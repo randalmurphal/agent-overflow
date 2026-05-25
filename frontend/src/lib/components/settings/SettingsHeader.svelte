@@ -28,7 +28,7 @@
 <header class="flex flex-col gap-1">
   <div class="flex items-baseline gap-2.5">
     {#if eyebrow}
-      <span class="text-[10.5px] font-medium uppercase tracking-[0.16em] text-fg-hint">
+      <span class="text-[0.65625rem] font-medium uppercase tracking-[0.16em] text-fg-hint">
         {eyebrow}
       </span>
     {/if}
@@ -36,9 +36,9 @@
       <span class="ml-auto">{@render badge()}</span>
     {/if}
   </div>
-  <h3 class="text-[15px] font-semibold text-fg leading-snug">{title}</h3>
+  <h3 class="text-[0.9375rem] font-semibold text-fg leading-snug">{title}</h3>
   {#if description}
-    <p class="max-w-2xl text-[12px] leading-relaxed text-fg-muted">
+    <p class="max-w-2xl text-[0.75rem] leading-relaxed text-fg-muted">
       {description}
     </p>
   {/if}

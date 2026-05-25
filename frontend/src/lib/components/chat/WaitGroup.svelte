@@ -58,7 +58,7 @@
       {#if hiddenChildCount > 0}
         <button
           type="button"
-          class="my-1 rounded-[var(--radius-control)] px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          class="my-1 rounded-[var(--radius-control)] px-2 py-1 text-[0.6875rem] text-fg-muted hover:bg-surface-2/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           onclick={(event) => preservePaneScrollAnchor(pane, event, () => { showAllChildren = true; })}
           data-testid="wait-group-show-all"
         >

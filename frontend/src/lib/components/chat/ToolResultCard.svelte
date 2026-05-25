@@ -111,12 +111,12 @@
     expanded={false}
     expandable={false}
     testId="tool-result-row-toggle"
-    class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] text-fg-muted"
+    class="rounded-[var(--radius-control)] px-1 py-1 text-[0.75rem] text-fg-muted"
   >
     {#snippet icon()}<ToolKindIcon kind="generic" ariaLabel="output" />{/snippet}
     {#snippet label()}<span>output</span>{/snippet}
     {#snippet body()}
-      <p class="min-w-0 truncate text-[12px] text-fg-muted/75">{meta.title || item.summary}</p>
+      <p class="min-w-0 truncate text-[0.75rem] text-fg-muted/75">{meta.title || item.summary}</p>
     {/snippet}
     {#snippet actions()}
       <ToolDecisionChip decision={item.decision} />
@@ -136,7 +136,7 @@
       {#if hasInlineDiff}
         <div class="mt-2 flex flex-wrap gap-1.5" data-testid="tool-result-inline-diffs">
           {#each meta.inlineDiff?.files ?? [] as file (file.path)}
-            <span class="group/chip inline-flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle px-2 py-1 text-[11px] {kindClasses(file)}">
+            <span class="group/chip inline-flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle px-2 py-1 text-[0.6875rem] {kindClasses(file)}">
               <span class="font-mono">{fileLabel(file)}</span>
               {#if file.insertions || file.deletions}
                 <span class="text-text-secondary">{fileStats(file)}</span>
@@ -182,17 +182,17 @@
         controls={canExpandExactPatch ? `tool-result-patch-${item.id}` : undefined}
         ariaLabel="Toggle Exact Patch"
         testId="tool-result-patch-toggle"
-        class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] text-fg-muted {canExpandExactPatch ? 'hover:bg-surface-2/20' : ''}"
+        class="rounded-[var(--radius-control)] px-1 py-1 text-[0.75rem] text-fg-muted {canExpandExactPatch ? 'hover:bg-surface-2/20' : ''}"
         onToggle={(event) => preservePaneScrollAnchor(pane, event, () => expansion.toggle())}
       >
         {#snippet icon()}<ToolKindIcon kind="file" ariaLabel="patch" />{/snippet}
         {#snippet label()}<span>patch</span>{/snippet}
         {#snippet body()}
-          <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75">Exact patch</span>
+          <span class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted/75">Exact patch</span>
         {/snippet}
         {#snippet actions()}
           {#if meta.inlineDiff?.insertions || meta.inlineDiff?.deletions}
-          <span class="text-[11px]">
+          <span class="text-[0.6875rem]">
             {#if meta.inlineDiff?.insertions}<span class="text-success">+{meta.inlineDiff.insertions}</span>{/if}
             {#if meta.inlineDiff?.insertions && meta.inlineDiff?.deletions}<span> </span>{/if}
             {#if meta.inlineDiff?.deletions}<span class="text-error">-{meta.inlineDiff.deletions}</span>{/if}

@@ -366,7 +366,7 @@
       data-status={effectiveStatus}
     ></span>
     <span
-      class="text-[10px] font-medium whitespace-nowrap shrink-0 hidden min-[260px]:inline {pill.labelClass}"
+      class="text-[0.625rem] font-medium whitespace-nowrap shrink-0 hidden min-[260px]:inline {pill.labelClass}"
       aria-hidden="true"
     >
       {pill.label}
@@ -419,7 +419,7 @@
           this row when active.
         -->
         <span
-          class="inline-flex h-5 items-center rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/90 px-1.5 font-mono text-[10px] font-medium text-fg shadow-sm pointer-events-none"
+          class="inline-flex h-5 items-center rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/90 px-1.5 font-mono text-[0.625rem] font-medium text-fg shadow-sm pointer-events-none"
           aria-hidden="true"
           data-testid="thread-row-jump-hint"
         >
@@ -427,7 +427,7 @@
         </span>
       {:else}
         <span
-          class="text-[10px] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-item:opacity-0 group-focus-within/thread-row:opacity-0"
+          class="text-[0.625rem] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-item:opacity-0 group-focus-within/thread-row:opacity-0"
           data-testid="thread-row-time"
         >
           {sidebarTimeLabel(thread.updatedAt)}
@@ -448,7 +448,7 @@
 
   {#if showWorktreeMeta}
     <div
-      class="relative -mt-1.5 flex h-3.5 items-center text-[10px] leading-none text-fg-hint"
+      class="relative -mt-1.5 flex h-3.5 items-center text-[0.625rem] leading-none text-fg-hint"
       style="padding-left: {worktreeIndentPx}px; padding-right: {worktreeRightPaddingPx}px"
       title="Worktree: {thread.worktreePath}"
       aria-label="Worktree {worktreeName}"
@@ -460,7 +460,7 @@
       >
         <Icon icon={FolderGit2} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
         <span
-          class="min-w-0 truncate font-mono text-[10px]"
+          class="min-w-0 truncate font-mono text-[0.625rem]"
           data-testid="thread-row-worktree-name"
         >
           {worktreeName}

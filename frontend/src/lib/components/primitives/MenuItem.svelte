@@ -150,7 +150,7 @@
   <span class="min-w-0 flex-1">
     <span class="block truncate">{label}</span>
     {#if description}
-      <span class="block truncate text-[11px] leading-4 text-fg-hint">{description}</span>
+      <span class="block truncate text-[0.6875rem] leading-4 text-fg-hint">{description}</span>
     {/if}
   </span>
   {#if indicator}
@@ -160,14 +160,14 @@
   {/if}
   {#if kbd}
     <span
-      class="ml-auto text-[10px] tracking-wide text-fg-hint"
+      class="ml-auto text-[0.625rem] tracking-wide text-fg-hint"
       aria-hidden="true"
     >
       {kbd}
     </span>
   {/if}
   {#if suffix}
-    <span class="ml-auto text-[10px] text-fg-hint">
+    <span class="ml-auto text-[0.625rem] text-fg-hint">
       {suffix}
     </span>
   {/if}

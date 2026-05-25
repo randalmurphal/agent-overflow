@@ -10,7 +10,7 @@
 
 {#if stats}
   <div
-    class="border-t border-border-subtle px-3 py-2 shrink-0 flex items-center gap-4 text-[11px] leading-tight text-fg-muted"
+    class="border-t border-border-subtle px-3 py-2 shrink-0 flex items-center gap-4 text-[0.6875rem] leading-tight text-fg-muted"
     data-testid="sidebar-system-stats"
   >
     {#if stats.isWsl}

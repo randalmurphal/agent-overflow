@@ -170,6 +170,9 @@ func validateSettings(current Settings) (Settings, error) {
 	if err := validateRetentionDays(current.Retention.Days); err != nil {
 		return Settings{}, err
 	}
+	if err := validateFontSize("fontSize", current.FontSize); err != nil {
+		return Settings{}, err
+	}
 	return current, nil
 }
 
@@ -263,6 +266,11 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.CodexAutoCompactExtendedPercent,
 	)
 	current.Retention.Days = sanitizeRetentionDays(current.Retention.Days)
+	current.FontSize = sanitizeFontSize(
+		"fontSize",
+		current.FontSize,
+		DefaultSettings.FontSize,
+	)
 	return current
 }
 
@@ -320,6 +328,26 @@ func sanitizeRetentionDays(value int) int {
 		return MaxRetentionDays
 	}
 	return value
+}
+
+const (
+	MinFontSize = 10
+	MaxFontSize = 20
+)
+
+func validateFontSize(field string, value int) error {
+	if value < MinFontSize || value > MaxFontSize {
+		return fmt.Errorf("%s must be between %d and %d", field, MinFontSize, MaxFontSize)
+	}
+	return nil
+}
+
+func sanitizeFontSize(field string, value, fallback int) int {
+	if value >= MinFontSize && value <= MaxFontSize {
+		return value
+	}
+	log.Printf("settings: invalid %s %d, using default %d", field, value, fallback)
+	return fallback
 }
 
 func validateOption(field, value string, allowed map[string]struct{}) error {

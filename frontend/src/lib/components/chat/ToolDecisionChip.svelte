@@ -26,7 +26,7 @@
 
 {#if label}
   <span
-    class="rounded-full border px-1.5 py-0.5 text-[11px] font-medium {classes}"
+    class="rounded-full border px-1.5 py-0.5 text-[0.6875rem] font-medium {classes}"
     data-testid="tool-decision-chip"
     data-decision={decision}
   >

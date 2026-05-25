@@ -215,7 +215,7 @@
     onclick={onHeaderClick}
     role="presentation"
     data-testid="diff-file-header"
-    class="flex w-full items-center gap-2 rounded-[var(--radius-control)] px-1 py-1 text-[13px] cursor-default"
+    class="flex w-full items-center gap-2 rounded-[var(--radius-control)] px-1 py-1 text-[0.8125rem] cursor-default"
   >
     <!-- Decorative chevron, rotated to "open" since the body is
          always shown when present. Mirrors the look of an expanded
@@ -227,9 +227,9 @@
       <Icon icon={ChevronRight} size={12} strokeWidth={2} class="rotate-90 opacity-70" />
     </span>
     <ToolKindIcon kind={classification.icon} ariaLabel={labelText} />
-    <span class="w-12 shrink-0 text-[11px] text-fg-hint" data-testid="diff-file-label">{labelText}</span>
+    <span class="w-12 shrink-0 text-[0.6875rem] text-fg-hint" data-testid="diff-file-label">{labelText}</span>
     <span
-      class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75 font-mono"
+      class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted/75 font-mono"
       data-testid="diff-file-path"
     >
       <EditorLink
@@ -243,7 +243,7 @@
       />
     </span>
     <span
-      class="ml-auto flex gap-2 text-[11px] shrink-0 tabular-nums"
+      class="ml-auto flex gap-2 text-[0.6875rem] shrink-0 tabular-nums"
       data-testid="diff-file-counts"
     >
       {#if file.additions > 0}<span class="text-success">+{file.additions}</span>{/if}
@@ -278,7 +278,7 @@
               data-testid="diff-file-hunk-separator"
             >
               <span class="flex-1 border-t border-border-subtle"></span>
-              <span class="text-[10px] text-fg-subtle">⋮</span>
+              <span class="text-[0.625rem] text-fg-subtle">⋮</span>
               <span class="flex-1 border-t border-border-subtle"></span>
             </div>
           {:else}

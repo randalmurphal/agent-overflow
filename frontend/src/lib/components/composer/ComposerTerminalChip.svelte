@@ -39,7 +39,7 @@
   {#if expanded}
     <pre
       id={`chip-body-${chip.id}`}
-      class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-surface-0 p-2 font-mono text-[11px] text-text-primary"
+      class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-surface-0 p-2 font-mono text-[0.6875rem] text-text-primary"
     >{chip.content}</pre>
   {/if}
 </div>

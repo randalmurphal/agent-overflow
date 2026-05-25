@@ -26,11 +26,11 @@
   <header class="space-y-1">
     <h3 class="text-sm font-semibold text-text-primary">Open {labels.longSingularTitleCase}</h3>
     {#if unsupportedForge}
-      <p class="text-[11px] text-text-secondary" data-testid="ship-changes-pr-unsupported">
+      <p class="text-[0.6875rem] text-text-secondary" data-testid="ship-changes-pr-unsupported">
         This remote is not GitHub or GitLab — pull/merge request creation is not supported.
       </p>
     {:else if alreadyHasPR}
-      <p class="text-[11px] text-text-secondary">
+      <p class="text-[0.6875rem] text-text-secondary">
         A {labels.noun} is already open for this branch:
         <a
           href={status?.openPrUrl}
@@ -42,8 +42,8 @@
         </a>
       </p>
     {:else if status}
-      <p class="text-[11px] text-text-secondary">
-        Create a {labels.noun} for <code class="text-[10px] bg-surface-2/60 px-1 rounded">{status.branch}</code>
+      <p class="text-[0.6875rem] text-text-secondary">
+        Create a {labels.noun} for <code class="text-[0.625rem] bg-surface-2/60 px-1 rounded">{status.branch}</code>
         against the default branch.
       </p>
     {/if}

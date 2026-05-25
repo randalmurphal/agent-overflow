@@ -27,7 +27,7 @@
     {#if field.required}<span aria-label="required" class="text-error">*</span>{/if}
   </label>
   {#if field.description}
-    <p class="text-[10px] text-text-secondary/80">{field.description}</p>
+    <p class="text-[0.625rem] text-text-secondary/80">{field.description}</p>
   {/if}
 
   {#if field.kind === 'string'}
@@ -105,7 +105,7 @@
   {/if}
 
   {#if error}
-    <p class="mt-1 text-[10px] text-error" data-testid="el-error-{field.name}">
+    <p class="mt-1 text-[0.625rem] text-error" data-testid="el-error-{field.name}">
       {error}
     </p>
   {/if}

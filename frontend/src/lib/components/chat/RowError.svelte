@@ -47,14 +47,14 @@
 </script>
 
 <div
-  class="flex items-baseline gap-1.5 text-[12px] {className}"
+  class="flex items-baseline gap-1.5 text-[0.75rem] {className}"
   data-testid="row-error"
   data-tone={tone}
   role="status"
 >
   {#if code}
     <span
-      class="inline-flex shrink-0 items-center rounded px-1 py-px font-mono text-[10px] {chipClass}"
+      class="inline-flex shrink-0 items-center rounded px-1 py-px font-mono text-[0.625rem] {chipClass}"
       data-testid="row-error-code"
     >{code}</span>
   {/if}

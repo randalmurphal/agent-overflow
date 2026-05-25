@@ -36,8 +36,8 @@
     expanded={false}
     expandable={false}
     testId="terminal-interaction-row"
-    class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] text-fg-muted"
-    buttonClass="text-[12px] text-fg-muted"
+    class="rounded-[var(--radius-control)] px-1 py-1 text-[0.75rem] text-fg-muted"
+    buttonClass="text-[0.75rem] text-fg-muted"
   >
     {#snippet icon()}<ToolKindIcon kind="clock" ariaLabel="wait" />{/snippet}
     {#snippet label()}<span data-testid="terminal-interaction-label">wait</span>{/snippet}

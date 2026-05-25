@@ -8,6 +8,7 @@ const FULL_SETTINGS: Settings = {
   timestampFormat: 'locale',
   sansFont: 'geist',
   monoFont: 'geist',
+  fontSize: 13,
   recentWorkspaces: ['/tmp/a'],
   diffWordWrap: true,
   streamingEnabled: true,

@@ -252,7 +252,7 @@
             {#each view.anchoredComments as comment (comment.id)}
               <div
                 class={[
-                  'border-l-2 pl-3 py-0.5 text-[12px]',
+                  'border-l-2 pl-3 py-0.5 text-[0.75rem]',
                   comment.status === 'draft'
                     ? 'border-accent/60'
                     : comment.status === 'sent'
@@ -263,7 +263,7 @@
               >
                 <div class="mb-1 flex items-center justify-between gap-2">
                   <span class={[
-                    'text-[10px] font-medium uppercase tracking-wide',
+                    'text-[0.625rem] font-medium uppercase tracking-wide',
                     comment.status === 'resolved'
                       ? 'text-fg-hint'
                       : comment.status === 'sent'
@@ -283,14 +283,14 @@
                     </div>
                   {/if}
                 </div>
-                <p class="mb-1.5 line-clamp-2 italic text-[11px] text-fg-muted">
+                <p class="mb-1.5 line-clamp-2 italic text-[0.6875rem] text-fg-muted">
                   "{comment.selectedText}"
                 </p>
                 {#if editingCommentId === comment.id && comment.status === 'draft'}
                   <textarea
                     bind:value={editBody}
                     rows="3"
-                    class="w-full resize-y rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-[12px] text-fg outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+                    class="w-full resize-y rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-[0.75rem] text-fg outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
                   ></textarea>
                   <div class="mt-1 flex justify-end gap-1">
                     <Button variant="ghost" size="xs" onclick={() => { editingCommentId = null; editBody = ''; }}>
@@ -346,12 +346,12 @@
       style={`top: ${pendingSelection.composerTop}px; left: ${pendingSelection.composerLeft}px; transform: translate(-50%, 0);`}
       data-testid="plan-comment-composer"
     >
-      <p class="mb-1 line-clamp-2 italic text-[11px] text-fg-muted">"{pendingSelection.text}"</p>
+      <p class="mb-1 line-clamp-2 italic text-[0.6875rem] text-fg-muted">"{pendingSelection.text}"</p>
       <textarea
         bind:value={commentBody}
         rows="3"
         placeholder="Leave a revision note..."
-        class="w-full resize-y rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-[12px] text-fg outline-none placeholder:text-fg-hint focus:border-accent focus:ring-2 focus:ring-accent/30"
+        class="w-full resize-y rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-[0.75rem] text-fg outline-none placeholder:text-fg-hint focus:border-accent focus:ring-2 focus:ring-accent/30"
       ></textarea>
       <div class="mt-2 flex justify-end gap-1.5">
         <Button variant="ghost" size="xs" onclick={clearSelection}>

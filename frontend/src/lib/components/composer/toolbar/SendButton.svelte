@@ -123,7 +123,7 @@
       {/if}
       <span>{label}</span>
       {#if showCommentCount}
-        <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[10px] font-semibold leading-4 text-surface-0">
+        <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[0.625rem] font-semibold leading-4 text-surface-0">
           {planCommentCount}
         </span>
       {/if}
@@ -193,7 +193,7 @@
     {:else if label}
       <span>{label}</span>
       {#if showCommentCount}
-        <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[10px] font-semibold leading-4 text-surface-0">
+        <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[0.625rem] font-semibold leading-4 text-surface-0">
           {planCommentCount}
         </span>
       {/if}

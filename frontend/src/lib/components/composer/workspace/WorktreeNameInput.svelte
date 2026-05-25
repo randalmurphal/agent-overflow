@@ -75,7 +75,7 @@
       onkeydown={handleKeydown}
       class={[
         'h-6 w-[11rem] min-w-0 rounded border border-border bg-transparent',
-        'px-2 text-[11px] text-text-primary placeholder:text-fg-hint',
+        'px-2 text-[0.6875rem] text-text-primary placeholder:text-fg-hint',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
       ].join(' ')}
     />
@@ -101,7 +101,7 @@
     data-testid="new-branch-toggle"
     class={[
       'inline-flex h-6 items-center gap-1 rounded border border-border bg-transparent',
-      'px-2 text-[11px] text-fg-muted hover:text-fg hover:border-border-strong',
+      'px-2 text-[0.6875rem] text-fg-muted hover:text-fg hover:border-border-strong',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
     ].join(' ')}
   >

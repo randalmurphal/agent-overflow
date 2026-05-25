@@ -59,7 +59,7 @@
 
 {#if approval.permissions}
   <div class="mt-2 rounded bg-surface-1 border border-border px-2.5 py-1.5" data-testid="permission-summary">
-    <span class="text-[10px] text-text-secondary/60 block mb-1">Requested Permissions</span>
+    <span class="text-[0.625rem] text-text-secondary/60 block mb-1">Requested Permissions</span>
     {#if approval.permissions.network}
       <p class="text-xs text-text-primary">Network: {approval.permissions.network.enabled ? 'Enabled' : 'Disabled'}</p>
     {/if}

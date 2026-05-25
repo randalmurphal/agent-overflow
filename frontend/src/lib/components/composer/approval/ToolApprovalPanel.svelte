@@ -125,7 +125,7 @@
 
 {#if !editing && preview}
   <div class="mt-2 rounded bg-surface-1 border border-border px-2.5 py-1.5 max-h-40 overflow-y-auto" data-testid="approval-preview">
-    <span class="text-[10px] text-text-secondary/60 block mb-0.5">{preview.label}</span>
+    <span class="text-[0.625rem] text-text-secondary/60 block mb-0.5">{preview.label}</span>
     <pre class="text-xs font-mono text-text-primary whitespace-pre-wrap">{preview.content}</pre>
   </div>
 {/if}
@@ -133,12 +133,12 @@
 {#if editing}
   <div class="mt-2 space-y-1">
     <div class="flex items-center justify-between gap-2">
-      <span class="text-[10px] text-text-secondary/80">Editing tool input (JSON)</span>
+      <span class="text-[0.625rem] text-text-secondary/80">Editing tool input (JSON)</span>
       <button
         type="button"
         data-testid="approval-edit-cancel"
         onclick={closeEdit}
-        class="text-[10px] text-text-secondary hover:text-accent cursor-pointer underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded px-1"
+        class="text-[0.625rem] text-text-secondary hover:text-accent cursor-pointer underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded px-1"
       >
         Cancel edit
       </button>
@@ -151,7 +151,7 @@
       oninput={(e) => setEditText((e.target as HTMLTextAreaElement).value)}
     ></textarea>
     {#if editError}
-      <p class="text-[10px] text-error" data-testid="approval-edit-error">
+      <p class="text-[0.625rem] text-error" data-testid="approval-edit-error">
         {editError}
       </p>
     {/if}

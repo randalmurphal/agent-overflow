@@ -22,7 +22,7 @@
   class={[
     'inline-flex items-center justify-center',
     'rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/70',
-    'px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em]',
+    'px-1.5 py-0.5 font-mono text-[0.625rem] uppercase tracking-[0.08em]',
     'text-fg-subtle shrink-0',
     className,
   ].join(' ')}

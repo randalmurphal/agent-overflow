@@ -54,7 +54,7 @@
               class="h-full w-full object-cover"
             />
           {:else}
-            <span class="line-clamp-3 px-1.5 text-center text-[10px] leading-tight text-text-secondary">
+            <span class="line-clamp-3 px-1.5 text-center text-[0.625rem] leading-tight text-text-secondary">
               {attachment.filename}
             </span>
           {/if}
@@ -68,7 +68,7 @@
           <Icon icon={X} size={12} strokeWidth={2.5} class="opacity-100" />
         </button>
         <span
-          class="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[10px] font-medium leading-none text-white"
+          class="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-white"
           aria-label={`Image ${index + 1}`}
         >
           #{index + 1}

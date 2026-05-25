@@ -37,7 +37,7 @@
   aria-label="Participant {index + 1}"
 >
   <div class="mb-3 flex items-center justify-between gap-2">
-    <legend class="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-subtle">
+    <legend class="text-[0.6875rem] font-semibold uppercase tracking-[0.18em] text-fg-subtle">
       Participant {index + 1}
     </legend>
     <Button
@@ -54,7 +54,7 @@
 
   <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
     <div>
-      <label for={roleId} class="block text-[12px] font-medium text-fg mb-1">
+      <label for={roleId} class="block text-[0.75rem] font-medium text-fg mb-1">
         Role <span class="text-error/80">*</span>
       </label>
       <input
@@ -63,29 +63,29 @@
         value={participant.role}
         oninput={(e) => update('role', (e.target as HTMLInputElement).value)}
         placeholder="e.g. advocate, critic"
-        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
+        class="w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
       />
     </div>
 
     <div>
-      <label for={descId} class="block text-[12px] font-medium text-fg mb-1">Description</label>
+      <label for={descId} class="block text-[0.75rem] font-medium text-fg mb-1">Description</label>
       <input
         id={descId}
         type="text"
         value={participant.description}
         oninput={(e) => update('description', (e.target as HTMLInputElement).value)}
         placeholder="How this role behaves"
-        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
+        class="w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
       />
     </div>
 
     <div>
-      <label for={providerId} class="block text-[12px] font-medium text-fg mb-1">Provider</label>
+      <label for={providerId} class="block text-[0.75rem] font-medium text-fg mb-1">Provider</label>
       <select
         id={providerId}
         value={participant.provider ?? ''}
         onchange={(e) => updateProvider((e.target as HTMLSelectElement).value)}
-        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
+        class="w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
       >
         <option value="">Inherit from parent thread</option>
         <option value="claude">Claude</option>
@@ -94,20 +94,20 @@
     </div>
 
     <div>
-      <label for={modelId} class="block text-[12px] font-medium text-fg mb-1">Model</label>
+      <label for={modelId} class="block text-[0.75rem] font-medium text-fg mb-1">Model</label>
       <input
         id={modelId}
         type="text"
         value={participant.model ?? ''}
         oninput={(e) => update('model', (e.target as HTMLInputElement).value)}
         placeholder="Inherit from parent thread"
-        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
+        class="w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
       />
     </div>
   </div>
 
   <div class="mt-3">
-    <label for={systemId} class="block text-[12px] font-medium text-fg mb-1">
+    <label for={systemId} class="block text-[0.75rem] font-medium text-fg mb-1">
       System prompt <span class="text-error/80">*</span>
     </label>
     <textarea
@@ -116,7 +116,7 @@
       oninput={(e) => update('system', (e.target as HTMLTextAreaElement).value)}
       rows={4}
       placeholder="What this participant believes, argues, prioritizes…"
-      class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-2 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors resize-y font-mono"
+      class="w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-2 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors resize-y font-mono"
     ></textarea>
   </div>
 </fieldset>

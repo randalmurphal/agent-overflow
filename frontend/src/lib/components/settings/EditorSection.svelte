@@ -101,18 +101,18 @@
       eyebrow="Open-in-editor"
       title="Editor"
     />
-    <p class="mt-1 max-w-2xl text-[12px] leading-relaxed text-fg-muted">
+    <p class="mt-1 max-w-2xl text-[0.75rem] leading-relaxed text-fg-muted">
       Choose which editor opens when you click a file path in the chat.
       "Auto" follows the catalog priority order (VS Code, Cursor, Zed, …)
-      with <code class="font-mono text-[11px]">$EDITOR</code> /
-      <code class="font-mono text-[11px]">$VISUAL</code> as the final
+      with <code class="font-mono text-[0.6875rem]">$EDITOR</code> /
+      <code class="font-mono text-[0.6875rem]">$VISUAL</code> as the final
       fallback. Editors that aren't installed are listed for reference but
       can't be selected.
     </p>
 
     {#if loading}
       <p
-        class="mt-4 text-[12px] text-fg-subtle"
+        class="mt-4 text-[0.75rem] text-fg-subtle"
         role="status"
         aria-live="polite"
       >
@@ -138,8 +138,8 @@
             onchange={() => void selectEditor('')}
             class="accent-accent"
           />
-          <span class="text-[13px] font-medium text-fg">Auto</span>
-          <span class="text-[12px] text-fg-muted">Use the best available editor.</span>
+          <span class="text-[0.8125rem] font-medium text-fg">Auto</span>
+          <span class="text-[0.75rem] text-fg-muted">Use the best available editor.</span>
         </label>
 
         {#each editors as editor (editor.id)}
@@ -159,11 +159,11 @@
               onchange={() => void selectEditor(editor.id)}
               class="accent-accent"
             />
-            <span class="text-[13px] font-medium text-fg">{editor.name}</span>
+            <span class="text-[0.8125rem] font-medium text-fg">{editor.name}</span>
             {#if !editor.available}
-              <span class="text-[11px] italic text-fg-hint">(not installed)</span>
+              <span class="text-[0.6875rem] italic text-fg-hint">(not installed)</span>
             {:else if editor.envFallback}
-              <span class="text-[11px] text-fg-hint">($EDITOR / $VISUAL)</span>
+              <span class="text-[0.6875rem] text-fg-hint">($EDITOR / $VISUAL)</span>
             {/if}
           </label>
         {/each}

@@ -145,7 +145,7 @@
 <div class="group mb-5 flex justify-end">
   <div
     class="max-w-[82%] rounded-[18px] rounded-br-[8px] border border-border-subtle bg-surface-2/60
-           px-3.5 py-2 text-[13px] leading-[1.55] text-fg shadow-sheet"
+           px-3.5 py-2 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet"
     class:user-message-target-flash-a={targetFlash && targetFlashNonce % 2 === 0}
     class:user-message-target-flash-b={targetFlash && targetFlashNonce % 2 === 1}
     data-target-flash={targetFlash ? 'true' : undefined}
@@ -175,7 +175,7 @@
               </span>
             {/if}
             <span
-              class="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[10px] font-medium leading-none text-white"
+              class="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-white"
               aria-label={`Image ${index + 1}`}
             >
               #{index + 1}
@@ -187,7 +187,7 @@
     {#if visibleSummary}
       <p class="whitespace-pre-wrap break-words">{visibleSummary}</p>
     {/if}
-    <div class="mt-1.5 flex items-center justify-end gap-1.5 text-[10px] text-fg-hint/70">
+    <div class="mt-1.5 flex items-center justify-end gap-1.5 text-[0.625rem] text-fg-hint/70">
       {#if showMessageActions && pane}
         {#if canRequestRevert}
           <span
@@ -257,21 +257,21 @@
       >
         <button
           type="button"
-          class="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[12px] text-fg transition-colors hover:bg-surface-2/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-55"
+          class="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[0.75rem] text-fg transition-colors hover:bg-surface-2/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-55"
           disabled={revertBusy}
           onclick={() => void confirmRevert('conversation-and-files')}
           role="menuitem"
           data-testid="revert-conversation-and-files"
         >
           <span class="whitespace-nowrap font-medium">Conversation & files</span>
-          <span class="flex shrink-0 items-center gap-1 whitespace-nowrap font-mono text-[11px] tabular-nums">
+          <span class="flex shrink-0 items-center gap-1 whitespace-nowrap font-mono text-[0.6875rem] tabular-nums">
             <span class="text-success">+{revertTotals.additions}</span>
             <span class="text-error">-{revertTotals.deletions}</span>
           </span>
         </button>
         <button
           type="button"
-          class="mt-0.5 flex w-full items-center rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[12px] font-medium text-fg-muted transition-colors hover:bg-surface-2/70 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-55"
+          class="mt-0.5 flex w-full items-center rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[0.75rem] font-medium text-fg-muted transition-colors hover:bg-surface-2/70 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-55"
           disabled={revertBusy}
           onclick={() => void confirmRevert('conversation-only')}
           role="menuitem"

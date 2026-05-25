@@ -227,7 +227,7 @@
   {@const el = approval.elicitation}
   <div class="mt-2 space-y-2">
     {#if el.serverName}
-      <p class="text-[10px] text-text-secondary/80" data-testid="elicitation-server">
+      <p class="text-[0.625rem] text-text-secondary/80" data-testid="elicitation-server">
         From MCP server: <span class="font-medium text-text-primary">{el.serverName}</span>
       </p>
     {/if}
@@ -241,7 +241,7 @@
         class="rounded border border-border bg-surface-1 px-2.5 py-2"
         data-testid="elicitation-url-panel"
       >
-        <p class="text-[10px] text-text-secondary/70 mb-1">External approval URL</p>
+        <p class="text-[0.625rem] text-text-secondary/70 mb-1">External approval URL</p>
         {#if safeURL}
           <a
             href={safeURL}
@@ -251,7 +251,7 @@
           >
             {safeURL}
           </a>
-          <p class="text-[10px] text-text-secondary/70 mt-1">
+          <p class="text-[0.625rem] text-text-secondary/70 mt-1">
             Click "Accept" after completing the flow in your browser.
           </p>
         {:else}

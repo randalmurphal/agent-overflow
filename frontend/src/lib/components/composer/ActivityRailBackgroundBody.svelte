@@ -110,14 +110,14 @@
   class="border-t border-border-subtle px-2 py-2 sm:px-3"
   data-testid="activity-rail-background-body"
 >
-  <div class="mb-1.5 flex items-center gap-2 font-mono text-[10.5px] text-fg-hint/70">
+  <div class="mb-1.5 flex items-center gap-2 font-mono text-[0.65625rem] text-fg-hint/70">
     <span data-testid="activity-rail-background-running-label">
       {anyRunning ? `${runningCount} running` : 'idle'}
     </span>
     {#if canStopAll}
       <button
         type="button"
-        class="ml-auto rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/60 px-2 py-0.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+        class="ml-auto rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/60 px-2 py-0.5 text-[0.6875rem] font-medium text-text-secondary transition-colors hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
         onclick={onStopAll}
         disabled={stopAllInFlight}
         data-testid="activity-rail-background-stop-all"

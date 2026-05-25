@@ -53,7 +53,7 @@ export const chatMarkdownTheme: ThemeOverride = {
     base: 'my-3 w-full overflow-hidden rounded-md border-0 flex flex-col bg-surface-1',
     // Same background as base — the inner container is mostly there
     // for the relative positioning the library expects.
-    container: 'relative overflow-visible bg-transparent p-0 font-mono text-[13px]',
+    container: 'relative overflow-visible bg-transparent p-0 font-mono text-[0.8125rem]',
     // The whole header bar (language label + copy/download buttons)
     // is hidden — chat surfaces favour zero-chrome code blocks. A
     // hover-revealed copy button mounted by `StreamdownCodeHost` is
@@ -101,10 +101,10 @@ export const chatMarkdownTheme: ThemeOverride = {
   td: {
     // Drop the 200-400px width clamp — chat tables are usually
     // narrow, and clamped cells push them past the column bounds.
-    base: 'px-3 py-1.5 text-[13px] min-w-0 max-w-none break-words text-fg',
+    base: 'px-3 py-1.5 text-[0.8125rem] min-w-0 max-w-none break-words text-fg',
   },
   th: {
-    base: 'px-3 py-1.5 text-[13px] font-medium min-w-0 max-w-none break-words text-fg-muted text-left',
+    base: 'px-3 py-1.5 text-[0.8125rem] font-medium min-w-0 max-w-none break-words text-fg-muted text-left',
   },
   hr: {
     base: 'border-border-subtle my-5',

@@ -61,7 +61,7 @@
         </span>
         <button
           type="button"
-          class="w-4 h-4 rounded hover:bg-surface-3 text-text-secondary hover:text-text-primary leading-none text-[11px]"
+          class="w-4 h-4 rounded hover:bg-surface-3 text-text-secondary hover:text-text-primary leading-none text-[0.6875rem]"
           data-testid={`terminal-tab-close-${tab.terminalID}`}
           onclick={(e) => { e.stopPropagation(); onClose(tab.terminalID); }}
           aria-label={`Close terminal ${labelFor(tab.summary.shell)}`}

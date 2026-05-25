@@ -67,7 +67,7 @@
   title={`Agent mode: ${modeLabel} — Shift+Tab to toggle`}
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
-    'px-1.5 py-1 text-[11px] text-fg-muted',
+    'px-1.5 py-1 text-[0.6875rem] text-fg-muted',
     'transition-colors cursor-pointer',
     'hover:text-fg hover:bg-surface-2/30',
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',

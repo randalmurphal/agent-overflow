@@ -47,7 +47,7 @@
       {pathRefs}
     />
   </div>
-  <div class="mt-1.5 flex items-center gap-1.5 text-[10px] text-fg-hint/70">
+  <div class="mt-1.5 flex items-center gap-1.5 text-[0.625rem] text-fg-hint/70">
     <time class="tabular-nums" datetime={isoTime}>
       {time}
     </time>

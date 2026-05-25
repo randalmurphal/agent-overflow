@@ -14,7 +14,7 @@
 <div
   role="presentation"
   data-menu-section-header
-  class="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary/70 select-none"
+  class="px-3 pt-2 pb-1 text-[0.625rem] font-semibold uppercase tracking-[0.12em] text-text-secondary/70 select-none"
 >
   {label}
 </div>

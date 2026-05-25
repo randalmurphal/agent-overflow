@@ -212,7 +212,7 @@
       <div class="flex min-w-0 items-center gap-1.5">
         <h3 class="truncate text-sm font-medium text-text-primary">{title}</h3>
         {#if isAccepted}
-          <span class="shrink-0 text-[12px] font-medium text-success">· Accepted</span>
+          <span class="shrink-0 text-[0.75rem] font-medium text-success">· Accepted</span>
         {/if}
       </div>
       <div class="flex items-center gap-1">

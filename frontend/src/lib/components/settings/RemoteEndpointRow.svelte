@@ -104,11 +104,11 @@
 <li class="flex flex-col gap-2 py-3">
   <div class="flex items-start justify-between gap-3">
     <div class="min-w-0 flex-1">
-      <p class="text-[13px] font-medium text-fg truncate">
+      <p class="text-[0.8125rem] font-medium text-fg truncate">
         {endpoint.name?.trim() || endpoint.url}
       </p>
-      <p class="mt-0.5 text-[11px] text-fg-muted font-mono truncate">{endpoint.url}</p>
-      <p class="mt-1 flex items-center gap-2 text-[11px] text-fg-muted font-mono">
+      <p class="mt-0.5 text-[0.6875rem] text-fg-muted font-mono truncate">{endpoint.url}</p>
+      <p class="mt-1 flex items-center gap-2 text-[0.6875rem] text-fg-muted font-mono">
         <span>Token:</span>
         <span aria-label="Token">
           {revealedToken ?? MASK}
@@ -116,7 +116,7 @@
         <button
           type="button"
           onclick={toggleReveal}
-          class="text-[11px] text-fg-muted hover:text-fg cursor-pointer underline-offset-2 hover:underline"
+          class="text-[0.6875rem] text-fg-muted hover:text-fg cursor-pointer underline-offset-2 hover:underline"
         >
           {revealedToken !== null ? 'Hide' : 'Show'}
         </button>
@@ -126,7 +126,7 @@
       <button
         type="button"
         onclick={copyLaunchCommand}
-        class="text-[12px] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-accent/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
+        class="text-[0.75rem] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-accent/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
         aria-label="Copy connect command for {endpoint.name || endpoint.url}"
       >
         {#if copyState === 'copied'}
@@ -140,7 +140,7 @@
       <button
         type="button"
         onclick={onEdit}
-        class="text-[12px] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-accent/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
+        class="text-[0.75rem] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-accent/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
       >
         Edit
       </button>
@@ -148,7 +148,7 @@
         type="button"
         onclick={onDelete}
         disabled={saving}
-        class="text-[12px] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-error/50 hover:text-error disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-error/40 transition-colors cursor-pointer"
+        class="text-[0.75rem] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-error/50 hover:text-error disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-error/40 transition-colors cursor-pointer"
       >
         Delete
       </button>

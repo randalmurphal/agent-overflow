@@ -44,7 +44,7 @@
 
 <Modal {open} {title} onClose={handleClose} width="sm" padding="comfortable">
   {#snippet children()}
-    <p class="text-[13px] text-fg-muted leading-relaxed">
+    <p class="text-[0.8125rem] text-fg-muted leading-relaxed">
       {description}
     </p>
   {/snippet}

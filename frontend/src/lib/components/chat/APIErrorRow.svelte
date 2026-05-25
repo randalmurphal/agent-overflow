@@ -59,13 +59,13 @@
     <div class="flex-1 space-y-1">
       <div>{item.summary || 'API error'}</div>
       {#if presentation.hint}
-        <div class="text-[12px] text-error/80">{presentation.hint}</div>
+        <div class="text-[0.75rem] text-error/80">{presentation.hint}</div>
       {/if}
       {#if presentation.action}
         <div>
           <a
             href={presentation.action.href}
-            class="text-[12px] underline hover:no-underline"
+            class="text-[0.75rem] underline hover:no-underline"
             target="_blank"
             rel="noopener noreferrer"
           >

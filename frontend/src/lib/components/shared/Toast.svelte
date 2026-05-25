@@ -38,7 +38,7 @@
       <div
         in:fly={{ x: 80, duration: 200 }}
         out:fade={{ duration: 150 }}
-        class="flex items-start gap-2.5 rounded-[12px] border px-3.5 py-2.5 shadow-menu backdrop-blur-md text-[13px] transition-transform duration-150 hover:scale-[1.015] {colorClasses(toast.type)}"
+        class="flex items-start gap-2.5 rounded-[12px] border px-3.5 py-2.5 shadow-menu backdrop-blur-md text-[0.8125rem] transition-transform duration-150 hover:scale-[1.015] {colorClasses(toast.type)}"
         role="alert"
       >
         <span class="mt-0.5 shrink-0 flex items-center">

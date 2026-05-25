@@ -250,7 +250,7 @@
   }
 </script>
 
-<div class="flex items-center justify-between px-3 py-1.5 border-b border-border-subtle text-[11px] text-text-secondary shrink-0">
+<div class="flex items-center justify-between px-3 py-1.5 border-b border-border-subtle text-[0.6875rem] text-text-secondary shrink-0">
   <span data-testid="diff-sidebar-file-count">{files.length} {files.length === 1 ? 'file' : 'files'}</span>
   {#if files.length > 1}
     <button

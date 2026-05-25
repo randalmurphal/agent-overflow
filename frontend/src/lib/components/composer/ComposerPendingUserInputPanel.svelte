@@ -335,11 +335,11 @@
   >
     <div class="min-w-0">
       <div class="flex items-center gap-2">
-        <p class="text-[11px] font-bold uppercase tracking-[0.08em] text-accent">
+        <p class="text-[0.6875rem] font-bold uppercase tracking-[0.08em] text-accent">
           Input requested
         </p>
         {#if request.questions.length > 1}
-          <span class="rounded-full border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+          <span class="rounded-full border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[0.625rem] font-semibold text-accent">
             {progressLabel}
           </span>
         {/if}

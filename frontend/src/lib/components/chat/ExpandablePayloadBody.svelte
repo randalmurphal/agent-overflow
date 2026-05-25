@@ -53,17 +53,17 @@
   data-testid={bodyTestId}
 >
   {#if expansion.loading}
-    <p class="px-3 py-2 text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">
+    <p class="px-3 py-2 text-[0.6875rem] text-fg-subtle animate-pulse" role="status" aria-live="polite">
       Loading…
     </p>
   {:else if expansion.error}
     <div class="space-y-2 px-3 py-2">
-      <p class="text-[11px] text-error" role="alert">
+      <p class="text-[0.6875rem] text-error" role="alert">
         Failed to load: {expansion.error}
       </p>
       <button
         type="button"
-        class="text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+        class="text-[0.6875rem] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
         onclick={() => expansion.retry()}
         data-testid="{testPrefix}-retry"
       >
@@ -75,7 +75,7 @@
       {@render renderContent({ data: expansion.displayData, testId: outputTestId })}
     {:else}
       <div
-        class="ansi-body min-w-0 max-w-full max-h-60 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
+        class="ansi-body min-w-0 max-w-full max-h-60 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words px-3 py-2 text-[0.6875rem] leading-relaxed text-fg-muted"
         data-testid={outputTestId}
       >
         <AnsiText source={expansion.displayData} class="whitespace-pre-wrap break-all" />
@@ -84,7 +84,7 @@
     {#if expansion.hasMore}
       <button
         type="button"
-        class="mx-3 mb-3 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+        class="mx-3 mb-3 text-[0.6875rem] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
         onclick={(event) => preservePaneScrollAnchor(pane, event, () => expansion.showFull())}
         data-testid="{testPrefix}-show-full"
       >
@@ -95,15 +95,15 @@
       <CopyFooter text={expansion.displayData} label={copyLabel} />
     {/if}
   {:else if deferredOutputState === 'loading'}
-    <p class="px-3 py-2 text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">
+    <p class="px-3 py-2 text-[0.6875rem] text-fg-subtle animate-pulse" role="status" aria-live="polite">
       Loading…
     </p>
   {:else if deferredOutputState === 'error'}
-    <p class="px-3 py-2 text-[11px] text-error" role="alert">
+    <p class="px-3 py-2 text-[0.6875rem] text-error" role="alert">
       Failed to load: {deferredOutputError || 'Background output could not be loaded.'}
     </p>
   {:else}
-    <p class="px-3 py-2 text-[11px] text-fg-subtle italic">
+    <p class="px-3 py-2 text-[0.6875rem] text-fg-subtle italic">
       {emptyMessage}
     </p>
   {/if}

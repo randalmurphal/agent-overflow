@@ -217,6 +217,69 @@ describe('<GeneralSettings> — Self-hosted GitLab hosts', () => {
   });
 });
 
+describe('<GeneralSettings> — Font size', () => {
+  beforeEach(async () => {
+    await seed();
+  });
+
+  it('renders the font size input with the default value', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-font-size') as HTMLInputElement;
+    expect(input.value).toBe('13');
+  });
+
+  it('dispatches fontSize patch on blur with parsed integer', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-font-size') as HTMLInputElement;
+    input.value = '16';
+    await fireEvent.blur(input);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 16 });
+  });
+
+  it('clamps below-minimum input to 10', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-font-size') as HTMLInputElement;
+    input.value = '5';
+    await fireEvent.blur(input);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 10 });
+  });
+
+  it('clamps above-maximum input to 20', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-font-size') as HTMLInputElement;
+    input.value = '30';
+    await fireEvent.blur(input);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 20 });
+  });
+
+  it('falls back to 13 on non-numeric input', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-font-size') as HTMLInputElement;
+    input.value = 'banana';
+    await fireEvent.blur(input);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 13 });
+  });
+
+  it('falls back to 13 on empty input', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-font-size') as HTMLInputElement;
+    input.value = '';
+    await fireEvent.blur(input);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 13 });
+  });
+});
+
 describe('<GeneralSettings> — Font selectors', () => {
   beforeEach(async () => {
     await seed();

@@ -59,6 +59,22 @@ func TestUpdateRejectsInvalidEnumeratedValues(t *testing.T) {
 			name:  "monoFont",
 			patch: map[string]any{"monoFont": "wingdings"},
 		},
+		{
+			name:  "fontSizeTooLow",
+			patch: map[string]any{"fontSize": 5},
+		},
+		{
+			name:  "fontSizeTooHigh",
+			patch: map[string]any{"fontSize": 25},
+		},
+		{
+			name:  "fontSizeJustBelowMin",
+			patch: map[string]any{"fontSize": 9},
+		},
+		{
+			name:  "fontSizeJustAboveMax",
+			patch: map[string]any{"fontSize": 21},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -83,6 +99,7 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
   "defaultThreadEnvMode": "remote",
   "paneDensity": "wide",
   "worktreeBranchPrefix": "bad/prefix",
+  "fontSize": 99,
   "recentWorkspaces": ["", " /tmp/one ", "/tmp/one", "/tmp/two"]
 }
 `)
@@ -118,6 +135,9 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
 	}
 	if got.WorktreeBranchPrefix != DefaultSettings.WorktreeBranchPrefix {
 		t.Fatalf("WorktreeBranchPrefix = %q, want %q", got.WorktreeBranchPrefix, DefaultSettings.WorktreeBranchPrefix)
+	}
+	if got.FontSize != DefaultSettings.FontSize {
+		t.Fatalf("FontSize = %d, want %d", got.FontSize, DefaultSettings.FontSize)
 	}
 	if len(got.RecentWorkspaces) != 2 {
 		t.Fatalf("len(RecentWorkspaces) = %d, want 2", len(got.RecentWorkspaces))
@@ -330,6 +350,65 @@ func TestRetentionClampsOverflowingDaysOnLoad(t *testing.T) {
 	got := NewService(dir).Get()
 	if got.Retention.Days != MaxRetentionDays {
 		t.Fatalf("Retention.Days = %d, want %d (clamped from 999999999)", got.Retention.Days, MaxRetentionDays)
+	}
+}
+
+func TestFontSizeDefaultIsThirteen(t *testing.T) {
+	got := NewService(t.TempDir()).Get()
+	if got.FontSize != 13 {
+		t.Fatalf("FontSize default = %d, want 13", got.FontSize)
+	}
+}
+
+func TestFontSizeUpdateRoundTrip(t *testing.T) {
+	svc := NewService(t.TempDir())
+
+	got, err := svc.Update(map[string]any{"fontSize": 16})
+	if err != nil {
+		t.Fatalf("fontSize=16: %v", err)
+	}
+	if got.FontSize != 16 {
+		t.Fatalf("fontSize=16 round-trip: got %d, want 16", got.FontSize)
+	}
+
+	got, err = svc.Update(map[string]any{"fontSize": 10})
+	if err != nil {
+		t.Fatalf("fontSize=10: %v", err)
+	}
+	if got.FontSize != 10 {
+		t.Fatalf("fontSize=10 round-trip: got %d, want 10", got.FontSize)
+	}
+
+	got, err = svc.Update(map[string]any{"fontSize": 20})
+	if err != nil {
+		t.Fatalf("fontSize=20: %v", err)
+	}
+	if got.FontSize != 20 {
+		t.Fatalf("fontSize=20 round-trip: got %d, want 20", got.FontSize)
+	}
+}
+
+func TestFontSizeSanitizesOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"fontSize": 99}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got := NewService(dir).Get()
+	if got.FontSize != DefaultSettings.FontSize {
+		t.Fatalf("FontSize = %d, want %d (reset from 99)", got.FontSize, DefaultSettings.FontSize)
+	}
+}
+
+func TestFontSizeSanitizesZeroOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"fontSize": 0}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got := NewService(dir).Get()
+	if got.FontSize != DefaultSettings.FontSize {
+		t.Fatalf("FontSize = %d, want %d (reset from 0)", got.FontSize, DefaultSettings.FontSize)
 	}
 }
 

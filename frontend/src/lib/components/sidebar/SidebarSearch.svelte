@@ -60,7 +60,7 @@
       placeholder="Search Projects & Threads…"
       aria-label="Search Projects and Threads"
       data-testid="sidebar-thread-search"
-      class="w-full rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/60 pl-8 pr-14 py-1.5 text-[12px] text-fg placeholder:text-fg-hint focus:outline-none focus:border-border focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
+      class="w-full rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/60 pl-8 pr-14 py-1.5 text-[0.75rem] text-fg placeholder:text-fg-hint focus:outline-none focus:border-border focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
     />
     {#if query.length > 0}
       <button

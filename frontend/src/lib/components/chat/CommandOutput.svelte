@@ -162,7 +162,7 @@
 
   {#snippet headerBody()}
     <span
-      class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-muted"
+      class="min-w-0 flex-1 truncate font-mono text-[0.75rem] text-fg-muted"
       title={displayCommand || undefined}
       data-testid="command-output-command"
     >
@@ -204,7 +204,7 @@
     controls={hasBody ? `cmd-output-${payloadId || item.id}` : undefined}
     ariaLabel={`Toggle Command Output: ${displayCommand}`}
     testId="command-output-toggle"
-    class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] {hasBody ? 'hover:bg-surface-2/20' : ''}"
+    class="rounded-[var(--radius-control)] px-1 py-1 text-[0.75rem] {hasBody ? 'hover:bg-surface-2/20' : ''}"
     onToggle={(event) => preservePaneScrollAnchor(pane, event, () => expansion.toggle())}
   >
     {#snippet icon()}{@render headerIcon()}{/snippet}
@@ -221,7 +221,7 @@
     </div>
   {/if}
   {#if compactCollapsedPreview && !expansion.expanded}
-    <div class="ml-5 truncate px-3 pb-1 text-[11px] text-fg-subtle" data-testid="command-output-preview">
+    <div class="ml-5 truncate px-3 pb-1 text-[0.6875rem] text-fg-subtle" data-testid="command-output-preview">
       └ {compactCollapsedPreview}
     </div>
   {/if}
@@ -231,13 +231,13 @@
     <div id="cmd-output-{payloadId || item.id}" class="ml-5 border-l border-border-subtle bg-surface-0/35">
       <div class="max-h-96 overflow-auto px-3 py-2">
         {#if hasPayload && expansion.loading}
-          <p class="text-[11px] text-fg-subtle" role="status" aria-live="polite">Loading output…</p>
+          <p class="text-[0.6875rem] text-fg-subtle" role="status" aria-live="polite">Loading output…</p>
         {:else if hasPayload && expansion.error}
           <div class="space-y-2">
-            <p class="text-[11px] text-error" role="alert">Failed to load output: {expansion.error}</p>
+            <p class="text-[0.6875rem] text-error" role="alert">Failed to load output: {expansion.error}</p>
             <button
               type="button"
-              class="text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded"
+              class="text-[0.6875rem] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded"
               onclick={() => expansion.retry()}
               data-testid="command-output-retry"
             >
@@ -245,11 +245,11 @@
             </button>
           </div>
         {:else if hasPayload}
-          <AnsiText source={expansion.displayData ?? ''} class="text-[11px] whitespace-pre text-fg-muted leading-relaxed" />
+          <AnsiText source={expansion.displayData ?? ''} class="text-[0.6875rem] whitespace-pre text-fg-muted leading-relaxed" />
           {#if expansion.hasMore}
             <button
               type="button"
-              class="mt-2 inline-flex items-center rounded-[var(--radius-control)] border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              class="mt-2 inline-flex items-center rounded-[var(--radius-control)] border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:bg-surface-2/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
               onclick={(event) => preservePaneScrollAnchor(pane, event, () => expansion.showFull())}
               data-testid="command-output-show-full"
             >
@@ -257,11 +257,11 @@
             </button>
           {/if}
         {:else if deferredOutputState === 'loading'}
-          <p class="text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">
+          <p class="text-[0.6875rem] text-fg-subtle animate-pulse" role="status" aria-live="polite">
             Loading…
           </p>
         {:else if deferredOutputState === 'error'}
-          <p class="text-[11px] text-error" role="alert">
+          <p class="text-[0.6875rem] text-error" role="alert">
             Failed to load: {deferredOutputError || 'Background output could not be loaded.'}
           </p>
         {/if}

@@ -196,7 +196,7 @@
   {#snippet children()}
     <div data-testid="ship-changes-drawer" class="space-y-4">
       {#if wizard.phase === 'idle'}
-        <p class="text-[12px] text-fg-muted" data-testid="ship-changes-loading">Loading git status…</p>
+        <p class="text-[0.75rem] text-fg-muted" data-testid="ship-changes-loading">Loading git status…</p>
       {:else if wizard.phase.startsWith('commit.')}
         <CommitStep state={wizard} onCommit={handleCommit} onSkip={handleSkipCommit} />
         {#if wizard.phase === 'commit.error'}

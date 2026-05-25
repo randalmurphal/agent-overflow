@@ -183,19 +183,19 @@
         placeholder="Search titles and message text…"
         aria-label="Search messages"
         data-testid="message-search-input"
-        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors mb-3"
+        class="w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors mb-3"
       />
 
       {#if loading}
-        <div class="px-2 py-3 text-[12px] text-fg-muted" data-testid="message-search-loading">Searching…</div>
+        <div class="px-2 py-3 text-[0.75rem] text-fg-muted" data-testid="message-search-loading">Searching…</div>
       {:else if error}
-        <div class="px-2 py-3 text-[12px] text-error" data-testid="message-search-error">{error}</div>
+        <div class="px-2 py-3 text-[0.75rem] text-error" data-testid="message-search-error">{error}</div>
       {:else if query.trim().length === 0}
-        <div class="px-2 py-3 text-[12px] text-fg-muted" data-testid="message-search-idle">
+        <div class="px-2 py-3 text-[0.75rem] text-fg-muted" data-testid="message-search-idle">
           Type to search across thread titles and message text.
         </div>
       {:else if hits.length === 0}
-        <div class="px-2 py-3 text-[12px] text-fg-muted" data-testid="message-search-empty">
+        <div class="px-2 py-3 text-[0.75rem] text-fg-muted" data-testid="message-search-empty">
           No matches for "{query.trim()}".
         </div>
       {:else}
@@ -214,11 +214,11 @@
                 ].join(' ')}
               >
                 <div class="flex items-center gap-2">
-                  <span class="text-[9px] font-semibold px-1 py-0.5 rounded-[4px] shrink-0 tracking-wide
+                  <span class="text-[0.5625rem] font-semibold px-1 py-0.5 rounded-[4px] shrink-0 tracking-wide
                     {providerDefinition?.badgeClass ?? 'bg-surface-2 text-fg-muted'}" aria-hidden="true">
                     {providerDefinition?.shortLabel ?? '?'}
                   </span>
-                  <span class="text-[13px] truncate text-fg">
+                  <span class="text-[0.8125rem] truncate text-fg">
                     {#each computeHighlightSegments(hit.threadTitle || 'Untitled', query) as seg}
                       {#if seg.type === 'match'}
                         <mark class="bg-accent/30 text-fg rounded-sm px-0.5">{seg.value}</mark>
@@ -227,12 +227,12 @@
                       {/if}
                     {/each}
                   </span>
-                  <span class="text-[9px] ml-auto px-1 py-0.5 rounded-[4px] bg-surface-0 border border-border-subtle text-fg-hint shrink-0 tabular-nums">
+                  <span class="text-[0.5625rem] ml-auto px-1 py-0.5 rounded-[4px] bg-surface-0 border border-border-subtle text-fg-hint shrink-0 tabular-nums">
                     {hit.matchType === 'title' ? 'title' : `turn ${hit.turnIndex}`}
                   </span>
                 </div>
                 {#if hit.matchType === 'item' && hit.summary}
-                  <p class="text-[12px] text-fg-muted truncate">
+                  <p class="text-[0.75rem] text-fg-muted truncate">
                     {#each computeHighlightSegments(hit.summary, query) as seg}
                       {#if seg.type === 'match'}
                         <mark class="bg-accent/30 text-fg rounded-sm px-0.5">{seg.value}</mark>
@@ -250,6 +250,6 @@
     </div>
   {/snippet}
   {#snippet footer()}
-    <span class="text-[10px] text-fg-hint w-full">↑↓ to navigate · ↵ to open · Esc to close</span>
+    <span class="text-[0.625rem] text-fg-hint w-full">↑↓ to navigate · ↵ to open · Esc to close</span>
   {/snippet}
 </Modal>

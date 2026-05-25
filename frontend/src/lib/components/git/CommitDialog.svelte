@@ -40,7 +40,7 @@
   }
 
   const FIELD_CLASS =
-    'w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 ' +
+    'w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 ' +
     'text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 ' +
     'transition-colors';
 </script>
@@ -49,7 +49,7 @@
   {#snippet children()}
     <div class="space-y-3">
       <div>
-        <label for="commit-subject" class="text-[12px] text-fg-muted block mb-1 font-medium">Subject</label>
+        <label for="commit-subject" class="text-[0.75rem] text-fg-muted block mb-1 font-medium">Subject</label>
         <input
           id="commit-subject"
           type="text"
@@ -59,11 +59,11 @@
           placeholder="Brief description of changes"
           class={FIELD_CLASS}
         />
-        <span class="text-[10px] text-fg-hint mt-0.5 block text-right tabular-nums">{subject.length}/72</span>
+        <span class="text-[0.625rem] text-fg-hint mt-0.5 block text-right tabular-nums">{subject.length}/72</span>
       </div>
 
       <div>
-        <label for="commit-body" class="text-[12px] text-fg-muted block mb-1 font-medium">Body (optional)</label>
+        <label for="commit-body" class="text-[0.75rem] text-fg-muted block mb-1 font-medium">Body (optional)</label>
         <textarea
           id="commit-body"
           bind:value={body}
@@ -74,7 +74,7 @@
       </div>
 
       {#if error}
-        <p class="text-[12px] text-error break-words" role="alert">{error}</p>
+        <p class="text-[0.75rem] text-error break-words" role="alert">{error}</p>
       {/if}
     </div>
   {/snippet}

@@ -262,16 +262,16 @@
 
 <div class="flex h-full flex-col min-h-0">
   <div class="border-b border-border-subtle px-5 py-2 flex items-center gap-3 shrink-0">
-    <span class="inline-flex items-center gap-1.5 rounded-[var(--radius-field)] border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide
+    <span class="inline-flex items-center gap-1.5 rounded-[var(--radius-field)] border px-2 py-0.5 text-[0.625rem] font-medium uppercase tracking-wide
       {concluded ? 'border-border-subtle bg-surface-2/40 text-fg-muted' : 'border-success/30 bg-success/10 text-success'}">
       <span class="w-1.5 h-1.5 rounded-full {concluded ? 'bg-fg-subtle' : 'bg-success'}" aria-hidden="true"></span>
       {statusLabel()}
     </span>
-    <span class="text-[11px] text-fg-muted tabular-nums">
+    <span class="text-[0.6875rem] text-fg-muted tabular-nums">
       {messages.length} {messages.length === 1 ? 'message' : 'messages'}
     </span>
     {#if pollError}
-      <span role="alert" class="ml-auto text-[11px] text-error truncate max-w-[280px]" title={pollError}>
+      <span role="alert" class="ml-auto text-[0.6875rem] text-error truncate max-w-[280px]" title={pollError}>
         Poll error: {pollError}
       </span>
     {/if}
@@ -297,20 +297,20 @@
     >
       <div bind:this={contentEl} class="space-y-3">
         {#if loadingInitial}
-          <div class="text-[12px] text-fg-subtle">Loading channel messages…</div>
+          <div class="text-[0.75rem] text-fg-subtle">Loading channel messages…</div>
         {:else if messages.length === 0}
-          <div class="text-[12px] text-fg-subtle">
+          <div class="text-[0.75rem] text-fg-subtle">
             No messages yet. Participants will begin speaking as their turns complete.
           </div>
         {:else}
           {#each messages as msg (msg.id || msg.sequence)}
             <div class="rounded-[var(--radius-card)] border {messageAccentClass(msg)} px-3.5 py-2.5">
               <div class="flex items-center gap-2 mb-1.5">
-                <span class="rounded-[var(--radius-field)] border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] {roleBadgeClass(msg)}">
+                <span class="rounded-[var(--radius-field)] border px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase tracking-[0.14em] {roleBadgeClass(msg)}">
                   {roleLabel(msg)}
                 </span>
-                <span class="text-[11px] text-fg-hint tabular-nums">#{msg.sequence}</span>
-                <span class="ml-auto text-[11px] text-fg-hint">
+                <span class="text-[0.6875rem] text-fg-hint tabular-nums">#{msg.sequence}</span>
+                <span class="ml-auto text-[0.6875rem] text-fg-hint">
                   {relativeTime(msg.createdAt, getSettings().timestampFormat)}
                 </span>
               </div>
@@ -318,7 +318,7 @@
                 source={msg.content}
                 workspacePath={paneWorkspacePath(pane)}
                 pathRefs={getPathRefsFromMeta(msg.meta) ?? []}
-                class="text-[13px] text-fg break-words"
+                class="text-[0.8125rem] text-fg break-words"
               />
             </div>
           {/each}
@@ -334,7 +334,7 @@
     data-testid="channel-composer-section"
   >
     {#if concluded}
-      <p class="text-[12px] text-fg-muted">
+      <p class="text-[0.75rem] text-fg-muted">
         This discussion has concluded. Posting is disabled.
       </p>
     {:else}
@@ -346,7 +346,7 @@
           placeholder="Post to the channel (Shift+Enter for newline)"
           aria-label="Channel Message Input"
           rows={1}
-          class="flex-1 resize-none rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-2 text-[13px] text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          class="flex-1 resize-none rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-2 text-[0.8125rem] text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         ></textarea>
         <Button
           variant="primary"

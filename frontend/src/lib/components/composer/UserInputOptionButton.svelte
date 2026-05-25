@@ -51,13 +51,13 @@
   onfocus={onFocus}
   onkeydown={onKeydown}
 >
-  <span class="mt-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded border border-border-subtle text-[10px] text-fg-muted">
+  <span class="mt-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded border border-border-subtle text-[0.625rem] text-fg-muted">
     {optionIndex + 1}
   </span>
   <span class="min-w-0 flex-1">
     <span class="block text-xs font-medium">{label}</span>
     {#if description}
-      <span class="mt-0.5 block text-[11px] leading-4 text-fg-muted">{description}</span>
+      <span class="mt-0.5 block text-[0.6875rem] leading-4 text-fg-muted">{description}</span>
     {/if}
   </span>
   {#if selected}

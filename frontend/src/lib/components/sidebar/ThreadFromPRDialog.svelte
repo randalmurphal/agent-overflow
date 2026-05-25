@@ -124,7 +124,7 @@
   }
 
   const FIELD_CLASS =
-    'w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 ' +
+    'w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 ' +
     'text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 ' +
     'transition-colors';
 </script>
@@ -144,7 +144,7 @@
       onkeydown={handleBodyKeydown}
     >
       <div class="space-y-2">
-        <label for="pr-url-input" class="text-[12px] text-fg-muted block font-medium">
+        <label for="pr-url-input" class="text-[0.75rem] text-fg-muted block font-medium">
           Pull request / merge request URL or short ref
         </label>
         <input
@@ -156,7 +156,7 @@
           placeholder="https://github.com/owner/repo/pull/123"
           class={FIELD_CLASS}
         />
-        <p class="text-[10px] text-fg-hint">
+        <p class="text-[0.625rem] text-fg-hint">
           Accepts:
           <code class="font-mono">github.com/OWNER/REPO/pull/N</code>,
           <code class="font-mono">gitlab.com/NAMESPACE/REPO/-/merge_requests/N</code>,
@@ -164,12 +164,12 @@
           or <code class="font-mono">NAMESPACE/REPO!N</code>.
         </p>
         {#if parseErrorMessage}
-          <p class="text-[12px] text-error" role="alert" data-testid="thread-from-pr-parse-error">{parseErrorMessage}</p>
+          <p class="text-[0.75rem] text-error" role="alert" data-testid="thread-from-pr-parse-error">{parseErrorMessage}</p>
         {/if}
       </div>
 
       <div class="space-y-2">
-        <span class="text-[12px] text-fg-muted block font-medium">Provider</span>
+        <span class="text-[0.75rem] text-fg-muted block font-medium">Provider</span>
         <div class="flex gap-1" role="radiogroup" aria-label="Provider">
           {#each PROVIDER_SETTINGS_ORDER as choice}
             {@const providerDefinition = getProviderDefinition(choice)}
@@ -180,7 +180,7 @@
               data-testid={`thread-from-pr-provider-${choice}`}
               onclick={() => (provider = choice)}
               class={[
-                'flex-1 text-[12px] py-1.5 rounded-[var(--radius-control)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors',
+                'flex-1 text-[0.75rem] py-1.5 rounded-[var(--radius-control)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors',
                 provider === choice
                   ? 'bg-accent text-surface-0 font-medium'
                   : 'bg-surface-2/40 text-fg-muted hover:text-fg hover:bg-surface-2/60',
@@ -193,7 +193,7 @@
       </div>
 
       <div class="space-y-1">
-        <label for="pr-model-input" class="text-[12px] text-fg-muted block font-medium">Model (optional)</label>
+        <label for="pr-model-input" class="text-[0.75rem] text-fg-muted block font-medium">Model (optional)</label>
         <input
           id="pr-model-input"
           data-testid="thread-from-pr-model"
@@ -205,7 +205,7 @@
       </div>
 
       {#if error}
-        <p class="text-[12px] text-error break-words" role="alert" data-testid="thread-from-pr-error">{error}</p>
+        <p class="text-[0.75rem] text-error break-words" role="alert" data-testid="thread-from-pr-error">{error}</p>
       {/if}
     </div>
   {/snippet}

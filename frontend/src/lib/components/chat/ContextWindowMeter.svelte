@@ -107,7 +107,7 @@
       class={strokeColor}
     />
   </svg>
-  <span class="absolute left-1/2 top-1/2 block -translate-x-1/2 -translate-y-1/2 text-center text-[8.5px] leading-none font-semibold tabular-nums text-text-secondary" aria-hidden="true">
+  <span class="absolute left-1/2 top-1/2 block -translate-x-1/2 -translate-y-1/2 text-center text-[0.53125rem] leading-none font-semibold tabular-nums text-text-secondary" aria-hidden="true">
     {displayLabel}
   </span>
 </button>
@@ -137,7 +137,7 @@
           <Icon icon={SlidersHorizontal} size={13} strokeWidth={1.8} />
         </button>
       {/if}
-      <p class="mb-1.5 pr-7 text-[10px] font-semibold text-fg-subtle uppercase tracking-wider">Context window</p>
+      <p class="mb-1.5 pr-7 text-[0.625rem] font-semibold text-fg-subtle uppercase tracking-wider">Context window</p>
       <div class="space-y-0.5 text-xs text-fg-muted">
         {#if exceeded}
           <p class="text-error">Context window exceeded</p>

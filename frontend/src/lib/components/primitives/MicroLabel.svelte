@@ -22,7 +22,7 @@
 <svelte:element
   this={as}
   class={[
-    'text-[11px] font-medium uppercase tracking-[0.18em] text-fg-subtle',
+    'text-[0.6875rem] font-medium uppercase tracking-[0.18em] text-fg-subtle',
     className,
   ].join(' ')}
 >

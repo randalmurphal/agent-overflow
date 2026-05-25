@@ -314,7 +314,7 @@
       class={[
         'inline-flex items-center gap-1 rounded-[var(--radius-field)] ml-auto',
         'border border-border-subtle bg-surface-0 px-2 py-1',
-        'text-[12px] text-fg cursor-pointer transition-colors',
+        'text-[0.75rem] text-fg cursor-pointer transition-colors',
         'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
         'disabled:opacity-60 disabled:cursor-not-allowed',
       ].join(' ')}
@@ -329,11 +329,11 @@
     {#if !threadId}
       <div class="flex flex-col items-center justify-center h-full text-center text-fg-muted">
         <Icon icon={MessagesSquare} size={36} strokeWidth={1.2} class="text-fg-hint mb-3" />
-        <p class="text-[13px]">No Design Thread Loaded</p>
+        <p class="text-[0.8125rem]">No Design Thread Loaded</p>
       </div>
     {:else if !iframeSrc}
       <div class="flex flex-col items-center justify-center h-full text-center text-fg-muted">
-        <p class="text-[13px]">Preparing preview…</p>
+        <p class="text-[0.8125rem]">Preparing preview…</p>
       </div>
     {:else}
       <iframe

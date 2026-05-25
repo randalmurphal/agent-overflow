@@ -35,12 +35,12 @@
   <div class="flex min-w-0 items-center gap-1.5">
     <h3 class="truncate text-sm font-medium text-text-primary" data-testid="diff-sidebar-title">{title}</h3>
     {#if subtitle}
-      <span class="shrink-0 text-[12px] text-fg-muted truncate">· {subtitle}</span>
+      <span class="shrink-0 text-[0.75rem] text-fg-muted truncate">· {subtitle}</span>
     {/if}
   </div>
   <div class="flex items-center gap-1 shrink-0">
     {#if insertions > 0 || deletions > 0}
-      <span class="flex gap-2 text-[11px] tabular-nums px-1">
+      <span class="flex gap-2 text-[0.6875rem] tabular-nums px-1">
         {#if insertions > 0}<span class="text-success">+{insertions}</span>{/if}
         {#if deletions > 0}<span class="text-error">-{deletions}</span>{/if}
       </span>

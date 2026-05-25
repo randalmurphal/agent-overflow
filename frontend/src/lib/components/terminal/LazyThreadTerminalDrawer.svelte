@@ -53,11 +53,11 @@
 {#if Drawer}
   <Drawer {surface} {manual} />
 {:else if loadError}
-  <div class="border-t border-border bg-panel px-3 py-2 text-[12px] text-error" data-testid="terminal-drawer-load-error">
+  <div class="border-t border-border bg-panel px-3 py-2 text-[0.75rem] text-error" data-testid="terminal-drawer-load-error">
     Failed to load terminal drawer: {loadError}
   </div>
 {:else}
-  <div class="border-t border-border bg-panel px-3 py-2 text-[12px] text-fg-muted" data-testid="terminal-drawer-loading">
+  <div class="border-t border-border bg-panel px-3 py-2 text-[0.75rem] text-fg-muted" data-testid="terminal-drawer-loading">
     Loading terminal...
   </div>
 {/if}

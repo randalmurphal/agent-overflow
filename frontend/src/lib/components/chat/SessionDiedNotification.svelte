@@ -34,7 +34,7 @@
 </script>
 
 <div
-  class="mb-1.5 flex items-start gap-1.5 px-2 py-1 text-[11px] italic text-fg-subtle"
+  class="mb-1.5 flex items-start gap-1.5 px-2 py-1 text-[0.6875rem] italic text-fg-subtle"
   data-testid="session-died-notification"
   title={reason || undefined}
 >

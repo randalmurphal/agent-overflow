@@ -267,9 +267,9 @@
   {/if}
 
   {#if loading && library.length === 0}
-    <p class="text-[12px] text-fg-muted">Loading…</p>
+    <p class="text-[0.75rem] text-fg-muted">Loading…</p>
   {:else if library.length === 0}
-    <p class="text-[12px] text-fg-muted">
+    <p class="text-[0.75rem] text-fg-muted">
       No MCP servers yet. Add one to expose extra tools to your threads.
     </p>
   {:else}
@@ -287,28 +287,28 @@
             ></span>
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
-                <span class="text-[13px] font-medium text-fg">{server.name}</span>
-                <span class="text-[11px] uppercase tracking-[0.12em] text-fg-subtle">{server.provider}</span>
-                <span class="text-[11px] uppercase tracking-[0.12em] text-fg-subtle">·</span>
-                <span class="text-[11px] uppercase tracking-[0.12em] text-fg-subtle">{server.transport}</span>
+                <span class="text-[0.8125rem] font-medium text-fg">{server.name}</span>
+                <span class="text-[0.6875rem] uppercase tracking-[0.12em] text-fg-subtle">{server.provider}</span>
+                <span class="text-[0.6875rem] uppercase tracking-[0.12em] text-fg-subtle">·</span>
+                <span class="text-[0.6875rem] uppercase tracking-[0.12em] text-fg-subtle">{server.transport}</span>
                 {#if server.disabled}
-                  <span class="rounded-full bg-warning/20 px-1.5 text-[10px] font-semibold text-warning">Disabled</span>
+                  <span class="rounded-full bg-warning/20 px-1.5 text-[0.625rem] font-semibold text-warning">Disabled</span>
                 {/if}
                 {#if readOnly}
-                  <span class="rounded-full bg-fg-subtle/15 px-1.5 text-[10px] font-semibold text-fg-subtle">
+                  <span class="rounded-full bg-fg-subtle/15 px-1.5 text-[0.625rem] font-semibold text-fg-subtle">
                     {server.source}
                   </span>
                 {/if}
               </div>
-              <p class="mt-0.5 text-[11.5px] text-fg-muted">
+              <p class="mt-0.5 text-[0.71875rem] text-fg-muted">
                 {statusLabel(status, refreshing)}
               </p>
               {#if server.transport === 'stdio' && server.command}
-                <p class="mt-1 truncate font-mono text-[11px] text-fg-subtle">
+                <p class="mt-1 truncate font-mono text-[0.6875rem] text-fg-subtle">
                   {server.command}{server.args && server.args.length > 0 ? ` ${server.args.join(' ')}` : ''}
                 </p>
               {:else if server.url}
-                <p class="mt-1 truncate font-mono text-[11px] text-fg-subtle">{server.url}</p>
+                <p class="mt-1 truncate font-mono text-[0.6875rem] text-fg-subtle">{server.url}</p>
               {/if}
             </div>
             <div class="flex shrink-0 items-center gap-1">

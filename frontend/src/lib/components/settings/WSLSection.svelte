@@ -115,7 +115,7 @@
 {:else if loading}
   <section data-testid="wsl-section-loading">
     <SettingsHeader eyebrow="Windows host" title="WSL Distro" />
-    <p class="mt-3 text-[12px] text-fg-hint" role="status" aria-live="polite">
+    <p class="mt-3 text-[0.75rem] text-fg-hint" role="status" aria-live="polite">
       Detecting WSL…
     </p>
   </section>
@@ -131,13 +131,13 @@
 
     {#if distros.length === 0}
       <p
-        class="mt-4 text-[12px] text-fg-hint"
+        class="mt-4 text-[0.75rem] text-fg-hint"
         data-testid="wsl-section-no-distros"
       >
         No WSL distros reported by
-        <code class="font-mono text-[11px]">wsl.exe</code>. Install one from
+        <code class="font-mono text-[0.6875rem]">wsl.exe</code>. Install one from
         PowerShell with
-        <code class="font-mono text-[11px]">wsl --install -d Ubuntu</code> and
+        <code class="font-mono text-[0.6875rem]">wsl --install -d Ubuntu</code> and
         reopen Settings to refresh the list.
       </p>
     {:else}
@@ -161,15 +161,15 @@
               onchange={() => void selectDistro(distro.name)}
               class="accent-accent"
             />
-            <span class="text-[13px] font-medium text-fg">{distro.name}</span>
+            <span class="text-[0.8125rem] font-medium text-fg">{distro.name}</span>
             {#if distro.default}
-              <span class="text-[11px] text-fg-hint">(default)</span>
+              <span class="text-[0.6875rem] text-fg-hint">(default)</span>
             {/if}
             {#if distro.state && distro.state !== 'Running'}
-              <span class="text-[11px] italic text-fg-hint">({distro.state})</span>
+              <span class="text-[0.6875rem] italic text-fg-hint">({distro.state})</span>
             {/if}
             {#if distro.version === 1}
-              <span class="text-[11px] text-warning">(WSL1 — agent-overflow needs WSL2)</span>
+              <span class="text-[0.6875rem] text-warning">(WSL1 — agent-overflow needs WSL2)</span>
             {/if}
           </label>
         {/each}
@@ -177,7 +177,7 @@
 
       {#if saved && selected !== saved}
         <p
-          class="mt-2 text-[11px] text-fg-hint"
+          class="mt-2 text-[0.6875rem] text-fg-hint"
           aria-live="polite"
           data-testid="wsl-section-pending-hint"
         >

@@ -50,10 +50,10 @@
   data-testid="settings-context-{provider}"
 >
   <div class="flex items-baseline gap-2">
-    <span class="text-[10.5px] font-medium uppercase tracking-[0.16em] text-fg-hint">
+    <span class="text-[0.65625rem] font-medium uppercase tracking-[0.16em] text-fg-hint">
       Auto-compact
     </span>
-    <span class="text-[11.5px] text-fg-muted">
+    <span class="text-[0.71875rem] text-fg-muted">
       Trigger compaction at this percent of the live context window.
     </span>
   </div>
@@ -61,8 +61,8 @@
   <div class="mt-4 flex flex-col gap-4">
     <div>
       <div class="flex items-baseline justify-between gap-3">
-        <p class="text-[13px] font-medium text-fg">Standard window</p>
-        <span class="text-[11.5px] tabular-nums text-fg-muted">
+        <p class="text-[0.8125rem] font-medium text-fg">Standard window</p>
+        <span class="text-[0.71875rem] tabular-nums text-fg-muted">
           {providerDefinition.contextLabels.standard}
         </span>
       </div>
@@ -80,7 +80,7 @@
           class="w-full accent-accent"
           data-testid="settings-context-{provider}-standard-slider"
         />
-        <span class="w-10 text-right text-[12px] tabular-nums text-fg">
+        <span class="w-10 text-right text-[0.75rem] tabular-nums text-fg">
           {standardLive}%
         </span>
       </div>
@@ -88,8 +88,8 @@
 
     <div>
       <div class="flex items-baseline justify-between gap-3">
-        <p class="text-[13px] font-medium text-fg">Extended window</p>
-        <span class="text-[11.5px] tabular-nums text-fg-muted">
+        <p class="text-[0.8125rem] font-medium text-fg">Extended window</p>
+        <span class="text-[0.71875rem] tabular-nums text-fg-muted">
           {providerDefinition.contextLabels.extended}
         </span>
       </div>
@@ -107,7 +107,7 @@
           class="w-full accent-accent"
           data-testid="settings-context-{provider}-extended-slider"
         />
-        <span class="w-10 text-right text-[12px] tabular-nums text-fg">
+        <span class="w-10 text-right text-[0.75rem] tabular-nums text-fg">
           {extendedLive}%
         </span>
       </div>

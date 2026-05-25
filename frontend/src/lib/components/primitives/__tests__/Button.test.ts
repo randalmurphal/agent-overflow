@@ -75,7 +75,7 @@ describe('<Button>', () => {
     const { getByRole } = render(Harness, { props: { size: 'xs' } });
     const cls = getByRole('button').className;
     expect(cls).toContain('h-6');
-    expect(cls).toContain('text-[11px]');
+    expect(cls).toContain('text-[0.6875rem]');
   });
 
   it('applies md size', () => {

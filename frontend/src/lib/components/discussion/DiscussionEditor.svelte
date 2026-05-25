@@ -137,7 +137,7 @@
 <form onsubmit={handleSubmit} class="space-y-4" aria-label={isNew ? 'Create discussion' : 'Edit discussion'}>
   <section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
     <div class="mb-3">
-      <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Definition</p>
+      <p class="text-[0.6875rem] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Definition</p>
       <h3 class="mt-1 text-base font-semibold text-text-primary">
         {isNew ? 'New discussion' : `Editing "${initial.name}"`}
       </h3>
@@ -217,7 +217,7 @@
   <section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
     <div class="mb-3 flex items-center justify-between gap-3">
       <div>
-        <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Participants</p>
+        <p class="text-[0.6875rem] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Participants</p>
         <h3 class="mt-1 text-base font-semibold text-text-primary">Who Is in the Room</h3>
       </div>
       <button

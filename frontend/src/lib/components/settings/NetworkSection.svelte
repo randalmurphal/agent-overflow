@@ -85,18 +85,18 @@
       title="Network Binding"
     />
     {#if clientMode}
-      <p class="mt-1 max-w-2xl text-[12px] leading-relaxed text-fg-muted">
+      <p class="mt-1 max-w-2xl text-[0.75rem] leading-relaxed text-fg-muted">
         Network binding can only be edited from your local install. This window is
         attached to a remote backend, so changes here would update the remote
         machine's bind preference, not yours.
       </p>
     {:else}
-      <p class="mt-1 max-w-2xl text-[12px] leading-relaxed text-fg-muted">
+      <p class="mt-1 max-w-2xl text-[0.75rem] leading-relaxed text-fg-muted">
         By default the server binds to
-        <code class="font-mono text-[11px]">127.0.0.1</code> so only this machine can
+        <code class="font-mono text-[0.6875rem]">127.0.0.1</code> so only this machine can
         reach it. Toggle on to listen on every network interface — other devices on
         your LAN can then open the URL below in a browser. The traffic is plain
-        <code class="font-mono text-[11px]">ws://</code>; for exposure beyond a
+        <code class="font-mono text-[0.6875rem]">ws://</code>; for exposure beyond a
         trusted LAN, route through Tailscale Serve or an SSH tunnel.
       </p>
 

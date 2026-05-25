@@ -110,7 +110,7 @@
         data-testid="activity-rail-shimmer"
       ></span>
     {/if}
-    <div class="flex flex-wrap items-center gap-1.5 px-3 py-2 text-[11px] leading-tight">
+    <div class="flex flex-wrap items-center gap-1.5 px-3 py-2 text-[0.6875rem] leading-tight">
       {#if isWorking}
         <span
           class="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5"
@@ -156,7 +156,7 @@
           />
           <span>Todos</span>
           <span
-            class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[10px] font-medium text-accent"
+            class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
             data-testid="activity-rail-todos-count"
           >{completedCount}/{liveTodo.steps.length}</span>
           {#if inProgressPreview}
@@ -188,7 +188,7 @@
           />
           <span>Background</span>
           <span
-            class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[10px] font-medium text-accent"
+            class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
             data-testid="activity-rail-background-count"
           >{bg.count}</span>
           {#if bg.anyRunning}

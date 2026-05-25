@@ -105,7 +105,7 @@
       {pathRefs}
     />
     {#if isAccepted}
-      <p class="mt-2 text-[11px] text-fg-hint" data-testid="proposed-plan-accepted">
+      <p class="mt-2 text-[0.6875rem] text-fg-hint" data-testid="proposed-plan-accepted">
         Accepted
       </p>
     {/if}

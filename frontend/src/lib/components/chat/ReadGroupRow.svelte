@@ -122,11 +122,11 @@
     <ToolKindIcon kind="eye" ariaLabel="reads" />
   </span>
   <span
-    class="w-12 shrink-0 truncate text-[11px] text-fg-hint"
+    class="w-12 shrink-0 truncate text-[0.6875rem] text-fg-hint"
     data-testid="read-group-row-label"
   >reads</span>
   <span
-    class="min-w-0 flex-1 inline-flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[12px] text-fg-muted/75"
+    class="min-w-0 flex-1 inline-flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[0.75rem] text-fg-muted/75"
     data-testid="read-group-row-list"
   >
     {#each displayEntries as entry (entry.id)}

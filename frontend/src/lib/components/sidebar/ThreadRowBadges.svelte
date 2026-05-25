@@ -20,9 +20,9 @@
 </script>
 
 {#if thread.mode === 'discussion'}
-  <span class="text-[8.5px] px-1 py-[1px] rounded-[4px] bg-accent/10 text-accent shrink-0" title="Discussion Parent Thread" aria-label="Discussion Parent Thread">D</span>
+  <span class="text-[0.53125rem] px-1 py-[1px] rounded-[4px] bg-accent/10 text-accent shrink-0" title="Discussion Parent Thread" aria-label="Discussion Parent Thread">D</span>
 {:else if thread.parentThreadId}
-  <span class="text-[8.5px] px-1 py-[1px] rounded-[4px] bg-provider-codex/10 text-provider-codex shrink-0" title="Discussion Participant" aria-label="Discussion Participant">Dp</span>
+  <span class="text-[0.53125rem] px-1 py-[1px] rounded-[4px] bg-provider-codex/10 text-provider-codex shrink-0" title="Discussion Participant" aria-label="Discussion Participant">Dp</span>
 {:else if thread.mode === 'design'}
   <span class="shrink-0 inline-flex items-center text-fg-hint" title="Design Thread" aria-label="Design Thread">
     <Icon icon={Palette} size={12} strokeWidth={1.6} />

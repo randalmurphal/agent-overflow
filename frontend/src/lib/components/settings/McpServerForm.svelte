@@ -194,7 +194,7 @@
 <div class="rounded-[var(--radius-card)] border border-border-subtle bg-surface-1/60 p-4">
   <div class="grid grid-cols-1 gap-3">
     <label class="flex flex-col gap-1">
-      <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">Provider</span>
+      <span class="text-[0.6875rem] font-medium uppercase tracking-[0.12em] text-fg-hint">Provider</span>
       <select
         bind:value={provider}
         class={SELECT_CLASS}
@@ -204,14 +204,14 @@
         <option value="claude">Claude Code</option>
         <option value="codex">Codex</option>
       </select>
-      <span class="text-[11px] text-fg-subtle">
+      <span class="text-[0.6875rem] text-fg-subtle">
         Servers are written to the provider's native config file
         (Claude: <code>~/.claude.json</code>; Codex: <code>~/.codex/config.toml</code>).
       </span>
     </label>
 
     <label class="flex flex-col gap-1">
-      <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">Name</span>
+      <span class="text-[0.6875rem] font-medium uppercase tracking-[0.12em] text-fg-hint">Name</span>
       <input
         type="text"
         bind:value={name}
@@ -221,7 +221,7 @@
         data-testid="mcp-form-name"
       />
       {#if mode === 'add'}
-        <span class="text-[11px] text-fg-subtle">
+        <span class="text-[0.6875rem] text-fg-subtle">
           Tools will appear as <code>mcp__{name || '&lt;name&gt;'}__&lt;tool&gt;</code>.
           Letters, digits, dot, underscore, hyphen.
         </span>
@@ -229,7 +229,7 @@
     </label>
 
     <label class="flex flex-col gap-1">
-      <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">Transport</span>
+      <span class="text-[0.6875rem] font-medium uppercase tracking-[0.12em] text-fg-hint">Transport</span>
       <select
         bind:value={transport}
         class={SELECT_CLASS}
@@ -248,7 +248,7 @@
 
     {#if transport === 'stdio'}
       <label class="flex flex-col gap-1">
-        <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">Command</span>
+        <span class="text-[0.6875rem] font-medium uppercase tracking-[0.12em] text-fg-hint">Command</span>
         <input
           type="text"
           bind:value={command}
@@ -259,7 +259,7 @@
         />
       </label>
       <label class="flex flex-col gap-1">
-        <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">Arguments</span>
+        <span class="text-[0.6875rem] font-medium uppercase tracking-[0.12em] text-fg-hint">Arguments</span>
         <input
           type="text"
           bind:value={argsText}
@@ -268,10 +268,10 @@
           disabled={saving}
           data-testid="mcp-form-args"
         />
-        <span class="text-[11px] text-fg-subtle">Space-separated.</span>
+        <span class="text-[0.6875rem] text-fg-subtle">Space-separated.</span>
       </label>
       <label class="flex flex-col gap-1">
-        <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">Environment</span>
+        <span class="text-[0.6875rem] font-medium uppercase tracking-[0.12em] text-fg-hint">Environment</span>
         <textarea
           bind:value={envText}
           placeholder={'GITHUB_TOKEN=${GITHUB_TOKEN}'}
@@ -280,14 +280,14 @@
           disabled={saving}
           data-testid="mcp-form-env"
         ></textarea>
-        <span class="text-[11px] text-fg-subtle">
+        <span class="text-[0.6875rem] text-fg-subtle">
           One per line as <code>KEY=VALUE</code>. Use <code>${'$'}{'{'}VAR{'}'}</code> to
           reference your shell environment — secrets never touch AO storage.
         </span>
       </label>
     {:else if isHttpish}
       <label class="flex flex-col gap-1">
-        <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">URL</span>
+        <span class="text-[0.6875rem] font-medium uppercase tracking-[0.12em] text-fg-hint">URL</span>
         <input
           type="text"
           bind:value={url}
@@ -298,7 +298,7 @@
         />
       </label>
       <label class="flex flex-col gap-1">
-        <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">Headers</span>
+        <span class="text-[0.6875rem] font-medium uppercase tracking-[0.12em] text-fg-hint">Headers</span>
         <textarea
           bind:value={headersText}
           placeholder="X-Foo=bar"
@@ -307,10 +307,10 @@
           disabled={saving}
           data-testid="mcp-form-headers"
         ></textarea>
-        <span class="text-[11px] text-fg-subtle">One per line as <code>KEY=VALUE</code>.</span>
+        <span class="text-[0.6875rem] text-fg-subtle">One per line as <code>KEY=VALUE</code>.</span>
       </label>
       <label class="flex flex-col gap-1">
-        <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-fg-hint">Bearer env var</span>
+        <span class="text-[0.6875rem] font-medium uppercase tracking-[0.12em] text-fg-hint">Bearer env var</span>
         <input
           type="text"
           bind:value={bearerTokenEnv}
@@ -319,7 +319,7 @@
           disabled={saving}
           data-testid="mcp-form-bearer-env"
         />
-        <span class="text-[11px] text-fg-subtle">
+        <span class="text-[0.6875rem] text-fg-subtle">
           Name of the environment variable holding the bearer token. The provider
           reads it at spawn time; AO never sees the token value.
         </span>
@@ -328,7 +328,7 @@
   </div>
 
   {#if formError}
-    <p class="mt-3 text-[12px] text-error" data-testid="mcp-form-error">{formError}</p>
+    <p class="mt-3 text-[0.75rem] text-error" data-testid="mcp-form-error">{formError}</p>
   {/if}
 
   <div class="mt-4 flex items-center justify-end gap-2">

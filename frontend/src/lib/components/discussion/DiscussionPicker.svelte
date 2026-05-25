@@ -35,11 +35,11 @@
 
 <div class="space-y-1" role="listbox" aria-label="Discussions" aria-busy={loading}>
   {#if loading}
-    <div class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 px-4 py-3 text-[12px] text-fg-muted">
+    <div class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 px-4 py-3 text-[0.75rem] text-fg-muted">
       Loading discussions…
     </div>
   {:else if discussions.length === 0}
-    <div class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 px-4 py-3 text-[12px] text-fg-muted">
+    <div class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 px-4 py-3 text-[0.75rem] text-fg-muted">
       {emptyLabel}
     </div>
   {:else}
@@ -55,15 +55,15 @@
             ? 'border-accent/50 bg-accent/10'
             : 'border-border-subtle bg-card/30 hover:border-border hover:bg-surface-2/30'}"
       >
-        <span class="mt-0.5 shrink-0 text-[10px] font-semibold uppercase tracking-[0.14em] rounded-[var(--radius-field)] border px-1.5 py-0.5 {scopeClasses(def)}">
+        <span class="mt-0.5 shrink-0 text-[0.625rem] font-semibold uppercase tracking-[0.14em] rounded-[var(--radius-field)] border px-1.5 py-0.5 {scopeClasses(def)}">
           {scopeLabel(def)}
         </span>
         <span class="min-w-0 flex-1">
-          <span class="block text-[13px] font-medium text-fg truncate">{def.name}</span>
+          <span class="block text-[0.8125rem] font-medium text-fg truncate">{def.name}</span>
           {#if def.description}
-            <span class="mt-0.5 block text-[12px] text-fg-muted line-clamp-2">{def.description}</span>
+            <span class="mt-0.5 block text-[0.75rem] text-fg-muted line-clamp-2">{def.description}</span>
           {/if}
-          <span class="mt-1 block text-[10px] text-fg-hint tabular-nums">
+          <span class="mt-1 block text-[0.625rem] text-fg-hint tabular-nums">
             {def.participants.length} participants · {def.settings.maxTurns} turns
           </span>
         </span>

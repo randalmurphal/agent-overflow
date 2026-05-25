@@ -32,8 +32,8 @@
 
 <div class="flex items-center gap-2 px-3 py-2">
   <div class="min-w-0 flex-1">
-    <div class="text-[12px] font-semibold uppercase tracking-[0.08em] text-fg-muted">Checkpoint Diff</div>
-    <div class="mt-0.5 flex items-center gap-2 text-[12px] text-fg-muted">
+    <div class="text-[0.75rem] font-semibold uppercase tracking-[0.08em] text-fg-muted">Checkpoint Diff</div>
+    <div class="mt-0.5 flex items-center gap-2 text-[0.75rem] text-fg-muted">
       <span>{totals.files} files</span>
       <span class="text-success">+{totals.additions}</span>
       <span class="text-error">-{totals.deletions}</span>
@@ -77,7 +77,7 @@
   <button
     role="tab"
     aria-selected={tabMode === mode}
-    class="rounded px-2.5 py-1 text-[12px] {tabMode === mode ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2/60'}"
+    class="rounded px-2.5 py-1 text-[0.75rem] {tabMode === mode ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2/60'}"
     onclick={() => setTabMode(mode)}
     data-testid={testId}
   >

@@ -78,6 +78,7 @@ type Settings struct {
 	// falls through to the OS fallback chain and adds zero weight.
 	SansFont         string   `json:"sansFont"`
 	MonoFont         string   `json:"monoFont"`
+	FontSize         int      `json:"fontSize"`
 	RecentWorkspaces []string `json:"recentWorkspaces"`
 	DiffWordWrap     bool     `json:"diffWordWrap"`
 	StreamingEnabled bool     `json:"streamingEnabled"`
@@ -205,6 +206,7 @@ var DefaultSettings = Settings{
 	TimestampFormat:      "locale",
 	SansFont:             "geist",
 	MonoFont:             "geist",
+	FontSize:             13,
 	DiffWordWrap:         false,
 	StreamingEnabled:     true,
 	ConfirmArchive:       true,

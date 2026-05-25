@@ -308,16 +308,16 @@
                 {/if}?
               </div>
               {#if confirm.loading}
-                <div class="mt-1 text-[11px] text-fg-hint">Checking…</div>
+                <div class="mt-1 text-[0.6875rem] text-fg-hint">Checking…</div>
               {:else if confirm.error}
-                <div class="mt-1 text-[11px] text-error truncate">{confirm.error}</div>
+                <div class="mt-1 text-[0.6875rem] text-error truncate">{confirm.error}</div>
               {:else if confirm.status}
                 {#if isRiskyStatus(confirm.status)}
-                  <div class="mt-1 text-[11px] text-warning truncate">
+                  <div class="mt-1 text-[0.6875rem] text-warning truncate">
                     {riskSummary(confirm.status)}
                   </div>
                 {:else if confirm.status.attachedThreads > 0}
-                  <div class="mt-1 text-[11px] text-fg-hint truncate">
+                  <div class="mt-1 text-[0.6875rem] text-fg-hint truncate">
                     {riskSummary(confirm.status)} — will move to project root.
                   </div>
                 {/if}

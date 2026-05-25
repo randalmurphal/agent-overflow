@@ -741,7 +741,7 @@
           aria-label="Message Input"
           rows={1}
           value={inputValue}
-          class="w-full resize-none bg-transparent px-1 py-1 text-[13px] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+          class="w-full resize-none bg-transparent px-1 py-1 text-[0.8125rem] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
         ></textarea>
       </div>
 
@@ -749,7 +749,7 @@
 
     {#if !hasInteractivePrompt && preparingWorktree}
       <div
-        class="px-4 pb-1 text-[11px] text-text-secondary/70"
+        class="px-4 pb-1 text-[0.6875rem] text-text-secondary/70"
         aria-live="polite"
         data-testid="composer-worktree-preparing"
       >

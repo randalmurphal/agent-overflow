@@ -140,7 +140,7 @@
       />
     {/if}
   </svg>
-  <span class="absolute left-1/2 top-1/2 block -translate-x-1/2 -translate-y-1/2 text-center text-[8.5px] leading-none font-semibold tabular-nums text-text-secondary" aria-hidden="true">
+  <span class="absolute left-1/2 top-1/2 block -translate-x-1/2 -translate-y-1/2 text-center text-[0.53125rem] leading-none font-semibold tabular-nums text-text-secondary" aria-hidden="true">
     {label}
   </span>
 </button>
@@ -159,7 +159,7 @@
       onmouseleave={scheduleClose}
       class="relative bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu px-3 py-2 min-w-[170px]"
     >
-      <p class="mb-1.5 text-[10px] font-semibold text-fg-subtle uppercase tracking-wider">{popoverHeader}</p>
+      <p class="mb-1.5 text-[0.625rem] font-semibold text-fg-subtle uppercase tracking-wider">{popoverHeader}</p>
       <div class="space-y-0.5 text-xs text-fg-muted">
         {#if entry}
           <p>{displayPct}% used</p>

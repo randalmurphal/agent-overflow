@@ -206,18 +206,18 @@
       <span class="min-w-0 flex-1">
         <span class="flex min-w-0 items-center gap-2">
           <span
-            class="text-[12px] text-fg-muted shrink-0"
+            class="text-[0.75rem] text-fg-muted shrink-0"
             data-testid="subagent-group-label"
           >
             {agentTitle}{#if modelLabel}<span class="ml-1 text-fg-hint normal-case tracking-normal">({modelLabel})</span>{/if}
           </span>
           {#if inputDescription}
-            <span class="min-w-0 truncate text-[12px] text-fg-muted/75" data-testid="subagent-group-description">
+            <span class="min-w-0 truncate text-[0.75rem] text-fg-muted/75" data-testid="subagent-group-description">
               {inputDescription}
             </span>
           {/if}
         </span>
-        <span class="mt-0.5 block min-w-0 truncate text-[11px] text-fg-hint/85" data-testid="subagent-group-preview">
+        <span class="mt-0.5 block min-w-0 truncate text-[0.6875rem] text-fg-hint/85" data-testid="subagent-group-preview">
           <span aria-hidden="true">└</span>
           {previewText}
         </span>
@@ -226,7 +226,7 @@
       {#snippet actions()}
         {#if entryCountLabel}
           <span
-            class="shrink-0 text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
+            class="shrink-0 text-[0.625rem] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
             data-testid="subagent-group-count"
             aria-label={entryCountAriaLabel}
           >

@@ -51,7 +51,7 @@
 </script>
 
 <ol
-  class="flex items-center gap-2 text-[11px] uppercase tracking-wide text-text-secondary/70"
+  class="flex items-center gap-2 text-[0.6875rem] uppercase tracking-wide text-text-secondary/70"
   aria-label="Ship Changes progress"
   data-testid="ship-changes-steps"
 >
@@ -60,7 +60,7 @@
     <li class="flex items-center gap-1" data-step={step.key} data-state={state}>
       <span
         aria-hidden="true"
-        class="flex h-4 w-4 items-center justify-center rounded-full border text-[9px]
+        class="flex h-4 w-4 items-center justify-center rounded-full border text-[0.5625rem]
           {state === 'done'
             ? 'bg-accent border-accent text-surface-0'
             : state === 'active'

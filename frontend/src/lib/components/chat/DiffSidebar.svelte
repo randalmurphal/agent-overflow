@@ -299,7 +299,7 @@
         </button>
       </div>
     {:else if !expansion.isComplete}
-      <div class="border-t border-border-subtle px-3 py-2 text-[11px] text-text-secondary shrink-0" data-testid="diff-sidebar-truncated">
+      <div class="border-t border-border-subtle px-3 py-2 text-[0.6875rem] text-text-secondary shrink-0" data-testid="diff-sidebar-truncated">
         Truncated — content beyond the loaded window is not shown.
       </div>
     {/if}

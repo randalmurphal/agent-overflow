@@ -113,14 +113,14 @@
 >
   {#snippet children()}
     <div class="flex flex-col gap-3">
-      <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-subtle">Start discussion</p>
-      <p class="text-[12px] text-fg-muted leading-relaxed">
+      <p class="text-[0.6875rem] font-semibold uppercase tracking-[0.18em] text-fg-subtle">Start discussion</p>
+      <p class="text-[0.75rem] text-fg-muted leading-relaxed">
         Participants spawn as child threads and deliberate in a shared channel.
       </p>
 
       <div class="flex-1 min-h-0 overflow-y-auto pr-1">
         {#if loadError}
-          <div role="alert" class="rounded-[var(--radius-control)] border border-error/40 bg-error/10 px-3 py-2 text-[12px] text-error">
+          <div role="alert" class="rounded-[var(--radius-control)] border border-error/40 bg-error/10 px-3 py-2 text-[0.75rem] text-error">
             Failed to load discussions: {loadError}
           </div>
         {:else}
@@ -135,7 +135,7 @@
       </div>
 
       {#if startError}
-        <div role="alert" aria-live="polite" class="rounded-[var(--radius-control)] border border-error/40 bg-error/10 px-3 py-2 text-[12px] text-error">
+        <div role="alert" aria-live="polite" class="rounded-[var(--radius-control)] border border-error/40 bg-error/10 px-3 py-2 text-[0.75rem] text-error">
           {startError}
         </div>
       {/if}

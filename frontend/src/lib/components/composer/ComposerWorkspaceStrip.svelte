@@ -30,7 +30,7 @@
 
 {#if pane.thread}
   <div
-    class="flex min-w-0 items-center gap-2 border-t border-border-subtle px-3 py-1.5 text-[11px] text-fg-muted"
+    class="flex min-w-0 items-center gap-2 border-t border-border-subtle px-3 py-1.5 text-[0.6875rem] text-fg-muted"
     data-testid="composer-workspace-strip"
   >
     <ThreadModePicker {pane} />

@@ -179,7 +179,7 @@
   data-testid="diff-sidebar-file"
   class="group/diff-sidebar-file mb-2"
 >
-  <header class="flex items-center gap-2 px-1 py-1 text-[13px] hover:bg-surface-2/20 rounded-[var(--radius-control)] transition-colors">
+  <header class="flex items-center gap-2 px-1 py-1 text-[0.8125rem] hover:bg-surface-2/20 rounded-[var(--radius-control)] transition-colors">
     <button
       type="button"
       onclick={() => onToggle(rowId)}
@@ -191,8 +191,8 @@
         <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
       </span>
       <ToolKindIcon kind="file" ariaLabel="File" />
-      <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-muted/85">{displayPath}</span>
-      <span class="ml-auto flex gap-2 text-[11px] shrink-0 tabular-nums">
+      <span class="min-w-0 flex-1 truncate font-mono text-[0.75rem] text-fg-muted/85">{displayPath}</span>
+      <span class="ml-auto flex gap-2 text-[0.6875rem] shrink-0 tabular-nums">
         {#if file.additions > 0}<span class="text-success">+{file.additions}</span>{/if}
         {#if file.deletions > 0}<span class="text-error">-{file.deletions}</span>{/if}
       </span>
@@ -211,7 +211,7 @@
       {#if shouldRender}
         {#if viewMode === 'split'}
           <div
-            class="grid grid-cols-2 gap-px bg-border-subtle font-mono text-[11px] leading-tight"
+            class="grid grid-cols-2 gap-px bg-border-subtle font-mono text-[0.6875rem] leading-tight"
             style="--gutter-w: {gutterChars + 1}ch"
             data-testid="diff-sidebar-split-body"
           >
@@ -222,7 +222,7 @@
           </div>
         {:else}
           <div
-            class="py-2 font-mono text-[11px] leading-tight"
+            class="py-2 font-mono text-[0.6875rem] leading-tight"
             style="--gutter-w: {gutterChars + 1}ch"
             data-testid="diff-sidebar-stacked-body"
           >
@@ -245,7 +245,7 @@
                   data-testid="diff-sidebar-hunk-separator"
                 >
                   <span class="flex-1 border-t border-border-subtle"></span>
-                  <span class="text-[10px] text-fg-subtle">⋮</span>
+                  <span class="text-[0.625rem] text-fg-subtle">⋮</span>
                   <span class="flex-1 border-t border-border-subtle"></span>
                 </div>
               {/if}

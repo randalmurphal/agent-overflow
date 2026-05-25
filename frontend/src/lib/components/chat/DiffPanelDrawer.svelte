@@ -307,20 +307,20 @@
 
   <div class="flex min-h-0 flex-1 flex-col">
     {#if error}
-      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-[12px] text-error" data-testid="diff-panel-error">{error}</div>
+      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-[0.75rem] text-error" data-testid="diff-panel-error">{error}</div>
     {/if}
     <div class="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
-      <button class="rounded border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(true)}>Expand all</button>
-      <button class="rounded border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(false)}>Collapse all</button>
+      <button class="rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(true)}>Expand all</button>
+      <button class="rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(false)}>Collapse all</button>
     </div>
 
     <div class="min-h-0 flex-1 overflow-auto px-3 py-3">
       {#if loading}
-        <div class="py-8 text-center text-[13px] text-fg-muted" role="status">Loading diff...</div>
+        <div class="py-8 text-center text-[0.8125rem] text-fg-muted" role="status">Loading diff...</div>
       {:else if checkpoints.length === 0 && tabMode !== 'workspace'}
-        <div class="py-8 text-center text-[13px] text-fg-muted">No checkpoints yet.</div>
+        <div class="py-8 text-center text-[0.8125rem] text-fg-muted">No checkpoints yet.</div>
       {:else if files.length === 0}
-        <div class="py-8 text-center text-[13px] text-fg-muted">No changes in this range.</div>
+        <div class="py-8 text-center text-[0.8125rem] text-fg-muted">No changes in this range.</div>
       {:else if threadId}
         <!--
           `threadId` is guaranteed here because `loadDiff` only writes
@@ -360,12 +360,12 @@
       -->
       <section class="border-t border-border bg-surface-1/85 px-3 py-2" aria-label="Diff comments">
         <div class="mb-2 flex items-center justify-between gap-3">
-          <div class="text-[11px] font-medium uppercase tracking-[0.08em] text-fg-muted">
+          <div class="text-[0.6875rem] font-medium uppercase tracking-[0.08em] text-fg-muted">
             Comments
           </div>
           <button
             type="button"
-            class="rounded border border-accent/45 px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/10 disabled:opacity-45"
+            class="rounded border border-accent/45 px-2 py-1 text-[0.6875rem] font-medium text-accent hover:bg-accent/10 disabled:opacity-45"
             disabled={sendingComments || isTurnActive}
             title={isTurnActive ? 'Send from the chat box while the agent is working' : 'Send comments'}
             onclick={sendCommentsOnly}
@@ -377,7 +377,7 @@
           {#each draftReviewComments as comment (comment.id)}
             <article class="rounded border border-border-subtle bg-surface-0/70 px-2 py-2">
               <div class="mb-1 flex items-center gap-1">
-                <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-muted">{commentLocation(comment)}</span>
+                <span class="min-w-0 flex-1 truncate font-mono text-[0.6875rem] text-fg-muted">{commentLocation(comment)}</span>
                 {#if editingCommentId !== comment.id}
                   <IconButton label="Edit comment" size="sm" onClick={() => startEditComment(comment)}>
                     {#snippet children()}<Icon icon={Pencil} size={12} />{/snippet}
@@ -391,14 +391,14 @@
                 <textarea
                   bind:value={editingBody}
                   rows="2"
-                  class="w-full resize-none rounded border border-border-subtle bg-surface-1 px-2 py-1.5 text-[12px] text-fg focus:border-accent/60 focus:outline-none"
+                  class="w-full resize-none rounded border border-border-subtle bg-surface-1 px-2 py-1.5 text-[0.75rem] text-fg focus:border-accent/60 focus:outline-none"
                 ></textarea>
                 <div class="mt-2 flex justify-end gap-2">
-                  <button type="button" class="rounded px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => { editingCommentId = null; editingBody = ''; }}>Cancel</button>
-                  <button type="button" class="rounded bg-accent px-2 py-1 text-[11px] font-medium text-accent-contrast disabled:opacity-45" disabled={!editingBody.trim()} onclick={() => saveCommentEdit(comment)}>Save</button>
+                  <button type="button" class="rounded px-2 py-1 text-[0.6875rem] text-fg-muted hover:bg-surface-2" onclick={() => { editingCommentId = null; editingBody = ''; }}>Cancel</button>
+                  <button type="button" class="rounded bg-accent px-2 py-1 text-[0.6875rem] font-medium text-accent-contrast disabled:opacity-45" disabled={!editingBody.trim()} onclick={() => saveCommentEdit(comment)}>Save</button>
                 </div>
               {:else}
-                <p class="whitespace-pre-wrap text-[12px] leading-relaxed text-fg">{comment.body}</p>
+                <p class="whitespace-pre-wrap text-[0.75rem] leading-relaxed text-fg">{comment.body}</p>
               {/if}
             </article>
           {/each}

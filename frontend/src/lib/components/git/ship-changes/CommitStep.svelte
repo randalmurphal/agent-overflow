@@ -57,11 +57,11 @@
   <header class="space-y-1">
     <h3 class="text-sm font-semibold text-text-primary">Commit Changes</h3>
     {#if status}
-      <p class="text-[11px] text-text-secondary" data-testid="ship-changes-diff-summary">
+      <p class="text-[0.6875rem] text-text-secondary" data-testid="ship-changes-diff-summary">
         {#if status.hasChanges}
           {status.fileCount} file{status.fileCount === 1 ? '' : 's'} changed
           &middot; +{status.insertions}/-{status.deletions}
-          on <code class="text-[10px] bg-surface-2/60 px-1 rounded">{status.branch}</code>
+          on <code class="text-[0.625rem] bg-surface-2/60 px-1 rounded">{status.branch}</code>
         {:else}
           No uncommitted changes. Skip to Push.
         {/if}
@@ -88,7 +88,7 @@
         onclick={handleGenerate}
         disabled={generating || busy || nothingToCommit}
         title="Ask the agent to draft a commit message from the current diff"
-        class="text-[10px] px-2 py-0.5 rounded border border-border/70 text-text-secondary hover:text-accent hover:border-accent/40 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        class="text-[0.625rem] px-2 py-0.5 rounded border border-border/70 text-text-secondary hover:text-accent hover:border-accent/40 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         {generating ? 'Generating…' : 'Generate'}
       </button>
@@ -104,7 +104,7 @@
       placeholder="Describe the change"
       class="w-full text-sm rounded border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 disabled:opacity-60 transition-colors"
     />
-    <span class="text-[10px] text-text-secondary/40 block text-right">
+    <span class="text-[0.625rem] text-text-secondary/40 block text-right">
       {ship.commitSubject.length}/72
     </span>
   </div>

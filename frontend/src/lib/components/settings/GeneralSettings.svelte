@@ -8,6 +8,11 @@
   import GitLabHostsSection from './GitLabHostsSection.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
+  // Mirrors internal/settings.{Min,Max}FontSize and DefaultSettings.FontSize.
+  const MIN_FONT_SIZE = 10;
+  const MAX_FONT_SIZE = 20;
+  const DEFAULT_FONT_SIZE = 13;
+
   // Mirrors internal/settings.MaxRetentionDays. Hard-capped on the Go
   // side as well; bounding the input here keeps the UI honest and stops
   // a typo from triggering the load-time clamp.
@@ -107,6 +112,31 @@
           <option value="hack-nerd">Hack Nerd Font</option>
           <option value="system">System default</option>
         </select>
+      </SettingsField>
+
+      <SettingsField
+        label="Font size"
+        hint="Base text size in pixels. Scales the entire UI."
+        htmlFor="font-size-input"
+      >
+        <input
+          id="font-size-input"
+          data-testid="settings-font-size"
+          type="number"
+          min={MIN_FONT_SIZE}
+          max={MAX_FONT_SIZE}
+          step="1"
+          value={settings.fontSize}
+          onblur={(e) => {
+            const raw = (e.target as HTMLInputElement).value;
+            const parsed = parseInt(raw, 10);
+            let next = Number.isFinite(parsed) ? parsed : DEFAULT_FONT_SIZE;
+            if (next < MIN_FONT_SIZE) next = MIN_FONT_SIZE;
+            if (next > MAX_FONT_SIZE) next = MAX_FONT_SIZE;
+            void updateSetting('fontSize', next);
+          }}
+          class="{INPUT_CLASS} max-w-[6rem]"
+        />
       </SettingsField>
     </div>
   </section>

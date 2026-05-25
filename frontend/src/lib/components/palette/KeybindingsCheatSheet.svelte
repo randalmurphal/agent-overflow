@@ -95,7 +95,7 @@
 >
   {#snippet children()}
     <div data-testid="keybindings-cheatsheet">
-      <p class="text-[12px] text-fg-muted mb-3">Customize these in Settings → Keybindings.</p>
+      <p class="text-[0.75rem] text-fg-muted mb-3">Customize these in Settings → Keybindings.</p>
       <input
         bind:this={searchEl}
         bind:value={searchQuery}
@@ -103,12 +103,12 @@
         placeholder="Search commands or shortcuts…"
         aria-label="Search shortcuts"
         data-testid="keybindings-cheatsheet-search"
-        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors mb-3"
+        class="w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors mb-3"
       />
 
       <div class="space-y-4">
         {#if filteredRows.length === 0}
-          <p class="text-[12px] italic text-fg-muted" data-testid="keybindings-cheatsheet-empty">
+          <p class="text-[0.75rem] italic text-fg-muted" data-testid="keybindings-cheatsheet-empty">
             No commands match "{searchQuery}".
           </p>
         {:else}
@@ -116,7 +116,7 @@
             <section aria-labelledby="cheatsheet-group-{group.category}">
               <h3
                 id="cheatsheet-group-{group.category}"
-                class="text-[10px] uppercase tracking-[0.18em] text-fg-subtle font-semibold mb-1.5"
+                class="text-[0.625rem] uppercase tracking-[0.18em] text-fg-subtle font-semibold mb-1.5"
                 data-testid="keybindings-cheatsheet-group-{group.category}"
               >
                 {group.category}
@@ -128,11 +128,11 @@
                     data-testid="keybindings-cheatsheet-row-{row.command.id}"
                   >
                     <div class="min-w-0 flex-1">
-                      <p class="text-[13px] text-fg">{row.command.label}</p>
+                      <p class="text-[0.8125rem] text-fg">{row.command.label}</p>
                       {#if row.command.description}
-                        <p class="text-[11px] text-fg-muted mt-0.5">{row.command.description}</p>
+                        <p class="text-[0.6875rem] text-fg-muted mt-0.5">{row.command.description}</p>
                       {/if}
-                      <p class="text-[10px] font-mono text-fg-hint mt-0.5">{row.command.id}</p>
+                      <p class="text-[0.625rem] font-mono text-fg-hint mt-0.5">{row.command.id}</p>
                     </div>
                     <div class="shrink-0">
                       {#if row.chord}
@@ -144,7 +144,7 @@
                         </span>
                       {:else}
                         <span
-                          class="text-[10px] italic text-fg-hint"
+                          class="text-[0.625rem] italic text-fg-hint"
                           data-testid="keybindings-cheatsheet-unbound-{row.command.id}"
                         >
                           unbound

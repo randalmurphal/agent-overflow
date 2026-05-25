@@ -24,6 +24,7 @@ const SETTINGS: Settings = {
   timestampFormat: 'locale',
   sansFont: 'geist',
   monoFont: 'geist',
+  fontSize: 13,
   recentWorkspaces: [],
   diffWordWrap: false,
   streamingEnabled: true,

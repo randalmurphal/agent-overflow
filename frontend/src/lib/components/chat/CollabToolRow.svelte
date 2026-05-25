@@ -263,7 +263,7 @@
   </ToolHeaderMeta>
 {/snippet}
 
-<div class="group/tool px-1 py-1 text-[12px] text-fg-muted" data-testid="collab-tool-row">
+<div class="group/tool px-1 py-1 text-[0.75rem] text-fg-muted" data-testid="collab-tool-row">
   <TranscriptDisclosureHeader
     expanded={expansion?.expanded ?? false}
     expandable={hasExpandableOutput}

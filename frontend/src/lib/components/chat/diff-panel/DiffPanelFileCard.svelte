@@ -191,9 +191,9 @@
       data-path={file.path}
     >
       <Icon icon={ChevronDown} size={12} class={open ? '' : '-rotate-90'} />
-      <span class="min-w-0 truncate font-mono text-[12px] text-fg">{file.path}</span>
-      <span class="shrink-0 text-[11px] text-success">+{file.additions}</span>
-      <span class="shrink-0 text-[11px] text-error">-{file.deletions}</span>
+      <span class="min-w-0 truncate font-mono text-[0.75rem] text-fg">{file.path}</span>
+      <span class="shrink-0 text-[0.6875rem] text-success">+{file.additions}</span>
+      <span class="shrink-0 text-[0.6875rem] text-error">-{file.deletions}</span>
     </button>
     {#if commentable}
       <button
@@ -223,22 +223,22 @@
         <textarea
           bind:value={draftBody}
           rows="2"
-          class="w-full resize-none rounded border border-border-subtle bg-surface-0 px-2 py-1.5 text-[12px] text-fg focus:border-accent/60 focus:outline-none"
+          class="w-full resize-none rounded border border-border-subtle bg-surface-0 px-2 py-1.5 text-[0.75rem] text-fg focus:border-accent/60 focus:outline-none"
           placeholder="Comment on this file"
         ></textarea>
         <div class="mt-2 flex justify-end gap-2">
-          <button type="button" class="rounded px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={cancelComment}>Cancel</button>
-          <button type="submit" disabled={saving || !draftBody.trim()} class="rounded bg-accent px-2 py-1 text-[11px] font-medium text-accent-contrast disabled:opacity-45">Add comment</button>
+          <button type="button" class="rounded px-2 py-1 text-[0.6875rem] text-fg-muted hover:bg-surface-2" onclick={cancelComment}>Cancel</button>
+          <button type="submit" disabled={saving || !draftBody.trim()} class="rounded bg-accent px-2 py-1 text-[0.6875rem] font-medium text-accent-contrast disabled:opacity-45">Add comment</button>
         </div>
       </form>
     {/if}
     {#if fileComments.length > 0}
-      <div class="mt-1 rounded-[var(--radius-control)] border border-border-subtle bg-surface-1/50 px-3 py-1.5 text-[11px] text-fg-muted">
+      <div class="mt-1 rounded-[var(--radius-control)] border border-border-subtle bg-surface-1/50 px-3 py-1.5 text-[0.6875rem] text-fg-muted">
         {fileComments.length} file comment{fileComments.length === 1 ? '' : 's'}
       </div>
     {/if}
     {#if viewMode === 'split' && splitRows}
-      <div class="mt-1 max-h-[42rem] overflow-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 font-mono text-[12px] leading-relaxed">
+      <div class="mt-1 max-h-[42rem] overflow-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 font-mono text-[0.75rem] leading-relaxed">
         {#each splitRows as row}
           <div class="grid grid-cols-2 border-b border-border-subtle/40 last:border-b-0">
             <div class="min-w-0 border-r border-border-subtle/50 {splitCellClass(row.left)}">
@@ -264,7 +264,7 @@
         {/each}
       </div>
     {:else}
-      <div class="mt-1 max-h-[42rem] overflow-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 font-mono text-[12px] leading-relaxed">
+      <div class="mt-1 max-h-[42rem] overflow-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 font-mono text-[0.75rem] leading-relaxed">
         {#each displayRows as row (row.id)}
           {@render diffLineRow(row, row.newLine || row.oldLine, wordWrap, commentable, () => startComment(rowAnchor(row)))}
           {#if draftAnchor && anchorKey(draftAnchor) === anchorKey(rowAnchor(row))}
@@ -284,7 +284,7 @@
   -->
   <div class="group/diff-line relative grid grid-cols-[2rem_minmax(0,1fr)] items-start {lineTintClass(row.line.type)}">
     <div class="relative h-full">
-      <div class="select-none px-1 py-0.5 text-right text-[10px] tabular-nums text-fg-subtle/65 transition-opacity {commentable ? 'group-hover/diff-line:opacity-0 group-focus-within/diff-line:opacity-0' : ''}">{displayLine || ''}</div>
+      <div class="select-none px-1 py-0.5 text-right text-[0.625rem] tabular-nums text-fg-subtle/65 transition-opacity {commentable ? 'group-hover/diff-line:opacity-0 group-focus-within/diff-line:opacity-0' : ''}">{displayLine || ''}</div>
       {#if commentable}
         <button
           type="button"
@@ -308,12 +308,12 @@
     <textarea
       bind:value={draftBody}
       rows="2"
-      class="w-full resize-none rounded border border-border-subtle bg-surface-0 px-2 py-1.5 text-[12px] text-fg focus:border-accent/60 focus:outline-none"
+      class="w-full resize-none rounded border border-border-subtle bg-surface-0 px-2 py-1.5 text-[0.75rem] text-fg focus:border-accent/60 focus:outline-none"
       placeholder="Comment on this line"
     ></textarea>
     <div class="mt-2 flex justify-end gap-2">
-      <button type="button" class="rounded px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={cancelComment}>Cancel</button>
-      <button type="submit" disabled={saving || !draftBody.trim()} class="rounded bg-accent px-2 py-1 text-[11px] font-medium text-accent-contrast disabled:opacity-45">Add comment</button>
+      <button type="button" class="rounded px-2 py-1 text-[0.6875rem] text-fg-muted hover:bg-surface-2" onclick={cancelComment}>Cancel</button>
+      <button type="submit" disabled={saving || !draftBody.trim()} class="rounded bg-accent px-2 py-1 text-[0.6875rem] font-medium text-accent-contrast disabled:opacity-45">Add comment</button>
     </div>
   </form>
 {/snippet}

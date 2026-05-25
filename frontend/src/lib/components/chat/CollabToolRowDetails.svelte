@@ -35,7 +35,7 @@
 </script>
 
 {#if promptPreview}
-  <div class="ml-5 mt-0.5 truncate text-[11px] text-fg-subtle">└ {promptPreview}</div>
+  <div class="ml-5 mt-0.5 truncate text-[0.6875rem] text-fg-subtle">└ {promptPreview}</div>
 {/if}
 {#if rowError}
   <div class="ml-[5.25rem] px-3 pb-1">
@@ -43,7 +43,7 @@
   </div>
 {/if}
 {#if completionPreview && !expanded}
-  <div class="ml-5 mt-0.5 truncate text-[11px] text-fg-subtle" data-testid="collab-tool-row-preview">
+  <div class="ml-5 mt-0.5 truncate text-[0.6875rem] text-fg-subtle" data-testid="collab-tool-row-preview">
     └ {completionPreview}
   </div>
 {/if}
@@ -65,7 +65,7 @@
     one row per agent.
   -->
   <div
-    class="ml-[6.125rem] mt-0.5 text-[11px] text-fg-subtle"
+    class="ml-[6.125rem] mt-0.5 text-[0.6875rem] text-fg-subtle"
     data-testid="collab-tool-row-receivers"
   >
     {receivers.map((id, index) => isCompletion ? statusLine(id) : receiverDisplayLabels[index]).join(', ')}

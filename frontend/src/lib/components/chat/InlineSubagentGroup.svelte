@@ -50,14 +50,14 @@
 >
   {#if group.memberCount > 1}
     <div
-      class="mb-1 flex min-w-0 items-center gap-2 px-1 py-0.5 text-[11px] text-fg-hint"
+      class="mb-1 flex min-w-0 items-center gap-2 px-1 py-0.5 text-[0.6875rem] text-fg-hint"
       data-testid="inline-subagent-group-header"
     >
       <ToolKindIcon kind="robot" ariaLabel="Inline Subagents" />
-      <span class="w-12 shrink-0 text-[11px] text-fg-hint" data-testid="inline-subagent-group-label">
+      <span class="w-12 shrink-0 text-[0.6875rem] text-fg-hint" data-testid="inline-subagent-group-label">
         {label}
       </span>
-      <span class="min-w-0 truncate tabular-nums text-[10px]" data-testid="inline-subagent-group-meta">
+      <span class="min-w-0 truncate tabular-nums text-[0.625rem]" data-testid="inline-subagent-group-meta">
         {metaLabel}
       </span>
     </div>

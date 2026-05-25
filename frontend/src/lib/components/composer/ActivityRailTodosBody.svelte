@@ -25,7 +25,7 @@
     pending: 1,
     completed: 2,
   };
-  const revealButtonClass = 'ml-[18px] mt-0.5 inline-flex rounded px-1 py-0.5 text-[11px] text-fg-hint/65 transition-colors hover:bg-surface-2/40 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35';
+  const revealButtonClass = 'ml-[18px] mt-0.5 inline-flex rounded px-1 py-0.5 text-[0.6875rem] text-fg-hint/65 transition-colors hover:bg-surface-2/40 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35';
 
   type SortedEntry = { step: TodoStep; originalIndex: number };
 
@@ -86,12 +86,12 @@
   class="border-t border-border-subtle px-3 py-2.5"
   data-testid="activity-rail-todos-body"
 >
-  <div class="mb-1.5 font-mono text-[10.5px] text-fg-hint/70">
+  <div class="mb-1.5 font-mono text-[0.65625rem] text-fg-hint/70">
     {summaryLabel}
   </div>
   <ul class="flex flex-col gap-0.5 pl-1" data-testid="activity-rail-todos-list">
     {#each visibleSteps as entry (entry.step.id ?? entry.originalIndex)}
-      <li class="flex flex-wrap items-start gap-x-1.5 gap-y-px py-px text-[12px] leading-snug">
+      <li class="flex flex-wrap items-start gap-x-1.5 gap-y-px py-px text-[0.75rem] leading-snug">
         <Icon
           icon={statusIcon(entry.step.status)}
           size={11}
@@ -101,7 +101,7 @@
         <span class={statusClass(entry.step.status)}>{entry.step.step}</span>
         {#if entry.step.owner}
           <span
-            class="font-mono text-[10px] text-fg-muted/65"
+            class="font-mono text-[0.625rem] text-fg-muted/65"
             data-testid="activity-rail-todos-owner"
             title="Owned by {entry.step.owner}"
           >({entry.step.owner})</span>

@@ -51,6 +51,7 @@ export interface Settings {
    * and load behaviour as `sansFont`.
    */
   monoFont: MonoFont;
+  fontSize: number;
   recentWorkspaces: string[];
   diffWordWrap: boolean;
   streamingEnabled: boolean;

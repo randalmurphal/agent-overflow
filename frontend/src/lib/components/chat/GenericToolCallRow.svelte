@@ -73,8 +73,8 @@
   );
   let previewClass = $derived(
     preview.path
-      ? 'min-w-0 flex-1 whitespace-normal break-all text-[12px] leading-4 text-fg-muted/75'
-      : 'min-w-0 flex-1 truncate text-[12px] text-fg-muted/75',
+      ? 'min-w-0 flex-1 whitespace-normal break-all text-[0.75rem] leading-4 text-fg-muted/75'
+      : 'min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted/75',
   );
 
   let durationMs = $derived.by<number | null>(() => {

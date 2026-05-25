@@ -1169,7 +1169,7 @@
                   {@const showResponsePill = rowDecorations.responsePillIndexes.has(index)}
                   {@const responseDuration = responsePillDuration(node)}
                   <!-- Two visual modes share a fixed wrapper height
-                       (`h-[1.625rem]` = 26px = pill chrome: text-[10px]
+                       (`h-[1.625rem]` = 26px = pill chrome: text-[0.625rem]
                        × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
                        Labeled mode renders `line | gap | pill | gap | line`,
                        unlabeled mode renders one continuous full-width line.
@@ -1188,7 +1188,7 @@
                       <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
                       {#if showResponsePill}
                         <span
-                          class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[10px] uppercase leading-tight tracking-[0.14em] text-text-secondary"
+                          class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[0.625rem] uppercase leading-tight tracking-[0.14em] text-text-secondary"
                         >
                           Response{#if responseDuration}{' '}<span class="normal-case tabular-nums tracking-normal">{responseDuration}</span>{/if}
                         </span>

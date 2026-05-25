@@ -76,12 +76,12 @@
 
 <div class="flex flex-col gap-1 {className}">
   {#if label}
-    <label for={resolvedId} class="text-[12px] font-medium text-fg">
+    <label for={resolvedId} class="text-[0.75rem] font-medium text-fg">
       {label}
     </label>
   {/if}
   {#if description}
-    <p class="text-[12px] text-fg-muted">{description}</p>
+    <p class="text-[0.75rem] text-fg-muted">{description}</p>
   {/if}
   {#if multiline}
     <textarea
@@ -116,6 +116,6 @@
     />
   {/if}
   {#if error}
-    <p class="text-[11px] text-error">{error}</p>
+    <p class="text-[0.6875rem] text-error">{error}</p>
   {/if}
 </div>

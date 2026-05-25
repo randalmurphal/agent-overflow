@@ -136,13 +136,13 @@
         id={`thinking-${item.id}`}
         data-testid="thinking-body"
         class={[
-          'flex-1 min-w-0 block text-[12px] text-fg-muted/70 italic whitespace-pre-wrap leading-relaxed',
+          'flex-1 min-w-0 block text-[0.75rem] text-fg-muted/70 italic whitespace-pre-wrap leading-relaxed',
           !expanded ? 'max-h-[3lh] overflow-hidden' : null,
         ]}
       >{bodyText}</span>
     {/snippet}
     {#snippet actions()}
-      <div class="shrink-0 flex items-center gap-1.5 text-[10px] text-fg-hint pt-[2px]">
+      <div class="shrink-0 flex items-center gap-1.5 text-[0.625rem] text-fg-hint pt-[2px]">
         {#if canCopy}
           <span class="opacity-0 transition-opacity duration-150 group-hover/thinking:opacity-100 focus-within:opacity-100">
             <CopyButton

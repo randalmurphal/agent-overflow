@@ -155,15 +155,15 @@
         placeholder="Filter by title, project, or workspace…"
         aria-label="Filter threads"
         data-testid="thread-picker-input"
-        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors mb-3"
+        class="w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors mb-3"
       />
 
       {#if visibleThreads.length === 0}
-        <div class="px-2 py-3 text-[12px] text-fg-muted" data-testid="thread-picker-empty">
+        <div class="px-2 py-3 text-[0.75rem] text-fg-muted" data-testid="thread-picker-empty">
           No threads yet — create one from the sidebar.
         </div>
       {:else if hits.length === 0}
-        <div class="px-2 py-3 text-[12px] text-fg-muted" data-testid="thread-picker-empty">
+        <div class="px-2 py-3 text-[0.75rem] text-fg-muted" data-testid="thread-picker-empty">
           No threads match "{query.trim()}".
         </div>
       {:else}
@@ -184,7 +184,7 @@
                   activeIndex === i ? 'bg-accent/10 text-fg' : 'hover:bg-surface-2/30 text-fg-muted',
                 ].join(' ')}
               >
-                <span class="text-[9px] font-semibold px-1 py-0.5 rounded-[4px] shrink-0 tracking-wide
+                <span class="text-[0.5625rem] font-semibold px-1 py-0.5 rounded-[4px] shrink-0 tracking-wide
                     {providerDefinition?.badgeClass ?? 'bg-surface-2 text-fg-muted'}" aria-hidden="true">
                   {providerDefinition?.shortLabel ?? '?'}
                 </span>
@@ -200,7 +200,7 @@
                     data-status={status}
                   ></span>
                 {/if}
-                <span class="text-[13px] truncate text-fg flex-1 min-w-0">
+                <span class="text-[0.8125rem] truncate text-fg flex-1 min-w-0">
                   {#each computeHighlightSegments(hit.thread.title || 'Untitled', query) as seg}
                     {#if seg.type === 'match'}
                       <mark class="bg-accent/30 text-fg rounded-sm px-0.5">{seg.value}</mark>
@@ -208,10 +208,10 @@
                   {/each}
                 </span>
                 {#if hit.thread.worktreePath}
-                  <span class="text-[9px] px-1 py-0.5 rounded-[4px] bg-accent/10 text-accent/80 shrink-0" title="Worktree: {hit.thread.worktreePath}">worktree</span>
+                  <span class="text-[0.5625rem] px-1 py-0.5 rounded-[4px] bg-accent/10 text-accent/80 shrink-0" title="Worktree: {hit.thread.worktreePath}">worktree</span>
                 {/if}
                 {#if basename}
-                  <span class="text-[10px] text-fg-hint shrink-0 ml-auto truncate max-w-[12rem] font-mono">{basename}</span>
+                  <span class="text-[0.625rem] text-fg-hint shrink-0 ml-auto truncate max-w-[12rem] font-mono">{basename}</span>
                 {/if}
               </button>
             </li>
@@ -221,7 +221,7 @@
     </div>
   {/snippet}
   {#snippet footer()}
-    <div class="flex items-center justify-between gap-3 text-[10px] text-fg-hint w-full">
+    <div class="flex items-center justify-between gap-3 text-[0.625rem] text-fg-hint w-full">
       <span>↑↓ to navigate · ↵ to open · Esc to close</span>
       {#if overflow > 0}
         <span data-testid="thread-picker-overflow" class="text-fg-muted tabular-nums">

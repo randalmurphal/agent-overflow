@@ -38,7 +38,7 @@
 
 {#if pending.length > 0 && pane.threadId}
   <div
-    class="mb-2 flex flex-col gap-0.5 pl-1.5 text-[11px] leading-snug"
+    class="mb-2 flex flex-col gap-0.5 pl-1.5 text-[0.6875rem] leading-snug"
     data-testid="send-queue-preview"
     aria-label="Pending user messages"
   >

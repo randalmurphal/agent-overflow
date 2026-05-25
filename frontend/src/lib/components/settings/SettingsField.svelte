@@ -37,12 +37,12 @@
   <div class="flex flex-col gap-2 py-1.5">
     <div class="flex flex-col gap-0.5">
       {#if htmlFor}
-        <label for={htmlFor} class="text-[13px] font-medium text-fg">{label}</label>
+        <label for={htmlFor} class="text-[0.8125rem] font-medium text-fg">{label}</label>
       {:else}
-        <p class="text-[13px] font-medium text-fg">{label}</p>
+        <p class="text-[0.8125rem] font-medium text-fg">{label}</p>
       {/if}
       {#if hint}
-        <p class="text-[11.5px] leading-snug text-fg-muted">{hint}</p>
+        <p class="text-[0.71875rem] leading-snug text-fg-muted">{hint}</p>
       {/if}
     </div>
     <div>{@render children()}</div>
@@ -51,12 +51,12 @@
   <div class="flex {alignClass} justify-between gap-4 py-1.5">
     <div class="min-w-0 flex-1">
       {#if htmlFor}
-        <label for={htmlFor} class="block text-[13px] font-medium text-fg">{label}</label>
+        <label for={htmlFor} class="block text-[0.8125rem] font-medium text-fg">{label}</label>
       {:else}
-        <p class="text-[13px] font-medium text-fg">{label}</p>
+        <p class="text-[0.8125rem] font-medium text-fg">{label}</p>
       {/if}
       {#if hint}
-        <p class="mt-0.5 text-[11.5px] leading-snug text-fg-muted">{hint}</p>
+        <p class="mt-0.5 text-[0.71875rem] leading-snug text-fg-muted">{hint}</p>
       {/if}
     </div>
     <div class="shrink-0 max-w-[60%]">{@render children()}</div>

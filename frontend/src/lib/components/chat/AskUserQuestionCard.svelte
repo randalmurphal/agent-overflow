@@ -142,7 +142,7 @@
     {#snippet icon()}<ToolKindIcon kind="speech-bubble" ariaLabel="ask" />{/snippet}
     {#snippet label()}<span data-testid="ask-user-question-label">ask</span>{/snippet}
     {#snippet body()}
-      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="ask-user-question-title">
+      <span class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted/75" data-testid="ask-user-question-title">
         {headerLabel}
       </span>
     {/snippet}
@@ -195,7 +195,7 @@
       data-testid="ask-user-question-body"
     >
       {#if questions.length === 0}
-        <p class="text-[11px] text-fg-subtle italic">
+        <p class="text-[0.6875rem] text-fg-subtle italic">
           No question metadata stored on this row.
         </p>
       {:else}
@@ -205,7 +205,7 @@
             {@const { matched, customs } = classifyAnswers(q, answers)}
             <li class="space-y-1.5" data-testid="ask-user-question-question-{qIndex}">
               {#if q.header}
-                <p class="text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-muted">
+                <p class="text-[0.625rem] font-semibold uppercase tracking-[0.06em] text-fg-muted">
                   {q.header}
                 </p>
               {/if}
@@ -221,7 +221,7 @@
                   {#each q.options as option (option.label)}
                     {@const isSelected = matched.has(option.label)}
                     <li
-                      class="flex items-start gap-2 text-[11px]"
+                      class="flex items-start gap-2 text-[0.6875rem]"
                       data-testid="ask-user-question-option"
                       data-selected={isSelected ? 'true' : 'false'}
                     >
@@ -239,7 +239,7 @@
                           {option.label}
                         </p>
                         {#if option.description}
-                          <p class="text-[10.5px] text-fg-subtle">{option.description}</p>
+                          <p class="text-[0.65625rem] text-fg-subtle">{option.description}</p>
                         {/if}
                         {#if isSelected && option.preview?.trim()}
                           <div
@@ -250,7 +250,7 @@
                               source={option.preview}
                               workspacePath={paneWorkspacePath(pane)}
                               {pathRefs}
-                              class="text-[11px]"
+                              class="text-[0.6875rem]"
                             />
                           </div>
                         {/if}
@@ -261,20 +261,20 @@
               {/if}
               {#each customs as customAnswer}
                 <div
-                  class="ml-2 flex items-start gap-2 text-[11px]"
+                  class="ml-2 flex items-start gap-2 text-[0.6875rem]"
                   data-testid="ask-user-question-custom"
                 >
                   <span class="mt-0.5 shrink-0 text-success" aria-label="Custom answer">
                     <Icon icon={Check} size={12} />
                   </span>
                   <p class="min-w-0 flex-1 text-fg">
-                    <span class="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-fg-muted">Custom:</span>
+                    <span class="text-[0.65625rem] font-semibold uppercase tracking-[0.06em] text-fg-muted">Custom:</span>
                     <span class="ml-1">{customAnswer}</span>
                   </p>
                 </div>
               {/each}
               {#if answers.length === 0 && !isRunningQuestion}
-                <p class="ml-2 text-[11px] italic text-fg-subtle">
+                <p class="ml-2 text-[0.6875rem] italic text-fg-subtle">
                   No answer recorded.
                 </p>
               {/if}

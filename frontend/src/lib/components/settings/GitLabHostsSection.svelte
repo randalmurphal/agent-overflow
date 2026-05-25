@@ -93,7 +93,7 @@
       <p
         id="gitlab-host-error"
         data-testid="settings-gitlab-host-error"
-        class="text-[11.5px] text-error"
+        class="text-[0.71875rem] text-error"
         role="alert"
       >
         {candidateError}
@@ -101,7 +101,7 @@
     {/if}
 
     {#if hosts.length === 0}
-      <p class="text-[11.5px] text-fg-hint" data-testid="settings-gitlab-hosts-empty">
+      <p class="text-[0.71875rem] text-fg-hint" data-testid="settings-gitlab-hosts-empty">
         No self-hosted GitLab hosts configured.
       </p>
     {:else}
@@ -111,7 +111,7 @@
             class="flex items-center justify-between gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/30 px-3 py-1.5"
             data-testid="settings-gitlab-host-row-{host}"
           >
-            <span class="font-mono text-[12px] text-fg">{host}</span>
+            <span class="font-mono text-[0.75rem] text-fg">{host}</span>
             <button
               type="button"
               data-testid="settings-gitlab-host-remove-{host}"

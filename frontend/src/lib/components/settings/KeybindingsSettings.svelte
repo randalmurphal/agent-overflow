@@ -113,7 +113,7 @@
       <ul class="mt-1.5 ml-4 list-disc space-y-0.5">
         {#each issues as issue (issue.index)}
           <li>
-            <span class="font-mono text-[11.5px]">{issue.rule.command}</span>
+            <span class="font-mono text-[0.71875rem]">{issue.rule.command}</span>
             — {issue.reason}
           </li>
         {/each}
@@ -124,9 +124,9 @@
   <div
     class="overflow-hidden rounded-[var(--radius-control)] border border-border-subtle"
   >
-    <table class="w-full text-[12.5px]">
+    <table class="w-full text-[0.78125rem]">
       <thead
-        class="bg-surface-1/40 text-[10.5px] uppercase tracking-[0.14em] text-fg-hint"
+        class="bg-surface-1/40 text-[0.65625rem] uppercase tracking-[0.14em] text-fg-hint"
       >
         <tr>
           <th class="px-3 py-2 text-left font-medium">Command</th>
@@ -137,7 +137,7 @@
       <tbody>
         {#each rules as rule, i (keybindingIdentity(rule.rule))}
           <tr class="border-t border-border-subtle/60">
-            <td class="px-3 py-2 font-mono text-[11.5px] text-fg">
+            <td class="px-3 py-2 font-mono text-[0.71875rem] text-fg">
               {rule.rule.command}
             </td>
             <td class="px-3 py-2">
@@ -150,7 +150,7 @@
                   onblur={() => {
                     if (capturingFor === i) capturingFor = null;
                   }}
-                  class="rounded-[var(--radius-field)] border border-accent bg-accent/15 px-2.5 py-1 text-[11.5px] font-mono text-accent"
+                  class="rounded-[var(--radius-field)] border border-accent bg-accent/15 px-2.5 py-1 text-[0.71875rem] font-mono text-accent"
                 >
                   Press keys... (Esc to cancel)
                 </button>
@@ -161,13 +161,13 @@
                     capturingFor = i;
                   }}
                   disabled={saving}
-                  class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-1 text-[11.5px] font-mono text-fg hover:border-accent/40 hover:text-accent cursor-pointer disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-1 text-[0.71875rem] font-mono text-fg hover:border-accent/40 hover:text-accent cursor-pointer disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                 >
                   {formatChord(rule.rule.key)}
                 </button>
               {/if}
             </td>
-            <td class="px-3 py-2 font-mono text-[11px] text-fg-muted">
+            <td class="px-3 py-2 font-mono text-[0.6875rem] text-fg-muted">
               {rule.rule.when ?? ''}
             </td>
           </tr>

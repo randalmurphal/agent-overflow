@@ -135,20 +135,20 @@
       <header class="flex flex-wrap items-start justify-between gap-3">
         <div class="min-w-0">
           <span
-            class="text-[10.5px] font-medium uppercase tracking-[0.16em] text-fg-hint"
+            class="text-[0.65625rem] font-medium uppercase tracking-[0.16em] text-fg-hint"
           >
             Provider
           </span>
-          <h3 class="mt-1 text-[16px] font-semibold text-fg leading-tight">
+          <h3 class="mt-1 text-[1rem] font-semibold text-fg leading-tight">
             {provider.label}
           </h3>
-          <p class="mt-1 max-w-xl text-[12px] leading-relaxed text-fg-muted">
+          <p class="mt-1 max-w-xl text-[0.75rem] leading-relaxed text-fg-muted">
             {status?.message ||
               `Configure ${provider.label} availability for thread creation, sessions, and context budgets.`}
           </p>
         </div>
         <span
-          class="inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-0 px-2.5 py-0.5 text-[11px] text-fg-muted"
+          class="inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-0 px-2.5 py-0.5 text-[0.6875rem] text-fg-muted"
           data-testid="settings-provider-status-pill"
           data-status={status?.status ?? 'checking'}
         >
@@ -159,7 +159,7 @@
           {status?.status ?? 'checking'}
           {#if status?.version}
             <span class="text-fg-hint">·</span>
-            <span class="font-mono text-[10.5px] text-fg-muted">{status.version}</span>
+            <span class="font-mono text-[0.65625rem] text-fg-muted">{status.version}</span>
           {/if}
         </span>
       </header>
@@ -205,14 +205,14 @@
             >
               {#each models as model (model.slug)}
                 <span
-                  class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-0.5 text-[11px] text-fg-muted"
+                  class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-0.5 text-[0.6875rem] text-fg-muted"
                 >
                   {model.name || model.slug}
                 </span>
               {/each}
             </div>
           {:else}
-            <span class="text-[12px] text-fg-muted">No models available.</span>
+            <span class="text-[0.75rem] text-fg-muted">No models available.</span>
           {/if}
         </SettingsField>
       </div>

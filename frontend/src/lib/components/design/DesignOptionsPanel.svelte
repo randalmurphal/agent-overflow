@@ -107,10 +107,10 @@
   >
     <div class="flex items-center justify-between px-3 pt-3 pb-2 border-b border-border-subtle shrink-0">
       <div>
-        <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-subtle">
+        <p class="text-[0.6875rem] font-semibold uppercase tracking-[0.18em] text-fg-subtle">
           Pick an option
         </p>
-        <p class="text-[10px] text-fg-hint mt-0.5">
+        <p class="text-[0.625rem] text-fg-hint mt-0.5">
           Set <span class="font-mono">{set.setId}</span>
           · {set.optionPaths.length} options
         </p>
@@ -137,7 +137,7 @@
           class={[
             'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
             'border border-border-subtle bg-surface-0 px-2 py-1',
-            'text-[12px] text-fg cursor-pointer transition-colors',
+            'text-[0.75rem] text-fg cursor-pointer transition-colors',
             'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
           ].join(' ')}
         >
@@ -147,7 +147,7 @@
     </div>
     <div class="flex-1 min-h-0 overflow-y-auto p-2">
       {#if set.optionPaths.length === 0}
-        <p class="px-2 py-4 text-[12px] text-fg-subtle">
+        <p class="px-2 py-4 text-[0.75rem] text-fg-subtle">
           The agent declared an option set with no options yet — wait a moment.
         </p>
       {:else}
@@ -169,7 +169,7 @@
                 class="w-full aspect-[4/3] bg-white border-b border-border-subtle"
               ></iframe>
               <div class="flex items-center justify-between px-2 py-1.5">
-                <span class="text-[12px] text-fg truncate font-medium">{optionId}</span>
+                <span class="text-[0.75rem] text-fg truncate font-medium">{optionId}</span>
                 <button
                   type="button"
                   onclick={() => void pick(optionId)}
@@ -177,7 +177,7 @@
                   class={[
                     'inline-flex items-center rounded-[var(--radius-field)]',
                     'border border-accent/60 bg-accent/15 px-2 py-0.5',
-                    'text-[11px] text-fg cursor-pointer transition-colors',
+                    'text-[0.6875rem] text-fg cursor-pointer transition-colors',
                     'hover:bg-accent/25',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
                     'disabled:opacity-50 disabled:cursor-not-allowed',

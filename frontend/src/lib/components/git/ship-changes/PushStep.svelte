@@ -26,15 +26,15 @@
   <header class="space-y-1">
     <h3 class="text-sm font-semibold text-text-primary">Push to Remote</h3>
     {#if status}
-      <p class="text-[11px] text-text-secondary" data-testid="ship-changes-push-summary">
+      <p class="text-[0.6875rem] text-text-secondary" data-testid="ship-changes-push-summary">
         {#if !status.hasUpstream}
-          <code class="text-[10px] bg-surface-2/60 px-1 rounded">{status.branch}</code>
+          <code class="text-[0.625rem] bg-surface-2/60 px-1 rounded">{status.branch}</code>
           has no upstream — push will set it.
         {:else if status.aheadCount > 0}
           {status.aheadCount} commit{status.aheadCount === 1 ? '' : 's'}
-          ahead of <code class="text-[10px] bg-surface-2/60 px-1 rounded">origin/{status.branch}</code>.
+          ahead of <code class="text-[0.625rem] bg-surface-2/60 px-1 rounded">origin/{status.branch}</code>.
         {:else}
-          Branch <code class="text-[10px] bg-surface-2/60 px-1 rounded">{status.branch}</code>
+          Branch <code class="text-[0.625rem] bg-surface-2/60 px-1 rounded">{status.branch}</code>
           is up to date with origin.
         {/if}
       </p>

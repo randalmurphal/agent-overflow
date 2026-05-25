@@ -47,7 +47,7 @@
 </script>
 
 <div
-  class="mb-1.5 flex items-center gap-1.5 px-2 py-1 text-[11px] italic text-fg-subtle"
+  class="mb-1.5 flex items-center gap-1.5 px-2 py-1 text-[0.6875rem] italic text-fg-subtle"
   data-testid="api-retry-row"
   data-status={item.status}
   title={tooltip}

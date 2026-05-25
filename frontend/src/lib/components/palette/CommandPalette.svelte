@@ -208,7 +208,7 @@
         aria-autocomplete="list"
         aria-activedescendant={activeId ? `palette-option-${activeId}` : undefined}
         placeholder="Type a command…"
-        class="w-full bg-transparent text-[15px] text-fg placeholder:text-fg-hint outline-none"
+        class="w-full bg-transparent text-[0.9375rem] text-fg placeholder:text-fg-hint outline-none"
         data-testid="command-palette-input"
       />
     </div>
@@ -237,7 +237,7 @@
         />
       {/each}
       {#if results.length === 0}
-        <div class="px-4 py-6 text-center text-[13px] text-fg-subtle" data-testid="command-palette-empty">
+        <div class="px-4 py-6 text-center text-[0.8125rem] text-fg-subtle" data-testid="command-palette-empty">
           No commands match "{query}".
         </div>
       {/if}

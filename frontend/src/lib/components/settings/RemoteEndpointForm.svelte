@@ -105,60 +105,60 @@
   class="space-y-3 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 p-4"
 >
   <div class="flex flex-col gap-1">
-    <label class="text-[12px] text-fg-muted" for="remote-endpoint-name">Nickname (optional)</label>
+    <label class="text-[0.75rem] text-fg-muted" for="remote-endpoint-name">Nickname (optional)</label>
     <input
       id="remote-endpoint-name"
       type="text"
       bind:value={formName}
       placeholder="Tailnet machine"
-      class="text-[12px] rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-1.5 text-fg focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40"
+      class="text-[0.75rem] rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-1.5 text-fg focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40"
     />
   </div>
   <div class="flex flex-col gap-1">
-    <label class="text-[12px] text-fg-muted" for="remote-endpoint-url">URL</label>
+    <label class="text-[0.75rem] text-fg-muted" for="remote-endpoint-url">URL</label>
     <input
       id="remote-endpoint-url"
       type="text"
       bind:value={formURL}
       placeholder="ws://host:port/"
       required
-      class="text-[12px] rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-1.5 text-fg font-mono focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40"
+      class="text-[0.75rem] rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-1.5 text-fg font-mono focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40"
     />
   </div>
   <div class="flex flex-col gap-1">
-    <label class="text-[12px] text-fg-muted" for="remote-endpoint-token">Token</label>
+    <label class="text-[0.75rem] text-fg-muted" for="remote-endpoint-token">Token</label>
     <div class="flex gap-2">
       <input
         id="remote-endpoint-token"
         type={revealFormToken ? 'text' : 'password'}
         bind:value={formToken}
         required
-        class="flex-1 text-[12px] rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-1.5 text-fg font-mono focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="flex-1 text-[0.75rem] rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-1.5 text-fg font-mono focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40"
       />
       <button
         type="button"
         onclick={() => (revealFormToken = !revealFormToken)}
-        class="text-[12px] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-accent/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
+        class="text-[0.75rem] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-accent/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
       >
         {revealFormToken ? 'Hide' : 'Show'}
       </button>
     </div>
   </div>
   {#if formError}
-    <p role="alert" class="text-[12px] text-error">{formError}</p>
+    <p role="alert" class="text-[0.75rem] text-error">{formError}</p>
   {/if}
   <div class="flex gap-2">
     <button
       type="submit"
       disabled={saving}
-      class="text-[12px] font-medium rounded-[var(--radius-field)] border border-accent/40 bg-accent/10 px-3 py-1.5 text-fg hover:border-accent/60 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
+      class="text-[0.75rem] font-medium rounded-[var(--radius-field)] border border-accent/40 bg-accent/10 px-3 py-1.5 text-fg hover:border-accent/60 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
     >
       {mode === 'add' ? 'Add' : 'Save'}
     </button>
     <button
       type="button"
       onclick={onCancel}
-      class="text-[12px] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-accent/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
+      class="text-[0.75rem] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-accent/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
     >
       Cancel
     </button>

@@ -32,7 +32,7 @@
 
 <div
   {role}
-  class="rounded-[var(--radius-field)] border px-3 py-2 text-[12px] leading-relaxed {toneClass}"
+  class="rounded-[var(--radius-field)] border px-3 py-2 text-[0.75rem] leading-relaxed {toneClass}"
 >
   {@render children()}
 </div>

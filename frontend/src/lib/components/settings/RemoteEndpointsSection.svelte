@@ -193,9 +193,9 @@
     />
 
     {#if !clientMode}
-      <p class="mt-1 max-w-2xl text-[11.5px] leading-relaxed text-fg-hint">
+      <p class="mt-1 max-w-2xl text-[0.71875rem] leading-relaxed text-fg-hint">
         These endpoints power
-        <code class="font-mono text-[11px]">agent-overflow --connect ws://host:port?token=&lt;value&gt;</code>;
+        <code class="font-mono text-[0.6875rem]">agent-overflow --connect ws://host:port?token=&lt;value&gt;</code>;
         the desktop binary opens a window attached to the remote backend instead
         of booting a local one.
       </p>
@@ -203,9 +203,9 @@
 
     {#if !clientMode}
       {#if loading}
-        <p class="mt-4 text-[12px] text-fg-muted">Loading…</p>
+        <p class="mt-4 text-[0.75rem] text-fg-muted">Loading…</p>
       {:else if endpoints.length === 0 && editingId === null}
-        <p class="mt-4 text-[12px] text-fg-muted">No remote endpoints saved.</p>
+        <p class="mt-4 text-[0.75rem] text-fg-muted">No remote endpoints saved.</p>
       {/if}
     {/if}
 

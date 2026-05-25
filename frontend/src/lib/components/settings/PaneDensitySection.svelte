@@ -64,13 +64,13 @@
           class="mt-1 h-3.5 w-3.5 accent-accent"
         />
         <span class="min-w-0">
-          <span class="flex items-center gap-2 text-[13px] font-medium">
+          <span class="flex items-center gap-2 text-[0.8125rem] font-medium">
             {option.label}
-            <span class="font-mono text-[11px] text-fg-hint">
+            <span class="font-mono text-[0.6875rem] text-fg-hint">
               {PANE_DENSITY_MIN_WIDTHS[option.mode]}px
             </span>
           </span>
-          <span class="mt-0.5 block text-[12px] leading-5 text-fg-muted">
+          <span class="mt-0.5 block text-[0.75rem] leading-5 text-fg-muted">
             {option.description}
           </span>
         </span>

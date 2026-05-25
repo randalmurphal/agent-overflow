@@ -16,6 +16,7 @@
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyTheme } from './lib/utils/theme';
   import { applyFonts } from './lib/utils/fonts';
+  import { applyFontScale } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import PaneHost from './lib/components/panes/PaneHost.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
@@ -217,6 +218,10 @@
   $effect(() => {
     const s = getSettings();
     applyFonts(s.sansFont, s.monoFont);
+  });
+
+  $effect(() => {
+    applyFontScale(getSettings().fontSize);
   });
 
   $effect(() => {

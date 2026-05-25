@@ -21,7 +21,7 @@
     title="Toggle Plan Sidebar"
     class={[
       'relative inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
-      'px-1.5 py-1 text-[11px] transition-colors cursor-pointer',
+      'px-1.5 py-1 text-[0.6875rem] transition-colors cursor-pointer',
       pane.showPlanSidebar
         ? 'bg-surface-2/60 text-fg ring-1 ring-inset ring-border-subtle'
         : 'text-fg-muted hover:text-fg hover:bg-surface-2/30',

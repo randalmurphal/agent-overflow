@@ -56,7 +56,7 @@ describe('<TerminalInteractionRow>', () => {
     const row = getByTestId('terminal-interaction-row');
     expect(row.className).not.toContain('italic');
     expect(row.className).toContain('text-fg-muted');
-    expect(row.className).toContain('text-[12px]');
+    expect(row.className).toContain('text-[0.75rem]');
   });
 
   it('renders the clock icon with a `wait` gutter label', () => {

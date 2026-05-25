@@ -126,7 +126,7 @@
     {#snippet icon()}<ToolKindIcon kind="brain" ariaLabel="advisor" />{/snippet}
     {#snippet label()}<span data-testid="advisor-row-label">advisor</span>{/snippet}
     {#snippet body()}
-      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="advisor-row-preview">
+      <span class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted/75" data-testid="advisor-row-preview">
         <span class="text-fg-muted">Advisor</span>{#if modelLabel}<span class="ml-1 text-fg-hint">({modelLabel})</span>{/if}{#if preview}<span class="ml-2">{preview}</span>{/if}
       </span>
     {/snippet}
@@ -167,7 +167,7 @@
 </div>
 
 {#snippet advisorBodyContent({ data, testId }: { data: string; testId: string })}
-  <div class="px-3 py-2 text-[12px] leading-relaxed text-fg-muted" data-testid={testId}>
+  <div class="px-3 py-2 text-[0.75rem] leading-relaxed text-fg-muted" data-testid={testId}>
     <ChatMarkdown source={data} workspacePath={paneWorkspacePath(pane)} {pathRefs} />
   </div>
 {/snippet}

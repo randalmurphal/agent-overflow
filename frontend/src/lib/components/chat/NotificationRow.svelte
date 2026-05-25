@@ -75,7 +75,7 @@
 </script>
 
 <div
-  class="mb-1.5 px-2 py-1 text-[11px] italic text-fg-subtle"
+  class="mb-1.5 px-2 py-1 text-[0.6875rem] italic text-fg-subtle"
   data-testid="notification-row"
 >
   <div class="flex items-center gap-1.5">
@@ -85,7 +85,7 @@
   {#if plan.length > 0}
     <div class="ml-5 mt-1 space-y-0.5 not-italic">
       {#each plan as step}
-        <div class="truncate font-mono text-[11px] text-fg-subtle">
+        <div class="truncate font-mono text-[0.6875rem] text-fg-subtle">
           [{statusGlyph(step.status)}] {step.step}
         </div>
       {/each}
@@ -94,12 +94,12 @@
   {#if hookEntries.length > 0}
     <div class="ml-5 mt-1 space-y-0.5 not-italic">
       {#each hookEntries as entry}
-        <div class="truncate font-mono text-[11px] text-fg-subtle">
+        <div class="truncate font-mono text-[0.6875rem] text-fg-subtle">
           {entry}
         </div>
       {/each}
       {#if hiddenHookEntryCount > 0}
-        <div class="truncate font-mono text-[11px] text-fg-hint">
+        <div class="truncate font-mono text-[0.6875rem] text-fg-hint">
           +{hiddenHookEntryCount} more
         </div>
       {/if}

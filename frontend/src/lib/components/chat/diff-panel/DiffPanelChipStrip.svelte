@@ -22,7 +22,7 @@
   <div class="min-w-0 flex-1 overflow-x-auto px-3 py-2" data-testid="diff-message-scroll-strip">
     <div class="flex w-max gap-1">
       <button
-        class="shrink-0 rounded border px-2.5 py-1 text-[12px] {selectedUserItemId === null ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
+        class="shrink-0 rounded border px-2.5 py-1 text-[0.75rem] {selectedUserItemId === null ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
         onclick={() => onSelectCheckpoint(null)}
         aria-label="All messages"
         data-testid="diff-all-messages"
@@ -31,14 +31,14 @@
       </button>
       {#each visibleCheckpoints as checkpoint (checkpoint.id)}
         <button
-          class="min-w-[30px] shrink-0 rounded border px-2 py-1 text-center text-[12px] {selectedUserItemId === checkpoint.userItemId ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
+          class="min-w-[30px] shrink-0 rounded border px-2 py-1 text-center text-[0.75rem] {selectedUserItemId === checkpoint.userItemId ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
           onclick={() => onSelectCheckpoint(checkpoint.userItemId)}
           aria-label={`Message ${checkpoint.turnIndex + 1}`}
           data-testid={`diff-message-${checkpoint.turnIndex}`}
         >
           {checkpoint.turnIndex + 1}
           {#if checkpoint.status && checkpoint.status !== 'ready'}
-            <span class="ml-1 text-[10px] text-warning">{checkpoint.status}</span>
+            <span class="ml-1 text-[0.625rem] text-warning">{checkpoint.status}</span>
           {/if}
         </button>
       {/each}

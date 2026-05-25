@@ -22,8 +22,8 @@
 
   const sizeClass = $derived(
     size === 'md'
-      ? 'text-[12.5px] px-3 py-1.5'
-      : 'text-[12px] px-2.5 py-1',
+      ? 'text-[0.78125rem] px-3 py-1.5'
+      : 'text-[0.75rem] px-2.5 py-1',
   );
 </script>
 

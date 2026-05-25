@@ -116,24 +116,24 @@
   >
     <div class="flex items-baseline justify-between gap-2 px-3 pt-3 pb-2 border-b border-border-subtle shrink-0">
       <div>
-        <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-subtle">
+        <p class="text-[0.6875rem] font-semibold uppercase tracking-[0.18em] text-fg-subtle">
           Clarification
         </p>
         {#if request.intro}
-          <p class="text-[12px] text-fg-muted mt-1 leading-relaxed">{request.intro}</p>
+          <p class="text-[0.75rem] text-fg-muted mt-1 leading-relaxed">{request.intro}</p>
         {/if}
       </div>
-      <span class="text-[10px] text-fg-hint font-mono shrink-0" title="Request ID">
+      <span class="text-[0.625rem] text-fg-hint font-mono shrink-0" title="Request ID">
         req {request.requestId.slice(0, 8)}
       </span>
     </div>
     <div class="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-3">
       {#each request.questions as question (question.id)}
         <fieldset class="flex flex-col gap-1.5">
-          <legend class="text-[12px] font-medium text-fg">
+          <legend class="text-[0.75rem] font-medium text-fg">
             {question.prompt}
             {#if question.multiple}
-              <span class="text-[10px] text-fg-hint ml-1">(pick any)</span>
+              <span class="text-[0.625rem] text-fg-hint ml-1">(pick any)</span>
             {/if}
           </legend>
           <div class="flex flex-wrap gap-2">
@@ -155,7 +155,7 @@
                 ].join(' ')}
                 data-testid="design-clarification-choice"
               >
-                <span class="text-[12px]">{choice.label}</span>
+                <span class="text-[0.75rem]">{choice.label}</span>
               </button>
             {/each}
           </div>
@@ -170,7 +170,7 @@
         class={[
           'inline-flex items-center gap-1 rounded-[var(--radius-field)]',
           'border border-accent/60 bg-accent/15 px-3 py-1',
-          'text-[12px] text-fg cursor-pointer transition-colors',
+          'text-[0.75rem] text-fg cursor-pointer transition-colors',
           'hover:bg-accent/25',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
           'disabled:opacity-50 disabled:cursor-not-allowed',

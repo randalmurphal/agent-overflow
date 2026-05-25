@@ -43,7 +43,7 @@
       class="w-[22rem] max-h-72 overflow-y-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 shadow-menu"
       data-testid="mention-popover"
     >
-      <div class="border-b border-border-subtle px-3 py-1.5 text-[11px] text-fg-subtle">
+      <div class="border-b border-border-subtle px-3 py-1.5 text-[0.6875rem] text-fg-subtle">
         {#if loading}
           Searching…
         {:else if query}
@@ -54,7 +54,7 @@
       </div>
 
       {#if results.length === 0 && !loading}
-        <div class="px-3 py-3 text-[12px] text-fg-subtle">No matches. Escape to close.</div>
+        <div class="px-3 py-3 text-[0.75rem] text-fg-subtle">No matches. Escape to close.</div>
       {:else}
         <ul class="py-1">
           {#each results as file, index (file.path)}
@@ -64,7 +64,7 @@
                 type="button"
                 role="option"
                 aria-selected={active}
-                class="flex w-full items-center justify-between gap-3 px-3 py-1.5 pr-9 text-left text-[13px] hover:bg-surface-2/40 focus-visible:outline-none transition-colors"
+                class="flex w-full items-center justify-between gap-3 px-3 py-1.5 pr-9 text-left text-[0.8125rem] hover:bg-surface-2/40 focus-visible:outline-none transition-colors"
                 class:bg-accent={active}
                 class:text-surface-0={active}
                 data-testid="mention-option"
@@ -72,7 +72,7 @@
                 onmouseenter={() => onHover?.(index)}
               >
                 <span class="truncate" title={file.path}>{file.path}</span>
-                <span class="text-[10px] text-fg-hint shrink-0">
+                <span class="text-[0.625rem] text-fg-hint shrink-0">
                   {file.kind === 'directory' ? 'dir' : 'file'}
                 </span>
               </button>

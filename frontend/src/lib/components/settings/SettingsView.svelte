@@ -133,7 +133,7 @@
           aria-selected={activeSection === section.id}
           aria-controls="settings-panel-{section.id}"
           tabindex={activeSection === section.id ? 0 : -1}
-          class="w-full rounded-[var(--radius-field)] text-left px-3 py-1.5 text-[13px] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40
+          class="w-full rounded-[var(--radius-field)] text-left px-3 py-1.5 text-[0.8125rem] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40
             {activeSection === section.id
               ? 'bg-accent/10 text-fg font-medium'
               : 'text-fg-muted hover:text-fg hover:bg-surface-2/30'}"
@@ -187,7 +187,7 @@
     </div>
   </div>
 
-  <footer class="border-t border-border-subtle px-5 py-2 text-[11px] text-fg-subtle shrink-0">
+  <footer class="border-t border-border-subtle px-5 py-2 text-[0.6875rem] text-fg-subtle shrink-0">
     Agent Overflow{appVersion ? ` v${appVersion}` : ''}
   </footer>
 </div>

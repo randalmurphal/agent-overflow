@@ -218,7 +218,7 @@
           </span>
           {#if entry.isRepo}
             <span
-              class="shrink-0 text-[9px] font-semibold uppercase tracking-wide text-accent/80"
+              class="shrink-0 text-[0.5625rem] font-semibold uppercase tracking-wide text-accent/80"
               title="Git Repository"
               aria-label="Git Repository"
             >
@@ -229,7 +229,7 @@
       {/each}
       {#if browser.listing.truncated}
         <li
-          class="px-3 py-2 text-[11px] text-text-secondary/60 border-t border-border/50"
+          class="px-3 py-2 text-[0.6875rem] text-text-secondary/60 border-t border-border/50"
           aria-hidden="true"
         >
           …more entries hidden. Refine the path above to narrow the listing.
@@ -239,7 +239,7 @@
   </ul>
 
   <p
-    class="text-[10px] text-text-secondary/60 flex flex-wrap gap-x-3 gap-y-1"
+    class="text-[0.625rem] text-text-secondary/60 flex flex-wrap gap-x-3 gap-y-1"
     aria-hidden="true"
   >
     <span><kbd class="font-mono">↑↓</kbd> Navigate</span>

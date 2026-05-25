@@ -337,11 +337,11 @@
         onclick={(e) => e.stopPropagation()}
         disabled={renameSaving}
         aria-label="Rename Project"
-        class="text-[12.5px] flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
+        class="text-[0.78125rem] flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
       />
     {:else}
       <span
-        class="text-[12.5px] font-medium truncate flex-1 text-fg"
+        class="text-[0.78125rem] font-medium truncate flex-1 text-fg"
         title={project.project.path}
       >
         {project.project.name}

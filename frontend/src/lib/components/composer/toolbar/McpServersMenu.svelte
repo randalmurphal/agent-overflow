@@ -176,7 +176,7 @@
 >
   <Menu ariaLabel="MCP servers" {onClose}>
     {#if visible.length === 0}
-      <div class="px-3 py-4 text-[12px] text-fg-muted">
+      <div class="px-3 py-4 text-[0.75rem] text-fg-muted">
         <div class="mb-2 font-medium text-fg">No MCP servers configured</div>
         <div class="text-fg-subtle">
           Add a server in Settings to expose extra tools to this thread.

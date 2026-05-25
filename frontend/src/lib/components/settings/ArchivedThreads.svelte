@@ -15,7 +15,7 @@
     >
       {#snippet badge()}
         <span
-          class="rounded-full border border-accent/35 bg-accent/10 px-2.5 py-0.5 text-[11px] font-medium text-accent"
+          class="rounded-full border border-accent/35 bg-accent/10 px-2.5 py-0.5 text-[0.6875rem] font-medium text-accent"
         >
           Two-way
         </span>
@@ -24,10 +24,10 @@
   </section>
 
   <section>
-    <p class="text-[10.5px] font-medium uppercase tracking-[0.16em] text-fg-hint">
+    <p class="text-[0.65625rem] font-medium uppercase tracking-[0.16em] text-fg-hint">
       Workflow
     </p>
-    <ul class="mt-3 flex flex-col gap-2 text-[13px] leading-relaxed text-fg-muted" role="list">
+    <ul class="mt-3 flex flex-col gap-2 text-[0.8125rem] leading-relaxed text-fg-muted" role="list">
       <li class="flex gap-2">
         <span aria-hidden="true" class="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-fg-hint"></span>
         <span>Archiving stops the active provider session and hides the thread from the default list.</span>

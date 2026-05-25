@@ -45,7 +45,7 @@
 
   {#if duration}
     <span
-      class="shrink-0 inline-block min-w-[3rem] text-right tabular-nums text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
+      class="shrink-0 inline-block min-w-[3rem] text-right tabular-nums text-[0.625rem] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
       data-testid={duration.testId}
     >
       {duration.label}
@@ -54,7 +54,7 @@
 
   {#if timestamp && timestampDate}
     <time
-      class="shrink-0 tabular-nums text-[10px] text-fg-hint"
+      class="shrink-0 tabular-nums text-[0.625rem] text-fg-hint"
       datetime={timestampDate.toISOString()}
       data-testid={timestamp.testId}
     >
