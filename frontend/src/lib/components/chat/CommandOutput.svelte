@@ -16,6 +16,8 @@
     commandErrorForItem,
     displayCommandForItem,
   } from './commandDisplay';
+  import { createRunningElapsed } from './useRunningElapsed.svelte';
+  import { formatDurationMs } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
@@ -90,6 +92,28 @@
     effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
   );
 
+  const BASH_ELAPSED_THRESHOLD_MS = 3_000;
+
+  let isRunning = $derived(
+    effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming',
+  );
+
+  const ticker = createRunningElapsed(
+    () => isRunning && durationLabel === '' && !isBackgroundedLaunch,
+    () => effectiveStatusItem.createdAt,
+    BASH_ELAPSED_THRESHOLD_MS,
+  );
+
+  let completedDurationMs = $derived.by<number | null>(() => {
+    if (isRunning || isBackgroundedLaunch) return null;
+    const created = effectiveStatusItem.createdAt;
+    const updated = effectiveStatusItem.updatedAt;
+    if (!created || !updated || updated <= created) return null;
+    const elapsed = updated - created;
+    if (elapsed < BASH_ELAPSED_THRESHOLD_MS) return null;
+    return elapsed;
+  });
+
   let time = $derived(
     new Date(effectiveStatusItem.createdAt).toLocaleTimeString(undefined, {
       hour: 'numeric',
@@ -150,7 +174,10 @@
     <ToolDecisionChip decision={effectiveDisplayItem.decision} />
     <ToolHeaderMeta
       statusSlotTestId="command-output-status-slot"
-      duration={{ testId: 'command-output-duration', label: durationLabel }}
+      duration={{
+        testId: 'command-output-duration',
+        label: durationLabel || (completedDurationMs !== null ? formatDurationMs(completedDurationMs) : ticker.label),
+      }}
       timestamp={showTimestamp
         ? { testId: 'command-output-time', value: effectiveStatusItem.createdAt, label: time }
         : undefined}

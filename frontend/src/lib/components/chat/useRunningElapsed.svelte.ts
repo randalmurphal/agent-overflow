@@ -31,6 +31,7 @@ interface RunningElapsed {
 export function createRunningElapsed(
   isTicking: () => boolean,
   createdAt: () => number,
+  thresholdMs: number = RUNNING_ELAPSED_THRESHOLD_MS,
 ): RunningElapsed {
   let now = $state(Date.now());
   $effect(() => {
@@ -47,7 +48,7 @@ export function createRunningElapsed(
     const created = createdAt();
     if (!Number.isFinite(created) || created <= 0) return '';
     const elapsedMs = now - created;
-    if (elapsedMs < RUNNING_ELAPSED_THRESHOLD_MS) return '';
+    if (elapsedMs < thresholdMs) return '';
     return formatElapsedSeconds(Math.floor(elapsedMs / 1_000));
   });
 

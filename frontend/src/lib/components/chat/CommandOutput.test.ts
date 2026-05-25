@@ -559,6 +559,80 @@ describe('<CommandOutput>', () => {
     expect(getByTestId('row-error-msg').textContent).toBe('Tool call stopped');
   });
 
+  it('shows no duration for a completed command under 3 seconds', () => {
+    const now = Date.now();
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({
+          id: 'tool-cmd',
+          kind: 'tool_completion',
+          status: 'completed',
+          createdAt: now - 2_000,
+          updatedAt: now,
+        }),
+        meta: commandMeta({ command: 'ls', exitCode: 0 }),
+      },
+    });
+
+    expect(getByTestId('command-output-duration').textContent?.trim()).toBe('');
+  });
+
+  it('shows duration for a completed command that took >= 3 seconds', () => {
+    const now = Date.now();
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({
+          id: 'tool-cmd',
+          kind: 'tool_completion',
+          status: 'completed',
+          createdAt: now - 5_000,
+          updatedAt: now,
+        }),
+        meta: commandMeta({ command: 'pnpm test', exitCode: 0 }),
+      },
+    });
+
+    expect(getByTestId('command-output-duration').textContent?.trim()).toBe('5.0s');
+  });
+
+  it('prefers caller-provided durationLabel over computed duration', () => {
+    const now = Date.now();
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({
+          id: 'tool-cmd',
+          kind: 'tool_completion',
+          status: 'completed',
+          createdAt: now - 10_000,
+          updatedAt: now,
+        }),
+        meta: commandMeta({ command: 'pnpm test', exitCode: 0 }),
+        durationLabel: '12s',
+      },
+    });
+
+    expect(getByTestId('command-output-duration').textContent?.trim()).toBe('12s');
+  });
+
+  it('shows no duration for a backgrounded launch', () => {
+    const now = Date.now();
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({
+          id: 'tool-cmd',
+          kind: 'tool_call',
+          status: 'running',
+          isBackground: true,
+          createdAt: now - 10_000,
+          updatedAt: now,
+        }),
+        meta: commandMeta({ command: 'pnpm test' }),
+      },
+    });
+
+    expect(getByTestId('command-output-duration').textContent?.trim()).toBe('');
+  });
+
   it('shows the item timestamp in the header instead of the line count', () => {
     const createdAt = Date.UTC(2026, 0, 2, 15, 4);
     const { getByTestId, queryByText } = render(CommandOutput, {
