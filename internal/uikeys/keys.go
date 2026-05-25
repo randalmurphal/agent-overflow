@@ -4,10 +4,12 @@ package uikeys
 
 import "github.com/wailsapp/wails/v3/pkg/application"
 
-// Browser returns the standard browser-style keybindings (zoom,
-// reload, fullscreen). Used by every WebviewWindow constructor in the
-// repo so a new shortcut lands here instead of drifting between call
-// sites.
+// Browser returns the standard browser-style keybindings (reload,
+// fullscreen, and zoom-key suppression). The zoom entries are no-ops
+// that prevent the webview's native viewport zoom — font scaling is
+// handled in the frontend via the fontSize setting. Used by every
+// WebviewWindow constructor so a new shortcut lands here instead of
+// drifting between call sites.
 func Browser() map[string]func(application.Window) {
 	return BrowserWithReload(nil)
 }
