@@ -228,11 +228,11 @@ describe('<GeneralSettings> — Font size', () => {
     expect(input.value).toBe('13');
   });
 
-  it('dispatches fontSize patch on blur with parsed integer', async () => {
+  it('dispatches fontSize patch on change', async () => {
     const { getByTestId } = render(GeneralSettings);
     const input = getByTestId('settings-font-size') as HTMLInputElement;
     input.value = '16';
-    await fireEvent.blur(input);
+    await fireEvent.change(input);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
@@ -243,7 +243,7 @@ describe('<GeneralSettings> — Font size', () => {
     const { getByTestId } = render(GeneralSettings);
     const input = getByTestId('settings-font-size') as HTMLInputElement;
     input.value = '5';
-    await fireEvent.blur(input);
+    await fireEvent.change(input);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 10 });
@@ -253,7 +253,7 @@ describe('<GeneralSettings> — Font size', () => {
     const { getByTestId } = render(GeneralSettings);
     const input = getByTestId('settings-font-size') as HTMLInputElement;
     input.value = '30';
-    await fireEvent.blur(input);
+    await fireEvent.change(input);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 20 });
@@ -263,7 +263,7 @@ describe('<GeneralSettings> — Font size', () => {
     const { getByTestId } = render(GeneralSettings);
     const input = getByTestId('settings-font-size') as HTMLInputElement;
     input.value = 'banana';
-    await fireEvent.blur(input);
+    await fireEvent.change(input);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 13 });
@@ -273,7 +273,7 @@ describe('<GeneralSettings> — Font size', () => {
     const { getByTestId } = render(GeneralSettings);
     const input = getByTestId('settings-font-size') as HTMLInputElement;
     input.value = '';
-    await fireEvent.blur(input);
+    await fireEvent.change(input);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 13 });

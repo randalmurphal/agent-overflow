@@ -127,7 +127,7 @@
           max={MAX_FONT_SIZE}
           step="1"
           value={settings.fontSize}
-          onblur={(e) => {
+          onchange={(e) => {
             const raw = (e.target as HTMLInputElement).value;
             const parsed = parseInt(raw, 10);
             let next = Number.isFinite(parsed) ? parsed : DEFAULT_FONT_SIZE;
