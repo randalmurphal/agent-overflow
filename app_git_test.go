@@ -287,7 +287,7 @@ func TestGitSyncBranchNonCurrentBranchAllowedWithActiveTurn(t *testing.T) {
 	}
 }
 
-func TestGitCheckoutRejectsActiveTurn(t *testing.T) {
+func TestGitCheckoutAllowedDuringActiveTurn(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
 
@@ -314,9 +314,8 @@ func TestGitCheckoutRejectsActiveTurn(t *testing.T) {
 		t.Fatalf("InsertTurn() error = %v", err)
 	}
 
-	err = app.GitCheckout(thread.ID, "feature/checkout")
-	if err == nil || !strings.Contains(err.Error(), "cannot switch workspace while turn 0 is active") {
-		t.Fatalf("GitCheckout() error = %v, want active-turn rejection", err)
+	if err := app.GitCheckout(thread.ID, "feature/checkout"); err != nil {
+		t.Fatalf("GitCheckout() should succeed during active turn, got error = %v", err)
 	}
 }
 
@@ -472,6 +471,73 @@ func TestGitCreateBranchFromOtherBaseDiscardsDirtyTree(t *testing.T) {
 	}
 	if strings.TrimSpace(stdout) != "" {
 		t.Fatalf("expected empty stash; got %q", stdout)
+	}
+}
+
+func TestGitCreateBranchFromOtherBaseRejectsActiveTurn(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	testutil.RunGit(t, repo, "branch", "release")
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-create-branch-active-turn")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	thread.UpdatedAt = 1_700_000_000_000
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-create-branch-active",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertTurn() error = %v", err)
+	}
+
+	_, err = app.GitCreateBranchFrom(thread.ID, "feature/blocked", "release", false)
+	if err == nil || !strings.Contains(err.Error(), "cannot switch workspace while turn 0 is active") {
+		t.Fatalf("GitCreateBranchFrom(other base) during active turn: error = %v, want workspace-change rejection", err)
+	}
+}
+
+func TestGitCreateBranchFromCurrentBaseAllowedDuringActiveTurn(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-create-branch-current-active-turn")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	thread.UpdatedAt = 1_700_000_000_000
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-create-branch-current-active",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertTurn() error = %v", err)
+	}
+
+	updated, err := app.GitCreateBranchFrom(thread.ID, "feature/allowed", "main", true)
+	if err != nil {
+		t.Fatalf("GitCreateBranchFrom(current base) during active turn should succeed, got error = %v", err)
+	}
+	if updated.Branch != "feature/allowed" {
+		t.Fatalf("Branch = %q, want feature/allowed", updated.Branch)
 	}
 }
 

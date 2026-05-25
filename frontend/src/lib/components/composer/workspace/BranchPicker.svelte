@@ -101,7 +101,6 @@
     return currentBranch || 'No branch';
   });
 
-  let disabledReason = $derived(workspaceLock.reason);
   let workspaceChangingDisabled = $derived(workspaceLock.locked);
 
   function orderBranchesForDisplay(sourceBranches: GitBranch[]): GitBranch[] {
@@ -309,7 +308,6 @@
   }
 
   function branchRowTitle(branch: GitBranch): string | undefined {
-    if (!intent.creatingBranch && workspaceChangingDisabled) return disabledReason;
     if (branch.name.length > BRANCH_LABEL_MAX_CHARS) return branch.name;
     return undefined;
   }
@@ -335,7 +333,7 @@
   }
 
   function startCreate(): void {
-    if (!pane.thread || workspaceChangingDisabled) return;
+    if (!pane.thread) return;
     enterCreateBranchMode(pane.thread, { workspaceDirty, currentBranch });
     closeMenu();
   }
@@ -363,7 +361,7 @@
       closeMenu();
       return;
     }
-    if (applying || workspaceChangingDisabled) {
+    if (applying) {
       closeMenu();
       return;
     }
@@ -375,6 +373,11 @@
         branch.worktreePath &&
         !sameNormalizedPath(branch.worktreePath, currentWorkspace)
       ) {
+        if (workspaceChangingDisabled) {
+          addToast('error', workspaceLock.reason);
+          closeMenu();
+          return;
+        }
         setThreadEnvMode(pane.thread, 'local');
         applying = true;
         try {
@@ -414,6 +417,12 @@
         await GitCheckout(pane.thread.id, branch.name);
         refreshed = (await GetThread(pane.thread.id)) as Thread | null;
       } else if (branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace)) {
+        if (workspaceChangingDisabled) {
+          addToast('error', workspaceLock.reason);
+          closeMenu();
+          applying = false;
+          return;
+        }
         refreshed = (await UpdateThreadWorkspace(pane.thread.id, branch.worktreePath)) as Thread;
       } else {
         await GitCheckout(pane.thread.id, branch.name);
@@ -472,8 +481,6 @@
     {:else}
       <MenuItem
         label="New branch…"
-        disabled={workspaceChangingDisabled}
-        title={workspaceChangingDisabled ? disabledReason : undefined}
         onSelect={startCreate}
       >
         {#snippet icon()}
@@ -519,8 +526,6 @@
           label="Local (with changes)"
           description={currentBranch || undefined}
           checked={isLocalSelected}
-          disabled={!intent.creatingBranch && workspaceChangingDisabled}
-          title={!intent.creatingBranch && workspaceChangingDisabled ? disabledReason : undefined}
           onSelect={selectLocalRow}
         />
         <MenuDivider />
@@ -540,7 +545,6 @@
               label={truncateBranchLabel(branch.name)}
               suffix={branchBadge(branch)}
               checked={isBaseSelected(branch)}
-              disabled={!intent.creatingBranch && workspaceChangingDisabled}
               title={branchRowTitle(branch)}
               onSelect={() => selectBranch(branch)}
               action={showsSyncAction(branch) ? syncIcon : undefined}

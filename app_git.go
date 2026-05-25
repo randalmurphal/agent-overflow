@@ -264,9 +264,6 @@ func (a *App) GitCheckout(threadID, branch string) error {
 
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
-	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
-		return err
-	}
 
 	core := a.gitCore()
 	if !gitops.SameFilesystemPath(workspace, project) && core.BranchIsDefault(project, branch) {
@@ -361,8 +358,11 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
-	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
-		return store.Thread{}, err
+
+	if !baseIsCurrent {
+		if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
+			return store.Thread{}, err
+		}
 	}
 
 	if baseIsCurrent {

@@ -362,27 +362,29 @@ describe('<BranchPicker>', () => {
     expect(worktreeIntentForThread(pane.thread).mode).toBe('local');
   });
 
-  it('disables branch checkout while the agent is responding', async () => {
+  it('allows branch checkout while the agent is responding', async () => {
     const pane = await buildPane('main');
     const workspaceLock = makeWorkspaceLock({
       locked: true,
       reason: 'Workspace changes are unavailable while the agent is responding.',
     });
+    const checkout = setBindingMock('GitCheckout', async () => {});
     setBindingMock('GitListBranches', async () => [
       { name: 'main', isCurrent: true, isDefault: true },
       { name: 'feat/abc', isCurrent: false, isDefault: false },
     ]);
-    setBindingMock('GitCheckout', async () => {});
+    setBindingMock('GetThread', async () => makeThread('feat/abc'));
 
     const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /feat\/abc/ });
-    expect(row).toHaveAttribute('aria-disabled', 'true');
-    expect(row).toHaveAttribute('title', expect.stringMatching(/agent is responding/));
+    expect(row).not.toHaveAttribute('aria-disabled', 'true');
 
     await fireEvent.click(row);
 
-    expect(getBindingMock('GitCheckout')).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(checkout).toHaveBeenCalled();
+    });
   });
 
   it('+ New branch dropdown entry enters creating-branch mode and closes the menu', async () => {
@@ -819,30 +821,32 @@ describe('<BranchPicker>', () => {
     expect(getBindingMock('GitSyncBranch')).not.toHaveBeenCalled();
   });
 
-  it('disables branch checkout while background tasks are running', async () => {
+  it('allows branch checkout while background tasks are running', async () => {
     const pane = await buildPane('main');
     const workspaceLock = makeWorkspaceLock({
       locked: true,
       reason: 'Workspace changes are unavailable while background tasks are running.',
       runningBackgroundCount: 1,
     });
+    const checkout = setBindingMock('GitCheckout', async () => {});
     setBindingMock('GitListBranches', async () => [
       { name: 'main', isCurrent: true, isDefault: true },
       { name: 'feat/abc', isCurrent: false, isDefault: false },
     ]);
-    setBindingMock('GitCheckout', async () => {});
+    setBindingMock('GetThread', async () => makeThread('feat/abc'));
 
     const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /feat\/abc/ });
 
     await waitFor(() => {
-      expect(row).toHaveAttribute('aria-disabled', 'true');
-      expect(row).toHaveAttribute('title', expect.stringMatching(/background tasks/));
+      expect(row).not.toHaveAttribute('aria-disabled', 'true');
     });
 
     await fireEvent.click(row);
 
-    expect(getBindingMock('GitCheckout')).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(checkout).toHaveBeenCalled();
+    });
   });
 });
