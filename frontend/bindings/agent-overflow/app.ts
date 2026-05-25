@@ -117,10 +117,12 @@ export function AttachThreadWorktree(threadID: string, branch: string): $Cancell
 }
 
 /**
- * AutoResumeThread starts the stored provider session for a focused thread if
- * one is not already live. It is deliberately separate from SwitchThread so
- * remote clients can focus/read threads without gaining an implicit local
- * process-spawn path.
+ * AutoResumeThread is a no-op retained for wire compatibility. Provider
+ * sessions are now started lazily on first send (app_send.go) rather than
+ * eagerly on thread focus. Eager resume was spawning ~240 MB Claude CLI
+ * processes (plus MCP servers) for every thread the user clicked on,
+ * accumulating gigabytes of resident memory across a handful of navigations
+ * before the 30-minute idle reaper could reclaim them.
  */
 export function AutoResumeThread(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(4095667805, threadID);
@@ -1968,9 +1970,8 @@ export function StopSession(threadID: string): $CancellablePromise<void> {
 }
 
 /**
- * SwitchThread returns the requested thread, marks it read durably, and
- * auto-resumes its provider session in the background when the thread has a
- * stored session reference.
+ * SwitchThread returns the requested thread and marks it read durably.
+ * Provider sessions are started lazily on first send, not on focus.
  */
 export function SwitchThread(threadID: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3897387725, threadID).then(($result: any) => {
