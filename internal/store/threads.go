@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -26,7 +27,7 @@ const threadColumns = `id, project_id,
     created_at, updated_at,
     (SELECT MAX(completed_at) FROM turns
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
-    archived, last_read_at, pinned_at,
+    archived, last_read_at, pinned_at, disabled_mcp_servers,
     EXISTS (
       SELECT 1
         FROM proposed_plans
@@ -135,6 +136,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, isDraft int
 	var latestTurnCompletedAt, lastReadAt, pinnedAt sql.NullInt64
+	var disabledMcpServersJSON sql.NullString
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
@@ -143,6 +145,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt,
+		&disabledMcpServersJSON,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft,
 	); err != nil {
 		return Thread{}, err
@@ -163,6 +166,12 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	if pinnedAt.Valid {
 		v := pinnedAt.Int64
 		t.PinnedAt = &v
+	}
+	if disabledMcpServersJSON.Valid {
+		var names []string
+		if err := json.Unmarshal([]byte(disabledMcpServersJSON.String), &names); err == nil {
+			t.DisabledMcpServers = &names
+		}
 	}
 	return t, nil
 }
@@ -192,15 +201,15 @@ func (s *Store) CreateThread(t Thread) error {
 		    mode, reasoning_effort, fast_mode, context_window,
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
-		    created_at, updated_at, archived)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    created_at, updated_at, archived, disabled_mcp_servers)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.ProjectID, t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
-		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived),
+		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived), marshalDisabledMcpServers(t.DisabledMcpServers),
 	)
 	if err != nil {
 		return fmt.Errorf("store: create thread: %w", err)
@@ -932,4 +941,53 @@ func normalizeRuntimeMode(mode string) string {
 	default:
 		return "full-access"
 	}
+}
+
+func marshalDisabledMcpServers(names *[]string) any {
+	if names == nil {
+		return nil
+	}
+	data, _ := json.Marshal(*names)
+	return string(data)
+}
+
+// GetDisabledMcpServers returns the per-thread MCP disabled set.
+// snapshotted=false when the column is NULL (pre-feature thread).
+func (s *Store) GetDisabledMcpServers(threadID string) (names []string, snapshotted bool, err error) {
+	var raw sql.NullString
+	err = s.db.QueryRow(
+		`SELECT disabled_mcp_servers FROM threads WHERE id = ?`, threadID,
+	).Scan(&raw)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: get disabled mcp servers for %s: %w", threadID, err)
+	}
+	if !raw.Valid {
+		return nil, false, nil
+	}
+	if err := json.Unmarshal([]byte(raw.String), &names); err != nil {
+		return nil, false, fmt.Errorf("store: decode disabled mcp servers for %s: %w", threadID, err)
+	}
+	return names, true, nil
+}
+
+// SetDisabledMcpServers persists the per-thread MCP disabled set. Always
+// produces a non-NULL value (empty slice serializes to "[]"). Does NOT
+// bump updated_at — MCP preferences are UI bookkeeping, same convention
+// as UpdateBranch, UpdateModel, and other in-thread setters.
+func (s *Store) SetDisabledMcpServers(threadID string, names []string) error {
+	if names == nil {
+		names = []string{}
+	}
+	data, err := json.Marshal(names)
+	if err != nil {
+		return fmt.Errorf("store: encode disabled mcp servers for %s: %w", threadID, err)
+	}
+	result, err := s.db.Exec(
+		`UPDATE threads SET disabled_mcp_servers = ? WHERE id = ?`,
+		string(data), threadID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set disabled mcp servers for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: set disabled mcp servers for %s", threadID))
 }

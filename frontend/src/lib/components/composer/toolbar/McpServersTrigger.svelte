@@ -25,8 +25,8 @@
   let open = $state(false);
 
   function loadForThread(): void {
-    if (!pane.thread) return;
-    void mcpServersStore.loadForThread(pane.thread.provider, pane.thread.workspacePath ?? '');
+    if (!pane.threadId || !pane.thread) return;
+    void mcpServersStore.loadForThread(pane.threadId, pane.thread.provider);
   }
 
   function openMenu(): void {

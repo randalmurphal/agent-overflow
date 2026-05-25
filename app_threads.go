@@ -223,6 +223,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		CreatedAt:                  now,
 		UpdatedAt:                  now,
 	}
+	t.DisabledMcpServers = a.snapshotDisabledMcpServers(t.Provider, t.WorkspacePath)
 	if err := a.store.CreateThread(t); err != nil {
 		return store.Thread{}, err
 	}
@@ -421,13 +422,13 @@ func (a *App) UnpinThread(id string) (store.Thread, error) {
 // centralized restartSessionIfAffected helper consults this list so
 // every per-field binding participates in the same restart policy.
 //
-// `mcpServers` deliberately does NOT live here. MCP servers are now
-// 1:1 with the provider's own config file (~/.claude.json mcpServers
-// and ~/.codex/config.toml [mcp_servers.*]). Mutations go through
-// `SetMcpServerEnabled` / CRUD bindings which call the provider's
-// own live-reconcile API (`mcp_set_servers` for Claude,
-// `config/mcpServer/reload` for Codex) — no provider-session restart
-// is needed for MCP changes.
+// `mcpServers` deliberately does NOT live here. Per-thread MCP
+// disabled state is stored in SQLite (disabled_mcp_servers column)
+// and applied via the provider's live-reconcile API (mcp_set_servers
+// for Claude, config.mcp_servers at start for Codex). Composer
+// toggles dual-write to both SQLite (per-thread) and the provider
+// config file (new-thread default). No provider-session restart is
+// needed for MCP changes.
 var sessionAffectingFields = map[string]struct{}{
 	"provider":        {},
 	"model":           {},

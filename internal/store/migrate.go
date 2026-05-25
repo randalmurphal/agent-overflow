@@ -51,6 +51,11 @@ WHERE TRIM(content) <> ''
 CREATE INDEX idx_thread_drafts_has_content
   ON thread_drafts(thread_id) WHERE has_content = 1;`,
 	},
+	{
+		Version: 4,
+		Name:    "thread_disabled_mcp_servers",
+		SQL:     `ALTER TABLE threads ADD COLUMN disabled_mcp_servers TEXT NULL CHECK(disabled_mcp_servers IS NULL OR json_valid(disabled_mcp_servers));`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

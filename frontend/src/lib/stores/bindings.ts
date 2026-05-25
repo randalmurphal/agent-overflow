@@ -228,6 +228,7 @@ export {
 
   // MCP library (1:1 sync with ~/.claude.json + ~/.codex/config.toml)
   ListMcpServers,
+  ListMcpServersForThread,
   CreateMcpServer,
   UpdateMcpServer,
   DeleteMcpServer,

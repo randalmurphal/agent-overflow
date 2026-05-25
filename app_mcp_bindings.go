@@ -672,26 +672,30 @@ func (a *App) setClaudeMcpDisabled(thread store.Thread, name string, disabled bo
 		// Skip the live reconcile so we don't spend an RPC on a no-op.
 		return nil
 	}
-	if !a.hasActiveSession(thread.ID) {
-		return nil
-	}
+	hasSession := a.hasActiveSession(thread.ID)
 	go func() {
-		// Serialize through the per-thread action lock so rapid toggles
-		// can't deliver mcp_set_servers RPCs out of order — the second
-		// goroutine waits for the first's round-trip to land before
-		// reading the latest disk state and pushing again.
+		// SQLite dual-write and reconcile run inside the per-thread lock
+		// so rapid toggles serialize correctly.
 		unlock := a.threadLocks().Lock(thread.ID)
 		defer unlock()
-		err := a.reconcileClaudeMCPLive(thread)
+		current, err := a.ensureDisabledMcpSnapshot(thread.ID, thread.Provider, workspacePath)
+		if err != nil {
+			log.Printf("mcp: thread %s claude snapshot disabled: %v", thread.ID, err)
+			return
+		}
+		updated := mutateDisabledSet(current, name, disabled)
+		if err := a.store.SetDisabledMcpServers(thread.ID, updated); err != nil {
+			log.Printf("mcp: thread %s claude set disabled: %v", thread.ID, err)
+			return
+		}
+		if !hasSession {
+			return
+		}
+		err = a.reconcileClaudeMCPLive(thread)
 		if err == nil {
 			return
 		}
 		log.Printf("mcp: thread %s claude live reconcile: %v", thread.ID, err)
-		// Shutdown race guard. appCancel runs in Shutdown step 1b
-		// BEFORE drainTriage; an in-flight RPC then returns ctx.Canceled
-		// here. Skip emitErrorToThread so we don't file a triage.Handle
-		// past the drain barrier — same invariant the OAuth poller's
-		// ctx.Err() check enforces.
 		if a.lifeCtx().Err() != nil {
 			return
 		}
@@ -700,17 +704,48 @@ func (a *App) setClaudeMcpDisabled(thread store.Thread, name string, disabled bo
 	return nil
 }
 
-// reconcileClaudeMCPLive pushes the workspace-effective user MCP set
-// to the live Claude session via mcp_set_servers. The desired-set
-// shape is the same one --mcp-config produces at launch, so a session
-// that started without --mcp-config sees the user MCP appear here for
-// the first time. (Claude treats absence-of-name as remove; the full
-// set is replace-with-diff.) Only called for chat/plan threads —
-// design threads are --strict-mcp-config locked.
+// reconcileClaudeMCPOnInit pushes the per-thread MCP disabled set after
+// a Claude session initializes. Skips design threads and threads with an
+// empty disabled set (nothing to override — native discovery is correct).
+func (a *App) reconcileClaudeMCPOnInit(threadID string) {
+	t, err := a.store.GetThread(threadID)
+	if err != nil {
+		log.Printf("mcp: thread %s post-init reconcile: load thread: %v", threadID, err)
+		return
+	}
+	if t.Mode == "design" {
+		return
+	}
+	disabled, err := a.ensureDisabledMcpSnapshot(t.ID, t.Provider, t.WorkspacePath)
+	if err != nil {
+		log.Printf("mcp: thread %s post-init reconcile: snapshot: %v", threadID, err)
+		return
+	}
+	if len(disabled) == 0 {
+		return
+	}
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	if err := a.reconcileClaudeMCPLive(t); err != nil {
+		log.Printf("mcp: thread %s post-init reconcile: %v", threadID, err)
+	}
+}
+
+// reconcileClaudeMCPLive pushes the thread-specific user MCP set to the
+// live Claude session via mcp_set_servers. Reads the disabled set from
+// SQLite (per-thread state) instead of the workspace config file.
 func (a *App) reconcileClaudeMCPLive(thread store.Thread) error {
 	sess, ok := a.sessionManager().get(thread.ID)
 	if !ok || sess.claude == nil {
 		return nil
+	}
+	disabled, err := a.ensureDisabledMcpSnapshot(thread.ID, thread.Provider, thread.WorkspacePath)
+	if err != nil {
+		return fmt.Errorf("ensure mcp snapshot for reconcile: %w", err)
+	}
+	disabledSet := make(map[string]bool, len(disabled))
+	for _, name := range disabled {
+		disabledSet[name] = true
 	}
 	st, err := a.claudeConfig()
 	if err != nil {
@@ -723,11 +758,9 @@ func (a *App) reconcileClaudeMCPLive(thread store.Thread) error {
 	target := map[string]any{}
 	for _, srv := range servers {
 		if srv.Source != claudeconfig.SourceUser {
-			// Plugin / cloud entries are managed by Claude itself; AO can't
-			// re-create their connection state via mcp_set_servers.
 			continue
 		}
-		if srv.Disabled {
+		if disabledSet[srv.Name] {
 			continue
 		}
 		spec, err := srv.RenderForCLI()
@@ -842,31 +875,30 @@ func (a *App) setCodexMcpEnabled(thread store.Thread, name string, enabled bool)
 		return fmt.Errorf("set codex mcp enabled: %w", err)
 	}
 	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: name})
-	if !a.hasActiveSession(thread.ID) {
-		return nil
-	}
-	sess, ok := a.sessionManager().get(thread.ID)
-	if !ok || sess.codex == nil {
-		return nil
-	}
 	go func() {
-		// Serialize through the per-thread action lock so rapid toggles
-		// can't deliver RefreshMCPServers RPCs out of order against the
-		// same Codex session.
 		unlock := a.threadLocks().Lock(thread.ID)
 		defer unlock()
+		current, err := a.ensureDisabledMcpSnapshot(thread.ID, thread.Provider, thread.WorkspacePath)
+		if err != nil {
+			log.Printf("mcp: thread %s codex snapshot disabled: %v", thread.ID, err)
+			return
+		}
+		updated := mutateDisabledSet(current, name, !enabled)
+		if err := a.store.SetDisabledMcpServers(thread.ID, updated); err != nil {
+			log.Printf("mcp: thread %s codex set disabled: %v", thread.ID, err)
+			return
+		}
+		sess, ok := a.sessionManager().get(thread.ID)
+		if !ok || sess.codex == nil {
+			return
+		}
 		ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveReconcileTimeout)
 		defer cancel()
-		err := sess.codex.RefreshMCPServers(ctx)
+		err = sess.codex.RefreshMCPServers(ctx)
 		if err == nil {
 			return
 		}
 		log.Printf("mcp: thread %s codex live reload: %v", thread.ID, err)
-		// Shutdown race guard. appCancel runs in Shutdown step 1b
-		// BEFORE drainTriage; an in-flight RPC then returns ctx.Canceled
-		// here. Skip emitErrorToThread so we don't file a triage.Handle
-		// past the drain barrier — same invariant the OAuth poller's
-		// ctx.Err() check enforces.
 		if ctx.Err() != nil {
 			return
 		}
@@ -911,6 +943,195 @@ func copyStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+// snapshotDisabledMcpServers reads the current global disabled set from
+// the provider config file for use as a new thread's initial snapshot.
+func (a *App) snapshotDisabledMcpServers(providerName, workspacePath string) *[]string {
+	var disabled []string
+	switch providerName {
+	case mcpProviderClaude:
+		st, err := a.claudeConfig()
+		if err != nil {
+			log.Printf("mcp: snapshot claude disabled: %v", err)
+			return &disabled
+		}
+		servers, err := st.ListServers(workspacePath)
+		if err != nil {
+			log.Printf("mcp: snapshot claude disabled: %v", err)
+			return &disabled
+		}
+		for _, srv := range servers {
+			if srv.Disabled {
+				disabled = append(disabled, srv.Name)
+			}
+		}
+	case mcpProviderCodex:
+		st, err := a.codexConfig()
+		if err != nil {
+			log.Printf("mcp: snapshot codex disabled: %v", err)
+			return &disabled
+		}
+		servers, err := st.ListServers()
+		if err != nil {
+			log.Printf("mcp: snapshot codex disabled: %v", err)
+			return &disabled
+		}
+		for _, srv := range servers {
+			if !srv.Enabled {
+				disabled = append(disabled, srv.Name)
+			}
+		}
+	}
+	return &disabled
+}
+
+// ensureDisabledMcpSnapshot returns the per-thread disabled set,
+// lazy-snapshotting from the global config if the thread has no
+// snapshot yet (NULL column, pre-feature thread).
+func (a *App) ensureDisabledMcpSnapshot(threadID, providerName, workspacePath string) ([]string, error) {
+	names, snapshotted, err := a.store.GetDisabledMcpServers(threadID)
+	if err != nil {
+		return nil, err
+	}
+	if snapshotted {
+		return names, nil
+	}
+	snapshot := a.snapshotDisabledMcpServers(providerName, workspacePath)
+	if err := a.store.SetDisabledMcpServers(threadID, *snapshot); err != nil {
+		return nil, err
+	}
+	return *snapshot, nil
+}
+
+// ListMcpServersForThread returns the MCP server library with per-thread
+// disabled state from SQLite instead of global config. Used by the
+// composer toolbar popup. Settings UI continues to use ListMcpServers.
+func (a *App) ListMcpServersForThread(threadID string) ([]MCPServer, error) {
+	t, err := a.store.GetThread(threadID)
+	if err != nil {
+		return nil, fmt.Errorf("list mcp servers for thread: %w", err)
+	}
+	disabled, err := a.ensureDisabledMcpSnapshot(t.ID, t.Provider, t.WorkspacePath)
+	if err != nil {
+		return nil, fmt.Errorf("list mcp servers for thread: %w", err)
+	}
+	disabledSet := make(map[string]bool, len(disabled))
+	for _, name := range disabled {
+		disabledSet[name] = true
+	}
+
+	switch t.Provider {
+	case "claude":
+		st, err := a.claudeConfig()
+		if err != nil {
+			return nil, err
+		}
+		servers, err := st.ListServers(t.WorkspacePath)
+		if err != nil {
+			return nil, fmt.Errorf("list claude mcp servers for thread: %w", err)
+		}
+		out := make([]MCPServer, 0, len(servers))
+		for _, srv := range servers {
+			ws := claudeServerToWire(srv)
+			ws.Disabled = disabledSet[srv.Name]
+			out = append(out, ws)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		return out, nil
+
+	case "codex":
+		st, err := a.codexConfig()
+		if err != nil {
+			return nil, err
+		}
+		servers, err := st.ListServers()
+		if err != nil {
+			return nil, fmt.Errorf("list codex mcp servers for thread: %w", err)
+		}
+		out := make([]MCPServer, 0, len(servers))
+		for _, srv := range servers {
+			ws := codexServerToWire(srv)
+			ws.Disabled = disabledSet[srv.Name]
+			out = append(out, ws)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		return out, nil
+
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, t.Provider)
+	}
+}
+
+// buildCodexMCPServersForThread builds the full enabled server set for
+// a Codex thread, reading disabled state from SQLite. The returned map
+// replaces native Codex config discovery via config.mcp_servers in
+// thread start params. Returns nil when nothing is disabled (native
+// discovery gives the correct result).
+func (a *App) buildCodexMCPServersForThread(t store.Thread) (map[string]any, error) {
+	disabled, err := a.ensureDisabledMcpSnapshot(t.ID, t.Provider, t.WorkspacePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(disabled) == 0 {
+		return nil, nil
+	}
+	disabledSet := make(map[string]bool, len(disabled))
+	for _, name := range disabled {
+		disabledSet[name] = true
+	}
+	st, err := a.codexConfig()
+	if err != nil {
+		return nil, err
+	}
+	servers, err := st.ListServers()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{}
+	for _, srv := range servers {
+		if disabledSet[srv.Name] {
+			continue
+		}
+		spec := map[string]any{}
+		switch srv.Transport {
+		case "stdio":
+			spec["command"] = srv.Command
+			if len(srv.Args) > 0 {
+				spec["args"] = srv.Args
+			}
+			if len(srv.Env) > 0 {
+				spec["env"] = srv.Env
+			}
+		case "streamable_http":
+			spec["url"] = srv.URL
+			if len(srv.HTTPHeaders) > 0 {
+				spec["http_headers"] = srv.HTTPHeaders
+			}
+			if srv.BearerTokenEnv != "" {
+				spec["bearer_token_env_var"] = srv.BearerTokenEnv
+			}
+		default:
+			continue
+		}
+		out[srv.Name] = spec
+	}
+	return out, nil
+}
+
+// mutateDisabledSet returns a copy of the disabled set with name
+// added (disabled=true) or removed (disabled=false).
+func mutateDisabledSet(current []string, name string, disabled bool) []string {
+	out := make([]string, 0, len(current)+1)
+	for _, n := range current {
+		if n != name {
+			out = append(out, n)
+		}
+	}
+	if disabled {
+		out = append(out, name)
 	}
 	return out
 }

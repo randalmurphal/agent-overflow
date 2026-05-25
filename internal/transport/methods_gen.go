@@ -122,6 +122,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListLiveBackgroundTasks", ID: 320784263}, // main.App.ListLiveBackgroundTasks
 	{Name: "ListMcpServerStatuses", ID: 2582096622}, // main.App.ListMcpServerStatuses
 	{Name: "ListMcpServers", ID: 1105613677}, // main.App.ListMcpServers
+	{Name: "ListMcpServersForThread", ID: 2790948120}, // main.App.ListMcpServersForThread
 	{Name: "ListPayloadMetas", ID: 1007133701}, // main.App.ListPayloadMetas
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978}, // main.App.ListPendingInteractiveRequests
 	{Name: "ListProjects", ID: 2721360259}, // main.App.ListProjects

@@ -1,5 +1,6 @@
 import {
   ListMcpServers,
+  ListMcpServersForThread,
   CreateMcpServer,
   UpdateMcpServer,
   DeleteMcpServer,
@@ -106,21 +107,20 @@ export const mcpServersStore = {
 
   /**
    * serversForProvider returns the visible servers for one provider.
-   * For Claude the rows reflect the workspace scope of the last
-   * loadForThread call; for Codex the global enabled flag.
+   * The disabled flag reflects the per-thread state from the last
+   * loadForThread call.
    */
   serversForProvider(provider: string): MCPServer[] {
     return servers.filter((s) => s.provider === provider);
   },
 
   /**
-   * loadForThread fetches the provider's MCP library scoped to the
-   * thread's workspace. Used by the composer toolbar popup. Pass an
-   * empty workspacePath for Codex (the flag is global).
+   * loadForThread fetches the MCP library with per-thread disabled
+   * state from SQLite. Used by the composer toolbar popup.
    */
-  async loadForThread(provider: string, workspacePath: string): Promise<MCPServer[]> {
+  async loadForThread(threadId: string, provider: string): Promise<MCPServer[]> {
     subscribeEvents();
-    const list = (await ListMcpServers(provider, workspacePath)) ?? [];
+    const list = (await ListMcpServersForThread(threadId)) ?? [];
     mergeServers(list, provider);
     return list;
   },

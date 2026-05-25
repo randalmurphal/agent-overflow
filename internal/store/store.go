@@ -87,8 +87,12 @@ type Thread struct {
 	// a plain string on the struct so store/ doesn't import provider/
 	// (which would create a cycle) — provider.NormalizeRuntimeMode is the
 	// authoritative normalizer at the binding boundary.
-	RuntimeMode        string `json:"runtimeMode"`
-	DiscussionID       string `json:"discussionId,omitempty"`
+	RuntimeMode string `json:"runtimeMode"`
+	// DisabledMcpServers is the per-thread MCP disabled set. nil = not
+	// yet snapshotted (pre-feature thread, lazy-snapshot on first access).
+	// Non-nil empty slice = snapshotted with all servers enabled.
+	DisabledMcpServers *[]string  `json:"disabledMcpServers,omitempty"`
+	DiscussionID       string     `json:"discussionId,omitempty"`
 	ParentThreadID     string `json:"parentThreadId,omitempty"`
 	ForkedFromThreadID string `json:"forkedFromThreadId,omitempty"`
 	LastTokenUsage     string `json:"lastTokenUsage,omitempty"`

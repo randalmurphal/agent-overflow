@@ -1213,6 +1213,17 @@ export function ListMcpServers(provider: string, workspacePath: string): $Cancel
 }
 
 /**
+ * ListMcpServersForThread returns the MCP server library with per-thread
+ * disabled state from SQLite instead of global config. Used by the
+ * composer toolbar popup. Settings UI continues to use ListMcpServers.
+ */
+export function ListMcpServersForThread(threadID: string): $CancellablePromise<$models.MCPServer[]> {
+    return $Call.ByID(2790948120, threadID).then(($result: any) => {
+        return $$createType57($result);
+    });
+}
+
+/**
  * ListPayloadMetas returns all payload metadata for a thread without the body.
  */
 export function ListPayloadMetas(threadID: string): $CancellablePromise<store$0.PayloadMeta[]> {

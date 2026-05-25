@@ -742,7 +742,8 @@ func (p *privilegedApp) ListWSLDistros() string         { return "ok" }
 func (p *privilegedApp) GetWSLDistroPreference() string { return "ok" }
 
 // 8. MCP library / per-thread config and status.
-func (p *privilegedApp) ListMcpServers() string         { return "ok" }
+func (p *privilegedApp) ListMcpServers() string          { return "ok" }
+func (p *privilegedApp) ListMcpServersForThread() string { return "ok" }
 func (p *privilegedApp) CreateMcpServer() string        { return "ok" }
 func (p *privilegedApp) UpdateMcpServer() string        { return "ok" }
 func (p *privilegedApp) DeleteMcpServer() string        { return "ok" }

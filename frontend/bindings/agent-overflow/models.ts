@@ -617,6 +617,8 @@ export class LiveStateTodo {
 export class LiveStateTodoStep {
     "step": string;
     "status": string;
+    "id"?: string;
+    "owner"?: string;
 
     /** Creates a new LiveStateTodoStep instance. */
     constructor($$source: Partial<LiveStateTodoStep> = {}) {

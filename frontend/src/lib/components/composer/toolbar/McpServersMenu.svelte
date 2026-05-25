@@ -36,22 +36,21 @@
 
   let { anchor, open, pane, onClose }: Props = $props();
 
-  // Derive the two fields the load effect actually depends on. The
-  // raw `pane.thread` reference is replaced on every usage event /
-  // item upsert / durable-status patch, so reading it inside the
-  // effect would re-trigger the loader on every Codex streaming
-  // token while the popup is mounted. Deriving provider/workspacePath
-  // narrows the dependency set to the values that actually matter.
+  // Derive the fields the load effect actually depends on. The raw
+  // `pane.thread` reference is replaced on every usage event / item
+  // upsert / durable-status patch, so reading it inside the effect
+  // would re-trigger the loader on every Codex streaming token while
+  // the popup is mounted.
   let loadProvider = $derived(pane.thread?.provider ?? '');
-  let loadWorkspacePath = $derived(pane.thread?.workspacePath ?? '');
+  let loadThreadId = $derived(pane.threadId ?? '');
 
   $effect(() => {
-    if (!(open && loadProvider)) return;
+    if (!(open && loadProvider && loadThreadId)) return;
     const provider = loadProvider;
-    const workspacePath = loadWorkspacePath;
+    const threadId = loadThreadId;
     void (async () => {
       const [library] = await Promise.all([
-        mcpServersStore.loadForThread(provider, workspacePath),
+        mcpServersStore.loadForThread(threadId, provider),
         mcpServersStore.loadStatuses(provider),
       ]);
       // Live sessions feed the cache continuously, so a thread that
@@ -119,9 +118,8 @@
     if (!threadId) return;
     try {
       await mcpServersStore.setEnabled(threadId, server.name, enable);
-      // Refresh so the unified Disabled flag reflects the new file state.
-      if (pane.thread) {
-        await mcpServersStore.loadForThread(pane.thread.provider, pane.thread.workspacePath ?? '');
+      if (threadId) {
+        await mcpServersStore.loadForThread(threadId, pane.thread?.provider ?? '');
       }
     } catch (err) {
       addToast('error', `Failed to update MCP server: ${errString(err)}`);

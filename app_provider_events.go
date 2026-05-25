@@ -38,6 +38,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// the dedicated startup-update handler.
 		if evt.Kind == provider.EventInit && providerType == string(provider.Claude) {
 			a.ingestClaudeInitMCPStatus(evt.Meta)
+			go a.reconcileClaudeMCPOnInit(threadID)
 		}
 
 		// A successful turn start is the wire-level proof that the new

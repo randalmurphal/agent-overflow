@@ -363,6 +363,7 @@ var LocalOnlyMethods = map[string]bool{
 	//     shape category 6 locks down. Conservative + consistent:
 	//     everything goes loopback-only.
 	"ListMcpServers":          true,
+	"ListMcpServersForThread": true,
 	"CreateMcpServer":         true,
 	"UpdateMcpServer":         true,
 	"DeleteMcpServer":         true,

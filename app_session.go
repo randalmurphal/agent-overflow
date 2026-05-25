@@ -117,13 +117,20 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	// designServers is non-nil only for design threads; chat/plan
-	// threads leave cfg.MCPServers empty so the provider reads its
-	// native config (Claude → ~/.claude.json mcpServers; Codex →
-	// ~/.codex/config.toml). Design threads keep the explicit
-	// injection so --strict-mcp-config / per-turn overlays lock them
-	// to a deterministic tool surface.
+	// designServers is non-nil only for design threads. For Codex
+	// chat/plan threads we inject the per-thread enabled set via
+	// config.mcp_servers so each session is isolated from global config
+	// changes. Claude chat/plan sessions use native discovery +
+	// post-init mcp_set_servers reconcile instead (see
+	// reconcileClaudeMCPOnInit in app_mcp_bindings.go).
 	designCfg.MCPServers = designServers
+	if designServers == nil && t.Provider == string(provider.Codex) {
+		if servers, err := a.buildCodexMCPServersForThread(t); err != nil {
+			log.Printf("start session: build codex mcp for thread %s: %v", threadID, err)
+		} else if len(servers) > 0 {
+			designCfg.MCPServers = servers
+		}
+	}
 
 	// Flip any persisted `is_background=running` rows for a Codex thread
 	// to errored/lost BEFORE spawning the new subprocess. Those rows

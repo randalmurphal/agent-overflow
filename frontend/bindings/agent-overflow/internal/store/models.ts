@@ -842,6 +842,13 @@ export class Thread {
      * authoritative normalizer at the binding boundary.
      */
     "runtimeMode": string;
+
+    /**
+     * DisabledMcpServers is the per-thread MCP disabled set. nil = not
+     * yet snapshotted (pre-feature thread, lazy-snapshot on first access).
+     * Non-nil empty slice = snapshotted with all servers enabled.
+     */
+    "disabledMcpServers"?: string[] | null;
     "discussionId"?: string;
     "parentThreadId"?: string;
     "forkedFromThreadId"?: string;
@@ -970,7 +977,11 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
+        const $$createField18_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("disabledMcpServers" in $$parsedSource) {
+            $$parsedSource["disabledMcpServers"] = $$createField18_0($$parsedSource["disabledMcpServers"]);
+        }
         return new Thread($$parsedSource as Partial<Thread>);
     }
 }
@@ -1108,3 +1119,5 @@ const $$createType2 = DiscussionSettings.createFrom;
 const $$createType3 = Item.createFrom;
 const $$createType4 = $Create.Array($$createType3);
 const $$createType5 = Project.createFrom;
+const $$createType6 = $Create.Array($Create.Any);
+const $$createType7 = $Create.Nullable($$createType6);
