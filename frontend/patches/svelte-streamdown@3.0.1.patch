@@ -280,3 +280,26 @@ index 63a979fbe298a9a4a88bfb3d3cd6bba6a3ba1e95..7fb491f4c38f713277d323c75520af15
  const isWithinFootnoteRef = (text, position) => {
      let openBracketPos = -1;
      let caretPos = -1;
+diff --git a/dist/marked/marked-subsup.js b/dist/marked/marked-subsup.js
+index 1234567890abcdef..fedcba0987654321 100644
+--- a/dist/marked/marked-subsup.js
++++ b/dist/marked/marked-subsup.js
+@@ -1,4 +1,4 @@
+-const subRule = /^~([^~\s](?:[^~]*[^~\s])?)~/; // ~text~
++const subRule = /^~([^~\s]+)~/; // ~text~ — no spaces allowed in subscript content
+ const supRule = /^\^([^\^\s](?:[^\^]*[^\^\s])?)\^/; // ^text^
+ export const markedSub = {
+     name: 'sub',
+diff --git a/dist/marked/index.js b/dist/marked/index.js
+index 1234567890abcdef..fedcba0987654321 100644
+--- a/dist/marked/index.js
++++ b/dist/marked/index.js
+@@ -1,4 +1,8 @@
+ import { Lexer } from 'marked';
++// marked 16's GFM del regex treats ~text~ (single tilde) as strikethrough,
++// producing false positives on approximate values like ~240MB. Require ~~.
++const _fixedDel = /^(~~)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/;
++Lexer.rules.inline.gfm.del = Lexer.rules.inline.breaks.del = _fixedDel;
+ import { markedAlert } from './marked-alert.js';
+ import { markedFootnote } from './marked-footnotes.js';
+ import { markedMath } from './marked-math.js';
