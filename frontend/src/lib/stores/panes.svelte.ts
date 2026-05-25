@@ -199,18 +199,22 @@ export function destroyPane(id: string): void {
   requestPanePersistence();
 }
 
-export function clearPanesShowingThread(threadId: string): void {
+export function closePanesShowingThread(threadId: string): void {
+  const toDestroy: string[] = [];
   for (const pane of panes.values()) {
-    if (pane.threadId === threadId) pane.clear();
+    if (pane.threadId === threadId) toDestroy.push(pane.paneId);
   }
+  for (const id of toDestroy) destroyPane(id);
 }
 
-export function clearPanesShowingThreads(threadIds: Iterable<string>): void {
-  const ids = new Set(threadIds);
-  if (ids.size === 0) return;
+export function closePanesShowingThreads(threadIds: Iterable<string>): void {
+  const idSet = new Set(threadIds);
+  if (idSet.size === 0) return;
+  const toDestroy: string[] = [];
   for (const pane of panes.values()) {
-    if (pane.threadId && ids.has(pane.threadId)) pane.clear();
+    if (pane.threadId && idSet.has(pane.threadId)) toDestroy.push(pane.paneId);
   }
+  for (const id of toDestroy) destroyPane(id);
 }
 
 export function closeFocusedPane(): void {

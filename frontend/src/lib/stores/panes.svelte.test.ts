@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   createPane,
-  clearPanesShowingThread,
-  clearPanesShowingThreads,
+  closePanesShowingThread,
+  closePanesShowingThreads,
   destroyPane,
   ensureMainPane,
   focusPane,
@@ -29,6 +29,7 @@ import {
   refreshThreads,
 } from './threads.svelte';
 import {
+  addPaneLayoutItem,
   getPaneLayoutItems,
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
@@ -312,40 +313,69 @@ describe('panes store', () => {
       expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'middle', 'right']);
     });
 
-    it('clears every pane showing a removed thread', async () => {
+    it('destroys every pane showing a removed thread', async () => {
       const thread = makeThread({ id: 'removed-thread' });
       const other = makeThread({ id: 'other-thread' });
       const left = createPane('left');
       const right = createPane('right');
       const untouched = createPane('untouched');
+      addPaneLayoutItem({ id: 'left', paneId: 'left', kind: 'thread', ratio: 1 });
+      addPaneLayoutItem({ id: 'right', paneId: 'right', kind: 'thread', ratio: 1 });
+      addPaneLayoutItem({ id: 'untouched', paneId: 'untouched', kind: 'thread', ratio: 1 });
 
       await left.replaceThread(thread);
       await right.replaceThread(thread);
       await untouched.replaceThread(other);
 
-      clearPanesShowingThread(thread.id);
+      closePanesShowingThread(thread.id);
 
-      expect(left.threadId).toBeNull();
-      expect(right.threadId).toBeNull();
+      expect(getAllPanes().has('left')).toBe(false);
+      expect(getAllPanes().has('right')).toBe(false);
+      expect(getAllPanes().has('untouched')).toBe(true);
+      expect(getPaneLayoutItems().find((i) => i.paneId === 'left')).toBeUndefined();
+      expect(getPaneLayoutItems().find((i) => i.paneId === 'right')).toBeUndefined();
       expect(untouched.threadId).toBe(other.id);
     });
 
-    it('clears every pane showing one of a removed project thread set', async () => {
+    it('transfers focus to adjacent pane when focused pane is destroyed', async () => {
+      const thread = makeThread({ id: 'doomed-thread' });
+      const other = makeThread({ id: 'survivor-thread' });
+      const left = createPane('left');
+      const right = createPane('right');
+      addPaneLayoutItem({ id: 'left', paneId: 'left', kind: 'thread', ratio: 1 });
+      addPaneLayoutItem({ id: 'right', paneId: 'right', kind: 'thread', ratio: 1 });
+
+      await left.replaceThread(other);
+      await right.replaceThread(thread);
+      focusPane('right');
+
+      closePanesShowingThread(thread.id);
+
+      expect(getFocusedPaneId()).toBe('left');
+    });
+
+    it('destroys every pane showing one of a removed project thread set', async () => {
       const first = makeThread({ id: 'first-deleted' });
       const second = makeThread({ id: 'second-deleted' });
       const other = makeThread({ id: 'other-thread' });
       const left = createPane('left');
       const right = createPane('right');
       const untouched = createPane('untouched');
+      addPaneLayoutItem({ id: 'left', paneId: 'left', kind: 'thread', ratio: 1 });
+      addPaneLayoutItem({ id: 'right', paneId: 'right', kind: 'thread', ratio: 1 });
+      addPaneLayoutItem({ id: 'untouched', paneId: 'untouched', kind: 'thread', ratio: 1 });
 
       await left.replaceThread(first);
       await right.replaceThread(second);
       await untouched.replaceThread(other);
 
-      clearPanesShowingThreads([first.id, second.id]);
+      closePanesShowingThreads([first.id, second.id]);
 
-      expect(left.threadId).toBeNull();
-      expect(right.threadId).toBeNull();
+      expect(getAllPanes().has('left')).toBe(false);
+      expect(getAllPanes().has('right')).toBe(false);
+      expect(getAllPanes().has('untouched')).toBe(true);
+      expect(getPaneLayoutItems().find((i) => i.paneId === 'left')).toBeUndefined();
+      expect(getPaneLayoutItems().find((i) => i.paneId === 'right')).toBeUndefined();
       expect(untouched.threadId).toBe(other.id);
     });
   });

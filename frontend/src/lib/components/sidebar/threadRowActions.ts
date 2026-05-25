@@ -32,7 +32,7 @@ import {
   updateThreadPinnedAt,
   updateThreadTitle,
 } from '../../stores/threads.svelte';
-import { clearPanesShowingThread } from '../../stores/panes.svelte';
+import { closePanesShowingThread } from '../../stores/panes.svelte';
 import { expandProject } from '../../stores/sidebar.svelte';
 import { addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
@@ -87,7 +87,7 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
     });
     await ArchiveThread(ctx.thread.id);
     removeThread(ctx.thread.id);
-    clearPanesShowingThread(ctx.thread.id);
+    closePanesShowingThread(ctx.thread.id);
   } catch (err) {
     console.error('Failed to archive thread:', err);
     ctx.reportError(userFacingError(err));
@@ -140,7 +140,7 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
     }
     await DeleteThread(ctx.thread.id);
     removeThread(ctx.thread.id);
-    clearPanesShowingThread(ctx.thread.id);
+    closePanesShowingThread(ctx.thread.id);
   } catch (err) {
     console.error('Failed to delete thread:', err);
     ctx.reportError(userFacingError(err));

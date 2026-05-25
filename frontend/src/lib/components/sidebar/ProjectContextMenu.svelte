@@ -12,7 +12,7 @@
     OpenInEditor,
   } from '../../stores/bindings';
   import { removeProjectLocal } from '../../stores/projects.svelte';
-  import { clearPanesShowingThreads } from '../../stores/panes.svelte';
+  import { closePanesShowingThreads } from '../../stores/panes.svelte';
   import { removeThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
@@ -64,7 +64,7 @@
       const threadIds = await DeleteProject(project.project.id);
       for (const id of threadIds) removeThread(id);
       removeProjectLocal(project.project.id);
-      clearPanesShowingThreads(threadIds);
+      closePanesShowingThreads(threadIds);
       addToast('info', `Deleted project "${project.project.name}".`);
     } catch (err) {
       console.error('Failed to delete project:', err);
