@@ -108,7 +108,7 @@
 </script>
 
 <div
-  class="flex w-full items-baseline gap-2 py-0.5"
+  class="flex w-full items-center gap-2 px-1 py-1"
   data-testid="read-group-row"
   data-tool-kind="eye"
 >
