@@ -435,13 +435,7 @@ func buildUnifiedPatch(change fileChange) (fileChangePatch, bool) {
 			return fileChangePatch{}, false
 		}
 		if strings.HasPrefix(hunk, "diff --git ") {
-			meta := ExtractDiffMeta(hunk)
-			return fileChangePatch{
-				Content:    hunk,
-				ChangeKind: meta.ChangeKind,
-				Insertions: meta.Insertions,
-				Deletions:  meta.Deletions,
-			}, true
+			return buildValidatedFullUnifiedPatch(change, hunk)
 		}
 		header = []string{
 			fmt.Sprintf("diff --git a/%s b/%s", change.Path, change.Path),
@@ -458,6 +452,101 @@ func buildUnifiedPatch(change fileChange) (fileChangePatch, bool) {
 		Insertions: meta.Insertions,
 		Deletions:  meta.Deletions,
 	}, true
+}
+
+func buildValidatedFullUnifiedPatch(change fileChange, patch string) (fileChangePatch, bool) {
+	sections := splitUnifiedDiffSections(patch)
+	if len(sections) != 1 {
+		return fileChangePatch{}, false
+	}
+	section := sections[0]
+	if !diffSectionMatchesFileChange(section, change) {
+		return fileChangePatch{}, false
+	}
+	meta := ExtractDiffMeta(section)
+	return fileChangePatch{
+		Content:    section,
+		ChangeKind: meta.ChangeKind,
+		Insertions: meta.Insertions,
+		Deletions:  meta.Deletions,
+	}, true
+}
+
+func diffSectionMatchesFileChange(section string, change fileChange) bool {
+	allowed := map[string]struct{}{change.Path: {}}
+	if change.PreviousPath != "" {
+		allowed[change.PreviousPath] = struct{}{}
+	}
+	paths, ok := strictDiffHeaderPaths(section)
+	if !ok || len(paths) == 0 {
+		return false
+	}
+	for _, path := range paths {
+		if _, ok := allowed[path]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func strictDiffHeaderPaths(section string) ([]string, bool) {
+	paths := []string{}
+	for _, line := range strings.Split(section, "\n") {
+		var ok bool
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			fields := strings.Fields(line)
+			if len(fields) < 4 {
+				return nil, false
+			}
+			paths, ok = appendStrictDiffPath(paths, fields[2])
+			if !ok {
+				return nil, false
+			}
+			paths, ok = appendStrictDiffPath(paths, fields[3])
+			if !ok {
+				return nil, false
+			}
+		case strings.HasPrefix(line, "--- "):
+			paths, ok = appendStrictDiffPath(paths, strings.TrimPrefix(line, "--- "))
+			if !ok {
+				return nil, false
+			}
+		case strings.HasPrefix(line, "+++ "):
+			paths, ok = appendStrictDiffPath(paths, strings.TrimPrefix(line, "+++ "))
+			if !ok {
+				return nil, false
+			}
+		case strings.HasPrefix(line, "rename from "):
+			paths, ok = appendStrictDiffPath(paths, strings.TrimPrefix(line, "rename from "))
+			if !ok {
+				return nil, false
+			}
+		case strings.HasPrefix(line, "rename to "):
+			paths, ok = appendStrictDiffPath(paths, strings.TrimPrefix(line, "rename to "))
+			if !ok {
+				return nil, false
+			}
+		}
+	}
+	return uniqueNonEmpty(paths), true
+}
+
+func appendStrictDiffPath(paths []string, raw string) ([]string, bool) {
+	raw = strings.TrimSpace(raw)
+	if fields := strings.Fields(raw); len(fields) > 0 {
+		raw = fields[0]
+	}
+	if raw == "/dev/null" {
+		return paths, true
+	}
+	raw = strings.TrimPrefix(raw, "a/")
+	raw = strings.TrimPrefix(raw, "b/")
+	path := normalizeToolPath(raw, "")
+	if path == "" {
+		return nil, false
+	}
+	return append(paths, path), true
 }
 
 func writePatchHeader(builder *strings.Builder, lines ...string) {

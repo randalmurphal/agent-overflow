@@ -318,6 +318,81 @@ func TestExtractFileChangeToolResultReadsCurrentCodexFileChangeShape(t *testing.
 	}
 }
 
+func TestExtractFileChangeToolResultAcceptsMatchingFullPatch(t *testing.T) {
+	raw := json.RawMessage(`{
+		"item": {
+			"id": "patch-1",
+			"type": "fileChange",
+			"changes": [
+				{
+					"path": "src/app.ts",
+					"kind": {"type": "update", "move_path": null},
+					"diff": "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1,2 @@\n const value = 1;\n+const next = 2;"
+				}
+			]
+		}
+	}`)
+
+	meta, diffData, ok := extractFileChangeToolResult(raw, "")
+	if !ok {
+		t.Fatal("expected matching full-patch fileChange extraction to succeed")
+	}
+	if meta.InlineDiff == nil || meta.InlineDiff.Availability != "exact_patch" {
+		t.Fatalf("inline diff = %+v, want exact_patch", meta.InlineDiff)
+	}
+	if !strings.Contains(string(diffData), "diff --git a/src/app.ts b/src/app.ts") {
+		t.Fatalf("expected full patch in payload, got %q", string(diffData))
+	}
+}
+
+func TestExtractFileChangeToolResultRejectsMismatchedFullPatchPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		diff string
+	}{
+		{
+			name: "different safe path",
+			diff: "diff --git a/src/other.ts b/src/other.ts\n--- a/src/other.ts\n+++ b/src/other.ts\n@@ -1 +1 @@\n-old\n+new",
+		},
+		{
+			name: "unsafe git path",
+			diff: "diff --git a/.git/config b/.git/config\n--- a/.git/config\n+++ b/.git/config\n@@ -1 +1 @@\n-old\n+new",
+		},
+		{
+			name: "multiple sections",
+			diff: "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n\ndiff --git a/src/other.ts b/src/other.ts\n--- a/src/other.ts\n+++ b/src/other.ts\n@@ -1 +1 @@\n-old\n+new",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{
+				"item": map[string]any{
+					"id":   "patch-1",
+					"type": "fileChange",
+					"changes": []map[string]any{{
+						"path": "src/app.ts",
+						"kind": map[string]any{"type": "update", "move_path": nil},
+						"diff": tc.diff,
+					}},
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal raw: %v", err)
+			}
+
+			meta, diffData, ok := extractFileChangeToolResult(raw, "")
+			if !ok {
+				t.Fatal("expected summary-only fileChange extraction to succeed")
+			}
+			if meta.InlineDiff == nil || meta.InlineDiff.Availability != "summary_only" {
+				t.Fatalf("inline diff = %+v, want summary_only", meta.InlineDiff)
+			}
+			if len(diffData) != 0 {
+				t.Fatalf("diff data = %q, want empty for rejected full patch", string(diffData))
+			}
+		})
+	}
+}
+
 func TestBuildInlineDiffFromChangesStoresLineBoundedFilePreviews(t *testing.T) {
 	var largeContent strings.Builder
 	for i := 1; i <= 35; i++ {
@@ -535,7 +610,7 @@ func TestFileChangeCompletionWithoutLaunchPreservesTerminalStatus(t *testing.T) 
 				t.Fatalf("complete: %v", err)
 			}
 
-			item, found, err := st.GetThreadItem("t1", "fc-" + tc.name)
+			item, found, err := st.GetThreadItem("t1", "fc-"+tc.name)
 			if err != nil {
 				t.Fatalf("get item: %v", err)
 			}

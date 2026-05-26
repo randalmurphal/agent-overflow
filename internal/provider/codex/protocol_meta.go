@@ -3,15 +3,17 @@ package codex
 import "encoding/json"
 
 // enrichItemMeta augments item/started and item/completed params with the
-// normalized Meta contract used by triage and the renderer:
+// normalized provider-event Meta contract. Triage consumes this event shape
+// directly; lifecycle persistence trims bulky transient fields before rows are
+// emitted to the renderer.
 //
 //   - source, item_status, process_id from the raw Codex item
 //   - toolName plus concise input fields for row labels/previews
-//   - raw item params for debugging and adjacent consumers
+//   - selected structured item fields when downstream triage needs them
 //
-// Image generation is the one exception to raw preservation: its result field
-// is base64 image bytes, so it is stripped from Meta while revisedPrompt and
-// savedPath stay available through input/content.
+// Image generation results deliberately stay out of Meta because the result
+// field can contain base64 image bytes; revisedPrompt and savedPath stay
+// available through input/content.
 func enrichItemMeta(params json.RawMessage) json.RawMessage {
 	return enrichItemMetaFromItem(params, readNestedObject(params, "item"))
 }
@@ -96,6 +98,7 @@ func fileChangeMetaExtras(item map[string]json.RawMessage) map[string]any {
 	if json.Unmarshal(changesRaw, &changes) != nil {
 		return extras
 	}
+	extras["item"] = fileChangeMetaItem(item, changesRaw)
 	paths := make([]string, 0, len(changes))
 	for _, change := range changes {
 		if change.Kind.Type == "update" && change.Kind.MovePath != "" {
@@ -112,6 +115,16 @@ func fileChangeMetaExtras(item map[string]json.RawMessage) map[string]any {
 		extras["input"] = map[string]any{"files": paths}
 	}
 	return extras
+}
+
+func fileChangeMetaItem(item map[string]json.RawMessage, changesRaw json.RawMessage) map[string]json.RawMessage {
+	out := map[string]json.RawMessage{"changes": changesRaw}
+	for _, key := range []string{"id", "type", "status"} {
+		if raw, ok := item[key]; ok && len(raw) > 0 {
+			out[key] = raw
+		}
+	}
+	return out
 }
 
 func commandExecutionMetaExtras(item map[string]json.RawMessage) map[string]any {

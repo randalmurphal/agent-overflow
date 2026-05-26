@@ -223,6 +223,19 @@ func TestItemStartedFileChangeNormalizesToInternalToolName(t *testing.T) {
 		Input      struct {
 			FilePath string `json:"file_path"`
 		} `json:"input"`
+		Item struct {
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Status  string `json:"status"`
+			Changes []struct {
+				Path string `json:"path"`
+				Kind struct {
+					Type     string `json:"type"`
+					MovePath string `json:"move_path"`
+				} `json:"kind"`
+				Diff string `json:"diff"`
+			} `json:"changes"`
+		} `json:"item"`
 	}
 	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 		t.Fatalf("unmarshal meta: %v", err)
@@ -235,6 +248,16 @@ func TestItemStartedFileChangeNormalizesToInternalToolName(t *testing.T) {
 	}
 	if meta.Input.FilePath != "src/new.go" {
 		t.Fatalf("input.file_path: got %q, want src/new.go", meta.Input.FilePath)
+	}
+	if meta.Item.ID != "patch-1" || meta.Item.Type != "fileChange" || meta.Item.Status != "inProgress" {
+		t.Fatalf("meta.item identity = %+v, want patch-1/fileChange/inProgress", meta.Item)
+	}
+	if len(meta.Item.Changes) != 1 {
+		t.Fatalf("meta.item.changes length = %d, want 1", len(meta.Item.Changes))
+	}
+	change := meta.Item.Changes[0]
+	if change.Path != "src/old.go" || change.Kind.MovePath != "src/new.go" || change.Diff == "" {
+		t.Fatalf("meta.item.changes[0] = %+v, want path, move_path, and diff preserved", change)
 	}
 }
 

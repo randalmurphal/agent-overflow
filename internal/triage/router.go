@@ -587,7 +587,13 @@ func (r *Router) settleToolPaths(evt provider.ProviderEvent) {
 	raw := r.pendingToolPaths[key]
 	delete(r.pendingToolPaths, key)
 	r.mu.Unlock()
-	if len(raw) == 0 || !toolCallSucceeded(evt) {
+	if !toolCallSucceeded(evt) {
+		return
+	}
+	if len(raw) == 0 && isCodexFileChangeItem(evt.ItemType) {
+		raw = extractToolPaths(evt)
+	}
+	if len(raw) == 0 {
 		return
 	}
 	thread, err := r.store.GetThread(evt.ThreadID)
@@ -1046,11 +1052,11 @@ func (r *Router) handleSubagentStatus(evt provider.ProviderEvent) error {
 // ThreadUpdateEvent is the wire shape for thread:updated. Action "full"
 // carries the entire Thread struct; "patch" carries only the changed fields.
 type ThreadUpdateEvent struct {
-	Action string       `json:"action"`
+	Action string        `json:"action"`
 	Thread *store.Thread `json:"thread,omitempty"`
-	ID     string       `json:"id,omitempty"`
-	Title  *string      `json:"title,omitempty"`
-	Model  *string      `json:"model,omitempty"`
+	ID     string        `json:"id,omitempty"`
+	Title  *string       `json:"title,omitempty"`
+	Model  *string       `json:"model,omitempty"`
 }
 
 func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
