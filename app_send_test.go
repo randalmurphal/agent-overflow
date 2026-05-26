@@ -888,16 +888,16 @@ func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 		return ` "Reconnect spinner resume fix" `, nil
 	}
 
-	emitted := make(chan store.Thread, 4)
+	emitted := make(chan triage.ThreadUpdateEvent, 4)
 	app.emitEventFn = func(name string, data any) {
 		if name != "thread:updated" {
 			return
 		}
-		updated, ok := data.(store.Thread)
+		evt, ok := data.(triage.ThreadUpdateEvent)
 		if !ok {
-			t.Fatalf("thread:updated payload type = %T, want store.Thread", data)
+			t.Fatalf("thread:updated payload type = %T, want triage.ThreadUpdateEvent", data)
 		}
-		emitted <- updated
+		emitted <- evt
 	}
 
 	sess, err := claude.NewSession(
@@ -928,8 +928,8 @@ func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 	foundTitle := false
 	for !foundTitle {
 		select {
-		case updated := <-emitted:
-			if updated.Title == "Reconnect spinner resume fix" {
+		case evt := <-emitted:
+			if evt.Title != nil && *evt.Title == "Reconnect spinner resume fix" {
 				foundTitle = true
 			}
 		case <-deadline:
@@ -973,20 +973,17 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 		return "Generated title", nil
 	}
 
-	renamedByGenerator := make(chan store.Thread, 4)
+	renamedByGenerator := make(chan triage.ThreadUpdateEvent, 4)
 	app.emitEventFn = func(name string, data any) {
 		if name != "thread:updated" {
 			return
 		}
-		updated, ok := data.(store.Thread)
+		evt, ok := data.(triage.ThreadUpdateEvent)
 		if !ok {
-			t.Fatalf("thread:updated payload type = %T, want store.Thread", data)
+			t.Fatalf("thread:updated payload type = %T, want triage.ThreadUpdateEvent", data)
 		}
-		// Only record events where the title matches the generated value —
-		// the user-driven rename in this test sets a different title and
-		// we only care about catching a stale generator write here.
-		if updated.Title == "Generated title" {
-			renamedByGenerator <- updated
+		if evt.Title != nil && *evt.Title == "Generated title" {
+			renamedByGenerator <- evt
 		}
 	}
 

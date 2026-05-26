@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/triage"
 )
 
 func TestGitCreateAndRemoveWorktree(t *testing.T) {
@@ -1013,8 +1014,12 @@ func TestRemoveOtherWorktreeBroadcastsSiblingUpdates(t *testing.T) {
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		if t, ok := data.(store.Thread); ok {
-			broadcast = append(broadcast, t.ID)
+		if evt, ok := data.(triage.ThreadUpdateEvent); ok {
+			if evt.Thread != nil {
+				broadcast = append(broadcast, evt.Thread.ID)
+			} else if evt.ID != "" {
+				broadcast = append(broadcast, evt.ID)
+			}
 		}
 	}
 
