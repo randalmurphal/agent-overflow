@@ -669,15 +669,20 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// A LAN-bind toggle rotates the allow-list under the same mu-guarded
 	// swap as the listener; the upgrader must see whichever policy was
 	// in effect when this handshake began.
-	conn, err := upgrade(w, r, s.token, s.currentOriginPatterns())
+	conn, err := upgrade(w, r, s.token, s.currentOriginPatterns(), !isLoopback)
 	if err != nil {
 		// upgrade has already written the HTTP error code.
 		return
 	}
 
+	profile := connProfile{
+		isLoopback:     isLoopback,
+		coalesceEvents: !isLoopback,
+	}
+
 	// Use the server's root context so Shutdown can cancel us promptly,
 	// not r.Context() which net/http only cancels on connection close.
-	runConnHandler(s.rootCtx, conn, s.cfg.Dispatcher, s.cfg.EventBus, s.cfg.ReadLimit, s.cfg.MaxConcurrentRPCs, isLoopback)
+	runConnHandler(s.rootCtx, conn, s.cfg.Dispatcher, s.cfg.EventBus, s.cfg.ReadLimit, s.cfg.MaxConcurrentRPCs, profile)
 	// Best-effort close. Read errors above already represent a closed
 	// connection; any normal-closure send here is for the other half
 	// of the bidirectional handshake.

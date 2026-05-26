@@ -61,16 +61,22 @@ var wireSafeMethods = map[string]bool{
 	"SwitchThread":    true,
 	"GetThreadRuntimeMode": true,
 
-	// Timeline reads (item slice / turn / search). The bytes-bearing
-	// payload reads are LocalOnly in category 1; metadata listings
-	// here are safe.
-	"GetThreadItem":          true,
-	"ListItems":              true,
-	"ListItemsBeforeTurn":    true,
-	"ListRecentThreadItems":  true,
-	"ListRecentTurns":        true,
-	"ListThreadSliceAround":  true,
-	"SearchThreadMessages":   true,
+	// Timeline reads (item slice / turn / search).
+	"GetThreadItem":         true,
+	"ListItems":             true,
+	"ListItemsBeforeTurn":   true,
+	"ListRecentThreadItems": true,
+	"ListRecentTurns":       true,
+	"ListThreadSliceAround": true,
+	"SearchThreadMessages":  true,
+
+	// Payload reads. Authorization via getThreadPayloadMeta's
+	// (threadID, payloadID) linkage check. Moved from LocalOnly
+	// to support remote-mode timeline rendering.
+	"GetPayloadPreview": true,
+	"GetPayloadChunk":   true,
+	"GetPayloadData":    true,
+	"ListPayloadMetas":  true,
 
 	// Live-state counts (the per-thread surface is LocalOnly in
 	// category 2 because it leaks composer drafts; these are

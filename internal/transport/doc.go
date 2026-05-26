@@ -5,9 +5,11 @@
 // remote-hosted backend.
 //
 // The wire is intentionally small: a JSON-RPC-shaped request/response
-// pair plus a server-initiated event push frame. There's no batching,
-// no negotiation, no version handshake — clients send requests and
-// replay markers, the server sends responses and events.
+// pair plus a server-initiated event push frame. Non-loopback
+// connections negotiate permessage-deflate compression and receive
+// coalesced event batches (type:"batch") to reduce wire overhead.
+// Loopback connections skip both — immediate per-event dispatch with
+// no compression on a shared-memory pipe.
 //
 // All wire messages are JSON text frames. Binary frames are rejected.
 package transport

@@ -24,11 +24,12 @@ type ProcessExitInfo struct {
 }
 
 // MarshalProcessExitMeta converts a subprocess exit error into event metadata.
+//
+// Non-ExitError errors (fork/exec failures, startup errors) get a
+// generic reason because err.Error() can contain host filesystem
+// paths. The raw error is logged server-side by the caller.
 func MarshalProcessExitMeta(err error) json.RawMessage {
 	info := ProcessExitInfo{Reason: "provider process exited unexpectedly"}
-	if err != nil {
-		info.Reason = err.Error()
-	}
 
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
@@ -41,6 +42,8 @@ func MarshalProcessExitMeta(err error) json.RawMessage {
 				info.Reason = fmt.Sprintf("provider process exited with code %d", info.ExitCode)
 			}
 		}
+	} else if err != nil {
+		info.Reason = "provider failed to start"
 	}
 
 	data, marshalErr := json.Marshal(info)

@@ -15,6 +15,7 @@
 //     {type:"rpc", id, result?}                              // success
 //     {type:"rpc", id, error:{code, message}}                // error
 //     {type:"event", channel, seq, data, gap?}               // push
+//     {type:"batch", events:[{channel,seq,data,gap?},...]}   // coalesced push
 //
 // The client owns:
 //   - The (single) WebSocket connection and its lifecycle.
@@ -101,7 +102,17 @@ interface ServerEventFrame {
   gap?: boolean;
 }
 
-type ServerFrame = ServerRPCFrame | ServerEventFrame;
+interface ServerBatchFrame {
+  type: 'batch';
+  events: Array<{
+    channel: string;
+    seq: number;
+    data: unknown;
+    gap?: boolean;
+  }>;
+}
+
+type ServerFrame = ServerRPCFrame | ServerEventFrame | ServerBatchFrame;
 
 interface ClientRPCFrame {
   type: 'rpc';
@@ -756,9 +767,9 @@ export class WSClient {
     }
   }
 
-  // handleFrame routes a parsed server frame. The two interesting cases
-  // are RPC responses (matched by id) and event pushes (fanned out to
-  // subscribers).
+  // handleFrame routes a parsed server frame. RPC responses are matched
+  // by id; event pushes fan out to subscribers; batch frames iterate
+  // their event array through the same per-event path.
   private handleFrame(frame: ServerFrame): void {
     if (frame.type === 'rpc') {
       const pending = this.pending.get(frame.id);
@@ -775,26 +786,36 @@ export class WSClient {
       return;
     }
     if (frame.type === 'event') {
-      this.recordChannelSeq(frame.channel, frame.seq);
-      // Server frames carry the raw payload directly in `data`. The
-      // transport layer is payload-agnostic; the wire envelope (channel,
-      // seq, gap) is owned here and the inner data is forwarded as-is.
-      if (frame.gap === true) {
-        console.warn(
-          `wsClient: event gap on ${clampString(frame.channel)} (seq ${frame.seq})`,
-        );
-        // Synthetic gap event so per-channel re-fetch logic can
-        // subscribe without having to introspect every channel handler.
-        // Future work: refine the payload shape if list endpoints
-        // need more context (e.g. lastKnownSeq).
-        this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, {
-          channel: frame.channel,
-          seq: frame.seq,
-        });
-      }
-      this.dispatchToSubscribers(frame.channel, frame.data);
+      this.handleEventEntry(frame);
       return;
     }
+    if (frame.type === 'batch') {
+      for (const evt of frame.events) {
+        this.handleEventEntry(evt);
+      }
+      return;
+    }
+  }
+
+  // handleEventEntry processes a single event entry — used by both
+  // the regular event path and the batch iteration path.
+  private handleEventEntry(evt: {
+    channel: string;
+    seq: number;
+    data: unknown;
+    gap?: boolean;
+  }): void {
+    this.recordChannelSeq(evt.channel, evt.seq);
+    if (evt.gap === true) {
+      console.warn(
+        `wsClient: event gap on ${clampString(evt.channel)} (seq ${evt.seq})`,
+      );
+      this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, {
+        channel: evt.channel,
+        seq: evt.seq,
+      });
+    }
+    this.dispatchToSubscribers(evt.channel, evt.data);
   }
 
   // recordChannelSeq updates the per-channel last-seen seq and evicts

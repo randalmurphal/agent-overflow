@@ -181,21 +181,13 @@ var LocalOnlyMethods = map[string]bool{
 	// through the thread record — keep with the rest of the local-CLI
 	// invocations for doctrine consistency.
 	"SearchWorkspaceFiles": true,
-	// Payload reads return raw bytes persisted by triage — tool call
-	// diffs, command outputs, file-read results, thinking blocks. The
-	// threat shape matches the diff-returning bindings above: bulk
-	// content disclosure in a single wire call, even though the bytes
-	// live in SQLite rather than a git ref. A token-holder enumerating
-	// thread ids (via the wire-safe thread listings) could pull every
-	// agent-edited diff and command output one thread at a time.
-	// ListPayloadMetas surfaces the same enumeration shape without the
-	// bytes — what tool calls fired, on which thread — and the precedent
-	// from the diff/checkpoint surface is "lock down now; opening later
-	// once a remote workflow needs them is a breaking change."
-	"GetPayloadPreview": true,
-	"GetPayloadChunk":   true,
-	"GetPayloadData":    true,
-	"ListPayloadMetas":  true,
+	// Payload reads (GetPayloadPreview, GetPayloadChunk, GetPayloadData,
+	// ListPayloadMetas) moved to wireSafeMethods — remote clients need
+	// tool-call output, command results, and thinking blocks to render
+	// the timeline. Authorization is enforced by getThreadPayloadMeta's
+	// (threadID, payloadID) linkage check; the token is the security
+	// boundary, matching every other wire-safe method.
+	// SavePayloadToFile stays here: it writes to the host filesystem.
 
 	// 2. Session control (provider subprocess spawn / steer).
 	"StartSession":             true,

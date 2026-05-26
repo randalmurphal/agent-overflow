@@ -467,6 +467,34 @@ func TestMarshalProcessExitMetaForSignal(t *testing.T) {
 	}
 }
 
+func TestMarshalProcessExitMetaForNilError(t *testing.T) {
+	data := MarshalProcessExitMeta(nil)
+	var meta ProcessExitInfo
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if meta.Reason != "provider process exited unexpectedly" {
+		t.Fatalf("Reason = %q, want generic fallback", meta.Reason)
+	}
+}
+
+func TestMarshalProcessExitMetaForNonExitError(t *testing.T) {
+	// Simulate a fork/exec error that would leak a filesystem path
+	// if passed through verbatim.
+	err := fmt.Errorf("fork/exec /home/user/.local/bin/claude: no such file or directory")
+	data := MarshalProcessExitMeta(err)
+	var meta ProcessExitInfo
+	if jsonErr := json.Unmarshal(data, &meta); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if meta.Reason != "provider failed to start" {
+		t.Fatalf("Reason = %q, want generic; raw error must not leak paths", meta.Reason)
+	}
+	if strings.Contains(string(data), "/home/") {
+		t.Fatal("marshaled metadata leaks filesystem path")
+	}
+}
+
 func TestWaitProcessExitErr(t *testing.T) {
 	ctx := context.Background()
 	p, err := Spawn(ctx, SpawnConfig{Binary: "false"})

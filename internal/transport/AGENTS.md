@@ -51,6 +51,8 @@ the `methods_gen_test.go` integrity test catches drift).
 - **Server → Client**:
   - `{type:"rpc", id, result|error}` — response
   - `{type:"event", channel, seq, data, gap?}` — push
+  - `{type:"batch", events:[{channel, seq, data, gap?}, ...]}` —
+    coalesced events (non-loopback connections only)
 
 `gap:true` is the "your replay seq fell outside the in-memory ring,
 re-fetch via list endpoints" signal. The server cannot reconstruct
@@ -67,6 +69,20 @@ list. Run via `go run ./internal/transport/methodgen` and committed.
 `methods_gen_test.go` is a CI gate: it re-runs the generator into a
 tempfile and bytes-diffs against the committed output. Adding a new
 exported `App` method without regenerating fails the test.
+
+## Per-connection transport policy
+
+`connProfile` (conn.go) captures transport policy at upgrade time:
+
+- **Loopback**: no compression, no event coalescing. Events dispatch
+  immediately per subscriber.
+- **Non-loopback**: `permessage-deflate` with context takeover
+  (~1.5 MB per connection), events coalesced in a per-connection
+  buffer (16 ms window / 50 event threshold). Single-event batches
+  fall through to regular `type:"event"` frames for compatibility.
+
+The profile is immutable for the connection's lifetime. Replay events
+(`handleReplay`) always use immediate dispatch regardless of profile.
 
 ## Conventions specific to this package
 

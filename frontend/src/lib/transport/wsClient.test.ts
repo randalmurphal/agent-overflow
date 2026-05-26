@@ -854,4 +854,98 @@ describe('WSClient', () => {
 
     client.close();
   });
+
+  it('dispatches each event in a batch frame to the correct channel subscriber', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const seenA: unknown[] = [];
+    const seenB: unknown[] = [];
+    client.subscribe('channel:a', (data) => seenA.push(data));
+    client.subscribe('channel:b', (data) => seenB.push(data));
+
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({
+      type: 'batch',
+      events: [
+        { channel: 'channel:a', seq: 1, data: { v: 1 } },
+        { channel: 'channel:b', seq: 1, data: { v: 2 } },
+        { channel: 'channel:a', seq: 2, data: { v: 3 } },
+      ],
+    });
+
+    expect(seenA).toEqual([{ v: 1 }, { v: 3 }]);
+    expect(seenB).toEqual([{ v: 2 }]);
+
+    client.close();
+  });
+
+  it('handles gap flags on individual batch entries', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const gaps: unknown[] = [];
+    client.subscribe('transport:gap', (data) => gaps.push(data));
+
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({
+      type: 'batch',
+      events: [
+        { channel: 'channel:a', seq: 10, data: { v: 1 }, gap: true },
+        { channel: 'channel:a', seq: 11, data: { v: 2 } },
+      ],
+    });
+
+    expect(gaps).toEqual([{ channel: 'channel:a', seq: 10 }]);
+
+    client.close();
+  });
+
+  it('updates lastSeqByChannel for batch entries on reconnect replay', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    client.subscribe('ch:x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const ws1 = MockWebSocket.instances[0]!;
+    ws1.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Deliver events via a batch frame so lastSeqByChannel is populated.
+    ws1.pushFrame({
+      type: 'batch',
+      events: [
+        { channel: 'ch:x', seq: 5, data: {} },
+        { channel: 'ch:y', seq: 3, data: {} },
+      ],
+    });
+
+    // Disconnect and reconnect.
+    ws1.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    const ws2 = MockWebSocket.instances[1]!;
+    ws2.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The replay frame should include seqs from the batch.
+    const replay = ws2.sent.find(
+      (f: Record<string, unknown>) => f.type === 'replay',
+    ) as Record<string, unknown> | undefined;
+    expect(replay).toBeDefined();
+    const seqs = replay!.lastSeqByChannel as Record<string, number>;
+    expect(seqs['ch:x']).toBe(5);
+    expect(seqs['ch:y']).toBe(3);
+
+    client.close();
+    vi.useRealTimers();
+  });
 });

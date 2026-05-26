@@ -8,6 +8,7 @@ const (
 	frameTypeRPC    = "rpc"
 	frameTypeEvent  = "event"
 	frameTypeReplay = "replay"
+	frameTypeBatch  = "batch"
 )
 
 // MaxReplayChannels caps the number of channels a single replay request
@@ -91,3 +92,21 @@ const (
 	ErrCodeInternal       = "internal"
 	ErrCodeShuttingDown   = "shutting_down"
 )
+
+// batchEventEntry is one event inside a batch frame. It carries the
+// subset of Event fields the client needs to dispatch: channel, seq,
+// data, and the gap flag.
+type batchEventEntry struct {
+	Channel string          `json:"channel"`
+	Seq     uint64          `json:"seq"`
+	Data    json.RawMessage `json:"data"`
+	Gap     bool            `json:"gap,omitempty"`
+}
+
+// batchFrame is the server-side envelope for coalesced event delivery.
+// Used only by the per-connection coalescing writer for non-loopback
+// peers. Wire shape: {"type":"batch","events":[...]}.
+type batchFrame struct {
+	Type   string            `json:"type"`
+	Events []batchEventEntry `json:"events"`
+}
