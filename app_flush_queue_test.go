@@ -1057,7 +1057,7 @@ func TestDispatchFlush_ResolveTurnIndex_FallsBackToNextWhenNoActiveTurn(t *testi
 	}
 
 	// active turn check returns nothing → fallback path.
-	got, _, err := app.resolveFlushTurnPlacement(thread.ID)
+	got, _, err := app.resolveFlushTurnPlacement(thread.ID, session{})
 	if err != nil {
 		t.Fatalf("resolveFlushTurnPlacement: %v", err)
 	}
@@ -1066,10 +1066,10 @@ func TestDispatchFlush_ResolveTurnIndex_FallsBackToNextWhenNoActiveTurn(t *testi
 	}
 }
 
-// TestDispatchFlush_ResolveTurnIndex_PrefersActiveTurn pins the
-// happy-path resolution: when the active turn exists, we use its
-// index even if LastTurnIndex would yield a different number.
-func TestDispatchFlush_ResolveTurnIndex_PrefersActiveTurn(t *testing.T) {
+// TestDispatchFlush_ResolveTurnIndex_CodexPrefersActiveTurn pins the
+// Codex happy-path: when the active turn exists and the session is
+// Codex, we steer into the active turn's index.
+func TestDispatchFlush_ResolveTurnIndex_CodexPrefersActiveTurn(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	thread := testThread("flush-active-turn")
@@ -1089,12 +1089,121 @@ func TestDispatchFlush_ResolveTurnIndex_PrefersActiveTurn(t *testing.T) {
 		t.Fatalf("InsertTurn: %v", err)
 	}
 
-	got, _, err := app.resolveFlushTurnPlacement(thread.ID)
+	codexSess := installSteerTestSession(t, app, thread, "ok")
+	sess := session{provider: string(provider.Codex), codex: codexSess}
+	got, active, err := app.resolveFlushTurnPlacement(thread.ID, sess)
 	if err != nil {
 		t.Fatalf("resolveFlushTurnPlacement: %v", err)
 	}
 	if got != 7 {
 		t.Errorf("turn index: got %d, want 7 (active turn)", got)
+	}
+	if !active {
+		t.Errorf("activeAtResolution should be true for Codex active turn")
+	}
+}
+
+// TestDispatchFlush_ResolveTurnIndex_ClaudeSkipsActiveTurn verifies
+// that Claude flush dispatch always uses nextSendTurnIndex, never the
+// active turn's index. Claude processes stdin messages as new turns
+// (useQueueProcessor only dequeues between turns), so using the active
+// turn's index would cause setOpenTurn to reset id-allocating counters
+// and produce segment ID collisions.
+func TestDispatchFlush_ResolveTurnIndex_ClaudeSkipsActiveTurn(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	thread := testThread("flush-claude-skip-active")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if _, err := app.store.AppendItem(store.Item{
+		ID:        "user:0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "first",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	// Active unsettled turn — Codex would steer into it, Claude must not.
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	claudeSess := session{provider: string(provider.Claude)}
+	got, active, err := app.resolveFlushTurnPlacement(thread.ID, claudeSess)
+	if err != nil {
+		t.Fatalf("resolveFlushTurnPlacement: %v", err)
+	}
+	if got != 1 {
+		t.Errorf("turn index: got %d, want 1 (next turn, not active turn 0)", got)
+	}
+	if active {
+		t.Errorf("activeAtResolution should be false for Claude")
+	}
+}
+
+// TestDispatchFlush_ResolveTurnIndex_AccountsForInFlightPendingSends
+// verifies that two messages queued during the same active turn get
+// distinct turn indices. The first dispatch claims turn N+1; the
+// second must advance to N+2 via MaxPendingSendTurnIndex.
+func TestDispatchFlush_ResolveTurnIndex_AccountsForInFlightPendingSends(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, app.emitWithReplay())
+
+	thread := testThread("flush-pending-dedup")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if _, err := app.store.AppendItem(store.Item{
+		ID:        "user:0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "first",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	// Simulate first flush dispatch: registers pending send at turn 1.
+	app.triage.RegisterPendingSend(thread.ID, "user:1:flush:1", 1)
+
+	claudeSess := session{provider: string(provider.Claude)}
+	got, _, err := app.resolveFlushTurnPlacement(thread.ID, claudeSess)
+	if err != nil {
+		t.Fatalf("resolveFlushTurnPlacement: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("turn index: got %d, want 2 (must skip past in-flight pending send at turn 1)", got)
 	}
 }
 

@@ -313,6 +313,31 @@ func TestClearPendingSendsByItemIDs(t *testing.T) {
 	}
 }
 
+func TestMaxPendingSendTurnIndex(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	if _, ok := router.MaxPendingSendTurnIndex("t1"); ok {
+		t.Fatalf("empty thread should return ok=false")
+	}
+
+	router.RegisterPendingSend("t1", "user:1", 1)
+	max, ok := router.MaxPendingSendTurnIndex("t1")
+	if !ok || max != 1 {
+		t.Fatalf("single entry: got max=%d ok=%v, want 1/true", max, ok)
+	}
+
+	router.RegisterPendingSend("t1", "user:3", 3)
+	router.RegisterPendingSend("t1", "user:2", 2)
+	max, ok = router.MaxPendingSendTurnIndex("t1")
+	if !ok || max != 3 {
+		t.Fatalf("multi entry: got max=%d ok=%v, want 3/true", max, ok)
+	}
+
+	if _, ok := router.MaxPendingSendTurnIndex("t2"); ok {
+		t.Fatalf("unrelated thread should return ok=false")
+	}
+}
+
 func TestClearPendingSendsByItemIDs_EmptyThread(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 

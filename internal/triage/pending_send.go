@@ -207,6 +207,28 @@ func (r *Router) clearPendingSendsLocked(threadID string) {
 	delete(r.pendingByThread, threadID)
 }
 
+// MaxPendingSendTurnIndex returns the highest TurnIndex across all
+// pending send entries for threadID. Returns (0, false) when no entries
+// exist. Used by the flush dispatch turn allocator to avoid assigning
+// the same turn index to two messages queued during the same active
+// turn — deferred items don't land in the items/turns tables until
+// echo, so store.LastTurnIndex alone can't see them.
+func (r *Router) MaxPendingSendTurnIndex(threadID string) (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending, ok := r.pendingByThread[threadID]
+	if !ok || len(pending) == 0 {
+		return 0, false
+	}
+	maxTurn := pending[0].TurnIndex
+	for _, p := range pending[1:] {
+		if p.TurnIndex > maxTurn {
+			maxTurn = p.TurnIndex
+		}
+	}
+	return maxTurn, true
+}
+
 // markWireOnlyUserTextSeen records a wire EventUserText whose
 // providerItemID has no pending AO send to match. Returns true on the
 // first sighting (caller may persist a "wire-only" timeline row),

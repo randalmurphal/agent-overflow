@@ -343,7 +343,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		return QueueFlushedItem{}, fmt.Errorf("no active session for thread %s", threadID)
 	}
 
-	turnIndex, activeAtResolution, err := a.resolveFlushTurnPlacement(threadID)
+	turnIndex, activeAtResolution, err := a.resolveFlushTurnPlacement(threadID, sess)
 	if err != nil {
 		return QueueFlushedItem{}, fmt.Errorf("resolve turn index: %w", err)
 	}
@@ -440,15 +440,42 @@ func (a *App) nextFlushSequenceForTurn(threadID string, turnIndex int) (int, err
 	return next, nil
 }
 
-func (a *App) resolveFlushTurnPlacement(threadID string) (turnIndex int, activeAtResolution bool, err error) {
-	if active, found, err := a.store.GetActiveTurn(threadID); err == nil && found {
-		return active.TurnIndex, true, nil
-	} else if err != nil {
-		return 0, false, fmt.Errorf("lookup active turn: %w", err)
+// resolveFlushTurnPlacement picks the turn index for a flush-dispatched
+// message. Provider-specific because Claude and Codex handle queued
+// messages differently:
+//
+//   - Codex: Steer injects into the active turn's pending_input. The
+//     message is part of the current turn. Use the active turn's index.
+//   - Claude: Send writes to stdin. Claude's useQueueProcessor only
+//     dequeues between turns (queryGuard blocks while a query is
+//     active), so the message always starts a NEW turn. Using the
+//     active turn's index would cause setOpenTurn to reset
+//     id-allocating counters for the already-running turn, producing
+//     segment ID collisions (text:T:0 overwrites previous text:T:0).
+//
+// For the non-active-turn path (shared by both providers), in-flight
+// pending sends are consulted via MaxPendingSendTurnIndex because
+// deferred items don't land in items/turns until echo — two messages
+// queued during the same active turn would otherwise both resolve to
+// the same next index.
+func (a *App) resolveFlushTurnPlacement(threadID string, sess session) (turnIndex int, activeAtResolution bool, err error) {
+	if sess.codex != nil {
+		if active, found, err := a.store.GetActiveTurn(threadID); err == nil && found {
+			return active.TurnIndex, true, nil
+		} else if err != nil {
+			return 0, false, fmt.Errorf("lookup active turn: %w", err)
+		}
 	}
-	// No active turn: derive next index using the same shape Send does.
 	turnIndex, err = a.nextSendTurnIndex(threadID)
-	return turnIndex, false, err
+	if err != nil {
+		return 0, false, err
+	}
+	if a.triage != nil {
+		if maxPending, ok := a.triage.MaxPendingSendTurnIndex(threadID); ok && maxPending+1 > turnIndex {
+			turnIndex = maxPending + 1
+		}
+	}
+	return turnIndex, false, nil
 }
 
 func (a *App) nextSendTurnIndex(threadID string) (int, error) {
