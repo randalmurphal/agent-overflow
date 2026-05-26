@@ -993,6 +993,15 @@ export function createUseStickToBottomController(
         writeCaller = crossedTarget ? 'spring.overshoot' : 'spring.tick';
         writeScrollTop(clamped);
         if (scrollEl.scrollTop !== current) accumulated = 0;
+      } else {
+        // Nothing to chase — zero residual velocity so the arrival
+        // check can pass. Without this, an external instant-pin
+        // (notifyContentMaybeGrew) or cross-target clamp landing at
+        // exactly the target freezes velocity at its mid-chase value;
+        // the arrival check (|velocity| < 0.5) never passes and the
+        // spring ticks at 60fps forever without writing.
+        velocity = 0;
+        accumulated = 0;
       }
 
       // Arrival check uses the cached `target` for the position

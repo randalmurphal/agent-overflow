@@ -2599,6 +2599,127 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(800);
     });
 
+    describe('stuck spring from instant pin during active chase', () => {
+      // When notifyContentMaybeGrew (composer-height RO) fires during an
+      // active spring chase, instantPinAfterExternalGeometryChange writes
+      // scrollTop = target. On the next tick: diff = 0, the velocity
+      // update block is skipped, velocity stays frozen at its mid-chase
+      // value (e.g., 28). When content then grows slightly (+10px), the
+      // frozen velocity causes an immediate overshoot+clamp instead of
+      // the smooth interpolation a clean sentinel would produce.
+
+      it('content growth after instant pin during spring should chase smoothly, not overshoot+clamp', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        // Start spring chase: content grows 400px, spring engages.
+        geom.scrollHeight = 1400;
+        geom.contentHeight = 1200;
+        ro.fire(contentEl, 1200); // target = 800
+        // Advance 3 frames to build velocity (~28 px/frame).
+        for (let i = 0; i < 3; i++) await nextFrame();
+        expect(geom.scrollTop).toBeGreaterThan(400);
+        expect(geom.scrollTop).toBeLessThan(800);
+
+        // Composer height change fires instant pin to target.
+        controller.notifyContentMaybeGrew();
+        expect(geom.scrollTop).toBe(800);
+
+        // In production, the composer RO and content RO fire in
+        // separate delivery loops (~3ms gap). Advance one frame so
+        // the spring tick sees diff=0 and zeroes velocity.
+        await nextFrame();
+
+        // Small content growth (+10px). If velocity was properly
+        // zeroed (diff=0 branch), the spring chases smoothly from
+        // 800 toward 810 (~0.4px per frame). If velocity stayed
+        // frozen at ~28 (no zeroing), the spring overshoots to 816+
+        // and cross-target clamps to 810 on the first frame.
+        geom.scrollHeight = 1410;
+        geom.contentHeight = 1210;
+        ro.fire(contentEl, 1210); // target = 810
+
+        await nextFrame();
+        // DESIRED: smooth chase — scrollTop moved partway toward 810
+        // but did NOT arrive in a single frame.
+        // BUG: frozen velocity causes overshoot → clamp → scrollTop = 810.
+        expect(geom.scrollTop).toBeGreaterThan(800);
+        expect(geom.scrollTop).toBeLessThan(810);
+      });
+
+      it('cross-target clamped spring zeros velocity so subsequent small growth chases smoothly', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        // Build velocity with a 200px chase.
+        geom.scrollHeight = 1200;
+        geom.contentHeight = 1000;
+        ro.fire(contentEl, 1000); // target = 600
+        for (let i = 0; i < 3; i++) await nextFrame();
+        const midChase = geom.scrollTop;
+        expect(midChase).toBeGreaterThan(400);
+
+        // Grow to a target just past current position — spring
+        // overshoots and cross-target clamps on first tick.
+        const nearTarget = Math.ceil(midChase) + 2;
+        geom.scrollHeight = nearTarget + 600;
+        geom.contentHeight = nearTarget + 400;
+        ro.fire(contentEl, nearTarget + 400);
+        await advanceUntil(() => geom.scrollTop === nearTarget, 50);
+
+        // Advance frames with diff=0. Without the fix, velocity stays
+        // frozen at ~8; with the fix, velocity is zeroed immediately.
+        for (let i = 0; i < 3; i++) await nextFrame();
+
+        // Small growth (+3px). With clean velocity (0), the spring
+        // chases smoothly (~0.12px/frame). With frozen velocity (~8),
+        // accumulated exceeds 3px on the first frame → overshoot+clamp.
+        geom.scrollHeight = nearTarget + 603;
+        geom.contentHeight = nearTarget + 403;
+        ro.fire(contentEl, nearTarget + 403); // target = nearTarget + 3
+        await nextFrame();
+        expect(geom.scrollTop).toBeGreaterThan(nearTarget);
+        expect(geom.scrollTop).toBeLessThan(nearTarget + 3);
+      });
+
+      it('notifyContentMaybeGrew during spring followed by small growth starts clean chase', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        // Start spring with a 200px chase to build velocity.
+        geom.scrollHeight = 1200;
+        geom.contentHeight = 1000;
+        ro.fire(contentEl, 1000); // target = 600
+        for (let i = 0; i < 3; i++) await nextFrame();
+        expect(geom.scrollTop).toBeGreaterThan(400);
+
+        // Instant pin kills the active chase.
+        controller.notifyContentMaybeGrew();
+        expect(geom.scrollTop).toBe(600);
+
+        // Advance frames with diff=0. Without the fix, velocity stays
+        // frozen at ~14; with the fix, velocity is zeroed immediately.
+        for (let i = 0; i < 3; i++) await nextFrame();
+
+        // Small content growth (+5px). With clean velocity (0), the
+        // spring chases smoothly from 600 toward 605 (~0.2px/frame).
+        // With frozen velocity (~14), accumulated exceeds 5px on the
+        // first frame → overshoot+clamp to 605.
+        geom.scrollHeight = 1205;
+        geom.contentHeight = 1005;
+        ro.fire(contentEl, 1005); // target = 605
+
+        await nextFrame();
+        expect(geom.scrollTop).toBeGreaterThan(600);
+        expect(geom.scrollTop).toBeLessThan(605);
+
+        await advanceUntil(() => geom.scrollTop === 605);
+      });
+    });
+
     it('lands at target eventually and stops ticking', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
@@ -2831,6 +2952,222 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Release: re-pins via pauseAutoScroll.release path (sync write).
       release();
       expect(geom.scrollTop).toBe(800);
+    });
+  });
+
+  describe('pauseDepth during active spring — disclosure toggle contract', () => {
+    // pauseDepth is the ONLY gate condition that can flip independently
+    // during streaming without canceling the spring. These tests lock
+    // the current contract: preserveScrollAnchor opens the gate via
+    // pauseAutoScroll(); the spring self-cancels on the next rAF tick.
+
+    it('external write passes through gate during pauseDepth > 0 even with springToken !== 0', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200); // target = 800
+      await nextFrame();
+      const midChase = geom.scrollTop;
+      expect(midChase).toBeGreaterThan(400);
+
+      // Pause lease (simulates disclosure toggle starting).
+      const release = controller.pauseAutoScroll();
+
+      // External write passes through — gate sees pauseDepth !== 0.
+      geom.scrollHeight = 1500;
+      scrollEl.scrollTop = 700;
+      expect(geom.scrollTop).toBe(700);
+
+      release();
+    });
+
+    it('spring tick bails and cancels when it sees pauseDepth > 0', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const midChase = geom.scrollTop;
+      expect(midChase).toBeGreaterThan(400);
+
+      const release = controller.pauseAutoScroll();
+      // Advance one frame — spring tick sees pauseDepth > 0, cancels.
+      await nextFrame();
+      const afterCancel = geom.scrollTop;
+
+      // scrollTop stopped advancing (spring dead).
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(afterCancel);
+
+      // Release re-pins to target.
+      release();
+      expect(geom.scrollTop).toBe(800);
+    });
+
+    it('sticky user remains pinned after pause lease completes during spring', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000); // target = 600
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+
+      // Pause, advance (spring cancels), release (re-pins).
+      const release = controller.pauseAutoScroll();
+      await nextFrame();
+      release();
+      expect(geom.scrollTop).toBe(600);
+
+      // Subsequent content growth should resume bottom-following.
+      geom.scrollHeight = 1600;
+      geom.contentHeight = 1400;
+      ro.fire(contentEl, 1400); // target = 1000
+      // New spring starts (previous was canceled by pause).
+      await advanceUntil(() => geom.scrollTop === 1000);
+      expect(controller.isSticky).toBe(true);
+    });
+  });
+
+  describe('gate condition coupling invariants — spring cancellation', () => {
+    // Each LOW-fragility gate condition (isAtBottomState,
+    // escapedFromLockState, warm) couples its transitions with
+    // cancelSpring(). These tests prove the coupling holds.
+
+    it('wheel-up escape during spring cancels spring and stops advancement', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const midChase = geom.scrollTop;
+      expect(midChase).toBeGreaterThan(400);
+
+      // User escape — cancels spring immediately.
+      fireWheel(scrollEl, -10, scrollEl);
+      expect(controller.escapedFromLock).toBe(true);
+
+      // scrollTop stopped advancing.
+      const afterEscape = geom.scrollTop;
+      for (let i = 0; i < 10; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(afterEscape);
+
+      // Gate is open via escape (external writes pass through).
+      geom.scrollHeight = 1500;
+      scrollEl.scrollTop = 300;
+      expect(geom.scrollTop).toBe(300);
+    });
+
+    it('forceStick(restore) re-arms warmup and cancels spring — gate opens via warm=false', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+
+      // Restore-reason forceStick re-arms warm gate → warm=false,
+      // coupled with cancelSpring.
+      controller.armRestoreSnap();
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.isWarm).toBe(false);
+
+      // Gate open via !warm — external writes pass through.
+      geom.scrollHeight = 1500;
+      scrollEl.scrollTop = 500;
+      expect(geom.scrollTop).toBe(500);
+    });
+
+    it('setEscapedFromLock(true) cancels spring and flips isAtBottomState — gate opens via escape', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+
+      controller.setEscapedFromLock(true);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+
+      // Spring canceled — scrollTop stops.
+      const afterEscape = geom.scrollTop;
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(afterEscape);
+    });
+  });
+
+  describe('scrollbar and interaction during spring', () => {
+    it('scrollbar pointer in gutter during spring chase escapes and cancels spring', async () => {
+      stubScrollbarGutter(scrollEl);
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+
+      // Pointer in scrollbar gutter.
+      const ev = new PointerEvent('pointerdown', {
+        clientX: 195, isPrimary: true, button: 0, bubbles: true,
+      });
+      Object.defineProperty(ev, 'target', { value: scrollEl });
+      scrollEl.dispatchEvent(ev);
+
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Spring dead — scrollTop stops.
+      const afterEscape = geom.scrollTop;
+      for (let i = 0; i < 10; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(afterEscape);
+    });
+
+    it('notifyContentMaybeGrew during spring does not leave gate stuck closed', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+
+      // Instant pin to target.
+      controller.notifyContentMaybeGrew();
+      expect(geom.scrollTop).toBe(800);
+
+      // Advance to let the spring arrive (velocity zeroed by the fix).
+      for (let i = 0; i < 30; i++) await nextFrame();
+
+      // Turn ends. Mode flips to instant. Spring should cancel.
+      mode = 'instant';
+      for (let i = 0; i < 10; i++) await nextFrame();
+
+      // Gate should be open (mode=instant pass-through + spring canceled).
+      geom.scrollHeight = 1500;
+      scrollEl.scrollTop = 850;
+      expect(geom.scrollTop).toBe(850);
     });
   });
 

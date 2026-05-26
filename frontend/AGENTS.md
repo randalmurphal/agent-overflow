@@ -543,6 +543,29 @@ frontend layers on top:
   opt-out. virtua already sets `overflow-anchor: none` on its inner
   container, so the controller doesn't need a defensive copy on
   contentEl — only the outer scrollEl needs the opt-out.
+- **External write gate — fragility map.** The gate in
+  `useStickToBottom.svelte.ts` blocks virtua's `$fixScrollJump` writes
+  when ALL of: `warm && isAtBottomState && !escapedFromLockState &&
+  pauseDepth === 0 && animationMode === 'spring' && springToken !== 0`.
+  If ANY condition transiently flips during an active spring/sentinel,
+  the gate opens and virtua can snap scrollTop. Conditions ranked by
+  fragility:
+
+  | Condition | Fragility | Coupling | Test coverage |
+  |-----------|-----------|----------|---------------|
+  | `pauseDepth` | **HIGH** | Independent — `pauseAutoScroll()` flips it without canceling the spring. ~16ms race window before the spring tick bails. 13 row components trigger via `preserveScrollAnchor`. | "pauseDepth during active spring" describe block |
+  | `animationMode` | **Covered** | Independent — reads a consumer-supplied getter. Wire-round gap regression fixed via 500ms hysteresis latch in `MessageTimeline.svelte`. | "wire-round gap regression" describe block |
+  | `springToken` | **Covered** | Downstream of other conditions — canceled by escape, pause bail, mode flip. Velocity-freeze bug fixed (diff===0 zeroes velocity). | "stuck spring from instant pin" + "sentinel-alive" describe blocks |
+  | `isAtBottomState` | LOW | Coupled — every `=false` write goes through `setEscapedFromLock(true)` which also calls `cancelSpring()`. | "gate condition coupling invariants" describe block |
+  | `escapedFromLockState` | LOW | Coupled — every `=true` write routes through `setEscapedFromLock(true)` which also calls `cancelSpring()`. | "gate condition coupling invariants" describe block |
+  | `warm` | LOW | Coupled — every `=false` write (`beginWarmup`, `armWarmup`) is preceded by `cancelSpring()`. | "gate condition coupling invariants" describe block |
+
+  When adding new code that touches any of these conditions, verify the
+  coupling still holds. The test describe blocks above are the regression
+  guards — a new call site that sets `pauseDepth > 0` or calls
+  `beginWarmup()` without the paired `cancelSpring()` would open the gate
+  during streaming.
+
 - **Reserved-slot banners** — `ProviderStatusBanner.svelte` and
   `TransportStatusBanner.svelte` both use `min-h-N` wrappers +
   `transition:fade` so banner mount/unmount does not animate adjacent
@@ -752,6 +775,10 @@ What NOT to do when chasing a scroll bug:
   the cascade-cover is unnecessary on the affected thread —
   uncached loads of 200+-item threads with heavy Streamdown
   content are the canonical stressor and the cascade is real.
+
+See the "External write gate — fragility map" section above for which
+gate conditions can transiently flip and which test describe blocks pin
+each one.
 
 ## Raw-content rendering
 

@@ -209,7 +209,6 @@
       .map((item) => [
         item.id,
         item.kind,
-        item.status,
         item.turnIndex,
         item.itemIndex,
       ].join(':'))
@@ -411,9 +410,10 @@
   // because assistant text then grows through Streamdown's async markdown
   // layout. This structural nudge asks the sticky controller to re-check the
   // bottom after Svelte and virtua have had a frame to publish the new row.
-  // It deliberately keys off tail row identity/status/order, not summary
-  // deltas or metadata churn, so normal streaming chunks still use the
-  // contentRO spring path. The nudge uses the live-content controller hook,
+  // It keys off tail row identity and order (id, kind, turnIndex,
+  // itemIndex), not status transitions or summary deltas, so normal
+  // streaming chunks and tool-call lifecycle status changes use the
+  // contentRO path. The nudge uses the live-content controller hook,
   // which honors spring mode; composer/sidebar layout nudges keep using the
   // instant notifyContentMaybeGrew path.
   $effect(() => {
