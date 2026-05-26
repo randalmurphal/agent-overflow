@@ -251,6 +251,14 @@ type Router struct {
 	// Defensively swept by clearOpenTurn and CleanupThread so a stale
 	// flag never leaks into a future turn. See revert_marker.go.
 	revertedTurns map[string]struct{}
+	// usageEmitThrottles rate-limits provider:usage emissions to at most
+	// one per usageEmitMinInterval per thread. The context-window meter
+	// changes gradually during streaming; Claude can fire 10-50 token
+	// usage events/second but the UI doesn't benefit from updates faster
+	// than ~2/sec. The pending window is flushed on turn-complete and
+	// CleanupThread so the final reading always reaches the frontend.
+	// Keyed by threadID.
+	usageEmitThrottles map[string]*usageEmitThrottle
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a
@@ -309,6 +317,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		workspacePathByThread:      make(map[string]string),
 		streamingPathRefsLast:      make(map[string]string),
 		revertedTurns:              make(map[string]struct{}),
+		usageEmitThrottles:         make(map[string]*usageEmitThrottle),
 	}
 }
 
@@ -727,7 +736,7 @@ func (r *Router) handleThreadModelUpdate(evt provider.ProviderEvent) error {
 	if err := r.store.UpdateModel(evt.ThreadID, evt.Content); err != nil {
 		return fmt.Errorf("update thread model: %w", err)
 	}
-	r.emitThreadUpdated(evt.ThreadID)
+	r.emitThreadPatch(evt.ThreadID, ThreadUpdateEvent{Model: &evt.Content})
 	return nil
 }
 
@@ -738,7 +747,7 @@ func (r *Router) handleThreadRename(evt provider.ProviderEvent) error {
 	if err := r.store.UpdateTitle(evt.ThreadID, evt.Content); err != nil {
 		return fmt.Errorf("update thread title: %w", err)
 	}
-	r.emitThreadUpdated(evt.ThreadID)
+	r.emitThreadPatch(evt.ThreadID, ThreadUpdateEvent{Title: &evt.Content})
 	return nil
 }
 
@@ -1034,13 +1043,20 @@ func (r *Router) handleSubagentStatus(evt provider.ProviderEvent) error {
 	return r.observeCodexSubagentStatus(evt)
 }
 
-func (r *Router) emitThreadUpdated(threadID string) {
-	thread, err := r.store.GetThread(threadID)
-	if err != nil {
-		log.Printf("triage: load updated thread %s: %v", threadID, err)
-		return
-	}
-	r.emit("thread:updated", thread)
+// ThreadUpdateEvent is the wire shape for thread:updated. Action "full"
+// carries the entire Thread struct; "patch" carries only the changed fields.
+type ThreadUpdateEvent struct {
+	Action string       `json:"action"`
+	Thread *store.Thread `json:"thread,omitempty"`
+	ID     string       `json:"id,omitempty"`
+	Title  *string      `json:"title,omitempty"`
+	Model  *string      `json:"model,omitempty"`
+}
+
+func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
+	patch.Action = "patch"
+	patch.ID = threadID
+	r.emit("thread:updated", patch)
 }
 
 // bumpThreadActivity is the single chokepoint for advancing
@@ -1134,6 +1150,36 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 			metric.WithAttributes(attribute.String("kind", inputPayload.Kind)))
 	}
 	return nil
+}
+
+// emitItemPatch sends a lightweight patch event carrying only the fields
+// that changed. The frontend merges the patch into the existing item in
+// place, avoiding re-transmission of immutable structural fields and the
+// potentially large summary text.
+func (r *Router) emitItemPatch(threadID, itemID, kind string, patch ItemPatchFields) {
+	r.emit("provider:item_event", newItemStreamPatch(threadID, itemID, kind, patch))
+}
+
+// persistItemFieldsAndPatch writes a targeted UPDATE for the specified
+// fields and emits a patch event. Use instead of persistItem when the
+// row already exists and only a narrow set of fields changed (e.g.,
+// streaming settle: status + meta + updatedAt).
+func (r *Router) persistItemFieldsAndPatch(threadID, itemID, kind string, update store.ItemPartialUpdate) error {
+	if err := r.store.UpdateItemFields(threadID, itemID, update); err != nil {
+		return err
+	}
+	r.emitItemPatch(threadID, itemID, kind, patchFromPartial(update))
+	return nil
+}
+
+func patchFromPartial(u store.ItemPartialUpdate) ItemPatchFields {
+	return ItemPatchFields{
+		Status:    u.Status,
+		Summary:   u.Summary,
+		Meta:      u.Meta,
+		Decision:  u.Decision,
+		UpdatedAt: u.UpdatedAt,
+	}
 }
 
 // shouldDropParentID decides whether an item's parent_id should be

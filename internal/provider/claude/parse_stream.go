@@ -51,9 +51,8 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		}
 		p.rememberStreamBlock(parentToolUseID, index, blockType)
 		meta, _ := json.Marshal(map[string]any{
-			"index":         index,
-			"blockType":     blockType,
-			"content_block": json.RawMessage(eventObj["content_block"]),
+			"index":     index,
+			"blockType": blockType,
 		})
 		return []provider.ProviderEvent{{
 			Kind:            provider.EventContentBlockStart,

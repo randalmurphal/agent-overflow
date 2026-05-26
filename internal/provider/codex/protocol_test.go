@@ -791,10 +791,8 @@ func TestClassifyNotification_ItemStartedCommandExecutionSource(t *testing.T) {
 			if meta["item_status"] != "inProgress" {
 				t.Errorf("meta.item_status: got %v, want %q (meta=%+v)", meta["item_status"], "inProgress", meta)
 			}
-			// Nested item block must still be present — callers who
-			// previously parsed meta.item.* should not break.
-			if _, ok := meta["item"]; !ok {
-				t.Errorf("meta.item was dropped by enrichment: %+v", meta)
+			if meta["itemId"] != "i1" {
+				t.Errorf("meta.itemId: got %v, want %q (meta=%+v)", meta["itemId"], "i1", meta)
 			}
 		})
 	}

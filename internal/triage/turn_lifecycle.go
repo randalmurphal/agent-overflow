@@ -358,6 +358,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 
 	r.clearOpenTurn(evt.ThreadID)
 	r.closeTurnSpan(evt.ThreadID, persistErr)
+	r.FlushUsageEmitThrottle(evt.ThreadID)
 
 	// Opportunistic WAL passive checkpoint at the idle boundary. PASSIVE
 	// is non-blocking: it reclaims whatever pages the WAL can free
@@ -1156,7 +1157,13 @@ func (r *Router) CleanupThread(threadID string) {
 	// turn-complete that fires above; this catches the case where the
 	// flag was set but no emission happened (e.g. predicate raced).
 	delete(r.revertedTurns, threadID)
+	pendingUsage, hasPendingUsage := r.takeUsageEmitPendingLocked(threadID)
+	delete(r.usageEmitThrottles, threadID)
 	r.mu.Unlock()
+
+	if hasPendingUsage {
+		r.emit("provider:usage", pendingUsage)
+	}
 
 	if orphanSpan != nil {
 		// Closing outside the lock avoids self-deadlock when the tracer's
@@ -1234,8 +1241,13 @@ func (r *Router) ResetThreadForRollback(threadID string) {
 	r.clearWireOnlyUserTextLocked(threadID)
 	r.clearFlushQueueLocked(threadID)
 	delete(r.revertedTurns, threadID)
+	pendingUsage, hasPendingUsage := r.takeUsageEmitPendingLocked(threadID)
+	delete(r.usageEmitThrottles, threadID)
 	r.mu.Unlock()
 
+	if hasPendingUsage {
+		r.emit("provider:usage", pendingUsage)
+	}
 	if orphanSpan != nil {
 		orphanSpan.End()
 	}

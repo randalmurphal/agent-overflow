@@ -12,19 +12,31 @@ const (
 	// Frontend consumers preserve delta ordering: any pending deltas
 	// for the same row flush BEFORE the meta replaces the row, so
 	// the meta lands against text the user has already seen.
-	itemStreamActionMeta = "meta"
+	itemStreamActionMeta  = "meta"
+	itemStreamActionPatch = "patch"
 )
 
+// ItemPatchFields carries the mutable subset of an Item for a patch event.
+// Non-nil pointer fields mean "set to this value"; nil means "unchanged".
+type ItemPatchFields struct {
+	Status    *string `json:"status,omitempty"`
+	Summary   *string `json:"summary,omitempty"`
+	Meta      *string `json:"meta,omitempty"`
+	Decision  *string `json:"decision,omitempty"`
+	UpdatedAt *int64  `json:"updatedAt,omitempty"`
+}
+
 type ItemStreamEvent struct {
-	Action           string      `json:"action"`
-	ThreadID         string      `json:"threadId"`
-	Item             *store.Item `json:"item,omitempty"`
-	CountsAsActivity *bool       `json:"countsAsActivity,omitempty"`
-	ItemID           string      `json:"itemId,omitempty"`
-	Kind             string      `json:"kind,omitempty"`
-	Delta            string      `json:"delta,omitempty"`
-	Meta             string      `json:"meta,omitempty"`
-	UpdatedAt        int64       `json:"updatedAt,omitempty"`
+	Action           string           `json:"action"`
+	ThreadID         string           `json:"threadId"`
+	Item             *store.Item      `json:"item,omitempty"`
+	CountsAsActivity *bool            `json:"countsAsActivity,omitempty"`
+	ItemID           string           `json:"itemId,omitempty"`
+	Kind             string           `json:"kind,omitempty"`
+	Delta            string           `json:"delta,omitempty"`
+	Meta             string           `json:"meta,omitempty"`
+	Patch            *ItemPatchFields `json:"patch,omitempty"`
+	UpdatedAt        int64            `json:"updatedAt,omitempty"`
 }
 
 func NewItemStreamUpsert(item store.Item) ItemStreamEvent {
@@ -59,5 +71,15 @@ func newItemStreamMeta(threadID, itemID, kind, meta string, updatedAt int64) Ite
 		Kind:      kind,
 		Meta:      meta,
 		UpdatedAt: updatedAt,
+	}
+}
+
+func newItemStreamPatch(threadID, itemID, kind string, patch ItemPatchFields) ItemStreamEvent {
+	return ItemStreamEvent{
+		Action:   itemStreamActionPatch,
+		ThreadID: threadID,
+		ItemID:   itemID,
+		Kind:     kind,
+		Patch:    &patch,
 	}
 }

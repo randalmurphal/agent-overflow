@@ -6,6 +6,7 @@ import type {
   ContextWindow,
   ItemDeltaEvent,
   ItemMetaEvent,
+  ItemPatchEvent,
   PendingInteractiveRequests,
   TodoStep,
   ProviderStatusEvent,
@@ -68,6 +69,7 @@ import {
   type ApplyItemUpsertsToWindowResult,
   applyItemUpsertsToWindow,
   compareItemsByTimelinePosition,
+  itemsAreEqual,
   itemsForThread,
   mergeItemsById,
   mergeMissingItemsById,
@@ -1830,6 +1832,22 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // not bump updated_at, and we don't want this re-render to look
       // like a content change to virtua / threadItemCache.
       items[index] = { ...current, meta: evt.meta };
+    },
+
+    applyItemPatch(evt: ItemPatchEvent): void {
+      if (!evt.itemId) return;
+      if (thread && evt.threadId !== thread.id) return;
+      const index = itemIndexById.get(evt.itemId);
+      if (index === undefined) return;
+      const current = items[index];
+      const next = { ...current };
+      if (evt.patch.status !== undefined) next.status = evt.patch.status;
+      if (evt.patch.summary !== undefined) next.summary = evt.patch.summary;
+      if (evt.patch.meta !== undefined) next.meta = evt.patch.meta;
+      if (evt.patch.decision !== undefined) next.decision = evt.patch.decision;
+      if (evt.patch.updatedAt !== undefined) next.updatedAt = evt.patch.updatedAt;
+      if (itemsAreEqual(current, next)) return;
+      items[index] = next;
     },
 
     // ---- Per-row UI state (survives virtua remount) ----

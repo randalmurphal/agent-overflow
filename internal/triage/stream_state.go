@@ -312,11 +312,12 @@ func (r *Router) finishSettle(threadID string) {
 
 // doSettleStreamingText is the heavy body of the text-block settle:
 // flush the stream-persist buffer, re-read the item from SQLite,
-// stamp final status + pathRefs, persist, then run finishSettle.
-// Called by both the sync wrapper (settleStreamingText, used inside
-// settleTurnStreaming) and the async wrapper
-// (settleStreamingTextAsync, used at content-block-stop on the
-// provider read-loop). Safe to run in any goroutine.
+// stamp final status + pathRefs, persist only the changed fields, and
+// emit a lightweight patch instead of the full Item. Called by both the
+// sync wrapper (settleStreamingText, used inside settleTurnStreaming)
+// and the async wrapper (settleStreamingTextAsync, used at
+// content-block-stop on the provider read-loop). Safe to run in any
+// goroutine.
 func (r *Router) doSettleStreamingText(threadID, itemID, status, finalContent string, finalContentPresent bool) error {
 	// finishSettle MUST fire whether we persist successfully, find no
 	// row, or find a row that already settled. Each of those still
@@ -341,18 +342,25 @@ func (r *Router) doSettleStreamingText(threadID, itemID, status, finalContent st
 	if item.Status != statusStreaming {
 		return nil
 	}
-	item.Status = status
 	if finalContentPresent {
 		item.Summary = finalContent
 	}
 	if status == statusErrored {
 		item.Summary = interruptedSummary(item.Summary)
 	}
-	item.UpdatedAt = time.Now().UnixMilli()
-	// Stamp the Go-validated path allowlist onto item.Meta before
-	// persisting (see enrichPathRefs).
+	now := time.Now().UnixMilli()
 	r.enrichPathRefs(threadID, &item)
-	return r.persistItem(item, nil)
+
+	update := store.ItemPartialUpdate{
+		Status:    &status,
+		Meta:      &item.Meta,
+		UpdatedAt: &now,
+	}
+	summaryChanged := finalContentPresent || status == statusErrored
+	if summaryChanged {
+		update.Summary = &item.Summary
+	}
+	return r.persistItemFieldsAndPatch(threadID, itemID, item.Kind, update)
 }
 
 // settleStreamingText is the synchronous text-block settle. Used by
@@ -760,20 +768,25 @@ func (r *Router) doSettleStreamingThinking(threadID, itemID, status, finalConten
 	if item.Status != statusStreaming {
 		return nil
 	}
-	item.Status = status
-	item.UpdatedAt = time.Now().UnixMilli()
+	now := time.Now().UnixMilli()
+	update := store.ItemPartialUpdate{
+		Status:    &status,
+		UpdatedAt: &now,
+	}
 	if finalContentPresent {
-		item.Summary = thinkingSummaryPreview(finalContent)
+		summary := thinkingSummaryPreview(finalContent)
+		update.Summary = &summary
 		if item.PayloadID != "" {
-			if err := r.store.ReplacePayloadData(item.PayloadID, []byte(finalContent), item.PayloadMeta, item.UpdatedAt); err != nil {
+			if err := r.store.ReplacePayloadData(item.PayloadID, []byte(finalContent), item.PayloadMeta, now); err != nil {
 				return fmt.Errorf("thinking final replace payload %s: %w", item.PayloadID, err)
 			}
 		}
 	}
 	if status == statusErrored {
-		item.Summary = interruptedSummary(item.Summary)
+		summary := interruptedSummary(item.Summary)
+		update.Summary = &summary
 	}
-	return r.persistItem(item, nil)
+	return r.persistItemFieldsAndPatch(threadID, itemID, item.Kind, update)
 }
 
 func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope string, status string) error {

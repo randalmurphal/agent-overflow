@@ -10,6 +10,7 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // WorktreeStatus describes a worktree's safety classification for the cleanup
@@ -347,7 +348,7 @@ func (a *App) RemoveOtherWorktree(threadID, worktreePath string, force bool) err
 		// worktree path until the user navigates. The caller's pane gets a
 		// redundant echo (the binding return already syncs it), which the
 		// pane store treats as idempotent.
-		a.emitEvent("thread:updated", t)
+		a.emitEvent("thread:updated", triage.ThreadUpdateEvent{Action: "full", Thread: &t})
 		if _, err := a.restartSessionIfAffected(id, "workspace"); err != nil {
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session refresh failed: %w", id, err))
 			continue

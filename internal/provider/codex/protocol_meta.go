@@ -17,7 +17,6 @@ func enrichItemMeta(params json.RawMessage) json.RawMessage {
 }
 
 func enrichItemMetaFromItem(params json.RawMessage, item map[string]json.RawMessage) json.RawMessage {
-	metaParams := params
 	source := ""
 	status := ""
 	processID := ""
@@ -42,38 +41,18 @@ func enrichItemMetaFromItem(params json.RawMessage, item map[string]json.RawMess
 	}
 	if item != nil {
 		mergeMap(extras, codexItemMetaExtras(item))
-		metaParams = stripImageGenerationResultFromMeta(params, item)
+		if itemID := readRawString(item, "id"); itemID != "" {
+			extras["itemId"] = itemID
+		}
 	}
 	if len(extras) == 0 {
-		return metaParams
+		return nil
 	}
-	return mergeMetaKeys(metaParams, extras)
-}
-
-func stripImageGenerationResultFromMeta(params json.RawMessage, item map[string]json.RawMessage) json.RawMessage {
-	itemType := readRawString(item, "type")
-	if itemType != "imageGeneration" && itemType != "image_generation" {
-		return params
-	}
-	if _, ok := item["result"]; !ok {
-		return params
-	}
-	strippedItem := make(map[string]json.RawMessage, len(item)-1)
-	for key, raw := range item {
-		if key == "result" {
-			continue
-		}
-		strippedItem[key] = raw
-	}
-	itemJSON, err := json.Marshal(strippedItem)
+	result, err := json.Marshal(extras)
 	if err != nil {
 		return params
 	}
-	out, err := json.Marshal(map[string]json.RawMessage{"item": itemJSON})
-	if err != nil {
-		return params
-	}
-	return out
+	return result
 }
 
 func codexItemMetaExtras(item map[string]json.RawMessage) map[string]any {
@@ -148,7 +127,6 @@ func commandExecutionMetaExtras(item map[string]json.RawMessage) map[string]any 
 	}
 	if exitCode, ok := readRawInt(item, "exitCode"); ok {
 		extras["exitCode"] = exitCode
-		extras["exit_code"] = exitCode
 	}
 	if durationMs, ok := readRawInt(item, "durationMs"); ok {
 		extras["durationMs"] = durationMs

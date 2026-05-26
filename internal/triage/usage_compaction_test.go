@@ -159,6 +159,109 @@ func createCodexThread(t *testing.T, st *store.Store, id string) {
 	}
 }
 
+func TestThrottledEmitUsageSuppressesRapidEvents(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	fire := func(used int) {
+		t.Helper()
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventTokenUsage,
+			ThreadID:  "t1",
+			Meta:      mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: used, MaxTokens: 200000}),
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle: %v", err)
+		}
+	}
+
+	fire(50000)
+	fire(51000)
+	fire(52000)
+
+	usageEmits := filterEmissions(*emissions, "provider:usage")
+	if len(usageEmits) != 1 {
+		t.Fatalf("expected 1 emission (first passes, rest throttled), got %d", len(usageEmits))
+	}
+	first := usageEmits[0].data.(provider.UsageEvent)
+	if first.UsedTokens != 50000 {
+		t.Errorf("first emission tokens: got %d, want 50000", first.UsedTokens)
+	}
+}
+
+func TestFlushUsageEmitThrottleDrainsPending(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	fire := func(used int) {
+		t.Helper()
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventTokenUsage,
+			ThreadID:  "t1",
+			Meta:      mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: used, MaxTokens: 200000}),
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle: %v", err)
+		}
+	}
+
+	fire(50000)
+	fire(60000)
+
+	before := len(filterEmissions(*emissions, "provider:usage"))
+	if before != 1 {
+		t.Fatalf("pre-flush: expected 1 emission, got %d", before)
+	}
+
+	router.FlushUsageEmitThrottle("t1")
+
+	after := len(filterEmissions(*emissions, "provider:usage"))
+	if after != 2 {
+		t.Fatalf("post-flush: expected 2 emissions, got %d", after)
+	}
+	last := filterEmissions(*emissions, "provider:usage")[1].data.(provider.UsageEvent)
+	if last.UsedTokens != 60000 {
+		t.Errorf("flushed emission tokens: got %d, want 60000", last.UsedTokens)
+	}
+}
+
+func TestResetUsageEmitThrottleAllowsImmediateNextEmit(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	fire := func(used int) {
+		t.Helper()
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventTokenUsage,
+			ThreadID:  "t1",
+			Meta:      mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: used, MaxTokens: 200000}),
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle: %v", err)
+		}
+	}
+
+	fire(50000)
+	fire(60000)
+
+	usageEmits := filterEmissions(*emissions, "provider:usage")
+	if len(usageEmits) != 1 {
+		t.Fatalf("pre-reset: expected 1 emission, got %d", len(usageEmits))
+	}
+
+	router.resetUsageEmitThrottle("t1")
+	fire(30000)
+
+	usageEmits = filterEmissions(*emissions, "provider:usage")
+	if len(usageEmits) != 2 {
+		t.Fatalf("post-reset: expected 2 emissions, got %d", len(usageEmits))
+	}
+	last := usageEmits[1].data.(provider.UsageEvent)
+	if last.UsedTokens != 30000 {
+		t.Errorf("post-reset emission tokens: got %d, want 30000", last.UsedTokens)
+	}
+}
+
 // Compile-time guard so the imports stay flagged as used even if a test
 // is removed.
 var _ = json.RawMessage{}

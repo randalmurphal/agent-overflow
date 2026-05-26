@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
 	"agent-overflow/internal/threadtitle"
+	"agent-overflow/internal/triage"
 )
 
 func (a *App) maybeGenerateThreadTitle(thread store.Thread, content string, hasPriorItems bool) {
@@ -172,12 +173,11 @@ func (a *App) applyGeneratedThreadTitle(threadID, title string) error {
 		return nil
 	}
 
-	// Only thread:updated is wired on the frontend; the historical
-	// provider:event fanout here was consumed by the retired test
-	// harness but never by the UI.
-	if thread, gerr := a.store.GetThread(threadID); gerr == nil {
-		a.emitEvent("thread:updated", thread)
-	}
+	a.emitEvent("thread:updated", triage.ThreadUpdateEvent{
+		Action: "patch",
+		ID:     threadID,
+		Title:  &title,
+	})
 	return nil
 }
 

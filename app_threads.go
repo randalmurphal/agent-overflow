@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/triage"
 
 	"github.com/google/uuid"
 )
@@ -380,9 +381,11 @@ func (a *App) RenameThread(id string, title string) error {
 	if err := a.store.UpdateTitle(id, title); err != nil {
 		return err
 	}
-	if updated, gerr := a.store.GetThread(id); gerr == nil {
-		a.emitEvent("thread:updated", updated)
-	}
+	a.emitEvent("thread:updated", triage.ThreadUpdateEvent{
+		Action: "patch",
+		ID:     id,
+		Title:  &title,
+	})
 	return nil
 }
 

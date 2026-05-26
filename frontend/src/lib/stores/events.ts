@@ -736,6 +736,15 @@ function applyItemStreamEvent(evt: ItemStreamEvent): void {
     if (!isBoundedString(evt.kind, 128)) return;
     if (!isBoundedString(evt.meta)) return;
     if (!isFiniteNumber(evt.updatedAt)) return;
+  } else if (evt.action === 'patch') {
+    if (!isBoundedString(evt.threadId, 512)) return;
+    if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
+    if (!evt.patch || typeof evt.patch !== 'object') return;
+    if (evt.patch.status !== undefined && !isBoundedString(evt.patch.status, 128)) return;
+    if (evt.patch.summary !== undefined && !isBoundedString(evt.patch.summary)) return;
+    if (evt.patch.meta !== undefined && !isBoundedString(evt.patch.meta)) return;
+    if (evt.patch.decision !== undefined && !isBoundedString(evt.patch.decision, 128)) return;
+    if (evt.patch.updatedAt !== undefined && !isFiniteNumber(evt.patch.updatedAt)) return;
   } else {
     return;
   }
@@ -829,6 +838,15 @@ function flushItemEventQueue(): void {
       }
       continue;
     }
+    if (evt.action === 'patch') {
+      flushPendingDeltas();
+      flushPendingUpserts();
+      for (const pane of iterPanes()) {
+        if (pane.threadId !== evt.threadId) continue;
+        pane.applyItemPatch(evt);
+      }
+      continue;
+    }
     if (evt.action !== 'delta') continue;
 
     flushPendingUpserts();
@@ -913,9 +931,29 @@ function applyProviderStatus(evt: ProviderStatusEvent): void {
   }
 }
 
-function applyThreadUpdated(updated: Thread): void {
-  if (!updated?.id) return;
-  syncThreadRow(updated);
+interface ThreadUpdateEvent {
+  action: string;
+  thread?: Thread;
+  id?: string;
+  title?: string;
+  model?: string;
+}
+
+function applyThreadUpdated(evt: ThreadUpdateEvent): void {
+  if (!evt) return;
+  if (evt.action === 'patch' && evt.id) {
+    const cached = getThreadById(evt.id)
+      ?? findPaneShowingThread(evt.id)?.thread;
+    if (!cached) return;
+    const merged = { ...cached };
+    if (evt.title !== undefined) merged.title = evt.title;
+    if (evt.model !== undefined) merged.model = evt.model;
+    syncThreadRow(merged);
+    return;
+  }
+  if (evt.thread?.id) {
+    syncThreadRow(evt.thread);
+  }
 }
 
 /**
@@ -1242,7 +1280,7 @@ export function setupEventListeners(): () => void {
     },
   );
 
-  const cancelThreadUpdated = wailsEventOn<Thread>('thread:updated', applyThreadUpdated);
+  const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', applyThreadUpdated);
 
   // provider:default_swapped — backend auto-flipped the default
   // provider because the saved one was not_found and the other was

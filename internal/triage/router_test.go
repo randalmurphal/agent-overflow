@@ -1090,6 +1090,22 @@ func TestModelReroutedUpdatesThread(t *testing.T) {
 	if len(*emissions) != 1 || (*emissions)[0].eventName != "thread:updated" {
 		t.Fatalf("expected thread:updated emission for model reroute, got %+v", *emissions)
 	}
+	tue := (*emissions)[0].data.(ThreadUpdateEvent)
+	if tue.Action != "patch" {
+		t.Fatalf("expected action=patch, got %q", tue.Action)
+	}
+	if tue.ID != "t1" {
+		t.Fatalf("expected id=t1, got %q", tue.ID)
+	}
+	if tue.Model == nil || *tue.Model != "gpt-5.4" {
+		t.Fatalf("expected model patch to be gpt-5.4, got %v", tue.Model)
+	}
+	if tue.Title != nil {
+		t.Fatalf("title must be nil in model-only patch, got %v", tue.Title)
+	}
+	if tue.Thread != nil {
+		t.Fatalf("thread must be nil in patch event, got non-nil")
+	}
 }
 
 func TestThreadRenamedUpdatesThread(t *testing.T) {
@@ -1115,6 +1131,22 @@ func TestThreadRenamedUpdatesThread(t *testing.T) {
 	}
 	if len(*emissions) != 1 || (*emissions)[0].eventName != "thread:updated" {
 		t.Fatalf("expected thread:updated emission for thread rename, got %+v", *emissions)
+	}
+	tue := (*emissions)[0].data.(ThreadUpdateEvent)
+	if tue.Action != "patch" {
+		t.Fatalf("expected action=patch, got %q", tue.Action)
+	}
+	if tue.ID != "t1" {
+		t.Fatalf("expected id=t1, got %q", tue.ID)
+	}
+	if tue.Title == nil || *tue.Title != "New Title" {
+		t.Fatalf("expected title patch to be 'New Title', got %v", tue.Title)
+	}
+	if tue.Model != nil {
+		t.Fatalf("model must be nil in title-only patch, got %v", tue.Model)
+	}
+	if tue.Thread != nil {
+		t.Fatalf("thread must be nil in patch event, got non-nil")
 	}
 }
 
@@ -1673,6 +1705,21 @@ func filterItemEventUpserts(emissions []emitted) []store.Item {
 			continue
 		}
 		out = append(out, *event.Item)
+	}
+	return out
+}
+
+func filterItemEventPatches(emissions []emitted) []ItemStreamEvent {
+	out := make([]ItemStreamEvent, 0)
+	for _, e := range emissions {
+		if e.eventName != "provider:item_event" {
+			continue
+		}
+		event, ok := e.data.(ItemStreamEvent)
+		if !ok || event.Action != itemStreamActionPatch || event.Patch == nil {
+			continue
+		}
+		out = append(out, event)
 	}
 	return out
 }
@@ -2268,8 +2315,11 @@ func TestReasoningDeltasPersistOnTurnComplete(t *testing.T) {
 		t.Fatalf("status after turn complete: got %q, want completed", items[0].Status)
 	}
 
-	if len(filterItemEventUpserts(*emissions)) < 2 {
-		t.Fatalf("expected initial streaming upsert plus settle upsert, got %+v", *emissions)
+	if len(filterItemEventUpserts(*emissions)) < 1 {
+		t.Fatalf("expected initial streaming upsert, got %+v", *emissions)
+	}
+	if len(filterItemEventPatches(*emissions)) < 1 {
+		t.Fatalf("expected settle patch, got %+v", *emissions)
 	}
 }
 
@@ -2503,8 +2553,18 @@ func TestTurnCompleteWithAccumulatedText(t *testing.T) {
 	}
 
 	upserts := filterItemEventUpserts(*emissions)
-	if len(upserts) != 2 {
-		t.Errorf("expected initial streaming upsert plus settle upsert, got %d", len(upserts))
+	if len(upserts) != 1 {
+		t.Errorf("expected 1 initial streaming upsert (settle is a patch), got %d", len(upserts))
+	}
+	patches := filterItemEventPatches(*emissions)
+	if len(patches) != 1 {
+		t.Errorf("expected 1 settle patch, got %d", len(patches))
+	}
+	if len(patches) > 0 {
+		patch := patches[0]
+		if patch.Patch == nil || patch.Patch.Status == nil || *patch.Patch.Status != "completed" {
+			t.Errorf("settle patch should set status=completed, got %+v", patch.Patch)
+		}
 	}
 }
 
@@ -3569,5 +3629,91 @@ func TestHandleEventSubagentNotification_EmitsPassthrough(t *testing.T) {
 	}
 	if string(payload.Meta) != string(meta) {
 		t.Errorf("payload.Meta = %q, want %q (raw passthrough)", string(payload.Meta), string(meta))
+	}
+}
+
+func TestPersistItemFieldsAndPatch_NoEmitOnStoreError(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	status := "completed"
+	err := router.persistItemFieldsAndPatch("t1", "nonexistent-item", "assistant_text", store.ItemPartialUpdate{
+		Status: &status,
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent item, got nil")
+	}
+	patches := filterItemEventPatches(*emissions)
+	if len(patches) != 0 {
+		t.Fatalf("expected 0 patch emissions on store error, got %d", len(patches))
+	}
+}
+
+func TestPersistItemFieldsAndPatch_EmitsPatchOnSuccess(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	now := time.Now().UnixMilli()
+	if _, err := st.AppendItem(store.Item{
+		ID:        "text:0:0",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "assistant_text",
+		Role:      "assistant",
+		Status:    "streaming",
+		Summary:   "hello world",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("append item: %v", err)
+	}
+
+	newStatus := "completed"
+	newMeta := `{"pathRefs":[]}`
+	newUpdatedAt := now + 1000
+	if err := router.persistItemFieldsAndPatch("t1", "text:0:0", "assistant_text", store.ItemPartialUpdate{
+		Status:    &newStatus,
+		Meta:      &newMeta,
+		UpdatedAt: &newUpdatedAt,
+	}); err != nil {
+		t.Fatalf("persist and patch: %v", err)
+	}
+
+	patches := filterItemEventPatches(*emissions)
+	if len(patches) != 1 {
+		t.Fatalf("expected 1 patch emission, got %d", len(patches))
+	}
+	p := patches[0]
+	if p.ItemID != "text:0:0" {
+		t.Errorf("patch itemId = %q, want text:0:0", p.ItemID)
+	}
+	if p.Kind != "assistant_text" {
+		t.Errorf("patch kind = %q, want assistant_text", p.Kind)
+	}
+	if p.Patch.Status == nil || *p.Patch.Status != "completed" {
+		t.Errorf("patch status = %v, want completed", p.Patch.Status)
+	}
+	if p.Patch.Meta == nil || *p.Patch.Meta != `{"pathRefs":[]}` {
+		t.Errorf("patch meta = %v, want {\"pathRefs\":[]}", p.Patch.Meta)
+	}
+	if p.Patch.UpdatedAt == nil || *p.Patch.UpdatedAt != newUpdatedAt {
+		t.Errorf("patch updatedAt = %v, want %d", p.Patch.UpdatedAt, newUpdatedAt)
+	}
+	if p.Patch.Summary != nil {
+		t.Errorf("patch summary must be nil when not updated, got %v", p.Patch.Summary)
+	}
+
+	item, found, err := st.GetThreadItem("t1", "text:0:0")
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	if !found {
+		t.Fatal("item not found after update")
+	}
+	if item.Status != "completed" {
+		t.Errorf("stored status = %q, want completed", item.Status)
+	}
+	if item.Summary != "hello world" {
+		t.Errorf("stored summary must be unchanged, got %q", item.Summary)
 	}
 }

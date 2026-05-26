@@ -155,6 +155,19 @@ export interface ItemMetaEvent {
   updatedAt: number;
 }
 
+export interface ItemPatchEvent {
+  threadId: string;
+  itemId: string;
+  kind: string;
+  patch: {
+    status?: Item['status'];
+    summary?: string;
+    meta?: string;
+    decision?: Item['decision'];
+    updatedAt?: number;
+  };
+}
+
 export type ItemStreamEvent =
 	  | {
 	      action: 'upsert';
@@ -163,7 +176,8 @@ export type ItemStreamEvent =
 	      countsAsActivity?: boolean;
 	    }
 	  | ({ action: 'delta' } & ItemDeltaEvent)
-	  | ({ action: 'meta' } & ItemMetaEvent);
+	  | ({ action: 'meta' } & ItemMetaEvent)
+	  | ({ action: 'patch' } & ItemPatchEvent);
 
 /**
  * RateLimitsSnapshot mirrors the Go `provider.RateLimitsSnapshot` payload.

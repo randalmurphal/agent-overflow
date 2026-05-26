@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
 	"agent-overflow/internal/threadtitle"
+	"agent-overflow/internal/triage"
 )
 
 // TestMaybeGenerateThreadTitleAppliesGeneratedTitleAndEmits covers the happy
@@ -43,27 +44,30 @@ func TestMaybeGenerateThreadTitleAppliesGeneratedTitleAndEmits(t *testing.T) {
 		return "Reconnect spinner fix", nil
 	}
 
-	updates := make(chan store.Thread, 1)
+	updates := make(chan triage.ThreadUpdateEvent, 1)
 	app.emitEventFn = func(name string, data any) {
 		if name != "thread:updated" {
 			return
 		}
-		updated, ok := data.(store.Thread)
+		evt, ok := data.(triage.ThreadUpdateEvent)
 		if !ok {
-			t.Fatalf("thread:updated payload type = %T, want store.Thread", data)
+			t.Fatalf("thread:updated payload type = %T, want triage.ThreadUpdateEvent", data)
 		}
-		updates <- updated
+		updates <- evt
 	}
 
 	app.maybeGenerateThreadTitle(thread, "fix the reconnect bug", false)
 
 	select {
-	case updated := <-updates:
-		if updated.ID != thread.ID {
-			t.Fatalf("updated threadID = %q, want %q", updated.ID, thread.ID)
+	case evt := <-updates:
+		if evt.Action != "patch" {
+			t.Fatalf("expected patch action, got %q", evt.Action)
 		}
-		if updated.Title != "Reconnect spinner fix" {
-			t.Fatalf("updated title = %q", updated.Title)
+		if evt.ID != thread.ID {
+			t.Fatalf("updated threadID = %q, want %q", evt.ID, thread.ID)
+		}
+		if evt.Title == nil || *evt.Title != "Reconnect spinner fix" {
+			t.Fatalf("updated title = %v", evt.Title)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for thread:updated event")
@@ -97,10 +101,10 @@ func TestMaybeGenerateThreadTitleRunsForCodexThread(t *testing.T) {
 		return "Codex generated title", nil
 	}
 
-	updates := make(chan store.Thread, 1)
+	updates := make(chan triage.ThreadUpdateEvent, 1)
 	app.emitEventFn = func(name string, data any) {
 		if name == "thread:updated" {
-			updates <- data.(store.Thread)
+			updates <- data.(triage.ThreadUpdateEvent)
 		}
 	}
 
@@ -114,8 +118,8 @@ func TestMaybeGenerateThreadTitleRunsForCodexThread(t *testing.T) {
 
 	select {
 	case updated := <-updates:
-		if updated.Title != "Codex generated title" {
-			t.Fatalf("updated title = %q", updated.Title)
+		if updated.Title == nil || *updated.Title != "Codex generated title" {
+			t.Fatalf("updated title = %v", updated.Title)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for thread:updated")
@@ -231,10 +235,10 @@ func TestMaybeGenerateThreadTitleSwallowsSubprocessError(t *testing.T) {
 		return "", errors.New("subprocess boom")
 	}
 
-	updates := make(chan store.Thread, 1)
+	updates := make(chan triage.ThreadUpdateEvent, 1)
 	app.emitEventFn = func(name string, data any) {
 		if name == "thread:updated" {
-			updates <- data.(store.Thread)
+			updates <- data.(triage.ThreadUpdateEvent)
 		}
 	}
 
@@ -281,10 +285,10 @@ func TestMaybeGenerateThreadTitleIgnoresEmptyResponse(t *testing.T) {
 		return "", nil
 	}
 
-	updates := make(chan store.Thread, 1)
+	updates := make(chan triage.ThreadUpdateEvent, 1)
 	app.emitEventFn = func(name string, data any) {
 		if name == "thread:updated" {
-			updates <- data.(store.Thread)
+			updates <- data.(triage.ThreadUpdateEvent)
 		}
 	}
 
@@ -648,10 +652,10 @@ func TestApplyGeneratedThreadTitleCompareAndSwapSkipsWhenTitleChanged(t *testing
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	updates := make(chan store.Thread, 1)
+	updates := make(chan triage.ThreadUpdateEvent, 1)
 	app.emitEventFn = func(name string, data any) {
 		if name == "thread:updated" {
-			updates <- data.(store.Thread)
+			updates <- data.(triage.ThreadUpdateEvent)
 		}
 	}
 

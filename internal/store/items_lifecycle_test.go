@@ -736,6 +736,117 @@ func TestAppendItemSummaryTailKeepsLatestRunes(t *testing.T) {
 	}
 }
 
+func TestUpdateItemFieldsPartialUpdate(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: 1000, UpdatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "i1", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Status: "streaming",
+		Summary: "Hello world", Meta: `{"pathRefs":[]}`, Decision: "",
+		CreatedAt: 2000, UpdatedAt: 2000,
+	}); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+
+	t.Run("status-only preserves other fields", func(t *testing.T) {
+		status := "completed"
+		ts := int64(3000)
+		if err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{
+			Status: &status, UpdatedAt: &ts,
+		}); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		got, found, err := s.GetThreadItem("t", "i1")
+		if err != nil || !found {
+			t.Fatalf("get: err=%v found=%v", err, found)
+		}
+		if got.Status != "completed" {
+			t.Errorf("status: got %q, want %q", got.Status, "completed")
+		}
+		if got.Summary != "Hello world" {
+			t.Errorf("summary should be preserved: got %q", got.Summary)
+		}
+		if got.Meta != `{"pathRefs":[]}` {
+			t.Errorf("meta should be preserved: got %q", got.Meta)
+		}
+		if got.UpdatedAt != 3000 {
+			t.Errorf("updatedAt: got %d, want 3000", got.UpdatedAt)
+		}
+	})
+
+	t.Run("meta-only preserves other fields", func(t *testing.T) {
+		meta := `{"pathRefs":[{"path":"foo.go"}]}`
+		if err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{
+			Meta: &meta,
+		}); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		got, found, err := s.GetThreadItem("t", "i1")
+		if err != nil || !found {
+			t.Fatalf("get: err=%v found=%v", err, found)
+		}
+		if got.Meta != meta {
+			t.Errorf("meta: got %q, want %q", got.Meta, meta)
+		}
+		if got.Status != "completed" {
+			t.Errorf("status should be preserved: got %q", got.Status)
+		}
+		if got.Summary != "Hello world" {
+			t.Errorf("summary should be preserved: got %q", got.Summary)
+		}
+	})
+
+	t.Run("all fields", func(t *testing.T) {
+		status := "errored"
+		summary := "Error occurred"
+		meta := `{"error":true}`
+		decision := "declined"
+		ts := int64(5000)
+		if err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{
+			Status: &status, Summary: &summary, Meta: &meta, Decision: &decision, UpdatedAt: &ts,
+		}); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		got, found, err := s.GetThreadItem("t", "i1")
+		if err != nil || !found {
+			t.Fatalf("get: err=%v found=%v", err, found)
+		}
+		if got.Status != "errored" {
+			t.Errorf("status: got %q", got.Status)
+		}
+		if got.Summary != "Error occurred" {
+			t.Errorf("summary: got %q", got.Summary)
+		}
+		if got.Meta != `{"error":true}` {
+			t.Errorf("meta: got %q", got.Meta)
+		}
+		if got.Decision != "declined" {
+			t.Errorf("decision: got %q", got.Decision)
+		}
+		if got.UpdatedAt != 5000 {
+			t.Errorf("updatedAt: got %d", got.UpdatedAt)
+		}
+	})
+
+	t.Run("empty update errors", func(t *testing.T) {
+		if err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{}); err == nil {
+			t.Fatal("expected error for empty update")
+		}
+	})
+
+	t.Run("nonexistent row errors", func(t *testing.T) {
+		status := "completed"
+		if err := s.UpdateItemFields("t", "nonexistent", ItemPartialUpdate{Status: &status}); err == nil {
+			t.Fatal("expected error for nonexistent row")
+		}
+	})
+}
+
 // BenchmarkTextDeltaGrowth approximates the streaming hot path: a
 // single row receives many deltas totalling the same final size. With
 // the old GetThreadItem → concat → UpsertItem path the work was

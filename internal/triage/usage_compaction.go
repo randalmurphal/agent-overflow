@@ -10,12 +10,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
 )
+
+const usageEmitMinInterval = 500 * time.Millisecond
+
+type usageEmitThrottle struct {
+	lastEmittedAt time.Time
+	pending       *provider.UsageEvent
+}
 
 const maxProviderCompactionIDLength = 420
 
@@ -85,6 +93,7 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 	if err := r.persistItem(item, nil); err != nil {
 		return err
 	}
+	r.resetUsageEmitThrottle(evt.ThreadID)
 	if window, ok := decodeContextWindow(evt.Meta); ok {
 		return r.persistAndEmitContextWindow(evt.ThreadID, window)
 	}
@@ -165,7 +174,7 @@ func (r *Router) persistAndEmitContextWindow(threadID string, window provider.Co
 	if err := r.store.UpdateLastTokenUsage(threadID, encodeContextWindow(window)); err != nil {
 		return fmt.Errorf("token usage persist: %w", err)
 	}
-	r.emit("provider:usage", provider.UsageEvent{
+	evt := provider.UsageEvent{
 		Action:                "usage",
 		ThreadID:              threadID,
 		UsedTokens:            window.UsedTokens,
@@ -174,6 +183,66 @@ func (r *Router) persistAndEmitContextWindow(threadID string, window provider.Co
 		AutoCompactPercent:    window.AutoCompactPercent,
 		AutoCompactTokenLimit: window.AutoCompactTokenLimit,
 		Exceeded:              window.Exceeded,
-	})
+	}
+	r.throttledEmitUsage(threadID, evt)
 	return nil
+}
+
+// throttledEmitUsage rate-limits provider:usage emissions to at most one
+// per usageEmitMinInterval per thread. The context meter changes gradually;
+// updating it faster than ~2Hz has no visible benefit but costs wire bytes
+// and ring buffer slots. Caller must hold NO lock (emit may fan out).
+func (r *Router) throttledEmitUsage(threadID string, evt provider.UsageEvent) {
+	now := time.Now()
+	r.mu.Lock()
+	throttle := r.usageEmitThrottles[threadID]
+	if throttle == nil {
+		throttle = &usageEmitThrottle{}
+		r.usageEmitThrottles[threadID] = throttle
+	}
+	if now.Sub(throttle.lastEmittedAt) >= usageEmitMinInterval {
+		throttle.lastEmittedAt = now
+		throttle.pending = nil
+		r.mu.Unlock()
+		r.emit("provider:usage", evt)
+		return
+	}
+	throttle.pending = &evt
+	r.mu.Unlock()
+}
+
+// takeUsageEmitPendingLocked drains the pending usage event for a thread
+// under r.mu. Returns the event and true if there was a pending event,
+// or a zero value and false otherwise. Caller must hold r.mu and emit
+// the returned event AFTER releasing the lock.
+func (r *Router) takeUsageEmitPendingLocked(threadID string) (provider.UsageEvent, bool) {
+	throttle := r.usageEmitThrottles[threadID]
+	if throttle == nil || throttle.pending == nil {
+		return provider.UsageEvent{}, false
+	}
+	evt := *throttle.pending
+	throttle.pending = nil
+	throttle.lastEmittedAt = time.Now()
+	return evt, true
+}
+
+// FlushUsageEmitThrottle emits any pending throttled usage event for
+// a thread. Called at turn-complete to ensure the final context-meter
+// reading reaches the frontend.
+func (r *Router) FlushUsageEmitThrottle(threadID string) {
+	r.mu.Lock()
+	evt, ok := r.takeUsageEmitPendingLocked(threadID)
+	r.mu.Unlock()
+	if ok {
+		r.emit("provider:usage", evt)
+	}
+}
+
+// resetUsageEmitThrottle clears the throttle for a thread so the next
+// usage event emits immediately. Used at compaction boundaries where the
+// context meter reading jumps discontinuously.
+func (r *Router) resetUsageEmitThrottle(threadID string) {
+	r.mu.Lock()
+	delete(r.usageEmitThrottles, threadID)
+	r.mu.Unlock()
 }

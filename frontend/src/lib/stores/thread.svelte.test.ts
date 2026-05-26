@@ -2996,6 +2996,112 @@ describe('createThreadPane', () => {
     expect(pane.latestSettledTurn).toBeNull();
   });
 
+  describe('applyItemPatch', () => {
+    it('applies status-only patch while preserving all other fields', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-patch' }));
+      const original = makeItem({
+        id: 'text:0:0',
+        threadId: 'thread-patch',
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'hello world, this is a long response',
+        meta: '{"pathRefs":[]}',
+        updatedAt: 1000,
+      });
+      pane.upsertItem(original);
+      expect(pane.items).toHaveLength(1);
+
+      pane.applyItemPatch({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        patch: { status: 'completed', updatedAt: 2000 },
+      });
+
+      const patched = pane.items[0];
+      expect(patched.status).toBe('completed');
+      expect(patched.updatedAt).toBe(2000);
+      expect(patched.summary).toBe('hello world, this is a long response');
+      expect(patched.meta).toBe('{"pathRefs":[]}');
+      expect(patched.kind).toBe('assistant_text');
+      expect(patched.role).toBe('assistant');
+    });
+
+    it('is a no-op for an unknown item id', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-patch' }));
+      pane.upsertItem(makeItem({ id: 'text:0:0', threadId: 'thread-patch' }));
+      const before = pane.items[0];
+
+      pane.applyItemPatch({
+        threadId: 'thread-patch',
+        itemId: 'nonexistent',
+        kind: 'assistant_text',
+        patch: { status: 'completed' },
+      });
+
+      expect(pane.items[0]).toBe(before);
+    });
+
+    it('is a no-op when patch changes nothing', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-patch' }));
+      const original = makeItem({
+        id: 'text:0:0',
+        threadId: 'thread-patch',
+        status: 'completed',
+        summary: 'hello',
+      });
+      pane.upsertItem(original);
+      const before = pane.items[0];
+
+      pane.applyItemPatch({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        patch: { status: 'completed', summary: 'hello' },
+      });
+
+      expect(pane.items[0]).toBe(before);
+    });
+
+    it('ignores patches for a different thread', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-a' }));
+      pane.upsertItem(makeItem({ id: 'text:0:0', threadId: 'thread-a', status: 'streaming' }));
+
+      pane.applyItemPatch({
+        threadId: 'thread-b',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        patch: { status: 'completed' },
+      });
+
+      expect(pane.items[0].status).toBe('streaming');
+    });
+
+    it('applies meta and decision patch fields', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-patch' }));
+      pane.upsertItem(makeItem({
+        id: 'tool:0:0',
+        threadId: 'thread-patch',
+        kind: 'tool_call',
+        meta: '{"toolName":"Bash"}',
+      }));
+
+      pane.applyItemPatch({
+        threadId: 'thread-patch',
+        itemId: 'tool:0:0',
+        kind: 'tool_call',
+        patch: {
+          meta: '{"toolName":"Bash","task_id":"t1"}',
+          decision: 'approved',
+        },
+      });
+
+      expect(pane.items[0].meta).toBe('{"toolName":"Bash","task_id":"t1"}');
+      expect(pane.items[0].decision).toBe('approved');
+    });
+  });
+
   it('appendSubagentNotification records pass-through payloads, bounded', () => {
     const pane = createThreadPane();
     for (let i = 0; i < 40; i++) {

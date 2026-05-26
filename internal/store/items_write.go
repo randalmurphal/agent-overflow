@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 func (s *Store) appendStreamingItemSummary(
@@ -448,6 +449,57 @@ func (s *Store) UpdateItemMeta(threadID, id, meta string) error {
 	return requireRowsAffected(
 		result,
 		fmt.Sprintf("store: update item meta %s/%s", threadID, id),
+	)
+}
+
+// ItemPartialUpdate describes a subset of mutable Item fields for a targeted
+// UPDATE. Non-nil pointer fields are written; nil fields are left unchanged.
+type ItemPartialUpdate struct {
+	Status    *string
+	Summary   *string
+	Meta      *string
+	Decision  *string
+	UpdatedAt *int64
+}
+
+// UpdateItemFields writes only the non-nil fields from update onto the
+// existing row identified by (threadID, id). Returns an error if the
+// row does not exist or no fields were specified.
+func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) error {
+	setClauses := make([]string, 0, 5)
+	args := make([]any, 0, 7)
+	if update.Status != nil {
+		setClauses = append(setClauses, "status = ?")
+		args = append(args, *update.Status)
+	}
+	if update.Summary != nil {
+		setClauses = append(setClauses, "summary = ?")
+		args = append(args, *update.Summary)
+	}
+	if update.Meta != nil {
+		setClauses = append(setClauses, "meta = ?")
+		args = append(args, *update.Meta)
+	}
+	if update.Decision != nil {
+		setClauses = append(setClauses, "decision = ?")
+		args = append(args, *update.Decision)
+	}
+	if update.UpdatedAt != nil {
+		setClauses = append(setClauses, "updated_at = ?")
+		args = append(args, *update.UpdatedAt)
+	}
+	if len(setClauses) == 0 {
+		return fmt.Errorf("store: update item fields %s/%s: no fields specified", threadID, id)
+	}
+	args = append(args, threadID, id)
+	query := "UPDATE items SET " + strings.Join(setClauses, ", ") + " WHERE thread_id = ? AND id = ?"
+	result, err := s.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("store: update item fields %s/%s: %w", threadID, id, err)
+	}
+	return requireRowsAffected(
+		result,
+		fmt.Sprintf("store: update item fields %s/%s", threadID, id),
 	)
 }
 

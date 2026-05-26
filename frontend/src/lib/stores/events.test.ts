@@ -963,13 +963,16 @@ describe('setupEventListeners', () => {
     getAllPanes().set('main', pane);
     await refreshThreads();
 
-    emitWailsEvent('thread:updated', makeThread({
-      id: 'thread-1',
-      title: 'New title',
-      model: 'claude-opus-4-1',
-      lastReadAt: 100,
-      latestTurnCompletedAt: 100,
-    }));
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({
+        id: 'thread-1',
+        title: 'New title',
+        model: 'claude-opus-4-1',
+        lastReadAt: 100,
+        latestTurnCompletedAt: 100,
+      }),
+    });
 
     expect(pane.thread?.title).toBe('New title');
     expect(pane.thread?.model).toBe('claude-opus-4-1');
@@ -1353,12 +1356,15 @@ describe('setupEventListeners', () => {
     await refreshThreads();
     await refreshProjects();
 
-    emitWailsEvent('thread:updated', makeThread({
-      id: 'thread-1',
-      projectId: 'project-1',
-      title: 'New title',
-      updatedAt: 100,
-    }));
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({
+        id: 'thread-1',
+        projectId: 'project-1',
+        title: 'New title',
+        updatedAt: 100,
+      }),
+    });
 
     expect(getThreads()[0]?.title).toBe('New title');
     expect(getThreads()[0]?.updatedAt).toBe(500);
@@ -1449,12 +1455,15 @@ describe('setupEventListeners', () => {
     ]);
     await refreshThreads();
 
-    emitWailsEvent('thread:updated', makeThread({
-      id: 'thread-1',
-      title: 'New title',
-      lastReadAt: 300,
-      latestTurnCompletedAt: 300,
-    }));
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({
+        id: 'thread-1',
+        title: 'New title',
+        lastReadAt: 300,
+        latestTurnCompletedAt: 300,
+      }),
+    });
 
     expect(getThreads()[0]?.title).toBe('New title');
     expect(getThreads()[0]?.lastReadAt).toBe(0);
