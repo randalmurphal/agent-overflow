@@ -4551,6 +4551,144 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(434);
     });
 
+    describe('content height oscillation during sentinel — browser auto-clamp', () => {
+      // When contentEl oscillates (-Npx then +Npx from async
+      // Streamdown typesetting), the browser auto-clamps scrollTop
+      // during the low point. The gate can't prevent this (native
+      // engine operation). When contentEl height restores, scrollTop
+      // is stranded at the clamped position and the sentinel sees
+      // diff > 0. Current behavior: the sentinel enters spring physics
+      // and visibly chases back to the original target — a 105px
+      // animation for zero net content change.
+      //
+      // Fix: track the target at sentinel entry. When the sentinel
+      // tick sees diff > 0 but target === sentinelEntryTarget, the
+      // oscillation returned to the same height — snap instantly
+      // instead of spring-chasing. When target !== sentinelEntryTarget,
+      // it's real content growth — spring-chase normally.
+
+      it('content oscillation returning to sentinel entry target snaps instead of springing', async () => {
+        setUiRenderTraceEnabled(true);
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        // Spring chases to target 500, arrives, enters sentinel.
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900); // target = 500
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame(); // past retain → sentinel
+        // Advance well past the sentinel snap age guard (50ms) so the
+        // oscillation snap is eligible. The trace showed ~180ms
+        // between sentinel entry and the oscillation.
+        while (mockNow < 500) await nextFrame();
+
+        // Content oscillation: -105 then +105 (async typesetting).
+        // The -105 makes browser auto-clamp scrollTop from 500 to 395.
+        geom.scrollHeight = 995; // scrollHeight - 105
+        geom.contentHeight = 795;
+        geom.scrollTop = 395; // browser auto-clamp: max = 995-600 = 395
+        ro.fire(contentEl, 795); // contentRO delta = -105
+
+        // Grow back immediately.
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900); // contentRO delta = +105, target back to 500
+
+        // Next sentinel tick should SNAP back to 500 (target ===
+        // sentinel entry target), not start a spring chase.
+        await nextFrame();
+
+        // DESIRED: scrollTop snapped to 500 in one frame.
+        expect(geom.scrollTop).toBe(500);
+      });
+
+      it('real content growth during sentinel still spring-chases normally', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        // Real content growth: target moves to a NEW value (not
+        // the sentinel entry value). Should spring-chase, not snap.
+        geom.scrollHeight = 1200;
+        geom.contentHeight = 1000;
+        ro.fire(contentEl, 1000); // target = 600
+
+        await nextFrame();
+        // Spring should be interpolating, not snapping.
+        expect(geom.scrollTop).toBeGreaterThan(500);
+        expect(geom.scrollTop).toBeLessThan(600);
+
+        await advanceUntil(() => geom.scrollTop === 600);
+      });
+
+      it('content oscillation to a DIFFERENT height spring-chases (not snap)', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        // Oscillation that does NOT return to sentinel entry value:
+        // target goes 500 → 400 → 520 (net +20px growth).
+        geom.scrollHeight = 1000;
+        geom.contentHeight = 800;
+        geom.scrollTop = 400;
+        ro.fire(contentEl, 800);
+        geom.scrollHeight = 1120;
+        geom.contentHeight = 920;
+        ro.fire(contentEl, 920); // target = 520 ≠ sentinelEntry(500)
+
+        // Should spring-chase to 520 (different target), not snap.
+        await nextFrame();
+        expect(geom.scrollTop).toBeGreaterThan(400);
+        expect(geom.scrollTop).toBeLessThan(520);
+        await advanceUntil(() => geom.scrollTop === 520);
+      });
+
+      it('estimate-correct pair during active chase still uses carve-out (no snap regression)', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        // Start a fresh spring chase (NOT in sentinel).
+        geom.scrollHeight = 1400;
+        geom.contentHeight = 1200;
+        ro.fire(contentEl, 1200); // target = 800
+        await nextFrame();
+        const midChase = geom.scrollTop;
+        expect(midChase).toBeGreaterThan(400);
+        expect(midChase).toBeLessThan(800);
+
+        // Estimate-correct pair mid-chase: +90 then -56.
+        geom.scrollHeight = 1490;
+        geom.contentHeight = 1290;
+        ro.fire(contentEl, 1290); // +90 → target = 890
+
+        geom.scrollHeight = 1434;
+        geom.contentHeight = 1234;
+        ro.fire(contentEl, 1234); // -56 → target = 834
+
+        // The -56 should NOT sync-pin (carve-out suppresses it
+        // because the spring is actively chasing, not in sentinel).
+        expect(geom.scrollTop).toBe(midChase);
+
+        // Spring should arrive at the corrected target.
+        await advanceUntil(() => geom.scrollTop === 834);
+      });
+    });
+
     it('spring stays sentinel-alive during streaming when arrived past the retain window — external writes suppressed', async () => {
       // The inter-chunk dead-zone bug: spring arrives, 350ms pass with
       // no new content (async shiki load, parseIncompleteMarkdown

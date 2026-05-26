@@ -533,6 +533,14 @@ export function createUseStickToBottomController(
   // because the symmetric spring now follows shrinks as well as growths.
   let lastTargetChangedAt = 0;
   let springStopRequested = false;
+  // The target when the sentinel first entered after a chase. When the
+  // sentinel tick sees diff > 0 but target === sentinelEntryTarget, the
+  // content oscillated and returned to the same height — snap instantly.
+  // -1 means not in sentinel. Only set on the FIRST sentinel entry
+  // after a chase (not on re-entry), so the value reflects the target
+  // at the moment the spring settled. Cleared on cancelSpring() and
+  // when the spring exits sentinel with a different target.
+  let sentinelEntryTarget = -1;
 
   // ===== Restore-snap consent state =====
   // One-shot flag the thread-switch entry point arms immediately before
@@ -922,6 +930,7 @@ export function createUseStickToBottomController(
     // fresh chase into thinking it's within the retain window right out
     // of the gate (matches the historical 80LoC-spring cleanup semantics).
     lastTargetChangedAt = 0;
+    sentinelEntryTarget = -1;
   }
 
   // Shared gate predicate. Used by both `startSpringIfNeeded` and the
@@ -975,24 +984,42 @@ export function createUseStickToBottomController(
       const diff = target - current;
 
       if (diff !== 0) {
-        velocity = (DEFAULT_SPRING.damping * velocity + DEFAULT_SPRING.stiffness * diff) / DEFAULT_SPRING.mass;
-        accumulated += velocity * dt;
-        const next = current + accumulated;
-        // Pre-clamp in JS so we know the post-state without a second
-        // layout read just to check whether the browser clamped. Cross-
-        // target clamps in EITHER direction count as kinematic
-        // overshoot: a positive-diff chase overshoots when
-        // `next > target`, a negative-diff chase (the symmetric branch
-        // that lets the spring follow shrinks) overshoots when
-        // `next < target`. Both clamp to `target` and zero `accumulated`
-        // below.
-        const crossedTarget =
-          (current < target && next > target)
-          || (current > target && next < target);
-        const clamped = crossedTarget ? target : next;
-        writeCaller = crossedTarget ? 'spring.overshoot' : 'spring.tick';
-        writeScrollTop(clamped);
-        if (scrollEl.scrollTop !== current) accumulated = 0;
+        // Content oscillation guard: if the sentinel was idle
+        // (sentinelEntryTarget set) and the target returned to the
+        // sentinel entry value, the content layer oscillated in
+        // height (-N then +N from async Streamdown typesetting /
+        // virtua row remount). The browser auto-clamped scrollTop
+        // during the low point (native engine operation that
+        // bypasses the property-descriptor gate), stranding scrollTop
+        // below the restored target. Snap back instantly — a spring
+        // chase for zero net content change is a visible artifact.
+        if (sentinelEntryTarget >= 0 && target === sentinelEntryTarget) {
+          writeCaller = 'spring.oscillationSnap';
+          writeScrollTop(target);
+          velocity = 0;
+          accumulated = 0;
+          sentinelEntryTarget = -1;
+        } else {
+          sentinelEntryTarget = -1;
+          velocity = (DEFAULT_SPRING.damping * velocity + DEFAULT_SPRING.stiffness * diff) / DEFAULT_SPRING.mass;
+          accumulated += velocity * dt;
+          const next = current + accumulated;
+          // Pre-clamp in JS so we know the post-state without a second
+          // layout read just to check whether the browser clamped. Cross-
+          // target clamps in EITHER direction count as kinematic
+          // overshoot: a positive-diff chase overshoots when
+          // `next > target`, a negative-diff chase (the symmetric branch
+          // that lets the spring follow shrinks) overshoots when
+          // `next < target`. Both clamp to `target` and zero `accumulated`
+          // below.
+          const crossedTarget =
+            (current < target && next > target)
+            || (current > target && next < target);
+          const clamped = crossedTarget ? target : next;
+          writeCaller = crossedTarget ? 'spring.overshoot' : 'spring.tick';
+          writeScrollTop(clamped);
+          if (scrollEl.scrollTop !== current) accumulated = 0;
+        }
       } else {
         // Nothing to chase — zero residual velocity so the arrival
         // check can pass. Without this, an external instant-pin
@@ -1042,6 +1069,9 @@ export function createUseStickToBottomController(
           }
           velocity = 0;
           accumulated = 0;
+          if (sentinelEntryTarget < 0) {
+            sentinelEntryTarget = target;
+          }
           springFrameHandle = requestFrame(tick);
           return;
         }
