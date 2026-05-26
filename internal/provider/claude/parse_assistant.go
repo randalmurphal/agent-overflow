@@ -738,12 +738,6 @@ func marshalToolMeta(toolName string, input json.RawMessage, isBackground bool, 
 	if assistantMessageID != "" {
 		fields["assistant_message_id"] = assistantMessageID
 	}
-	if !isBackground && (toolName == "Agent" || toolName == "Task") {
-		fields["is_inline_subagent"] = true
-		if assistantMessageID != "" {
-			fields["inline_subagent_group_id"] = assistantMessageID
-		}
-	}
 	out, _ := json.Marshal(fields)
 	return out
 }

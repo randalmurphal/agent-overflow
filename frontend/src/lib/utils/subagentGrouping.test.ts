@@ -8,7 +8,6 @@ import {
   timelineNodeItemId,
   timelineNodeKey,
   visibleTimelineItemIdForItem,
-  type InlineSubagentGroupNode,
   type SubagentGroupNode,
   type TimelineLeaf,
   type WaitGroupNode,
@@ -40,18 +39,15 @@ function codexWaitAgentMeta(): string {
   return toolMeta({ toolName: 'wait_agent', input: { tool: 'wait_agent' } });
 }
 
-function inlineAgent(id: string, itemIndex: number, assistantMessageID = 'assistant-1'): Item {
+function agentLaunch(id: string, itemIndex: number, toolName: 'Agent' | 'Task' = 'Agent'): Item {
   return mkItem({
     id,
     itemIndex,
     kind: 'tool_call',
-    toolName: 'Agent',
-    summary: 'Agent: investigate',
+    toolName,
+    summary: `${toolName}: investigate`,
     meta: toolMeta({
-      toolName: 'Agent',
-      assistant_message_id: assistantMessageID,
-      is_inline_subagent: true,
-      inline_subagent_group_id: assistantMessageID,
+      toolName,
       input: { description: 'investigate' },
     }),
   });
@@ -60,13 +56,6 @@ function inlineAgent(id: string, itemIndex: number, assistantMessageID = 'assist
 function expectGroup(node: TimelineNode): SubagentGroupNode {
   if (node.kind !== 'group') {
     throw new Error(`expected group node, got ${node.kind}`);
-  }
-  return node;
-}
-
-function expectInlineGroup(node: TimelineNode): InlineSubagentGroupNode {
-  if (node.kind !== 'inline_subagent_group') {
-    throw new Error(`expected inline_subagent_group node, got ${node.kind}`);
   }
   return node;
 }
@@ -95,36 +84,49 @@ describe('groupItemsBySubagent', () => {
     expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['a', 'b']);
   });
 
-  it('renders a Claude inline Agent in a stable wrapper before children arrive', () => {
-    const nodes = groupItemsBySubagent([inlineAgent('agent-1', 0)]);
-
-    const wrapper = expectInlineGroup(nodes[0]);
-    expect(wrapper.groupKey).toBe('inline:assistant-1:start');
-    expect(wrapper.memberCount).toBe(1);
-    expect(wrapper.members).toHaveLength(1);
-    expect(wrapper.members[0].parent.id).toBe('agent-1');
-    expect(wrapper.members[0].children).toEqual([]);
-    expect(wrapper.descendantCount).toBe(0);
-  });
-
-  it('groups sibling inline Agents from the same assistant message as peer cards in one wrapper', () => {
-    const nodes = groupItemsBySubagent([
-      inlineAgent('agent-1', 0, 'assistant-1'),
-      inlineAgent('agent-2', 1, 'assistant-1'),
-    ]);
+  it('renders a Claude foreground Agent as a group before children arrive', () => {
+    const nodes = groupItemsBySubagent([agentLaunch('agent-1', 0)]);
 
     expect(nodes).toHaveLength(1);
-    const wrapper = expectInlineGroup(nodes[0]);
-    expect(wrapper.groupKey).toBe('inline:assistant-1:start');
-    expect(wrapper.memberCount).toBe(2);
-    expect(wrapper.members.map((member) => member.parent.id)).toEqual(['agent-1', 'agent-2']);
-    expect(nodeContainsItem(wrapper, 'agent-2')).toBe(true);
+    const group = expectGroup(nodes[0]);
+    expect(group.parent.id).toBe('agent-1');
+    expect(group.children).toEqual([]);
+    expect(group.descendantCount).toBe(0);
   });
 
-  it('keeps first-agent children inside the first agent card instead of hoisting them', () => {
+  it('renders a foreground Task as a group', () => {
+    const nodes = groupItemsBySubagent([agentLaunch('task-1', 0, 'Task')]);
+
+    expect(nodes).toHaveLength(1);
+    const group = expectGroup(nodes[0]);
+    expect(group.parent.id).toBe('task-1');
+    expect(group.children).toEqual([]);
+  });
+
+  it('does not group a tool_completion with Agent toolName', () => {
     const nodes = groupItemsBySubagent([
-      inlineAgent('agent-1', 0, 'assistant-1'),
-      inlineAgent('agent-2', 1, 'assistant-1'),
+      mkItem({ id: 'comp', itemIndex: 0, kind: 'tool_completion', toolName: 'Agent', completionOf: 'agent-1' }),
+    ]);
+
+    expect(expectLeaf(nodes[0]).item.id).toBe('comp');
+  });
+
+  it('renders sibling foreground Agents as independent group cards', () => {
+    const nodes = groupItemsBySubagent([
+      agentLaunch('agent-1', 0),
+      agentLaunch('agent-2', 1),
+    ]);
+
+    expect(nodes).toHaveLength(2);
+    expect(expectGroup(nodes[0]).parent.id).toBe('agent-1');
+    expect(expectGroup(nodes[1]).parent.id).toBe('agent-2');
+    expect(nodeContainsItem(nodes[1], 'agent-2')).toBe(true);
+  });
+
+  it('keeps children inside the correct agent card', () => {
+    const nodes = groupItemsBySubagent([
+      agentLaunch('agent-1', 0),
+      agentLaunch('agent-2', 1),
       mkItem({
         id: 'child-of-agent-1',
         itemIndex: 2,
@@ -134,17 +136,18 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    const wrapper = expectInlineGroup(nodes[0]);
-    expect(wrapper.members.map((member) => member.parent.id)).toEqual(['agent-1', 'agent-2']);
-    expect(wrapper.members[0].children.map((node) => timelineNodeItemId(node))).toEqual([
+    expect(nodes).toHaveLength(2);
+    const group1 = expectGroup(nodes[0]);
+    const group2 = expectGroup(nodes[1]);
+    expect(group1.children.map((node) => timelineNodeItemId(node))).toEqual([
       'child-of-agent-1',
     ]);
-    expect(wrapper.members[1].children).toEqual([]);
+    expect(group2.children).toEqual([]);
   });
 
-  it('nests children only below inline Agent launch rows', () => {
+  it('nests children only below Agent launch rows', () => {
     const nodes = groupItemsBySubagent([
-      inlineAgent('agent-1', 0),
+      agentLaunch('agent-1', 0),
       mkItem({
         id: 'child',
         itemIndex: 1,
@@ -155,11 +158,10 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    const wrapper = expectInlineGroup(nodes[0]);
-    const group = wrapper.members[0];
+    expect(nodes).toHaveLength(1);
+    const group = expectGroup(nodes[0]);
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['child']);
     expect(group.descendantCount).toBe(1);
-    expect(wrapper.descendantCount).toBe(1);
     expect(group.latestChildSummary).toBe('Read: file.ts');
   });
 
@@ -624,7 +626,7 @@ describe('groupItemsBySubagent', () => {
     expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['interacted-pid-1', 'complete-cmd-1']);
   });
 
-  it('keeps foreground Agent-named rows flat without the inline marker', () => {
+  it('renders foreground Agent-named rows as groups even without inline marker meta', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'agent-like',
@@ -635,86 +637,66 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(expectLeaf(nodes[0]).item.id).toBe('agent-like');
+    expect(expectGroup(nodes[0]).parent.id).toBe('agent-like');
   });
 
-  it('keeps marked non-Agent rows flat', () => {
+  it('keeps non-Agent/Task tool rows flat regardless of meta', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'marked-read',
         itemIndex: 0,
         kind: 'tool_call',
         toolName: 'Read',
-        meta: toolMeta({ toolName: 'Read', is_inline_subagent: true }),
+        meta: toolMeta({ toolName: 'Read' }),
       }),
     ]);
 
     expect(expectLeaf(nodes[0]).item.id).toBe('marked-read');
   });
 
-  it('does not duplicate a nested inline Agent as a root', () => {
+  it('does not duplicate a nested Agent as a root', () => {
     const nodes = groupItemsBySubagent([
-      inlineAgent('agent-1', 0, 'assistant-1'),
+      agentLaunch('agent-1', 0),
       {
-        ...inlineAgent('agent-2', 1, 'assistant-2'),
+        ...agentLaunch('agent-2', 1),
         parentId: 'agent-1',
       },
     ]);
 
     expect(nodes).toHaveLength(1);
-    const wrapper = expectInlineGroup(nodes[0]);
-    const group = wrapper.members[0];
+    const group = expectGroup(nodes[0]);
     expect(group.children).toHaveLength(1);
     expect(expectGroup(group.children[0]).parent.id).toBe('agent-2');
     expect(findTimelineNodeIndex(nodes, 'agent-2')).toBe(0);
   });
 
-  it('does not reorder inline Agents across intervening non-agent rows', () => {
+  it('preserves order of Agents with intervening non-agent rows', () => {
     const nodes = groupItemsBySubagent([
-      inlineAgent('agent-1', 0, 'assistant-1'),
+      agentLaunch('agent-1', 0),
       mkItem({ id: 'bash', itemIndex: 1, kind: 'tool_call', toolName: 'Bash' }),
-      inlineAgent('agent-2', 2, 'assistant-1'),
+      agentLaunch('agent-2', 2),
     ]);
 
     expect(nodes).toHaveLength(3);
-    expect(expectInlineGroup(nodes[0]).members[0].parent.id).toBe('agent-1');
+    expect(expectGroup(nodes[0]).parent.id).toBe('agent-1');
     expect(expectLeaf(nodes[1]).item.id).toBe('bash');
-    const second = expectInlineGroup(nodes[2]);
-    expect(second.members[0].parent.id).toBe('agent-2');
-    expect(second.groupKey).toBe('inline:assistant-1:after:bash');
+    expect(expectGroup(nodes[2]).parent.id).toBe('agent-2');
   });
 
-  it('keeps first visible inline wrapper keys stable when older unrelated rows load', () => {
+  it('keeps group keys stable when older unrelated rows load', () => {
     const partial = groupItemsBySubagent([
-      inlineAgent('agent-2', 2, 'assistant-1'),
+      agentLaunch('agent-2', 2),
     ]);
-    const partialWrapper = expectInlineGroup(partial[0]);
+    const partialGroup = expectGroup(partial[0]);
 
     const complete = groupItemsBySubagent([
       mkItem({ id: 'bash', itemIndex: 1, kind: 'tool_call', toolName: 'Bash' }),
-      inlineAgent('agent-2', 2, 'assistant-1'),
+      agentLaunch('agent-2', 2),
     ]);
-    const completeWrapper = expectInlineGroup(complete[1]);
+    const completeGroup = expectGroup(complete[1]);
 
-    expect(partialWrapper.groupKey).toBe('inline:assistant-1:start');
-    expect(completeWrapper.groupKey).toBe(partialWrapper.groupKey);
-  });
-
-  it('keeps contiguous inline wrapper keys stable when older sibling agents load', () => {
-    const partial = groupItemsBySubagent([
-      inlineAgent('agent-2', 1, 'assistant-1'),
-    ]);
-    const partialWrapper = expectInlineGroup(partial[0]);
-
-    const complete = groupItemsBySubagent([
-      inlineAgent('agent-1', 0, 'assistant-1'),
-      inlineAgent('agent-2', 1, 'assistant-1'),
-    ]);
-    const completeWrapper = expectInlineGroup(complete[0]);
-
-    expect(partialWrapper.groupKey).toBe('inline:assistant-1:start');
-    expect(completeWrapper.groupKey).toBe(partialWrapper.groupKey);
-    expect(completeWrapper.members.map((member) => member.parent.id)).toEqual(['agent-1', 'agent-2']);
+    expect(partialGroup.groupKey).toBe('agent-2');
+    expect(completeGroup.groupKey).toBe(partialGroup.groupKey);
   });
 
   it('surfaces missing parents as orphan leaves instead of dropping them', () => {
@@ -729,12 +711,12 @@ describe('groupItemsBySubagent', () => {
 
   it('preserves stable keys and lookup semantics for grouped children', () => {
     const nodes = groupItemsBySubagent([
-      inlineAgent('agent-1', 0),
+      agentLaunch('agent-1', 0),
       mkItem({ id: 'child', itemIndex: 1, parentId: 'agent-1', summary: 'work' }),
       mkItem({ id: 'after', itemIndex: 2, summary: 'after' }),
     ]);
 
-    expect(timelineNodeKey(nodes[0])).toBe('ig:thread-1:inline:assistant-1:start');
+    expect(timelineNodeKey(nodes[0])).toBe('g:thread-1:agent-1');
     expect(timelineNodeItemId(nodes[0])).toBe('agent-1');
     expect(findTimelineNodeIndex(nodes, 'child')).toBe(0);
     expect(findTimelineNodeIndex(nodes, 'after')).toBe(1);
@@ -743,7 +725,7 @@ describe('groupItemsBySubagent', () => {
   it('detects tool/text spacing boundaries after grouping', () => {
     const nodes = groupItemsBySubagent([
       mkItem({ id: 'user', itemIndex: 0, kind: 'user_text', role: 'user' }),
-      inlineAgent('agent-1', 1),
+      agentLaunch('agent-1', 1),
       mkItem({ id: 'response', itemIndex: 2, kind: 'assistant_text', role: 'assistant' }),
     ]);
 
@@ -791,7 +773,7 @@ describe('finalAssistantTextIdsByTurn', () => {
     // (chat row contract), so a turn whose only trailing assistant_text
     // lives inside a subagent group must not appear here.
     const nodes = groupItemsBySubagent([
-      inlineAgent('agent-0', 0),
+      agentLaunch('agent-0', 0),
       mkItem({
         id: 'inside',
         itemIndex: 1,

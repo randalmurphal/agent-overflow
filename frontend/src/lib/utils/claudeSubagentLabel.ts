@@ -1,12 +1,12 @@
 // Shared helpers for rendering a Claude `Agent` tool call's header text
 // (label + model affix + description). Used by both `SubagentGroup`
-// (foreground inline subagents that render as a transcript group) and
+// (foreground subagents that render as a transcript group) and
 // `GenericToolCallRow` (backgrounded subagents that render as leaves
 // and in the activity-rail tray). Keeping the derivations in one place
 // is what guarantees the two surfaces stay visually aligned —
 // pre-extraction, the tray rendered the bare classifier label
 // ("Subagent") with no model affix and the raw "Agent: …" summary as
-// the preview, which looked completely separate from the inline card.
+// the preview, which looked completely separate from the subagent card.
 //
 // Naming mirrors the sibling Codex util (`subagentLaunch.ts` exports
 // `codexSubagentLaunchInfo` etc.) — every export here carries the

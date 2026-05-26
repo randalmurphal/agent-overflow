@@ -35,7 +35,7 @@ This redesign:
   column, and a 15-line inline diff cap with fade-to-side-panel.
 - Diverges in protocol where it makes sense. Provider-specific
   variants (Codex `spawn` / `waiting` / `waited` / `closed`, Claude
-  inline subagent with latest-tool preview, Codex `apply_patch` labeled
+  subagent with latest-tool preview, Codex `apply_patch` labeled
   as `patch`) keep their semantics; they share the same row primitive.
 - Keeps proper separation between providers where it makes sense.
   `CollabToolRow.svelte` stays Codex-only, `AgentRow.svelte` stays
@@ -46,7 +46,7 @@ This redesign:
 
 | Topic | Decision |
 |---|---|
-| Subagent rows | Keep inline "latest tool" preview under the agent row (Claude inline subagents only). Apply new design styles to the preview. |
+| Subagent rows | Keep "latest tool" preview under the agent row. Apply new design styles to the preview. |
 | Multi-file edits | One row per file (current behavior). MultiEdit / apply_patch already explodes into N `DiffFileBlock`s via `DiffFileStack`. |
 | Diff cap | 15 lines + fade + "open in side panel" button. |
 | Phase labels on stamps | Out of scope. |

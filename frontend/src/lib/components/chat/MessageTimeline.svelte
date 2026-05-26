@@ -24,7 +24,6 @@
   import { patchTimelineNodeItemRefs } from '../../utils/timelineNodePatch';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
-  import InlineSubagentGroup from './InlineSubagentGroup.svelte';
   import ReadGroupRow from './ReadGroupRow.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
@@ -83,7 +82,6 @@
   ]);
   const RAIL_GROUP_KINDS = new Set<string>([
     'group',
-    'inline_subagent_group',
     'wait_group',
     'read_group',
   ]);
@@ -1075,8 +1073,6 @@
           />
         {:else if node.kind === 'read_group'}
           <ReadGroupRow {pane} group={node} />
-        {:else}
-          <InlineSubagentGroup group={node} {depth} {renderNode} />
         {/if}
       {/snippet}
 

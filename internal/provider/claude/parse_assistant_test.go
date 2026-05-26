@@ -172,43 +172,35 @@ func TestParseAssistant_NoErrorFieldEmitsNoEventError(t *testing.T) {
 	}
 }
 
-func TestParseAssistant_InlineSubagentToolUseMeta(t *testing.T) {
+func TestParseAssistant_AgentTaskToolUseMeta(t *testing.T) {
 	cases := []struct {
 		name                 string
 		toolName             string
 		input                string
-		wantInline           bool
-		wantInlineGroupID    string
 		wantAssistantMessage string
 	}{
 		{
 			name:                 "foreground Agent",
 			toolName:             "Agent",
 			input:                `{"description":"inspect"}`,
-			wantInline:           true,
-			wantInlineGroupID:    "msg-inline",
 			wantAssistantMessage: "msg-inline",
 		},
 		{
 			name:                 "foreground Task",
 			toolName:             "Task",
 			input:                `{"description":"inspect"}`,
-			wantInline:           true,
-			wantInlineGroupID:    "msg-inline",
 			wantAssistantMessage: "msg-inline",
 		},
 		{
 			name:                 "background Agent",
 			toolName:             "Agent",
 			input:                `{"description":"inspect","run_in_background":true}`,
-			wantInline:           false,
 			wantAssistantMessage: "msg-inline",
 		},
 		{
 			name:                 "non Agent tool",
 			toolName:             "Read",
 			input:                `{"file_path":"foo.ts"}`,
-			wantInline:           false,
 			wantAssistantMessage: "msg-inline",
 		},
 	}
@@ -237,17 +229,11 @@ func TestParseAssistant_InlineSubagentToolUseMeta(t *testing.T) {
 			if got := meta["assistant_message_id"]; got != tc.wantAssistantMessage {
 				t.Fatalf("assistant_message_id: got %v, want %q", got, tc.wantAssistantMessage)
 			}
-			if got := meta["is_inline_subagent"] == true; got != tc.wantInline {
-				t.Fatalf("is_inline_subagent: got %v, want %v (meta=%v)", got, tc.wantInline, meta)
+			if _, ok := meta["is_inline_subagent"]; ok {
+				t.Fatalf("is_inline_subagent should not be stamped: %v", meta)
 			}
-			if tc.wantInlineGroupID == "" {
-				if _, ok := meta["inline_subagent_group_id"]; ok {
-					t.Fatalf("inline_subagent_group_id present for non-inline tool: %v", meta)
-				}
-				return
-			}
-			if got := meta["inline_subagent_group_id"]; got != tc.wantInlineGroupID {
-				t.Fatalf("inline_subagent_group_id: got %v, want %q", got, tc.wantInlineGroupID)
+			if _, ok := meta["inline_subagent_group_id"]; ok {
+				t.Fatalf("inline_subagent_group_id should not be stamped: %v", meta)
 			}
 		})
 	}

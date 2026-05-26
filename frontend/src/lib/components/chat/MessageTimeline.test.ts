@@ -29,12 +29,9 @@ beforeAll(() => {
   }
 });
 
-function inlineAgentMeta(assistantMessageId: string, description: string): string {
+function agentMeta(description: string): string {
   return JSON.stringify({
     toolName: 'Agent',
-    assistant_message_id: assistantMessageId,
-    is_inline_subagent: true,
-    inline_subagent_group_id: assistantMessageId,
     input: { description, subagent_type: 'Explore' },
   });
 }
@@ -503,11 +500,9 @@ describe('<MessageTimeline>', () => {
   });
 
   it('extends data-rail="true" to subagent / wait group container rows', async () => {
-    // Group containers (InlineSubagentGroup, WaitGroup, nested
-    // SubagentGroup) also participate in the rail so consecutive
-    // agent/wait rows form one continuous left border with adjacent
-    // tool rows. Without this, the rail would visibly break around
-    // a subagent card — the bug we're guarding against here.
+    // Group containers (SubagentGroup, WaitGroup) participate in the
+    // rail so consecutive agent/wait rows form one continuous left
+    // border with adjacent tool rows.
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'tool:0',
@@ -516,8 +511,6 @@ describe('<MessageTimeline>', () => {
         toolName: 'Bash',
         summary: 'ls',
       }),
-      // Two inline-subagent Agent calls collapse into one
-      // InlineSubagentGroup wrapper at the top level.
       makeItem({
         id: 'agent:0',
         itemIndex: 1,
@@ -525,7 +518,7 @@ describe('<MessageTimeline>', () => {
         toolName: 'Agent',
         status: 'running',
         summary: 'Agent: one',
-        meta: inlineAgentMeta('assistant:0', 'First agent'),
+        meta: agentMeta('First agent'),
       }),
       makeItem({
         id: 'agent:1',
@@ -534,9 +527,8 @@ describe('<MessageTimeline>', () => {
         toolName: 'Agent',
         status: 'running',
         summary: 'Agent: two',
-        meta: inlineAgentMeta('assistant:0', 'Second agent'),
+        meta: agentMeta('Second agent'),
       }),
-      // Codex wait_agent carrier renders as a WaitGroup wrapper.
       makeItem({
         id: 'wait:0',
         itemIndex: 3,
@@ -549,8 +541,8 @@ describe('<MessageTimeline>', () => {
     const { container } = render(MessageTimeline, { props: { pane } });
 
     const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
-    // tool_call leaf + inline_subagent_group wrapper + wait_group wrapper.
-    expect(wrappers.length).toBe(3);
+    // tool_call leaf + agent group + agent group + wait_group wrapper.
+    expect(wrappers.length).toBe(4);
     for (const wrapper of wrappers) {
       expect(wrapper.getAttribute('data-rail')).toBe('true');
       expect(wrapper.className).toContain('border-l');
@@ -689,7 +681,7 @@ describe('<MessageTimeline>', () => {
     expect(wrappers.length).toBe(50);
   });
 
-  it('renders Claude inline subagents inside a non-collapsible structural wrapper', async () => {
+  it('renders Claude foreground Agents as independent SubagentGroup cards', async () => {
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'agent-1',
@@ -698,7 +690,7 @@ describe('<MessageTimeline>', () => {
         toolName: 'Agent',
         status: 'running',
         summary: 'Agent: one',
-        meta: inlineAgentMeta('assistant-1', 'First agent'),
+        meta: agentMeta('First agent'),
       }),
       makeItem({
         id: 'agent-2',
@@ -707,15 +699,12 @@ describe('<MessageTimeline>', () => {
         toolName: 'Agent',
         status: 'running',
         summary: 'Agent: two',
-        meta: inlineAgentMeta('assistant-1', 'Second agent'),
+        meta: agentMeta('Second agent'),
       }),
     ]);
 
-    const { getByTestId, getAllByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
+    const { getAllByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
 
-    expect(getByTestId('inline-subagent-group-label').textContent).toContain('agent');
-    expect(getByTestId('inline-subagent-group-meta').textContent).toContain('2 agents');
-    expect(queryByTestId('inline-subagent-group-toggle')).toBeNull();
     expect(getAllByTestId('subagent-group')).toHaveLength(2);
     expect(getAllByTestId('subagent-group-preview').map((node) => node.textContent?.trim())).toEqual([
       '└ Initializing...',
@@ -1192,7 +1181,7 @@ describe('<MessageTimeline>', () => {
       expect(dividers[1].textContent).toContain('Response 1m 4s');
     });
 
-    it('treats an inline subagent group as tool activity for the trailing pill', async () => {
+    it('treats a subagent group as tool activity for the trailing pill', async () => {
       // Common Claude turn shape: user → inline Agent (subagent) →
       // assistant_text summary. The subagent group counts as tool
       // activity (`nodeRole(group) === 'tool'`), so the trailing
@@ -1206,7 +1195,7 @@ describe('<MessageTimeline>', () => {
           kind: 'tool_call',
           toolName: 'Agent',
           summary: 'Agent: explore',
-          meta: inlineAgentMeta('msg-0', 'explore the auth module'),
+          meta: agentMeta('explore the auth module'),
         }),
         makeItem({
           id: 'text:0:0',

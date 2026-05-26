@@ -10,20 +10,15 @@
 //   - Output: an array of TimelineNode roots. A `group` node wraps a parent
 //     item plus recursively-grouped children. A `wait_group` node wraps a
 //     terminal/subagent wait carrier plus target completion leaves observed by
-//     that wait. A `leaf` node wraps a single item with nothing under it. A
-//     `inline_subagent_group` node is a structural Claude inline-agent wrapper
-//     whose children are real subagent groups.
+//     that wait. A `leaf` node wraps a single item with nothing under it.
 //
 // Rules:
 //   - Normal rows always stay leaves.
-//   - Claude inline Agent/Task launch rows are groups from first render, even
-//     before any child activity arrives.
+//   - Claude foreground Agent/Task launch rows are groups from first render,
+//     even before any child activity arrives.
 //   - Codex spawn_agent launch rows stay leaves. Their child transcript is
 //     provider-internal detail represented by the background tray while live
 //     and explicit completion rows after wait/notification signals.
-//   - Adjacent inline agents from the same Claude assistant message share a
-//     structural wrapper row keyed by that assistant message. The real agent
-//     cards remain peers inside the wrapper.
 //   - Wait carriers use a stable structural wrapper from first render; Codex
 //     subagent target completions render beneath them when linked by
 //     `wait_carrier_id` or shared wait payload correlation.
@@ -44,6 +39,12 @@ import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
 import { isCodexSubagentLaunchItem } from './subagentLaunch';
 
+function isSubagentLaunch(item: Item): boolean {
+  return item.kind === 'tool_call'
+    && !item.isBackground
+    && (item.toolName === 'Agent' || item.toolName === 'Task');
+}
+
 export const MAX_DEPTH = 3;
 const PREVIEW_MAX_CHARS = 160;
 const PREVIEW_SCAN_CHARS = 512;
@@ -57,7 +58,6 @@ const PREVIEW_SCAN_CHARS = 512;
 export type TimelineNode =
   | TimelineLeaf
   | SubagentGroupNode
-  | InlineSubagentGroupNode
   | WaitGroupNode
   | ReadGroupNode;
 
@@ -94,20 +94,6 @@ export interface SubagentGroupNode {
    * Empty when the group has no children with usable summaries yet.
    */
   latestChildSummary: string;
-}
-
-export interface InlineSubagentGroupNode {
-  kind: 'inline_subagent_group';
-  /** Stable structural key for the non-collapsible Claude inline wrapper. */
-  groupKey: string;
-  /** Thread id is carried directly because this node has no synthetic Item. */
-  threadId: string;
-  /** Real subagent cards represented by this wrapper, in timeline order. */
-  members: SubagentGroupNode[];
-  /** Number of inline Agent/Task launches represented by this wrapper. */
-  memberCount: number;
-  /** Total entries inside every represented subagent. */
-  descendantCount: number;
 }
 
 export interface WaitGroupNode {
@@ -182,46 +168,6 @@ function isItemActive(item: Item): boolean {
   return item.status === 'running' || item.status === 'streaming';
 }
 
-interface InlineAgentInfo {
-  groupKey: string;
-}
-
-function metaString(meta: Record<string, unknown> | null, key: string): string {
-  const value = meta?.[key];
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function isInlineAgentToolName(toolName: string): boolean {
-  return toolName === 'Agent' || toolName === 'Task';
-}
-
-function inlineAgentInfo(item: Item): InlineAgentInfo | null {
-  if (item.kind !== 'tool_call') return null;
-  if (item.isBackground === true) return null;
-
-  const directToolName = (item.toolName ?? '').trim();
-  if (directToolName && !isInlineAgentToolName(directToolName)) return null;
-
-  const meta = parseJsonObject(item.meta);
-  if (meta?.is_inline_subagent !== true) return null;
-
-  const toolName = directToolName || metaString(meta, 'toolName');
-  if (!isInlineAgentToolName(toolName)) return null;
-
-  const stampedGroupID = metaString(meta, 'inline_subagent_group_id');
-  return {
-    groupKey: stampedGroupID ? `inline:${stampedGroupID}` : `item:${item.id}`,
-  };
-}
-
-function isClaudeInlineAgentLaunch(item: Item): boolean {
-  return inlineAgentInfo(item) !== null;
-}
-
-function isGroupedSubagentLaunch(item: Item): boolean {
-  return isClaudeInlineAgentLaunch(item);
-}
-
 function itemWaitCarrierID(item: Item): string {
   const meta = parseJsonObject(item.meta);
   const carrierID = meta?.wait_carrier_id ?? meta?.waitCarrierID;
@@ -252,15 +198,12 @@ function isWaitCarrier(item: Item): boolean {
     || isCodexWaitAgentCarrier(item);
 }
 
-function subagentNodeGroupKey(item: Item, inlineGroupKey: string): string {
-  return `${inlineGroupKey}:${item.id}`;
-}
-
 function timelineNodeRootItem(node: TimelineNode): Item {
   if (node.kind === 'leaf') return node.item;
   if (node.kind === 'group' || node.kind === 'wait_group') return node.parent;
   if (node.kind === 'read_group') return node.members[0];
-  return node.members[0].parent;
+  const _exhaustive: never = node;
+  return _exhaustive;
 }
 
 /**
@@ -288,10 +231,6 @@ function* descendantItems(nodes: TimelineNode[]): Generator<Item> {
     if (node.kind === 'read_group') {
       for (const member of node.members) yield member;
       continue;
-    }
-    for (const member of node.members) {
-      yield member.parent;
-      yield* descendantItems(member.children);
     }
   }
 }
@@ -333,16 +272,7 @@ function countDescendants(children: TimelineNode[]): number {
   for (const child of children) {
     n += 1;
     if (child.kind === 'group' || child.kind === 'wait_group') n += countDescendants(child.children);
-    if (child.kind === 'inline_subagent_group') n += countDescendants(child.members);
     if (child.kind === 'read_group') n += child.members.length - 1;
-  }
-  return n;
-}
-
-function countSubagentEntries(members: SubagentGroupNode[]): number {
-  let n = 0;
-  for (const member of members) {
-    n += countDescendants(member.children);
   }
   return n;
 }
@@ -358,7 +288,8 @@ export function timelineNodeKey(node: TimelineNode): string {
   if (node.kind === 'group') return `g:${node.parent.threadId}:${node.groupKey}`;
   if (node.kind === 'wait_group') return `wg:${node.parent.threadId}:${node.groupKey}`;
   if (node.kind === 'read_group') return `rg:${node.threadId}:${node.groupKey}`;
-  return `ig:${node.threadId}:${node.groupKey}`;
+  const _exhaustive: never = node;
+  return _exhaustive;
 }
 
 /** Item id of the leaf or group root. */
@@ -366,7 +297,8 @@ export function timelineNodeItemId(node: TimelineNode): string {
   if (node.kind === 'leaf') return node.item.id;
   if (node.kind === 'group' || node.kind === 'wait_group') return node.parent.id;
   if (node.kind === 'read_group') return node.members[0].id;
-  return node.members[0].parent.id;
+  const _exhaustive: never = node;
+  return _exhaustive;
 }
 
 /** Turn index of the leaf or structural node's first represented item. */
@@ -385,7 +317,6 @@ export type NodeRole = 'tool' | 'text' | 'other';
 export function nodeRole(node: TimelineNode): NodeRole {
   if (
     node.kind === 'group'
-    || node.kind === 'inline_subagent_group'
     || node.kind === 'wait_group'
     || node.kind === 'read_group'
   ) return 'tool';
@@ -450,10 +381,9 @@ export function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
     return node.parent.id === itemId
       || node.children.some((child) => nodeContainsItem(child, itemId));
   }
-  if (node.kind === 'read_group') {
-    return node.members.some((m) => m.id === itemId);
-  }
-  return node.members.some((member) => nodeContainsItem(member, itemId));
+  if (node.kind === 'read_group') return node.members.some((m) => m.id === itemId);
+  const _exhaustive: never = node;
+  return _exhaustive;
 }
 
 /**
@@ -506,7 +436,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const pid = item.parentId;
-    if ((pid && pid.length > 0) || item.completionOf || item.kind === 'terminal_interaction' || item.toolName === 'wait_agent' || isGroupedSubagentLaunch(item)) {
+    if ((pid && pid.length > 0) || item.completionOf || item.kind === 'terminal_interaction' || item.toolName === 'wait_agent' || isSubagentLaunch(item)) {
       hasGroupingSignals = true;
     }
     if (i > 0) {
@@ -595,14 +525,9 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
 
   const idSet = new Set(sorted.map((it) => it.id));
   const subagentLaunchIDs = new Set<string>();
-  const inlineGroupKeyByItemID = new Map<string, string>();
 
   for (const item of sorted) {
-    const info = inlineAgentInfo(item);
-    if (!info) continue;
-    const key = info.groupKey;
-    subagentLaunchIDs.add(item.id);
-    inlineGroupKeyByItemID.set(item.id, key);
+    if (isSubagentLaunch(item)) subagentLaunchIDs.add(item.id);
   }
 
   // Index children by parentId, but only for stable subagent launch
@@ -664,7 +589,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       return {
         kind: 'group',
         parent: item,
-        groupKey: subagentNodeGroupKey(item, inlineGroupKeyByItemID.get(item.id) ?? `item:${item.id}`),
+        groupKey: item.id,
         children: flatChildren,
         descendantCount: flatChildren.length,
         latestChildSummary: pickLatestChildSummary(flatChildren),
@@ -675,78 +600,30 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
     return {
       kind: 'group',
       parent: item,
-      groupKey: subagentNodeGroupKey(item, inlineGroupKeyByItemID.get(item.id) ?? `item:${item.id}`),
+      groupKey: item.id,
       children,
       descendantCount: countDescendants(children),
       latestChildSummary: pickLatestChildSummary(children),
     };
   }
 
-  function buildInlineAgentWrapper(members: Item[], segmentKey: string): InlineSubagentGroupNode {
-    const [first] = members;
-    const baseGroupKey = inlineGroupKeyByItemID.get(first.id) ?? `item:${first.id}`;
-    const groupKey = `${baseGroupKey}:${segmentKey}`;
-    const memberNodes = members
-      .map((member) => buildNode(member, 1))
-      .filter((node): node is SubagentGroupNode => node.kind === 'group')
-      .sort((a, b) => compareItems(a.parent, b.parent));
-    return {
-      kind: 'inline_subagent_group',
-      groupKey,
-      threadId: first.threadId,
-      memberCount: members.length,
-      members: memberNodes,
-      descendantCount: countSubagentEntries(memberNodes),
-    };
-  }
-
   const roots: TimelineNode[] = [];
-  const seenInlineGroupKeys = new Set<string>();
-  for (let index = 0; index < sorted.length; index += 1) {
-    const item = sorted[index];
-    const inlineKey = inlineGroupKeyByItemID.get(item.id);
-    if (inlineKey) {
-      const pid = item.parentId ?? '';
-      if (pid && subagentLaunchIDs.has(pid)) {
-        continue;
-      }
-      const members = [item];
-      const previous = sorted[index - 1];
-      const segmentKey = seenInlineGroupKeys.has(inlineKey) && previous
-        ? `after:${previous.id}`
-        : 'start';
-      let cursor = index + 1;
-      while (cursor < sorted.length) {
-        const candidate = sorted[cursor];
-        const candidateInlineKey = inlineGroupKeyByItemID.get(candidate.id);
-        const candidateParentID = candidate.parentId ?? '';
-        if (candidateInlineKey !== inlineKey || (candidateParentID && subagentLaunchIDs.has(candidateParentID))) {
-          break;
-        }
-        members.push(candidate);
-        cursor += 1;
-      }
-      roots.push(buildInlineAgentWrapper(members, segmentKey));
-      seenInlineGroupKeys.add(inlineKey);
-      index = cursor - 1;
+  for (const item of sorted) {
+    const pid = item.parentId ?? '';
+    if (pid && subagentLaunchIDs.has(pid)) {
       continue;
     }
-
-    const pid = item.parentId ?? '';
     if (!pid) {
       roots.push(buildNode(item, 0));
       continue;
     }
     if (orphanIds.has(item.id)) {
-      // Orphans surface at the top level with a warning indicator. Rendering
-      // silently would lose data; this keeps the timeline honest.
       roots.push({ kind: 'leaf', item, orphan: true });
       continue;
     }
     if (!subagentLaunchIDs.has(pid)) {
       roots.push({ kind: 'leaf', item });
     }
-    // Otherwise child is consumed by its subagent group above.
   }
 
   return roots;

@@ -36,7 +36,7 @@ const payloadKindToolCallInput = "tool_call_input"
 // A rule with empty KeepInput AND empty PromoteToPayload is a no-op and
 // behaves identically to "no rule". Top-level meta keys (`toolName`,
 // `task_id`, `is_background`, `assistant_message_id`,
-// `is_inline_subagent`, ...) are never touched — only meta.input.
+// ...) are never touched — only meta.input.
 type ToolMetaRule struct {
 	KeepInput        []string
 	PromoteToPayload []string

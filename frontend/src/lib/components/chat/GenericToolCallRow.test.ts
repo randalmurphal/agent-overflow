@@ -253,7 +253,7 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
   it('renders a Claude Agent row with the title-cased subagent_type label and the model affix', () => {
     // Without this header treatment a backgrounded Agent renders the
     // bare "Subagent" classifier label with no model — completely
-    // different from the inline `SubagentGroup` card a foreground
+    // different from the `SubagentGroup` card a foreground
     // Agent gets. Matching what `SubagentGroup` does here is what
     // keeps the two surfaces visually aligned.
     const item = makeItem({

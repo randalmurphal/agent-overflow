@@ -2,7 +2,7 @@
 // adjacent Read tool_call leaves into a single `read_group` node.
 //
 // The pass runs only at the top level of the timeline — Reads nested
-// inside a SubagentGroupNode / InlineSubagentGroupNode / WaitGroupNode
+// inside a SubagentGroupNode / WaitGroupNode
 // stay inside their parent group untouched, both because those
 // surfaces already have their own packing and because the rail
 // continuity for subagent transcripts is owned by the group

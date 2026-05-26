@@ -70,13 +70,8 @@ export function recordTimelineRenderTrace(
           turnIndex: node.members[0]?.turnIndex ?? 0,
         };
       }
-      return {
-        kind: 'inline_subagent_group',
-        groupKey: node.groupKey,
-        memberCount: node.memberCount,
-        childCount: node.members.length,
-        turnIndex: node.members[0]?.parent.turnIndex ?? 0,
-      };
+      const _exhaustive: never = node;
+      return _exhaustive;
     }),
     // The items array used to live here. It dominated trace file bytes
     // (single timeline.state snapshot averaged ~63 KB on a 228-item

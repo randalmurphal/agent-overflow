@@ -3,7 +3,6 @@ import type {
   TimelineNode,
   TimelineLeaf,
   SubagentGroupNode,
-  InlineSubagentGroupNode,
   WaitGroupNode,
   ReadGroupNode,
 } from './subagentGrouping';
@@ -66,28 +65,6 @@ function patchSubagentGroup(
   };
 }
 
-function patchInlineSubagentGroup(
-  node: InlineSubagentGroupNode,
-  getItem: (id: string) => Item | undefined,
-): InlineSubagentGroupNode {
-  let changed = false;
-  const nextMembers: SubagentGroupNode[] = new Array(node.members.length);
-  for (let i = 0; i < node.members.length; i++) {
-    const patched = patchSubagentGroup(node.members[i], getItem);
-    if (patched !== node.members[i]) changed = true;
-    nextMembers[i] = patched;
-  }
-  if (!changed) return node;
-  return {
-    kind: 'inline_subagent_group',
-    groupKey: node.groupKey,
-    threadId: node.threadId,
-    members: nextMembers,
-    memberCount: node.memberCount,
-    descendantCount: node.descendantCount,
-  };
-}
-
 function patchWaitGroup(
   node: WaitGroupNode,
   getItem: (id: string) => Item | undefined,
@@ -136,7 +113,6 @@ function patchNode(
   switch (node.kind) {
     case 'leaf': return patchLeaf(node, getItem);
     case 'group': return patchSubagentGroup(node, getItem);
-    case 'inline_subagent_group': return patchInlineSubagentGroup(node, getItem);
     case 'wait_group': return patchWaitGroup(node, getItem);
     case 'read_group': return patchReadGroup(node, getItem);
   }

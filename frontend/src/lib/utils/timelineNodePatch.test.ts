@@ -7,7 +7,6 @@ import type {
   SubagentGroupNode,
   WaitGroupNode,
   ReadGroupNode,
-  InlineSubagentGroupNode,
 } from './subagentGrouping';
 
 function mkItem(overrides: Partial<Item> & { id: string }): Item {
@@ -234,73 +233,6 @@ describe('patchTimelineNodeItemRefs', () => {
     const lookup = (id: string) => {
       if (id === 'm1') return m1;
       if (id === 'm2') return m2;
-      return undefined;
-    };
-    const result = patchTimelineNodeItemRefs(nodes, lookup);
-    expect(result).toBe(nodes);
-    expect(result[0]).toBe(group);
-  });
-
-  it('patches InlineSubagentGroupNode with changed descendant', () => {
-    const parent = mkItem({ id: 'p', summary: 'parent' });
-    const child = mkItem({ id: 'c', summary: 'child' });
-    const member: SubagentGroupNode = {
-      kind: 'group',
-      parent,
-      groupKey: 'g1',
-      children: [leaf(child)],
-      descendantCount: 1,
-      latestChildSummary: 'child',
-    };
-    const group: InlineSubagentGroupNode = {
-      kind: 'inline_subagent_group',
-      groupKey: 'ig1',
-      threadId: 't1',
-      members: [member],
-      memberCount: 1,
-      descendantCount: 1,
-    };
-    const nodes: TimelineNode[] = [group];
-
-    const childUpdated = mkItem({ id: 'c', summary: 'child updated' });
-    const lookup = (id: string) => {
-      if (id === 'p') return parent;
-      if (id === 'c') return childUpdated;
-      return undefined;
-    };
-    const result = patchTimelineNodeItemRefs(nodes, lookup);
-
-    const patched = result[0] as InlineSubagentGroupNode;
-    expect(patched).not.toBe(group);
-    expect(patched.members[0]).not.toBe(member);
-    expect((patched.members[0].children[0] as TimelineLeaf).item).toBe(childUpdated);
-    expect(patched.memberCount).toBe(1);
-    expect(patched.descendantCount).toBe(1);
-  });
-
-  it('returns same InlineSubagentGroupNode when nothing changed', () => {
-    const parent = mkItem({ id: 'p', summary: 'parent' });
-    const child = mkItem({ id: 'c', summary: 'child' });
-    const member: SubagentGroupNode = {
-      kind: 'group',
-      parent,
-      groupKey: 'g1',
-      children: [leaf(child)],
-      descendantCount: 1,
-      latestChildSummary: 'child',
-    };
-    const group: InlineSubagentGroupNode = {
-      kind: 'inline_subagent_group',
-      groupKey: 'ig1',
-      threadId: 't1',
-      members: [member],
-      memberCount: 1,
-      descendantCount: 1,
-    };
-    const nodes: TimelineNode[] = [group];
-    const lookup = (id: string) => {
-      if (id === 'p') return parent;
-      if (id === 'c') return child;
       return undefined;
     };
     const result = patchTimelineNodeItemRefs(nodes, lookup);

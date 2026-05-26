@@ -1561,9 +1561,9 @@ Nothing to clear on switch — there is no cache.
 ```
 
 Where:
-- `groupItemsBySubagent` only groups Claude inline Agent/Task rows that
-  carry provider-stamped inline-subagent metadata. Generic `parentId`
-  does not create frontend topology.
+- `groupItemsBySubagent` only groups Claude foreground Agent/Task rows
+  (detected by toolName). Generic `parentId` does not create frontend
+  topology.
 - `TimelineLeaf` is the item-kind dispatcher for ordinary rows.
 - `SubagentGroup` owns only the grouped card presentation; its expanded
   state is stored on `ThreadPane` by `SubagentGroupNode.groupKey`.
@@ -1587,9 +1587,9 @@ Where:
 - Expanded payload content is held in pane-level expansion registries,
   not component-local state, so virtua remounts do not reset toggles or
   refetch loaded chunks. Collapse and thread switch clear the data.
-- Children (if inline subagent): rendered by `SubagentGroup` when the
-  card is expanded. Groups are collapsed by default and are only created
-  from explicit provider metadata.
+- Children (if subagent): rendered by `SubagentGroup` when the card is
+  expanded. Groups are collapsed by default and are created for
+  foreground Agent/Task tool calls.
 - **Grandchild depth cap**: a subagent card at depth 1 whose children
   include another subagent (grandchild at depth 2) renders the
   grandchild as a minimal marker — name + spawn prompt only, not
