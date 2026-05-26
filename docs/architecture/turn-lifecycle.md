@@ -77,22 +77,24 @@ signals:
   `turn/completed`.
 
 Codex command executions do not follow Claude's sibling completion contract:
-typed `item/completed` updates the original command row. Codex `spawn_agent`
-is different: the parent launch row is only the completed "spawned" event.
-Child-agent terminal state is shown by a separate `tool_completion` sibling created from
-`wait_agent` or injected `<subagent_notification>` fragments. Direct child
-lifecycle notifications only update live/incomplete state so later explicit
-wait or notification output can own the visible transcript boundary.
+when Agent Overflow persists a command execution, typed `item/completed`
+updates the original command row. Codex `spawn_agent` is different: the parent
+launch row is only the completed "spawned" event. Child-agent terminal state is
+shown by a separate `tool_completion` sibling created from `wait_agent` or
+injected `<subagent_notification>` fragments. Direct child lifecycle
+notifications only update live/incomplete state so later explicit wait or
+notification output can own the visible transcript boundary.
 
 Codex `unifiedExecStartup` command executions are the exception to the
 persisted-launch-row shape. Their starts are tracked as transient
 running-tray state so the user can see the command immediately, but
 they are not written into transcript history at start time. Typed
-`item/completed` persists the command row with the original item id and clears
-the transient tray state, matching Codex TUI. Raw `exec_command` output may
-enrich live process metadata, but it does not create, delay, or reorder command
-history. Empty `write_stdin` polls persist separate terminal-interaction marker
-rows only while the command tracker is still live.
+`item/completed` clears the transient tray state and persists the command row
+with the original item id only while a Codex wire round is active, matching
+Codex TUI timing. Raw `exec_command` output may enrich live process metadata,
+but it does not create, delay, or reorder command history. Empty `write_stdin`
+polls persist separate terminal-interaction marker rows only while the command
+tracker is still live.
 
 The retired `BackgroundClassifier` heuristic must not come back.
 Background authorization comes from the wire fields above; model
@@ -456,8 +458,8 @@ cases only — it must not feed turn detection.
 | Claude TaskOutput `tool_result` | `EventToolComplete` + optional `EventBackgroundTaskTerminal` | `provider:item_event` upsert | Close TaskOutput row; drain stash and write/enrich sibling when terminal data is present |
 | Claude `system/task_notification` | — today; future notification event only | — today; future row only | No lifecycle state mutation |
 | Claude `result` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
-| Codex `item/started` | `EventToolStart` | `provider:item_event` upsert | Upsert item row |
-| Codex `item/completed` | `EventToolComplete` | `provider:item_event` upsert | Update item row |
+| Codex `item/started` | `EventToolStart` | `provider:item_event` upsert for persisted items | Upsert item row; `unifiedExecStartup` starts stay transient tray state |
+| Codex `item/completed` | `EventToolComplete` | `provider:item_event` upsert for persisted items | Update item row; unifiedExec completion clears live state and only persists while a Codex wire round is active |
 | Codex `turn/started` | `EventTurnStart` | `provider:turn_started` | Insert `turns` row |
 | Codex `turn/completed` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
 
@@ -677,7 +679,7 @@ counterpart "retry succeeded" wire signal from either provider.
 | `ChatWorkingIndicator` | `pane.activeTurn.startedAt` | Self-ticking timer, appears iff `activeTurn !== null`. |
 | `MessageTimeline` (response divider) | Ordered timeline nodes | Separator rendered before assistant text when tool activity immediately precedes the response in the same turn. |
 | `ToolCallCard` (backgrounded badge) | `item.isBackground && item.status === 'running'` | Renders a `…` status badge on the inline launch row. |
-| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)` | Shows running launches and pending Codex unifiedExec commands; completed Codex commands leave the live tray when typed completion persists the command row. |
+| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)` | Shows running launches and pending Codex unifiedExec commands; completed Codex commands leave the live tray when typed completion clears the transient tracker. |
 
 ## Anti-patterns (forbidden)
 

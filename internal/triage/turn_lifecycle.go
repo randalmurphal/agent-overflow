@@ -303,29 +303,12 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		}
 	}
 
-	// Codex background-terminal catchall: any inProgress unifiedExec
-	// items or spawn_agent rows with running children that reached the
-	// turn boundary without an earlier yield get stamped is_background
-	// here. Must run BEFORE forceCloseOrphanToolCalls so the invariant-24
-	// exemption (background rows skip force-close) kicks in on the
-	// newly-stamped rows — otherwise forceClose would flip them to
-	// errored a moment before we mark them backgrounded.
-	//
-	// Truncated turns (user-Esc) run this too, even though it looks like
-	// a "termination not a yield". Reason: Codex's process model says
-	// `Op::Interrupt` does NOT kill unifiedExec PTYs or spawn_agent
-	// collab threads. `core/src/tasks/mod.rs:632-637` — terminating
-	// PTYs is a separate `Op::CleanBackgroundTerminals` that
-	// `abort_all_tasks` deliberately does not invoke (mirrors the
-	// Codex TUI's Esc behaviour, which fires only `Op::Interrupt`).
-	// So a pre-yield unifiedExec started this turn is genuinely still
-	// running on disk after Esc; stamping it backgrounded here keeps
-	// the tray accurate and lets the user kill it via the Stop All
-	// button (which calls `thread/backgroundTerminals/clean`, the
-	// only Codex per-thread primitive — there's no per-row stop for
-	// unifiedExec until upstream adds one). spawn_agent rows already
-	// stamp at item/completed (codex_background.go:884-886), so this
-	// catchall only does work for unifiedExec items.
+	// Codex background-terminal turn-boundary cleanup. Turn completion settles
+	// visible terminal-wait carriers and drops pending spawn-agent starts that
+	// never reached a terminal spawn completion. UnifiedExec trackers stay
+	// transient after turn close because Codex `Op::Interrupt` does not kill
+	// the PTY; typed item/completed later clears the live tracker, and only
+	// persists transcript history if a Codex wire round is active at that time.
 	if persistErr == nil && err == nil {
 		r.observeCodexTurnComplete(evt.ThreadID)
 	}
@@ -822,6 +805,23 @@ func (r *Router) ActiveTurnSnapshot(threadID string) (ActiveTurnSnapshot, bool) 
 	defer r.mu.Unlock()
 	snapshot, ok := r.currentRoundByThread[threadID]
 	return snapshot, ok
+}
+
+// activeRoundTurnIndex returns the turn index for the frontend-visible active
+// wire round. Unlike currentTurnIndex, this never falls back to the newest
+// stored turn; callers use it when an event should be dropped from chat history
+// once the user-facing task indicator is no longer running.
+func (r *Router) activeRoundTurnIndex(threadID string) (int, bool) {
+	if r == nil || threadID == "" {
+		return 0, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	snapshot, ok := r.currentRoundByThread[threadID]
+	if !ok {
+		return 0, false
+	}
+	return snapshot.TurnIndex, true
 }
 
 // clearOpenTurn drops per-turn flow-control state at EventTurnComplete.

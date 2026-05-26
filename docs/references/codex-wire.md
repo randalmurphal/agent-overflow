@@ -60,8 +60,9 @@ The item stays `status: inProgress` until `spawn_exit_watcher` fires
 
 **Implication for agent-overflow**:
 `source: "unifiedExecStartup"` is the wire-typed signal that an item may
-become a background terminal. Typed `item/completed` is the history source for
-the command row, using the same item id. Typed
+become a background terminal. Typed `item/completed` clears the transient live
+tracker and is the history source for the command row, using the same item id,
+only while a Codex wire round is active. Typed
 `TerminalInteractionNotification` is the history source for the separate
 waited/interacted marker rows. Raw `exec_command` function-call output is
 model-facing text; it can enrich live metadata but must not gate or fabricate
@@ -73,8 +74,8 @@ what produced ghost rows in the former `BackgroundClassifier` (previously at
 
 On the wire, Codex items close via `item/completed` using the same
 `item_id` — the status flips in place, no sibling row is emitted.
-Agent Overflow follows that shape for Codex command executions: no
-`tool_completion` sibling is synthesized for unified exec command completion.
+Agent Overflow follows that shape for Codex command executions when they are
+persisted: no `tool_completion` sibling is synthesized for unified exec command completion.
 See
 [`codex.md §Known upstream constraints`](codex.md#known-upstream-constraints)
 for the per-row stop gap.
@@ -83,9 +84,11 @@ for the per-row stop gap.
 
 Each `item/*` notification includes a `status` field on the item
 object directly (`inProgress | completed | failed | ...`). Unlike
-Claude's "tool_use then tool_result" split, Codex items are
-one-shot upserts — `item/started` creates the row, `item/completed`
-updates it. Both handlers can share code via idempotent upsert.
+Claude's "tool_use then tool_result" split, most Codex items are
+one-shot upserts: `item/started` creates the row, `item/completed`
+updates it. `unifiedExecStartup` command executions are the important
+exception in Agent Overflow: starts are transient tray state, and completion
+history is gated on an active Codex wire round.
 
 This is the pattern CodexMonitor uses
 (`useAppServerEvents.ts:467-495`) — it dispatches on `method` but

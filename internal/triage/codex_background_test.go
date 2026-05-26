@@ -84,11 +84,18 @@ func buildCodexExecResultMeta(t *testing.T, result, processID, command string) j
 func seedOpenTurn(t *testing.T, router *Router, st *store.Store, threadID string, turnIndex int) {
 	t.Helper()
 	router.setOpenTurn(threadID, turnIndex)
+	startedAt := time.Now().UnixMilli()
+	router.setOpenRoundSnapshot(ActiveTurnSnapshot{
+		ThreadID:  threadID,
+		TurnID:    threadID + ":" + strconv.Itoa(turnIndex) + ":round",
+		TurnIndex: turnIndex,
+		StartedAt: startedAt,
+	})
 	if err := st.InsertTurn(store.Turn{
 		TurnID:    threadID + ":" + strconv.Itoa(turnIndex),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
-		StartedAt: time.Now().UnixMilli(),
+		StartedAt: startedAt,
 	}); err != nil {
 		t.Fatalf("insert turn row: %v", err)
 	}
@@ -353,6 +360,175 @@ func TestCodexUnifiedExecBackgroundCompletionPersistsCommandRow(t *testing.T) {
 	live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
 	if len(live) != 0 {
 		t.Fatalf("live tray should clear after typed command completion: %+v", live)
+	}
+}
+
+func TestCodexUnifiedExecIdleCompletionAfterTurnCompleteClearsTransientStateWithoutHistory(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-late",
+		ItemType: "commandExecution", TurnID: "t1:0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-late", "sleep 10 && echo done"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnID:       "t1:0",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	completeMeta := buildUnifiedExecCompleteMeta(t, "completed", "pid-late", "sleep 10 && echo done", 0)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-late",
+		ItemType: "commandExecution", TurnID: "t1:0", Content: "done\n",
+		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("command output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-late",
+		ItemType: "commandExecution", TurnID: "t1:0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool complete: %v", err)
+	}
+
+	if _, found, err := st.GetThreadItem("t1", "cmd-late"); err != nil || found {
+		t.Fatalf("idle late completion should not persist history row: found=%v err=%v", found, err)
+	}
+	if live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0); len(live) != 0 {
+		t.Fatalf("idle late completion should clear live tray: %+v", live)
+	}
+	for _, item := range filterItemEventUpserts(*emissions) {
+		if item.ID == "cmd-late" {
+			t.Fatalf("idle late completion emitted history upsert: %+v", item)
+		}
+	}
+}
+
+func TestCodexUnifiedExecIdleCompletionAfterInterruptedTurnClearsTransientStateWithoutHistory(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-interrupted-late",
+		ItemType: "commandExecution", TurnID: "t1:0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-interrupted-late", "sleep 10 && echo done"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnID:       "t1:0",
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "interrupted", Aborted: true},
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	completeMeta := buildUnifiedExecCompleteMeta(t, "completed", "pid-interrupted-late", "sleep 10 && echo done", 0)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-interrupted-late",
+		ItemType: "commandExecution", TurnID: "t1:0", Content: "done\n",
+		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("command output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-interrupted-late",
+		ItemType: "commandExecution", TurnID: "t1:0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool complete: %v", err)
+	}
+
+	if _, found, err := st.GetThreadItem("t1", "cmd-interrupted-late"); err != nil || found {
+		t.Fatalf("interrupted late completion should not persist history row: found=%v err=%v", found, err)
+	}
+	if live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0); len(live) != 0 {
+		t.Fatalf("interrupted late completion should clear live tray: %+v", live)
+	}
+	for _, item := range filterItemEventUpserts(*emissions) {
+		if item.ID == "cmd-interrupted-late" {
+			t.Fatalf("interrupted late completion emitted history upsert: %+v", item)
+		}
+	}
+}
+
+func TestCodexUnifiedExecCompletionDuringLaterActiveTurnPersistsAtObservedTurn(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-later-active",
+		ItemType: "commandExecution", TurnID: "t1:0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-later-active", "sleep 10 && echo done"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnID:       "t1:0",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	seedOpenTurn(t, router, st, "t1", 1)
+	completeMeta := buildUnifiedExecCompleteMeta(t, "completed", "pid-later-active", "sleep 10 && echo done", 0)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-later-active",
+		ItemType: "commandExecution", TurnID: "t1:0", Content: "done\n",
+		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("command output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-later-active",
+		ItemType: "commandExecution", TurnID: "t1:0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool complete: %v", err)
+	}
+
+	row, found, err := st.GetThreadItem("t1", "cmd-later-active")
+	if err != nil || !found {
+		t.Fatalf("later active completion row missing: found=%v err=%v", found, err)
+	}
+	if row.TurnIndex != 1 {
+		t.Fatalf("later active completion turn index = %d, want observed active turn 1", row.TurnIndex)
+	}
+	if row.Status != statusCompleted || row.PayloadKind != "command_output" {
+		t.Fatalf("later active completion status/payload = %+v", row)
+	}
+	foundUpsert := false
+	for _, item := range filterItemEventUpserts(*emissions) {
+		if item.ID != "cmd-later-active" {
+			continue
+		}
+		foundUpsert = true
+		if item.TurnIndex != 1 || item.Status != statusCompleted || item.PayloadKind != "command_output" {
+			t.Fatalf("later active completion upsert = %+v", item)
+		}
+	}
+	if !foundUpsert {
+		t.Fatalf("later active completion did not emit provider:item_event upsert; emissions=%+v", *emissions)
 	}
 }
 

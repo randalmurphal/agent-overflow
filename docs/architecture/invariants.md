@@ -703,9 +703,11 @@ after `yield_time_ms` (10s default) while the PTY keeps running in
 across turns, up to `background_terminal_max_timeout` (1h default).
 `source: "unifiedExecStartup"` is the unambiguous wire signal for "this item is
 a unified exec candidate"; typed `TerminalInteraction` is the visible wait
-signal. Typed `item/completed` owns the command transcript row with the same
-item id, matching Codex TUI. Treating raw `function_call_output` text as the
-history source is wrong because it is model-facing transcript, not UI history.
+signal. Typed `item/completed` owns transient live-state cleanup and owns the
+command transcript row with the same item id only while a Codex wire round is
+active, matching Codex TUI timing. Treating raw `function_call_output` text as
+the history source is wrong because it is model-facing transcript, not UI
+history.
 
 `spawn_agent` child threads live on their own `thread_id` and the
 parent's `spawn_agent` tool_call completes on the wire immediately. The
@@ -731,6 +733,11 @@ The former `BackgroundClassifier` at
   not transcript history or tray backgrounding.
 - `TestCodexUnifiedExecQuickCompletionPersistsNormalCommand` —
   typed command completion persists as a normal command row.
+- `TestCodexUnifiedExecIdleCompletionAfterTurnCompleteClearsTransientStateWithoutHistory`
+  and
+  `TestCodexUnifiedExecIdleCompletionAfterInterruptedTurnClearsTransientStateWithoutHistory`
+  — late typed completions clear the live tracker but do not append chat
+  history once no Codex wire round is active.
 - `TestCodexUnifiedExecLateRawYieldResultDoesNotCreateDuplicate`
   — a late raw exec result cannot create duplicate or reordered transcript
   history after typed command completion.

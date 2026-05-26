@@ -31,13 +31,14 @@ import (
 // and spawn_agent starts in transient state. A unifiedExec is shown in
 // the running-task tray immediately, but it only becomes a background
 // task when a typed trigger proves the model explicitly waited on it.
-// Command completion transcript history comes from typed item/completed,
-// matching Codex TUI; terminal interactions own only waited/interacted marker
-// rows. A spawn_agent start becomes transcript history only when Codex emits the
-// terminal spawn completion.
+// Command completion transcript history comes from typed item/completed only
+// while a Codex wire round is active, matching Codex TUI timing; terminal
+// interactions own only waited/interacted marker rows. A spawn_agent start
+// becomes transcript history only when Codex emits the terminal spawn
+// completion.
 //
 // The correlation is bounded: unifiedExec entries are dropped after typed
-// item/completed persists the command row,
+// item/completed clears the transient tracker,
 // pending spawn_agent starts are dropped at the turn boundary if no
 // terminal spawn completion arrived, completed spawn_agent entries are
 // dropped on wait/subagent notification, and all thread state clears on
@@ -45,8 +46,9 @@ import (
 //
 // Claude's handleBackgroundTaskTerminal remains the shape-of-truth for
 // persisted completion sibling rows. Codex unifiedExec intentionally
-// diverges: typed command item/completed persists the command row itself, while
-// TerminalInteraction persists only the separate wait/interact marker rows.
+// diverges: typed command item/completed owns the command row itself while a
+// Codex wire round is active, while TerminalInteraction persists only the
+// separate wait/interact marker rows.
 
 const (
 	codexLiveCommandOutputMaxBytes       = 1024 * 1024
@@ -56,10 +58,10 @@ const (
 // unifiedExecTracker is the per-thread per-launchID state tracked for
 // Codex unified exec command executions. Unlike Claude background
 // tasks, these rows are not timeline history while they are live:
-// they first appear only in the running-task tray. Typed item/completed
-// persists the normal command row and removes the tracker. Empty write_stdin
-// polls create separate terminal_interaction marker rows while the tracker is
-// still live.
+// they first appear only in the running-task tray. Typed item/completed removes
+// the tracker; it persists the normal command row only while a Codex wire round
+// is still active. Empty write_stdin polls create separate terminal_interaction
+// marker rows while the tracker is still live.
 type unifiedExecTracker struct {
 	backgrounded bool
 	launchID     string
@@ -147,8 +149,9 @@ type codexExecResultMeta struct {
 // projector is responsible for its own synchronization.
 type codexBackgroundState struct {
 	// unifiedExec maps launchID → tracker for inProgress unifiedExec
-	// command_execution items. Typed item/completed persists the command row
-	// and removes the tracker.
+	// command_execution items. Typed item/completed removes the tracker and
+	// persists the command row only when the frontend-visible Codex task is
+	// still running.
 	unifiedExec map[string]*unifiedExecTracker
 	// unifiedExecByProcess maps process_id → launchID so
 	// TerminalInteraction events can correlate wait/interact marker rows without
@@ -914,10 +917,11 @@ func (r *Router) observeCodexCommandOutput(evt provider.ProviderEvent) bool {
 	return true
 }
 
-// observeCodexUnifiedExecComplete owns item/completed for tracked
-// unified exec startups. This mirrors Codex TUI: command completion is a
-// command row from typed item/completed, while TerminalInteraction owns only
-// the separate waited/interacted marker rows.
+// observeCodexUnifiedExecComplete owns item/completed for tracked unified exec
+// startups. This mirrors Codex TUI: late completions still clear background
+// process state, but chat history only changes while the task indicator is
+// running. TerminalInteraction owns only the separate waited/interacted marker
+// rows.
 func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bool, error) {
 	itemID := strings.TrimSpace(eventItemID(evt))
 	if itemID == "" {
@@ -971,18 +975,18 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 		r.clearCodexTerminalWaitCarrierIfMatches(evt.ThreadID, tracker.processID, pendingWait.itemID)
 	}
 	r.emitCodexBackgroundTasksChanged(evt.ThreadID)
-	return true, r.persistCodexUnifiedExecCommand(evt, tracker)
+	turnIndex, ok := r.activeRoundTurnIndex(evt.ThreadID)
+	if !ok {
+		return true, nil
+	}
+	return true, r.persistCodexUnifiedExecCommand(evt, tracker, turnIndex)
 }
 
-func (r *Router) persistCodexUnifiedExecCommand(evt provider.ProviderEvent, tracker unifiedExecTracker) error {
+func (r *Router) persistCodexUnifiedExecCommand(evt provider.ProviderEvent, tracker unifiedExecTracker, turnIndex int) error {
 	meta := decodeToolStartMeta(evt.Meta)
 	summary := buildToolCallSummary(meta, evt.ItemType)
 	if strings.TrimSpace(summary) == "" {
 		summary = tracker.summary
-	}
-	turnIndex, err := r.turnIndexForEvent(evt)
-	if err != nil {
-		return fmt.Errorf("codex unified exec command turn index %s: %w", tracker.launchID, err)
 	}
 	now := eventTimestampMillis(evt)
 	item := store.Item{
@@ -1015,7 +1019,7 @@ func (r *Router) persistCodexUnifiedExecCommand(evt provider.ProviderEvent, trac
 // ListLiveCodexBackgroundTasks returns transient Codex unified exec tray
 // rows. Pending foreground commands are included with IsBackground=false;
 // yielded PTYs are included with IsBackground=true. Completed commands leave
-// the live tray when typed item/completed persists the transcript command row.
+// the live tray when typed item/completed removes the transient tracker.
 func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64) []store.Item {
 	r.mu.Lock()
 	state := r.codexBackground[threadID]
@@ -1623,9 +1627,9 @@ func (r *Router) stampCodexItemBackgrounded(threadID, itemID string) error {
 // completions persist immediately because the wait carrier is the
 // timeline boundary that should own the indented completion row. The
 // sibling lands at the LATEST turn's tail (not the launching turn) —
-// long unifiedExec commands can complete hours after their launch, across
-// many turns, and the row must appear where the timeline's write-head is
-// at completion time.
+// Codex subagents can complete long after their spawn row, across many turns,
+// and the row must appear where the timeline's write-head is at completion
+// time.
 //
 // Idempotent by stable id (`complete:<launchID>`): a duplicate
 // item/completed upserts in place rather than creating a second row.

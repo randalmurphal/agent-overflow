@@ -33,8 +33,9 @@ none fits.
 - `tool_lifecycle.go` — tool-call launch/completion rows,
   background-task pairing (Claude), summary/status derivation.
 - `codex_background.go` — Codex-specific background projection.
-  Tracks unifiedExec commands as transient running-tray state, persists
-  typed completions as normal command rows using the original item id.
+  Tracks unifiedExec commands as transient running-tray state, clears
+  typed completions from live state, and persists the normal command row
+  using the original item id only while a Codex wire round is active.
   Terminal interactions persist only waited/interacted marker rows while a
   unifiedExec tracker is live. Pending unifiedExec commands are tray-visible
   before a typed wait but only become backgrounded after that wire-typed
@@ -91,7 +92,7 @@ none fits.
 | Turn metadata (cost/tokens) | Persist on turn completion. |
 | Context-window usage | Frontend context meter + `threads.last_token_usage`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
-| Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; typed command completions persist as normal command rows using the original item id. Spawn-agent starts are pending-only; terminal spawn completions persist the visible row and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
+| Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; typed command completions clear live state and persist normal command rows using the original item id only while a Codex wire round is active. Spawn-agent starts are pending-only; terminal spawn completions persist the visible row and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
 | Codex terminal interaction | Empty stdin persists/reuses one visible `terminal_interaction` wait carrier on the current open turn while the PTY tracker is live. Non-empty stdin first flushes any active wait for that process, then persists an interaction marker without storing stdin bytes. See `terminal_interaction.go`. |
 | Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. |
 | Error | Distinct event kind; frontend renders as status/alert. |
@@ -138,9 +139,10 @@ Authoritative mental model:
   `codex_background.go` tracks unifiedExec items as transient state and
   shows them in the running tray immediately. They only become
   backgrounded after a typed terminal-interaction notification for an explicit
-  empty write_stdin poll. Typed unifiedExec completions always persist normal
-  command rows using the original item id; raw exec output never creates,
-  delays, or backgrounds transcript history.
+  empty write_stdin poll. Typed unifiedExec completions always clear transient
+  live state; they persist normal command rows using the original item id only
+  while the frontend-visible Codex wire round is active. Raw exec output never
+  creates, delays, or backgrounds transcript history.
   Spawn-agent starts are tracker-only until terminal spawn completion creates
   the visible tool row. Child-agent transcript completions are owned by
   wait_agent or subagent_notification; direct child lifecycle only updates live
