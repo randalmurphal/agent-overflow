@@ -278,6 +278,7 @@ func (a *App) runPlainInterruptLocked(threadID string) error {
 		if _, err := a.triage.MarkUserInterrupt(threadID); err != nil {
 			log.Printf("app: interrupt-and-revert: plain fallback: mark user interrupt: %v", err)
 		}
+		a.eagerPersistFlushSendsOnInterrupt(threadID, sess)
 	}
 	return nil
 }

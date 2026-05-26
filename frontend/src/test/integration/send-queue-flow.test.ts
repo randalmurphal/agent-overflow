@@ -242,11 +242,9 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
 
   // ---- T4 — confirmed item_event upsert clears Zone 2 ------------------
 
-  it('T4: provider:item_event upsert for a flushed userItemId clears Zone 2 only when provider-confirmed', async () => {
+  it('T4: provider:item_event upsert for a flushed userItemId clears Zone 2 on any flush user_text', async () => {
     await mountWithActiveThread();
 
-    // Seed Zone 2 directly via the event channel so the test exercises
-    // both the markItemsFlushed handler and the confirm path.
     emitWailsEvent('provider:queue_flushed', {
       threadId: 'thread-1',
       items: [
@@ -260,15 +258,10 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       'user:0:flush:2',
     ]);
 
-    // A user_text upsert without provider_item_id is not confirmation
-    // that the provider accepted the queued message. Zone 2 must stay
-    // visible so chat history does not get ahead of the provider's
-    // actual context.
-    //
-    // events.ts coalesces upserts behind requestAnimationFrame +
-    // 50 ms timeout; happy-dom doesn't tick raf from svelte's tick(),
-    // so we waitFor the store mutation rather than relying on
-    // synchronous dispatch.
+    // A user_text upsert with a :flush: id clears Zone 2 for that
+    // item — even without provider_item_id. This supports the eager
+    // persist on interrupt path where the item is persisted into the
+    // timeline before the provider echo arrives.
     emitItemEventUpsert({
       id: 'user:0:flush:1',
       threadId: 'thread-1',
@@ -282,32 +275,30 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       createdAt: 1,
       updatedAt: 1,
     });
-    await new Promise<void>((r) => setTimeout(r, 60));
-    expect(getFlushedForThread('thread-1').map((f) => f.userItemId)).toEqual([
-      'user:0:flush:1',
-      'user:0:flush:2',
-    ]);
-
-    // The wire echo lands later carrying `provider_item_id` in Meta.
-    // That is the confirmation boundary for q-1; q-2 stays pending
-    // because no confirmed upsert arrived for it.
-    emitItemEventUpsert({
-      id: 'user:0:flush:1',
-      threadId: 'thread-1',
-      turnIndex: 0,
-      itemIndex: 1,
-      kind: 'user_text',
-      role: 'user',
-      status: 'completed',
-      summary: 'in-flight',
-      meta: JSON.stringify({ provider_item_id: 'wire-echo-001' }),
-      createdAt: 1,
-      updatedAt: 2,
-    });
     await waitFor(() => {
       expect(getFlushedForThread('thread-1').map((f) => f.userItemId)).toEqual([
         'user:0:flush:2',
       ]);
+    });
+
+    // The wire echo lands later with provider_item_id, clearing the
+    // remaining item. Both paths (eager persist without id, normal
+    // echo with id) use the same confirm gate.
+    emitItemEventUpsert({
+      id: 'user:0:flush:2',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 2,
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      summary: 'still pending',
+      meta: JSON.stringify({ provider_item_id: 'wire-echo-002' }),
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    await waitFor(() => {
+      expect(getFlushedForThread('thread-1')).toHaveLength(0);
     });
   });
 

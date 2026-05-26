@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"log"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -242,4 +243,93 @@ func (r *Router) clearWireOnlyUserTextForThread(threadID string) {
 // clearWireOnlyUserTextForThread. Caller MUST hold r.mu.
 func (r *Router) clearWireOnlyUserTextLocked(threadID string) {
 	delete(r.wireOnlyUserTextSeen, threadID)
+}
+
+// EagerPersistedFlush describes a deferred flush send that was eagerly
+// persisted during interrupt. The app layer uses it for checkpoint
+// capture and (for Codex) re-send.
+type EagerPersistedFlush struct {
+	UserItemID string
+	TurnIndex  int
+	Content    string
+	Meta       string
+}
+
+// EagerPersistDeferredFlushSends immediately persists all deferred
+// pending flush sends for threadID into the timeline. Called on user
+// interrupt so queued messages become visible without waiting for the
+// provider echo.
+//
+// Under lock: snapshots deferred items and nils DeferredItem on each
+// pending send entry. Nilling ensures the echo path routes to
+// attachProviderItemIDToUserRow (stamp-only) instead of
+// persistDeferredUserText (re-persist).
+//
+// Each item is persisted via persistItem (UpsertItem + emit) so the
+// frontend receives a provider:item_event upsert immediately.
+func (r *Router) EagerPersistDeferredFlushSends(threadID string) []EagerPersistedFlush {
+	if threadID == "" || r.store == nil {
+		return nil
+	}
+
+	r.mu.Lock()
+	pending := r.pendingByThread[threadID]
+	var snapshots []store.Item
+	for i := range pending {
+		if pending[i].DeferredItem != nil && pending[i].QueueItemID != "" {
+			snapshots = append(snapshots, *pending[i].DeferredItem)
+			pending[i].DeferredItem = nil
+		}
+	}
+	r.mu.Unlock()
+
+	if len(snapshots) == 0 {
+		return nil
+	}
+
+	result := make([]EagerPersistedFlush, 0, len(snapshots))
+	for _, item := range snapshots {
+		if err := r.persistItem(item, nil); err != nil {
+			log.Printf("triage: eager persist deferred flush %s/%s: %v", item.ThreadID, item.ID, err)
+			continue
+		}
+		result = append(result, EagerPersistedFlush{
+			UserItemID: item.ID,
+			TurnIndex:  item.TurnIndex,
+			Content:    item.Summary,
+			Meta:       item.Meta,
+		})
+	}
+	return result
+}
+
+// ClearPendingSendsByItemIDs removes pending send entries whose
+// AOItemID matches one of the provided ids. Used by the Codex
+// interrupt path to remove stranded entries whose echo will never
+// arrive (Codex discards steered pending_input on turn/interrupt).
+func (r *Router) ClearPendingSendsByItemIDs(threadID string, ids []string) {
+	if threadID == "" || len(ids) == 0 {
+		return
+	}
+	remove := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		remove[id] = struct{}{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	queue := r.pendingByThread[threadID]
+	if len(queue) == 0 {
+		return
+	}
+	filtered := make([]pendingSend, 0, len(queue))
+	for _, entry := range queue {
+		if _, drop := remove[entry.AOItemID]; !drop {
+			filtered = append(filtered, entry)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(r.pendingByThread, threadID)
+	} else {
+		r.pendingByThread[threadID] = filtered
+	}
 }

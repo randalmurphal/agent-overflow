@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -11,6 +12,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
+	"agent-overflow/internal/triage"
 
 	"github.com/google/uuid"
 )
@@ -363,7 +365,6 @@ func (a *App) InterruptTurn(threadID string) error {
 	}
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
-		// Mirrors runPlainInterruptLocked's tolerant contract.
 		return nil
 	}
 
@@ -378,8 +379,84 @@ func (a *App) InterruptTurn(threadID string) error {
 		if _, err := a.triage.MarkUserInterrupt(threadID); err != nil {
 			log.Printf("app: interrupt turn: mark user interrupt: %v", err)
 		}
+		a.eagerPersistFlushSendsOnInterrupt(threadID, sess)
 	}
 	return nil
+}
+
+// eagerPersistFlushSendsOnInterrupt immediately persists any deferred
+// flush sends so queued user messages appear in the chat timeline
+// without waiting for the provider echo. For Codex, it also re-sends
+// the messages as a fresh turn because Codex discards steered
+// pending_input on turn/interrupt.
+func (a *App) eagerPersistFlushSendsOnInterrupt(threadID string, sess session) {
+	persisted := a.triage.EagerPersistDeferredFlushSends(threadID)
+	if len(persisted) == 0 {
+		return
+	}
+
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		log.Printf("app: eager persist flush: load thread %s: %v", threadID, err)
+		return
+	}
+
+	for _, p := range persisted {
+		a.captureMessageCheckpoint(thread, store.Item{
+			ID:        p.UserItemID,
+			ThreadID:  threadID,
+			TurnIndex: p.TurnIndex,
+		})
+	}
+
+	if sess.codex == nil {
+		return
+	}
+
+	a.codexResendAfterInterrupt(threadID, sess, persisted, thread)
+}
+
+// codexResendAfterInterrupt clears stranded pending sends and re-sends
+// eagerly-persisted flush items as a fresh Codex turn. Codex discards
+// steered pending_input on turn/interrupt (codex-rs abort_all_tasks →
+// input_queue.clear_pending), so the client must re-submit — mirroring
+// the Codex TUI's submit_pending_steers_after_interrupt flow.
+func (a *App) codexResendAfterInterrupt(
+	threadID string,
+	sess session,
+	persisted []triage.EagerPersistedFlush,
+	thread store.Thread,
+) {
+	ids := make([]string, len(persisted))
+	contents := make([]string, len(persisted))
+	for i, p := range persisted {
+		ids[i] = p.UserItemID
+		contents[i] = p.Content
+	}
+	a.triage.ClearPendingSendsByItemIDs(threadID, ids)
+
+	merged := strings.Join(contents, "\n\n")
+	sendOpts := provider.SendOptions{
+		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
+	}
+
+	turnIndex, err := a.nextSendTurnIndex(threadID)
+	if err != nil {
+		log.Printf("app: codex interrupt re-send: resolve turn index for %s: %v", threadID, err)
+		return
+	}
+
+	// Register a non-deferred pending send for the first item so the
+	// echo stamps provider_item_id via attachProviderItemIDToUserRow.
+	// Items 2+ are merged into the same turn and share the first
+	// item's provider correlation.
+	a.triage.RegisterPendingSend(threadID, persisted[0].UserItemID, turnIndex)
+	sess.liveness.bumpActivity(time.Now())
+
+	if sendErr := sess.codex.Send(context.Background(), merged, sendOpts); sendErr != nil {
+		log.Printf("app: codex interrupt re-send for thread %s: %v", threadID, sendErr)
+		a.triage.ClearPendingSendForFailure(threadID, persisted[0].UserItemID)
+	}
 }
 
 // StopSession tears down the thread's provider session. Idempotent: a

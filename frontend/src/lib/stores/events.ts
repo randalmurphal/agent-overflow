@@ -657,11 +657,11 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
     } else {
       itemsByThread.set(item.threadId, [item]);
     }
-    // Zone 2 clears only when the provider-confirmed user_text row
-    // arrives. Normal queued sends no longer create an optimistic chat
-    // row at flush time; the row's provider_item_id is the signal that
-    // Claude/Codex accepted it into context.
-    if (item.kind === 'user_text' && item.id.includes(':flush:') && itemHasProviderItemID(item)) {
+    // Zone 2 clears when a flush user_text row arrives in the
+    // timeline — either via the normal deferred echo path (which
+    // carries provider_item_id) or via the eager persist on
+    // interrupt (which appears before the echo).
+    if (item.kind === 'user_text' && item.id.includes(':flush:')) {
       confirmFlushedByUserItemId(item.threadId, item.id);
     }
     // user_text upserts are one of three sidebar-bump boundaries —
@@ -698,12 +698,6 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
   for (const [threadId, updatedAt] of userTextActivityByThread) {
     syncThreadActivity(threadId, updatedAt);
   }
-}
-
-function itemHasProviderItemID(item: Item): boolean {
-  const parsed = parseJsonObject(item.meta);
-  const id = parsed?.provider_item_id ?? parsed?.providerItemId;
-  return typeof id === 'string' && id.trim().length > 0;
 }
 
 function applyItemDelta(evt: ItemDeltaEvent): void {
