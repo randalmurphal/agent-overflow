@@ -167,10 +167,10 @@
               <img
                 src={preview.url}
                 alt={attachment.filename}
-                class="max-h-[220px] w-full object-cover"
+                class="aspect-[4/3] w-full object-cover"
               />
             {:else}
-              <span class="flex h-24 items-center justify-center px-2 text-center text-xs text-text-secondary">
+              <span class="flex aspect-[4/3] w-full items-center justify-center px-2 text-center text-xs text-text-secondary">
                 {attachment.filename}
               </span>
             {/if}
