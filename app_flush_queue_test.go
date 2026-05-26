@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -1207,6 +1208,201 @@ func TestDispatchFlush_ResolveTurnIndex_AccountsForInFlightPendingSends(t *testi
 	}
 }
 
+// TestDispatchFlush_Claude_EagerPersistAtActiveTurn verifies that when
+// a Claude session has an active turn, the flush-dispatched user_text
+// row is persisted eagerly at the active turn's index (so it appears
+// in the timeline alongside the ongoing response) while the pending
+// send is registered at the next turn (so resolveTurnIndexOnStart opens
+// a fresh turn for the response). On echo, attachProviderItemIDToUserRow
+// stamps provider_item_id on the existing row without re-persisting.
+func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-claude-eager")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = initCheckpointRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "user:3", ThreadID: thread.ID, TurnIndex: 3,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "original prompt", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed user item: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID: "turn-3", ThreadID: thread.ID, TurnIndex: 3, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	// Simulate a tool_call row at turn 3 so there's existing content.
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "toolu_sleep", ThreadID: thread.ID, TurnIndex: 3,
+		Kind: "tool_call", Role: "assistant", Status: "running",
+		Summary: "sleep 10", CreatedAt: now + 1, UpdatedAt: now + 1,
+	}); err != nil {
+		t.Fatalf("seed tool_call: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(), thread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("claude.NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+		liveness: newSessionLiveness(time.Now()),
+	}
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+		{ID: "queue:msg1", Message: "queued follow-up", Payload: json.RawMessage(`{}`)},
+	})
+
+	// The user_text row must be persisted immediately at turn 3 (the active turn).
+	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	if err != nil {
+		t.Fatalf("ListItemsForTurn: %v", err)
+	}
+	var flushRow *store.Item
+	for i, it := range items {
+		if it.Kind == "user_text" && strings.Contains(it.ID, ":flush:") {
+			flushRow = &items[i]
+			break
+		}
+	}
+	if flushRow == nil {
+		t.Fatalf("eagerly-persisted flush row not found at turn 3; items: %+v", items)
+	}
+	if flushRow.Summary != "queued follow-up" {
+		t.Errorf("flush row summary: got %q, want %q", flushRow.Summary, "queued follow-up")
+	}
+	if flushRow.ItemIndex <= 1 {
+		t.Errorf("flush row item_index=%d, want > 1 (after user:3 and tool_call)", flushRow.ItemIndex)
+	}
+
+	// The pending send must be registered at the NEXT turn (4), not the active turn (3).
+	head, ok := app.triage.PeekPendingSendHeadForTest(thread.ID)
+	if !ok {
+		t.Fatalf("no pending send registered after eager-persist dispatch")
+	}
+	if head.TurnIndex != 4 {
+		t.Errorf("pending send TurnIndex: got %d, want 4 (response turn)", head.TurnIndex)
+	}
+
+	// provider:queue_flushed must have been emitted (Zone 1 → Zone 2 transition).
+	if !rec.hasEvent("provider:queue_flushed") {
+		t.Error("provider:queue_flushed not emitted")
+	}
+
+	// Simulate the provider echo — attachProviderItemIDToUserRow stamps the
+	// existing row without re-persisting.
+	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-user-1"})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: thread.ID,
+		TurnIndex: 3, ItemID: flushRow.ID, Content: "queued follow-up",
+		Meta: echoMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("EventUserText echo: %v", err)
+	}
+
+	// After echo, the row should carry provider_item_id in meta.
+	stamped, found, err := app.store.GetThreadItem(thread.ID, flushRow.ID)
+	if err != nil || !found {
+		t.Fatalf("row after echo: found=%v err=%v", found, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(stamped.Meta), &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["provider_item_id"] != "wire-user-1" {
+		t.Errorf("provider_item_id after echo: got %v, want wire-user-1", meta["provider_item_id"])
+	}
+	// Item index must not have changed on echo (row was updated in place, not re-inserted).
+	if stamped.ItemIndex != flushRow.ItemIndex {
+		t.Errorf("item_index changed after echo: was %d, now %d", flushRow.ItemIndex, stamped.ItemIndex)
+	}
+	// Eagerly-persisted flush messages at a shared turn must NOT capture a
+	// checkpoint — the original user:3 checkpoint already covers the same
+	// workspace state, and DeleteConversationFromTurn(3) would incorrectly
+	// delete the original prompt if the flush message had its own checkpoint.
+	if _, ok, _ := app.store.GetCheckpointByUserItemID(thread.ID, flushRow.ID); ok {
+		t.Error("eagerly-persisted flush at active turn should not capture a checkpoint")
+	}
+}
+
+// TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex verifies that
+// when no active turn exists for a Claude session, flush dispatch uses
+// the deferred persistence path (same as Codex) — the item appears in
+// the timeline only after the provider echoes it.
+func TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-claude-no-active")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = initCheckpointRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	// Seed a completed turn — no active turn.
+	now := time.Now().UnixMilli()
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "user:0", ThreadID: thread.ID, TurnIndex: 0,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "done", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID: "turn-0", ThreadID: thread.ID, TurnIndex: 0,
+		StartedAt: now, CompletedAt: &now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(), thread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("claude.NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+		liveness: newSessionLiveness(time.Now()),
+	}
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+		{ID: "queue:def", Message: "follow-up after turn", Payload: json.RawMessage(`{}`)},
+	})
+
+	// No user_text row should exist yet — deferred until echo.
+	items, err := app.store.ListItemsForTurn(thread.ID, 1)
+	if err != nil {
+		t.Fatalf("ListItemsForTurn: %v", err)
+	}
+	for _, it := range items {
+		if it.Kind == "user_text" && strings.Contains(it.ID, ":flush:") {
+			t.Fatalf("flush row should not be persisted before echo (deferred path); got %+v", it)
+		}
+	}
+	if !app.triage.HasPendingSendForThread(thread.ID) {
+		t.Error("pending-send marker not registered")
+	}
+}
+
 // guardCompileEnsureSendMessageOptionsCompatible prevents a silent
 // drift between flushQueuePayload and SendMessageOptions: the
 // frontend writes one shape and reads the other, so the field set
@@ -1327,6 +1523,15 @@ func (r *emitRecorder) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = r.calls[:0]
+}
+
+func (r *emitRecorder) hasEvent(channel string) bool {
+	for _, c := range r.snapshot() {
+		if c.Channel == channel {
+			return true
+		}
+	}
+	return false
 }
 
 func emittedItemUpserts(rec *emitRecorder) []store.Item {

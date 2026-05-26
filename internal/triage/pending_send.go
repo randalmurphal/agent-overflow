@@ -66,6 +66,28 @@ type PendingFlushItemSnapshot struct {
 	Message     string
 }
 
+// PendingSendSnapshot is the test-visible projection of a pendingSend entry.
+type PendingSendSnapshot struct {
+	AOItemID    string
+	TurnIndex   int
+	HasDeferred bool
+}
+
+// PeekPendingSendHeadForTest returns a snapshot of the FIFO head for threadID.
+// Exported for integration tests in the main package that verify the turn-index
+// split between persist and response turns.
+func (r *Router) PeekPendingSendHeadForTest(threadID string) (PendingSendSnapshot, bool) {
+	head, ok := r.peekPendingSendHead(threadID)
+	if !ok {
+		return PendingSendSnapshot{}, false
+	}
+	return PendingSendSnapshot{
+		AOItemID:    head.AOItemID,
+		TurnIndex:   head.TurnIndex,
+		HasDeferred: head.DeferredItem != nil,
+	}, true
+}
+
 // RegisterPendingSend appends a new entry to the per-thread FIFO. The
 // send path calls this synchronously so the queue mirrors user-typed
 // order. EnqueuedAt is stamped from time.Now here — Phase E uses it

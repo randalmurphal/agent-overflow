@@ -218,44 +218,34 @@ type flushQueuePayload = flushqueue.Payload
 //  1. Decode QueuedFlushItem.Payload into flushQueuePayload.
 //  2. Resolve attachments + source/revision plan refs (same shape
 //     Send and Steer use).
-//  3. Allocate the AO item id (`user:<turnIndex>:flush:<n>`) — never
-//     collides with the seed `user:<turnIndex>` row or with
-//     `:steer:<n>` rows.
-//  4. RegisterPendingFlushSend so the wire echo (Claude
-//     `--replay-user-messages` envelope or Codex `item/completed
-//     userMessage`) creates the chat-history row at MAX+1 of the
-//     dispatch-decided turn, computed at echo time, with
-//     `provider_item_id` already attached. The position is recomputed
-//     at echo time deliberately — capturing it at dispatch would
-//     place the queued message above any rows the model emitted
-//     between dispatch and echo. See triage/pending_send.go
-//     pendingSend.
+//  3. Allocate the AO item id (`user:<turnIndex>:flush:<n>`).
+//  4. Register the pending-send marker — provider-specific:
+//     - Claude with active turn: EAGER persist. The user_text row is
+//     persisted immediately at the active turn's index so it appears
+//     in the timeline at the point it was dispatched (before any
+//     response items the agent produces after). A non-deferred
+//     pending send is registered at the response turn so
+//     resolveTurnIndexOnStart opens a fresh turn for the response.
+//     On echo, attachProviderItemIDToUserRow stamps provider_item_id.
+//     provider:queue_flushed emits BEFORE PersistItem so the Zone 2
+//     entry exists when the upsert clears it.
+//     - Claude without active turn / Codex: DEFERRED persist. The
+//     row is deferred via RegisterPendingFlushSend and persisted at
+//     echo time via persistDeferredUserText at MAX+1 item_index.
 //  5. Call the provider:
 //     - Claude: sess.Send writes a fresh user envelope to stdin;
-//     Claude's mid-loop drain (query.ts:1547) consumes it on the
-//     next API iteration.
-//     - Codex drains: sess.Steer pushes onto the active turn's
+//     Claude's queue processor (queryGuard-gated) consumes it between
+//     turns.
+//     - Codex: sess.Steer pushes onto the active turn's
 //     pending_input. Falls back to sess.Send when Steer returns
-//     ErrNoActiveTurn — the active turn ended between trigger fire and
-//     Steer arrival.
+//     ErrNoActiveTurn.
 //
 // On any definite item error, the dispatcher persists a sibling `error`
-// row, aborts the current batch, and requeues items not yet attempted. The
-// failed item itself never enters Zone 2 because no provider confirmation
-// can arrive for it. Codex turn/steer timeouts are different: once the
-// request has been written, timeout means the ACK is missing, not that the
-// provider rejected the message. Those stay pending for the provider echo.
+// row, aborts the current batch, and requeues items not yet attempted.
 //
 // Invoked by the app-layer per-thread flush worker, after triage has released
 // r.mu. The worker preserves FIFO order across multiple boundary drains and
 // prevents concurrent sequence allocation for one thread.
-//
-// Each successful per-item provider write emits `provider:queue_flushed`
-// with the (queueItemId, userItemId, message) mapping before the empty
-// `provider:queue_state_changed` snapshot. That order keeps the above-composer
-// pending row visible until the client can move it from queued to provider-sent.
-// Failed or unattempted items never enter Zone 2, so the frontend cannot get
-// stuck waiting for a provider confirmation that will never arrive.
 func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
 	a.dispatchFlushWithGeneration(threadID, items, a.currentFlushDispatchGeneration(threadID))
 }
@@ -275,7 +265,7 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 		if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
 			return
 		}
-		flushedItem, err := a.dispatchFlushItem(threadID, item)
+		flushedItem, flushedEmitted, err := a.dispatchFlushItem(threadID, item)
 		if err != nil {
 			log.Printf("flush dispatch: thread=%s item=%s: %v", threadID, item.ID, err)
 			if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
@@ -287,23 +277,25 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 			a.emitQueueStateChanged(threadID)
 			return
 		}
-		a.emit("provider:queue_flushed", QueueFlushedEvent{
-			ThreadID: threadID,
-			Items:    []QueueFlushedItem{flushedItem},
-		})
+		if !flushedEmitted {
+			a.emit("provider:queue_flushed", QueueFlushedEvent{
+				ThreadID: threadID,
+				Items:    []QueueFlushedItem{flushedItem},
+			})
+		}
 	}
 	a.emitQueueStateChanged(threadID)
 }
 
-func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (QueueFlushedItem, error) {
+func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (QueueFlushedItem, bool, error) {
 	if a.shuttingDown.Load() {
-		return QueueFlushedItem{}, ErrShuttingDown
+		return QueueFlushedItem{}, false, ErrShuttingDown
 	}
 
 	var payload flushQueuePayload
 	if len(item.Payload) > 0 {
 		if err := json.Unmarshal(item.Payload, &payload); err != nil {
-			return QueueFlushedItem{}, fmt.Errorf("decode payload: %w", err)
+			return QueueFlushedItem{}, false, fmt.Errorf("decode payload: %w", err)
 		}
 	}
 
@@ -316,46 +308,60 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		revisionSourceDiffCommentIDs: payload.RevisionSourceDiffCommentIDs,
 	})
 	if err != nil {
-		return QueueFlushedItem{}, err
+		return QueueFlushedItem{}, false, err
 	}
 	content := resolved.content
 	providerAttachments := resolved.providerAttachments
 	userMeta := resolved.userMessageMeta
 
 	if a.triage == nil {
-		// Defensive: production wires triage in initSubsystems
-		// (app.go:332) before any provider events flow. The lazy init
-		// here matches the pattern used by sendMessageWithOptions and
-		// steerMessageWithOptions for tests that build a partial App.
 		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
 		a.configureTriageQueueCallbacks()
 	}
 
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return QueueFlushedItem{}, fmt.Errorf("load thread: %w", err)
+		return QueueFlushedItem{}, false, fmt.Errorf("load thread: %w", err)
 	}
 	if err := a.ensureClaudeContextReadyForUserSendLocked(thread); err != nil {
-		return QueueFlushedItem{}, err
+		return QueueFlushedItem{}, false, err
 	}
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
-		return QueueFlushedItem{}, fmt.Errorf("no active session for thread %s", threadID)
+		return QueueFlushedItem{}, false, fmt.Errorf("no active session for thread %s", threadID)
 	}
 
-	turnIndex, activeAtResolution, err := a.resolveFlushTurnPlacement(threadID, sess)
+	responseTurnIndex, activeAtResolution, err := a.resolveFlushTurnPlacement(threadID, sess)
 	if err != nil {
-		return QueueFlushedItem{}, fmt.Errorf("resolve turn index: %w", err)
+		return QueueFlushedItem{}, false, fmt.Errorf("resolve turn index: %w", err)
 	}
-	flushItemID, err := a.nextFlushUserItemID(threadID, turnIndex)
+
+	// Claude with an active turn: persist the user_text within the active turn
+	// for timeline ordering (the message sorts alongside the ongoing response
+	// at the point it was dispatched), but register the pending send at the
+	// response turn so resolveTurnIndexOnStart opens a fresh turn for the
+	// response. Codex steers into the active turn's pending_input, so both
+	// indices stay the same.
+	persistTurnIndex := responseTurnIndex
+	eagerPersist := false
+	if sess.codex == nil {
+		if active, found, lookupErr := a.store.GetActiveTurn(threadID); lookupErr == nil && found {
+			persistTurnIndex = active.TurnIndex
+			eagerPersist = true
+		} else if lookupErr != nil {
+			return QueueFlushedItem{}, false, fmt.Errorf("resolve persist turn: %w", lookupErr)
+		}
+	}
+
+	flushItemID, err := a.nextFlushUserItemID(threadID, persistTurnIndex)
 	if err != nil {
-		return QueueFlushedItem{}, fmt.Errorf("allocate item id: %w", err)
+		return QueueFlushedItem{}, false, fmt.Errorf("allocate item id: %w", err)
 	}
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
 		ID:        flushItemID,
 		ThreadID:  threadID,
-		TurnIndex: turnIndex,
+		TurnIndex: persistTurnIndex,
 		Kind:      "user_text",
 		Role:      "user",
 		Status:    "completed",
@@ -364,15 +370,31 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	// Register the pending-send marker BEFORE the provider write so the
-	// wire echo can't race ahead of the marker and miss the
-	// pending-send-present branch in handleUserText. The row is deferred:
-	// normal queued sends should not appear in chat history until the
-	// provider confirms they entered context. Cleared on dispatch failure
-	// below. The persisted row's item_index is computed at echo time
-	// (persistDeferredUserText) so the queued message lands after rows
-	// the model emitted between dispatch and echo.
-	a.triage.RegisterPendingFlushSend(threadID, item.ID, userItem)
+
+	flushedItem := QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message}
+
+	if eagerPersist {
+		// Emit queue_flushed BEFORE PersistItem so the frontend's Zone 2
+		// entry exists when the provider:item_event upsert triggers
+		// confirmFlushedByUserItemId — clearing the pending marker
+		// immediately rather than waiting for the provider echo.
+		a.emit("provider:queue_flushed", QueueFlushedEvent{
+			ThreadID: threadID,
+			Items:    []QueueFlushedItem{flushedItem},
+		})
+		if persistErr := a.triage.PersistItem(userItem, nil); persistErr != nil {
+			return QueueFlushedItem{}, true, fmt.Errorf("eager persist flush: %w", persistErr)
+		}
+		// Non-deferred pending send at the response turn. The item is
+		// already persisted at persistTurnIndex; on echo,
+		// attachProviderItemIDToUserRow stamps provider_item_id on the
+		// existing row. resolveTurnIndexOnStart reads responseTurnIndex
+		// from the FIFO to open a new turn for the response.
+		a.triage.RegisterPendingSend(threadID, userItem.ID, responseTurnIndex)
+	} else {
+		// Deferred: row persists at echo time via persistDeferredUserText.
+		a.triage.RegisterPendingFlushSend(threadID, item.ID, userItem)
+	}
 	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
 		log.Printf("flush queue: delete draft for thread %s: %v", threadID, draftErr)
 	}
@@ -387,38 +409,39 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		if codex.IsAmbiguousSteerTimeout(dispatchErr) {
 			log.Printf("flush dispatch: thread=%s item=%s: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, item.ID)
 			a.applyProposedPlanAcceptance(threadID, userItem, resolved)
-			return QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message}, nil
+			return flushedItem, eagerPersist, nil
 		}
 		if sess.codex != nil && codex.IsNoActiveTurnRace(dispatchErr) {
 			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 			if activeAtResolution {
-				turnIndex++
+				responseTurnIndex++
 			}
-			freshFlushItemID, allocErr := a.nextFlushUserItemID(threadID, turnIndex)
+			freshFlushItemID, allocErr := a.nextFlushUserItemID(threadID, responseTurnIndex)
 			if allocErr != nil {
-				a.persistFlushDispatchError(threadID, turnIndex, allocErr)
-				return QueueFlushedItem{}, allocErr
+				a.persistFlushDispatchError(threadID, responseTurnIndex, allocErr)
+				return QueueFlushedItem{}, eagerPersist, allocErr
 			}
 			userItem.ID = freshFlushItemID
-			userItem.TurnIndex = turnIndex
+			userItem.TurnIndex = responseTurnIndex
 			userItem.CreatedAt = time.Now().UnixMilli()
 			userItem.UpdatedAt = userItem.CreatedAt
 			a.triage.RegisterPendingFlushSend(threadID, item.ID, userItem)
 			sess.liveness.bumpActivity(time.Now())
 			if sendErr := sess.codex.Send(context.Background(), content, sendOpts); sendErr != nil {
 				a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
-				a.persistFlushDispatchError(threadID, turnIndex, sendErr)
-				return QueueFlushedItem{}, sendErr
+				a.persistFlushDispatchError(threadID, responseTurnIndex, sendErr)
+				return QueueFlushedItem{}, eagerPersist, sendErr
 			}
 			a.applyProposedPlanAcceptance(threadID, userItem, resolved)
-			return QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message}, nil
+			flushedItem.UserItemID = userItem.ID
+			return flushedItem, eagerPersist, nil
 		}
 		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
-		a.persistFlushDispatchError(threadID, turnIndex, dispatchErr)
-		return QueueFlushedItem{}, dispatchErr
+		a.persistFlushDispatchError(threadID, persistTurnIndex, dispatchErr)
+		return QueueFlushedItem{}, eagerPersist, dispatchErr
 	}
 	a.applyProposedPlanAcceptance(threadID, userItem, resolved)
-	return QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message}, nil
+	return flushedItem, eagerPersist, nil
 }
 
 // nextFlushSequenceForTurn returns the next available flush sequence
