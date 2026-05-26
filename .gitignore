@@ -35,7 +35,8 @@ frontend/package.json.md5
 .claude/
 .playwright-mcp
 
-# Throwaway cmd/* binaries built into the repo root via `go build ./cmd/<name>`
+# Binaries built into the repo root
+/agent-overflow
 /db-rebake
 /dump-schema
 
