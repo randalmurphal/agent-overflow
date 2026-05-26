@@ -2,6 +2,7 @@ package triage
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -345,6 +346,48 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string) []EagerPersiste
 		})
 	}
 	return result
+}
+
+// PromoteQuietFlushSends emits provider:item_event for any
+// non-deferred flush sends already persisted in the store. Called on
+// user interrupt so quietly-persisted flush messages transition from
+// Zone 2 (queued marker) to the timeline immediately, rather than
+// waiting for the provider echo. The pending send entries stay in the
+// FIFO — the echo still stamps provider_item_id via
+// attachProviderItemIDToUserRow.
+func (r *Router) PromoteQuietFlushSends(threadID string) int {
+	if threadID == "" || r.store == nil {
+		return 0
+	}
+
+	r.mu.Lock()
+	pending := r.pendingByThread[threadID]
+	var ids []string
+	for _, p := range pending {
+		if p.DeferredItem == nil && strings.Contains(p.AOItemID, ":flush:") {
+			ids = append(ids, p.AOItemID)
+		}
+	}
+	r.mu.Unlock()
+
+	if len(ids) == 0 {
+		return 0
+	}
+
+	promoted := 0
+	for _, id := range ids {
+		item, found, err := r.store.GetThreadItem(threadID, id)
+		if err != nil {
+			log.Printf("triage: promote quiet flush %s/%s: %v", threadID, id, err)
+			continue
+		}
+		if !found {
+			continue
+		}
+		r.emitItemUpsertWithActivity(item, false)
+		promoted++
+	}
+	return promoted
 }
 
 // ClearPendingSendsByItemIDs removes pending send entries whose

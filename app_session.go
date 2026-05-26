@@ -384,12 +384,21 @@ func (a *App) InterruptTurn(threadID string) error {
 	return nil
 }
 
-// eagerPersistFlushSendsOnInterrupt immediately persists any deferred
-// flush sends so queued user messages appear in the chat timeline
-// without waiting for the provider echo. For Codex, it also re-sends
-// the messages as a fresh turn because Codex discards steered
-// pending_input on turn/interrupt.
+// eagerPersistFlushSendsOnInterrupt makes queued user messages
+// visible in the chat timeline immediately on interrupt. Two paths:
+//
+//  1. Deferred sends (DeferredItem != nil): persisted via
+//     EagerPersistDeferredFlushSends, which writes the row and emits.
+//  2. Quietly-persisted sends (DeferredItem == nil, :flush: ID):
+//     already in the store from dispatch-time PersistItemQuiet.
+//     PromoteQuietFlushSends emits provider:item_event so they
+//     transition from Zone 2 to the timeline.
+//
+// For Codex, deferred sends are also re-sent as a fresh turn because
+// Codex discards steered pending_input on turn/interrupt.
 func (a *App) eagerPersistFlushSendsOnInterrupt(threadID string, sess session) {
+	a.triage.PromoteQuietFlushSends(threadID)
+
 	persisted := a.triage.EagerPersistDeferredFlushSends(threadID)
 	if len(persisted) == 0 {
 		return
