@@ -383,6 +383,46 @@ func readBackUpsertedItem(tx *sql.Tx, threadID, id string) (Item, error) {
 	return persisted, nil
 }
 
+// BumpItemToTurnEnd atomically moves an item to MAX(item_index)+1 for
+// its turn, placing it after all items currently at that turn. Returns
+// the updated item. Used by the interrupt path to reposition
+// quietly-persisted flush messages after the "Stopped by user" marker.
+func (s *Store) BumpItemToTurnEnd(threadID, itemID string) (Item, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Item{}, fmt.Errorf("store: begin bump item index tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var turnIndex int
+	if err := tx.QueryRow(
+		`SELECT turn_index FROM items WHERE thread_id = ? AND id = ?`,
+		threadID, itemID,
+	).Scan(&turnIndex); err != nil {
+		return Item{}, fmt.Errorf("store: bump item index lookup %s: %w", itemID, err)
+	}
+
+	next, err := nextItemIndexTx(tx, threadID, turnIndex, "store: bump item index")
+	if err != nil {
+		return Item{}, err
+	}
+	if _, err := tx.Exec(
+		`UPDATE items SET item_index = ? WHERE thread_id = ? AND id = ?`,
+		next, threadID, itemID,
+	); err != nil {
+		return Item{}, fmt.Errorf("store: bump item index update %s: %w", itemID, err)
+	}
+
+	item, err := readBackItemTx(tx, threadID, itemID)
+	if err != nil {
+		return Item{}, fmt.Errorf("store: bump item index re-read %s: %w", itemID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, fmt.Errorf("store: commit bump item index tx: %w", err)
+	}
+	return item, nil
+}
+
 // DeleteConversationFromTurn removes items and turn rows with turn_index >=
 // fromTurnIndex. Reverting to a user-message checkpoint deletes that selected
 // prompt too, so the predicate is inclusive.

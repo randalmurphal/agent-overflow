@@ -1353,6 +1353,131 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 	}
 }
 
+// TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser verifies
+// that on interrupt, quietly-persisted flush messages are bumped to
+// MAX(item_index)+1 so they sort AFTER the "Stopped by user" marker.
+func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-claude-interrupt")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = initCheckpointRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "user:3", ThreadID: thread.ID, TurnIndex: 3,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "run sleep", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed user item: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID: "turn-3", ThreadID: thread.ID, TurnIndex: 3, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "toolu_sleep", ThreadID: thread.ID, TurnIndex: 3,
+		Kind: "tool_call", Role: "assistant", Status: "running",
+		Summary: "sleep 10", CreatedAt: now + 1, UpdatedAt: now + 1,
+	}); err != nil {
+		t.Fatalf("seed tool_call: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(), thread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("claude.NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+		liveness: newSessionLiveness(time.Now()),
+	}
+
+	// Dispatch two flush messages while agent is working.
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+		{ID: "queue:m1", Message: "test message 1", Payload: json.RawMessage(`{}`)},
+		{ID: "queue:m2", Message: "test message 2", Payload: json.RawMessage(`{}`)},
+	})
+
+	// Both flush rows are quietly persisted at turn 3.
+	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	if err != nil {
+		t.Fatalf("ListItemsForTurn: %v", err)
+	}
+	var flushIndices []int
+	for _, it := range items {
+		if it.Kind == "user_text" && strings.Contains(it.ID, ":flush:") {
+			flushIndices = append(flushIndices, it.ItemIndex)
+		}
+	}
+	if len(flushIndices) != 2 {
+		t.Fatalf("expected 2 flush rows at turn 3, got %d", len(flushIndices))
+	}
+
+	// Simulate MarkUserInterrupt — persists "Stopped by user" after the
+	// flush messages. We need an open turn in triage for this to work.
+	app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: thread.ID,
+		TurnIndex: 3, Timestamp: time.Now(),
+	})
+	stoppedID, err := app.triage.MarkUserInterrupt(thread.ID)
+	if err != nil {
+		t.Fatalf("MarkUserInterrupt: %v", err)
+	}
+	if stoppedID == "" {
+		t.Fatal("MarkUserInterrupt returned empty ID")
+	}
+
+	// "Stopped by user" should be at a higher item_index than the flush rows.
+	stoppedItem, found, err := app.store.GetThreadItem(thread.ID, stoppedID)
+	if err != nil || !found {
+		t.Fatalf("Stopped by user row: found=%v err=%v", found, err)
+	}
+	for _, fi := range flushIndices {
+		if fi >= stoppedItem.ItemIndex {
+			t.Errorf("flush item_index %d >= stopped item_index %d before promote", fi, stoppedItem.ItemIndex)
+		}
+	}
+
+	rec.reset()
+
+	// Promote — should bump flush messages after "Stopped by user".
+	promoted := app.triage.PromoteQuietFlushSends(thread.ID)
+	if promoted != 2 {
+		t.Errorf("promoted: got %d, want 2", promoted)
+	}
+
+	// provider:item_event must have been emitted for promoted items.
+	if !rec.hasEvent("provider:item_event") {
+		t.Error("provider:item_event not emitted after promote")
+	}
+
+	// Re-read and verify ordering: both flush rows should now be after
+	// "Stopped by user".
+	items, err = app.store.ListItemsForTurn(thread.ID, 3)
+	if err != nil {
+		t.Fatalf("ListItemsForTurn after promote: %v", err)
+	}
+	for _, it := range items {
+		if it.Kind == "user_text" && strings.Contains(it.ID, ":flush:") {
+			if it.ItemIndex <= stoppedItem.ItemIndex {
+				t.Errorf("flush row %s item_index=%d should be > stopped item_index=%d",
+					it.ID, it.ItemIndex, stoppedItem.ItemIndex)
+			}
+		}
+	}
+}
+
 // TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex verifies that
 // when no active turn exists for a Claude session, flush dispatch uses
 // the deferred persistence path (same as Codex) — the item appears in

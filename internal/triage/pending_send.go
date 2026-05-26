@@ -376,12 +376,9 @@ func (r *Router) PromoteQuietFlushSends(threadID string) int {
 
 	promoted := 0
 	for _, id := range ids {
-		item, found, err := r.store.GetThreadItem(threadID, id)
+		item, err := r.store.BumpItemToTurnEnd(threadID, id)
 		if err != nil {
 			log.Printf("triage: promote quiet flush %s/%s: %v", threadID, id, err)
-			continue
-		}
-		if !found {
 			continue
 		}
 		r.emitItemUpsertWithActivity(item, false)
