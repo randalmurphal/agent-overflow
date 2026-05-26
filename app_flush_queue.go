@@ -374,22 +374,24 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	flushedItem := QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message}
 
 	if eagerPersist {
-		// Emit queue_flushed BEFORE PersistItem so the frontend's Zone 2
-		// entry exists when the provider:item_event upsert triggers
-		// confirmFlushedByUserItemId — clearing the pending marker
-		// immediately rather than waiting for the provider echo.
+		// Emit queue_flushed so the frontend creates the Zone 2 entry
+		// (queued marker above the composer). Persist the row quietly —
+		// no provider:item_event — so the item reserves its timeline
+		// position in SQLite but stays as a queued marker in the UI
+		// until the provider echo confirms it entered context.
 		a.emit("provider:queue_flushed", QueueFlushedEvent{
 			ThreadID: threadID,
 			Items:    []QueueFlushedItem{flushedItem},
 		})
-		if persistErr := a.triage.PersistItem(userItem, nil); persistErr != nil {
+		if persistErr := a.triage.PersistItemQuiet(userItem, nil); persistErr != nil {
 			return QueueFlushedItem{}, true, fmt.Errorf("eager persist flush: %w", persistErr)
 		}
 		// Non-deferred pending send at the response turn. The item is
 		// already persisted at persistTurnIndex; on echo,
-		// attachProviderItemIDToUserRow stamps provider_item_id on the
-		// existing row. resolveTurnIndexOnStart reads responseTurnIndex
-		// from the FIFO to open a new turn for the response.
+		// attachProviderItemIDToUserRow stamps provider_item_id and
+		// emits the provider:item_event upsert that clears Zone 2.
+		// resolveTurnIndexOnStart reads responseTurnIndex from the
+		// FIFO to open a new turn for the response.
 		a.triage.RegisterPendingSend(threadID, userItem.ID, responseTurnIndex)
 	} else {
 		// Deferred: row persists at echo time via persistDeferredUserText.

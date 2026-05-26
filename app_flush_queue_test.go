@@ -1210,11 +1210,13 @@ func TestDispatchFlush_ResolveTurnIndex_AccountsForInFlightPendingSends(t *testi
 
 // TestDispatchFlush_Claude_EagerPersistAtActiveTurn verifies that when
 // a Claude session has an active turn, the flush-dispatched user_text
-// row is persisted eagerly at the active turn's index (so it appears
-// in the timeline alongside the ongoing response) while the pending
-// send is registered at the next turn (so resolveTurnIndexOnStart opens
-// a fresh turn for the response). On echo, attachProviderItemIDToUserRow
-// stamps provider_item_id on the existing row without re-persisting.
+// row is persisted quietly at the active turn's index (reserving its
+// timeline position in SQLite) while the frontend keeps the Zone 2
+// queued marker visible. No provider:item_event fires until the
+// provider echo stamps provider_item_id — at which point the upsert
+// clears Zone 2 and the item appears in the timeline at the reserved
+// position. The pending send is registered at the next turn so
+// resolveTurnIndexOnStart opens a fresh turn for the response.
 func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 	app, rec := newAppForFlushQueueRPC(t)
 
@@ -1303,8 +1305,15 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 		t.Error("provider:queue_flushed not emitted")
 	}
 
-	// Simulate the provider echo — attachProviderItemIDToUserRow stamps the
-	// existing row without re-persisting.
+	// provider:item_event must NOT have been emitted during dispatch — the
+	// quiet persist reserves the timeline position in SQLite but the
+	// frontend keeps showing the Zone 2 queued marker until the echo.
+	if rec.hasEvent("provider:item_event") {
+		t.Error("provider:item_event should not fire during quiet persist (Zone 2 should stay)")
+	}
+
+	// Simulate the provider echo — attachProviderItemIDToUserRow stamps
+	// provider_item_id and emits the upsert that clears Zone 2.
 	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-user-1"})
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: thread.ID,
@@ -1314,7 +1323,12 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 		t.Fatalf("EventUserText echo: %v", err)
 	}
 
-	// After echo, the row should carry provider_item_id in meta.
+	// After echo, provider:item_event must have been emitted (Zone 2 clears).
+	if !rec.hasEvent("provider:item_event") {
+		t.Error("provider:item_event not emitted after echo — Zone 2 would stay stuck")
+	}
+
+	// The row should carry provider_item_id in meta.
 	stamped, found, err := app.store.GetThreadItem(thread.ID, flushRow.ID)
 	if err != nil || !found {
 		t.Fatalf("row after echo: found=%v err=%v", found, err)

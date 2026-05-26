@@ -1243,6 +1243,14 @@ func (r *Router) PersistItem(item store.Item, payload *store.Payload) error {
 	return r.persistItem(item, payload)
 }
 
+// PersistItemQuiet persists the item to the store without emitting
+// provider:item_event. Used by the eager-persist flush path to reserve
+// timeline position in SQLite while the frontend keeps showing the
+// item as a Zone 2 queued marker until the provider echo confirms it.
+func (r *Router) PersistItemQuiet(item store.Item, payload *store.Payload) error {
+	return r.persistItemQuiet(item, payload)
+}
+
 // NextErrorSequence returns the next per-turn error sequence number for
 // the given thread + turn + scope. Exposed so app-layer callers (e.g.
 // send-failure persistence) can build error IDs via the same counter
