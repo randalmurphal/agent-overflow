@@ -381,12 +381,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // changes shape or identity; `applyItemDelta` intentionally does not bump.
   let timelineRevision = $state(0);
   const itemIndexById: Map<string, number> = new Map();
-  const rowUiState = createThreadRowUiState({
-    getItemById(itemId: string): Item | undefined {
-      const index = itemIndexById.get(itemId);
-      return index === undefined ? undefined : items[index];
-    },
-  });
+  function getItemById(itemId: string): Item | undefined {
+    const index = itemIndexById.get(itemId);
+    return index === undefined ? undefined : items[index];
+  }
+  const rowUiState = createThreadRowUiState({ getItemById });
   const pendingInteractiveState = createThreadPendingInteractiveState();
   let contextWindow: ContextWindow | null = $state(null);
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`
@@ -1104,6 +1103,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     get isLocked() { return items.length > 0; },
     get timelineRevision() { return timelineRevision; },
+    getItemById,
     get pendingApprovals() { return pendingInteractiveState.approvals; },
     get pendingUserInputs() { return pendingInteractiveState.userInputs; },
     get contextWindow() { return contextWindow; },

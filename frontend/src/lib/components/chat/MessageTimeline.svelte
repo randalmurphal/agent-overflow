@@ -21,6 +21,7 @@
   import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
   import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
   import { filterRedundantNotifications } from '../../utils/notificationFilter';
+  import { patchTimelineNodeItemRefs } from '../../utils/timelineNodePatch';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
   import InlineSubagentGroup from './InlineSubagentGroup.svelte';
@@ -162,8 +163,19 @@
   });
   const targetFlash = createTimelineTargetFlash(TARGET_FLASH_MS);
 
-  let groupedNodes = $derived<TimelineNode[]>(
-    groupConsecutiveReads(groupItemsBySubagent(filterRedundantNotifications(pane.items))),
+  // Two-phase derivation: structuralNodes runs the expensive grouping
+  // pipeline only when the item window changes shape (timelineRevision
+  // bump). groupedNodes is a cheap O(M) patch pass that swaps in fresh
+  // item refs on every streaming delta, with structural sharing so
+  // unchanged nodes keep the same object reference and skip re-render.
+  let structuralNodes = $derived.by(() => {
+    pane.timelineRevision;
+    return untrack(() =>
+      groupConsecutiveReads(groupItemsBySubagent(filterRedundantNotifications(pane.items))),
+    );
+  });
+  let groupedNodes = $derived.by(() =>
+    patchTimelineNodeItemRefs(structuralNodes, (id) => pane.getItemById(id)),
   );
   let codexReceiverLabels = $derived.by(() => {
     const provider = pane.thread?.provider;

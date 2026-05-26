@@ -3,6 +3,9 @@ const OPENER_RE = /^ {0,3}(`{3,})(markdown|md)\s*$/i;
 export function unwrapMarkdownFence(source: string): string {
   if (!source) return source;
 
+  const firstBacktick = source.indexOf('`');
+  if (firstBacktick === -1 || firstBacktick > 3) return source;
+
   const lines = source.split('\n');
 
   let firstIdx = -1;

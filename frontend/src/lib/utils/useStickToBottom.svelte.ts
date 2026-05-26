@@ -58,6 +58,11 @@ import { isUiRenderTraceEnabled, recordUiTrace } from './uiRenderTrace';
 // thunk skips object construction when disabled. Records flow into
 // `${configDir}/ui-trace/ui-render.jsonl` via the same batched
 // `AppendUIRenderTraceBatch` binding the timeline render trace uses.
+//
+// Call sites double-gate with `if (isUiRenderTraceEnabled()) trace(…)`
+// because Rolldown inlines the gate but does not eliminate the closure
+// allocation — the outer guard prevents ~120 closures/sec during
+// spring animation in production builds.
 function trace(label: string, build: () => Record<string, unknown>): void {
   if (!isUiRenderTraceEnabled()) return;
   recordUiTrace(label, build());
@@ -576,7 +581,7 @@ export function createUseStickToBottomController(
     if (warm) return;
     warm = true;
     clearWarmupTimers();
-    trace(`scroll.warmup.${reason}`, () => ({
+    if (isUiRenderTraceEnabled()) trace(`scroll.warmup.${reason}`, () => ({
       isAtBottomState,
       escapedFromLockState,
       pauseDepth,
@@ -627,7 +632,7 @@ export function createUseStickToBottomController(
     else if (!haveTimer && !hasFirstContentRO) outcome = 'noop_no_ro';
     else if (haveTimer) outcome = 'rearmed';
     else outcome = 'armed';
-    trace('scroll.warmup.signalChanged', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.warmup.signalChanged', () => ({
       outcome,
       settled,
       haveTimer,
@@ -714,7 +719,7 @@ export function createUseStickToBottomController(
     escapedFromLockState = false;
     isAtBottomState = true;
     springStopRequested = false;
-    trace('scroll.restick.input', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.restick.input', () => ({
       source,
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
       distFromBottom: scrollEl ? Math.round(distanceFromBottom()) : null,
@@ -736,7 +741,7 @@ export function createUseStickToBottomController(
         && recentDownIntentUntil === expiresAt
       ) clearRecentDownIntent();
     }, RECENT_DOWN_INTENT_WINDOW_MS);
-    trace('scroll.intent.down', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.intent.down', () => ({
       source,
       recentDownIntentUntil: Math.round(recentDownIntentUntil),
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
@@ -773,9 +778,29 @@ export function createUseStickToBottomController(
   let springTickSinceLastTrace = SPRING_TICK_TRACE_SAMPLE - 1;
   function writeProgrammaticScrollTop(value: number): void {
     if (!scrollEl) return;
-    const beforeTop = scrollEl.scrollTop;
-    const beforeHeight = scrollEl.scrollHeight;
-    const beforeClient = scrollEl.clientHeight;
+    // Determine whether this write will be traced BEFORE reading any
+    // pre-write geometry. The sampling decision and the
+    // isUiRenderTraceEnabled gate are both pure reads with no side
+    // effects, so hoisting them above the write is safe. This lets us
+    // skip the three layout reads (scrollTop, scrollHeight, clientHeight)
+    // on the hot path — spring ticks fire at 60Hz and the trace is
+    // sampled to ~5Hz, so ~92% of ticks skip the reads entirely.
+    let recordTrace = true;
+    if (writeCaller === 'spring.tick') {
+      if (springTickSinceLastTrace < SPRING_TICK_TRACE_SAMPLE - 1) {
+        springTickSinceLastTrace += 1;
+        recordTrace = false;
+      } else {
+        springTickSinceLastTrace = 0;
+      }
+    }
+    const shouldTrace = recordTrace && isUiRenderTraceEnabled();
+    let beforeTop = 0, beforeHeight = 0, beforeClient = 0;
+    if (shouldTrace) {
+      beforeTop = scrollEl.scrollTop;
+      beforeHeight = scrollEl.scrollHeight;
+      beforeClient = scrollEl.clientHeight;
+    }
     // Bypass the external-write gate for our own writes. The gate's
     // job is to filter writes from OTHER writers (virtua's
     // $fixScrollJump, browser auto-anchor); the controller is always
@@ -793,16 +818,7 @@ export function createUseStickToBottomController(
     ignoreScrollToTop = scrollEl.scrollTop;
     lastObservedScrollTopForRestick = scrollEl.scrollTop;
     refreshIsNearBottom();
-    let recordTrace = true;
-    if (writeCaller === 'spring.tick') {
-      if (springTickSinceLastTrace < SPRING_TICK_TRACE_SAMPLE - 1) {
-        springTickSinceLastTrace += 1;
-        recordTrace = false;
-      } else {
-        springTickSinceLastTrace = 0;
-      }
-    }
-    if (recordTrace) {
+    if (shouldTrace) {
       trace('scroll.write', () => ({
         caller: writeCaller,
         requested: Math.round(value),
@@ -1056,7 +1072,7 @@ export function createUseStickToBottomController(
         // lands at the right place. Matches upstream's `initial` behavior
         // when isAtBottom starts true.
         const willPin = isAtBottomState && !escapedFromLockState;
-        trace('scroll.contentRO.firstFire', () => ({
+        if (isUiRenderTraceEnabled()) trace('scroll.contentRO.firstFire', () => ({
           nextHeight: Math.round(nextHeight),
           willPin,
           isAtBottomState,
@@ -1103,7 +1119,7 @@ export function createUseStickToBottomController(
         && (isAtBottomState || isNearBottomState)
         && !escapedFromLockState
         && pauseDepth === 0;
-      trace('scroll.contentRO', () => ({
+      if (isUiRenderTraceEnabled()) trace('scroll.contentRO', () => ({
         prev: Math.round(prev),
         next: Math.round(nextHeight),
         delta: Math.round(delta),
@@ -1251,8 +1267,6 @@ export function createUseStickToBottomController(
         }
       }
 
-      refreshIsNearBottom();
-
       // Schedule resizeDifference clear AFTER the scroll handler's 1ms.
       // The scroll event fired by the layout change above must observe
       // resizeDifference !== 0 so it is treated as layout, not input.
@@ -1286,7 +1300,7 @@ export function createUseStickToBottomController(
     if (!scrollEl) return;
     if (source !== 'pointer') clearScrollbarDragSession();
     const targetScrollEl = scrollEl;
-    if (!escapedFromLockState) {
+    if (!escapedFromLockState && isUiRenderTraceEnabled()) {
       trace('scroll.intent.escape', () => ({
         source,
         scrollTop: Math.round(targetScrollEl.scrollTop),
@@ -1333,7 +1347,7 @@ export function createUseStickToBottomController(
     const inLeftGutter = style.direction === 'rtl' && e.clientX <= rect.left + scrollbarWidth;
     if (!inRightGutter && !inLeftGutter) return;
 
-    trace('scroll.pointer.intent', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.pointer.intent', () => ({
       clientX: Math.round(e.clientX),
       scrollbarWidth: Math.round(scrollbarWidth),
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
@@ -1362,9 +1376,21 @@ export function createUseStickToBottomController(
     const tag = ignoreScrollToTop;
     ignoreScrollToTop = -1;
     const externalTagged = externalScrollIgnoreUntil > nowMs();
-    const distFromBottomAtEvent = refreshIsNearBottom();
     const tagged = scrollTopAtEvent === tag || externalTagged;
-    trace('scroll.scrollEvent', () => ({
+    // Tagged programmatic write — bail synchronously without scheduling
+    // the deferral timer. Steady-state streaming fires a sync-pin write
+    // on every contentRO positive delta; allocating a closure + timer
+    // registration for each one just to no-op inside the callback was
+    // hundreds of throwaway allocs/sec on long assistant turns. The 1 ms
+    // RO-race deferral below isn't needed for tagged writes — the tag is
+    // set synchronously by writeScrollTop, so we already know this event
+    // reflects our own write, not user intent. The refreshIsNearBottom
+    // call and trace allocation below are also skipped on the tagged
+    // path — the spring fires at 60Hz during a chase, and both are
+    // wasted work when we already know this is our own write.
+    if (tagged) return;
+    const distFromBottomAtEvent = refreshIsNearBottom();
+    if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent', () => ({
       scrollTop: Math.round(scrollTopAtEvent),
       tag: Math.round(tag),
       externalTagged,
@@ -1377,15 +1403,6 @@ export function createUseStickToBottomController(
       pauseDepth,
       isNearBottomState,
     }));
-    // Tagged programmatic write — bail synchronously without scheduling
-    // the deferral timer. Steady-state streaming fires a sync-pin write
-    // on every contentRO positive delta; allocating a closure + timer
-    // registration for each one just to no-op inside the callback was
-    // hundreds of throwaway allocs/sec on long assistant turns. The 1 ms
-    // RO-race deferral below isn't needed for tagged writes — the tag is
-    // set synchronously by writeScrollTop, so we already know this event
-    // reflects our own write, not user intent.
-    if (tagged) return;
     const resizeCorrelatedScroll = resizeDifference !== 0 || resizeCorrelatedUntaggedScrollBudget > 0;
     if (resizeCorrelatedUntaggedScrollBudget > 0) resizeCorrelatedUntaggedScrollBudget -= 1;
     const previousObserved = lastObservedScrollTopForRestick;
@@ -1436,7 +1453,7 @@ export function createUseStickToBottomController(
         && scrolledDown;
       const hasLiveDownIntent = hasLiveRecentDownIntent || hasLiveScrollbarDragRestickIntent;
       if (resizeCorrelatedScroll && !hasLiveDownIntent) {
-        trace('scroll.scrollEvent.deferred.bailRO', () => ({
+        if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent.deferred.bailRO', () => ({
           resizeDifference: Math.round(resizeDifference),
           resizeCorrelatedScroll,
           hasLiveDownIntent,
@@ -1446,7 +1463,7 @@ export function createUseStickToBottomController(
       }
 
       if (isSelectingInside(scrollEl)) {
-        trace('scroll.scrollEvent.deferred.escapeSelection', () => ({
+        if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent.deferred.escapeSelection', () => ({
           scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
         }));
         setEscapedFromLock(true);
@@ -1457,7 +1474,7 @@ export function createUseStickToBottomController(
         && scrolledDown
         && escapedFromLockState
         && distFromBottomAtEvent <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
-      trace('scroll.scrollEvent.deferred', () => ({
+      if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent.deferred', () => ({
         scrollTop: Math.round(scrollTopAtEvent),
         previousObserved: Math.round(previousObserved),
         scrolledDown,
@@ -1526,7 +1543,7 @@ export function createUseStickToBottomController(
     if (next) {
       isAtBottomState = false;
     }
-    trace('scroll.escape.set', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.escape.set', () => ({
       next,
       previousIsAtBottom,
       isAtBottomState,
@@ -1540,7 +1557,7 @@ export function createUseStickToBottomController(
 
   function armRestoreSnap(): void {
     restoreSnapArmed = true;
-    trace('scroll.restoreSnap.arm', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.restoreSnap.arm', () => ({
       isAtBottomState,
       escapedFromLockState,
       pauseDepth,
@@ -1686,7 +1703,7 @@ export function createUseStickToBottomController(
     // intent), and they ALSO consume any pending restore consent so
     // the next call doesn't see a stale arm.
     if (reason === 'restore' && !restoreSnapArmed) {
-      trace('scroll.forceStick.skipRestore', () => ({
+      if (isUiRenderTraceEnabled()) trace('scroll.forceStick.skipRestore', () => ({
         reason,
         restoreSnapArmed,
         isAtBottomState,
@@ -1699,7 +1716,7 @@ export function createUseStickToBottomController(
     restoreSnapArmed = false;
     clearRecentDownIntent();
     clearScrollbarDragSession();
-    trace('scroll.forceStick.entry', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.forceStick.entry', () => ({
       reason,
       isAtBottomState,
       escapedFromLockState,
@@ -1736,7 +1753,7 @@ export function createUseStickToBottomController(
     // branch — so the restore-snap consent must be consumed here too,
     // otherwise the arm leaks past a completed empty-thread restore
     // and admits a later stale restore-stick.
-    trace('scroll.markAtBottom', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.markAtBottom', () => ({
       isAtBottomState,
       escapedFromLockState,
       pauseDepth,
@@ -1798,7 +1815,7 @@ export function createUseStickToBottomController(
 
   function notifyContentMaybeGrew(): void {
     const gate = readNotifyContentGate();
-    trace('scroll.notifyContentMaybeGrew', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.notifyContentMaybeGrew', () => ({
       willPin: gate.canPin,
       gateScrollEl: gate.gateScrollEl,
       gateEscape: gate.gateEscape,
@@ -1818,7 +1835,7 @@ export function createUseStickToBottomController(
   function notifyLiveContentMaybeGrew(): void {
     const gate = readNotifyContentGate();
     const willSpring = gate.canPin && warm && springGateOpen();
-    trace('scroll.notifyLiveContentMaybeGrew', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.notifyLiveContentMaybeGrew', () => ({
       canPin: gate.canPin,
       willSpring,
       gateScrollEl: gate.gateScrollEl,
@@ -1850,7 +1867,7 @@ export function createUseStickToBottomController(
 
   function pauseAutoScroll(): () => void {
     pauseDepth += 1;
-    trace('scroll.pause.acquire', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.pause.acquire', () => ({
       pauseDepth,
       isAtBottomState,
       escapedFromLockState,
@@ -1863,7 +1880,7 @@ export function createUseStickToBottomController(
       const willRepin = pauseDepth === 0
         && !escapedFromLockState
         && isAtBottomState;
-      trace('scroll.pause.release', () => ({
+      if (isUiRenderTraceEnabled()) trace('scroll.pause.release', () => ({
         pauseDepth,
         willRepin,
         isAtBottomState,
@@ -1997,7 +2014,7 @@ export function createUseStickToBottomController(
         // The contentRO fire that follows the row remeasure will
         // see `scrollTop` still at the spring's current position,
         // compute a positive delta, and continue the chase smoothly.
-        trace('scroll.externalWriteSuppressed', () => ({
+        if (isUiRenderTraceEnabled()) trace('scroll.externalWriteSuppressed', () => ({
           requested: Math.round(value),
           current: Math.round(origGet.call(el) as number),
           springToken,
@@ -2041,7 +2058,7 @@ export function createUseStickToBottomController(
     // (which fire on mount) hit the gate from frame zero.
     installExternalScrollTopGate(nextScrollEl);
     beginWarmup();
-    trace('scroll.attach', () => ({
+    if (isUiRenderTraceEnabled()) trace('scroll.attach', () => ({
       surface: nextScrollEl.dataset?.testid ?? '',
       scrollTop: Math.round(nextScrollEl.scrollTop),
       scrollHeight: Math.round(nextScrollEl.scrollHeight),

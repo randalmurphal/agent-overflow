@@ -305,7 +305,7 @@ function* descendantItems(nodes: TimelineNode[]): Generator<Item> {
  * Comparison key is `(turnIndex, itemIndex)` — the same canonical
  * ordering the timeline uses everywhere else.
  */
-function pickLatestChildSummary(children: TimelineNode[]): string {
+export function pickLatestChildSummary(children: TimelineNode[]): string {
   let bestActive: { item: Item; preview: string } | null = null;
   let bestTerminal: { item: Item; preview: string } | null = null;
   for (const item of descendantItems(children)) {
