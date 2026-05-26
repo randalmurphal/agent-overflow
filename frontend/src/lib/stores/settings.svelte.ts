@@ -45,6 +45,8 @@ const DEFAULT_SETTINGS: Settings = {
   // Empty allowlist — only gitlab.com / github.com are recognised by
   // default. Users add self-hosted entries through the Settings UI.
   gitlabSelfHostedHosts: [],
+  projectSortMode: "lastActivity",
+  collapsedProjects: [],
 };
 
 function defaultSettings(): Settings {
@@ -54,6 +56,7 @@ function defaultSettings(): Settings {
     network: { ...DEFAULT_SETTINGS.network },
     retention: { ...DEFAULT_SETTINGS.retention },
     gitlabSelfHostedHosts: [...DEFAULT_SETTINGS.gitlabSelfHostedHosts],
+    collapsedProjects: [...(DEFAULT_SETTINGS.collapsedProjects ?? [])],
   };
 }
 

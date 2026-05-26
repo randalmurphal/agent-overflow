@@ -53,6 +53,11 @@ var (
 		"comfortable": {},
 		"spacious":    {},
 	}
+	allowedProjectSortModes = map[string]struct{}{
+		"lastActivity": {},
+		"createdAt":    {},
+		"manual":       {},
+	}
 	// allowedFonts enumerates the typefaces selectable for --font-sans
 	// and --font-mono. "geist" is the eager default, "hack-nerd" lazy-
 	// loads, and "system" uses the OS fallback chain.
@@ -173,6 +178,19 @@ func validateSettings(current Settings) (Settings, error) {
 	if err := validateFontSize("fontSize", current.FontSize); err != nil {
 		return Settings{}, err
 	}
+
+	current.ProjectSortMode = strings.TrimSpace(current.ProjectSortMode)
+	if err := validateOption("projectSortMode", current.ProjectSortMode, allowedProjectSortModes); err != nil {
+		return Settings{}, err
+	}
+	if len(current.CollapsedProjects) > MaxCollapsedProjects {
+		return Settings{}, fmt.Errorf(
+			"collapsedProjects has %d entries, max is %d",
+			len(current.CollapsedProjects), MaxCollapsedProjects,
+		)
+	}
+	current.CollapsedProjects = sanitizeCollapsedProjects(current.CollapsedProjects)
+
 	return current, nil
 }
 
@@ -271,6 +289,13 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		current.FontSize,
 		DefaultSettings.FontSize,
 	)
+	current.ProjectSortMode = sanitizeOption(
+		"projectSortMode",
+		current.ProjectSortMode,
+		DefaultSettings.ProjectSortMode,
+		allowedProjectSortModes,
+	)
+	current.CollapsedProjects = sanitizeCollapsedProjects(current.CollapsedProjects)
 	return current
 }
 
@@ -615,6 +640,34 @@ func normalizeRecentWorkspaces(paths []string) []string {
 	return recent
 }
 
+const MaxCollapsedProjects = 500
+
+func sanitizeCollapsedProjects(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		if _, dup := seen[trimmed]; dup {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+		if len(out) >= MaxCollapsedProjects {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func joinAllowedValues(values map[string]struct{}) string {
 	options := make([]string, 0, len(values))
 	// Ordered candidate list so error messages render deterministically.
@@ -624,9 +677,11 @@ func joinAllowedValues(values map[string]struct{}) string {
 		"system", "light", "dark",
 		"locale", "12-hour", "24-hour",
 		"claude", "codex",
-		"low", "medium", "high", "xhigh", "max",
+		"none", "minimal", "low", "medium", "high", "xhigh", "max",
 		"local", "worktree",
+		"compact", "comfortable", "spacious",
 		"geist", "hack-nerd",
+		"lastActivity", "createdAt", "manual",
 	}
 	for _, candidate := range candidates {
 		if _, ok := values[candidate]; ok {

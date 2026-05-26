@@ -43,6 +43,12 @@ func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
 	if got.ObservabilityOtlpEndpoint != "" {
 		t.Errorf("ObservabilityOtlpEndpoint = %q, want empty by default", got.ObservabilityOtlpEndpoint)
 	}
+	if got.ProjectSortMode != "lastActivity" {
+		t.Errorf("ProjectSortMode = %q, want %q", got.ProjectSortMode, "lastActivity")
+	}
+	if got.CollapsedProjects != nil {
+		t.Errorf("CollapsedProjects = %v, want nil", got.CollapsedProjects)
+	}
 }
 
 func TestGetReturnsDefaultsOnMalformedJSON(t *testing.T) {
@@ -746,5 +752,105 @@ func TestLoad_AcceptsForwardCompatSchemaVersion(t *testing.T) {
 	got := NewService(dir).Get()
 	if got.Theme != "dark" {
 		t.Fatalf("Theme = %q, want dark (loader rejected forward-version file?)", got.Theme)
+	}
+}
+
+func TestProjectSortModeRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{
+		"projectSortMode":  "manual",
+		"collapsedProjects": []any{"proj-1", "proj-2"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.ProjectSortMode != "manual" {
+		t.Errorf("ProjectSortMode = %q, want %q", updated.ProjectSortMode, "manual")
+	}
+	if len(updated.CollapsedProjects) != 2 || updated.CollapsedProjects[0] != "proj-1" {
+		t.Errorf("CollapsedProjects = %v, want [proj-1 proj-2]", updated.CollapsedProjects)
+	}
+
+	reloaded := NewService(dir).Get()
+	if reloaded.ProjectSortMode != "manual" {
+		t.Errorf("reloaded ProjectSortMode = %q, want %q", reloaded.ProjectSortMode, "manual")
+	}
+	if len(reloaded.CollapsedProjects) != 2 {
+		t.Errorf("reloaded CollapsedProjects = %v, want 2 entries", reloaded.CollapsedProjects)
+	}
+
+	// Resetting to default should sparse-omit both keys.
+	updated, err = svc.Update(map[string]any{
+		"projectSortMode":  "lastActivity",
+		"collapsedProjects": []any{},
+	})
+	if err != nil {
+		t.Fatalf("Update(reset) error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := fileMap["projectSortMode"]; ok {
+		t.Errorf("file still contains projectSortMode when default; contents: %s", string(data))
+	}
+	if _, ok := fileMap["collapsedProjects"]; ok {
+		t.Errorf("file still contains collapsedProjects when empty; contents: %s", string(data))
+	}
+}
+
+func TestProjectSortModeValidation(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	_, err := svc.Update(map[string]any{"projectSortMode": "bogus"})
+	if err == nil {
+		t.Fatal("expected error for invalid projectSortMode, got nil")
+	}
+
+	for _, mode := range []string{"lastActivity", "createdAt", "manual"} {
+		_, err := svc.Update(map[string]any{"projectSortMode": mode})
+		if err != nil {
+			t.Errorf("Update(projectSortMode=%q) error = %v", mode, err)
+		}
+	}
+}
+
+func TestCollapsedProjectsSanitization(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	// Write path: dedup, trim, drop empty.
+	updated, err := svc.Update(map[string]any{
+		"collapsedProjects": []any{"", "  ", " p1 ", "p1", "p2"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(updated.CollapsedProjects) != 2 ||
+		updated.CollapsedProjects[0] != "p1" ||
+		updated.CollapsedProjects[1] != "p2" {
+		t.Errorf("write-path sanitize: got %v, want [p1 p2]", updated.CollapsedProjects)
+	}
+
+	// Load path: write dirty JSON directly and verify Get() sanitizes.
+	raw := `{"projectSortMode":"bogus","collapsedProjects":["","  x  ","x","y"]}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	loaded := NewService(dir).Get()
+	if loaded.ProjectSortMode != "lastActivity" {
+		t.Errorf("load-path sanitize: ProjectSortMode = %q, want %q", loaded.ProjectSortMode, "lastActivity")
+	}
+	if len(loaded.CollapsedProjects) != 2 ||
+		loaded.CollapsedProjects[0] != "x" ||
+		loaded.CollapsedProjects[1] != "y" {
+		t.Errorf("load-path sanitize: CollapsedProjects = %v, want [x y]", loaded.CollapsedProjects)
 	}
 }

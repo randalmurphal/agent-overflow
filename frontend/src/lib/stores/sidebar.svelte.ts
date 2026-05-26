@@ -1,6 +1,13 @@
 // Sidebar UI state: which project rows are expanded, and which direction
-// the projects list is sorted. Both persist to localStorage so reopening
-// the app doesn't lose the user's reading context.
+// the projects list is sorted.
+//
+// Dual-write persistence: localStorage is the synchronous fast-path so
+// module init has the correct value before the async Go settings load
+// completes. Go settings (settings.json on disk) is the durable source
+// of truth — localStorage is ephemeral on some webview platforms
+// (WebKit2GTK / WSL2). On loadSettings(), syncSidebarFromSettings()
+// overwrites the in-memory state from Go; on mutation, both layers are
+// written through.
 //
 // Project expansion uses an inverted set: we persist explicit *collapses*
 // rather than expansions, so an unseen project defaults to expanded
@@ -13,7 +20,11 @@
 // screen but have different lifecycles (data refreshes; view state
 // persists across refreshes).
 
+import type { ProjectSortMode } from '../types/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
+import { getSettings, updateSettingsPatch } from './settings.svelte';
+
+export type { ProjectSortMode };
 
 const COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
 const LEGACY_EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
@@ -21,13 +32,6 @@ const SORT_MODE_KEY = 'agent-overflow:sidebar:projectSortMode';
 const EXPANDED_DISCUSSIONS_KEY = 'agent-overflow:sidebar:expandedDiscussions';
 const LEGACY_EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
 const THREAD_LIST_VISIBLE_LIMITS_KEY = 'agent-overflow:sidebar:threadListVisibleLimits';
-
-/**
- * Project sort mode. Three discrete strategies with no per-mode tuning
- * (forge / t3-code parity). Mode persists across sessions; manual order
- * lives in `Project.sortPosition` and is set by the DnD reorder handler.
- */
-export type ProjectSortMode = 'lastActivity' | 'createdAt' | 'manual';
 
 const DEFAULT_PROJECT_SORT_MODE: ProjectSortMode = 'lastActivity';
 
@@ -153,6 +157,7 @@ export function toggleProject(id: string): void {
   else next.add(id);
   collapsedProjects = next;
   writeCollapsed(next);
+  void updateSettingsPatch({ collapsedProjects: [...next] });
 }
 
 export function expandProject(id: string): void {
@@ -161,6 +166,7 @@ export function expandProject(id: string): void {
   next.delete(id);
   collapsedProjects = next;
   writeCollapsed(next);
+  void updateSettingsPatch({ collapsedProjects: [...next] });
 }
 
 export function collapseProject(id: string): void {
@@ -168,6 +174,7 @@ export function collapseProject(id: string): void {
   const next = new Set(collapsedProjects).add(id);
   collapsedProjects = next;
   writeCollapsed(next);
+  void updateSettingsPatch({ collapsedProjects: [...next] });
 }
 
 export function getProjectSortMode(): ProjectSortMode {
@@ -178,6 +185,55 @@ export function setProjectSortMode(mode: ProjectSortMode): void {
   if (projectSortMode === mode) return;
   projectSortMode = mode;
   writeProjectSortMode(mode);
+  void updateSettingsPatch({ projectSortMode: mode });
+}
+
+/**
+ * Reconcile in-memory sidebar state with Go settings. Called after
+ * loadSettings() completes. Go settings are the durable source of
+ * truth, but on the first run after upgrade localStorage may hold
+ * the user's real preferences while Go still has factory defaults.
+ * In that case we push localStorage → Go (one-time migration)
+ * instead of overwriting the user's state with defaults.
+ *
+ * Steady state (post-migration): every mutation writes through to
+ * both layers, so they stay in sync and Go always wins here.
+ */
+export function syncSidebarFromSettings(): void {
+  const s = getSettings();
+  const migrationPatch: Partial<{ projectSortMode: ProjectSortMode; collapsedProjects: string[] }> =
+    {};
+
+  const goMode = PROJECT_SORT_MODES.includes(s.projectSortMode)
+    ? s.projectSortMode
+    : DEFAULT_PROJECT_SORT_MODE;
+  if (goMode === DEFAULT_PROJECT_SORT_MODE && projectSortMode !== DEFAULT_PROJECT_SORT_MODE) {
+    migrationPatch.projectSortMode = projectSortMode;
+  } else if (projectSortMode !== goMode) {
+    projectSortMode = goMode;
+    writeProjectSortMode(goMode);
+  }
+
+  const goIds = s.collapsedProjects ?? [];
+  const goSet = new Set(goIds.filter((id) => typeof id === 'string' && id !== ''));
+  if (goSet.size === 0 && collapsedProjects.size > 0) {
+    migrationPatch.collapsedProjects = [...collapsedProjects];
+  } else if (!setsEqual(collapsedProjects, goSet)) {
+    collapsedProjects = goSet;
+    writeCollapsed(goSet);
+  }
+
+  if (Object.keys(migrationPatch).length > 0) {
+    void updateSettingsPatch(migrationPatch);
+  }
+}
+
+function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) {
+    if (!b.has(id)) return false;
+  }
+  return true;
 }
 
 /**
@@ -210,17 +266,7 @@ export function toggleDiscussion(id: string): void {
  * the next set from the tree and swap it in atomically.
  */
 export function setExpandedDiscussions(next: ReadonlySet<string>): void {
-  // Cheap equality check so we don't write storage on every keystroke.
-  if (next.size === expandedDiscussions.size) {
-    let same = true;
-    for (const id of next) {
-      if (!expandedDiscussions.has(id)) {
-        same = false;
-        break;
-      }
-    }
-    if (same) return;
-  }
+  if (setsEqual(next, expandedDiscussions)) return;
   const copy = new Set(next);
   expandedDiscussions = copy;
   writeStringSet(EXPANDED_DISCUSSIONS_KEY, copy);

@@ -50,6 +50,8 @@ const SETTINGS: Settings = {
   network: { bindAll: false },
   retention: { days: 30 },
   gitlabSelfHostedHosts: [],
+  projectSortMode: 'lastActivity',
+  collapsedProjects: [],
 };
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {

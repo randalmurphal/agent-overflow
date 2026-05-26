@@ -32,6 +32,8 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     network: { bindAll: false },
     retention: { days: 30 },
     gitlabSelfHostedHosts: [],
+    projectSortMode: 'lastActivity',
+    collapsedProjects: [],
     ...overrides,
   };
 }

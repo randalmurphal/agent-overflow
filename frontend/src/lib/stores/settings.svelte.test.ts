@@ -34,6 +34,8 @@ const FULL_SETTINGS: Settings = {
   network: { bindAll: false },
   retention: { days: 30 },
   gitlabSelfHostedHosts: [],
+  projectSortMode: 'lastActivity',
+  collapsedProjects: [],
 };
 
 describe('settings store', () => {

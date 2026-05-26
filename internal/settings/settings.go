@@ -198,6 +198,17 @@ type Settings struct {
 	// become long-lived bearer tokens, move this field to a
 	// keychain-backed store and remove the JSON persistence path.
 	RemoteEndpoints []RemoteEndpoint `json:"remoteEndpoints,omitempty"`
+
+	// ProjectSortMode controls sidebar project ordering. One of
+	// {"lastActivity", "createdAt", "manual"}. Persisted here rather
+	// than in the webview's localStorage because localStorage is
+	// ephemeral on some platforms (WebKit2GTK / WSL2).
+	ProjectSortMode string `json:"projectSortMode"`
+
+	// CollapsedProjects lists project IDs the user has explicitly
+	// collapsed in the sidebar. Projects not in this list default to
+	// expanded. Same persistence rationale as ProjectSortMode.
+	CollapsedProjects []string `json:"collapsedProjects,omitempty"`
 }
 
 // DefaultSettings provides sane defaults for all settings fields.
@@ -242,7 +253,8 @@ var DefaultSettings = Settings{
 	ObservabilityEventLogEnabled: false,
 	// 30 days is the default retention window. The cleanup loop reads
 	// this on every tick, so toggling it doesn't require a restart.
-	Retention: RetentionSettings{Days: 30},
+	Retention:       RetentionSettings{Days: 30},
+	ProjectSortMode: "lastActivity",
 }
 
 // AutoCompactPercents returns the per-tier compact thresholds for the
@@ -652,6 +664,7 @@ func copyDefaults() Settings {
 	d := DefaultSettings
 	d.RecentWorkspaces = nil
 	d.GitLabSelfHostedHosts = nil
+	d.CollapsedProjects = nil
 	return d
 }
 

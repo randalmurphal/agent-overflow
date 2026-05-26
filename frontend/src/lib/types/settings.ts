@@ -36,6 +36,7 @@ export type ThreadEnvMode = "local" | "worktree";
 export type SansFont = "geist" | "hack-nerd" | "system";
 export type MonoFont = "geist" | "hack-nerd" | "system";
 export type PaneDensityMode = "compact" | "comfortable" | "spacious";
+export type ProjectSortMode = "lastActivity" | "createdAt" | "manual";
 
 export interface Settings {
   theme: "system" | "light" | "dark";
@@ -126,6 +127,13 @@ export interface Settings {
    * empty list.
    */
   remoteEndpoints?: RemoteEndpointPersisted[];
+
+  /** Sidebar project sort order. Persisted in Go settings for cross-restart durability. */
+  projectSortMode: ProjectSortMode;
+  /** Project IDs explicitly collapsed in the sidebar. Absent IDs default to expanded.
+   * Go uses `omitempty`, so the key may be absent on the wire — treat undefined as [].
+   */
+  collapsedProjects?: string[];
 }
 
 export interface NetworkPersistedSettings {

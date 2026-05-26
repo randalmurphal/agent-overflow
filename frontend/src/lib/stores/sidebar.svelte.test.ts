@@ -11,8 +11,12 @@ import {
   revealMoreThreadList,
   setThreadListVisibleLimit,
   setProjectSortMode,
+  syncSidebarFromSettings,
   toggleProject,
 } from './sidebar.svelte';
+import { loadSettings, resetSettingsForTest } from './settings.svelte';
+import { setBindingMock } from '../../test/mocks/bindings-app';
+import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
 
 describe('sidebar store', () => {
@@ -83,6 +87,115 @@ describe('sidebar store', () => {
       // path doesn't accept invalid input:
       setProjectSortMode('lastActivity');
       expect(getProjectSortMode()).toBe('lastActivity');
+    });
+  });
+
+  describe('syncSidebarFromSettings', () => {
+    beforeEach(() => {
+      resetSettingsForTest();
+    });
+
+    it('overwrites sort mode and collapsed projects from Go settings', async () => {
+      setProjectSortMode('lastActivity');
+      expect(getProjectSortMode()).toBe('lastActivity');
+      expect(isProjectExpanded('proj-1')).toBe(true);
+
+      const serverSettings = makeSettings({
+        projectSortMode: 'manual',
+        collapsedProjects: ['proj-1', 'proj-2'],
+      });
+      setBindingMock('GetSettings', async () => serverSettings);
+      setBindingMock('UpdateSettings', async () => serverSettings);
+      await loadSettings();
+
+      syncSidebarFromSettings();
+      expect(getProjectSortMode()).toBe('manual');
+      expect(isProjectExpanded('proj-1')).toBe(false);
+      expect(isProjectExpanded('proj-2')).toBe(false);
+      expect(isProjectExpanded('proj-3')).toBe(true);
+    });
+
+    it('back-fills localStorage from Go settings without pushing back', async () => {
+      const serverSettings = makeSettings({
+        projectSortMode: 'createdAt',
+        collapsedProjects: ['proj-a'],
+      });
+      setBindingMock('GetSettings', async () => serverSettings);
+      const updateMock = setBindingMock('UpdateSettings', async () => serverSettings);
+      await loadSettings();
+
+      syncSidebarFromSettings();
+      expect(localStorage.getItem('agent-overflow:sidebar:projectSortMode')).toBe('createdAt');
+      const raw = localStorage.getItem('agent-overflow:sidebar:collapsedProjects');
+      expect(raw).not.toBeNull();
+      expect(JSON.parse(raw as string)).toContain('proj-a');
+      expect(updateMock!.mock.calls.length).toBe(0);
+    });
+
+    it('Go wins when both Go and memory have non-default values', async () => {
+      setProjectSortMode('createdAt');
+      collapseProject('proj-local');
+
+      const serverSettings = makeSettings({
+        projectSortMode: 'manual',
+        collapsedProjects: ['proj-server'],
+      });
+      setBindingMock('GetSettings', async () => serverSettings);
+      const updateMock = setBindingMock('UpdateSettings', async () => serverSettings);
+      await loadSettings();
+
+      syncSidebarFromSettings();
+      expect(getProjectSortMode()).toBe('manual');
+      expect(isProjectExpanded('proj-server')).toBe(false);
+      expect(isProjectExpanded('proj-local')).toBe(true);
+      expect(updateMock!.mock.calls.length).toBe(0);
+    });
+
+    it('pushes localStorage values to Go when Go has defaults but memory has non-defaults (upgrade migration)', async () => {
+      // Simulate the upgrade scenario: user has non-default values in
+      // memory (populated from localStorage at module init), but Go
+      // settings are at factory defaults because the fields didn't
+      // exist before this version.
+      setProjectSortMode('manual');
+      collapseProject('proj-x');
+      expect(getProjectSortMode()).toBe('manual');
+      expect(isProjectExpanded('proj-x')).toBe(false);
+
+      const defaultGoSettings = makeSettings();
+      setBindingMock('GetSettings', async () => defaultGoSettings);
+      const updateMock = setBindingMock('UpdateSettings', async (patch: Partial<typeof defaultGoSettings>) => ({
+        ...defaultGoSettings,
+        ...patch,
+      }));
+      await loadSettings();
+
+      syncSidebarFromSettings();
+
+      // In-memory values should NOT be overwritten with defaults.
+      expect(getProjectSortMode()).toBe('manual');
+      expect(isProjectExpanded('proj-x')).toBe(false);
+
+      // A single merged patch should push both fields to Go.
+      expect(updateMock!.mock.calls.length).toBe(1);
+      const patch = updateMock!.mock.calls[0][0] as Record<string, unknown>;
+      expect(patch.projectSortMode).toBe('manual');
+      expect(patch.collapsedProjects).toContain('proj-x');
+    });
+
+    it('does not push when both Go and memory are at defaults', async () => {
+      // Fresh install: both layers have defaults. No migration needed.
+      expect(getProjectSortMode()).toBe('lastActivity');
+      expect(isProjectExpanded('any-project')).toBe(true);
+
+      const defaultGoSettings = makeSettings();
+      setBindingMock('GetSettings', async () => defaultGoSettings);
+      const updateMock = setBindingMock('UpdateSettings', async () => defaultGoSettings);
+      await loadSettings();
+
+      syncSidebarFromSettings();
+
+      // No push should have happened.
+      expect(updateMock!.mock.calls.length).toBe(0);
     });
   });
 
