@@ -298,7 +298,7 @@ separate**:
   mutating tool start and successful completion, then written durably to
   `thread_tracked_files`.
 
-When adding a new map, ask **two** questions:
+When adding a new map, ask **three** questions:
 
 1. Do the values written here become primary keys of persisted rows? If
    yes, it's an id-allocating counter — clean it in `CleanupThread` (and
@@ -307,6 +307,11 @@ When adding a new map, ask **two** questions:
    it represents durable user-visible state? If yes, persist it in the
    store at the point it becomes known. Otherwise, it's per-turn
    flow-control — clean it in `clearOpenTurn`.
+3. Does this map represent user-blocking live state that should prevent
+   session reaping? (Pending approvals, user-input requests, queued
+   flush items, and pending sends qualify.) If yes, add it to
+   `HasPendingWork` in `interactive_requests.go` and add a test in
+   `interactive_requests_test.go`.
 
 `handleTurnComplete` is **idempotent** at logical-turn granularity
 via `claimTurnSettlement`. The first complete drains streaming items,

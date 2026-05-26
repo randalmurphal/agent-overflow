@@ -109,10 +109,14 @@ func (a *App) reaperNow() time.Time {
 
 // reapIdleSessions walks a.sessions, picks candidates whose
 // lastActivity is older than the threshold and whose activeTurns
-// counter is zero, then for each candidate confirms no running
-// background tool calls exist in the store before closing the
-// session. The two-phase split keeps a.mu untouched during the SQLite
-// probe and the close call, both of which can take meaningful time.
+// counter is zero, then for each candidate confirms (a) triage holds
+// no user-blocking live state (pending approvals, pending user-input
+// requests, queued flush items, or pending sends) and (b) no running
+// background tool calls exist in the store, before closing the
+// session. The triage check ensures sessions that the user perceives
+// as active or blocked-on-user are never reaped. The two-phase split
+// keeps a.mu untouched during the triage query, the SQLite probe,
+// and the close call, all of which can take meaningful time.
 // idleCloseSession re-checks the per-session guards under the lock so
 // a user send between the sweep snapshot and the close cannot lose a
 // turn.
@@ -128,6 +132,9 @@ func (a *App) reapIdleSessions(now time.Time) {
 	for _, threadID := range a.sessionManager().idleCandidates(cutoffNano) {
 		if a.shuttingDown.Load() {
 			return
+		}
+		if a.triage.HasPendingWork(threadID) {
+			continue
 		}
 		running, err := a.store.ListRunningBackgroundToolCalls(threadID)
 		if err != nil {

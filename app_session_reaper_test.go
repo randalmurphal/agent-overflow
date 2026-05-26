@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // TestSessionLivenessBumpActivityStampsClock is the base-case contract
@@ -544,5 +546,216 @@ func TestReapIdleSessionsIsRaceFreeUnderChurn(t *testing.T) {
 	}
 	if survived != 0 {
 		t.Fatalf("expected all %d seeded sessions to be reaped, %d survived", seeded, survived)
+	}
+}
+
+// --- Triage-aware reaper tests ---
+//
+// These tests verify that the reaper skips sessions when triage holds
+// user-blocking live state, aligning the reaper's idle predicate with
+// the frontend's isThreadWorking / status-priority-ladder derivation.
+
+func newTestAppWithTriage(t *testing.T) *App {
+	t.Helper()
+	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	return app
+}
+
+func staleSession() session {
+	past := time.Now().Add(-idleReapThreshold - time.Minute)
+	return session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		liveness: newSessionLiveness(past),
+	}
+}
+
+// TestReapIdleSessionsSkipsPendingApproval verifies that a session
+// waiting for the user to respond to a permission prompt is never
+// reaped, regardless of how long the user takes to answer.
+func TestReapIdleSessionsSkipsPendingApproval(t *testing.T) {
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-pending-approval")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.sessions[thread.ID] = staleSession()
+
+	meta, _ := json.Marshal(provider.ApprovalRequest{
+		RequestID:   "req-1",
+		ThreadID:    thread.ID,
+		ToolName:    "Bash",
+		Description: "Run command",
+	})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalRequest,
+		ThreadID:  thread.ID,
+		ItemID:    "req-1",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle approval request: %v", err)
+	}
+
+	app.reapIdleSessions(time.Now())
+
+	app.mu.Lock()
+	_, present := app.sessions[thread.ID]
+	app.mu.Unlock()
+	if !present {
+		t.Fatal("session with pending approval was reaped")
+	}
+}
+
+// TestReapIdleSessionsSkipsPendingUserInput verifies that a session
+// waiting for the user to answer an AskUserQuestion prompt is never
+// reaped. This is the exact scenario from the bug report.
+func TestReapIdleSessionsSkipsPendingUserInput(t *testing.T) {
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-pending-input")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.sessions[thread.ID] = staleSession()
+
+	meta, _ := json.Marshal(provider.UserInputRequest{
+		RequestID: "req-2",
+		ThreadID:  thread.ID,
+		ToolName:  "user_input",
+		Title:     "Column design",
+		Questions: []provider.UserInputQuestion{{
+			ID:       "q1",
+			Header:   "Design",
+			Question: "Which approach?",
+			Options: []provider.UserInputQuestionOption{
+				{Label: "Option A", Description: "First option"},
+			},
+		}},
+	})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserInputRequest,
+		ThreadID:  thread.ID,
+		ItemID:    "req-2",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle user-input request: %v", err)
+	}
+
+	app.reapIdleSessions(time.Now())
+
+	app.mu.Lock()
+	_, present := app.sessions[thread.ID]
+	app.mu.Unlock()
+	if !present {
+		t.Fatal("session with pending user-input request was reaped")
+	}
+}
+
+// TestReapIdleSessionsSkipsQueuedFlushItems verifies that a session
+// with user messages queued behind an in-flight turn is not reaped.
+func TestReapIdleSessionsSkipsQueuedFlushItems(t *testing.T) {
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-queued-flush")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.sessions[thread.ID] = staleSession()
+
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
+		ID:      "queue:test-1",
+		Message: "follow-up message",
+	})
+
+	app.reapIdleSessions(time.Now())
+
+	app.mu.Lock()
+	_, present := app.sessions[thread.ID]
+	app.mu.Unlock()
+	if !present {
+		t.Fatal("session with queued flush items was reaped")
+	}
+}
+
+// TestReapIdleSessionsSkipsPendingSend verifies that a session with a
+// pending send awaiting wire echo is not reaped.
+func TestReapIdleSessionsSkipsPendingSend(t *testing.T) {
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-pending-send")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.sessions[thread.ID] = staleSession()
+
+	app.triage.RegisterPendingSend(thread.ID, "user:1", 1)
+
+	app.reapIdleSessions(time.Now())
+
+	app.mu.Lock()
+	_, present := app.sessions[thread.ID]
+	app.mu.Unlock()
+	if !present {
+		t.Fatal("session with pending send was reaped")
+	}
+}
+
+// TestReapIdleSessionsReapsAfterApprovalResolves confirms that once
+// all pending work clears, the session becomes reapable again. Without
+// this, a resolved approval would shield a session from the reaper
+// forever.
+func TestReapIdleSessionsReapsAfterApprovalResolves(t *testing.T) {
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-resolved-approval")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.sessions[thread.ID] = staleSession()
+
+	reqMeta, _ := json.Marshal(provider.ApprovalRequest{
+		RequestID: "req-3",
+		ThreadID:  thread.ID,
+		ToolName:  "Bash",
+	})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalRequest,
+		ThreadID:  thread.ID,
+		ItemID:    "req-3",
+		Meta:      reqMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle approval request: %v", err)
+	}
+
+	resolveMeta, _ := json.Marshal(map[string]any{
+		"requestId": "req-3",
+		"decision":  "approved",
+	})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalResolved,
+		ThreadID:  thread.ID,
+		ItemID:    "req-3",
+		Meta:      resolveMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle approval resolved: %v", err)
+	}
+
+	// Re-stamp stale liveness — triage.Handle doesn't touch session
+	// liveness (that's recordSessionActivity's job via the provider
+	// event loop), so force a stale timestamp to make the reaper
+	// consider this session reapable.
+	app.mu.Lock()
+	sess := app.sessions[thread.ID]
+	sess.liveness.lastActivityUnixNano.Store(time.Now().Add(-idleReapThreshold - time.Minute).UnixNano())
+	app.mu.Unlock()
+
+	app.reapIdleSessions(time.Now())
+
+	app.mu.Lock()
+	_, present := app.sessions[thread.ID]
+	app.mu.Unlock()
+	if present {
+		t.Fatal("session with resolved approval was not reaped")
 	}
 }

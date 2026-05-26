@@ -237,3 +237,176 @@ func mustMarshalJSON(t *testing.T, value any) json.RawMessage {
 	}
 	return data
 }
+
+// --- HasPendingWork tests ---
+
+func TestHasPendingWorkNilRouter(t *testing.T) {
+	var r *Router
+	if r.HasPendingWork("thread-1") {
+		t.Fatal("nil router returned true")
+	}
+}
+
+func TestHasPendingWorkEmptyThread(t *testing.T) {
+	r := NewRouter(nil, func(string, any) {})
+	if r.HasPendingWork("") {
+		t.Fatal("empty threadID returned true")
+	}
+}
+
+func TestHasPendingWorkNoState(t *testing.T) {
+	r := NewRouter(nil, func(string, any) {})
+	if r.HasPendingWork("thread-1") {
+		t.Fatal("fresh router returned true")
+	}
+}
+
+func TestHasPendingWorkPendingApproval(t *testing.T) {
+	r := NewRouter(nil, func(string, any) {})
+
+	meta := mustMarshalJSON(t, provider.ApprovalRequest{
+		RequestID: "a-1",
+		ThreadID:  "thread-1",
+		ToolName:  "Bash",
+	})
+	if err := r.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalRequest,
+		ThreadID:  "thread-1",
+		ItemID:    "a-1",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if !r.HasPendingWork("thread-1") {
+		t.Fatal("pending approval: want true")
+	}
+
+	resolveMeta := mustMarshalJSON(t, map[string]any{
+		"requestId": "a-1",
+		"decision":  "approved",
+	})
+	if err := r.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalResolved,
+		ThreadID:  "thread-1",
+		ItemID:    "a-1",
+		Meta:      resolveMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle resolve: %v", err)
+	}
+
+	if r.HasPendingWork("thread-1") {
+		t.Fatal("after resolve: want false")
+	}
+}
+
+func TestHasPendingWorkPendingUserInput(t *testing.T) {
+	r := NewRouter(nil, func(string, any) {})
+
+	meta := mustMarshalJSON(t, provider.UserInputRequest{
+		RequestID: "ui-1",
+		ThreadID:  "thread-1",
+		ToolName:  "user_input",
+		Title:     "Choose",
+		Questions: []provider.UserInputQuestion{{
+			ID:       "q",
+			Header:   "Q",
+			Question: "Pick one",
+			Options: []provider.UserInputQuestionOption{
+				{Label: "A", Description: "First"},
+			},
+		}},
+	})
+	if err := r.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserInputRequest,
+		ThreadID:  "thread-1",
+		ItemID:    "ui-1",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if !r.HasPendingWork("thread-1") {
+		t.Fatal("pending user input: want true")
+	}
+
+	resolveMeta := mustMarshalJSON(t, map[string]any{
+		"requestId": "ui-1",
+		"decision":  "answered",
+	})
+	if err := r.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserInputResolved,
+		ThreadID:  "thread-1",
+		ItemID:    "ui-1",
+		Meta:      resolveMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle resolve: %v", err)
+	}
+
+	if r.HasPendingWork("thread-1") {
+		t.Fatal("after resolve: want false")
+	}
+}
+
+func TestHasPendingWorkQueuedFlushItems(t *testing.T) {
+	r := NewRouter(nil, func(string, any) {})
+
+	r.RegisterQueueItem("thread-1", QueuedFlushItem{
+		ID:      "queue:1",
+		Message: "follow-up",
+	})
+
+	if !r.HasPendingWork("thread-1") {
+		t.Fatal("queued flush item: want true")
+	}
+}
+
+func TestHasPendingWorkPendingSend(t *testing.T) {
+	r := NewRouter(nil, func(string, any) {})
+
+	r.RegisterPendingSend("thread-1", "user:1", 1)
+
+	if !r.HasPendingWork("thread-1") {
+		t.Fatal("pending send: want true")
+	}
+}
+
+func TestHasPendingWorkCleanupThreadClears(t *testing.T) {
+	r := NewRouter(nil, func(string, any) {})
+
+	r.setPendingUserInput("thread-1", provider.UserInputRequest{
+		RequestID: "ui-x",
+		ThreadID:  "thread-1",
+		Questions: []provider.UserInputQuestion{{
+			ID: "q", Header: "Q", Question: "?",
+		}},
+	})
+	r.RegisterQueueItem("thread-1", QueuedFlushItem{
+		ID: "queue:x", Message: "msg",
+	})
+	r.RegisterPendingSend("thread-1", "user:x", 1)
+
+	if !r.HasPendingWork("thread-1") {
+		t.Fatal("multiple sources: want true")
+	}
+
+	r.CleanupThread("thread-1")
+
+	if r.HasPendingWork("thread-1") {
+		t.Fatal("after CleanupThread: want false")
+	}
+}
+
+func TestHasPendingWorkIsolatesThreads(t *testing.T) {
+	r := NewRouter(nil, func(string, any) {})
+
+	r.RegisterPendingSend("thread-1", "user:1", 1)
+
+	if r.HasPendingWork("thread-2") {
+		t.Fatal("unrelated thread returned true")
+	}
+}
