@@ -93,7 +93,13 @@ const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
 // Keep chasing for this long after the last positive grow event. Without
 // this, the spring would consider itself "arrived" between streaming
 // chunks and stop, then have to spin up again on the next chunk —
-// visibly jittery at chunk boundaries.
+// visibly jittery at chunk boundaries. Once this window expires AND
+// animationMode is still 'spring', the spring enters sentinel mode
+// (re-rAFs without writing, keeping springToken non-zero) so the
+// external write gate and negative-delta carve-out stay engaged
+// across gaps > 350ms (async shiki loads, parseIncompleteMarkdown
+// rebalances). The sentinel cancels on the next tick where
+// animationMode flips to 'instant' (turn ended).
 const RETAIN_ANIMATION_DURATION_MS = 350;
 // Spring arrival thresholds: distance ≤1px from target AND velocity
 // below 0.5 px-per-60fps-frame means we've effectively settled.
@@ -988,6 +994,32 @@ export function createUseStickToBottomController(
         Math.abs(scrollEl.scrollTop - target) < ARRIVAL_DISTANCE_PX
         && Math.abs(velocity) < ARRIVAL_VELOCITY_THRESHOLD;
       if (arrived && !withinTargetChangeRetainWindow) {
+        if (wantsSpringNow) {
+          // Streaming active but no target change within the retain
+          // window (async shiki load, inter-chunk gap, parseIncomplete
+          // Markdown rebalance). Keep the spring sentinel-alive so the
+          // external write gate (springToken !== 0 suppression) and the
+          // negative-delta carve-out stay engaged. Without this,
+          // cancelSpring sets springToken=0 and the dead window lets
+          // virtua $fixScrollJump or a negative contentRO sync-pin snap
+          // scrollTop — visible as 1-2 lines of instant jump mid-stream.
+          // The next positive contentRO delta bumps lastTargetChangedAt
+          // and the chase resumes on the following tick.
+          //
+          // Snap pixel-perfect on sentinel entry (diff non-zero means
+          // the spring converged within 1px but didn't land exactly);
+          // subsequent sentinel ticks see diff===0 and skip the write,
+          // avoiding trace noise. Zeroing velocity/accumulated keeps the
+          // arrival check stable across sentinel ticks.
+          if (diff !== 0) {
+            writeCaller = 'spring.arrive';
+            writeScrollTop(target);
+          }
+          velocity = 0;
+          accumulated = 0;
+          springFrameHandle = requestFrame(tick);
+          return;
+        }
         // Snap to the exact target on arrival so the final paint lands
         // pixel-perfect rather than 0.5px above the bottom.
         writeCaller = 'spring.arrive';

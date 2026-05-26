@@ -4051,6 +4051,103 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(434);
     });
 
+    it('spring stays sentinel-alive during streaming when arrived past the retain window — external writes suppressed', async () => {
+      // The inter-chunk dead-zone bug: spring arrives, 350ms pass with
+      // no new content (async shiki load, parseIncompleteMarkdown
+      // rebalance, slow model cadence), cancelSpring sets springToken=0.
+      // In that window virtua's $fixScrollJump passes through the
+      // external write gate (springToken===0 pass-through at line 1955)
+      // and negative contentRO deltas sync-pin (springToken===0 at
+      // line 1206) — both produce a user-visible instant snap mid-stream
+      // where the spring should have smoothly chased. Code blocks
+      // exacerbate this because shiki language loads are async and
+      // parseIncompleteMarkdown rebalances create timing gaps > 350ms.
+      //
+      // Fix: when arrived but animationMode is still 'spring', the
+      // spring re-rAFs as a sentinel (springToken stays non-zero) so the
+      // gate and carve-out remain engaged. The next chunk's positive
+      // contentRO delta bumps lastTargetChangedAt and the chase resumes.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      // Kick a spring chase: content grows, spring starts.
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900); // target = 500
+
+      // Let the spring fully arrive AND advance mockNow past
+      // RETAIN_ANIMATION_DURATION_MS (350ms). advanceUntil advances
+      // mockNow by 16.67ms per frame; ~25 frames reaches 416ms.
+      // lastTargetChangedAt was set when the positive contentRO fired
+      // (mockNow=0 at that point), so mockNow > 350 means the retain
+      // window has expired. The sentinel branch keeps the spring alive.
+      await advanceUntil(() => geom.scrollTop === 500);
+      // Ensure we're past the retain window.
+      while (mockNow < 360) await nextFrame();
+
+      // Widen the scroll range so writes above the current target
+      // aren't clamped by the stub geometry (maxTarget = scrollHeight
+      // - clientHeight). This isolates gate suppression from clamping.
+      geom.scrollHeight = 1200;
+      // contentHeight unchanged — no contentRO fire.
+
+      // Simulate virtua $fixScrollJump writing scrollTop (above-viewport
+      // row remeasured while the model is between chunks). Before the
+      // fix, this passes through the gate and snaps — the regression.
+      scrollEl.scrollTop = 510;
+      expect(geom.scrollTop).toBe(500);
+
+      // Similarly, a small negative contentRO delta (parseIncomplete
+      // Markdown rebalance) must NOT sync-pin.
+      geom.scrollHeight = 1190;
+      geom.contentHeight = 890;
+      ro.fire(contentEl, 890); // target = 590, current=500, no overshoot
+      expect(geom.scrollTop).toBe(500);
+
+      // Next streaming chunk arrives — spring resumes chasing.
+      geom.scrollHeight = 1300;
+      geom.contentHeight = 1100;
+      ro.fire(contentEl, 1100); // target = 700
+      await advanceUntil(() => Math.abs(geom.scrollTop - 700) <= 1);
+      expect(Math.abs(geom.scrollTop - 700)).toBeLessThanOrEqual(1);
+    });
+
+    it('spring sentinel cancels cleanly when animationMode flips to instant (turn ends)', async () => {
+      // The sentinel must not keep the spring alive after the turn ends.
+      // When animationMode flips to 'instant', the next sentinel tick
+      // sees wantsSpringNow=false, the retain window is expired, and the
+      // standard cancel branch fires.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      await advanceUntil(() => geom.scrollTop === 500);
+      // Ensure past retain window so spring enters sentinel.
+      while (mockNow < 360) await nextFrame();
+
+      // Turn ends — mode flips to instant. The sentinel tick's next
+      // arrival evaluation sees wantsSpringNow=false and takes the
+      // cancel branch (springToken→0). Multiple frames because the
+      // sentinel's pending rAF and nextFrame's rAF interleave — the
+      // cancel may land one frame after the mode flip is visible.
+      mode = 'instant';
+      for (let i = 0; i < 10; i++) await nextFrame();
+
+      // Widen scrollHeight so the write value isn't clamped by the
+      // stub geometry (maxTarget = scrollHeight - clientHeight must
+      // exceed the write value).
+      geom.scrollHeight = 1200;
+
+      // External write now passes through (springToken should be 0
+      // after the instant-mode cancel).
+      scrollEl.scrollTop = 510;
+      expect(geom.scrollTop).toBe(510);
+    });
+
     it('text selection mid-spring pauses scrollTop advancement', async () => {
       // The spring tick checks isSelectingInside() and re-rAFs without
       // advancing scrollTop when the user is dragging a selection
