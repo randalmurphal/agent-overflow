@@ -2720,6 +2720,169 @@ describe('createUseStickToBottomController — spring chase', () => {
       });
     });
 
+    describe('spring chase distance invariants', () => {
+      // The spring's total visual distance must equal the actual
+      // geometry change (scrollHeight delta), not the virtua estimate.
+      // These tests verify the distance invariant under timing
+      // variations that could produce wrong starting positions.
+
+      it('estimate-correct pair: spring lands at corrected target, not the estimate', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        const startScrollTop = geom.scrollTop; // 400
+
+        // +90 estimate (mimics virtua provisionally rendering a row).
+        geom.scrollHeight = 1090;
+        geom.contentHeight = 890;
+        ro.fire(contentEl, 890); // estimate target = 490
+
+        // -50 correction within the same RO burst.
+        geom.scrollHeight = 1040;
+        geom.contentHeight = 840;
+        ro.fire(contentEl, 840); // corrected target = 440
+
+        // Spring should land at 440 (corrected), not 490 (estimate).
+        await advanceUntil(() => geom.scrollTop === 440);
+        // Total distance: 440 - 400 = 40px (the actual row height).
+        expect(geom.scrollTop - startScrollTop).toBe(40);
+      });
+
+      it('two rows in quick succession: total distance is sum of actual heights', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        const startScrollTop = geom.scrollTop; // 400
+
+        // Row 1: +90 estimate, then -50 correction (actual 40px).
+        geom.scrollHeight = 1090;
+        geom.contentHeight = 890;
+        ro.fire(contentEl, 890);
+        geom.scrollHeight = 1040;
+        geom.contentHeight = 840;
+        ro.fire(contentEl, 840);
+
+        // Row 2: +90 estimate, then -55 correction (actual 35px).
+        geom.scrollHeight = 1130;
+        geom.contentHeight = 930;
+        ro.fire(contentEl, 930);
+        geom.scrollHeight = 1075;
+        geom.contentHeight = 875;
+        ro.fire(contentEl, 875);
+
+        // Target = 1075 - 600 = 475. Total height: 40+35 = 75px.
+        await advanceUntil(() => geom.scrollTop === 475);
+        expect(geom.scrollTop - startScrollTop).toBe(75);
+      });
+
+      it('row appearing mid-chase does not double-count distance', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        const startScrollTop = geom.scrollTop; // 400
+
+        // Row 1 appears (actual 40px after correction).
+        geom.scrollHeight = 1090;
+        geom.contentHeight = 890;
+        ro.fire(contentEl, 890);
+        geom.scrollHeight = 1040;
+        geom.contentHeight = 840;
+        ro.fire(contentEl, 840); // target = 440
+
+        // Spring runs a few frames — partial progress.
+        for (let i = 0; i < 3; i++) await nextFrame();
+        const midChase = geom.scrollTop;
+        expect(midChase).toBeGreaterThan(400);
+        expect(midChase).toBeLessThan(440);
+
+        // Row 2 appears mid-chase (actual 30px).
+        geom.scrollHeight = 1120;
+        geom.contentHeight = 920;
+        ro.fire(contentEl, 920);
+        geom.scrollHeight = 1070;
+        geom.contentHeight = 870;
+        ro.fire(contentEl, 870); // target = 470
+
+        // Spring continues from midChase toward 470.
+        await advanceUntil(() => geom.scrollTop === 470);
+        // Total distance from start: 70px = 40px + 30px. Correct.
+        expect(geom.scrollTop - startScrollTop).toBe(70);
+      });
+
+      it('new row after sentinel starts fresh chase from correct position (no carryover offset)', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        // Row 1: spring chases and arrives.
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900); // target = 500
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame(); // sentinel
+
+        const posBeforeRow2 = geom.scrollTop; // 500
+
+        // Row 2 appears (actual 40px).
+        geom.scrollHeight = 1190;
+        geom.contentHeight = 990;
+        ro.fire(contentEl, 990);
+        geom.scrollHeight = 1140;
+        geom.contentHeight = 940;
+        ro.fire(contentEl, 940); // target = 540
+
+        // Sentinel sees the new target (diff > 0), starts chasing.
+        // With the velocity-zero fix, velocity starts at 0 (not
+        // carried over from the previous chase).
+        await nextFrame();
+        // First frame should move a small amount — proportional to
+        // the actual 40px diff, not influenced by prior velocity.
+        const firstFrameMove = geom.scrollTop - posBeforeRow2;
+        // With vel=0, stiffness=0.05, diff=40, mass=1.25:
+        // vel = 0.05*40/1.25 = 1.6, move = 1.6px.
+        // Allow some tolerance but it should be small, not the ~16px
+        // a carryover velocity would produce.
+        expect(firstFrameMove).toBeLessThan(5);
+        expect(firstFrameMove).toBeGreaterThan(0);
+
+        await advanceUntil(() => geom.scrollTop === 540);
+        expect(geom.scrollTop - posBeforeRow2).toBe(40);
+      });
+
+      it('notifyLiveContentMaybeGrew during sentinel does not add phantom distance', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        const posBeforeNudge = geom.scrollTop;
+
+        // Structural nudge fires but nothing actually grew.
+        controller.notifyLiveContentMaybeGrew();
+        for (let i = 0; i < 5; i++) await nextFrame();
+
+        // scrollTop must not have moved — no geometry change.
+        expect(geom.scrollTop).toBe(posBeforeNudge);
+
+        // Now actual content grows. Distance should be exactly the
+        // growth amount, not growth + phantom.
+        geom.scrollHeight = 1150;
+        geom.contentHeight = 950;
+        ro.fire(contentEl, 950); // target = 550
+
+        await advanceUntil(() => geom.scrollTop === 550);
+        expect(geom.scrollTop - posBeforeNudge).toBe(50);
+      });
+    });
+
     it('lands at target eventually and stops ticking', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
