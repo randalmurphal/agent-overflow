@@ -247,8 +247,33 @@
   // typesetting is done.
   let anyMarkdownSettledSinceArm = $state(false);
 
+  // Latch spring mode for a brief window after the per-wire-round
+  // active turn signal clears. Between wire rounds (tool-call emission
+  // → tool-result processing), getActiveTurn() returns null for
+  // 50–200ms. Without hysteresis that null flips animationMode to
+  // 'instant', which cancels the spring sentinel, opens the external
+  // write gate, and lets virtua's $fixScrollJump snap scrollTop —
+  // visible as a "snap up, spring down" that repeats per boundary.
+  // The hold window (500ms) covers typical inter-round gaps. For
+  // long-running tools (>500ms) the sentinel has been idle long enough
+  // that the transition to instant is clean — no in-flight spring to
+  // disrupt and no pending virtua corrections to race.
+  const SPRING_MODE_HOLD_MS = 500;
+  let lastActiveTurnSeenAt = 0;
+
+  function animationModeForScroll(): 'spring' | 'instant' {
+    if (getActiveTurn(pane.threadId)) {
+      lastActiveTurnSeenAt = performance.now();
+      return 'spring';
+    }
+    if (performance.now() - lastActiveTurnSeenAt < SPRING_MODE_HOLD_MS) {
+      return 'spring';
+    }
+    return 'instant';
+  }
+
   const stick = createUseStickToBottomController({
-    animationMode: () => (getActiveTurn(pane.threadId) ? 'spring' : 'instant'),
+    animationMode: animationModeForScroll,
     quietContextSignal: () => anyMarkdownSettledSinceArm,
   });
 

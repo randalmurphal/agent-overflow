@@ -4511,6 +4511,307 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(500);
     });
 
+    describe('wire-round gap regression — brief animationMode flip during sentinel', () => {
+      // Between tool-call emission and tool-result processing,
+      // getActiveTurn() can briefly return null (per-wire-round
+      // emission cadence), flipping animationMode to 'instant'. Without
+      // hysteresis, the spring sentinel cancels, the external write gate
+      // opens, and virtua's $fixScrollJump snaps scrollTop — visible as
+      // a "snap up, spring down" that repeats per wire-round boundary.
+      //
+      // The fix is in the animationMode getter (MessageTimeline.svelte):
+      // a time-based hysteresis holds 'spring' for SPRING_MODE_HOLD_MS
+      // after the active turn clears. These tests exercise the
+      // controller with a hysteresis-backed mode getter to verify the
+      // gate stays closed during the gap.
+      //
+      // The hold constant must match MessageTimeline's SPRING_MODE_HOLD_MS.
+      const HOLD_MS = 500;
+
+      // Simulates the hysteresis getter from MessageTimeline: holds
+      // 'spring' for HOLD_MS after the underlying turn signal clears.
+      function createHysteresisMode() {
+        let turnActive = true;
+        let lastActiveAt = 0;
+        return {
+          get getter(): () => 'spring' | 'instant' {
+            return () => {
+              if (turnActive) {
+                lastActiveAt = mockNow;
+                return 'spring';
+              }
+              if (mockNow - lastActiveAt < HOLD_MS) return 'spring';
+              return 'instant';
+            };
+          },
+          set active(v: boolean) { turnActive = v; },
+          get active() { return turnActive; },
+        };
+      }
+
+      it('hysteresis holds spring mode during brief wire-round gap — gate blocks external writes', async () => {
+        const hmode = createHysteresisMode();
+        controller.detach();
+        controller = createUseStickToBottomController({ animationMode: hmode.getter });
+        controller.attach(scrollEl, contentEl);
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        // Wire-round gap: turn signal clears.
+        hmode.active = false;
+        // Advance a few frames — well within the hold window.
+        for (let i = 0; i < 5; i++) await nextFrame();
+        // mockNow is ~443ms. lastActiveAt was ~360ms. Gap = ~83ms < 500ms.
+
+        geom.scrollHeight = 1200;
+        scrollEl.scrollTop = 450;
+        // Hysteresis keeps mode='spring', sentinel alive, gate closed.
+        expect(geom.scrollTop).toBe(500);
+      });
+
+      it('hysteresis prevents scrollTop displacement across full wire-round gap cycle', async () => {
+        const hmode = createHysteresisMode();
+        controller.detach();
+        controller = createUseStickToBottomController({ animationMode: hmode.getter });
+        controller.attach(scrollEl, contentEl);
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        // Wire-round gap.
+        hmode.active = false;
+        for (let i = 0; i < 3; i++) await nextFrame();
+
+        // Virtua $fixScrollJump — blocked by hysteresis-backed gate.
+        geom.scrollHeight = 1200;
+        scrollEl.scrollTop = 420;
+        expect(geom.scrollTop).toBe(500);
+
+        // Round resumes.
+        hmode.active = true;
+
+        // New content. Spring starts from 500 (correct), not 420.
+        geom.scrollHeight = 1300;
+        geom.contentHeight = 1100;
+        ro.fire(contentEl, 1100);
+        await nextFrame();
+        expect(geom.scrollTop).toBeGreaterThanOrEqual(500);
+        await advanceUntil(() => geom.scrollTop === 700);
+      });
+
+      it('repeated wire-round gaps do not cause repeated snap-up / spring-down cycles', async () => {
+        const hmode = createHysteresisMode();
+        controller.detach();
+        controller = createUseStickToBottomController({ animationMode: hmode.getter });
+        controller.attach(scrollEl, contentEl);
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        for (let cycle = 0; cycle < 3; cycle++) {
+          const before = geom.scrollTop;
+
+          hmode.active = false;
+          for (let i = 0; i < 3; i++) await nextFrame();
+
+          // Virtua writes — blocked by hysteresis.
+          geom.scrollHeight += 50;
+          scrollEl.scrollTop = before - 40;
+          expect(geom.scrollTop).toBe(before);
+
+          // Round resumes.
+          hmode.active = true;
+          geom.scrollHeight += 50;
+          geom.contentHeight += 50;
+          ro.fire(contentEl, geom.contentHeight);
+
+          const target = geom.scrollHeight - 600;
+          await advanceUntil(() => Math.abs(geom.scrollTop - target) <= 1);
+        }
+      });
+
+      it('hysteresis expires after hold window — sentinel cancels and gate opens for real turn-end', async () => {
+        const hmode = createHysteresisMode();
+        controller.detach();
+        controller = createUseStickToBottomController({ animationMode: hmode.getter });
+        controller.attach(scrollEl, contentEl);
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        // Turn ends for real.
+        hmode.active = false;
+        // Advance well past HOLD_MS (500ms from lastActiveAt). Need
+        // enough frames for (a) mockNow to pass the hold window AND
+        // (b) the sentinel tick to fire and see wantsSpringNow=false.
+        // 60 frames ≈ 1000ms from current position, safely past 500ms.
+        for (let i = 0; i < 60; i++) await nextFrame();
+
+        // Hysteresis expired — mode is now 'instant'. Sentinel should
+        // have cancelled and the gate should be open.
+        geom.scrollHeight = 1200;
+        scrollEl.scrollTop = 510;
+        expect(geom.scrollTop).toBe(510);
+      });
+
+      it('hysteresis re-latches when turn resumes within hold window', async () => {
+        const hmode = createHysteresisMode();
+        controller.detach();
+        controller = createUseStickToBottomController({ animationMode: hmode.getter });
+        controller.attach(scrollEl, contentEl);
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        // First gap.
+        hmode.active = false;
+        for (let i = 0; i < 3; i++) await nextFrame();
+
+        // Resume — resets the latch timer.
+        hmode.active = true;
+        geom.scrollHeight = 1200;
+        geom.contentHeight = 1000;
+        ro.fire(contentEl, 1000);
+        await advanceUntil(() => geom.scrollTop === 600);
+        while (mockNow - 360 < 360) await nextFrame();
+
+        // Second gap — hysteresis still protects because lastActiveAt
+        // was refreshed during the resumed round.
+        hmode.active = false;
+        for (let i = 0; i < 3; i++) await nextFrame();
+
+        geom.scrollHeight = 1300;
+        scrollEl.scrollTop = 550;
+        // Gate still closed — the re-latched hysteresis covers this gap.
+        expect(geom.scrollTop).toBe(600);
+      });
+
+      it('without hysteresis, raw mode flip during sentinel opens the gate (documents the underlying bug)', async () => {
+        // This test uses the raw `mode` variable (no hysteresis) to
+        // document the controller-level behavior that the upstream
+        // hysteresis fix guards against.
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        mode = 'instant';
+        for (let i = 0; i < 5; i++) await nextFrame();
+
+        geom.scrollHeight = 1200;
+        scrollEl.scrollTop = 450;
+        // Without hysteresis, the gate opens and the write passes.
+        expect(geom.scrollTop).toBe(450);
+      });
+    });
+
+    describe('notifyLiveContentMaybeGrew during sentinel — structural signature nudges', () => {
+      it('does not restart spring when scrollTop equals target', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        // Sentinel running. scrollTop === target === 500.
+        const scrollTopBefore = geom.scrollTop;
+        controller.notifyLiveContentMaybeGrew();
+
+        // Should not move scrollTop — already at bottom, nothing grew.
+        expect(geom.scrollTop).toBe(scrollTopBefore);
+        for (let i = 0; i < 10; i++) await nextFrame();
+        expect(geom.scrollTop).toBe(scrollTopBefore);
+      });
+
+      it('multiple notifyLiveContentMaybeGrew calls during sentinel do not cause visible scroll motion', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        const scrollTopBefore = geom.scrollTop;
+        // Simulate 4 structural signature changes (tool call lifecycle:
+        // running → streaming → success → tool_completion).
+        for (let i = 0; i < 4; i++) {
+          controller.notifyLiveContentMaybeGrew();
+          await nextFrame();
+          await nextFrame();
+        }
+
+        // scrollTop must not have moved — no content grew.
+        expect(geom.scrollTop).toBe(scrollTopBefore);
+      });
+
+      it('notifyLiveContentMaybeGrew with scrollTop 1px below target bumps retain but does not restart spring', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame();
+
+        // Simulate sub-pixel rounding leaving scrollTop 1px short.
+        geom.scrollTop = 499;
+        controller.notifyLiveContentMaybeGrew();
+
+        // Should NOT start a visible spring animation for 1px.
+        // The nudge bumps lastTargetChangedAt and calls
+        // startSpringIfNeeded which returns (spring still in sentinel).
+        await nextFrame();
+        await nextFrame();
+        // Spring sentinel absorbs the 1px and lands at 500.
+        await advanceUntil(() => geom.scrollTop === 500);
+      });
+    });
+
     it('restores the original scrollTop descriptor on detach', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
