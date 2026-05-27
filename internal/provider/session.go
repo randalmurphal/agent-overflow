@@ -9,6 +9,15 @@ import "context"
 type SendOptions struct {
 	InteractionMode InteractionMode
 	Attachments     []ImageAttachment
+	// UserMessageUUID, when non-empty, is the message id the app minted at
+	// send time. Providers that let the client supply the user-message id
+	// send it on the wire so the id is known before the provider echoes the
+	// message back — letting a revert slice by a stable id it knew at send
+	// time. Claude honours a client-supplied top-level `uuid` on the
+	// stream-json envelope; Codex assigns its own ids and ignores this.
+	// Optional: empty means "let the provider assign the id" (legacy
+	// behaviour, id learned from the echo).
+	UserMessageUUID string
 }
 
 // ImageAttachment is the provider-ready form of a user-attached image.

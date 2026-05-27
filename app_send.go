@@ -16,6 +16,8 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
+
+	"github.com/google/uuid"
 )
 
 // Local aliases so the rest of main can keep using the short names.
@@ -205,12 +207,39 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
+	// Register the mode-switch rollback BEFORE any fallible work below.
+	// beginImplementModeSwitch may have persisted a plan→chat switch, so
+	// every early return from here on must be able to roll it back — the
+	// defer therefore has to dominate the pre-stamp block, which can return
+	// on a MergeProviderItemID error. userMsgKept flips true once the user
+	// row lands, at which point the switch is a committed part of the send.
 	userMsgKept := false
 	defer func() {
 		if err != nil && !userMsgKept {
 			restoreImplementMode()
 		}
 	}()
+
+	// Mint the user message id and stamp it onto the row meta BEFORE the
+	// optimistic persist and checkpoint capture below, then send it to the
+	// provider as the envelope's message id. Claude honours a client-supplied
+	// top-level uuid verbatim (see claude.Session.Send), so the row's
+	// provider_item_id and the checkpoint's ProviderUserMessageID both point
+	// at the real transcript uuid from the moment of persist — no dependency
+	// on the replay echo. This closes the fast send→escape race: a revert
+	// firing before the echo arrives still finds a stable id and takes the
+	// UUID-keyed slice instead of the ordinal-walk fallback. Gated on Claude:
+	// Codex assigns its own item ids and ignores a supplied uuid, so stamping
+	// a fabricated id there would only mis-seed the row and trip the
+	// echo-time drift log on every send.
+	var sendUUID string
+	if thread.Provider == string(provider.Claude) {
+		sendUUID = uuid.NewString()
+		userMeta, err = usermessage.MergeProviderItemID(userMeta, sendUUID)
+		if err != nil {
+			return store.Item{}, fmt.Errorf("send message: stamp send uuid: %w", err)
+		}
+	}
 	if a.triage == nil {
 		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
 		a.configureTriageQueueCallbacks()
@@ -291,7 +320,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// envelope arrives, or cleared on send failure below.
 	a.triage.RegisterPendingSend(threadID, userItem.ID, turnIndex)
 
-	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments); err != nil {
+	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments, sendUUID); err != nil {
 		// Drop the pending-send marker before persisting the error row.
 		// Without this, the marker would still be live when the next AO
 		// send registers a new entry, and a stale wire init for an orphaned
@@ -615,6 +644,7 @@ func sendToProvider(
 	content string,
 	mode provider.InteractionMode,
 	attachments []provider.ImageAttachment,
+	userMessageUUID string,
 ) error {
 	providerSess := sess.providerSession()
 	if providerSess == nil {
@@ -629,5 +659,6 @@ func sendToProvider(
 	return providerSess.Send(context.Background(), content, provider.SendOptions{
 		InteractionMode: mode,
 		Attachments:     attachments,
+		UserMessageUUID: userMessageUUID,
 	})
 }

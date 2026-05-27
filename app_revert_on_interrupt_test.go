@@ -717,6 +717,82 @@ func TestInterruptAndRevertIfCleanSurvivesCompactBoundary(t *testing.T) {
 		[]string{"third"})
 }
 
+// TestInterruptAndRevertIfCleanSurvivesPriorInterruptMarker is the
+// end-to-end regression guard for the bug the user hit on thread
+// 3da09d16: send a message, hit Stop, and the revert lands one turn too
+// early. The trigger conjunction is (a) a `[Request interrupted by
+// user]` marker in kept history — Claude writes one whenever an earlier
+// turn was interrupted — AND (b) the revert taking the ORDINAL fallback
+// because no provider_item_id was stamped yet (the fast send→escape
+// race: the wire echo that stamps the UUID hasn't arrived). With both,
+// the ordinal walk used to count the interrupt marker as a real prompt
+// and slice the resumed session a full turn too far back.
+//
+// Unlike TestInterruptAndRevertIfCleanSurvivesCompactBoundary above,
+// this deliberately inserts the final user item with NO provider_item_id
+// (plain insertUserItem) so writeClaudeSessionSlice's empty-anchor
+// branch routes through WriteForkFileForLastKeptTurn — the ordinal path
+// where the bug lived. The marker is written as ARRAY content, exactly
+// as createUserInterruptionMessage emits it
+// (claude-code-source-code/src/utils/messages.ts:545-560).
+//
+// Scenario: turn 0 "first"/"reply 0", a prior interrupt marker, turn 1
+// "second"/"reply 1", then turn 2 "third" sent and immediately Stopped.
+// The revert must keep turns 0 AND 1 in full and drop only "third".
+// Before the fix it dropped "second"/"reply 1" too.
+func TestInterruptAndRevertIfCleanSurvivesPriorInterruptMarker(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	const sessionID = "prior-interrupt-session"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"prior-interrupt-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"prior-interrupt-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"int1","parentUuid":"a0","sessionId":"prior-interrupt-session","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}
+{"type":"user","uuid":"u1","parentUuid":"int1","sessionId":"prior-interrupt-session","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"prior-interrupt-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"prior-interrupt-session","message":{"role":"user","content":"third"}}
+`)
+	thread := createCheckpointTestThread(t, app, "interrupt-marker", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "u:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "u:1", 1, "second")
+	// No provider_item_id on u:2 — forces the ordinal fallback (the buggy
+	// path), reproducing the fast send→escape race where the wire echo
+	// hasn't stamped the UUID yet.
+	insertUserItem(t, app.store, thread.ID, "u:2", 2, "third")
+
+	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	if err != nil {
+		t.Fatalf("interrupt-and-revert: %v", err)
+	}
+	if !result.Reverted {
+		t.Fatalf("expected Reverted=true, got Reverted=false reason=%q", result.Reason)
+	}
+
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef == "" || updated.SessionRef == sessionID {
+		t.Fatalf("thread session ref = %q, want sliced fork session", updated.SessionRef)
+	}
+	// turn 1's "second"/"reply 1" MUST survive; only "third" is dropped.
+	// Before the fix, the interrupt marker shifted the ordinal count and
+	// "second"/"reply 1" were sliced away too.
+	assertClaudeSessionText(t, workspace, updated.SessionRef,
+		[]string{"first", "reply 0", "second", "reply 1"},
+		[]string{"third"})
+}
+
 // TestResolveRevertCheckpointSynthesizesProviderUserMessageID is the
 // fine-grained unit test for the synthesize path: when no persisted
 // checkpoint exists, the helper must lift the wire id off the user

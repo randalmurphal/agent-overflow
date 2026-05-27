@@ -33,51 +33,6 @@ var ErrUserTurnOutOfRange = errors.New("sessionfork: user turn index out of rang
 // distinction.
 var ErrUserTurnAtTranscriptEnd = fmt.Errorf("%w: at transcript end", ErrUserTurnOutOfRange)
 
-// FindParentUUIDForUserMessageUUID streams the JSONL and returns the
-// parentUuid of the real user prompt with the given Claude message UUID.
-// This is the message-keyed equivalent of FindUUIDBeforeUserTurn and is
-// preferred by checkpoint rollback because queued/local message shapes can
-// make turn ordinals less precise than the provider's own UUID.
-func FindParentUUIDForUserMessageUUID(r io.Reader, messageUUID string) (string, error) {
-	if messageUUID == "" {
-		return "", fmt.Errorf("sessionfork: empty user message uuid")
-	}
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, scannerBufInitial), scannerBufMax)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var entry map[string]any
-		if err := json.Unmarshal(line, &entry); err != nil {
-			continue
-		}
-		if !isRealUserPrompt(entry) {
-			continue
-		}
-		uuid, _ := entry["uuid"].(string)
-		if uuid != messageUUID {
-			continue
-		}
-		parent, _ := entry["parentUuid"].(string)
-		return parent, nil
-	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("sessionfork: scan: %w", err)
-	}
-	return "", fmt.Errorf("%w: user message uuid %q", ErrMessageNotFound, messageUUID)
-}
-
-func ParentUUIDForUserMessageUUID(srcPath string, messageUUID string) (string, error) {
-	f, err := os.Open(srcPath)
-	if err != nil {
-		return "", fmt.Errorf("sessionfork: open claude session: %w", err)
-	}
-	defer f.Close()
-	return FindParentUUIDForUserMessageUUID(f, messageUUID)
-}
-
 // FindUUIDBeforeUserTurn streams the JSONL and returns the UUID of the
 // entry immediately before the Nth (0-indexed) real user prompt — i.e.
 // the parentUuid of that prompt. This is the right slice point for a
@@ -194,11 +149,50 @@ func SliceUUIDForLastKeptTurn(srcPath string, lastKeptTurn int) (string, error) 
 // Drift surface — keep synced with Claude Code's
 // `selectableUserMessagesFilter` at
 // claude-code-source-code/src/components/MessageSelector.tsx:767-792.
+// That filter rejects synthetic entries along three axes; this slice
+// (boolean flags) is one. The other two are the injected-XML wrappers
+// (injectedUserContentTagPairs, below) and the synthetic-content
+// sentinels (syntheticUserContentMessages / isSyntheticUserContent,
+// below) — keep all three in mind when reconciling against upstream.
 var syntheticUserEntryFlags = []string{
 	"isMeta",
 	"isReplay",
 	"isCompactSummary",
 	"isVisibleInTranscriptOnly",
+}
+
+// Claude's synthetic user-content sentinels. Claude writes each as a
+// user-role entry whose `message.content` is an ARRAY whose first block
+// is `{type:"text", text:<sentinel>}` — e.g. an interrupted turn yields
+// `[Request interrupted by user]` via createUserInterruptionMessage
+// (claude-code-source-code/src/utils/messages.ts:545-560). These are
+// not user-typed prompts, and Claude's own message selector skips them
+// via isSyntheticMessage. AO's ordinal walk must skip the identical set
+// or it counts one phantom prompt per prior interrupt/cancel/reject and
+// slices the resumed session a full turn too far back. The strings are
+// verbatim copies of the upstream constants — one character of drift
+// silently disables the filter.
+//
+// Drift surface — keep synced with Claude Code's SYNTHETIC_MESSAGES set
+// and isSyntheticMessage at
+// claude-code-source-code/src/utils/messages.ts:302-319 (the underlying
+// constants are defined at :207-240). REJECT_MESSAGE_WITH_REASON_PREFIX
+// and the SUBAGENT_* variants are deliberately NOT in upstream's set, so
+// they are deliberately absent here too.
+const (
+	claudeInterruptMessage           = "[Request interrupted by user]"
+	claudeInterruptMessageForToolUse = "[Request interrupted by user for tool use]"
+	claudeCancelMessage              = "The user doesn't want to take this action right now. STOP what you are doing and wait for the user to tell you how to proceed."
+	claudeRejectMessage              = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
+	claudeNoResponseRequested        = "No response requested."
+)
+
+var syntheticUserContentMessages = map[string]struct{}{
+	claudeInterruptMessage:           {},
+	claudeInterruptMessageForToolUse: {},
+	claudeCancelMessage:              {},
+	claudeRejectMessage:              {},
+	claudeNoResponseRequested:        {},
 }
 
 // injectedUserContentTagPairs names the balanced XML wrappers Claude
@@ -248,11 +242,14 @@ var injectedUserContentTagPairs = []struct{ open, close string }{
 //     isCompactSummary / isVisibleInTranscriptOnly)
 //   - has message.role == "user"
 //   - has message.content that is either a string (not wrapped in any
-//     Claude-injected XML envelope) OR an array with at least one
-//     non-tool_result block whose text (if any) isn't wrapped XML
+//     Claude-injected XML envelope) OR an array that is not a synthetic
+//     sentinel (interrupt / cancel / reject / no-response) and has at
+//     least one non-tool_result block whose text (if any) isn't wrapped XML
 //
 // Tool-result echoes have type == "user" but their content is an array
-// composed entirely of tool_result blocks.
+// composed entirely of tool_result blocks. Synthetic sentinels (e.g.
+// `[Request interrupted by user]`) are array entries whose first text
+// block is one of Claude's fixed strings; see isSyntheticUserContent.
 func isRealUserPrompt(entry map[string]any) bool {
 	if t, _ := entry["type"].(string); t != "user" {
 		return false
@@ -279,6 +276,9 @@ func isRealUserPrompt(entry map[string]any) bool {
 		}
 		return true
 	case []any:
+		if isSyntheticUserContent(content) {
+			return false
+		}
 		hasNonToolResult := false
 		for _, block := range content {
 			b, ok := block.(map[string]any)
@@ -309,6 +309,35 @@ func isRealUserPrompt(entry map[string]any) bool {
 		// prompt so we don't silently swallow user input.
 		return true
 	}
+}
+
+// isSyntheticUserContent mirrors Claude's isSyntheticMessage for the
+// array-content case: a user entry whose FIRST content block is a text
+// block carrying one of Claude's synthetic sentinels (interrupt,
+// cancel, reject, no-response). Claude excludes these from selectable
+// user messages, so the fork/revert ordinal walk must skip them too or
+// it counts one phantom "prompt" per prior interrupt and slices the
+// session too far back.
+//
+// Only the FIRST block is inspected and only array-shaped content is
+// matched — both deliberate, to stay byte-for-byte with upstream
+// (claude-code-source-code/src/utils/messages.ts:310-319). A user who
+// literally types `[Request interrupted by user]` as a plain string is
+// therefore still a real prompt, exactly as Claude treats it.
+func isSyntheticUserContent(content []any) bool {
+	if len(content) == 0 {
+		return false
+	}
+	first, ok := content[0].(map[string]any)
+	if !ok {
+		return false
+	}
+	if t, _ := first["type"].(string); t != "text" {
+		return false
+	}
+	text, _ := first["text"].(string)
+	_, synthetic := syntheticUserContentMessages[text]
+	return synthetic
 }
 
 // hasInjectedUserContentTag reports whether s contains any of the

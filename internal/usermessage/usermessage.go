@@ -128,9 +128,9 @@ func EncodeDraftSource(ref *store.ProposedPlanSourceRef) (string, error) {
 // the Meta struct because it's internal correlation, not UI-facing
 // content the frontend should ever read.
 //
-// The matching writer lives in
-// `internal/triage/handle_user_text.go::mergeProviderItemIDIntoMeta`
-// — both functions agree on the key name `provider_item_id`.
+// The matching writer is MergeProviderItemID below; triage's
+// handle_user_text path and the send path both call it directly to set
+// the key. All readers and writers agree on the name `provider_item_id`.
 func ReadProviderItemID(metaJSON string) string {
 	trimmed := strings.TrimSpace(metaJSON)
 	if trimmed == "" {
@@ -147,10 +147,11 @@ func ReadProviderItemID(metaJSON string) string {
 // MergeProviderItemID returns a JSON-encoded meta blob that preserves
 // every key in `existing` and sets `provider_item_id` to
 // providerItemID. Empty providerItemID returns the original meta
-// unchanged. Used by the fork-time UUID remap to rewrite stored wire
-// ids when a Claude session JSONL is forked with fresh uuids; also
-// the canonical writer for triage's `handle_user_text` flow via
-// `mergeProviderItemIDIntoMeta`, which is a one-line delegate.
+// unchanged. Three callers: the fork-time UUID remap (rewrites stored
+// wire ids when a Claude session JSONL is forked with fresh uuids), the
+// send path (pre-stamps the app-minted id before the provider echo), and
+// triage's `handle_user_text` flow (folds the echoed id onto the user
+// row). All call it directly — there is no intermediate delegate.
 func MergeProviderItemID(existing, providerItemID string) (string, error) {
 	if providerItemID == "" {
 		return existing, nil

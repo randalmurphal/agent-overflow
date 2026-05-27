@@ -556,6 +556,88 @@ func TestRevertToMessageCheckpointFallbackHandlesCompactBoundary(t *testing.T) {
 		[]string{"third", "reply 2"})
 }
 
+// TestRevertToMessageCheckpointFallsBackToOrdinalWhenStampedUUIDAbsent
+// pins the safety net the send-time-uuid change leans on. A checkpoint
+// DOES carry a ProviderUserMessageID, but that id is absent from the
+// session JSONL — the case if the undocumented "Claude honors our
+// top-level uuid" contract ever drifts (a CLI version stops persisting
+// the supplied uuid; see docs/references/claude-wire.md §"Outbound user
+// message"). The UUID-keyed slice returns ErrMessageNotFound, and
+// writeClaudeSessionSlice must fall THROUGH to the ordinal walk, which —
+// with the tightened isRealUserPrompt filter — still lands on the SAME
+// turn boundary the uuid would have.
+//
+// Distinct coverage:
+//   - FallbackHandlesCompactBoundary uses an EMPTY uuid, so it never
+//     enters the UUID-keyed branch; this test forces that branch and its
+//     ErrMessageNotFound fall-through (writeClaudeSessionSlice:560-568).
+//   - TolerantOfMissingJSONLAnchor also has an absent uuid, but its
+//     ordinal walk hits EOF and CLONES; this one slices mid-transcript.
+//
+// The compact-summary entry between turn 0 and turn 1 is the off-by-N
+// trap: a fallback that counted cs1 as a real prompt would slice one
+// turn too far back and lose "second"/"reply 1". Mirrors the UUID-keyed
+// happy path's fixture so both paths must reach the identical answer.
+func TestRevertToMessageCheckpointFallsBackToOrdinalWhenStampedUUIDAbsent(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	const sessionID = "uuid-drift-session"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"uuid-drift-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"uuid-drift-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"cs1","parentUuid":"a0","sessionId":"uuid-drift-session","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation."}}
+{"type":"user","uuid":"u1","parentUuid":"cs1","sessionId":"uuid-drift-session","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"uuid-drift-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"uuid-drift-session","message":{"role":"user","content":"third"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"uuid-drift-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
+`)
+	thread := createCheckpointTestThread(t, app, "t-uuid-drift", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertUserItem(t, app.store, thread.ID, "user:2", 2, "third")
+	// Stamped id is NON-EMPTY but matches no JSONL entry — forces the
+	// UUID-keyed branch to run, return ErrMessageNotFound, and fall
+	// through to the ordinal walk at TurnIndex-1.
+	if err := app.store.SaveCheckpoint(store.Checkpoint{
+		ID:                    "chk-uuid-drift",
+		ThreadID:              thread.ID,
+		UserItemID:            "user:2",
+		TurnIndex:             2,
+		ProviderUserMessageID: "drifted-uuid-not-in-jsonl",
+		RefName:               checkpoint.ThreadRefPrefix(thread.ID) + "message/uuid-drift",
+		CapturedAt:            time.Now().UnixMilli(),
+		WorkspacePath:         workspace,
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "user:2", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef == "" || updated.SessionRef == sessionID {
+		t.Fatalf("thread session ref = %q, want sliced fork session", updated.SessionRef)
+	}
+	// Same boundary as the UUID-keyed happy path: turn 1 survives, turn 2
+	// is gone. A fallback that miscounted the compact summary would also
+	// drop "second"/"reply 1".
+	assertClaudeSessionText(t, workspace, updated.SessionRef,
+		[]string{"first", "reply 0", "second", "reply 1"},
+		[]string{"third", "reply 2"})
+}
+
 // TestRevertToMessageCheckpointTolerantOfMissingJSONLAnchor pins the
 // bricked-session recovery path: AO recorded a user_text row at
 // TurnIndex=N, but the Claude subprocess died before persisting that

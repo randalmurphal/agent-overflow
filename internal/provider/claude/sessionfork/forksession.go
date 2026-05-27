@@ -263,8 +263,7 @@ func writeForkOutput(srcPath, newID string, lines []string) (string, string, err
 
 // parentUUIDForUserMessageUUIDInTranscript walks an already-parsed
 // transcript and returns the parentUuid of the user prompt whose
-// `uuid` matches messageUUID. Mirrors
-// `FindParentUUIDForUserMessageUUID` but operates on the in-memory
+// `uuid` matches messageUUID. It operates on the in-memory transcript
 // slice so the fork pipeline doesn't re-open the file.
 //
 // Matches on (uuid, type:"user") only — no `isRealUserPrompt`

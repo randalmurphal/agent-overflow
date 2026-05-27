@@ -53,33 +53,6 @@ func TestFindUUIDBeforeUserTurn_FirstPromptReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestFindParentUUIDForUserMessageUUID(t *testing.T) {
-	got, err := FindParentUUIDForUserMessageUUID(strings.NewReader(withToolResultsJSONL), "u2")
-	if err != nil {
-		t.Fatalf("err=%v", err)
-	}
-	if got != "a2" {
-		t.Fatalf("got %q, want a2", got)
-	}
-}
-
-func TestFindParentUUIDForUserMessageUUID_FirstPromptReturnsEmpty(t *testing.T) {
-	got, err := FindParentUUIDForUserMessageUUID(strings.NewReader(withToolResultsJSONL), "u1")
-	if err != nil {
-		t.Fatalf("err=%v", err)
-	}
-	if got != "" {
-		t.Fatalf("got %q, want empty parent for first prompt", got)
-	}
-}
-
-func TestFindParentUUIDForUserMessageUUID_SkipsToolResultEcho(t *testing.T) {
-	_, err := FindParentUUIDForUserMessageUUID(strings.NewReader(withToolResultsJSONL), "echo1")
-	if !errors.Is(err, ErrMessageNotFound) {
-		t.Fatalf("err=%v, want ErrMessageNotFound", err)
-	}
-}
-
 func TestFindUUIDBeforeUserTurn_NegativeIndex(t *testing.T) {
 	_, err := FindUUIDBeforeUserTurn(strings.NewReader(withToolResultsJSONL), -1)
 	if err == nil {
@@ -243,24 +216,123 @@ func TestFindUUIDBeforeUserTurn_SkipsInjectedXMLContent(t *testing.T) {
 	}
 }
 
-// TestFindParentUUIDForUserMessageUUID_ImmuneToSynthetics demonstrates
-// that the UUID-keyed lookup is structurally immune to the
-// over-counting bug — it matches by UUID, not by ordinal, so any
-// number of synthetic entries between real prompts is irrelevant.
-func TestFindParentUUIDForUserMessageUUID_ImmuneToSynthetics(t *testing.T) {
-	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first real prompt"}}
+// withSyntheticInterruptJSONL reproduces the revert-on-interrupt
+// off-by-one bug. A prior turn was interrupted, so Claude wrote a
+// `[Request interrupted by user]` entry into the JSONL: a
+// `type:"user"`, `role:"user"` row with NO synthetic boolean flags and
+// array content whose first block is `{type:"text", text:"[Request
+// interrupted by user]"}` (see createUserInterruptionMessage at
+// claude-code-source-code/src/utils/messages.ts:545-560). Claude's own
+// selectableUserMessagesFilter excludes it via isSyntheticMessage;
+// AO's ordinal walk must too, or it counts one phantom prompt per prior
+// interrupt and slices the resumed session a full turn too far back.
+//
+// Real prompts here are u1 (0), u2 (1), u3 (2). int1 sits in the chain
+// between a1 and u2 and must NOT be counted.
+const withSyntheticInterruptJSONL = `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first real prompt"}}
 {"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"first response"}]}}
-{"type":"system","uuid":"sys-compact","parentUuid":null,"sessionId":"src","content":"compaction event"}
-{"type":"user","uuid":"cs1","parentUuid":"sys-compact","sessionId":"src","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued..."}}
-{"type":"assistant","uuid":"a2","parentUuid":"cs1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"resumed response"}]}}
-{"type":"user","uuid":"u2","parentUuid":"a2","sessionId":"src","message":{"role":"user","content":"second real prompt"}}
+{"type":"user","uuid":"int1","parentUuid":"a1","sessionId":"src","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}
+{"type":"user","uuid":"u2","parentUuid":"int1","sessionId":"src","message":{"role":"user","content":"second real prompt"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"second response"}]}}
+{"type":"user","uuid":"u3","parentUuid":"a2","sessionId":"src","message":{"role":"user","content":"third real prompt"}}
 `
-	got, err := FindParentUUIDForUserMessageUUID(strings.NewReader(src), "u2")
+
+// TestFindUUIDBeforeUserTurn_SkipsSyntheticInterrupt is the regression
+// guard for the revert-on-interrupt bug: a `[Request interrupted by
+// user]` marker in kept history was counted as a real prompt, so the
+// ordinal walk landed one turn too early and the resumed Claude session
+// silently lost a turn (timeline/composer looked correct; only Claude's
+// memory was short). Fails before the isSyntheticMessage port.
+func TestFindUUIDBeforeUserTurn_SkipsSyntheticInterrupt(t *testing.T) {
+	// u2 is the 2nd real prompt (index 1); its parent is int1 (the
+	// interrupt marker physically precedes it in the chain — the marker
+	// stays in history, it just isn't a countable turn). Counting int1
+	// as a prompt would return a1 instead.
+	got, err := FindUUIDBeforeUserTurn(strings.NewReader(withSyntheticInterruptJSONL), 1)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != "int1" {
+		t.Errorf("FindUUIDBeforeUserTurn(1): got %q, want int1 (u2's parent — the interrupt marker must not be counted as a real prompt)", got)
+	}
+
+	// u3 is the 3rd real prompt (index 2); its parent is a2. Counting
+	// int1 would make index 2 land on u2 and return int1 instead.
+	got, err = FindUUIDBeforeUserTurn(strings.NewReader(withSyntheticInterruptJSONL), 2)
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
 	if got != "a2" {
-		t.Fatalf("got %q, want a2 (u2's parent — UUID-keyed lookup must land correctly regardless of synthetic entries between prompts)", got)
+		t.Errorf("FindUUIDBeforeUserTurn(2): got %q, want a2 (u3's parent — the interrupt marker must not shift the ordinal count)", got)
+	}
+}
+
+// TestFindUUIDBeforeUserTurn_InterruptDoesNotShiftTranscriptEnd pins the
+// at-transcript-end boundary in the presence of an interrupt marker.
+// With int1 correctly skipped there are exactly 3 real prompts, so
+// index 3 is one past the end and must route to
+// ErrUserTurnAtTranscriptEnd (which the revert pipeline catches and
+// turns into a whole-transcript clone). If int1 were miscounted the
+// count would be 4 and index 3 would silently return a real slice point
+// instead — masking the boundary the fallback depends on.
+func TestFindUUIDBeforeUserTurn_InterruptDoesNotShiftTranscriptEnd(t *testing.T) {
+	_, err := FindUUIDBeforeUserTurn(strings.NewReader(withSyntheticInterruptJSONL), 3)
+	if !errors.Is(err, ErrUserTurnAtTranscriptEnd) {
+		t.Fatalf("err=%v, want ErrUserTurnAtTranscriptEnd (3 real prompts, index 3 is exactly one past the end)", err)
+	}
+}
+
+// TestIsRealUserPrompt_AllSyntheticSentinelsFiltered pins the full
+// SYNTHETIC_MESSAGES set as the spec. Every sentinel, in the array
+// content shape Claude actually emits, must be rejected by
+// isRealUserPrompt; the same text as a bare string must NOT be —
+// Claude's isSyntheticMessage requires Array.isArray(content), so a user
+// who literally types a sentinel is still a real prompt.
+//
+// This guards two drift surfaces the single-string test missed: a
+// sentinel being dropped from syntheticUserContentMessages, and a typo
+// in any constant other than claudeInterruptMessage. The interrupt and
+// tool-use-interrupt markers genuinely reach this array path on the wire
+// (createUserInterruptionMessage emits both as single text blocks); the
+// cancel/reject/no-response strings are carried for byte-for-byte
+// upstream parity even though Claude delivers them via tool_result or
+// assistant-role entries that other branches already filter.
+func TestIsRealUserPrompt_AllSyntheticSentinelsFiltered(t *testing.T) {
+	// Explicit list, not a range over the map: if a constant is dropped
+	// from syntheticUserContentMessages its row here flips to "real" and
+	// fails, so the test stays a checklist of the intended set.
+	sentinels := []string{
+		claudeInterruptMessage,
+		claudeInterruptMessageForToolUse,
+		claudeCancelMessage,
+		claudeRejectMessage,
+		claudeNoResponseRequested,
+	}
+	for _, text := range sentinels {
+		arrayForm := map[string]any{
+			"type":    "user",
+			"message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": text}}},
+		}
+		if isRealUserPrompt(arrayForm) {
+			t.Errorf("array-form sentinel %q must be filtered (not a real prompt)", text)
+		}
+		stringForm := map[string]any{
+			"type":    "user",
+			"message": map[string]any{"role": "user", "content": text},
+		}
+		if !isRealUserPrompt(stringForm) {
+			t.Errorf("string-form sentinel %q must remain a real prompt (Claude's isSyntheticMessage requires array content)", text)
+		}
+	}
+
+	// Positive control: a normal array-form prompt is still real, so the
+	// filter isn't rejecting all text-first arrays.
+	normal := map[string]any{
+		"type":    "user",
+		"message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "actually do the thing"}}},
+	}
+	if !isRealUserPrompt(normal) {
+		t.Errorf("normal array-form prompt must count as a real prompt")
 	}
 }
 

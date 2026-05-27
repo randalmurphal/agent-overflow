@@ -76,15 +76,23 @@ func (a *App) captureMessageCheckpoint(thread store.Thread, userItem store.Item)
 
 	now := time.Now().UnixMilli()
 	record := store.Checkpoint{
-		ID:            uuid.NewString(),
-		ThreadID:      thread.ID,
-		UserItemID:    userItem.ID,
-		TurnIndex:     userItem.TurnIndex,
-		RefName:       ref,
-		Status:        "ready",
-		Files:         files,
-		CapturedAt:    now,
-		WorkspacePath: workspace,
+		ID:         uuid.NewString(),
+		ThreadID:   thread.ID,
+		UserItemID: userItem.ID,
+		TurnIndex:  userItem.TurnIndex,
+		// Mirror the row's provider_item_id onto the checkpoint at capture
+		// time. For a direct send the row meta already carries the minted
+		// send uuid (app_send.go stamps it before this call), so the
+		// checkpoint is revert-ready before Claude's replay echo — the
+		// revert path keys on this id. Empty when the meta has none yet
+		// (eager-persist-on-interrupt rows, legacy sends); the echo then
+		// fills it via UpdateCheckpointProviderIDs as before.
+		ProviderUserMessageID: usermessage.ReadProviderItemID(userItem.Meta),
+		RefName:               ref,
+		Status:                "ready",
+		Files:                 files,
+		CapturedAt:            now,
+		WorkspacePath:         workspace,
 	}
 	stale, err := a.store.ReplaceCheckpointByUserItemID(record)
 	if err != nil {
@@ -495,13 +503,15 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 	}
 	// Prefer UUID-keyed slicing when the checkpoint carries a wire
 	// id — it is immune to synthetic-entry ordinal drift (e.g.
-	// /compact-summary rows). Fall back to the ordinal walk when
-	// the checkpoint has no stamped id (the user_text row pre-dates
-	// triage's `provider_item_id` stamping path, or the synthesized
-	// at-send record found nothing on the item meta);
-	// `findmessage.isRealUserPrompt` filters the same synthetic
-	// flags so the fallback is correct as long as the wire shape
-	// stays in its documented set.
+	// /compact-summary rows or `[Request interrupted by user]`
+	// markers). Fall back to the ordinal walk when the checkpoint has
+	// no stamped id (the user_text row pre-dates triage's
+	// `provider_item_id` stamping path, or the synthesized at-send
+	// record found nothing on the item meta — the fast send→escape
+	// race lands here); `findmessage.isRealUserPrompt` filters the same
+	// synthetic entries (boolean flags, content sentinels, injected XML)
+	// so the fallback is correct as long as the wire shape stays in its
+	// documented set.
 	newID, newPath, err := a.writeRevertedClaudeSession(srcPath, checkpoint)
 	if err != nil {
 		return fmt.Errorf("write reverted session: %w", err)

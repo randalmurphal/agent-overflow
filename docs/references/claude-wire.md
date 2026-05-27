@@ -40,7 +40,7 @@ The CLI emits newline-delimited JSON. Every line has a top-level
 |---|---|---|
 | `system` | `parseSystem` | Init, task lifecycle, compact boundary, session status. |
 | `assistant` | `parseAssistant` | Text / thinking / tool_use blocks, token usage. |
-| `user` | `parseUser` | `tool_result` blocks echoed back after tool execution. |
+| `user` | `parseUser` | `tool_result` blocks echoed back after tool execution, plus replayed user text (`--replay-user-messages`, `isReplay:true`) — see [§Outbound user message](#outbound-user-message--client-supplied-uuid---replay-user-messages). |
 | `stream_event` | `parseStreamEvent` | Incremental deltas (requires `include_partial_messages:true`). |
 | `result` | `parseResult` | **Turn-complete signal.** One per CLI turn. |
 | `control_request` | `parseControlRequest` | Bidirectional. Inbound: `can_use_tool`, `exit_plan_mode`. Outbound (client → CLI): `interrupt`, `stop_task`, `set_permission_mode`, `mcp_set_servers`, `mcp_authenticate`, `mcp_oauth_callback_url`, `mcp_status`. |
@@ -474,6 +474,76 @@ the structured-envelope path produces, so triage's stash-drain ->
 `tool_completion` sibling write runs in either case. Without this
 parser fallback, the launch row stays `running` indefinitely. See
 `internal/provider/claude/CLAUDE.md` §Synthetic XML extraction.
+
+---
+
+## Outbound `user` message + client-supplied `uuid` (`--replay-user-messages`)
+
+AO mints a uuidv4 at send time and sets it as the **top-level `uuid`** on
+the outbound user envelope written to the CLI's stdin:
+
+```json
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"…"}]},"uuid":"<client-minted-uuidv4>"}
+```
+
+The CLI honors that id. This is the contract the revert / fork slice
+relies on: AO can address a transcript entry by a uuid it knew *at send
+time*, before any wire echo, so a fast send→escape revert takes the
+UUID-keyed slice (`sessionfork.WriteForkFileForUserMessageUUID`) rather
+than the synthetic-entry-sensitive ordinal walk. The app stamps the same
+id onto the `user_text` row meta (`provider_item_id`) and the message
+checkpoint (`ProviderUserMessageID`) before the optimistic persist —
+see `internal/provider/claude/session.go` (`Send`) and `app_send.go`.
+
+### ⚠ Verified behavior (claude 2.1.150, AO's exact flags) — undocumented contract
+
+Confirmed by isolated spike on 2026-05-27 against the installed binary
+with the full base flag set (`--input-format stream-json --output-format
+stream-json --verbose --permission-prompt-tool stdio
+--include-partial-messages --replay-user-messages --thinking-display
+summarized`), 3 turns in one persistent session:
+
+- **Persisted verbatim.** The session JSONL
+  (`~/.claude/projects/<proj>/<session_id>.jsonl`) gains a `type:"user"`
+  entry whose `uuid` is *exactly* the value we sent — no normalization,
+  no reassignment.
+- **Echoed verbatim.** The CLI echoes the message back on stdout as a
+  `user` envelope with `isReplay:true` carrying the same top-level
+  `uuid` (this is what `--replay-user-messages` adds; triage promotes it
+  to `EventUserText` and folds in `parentUuid` — see
+  `internal/triage/handle_user_text.go`).
+- **`parentUuid` is CLI-assigned.** The client supplies only `uuid`; the
+  CLI assigns `parentUuid` itself, threading the entry onto the transcript.
+
+### Timing — the fast send→escape race window
+
+Same spike, each value measured from the stdin write of the envelope:
+
+| Turn | user entry on disk | first assistant token | `result` |
+|---|---|---|---|
+| 0 (cold — also creates the session file) | ~1856 ms | ~3415 ms | ~3702 ms |
+| 1 (warm) | ~98 ms | ~1449 ms | ~1537 ms |
+| 2 (warm) | ~102 ms | ~1468 ms | ~2711 ms |
+
+The user entry lands on disk **before the first assistant token in every
+case** — ~100 ms in steady state, up to ~1.9 s on the cold first turn
+that also creates the session file. So the window in which AO has stamped
+the uuid on its own rows but the CLI has not yet written it to the JSONL
+is ~100 ms and closes *before the user sees the turn begin responding*.
+A revert firing inside that sliver fails safe: the UUID-keyed slice
+returns `ErrMessageNotFound` and falls back to the
+(synthetic-entry-corrected) ordinal walk, then to a full-transcript clone
++ composer-draft restore. See `app_checkpoint.go` (`writeClaudeSessionSlice`).
+
+### Drift
+
+This is an **undocumented binary contract** pinned to the observed CLI
+version. If a future CLI stops honoring the supplied `uuid` (or starts
+canonicalizing / reassigning it), revert-by-uuid silently degrades to the
+ordinal walk. Re-spike per [`spike-policy.md`](spike-policy.md) before
+assuming it still holds; `claude/session.go` rejects non-canonical input
+up front so the row, checkpoint, envelope, and echoed JSONL `uuid` stay
+byte-identical.
 
 ---
 

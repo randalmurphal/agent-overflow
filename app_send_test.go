@@ -871,6 +871,120 @@ func TestSendMessageCapturesCheckpointBeforeEachUserMessage(t *testing.T) {
 	}
 }
 
+// TestSendMessageStampsProviderItemIDOnRowAndCheckpointBeforeEcho pins the
+// send-time-uuid fix. On a fast send→escape the revert fires before
+// Claude's replay echo arrives, and resolveRevertCheckpoint returns the
+// checkpoint as-is when one exists (the git-workspace common case). So the
+// minted uuid must land on BOTH the row meta AND the checkpoint at send
+// time — before any echo — or the revert reads an empty id and drops to
+// the ordinal-walk slice. No provider echo is simulated here: the assertion
+// is precisely the pre-echo state.
+func TestSendMessageStampsProviderItemIDOnRowAndCheckpointBeforeEcho(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.checkpoints = checkpoint.NewStore()
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+
+	workspace := initCheckpointRepo(t)
+	thread := testThread("thread-send-prestamp-uuid")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = workspace
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: workspace},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "test-token", claude: sess}
+
+	if err := app.SendMessage(thread.ID, "fix the reconnect bug", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var userItem store.Item
+	for _, it := range items {
+		if it.Role == "user" {
+			userItem = it
+			break
+		}
+	}
+	if userItem.ID == "" {
+		t.Fatal("expected persisted user item")
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(userItem.Meta), &meta); err != nil {
+		t.Fatalf("decode user meta %q: %v", userItem.Meta, err)
+	}
+	rowID, _ := meta["provider_item_id"].(string)
+	if rowID == "" {
+		t.Fatalf("user row has no provider_item_id at persist time — send-time pre-stamp did not fire (meta: %q)", userItem.Meta)
+	}
+
+	cp, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, userItem.ID)
+	if err != nil || !ok {
+		t.Fatalf("checkpoint missing after send: ok=%v err=%v", ok, err)
+	}
+	if cp.ProviderUserMessageID != rowID {
+		t.Fatalf("checkpoint ProviderUserMessageID = %q, want %q (must mirror the pre-stamped row meta so a fast revert keys on the UUID-slice path)", cp.ProviderUserMessageID, rowID)
+	}
+}
+
+// TestSendMessageDoesNotPreStampProviderItemIDForCodex pins the Claude
+// gate on the send-time-uuid mint. Codex assigns its own item ids and
+// ignores a supplied uuid; stamping a fabricated id on a Codex row would
+// mis-seed it and trip attachProviderItemIDToUserRow's drift log on every
+// echo. The no-provider Codex session makes sendToProvider fail AFTER the
+// user row is persisted, so the persisted row reflects the send-time state.
+func TestSendMessageDoesNotPreStampProviderItemIDForCodex(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-codex-no-prestamp")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.sessions[thread.ID] = session{provider: string(provider.Codex), token: "no-provider"}
+
+	if _, err := app.SendMessageWithOptions(thread.ID, "hello codex", SendMessageOptions{}); err == nil {
+		t.Fatal("SendMessageWithOptions on no-provider Codex session returned nil, want failure")
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var userItem store.Item
+	for _, it := range items {
+		if it.Role == "user" {
+			userItem = it
+			break
+		}
+	}
+	if userItem.ID == "" {
+		t.Fatal("expected persisted user item even on send failure")
+	}
+	if userItem.Meta != "" {
+		var meta map[string]any
+		if err := json.Unmarshal([]byte(userItem.Meta), &meta); err != nil {
+			t.Fatalf("decode meta %q: %v", userItem.Meta, err)
+		}
+		if id, _ := meta["provider_item_id"].(string); id != "" {
+			t.Fatalf("Codex user row carries provider_item_id %q at send time — pre-stamp must be gated on Claude", id)
+		}
+	}
+}
+
 func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-title")

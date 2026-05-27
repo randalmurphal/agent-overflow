@@ -16,6 +16,8 @@ import (
 
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
+
+	"github.com/google/uuid"
 )
 
 // controlRequestPrefix is the first bytes of a Claude control_request
@@ -429,6 +431,27 @@ func (s *Session) SetInteractionMode(ctx context.Context, mode provider.Interact
 // can_use_tool prompt or thinking through a hard request. The user-facing
 // Stop button is the authoritative way to abort.
 func (s *Session) Send(ctx context.Context, content string, opts provider.SendOptions) error {
+	// Validate the client-supplied message id before any side effect
+	// (permission-mode control_request, stdin write) so a malformed id
+	// fails the send loudly instead of poisoning the session JSONL with a
+	// uuid the revert path can never match. Reject non-canonical forms too:
+	// the caller (app_send.go) stamps this exact string on the user row and
+	// the message checkpoint, and the revert path matches the JSONL `uuid`
+	// against that stored string byte-for-byte. Normalizing here instead
+	// would desync the envelope from the pre-stamped row; sending a
+	// non-canonical id as-is would bet on the CLI never canonicalizing.
+	// Requiring canonical input keeps row, checkpoint, envelope, and the
+	// echoed JSONL uuid identical, and turns the parsed value into a real
+	// check rather than a discarded result.
+	if opts.UserMessageUUID != "" {
+		parsed, err := uuid.Parse(opts.UserMessageUUID)
+		if err != nil {
+			return fmt.Errorf("claude: invalid user message uuid %q: %w", opts.UserMessageUUID, err)
+		}
+		if parsed.String() != opts.UserMessageUUID {
+			return fmt.Errorf("claude: user message uuid %q is not in canonical form (want %q)", opts.UserMessageUUID, parsed.String())
+		}
+	}
 	interactionMode := opts.InteractionMode
 	if interactionMode == "" {
 		interactionMode = s.interactionMode
@@ -468,6 +491,21 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	msg := map[string]any{
 		"type":    "user",
 		"message": message,
+	}
+	// Stamp the client-minted message id as the envelope's top-level
+	// `uuid`. Verified behaviour (claude v2.1.150, --input-format
+	// stream-json persistent mode — AO's exact flags): the CLI persists
+	// this exact value as the user entry's `uuid` in its session JSONL and
+	// echoes it back on the --replay-user-messages envelope, assigning only
+	// `parentUuid` itself. AO relies on this so a revert can slice the
+	// transcript by a uuid it knew at send time, before the replay echo
+	// arrives. This is an undocumented binary contract — if the CLI version
+	// moves and revert-by-uuid starts falling back to the ordinal walk,
+	// re-spike per docs/references/spike-policy.md before assuming this
+	// still holds. Verified behaviour + write-timing data are captured in
+	// docs/references/claude-wire.md §"Outbound user message".
+	if opts.UserMessageUUID != "" {
+		msg["uuid"] = opts.UserMessageUUID
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

@@ -178,10 +178,26 @@ func (r *Router) attachProviderItemIDToUserRow(threadID, aoItemID, providerItemI
 			// the worst presentation.
 			log.Printf("triage: handleUserText popped pending entry %s/%s but wire echo carried no provider_item_id — queue-confirm path will not fire; check parser coverage for the wire shape", threadID, aoItemID)
 		}
-		// Otherwise: provider_item_id was already set to the same value
-		// (genuine duplicate, e.g. session-resume replay). Skip the
-		// redundant write + emit.
+		// Otherwise: provider_item_id already equals providerItemID. This
+		// is the expected path for an AO send that minted the id up front
+		// (app_send.go stamps it before persist) and Claude echoed it back
+		// verbatim, as well as for a genuine duplicate (session-resume
+		// replay). The row already carries the id, so skip the redundant
+		// write + emit; UpdateCheckpointProviderIDs above still folds in
+		// parent_uuid, which only the echo knows.
 		return nil
+	}
+
+	if existingID := usermessage.ReadProviderItemID(existing.Meta); existingID != "" && existingID != providerItemID {
+		// The row already carried a DIFFERENT provider_item_id. For a
+		// direct send this means Claude did not honour the top-level uuid
+		// we supplied (claude.Session.Send) — a binary-contract drift. We
+		// overwrite to the echoed id (the real transcript uuid, the correct
+		// slice anchor) and self-heal the checkpoint below, but log loudly:
+		// a silent drift would mean every fast send→escape quietly
+		// regressed from the UUID-keyed slice to the ordinal-walk fallback.
+		// Re-spike the uuid contract per docs/references/spike-policy.md.
+		log.Printf("triage: handleUserText user row %s/%s pre-stamped provider_item_id %q but wire echo carried %q — Claude did not honour the supplied uuid; overwriting to the echoed id and re-checking the uuid contract", threadID, aoItemID, existingID, providerItemID)
 	}
 
 	existing.Meta = mergedMeta

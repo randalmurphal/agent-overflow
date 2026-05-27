@@ -1308,6 +1308,144 @@ func TestSessionSend(t *testing.T) {
 	}
 }
 
+// TestSessionSendStampsUserMessageUUID verifies that a client-supplied
+// UserMessageUUID rides the user envelope as the top-level `uuid` — the
+// contract app_send.go depends on so a revert can slice the transcript
+// by a uuid it knew at send time (see the Send doc comment).
+func TestSessionSendStampsUserMessageUUID(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "bash",
+		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
+		Env:    map[string]string{"CAPTURE": capturePath},
+	})
+	if err != nil {
+		t.Fatalf("spawn capture process: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Close() })
+
+	const wantUUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+	s := &Session{proc: proc}
+	if err := s.Send(context.Background(), "hello", provider.SendOptions{UserMessageUUID: wantUUID}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	lines := waitCapturedLines(t, capturePath, 1)
+	var captured struct {
+		Type string `json:"type"`
+		UUID string `json:"uuid"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &captured); err != nil {
+		t.Fatalf("unmarshal captured line: %v", err)
+	}
+	if captured.Type != "user" {
+		t.Fatalf("captured type = %q, want user", captured.Type)
+	}
+	if captured.UUID != wantUUID {
+		t.Fatalf("captured top-level uuid = %q, want %q", captured.UUID, wantUUID)
+	}
+}
+
+// TestSessionSendOmitsUUIDWhenEmpty verifies the optional-field contract:
+// when no UserMessageUUID is supplied, the envelope carries no `uuid` key
+// and the CLI assigns its own id (legacy behaviour, learned from the echo).
+func TestSessionSendOmitsUUIDWhenEmpty(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "bash",
+		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
+		Env:    map[string]string{"CAPTURE": capturePath},
+	})
+	if err != nil {
+		t.Fatalf("spawn capture process: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Close() })
+
+	s := &Session{proc: proc}
+	if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	lines := waitCapturedLines(t, capturePath, 1)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(lines[0]), &raw); err != nil {
+		t.Fatalf("unmarshal captured line: %v", err)
+	}
+	if _, present := raw["uuid"]; present {
+		t.Fatalf("envelope carried a uuid key with no UserMessageUUID supplied: %s", lines[0])
+	}
+}
+
+// TestSessionSendRejectsMalformedUUID verifies the validation guard fails
+// the send loudly BEFORE any stdin write, so a malformed id never poisons
+// the session JSONL with a uuid the revert path can't match.
+func TestSessionSendRejectsMalformedUUID(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "bash",
+		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
+		Env:    map[string]string{"CAPTURE": capturePath},
+	})
+	if err != nil {
+		t.Fatalf("spawn capture process: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Close() })
+
+	s := &Session{proc: proc}
+	err = s.Send(context.Background(), "hello", provider.SendOptions{UserMessageUUID: "not-a-uuid"})
+	if err == nil {
+		t.Fatal("Send with malformed uuid returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "invalid user message uuid") {
+		t.Fatalf("Send error = %v, want invalid-user-message-uuid", err)
+	}
+	if data, readErr := os.ReadFile(capturePath); readErr == nil && len(data) > 0 {
+		t.Fatalf("malformed-uuid send wrote to stdin before validation: %q", data)
+	}
+}
+
+// TestSessionSendRejectsNonCanonicalUUID verifies that a parseable but
+// non-canonical id (here, uppercase) is refused rather than silently
+// normalized. app_send.go stamps the exact minted string on the user row
+// and checkpoint; if Send canonicalized a different string into the
+// envelope the pre-stamped row would no longer match the echoed JSONL
+// uuid, dropping a pre-echo revert back to the ordinal-walk fallback. The
+// guard makes that contract enforceable at the boundary.
+func TestSessionSendRejectsNonCanonicalUUID(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "bash",
+		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
+		Env:    map[string]string{"CAPTURE": capturePath},
+	})
+	if err != nil {
+		t.Fatalf("spawn capture process: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Close() })
+
+	s := &Session{proc: proc}
+	// Uppercase of a valid uuid: uuid.Parse accepts it, but String()
+	// round-trips to the lowercase canonical form, so the guard rejects it.
+	err = s.Send(context.Background(), "hello", provider.SendOptions{UserMessageUUID: "F47AC10B-58CC-4372-A567-0E02B2C3D479"})
+	if err == nil {
+		t.Fatal("Send with non-canonical uuid returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "not in canonical form") {
+		t.Fatalf("Send error = %v, want not-in-canonical-form", err)
+	}
+	if data, readErr := os.ReadFile(capturePath); readErr == nil && len(data) > 0 {
+		t.Fatalf("non-canonical-uuid send wrote to stdin before validation: %q", data)
+	}
+}
+
 func TestSessionSendSetsPlanPermissionModeBeforeUserMessage(t *testing.T) {
 	scriptPath := filepath.Join(t.TempDir(), "fake-claude")
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")

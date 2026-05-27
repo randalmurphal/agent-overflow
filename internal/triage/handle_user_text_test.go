@@ -460,6 +460,156 @@ func TestHandleUserText_PendingSendMatch_DuplicateProviderItemID_NoLog(t *testin
 	}
 }
 
+// TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUIDWithoutReEmit
+// pins the common direct-send success path: app_send.go pre-stamps the
+// minted uuid on the row + checkpoint, Claude honours it and echoes that
+// exact id back plus the parentUuid it assigned. The no-op-merge branch
+// must (1) fold the echo-only parent_uuid into the checkpoint, and (2)
+// skip the redundant upsert — the row is byte-identical, so re-emitting
+// would be a wasted frontend mutation. The row is emitted once at persist
+// (not exercised here; the seed is reset), never again on the echo.
+func TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUIDWithoutReEmit(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	router.RegisterPendingSend("t1", "user:0", 0)
+	// Row + checkpoint carry the honoured send uuid; the checkpoint has no
+	// parent_uuid yet (Claude assigns parentUuid, unknown at pre-stamp).
+	seedUserTextRow(t, st, "t1", 0, "ship it", `{"provider_item_id":"p"}`)
+	if err := st.SaveCheckpoint(store.Checkpoint{
+		ID:                    "checkpoint-user-0",
+		ThreadID:              "t1",
+		UserItemID:            "user:0",
+		TurnIndex:             0,
+		ProviderUserMessageID: "p",
+		RefName:               "refs/agent-overflow/checkpoints/dDE/message/user-0",
+		CapturedAt:            time.Now().UnixMilli(),
+		WorkspacePath:         t.TempDir(),
+	}); err != nil {
+		t.Fatalf("seed checkpoint: %v", err)
+	}
+	*emissions = (*emissions)[:0]
+
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prev)
+
+	// Echo carries the SAME id (honoured) plus the parentUuid Claude assigned.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "ship it",
+		Meta:      json.RawMessage(`{"provider_item_id":"p","parent_uuid":"parent-honored"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle EventUserText: %v", err)
+	}
+
+	// Neither failure-mode log should fire: the ids match (no drift) and
+	// the id is non-empty (no stuck-queue warning).
+	if got := logBuf.String(); strings.Contains(got, "did not honour the supplied uuid") ||
+		strings.Contains(got, "queue-confirm path will not fire") {
+		t.Fatalf("honoured-id path must log nothing, got: %q", got)
+	}
+
+	// parent_uuid — known only from the echo — must be folded into the
+	// checkpoint even though the message id is unchanged.
+	cp, ok, err := st.GetCheckpointByUserItemID("t1", "user:0")
+	if err != nil || !ok {
+		t.Fatalf("checkpoint missing: ok=%v err=%v", ok, err)
+	}
+	if cp.ProviderUserMessageID != "p" || cp.ProviderParentUUID != "parent-honored" {
+		t.Fatalf("checkpoint provider ids = %q/%q, want p/parent-honored (fold in the echoed parent_uuid)",
+			cp.ProviderUserMessageID, cp.ProviderParentUUID)
+	}
+
+	// The row meta is byte-identical, so no upsert should re-emit.
+	if upserts := itemUpsertEmissionsForID(*emissions, "t1", "user:0"); len(upserts) != 0 {
+		t.Fatalf("honoured-id path re-emitted %d upserts for user:0, want 0", len(upserts))
+	}
+	persisted, found, err := st.GetThreadItem("t1", "user:0")
+	if err != nil || !found {
+		t.Fatalf("expected user:0 to exist: found=%v err=%v", found, err)
+	}
+	if persisted.Meta != `{"provider_item_id":"p"}` {
+		t.Fatalf("row meta mutated: got %q, want unchanged", persisted.Meta)
+	}
+}
+
+// TestHandleUserText_PreStampedIDDrift_OverwritesAndLogs pins the
+// send-time-uuid contract's failure mode. app_send.go stamps a minted
+// uuid onto the row meta and sends it to Claude as the envelope's
+// top-level uuid; Claude is expected to echo that exact id back. If the
+// echo carries a DIFFERENT id (Claude did not honour the supplied uuid
+// — a binary-contract drift), attachProviderItemIDToUserRow must
+// overwrite the row + checkpoint to the echoed id (the real transcript
+// uuid, the correct slice anchor) and log loudly so the regression is
+// observable instead of silently falling back to the ordinal walk.
+func TestHandleUserText_PreStampedIDDrift_OverwritesAndLogs(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	router.RegisterPendingSend("t1", "user:0", 0)
+	// Row + checkpoint carry the minted send uuid (the pre-stamp).
+	seedUserTextRow(t, st, "t1", 0, "fix the bug", `{"provider_item_id":"minted-uuid"}`)
+	if err := st.SaveCheckpoint(store.Checkpoint{
+		ID:                    "checkpoint-user-0",
+		ThreadID:              "t1",
+		UserItemID:            "user:0",
+		TurnIndex:             0,
+		ProviderUserMessageID: "minted-uuid",
+		RefName:               "refs/agent-overflow/checkpoints/dDE/message/user-0",
+		CapturedAt:            time.Now().UnixMilli(),
+		WorkspacePath:         t.TempDir(),
+	}); err != nil {
+		t.Fatalf("seed checkpoint: %v", err)
+	}
+	*emissions = (*emissions)[:0]
+
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prev)
+
+	// Echo carries a DIFFERENT id than the pre-stamp.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "fix the bug",
+		Meta:      json.RawMessage(`{"provider_item_id":"claude-real-uuid","parent_uuid":"parent-xyz"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle EventUserText: %v", err)
+	}
+
+	if !strings.Contains(logBuf.String(), "did not honour the supplied uuid") {
+		t.Fatalf("expected drift log about Claude not honouring the supplied uuid, got: %q", logBuf.String())
+	}
+
+	persisted, found, err := st.GetThreadItem("t1", "user:0")
+	if err != nil || !found {
+		t.Fatalf("expected user:0 to exist: found=%v err=%v", found, err)
+	}
+	if got := readProviderItemIDFromMeta(json.RawMessage(persisted.Meta)); got != "claude-real-uuid" {
+		t.Fatalf("row provider_item_id = %q, want claude-real-uuid (overwrite to the echoed id)", got)
+	}
+
+	cp, ok, err := st.GetCheckpointByUserItemID("t1", "user:0")
+	if err != nil || !ok {
+		t.Fatalf("checkpoint missing: ok=%v err=%v", ok, err)
+	}
+	if cp.ProviderUserMessageID != "claude-real-uuid" || cp.ProviderParentUUID != "parent-xyz" {
+		t.Fatalf("checkpoint provider ids = %q/%q, want claude-real-uuid/parent-xyz (self-heal to the echoed id)",
+			cp.ProviderUserMessageID, cp.ProviderParentUUID)
+	}
+
+	upserts := itemUpsertEmissionsForID(*emissions, "t1", "user:0")
+	if len(upserts) != 1 {
+		t.Fatalf("expected exactly one upsert for the overwrite, got %d", len(upserts))
+	}
+}
+
 func TestHandleUserText_PendingMatchWithMissingTargetRow_LogsAndReturns(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
