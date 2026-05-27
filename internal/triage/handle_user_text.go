@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -144,6 +145,16 @@ func readParentUUIDFromMeta(meta json.RawMessage) string {
 // rendering and revision provenance the user-facing summary already
 // reflects.
 //
+// Eager flush rows (`user:<turn>:flush:<n>`) get one extra step before
+// the stamp: they were persisted quietly at dispatch time, before the
+// rows the model emitted between dispatch and this echo, so they are
+// repositioned to the turn tail here (BumpItemToTurnEnd) so the queued
+// message lands AFTER that content — where Claude actually consumed it.
+// This mirrors the interrupt-promote path (PromoteQuietFlushSends).
+// Direct sends (`user:<turn>`) and steers (`user:<turn>:steer:<n>`) are
+// already at their intended position and must not move, so the
+// reposition is scoped to `:flush:` exactly as the interrupt path is.
+//
 // Missing-row is a bounded edge case (the AO send must have errored
 // after RegisterPendingSend but before the optimistic persist). Log
 // once and return nil rather than panic — the send-failure path has
@@ -198,6 +209,24 @@ func (r *Router) attachProviderItemIDToUserRow(threadID, aoItemID, providerItemI
 		// regressed from the UUID-keyed slice to the ordinal-walk fallback.
 		// Re-spike the uuid contract per docs/references/spike-policy.md.
 		log.Printf("triage: handleUserText user row %s/%s pre-stamped provider_item_id %q but wire echo carried %q — Claude did not honour the supplied uuid; overwriting to the echoed id and re-checking the uuid contract", threadID, aoItemID, existingID, providerItemID)
+	}
+
+	// Eager flush rows were persisted quietly at dispatch, before the rows
+	// the model emitted between dispatch and this echo. Reposition to the
+	// turn tail so the queued message lands AFTER that content, matching
+	// where Claude consumed it — the echo-side mirror of the interrupt
+	// promote (PromoteQuietFlushSends). Scoped to :flush: so direct sends
+	// and steers, already at their intended slot, never move.
+	if strings.Contains(aoItemID, ":flush:") {
+		bumped, bumpErr := r.store.BumpItemToTurnEnd(threadID, aoItemID)
+		if bumpErr != nil {
+			return fmt.Errorf("triage: reposition flush row %s/%s to turn tail: %w", threadID, aoItemID, bumpErr)
+		}
+		existing = bumped
+		mergedMeta, err = usermessage.MergeProviderItemID(existing.Meta, providerItemID)
+		if err != nil {
+			return fmt.Errorf("triage: merge provider_item_id into repositioned flush row %s/%s meta: %w", threadID, aoItemID, err)
+		}
 	}
 
 	existing.Meta = mergedMeta

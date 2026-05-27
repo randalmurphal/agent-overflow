@@ -1340,9 +1340,20 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 	if meta["provider_item_id"] != "wire-user-1" {
 		t.Errorf("provider_item_id after echo: got %v, want wire-user-1", meta["provider_item_id"])
 	}
-	// Item index must not have changed on echo (row was updated in place, not re-inserted).
-	if stamped.ItemIndex != flushRow.ItemIndex {
-		t.Errorf("item_index changed after echo: was %d, now %d", flushRow.ItemIndex, stamped.ItemIndex)
+	// On echo the eager flush row is repositioned to the turn tail
+	// (BumpItemToTurnEnd) so it lands AFTER any rows the model emitted
+	// between dispatch and echo. No intervening content arrived in this
+	// test, so the move is degenerate — but the row must still end up last
+	// at its turn. The behavioral guard with intervening content lives in
+	// TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho.
+	afterEcho, err := app.store.ListItemsForTurn(thread.ID, 3)
+	if err != nil {
+		t.Fatalf("ListItemsForTurn after echo: %v", err)
+	}
+	for _, it := range afterEcho {
+		if it.ID != stamped.ID && it.ItemIndex >= stamped.ItemIndex {
+			t.Errorf("flush row not at turn tail after echo: %s at index %d >= flush index %d", it.ID, it.ItemIndex, stamped.ItemIndex)
+		}
 	}
 	// Eagerly-persisted flush messages at a shared turn must NOT capture a
 	// checkpoint — the original user:3 checkpoint already covers the same
@@ -1350,6 +1361,144 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 	// delete the original prompt if the flush message had its own checkpoint.
 	if _, ok, _ := app.store.GetCheckpointByUserItemID(thread.ID, flushRow.ID); ok {
 		t.Error("eagerly-persisted flush at active turn should not capture a checkpoint")
+	}
+}
+
+// TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho
+// reproduces the queued-message ordering bug. A message queued while
+// Claude is mid-turn is eagerly persisted at the active turn, then the
+// model emits more rows (response text, a file read, a tail command)
+// BEFORE it consumes the queued message. The wire echo must reposition
+// the queued row to the turn tail so it lands AFTER that content — not
+// stranded at its dispatch-time slot above it.
+func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-claude-reposition")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = initCheckpointRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "user:3", ThreadID: thread.ID, TurnIndex: 3,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "original prompt", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed user item: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID: "turn-3", ThreadID: thread.ID, TurnIndex: 3, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	// A tool_call already running when the user queues the message.
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "toolu_inflight", ThreadID: thread.ID, TurnIndex: 3,
+		Kind: "tool_call", Role: "assistant", Status: "running",
+		Summary: "in-flight work", CreatedAt: now + 1, UpdatedAt: now + 1,
+	}); err != nil {
+		t.Fatalf("seed in-flight tool_call: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(), thread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("claude.NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+		liveness: newSessionLiveness(time.Now()),
+	}
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+		{ID: "queue:msg1", Message: "feel free to update", Payload: json.RawMessage(`{}`)},
+	})
+
+	const flushID = "user:3:flush:1"
+	dispatched, found, err := app.store.GetThreadItem(thread.ID, flushID)
+	if err != nil || !found {
+		t.Fatalf("flush row after dispatch: found=%v err=%v", found, err)
+	}
+
+	// The model keeps working in the active turn AFTER the queue dispatch
+	// but BEFORE it consumes the queued message: response text, a file
+	// read, then a tail command. Each lands at MAX+1, above the
+	// dispatch-time flush slot.
+	intervening := []store.Item{
+		{ID: "assistant:3:0", Kind: "assistant_text", Summary: "let me check the bindings"},
+		{ID: "toolu_read", Kind: "tool_call", Summary: "read manifest_bindings.py"},
+		{ID: "toolu_tail", Kind: "tool_call", Summary: "tail -25"},
+	}
+	for i, it := range intervening {
+		it.ThreadID = thread.ID
+		it.TurnIndex = 3
+		it.Role = "assistant"
+		it.Status = "completed"
+		it.CreatedAt = now + int64(2+i)
+		it.UpdatedAt = it.CreatedAt
+		if _, err := app.store.AppendItem(it); err != nil {
+			t.Fatalf("append intervening %s: %v", it.ID, err)
+		}
+	}
+
+	// Sanity: before the echo the flush row is stranded ABOVE the
+	// intervening content — the bug, if left uncorrected.
+	tail, found, err := app.store.GetThreadItem(thread.ID, "toolu_tail")
+	if err != nil || !found {
+		t.Fatalf("tail row: found=%v err=%v", found, err)
+	}
+	if dispatched.ItemIndex >= tail.ItemIndex {
+		t.Fatalf("test setup wrong: dispatch-time flush index %d should be < tail index %d", dispatched.ItemIndex, tail.ItemIndex)
+	}
+
+	// The provider echo: Claude consumed the queued message after the tail.
+	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-user-1"})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: thread.ID,
+		TurnIndex: 3, ItemID: flushID, Content: "feel free to update",
+		Meta: echoMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("EventUserText echo: %v", err)
+	}
+
+	// After echo, the queued row must sort AFTER every row that arrived
+	// before the echo — the whole point of the fix.
+	items, err := app.store.ListItemsForTurn(thread.ID, 3)
+	if err != nil {
+		t.Fatalf("ListItemsForTurn after echo: %v", err)
+	}
+	indexByID := map[string]int{}
+	var flushRow store.Item
+	for _, it := range items {
+		indexByID[it.ID] = it.ItemIndex
+		if it.ID == flushID {
+			flushRow = it
+		}
+	}
+	if flushRow.ID == "" {
+		t.Fatalf("flush row missing after echo; items: %+v", items)
+	}
+	for _, id := range []string{"assistant:3:0", "toolu_read", "toolu_tail"} {
+		if indexByID[id] >= flushRow.ItemIndex {
+			t.Errorf("flush row index %d must exceed %s index %d (queued message stranded above content that arrived first)", flushRow.ItemIndex, id, indexByID[id])
+		}
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(flushRow.Meta), &meta); err != nil {
+		t.Fatalf("unmarshal flush meta: %v", err)
+	}
+	if meta["provider_item_id"] != "wire-user-1" {
+		t.Errorf("provider_item_id after echo: got %v, want wire-user-1", meta["provider_item_id"])
 	}
 }
 

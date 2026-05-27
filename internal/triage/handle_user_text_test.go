@@ -132,6 +132,66 @@ func TestHandleUserText_PendingSendMatch_StampsProviderItemID(t *testing.T) {
 	}
 }
 
+// TestHandleUserText_DirectSendMatch_DoesNotReposition locks the `:flush:`
+// scoping of the echo-side reposition. A direct send (`user:<turn>`) shares
+// attachProviderItemIDToUserRow with queued flush rows, but unlike a queued
+// message it is already at its intended timeline slot and must NOT be bumped
+// to the turn tail. The guard is strings.Contains(aoItemID, ":flush:"); if it
+// were dropped, a direct-send echo would reposition the prompt BELOW any
+// assistant rows that landed after it. A sibling row at the same turn is
+// seeded so a wrongful bump is observable — a sole row at its turn bumps to a
+// near-identical slot and would hide the regression. (Steers, `:steer:`, take
+// the same non-`:flush:` branch and are covered by the same scoping rule.)
+func TestHandleUserText_DirectSendMatch_DoesNotReposition(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	router.RegisterPendingSend("t1", "user:0", 0)
+	seedUserTextRow(t, st, "t1", 0, "original prompt", "")
+
+	// An assistant row lands at the same turn AFTER the prompt. A wrongful
+	// bump would move user:0 to MAX+1, i.e. below this row.
+	now := time.Now().UnixMilli()
+	if _, err := st.UpsertItem(store.Item{
+		ID: "assistant:0:0", ThreadID: "t1", TurnIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Status: "completed",
+		Summary: "response", CreatedAt: now + 1, UpdatedAt: now + 1,
+	}, nil); err != nil {
+		t.Fatalf("seed assistant row: %v", err)
+	}
+
+	before, found, err := st.GetThreadItem("t1", "user:0")
+	if err != nil || !found {
+		t.Fatalf("user:0 before echo: found=%v err=%v", found, err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "original prompt",
+		Meta:      json.RawMessage(`{"provider_item_id":"msg_xyz"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle EventUserText: %v", err)
+	}
+
+	after, found, err := st.GetThreadItem("t1", "user:0")
+	if err != nil || !found {
+		t.Fatalf("user:0 after echo: found=%v err=%v", found, err)
+	}
+	if after.ItemIndex != before.ItemIndex {
+		t.Fatalf("direct-send row repositioned on echo: item_index %d -> %d (the :flush: scoping guard must keep direct sends in place)", before.ItemIndex, after.ItemIndex)
+	}
+	// The stamp must still happen — scoping the bump must not skip the merge.
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(after.Meta), &meta); err != nil {
+		t.Fatalf("decode meta %q: %v", after.Meta, err)
+	}
+	if id, _ := meta["provider_item_id"].(string); id != "msg_xyz" {
+		t.Fatalf("provider_item_id after echo = %v, want msg_xyz", meta["provider_item_id"])
+	}
+}
+
 func TestHandleUserText_PendingSendMatch_PreservesExistingMeta(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
