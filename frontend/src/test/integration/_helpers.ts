@@ -12,10 +12,7 @@ import { closePalette } from '../../lib/stores/palette.svelte';
 import { resetKeybindingsStore } from '../../lib/stores/keybindings.svelte';
 import { resetPanesForTest } from '../../lib/stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../lib/stores/paneLayout.svelte';
-import {
-  PANE_LAYOUT_STORAGE_KEY,
-  resetPaneLayoutPersistenceForTest,
-} from '../../lib/stores/paneLayoutPersistence';
+import { resetPaneLayoutPersistenceForTest } from '../../lib/stores/paneLayoutPersistence';
 import {
   clearThreadSelection,
   setThreadFilterQuery,
@@ -38,6 +35,7 @@ import {
 import { getThreads } from '../../lib/stores/threads.svelte';
 import { resetThreadTerminalStatesForTest } from '../../lib/components/terminal/terminalStore.svelte';
 import { clearThreadScrollSnapshotsForTest } from '../../lib/utils/threadScrollSnapshots';
+import { makeSettings } from '../helpers/settings';
 
 // Drain microtasks + Svelte reactions so $effects and async mounts settle.
 // `n` should be generous for integration tests that depend on $effects
@@ -53,7 +51,6 @@ export function resetAppState(): void {
   resetPanesForTest();
   resetPaneLayoutForTest();
   resetPaneLayoutPersistenceForTest();
-  localStorage.removeItem(PANE_LAYOUT_STORAGE_KEY);
   setThreadFilterQuery('');
   setWorkspaceFilter(null);
   clearThreadSelection();
@@ -78,6 +75,7 @@ export function resetAppState(): void {
 // App renders without the "called without a mock" explosion.
 export function installAppDefaults(): void {
   setBindingMock('GetSettings', async () => null);
+  setBindingMock('UpdateSettings', async (patch: unknown) => makeSettings(patch as Parameters<typeof makeSettings>[0]));
   setBindingMock('Version', async () => '0.0.1');
   setBindingMock('ListThreads', async () => []);
   setBindingMock('GetKeybindings', async () => []);

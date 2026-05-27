@@ -47,6 +47,22 @@ type RetentionSettings struct {
 	Days int `json:"days"`
 }
 
+// PaneLayoutSettings stores the user's visible thread-pane arrangement.
+// This used to live in webview localStorage, but packaged webviews are not
+// durable on every platform. Keep it with settings so app restart behavior
+// is owned by the same cross-platform persistence path as sidebar layout.
+type PaneLayoutSettings struct {
+	Version       int              `json:"version"`
+	Panes         []PaneLayoutPane `json:"panes,omitempty"`
+	FocusedPaneID string           `json:"focusedPaneId,omitempty"`
+}
+
+type PaneLayoutPane struct {
+	PaneID   string  `json:"paneId"`
+	ThreadID string  `json:"threadId"`
+	Ratio    float64 `json:"ratio"`
+}
+
 // CurrentSchemaVersion is the version stamped on every Update-written
 // settings file. Bump on any breaking shape change so a future loader
 // can branch on the version and run a one-shot migration before
@@ -209,6 +225,11 @@ type Settings struct {
 	// collapsed in the sidebar. Projects not in this list default to
 	// expanded. Same persistence rationale as ProjectSortMode.
 	CollapsedProjects []string `json:"collapsedProjects,omitempty"`
+
+	// PaneLayout stores the visible thread panes, their order/ratios,
+	// and the focused pane. Same persistence rationale as
+	// ProjectSortMode: webview localStorage is not durable everywhere.
+	PaneLayout PaneLayoutSettings `json:"paneLayout"`
 }
 
 // DefaultSettings provides sane defaults for all settings fields.
@@ -255,6 +276,7 @@ var DefaultSettings = Settings{
 	// this on every tick, so toggling it doesn't require a restart.
 	Retention:       RetentionSettings{Days: 30},
 	ProjectSortMode: "lastActivity",
+	PaneLayout:      PaneLayoutSettings{Version: 1},
 }
 
 // AutoCompactPercents returns the per-tier compact thresholds for the
@@ -658,13 +680,14 @@ func applyPatch(base Settings, patch map[string]any) (Settings, error) {
 	return result, nil
 }
 
-// copyDefaults returns a copy of DefaultSettings with fresh slices for
-// RecentWorkspaces and GitLabSelfHostedHosts to avoid aliasing.
+// copyDefaults returns a copy of DefaultSettings with nil slice fields so
+// callers can append without aliasing package-level defaults.
 func copyDefaults() Settings {
 	d := DefaultSettings
 	d.RecentWorkspaces = nil
 	d.GitLabSelfHostedHosts = nil
 	d.CollapsedProjects = nil
+	d.PaneLayout.Panes = nil
 	return d
 }
 

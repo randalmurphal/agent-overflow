@@ -38,6 +38,18 @@ export type MonoFont = "geist" | "hack-nerd" | "system";
 export type PaneDensityMode = "compact" | "comfortable" | "spacious";
 export type ProjectSortMode = "lastActivity" | "createdAt" | "manual";
 
+export interface PaneLayoutPersistedPane {
+  paneId: string;
+  threadId: string;
+  ratio: number;
+}
+
+export interface PaneLayoutPersistedSettings {
+  version: 1;
+  panes: PaneLayoutPersistedPane[];
+  focusedPaneId?: string | null;
+}
+
 export interface Settings {
   theme: "system" | "light" | "dark";
   timestampFormat: "locale" | "12-hour" | "24-hour";
@@ -134,6 +146,13 @@ export interface Settings {
    * Go uses `omitempty`, so the key may be absent on the wire — treat undefined as [].
    */
   collapsedProjects?: string[];
+
+  /**
+   * Visible thread pane order, ratios, and focus. Stored in Go settings
+   * instead of webview localStorage because packaged webviews are not
+   * durable on every platform.
+   */
+  paneLayout: PaneLayoutPersistedSettings;
 }
 
 export interface NetworkPersistedSettings {

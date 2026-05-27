@@ -8,6 +8,7 @@
 // paths can drop any pending invocation without side effects.
 export type Debounced<Args extends unknown[]> = ((...args: Args) => void) & {
   cancel: () => void;
+  flush: () => boolean;
 };
 
 export function debounce<Args extends unknown[]>(
@@ -15,11 +16,15 @@ export function debounce<Args extends unknown[]>(
   ms: number,
 ): Debounced<Args> {
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let pendingArgs: Args | null = null;
   const debounced = ((...args: Args): void => {
+    pendingArgs = args;
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
-      fn(...args);
+      const argsToFlush = pendingArgs;
+      pendingArgs = null;
+      if (argsToFlush) fn(...argsToFlush);
     }, ms);
   }) as Debounced<Args>;
   debounced.cancel = (): void => {
@@ -27,6 +32,16 @@ export function debounce<Args extends unknown[]>(
       clearTimeout(timer);
       timer = null;
     }
+    pendingArgs = null;
+  };
+  debounced.flush = (): boolean => {
+    if (timer === null) return false;
+    clearTimeout(timer);
+    timer = null;
+    const argsToFlush = pendingArgs;
+    pendingArgs = null;
+    if (argsToFlush) fn(...argsToFlush);
+    return true;
   };
   return debounced;
 }

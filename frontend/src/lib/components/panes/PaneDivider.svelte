@@ -2,7 +2,10 @@
   import { onDestroy } from 'svelte';
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
   import { getPaneWidth } from '../../stores/layoutMetrics.svelte';
-  import { resizeAdjacentPaneLayoutItems } from '../../stores/paneLayout.svelte';
+  import {
+    flushPaneLayoutPersistence,
+    resizeAdjacentPaneLayoutItems,
+  } from '../../stores/paneLayout.svelte';
   import { getPane } from '../../stores/panes.svelte';
   import { createResizeGesture } from '../../utils/resizeGesture.svelte';
 
@@ -46,7 +49,7 @@
           getMinPaneWidth(),
         );
       },
-      onResizeEnd: () => {},
+      onResizeEnd: () => void flushPaneLayoutPersistence(),
       acquireLease: acquireAdjacentScrollLeases,
     };
   });

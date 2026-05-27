@@ -1,17 +1,18 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { ensureMainPane, getFocusedPaneOrNull, getPane, openThreadFromNavigation } from './lib/stores/panes.svelte';
+  import { ensureMainPane, getFocusedPaneOrNull, getPane, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import {
     OPEN_SETTINGS_EVENT,
     OPEN_SHIP_CHANGES_EVENT,
     RENAME_THREAD_EVENT,
     setupEventListeners,
   } from './lib/stores/events';
-  import { getThreads, refreshThreads } from './lib/stores/threads.svelte';
+  import { getThreads, loadThreads } from './lib/stores/threads.svelte';
   import {
     installPaneLayoutPersistence,
-    loadFromStorage as loadPaneLayoutFromStorage,
+    loadFromSettings as loadPaneLayoutFromSettings,
   } from './lib/stores/paneLayoutPersistence';
+  import { flushPaneLayoutPersistence, setPaneLayoutItems } from './lib/stores/paneLayout.svelte';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
   import { syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
@@ -74,6 +75,7 @@
   let openFromPR = $state<(() => void) | null>(null);
   let appContentEl: HTMLDivElement | undefined = $state(undefined);
   let appReady = $state(false);
+  let paneLayoutRestored = $state(false);
 
   let sidebarPane = $derived(getFocusedPaneOrNull());
   // Commands that fire even when focus sits inside an INPUT / TEXTAREA /
@@ -240,15 +242,18 @@
 
   onMount(() => {
     const cleanupEvents = setupEventListeners();
-    installPaneLayoutPersistence();
     void (async () => {
       try {
-        await refreshThreads();
-        await loadPaneLayoutFromStorage(getThreads());
+        const threads = await loadThreads();
+        await loadPaneLayoutFromSettings(threads);
+        installPaneLayoutPersistence();
       } catch (err) {
         console.error('Failed to restore pane layout:', err);
+        setPaneLayoutItems([]);
+        resetPaneRegistry(null);
         addToast('error', userFacingError(err, 'Failed to restore pane layout.'));
       } finally {
+        paneLayoutRestored = true;
         appReady = true;
       }
     })();
@@ -287,6 +292,12 @@
     });
 
     void loadKeybindings();
+    const flushPaneLayout = () => {
+      if (paneLayoutRestored) void flushPaneLayoutPersistence();
+    };
+    const flushPaneLayoutWhenHidden = () => {
+      if (document.visibilityState === 'hidden') flushPaneLayout();
+    };
     const handleOpenSettings = (event: Event) => {
       const detail = (event as CustomEvent).detail as {
         section?: SettingsSection;
@@ -296,12 +307,19 @@
     };
     window.addEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
     window.addEventListener('keydown', handleGlobalKeydown);
+    window.addEventListener('pagehide', flushPaneLayout);
+    window.addEventListener('beforeunload', flushPaneLayout);
+    document.addEventListener('visibilitychange', flushPaneLayoutWhenHidden);
 
     return () => {
+      flushPaneLayout();
       cleanupEvents();
       cleanupExternalLinks();
       cleanupZoomKeys();
       window.removeEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
+      window.removeEventListener('pagehide', flushPaneLayout);
+      window.removeEventListener('beforeunload', flushPaneLayout);
+      document.removeEventListener('visibilitychange', flushPaneLayoutWhenHidden);
     };
   });
 

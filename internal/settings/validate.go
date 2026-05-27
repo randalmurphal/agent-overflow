@@ -3,6 +3,8 @@ package settings
 import (
 	"fmt"
 	"log"
+	"math"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -190,6 +192,7 @@ func validateSettings(current Settings) (Settings, error) {
 		)
 	}
 	current.CollapsedProjects = sanitizeCollapsedProjects(current.CollapsedProjects)
+	current.PaneLayout = sanitizePaneLayout(current.PaneLayout)
 
 	return current, nil
 }
@@ -296,6 +299,7 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		allowedProjectSortModes,
 	)
 	current.CollapsedProjects = sanitizeCollapsedProjects(current.CollapsedProjects)
+	current.PaneLayout = sanitizePaneLayout(current.PaneLayout)
 	return current
 }
 
@@ -561,7 +565,7 @@ func sanitizeGitLabHosts(hosts []string) []string {
 // `git remote` use, so we reject malformed inputs early instead of
 // memoising a host that could never match a real origin URL.
 const (
-	maxHostnameLength = 253
+	maxHostnameLength  = 253
 	maxHostLabelLength = 63
 )
 
@@ -666,6 +670,68 @@ func sanitizeCollapsedProjects(ids []string) []string {
 		return nil
 	}
 	return out
+}
+
+const (
+	CurrentPaneLayoutVersion = 1
+	MaxPaneLayoutPanes       = 24
+	MaxPaneLayoutIDLength    = 64
+	MaxPaneLayoutThreadIDLen = 256
+	MaxPaneLayoutRatio       = 100
+)
+
+var safePaneLayoutIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+func sanitizePaneLayout(layout PaneLayoutSettings) PaneLayoutSettings {
+	if layout.Version != CurrentPaneLayoutVersion {
+		return DefaultSettings.PaneLayout
+	}
+	capacity := min(len(layout.Panes), MaxPaneLayoutPanes)
+	seenPaneIDs := make(map[string]struct{}, capacity)
+	seenThreadIDs := make(map[string]struct{}, capacity)
+	panes := make([]PaneLayoutPane, 0, capacity)
+	for _, pane := range layout.Panes {
+		paneID := strings.TrimSpace(pane.PaneID)
+		threadID := strings.TrimSpace(pane.ThreadID)
+		if !safePaneLayoutIDPattern.MatchString(paneID) ||
+			len(paneID) > MaxPaneLayoutIDLength ||
+			threadID == "" ||
+			len(threadID) > MaxPaneLayoutThreadIDLen {
+			continue
+		}
+		if _, dup := seenPaneIDs[paneID]; dup {
+			continue
+		}
+		if _, dup := seenThreadIDs[threadID]; dup {
+			continue
+		}
+		seenPaneIDs[paneID] = struct{}{}
+		seenThreadIDs[threadID] = struct{}{}
+		ratio := pane.Ratio
+		if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 {
+			ratio = 1
+		}
+		if ratio > MaxPaneLayoutRatio {
+			ratio = MaxPaneLayoutRatio
+		}
+		panes = append(panes, PaneLayoutPane{
+			PaneID:   paneID,
+			ThreadID: threadID,
+			Ratio:    ratio,
+		})
+		if len(panes) >= MaxPaneLayoutPanes {
+			break
+		}
+	}
+	focusedPaneID := strings.TrimSpace(layout.FocusedPaneID)
+	if _, ok := seenPaneIDs[focusedPaneID]; !ok {
+		focusedPaneID = ""
+	}
+	return PaneLayoutSettings{
+		Version:       CurrentPaneLayoutVersion,
+		Panes:         panes,
+		FocusedPaneID: focusedPaneID,
+	}
 }
 
 func joinAllowedValues(values map[string]struct{}) string {

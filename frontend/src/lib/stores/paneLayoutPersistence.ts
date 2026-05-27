@@ -1,6 +1,11 @@
 import type { Thread } from '../types/models';
+import type {
+  PaneLayoutPersistedPane,
+  PaneLayoutPersistedSettings,
+  Settings,
+} from '../types/settings';
 import { debounce } from '../utils/debounce';
-import { ListThreads } from './bindings';
+import { GetSettings, ListThreads, UpdateSettings } from './bindings';
 import {
   DEFAULT_PANE_RATIO,
   getPaneLayoutItems,
@@ -16,36 +21,39 @@ import {
   setPanePersistenceHandler,
 } from './panes.svelte';
 
-export const PANE_LAYOUT_STORAGE_KEY = 'agentOverflowPaneLayout';
-const PANE_LAYOUT_STORAGE_VERSION = 1;
+const LEGACY_PANE_LAYOUT_STORAGE_KEY = 'agentOverflowPaneLayout';
+const PANE_LAYOUT_SETTINGS_VERSION = 1;
 const PANE_RESIZE_PERSIST_DELAY_MS = 200;
 const MAX_RESTORED_PANES = 24;
+const MAX_PANE_ID_LENGTH = 64;
+const MAX_THREAD_ID_LENGTH = 256;
+const MAX_PANE_RATIO = 100;
 const SAFE_PANE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
-interface PersistedPane {
-  paneId: string;
-  threadId: string;
-  ratio: number;
-}
+type PersistedPaneLayout = PaneLayoutPersistedSettings;
+type PersistedPane = PaneLayoutPersistedPane;
 
-interface PersistedPaneLayout {
-  version: 1;
-  panes: PersistedPane[];
-  focusedPaneId: string | null;
-}
-
-function storageAvailable(): boolean {
-  return typeof localStorage !== 'undefined';
-}
+let paneLayoutWriteInFlight = false;
+let pendingPaneLayoutSnapshot: PersistedPaneLayout | null = null;
+let lastPersistedPaneLayoutKey: string | null = null;
+let paneLayoutWriteIdlePromise: Promise<void> = Promise.resolve();
+let resolvePaneLayoutWriteIdlePromise: (() => void) | null = null;
 
 function normalizePersistedRatio(ratio: unknown): number {
-  return typeof ratio === 'number' && Number.isFinite(ratio) && ratio > 0
-    ? ratio
-    : DEFAULT_PANE_RATIO;
+  if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0) {
+    return DEFAULT_PANE_RATIO;
+  }
+  return Math.min(ratio, MAX_PANE_RATIO);
 }
 
 function isSafePersistedPaneId(paneId: string): boolean {
-  return paneId.length > 0 && SAFE_PANE_ID_PATTERN.test(paneId);
+  return paneId.length > 0 &&
+    paneId.length <= MAX_PANE_ID_LENGTH &&
+    SAFE_PANE_ID_PATTERN.test(paneId);
+}
+
+function isSafePersistedThreadId(threadId: string): boolean {
+  return threadId.length > 0 && threadId.length <= MAX_THREAD_ID_LENGTH;
 }
 
 async function emptyLayout(): Promise<void> {
@@ -53,45 +61,10 @@ async function emptyLayout(): Promise<void> {
   resetPaneRegistry(null);
 }
 
-function readLayoutStorage(): string | null {
-  if (!storageAvailable()) return null;
-  try {
-    return localStorage.getItem(PANE_LAYOUT_STORAGE_KEY);
-  } catch (err) {
-    console.warn('Failed to read pane layout persistence:', err);
-    return null;
-  }
-}
-
-function writeLayoutStorage(value: string): void {
-  if (!storageAvailable()) return;
-  try {
-    localStorage.setItem(PANE_LAYOUT_STORAGE_KEY, value);
-  } catch (err) {
-    console.warn('Failed to write pane layout persistence:', err);
-  }
-}
-
-function removeLayoutStorage(): void {
-  if (!storageAvailable()) return;
-  try {
-    localStorage.removeItem(PANE_LAYOUT_STORAGE_KEY);
-  } catch (err) {
-    console.warn('Failed to clear pane layout persistence:', err);
-  }
-}
-
-function parsePersistedLayout(raw: string | null): PersistedPaneLayout | null {
-  if (!raw) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object') return null;
-  const record = parsed as Record<string, unknown>;
-  if (record.version !== PANE_LAYOUT_STORAGE_VERSION) return null;
+function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  if (record.version !== PANE_LAYOUT_SETTINGS_VERSION) return null;
   if (!Array.isArray(record.panes)) return null;
   const focusedPaneId = typeof record.focusedPaneId === 'string' && isSafePersistedPaneId(record.focusedPaneId)
     ? record.focusedPaneId
@@ -103,7 +76,7 @@ function parsePersistedLayout(raw: string | null): PersistedPaneLayout | null {
     if (!item || typeof item !== 'object') continue;
     const pane = item as Record<string, unknown>;
     if (typeof pane.paneId !== 'string' || !isSafePersistedPaneId(pane.paneId)) continue;
-    if (typeof pane.threadId !== 'string' || pane.threadId.length === 0) continue;
+    if (typeof pane.threadId !== 'string' || !isSafePersistedThreadId(pane.threadId)) continue;
     if (seenPaneIds.has(pane.paneId) || seenThreadIds.has(pane.threadId)) continue;
     seenPaneIds.add(pane.paneId);
     seenThreadIds.add(pane.threadId);
@@ -114,10 +87,18 @@ function parsePersistedLayout(raw: string | null): PersistedPaneLayout | null {
     });
     if (panes.length >= MAX_RESTORED_PANES) break;
   }
-  return { version: PANE_LAYOUT_STORAGE_VERSION, panes, focusedPaneId };
+  return { version: PANE_LAYOUT_SETTINGS_VERSION, panes, focusedPaneId };
 }
 
-function buildSnapshot(): PersistedPaneLayout | null {
+function paneLayoutKey(snapshot: PersistedPaneLayout): string {
+  return JSON.stringify(snapshot);
+}
+
+function isEmptyPaneLayout(snapshot: PersistedPaneLayout): boolean {
+  return snapshot.panes.length === 0 && !snapshot.focusedPaneId;
+}
+
+function buildSnapshot(): PersistedPaneLayout {
   const panesById = getAllPanes();
   const panes: PersistedPane[] = [];
   for (const item of getPaneLayoutItems()) {
@@ -129,10 +110,9 @@ function buildSnapshot(): PersistedPaneLayout | null {
       ratio: normalizePersistedRatio(item.ratio),
     });
   }
-  if (panes.length === 0) return null;
   const focusedPaneId = getFocusedPaneId();
   return {
-    version: PANE_LAYOUT_STORAGE_VERSION,
+    version: PANE_LAYOUT_SETTINGS_VERSION,
     panes,
     focusedPaneId: focusedPaneId && panes.some((pane) => pane.paneId === focusedPaneId)
       ? focusedPaneId
@@ -140,25 +120,120 @@ function buildSnapshot(): PersistedPaneLayout | null {
   };
 }
 
+function readLegacyPersistedLayout(): PersistedPaneLayout | null {
+  if (typeof localStorage === 'undefined') return null;
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(LEGACY_PANE_LAYOUT_STORAGE_KEY);
+  } catch (err) {
+    console.warn('Failed to read legacy pane layout persistence:', err);
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    return parsePersistedLayout(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function removeLegacyPersistedLayout(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem(LEGACY_PANE_LAYOUT_STORAGE_KEY);
+  } catch (err) {
+    console.warn('Failed to clear legacy pane layout persistence:', err);
+  }
+}
+
+async function readPersistedLayout(): Promise<PersistedPaneLayout | null> {
+  const settings = await GetSettings() as Settings | null;
+  const settingsLayout = parsePersistedLayout(settings?.paneLayout ?? null);
+  if (settingsLayout && !isEmptyPaneLayout(settingsLayout)) {
+    lastPersistedPaneLayoutKey = paneLayoutKey(settingsLayout);
+    return settingsLayout;
+  }
+  const legacyLayout = readLegacyPersistedLayout();
+  if (legacyLayout && !isEmptyPaneLayout(legacyLayout)) {
+    queuePaneLayoutWrite(legacyLayout);
+    return legacyLayout;
+  }
+  if (settingsLayout) {
+    lastPersistedPaneLayoutKey = paneLayoutKey(settingsLayout);
+  }
+  return settingsLayout;
+}
+
+function resolvePaneLayoutWriteIdle(): void {
+  const resolve = resolvePaneLayoutWriteIdlePromise;
+  resolvePaneLayoutWriteIdlePromise = null;
+  resolve?.();
+}
+
+function ensurePaneLayoutWriteIdlePromise(): void {
+  if (resolvePaneLayoutWriteIdlePromise) return;
+  paneLayoutWriteIdlePromise = new Promise((resolve) => {
+    resolvePaneLayoutWriteIdlePromise = resolve;
+  });
+}
+
+function startPaneLayoutWriteLoop(): void {
+  if (paneLayoutWriteInFlight) return;
+  paneLayoutWriteInFlight = true;
+  ensurePaneLayoutWriteIdlePromise();
+  void (async () => {
+    try {
+      while (pendingPaneLayoutSnapshot) {
+        const snapshot = pendingPaneLayoutSnapshot;
+        pendingPaneLayoutSnapshot = null;
+        const key = paneLayoutKey(snapshot);
+        if (key === lastPersistedPaneLayoutKey) continue;
+        try {
+          await UpdateSettings({ paneLayout: snapshot } satisfies Partial<Settings>);
+          lastPersistedPaneLayoutKey = key;
+          removeLegacyPersistedLayout();
+        } catch (err) {
+          console.warn('Failed to write pane layout persistence:', err);
+        }
+      }
+    } finally {
+      paneLayoutWriteInFlight = false;
+      if (pendingPaneLayoutSnapshot) {
+        startPaneLayoutWriteLoop();
+      } else {
+        resolvePaneLayoutWriteIdle();
+      }
+    }
+  })();
+}
+
+function queuePaneLayoutWrite(snapshot: PersistedPaneLayout): void {
+  if (paneLayoutKey(snapshot) === lastPersistedPaneLayoutKey && !pendingPaneLayoutSnapshot) {
+    return;
+  }
+  pendingPaneLayoutSnapshot = snapshot;
+  startPaneLayoutWriteLoop();
+}
+
 async function loadThreadsForValidation(availableThreads?: Thread[]): Promise<Thread[]> {
   if (availableThreads) return availableThreads;
   return await ListThreads() as Thread[];
 }
 
-export async function loadFromStorage(availableThreads?: Thread[]): Promise<void> {
-  if (!storageAvailable()) {
-    await emptyLayout();
-    return;
-  }
-
-  const persisted = parsePersistedLayout(readLayoutStorage());
+export async function loadFromSettings(availableThreads?: Thread[]): Promise<void> {
+  const persisted = await readPersistedLayout();
   if (!persisted) {
     await emptyLayout();
     return;
   }
 
   const threads = await loadThreadsForValidation(availableThreads);
-  const threadById = new Map(threads.map((thread) => [thread.id, thread]));
+  const neededThreadIds = new Set(persisted.panes.map((pane) => pane.threadId));
+  const threadById = new Map<string, Thread>();
+  for (const thread of threads) {
+    const threadId = thread.id;
+    if (neededThreadIds.has(threadId)) threadById.set(threadId, thread);
+  }
   const layoutItems: PaneLayoutItem[] = [];
   const registryEntries: Array<{ paneId: string; thread: Thread }> = [];
   for (const pane of persisted.panes) {
@@ -181,30 +256,37 @@ export async function loadFromStorage(availableThreads?: Thread[]): Promise<void
   await hydrateRestoredPaneRegistry(registryEntries, restoredFocusedPaneId);
 }
 
-export function persistToStorage(): void {
-  if (!storageAvailable()) return;
-  const snapshot = buildSnapshot();
-  if (!snapshot) {
-    // Empty layout is encoded as a missing key. That keeps "no saved layout"
-    // and "user closed every pane" on the same empty-state path at launch.
-    removeLayoutStorage();
-    return;
-  }
-  writeLayoutStorage(JSON.stringify(snapshot));
+export function persistToSettings(): void {
+  queuePaneLayoutWrite(buildSnapshot());
 }
 
-export const persistToStorageDebounced = debounce(persistToStorage, PANE_RESIZE_PERSIST_DELAY_MS);
+export const persistToSettingsDebounced = debounce(persistToSettings, PANE_RESIZE_PERSIST_DELAY_MS);
+
+async function flushPendingPaneLayoutPersistence(): Promise<void> {
+  persistToSettingsDebounced.flush();
+  await paneLayoutWriteIdlePromise;
+}
 
 export function installPaneLayoutPersistence(): void {
   setPaneLayoutPersistenceHandlers({
-    immediate: persistToStorage,
-    debounced: persistToStorageDebounced,
+    immediate: persistToSettings,
+    debounced: persistToSettingsDebounced,
+    flush: flushPendingPaneLayoutPersistence,
   });
-  setPanePersistenceHandler(persistToStorage);
+  setPanePersistenceHandler(persistToSettings);
+}
+
+export async function waitForPaneLayoutPersistenceForTest(): Promise<void> {
+  await paneLayoutWriteIdlePromise;
 }
 
 export function resetPaneLayoutPersistenceForTest(): void {
-  persistToStorageDebounced.cancel();
+  persistToSettingsDebounced.cancel();
+  paneLayoutWriteInFlight = false;
+  pendingPaneLayoutSnapshot = null;
+  lastPersistedPaneLayoutKey = null;
+  paneLayoutWriteIdlePromise = Promise.resolve();
+  resolvePaneLayoutWriteIdlePromise = null;
   setPaneLayoutPersistenceHandlers(null);
   setPanePersistenceHandler(null);
 }

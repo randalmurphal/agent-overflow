@@ -41,6 +41,7 @@ const BASE_SETTINGS: Settings = {
   gitlabSelfHostedHosts: [],
   projectSortMode: "lastActivity",
   collapsedProjects: [],
+  paneLayout: { version: 1, panes: [], focusedPaneId: null },
 };
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {

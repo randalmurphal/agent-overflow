@@ -60,6 +60,28 @@ describe('debounce', () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
+  it('flush() runs the pending invocation immediately with the latest args', () => {
+    const fn = vi.fn();
+    const d = debounce<[number]>(fn, 50);
+
+    d(1);
+    d(2);
+    expect(d.flush()).toBe(true);
+
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith(2);
+    vi.advanceTimersByTime(50);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('flush() is safe to call when nothing is pending', () => {
+    const fn = vi.fn();
+    const d = debounce(fn, 50);
+
+    expect(d.flush()).toBe(false);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   it('cancel() is safe to call when nothing is pending', () => {
     const fn = vi.fn();
     const d = debounce(fn, 50);

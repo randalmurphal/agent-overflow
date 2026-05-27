@@ -17,9 +17,14 @@ export function getThreads(): Thread[] {
   return threads;
 }
 
+export async function loadThreads(): Promise<Thread[]> {
+  threads = await ListThreads() as Thread[];
+  return threads;
+}
+
 export async function refreshThreads(): Promise<void> {
   try {
-    threads = await ListThreads() as Thread[];
+    await loadThreads();
   } catch (err) {
     console.error('Failed to load threads:', err);
     addToast('error', 'Failed to load threads');

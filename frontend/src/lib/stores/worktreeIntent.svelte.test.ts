@@ -52,6 +52,7 @@ const SETTINGS: Settings = {
   gitlabSelfHostedHosts: [],
   projectSortMode: 'lastActivity',
   collapsedProjects: [],
+  paneLayout: { version: 1, panes: [], focusedPaneId: null },
 };
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {

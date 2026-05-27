@@ -4,6 +4,8 @@
 export {
     EditorSettings,
     NetworkSettings,
+    PaneLayoutPane,
+    PaneLayoutSettings,
     RemoteEndpoint,
     RemoteEndpointSummary,
     RetentionSettings,

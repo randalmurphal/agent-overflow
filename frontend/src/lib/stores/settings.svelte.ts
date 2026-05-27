@@ -47,6 +47,7 @@ const DEFAULT_SETTINGS: Settings = {
   gitlabSelfHostedHosts: [],
   projectSortMode: "lastActivity",
   collapsedProjects: [],
+  paneLayout: { version: 1, panes: [], focusedPaneId: null },
 };
 
 function defaultSettings(): Settings {
@@ -57,6 +58,43 @@ function defaultSettings(): Settings {
     retention: { ...DEFAULT_SETTINGS.retention },
     gitlabSelfHostedHosts: [...DEFAULT_SETTINGS.gitlabSelfHostedHosts],
     collapsedProjects: [...(DEFAULT_SETTINGS.collapsedProjects ?? [])],
+    paneLayout: {
+      ...DEFAULT_SETTINGS.paneLayout,
+      panes: [...DEFAULT_SETTINGS.paneLayout.panes],
+    },
+  };
+}
+
+function mergeSettingsWithDefaults(result: Partial<Settings>): Settings {
+  const defaults = defaultSettings();
+  return {
+    ...defaults,
+    ...result,
+    recentWorkspaces: result.recentWorkspaces
+      ? [...result.recentWorkspaces]
+      : defaults.recentWorkspaces,
+    network: {
+      ...defaults.network,
+      ...result.network,
+    },
+    retention: {
+      ...defaults.retention,
+      ...result.retention,
+    },
+    gitlabSelfHostedHosts: result.gitlabSelfHostedHosts
+      ? [...result.gitlabSelfHostedHosts]
+      : defaults.gitlabSelfHostedHosts,
+    collapsedProjects: result.collapsedProjects
+      ? [...result.collapsedProjects]
+      : defaults.collapsedProjects,
+    paneLayout: {
+      ...defaults.paneLayout,
+      ...result.paneLayout,
+      panes: result.paneLayout?.panes
+        ? [...result.paneLayout.panes]
+        : defaults.paneLayout.panes,
+      focusedPaneId: result.paneLayout?.focusedPaneId ?? defaults.paneLayout.focusedPaneId,
+    },
   };
 }
 
@@ -70,10 +108,7 @@ export async function loadSettings(): Promise<boolean> {
   try {
     const result = await GetSettings();
     if (result) {
-      settings = {
-        ...defaultSettings(),
-        ...result,
-      } as Settings;
+      settings = mergeSettingsWithDefaults(result as Partial<Settings>);
     }
     return true;
   } catch (err) {
@@ -98,10 +133,7 @@ export async function updateSettingsPatch(
   try {
     const result = await UpdateSettings(patch);
     if (result) {
-      settings = {
-        ...defaultSettings(),
-        ...result,
-      } as Settings;
+      settings = mergeSettingsWithDefaults(result as Partial<Settings>);
     }
   } catch (err) {
     console.error("Failed to update setting:", err);

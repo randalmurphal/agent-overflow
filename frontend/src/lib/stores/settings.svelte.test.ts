@@ -36,6 +36,7 @@ const FULL_SETTINGS: Settings = {
   gitlabSelfHostedHosts: [],
   projectSortMode: 'lastActivity',
   collapsedProjects: [],
+  paneLayout: { version: 1, panes: [], focusedPaneId: null },
 };
 
 describe('settings store', () => {
@@ -58,6 +59,20 @@ describe('settings store', () => {
       // Unspecified fields fall back to defaults.
       expect(getSettings().timestampFormat).toBe('locale');
       expect(getSettings().claudeEnabled).toBe(true);
+    });
+
+    it('normalizes sparse nested pane layout settings', async () => {
+      setBindingMock('GetSettings', async () => ({
+        paneLayout: { version: 1 },
+      } as Partial<Settings>));
+
+      await loadSettings();
+
+      expect(getSettings().paneLayout).toEqual({
+        version: 1,
+        panes: [],
+        focusedPaneId: null,
+      });
     });
 
     it('does nothing when GetSettings returns null', async () => {

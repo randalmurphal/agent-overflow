@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -48,6 +49,12 @@ func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
 	}
 	if got.CollapsedProjects != nil {
 		t.Errorf("CollapsedProjects = %v, want nil", got.CollapsedProjects)
+	}
+	if got.PaneLayout.Version != CurrentPaneLayoutVersion {
+		t.Errorf("PaneLayout.Version = %d, want %d", got.PaneLayout.Version, CurrentPaneLayoutVersion)
+	}
+	if got.PaneLayout.Panes != nil {
+		t.Errorf("PaneLayout.Panes = %v, want nil", got.PaneLayout.Panes)
 	}
 }
 
@@ -760,7 +767,7 @@ func TestProjectSortModeRoundTrip(t *testing.T) {
 	svc := NewService(dir)
 
 	updated, err := svc.Update(map[string]any{
-		"projectSortMode":  "manual",
+		"projectSortMode":   "manual",
 		"collapsedProjects": []any{"proj-1", "proj-2"},
 	})
 	if err != nil {
@@ -783,7 +790,7 @@ func TestProjectSortModeRoundTrip(t *testing.T) {
 
 	// Resetting to default should sparse-omit both keys.
 	updated, err = svc.Update(map[string]any{
-		"projectSortMode":  "lastActivity",
+		"projectSortMode":   "lastActivity",
 		"collapsedProjects": []any{},
 	})
 	if err != nil {
@@ -852,5 +859,119 @@ func TestCollapsedProjectsSanitization(t *testing.T) {
 		loaded.CollapsedProjects[0] != "x" ||
 		loaded.CollapsedProjects[1] != "y" {
 		t.Errorf("load-path sanitize: CollapsedProjects = %v, want [x y]", loaded.CollapsedProjects)
+	}
+}
+
+func TestPaneLayoutRoundTripAndSparseDefault(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{
+		"paneLayout": map[string]any{
+			"version":       1,
+			"focusedPaneId": "right",
+			"panes": []any{
+				map[string]any{"paneId": "left", "threadId": "thread-left", "ratio": 0.75},
+				map[string]any{"paneId": "right", "threadId": "thread-right", "ratio": 1.25},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.PaneLayout.Version != CurrentPaneLayoutVersion {
+		t.Fatalf("PaneLayout.Version = %d, want %d", updated.PaneLayout.Version, CurrentPaneLayoutVersion)
+	}
+	if len(updated.PaneLayout.Panes) != 2 {
+		t.Fatalf("PaneLayout.Panes = %v, want 2 panes", updated.PaneLayout.Panes)
+	}
+	if updated.PaneLayout.FocusedPaneID != "right" {
+		t.Fatalf("FocusedPaneID = %q, want right", updated.PaneLayout.FocusedPaneID)
+	}
+
+	reloaded := NewService(dir).Get()
+	if reloaded.PaneLayout.FocusedPaneID != "right" {
+		t.Fatalf("reloaded FocusedPaneID = %q, want right", reloaded.PaneLayout.FocusedPaneID)
+	}
+	if len(reloaded.PaneLayout.Panes) != 2 || reloaded.PaneLayout.Panes[1].ThreadID != "thread-right" {
+		t.Fatalf("reloaded PaneLayout.Panes = %+v", reloaded.PaneLayout.Panes)
+	}
+
+	updated, err = svc.Update(map[string]any{
+		"paneLayout": map[string]any{
+			"version":       1,
+			"focusedPaneId": "",
+			"panes":         []any{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Update(reset) error = %v", err)
+	}
+	if len(updated.PaneLayout.Panes) != 0 {
+		t.Fatalf("reset PaneLayout.Panes = %+v, want empty", updated.PaneLayout.Panes)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := fileMap["paneLayout"]; ok {
+		t.Fatalf("settings file = %s, want paneLayout omitted when default", string(data))
+	}
+}
+
+func TestPaneLayoutSanitization(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{
+		"paneLayout": map[string]any{
+			"version":       1,
+			"focusedPaneId": "missing",
+			"panes": []any{
+				map[string]any{"paneId": " left ", "threadId": " thread-left ", "ratio": 0.75},
+				map[string]any{"paneId": "left", "threadId": "thread-left-duplicate", "ratio": 1},
+				map[string]any{"paneId": "right", "threadId": "thread-right", "ratio": -1},
+				map[string]any{"paneId": "wide", "threadId": "thread-wide", "ratio": 1000},
+				map[string]any{"paneId": strings.Repeat("x", MaxPaneLayoutIDLength+1), "threadId": "thread-long-pane", "ratio": 1},
+				map[string]any{"paneId": "long-thread", "threadId": strings.Repeat("x", MaxPaneLayoutThreadIDLen+1), "ratio": 1},
+				map[string]any{"paneId": "bad\"] [data-pane-id=\"x", "threadId": "thread-bad", "ratio": 1},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	want := []PaneLayoutPane{
+		{PaneID: "left", ThreadID: "thread-left", Ratio: 0.75},
+		{PaneID: "right", ThreadID: "thread-right", Ratio: 1},
+		{PaneID: "wide", ThreadID: "thread-wide", Ratio: MaxPaneLayoutRatio},
+	}
+	if len(updated.PaneLayout.Panes) != len(want) {
+		t.Fatalf("PaneLayout.Panes = %+v, want %+v", updated.PaneLayout.Panes, want)
+	}
+	for i := range want {
+		if updated.PaneLayout.Panes[i] != want[i] {
+			t.Fatalf("PaneLayout.Panes[%d] = %+v, want %+v", i, updated.PaneLayout.Panes[i], want[i])
+		}
+	}
+	if updated.PaneLayout.FocusedPaneID != "" {
+		t.Fatalf("FocusedPaneID = %q, want empty when focused pane is not restored", updated.PaneLayout.FocusedPaneID)
+	}
+
+	raw := `{"paneLayout":{"version":2,"focusedPaneId":"left","panes":[{"paneId":"left","threadId":"thread-left","ratio":1}]}}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	loaded := NewService(dir).Get()
+	if loaded.PaneLayout.Version != CurrentPaneLayoutVersion {
+		t.Fatalf("load-path version = %d, want %d", loaded.PaneLayout.Version, CurrentPaneLayoutVersion)
+	}
+	if len(loaded.PaneLayout.Panes) != 0 {
+		t.Fatalf("load-path panes = %+v, want empty for unsupported version", loaded.PaneLayout.Panes)
 	}
 }

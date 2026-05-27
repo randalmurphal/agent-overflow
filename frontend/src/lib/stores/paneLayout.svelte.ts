@@ -12,6 +12,7 @@ export const DEFAULT_PANE_RATIO = 1;
 interface PaneLayoutPersistenceHandlers {
   immediate: () => void;
   debounced: () => void;
+  flush: () => Promise<void>;
 }
 
 interface PaneLayoutMutationOptions {
@@ -41,6 +42,10 @@ function requestLayoutPersistence(debounced = false): void {
   } else {
     persistenceHandlers.immediate();
   }
+}
+
+export function flushPaneLayoutPersistence(): Promise<void> {
+  return persistenceHandlers?.flush() ?? Promise.resolve();
 }
 
 function shouldPersist(options?: PaneLayoutMutationOptions): boolean {
