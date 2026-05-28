@@ -1016,6 +1016,15 @@ func (s *Session) clearExpectedReplayParent() {
 	s.replayMu.Unlock()
 }
 
+// PID returns the OS process id (and process-group id) of the Claude
+// subprocess, or 0 when no process is live.
+func (s *Session) PID() int {
+	if s.proc == nil {
+		return 0
+	}
+	return s.proc.PID()
+}
+
 // Close shuts down the CLI process gracefully.
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {

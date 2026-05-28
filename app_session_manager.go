@@ -67,16 +67,21 @@ func (m sessionManager) startState(threadID string) (*sessionStart, bool) {
 	return startState, ok
 }
 
-func (m sessionManager) unregister(threadID, sessionToken string) bool {
+// unregister removes the session for threadID iff it still carries
+// sessionToken (guarding against a newer session having replaced it), and
+// returns the removed session so the caller can release its process group
+// from the orphan reaper. Returns ok=false (and the zero session) when
+// nothing matched.
+func (m sessionManager) unregister(threadID, sessionToken string) (session, bool) {
 	m.app.mu.Lock()
 	defer m.app.mu.Unlock()
 
 	current, ok := m.app.sessions[threadID]
 	if !ok || current.token != sessionToken {
-		return false
+		return session{}, false
 	}
 	delete(m.app.sessions, threadID)
-	return true
+	return current, true
 }
 
 func (m sessionManager) recordActivity(threadID, sessionToken string, kind provider.EventKind, content string, now time.Time) {

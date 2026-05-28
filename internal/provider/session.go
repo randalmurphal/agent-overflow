@@ -50,6 +50,12 @@ type Session interface {
 	// RespondToUserInput forwards answers for a structured user-input
 	// request back to the provider.
 	RespondToUserInput(ctx context.Context, resp UserInputResponse) error
+	// PID returns the OS process id of the session's provider subprocess,
+	// or 0 if no process is live. Because the subprocess is its own
+	// process-group leader (Setpgid), this doubles as the group id for a
+	// negative-PID group kill — the orphan reaper uses it to tear down a
+	// session's whole process tree if the app dies ungracefully.
+	PID() int
 	// Close tears down the session and any provider subprocess it owns.
 	Close() error
 }

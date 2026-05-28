@@ -160,6 +160,14 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 
 	a.sessionManager().put(threadID, newSess)
 
+	// Register the freshly-spawned process group with the orphan reaper so
+	// it's torn down if the app dies before the session closes cleanly
+	// (macOS only; no-op elsewhere). Paired with the release in
+	// closeProviderSession.
+	if ps := newSess.providerSession(); ps != nil {
+		a.watchSessionProcess(ps.PID(), sessionToken)
+	}
+
 	// Best-effort Codex reconcile for the on-reopen case. If the prior
 	// app-server forgot the thread across a restart we want to flip any
 	// still-`running && is_background` rows to errored/lost (systemError
@@ -227,7 +235,7 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	// Thread-scoped design state must be torn down alongside the session
 	// so a restart doesn't leak the prior turn's MCP registration.
 	a.teardownDesignThread(threadID)
-	return closeProviderSession(threadID, existing)
+	return a.closeProviderSession(threadID, existing)
 }
 
 // spawnProviderSession builds the provider-specific Config via
@@ -501,5 +509,5 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	if a.triage != nil {
 		a.triage.CleanupThread(threadID)
 	}
-	return closeProviderSession(threadID, sess)
+	return a.closeProviderSession(threadID, sess)
 }

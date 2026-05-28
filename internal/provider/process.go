@@ -335,6 +335,18 @@ func (p *Process) signalGroup(sig syscall.Signal) {
 	signalGroupPlatform(p.cmd.Process.Pid, sig)
 }
 
+// PID returns the spawned subprocess's OS process id, or 0 before the
+// process has started (or after a failed spawn). Because applySysProcAttr
+// sets Setpgid, the child is its own process-group leader, so this value
+// doubles as the process-group id callers pass to a negative-PID group
+// kill — see signalGroupPlatform and the orphan reaper.
+func (p *Process) PID() int {
+	if p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
+}
+
 func (p *Process) logEvent(direction string, data []byte) {
 	if p.eventLogger == nil || p.threadID == "" || p.provider == "" {
 		return
