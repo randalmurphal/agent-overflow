@@ -48,7 +48,7 @@
     buildPathLinkExtension,
   } from '../../utils/pathLinkExtension';
   import type { PathRef } from '../../types/models';
-  import { splitAtBoundary } from '../../markdown/boundary';
+  import { StreamingBoundarySplitter } from '../../markdown/boundary';
 
   let {
     source,
@@ -131,34 +131,21 @@
   // every update with `parseIncompleteMarkdown` enabled to absorb
   // half-typed fences / tables / setext underlines.
   //
-  // The high-water mark of the committed prefix length lives on a plain
-  // (non-reactive) `let`. Derivations stay pure — they read the live
-  // length, ask `splitAtBoundary` for the split (which applies the
-  // monotonic guard internally), and an `$effect` writes the new
-  // high-water mark afterwards. The `splitDerived` value embeds the
-  // chosen prefix length directly so it doesn't need to be reactive.
-  let previousPrefixLength = 0;
+  // `StreamingBoundarySplitter` owns the committed high-water mark and a
+  // persistent detector, resuming detection from the last committed line
+  // each call (O(n) over the stream) instead of re-scanning from line 0
+  // every reveal tick (O(n²)). It is created once per component instance
+  // and is non-reactive; `split()` is idempotent for a given source, so
+  // calling it inside the derivation is safe even if Svelte coalesces or
+  // re-evaluates. `streaming` is only ever true for the assistant_text
+  // row, whose source is append-only — the splitter's precondition.
+  const boundarySplitter = new StreamingBoundarySplitter();
 
   const splitDerived = $derived.by(() => {
     if (!streaming) {
       return { prefix: processedSource, tail: '' };
     }
-    // Source shrank below the committed prefix length (mid-flight
-    // trim — typically a tail-windowed source). Reset the high-water
-    // mark and render the new source whole; the next stable boundary
-    // on this row will re-commit. The mark write happens in the
-    // companion `$effect` so this derivation stays pure.
-    if (previousPrefixLength > processedSource.length) {
-      return { prefix: '', tail: processedSource };
-    }
-    return splitAtBoundary(processedSource, previousPrefixLength);
-  });
-
-  $effect(() => {
-    // Advance the monotonic high-water mark when the derivation
-    // produces a longer prefix; reset to 0 when the source shrank.
-    // The derivation is pure; this effect is the sole writer.
-    previousPrefixLength = splitDerived.prefix.length;
+    return boundarySplitter.split(processedSource);
   });
 </script>
 

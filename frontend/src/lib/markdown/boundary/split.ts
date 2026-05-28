@@ -70,8 +70,9 @@ export function splitAtBoundary(
 // Returns the character offset immediately after line `lineIndex`'s
 // terminating newline. For the last line (no trailing newline), returns
 // text.length. Walks via `lines[].length` so we don't re-scan the
-// string for newlines.
-function offsetAfterLine(
+// string for newlines. Exported for `StreamingBoundarySplitter`, which
+// shares the offset arithmetic.
+export function offsetAfterLine(
   text: string,
   lines: string[],
   lineIndex: number,

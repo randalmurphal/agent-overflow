@@ -5,4 +5,5 @@ export type {
 } from './BoundaryDetector';
 export { splitAtBoundary } from './split';
 export type { BoundarySplit } from './split';
+export { StreamingBoundarySplitter } from './streamingSplitter';
 export type { BlockContext, ContainerConfig, ContainerMatch } from './types';
