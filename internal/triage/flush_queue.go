@@ -223,6 +223,32 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 // the App-layer dispatcher owns asynchronous provider writes and per-thread
 // ordering. The batch is copied out under r.mu so a concurrent CleanupThread
 // between unlock and dispatch doesn't observe a partially-cleared queue.
+//
+// This primitive is deliberately NOT self-protecting against the
+// revert-on-interrupt predicate. Between deleting the batch from
+// queuedFlushItems here and the App-layer dispatcher recording it as
+// in-flight, the item is invisible to every counter that predicate consults
+// (queue length, inflight count, persisted rows). App.RegisterQueueItem — the
+// drain trigger that fires on a bare user action, when the latest turn may be
+// a lone user_text — closes this window by holding App.flushHandoffMu across
+// the call; the predicate reads the same counters under that mutex
+// (pendingFlushWorkCount), so InterruptAndRevertIfClean cannot observe the gap.
+//
+// The boundary-drain triggers (turn / tool / background-task completion) run
+// lock-free on this goroutine and are NOT protected. For most of them the turn
+// carries durable agent content by the time the drain fires — a settled
+// assistant_text or a persisted tool_call row — or a live background-task
+// count, so in practice the predicate refuses before the window matters. The
+// one path traced exhaustively here is the exception: a top-level Codex
+// unified-exec command that completes outside an
+// active wire round: observeCodexUnifiedExecComplete removes the live tracker
+// and skips the command-row persist before firing this drain (see
+// handleToolComplete in router.go), and the unified-exec start never persisted
+// a tool_call row — so the turn can hold only its lone user_text and a Stop
+// landing in the window would wrongly revert. Closing that path is a tracked
+// follow-up; it needs the boundary drain to coordinate with flushHandoffMu
+// without taking an app-layer lock on this goroutine. See app_flush_queue.go
+// RegisterQueueItem.
 func (r *Router) tryFlushQueue(threadID string) bool {
 	if threadID == "" {
 		return false

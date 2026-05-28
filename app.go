@@ -173,6 +173,19 @@ type App struct {
 	flushDispatchInflightItems map[string]int
 	flushDispatchGeneration    map[string]uint64
 	flushDispatchWG            sync.WaitGroup
+	// flushHandoffMu serializes RegisterQueueItem's enqueue→flush handoff
+	// against the revert-on-interrupt predicate's read of the queued /
+	// in-flight counters. tryFlushQueue deletes a batch from the triage queue
+	// before the dispatcher records it as in-flight; in that window the item
+	// is invisible to every counter the predicate consults. Holding this mutex
+	// across both the handoff (RegisterQueueItem) and the counter read
+	// (pendingFlushWorkCount) makes the queued message observable to a
+	// concurrent Stop click as either still-queued or already-in-flight, never
+	// neither. Deliberately NOT the per-thread action lock: that lock is held
+	// for seconds by git / worktree / checkpoint ops, and queueing a message
+	// must stay responsive while those run. See RegisterQueueItem for the full
+	// lock hierarchy and deadlock-freedom argument.
+	flushHandoffMu sync.Mutex
 	// threadID → in-flight session start. Concurrent callers wait for the
 	// first start attempt instead of spawning duplicate provider runtimes.
 	startingSessions map[string]*sessionStart

@@ -635,6 +635,26 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 		a.configureTriageQueueCallbacks()
 	}
 
+	// Hold flushHandoffMu across the queue append and the immediate flush
+	// handoff below: the revert predicate reads the same queued / in-flight
+	// counters under this mutex (pendingFlushWorkCount), so holding it here
+	// keeps a Stop click from observing tryFlushQueue's handoff window and
+	// discarding the turn-starting prompt. See the flushHandoffMu field doc
+	// (app.go) for the window and why this isn't the per-thread action lock.
+	//
+	// Lock hierarchy (acyclic): threadLock -> flushHandoffMu -> {r.mu (triage),
+	// flushDispatchMu, a.mu}. The only threadLock/flushHandoffMu edge is the
+	// revert predicate's (InterruptAndRevertIfClean holds threadLock and reaches
+	// flushHandoffMu via pendingFlushWorkCount). This span acquires r.mu,
+	// flushDispatchMu (the synchronous enqueueFlushDispatch inflight bump), and
+	// a.mu (sessionManager().get below) while holding flushHandoffMu, but never
+	// the thread lock — enqueueFlushDispatch spawns the dispatch worker, which
+	// takes threadLock asynchronously. And no path holds a.mu when entering
+	// RegisterQueueItem or pendingFlushWorkCount, so a.mu is never inverted
+	// against flushHandoffMu. No cycle, no deadlock.
+	a.flushHandoffMu.Lock()
+	defer a.flushHandoffMu.Unlock()
+
 	totalQueued := a.triage.QueuedFlushItemCount(threadID) + a.triage.DeferredPendingFlushItemCount(threadID) + a.flushDispatchItemCount(threadID)
 	if totalQueued >= maxQueueLength() {
 		return QueuedItem{}, fmt.Errorf("register queue item: queue full (max %d items per thread)", maxQueueLength())

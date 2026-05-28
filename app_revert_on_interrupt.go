@@ -224,7 +224,20 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 	return true, userItem, "", nil
 }
 
+// pendingFlushWorkCount sums every queued / in-flight follow-up message the
+// revert predicate must treat as turn-extending work. It reads three counters
+// that the flush handoff updates non-atomically (triage queue length, deferred
+// pending count, App-layer inflight count), so it holds flushHandoffMu across
+// all three — the same mutex RegisterQueueItem holds across its enqueue→flush
+// handoff. That makes a message mid-handoff observable here as either
+// still-queued or already-in-flight, never invisible in the gap between.
+//
+// Reached only from evaluateInterruptRevertPredicate (InterruptAndRevertIfClean
+// holds the per-thread action lock, not flushHandoffMu), so there is no
+// re-entrancy on this mutex.
 func (a *App) pendingFlushWorkCount(threadID string) int {
+	a.flushHandoffMu.Lock()
+	defer a.flushHandoffMu.Unlock()
 	total := a.flushDispatchItemCount(threadID)
 	if a.triage != nil {
 		total += a.triage.QueuedFlushItemCount(threadID)
