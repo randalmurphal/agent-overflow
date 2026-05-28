@@ -32,10 +32,34 @@ index b60d68b7df76d1e580a728f42411d0ac749ab122..7022294de7e730910649dc6f7b9da6b3
  	});
  </script>
 diff --git a/dist/Elements/Math.svelte b/dist/Elements/Math.svelte
-index 5bdcc4a447da9dadf4edf58cbb991030a0c3dc2a..b86dcca4ca37ef1eec370737a5816a9fe0af81da 100644
+index 5bdcc4a447da9dadf4edf58cbb991030a0c3dc2a..2356db144f2f3e7d37068f4f2e0ce9558f50624e 100644
 --- a/dist/Elements/Math.svelte
 +++ b/dist/Elements/Math.svelte
-@@ -17,9 +17,12 @@
+@@ -5,6 +5,23 @@
+ 	import type { KatexOptions } from 'katex';
+ 	import 'katex/dist/katex.min.css';
+ 
++	// Module-level KaTeX HTML cache. `renderToString` is fast (~1 ms for
++	// typical expressions) but the split-Streamdown architecture causes
++	// each settled math block to remount once when migrating from the
++	// volatile tail Streamdown to the committed prefix Streamdown.
++	// Caching the output makes that remount free. KaTeX output is
++	// deterministic and contains no random ids or fragment refs, so a
++	// straight string cache is safe — no id-rewrite needed (unlike
++	// mermaid). The cap is generous because each entry is small
++	// (hundreds of bytes to a few KB).
++	//
++	// Cache key is `${displayMode}:${source}`. Custom `katexConfig`
++	// fields (macros, trust callbacks) are not part of the key — callers
++	// who vary katexConfig per call for the same source should bust
++	// manually by varying the source text.
++	const _katexHtmlCache: Map<string, string> = new Map();
++	const _KATEX_CACHE_MAX = 500;
++
+ 	const {
+ 		token,
+ 		id
+@@ -17,9 +34,12 @@
  	let katexInstance = $state<typeof import('katex') | null>(null);
  
  	onMount(() => {
@@ -51,11 +75,75 @@ index 5bdcc4a447da9dadf4edf58cbb991030a0c3dc2a..b86dcca4ca37ef1eec370737a5816a9f
  	});
  
  	let inner = $state<HTMLElement | null>(null);
+@@ -27,17 +47,35 @@
+ 		if (!katexInstance) {
+ 			return '';
+ 		}
++		const code = token.text;
++		const displayMode = !token.isInline;
++		const cacheKey = `${displayMode ? 'b' : 'i'}:${code}`;
++
++		const cached = _katexHtmlCache.get(cacheKey);
++		if (cached !== undefined) {
++			// LRU bump — keep recently-used entries from being evicted.
++			_katexHtmlCache.delete(cacheKey);
++			_katexHtmlCache.set(cacheKey, cached);
++			return cached;
++		}
++
+ 		const config: KatexOptions = {
+ 			output: 'html',
+-			displayMode: !token.isInline,
++			displayMode,
+ 			...(typeof streamdown.katexConfig === 'function'
+ 				? streamdown.katexConfig(token.isInline)
+ 				: streamdown.katexConfig || {})
+ 		};
+-		const code = token.text;
+ 
+ 		try {
+-			return katexInstance.renderToString(code, config);
++			const result = katexInstance.renderToString(code, config);
++			_katexHtmlCache.set(cacheKey, result);
++			while (_katexHtmlCache.size > _KATEX_CACHE_MAX) {
++				const firstKey = _katexHtmlCache.keys().next().value;
++				if (firstKey === undefined) break;
++				_katexHtmlCache.delete(firstKey);
++			}
++			return result;
+ 		} catch (error) {
+ 			return untrack(() => {
+ 				return inner?.innerHTML || '';
 diff --git a/dist/Elements/Mermaid.svelte b/dist/Elements/Mermaid.svelte
-index 8f6382c3ff28fe730c73a3285f77752fcc540d3a..a2ddc09f0776883de15549737b656ec45706d587 100644
+index 8f6382c3ff28fe730c73a3285f77752fcc540d3a..388eeb48f57168389c790f8558de0794d9f80db1 100644
 --- a/dist/Elements/Mermaid.svelte
 +++ b/dist/Elements/Mermaid.svelte
-@@ -20,7 +20,12 @@
+@@ -8,6 +8,24 @@
+ 	import { fitViewIcon, fullscreenIcon, zoomInIcon, zoomOutIcon } from './icons.js';
+ 	import MermaidDownload from './MermaidDownload.svelte';
+ 
++	// Module-level SVG cache. `mermaid.render` is expensive (hundreds of
++	// ms for non-trivial diagrams) and its output is deterministic for a
++	// given (sanitized source, theme) pair. The split-Streamdown
++	// architecture (ChatMarkdown's prefix/tail) remounts a diagram once
++	// at the moment its closing fence arrives — caching makes that
++	// remount free. The cap is conservative (~10 MB worst case at 100 KB
++	// per diagram, well-shaped diagrams are 5-30 KB).
++	//
++	// Mermaid bakes its uniqueId into internal element ids and `url(#x)`
++	// refs throughout the SVG; storing the original uniqueId alongside
++	// the SVG lets us substitute a fresh one per insertion so two
++	// in-DOM instances of the same source can't collide on document-
++	// scoped ids (`url(#x)` / `xlink:href="#x"` resolve to the first
++	// match in document order, so collisions silently break gradients,
++	// arrowheads, and markers on the second instance).
++	const _mermaidSvgCache: Map<string, { svg: string; baseId: string }> = new Map();
++	const _MERMAID_CACHE_MAX = 100;
++
+ 	const streamdown = useStreamdown();
+ 
+ 	const {
+@@ -20,7 +38,12 @@
  
  	let mermaid = $state<any>(null);
  	onMount(async () => {
@@ -69,6 +157,99 @@ index 8f6382c3ff28fe730c73a3285f77752fcc540d3a..a2ddc09f0776883de15549737b656ec4
  	});
  
  	const useIsInsideForMoreThanAQuarterSecond = () => {
+@@ -160,33 +183,71 @@
+ 			// Sanitize the code first
+ 			const sanitizedCode = sanitizeMermaidCode(code);
+ 
+-			// Default configuration
+-			const defaultConfig: MermaidConfig = {
+-				theme: 'base',
+-				startOnLoad: false,
+-				securityLevel: 'strict',
+-				fontFamily: 'monospace',
+-				suppressErrorRendering: true,
+-
+-				flowchart: {
+-					useMaxWidth: true,
+-					htmlLabels: true,
+-					curve: 'basis'
+-				},
+-				...(streamdown.mermaidConfig || {})
+-			};
+-
+-			// Initialize mermaid with merged config
+-			mermaid.initialize(defaultConfig);
+-
+ 			const chartHash = code.split('').reduce((acc, char) => {
+ 				return ((acc << 5) - acc + char.charCodeAt(0)) | 0;
+ 			}, 0);
+ 
+ 			const uniqueId = `mermaid-${Math.abs(chartHash)}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+ 
+-			// Render the diagram
+-			const { svg: svgString } = await mermaid.render(uniqueId, sanitizedCode);
++			// Cache key includes theme because the same source under a
++			// different theme produces different SVG output (mermaid bakes
++			// the palette into the rendered SVG). Custom `streamdown.mermaidConfig`
++			// fields beyond theme are not part of the key — callers that
++			// override flowchart curves / fontFamily for the same diagram
++			// across instances should bust the cache themselves by varying
++			// the source text.
++			const themeKey = (streamdown.mermaidConfig?.theme as string | undefined) || 'base';
++			const cacheKey = `${themeKey}:${sanitizedCode}`;
++
++			let svgString: string;
++			const cached = _mermaidSvgCache.get(cacheKey);
++			if (cached) {
++				// LRU bump — touching a hit moves it to the most-recent
++				// position so the eviction pass at line below drops stale
++				// entries first.
++				_mermaidSvgCache.delete(cacheKey);
++				_mermaidSvgCache.set(cacheKey, cached);
++				// Rewrite the baked-in uniqueId across both `id="…"`
++				// attributes and `url(#…)` / `xlink:href="#…"` refs so
++				// concurrent in-DOM instances of the same source don't
++				// collide on document-scoped fragment ids. `split-join`
++				// is the simplest correct rewrite — `replaceAll` exists
++				// but split-join is universally available even on older
++				// runtime targets.
++				svgString = cached.svg.split(cached.baseId).join(uniqueId);
++			} else {
++				// Default configuration
++				const defaultConfig: MermaidConfig = {
++					theme: 'base',
++					startOnLoad: false,
++					securityLevel: 'strict',
++					fontFamily: 'monospace',
++					suppressErrorRendering: true,
++
++					flowchart: {
++						useMaxWidth: true,
++						htmlLabels: true,
++						curve: 'basis'
++					},
++					...(streamdown.mermaidConfig || {})
++				};
++
++				// Initialize mermaid with merged config
++				mermaid.initialize(defaultConfig);
++
++				// Render the diagram
++				const result = await mermaid.render(uniqueId, sanitizedCode);
++				svgString = result.svg;
++				_mermaidSvgCache.set(cacheKey, { svg: svgString, baseId: uniqueId });
++				// Bounded eviction. Drop the oldest entry (Map iteration
++				// order is insertion order, so `.keys().next().value` is
++				// the LRU entry after the bump-on-hit above).
++				while (_mermaidSvgCache.size > _MERMAID_CACHE_MAX) {
++					const firstKey = _mermaidSvgCache.keys().next().value;
++					if (firstKey === undefined) break;
++					_mermaidSvgCache.delete(firstKey);
++				}
++			}
+ 
+ 			// Insert the SVG into the target element
+ 			const svgTarget = element.querySelector('[data-mermaid-svg]') as SVGElement;
 diff --git a/dist/Streamdown.svelte b/dist/Streamdown.svelte
 index b11c35036bd44f047f19b3b5576b3096ed937874..be81277e1a7622c116c3d707978b70fb2bc228dc 100644
 --- a/dist/Streamdown.svelte
@@ -187,7 +368,7 @@ index 1131b2c3261d104c151289c31e126dea2167ab30..4325191ac0af03ce76ab8c114fb68c1d
          return getContext('POPOVER')
              ? undefined
 diff --git a/dist/marked/index.js b/dist/marked/index.js
-index fe8c295baecc3f82c02f7b401325fb32a88514e8..86ece064a98bd7049dcb2339863138e922f1dc23 100644
+index fe8c295baecc3f82c02f7b401325fb32a88514e8..3afa89debab17b9675e8a3b6636139844352ec44 100644
 --- a/dist/marked/index.js
 +++ b/dist/marked/index.js
 @@ -1,4 +1,8 @@
@@ -199,19 +380,44 @@ index fe8c295baecc3f82c02f7b401325fb32a88514e8..86ece064a98bd7049dcb2339863138e9
  import { markedAlert } from './marked-alert.js';
  import { markedFootnote } from './marked-footnotes.js';
  import { markedMath } from './marked-math.js';
-@@ -48,7 +52,7 @@ export const lex = (markdown, extensions = []) => {
-         .lex(markdown)
-         .filter((token) => token.type !== 'space' && token.type !== 'footnote');
- };
- export const parseBlocks = (markdown, extensions = []) => {
-     const blockLexer = new Lexer(parseExtensions(markedHr, ...markedFootnote(), markedDl, markedTable, markedAlign, markedMdx, ...extensions.filter(({ level, applyInBlockParsing }) => level === 'block' && applyInBlockParsing)));
-     return blockLexer.blockTokens(markdown, []).reduce((acc, block) => {
-         if (block.type === 'space' || block.type === 'footnote') {
-@@ -58,4 +62,4 @@ export const parseBlocks = (markdown, extensions = []) => {
-         }
-         return acc;
-     }, []);
- };
+diff --git a/dist/marked/marked-math.js b/dist/marked/marked-math.js
+index 893ba7e456c000e18817c495e8949733ac18efde..1b4288fa6fa4c038787850d2c3e33af20d346810 100644
+--- a/dist/marked/marked-math.js
++++ b/dist/marked/marked-math.js
+@@ -1,6 +1,19 @@
+ // Math parsing rules
+-// Block math: supports both newline format ($$\nmath\n$$) and single-line format ($$math$$)
+-const blockRule = /^(\$\$)(?:\n((?:\\[\s\S]|[^\\])+?)\n\1(?:\n|$)|([^$\n]+?)\1(?=\s|$|$))/;
++// Block math: three alternatives, tried left-to-right (lazy quantifiers + leftmost-first).
++//   Alt 1 (group 2): $$\nCONTENT\n$$  — canonical multiline form.
++//   Alt 2 (group 3): $$CONTENT$$       — single-line, content excludes $ and \n.
++//   Alt 3 (group 4): $$CONTENT$$       — content may include $ AND \n. Closing $$ must
++//                                       be followed by \n or end-of-string so we don't
++//                                       over-match adjacent inline $$X$$ on the same line
++//                                       (those still go through Alt 2 with its trailing
++//                                       whitespace lookahead, which fires first).
++// Alt 3 was added to handle LLM-emitted matrices like `$$ \begin{pmatrix}...\n...\n$$`,
++// which open with a space (not newline) and contain internal newlines — neither legacy
++// alternative accepted that shape, so the block fell through to plain paragraph rendering
++// (the user-visible "math starts to render then turns back into raw markdown" symptom
++// during streaming, where the inline rule briefly matched a single-line prefix before
++// the first newline arrived).
++const blockRule = /^(\$\$)(?:\n((?:\\[\s\S]|[^\\])+?)\n\1(?:\n|$)|([^$\n]+?)\1(?=\s|$|$)|([\s\S]+?)\1(?=\n|$))/;
+ // Inline math: handles both single ($) and double ($$) dollar delimiters
+ // Avoids matching currency by checking context and requiring proper content
+ const inlineRule = /^(\${1,2})(?!\$)((?:[^$\n]|\\\$)*?)\1(?!\d)/;
+@@ -22,8 +35,9 @@ export const markedMath = [
+         tokenizer(src) {
+             const match = src.match(blockRule);
+             if (match) {
+-                // match[2] is multiline format, match[3] is single-line format
+-                const content = (match[2] || match[3]).trim();
++                // match[2] = newline-delimited, match[3] = single-line no-newline,
++                // match[4] = flexible form (content may contain newlines / inner $).
++                const content = (match[2] || match[3] || match[4]).trim();
+                 return {
+                     type: 'math',
+                     isInline: false,
 diff --git a/dist/marked/marked-subsup.js b/dist/marked/marked-subsup.js
 index 7e63670452888e539d36d95e8580eeba09eb20b2..f823cb14b3791a644a317c66e69c636b0ba8bdee 100644
 --- a/dist/marked/marked-subsup.js

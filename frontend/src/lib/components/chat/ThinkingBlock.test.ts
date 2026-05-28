@@ -1,9 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
-import { tick } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import ThinkingBlock from './ThinkingBlock.svelte';
+import { __setSmoothingClockForTest } from '../../stores/thread.svelte';
+import type { SmoothingClock } from '../../markdown/smoothing/PerItemSmoother';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+
+class FakeSmoothingClock implements SmoothingClock {
+  private current = 0;
+  private nextHandle = 1;
+  private pending = new Map<number, () => void>();
+  now(): number { return this.current; }
+  schedule(cb: () => void): number {
+    const h = this.nextHandle++;
+    this.pending.set(h, cb);
+    return h;
+  }
+  cancel(h: number): void { this.pending.delete(h); }
+  tickFrame(ms: number): void {
+    this.current += ms;
+    const toFire = [...this.pending.values()];
+    this.pending.clear();
+    for (const cb of toFire) cb();
+  }
+  pendingCount(): number { return this.pending.size; }
+}
 
 describe('<ThinkingBlock>', () => {
   beforeEach(() => {
@@ -87,24 +109,64 @@ describe('<ThinkingBlock>', () => {
   });
 
   it('stays tail-clamped through the streaming → settled boundary', async () => {
-    const baseItem = makeItem({
-      kind: 'thinking',
-      status: 'streaming',
-      summary: 'live delta text',
-      payloadId: 'thinking-payload',
-    });
-    const { container, rerender } = render(ThinkingBlock, {
-      props: { item: baseItem },
-    });
+    // Exercises the streaming → completed transition through the pane
+    // reducer so the live-tail path (pane.liveThinkingTailForItem) and
+    // the smoother disposal path both fire. Without the `pane` prop
+    // ThinkingBlock falls through to `item.summary` and never reads
+    // the live tail, so the test silently bypassed the very code path
+    // its name implies it covers.
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    try {
+      const thinking = makeItem({
+        id: 'think:0:0',
+        kind: 'thinking',
+        status: 'streaming',
+        summary: '',
+        payloadId: 'thinking-payload',
+        updatedAt: 1,
+      });
+      const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
 
-    let body = container.querySelector('[data-testid="thinking-body"]');
-    expect(body?.className).toMatch(/max-h-\[3lh\]/);
+      const { container, rerender } = render(ThinkingBlock, {
+        props: { pane, item: pane.items[0] },
+      });
 
-    await rerender({ item: { ...baseItem, status: 'completed' } });
-    await tick();
+      pane.applyItemDelta({
+        threadId: 'thread-1',
+        itemId: 'think:0:0',
+        kind: 'thinking',
+        delta: 'live delta text ',
+        updatedAt: 2,
+      });
+      let safety = 500;
+      while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+      await rerender({ pane, item: pane.items[0] });
+      await tick();
 
-    body = container.querySelector('[data-testid="thinking-body"]');
-    expect(body?.className).toMatch(/max-h-\[3lh\]/);
+      let body = container.querySelector('[data-testid="thinking-body"]');
+      expect(body?.className).toMatch(/max-h-\[3lh\]/);
+      expect(body?.textContent).toContain('live delta text');
+      expect(pane.liveThinkingTailForItem('think:0:0')).not.toBeNull();
+
+      pane.applyItemPatch({
+        threadId: 'thread-1',
+        itemId: 'think:0:0',
+        kind: 'thinking',
+        patch: { status: 'completed', updatedAt: 3 },
+      });
+      await rerender({ pane, item: pane.items[0] });
+      await tick();
+
+      body = container.querySelector('[data-testid="thinking-body"]');
+      expect(body?.className).toMatch(/max-h-\[3lh\]/);
+      expect(body?.textContent).toContain('live delta text');
+      // Smoother disposed on the bare-status patch — body now reads
+      // the persisted summary, not the (now-cleared) live tail.
+      expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+    } finally {
+      __setSmoothingClockForTest(undefined);
+    }
   });
 
   it('renders the live item summary as the body content during streaming', () => {
@@ -201,6 +263,10 @@ describe('<ThinkingBlock>', () => {
       delta: ' live',
       updatedAt: 2,
     });
+    // Smoothing routes streaming text through a per-item rAF smoother;
+    // flush it so the live-payload tail update (driven by the smoother
+    // reveal callback) lands before the assertion.
+    pane.__flushItemSmoothersForTest();
     await rerender({ pane, item: pane.items[0] });
     await tick();
     expect(container.querySelector('[data-testid="thinking-body"]')?.textContent).toBe('seed live');
@@ -217,6 +283,7 @@ describe('<ThinkingBlock>', () => {
       delta: ' collapsed',
       updatedAt: 3,
     });
+    pane.__flushItemSmoothersForTest();
     await rerender({ pane, item: pane.items[0] });
     await tick();
     expect(container.querySelector('[data-testid="thinking-body"]')?.textContent).toBe('seed live collapsed');
@@ -279,11 +346,99 @@ describe('<ThinkingBlock>', () => {
       delta: ' more',
       updatedAt: 2,
     });
+    pane.__flushItemSmoothersForTest();
     await rerender({ pane, item: pane.items[0] });
     await tick();
 
     expect(container.querySelector('[data-testid="thinking-body"]')?.textContent)
       .toBe('full payload before live tail more');
+  });
+
+  it('renders smoother reveals past the 400-rune cap without calling __flushItemSmoothersForTest', async () => {
+    // Discriminator for the past-400-runes regression. Drives the
+    // per-item smoother via a fake rAF clock and asserts the rendered
+    // DOM body text grows past `THINKING_TAIL_RUNES` (=400) — the
+    // bound on `item.summary` — without the test-only flush helper
+    // (which clears the live-tail map and forces a fallback read of
+    // the bounded summary). Proves the full reactivity chain works
+    // end-to-end:
+    //   PerItemSmoother.onReveal
+    //     → pane.itemLiveThinkingTail.set (SvelteMap)
+    //     → pane.liveThinkingTailForItem(id) read inside
+    //     → ThinkingBlock's `bodyText` $derived
+    //     → DOM textContent
+    // If this passes while item.summary stays <= 400, the collapsed
+    // view is reading the live tail rather than the trimmed summary.
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    try {
+      const thinking = makeItem({
+        id: 'think:0:0',
+        threadId: 'thread-1',
+        kind: 'thinking',
+        role: 'assistant',
+        status: 'streaming',
+        summary: '',
+        payloadId: 'thinking-payload',
+        updatedAt: 1,
+      });
+      const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
+
+      const { container } = render(ThinkingBlock, {
+        props: { pane, item: pane.items[0] },
+      });
+
+      const words: string[] = [];
+      for (let i = 0; i < 100; i++) words.push(`tok${String(i).padStart(2, '0')}`);
+      // Sample at 30 / 60 / 100 to prove per-tick DOM growth — a
+      // regression where Svelte batched updates to end-of-stream
+      // would leave the early samples empty and only fill at the
+      // final flush.
+      const samples: number[] = [];
+      const sampleAt = new Set([30, 60, 100]);
+      for (let i = 0; i < words.length; i++) {
+        pane.applyItemDelta({
+          threadId: 'thread-1',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: words[i] + ' ',
+          updatedAt: 100 + i,
+        });
+        clock.tickFrame(16);
+        if (sampleAt.has(i + 1)) {
+          flushSync();
+          const body = container.querySelector('[data-testid="thinking-body"]');
+          samples.push(body?.textContent?.length ?? 0);
+        }
+      }
+      while (clock.pendingCount() > 0) clock.tickFrame(16);
+
+      flushSync();
+      await tick();
+
+      expect(pane.items[0].summary.length).toBeLessThanOrEqual(400);
+      const liveTail = pane.liveThinkingTailForItem('think:0:0');
+      expect(liveTail).not.toBeNull();
+      expect(liveTail!.length).toBeGreaterThan(400);
+
+      const body = container.querySelector('[data-testid="thinking-body"]');
+      expect(body).not.toBeNull();
+      const rendered = body!.textContent ?? '';
+      expect(rendered.length).toBeGreaterThan(400);
+      // The DOM should mirror the live tail, not the trimmed summary.
+      expect(rendered.length).toBe(liveTail!.length);
+      // Mid-stream samples must show monotonic growth and must already
+      // exceed the 400-rune cap by the final mid-stream checkpoint —
+      // otherwise the DOM only catches up at the final flush (the
+      // exact symptom the user reported).
+      expect(samples).toHaveLength(3);
+      expect(samples[0]).toBeGreaterThan(0);
+      expect(samples[1]).toBeGreaterThan(samples[0]);
+      expect(samples[2]).toBeGreaterThan(samples[1]);
+      expect(samples[2]).toBeGreaterThan(400);
+    } finally {
+      __setSmoothingClockForTest(undefined);
+    }
   });
 
   it('copies the refreshed completed payload when a row settles while expanded', async () => {

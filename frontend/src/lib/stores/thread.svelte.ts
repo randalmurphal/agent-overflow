@@ -1,4 +1,4 @@
-import type { Item, Project, Thread } from '../types/models';
+import type { Item, ItemKind, Project, Thread } from '../types/models';
 import { asProviderID } from '../types/providers';
 import type { Checkpoint } from '../types/checkpoint';
 import type {
@@ -119,6 +119,21 @@ import {
 import { createThreadDesignState } from './threadDesignState.svelte';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
+import { SvelteMap } from 'svelte/reactivity';
+import {
+  PerItemSmoother,
+  type SmoothingClock,
+} from '../markdown/smoothing/PerItemSmoother';
+
+// Test-only injection: when set, every PerItemSmoother created by
+// `getOrCreateSmoothing` uses this clock instead of the default rAF +
+// performance.now() pair. Lets reveal-cadence tests run deterministically
+// without globally monkey-patching browser APIs.
+let smoothingClockForTest: SmoothingClock | undefined;
+
+export function __setSmoothingClockForTest(clock: SmoothingClock | undefined): void {
+  smoothingClockForTest = clock;
+}
 
 /**
  * Default raw-item budget passed to `ListItemsBeforeTurn` for an
@@ -368,6 +383,17 @@ interface ThreadPaneOptions {
 }
 
 /**
+ * Per-item smoothing handle stored in the pane's `itemSmoothers` map.
+ * Holds the PerItemSmoother plus a closure setter that lets
+ * `applyItemDelta` push the latest wire `updatedAt` into the
+ * smoother's reveal callback without re-creating the closure.
+ */
+interface ItemSmoothing {
+  smoother: PerItemSmoother;
+  setLatestUpdatedAt(at: number): void;
+}
+
+/**
  * Creates a self-contained thread pane state instance.
  * Each pane tracks its own thread, unified timeline items, approvals,
  * context/banner state, and mode-specific UI. Components receive a
@@ -388,6 +414,29 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     return index === undefined ? undefined : items[index];
   }
   const rowUiState = createThreadRowUiState({ getItemById });
+  // Per-item streaming smoothers keyed by item id. Created lazily on
+  // the first streaming delta for a smoothable row (assistant_text /
+  // thinking); disposed on row removal, status snap, or pane clear.
+  // Sibling to itemIndexById / rowUiState so all three life-cycle
+  // ride the same clear paths.
+  const itemSmoothers: Map<string, ItemSmoothing> = new Map();
+  // Live full revealed text for streaming thinking rows, keyed by item
+  // id. Sibling to `itemSmoothers`: written from every onReveal and
+  // deleted on every smoother dispose path. Decouples the collapsed
+  // ThinkingBlock render from `items[].summary` (which is trimmed to
+  // THINKING_TAIL_RUNES for memory and persistence). The trimmed summary
+  // sliding-window forces the collapsed `<span>{bodyText}</span>` to
+  // re-wrap its full string on every reveal — `whitespace-pre-wrap`
+  // + `max-h-[3lh] overflow-hidden` + `scrollTop = scrollHeight` then
+  // shifts the visible 3 lines wholesale whenever a char drop near the
+  // start lets a word cross a wrap boundary, producing the user-visible
+  // "5 words appear at once past 400 runes" symptom. Reading the live
+  // tail instead gives the span monotonically-growing content so wrap
+  // layout never reshuffles older text — only the bottom 3 lines scroll
+  // up as content arrives. SvelteMap so Map.get inside a $derived
+  // re-runs on Map.set. Cleared in the same paths that clear
+  // itemSmoothers.
+  const itemLiveThinkingTail: SvelteMap<string, string> = new SvelteMap();
   const pendingInteractiveState = createThreadPendingInteractiveState();
   let contextWindow: ContextWindow | null = $state(null);
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`
@@ -592,6 +641,112 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     return true;
   }
 
+  function disposeSmootherFor(itemId: string): void {
+    const entry = itemSmoothers.get(itemId);
+    if (!entry) return;
+    entry.smoother.dispose();
+    itemSmoothers.delete(itemId);
+    itemLiveThinkingTail.delete(itemId);
+  }
+
+  function disposeAllSmoothers(): void {
+    for (const entry of itemSmoothers.values()) entry.smoother.dispose();
+    itemSmoothers.clear();
+    itemLiveThinkingTail.clear();
+  }
+
+  // Smoothable kinds: assistant_text + thinking. Tool calls, errors,
+  // notifications, etc. pass through directly — they have their own
+  // rendering and don't benefit from word-aligned reveal. Accepts a
+  // plain string because `Item.kind` is `ItemKind | string` to absorb
+  // unknown wire values without forcing a runtime guard at every site.
+  function shouldSmoothKind(kind: ItemKind | string): boolean {
+    return kind === 'assistant_text' || kind === 'thinking';
+  }
+
+  function getOrCreateSmoothing(
+    itemId: string,
+    initialReceived: string,
+  ): ItemSmoothing {
+    const existing = itemSmoothers.get(itemId);
+    if (existing) return existing;
+
+    // Closure state for this item's smoother. Updated by each delta
+    // and read inside `onReveal` so the row's `updatedAt` stays close
+    // to wire time even as the smoother lags.
+    let latestUpdatedAt = 0;
+    // Previous revealed text — passed as `previousLiveTail` when a
+    // thinking row's live-payload expansion is active so the live tail
+    // stays in sync with the smoothed cursor.
+    let previousRevealed = initialReceived;
+
+    const smoother = new PerItemSmoother({
+      initialReceived,
+      // Seed revealed = received so a mid-flight feature deploy or
+      // turn-resume sees no visible snap.
+      initialRevealed: initialReceived,
+      clock: smoothingClockForTest,
+      onReveal: (revealed, delta) => {
+        const idx = itemIndexById.get(itemId);
+        if (idx === undefined) {
+          smoother.dispose();
+          itemSmoothers.delete(itemId);
+          itemLiveThinkingTail.delete(itemId);
+          return;
+        }
+        const current = items[idx];
+        const prevRevealed = previousRevealed;
+        previousRevealed = revealed;
+        const nextSummary =
+          current.kind === 'thinking'
+            ? trimToTailRunes(revealed, THINKING_TAIL_RUNES)
+            : revealed;
+        // Keep the row's `updatedAt` monotonic. A status-only patch
+        // (e.g. bare `{status: 'completed', updatedAt: T}`) can land
+        // between deltas and bump `current.updatedAt` past the
+        // smoother's last-known wire delta; the older value must not
+        // overwrite it when the next rAF reveal lands.
+        const nextItem = {
+          ...current,
+          summary: nextSummary,
+          updatedAt: Math.max(latestUpdatedAt, current.updatedAt),
+        };
+        items[idx] = nextItem;
+        if (nextItem.kind === 'thinking') {
+          itemLiveThinkingTail.set(itemId, revealed);
+          rowUiState.appendLivePayloadDeltaForItem(
+            nextItem.id,
+            THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+            delta,
+            thinkingPayloadVersionForItem(nextItem),
+            prevRevealed,
+          );
+        }
+        // Auto-cleanup once the stream has settled AND the smoother has
+        // caught up. After that point no more deltas will arrive and
+        // the smoother is dormant; holding the map slot would just
+        // wait for the next thread switch. Terminal-status paths
+        // (upsert reconcile and `applyItemPatch`'s snap branch) both
+        // dispose synchronously before any further rAF fires, so this
+        // never tramples an authoritative summary.
+        if (current.status !== 'streaming' && smoother.isCaughtUp()) {
+          smoother.dispose();
+          itemSmoothers.delete(itemId);
+          itemLiveThinkingTail.delete(itemId);
+        }
+      },
+    });
+
+    const entry: ItemSmoothing = {
+      smoother,
+      setLatestUpdatedAt(at) {
+        latestUpdatedAt = at;
+      },
+    };
+    itemSmoothers.set(itemId, entry);
+    return entry;
+  }
+
   function upsertItemsBatch(incoming: Item[]): ApplyItemUpsertsToWindowResult | null {
     if (incoming.length === 0) return null;
 
@@ -618,6 +773,37 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
     }
     timelineRevision++;
+
+    // Reconcile per-item smoothers with the upsert state. A completion /
+    // failure upsert replaces items[index] entirely, so a still-running
+    // smoother would write stale partial reveals back over the new
+    // summary on its next tick. Dispose on any terminal-status upsert.
+    // For streaming upserts whose summary extends what the smoother has
+    // already received, append the suffix so the smoother continues
+    // toward the new target; on a non-extending mismatch, dispose so
+    // the next delta seeds a fresh smoother from the new summary.
+    if (itemSmoothers.size > 0) {
+      for (const it of next.changedItems) {
+        const entry = itemSmoothers.get(it.id);
+        if (!entry) continue;
+        if (it.status !== 'streaming') {
+          entry.smoother.dispose();
+          itemSmoothers.delete(it.id);
+          itemLiveThinkingTail.delete(it.id);
+          continue;
+        }
+        if (!shouldSmoothKind(it.kind)) continue;
+        const received = entry.smoother.getReceived();
+        if (it.summary === received) continue;
+        if (it.summary.length > received.length && it.summary.startsWith(received)) {
+          entry.smoother.appendDelta(it.summary.slice(received.length));
+        } else {
+          entry.smoother.dispose();
+          itemSmoothers.delete(it.id);
+          itemLiveThinkingTail.delete(it.id);
+        }
+      }
+    }
 
     // Design-mode side-channel: scan assistant text for structured
     // `aoflow-design` payloads and project them onto pane state. Cheap
@@ -900,6 +1086,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       hasMoreHistory = false;
     }
     rowUiState.clear();
+    disposeAllSmoothers();
     loadingOlder = false;
     return { cached, sliceAnchorId };
   }
@@ -1333,6 +1520,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       draftPlaceholder = null;
       replaceTimelineItems([]);
       rowUiState.clear();
+      disposeAllSmoothers();
       pendingInteractiveState.clear();
       contextWindow = null;
       providerBanner = undefined;
@@ -1733,6 +1921,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (idx === undefined) return null;
       const removed = items[idx];
       replaceTimelineItems(items.filter((it) => it.id !== itemId));
+      disposeSmootherFor(itemId);
       if (thread) {
         threadItemCache.evict(thread.id);
       }
@@ -1763,10 +1952,28 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
       if (removed.length === 0) return removed;
       replaceTimelineItems(kept);
+      for (const r of removed) disposeSmootherFor(r.id);
       if (thread) {
         threadItemCache.evict(thread.id);
       }
       return removed;
+    },
+
+    /**
+     * Test-only synchronous flush of every per-item streaming smoother
+     * in this pane. Snaps each active smoother so items[].summary
+     * reflects the full received text immediately, then disposes the
+     * entry. Used by tests that assert summary content right after
+     * applying deltas without waiting for the smoother's rAF schedule.
+     * Not part of the production surface.
+     */
+    __flushItemSmoothersForTest(): void {
+      for (const [id, entry] of itemSmoothers) {
+        entry.smoother.snap();
+        entry.smoother.dispose();
+        itemSmoothers.delete(id);
+        itemLiveThinkingTail.delete(id);
+      }
     },
 
     applyItemDelta(evt: ItemDeltaEvent): void {
@@ -1789,27 +1996,28 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       const current = items[index];
       if (current.status !== 'streaming') return;
 
-      let nextSummary = current.summary + evt.delta;
-      if (current.kind === 'thinking') {
-        nextSummary = trimToTailRunes(nextSummary, THINKING_TAIL_RUNES);
+      // Tool calls, errors, notifications, etc. bypass the smoother —
+      // they have their own renderers and don't benefit from
+      // word-aligned reveal. Replace the entry rather than mutating in
+      // place so virtua's per-row ResizeObserver stays quiet on
+      // unchanged rows; the streaming row is genuinely growing, so a
+      // fresh reference is the correct signal.
+      if (!shouldSmoothKind(current.kind)) {
+        items[index] = {
+          ...current,
+          summary: current.summary + evt.delta,
+          updatedAt: evt.updatedAt,
+        };
+        return;
       }
-      // Replace the entry rather than mutating in place: threadItemCache
-      // snapshots items by reference and the chat surface depends on
-      // reference equality for virtua's per-row ResizeObserver to stay
-      // quiet on unchanged rows. The streaming row is genuinely growing,
-      // so a fresh reference for the row whose content changed is the
-      // correct signal.
-      const nextItem = { ...current, summary: nextSummary, updatedAt: evt.updatedAt };
-      items[index] = nextItem;
-      if (nextItem.kind === 'thinking') {
-        rowUiState.appendLivePayloadDeltaForItem(
-          nextItem.id,
-          THINKING_PAYLOAD_EXPANSION_STATE_KEY,
-          evt.delta,
-          thinkingPayloadVersionForItem(nextItem),
-          current.summary,
-        );
-      }
+
+      // Smoothable kinds (assistant_text + thinking): route the wire
+      // delta through the per-item smoother. The smoother's onReveal
+      // callback owns all subsequent writes to items[index].summary
+      // and to the live payload tail.
+      const entry = getOrCreateSmoothing(evt.itemId, current.summary);
+      entry.setLatestUpdatedAt(evt.updatedAt);
+      entry.smoother.appendDelta(evt.delta);
     },
 
     applyItemMeta(evt: ItemMetaEvent): void {
@@ -1838,11 +2046,88 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (!evt.itemId) return;
       if (thread && evt.threadId !== thread.id) return;
       const index = itemIndexById.get(evt.itemId);
-      if (index === undefined) return;
+      if (index === undefined) {
+        // Patch arrived for a row we no longer track (race after
+        // removal). Make sure any orphaned smoother is cleaned up.
+        disposeSmootherFor(evt.itemId);
+        return;
+      }
       const current = items[index];
+      const smoothing = itemSmoothers.get(evt.itemId);
+      const nextStatus = evt.patch.status;
+      // `errored`, `killed`, and `declined` all represent terminal
+      // states where the user has either explicitly stopped the
+      // stream or the provider failed it. In all three, we want the
+      // already-streamed text to be fully visible before the patch's
+      // summary (which may include an "[interrupted] " prefix or
+      // similar) takes over — so snap synchronously and dispose.
+      const isSnapStatus =
+        nextStatus === 'errored' ||
+        nextStatus === 'killed' ||
+        nextStatus === 'declined';
+
+      // Cancel / interrupt / error: synchronously reveal everything in
+      // the smoother before applying the patch, then dispose. The
+      // patch's own summary (e.g. "[interrupted] …") then lands as
+      // the final visible text without being overwritten by a trailing
+      // rAF tick.
+      if (smoothing && isSnapStatus) {
+        smoothing.smoother.snap();
+        disposeSmootherFor(evt.itemId);
+      } else if (smoothing && evt.patch.summary !== undefined) {
+        // Status flipping to completed (or any non-snap patch) may
+        // carry a final summary. If it extends what the smoother has
+        // already received, push the suffix as a delta so the smoother
+        // finishes the reveal naturally. If it doesn't extend (an
+        // overwrite or a backwards correction), snap and dispose so
+        // the patch's summary wins cleanly.
+        const received = smoothing.smoother.getReceived();
+        const patchSummary = evt.patch.summary;
+        if (
+          patchSummary !== received &&
+          patchSummary.startsWith(received)
+        ) {
+          if (evt.patch.updatedAt !== undefined) {
+            smoothing.setLatestUpdatedAt(evt.patch.updatedAt);
+          }
+          smoothing.smoother.appendDelta(patchSummary.slice(received.length));
+        } else if (patchSummary !== received) {
+          smoothing.smoother.snap();
+          disposeSmootherFor(evt.itemId);
+        }
+      } else if (
+        smoothing &&
+        nextStatus !== undefined &&
+        nextStatus !== 'streaming' &&
+        smoothing.smoother.isCaughtUp()
+      ) {
+        // Bare status patch transitioning out of streaming with no
+        // summary (e.g. `{status: 'completed', updatedAt: T}`). The
+        // `onReveal` auto-cleanup only fires on a subsequent rAF tick;
+        // if the smoother is already caught up, no further ticks will
+        // arrive and the `itemSmoothers` + `itemLiveThinkingTail`
+        // entries would leak until the next thread switch. Non-caught-
+        // up smoothers keep streaming text and dispose via `onReveal`
+        // once they catch up (the status check at line 732).
+        disposeSmootherFor(evt.itemId);
+      }
+
       const next = { ...current };
       if (evt.patch.status !== undefined) next.status = evt.patch.status;
-      if (evt.patch.summary !== undefined) next.summary = evt.patch.summary;
+      if (evt.patch.summary !== undefined) {
+        // If a smoother is still active for this item AND the patch
+        // summary was absorbed as a smoother delta above (extends
+        // received), let the smoother own the visible summary write.
+        // Otherwise (no smoother, snapped, or overwrite path), apply
+        // the patch summary directly. After-snap, items[index].summary
+        // already contains the full revealed text; the patch summary
+        // then replaces it with the final wire shape (e.g. interrupted
+        // prefix).
+        const stillSmoothing = itemSmoothers.has(evt.itemId);
+        if (!stillSmoothing) {
+          next.summary = evt.patch.summary;
+        }
+      }
       if (evt.patch.meta !== undefined) next.meta = evt.patch.meta;
       if (evt.patch.decision !== undefined) next.decision = evt.patch.decision;
       if (evt.patch.updatedAt !== undefined) next.updatedAt = evt.patch.updatedAt;
@@ -1856,6 +2141,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
     toggleSubagentGroupExpanded: rowUiState.toggleSubagentGroupExpanded,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
+    // Live smoother-revealed text for a streaming thinking row.
+    // Returns null when no smoother is active (settled rows, non-thinking
+    // rows, pre-stream cache hits) — callers fall back to `item.summary`.
+    // See `itemLiveThinkingTail` for why ThinkingBlock prefers this over
+    // the trimmed-summary sliding window.
+    liveThinkingTailForItem(itemId: string): string | null {
+      return itemLiveThinkingTail.get(itemId) ?? null;
+    },
 
     setGeneralError(message: string | null): void {
       generalError = message;

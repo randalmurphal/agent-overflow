@@ -49,14 +49,23 @@
 
   const isStreaming = $derived(item.status === 'streaming');
 
-  // Body text source. `item.summary` is the bounded live tail: it is the
-  // only source used while collapsed. After expansion, the full payload
-  // comes from SQLite and future deltas append into the expansion handle.
-  // While the row is still streaming, merge the live tail over the full
-  // payload so a stale read cannot hide text that was already visible in
-  // the collapsed row.
+  // Body text source. For the collapsed view we prefer the per-pane
+  // live smoother tail — it grows monotonically with the smoother's
+  // revealed text, so the CSS clip (`max-h-[3lh] overflow-hidden`)
+  // can scroll older lines off the top without `whitespace-pre-wrap`
+  // re-wrapping a sliding-window string and shifting visible content
+  // wholesale. `item.summary` is trimmed to THINKING_TAIL_RUNES for
+  // memory/persistence; reading it directly produces the user-reported
+  // "5 words appear at once past 400 runes" symptom because every
+  // reveal recomputes wrap for the full bounded string. The live-tail
+  // map is non-null only while the smoother is active; fall back to
+  // `item.summary` once the stream settles (the smoother disposes and
+  // the trimmed tail is the persisted final value).
+  // After expansion, the full payload comes from SQLite and future
+  // deltas append into the expansion handle.
   const bodyText = $derived.by<string>(() => {
-    const live = item.summary ?? '';
+    const summary = item.summary ?? '';
+    const live = pane?.liveThinkingTailForItem(item.id) ?? summary;
     const persisted = expansion.displayData ?? '';
     if (!expanded) return live;
     if (isStreaming) return mergeStreamingExpandedText(persisted, live);

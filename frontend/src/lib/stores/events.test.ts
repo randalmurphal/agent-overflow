@@ -271,6 +271,10 @@ describe('setupEventListeners', () => {
       updatedAt: 123,
     });
     await nextFrame();
+    // Smoothing routes streaming text through a per-item rAF smoother;
+    // flush it so the assertion sees the fully revealed accumulated text.
+    paneA.__flushItemSmoothersForTest();
+    paneB.__flushItemSmoothersForTest();
 
     expect(paneA.items.find((it) => it.id === 'text:0:0')?.summary).toBe('hello world');
     expect(paneB.items.find((it) => it.id === 'text:0:0')?.summary).toBe('hello');
@@ -664,6 +668,7 @@ describe('setupEventListeners', () => {
       updatedAt: 2,
     });
     await nextFrame();
+    pane.__flushItemSmoothersForTest();
     expect(pane.items.find((item) => item.id === 'text-1')?.summary).toBe('yield timeouts');
 
     emitWailsEvent('provider:item_event', {
@@ -685,6 +690,7 @@ describe('setupEventListeners', () => {
       updatedAt: 3,
     });
     await nextFrame();
+    pane.__flushItemSmoothersForTest();
 
     expect(pane.items.find((item) => item.id === 'text-1')?.summary).toBe('yield timeouts');
   });
@@ -728,6 +734,7 @@ describe('setupEventListeners', () => {
       updatedAt: 3,
     });
     await nextFrame();
+    pane.__flushItemSmoothersForTest();
 
     // The events.ts batch flushes pending deltas around every upsert
     // boundary (`flushPendingDeltas()` at the upsert, then
@@ -819,6 +826,7 @@ describe('setupEventListeners', () => {
       updatedAt: 5,
     });
     await nextFrame();
+    pane.__flushItemSmoothersForTest();
 
     expect(deltaSpy).toHaveBeenCalledOnce();
     expect(metaSpy).toHaveBeenCalledOnce();

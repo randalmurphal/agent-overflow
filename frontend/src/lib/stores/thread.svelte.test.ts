@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
-import { createThreadPane, LIVE_TODO_AUTOHIDE_MS } from './thread.svelte';
+import {
+  __setSmoothingClockForTest,
+  createThreadPane,
+  LIVE_TODO_AUTOHIDE_MS,
+} from './thread.svelte';
+import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
 import {
   hasRuntimeModeDraft,
   resetRuntimeModeDraftsForTest,
@@ -35,6 +40,43 @@ function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => resolve());
   });
+}
+
+// FakeClock for smoothing reveal tests. Mirrors the same shape as
+// PerItemSmoother.test.ts so per-tick assertions are deterministic.
+class FakeSmoothingClock implements SmoothingClock {
+  private current = 0;
+  private nextHandle = 1;
+  private pending = new Map<number, () => void>();
+  now(): number { return this.current; }
+  schedule(cb: () => void): number {
+    const h = this.nextHandle++;
+    this.pending.set(h, cb);
+    return h;
+  }
+  cancel(h: number): void { this.pending.delete(h); }
+  tickFrame(ms: number): void {
+    this.current += ms;
+    const toFire = [...this.pending.values()];
+    this.pending.clear();
+    for (const cb of toFire) cb();
+  }
+  pendingCount(): number { return this.pending.size; }
+}
+
+// Helper: how much *new content* appeared at the end of `cur` that
+// wasn't already at the end of `prev`. Computed by finding the longest
+// suffix of `prev` that's also a prefix of `cur`, and returning the
+// length of `cur` past that match. Used by smoothing tests to verify
+// per-tick reveal granularity once the trim engages.
+function smoothingNewTailChars(prev: string, cur: string): number {
+  const max = Math.min(prev.length, cur.length);
+  for (let overlap = max; overlap > 0; overlap--) {
+    if (prev.endsWith(cur.slice(0, overlap))) {
+      return cur.length - overlap;
+    }
+  }
+  return cur.length;
 }
 
 function designFence(payload: unknown): string {
@@ -1017,6 +1059,10 @@ describe('createThreadPane', () => {
       delta: '!',
       updatedAt: 124,
     });
+    // Smoothing routes streaming text through a per-item rAF smoother;
+    // flush it synchronously so the assertion sees the fully revealed
+    // accumulated text rather than the partial mid-reveal.
+    pane.__flushItemSmoothersForTest();
     await nextFrame();
 
     // Replace-pattern semantics: deltas write `items[index] = { ...current, summary }`,
@@ -1053,6 +1099,9 @@ describe('createThreadPane', () => {
       delta: bigChunk,
       updatedAt: 100,
     });
+    // Drain the smoother so the trim-to-tail logic in its reveal
+    // callback has actually written through to the row.
+    pane.__flushItemSmoothersForTest();
 
     const after = pane.items.find((item) => item.id === 'think:0:0')?.summary ?? '';
     expect([...after].length).toBe(400);
@@ -1075,8 +1124,10 @@ describe('createThreadPane', () => {
       delta: ' world',
       updatedAt: 123,
     });
-    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('hello world');
-
+    // The streaming-delta path goes through the smoother and the row's
+    // summary catches up on rAF. The completion upsert below carries
+    // the authoritative final summary, so the visible result snaps
+    // through it regardless of how much the smoother had revealed.
     pane.upsertItem(makeItem({
       id: 'text:0:0',
       kind: 'assistant_text',
@@ -3099,6 +3150,809 @@ describe('createThreadPane', () => {
 
       expect(pane.items[0].meta).toBe('{"toolName":"Bash","task_id":"t1"}');
       expect(pane.items[0].decision).toBe('approved');
+    });
+
+    it('reveals the full extending summary when status flips to completed mid-smooth', async () => {
+      // A completed-status patch is intentionally NOT in the snap set:
+      // the smoother is left running so the trailing characters reveal
+      // naturally instead of snapping. The patch's summary, if it
+      // extends what the smoother has already received, is appended as
+      // a delta — and the patch's `summary` field is not written
+      // directly to items[index] because the smoother now owns the
+      // visible summary. Once the stream is fully revealed, the
+      // smoother disposes itself. Without that handoff the row would
+      // be stuck at the mid-stream cursor when the smoother eventually
+      // ticked the auto-cleanup branch.
+      const pane = await buildPane(makeThread({ id: 'thread-patch' }));
+      pane.upsertItem(makeItem({
+        id: 'text:0:0',
+        threadId: 'thread-patch',
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'initial',
+        updatedAt: 1,
+      }));
+
+      pane.applyItemDelta({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        delta: ' middle',
+        updatedAt: 2,
+      });
+
+      pane.applyItemPatch({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        patch: {
+          status: 'completed',
+          summary: 'initial middle and the final tail',
+          updatedAt: 3,
+        },
+      });
+
+      pane.__flushItemSmoothersForTest();
+
+      expect(pane.items[0].summary).toBe('initial middle and the final tail');
+      expect(pane.items[0].status).toBe('completed');
+      expect(pane.items[0].updatedAt).toBe(3);
+    });
+
+    it('snaps and lets the patch summary win on a non-extending completion overwrite', async () => {
+      // When `completed` arrives with a summary that does NOT extend
+      // what the smoother already received (a backwards correction or
+      // a wholesale rewrite), the smoother snaps so its in-flight
+      // reveal doesn't trample the patch, and the patch summary is
+      // written through to items[index] as the final wire shape.
+      const pane = await buildPane(makeThread({ id: 'thread-patch' }));
+      pane.upsertItem(makeItem({
+        id: 'text:0:0',
+        threadId: 'thread-patch',
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'initial received',
+        updatedAt: 1,
+      }));
+
+      pane.applyItemDelta({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        delta: ' more streamed',
+        updatedAt: 2,
+      });
+
+      pane.applyItemPatch({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        patch: {
+          status: 'completed',
+          summary: 'completely different final wording',
+          updatedAt: 3,
+        },
+      });
+
+      expect(pane.items[0].summary).toBe('completely different final wording');
+      expect(pane.items[0].status).toBe('completed');
+    });
+
+    it('snaps on errored status and lets the interrupted-prefix patch summary win', async () => {
+      // Snap-status terminal patches (errored / killed / declined)
+      // synchronously reveal the smoother's full received text before
+      // writing the patch summary. The patch summary often carries an
+      // "[interrupted] …" prefix or similar; it must land as the final
+      // visible text, not be overwritten by a trailing reveal.
+      const pane = await buildPane(makeThread({ id: 'thread-patch' }));
+      pane.upsertItem(makeItem({
+        id: 'text:0:0',
+        threadId: 'thread-patch',
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'partial reveal so far',
+        updatedAt: 1,
+      }));
+
+      pane.applyItemDelta({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        delta: ' more',
+        updatedAt: 2,
+      });
+
+      pane.applyItemPatch({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        patch: {
+          status: 'errored',
+          summary: '[interrupted] partial reveal so far',
+          updatedAt: 3,
+        },
+      });
+
+      expect(pane.items[0].summary).toBe('[interrupted] partial reveal so far');
+      expect(pane.items[0].status).toBe('errored');
+    });
+
+    it('handles a bare status-only completion patch (no summary) on a smoothing row', async () => {
+      // A completion patch may arrive with only `status` and `updatedAt`
+      // — no `summary`. The smoother is left running with the items
+      // status already flipped; on the next natural rAF tick (or
+      // synchronous flush) the smoother reveals the remaining received
+      // characters and the onReveal auto-cleanup branch disposes the
+      // entry once `current.status !== 'streaming' && isCaughtUp()`.
+      const pane = await buildPane(makeThread({ id: 'thread-patch' }));
+      pane.upsertItem(makeItem({
+        id: 'text:0:0',
+        threadId: 'thread-patch',
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'seed',
+        updatedAt: 1,
+      }));
+
+      pane.applyItemDelta({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        delta: ' more',
+        updatedAt: 2,
+      });
+
+      pane.applyItemPatch({
+        threadId: 'thread-patch',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        patch: { status: 'completed', updatedAt: 3 },
+      });
+
+      pane.__flushItemSmoothersForTest();
+
+      expect(pane.items[0].summary).toBe('seed more');
+      expect(pane.items[0].status).toBe('completed');
+      expect(pane.items[0].updatedAt).toBe(3);
+    });
+  });
+
+  describe('thinking smoothing past the 400-rune tail cap', () => {
+    function buildWords(n: number): string[] {
+      // Short ~5-char words separated by spaces. ~6 chars per word means
+      // 70 words ≈ 420 chars — enough to push past THINKING_TAIL_RUNES=400.
+      const out: string[] = [];
+      for (let i = 0; i < n; i++) out.push(`word${String(i).padStart(2, '0')}`);
+      return out;
+    }
+
+    it('keeps writing items[].summary in word-sized advances after revealed > 400 runes', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-think' }));
+        // Simulate the firstBlock upsert (Go-side initial thinking row),
+        // then a long sequence of wire deltas — same shape Claude produces
+        // for reasoning that flows past the 400-rune tail.
+        const initial = 'seed ';
+        pane.upsertItem(makeItem({
+          id: 'think:0:0',
+          threadId: 'thread-think',
+          kind: 'thinking',
+          role: 'assistant',
+          status: 'streaming',
+          summary: initial,
+          payloadId: 'thinking:think:0:0',
+          updatedAt: 1,
+        }));
+
+        const words = buildWords(80); // ~7 chars × 80 ≈ 560 chars total.
+        // Stream each word as its own wire delta with a few rAF frames
+        // between them. This mimics Claude's bursty reasoning text where
+        // 5–50 char chunks arrive every 30–100 ms.
+        const summaryAtTick: { tick: number; len: number }[] = [];
+        let frameCount = 0;
+        for (let i = 0; i < words.length; i++) {
+          pane.applyItemDelta({
+            threadId: 'thread-think',
+            itemId: 'think:0:0',
+            kind: 'thinking',
+            delta: words[i] + ' ',
+            updatedAt: 100 + i,
+          });
+          // Run a handful of rAF frames per wire delta so the smoother
+          // gets a chance to reveal between deltas. 6 frames × 16ms = 96ms.
+          for (let f = 0; f < 6; f++) {
+            clock.tickFrame(16);
+            frameCount++;
+            summaryAtTick.push({
+              tick: frameCount,
+              len: pane.items[0].summary.length,
+            });
+          }
+        }
+        // Drain remaining lag.
+        while (clock.pendingCount() > 0) {
+          clock.tickFrame(16);
+          frameCount++;
+          summaryAtTick.push({
+            tick: frameCount,
+            len: pane.items[0].summary.length,
+          });
+        }
+
+        // Sanity: by the end, summary should equal the trimmed tail of the
+        // full received text.
+        const fullText = initial + words.map((w) => w + ' ').join('');
+        const expectedTail = fullText.slice(-400);
+        expect(pane.items[0].summary).toBe(expectedTail);
+
+        // The smoother is the *only* writer to items[idx].summary for
+        // thinking. Per-tick advances after each reveal land in word-sized
+        // increments at the base rate (160 cps × 16ms ≈ 2.5 chars; word
+        // units round up to ~7 chars). If anything in the pipeline starts
+        // bypassing the smoother past the trim cap, we'd see a jump
+        // equal to one wire delta (~7 chars) appear "all at once" without
+        // the matching per-tick growth that precedes it.
+        //
+        // Find every transition where summary GREW (length increased).
+        // Before the trim engages (summary < 400), growth jumps are
+        // exactly the word advance. After the trim engages, summary
+        // stays pinned at 400 chars but its CONTENT shifts — the
+        // length-delta-only check no longer suffices, so we instead
+        // verify that *no single tick* added more than ~14 chars (2
+        // word-units worth) to either the length OR the trailing slice.
+        let maxLengthJump = 0;
+        let maxContentJump = 0;
+        let prevSummary = initial;
+        // Walk all rAF ticks again to also inspect content (not just len).
+        // We approximate by replaying from the recorded snapshot: read the
+        // *current* summary after each tick. But pane state has progressed
+        // past the loop, so use the final state for content-jump checks
+        // via getOrCreateSmoothing's revealed history — we don't have
+        // that here. Instead, do a SECOND clean run with a fresh pane and
+        // capture summary at each frame.
+        {
+          // Reset and re-run with snapshot capture.
+          const clock2 = new FakeSmoothingClock();
+          __setSmoothingClockForTest(clock2);
+          const pane2 = await buildPane(makeThread({ id: 'thread-think-2' }));
+          pane2.upsertItem(makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-think-2',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: initial,
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }));
+          let prev = initial;
+          for (let i = 0; i < words.length; i++) {
+            pane2.applyItemDelta({
+              threadId: 'thread-think-2',
+              itemId: 'think:0:0',
+              kind: 'thinking',
+              delta: words[i] + ' ',
+              updatedAt: 100 + i,
+            });
+            for (let f = 0; f < 6; f++) {
+              clock2.tickFrame(16);
+              const cur = pane2.items[0].summary;
+              // Length jump (positive only — trim might shrink it back
+              // to 400, which we don't penalize).
+              const lenJump = Math.max(0, cur.length - prev.length);
+              maxLengthJump = Math.max(maxLengthJump, lenJump);
+              // Content jump: how much new text appeared at the END
+              // relative to the previous summary. After trim, prev and
+              // cur are both 400-char tails; new content is the part of
+              // cur that doesn't overlap prev as a suffix-of-prev
+              // prefix-of-cur match.
+              const contentJump = smoothingNewTailChars(prev, cur);
+              maxContentJump = Math.max(maxContentJump, contentJump);
+              prev = cur;
+            }
+          }
+          while (clock2.pendingCount() > 0) {
+            clock2.tickFrame(16);
+            const cur = pane2.items[0].summary;
+            const lenJump = Math.max(0, cur.length - prev.length);
+            maxLengthJump = Math.max(maxLengthJump, lenJump);
+            const contentJump = smoothingNewTailChars(prev, cur);
+            maxContentJump = Math.max(maxContentJump, contentJump);
+            prev = cur;
+          }
+          // Reference the unused vars so lint stays clean.
+          void prevSummary;
+          void summaryAtTick;
+        }
+        // Word units in our test are 7 chars (e.g. "word00 "). Adaptive
+        // catch-up can fire several word units in one tick when lag is
+        // high, but should not approach the ~50+ chars/tick that wire
+        // deltas would produce if the smoother were bypassed. Cap at
+        // 28 chars (~4 word units in one frame) — well below "5 words
+        // appearing as a chunk".
+        expect(maxLengthJump).toBeLessThanOrEqual(28);
+        expect(maxContentJump).toBeLessThanOrEqual(28);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('does not produce wire-chunk-sized reveals when Claude bursts faster than the base rate', async () => {
+      // Reproduces the user-reported regression: past ~400 chars, thinking
+      // text appears in chunks "exactly like the old behavior before any
+      // smoothing changes" — 5 words, pause, 15 words. The hypothesis is
+      // that the adaptive catch-up math (`drain lag in 500ms`) scales the
+      // per-tick reveal proportional to lag, so a wire that bursts faster
+      // than the 160 cps base rate eventually settles at a steady-state
+      // lag where per-tick = wire_rate * (16/500) — for a 2000 cps wire,
+      // that's 64 chars (~10 words) per tick.
+      //
+      // Wire pattern is realistic: 50-char wire bursts arriving every
+      // 25ms (= 2000 cps sustained, close to Claude's burst rate for
+      // reasoning text). Streamed for ~1.5s so we walk well past the
+      // 400-rune trim cap and reach steady-state lag.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-burst' }));
+        pane.upsertItem(makeItem({
+          id: 'think:0:0',
+          threadId: 'thread-burst',
+          kind: 'thinking',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          payloadId: 'thinking:think:0:0',
+          updatedAt: 1,
+        }));
+
+        // 50-char wire bursts with realistic word distribution (5–8 char
+        // words separated by spaces). Each burst is ~7 words.
+        function makeBurst(seed: number): string {
+          const sizes = [4, 7, 5, 6, 8, 5, 7];
+          const out: string[] = [];
+          let used = 0;
+          let i = 0;
+          while (used < 50) {
+            const sz = sizes[(seed + i) % sizes.length];
+            const word = 'a'.repeat(sz);
+            out.push(word);
+            used += sz + 1; // +1 for space
+            i++;
+          }
+          return out.join(' ') + ' ';
+        }
+
+        let maxContentJump = 0;
+        let maxLengthJump = 0;
+        let prev = '';
+        let burstIdx = 0;
+        // Wire arrives every 25ms; tick rAF every 16ms. We loop over a
+        // 1500ms simulated window, emitting a wire burst on the 25ms
+        // cadence and a rAF on the 16ms cadence (interleaved by time).
+        const totalMs = 1500;
+        const wireIntervalMs = 25;
+        const rafIntervalMs = 16;
+        let nextWireAt = 0;
+        let nextRafAt = 0;
+        let elapsed = 0;
+        const measure = () => {
+          const cur = pane.items[0].summary;
+          const lenJump = Math.max(0, cur.length - prev.length);
+          const contentJump = smoothingNewTailChars(prev, cur);
+          maxLengthJump = Math.max(maxLengthJump, lenJump);
+          maxContentJump = Math.max(maxContentJump, contentJump);
+          prev = cur;
+        };
+        while (elapsed < totalMs) {
+          if (nextWireAt <= nextRafAt) {
+            const dt = nextWireAt - elapsed;
+            if (dt > 0) {
+              clock.tickFrame(dt);
+              elapsed += dt;
+              // Measure after every clock advance so per-tick reveals
+              // are observed individually — without this, several
+              // smoother ticks could fire between two rAF-branch
+              // measurements and the recorded "jump" would be the sum
+              // of all of them.
+              measure();
+            }
+            const burst = makeBurst(burstIdx++);
+            pane.applyItemDelta({
+              threadId: 'thread-burst',
+              itemId: 'think:0:0',
+              kind: 'thinking',
+              delta: burst,
+              updatedAt: 100 + burstIdx,
+            });
+            nextWireAt = elapsed + wireIntervalMs;
+          } else {
+            const dt = nextRafAt - elapsed;
+            if (dt > 0) {
+              clock.tickFrame(dt);
+              elapsed += dt;
+              measure();
+            }
+            nextRafAt = elapsed + rafIntervalMs;
+          }
+        }
+        // Drain any remaining lag.
+        while (clock.pendingCount() > 0) {
+          clock.tickFrame(16);
+          measure();
+        }
+
+        // "5 words show up" ≈ 30 chars; "15 more words" ≈ 90 chars.
+        // A healthy smoother should stay under ~14 chars/tick (about 2
+        // words) even under steady-state burst. The cap inside
+        // `PerItemSmoother.tick()` is what enforces this; without it,
+        // adaptive math at lag ~= wire_rate * (catchup_ms / 1000)
+        // produces 60–100+ chars/tick under sustained 2000 cps bursts
+        // and the user perceives those as chunks of 5–15 words.
+        expect(maxLengthJump).toBeLessThanOrEqual(14);
+        expect(maxContentJump).toBeLessThanOrEqual(14);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('reveals a single small wire delta over multiple ticks past 400 runes', async () => {
+      // Reproduces the user's "5 words in one chunk even when only 5
+      // words streamed" report. The smoother is past the trim threshold
+      // and caught up (revealed == received, lag = 0). A SINGLE small
+      // wire delta (≈5 words) arrives. With base rate 160 cps and the
+      // per-tick cap of 14 chars, those 5 words must reveal over at
+      // least ~5 rAF ticks (~80ms), never as one DOM update.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-think-burst' }));
+        // Seed the item with > 400 chars already in the summary so the
+        // trim is already engaged. The smoother starts caught up
+        // (initialRevealed = initialReceived = seed), so this isolates
+        // the per-tick reveal of the NEXT delta.
+        const seedWords: string[] = [];
+        for (let i = 0; i < 80; i++) seedWords.push(`word${String(i).padStart(2, '0')}`);
+        const seed = seedWords.join(' ') + ' ';
+        expect(seed.length).toBeGreaterThan(400);
+        pane.upsertItem(makeItem({
+          id: 'think:0:0',
+          threadId: 'thread-think-burst',
+          kind: 'thinking',
+          role: 'assistant',
+          status: 'streaming',
+          summary: seed,
+          payloadId: 'thinking:think:0:0',
+          updatedAt: 1,
+        }));
+        // Seed the smoother by sending a zero-impact delta. The
+        // production path creates the smoother in applyItemDelta with
+        // initialReceived = current.summary = seed; revealed = seed.
+        // Lag = delta.length. We feed a single small 5-word burst.
+        const fiveWords = 'hello bright cosmic future today ';
+        pane.applyItemDelta({
+          threadId: 'thread-think-burst',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: fiveWords,
+          updatedAt: 2,
+        });
+
+        // Walk rAF ticks and record per-tick summary changes. Cap the
+        // walk well past the expected drain so we can verify the
+        // smoother caught up at the end.
+        const tickAdvances: number[] = [];
+        let prev = pane.items[0].summary;
+        for (let i = 0; i < 30 && clock.pendingCount() > 0; i++) {
+          clock.tickFrame(16);
+          const cur = pane.items[0].summary;
+          const advance = smoothingNewTailChars(prev, cur);
+          if (advance > 0) tickAdvances.push(advance);
+          prev = cur;
+        }
+
+        // Verify: the 5 words (33 chars) revealed over MULTIPLE ticks,
+        // with each tick's advance bounded by the cap. None should be
+        // the full 33-char delta.
+        expect(tickAdvances.length).toBeGreaterThanOrEqual(2);
+        for (const advance of tickAdvances) {
+          expect(advance).toBeLessThanOrEqual(14);
+        }
+        // Sanity: the trailing 5 words are now in the summary.
+        expect(pane.items[0].summary.endsWith(fiveWords)).toBe(true);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('drains the remaining smoother backlog after status flips to completed with an extending summary', async () => {
+      // The per-tick cap means catch-up can no longer outrun the wire
+      // — accumulated lag at completion time must still drain to the
+      // patch's extending summary. Verify the applyItemPatch
+      // extending-summary branch appends the suffix as a delta, the
+      // smoother continues at the capped rate, and the on-reveal
+      // auto-cleanup (`!streaming && isCaughtUp`) eventually fires so
+      // the row settles with the full final text and the smoother map
+      // doesn't strand a stale entry.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-drain' }));
+        pane.upsertItem(makeItem({
+          id: 'think:0:0',
+          threadId: 'thread-drain',
+          kind: 'thinking',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          payloadId: 'thinking:think:0:0',
+          updatedAt: 1,
+        }));
+        // Stream the first half (~150 chars) as deltas, then complete
+        // with an extending summary that adds another ~150 chars on
+        // top. This is the actual extending-summary path: smoother
+        // received < patchSummary AND patchSummary.startsWith(received).
+        const allWords: string[] = [];
+        for (let i = 0; i < 50; i++) allWords.push(`item${String(i).padStart(2, '0')}`);
+        const fullText = allWords.join(' ') + ' ';
+        const streamed = allWords.slice(0, 25).join(' ') + ' ';
+        pane.applyItemDelta({
+          threadId: 'thread-drain',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: streamed,
+          updatedAt: 2,
+        });
+        pane.applyItemPatch({
+          threadId: 'thread-drain',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', summary: fullText, updatedAt: 3 },
+        });
+
+        // Drain. With per-tick cap = 14 chars, ~300 chars takes ~22
+        // ticks (~350ms). Allow more to be safe.
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) {
+          clock.tickFrame(16);
+        }
+        // Final state: full text revealed (trimmed), status flipped,
+        // smoother auto-disposed (no leftover pending callbacks).
+        expect(pane.items[0].summary).toBe(fullText.slice(-400));
+        expect(pane.items[0].status).toBe('completed');
+        expect(clock.pendingCount()).toBe(0);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('exposes a monotonically-growing live tail past 400 runes for the collapsed view', async () => {
+      // Regression guard for the user-reported "5 words appear at once
+      // past 400 runes" symptom. The collapsed ThinkingBlock renders a
+      // `<span>{bodyText}</span>` inside `whitespace-pre-wrap` +
+      // `max-h-[3lh] overflow-hidden` + `scrollTop = scrollHeight`.
+      // When bodyText is `item.summary` past the trim threshold, the
+      // string is a sliding window — characters drop from the start as
+      // new ones arrive at the end. Even a single 1-char-per-tick
+      // reveal recomputes wrap for the full bounded string and can
+      // shift the visible 3 lines wholesale when a word at the start
+      // crosses a wrap boundary. `pane.liveThinkingTailForItem` exposes
+      // the smoother's full revealed text instead, which grows append-
+      // only — wrap layout never reshuffles older text and the visible
+      // window scrolls by exactly the per-tick reveal.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-live-tail' }));
+        pane.upsertItem(makeItem({
+          id: 'think:0:0',
+          threadId: 'thread-live-tail',
+          kind: 'thinking',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          payloadId: 'thinking:think:0:0',
+          updatedAt: 1,
+        }));
+
+        // Stream enough text to push well past 400 runes.
+        const words: string[] = [];
+        for (let i = 0; i < 100; i++) words.push(`tok${String(i).padStart(2, '0')}`);
+        // Feed in word-by-word so the smoother has lag throughout.
+        for (let i = 0; i < words.length; i++) {
+          pane.applyItemDelta({
+            threadId: 'thread-live-tail',
+            itemId: 'think:0:0',
+            kind: 'thinking',
+            delta: words[i] + ' ',
+            updatedAt: 100 + i,
+          });
+          clock.tickFrame(16);
+        }
+        // Drain remaining lag.
+        while (clock.pendingCount() > 0) clock.tickFrame(16);
+
+        const finalTail = pane.liveThinkingTailForItem('think:0:0');
+        // Smoother is still live (status === 'streaming') so the live
+        // tail must be populated and equal the full received text.
+        expect(finalTail).not.toBeNull();
+        expect(finalTail!.length).toBeGreaterThan(400);
+        // items[].summary is the trimmed sliding window; live tail is the
+        // full text. They must diverge in length once past the cap —
+        // proving the collapsed render no longer reads the bounded
+        // sliding-window source.
+        expect(pane.items[0].summary.length).toBeLessThanOrEqual(400);
+        expect(finalTail!.length).toBeGreaterThan(pane.items[0].summary.length);
+
+        // Now sample monotonic growth across a fresh run: at each tick
+        // the live tail must be a prefix-extension of the previous tail
+        // (append-only, never sliding window).
+        const clock2 = new FakeSmoothingClock();
+        __setSmoothingClockForTest(clock2);
+        const pane2 = await buildPane(makeThread({ id: 'thread-live-tail-2' }));
+        pane2.upsertItem(makeItem({
+          id: 'think:0:0',
+          threadId: 'thread-live-tail-2',
+          kind: 'thinking',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          payloadId: 'thinking:think:0:0',
+          updatedAt: 1,
+        }));
+        let prev = '';
+        let pastTrimSamples = 0;
+        let growthPastTrimSamples = 0;
+        for (let i = 0; i < words.length; i++) {
+          pane2.applyItemDelta({
+            threadId: 'thread-live-tail-2',
+            itemId: 'think:0:0',
+            kind: 'thinking',
+            delta: words[i] + ' ',
+            updatedAt: 100 + i,
+          });
+          for (let f = 0; f < 3; f++) {
+            clock2.tickFrame(16);
+            const cur = pane2.liveThinkingTailForItem('think:0:0') ?? '';
+            if (cur.length > 0) {
+              // Append-only invariant: previous tail is always a prefix
+              // of the new tail (no characters drop from the start).
+              expect(cur.startsWith(prev)).toBe(true);
+              if (cur.length > 400) pastTrimSamples++;
+              // Real growth past the trim threshold (not the smoother
+              // sitting idle re-reading the same value) — guards
+              // against a regression that quietly clamps the live tail
+              // to the trimmed-summary length.
+              if (cur.length > 400 && cur.length > prev.length) growthPastTrimSamples++;
+              prev = cur;
+            }
+          }
+        }
+        // We must have actually crossed the 400-rune threshold while
+        // sampling — otherwise the test doesn't exercise the regression
+        // path it claims to.
+        expect(pastTrimSamples).toBeGreaterThan(10);
+        // And the tail must have grown past the threshold more than
+        // once: a single growth tick crossing 400 followed by an idle
+        // smoother would still satisfy `pastTrimSamples > 10` because
+        // the same value is re-read many times. Real append-only
+        // behaviour produces growth on most reveals.
+        expect(growthPastTrimSamples).toBeGreaterThan(5);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('clears the live thinking tail when the smoother disposes on completion', async () => {
+      // Once the stream settles the smoother auto-disposes; the live
+      // tail map entry must drop with it so ThinkingBlock falls back to
+      // `item.summary` (the persisted trimmed tail) for the settled
+      // row. A stranded live-tail entry would keep the collapsed view
+      // showing the full pre-settle text indefinitely.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-tail-cleanup' }));
+        pane.upsertItem(makeItem({
+          id: 'think:0:0',
+          threadId: 'thread-tail-cleanup',
+          kind: 'thinking',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          payloadId: 'thinking:think:0:0',
+          updatedAt: 1,
+        }));
+        const words: string[] = [];
+        for (let i = 0; i < 80; i++) words.push(`tok${String(i).padStart(2, '0')}`);
+        const fullText = words.join(' ') + ' ';
+        pane.applyItemDelta({
+          threadId: 'thread-tail-cleanup',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: fullText,
+          updatedAt: 2,
+        });
+        pane.applyItemPatch({
+          threadId: 'thread-tail-cleanup',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', summary: fullText, updatedAt: 3 },
+        });
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.items[0].status).toBe('completed');
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('disposes the smoother on a bare status-completed patch with no summary', async () => {
+      // Regression for a leak in applyItemPatch: a status-only patch
+      // (e.g. Codex sometimes sends `{status: 'completed', updatedAt}`
+      // without re-asserting `summary` when the wire summary already
+      // matched what the smoother had received) took neither the snap
+      // branch (status isn't errored/killed/declined) nor the
+      // extend-or-snap branch (no summary). The `onReveal` auto-cleanup
+      // at the smoother factory site only runs on a subsequent rAF
+      // tick, so a smoother that's already caught up by the time the
+      // patch lands would never re-fire — the `itemSmoothers` and
+      // `itemLiveThinkingTail` entries leaked until the next thread
+      // switch, keeping the collapsed ThinkingBlock pinned to the
+      // pre-settle live text instead of falling back to the persisted
+      // summary.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-bare-status' }));
+        pane.upsertItem(makeItem({
+          id: 'think:0:0',
+          threadId: 'thread-bare-status',
+          kind: 'thinking',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          payloadId: 'thinking:think:0:0',
+          updatedAt: 1,
+        }));
+        pane.applyItemDelta({
+          threadId: 'thread-bare-status',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'reasoning text ',
+          updatedAt: 2,
+        });
+        // Drain to caught-up so the next onReveal auto-cleanup branch
+        // is unreachable — only the patch handler can dispose now.
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.liveThinkingTailForItem('think:0:0')).not.toBeNull();
+
+        pane.applyItemPatch({
+          threadId: 'thread-bare-status',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', updatedAt: 3 },
+        });
+
+        expect(pane.items[0].status).toBe('completed');
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+        // Drain again to confirm no zombie rAF ticks (a fresh tick
+        // after a leak would re-populate the live tail and re-fire
+        // onReveal against the disposed slot).
+        safety = 20;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
     });
   });
 

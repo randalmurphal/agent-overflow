@@ -34,7 +34,9 @@
   import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
   import StreamdownCodeHost from './markdown/StreamdownCodeHost.svelte';
   import StreamdownMermaidHost from './markdown/StreamdownMermaidHost.svelte';
+  import StreamdownMermaidHostDeferred from './markdown/StreamdownMermaidHostDeferred.svelte';
   import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
+  import StreamdownMathHostDeferred from './markdown/StreamdownMathHostDeferred.svelte';
   import { chatMarkdownTheme, extraShikiLanguages } from './markdown/streamdownTheme';
   import { unwrapMarkdownFence } from './markdown/unwrapMarkdownFence';
   import {
@@ -46,6 +48,7 @@
     buildPathLinkExtension,
   } from '../../utils/pathLinkExtension';
   import type { PathRef } from '../../types/models';
+  import { splitAtBoundary } from '../../markdown/boundary';
 
   let {
     source,
@@ -119,15 +122,66 @@
   const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX];
 
   const processedSource = $derived(unwrapMarkdownFence(source));
+
+  // Streaming-only block-boundary memoization. When `streaming === true`,
+  // the source is split at the last stable markdown block boundary
+  // (incremark's BoundaryDetector — vendored under
+  // `lib/markdown/boundary/`); the committed prefix is parsed once and
+  // never re-parses while streaming, and the volatile tail re-parses on
+  // every update with `parseIncompleteMarkdown` enabled to absorb
+  // half-typed fences / tables / setext underlines.
+  //
+  // The high-water mark of the committed prefix length lives on a plain
+  // (non-reactive) `let`. Derivations stay pure — they read the live
+  // length, ask `splitAtBoundary` for the split (which applies the
+  // monotonic guard internally), and an `$effect` writes the new
+  // high-water mark afterwards. The `splitDerived` value embeds the
+  // chosen prefix length directly so it doesn't need to be reactive.
+  let previousPrefixLength = 0;
+
+  const splitDerived = $derived.by(() => {
+    if (!streaming) {
+      return { prefix: processedSource, tail: '' };
+    }
+    // Source shrank below the committed prefix length (mid-flight
+    // trim — typically a tail-windowed source). Reset the high-water
+    // mark and render the new source whole; the next stable boundary
+    // on this row will re-commit. The mark write happens in the
+    // companion `$effect` so this derivation stays pure.
+    if (previousPrefixLength > processedSource.length) {
+      return { prefix: '', tail: processedSource };
+    }
+    return splitAtBoundary(processedSource, previousPrefixLength);
+  });
+
+  $effect(() => {
+    // Advance the monotonic high-water mark when the derivation
+    // produces a longer prefix; reset to 0 when the source shrank.
+    // The derivation is pure; this effect is the sole writer.
+    previousPrefixLength = splitDerived.prefix.length;
+  });
 </script>
 
-<div
-  bind:this={root}
-  class={['markdown-body', className].filter(Boolean).join(' ')}
->
+<!--
+  Both Streamdown instances share identical theme / extensions / safety
+  config; only `content` and `parseIncompleteMarkdown` differ between
+  the committed prefix (parsed once, completed) and the volatile tail
+  (re-parses with incomplete-markdown auto-close while streaming).
+  The snippet keeps the props in one place so a future tweak (theme,
+  link allowlist, host component) can't silently miss one half.
+
+  The volatile tail uses deferred hosts for math and mermaid: KaTeX and
+  mermaid render only on the committed prefix, so a half-typed matrix /
+  diagram in the tail never enters typesetting mid-chunk. Without this,
+  per-chunk KaTeX re-renders produced contentRO height deltas the
+  stick-to-bottom spring chased across the viewport. Code and prose
+  still stream live (code blocks keep their reactive shiki path, prose
+  keeps incremental markdown).
+-->
+{#snippet streamdownInstance(content: string, parseIncompleteMarkdown: boolean)}
   <Streamdown
-    content={processedSource}
-    parseIncompleteMarkdown={streaming}
+    {content}
+    {parseIncompleteMarkdown}
     baseTheme="tailwind"
     theme={chatMarkdownTheme}
     shikiLanguages={extraShikiLanguages}
@@ -139,8 +193,20 @@
     onsettled={handleSettled}
     components={{
       code: StreamdownCodeHost,
-      mermaid: StreamdownMermaidHost,
-      math: StreamdownMathHost,
+      mermaid: parseIncompleteMarkdown ? StreamdownMermaidHostDeferred : StreamdownMermaidHost,
+      math: parseIncompleteMarkdown ? StreamdownMathHostDeferred : StreamdownMathHost,
     }}
   />
+{/snippet}
+
+<div
+  bind:this={root}
+  class={['markdown-body', className].filter(Boolean).join(' ')}
+>
+  {#if splitDerived.prefix}
+    {@render streamdownInstance(splitDerived.prefix, false)}
+  {/if}
+  {#if splitDerived.tail || !splitDerived.prefix}
+    {@render streamdownInstance(splitDerived.tail, streaming)}
+  {/if}
 </div>
