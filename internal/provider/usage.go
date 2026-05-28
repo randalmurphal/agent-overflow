@@ -5,13 +5,13 @@ package provider
 // `rate_limits` carries a rate-limits snapshot folded onto the same channel
 // for future UI, but does not change the context ring.
 type UsageEvent struct {
-	Action                string              `json:"action"` // "usage" | "reset" | "rate_limits"
-	ThreadID              string              `json:"threadId"`
-	UsedTokens            int                 `json:"usedTokens,omitempty"`
-	MaxTokens             int                 `json:"maxTokens,omitempty"`
-	ContextPercent        float64             `json:"contextPercent,omitempty"`
-	AutoCompactPercent    int                 `json:"autoCompactPercent,omitempty"`
-	AutoCompactTokenLimit int                 `json:"autoCompactTokenLimit,omitempty"`
+	Action                string  `json:"action"` // "usage" | "reset" | "rate_limits"
+	ThreadID              string  `json:"threadId"`
+	UsedTokens            int     `json:"usedTokens,omitempty"`
+	MaxTokens             int     `json:"maxTokens,omitempty"`
+	ContextPercent        float64 `json:"contextPercent,omitempty"`
+	AutoCompactPercent    int     `json:"autoCompactPercent,omitempty"`
+	AutoCompactTokenLimit int     `json:"autoCompactTokenLimit,omitempty"`
 	// Exceeded is the wire signal that the model returned
 	// `ContextWindowExceeded` and the provider pegged usage to the window
 	// size as a sentinel. UI should render this distinctly from a real

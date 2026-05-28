@@ -8,7 +8,6 @@ import (
 	"strings"
 )
 
-
 // ErrSessionFileNotFound is returned when the JSONL for sessionID can't
 // be located on disk (neither in the workspace's project dir nor in any
 // other project dir under ~/.claude/projects/).

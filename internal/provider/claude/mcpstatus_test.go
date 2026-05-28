@@ -52,14 +52,14 @@ dispatch-gitlab: podman run --rm -i -v /home/rmurphy/local_secrets.json:/home/ri
 	results := parseMCPList(output, now)
 
 	want := map[string]mcpstatus.Status{
-		"claude.ai Gmail":               mcpstatus.StatusNeedsAuth,
-		"claude.ai Google Calendar":     mcpstatus.StatusNeedsAuth,
-		"claude.ai Google Drive":        mcpstatus.StatusNeedsAuth,
-		"plugin:playwright:playwright":  mcpstatus.StatusConnected,
-		"plugin:context7:context7":      mcpstatus.StatusConnected,
-		"code-index":                    mcpstatus.StatusConnected,
-		"dispatch-atlassian":            mcpstatus.StatusConnected,
-		"dispatch-gitlab":               mcpstatus.StatusConnected,
+		"claude.ai Gmail":              mcpstatus.StatusNeedsAuth,
+		"claude.ai Google Calendar":    mcpstatus.StatusNeedsAuth,
+		"claude.ai Google Drive":       mcpstatus.StatusNeedsAuth,
+		"plugin:playwright:playwright": mcpstatus.StatusConnected,
+		"plugin:context7:context7":     mcpstatus.StatusConnected,
+		"code-index":                   mcpstatus.StatusConnected,
+		"dispatch-atlassian":           mcpstatus.StatusConnected,
+		"dispatch-gitlab":              mcpstatus.StatusConnected,
 	}
 
 	if len(results) != len(want) {
