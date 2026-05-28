@@ -653,6 +653,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     timelineRevision++;
     return true;
   }
+  // Reveal-gate invariant: any wholesale `items` replacement that can
+  // change which top-level rows exist relative to a live smoother must
+  // pair with `recomputeReveal()` (or `disposeAllSmoothers()`, which
+  // clears the boundary). Current callers all hold this: switchThread /
+  // clear → disposeAllSmoothers; removeItem / removeItemsForTurns →
+  // recomputeReveal. The `loadOlder` merge is the deliberate exception —
+  // it only prepends OLDER rows (before any streaming frontier by
+  // (turnIndex, itemIndex)), which can be neither the frontier nor a
+  // gated successor, so the boundary is unaffected and no recompute is
+  // needed. A new mutation path that can append rows during a turn MUST
+  // call recomputeReveal — there is no reactive backstop (a parallel
+  // $effect over the timeline is forbidden; see frontend/CLAUDE.md).
 
   function disposeSmootherFor(itemId: string): void {
     const entry = itemSmoothers.get(itemId);
@@ -2084,6 +2096,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
     },
 
+    /**
+     * Test-only count of live per-item streaming smoothers. Lets dispose-
+     * contract regressions assert directly on the map size for kinds with
+     * no other observable (assistant_text has no live-tail accessor). Not
+     * part of the production surface.
+     */
+    __itemSmootherCountForTest(): number {
+      return itemSmoothers.size;
+    },
+
     applyItemDelta(evt: ItemDeltaEvent): void {
       if (!evt.itemId || !evt.delta) return;
       if (thread && evt.threadId !== thread.id) return;
@@ -2205,6 +2227,21 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         } else if (patchSummary !== received) {
           smoothing.smoother.snap();
           disposeSmootherFor(evt.itemId);
+        } else if (
+          nextStatus !== undefined &&
+          nextStatus !== 'streaming' &&
+          smoothing.smoother.isCaughtUp()
+        ) {
+          // patchSummary === received AND a terminal status AND nothing
+          // left to reveal. No further rAF tick will fire, so the
+          // onReveal auto-cleanup can't dispose — do it here or the
+          // smoother (and its itemLiveThinkingTail entry) leaks until the
+          // next thread switch. This is the Codex completion shape:
+          // content-block-stop carries ContentPresent=true, so
+          // doSettleStreamingText re-asserts the full summary (== what the
+          // smoother received). The bare-status branch below only covers
+          // the case where that equal summary is OMITTED from the patch.
+          disposeSmootherFor(evt.itemId);
         }
       } else if (
         smoothing &&
@@ -2228,7 +2265,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // reveal. Runs before the early `itemsAreEqual` return below.
       recomputeReveal();
 
-      const next = { ...current };
+      // Spread from items[index], NOT the pre-snap `current` capture: a
+      // snap above rewrote items[index].summary to the full revealed text
+      // via onReveal. Spreading `current` would discard that write, so a
+      // terminal patch that OMITS a summary (a kill/error that doesn't
+      // re-send text) would silently revert to the partial pre-snap
+      // summary and lose the already-streamed tail. With items[index] the
+      // snap's full text is the base; a present patch summary still
+      // overrides it below.
+      const next = { ...items[index] };
       if (evt.patch.status !== undefined) next.status = evt.patch.status;
       if (evt.patch.summary !== undefined) {
         // If a smoother is still active for this item AND the patch

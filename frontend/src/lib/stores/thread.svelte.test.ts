@@ -3954,6 +3954,106 @@ describe('createThreadPane', () => {
         __setSmoothingClockForTest(undefined);
       }
     });
+
+    it('disposes the smoother when a completed patch re-asserts the equal summary (Codex assistant_text)', async () => {
+      // The sibling of the bare-status leak test. Codex content-block-stop
+      // carries ContentPresent=true, so doSettleStreamingText re-asserts
+      // the full summary on the completion patch. When that summary equals
+      // what the smoother already received AND the smoother is caught up,
+      // the extend/snap branches are both skipped (summary === received)
+      // and the bare-status dispose branch is unreachable (it is an
+      // else-if after the summary branch). Before the fix the smoother
+      // leaked until the next thread switch. assistant_text has no
+      // live-tail observable, so assert on the smoother count directly.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-equal-text' }));
+        pane.upsertItem(makeItem({
+          id: 'text:0:0',
+          threadId: 'thread-equal-text',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          updatedAt: 1,
+        }));
+        pane.applyItemDelta({
+          threadId: 'thread-equal-text',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: 'hello world ',
+          updatedAt: 2,
+        });
+        // Drain to caught-up so the onReveal auto-cleanup can't fire later.
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+
+        pane.applyItemPatch({
+          threadId: 'thread-equal-text',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          patch: { status: 'completed', summary: 'hello world ', updatedAt: 3 },
+        });
+
+        expect(pane.items[0].status).toBe('completed');
+        expect(pane.items[0].summary).toBe('hello world ');
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        // No zombie rAF ticks left behind.
+        safety = 20;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('preserves the full revealed text when a snap-status patch omits a summary', async () => {
+      // Regression for the dead-snap discard: the isSnapStatus branch
+      // snaps the smoother (writing the full received text into
+      // items[index] via onReveal), but the final item was rebuilt from
+      // the PRE-snap `current` capture — discarding that write. A
+      // kill/error patch that carries no summary would then revert to the
+      // partial pre-snap text, losing the already-streamed tail. The fix
+      // rebuilds from items[index] so the snap survives.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-snap-nosum' }));
+        pane.upsertItem(makeItem({
+          id: 'text:0:0',
+          threadId: 'thread-snap-nosum',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: 'partial so far',
+          updatedAt: 1,
+        }));
+        // Append a tail the smoother has received but NOT yet revealed
+        // (no clock ticks fired), so snap has real work to do.
+        pane.applyItemDelta({
+          threadId: 'thread-snap-nosum',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: ' and then more',
+          updatedAt: 2,
+        });
+        // Kill with status only — no summary in the patch.
+        pane.applyItemPatch({
+          threadId: 'thread-snap-nosum',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          patch: { status: 'killed', updatedAt: 3 },
+        });
+        expect(pane.items[0].status).toBe('killed');
+        // The snap revealed everything; the no-summary patch must keep it.
+        expect(pane.items[0].summary).toBe('partial so far and then more');
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
   });
 
   it('appendSubagentNotification records pass-through payloads, bounded', () => {
