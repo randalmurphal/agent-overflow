@@ -20,9 +20,9 @@ func TestResolvePath(t *testing.T) {
 		wantErr   string
 	}{
 		{
-			name:    "absolute canonical passes through",
-			path:    "/etc/hosts",
-			want:    "/etc/hosts",
+			name: "absolute canonical passes through",
+			path: "/etc/hosts",
+			want: "/etc/hosts",
 		},
 		{
 			name:    "absolute non-canonical rejected",

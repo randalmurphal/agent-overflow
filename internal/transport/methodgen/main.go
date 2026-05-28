@@ -301,4 +301,3 @@ func NewMethodAllowList() map[string]bool {
 `)
 	return buf.Bytes(), nil
 }
-

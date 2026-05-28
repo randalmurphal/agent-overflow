@@ -140,7 +140,7 @@ func TestOpen_RejectsRelativePathWithoutWorkspace(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for relative path without workspace")
 	}
-	if !strings.Contains(err.Error(),"workspacePath") {
+	if !strings.Contains(err.Error(), "workspacePath") {
 		t.Fatalf("expected error to mention 'workspacePath', got %q", err.Error())
 	}
 }
@@ -217,7 +217,7 @@ func TestOpen_RejectsWorkspaceEscape(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for path that escapes workspace")
 	}
-	if !strings.Contains(err.Error(),"escapes workspace") {
+	if !strings.Contains(err.Error(), "escapes workspace") {
 		t.Fatalf("expected error to mention 'escapes workspace', got %q", err.Error())
 	}
 }
@@ -341,7 +341,7 @@ func TestOpen_RejectsRelativeWorkspace(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for relative workspacePath")
 	}
-	if !strings.Contains(err.Error(),"workspacePath must be absolute") {
+	if !strings.Contains(err.Error(), "workspacePath must be absolute") {
 		t.Fatalf("expected workspacePath error, got %q", err.Error())
 	}
 }
@@ -361,7 +361,7 @@ func TestOpen_RejectsTraversalPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for traversal path")
 	}
-	if !strings.Contains(err.Error(),"canonical") {
+	if !strings.Contains(err.Error(), "canonical") {
 		t.Fatalf("expected error to mention 'canonical', got %q", err.Error())
 	}
 }
@@ -594,8 +594,7 @@ func TestOpen_StartCommandFailureSurfacesEditorName(t *testing.T) {
 	// Error text must include the human-readable editor name so the
 	// frontend toast can render "Failed to launch VS Code: boom".
 	want := "VS Code"
-	if !strings.Contains(err.Error(),want) {
+	if !strings.Contains(err.Error(), want) {
 		t.Fatalf("expected error text to include %q; got %q", want, err.Error())
 	}
 }
-

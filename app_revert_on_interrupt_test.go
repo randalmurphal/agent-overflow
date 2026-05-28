@@ -346,7 +346,7 @@ func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing
 		t.Fatalf("interrupt-and-revert: %v", out.err)
 	}
 	if out.res.Reverted {
-		t.Fatalf("after handoff: expected refuse (M in flight), got Reverted=true; "+
+		t.Fatalf("after handoff: expected refuse (M in flight), got Reverted=true; " +
 			"the turn-starting prompt would have been discarded")
 	}
 

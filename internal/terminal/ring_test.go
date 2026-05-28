@@ -63,8 +63,8 @@ func TestRingBufferSnapshotIsCopy(t *testing.T) {
 // splits an append across the end of the backing array.
 func TestRingBufferAppendWrapAroundSplit(t *testing.T) {
 	r := newRingBuffer(8)
-	r.append([]byte("abcd"))    // fills positions 0..3
-	r.append([]byte("efghij"))  // last 2 bytes must wrap to positions 0..1
+	r.append([]byte("abcd"))   // fills positions 0..3
+	r.append([]byte("efghij")) // last 2 bytes must wrap to positions 0..1
 	got := r.snapshot()
 	if !bytes.Equal(got, []byte("cdefghij")) {
 		t.Fatalf("got %q, want cdefghij", got)

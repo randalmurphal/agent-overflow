@@ -124,8 +124,8 @@ fi
 `)
 	fs := &fakeFS{
 		files: map[string][]byte{
-			wslOSReleasePath:        []byte("5.15.146.1-microsoft-standard-WSL2"),
-			"/usr/local/bin/code":   shim,
+			wslOSReleasePath:      []byte("5.15.146.1-microsoft-standard-WSL2"),
+			"/usr/local/bin/code": shim,
 		},
 	}
 	paths := pathTable{"code": "/usr/local/bin/code"}
@@ -167,11 +167,11 @@ ELECTRON="/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/Code.exe"
 	userPath := "/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code"
 	fs := &fakeFS{
 		files: map[string][]byte{
-			wslOSReleasePath:                                                                                         []byte("5.15.146.1-microsoft-standard-WSL2"),
-			systemPath:                                                                                               brokenSystemShim,
+			wslOSReleasePath: []byte("5.15.146.1-microsoft-standard-WSL2"),
+			systemPath:       brokenSystemShim,
 			// system cli.js intentionally absent — half-uninstalled
-			userPath:                                                                                                 workingUserShim,
-			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/034f571df5/resources/app/out/cli.js":        []byte("// cli.js"),
+			userPath: workingUserShim,
+			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/034f571df5/resources/app/out/cli.js": []byte("// cli.js"),
 		},
 		dirs: map[string][]string{"/mnt/c/Users": {"alice"}},
 	}
@@ -280,9 +280,9 @@ func TestDetectEditors_SkipsDefaultUserDirectories(t *testing.T) {
 	defaultUserInstall := "/mnt/c/Users/Default/AppData/Local/Programs/Microsoft VS Code/bin/code"
 	fs := &fakeFS{
 		files: map[string][]byte{
-			wslOSReleasePath:    []byte("microsoft"),
-			defaultUserInstall:  []byte(""),
-			systemInstall:       []byte(""),
+			wslOSReleasePath:   []byte("microsoft"),
+			defaultUserInstall: []byte(""),
+			systemInstall:      []byte(""),
 		},
 		dirs: map[string][]string{
 			"/mnt/c/Users": {"Default", "Public", "All Users", "Default User"},
@@ -328,8 +328,8 @@ func TestDetectEditors_EnvFallback(t *testing.T) {
 func TestDetectEditors_VisualPreferredOverEditor(t *testing.T) {
 	fs := &fakeFS{}
 	paths := pathTable{
-		"code": "/usr/bin/code-fake",  // not on /mnt/c, not in detection table
-		"vim":  "/usr/bin/vim",
+		"code":  "/usr/bin/code-fake", // not on /mnt/c, not in detection table
+		"vim":   "/usr/bin/vim",
 		"emacs": "/usr/bin/emacs",
 	}
 	env := newDetectEnv(fs, paths, map[string]string{

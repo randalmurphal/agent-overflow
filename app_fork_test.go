@@ -118,7 +118,6 @@ func TestForkThreadRejectsThreadsWithoutMessages(t *testing.T) {
 	}
 }
 
-
 func TestForkThreadUsesActiveCodexSession(t *testing.T) {
 	app := newTestAppWithStore(t)
 

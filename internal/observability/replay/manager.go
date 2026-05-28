@@ -205,7 +205,6 @@ func (m *Manager) SetEnabled(v bool) {
 	m.mu.Unlock()
 }
 
-
 // Enqueue offers a record to the background writer. Returns true on success,
 // false when the queue is full or the manager is disabled/closed. When
 // Enqueue returns false the configured DropHook is invoked — callers should

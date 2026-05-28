@@ -58,9 +58,9 @@ type WatchEvent struct {
 // per active design thread. NewWatcher is the only allocation point;
 // callers Stop before allocating a replacement.
 type Watcher struct {
-	threadID string
+	threadID  string
 	threadDir string
-	emit     func(WatchEvent)
+	emit      func(WatchEvent)
 
 	ctx    context.Context
 	cancel context.CancelFunc

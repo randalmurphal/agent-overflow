@@ -77,10 +77,10 @@ type PathRef struct {
 // RE2 doesn't support lookbehind, so the safe-boundary rule moves to a
 // post-match check.
 //
-//   group 1 — optional leading `@` (presentation prefix)
-//   group 2 — the path body (what we validate and emit)
-//   group 3 — optional :line
-//   group 4 — optional :col
+//	group 1 — optional leading `@` (presentation prefix)
+//	group 2 — the path body (what we validate and emit)
+//	group 3 — optional :line
+//	group 4 — optional :col
 var pathPattern = regexp.MustCompile(`(@)?((?:\.{0,2}/|/)?[\w.\-~]+(?:/[\w.\-~]+)+)(?::(\d+)(?::(\d+))?)?`)
 
 // safeBoundary reports whether b can legitimately precede a path

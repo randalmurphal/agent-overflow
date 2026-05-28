@@ -29,7 +29,7 @@ func TestInsertItemPersistsParentID(t *testing.T) {
 
 	threadID := "thread-sub"
 	if err := s.CreateThread(Thread{
-		ProjectID: defaultTestProjectID, ID:            threadID,
+		ProjectID: defaultTestProjectID, ID: threadID,
 		Title:         "t",
 		Provider:      "claude",
 		WorkspacePath: "/tmp",
@@ -40,15 +40,15 @@ func TestInsertItemPersistsParentID(t *testing.T) {
 	}
 
 	item := Item{
-		ID:              "item-child",
-		ThreadID:        threadID,
-		TurnIndex:       0,
-		ItemIndex:       0,
+		ID:        "item-child",
+		ThreadID:  threadID,
+		TurnIndex: 0,
+		ItemIndex: 0,
 		Kind:      "assistant_text",
-		Role:            "assistant",
-		Summary:         "subagent body",
-		ParentID: "task_tool_42",
-		CreatedAt:       now,
+		Role:      "assistant",
+		Summary:   "subagent body",
+		ParentID:  "task_tool_42",
+		CreatedAt: now,
 	}
 	if err := s.InsertItem(item); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -72,7 +72,7 @@ func TestInsertItemEmptyParentIDRoundTrips(t *testing.T) {
 
 	threadID := "thread-top"
 	if err := s.CreateThread(Thread{
-		ProjectID: defaultTestProjectID, ID:            threadID,
+		ProjectID: defaultTestProjectID, ID: threadID,
 		Title:         "t",
 		Provider:      "claude",
 		WorkspacePath: "/tmp",
@@ -113,7 +113,7 @@ func TestListItemsPreservesParentID(t *testing.T) {
 
 	threadID := "thread-list"
 	if err := s.CreateThread(Thread{
-		ProjectID: defaultTestProjectID, ID:            threadID,
+		ProjectID: defaultTestProjectID, ID: threadID,
 		Title:         "t",
 		Provider:      "claude",
 		WorkspacePath: "/tmp",
@@ -131,7 +131,7 @@ func TestListItemsPreservesParentID(t *testing.T) {
 	}
 	if err := s.InsertItem(Item{
 		ID: "child-1", ThreadID: threadID, TurnIndex: 0, ItemIndex: 1,
-		Kind:      "assistant_text", Role: "assistant", Summary: "child result",
+		Kind: "assistant_text", Role: "assistant", Summary: "child result",
 		ParentID: "parent", CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert child: %v", err)
@@ -176,7 +176,7 @@ func TestItemIndexUniqueConstraintBlocksDuplicate(t *testing.T) {
 	// First insert is fine.
 	if err := s.InsertItem(Item{
 		ID: "i-a", ThreadID: "t-dup", TurnIndex: 0, ItemIndex: 0,
-		Kind:      "assistant_text", Role: "assistant", CreatedAt: now,
+		Kind: "assistant_text", Role: "assistant", CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestAppendItemReturnsAssignedIndex(t *testing.T) {
 	}
 
 	idxA, err := s.AppendItem(Item{
-		ID: "a", ThreadID: "t-ra", TurnIndex: 0, Kind:      "assistant_text",
+		ID: "a", ThreadID: "t-ra", TurnIndex: 0, Kind: "assistant_text",
 		Role: "assistant", CreatedAt: now,
 	})
 	if err != nil {
@@ -280,7 +280,7 @@ func TestAppendItemReturnsAssignedIndex(t *testing.T) {
 		t.Errorf("first append should return 0, got %d", idxA)
 	}
 	idxB, err := s.AppendItem(Item{
-		ID: "b", ThreadID: "t-ra", TurnIndex: 0, Kind:      "assistant_text",
+		ID: "b", ThreadID: "t-ra", TurnIndex: 0, Kind: "assistant_text",
 		Role: "assistant", CreatedAt: now,
 	})
 	if err != nil {
@@ -381,7 +381,7 @@ func TestAppendItemWithPayloadReturnsAssignedIndex(t *testing.T) {
 	}
 
 	idx, err := s.AppendItemWithPayload(Item{
-		ID: "a", ThreadID: "t-rap", TurnIndex: 0, Kind:      "tool_call",
+		ID: "a", ThreadID: "t-rap", TurnIndex: 0, Kind: "tool_call",
 		Role: "assistant", PayloadID: "pa", CreatedAt: now,
 	}, Payload{ID: "pa", Kind: "diff", Meta: "{}", Data: []byte("pa"), CreatedAt: now})
 	if err != nil {
@@ -391,7 +391,7 @@ func TestAppendItemWithPayloadReturnsAssignedIndex(t *testing.T) {
 		t.Errorf("first append index = %d, want 0", idx)
 	}
 	idx, err = s.AppendItemWithPayload(Item{
-		ID: "b", ThreadID: "t-rap", TurnIndex: 0, Kind:      "tool_call",
+		ID: "b", ThreadID: "t-rap", TurnIndex: 0, Kind: "tool_call",
 		Role: "assistant", PayloadID: "pb", CreatedAt: now,
 	}, Payload{ID: "pb", Kind: "diff", Meta: "{}", Data: []byte("pb"), CreatedAt: now})
 	if err != nil {

@@ -14,7 +14,6 @@ import (
 	"agent-overflow/internal/settings"
 )
 
-
 func TestStaleSessionDisconnectDoesNotRemoveReplacement(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-stale")

@@ -129,8 +129,8 @@ func TestWriteMockGhCLIResolvesMatchingSubcommand(t *testing.T) {
 	t.Parallel()
 
 	path := WriteMockGhCLI(t, t.TempDir(), map[string]string{
-		"pr view":  `{"number":42,"title":"Test PR"}`,
-		"pr list":  `[{"number":42}]`,
+		"pr view": `{"number":42,"title":"Test PR"}`,
+		"pr list": `[{"number":42}]`,
 	})
 
 	out, err := exec.Command(path, "pr", "view", "42", "--json", "number,title").Output()

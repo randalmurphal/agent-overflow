@@ -17,12 +17,12 @@ func nestedWorkspace(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
-		"a/b/c/deep.go":           "deep",
-		"a/b/middle.go":           "middle",
-		"a/top.go":                "top",
-		"src/components/App.tsx":  "App",
-		"src/utils/helper.ts":     "helper",
-		"README.md":               "readme",
+		"a/b/c/deep.go":          "deep",
+		"a/b/middle.go":          "middle",
+		"a/top.go":               "top",
+		"src/components/App.tsx": "App",
+		"src/utils/helper.ts":    "helper",
+		"README.md":              "readme",
 	}
 	for rel, body := range files {
 		full := filepath.Join(root, rel)

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"agent-overflow/internal/prthread"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/prthread"
 	"agent-overflow/internal/settings"
 )
 

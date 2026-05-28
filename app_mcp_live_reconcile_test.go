@@ -344,4 +344,3 @@ func trimToFirstLine(raw []byte) []byte {
 	}
 	return raw
 }
-

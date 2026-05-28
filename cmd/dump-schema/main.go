@@ -4,8 +4,9 @@
 // to diff against a long-lived production DB so drift becomes visible.
 //
 // Usage:
-//   go run ./cmd/dump-schema > /tmp/fresh_schema.sql
-//   go run ./cmd/dump-schema --db ~/.config/agent-overflow/agent-overflow.db > /tmp/live_schema.sql
+//
+//	go run ./cmd/dump-schema > /tmp/fresh_schema.sql
+//	go run ./cmd/dump-schema --db ~/.config/agent-overflow/agent-overflow.db > /tmp/live_schema.sql
 //
 // Throwaway. Delete after the squash lands.
 package main

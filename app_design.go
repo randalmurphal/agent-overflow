@@ -375,4 +375,3 @@ const (
 	maxDiagnosticFieldChars   = 8 * 1024
 	maxDiagnosticStackChars   = 32 * 1024
 )
-

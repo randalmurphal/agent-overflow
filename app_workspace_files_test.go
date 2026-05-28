@@ -21,10 +21,10 @@ func newWorkspaceFilesApp(t *testing.T) (*App, string) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	files := map[string]string{
-		"README.md":        "readme",
-		"src/main.ts":      "main",
-		"src/helper.ts":    "helper",
-		"package.json":     "{}",
+		"README.md":     "readme",
+		"src/main.ts":   "main",
+		"src/helper.ts": "helper",
+		"package.json":  "{}",
 	}
 	for path, body := range files {
 		full := filepath.Join(workspace, path)
@@ -37,15 +37,15 @@ func newWorkspaceFilesApp(t *testing.T) (*App, string) {
 	}
 
 	thread := store.Thread{
-		ID:              "thr-ws",
+		ID:            "thr-ws",
 		ProjectID:     defaultTestProjectID,
-		Title:           "Ws",
-		Provider:        "claude",
-		WorkspacePath:   workspace,
-		Model:           "claude",
-		Mode: "chat",
-		CreatedAt:       time.Now().UnixMilli(),
-		UpdatedAt:       time.Now().UnixMilli(),
+		Title:         "Ws",
+		Provider:      "claude",
+		WorkspacePath: workspace,
+		Model:         "claude",
+		Mode:          "chat",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
 	}
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)

@@ -864,4 +864,3 @@ func TestDeleteThread_CodexCleanFailureDoesNotBlockDelete(t *testing.T) {
 		t.Fatal("thread row should be gone despite clean failure")
 	}
 }
-

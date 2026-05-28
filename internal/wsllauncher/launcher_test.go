@@ -16,7 +16,6 @@ import (
 // verify here is parsing, error shape, and the cross-platform
 // interface contracts.
 
-
 func TestLaunch_ErrorsOnNonWindows(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("verified on non-Windows hosts only")

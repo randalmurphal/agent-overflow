@@ -173,4 +173,3 @@ func (a *App) emitProposedPlanUpsert(threadID, planItemID string) error {
 	}
 	return fmt.Errorf("proposed plan %s not found on thread %s", planItemID, threadID)
 }
-

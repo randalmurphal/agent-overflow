@@ -89,4 +89,3 @@ func (a *App) deliberation(channelID string) (*discussion.Deliberation, bool) {
 	deliberation, ok := a.deliberations[channelID]
 	return deliberation, ok
 }
-
