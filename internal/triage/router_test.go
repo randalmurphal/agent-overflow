@@ -1656,16 +1656,20 @@ func TestTextDeltaEmitsSemanticDeltasWithoutSnapshotSpam(t *testing.T) {
 	}
 
 	events := filterItemStreamEvents(*emissions)
-	if len(events) != 3 {
-		t.Fatalf("provider:item_event count = %d, want 3 ordered events: %+v", len(events), events)
+	// One creation upsert + one delta per chunk — no full-snapshot re-upserts
+	// per chunk (the "without snapshot spam" guarantee). The creation upsert
+	// carries NO content; the first chunk streams as a delta so the frontend
+	// smoother animates it instead of seeding it as already-revealed.
+	if len(events) != 4 {
+		t.Fatalf("provider:item_event count = %d, want 4 (1 creation upsert + 3 deltas): %+v", len(events), events)
 	}
 	if events[0].Action != itemStreamActionUpsert || events[0].Item == nil {
 		t.Fatalf("event[0] = %+v, want initial upsert with item", events[0])
 	}
-	if events[0].Item.Summary != "first " {
-		t.Fatalf("initial upsert summary = %q, want first ", events[0].Item.Summary)
+	if events[0].Item.Summary != "" {
+		t.Fatalf("initial upsert summary = %q, want empty (content streams as deltas)", events[0].Item.Summary)
 	}
-	wantDeltas := []string{"second", " third"}
+	wantDeltas := []string{"first ", "second", " third"}
 	for i, want := range wantDeltas {
 		event := events[i+1]
 		if event.Action != itemStreamActionDelta {

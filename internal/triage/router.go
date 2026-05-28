@@ -1102,10 +1102,22 @@ func userTextCountsAsThreadActivity(item store.Item) bool {
 }
 
 func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
-	return r.persistItemWithEmit(item, payload, nil, true)
+	_, err := r.persistItemWithEmit(item, payload, nil, true)
+	return err
 }
 
 func (r *Router) persistItemQuiet(item store.Item, payload *store.Payload) error {
+	_, err := r.persistItemWithEmit(item, payload, nil, false)
+	return err
+}
+
+// persistItemQuietReturning persists without emitting and returns the stored
+// row, which carries store-assigned fields (notably item_index from
+// nextItemIndexTx). Callers that need to emit a tailored upsert — e.g. a
+// streaming row whose first chunk ships as a delta rather than being baked
+// into the creation summary — must emit THIS, not the hand-built pre-persist
+// struct, or the emitted row would carry item_index 0 and mis-sort.
+func (r *Router) persistItemQuietReturning(item store.Item, payload *store.Payload) (store.Item, error) {
 	return r.persistItemWithEmit(item, payload, nil, false)
 }
 
@@ -1114,10 +1126,11 @@ func (r *Router) persistItemQuiet(item store.Item, payload *store.Payload) error
 // inputs out of items.meta into a sibling tool_call_input payload row.
 // resultPayload and inputPayload may each be nil independently.
 func (r *Router) persistItemWithInputPayload(item store.Item, resultPayload, inputPayload *store.Payload) error {
-	return r.persistItemWithEmit(item, resultPayload, inputPayload, true)
+	_, err := r.persistItemWithEmit(item, resultPayload, inputPayload, true)
+	return err
 }
 
-func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, inputPayload *store.Payload, emit bool) error {
+func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, inputPayload *store.Payload, emit bool) (store.Item, error) {
 	countsAsActivity := userTextCountsAsThreadActivity(item)
 
 	// parent_id invariant (spec invariant 7): items.parent_id must point
@@ -1133,7 +1146,7 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 
 	persisted, err := r.store.UpsertItemWithInputPayload(item, payload, inputPayload)
 	if err != nil {
-		return err
+		return store.Item{}, err
 	}
 	// Bump sidebar activity only for user-authored user_text rows.
 	// Provider-injected wire-only context and subagent-internal prompts
@@ -1155,7 +1168,7 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 		r.metrics.PayloadsPersisted.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("kind", inputPayload.Kind)))
 	}
-	return nil
+	return persisted, nil
 }
 
 // emitItemPatch sends a lightweight patch event carrying only the fields

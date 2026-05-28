@@ -62,10 +62,34 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
-		if err := r.persistItem(item, nil); err != nil {
+		// Persist the content for history / mid-stream restore, but emit row
+		// creation with an EMPTY summary and ship the first chunk as a delta.
+		// If the creation upsert carried the content, the frontend smoother
+		// would seed it as already-revealed and it would snap in as one block
+		// with no animation — very visible when the first chunk is large (a
+		// whole assistant-message text block from parse_assistant, or the
+		// opening burst after a thinking block). Routing ALL content through
+		// deltas lets every chunk animate; the non-first branch below already
+		// emits deltas, so this just makes the first chunk consistent.
+		//
+		// Emit the PERSISTED row (with store-assigned item_index), summary
+		// blanked — not the pre-persist struct, whose item_index is still 0
+		// and would mis-sort against the preceding thinking row and feed a
+		// wrong position into the reveal gate.
+		persisted, err := r.persistItemQuietReturning(item, nil)
+		if err != nil {
 			return err
 		}
-		return r.emitInline(evt)
+		persisted.Summary = ""
+		r.emitItemUpsert(persisted)
+		r.emitItemDelta(ItemDeltaEvent{
+			ThreadID:  evt.ThreadID,
+			ItemID:    itemID,
+			Kind:      itemKindAssistantText,
+			Delta:     evt.Content,
+			UpdatedAt: now,
+		})
+		return nil
 	}
 	r.emitItemDelta(ItemDeltaEvent{
 		ThreadID:  evt.ThreadID,

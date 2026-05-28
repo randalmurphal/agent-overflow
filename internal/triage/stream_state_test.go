@@ -1086,3 +1086,103 @@ func TestProviderItemCompletionCanReplaceThinkingWithEmptyFinal(t *testing.T) {
 		t.Fatalf("payload = %q, want empty authoritative final content", data)
 	}
 }
+
+// TestTextBlockStartStreamsFirstChunkAsDelta pins the streaming-animation
+// contract for the first chunk of an assistant_text block. The first chunk
+// used to be baked into the creation upsert's Summary, so the frontend
+// per-item smoother seeded it as already-revealed and it snapped in as one
+// block with no animation — most visible when the first chunk is large (a
+// whole assistant-message text block emitted by parse_assistant, or the
+// opening burst after a thinking block). Row creation must carry an EMPTY
+// summary and ALL content must arrive as deltas so every chunk animates;
+// SQLite still persists the content for history / mid-stream restore.
+func TestTextBlockStartStreamsFirstChunkAsDelta(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// A thinking block precedes the text (the reported "thinking -> output"
+	// case), which also pushes the text row to a non-zero item_index. The
+	// emitted creation upsert must carry that store-assigned index; emitting
+	// the pre-persist struct would ship item_index 0 and mis-sort against the
+	// thinking row (and feed a wrong position into the reveal gate).
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventThinking, ThreadID: "t1", Content: "reasoning about it", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("thinking delta: %v", err)
+	}
+
+	first := "This is the opening of the agent response, long enough to look like a snap."
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Content: first, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first text delta: %v", err)
+	}
+
+	// The row must already be persisted with the first chunk — emitting an
+	// empty creation upsert must NOT drop content from SQLite history.
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	var textID, persistedSummary string
+	var persistedItemIndex int
+	for _, it := range items {
+		if it.Kind == itemKindAssistantText {
+			textID = it.ID
+			persistedSummary = it.Summary
+			persistedItemIndex = it.ItemIndex
+			break
+		}
+	}
+	if textID == "" {
+		t.Fatalf("no assistant_text row persisted; items=%+v", items)
+	}
+	if persistedSummary != first {
+		t.Fatalf("persisted summary = %q, want %q (history must keep the content)", persistedSummary, first)
+	}
+	if persistedItemIndex == 0 {
+		t.Fatalf("expected the text row to follow the thinking row at item_index > 0, got 0")
+	}
+
+	second := " And this continues streaming."
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Content: second, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second text delta: %v", err)
+	}
+
+	var events []ItemStreamEvent
+	for _, e := range filterItemStreamEvents(*emissions) {
+		if (e.Item != nil && e.Item.ID == textID) || e.ItemID == textID {
+			events = append(events, e)
+		}
+	}
+	if len(events) < 3 {
+		t.Fatalf("want >=3 item-stream events (creation upsert + 2 deltas), got %d: %+v", len(events), events)
+	}
+	// 1) Row creation upsert with NO content baked into the summary, and the
+	//    store-assigned item_index (NOT the zero-value pre-persist struct) so
+	//    it sorts after the thinking row and the reveal gate sees the right
+	//    position.
+	if events[0].Action != itemStreamActionUpsert {
+		t.Fatalf("event[0].Action = %q, want upsert", events[0].Action)
+	}
+	if events[0].Item == nil || events[0].Item.Summary != "" {
+		t.Fatalf("creation upsert Summary = %q, want empty (content must stream as deltas)",
+			events[0].Item.Summary)
+	}
+	if events[0].Item.ItemIndex != persistedItemIndex {
+		t.Fatalf("creation upsert item_index = %d, want %d (the store-assigned index)",
+			events[0].Item.ItemIndex, persistedItemIndex)
+	}
+	// 2) The first chunk arrives as a delta so the smoother animates it.
+	if events[1].Action != itemStreamActionDelta || events[1].Delta != first {
+		t.Fatalf("event[1] = {action:%q delta:%q}, want {delta, %q}",
+			events[1].Action, events[1].Delta, first)
+	}
+	// 3) The second chunk continues as a delta.
+	if events[2].Action != itemStreamActionDelta || events[2].Delta != second {
+		t.Fatalf("event[2] = {action:%q delta:%q}, want {delta, %q}",
+			events[2].Action, events[2].Delta, second)
+	}
+}
