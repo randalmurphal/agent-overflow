@@ -130,4 +130,3 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 	a.rememberChatModelProfile(refreshed)
 	return refreshed, nil
 }
-

@@ -32,9 +32,9 @@ const (
 	// The pair replaces the parser-side snapshot that previously lived
 	// on the per-Session Parser — this placement survives session
 	// resume because triage's Router outlives any individual Parser.
-	EventTaskCreate EventKind = "task_create"
-	EventTaskUpdate EventKind = "task_update"
-	EventNotification      EventKind = "notification"
+	EventTaskCreate   EventKind = "task_create"
+	EventTaskUpdate   EventKind = "task_update"
+	EventNotification EventKind = "notification"
 
 	// EventAPIRetry surfaces transient-retry envelopes from both providers
 	// (Claude `system.api_retry` and Codex `error+willRetry:true`). Triage

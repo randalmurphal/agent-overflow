@@ -35,8 +35,10 @@ var modernScreenshotBundleRaw []byte
 // allow-same-origin) that helper iframe gets its OWN opaque origin —
 // distinct from the parent's opaque origin — and any read of
 // `helperIframe.contentDocument` is rejected with:
-//   "Blocked a frame with origin 'null' from accessing a cross-origin
-//    frame."
+//
+//	"Blocked a frame with origin 'null' from accessing a cross-origin
+//	 frame."
+//
 // The library has no public option to skip this code path. We patch
 // by short-circuiting the iframe-creating expression with `false &&`:
 // the syntax stays valid, the iframe is never constructed,

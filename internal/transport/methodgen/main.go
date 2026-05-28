@@ -25,6 +25,7 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"hash/fnv"
@@ -134,6 +135,15 @@ func main() {
 	body, err := renderFile(entries)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "methodgen: render: %v\n", err)
+		os.Exit(1)
+	}
+
+	// gofmt the generated source so the committed file stays format-clean
+	// and the in-sync CI gate (methods_gen_test.go) keeps matching even
+	// after a repo-wide gofmt pass.
+	body, err = format.Source(body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "methodgen: format: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -301,4 +311,3 @@ func NewMethodAllowList() map[string]bool {
 `)
 	return buf.Bytes(), nil
 }
-

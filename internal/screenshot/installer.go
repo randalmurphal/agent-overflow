@@ -300,7 +300,7 @@ type chromeForTestingManifest struct {
 }
 
 type chromeForTestingChannel struct {
-	Version   string                                 `json:"version"`
+	Version   string                                `json:"version"`
 	Downloads map[string][]chromeForTestingDownload `json:"downloads"`
 }
 

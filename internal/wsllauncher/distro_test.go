@@ -155,9 +155,9 @@ func TestIsNoDistrosMessage(t *testing.T) {
 
 func TestParseInt(t *testing.T) {
 	cases := []struct {
-		in  string
-		n   int
-		ok  bool
+		in string
+		n  int
+		ok bool
 	}{
 		{"2", 2, true},
 		{"42", 42, true},

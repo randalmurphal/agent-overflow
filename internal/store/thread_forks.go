@@ -43,7 +43,7 @@ func BuildForkedThread(source Thread) Thread {
 		FastMode:           source.FastMode,
 		ContextWindow:      source.ContextWindow,
 		RuntimeMode:        source.RuntimeMode,
-		LastTokenUsage:      source.LastTokenUsage,
+		LastTokenUsage:     source.LastTokenUsage,
 		DisabledMcpServers: source.DisabledMcpServers,
 		ForkedFromThreadID: source.ID,
 		CreatedAt:          now,

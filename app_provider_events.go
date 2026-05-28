@@ -230,8 +230,19 @@ func (a *App) ingestClaudeInitMCPStatus(meta json.RawMessage) {
 }
 
 func (a *App) unregisterSession(threadID, sessionToken string) {
-	if !a.sessionManager().unregister(threadID, sessionToken) {
+	removed, ok := a.sessionManager().unregister(threadID, sessionToken)
+	if !ok {
 		return
+	}
+
+	// Self-exit teardown bypasses closeProviderSession (the subprocess is
+	// already dead — see attemptAutoReconnect), so release its group from
+	// the orphan reaper here. Without this, a crashed provider's pgid would
+	// linger in the sidecar's watched set with no start-time guard, risking
+	// a wrong-group kill if the OS later recycles that PID and the app then
+	// dies. Release is idempotent and pgid<=1 is guarded inside.
+	if ps := removed.providerSession(); ps != nil {
+		a.releaseSessionProcess(ps.PID())
 	}
 
 	a.teardownDesignThread(threadID)

@@ -388,7 +388,6 @@ func TestAutoResumeThreadIsNoOp(t *testing.T) {
 	}
 }
 
-
 func TestSwitchThreadMarksThreadReadBeforeReturning(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-switch-read")
@@ -426,9 +425,6 @@ func TestSwitchThreadMarksThreadReadBeforeReturning(t *testing.T) {
 		t.Fatalf("stored LastReadAt = %d, want >= latest turn completed %d", *stored.LastReadAt, *stored.LatestTurnCompletedAt)
 	}
 }
-
-
-
 
 func TestReconnectSessionStopsThenStarts(t *testing.T) {
 	app := &App{}

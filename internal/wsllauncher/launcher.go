@@ -272,4 +272,3 @@ func drainStderr(r io.Reader, dropFn func(string)) {
 		}
 	}
 }
-

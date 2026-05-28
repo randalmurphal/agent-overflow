@@ -568,7 +568,7 @@ func TestRepositoryRootReturnsGitTopLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RepositoryRoot() error = %v", err)
 	}
-	if testutil.CanonicalPath(t,root) != testutil.CanonicalPath(t,repo) {
+	if testutil.CanonicalPath(t, root) != testutil.CanonicalPath(t, repo) {
 		t.Fatalf("root = %q, want %q", root, repo)
 	}
 }
@@ -586,9 +586,9 @@ func TestRepositoryRootReturnsErrorForNonRepo(t *testing.T) {
 func TestStatusOnRepositoryWithOrigin(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
-	testutil.RunGit(t,t.TempDir(), "init", "--bare", remote)
-	testutil.RunGit(t,repo, "remote", "add", "origin", remote)
-	testutil.RunGit(t,repo, "push", "-u", "origin", "main")
+	testutil.RunGit(t, t.TempDir(), "init", "--bare", remote)
+	testutil.RunGit(t, repo, "remote", "add", "origin", remote)
+	testutil.RunGit(t, repo, "push", "-u", "origin", "main")
 
 	readmePath := filepath.Join(repo, "README.txt")
 	if err := os.WriteFile(readmePath, []byte("hello\nworld\n"), 0o644); err != nil {
@@ -676,7 +676,7 @@ func TestWorkingTreeDiff(t *testing.T) {
 	if err := os.WriteFile(readmePath, []byte("hello\nstaged\n"), 0o644); err != nil {
 		t.Fatalf("write staged version: %v", err)
 	}
-	testutil.RunGit(t,repo, "add", "README.txt")
+	testutil.RunGit(t, repo, "add", "README.txt")
 	if err := os.WriteFile(readmePath, []byte("hello\nstaged\nunstaged\n"), 0o644); err != nil {
 		t.Fatalf("write unstaged version: %v", err)
 	}
@@ -906,9 +906,9 @@ func TestCombineDiffsEdgeCases(t *testing.T) {
 
 func TestIsDefaultBranchNameEdgeCases(t *testing.T) {
 	tests := []struct {
-		branch  string
-		dflt    string
-		want    bool
+		branch string
+		dflt   string
+		want   bool
 	}{
 		{"", "main", false},
 		{"main", "", true},
@@ -1237,4 +1237,3 @@ func TestUpstreamForReturnsFalseWhenNoUpstream(t *testing.T) {
 		t.Fatal("expected upstreamFor to return ok=false on a repo with no remote")
 	}
 }
-

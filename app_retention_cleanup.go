@@ -240,4 +240,3 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 	}
 	return deleted, failed
 }
-

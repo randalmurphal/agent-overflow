@@ -407,7 +407,7 @@ func TestIsLoopbackHost(t *testing.T) {
 		{"192.168.1.5", false},
 		{"127.0.0.1.attacker.tld", false}, // string-prefix isn't enough
 		{"localhost.attacker.tld", false},
-		{"127.0.0.2", false},        // any other 127.x.x.x is rejected
+		{"127.0.0.2", false},         // any other 127.x.x.x is rejected
 		{"[fe80::1234]:8080", false}, // non-loopback IPv6 with port
 	}
 	for _, c := range cases {

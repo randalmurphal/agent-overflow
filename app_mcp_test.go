@@ -760,7 +760,7 @@ func TestPollClaudeMCPAfterOAuth_MissingEntryKeepsPolling(t *testing.T) {
 
 	getQuerier := scriptedQuerier(
 		[][]claude.MCPServerStatus{
-			{}, // empty
+			{},                                     // empty
 			{{Name: "other", Status: "connected"}}, // ours still absent
 			{{Name: "linear", Status: "connected"}},
 		},

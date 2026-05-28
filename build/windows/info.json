@@ -1,10 +1,10 @@
 {
 	"fixed": {
-		"file_version": "0.0.4"
+		"file_version": "0.0.5"
 	},
 	"info": {
 		"0000": {
-			"ProductVersion": "0.0.4",
+			"ProductVersion": "0.0.5",
 			"CompanyName": "Agent Overflow",
 			"FileDescription": "Desktop app for using coding agents with a shared UX",
 			"LegalCopyright": "(c) 2026, Randy Murphy",

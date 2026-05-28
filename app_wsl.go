@@ -13,11 +13,11 @@ import (
 // Test seams. editor.IsWSL caches its /proc read via sync.Once, so
 // tests must inject through these vars rather than mutate the cache.
 var (
-	wslIsWSL         = editor.IsWSL
-	wslListDistros   = wsllauncher.ListDistros
-	wslConfigDir     = wsldistro.WSLConfigDir
-	wslLoadConfig    = wsldistro.Load
-	wslSaveConfig    = wsldistro.Save
+	wslIsWSL       = editor.IsWSL
+	wslListDistros = wsllauncher.ListDistros
+	wslConfigDir   = wsldistro.WSLConfigDir
+	wslLoadConfig  = wsldistro.Load
+	wslSaveConfig  = wsldistro.Save
 )
 
 // IsWSL reports whether the backend is running inside a WSL

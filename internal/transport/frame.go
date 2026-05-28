@@ -37,12 +37,12 @@ const MaxRPCParams = 64
 // The server echoes ID back on rpc responses so the client can match
 // requests to in-flight promises.
 type ClientFrame struct {
-	Type             string             `json:"type"`
-	ID               string             `json:"id,omitempty"`
-	Method           string             `json:"method,omitempty"`
-	MethodID         uint32             `json:"methodId,omitempty"`
-	Params           []json.RawMessage  `json:"params,omitempty"`
-	LastSeqByChannel map[string]uint64  `json:"lastSeqByChannel,omitempty"`
+	Type             string            `json:"type"`
+	ID               string            `json:"id,omitempty"`
+	Method           string            `json:"method,omitempty"`
+	MethodID         uint32            `json:"methodId,omitempty"`
+	Params           []json.RawMessage `json:"params,omitempty"`
+	LastSeqByChannel map[string]uint64 `json:"lastSeqByChannel,omitempty"`
 }
 
 // ServerFrame is the union of every frame the server may send. The
@@ -79,11 +79,11 @@ type FrameError struct {
 //   - method_not_found: dispatcher saw no registered method for the id/name.
 //   - bad_params:       JSON decode failed or arity/type was wrong on input.
 //   - method_error:     the registered method returned a non-nil error.
-//                       Wire message contains a generic prose; the full
-//                       error is logged server-side under a correlation id.
+//     Wire message contains a generic prose; the full
+//     error is logged server-side under a correlation id.
 //   - internal:         dispatcher panicked or hit an internal failure.
-//                       Wire message is generic; full panic + stack is
-//                       logged server-side under a correlation id.
+//     Wire message is generic; full panic + stack is
+//     logged server-side under a correlation id.
 //   - shutting_down:    server is mid-shutdown; this RPC was dropped.
 const (
 	ErrCodeMethodNotFound = "method_not_found"

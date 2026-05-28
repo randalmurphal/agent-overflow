@@ -187,8 +187,8 @@ ELECTRON="something"
 `)
 	fs := &fakeFS{
 		files: map[string][]byte{
-			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code":                                 shim,
-			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/034f571df5/resources/app/out/cli.js":      []byte("// cli.js"),
+			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code":                            shim,
+			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/034f571df5/resources/app/out/cli.js": []byte("// cli.js"),
 		},
 	}
 	env := newDetectEnv(fs, pathTable{}, nil)
@@ -238,10 +238,10 @@ func TestFindWindowsInstall_SkipsBrokenUserInstallContinuesWalk(t *testing.T) {
 	workingShim := []byte(`VERSIONFOLDER="034f571df5"`)
 	fs := &fakeFS{
 		files: map[string][]byte{
-			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code":                                  brokenShim,
+			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code": brokenShim,
 			// alice's cli.js intentionally absent
-			"/mnt/c/Users/bob/AppData/Local/Programs/Microsoft VS Code/bin/code":                                    workingShim,
-			"/mnt/c/Users/bob/AppData/Local/Programs/Microsoft VS Code/034f571df5/resources/app/out/cli.js":         []byte("// cli.js"),
+			"/mnt/c/Users/bob/AppData/Local/Programs/Microsoft VS Code/bin/code":                            workingShim,
+			"/mnt/c/Users/bob/AppData/Local/Programs/Microsoft VS Code/034f571df5/resources/app/out/cli.js": []byte("// cli.js"),
 		},
 		dirs: map[string][]string{"/mnt/c/Users": {"alice", "bob"}},
 	}
@@ -262,9 +262,9 @@ func TestFindWindowsInstall_FallsThroughToSystemWhenAllUsersBroken(t *testing.T)
 	workingShim := []byte(`VERSIONFOLDER="034f571df5"`)
 	fs := &fakeFS{
 		files: map[string][]byte{
-			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code":           brokenShim,
-			"/mnt/c/Program Files/Microsoft VS Code/bin/code":                                workingShim,
-			"/mnt/c/Program Files/Microsoft VS Code/034f571df5/resources/app/out/cli.js":     []byte("// cli.js"),
+			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code":       brokenShim,
+			"/mnt/c/Program Files/Microsoft VS Code/bin/code":                            workingShim,
+			"/mnt/c/Program Files/Microsoft VS Code/034f571df5/resources/app/out/cli.js": []byte("// cli.js"),
 		},
 		dirs: map[string][]string{"/mnt/c/Users": {"alice"}},
 	}

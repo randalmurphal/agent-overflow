@@ -335,9 +335,9 @@ func TestMCPServerUsesOpaqueThreadToken(t *testing.T) {
 // function runs synchronously with the inbound MCP request, so the
 // happy-path tests don't have to wire any goroutines.
 type fakeCapturer struct {
-	mu        sync.Mutex
-	fn        func(ctx context.Context, threadID string) ([]byte, error)
-	seenIDs   []string
+	mu      sync.Mutex
+	fn      func(ctx context.Context, threadID string) ([]byte, error)
+	seenIDs []string
 }
 
 func (f *fakeCapturer) Capture(ctx context.Context, threadID string) ([]byte, error) {

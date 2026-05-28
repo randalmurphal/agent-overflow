@@ -5,17 +5,18 @@
 // databases would otherwise diverge from the canonical schema in three
 // places this tool corrects:
 //
-//   1. orphan tables left behind by removed-but-not-DROPped migrations
-//      (`new_thread_drafts`, `draft_attachments`)
-//   2. an items.decision CHECK that still admits the unreachable value
-//      'timeout' (no production code ever wrote it)
-//   3. a migration_versions table holding 51 rows (one per legacy
-//      migration) where the new runner expects exactly one
-//      (1, 'initial_schema')
+//  1. orphan tables left behind by removed-but-not-DROPped migrations
+//     (`new_thread_drafts`, `draft_attachments`)
+//  2. an items.decision CHECK that still admits the unreachable value
+//     'timeout' (no production code ever wrote it)
+//  3. a migration_versions table holding 51 rows (one per legacy
+//     migration) where the new runner expects exactly one
+//     (1, 'initial_schema')
 //
 // Usage:
-//   go run ./cmd/db-rebake --db ~/.config/agent-overflow/agent-overflow.db
-//   go run ./cmd/db-rebake --db <path> --dry-run
+//
+//	go run ./cmd/db-rebake --db ~/.config/agent-overflow/agent-overflow.db
+//	go run ./cmd/db-rebake --db <path> --dry-run
 //
 // Always pass --db explicitly so the tool can't accidentally clobber a
 // neighbour DB. Take a backup first; the tool refuses to start if it

@@ -273,6 +273,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// Step 4's snapshotAndClear would race the session map.
 		"stop retention cleanup",
 		"close provider sessions",
+		// "stop orphan reaper" follows session close: each session
+		// releases its watched group on a clean close, so the sidecar has
+		// nothing left to reap by the time we close its control pipe.
+		"stop orphan reaper",
 		"close design reactor",
 		"close gitwatch manager",
 		"close terminal sessions",

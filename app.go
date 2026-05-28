@@ -27,6 +27,7 @@ import (
 	"agent-overflow/internal/mcpstatus"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -159,6 +160,14 @@ type App struct {
 	appCancel context.CancelFunc
 	mu        sync.Mutex
 	sessions  map[string]session // threadID → active session
+	// orphanReaper is the macOS sidecar process that kills provider
+	// process groups if this app dies ungracefully; orphanRegistry is the
+	// durable backstop the next launch sweeps. Both stay nil on
+	// Linux/Windows (which rely on Pdeathsig / a Job Object) and in tests
+	// — the watch/release helpers and Client methods are nil-safe. See
+	// app_orphan_reaper.go.
+	orphanReaper   *orphanreaper.Client
+	orphanRegistry *orphanreaper.Registry
 	// threadActionLocks serializes per-thread workflows that must observe a
 	// stable thread timeline or workspace while they run.
 	threadActionLocksOnce sync.Once
@@ -326,6 +335,13 @@ type App struct {
 	// nil and the probe uses the package-level singleton; tests assign
 	// a client pointing at a local httptest server.
 	rateLimitProbeClientOverride *http.Client
+	// userConfigDirOverride is a test-only injection seam for the data
+	// directory root that initStores otherwise resolves via
+	// os.UserConfigDir(). Production leaves it empty. Tests set it to a
+	// t.TempDir() so the path is deterministic across OSes —
+	// os.UserConfigDir() ignores XDG on macOS (it returns
+	// $HOME/Library/Application Support), which env overrides can't redirect.
+	userConfigDirOverride string
 	// idleReaperNowFn is a test-only clock injection for the reaper.
 	// Production leaves it nil and reaperNow reads time.Now directly.
 	idleReaperNowFn func() time.Time
@@ -489,6 +505,13 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	logBootPhase("app.init_subsystems", phaseStarted)
 
+	// Guard against provider subprocesses outliving an ungraceful app
+	// death (macOS only — Linux has Pdeathsig, Windows a Job Object).
+	// Runs after subsystems so the data dir is ready; before the probe
+	// goroutines and any session RPC so the startup sweep can't race a
+	// fresh registry Add. See app_orphan_reaper.go.
+	a.startOrphanReaper(dbDir)
+
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens
 	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
@@ -543,15 +566,19 @@ func (a *App) Start(ctx context.Context) error {
 // leak an open DB file on startup error; the close error is joined onto
 // the logger error so tests see both causes.
 func (a *App) initStores() (string, *store.Store, error) {
-	dataDir, err := os.UserConfigDir()
-	if err != nil {
-		// Fall back to ~/.agent-overflow/ which persists across reboots,
-		// unlike os.TempDir() which is cleaned on reboot and would lose data.
-		homeDir, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return "", nil, fmt.Errorf("cannot determine config directory: %w (home dir also unavailable: %v)", err, homeErr)
+	dataDir := a.userConfigDirOverride
+	if dataDir == "" {
+		var err error
+		dataDir, err = os.UserConfigDir()
+		if err != nil {
+			// Fall back to ~/.agent-overflow/ which persists across reboots,
+			// unlike os.TempDir() which is cleaned on reboot and would lose data.
+			homeDir, homeErr := os.UserHomeDir()
+			if homeErr != nil {
+				return "", nil, fmt.Errorf("cannot determine config directory: %w (home dir also unavailable: %v)", err, homeErr)
+			}
+			dataDir = homeDir
 		}
-		dataDir = homeDir
 	}
 	dbDir := filepath.Join(dataDir, "agent-overflow")
 	if err := ensureAppPrivateDir(dbDir); err != nil {
@@ -978,6 +1005,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 	sessions := a.sessionManager().snapshotAndClear()
 	sessionErrs := closeSessionsParallel(a, sessions, sessionShutdownTimeout)
 	record("close provider sessions", errors.Join(sessionErrs...))
+
+	// Step 4b: stop the orphan-reaper sidecar (macOS). Sessions that closed
+	// cleanly above each released their group; any whose Close was abandoned
+	// on the parallel timeout stay watched and get reaped as we close the
+	// control pipe here — exactly what we want for a still-alive straggler.
+	// Placed after Step 4 so the sidecar stays armed for the whole
+	// session-teardown window. No-op when inactive.
+	a.stopOrphanReaper()
+	record("stop orphan reaper", nil)
 
 	// Step 5: close the design reactor's pending choice requests. This
 	// tears down per-thread design state left dangling when a session

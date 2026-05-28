@@ -121,14 +121,10 @@ func sessionCloseTask(a *App, threadID string, s session) closer.Task {
 		Label: fmt.Sprintf("session for thread %s", threadID),
 		Close: func() error {
 			a.teardownDesignThread(threadID)
-			providerSess := s.providerSession()
-			if providerSess == nil {
-				return nil
-			}
-			if err := providerSess.Close(); err != nil {
-				return fmt.Errorf("close %s: %w", s.provider, err)
-			}
-			return nil
+			// Routes through closeProviderSession so the orphan-reaper
+			// release fires on a clean shutdown close, same as every other
+			// teardown path.
+			return a.closeProviderSession(threadID, s)
 		},
 	}
 }

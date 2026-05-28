@@ -18,7 +18,7 @@ import (
 // streamable_http. AO normalises to a single Transport field on the
 // way out.
 const (
-	TransportStdio    = "stdio"
+	TransportStdio      = "stdio"
 	TransportStreamable = "streamable_http"
 )
 
@@ -26,15 +26,15 @@ const (
 // Settings library. Enabled defaults to true (Codex's own default),
 // so AO only writes the key when the user toggled it off.
 type Server struct {
-	Name            string            `json:"name"`
-	Transport       string            `json:"transport"`
-	Command         string            `json:"command,omitempty"`
-	Args            []string          `json:"args,omitempty"`
-	Env             map[string]string `json:"env,omitempty"`
-	URL             string            `json:"url,omitempty"`
-	HTTPHeaders     map[string]string `json:"httpHeaders,omitempty"`
-	BearerTokenEnv  string            `json:"bearerTokenEnv,omitempty"`
-	Enabled         bool              `json:"enabled"`
+	Name           string            `json:"name"`
+	Transport      string            `json:"transport"`
+	Command        string            `json:"command,omitempty"`
+	Args           []string          `json:"args,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	URL            string            `json:"url,omitempty"`
+	HTTPHeaders    map[string]string `json:"httpHeaders,omitempty"`
+	BearerTokenEnv string            `json:"bearerTokenEnv,omitempty"`
+	Enabled        bool              `json:"enabled"`
 }
 
 var (

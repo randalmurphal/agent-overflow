@@ -14,16 +14,13 @@ on:
 permissions:
   contents: read
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
   linux-wsl:
     name: Linux and WSL artifacts
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Resolve version
         shell: bash
@@ -46,11 +43,11 @@ jobs:
           esac
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.2"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
 
@@ -73,7 +70,7 @@ jobs:
         run: ./scripts/build-release.sh --version "$VERSION" --skip-macos
 
       - name: Upload raw Linux and WSL artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-wsl-raw
           path: |
@@ -86,7 +83,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Resolve version
         shell: bash
@@ -109,11 +106,11 @@ jobs:
           esac
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.2"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
 
@@ -134,7 +131,7 @@ jobs:
           ( cd bin && zip -qr "../dist/release/$VERSION/AgentOverflow-macos.zip" "agent-overflow.app" )
 
       - name: Upload raw macOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-raw
           path: dist/release/${{ env.VERSION }}/AgentOverflow-macos.zip
@@ -150,7 +147,7 @@ jobs:
       - macos
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Resolve version
         shell: bash
@@ -174,13 +171,13 @@ jobs:
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Download Linux and WSL artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linux-wsl-raw
           path: dist/release/${{ env.VERSION }}
 
       - name: Download macOS artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: macos-raw
           path: dist/release/${{ env.VERSION }}
@@ -190,7 +187,7 @@ jobs:
         run: ./scripts/package-release-assets.sh "dist/release/$VERSION"
 
       - name: Upload packaged release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agent-overflow-release-${{ env.VERSION }}
           path: dist/release/${{ env.VERSION }}/*

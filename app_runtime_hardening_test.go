@@ -12,7 +12,6 @@ func TestInitStoresRepairsAppOwnedPermissions(t *testing.T) {
 		t.Skip("Unix permission bits are not stable on Windows")
 	}
 	configRoot := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configRoot)
 	t.Setenv("AGENT_OVERFLOW_DEBUG", "provider")
 
 	dbDir := filepath.Join(configRoot, "agent-overflow")
@@ -49,6 +48,10 @@ func TestInitStoresRepairsAppOwnedPermissions(t *testing.T) {
 	}
 
 	app := NewApp()
+	// Inject the data-dir root so the test is deterministic across OSes;
+	// os.UserConfigDir() ignores XDG on macOS, so an env override wouldn't
+	// redirect it there.
+	app.userConfigDirOverride = configRoot
 	gotDir, st, err := app.initStores()
 	if err != nil {
 		t.Fatalf("initStores: %v", err)

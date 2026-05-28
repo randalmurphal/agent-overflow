@@ -80,4 +80,3 @@ func TestRenderForOverlayErrors(t *testing.T) {
 		t.Error("unsupported transport should error")
 	}
 }
-

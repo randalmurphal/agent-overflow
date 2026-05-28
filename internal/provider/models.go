@@ -46,6 +46,14 @@ type ModelInfo struct {
 // ClaudeModels lists models available through the Claude provider.
 var ClaudeModels = []ModelInfo{
 	{
+		Slug:             "claude-opus-4-8",
+		Name:             "Claude Opus 4.8",
+		Provider:         "claude",
+		Capabilities:     []string{ModelCapabilityFastMode},
+		ContextWindows:   claudeExtendedContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
+	},
+	{
 		Slug:             "claude-opus-4-7",
 		Name:             "Claude Opus 4.7",
 		Provider:         "claude",
@@ -176,7 +184,9 @@ func NormalizeModelSlug(providerName, model string) string {
 		}
 	case string(Claude):
 		switch model {
-		case "opus", "opus-4.7", "claude-opus-4.7":
+		case "opus", "opus-4.8", "claude-opus-4.8":
+			return "claude-opus-4-8"
+		case "opus-4.7", "claude-opus-4.7":
 			return "claude-opus-4-7"
 		case "opus-4.6", "claude-opus-4.6":
 			return "claude-opus-4-6"

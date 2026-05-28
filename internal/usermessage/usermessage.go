@@ -22,12 +22,12 @@ import (
 // plan / diff revision context serialises to an empty string — the
 // caller can then store SQL NULL or skip the Meta write entirely.
 type Meta struct {
-	Attachments                  []AttachmentMeta                  `json:"attachments,omitempty"`
-	SourceProposedPlan           *store.ProposedPlanSourceRef      `json:"sourceProposedPlan,omitempty"`
-	RevisionSourceProposedPlan   *store.ProposedPlanSourceRef      `json:"revisionSourceProposedPlan,omitempty"`
-	RevisionSourceCommentIDs     []string                          `json:"revisionSourceCommentIds,omitempty"`
-	RevisionSourceDiffReview     *store.DiffReviewSourceRef        `json:"revisionSourceDiffReview,omitempty"`
-	RevisionSourceDiffCommentIDs []string                          `json:"revisionSourceDiffCommentIds,omitempty"`
+	Attachments                  []AttachmentMeta             `json:"attachments,omitempty"`
+	SourceProposedPlan           *store.ProposedPlanSourceRef `json:"sourceProposedPlan,omitempty"`
+	RevisionSourceProposedPlan   *store.ProposedPlanSourceRef `json:"revisionSourceProposedPlan,omitempty"`
+	RevisionSourceCommentIDs     []string                     `json:"revisionSourceCommentIds,omitempty"`
+	RevisionSourceDiffReview     *store.DiffReviewSourceRef   `json:"revisionSourceDiffReview,omitempty"`
+	RevisionSourceDiffCommentIDs []string                     `json:"revisionSourceDiffCommentIds,omitempty"`
 }
 
 // AttachmentMeta is the per-attachment slice element. The Go side

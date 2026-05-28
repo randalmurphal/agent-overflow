@@ -32,6 +32,7 @@ one closest to what you're touching.
 | `workspacepath/` | `NormalizeRelative(rel)` validates a user-supplied workspace-relative path (rejects empty/absolute/parent-escaping) and returns the OS-cleaned form callers can safely join under a workspace root. |
 | `errorsx/` | Stdlib-only error helpers: `Append` (nil-filtering slice append) and `WrapLifecycle` (action-prefixed `%s: %w`). |
 | `closer/` | Close-orchestration helpers: `Task` + `RunParallel(tasks, timeout)` for goroutine-fan-out teardown, and `Stack` (LIFO cleanup list with reverse-order `Run`) for fork-and-revert undo chains. |
+| `orphanreaper/` | macOS-only guard that provider subprocess groups don't outlive an ungraceful app death (no Pdeathsig / Job Object there). A `__reap` sidecar holds a control pipe and kills watched groups on parent-death EOF; a durable registry + startup `Sweep` is the backstop. `app_orphan_reaper.go` owns the lifecycle wiring. |
 | `eventscope/` | `ThreadIDFromEvent(payload)` — best-effort thread-id extraction from arbitrary event payloads (map / struct / JSON fallback) used by the observability fan-out to attribute emissions. |
 | `codexghost/` | Pure summary-rewrite helpers (`GhostSummary` + `SessionEndedSuffix`) backing the Codex ghost-row flip that runs on every Codex session start. |
 | `composerdraft/` | Pure `store.Item` → `store.ThreadDraft` projectors (`FromUserItem`, `FromParts`) backing the revert-to-message and fork-and-revert composer rehydration paths. App-bound cross-thread attachment cloning stays in `app_draft.go`. |

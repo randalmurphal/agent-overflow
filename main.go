@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
 	"agent-overflow/internal/transport"
@@ -60,6 +61,15 @@ var version = "dev"
 var nativeMode = "prod"
 
 func main() {
+	// The orphan-reaper sidecar (macOS) re-execs this binary with the
+	// __reap subcommand. Short-circuit before any other startup — flag
+	// parsing, shell-env sync, Wails — so the sidecar stays a tiny pipe
+	// reader that owns no GUI or transport. See internal/orphanreaper.
+	if len(os.Args) > 1 && os.Args[1] == orphanreaper.Subcommand() {
+		orphanreaper.RunChild()
+		return
+	}
+
 	flags, err := parseFlags(os.Args[1:])
 	if err != nil {
 		fatalf("%v", err)

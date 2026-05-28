@@ -85,4 +85,3 @@ func rejectSystemPath(abs, canon string) error {
 	}
 	return nil
 }
-

@@ -14,15 +14,15 @@ func newDraftTestApp(t *testing.T) *App {
 	app := newTestAppWithStore(t)
 
 	thread := store.Thread{
-		ID:              "thr-draft",
+		ID:            "thr-draft",
 		ProjectID:     defaultTestProjectID,
-		Title:           "Draft Thread",
-		Provider:        "claude",
-		WorkspacePath:   "/tmp",
-		Model:           "claude",
-		Mode: "chat",
-		CreatedAt:       time.Now().UnixMilli(),
-		UpdatedAt:       time.Now().UnixMilli(),
+		Title:         "Draft Thread",
+		Provider:      "claude",
+		WorkspacePath: "/tmp",
+		Model:         "claude",
+		Mode:          "chat",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
 	}
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)

@@ -28,12 +28,12 @@ func setupWorkspace(t *testing.T) string {
 	}
 
 	files := map[string]string{
-		"README.md":                "# Readme",
-		"src/components/App.tsx":   "app",
-		"src/components/Button.ts": "button",
-		"src/utils/helper.ts":      "helper",
-		"frontend/lib/index.ts":    "index",
-		".git/objects/abc":         "ignored",
+		"README.md":                          "# Readme",
+		"src/components/App.tsx":             "app",
+		"src/components/Button.ts":           "button",
+		"src/utils/helper.ts":                "helper",
+		"frontend/lib/index.ts":              "index",
+		".git/objects/abc":                   "ignored",
 		"node_modules/fake-pkg/package.json": "ignored",
 		"dist/bundle/app.js":                 "ignored",
 		"build/output/main.bin":              "ignored",

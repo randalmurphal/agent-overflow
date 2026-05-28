@@ -85,4 +85,3 @@ func TestRenderForCLIErrors(t *testing.T) {
 		})
 	}
 }
-

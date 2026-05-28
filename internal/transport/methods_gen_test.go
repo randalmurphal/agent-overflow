@@ -54,11 +54,11 @@ var wireSafeMethods = map[string]bool{
 	"GetThread":            true,
 	"ListArchivedThreads":  true,
 	"ListThreads":          true,
-	"PinThread":       true,
-	"UnpinThread":     true,
-	"MarkThreadRead":  true,
-	"MarkThreadUnread": true,
-	"SwitchThread":    true,
+	"PinThread":            true,
+	"UnpinThread":          true,
+	"MarkThreadRead":       true,
+	"MarkThreadUnread":     true,
+	"SwitchThread":         true,
 	"GetThreadRuntimeMode": true,
 
 	// Timeline reads (item slice / turn / search).
@@ -90,23 +90,23 @@ var wireSafeMethods = map[string]bool{
 	// row without spawning a provider subprocess — the LocalOnly
 	// SendMessage path is what drives the AI turn. Audit again if
 	// discussion channels grow a side-effecting path.
-	"CreateDiscussion":          true,
-	"DeleteDiscussion":          true,
-	"UpdateDiscussion":          true,
-	"GetDiscussion":             true,
-	"ListDiscussions":           true,
-	"ListDiscussionsForThread":  true,
-	"GetChannelMessages":        true,
-	"PostChannelMessage":        true,
+	"CreateDiscussion":         true,
+	"DeleteDiscussion":         true,
+	"UpdateDiscussion":         true,
+	"GetDiscussion":            true,
+	"ListDiscussions":          true,
+	"ListDiscussionsForThread": true,
+	"GetChannelMessages":       true,
+	"PostChannelMessage":       true,
 
 	// Proposed-plan inline comments. CRUD is wire-safe; the
 	// LocalOnly SendPlanRevisionComments path is what hands them to
 	// the provider for a revision turn.
-	"CreateProposedPlanComment":  true,
-	"DeleteProposedPlanComment":  true,
-	"UpdateProposedPlanComment":  true,
-	"ListProposedPlanComments":   true,
-	"ListThreadProposedPlans":    true,
+	"CreateProposedPlanComment": true,
+	"DeleteProposedPlanComment": true,
+	"UpdateProposedPlanComment": true,
+	"ListProposedPlanComments":  true,
+	"ListThreadProposedPlans":   true,
 
 	// Design-mode read of stored option choices. Workdir mutations
 	// are LocalOnly in category 4.
@@ -124,9 +124,9 @@ var wireSafeMethods = map[string]bool{
 	// RemoteEndpoint.Token before returning so the LAN-bound caller
 	// cannot enumerate saved credentials; the on-demand
 	// GetRemoteEndpointToken path stays loopback-only in category 6.
-	"GetSettings":         true,
-	"GetEditorSettings":   true,
-	"GetContextSettings":  true,
+	"GetSettings":        true,
+	"GetEditorSettings":  true,
+	"GetContextSettings": true,
 	// GetKeybindings: see the explicit carve-out comment in
 	// internalmethods.go above the LocalOnlyMethods map. Frontend
 	// has no client-side defaults; LocalOnly would zero every

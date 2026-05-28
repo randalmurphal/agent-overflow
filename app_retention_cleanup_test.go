@@ -53,10 +53,10 @@ func TestRunRetentionSweepEvictsOnlyOlderThanCutoff(t *testing.T) {
 
 	// Seed threads spanning the cutoff (30 days before 'now' = May 2).
 	cutoff := now.Add(-30 * 24 * time.Hour).UnixMilli()
-	seedThread(t, app, "ancient", cutoff-100_000_000)              // ~28h before cutoff
-	seedThread(t, app, "stale", cutoff-1_000)                      // 1s before cutoff
-	seedThread(t, app, "boundary", cutoff)                         // exactly at cutoff (NOT eligible: strict <)
-	seedThread(t, app, "fresh", now.Add(-time.Hour).UnixMilli())   // an hour ago
+	seedThread(t, app, "ancient", cutoff-100_000_000)               // ~28h before cutoff
+	seedThread(t, app, "stale", cutoff-1_000)                       // 1s before cutoff
+	seedThread(t, app, "boundary", cutoff)                          // exactly at cutoff (NOT eligible: strict <)
+	seedThread(t, app, "fresh", now.Add(-time.Hour).UnixMilli())    // an hour ago
 	seedThread(t, app, "newest", now.Add(-time.Minute).UnixMilli()) // a minute ago
 
 	app.runRetentionSweep(now)
@@ -360,4 +360,3 @@ func TestRunRetentionThreadSweepAbortsMidBatchOnShutdown(t *testing.T) {
 		t.Fatalf("survived=%d, want %d (= seeded - polled boundary)", survived, want)
 	}
 }
-

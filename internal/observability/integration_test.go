@@ -134,10 +134,9 @@ func TestObs_TurnLifecycleSpanHasCorrectAttributes(t *testing.T) {
 	recorder, tp := newRecordingTracerProvider(t)
 
 	tracer := tp.Tracer("turn-attrs")
-	_, span := tracer.Start(context.Background(), "turn.lifecycle",
-		// Use the same attribute helpers the Provider exposes so we catch
-		// regressions in the attribute keys.
-	)
+	_, span := tracer.Start(context.Background(), "turn.lifecycle") // Use the same attribute helpers the Provider exposes so we catch
+	// regressions in the attribute keys.
+
 	span.SetAttributes(
 		obsotel.ThreadAttr("thread-99"),
 		obsotel.ProviderAttr("codex"),
