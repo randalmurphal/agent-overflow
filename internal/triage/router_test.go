@@ -2393,9 +2393,22 @@ func TestThinkingDeltaEmitsSemanticDeltasWithoutSnapshotSpam(t *testing.T) {
 	if len(upserts) != 1 {
 		t.Fatalf("provider:item_event upsert count = %d, want 1 initial row: %+v", len(upserts), upserts)
 	}
+	// The creation upsert carries NO content; the first chunk streams as a
+	// delta so the frontend smoother animates it instead of seeding it as
+	// already-revealed (the post-thinking "snap" the streaming fix targets).
+	if upserts[0].Summary != "" {
+		t.Fatalf("creation upsert summary = %q, want empty (content streams as deltas)", upserts[0].Summary)
+	}
 	deltas := filterItemEventDeltas(*emissions)
-	if len(deltas) != 2 {
-		t.Fatalf("provider:item_event delta count = %d, want 2 follow-up deltas: %+v", len(deltas), deltas)
+	wantDeltas := []string{"plan ", "more", " done"}
+	if len(deltas) != len(wantDeltas) {
+		t.Fatalf("provider:item_event delta count = %d, want %d (first chunk + 2 follow-ups): %+v",
+			len(deltas), len(wantDeltas), deltas)
+	}
+	for i, want := range wantDeltas {
+		if deltas[i].Delta != want {
+			t.Fatalf("delta[%d] = %q, want %q", i, deltas[i].Delta, want)
+		}
 	}
 
 	if err := router.Wait(context.Background()); err != nil {

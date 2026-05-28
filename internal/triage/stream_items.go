@@ -62,34 +62,7 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
-		// Persist the content for history / mid-stream restore, but emit row
-		// creation with an EMPTY summary and ship the first chunk as a delta.
-		// If the creation upsert carried the content, the frontend smoother
-		// would seed it as already-revealed and it would snap in as one block
-		// with no animation — very visible when the first chunk is large (a
-		// whole assistant-message text block from parse_assistant, or the
-		// opening burst after a thinking block). Routing ALL content through
-		// deltas lets every chunk animate; the non-first branch below already
-		// emits deltas, so this just makes the first chunk consistent.
-		//
-		// Emit the PERSISTED row (with store-assigned item_index), summary
-		// blanked — not the pre-persist struct, whose item_index is still 0
-		// and would mis-sort against the preceding thinking row and feed a
-		// wrong position into the reveal gate.
-		persisted, err := r.persistItemQuietReturning(item, nil)
-		if err != nil {
-			return err
-		}
-		persisted.Summary = ""
-		r.emitItemUpsert(persisted)
-		r.emitItemDelta(ItemDeltaEvent{
-			ThreadID:  evt.ThreadID,
-			ItemID:    itemID,
-			Kind:      itemKindAssistantText,
-			Delta:     evt.Content,
-			UpdatedAt: now,
-		})
-		return nil
+		return r.emitStreamingBlockStart(item, nil, evt.Content, now)
 	}
 	r.emitItemDelta(ItemDeltaEvent{
 		ThreadID:  evt.ThreadID,
@@ -156,10 +129,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 			Data:      []byte(evt.Content),
 			CreatedAt: now,
 		}
-		if err := r.persistItem(item, &payload); err != nil {
-			return err
-		}
-		return r.emitInline(evt)
+		return r.emitStreamingBlockStart(item, &payload, evt.Content, now)
 	}
 	flushThinkingAfterEmit := r.stageThinkingPersistenceForEmit(evt.ThreadID, itemID, payloadID, evt.Content, now)
 	r.emitItemDelta(ItemDeltaEvent{
@@ -175,6 +145,45 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		}
 	}
 	return r.emitInline(evt)
+}
+
+// emitStreamingBlockStart persists a new streaming text/thinking row (with
+// its optional payload) for history / mid-stream restore, then emits row
+// creation with an EMPTY summary and ships the first chunk as a delta.
+//
+// If the creation upsert carried the content, the frontend per-item smoother
+// would seed it as already-revealed and it would snap in as one block with no
+// animation — very visible when the first chunk is large (a whole
+// assistant-message text block from parse_assistant, or the opening burst
+// after a thinking block). Routing ALL content through deltas lets every
+// chunk animate; the non-first delta path already does this, so this just
+// makes the first chunk consistent.
+//
+// It emits the PERSISTED row (summary blanked), not the pre-persist struct:
+// the store assigns item_index via nextItemIndexTx, so the pre-persist struct
+// still carries item_index 0 and would mis-sort against a preceding row (e.g.
+// a thinking block before the text) and feed a wrong position into the
+// frontend reveal gate.
+func (r *Router) emitStreamingBlockStart(
+	item store.Item,
+	payload *store.Payload,
+	content string,
+	now int64,
+) error {
+	persisted, err := r.persistItemQuietReturning(item, payload)
+	if err != nil {
+		return err
+	}
+	persisted.Summary = ""
+	r.emitItemUpsert(persisted)
+	r.emitItemDelta(ItemDeltaEvent{
+		ThreadID:  persisted.ThreadID,
+		ItemID:    persisted.ID,
+		Kind:      persisted.Kind,
+		Delta:     content,
+		UpdatedAt: now,
+	})
+	return nil
 }
 
 func scopeCounterKey(threadID string, turnIndex int, scope string) string {
