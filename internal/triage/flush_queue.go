@@ -246,9 +246,19 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 // handleToolComplete in router.go), and the unified-exec start never persisted
 // a tool_call row — so the turn can hold only its lone user_text and a Stop
 // landing in the window would wrongly revert. Closing that path is a tracked
-// follow-up; it needs the boundary drain to coordinate with flushHandoffMu
-// without taking an app-layer lock on this goroutine. See app_flush_queue.go
-// RegisterQueueItem.
+// follow-up. The drain itself does NOT take flushHandoffMu — it runs on a
+// goroutine that never holds it, and that mutex only serializes the
+// RegisterQueueItem trigger against the predicate. What observes the fix is the
+// predicate's existing flushHandoffMu-guarded read, which already folds in the
+// triage counts. The fix stays inside the router — a
+// per-thread claim count bumped under r.mu alongside the delete here, folded
+// into QueuedFlushItemCount, and dropped only after the dispatcher has
+// synchronously recorded the batch in-flight — so the batch reads as queued,
+// then claimed, then in-flight, never invisible across the handoff. (For that
+// overlap to be airtight the predicate must read the triage counts before the
+// App inflight count; today pendingFlushWorkCount reads them App-first.) See
+// app_flush_queue.go RegisterQueueItem for the analogous guarantee on the
+// action-triggered path.
 func (r *Router) tryFlushQueue(threadID string) bool {
 	if threadID == "" {
 		return false
