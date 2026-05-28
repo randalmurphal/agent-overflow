@@ -177,9 +177,18 @@
   stick-to-bottom spring chased across the viewport. Code and prose
   still stream live (code blocks keep their reactive shiki path, prose
   keeps incremental markdown).
+
+  `wrapperClass` (`md-committed` / `md-volatile`) marks each Streamdown's
+  root div so `.markdown-body > .md-committed + .md-volatile` in app.css
+  can re-establish the inter-paragraph gap at the seam: the two instances
+  are separate containers, so the adjacent-sibling `p + p` spacing rule
+  can't match across them and the gap would otherwise collapse until the
+  next block commits. A settled (non-streaming) message renders as a
+  single `md-committed` container and never matches the seam rule.
 -->
-{#snippet streamdownInstance(content: string, parseIncompleteMarkdown: boolean)}
+{#snippet streamdownInstance(content: string, parseIncompleteMarkdown: boolean, wrapperClass: string)}
   <Streamdown
+    class={wrapperClass}
     {content}
     {parseIncompleteMarkdown}
     baseTheme="tailwind"
@@ -204,9 +213,9 @@
   class={['markdown-body', className].filter(Boolean).join(' ')}
 >
   {#if splitDerived.prefix}
-    {@render streamdownInstance(splitDerived.prefix, false)}
+    {@render streamdownInstance(splitDerived.prefix, false, 'md-committed')}
   {/if}
   {#if splitDerived.tail || !splitDerived.prefix}
-    {@render streamdownInstance(splitDerived.tail, streaming)}
+    {@render streamdownInstance(splitDerived.tail, streaming, 'md-volatile')}
   {/if}
 </div>

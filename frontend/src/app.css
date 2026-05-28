@@ -283,6 +283,21 @@ pre, code, kbd, samp, .ansi-body {
 .markdown-body p + p {
   margin-top: calc(var(--markdown-body-line-height) * 1em);
 }
+/* Streaming committed-prefix / volatile-tail split: ChatMarkdown renders the
+   committed prefix and the volatile tail as two separate Streamdown
+   containers (.md-committed + .md-volatile), so the adjacent-sibling `p + p`
+   rule above can't match across the container boundary and the
+   inter-paragraph gap collapses at the seam — until the next block commits
+   into the prefix and the gap pops back in (the user-visible "spacing drops
+   then reformats" while streaming). Re-establish the gap at the seam. Scoped
+   to the split: a settled message renders as a single .md-committed
+   container, so this never matches once streaming ends. The fixed
+   paragraph-sized gap is a deliberate approximation — a non-paragraph seam
+   (e.g. code → paragraph) gets a slightly larger gap for the brief moment
+   it's split, which resolves to exact spacing on settle. */
+.markdown-body > .md-committed + .md-volatile {
+  margin-top: calc(var(--markdown-body-line-height) * 1em);
+}
 .markdown-body ul,
 .markdown-body ol {
   margin: 0.25rem 0;
