@@ -3971,4 +3971,407 @@ describe('createThreadPane', () => {
       .toContain('agent-39');
     expect(pane.subagentNotifications[0].meta).toContain('agent-8');
   });
+
+  describe('reveal sequencer (revealBoundary)', () => {
+    function streamingThinking(id: string, itemIndex: number, threadId: string) {
+      return makeItem({
+        id,
+        threadId,
+        kind: 'thinking',
+        role: 'assistant',
+        status: 'streaming',
+        turnIndex: 0,
+        itemIndex,
+        summary: '',
+        payloadId: `thinking:${id}`,
+        updatedAt: 1,
+      });
+    }
+
+    it('starts with no gate', async () => {
+      const pane = await buildPane(makeThread({ id: 't' }));
+      expect(pane.revealBoundary).toBeNull();
+    });
+
+    it('a solo streaming row gates at itself but withholds nothing at the tail', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(streamingThinking('think:0:0', 0, 't'));
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'word '.repeat(40),
+          updatedAt: 2,
+        });
+        // Frontier is the only/last node → boundary points at it but the
+        // slice helper (covered in subagentGrouping.test.ts) withholds nothing.
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        // It drains at the base cadence (no successor → no fast-drain).
+        for (let i = 0; i < 80; i++) clock.tickFrame(16);
+        expect(pane.revealBoundary).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('withholds the next top-level row until the streaming item drains', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(streamingThinking('think:0:0', 0, 't'));
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'word '.repeat(40),
+          updatedAt: 2,
+        });
+        // Wire moves on: a tool call appears while the thinking still lags.
+        pane.upsertItem(makeItem({
+          id: 'tool:0:1',
+          threadId: 't',
+          kind: 'tool_call',
+          status: 'running',
+          turnIndex: 0,
+          itemIndex: 1,
+          toolName: 'Bash',
+          summary: 'Bash',
+          updatedAt: 3,
+        }));
+        // Gate stays at the thinking row — the tool call is withheld.
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        // Fast-drain finishes the thinking within ~200ms (≈13 frames).
+        for (let i = 0; i < 14; i++) clock.tickFrame(16);
+        expect(pane.revealBoundary).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('fast-drains the frontier only when a successor is waiting', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        // Control: no successor — drains at the base cadence and is NOT done
+        // after the ~200ms fast-drain window.
+        const solo = await buildPane(makeThread({ id: 'solo' }));
+        solo.upsertItem(streamingThinking('think:0:0', 0, 'solo'));
+        solo.applyItemDelta({
+          threadId: 'solo',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'word '.repeat(40),
+          updatedAt: 2,
+        });
+        for (let i = 0; i < 14; i++) clock.tickFrame(16);
+        expect(solo.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+
+        // With a successor, the same lag drains inside the window.
+        const gated = await buildPane(makeThread({ id: 'gated' }));
+        gated.upsertItem(streamingThinking('think:0:0', 0, 'gated'));
+        gated.applyItemDelta({
+          threadId: 'gated',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'word '.repeat(40),
+          updatedAt: 2,
+        });
+        gated.upsertItem(makeItem({
+          id: 'tool:0:1',
+          threadId: 'gated',
+          kind: 'tool_call',
+          status: 'running',
+          turnIndex: 0,
+          itemIndex: 1,
+          toolName: 'Bash',
+          summary: 'Bash',
+          updatedAt: 3,
+        }));
+        for (let i = 0; i < 14; i++) clock.tickFrame(16);
+        expect(gated.revealBoundary).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('pauses a withheld smoothed successor so it animates from the start', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(streamingThinking('think:0:0', 0, 't'));
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'word '.repeat(40),
+          updatedAt: 2,
+        });
+        // A streaming assistant_text successor arrives and gets its deltas
+        // while still withheld behind the thinking row.
+        pane.upsertItem(makeItem({
+          id: 'text:0:1',
+          threadId: 't',
+          kind: 'assistant_text',
+          status: 'streaming',
+          turnIndex: 0,
+          itemIndex: 1,
+          summary: '',
+          updatedAt: 3,
+        }));
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:1',
+          kind: 'assistant_text',
+          delta: 'Hello world this is the answer',
+          updatedAt: 4,
+        });
+        const textIdx = pane.items.findIndex((i) => i.id === 'text:0:1');
+
+        // While withheld, the successor's reveal is paused at its seed.
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        for (let i = 0; i < 5; i++) clock.tickFrame(16);
+        expect(pane.items[textIdx].summary).toBe('');
+
+        // Thinking fast-drains → gate advances to the text row, which now
+        // reveals from the start.
+        for (let i = 0; i < 14; i++) clock.tickFrame(16);
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
+        for (let i = 0; i < 80; i++) clock.tickFrame(16);
+        expect(pane.items[textIdx].summary).toBe('Hello world this is the answer');
+        expect(pane.revealBoundary).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('never lets a subagent child become the frontier (no cross-branch gating)', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        // Agent launch (top-level, non-smoothed) + a streaming child thinking.
+        pane.upsertItem(makeItem({
+          id: 'agent:0:0',
+          threadId: 't',
+          kind: 'tool_call',
+          toolName: 'Agent',
+          status: 'running',
+          turnIndex: 0,
+          itemIndex: 0,
+          summary: 'Agent',
+          updatedAt: 1,
+        }));
+        pane.upsertItem(makeItem({
+          id: 'child:0:1',
+          threadId: 't',
+          kind: 'thinking',
+          parentId: 'agent:0:0',
+          status: 'streaming',
+          turnIndex: 0,
+          itemIndex: 1,
+          summary: '',
+          payloadId: 'thinking:child',
+          updatedAt: 2,
+        }));
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'child:0:1',
+          kind: 'thinking',
+          delta: 'subagent reasoning '.repeat(5),
+          updatedAt: 3,
+        });
+        // A subagent descendant must not gate the timeline.
+        expect(pane.revealBoundary).toBeNull();
+
+        // A later top-level text becomes the frontier; the child is ignored.
+        pane.upsertItem(makeItem({
+          id: 'text:0:2',
+          threadId: 't',
+          kind: 'assistant_text',
+          status: 'streaming',
+          turnIndex: 0,
+          itemIndex: 2,
+          summary: '',
+          updatedAt: 4,
+        }));
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:2',
+          kind: 'assistant_text',
+          delta: 'top level answer',
+          updatedAt: 5,
+        });
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 2 });
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('drops the gate when the streaming item is interrupted', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(streamingThinking('think:0:0', 0, 't'));
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'word '.repeat(40),
+          updatedAt: 2,
+        });
+        pane.upsertItem(makeItem({
+          id: 'tool:0:1',
+          threadId: 't',
+          kind: 'tool_call',
+          status: 'running',
+          turnIndex: 0,
+          itemIndex: 1,
+          toolName: 'Bash',
+          summary: 'Bash',
+          updatedAt: 3,
+        }));
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        // Interrupt kills the thinking row → snap + dispose → gate drops.
+        pane.applyItemPatch({
+          threadId: 't',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'killed', updatedAt: 4 },
+        });
+        expect(pane.revealBoundary).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('holds the gate while a completion patch extends the frontier, then drops it once the suffix drains', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(makeItem({
+          id: 'text:0:0', threadId: 't', kind: 'assistant_text', role: 'assistant',
+          status: 'streaming', turnIndex: 0, itemIndex: 0, summary: '', updatedAt: 1,
+        }));
+        pane.applyItemDelta({
+          threadId: 't', itemId: 'text:0:0', kind: 'assistant_text', delta: 'hello ', updatedAt: 2,
+        });
+        pane.upsertItem(makeItem({
+          id: 'tool:0:1', threadId: 't', kind: 'tool_call', status: 'running',
+          turnIndex: 0, itemIndex: 1, toolName: 'Bash', summary: 'Bash', updatedAt: 3,
+        }));
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        // Turn-completion patch carries the final text, extending what streamed.
+        pane.applyItemPatch({
+          threadId: 't', itemId: 'text:0:0', kind: 'assistant_text',
+          patch: { status: 'completed', summary: 'hello world done', updatedAt: 4 },
+        });
+        // Gate still held — the appended suffix hasn't revealed yet.
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        for (let i = 0; i < 80; i++) clock.tickFrame(16);
+        expect(pane.revealBoundary).toBeNull();
+        const text = pane.items.find((i) => i.id === 'text:0:0');
+        expect(text?.summary).toBe('hello world done');
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('reveals a thinking → text → tool_call chain in order', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(streamingThinking('think:0:0', 0, 't'));
+        pane.applyItemDelta({
+          threadId: 't', itemId: 'think:0:0', kind: 'thinking', delta: 'word '.repeat(40), updatedAt: 2,
+        });
+        pane.upsertItem(makeItem({
+          id: 'text:0:1', threadId: 't', kind: 'assistant_text', role: 'assistant',
+          status: 'streaming', turnIndex: 0, itemIndex: 1, summary: '', updatedAt: 3,
+        }));
+        pane.applyItemDelta({
+          threadId: 't', itemId: 'text:0:1', kind: 'assistant_text', delta: 'the answer here', updatedAt: 4,
+        });
+        pane.upsertItem(makeItem({
+          id: 'tool:0:2', threadId: 't', kind: 'tool_call', status: 'running',
+          turnIndex: 0, itemIndex: 2, toolName: 'Bash', summary: 'Bash', updatedAt: 5,
+        }));
+        // Gate at thinking; text AND tool both withheld.
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        // thinking drains → gate steps to the text row (not straight to null).
+        for (let i = 0; i < 14; i++) clock.tickFrame(16);
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
+        // text drains → gate drops (tool has no smoother, reveals immediately).
+        for (let i = 0; i < 20; i++) clock.tickFrame(16);
+        expect(pane.revealBoundary).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('resumes a paused successor when the frontier row is removed', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(streamingThinking('think:0:0', 0, 't'));
+        pane.applyItemDelta({
+          threadId: 't', itemId: 'think:0:0', kind: 'thinking', delta: 'word '.repeat(40), updatedAt: 2,
+        });
+        pane.upsertItem(makeItem({
+          id: 'text:0:1', threadId: 't', kind: 'assistant_text', role: 'assistant',
+          status: 'streaming', turnIndex: 0, itemIndex: 1, summary: '', updatedAt: 3,
+        }));
+        pane.applyItemDelta({
+          threadId: 't', itemId: 'text:0:1', kind: 'assistant_text', delta: 'the answer', updatedAt: 4,
+        });
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        // Optimistic revert removes the streaming frontier row.
+        pane.removeItemById('think:0:0');
+        // The withheld successor becomes the frontier and resumes from its start.
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
+        for (let i = 0; i < 60; i++) clock.tickFrame(16);
+        expect(pane.items.find((i) => i.id === 'text:0:1')?.summary).toBe('the answer');
+        expect(pane.revealBoundary).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('resets the gate to null on thread switch', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(streamingThinking('think:0:0', 0, 't'));
+        pane.applyItemDelta({
+          threadId: 't', itemId: 'think:0:0', kind: 'thinking', delta: 'word '.repeat(40), updatedAt: 2,
+        });
+        pane.upsertItem(makeItem({
+          id: 'tool:0:1', threadId: 't', kind: 'tool_call', status: 'running',
+          turnIndex: 0, itemIndex: 1, toolName: 'Bash', summary: 'Bash', updatedAt: 3,
+        }));
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        await pane.switchThread(makeThread({ id: 'other-thread' }));
+        expect(pane.revealBoundary).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('leaves the gate null for a settled thread (no streaming)', async () => {
+      const pane = await buildPane(makeThread({ id: 't' }), [
+        makeItem({ id: 'u:0', threadId: 't', kind: 'user_text', role: 'user', summary: 'hi', turnIndex: 0, itemIndex: 0 }),
+        makeItem({ id: 'a:1', threadId: 't', kind: 'assistant_text', summary: 'done', turnIndex: 0, itemIndex: 1 }),
+      ]);
+      expect(pane.revealBoundary).toBeNull();
+    });
+  });
 });

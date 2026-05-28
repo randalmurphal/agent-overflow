@@ -39,6 +39,15 @@ const defaultClock: SmoothingClock = {
 export const BASE_CHARS_PER_SEC = 160;
 export const ADAPTIVE_TRIGGER_CHARS = 80;
 export const ADAPTIVE_CATCHUP_MS = 500;
+// Default window for `requestFastDrain`: the reveal sequencer calls it on
+// a top-level item the instant a successor row is waiting behind it, so the
+// predecessor finishes animating quickly instead of stalling the queue for
+// seconds. Bounded so a long collapsed thinking block can't delay a live
+// tool call by more than a moment, while still reading as motion rather than
+// an instant snap. Fast-drain bypasses MAX_ADVANCE_PER_TICK_CHARS — that cap
+// exists to keep steady-state streaming from bursting; a deliberate
+// finish-the-predecessor drain is exactly the case where bursting is wanted.
+export const FAST_DRAIN_MS = 200;
 // Hard cap on how many characters the smoother may reveal in a single
 // rAF tick, regardless of how much budget the adaptive catch-up math
 // has produced. Without this cap, sustained high-rate wire bursts
@@ -78,6 +87,16 @@ export class PerItemSmoother {
   // Fractional character budget accumulates across ticks so a slow
   // tick (low rAF rate) still averages out to ~rate chars per second.
   private revealBudget = 0;
+  // While paused, the smoother accumulates `received` (appendDelta still
+  // grows it) but advances `revealed` zero — `scheduleTick` no-ops. The
+  // reveal sequencer pauses a row whose turn to reveal hasn't come yet, so
+  // when it is finally revealed it animates from where it left off (the
+  // start) rather than snapping in a chunk that streamed invisibly.
+  private paused = false;
+  // When non-null, the smoother is fast-draining toward this wall-clock
+  // deadline: charsPerSec is sized to reveal the current lag by then and the
+  // per-tick cap is lifted. Cleared once caught up (or on snap).
+  private fastDrainEndsAt: number | null = null;
 
   constructor(opts: PerItemSmootherOptions) {
     this.received = opts.initialReceived ?? '';
@@ -99,6 +118,7 @@ export class PerItemSmoother {
   /** Synchronously reveal everything in `received`. */
   snap(): void {
     if (this.disposed) return;
+    this.fastDrainEndsAt = null;
     if (this.rafHandle != null) {
       this.clock.cancel(this.rafHandle);
       this.rafHandle = null;
@@ -108,6 +128,44 @@ export class PerItemSmoother {
     this.revealed = this.received;
     this.revealBudget = 0;
     this.onReveal(this.revealed, delta);
+  }
+
+  /**
+   * Hold reveal at its current cursor. `appendDelta` keeps accumulating
+   * `received`; no rAF advances `revealed` until `resume`. Idempotent.
+   */
+  pause(): void {
+    if (this.disposed || this.paused) return;
+    this.paused = true;
+    if (this.rafHandle != null) {
+      this.clock.cancel(this.rafHandle);
+      this.rafHandle = null;
+    }
+  }
+
+  /** Resume reveal after `pause`. Re-schedules a tick if behind. Idempotent. */
+  resume(): void {
+    if (this.disposed || !this.paused) return;
+    this.paused = false;
+    this.lastTickAt = this.clock.now();
+    this.scheduleTick();
+  }
+
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  /**
+   * Drain the current lag aggressively so the row finishes animating within
+   * ~`targetMs`. First call wins the deadline; later calls are ignored so a
+   * repeated trigger can't keep pushing the finish out. No-op once caught up.
+   */
+  requestFastDrain(targetMs: number = FAST_DRAIN_MS): void {
+    if (this.disposed) return;
+    if (this.fastDrainEndsAt !== null) return;
+    if (this.isCaughtUp()) return;
+    this.fastDrainEndsAt = this.clock.now() + Math.max(0, targetMs);
+    this.scheduleTick();
   }
 
   isCaughtUp(): boolean {
@@ -139,6 +197,7 @@ export class PerItemSmoother {
 
   private scheduleTick(): void {
     if (this.disposed) return;
+    if (this.paused) return;
     if (this.rafHandle != null) return;
     if (this.isCaughtUp()) return;
     this.rafHandle = this.clock.schedule(() => {
@@ -155,8 +214,16 @@ export class PerItemSmoother {
     if (this.isCaughtUp()) return;
 
     const lag = this.received.length - this.revealed.length;
+    // Fast-drain mode: size the rate to clear the remaining lag by the
+    // deadline. Floor the window at ~one frame so the rate stays finite,
+    // and once the deadline has passed the lag/16ms rate reveals the
+    // remainder in a single tick (a hard finish).
+    const draining = this.fastDrainEndsAt !== null;
     let charsPerSec = BASE_CHARS_PER_SEC;
-    if (lag > ADAPTIVE_TRIGGER_CHARS) {
+    if (draining) {
+      const msLeft = Math.max(16, (this.fastDrainEndsAt as number) - now);
+      charsPerSec = Math.max(charsPerSec, (lag * 1000) / msLeft);
+    } else if (lag > ADAPTIVE_TRIGGER_CHARS) {
       charsPerSec = Math.max(charsPerSec, (lag * 1000) / ADAPTIVE_CATCHUP_MS);
     }
     this.revealBudget += (charsPerSec * dt) / 1000;
@@ -166,14 +233,18 @@ export class PerItemSmoother {
     // `MAX_ADVANCE_PER_TICK_CHARS` chars in normal word streaming.
     // The exception is a single word unit bigger than the cap (URL,
     // long identifier) — we let the cap expand to that one word's
-    // size so the smoother doesn't stall forever on it.
+    // size so the smoother doesn't stall forever on it. Fast-drain
+    // lifts the cap entirely: finishing a predecessor before the next
+    // row reveals is exactly when a burst is the intended behavior.
     const previousLength = this.revealed.length;
     const nextUnitLen =
       nextWordUnitEnd(this.received, previousLength) - previousLength;
     const isOversizedNext = nextUnitLen > MAX_ADVANCE_PER_TICK_CHARS;
-    const perTickCap = isOversizedNext
-      ? nextUnitLen
-      : MAX_ADVANCE_PER_TICK_CHARS;
+    const perTickCap = draining
+      ? Number.POSITIVE_INFINITY
+      : isOversizedNext
+        ? nextUnitLen
+        : MAX_ADVANCE_PER_TICK_CHARS;
     const rawCap = Math.floor(this.revealBudget);
     const advanceCap = rawCap > perTickCap ? perTickCap : rawCap;
     const nextEnd =
@@ -187,16 +258,21 @@ export class PerItemSmoother {
       this.revealed = this.received.slice(0, nextEnd);
       this.onReveal(this.revealed, delta);
     }
+    // Drain finished: drop back to the normal cadence for any later
+    // appended text (defensive — a frontier's wire is already complete).
+    if (this.isCaughtUp()) this.fastDrainEndsAt = null;
     // Clamp residual budget so accumulated catch-up budget can't burst
     // into a multi-tick chunk on the next frame. The clamp is skipped
     // when the now-next word is still oversized — that case genuinely
-    // needs more budget than the cap to make any progress at all.
+    // needs more budget than the cap to make any progress at all — and
+    // while fast-draining, where the large budget is the whole point.
     const newNextLen =
       nextWordUnitEnd(this.received, this.revealed.length)
       - this.revealed.length;
     const stillOversizedNext = newNextLen > MAX_ADVANCE_PER_TICK_CHARS;
     if (
-      !stillOversizedNext
+      !draining
+      && !stillOversizedNext
       && this.revealBudget > MAX_ADVANCE_PER_TICK_CHARS
     ) {
       this.revealBudget = MAX_ADVANCE_PER_TICK_CHARS;

@@ -13,6 +13,7 @@
   } from '../../utils/threadScrollSnapshots';
   import {
     groupItemsBySubagent,
+    sliceRevealedNodes,
     timelineNodeKey,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
@@ -175,6 +176,15 @@
   let groupedNodes = $derived.by(() =>
     patchTimelineNodeItemRefs(structuralNodes, (id) => pane.getItemById(id)),
   );
+  // Reveal gate: while a turn streams, the pane's sequencer holds the next
+  // top-level row back until the current item's smoother drains
+  // (`pane.revealBoundary`). `sliceRevealedNodes` returns the SAME array
+  // reference when nothing is withheld (boundary null, or the frontier is the
+  // tail node), so this is zero-cost outside the brief withhold windows.
+  // Everything index-based downstream (virtua data, decorations, the
+  // live-follow nudge, scroll-to-index) must read THIS, not `groupedNodes`,
+  // so the indices line up with what virtua actually renders.
+  let revealedNodes = $derived(sliceRevealedNodes(groupedNodes, pane.revealBoundary));
   let codexReceiverLabels = $derived.by(() => {
     const provider = pane.thread?.provider;
     // Receiver labels come from spawn-row metadata. Summary-only streaming
@@ -189,10 +199,16 @@
   let rowDecorations = $derived.by(() => {
     const activeTurnIndex = getActiveTurn(pane.threadId)?.turnIndex ?? null;
     // Decoration sets depend on row structure and active-turn exclusion,
-    // not the growing summary text inside an existing row.
+    // not the growing summary text inside an existing row. Track
+    // `pane.revealBoundary` (a $state that only changes when the gate
+    // advances — NOT per streaming delta) so divider/boundary indexes
+    // realign with the gated set without recomputing on every chunk;
+    // `revealedNodes` is read inside `untrack` because its array ref churns
+    // each delta even when the boundary is unchanged.
     pane.timelineRevision;
+    pane.revealBoundary;
 
-    return untrack(() => timelineRowDecorations(groupedNodes, activeTurnIndex));
+    return untrack(() => timelineRowDecorations(revealedNodes, activeTurnIndex));
   });
 
   let activeTurnStructuralSignature = $derived.by(() => {
@@ -200,7 +216,9 @@
     const activeTurn = getActiveTurn(threadId);
     if (!threadId || !activeTurn) return '';
 
-    const tailNodeKeys = groupedNodes
+    // Tail of the REVEALED set so the nudge fires when a row actually
+    // appears (reveal advances), not when a still-withheld item arrives.
+    const tailNodeKeys = revealedNodes
       .slice(-LIVE_FOLLOW_TAIL_NODE_COUNT)
       .map((node) => timelineNodeKey(node))
       .join(',');
@@ -299,7 +317,7 @@
   }
 
   function notifyHostLayoutSettled(retryCount = 0): void {
-    const lastIndex = groupedNodes.length - 1;
+    const lastIndex = revealedNodes.length - 1;
     const shouldStickToBottom = !stick.escapedFromLock;
     if (!listRef && lastIndex >= 0) {
       if (retryCount < 2) retryHostLayoutSettled(retryCount + 1);
@@ -446,8 +464,8 @@
     pane.threadId;
     pane.items.length;
     pane.timelineRevision;
-    groupedNodes.length;
-    recordTimelineRenderTrace(pane, groupedNodes, scrollEl, listRef);
+    revealedNodes.length;
+    recordTimelineRenderTrace(pane, revealedNodes, scrollEl, listRef);
   });
 
   // Trace virtua remount transitions: listRef goes undefined → defined
@@ -465,7 +483,7 @@
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
       scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-      groupedNodesLength: groupedNodes.length,
+      groupedNodesLength: revealedNodes.length,
     });
   });
 
@@ -490,7 +508,7 @@
   // `groupedNodes` into every call site.
 
   function findTimelineNodeIndex(itemId: string): number {
-    return resolveVisibleTimelineNodeIndex(groupedNodes, pane.items, itemId);
+    return resolveVisibleTimelineNodeIndex(revealedNodes, pane.items, itemId);
   }
 
 
@@ -573,7 +591,7 @@
       // Negative when the anchor row's top has scrolled above the viewport
       // top by `-offsetTop` pixels. Restoration recreates exactly this
       // relationship via scrollToIndex({ align:'start', offset: -offsetTop }).
-      const anchor = captureTimelineAnchor(groupedNodes, listRef, offset, { clampIndex: true });
+      const anchor = captureTimelineAnchor(revealedNodes, listRef, offset, { clampIndex: true });
       if (!anchor) return;
       setThreadScrollSnapshot(threadId, { kind: 'anchor', ...anchor });
     } catch (err) {
@@ -781,12 +799,16 @@
   // bottom. notifyContentMaybeGrew is escape-aware (bails if the user
   // gestured up between frames) so it can't yank them.
   function restoreToBottom(): void {
-    const lastIndex = groupedNodes.length - 1;
+    // Last RENDERED row (virtua's `data` is `revealedNodes`). If a stream
+    // event set the reveal gate between switch and restore, the true last
+    // index is the revealed one — scrolling to a withheld index would land
+    // out of virtua's range.
+    const lastIndex = revealedNodes.length - 1;
     if (isUiRenderTraceEnabled()) {
       recordUiTrace('timeline.restore.bottom.entry', {
         threadId: restoredThreadId,
         lastIndex,
-        groupedNodesLength: groupedNodes.length,
+        groupedNodesLength: revealedNodes.length,
         hasListRef: listRef !== undefined,
         hasScrollEl: scrollEl !== undefined,
         scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
@@ -937,7 +959,7 @@
   async function handleLoadOlder(): Promise<void> {
     if (!listRef) return;
     const offsetBefore = listRef.getScrollOffset();
-    const anchor = captureTimelineAnchor(groupedNodes, listRef, offsetBefore);
+    const anchor = captureTimelineAnchor(revealedNodes, listRef, offsetBefore);
     const anchorId = anchor?.itemId ?? null;
     const anchorOffsetTop = anchor?.offsetTop ?? 0;
 
@@ -994,7 +1016,7 @@
     if (myToken !== restoreToken || !listRef) return;
     const idx = findTimelineNodeIndex(id);
     if (idx < 0) return;
-    const targetNode = groupedNodes[idx];
+    const targetNode = revealedNodes[idx];
     const targetItemId = targetNode?.kind === 'leaf' ? targetNode.item.id : id;
     stick.runExternalScroll(() => {
       listRef?.scrollToIndex(idx, { align: 'center' });
@@ -1116,7 +1138,7 @@
         <Virtualizer
           bind:this={listRef}
           scrollRef={scrollEl}
-          data={groupedNodes}
+          data={revealedNodes}
           getKey={(node) => timelineNodeKey(node)}
           itemSize={ESTIMATED_ROW_SIZE}
           bufferSize={BUFFER_SIZE_PX}

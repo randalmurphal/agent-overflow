@@ -4,7 +4,8 @@ import { tick } from 'svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { createThreadPane } from '../../stores/thread.svelte';
+import { __setSmoothingClockForTest, createThreadPane } from '../../stores/thread.svelte';
+import type { SmoothingClock } from '../../markdown/smoothing/PerItemSmoother';
 import {
   projectTurnCompleted,
   projectTurnStarted,
@@ -34,6 +35,25 @@ function agentMeta(description: string): string {
     toolName: 'Agent',
     input: { description, subagent_type: 'Explore' },
   });
+}
+
+class FakeSmoothingClock implements SmoothingClock {
+  private current = 0;
+  private nextHandle = 1;
+  private pending = new Map<number, () => void>();
+  now(): number { return this.current; }
+  schedule(cb: () => void): number {
+    const h = this.nextHandle++;
+    this.pending.set(h, cb);
+    return h;
+  }
+  cancel(h: number): void { this.pending.delete(h); }
+  tickFrame(ms: number): void {
+    this.current += ms;
+    const toFire = [...this.pending.values()];
+    this.pending.clear();
+    for (const cb of toFire) cb();
+  }
 }
 
 describe('<MessageTimeline>', () => {
@@ -1263,6 +1283,58 @@ describe('<MessageTimeline>', () => {
       const row = container.querySelector('[data-row-index="1"]');
       if (!row) throw new Error('row 1 not found');
       expect(row.classList.contains('mt-4')).toBe(true);
+    });
+  });
+
+  describe('reveal gate', () => {
+    function countNodes(scroll: HTMLElement): number {
+      return scroll.querySelectorAll('[data-testid="message-timeline-node"]').length;
+    }
+
+    it('withholds the next row while the prior item streams, then reveals it', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-1' }), [
+          makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi', turnIndex: 0, itemIndex: 0 }),
+        ]);
+        pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: Date.now() });
+        // A thinking row streams; the wire then moves on to a tool call while
+        // the thinking smoother still has a backlog to reveal.
+        pane.upsertItem(makeItem({
+          id: 'think:0:1', kind: 'thinking', role: 'assistant', status: 'streaming',
+          turnIndex: 0, itemIndex: 1, summary: '', payloadId: 'p', updatedAt: 1,
+        }));
+        pane.applyItemDelta({
+          threadId: 'thread-1', itemId: 'think:0:1', kind: 'thinking',
+          delta: 'word '.repeat(40), updatedAt: 2,
+        });
+        pane.upsertItem(makeItem({
+          id: 'tool:0:2', kind: 'tool_call', role: 'assistant', status: 'running',
+          turnIndex: 0, itemIndex: 2, toolName: 'Bash', summary: 'Bash command', updatedAt: 3,
+        }));
+
+        const { getByTestId } = render(MessageTimeline, { props: { pane } });
+        await tick();
+
+        const scroll = getByTestId('message-timeline-scroll');
+        // user + thinking render; the tool call is withheld behind the
+        // still-streaming thinking row.
+        expect(countNodes(scroll)).toBe(2);
+        expect(scroll.textContent).not.toContain('Bash command');
+
+        // Drain the thinking smoother (fast-drain finishes within ~200ms) and
+        // the gate drops — the tool call row reveals. Loop until the boundary
+        // clears rather than a fixed frame count so the assertion proves "the
+        // gate dropped", independent of the exact fast-drain constant.
+        for (let i = 0; i < 40 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
+        await tick();
+
+        expect(countNodes(scroll)).toBe(3);
+        expect(scroll.textContent).toContain('Bash command');
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
     });
   });
 });

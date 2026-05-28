@@ -59,6 +59,7 @@ import {
   type RhsPanelSlot,
 } from './rhsPanelSlot.svelte';
 import { errString } from '../utils/errors';
+import type { RevealBoundary } from '../utils/subagentGrouping';
 import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
 import {
   MAX_CACHED_SNAPSHOT_ITEMS,
@@ -437,6 +438,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // re-runs on Map.set. Cleared in the same paths that clear
   // itemSmoothers.
   const itemLiveThinkingTail: SvelteMap<string, string> = new SvelteMap();
+  // Reveal gate. While a turn streams, the timeline reveals one top-level
+  // item at a time: the next row is withheld until the current item's
+  // smoother drains. `revealBoundary` is the position of the item currently
+  // being revealed (the "frontier"); MessageTimeline renders nodes up to and
+  // including it and withholds anything after via `sliceRevealedNodes`. `null`
+  // means no gate — render everything — the steady state outside live
+  // streaming. The sequencer (`recomputeReveal`) is the sole writer; it keys
+  // purely off smoother liveness + (turnIndex, itemIndex) order, never off
+  // `getActiveTurn`, so a between-rounds activeturn flicker can't drop the
+  // gate. Subagent children (`parentId` set) never become the frontier, so
+  // parallel subagent branches are never serialized behind one another.
+  let revealBoundary: RevealBoundary | null = $state(null);
   const pendingInteractiveState = createThreadPendingInteractiveState();
   let contextWindow: ContextWindow | null = $state(null);
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`
@@ -653,6 +666,91 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     for (const entry of itemSmoothers.values()) entry.smoother.dispose();
     itemSmoothers.clear();
     itemLiveThinkingTail.clear();
+    revealBoundary = null;
+  }
+
+  // Two reveal boundaries are equal when both are null or share a position.
+  // Mirrors the `sameActiveTurn` / `sameRhsPanel` equality helpers; the
+  // change-guard in `recomputeReveal` uses it so `revealBoundary` is only
+  // reassigned when the gate actually moves, not on every streaming chunk
+  // (MessageTimeline's `rowDecorations` relies on that via `untrack`).
+  function sameBoundary(
+    a: RevealBoundary | null,
+    b: RevealBoundary | null,
+  ): boolean {
+    if (a === null || b === null) return a === b;
+    return a.turnIndex === b.turnIndex && a.itemIndex === b.itemIndex;
+  }
+
+  /**
+   * Reveal sequencer. Recomputes the reveal frontier from current smoother
+   * state and (turnIndex, itemIndex) order, then:
+   *   - publishes `revealBoundary` (the frontier's position, or null when no
+   *     top-level smoother is mid-reveal — render everything),
+   *   - pauses smoothers for withheld successors so they animate from their
+   *     start when their turn comes rather than snapping in text that streamed
+   *     while hidden, and resumes the frontier,
+   *   - fast-drains the frontier when any later top-level row is already
+   *     waiting, so the next row appears within ~200ms instead of stalling
+   *     behind a long (often collapsed) thinking block.
+   *
+   * The frontier is the earliest top-level (`!parentId`) item whose smoother
+   * is still revealing. Subagent children are excluded so a streaming child
+   * never gates a sibling branch or a top-level row.
+   *
+   * INVARIANT: every path that mutates `items` or a smoother's liveness must
+   * call this. There is deliberately NO reactive `$effect` watching `items`
+   * (frontend/CLAUDE.md forbids a parallel watcher over the timeline), so the
+   * gate is kept in sync by explicit calls from `applyItemDelta`,
+   * `applyItemPatch`, `upsertItemsBatch`, `onReveal` (on catch-up), and the
+   * item-removal paths; `disposeAllSmoothers` clears the boundary directly.
+   */
+  function recomputeReveal(): void {
+    let frontier: Item | null = null;
+    for (const [id, entry] of itemSmoothers) {
+      const item = getItemById(id);
+      if (!item || item.parentId) continue;
+      if (entry.smoother.isCaughtUp()) continue;
+      // Earliest position wins (<= 0 ⇒ item is at or before the frontier).
+      if (frontier === null || compareItemsByTimelinePosition(item, frontier) <= 0) {
+        frontier = item;
+      }
+    }
+
+    if (frontier) {
+      const f = frontier;
+      // A successor is any later TOP-LEVEL row. `items` is sorted by
+      // (turnIndex, itemIndex), so scan FORWARD from the frontier's index
+      // instead of the whole array — the common case (streaming the tail
+      // row with nothing after it yet) then costs O(1), not O(items), on
+      // the per-chunk hot path.
+      let hasSuccessor = false;
+      const frontierIdx = itemIndexById.get(f.id) ?? -1;
+      for (let i = frontierIdx + 1; i < items.length; i++) {
+        if (!items[i].parentId) {
+          hasSuccessor = true;
+          break;
+        }
+      }
+      for (const [id, entry] of itemSmoothers) {
+        const item = getItemById(id);
+        if (!item || item.parentId) continue;
+        // Withheld successors pause; the frontier (and any earlier top-level
+        // smoother, though none should outrank it) resumes.
+        if (compareItemsByTimelinePosition(item, f) > 0) entry.smoother.pause();
+        else entry.smoother.resume();
+      }
+      if (hasSuccessor) itemSmoothers.get(f.id)?.smoother.requestFastDrain();
+    } else {
+      // Nothing is gating — make sure no smoother is left paused (the
+      // frontier may have drained between recomputes).
+      for (const entry of itemSmoothers.values()) entry.smoother.resume();
+    }
+
+    const next: RevealBoundary | null = frontier
+      ? { turnIndex: frontier.turnIndex, itemIndex: frontier.itemIndex }
+      : null;
+    if (!sameBoundary(revealBoundary, next)) revealBoundary = next;
   }
 
   // Smoothable kinds: assistant_text + thinking. Tool calls, errors,
@@ -734,6 +832,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           itemSmoothers.delete(itemId);
           itemLiveThinkingTail.delete(itemId);
         }
+        // Advance the reveal gate the moment the frontier catches up so the
+        // withheld successor reveals in the same frame, without waiting on an
+        // unrelated wire event.
+        if (smoother.isCaughtUp()) recomputeReveal();
       },
     });
 
@@ -815,6 +917,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         designState.applyAssistantPayloadsForItem(item, thread);
       }
     }
+    // A newly-appended successor row should withhold behind the streaming
+    // frontier and trigger its fast-drain; a terminal upsert that disposed
+    // the frontier should drop the gate. Recompute once per batch.
+    recomputeReveal();
     return next;
   }
 
@@ -1922,6 +2028,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       const removed = items[idx];
       replaceTimelineItems(items.filter((it) => it.id !== itemId));
       disposeSmootherFor(itemId);
+      recomputeReveal();
       if (thread) {
         threadItemCache.evict(thread.id);
       }
@@ -1953,6 +2060,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (removed.length === 0) return removed;
       replaceTimelineItems(kept);
       for (const r of removed) disposeSmootherFor(r.id);
+      recomputeReveal();
       if (thread) {
         threadItemCache.evict(thread.id);
       }
@@ -2018,6 +2126,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       const entry = getOrCreateSmoothing(evt.itemId, current.summary);
       entry.setLatestUpdatedAt(evt.updatedAt);
       entry.smoother.appendDelta(evt.delta);
+      // A new smoothed row (or fresh lag on the frontier) may move the gate;
+      // recompute so a withheld successor pauses and the frontier fast-drains.
+      recomputeReveal();
     },
 
     applyItemMeta(evt: ItemMetaEvent): void {
@@ -2112,6 +2223,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         disposeSmootherFor(evt.itemId);
       }
 
+      // Snap/dispose above may have cleared the frontier (interrupt, error,
+      // completion); recompute so the gate drops and any withheld tail rows
+      // reveal. Runs before the early `itemsAreEqual` return below.
+      recomputeReveal();
+
       const next = { ...current };
       if (evt.patch.status !== undefined) next.status = evt.patch.status;
       if (evt.patch.summary !== undefined) {
@@ -2148,6 +2264,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // the trimmed-summary sliding window.
     liveThinkingTailForItem(itemId: string): string | null {
       return itemLiveThinkingTail.get(itemId) ?? null;
+    },
+
+    /**
+     * Reveal gate for the timeline. While a turn streams, this is the
+     * (turnIndex, itemIndex) of the top-level item currently revealing;
+     * MessageTimeline withholds nodes after it via `sliceRevealedNodes` so
+     * the next row waits for the current item's reveal to drain. `null`
+     * outside live streaming — render everything. See `recomputeReveal`.
+     */
+    get revealBoundary(): RevealBoundary | null {
+      return revealBoundary;
     },
 
     setGeneralError(message: string | null): void {

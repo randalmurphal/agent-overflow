@@ -5,6 +5,7 @@ import {
   BASE_CHARS_PER_SEC,
   ADAPTIVE_TRIGGER_CHARS,
   ADAPTIVE_CATCHUP_MS,
+  MAX_ADVANCE_PER_TICK_CHARS,
   type SmoothingClock,
 } from './PerItemSmoother';
 
@@ -309,5 +310,122 @@ describe('PerItemSmoother', () => {
     // Allow ±25% slack for word-boundary stutter and fractional budget.
     expect(elapsed).toBeGreaterThanOrEqual(ideal * 0.75);
     expect(elapsed).toBeLessThanOrEqual(ideal * 1.5);
+  });
+});
+
+const FAST_DRAIN_WINDOW = 200;
+
+describe('PerItemSmoother — reveal sequencing primitives', () => {
+  it('pause holds the reveal cursor while received keeps accumulating', () => {
+    const { clock, smoother } = makeSmoother();
+    smoother.appendDelta('hello world here we go');
+    // Three frames at base rate reveal the first word.
+    clock.tickFrame(16);
+    clock.tickFrame(16);
+    clock.tickFrame(16);
+    const revealedAtPause = smoother.getRevealed();
+    expect(revealedAtPause).toBe('hello ');
+    expect(clock.pendingCount()).toBe(1);
+
+    smoother.pause();
+    expect(smoother.isPaused()).toBe(true);
+    // Pausing cancels the pending rAF so no further reveal fires.
+    expect(clock.pendingCount()).toBe(0);
+
+    // Wire keeps arriving and many frames pass — reveal must not move.
+    smoother.appendDelta(' and more');
+    for (let i = 0; i < 50; i++) clock.tickFrame(16);
+    expect(smoother.getRevealed()).toBe(revealedAtPause);
+    expect(smoother.getReceived()).toBe('hello world here we go and more');
+
+    // Resume continues from where it left off and drains to completion.
+    smoother.resume();
+    expect(smoother.isPaused()).toBe(false);
+    let frames = 0;
+    while (!smoother.isCaughtUp() && frames < 500) {
+      clock.tickFrame(16);
+      frames++;
+    }
+    expect(smoother.getRevealed()).toBe('hello world here we go and more');
+  });
+
+  it('pause is idempotent and resume on a non-paused smoother is a no-op', () => {
+    const { clock, smoother } = makeSmoother();
+    smoother.appendDelta('hello world');
+    expect(clock.pendingCount()).toBe(1);
+    smoother.resume(); // not paused → no-op
+    expect(clock.pendingCount()).toBe(1);
+    smoother.pause();
+    smoother.pause(); // idempotent
+    expect(smoother.isPaused()).toBe(true);
+    expect(clock.pendingCount()).toBe(0);
+  });
+
+  it('snap reveals everything even while paused (interrupt while withheld)', () => {
+    const { smoother } = makeSmoother();
+    smoother.appendDelta('hello world');
+    smoother.pause();
+    smoother.snap();
+    expect(smoother.getRevealed()).toBe('hello world');
+    expect(smoother.isCaughtUp()).toBe(true);
+  });
+
+  it('requestFastDrain finishes a large lag sooner than the per-tick cap would', () => {
+    // 80 three-char word units = 320 chars. Without fast-drain the per-tick
+    // cap (14 chars) bounds the rate; fast-drain lifts it to hit the window.
+    const text = 'ab '.repeat(80);
+    const { clock, smoother, reveals } = makeSmoother();
+    smoother.appendDelta(text);
+    smoother.requestFastDrain(FAST_DRAIN_WINDOW);
+    let frames = 0;
+    while (!smoother.isCaughtUp() && frames < 200) {
+      clock.tickFrame(16);
+      frames++;
+    }
+    const elapsed = clock.now();
+    expect(smoother.getRevealed()).toBe(text);
+    // No reveal split a word — each ends on whitespace or is the final value.
+    for (const r of reveals) {
+      const last = r.revealed[r.revealed.length - 1];
+      expect(last === ' ' || r.revealed === text).toBe(true);
+    }
+
+    // Control: same lag with the normal cap takes materially longer.
+    const control = makeSmoother();
+    control.smoother.appendDelta(text);
+    let cf = 0;
+    while (!control.smoother.isCaughtUp() && cf < 400) {
+      control.clock.tickFrame(16);
+      cf++;
+    }
+    const controlElapsed = control.clock.now();
+    expect(elapsed).toBeLessThan(controlElapsed);
+    // And the control really was cap-bound (>= text.length / cap frames).
+    const minCapMs = (text.length / MAX_ADVANCE_PER_TICK_CHARS) * 16;
+    expect(controlElapsed).toBeGreaterThanOrEqual(minCapMs * 0.9);
+  });
+
+  it('requestFastDrain ignores later calls so the deadline cannot be pushed out', () => {
+    const text = 'cd '.repeat(60); // 180 chars
+    const { clock, smoother } = makeSmoother();
+    smoother.appendDelta(text);
+    smoother.requestFastDrain(FAST_DRAIN_WINDOW);
+    clock.tickFrame(16);
+    // A second, far longer request must not extend the window.
+    smoother.requestFastDrain(5000);
+    let frames = 1;
+    while (!smoother.isCaughtUp() && frames < 200) {
+      clock.tickFrame(16);
+      frames++;
+    }
+    // Finished near the original window, nowhere near the 5s second request.
+    expect(clock.now()).toBeLessThanOrEqual(FAST_DRAIN_WINDOW + 64);
+  });
+
+  it('requestFastDrain is a no-op when already caught up', () => {
+    const { clock, smoother } = makeSmoother('all done');
+    smoother.requestFastDrain();
+    expect(clock.pendingCount()).toBe(0);
+    expect(smoother.isCaughtUp()).toBe(true);
   });
 });

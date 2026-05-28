@@ -5,7 +5,9 @@ import {
   groupItemsBySubagent,
   isToolTextBoundary,
   nodeContainsItem,
+  sliceRevealedNodes,
   timelineNodeItemId,
+  timelineNodeItemIndex,
   timelineNodeKey,
   visibleTimelineItemIdForItem,
   type SubagentGroupNode,
@@ -784,5 +786,71 @@ describe('finalAssistantTextIdsByTurn', () => {
     ]);
 
     expect(finalAssistantTextIdsByTurn(nodes, null).size).toBe(0);
+  });
+});
+
+describe('sliceRevealedNodes', () => {
+  // think(0) | Agent group(1) {child(2)} | text(3) — a top-level sequence
+  // with a subagent group in the middle.
+  function buildTimeline(): TimelineNode[] {
+    const launch = agentLaunch('agent-1', 1);
+    return groupItemsBySubagent([
+      mkItem({ id: 'think-0', itemIndex: 0, kind: 'thinking', summary: 'reasoning' }),
+      launch,
+      mkItem({
+        id: 'child-2',
+        itemIndex: 2,
+        kind: 'assistant_text',
+        parentId: 'agent-1',
+        summary: 'subagent step',
+      }),
+      mkItem({ id: 'text-3', itemIndex: 3, kind: 'assistant_text', summary: 'final answer' }),
+    ]);
+  }
+
+  it('returns the same array reference when the boundary is null (no gate)', () => {
+    const nodes = buildTimeline();
+    expect(sliceRevealedNodes(nodes, null)).toBe(nodes);
+  });
+
+  it('withholds the trailing run after a mid-sequence boundary', () => {
+    const nodes = buildTimeline();
+    // Boundary at the Agent launch (the group parent, position 0:1) reveals
+    // the thinking row and the whole subagent group, withholds text-3.
+    const revealed = sliceRevealedNodes(nodes, { turnIndex: 0, itemIndex: 1 });
+    expect(revealed.map(timelineNodeItemId)).toEqual(['think-0', 'agent-1']);
+    // The group is returned whole — its child rides inside, never gated out.
+    const group = expectGroup(revealed[1]);
+    expect(group.children.map((c) => timelineNodeItemId(c))).toEqual(['child-2']);
+  });
+
+  it('a streaming thinking row withholds the subsequent subagent group', () => {
+    const nodes = buildTimeline();
+    const revealed = sliceRevealedNodes(nodes, { turnIndex: 0, itemIndex: 0 });
+    expect(revealed.map(timelineNodeItemId)).toEqual(['think-0']);
+  });
+
+  it('returns the same reference when the boundary is at or past the last node', () => {
+    const nodes = buildTimeline();
+    expect(sliceRevealedNodes(nodes, { turnIndex: 0, itemIndex: 3 })).toBe(nodes);
+    expect(sliceRevealedNodes(nodes, { turnIndex: 9, itemIndex: 0 })).toBe(nodes);
+  });
+
+  it('compares turnIndex before itemIndex across turns', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({ id: 'a', turnIndex: 0, itemIndex: 5, summary: 'older turn tail' }),
+      mkItem({ id: 'b', turnIndex: 1, itemIndex: 0, kind: 'thinking', summary: 'new turn' }),
+      mkItem({ id: 'c', turnIndex: 1, itemIndex: 1, kind: 'tool_call', summary: 'tool' }),
+    ]);
+    // Boundary in turn 1 keeps the whole earlier turn even though its
+    // itemIndex (5) is numerically larger than the boundary's (0).
+    const revealed = sliceRevealedNodes(nodes, { turnIndex: 1, itemIndex: 0 });
+    expect(revealed.map(timelineNodeItemId)).toEqual(['a', 'b']);
+  });
+
+  it('timelineNodeItemIndex reads the root item index for groups', () => {
+    const nodes = buildTimeline();
+    expect(timelineNodeItemIndex(nodes[0])).toBe(0); // think leaf
+    expect(timelineNodeItemIndex(nodes[1])).toBe(1); // Agent group → parent
   });
 });

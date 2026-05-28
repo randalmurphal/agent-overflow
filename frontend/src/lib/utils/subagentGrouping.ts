@@ -306,6 +306,50 @@ export function timelineNodeTurnIndex(node: TimelineNode): number {
   return timelineNodeRootItem(node).turnIndex;
 }
 
+/** Item index of the leaf or structural node's first represented item. */
+export function timelineNodeItemIndex(node: TimelineNode): number {
+  return timelineNodeRootItem(node).itemIndex;
+}
+
+/**
+ * The last top-level item position the timeline may render while a turn is
+ * streaming. Items strictly after it are withheld by `sliceRevealedNodes`
+ * until the reveal sequencer advances the boundary. `null` means "no gate —
+ * render everything", which is the steady state outside live streaming.
+ */
+export interface RevealBoundary {
+  turnIndex: number;
+  itemIndex: number;
+}
+
+/**
+ * Returns the prefix of `nodes` whose representative (turnIndex, itemIndex)
+ * is at or before `boundary`. `nodes` is already in (turnIndex, itemIndex)
+ * order, so the withheld set is always a trailing run. A `null` boundary
+ * returns the same array reference (no gate) so downstream `$derived`s don't
+ * re-run. Pure — never mutates the input.
+ *
+ * The boundary is always a top-level item (the sequencer ignores subagent
+ * children when choosing it), so a subagent group whose parent sits at or
+ * before the boundary is returned whole — its still-streaming children
+ * animate inside the card and are never individually gated here.
+ */
+export function sliceRevealedNodes(
+  nodes: TimelineNode[],
+  boundary: RevealBoundary | null,
+): TimelineNode[] {
+  if (!boundary) return nodes;
+  for (let i = 0; i < nodes.length; i++) {
+    const turnIndex = timelineNodeTurnIndex(nodes[i]);
+    const itemIndex = timelineNodeItemIndex(nodes[i]);
+    const afterBoundary =
+      turnIndex > boundary.turnIndex ||
+      (turnIndex === boundary.turnIndex && itemIndex > boundary.itemIndex);
+    if (afterBoundary) return nodes.slice(0, i);
+  }
+  return nodes;
+}
+
 /**
  * Visual-cadence bucket for the timeline. Tool rows pack tight; prose
  * rows carry their own bottom margin; everything else (notifications,
