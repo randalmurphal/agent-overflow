@@ -180,7 +180,11 @@ export class PerItemSmoother {
     return this.received;
   }
 
-  /** Pending lag in characters. Use to drive visibility-resume snaps. */
+  /**
+   * Pending unrevealed characters (received − revealed). Visibility-resume
+   * uses `snap()` directly (which no-ops when caught up) rather than gating
+   * on this; exposed as an accessor for tests and lag-based decisions.
+   */
   getLag(): number {
     return this.received.length - this.revealed.length;
   }

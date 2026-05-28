@@ -2312,6 +2312,35 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     /**
+     * Snap every behind smoother straight to its full received text.
+     *
+     * Wired to `visibilitychange → visible` (App.svelte). `requestAnimationFrame`
+     * is suspended while the tab is hidden, but the WebSocket keeps delivering
+     * deltas into each smoother's `received` buffer. A turn that streamed — or
+     * fully completed — in the background therefore leaves smoothers with a
+     * large unrevealed backlog that, on return, would otherwise crawl in at the
+     * per-tick cap (~840 cps): a multi-KB response typing itself out for
+     * seconds even though it is already done. Before the per-item smoother this
+     * never happened — `applyItemDelta` wrote `summary += delta` directly, so a
+     * hidden tab showed the full text the instant it regained focus; the rAF
+     * reveal gate reintroduced the lag, so this restores the prior behavior on
+     * resume without giving up the live-streaming animation.
+     *
+     * Snapping catches the visible text up to the wire in one frame. Still-
+     * streaming rows resume live animation from there (snap leaves the smoother
+     * usable); terminal rows dispose through the same onReveal cleanup any
+     * caught-up smoother uses. `snap()` no-ops on a caught-up smoother, so this
+     * is safe to call unconditionally and costs nothing when nothing is behind.
+     */
+    snapSmoothersToReceived(): void {
+      if (itemSmoothers.size === 0) return;
+      // snap() → onReveal can dispose+delete entries (terminal rows), so
+      // iterate a snapshot rather than the live map.
+      for (const entry of [...itemSmoothers.values()]) entry.smoother.snap();
+      recomputeReveal();
+    },
+
+    /**
      * Reveal gate for the timeline. While a turn streams, this is the
      * (turnIndex, itemIndex) of the top-level item currently revealing;
      * MessageTimeline withholds nodes after it via `sliceRevealedNodes` so

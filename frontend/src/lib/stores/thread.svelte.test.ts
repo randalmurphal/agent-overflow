@@ -4072,6 +4072,170 @@ describe('createThreadPane', () => {
     expect(pane.subagentNotifications[0].meta).toContain('agent-8');
   });
 
+  describe('visibility-resume snap (snapSmoothersToReceived)', () => {
+    // requestAnimationFrame is suspended while a tab is hidden, but the
+    // WebSocket keeps delivering deltas into each smoother's `received`
+    // buffer. The FakeSmoothingClock models this exactly: appending a delta
+    // without calling `tickFrame` leaves `received` ahead of `revealed` with
+    // a pending callback that never fires — the hidden-tab state. The
+    // visibilitychange→visible entry point (App.svelte) calls
+    // `snapSmoothersToReceived` so the backlog catches up to the wire in one
+    // frame instead of crawling in at the ~840 cps per-tick cap on return.
+    function manyWords(prefix: string, n: number): string {
+      return Array.from(
+        { length: n },
+        (_, i) => `${prefix}${String(i).padStart(2, '0')}`,
+      ).join(' ');
+    }
+
+    it('snaps a backlogged STILL-STREAMING row to the wire and keeps the smoother live', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-vis-a' }));
+        pane.upsertItem(makeItem({
+          id: 'text:0:0',
+          threadId: 'thread-vis-a',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          updatedAt: 1,
+        }));
+        // ~700 chars in one delta — far more than one tick's 14-char cap.
+        const big = manyWords('word', 100);
+        pane.applyItemDelta({
+          threadId: 'thread-vis-a',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: big,
+          updatedAt: 2,
+        });
+        // Hidden: nothing revealed yet, a pending rAF would crawl it in.
+        expect(pane.items[0].summary).toBe('');
+        expect(clock.pendingCount()).toBeGreaterThan(0);
+
+        pane.snapSmoothersToReceived();
+
+        // Caught up to the wire in one call; the pending rAF is canceled.
+        expect(pane.items[0].summary).toBe(big);
+        expect(clock.pendingCount()).toBe(0);
+        // Row is still streaming, so the smoother is retained for the rest
+        // of the live turn rather than disposed.
+        expect(pane.items[0].status).toBe('streaming');
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+
+        // A later delta still animates — snap leaves the smoother usable.
+        pane.applyItemDelta({
+          threadId: 'thread-vis-a',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: ' more',
+          updatedAt: 3,
+        });
+        expect(pane.items[0].summary).toBe(big); // not revealed until a tick
+        while (clock.pendingCount() > 0) clock.tickFrame(16);
+        expect(pane.items[0].summary).toBe(`${big} more`);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('snaps and disposes a row that COMPLETED while hidden instead of crawling on return', async () => {
+      // The headline regression. The row streams AND completes in the
+      // background; the completion patch re-asserts the equal summary (Codex
+      // content-block-stop shape) but the smoother is still backlogged, so
+      // none of applyItemPatch's dispose branches fire (summary === received,
+      // not caught up). Without the visibility snap the finished response
+      // would type itself in at the per-tick cap when the tab regains focus.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-vis-b' }));
+        pane.upsertItem(makeItem({
+          id: 'text:0:0',
+          threadId: 'thread-vis-b',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          updatedAt: 1,
+        }));
+        const full = manyWords('tok', 100);
+        pane.applyItemDelta({
+          threadId: 'thread-vis-b',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: full,
+          updatedAt: 2,
+        });
+        pane.applyItemPatch({
+          threadId: 'thread-vis-b',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          patch: { status: 'completed', summary: full, updatedAt: 3 },
+        });
+        // Bug shape on return WITHOUT the snap: status is completed but the
+        // text has not been revealed, and a pending rAF would drain it slowly.
+        expect(pane.items[0].status).toBe('completed');
+        expect(pane.items[0].summary).toBe('');
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+        expect(clock.pendingCount()).toBeGreaterThan(0);
+
+        pane.snapSmoothersToReceived();
+
+        // Fully shown in one frame; the terminal-status onReveal cleanup
+        // disposes the smoother; no lingering rAF to crawl the text in.
+        expect(pane.items[0].summary).toBe(full);
+        expect(pane.items[0].status).toBe('completed');
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(clock.pendingCount()).toBe(0);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('is a no-op when smoothers are caught up or absent', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-vis-c' }));
+        // No smoothers yet: safe to call.
+        expect(() => pane.snapSmoothersToReceived()).not.toThrow();
+
+        pane.upsertItem(makeItem({
+          id: 'text:0:0',
+          threadId: 'thread-vis-c',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          updatedAt: 1,
+        }));
+        pane.applyItemDelta({
+          threadId: 'thread-vis-c',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: 'short text ',
+          updatedAt: 2,
+        });
+        // Fully drain so the smoother is caught up but still streaming.
+        while (clock.pendingCount() > 0) clock.tickFrame(16);
+        expect(pane.items[0].summary).toBe('short text ');
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+
+        // A caught-up snap changes nothing and keeps the streaming smoother.
+        pane.snapSmoothersToReceived();
+        expect(pane.items[0].summary).toBe('short text ');
+        expect(pane.items[0].status).toBe('streaming');
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+        expect(clock.pendingCount()).toBe(0);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+  });
+
   describe('reveal sequencer (revealBoundary)', () => {
     function streamingThinking(id: string, itemIndex: number, threadId: string) {
       return makeItem({

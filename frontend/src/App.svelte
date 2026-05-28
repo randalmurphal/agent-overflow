@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { ensureMainPane, getFocusedPaneOrNull, getPane, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
+  import { ensureMainPane, getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import {
     OPEN_SETTINGS_EVENT,
     OPEN_SHIP_CHANGES_EVENT,
@@ -295,8 +295,16 @@
     const flushPaneLayout = () => {
       if (paneLayoutRestored) void flushPaneLayoutPersistence();
     };
-    const flushPaneLayoutWhenHidden = () => {
-      if (document.visibilityState === 'hidden') flushPaneLayout();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushPaneLayout();
+        return;
+      }
+      // Tab regained focus: requestAnimationFrame resumed. Catch any per-item
+      // smoother that fell behind while hidden up to the wire so a turn that
+      // streamed (or completed) in the background doesn't crawl in at the
+      // smoother's per-tick cap. See ThreadPane.snapSmoothersToReceived.
+      for (const pane of iterPanes()) pane.snapSmoothersToReceived();
     };
     const handleOpenSettings = (event: Event) => {
       const detail = (event as CustomEvent).detail as {
@@ -309,7 +317,7 @@
     window.addEventListener('keydown', handleGlobalKeydown);
     window.addEventListener('pagehide', flushPaneLayout);
     window.addEventListener('beforeunload', flushPaneLayout);
-    document.addEventListener('visibilitychange', flushPaneLayoutWhenHidden);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       flushPaneLayout();
@@ -319,7 +327,7 @@
       window.removeEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
       window.removeEventListener('pagehide', flushPaneLayout);
       window.removeEventListener('beforeunload', flushPaneLayout);
-      document.removeEventListener('visibilitychange', flushPaneLayoutWhenHidden);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   });
 
