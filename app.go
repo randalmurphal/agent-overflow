@@ -335,6 +335,13 @@ type App struct {
 	// nil and the probe uses the package-level singleton; tests assign
 	// a client pointing at a local httptest server.
 	rateLimitProbeClientOverride *http.Client
+	// userConfigDirOverride is a test-only injection seam for the data
+	// directory root that initStores otherwise resolves via
+	// os.UserConfigDir(). Production leaves it empty. Tests set it to a
+	// t.TempDir() so the path is deterministic across OSes —
+	// os.UserConfigDir() ignores XDG on macOS (it returns
+	// $HOME/Library/Application Support), which env overrides can't redirect.
+	userConfigDirOverride string
 	// idleReaperNowFn is a test-only clock injection for the reaper.
 	// Production leaves it nil and reaperNow reads time.Now directly.
 	idleReaperNowFn func() time.Time
@@ -559,15 +566,19 @@ func (a *App) Start(ctx context.Context) error {
 // leak an open DB file on startup error; the close error is joined onto
 // the logger error so tests see both causes.
 func (a *App) initStores() (string, *store.Store, error) {
-	dataDir, err := os.UserConfigDir()
-	if err != nil {
-		// Fall back to ~/.agent-overflow/ which persists across reboots,
-		// unlike os.TempDir() which is cleaned on reboot and would lose data.
-		homeDir, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return "", nil, fmt.Errorf("cannot determine config directory: %w (home dir also unavailable: %v)", err, homeErr)
+	dataDir := a.userConfigDirOverride
+	if dataDir == "" {
+		var err error
+		dataDir, err = os.UserConfigDir()
+		if err != nil {
+			// Fall back to ~/.agent-overflow/ which persists across reboots,
+			// unlike os.TempDir() which is cleaned on reboot and would lose data.
+			homeDir, homeErr := os.UserHomeDir()
+			if homeErr != nil {
+				return "", nil, fmt.Errorf("cannot determine config directory: %w (home dir also unavailable: %v)", err, homeErr)
+			}
+			dataDir = homeDir
 		}
-		dataDir = homeDir
 	}
 	dbDir := filepath.Join(dataDir, "agent-overflow")
 	if err := ensureAppPrivateDir(dbDir); err != nil {
