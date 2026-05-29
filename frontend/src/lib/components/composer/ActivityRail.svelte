@@ -216,4 +216,21 @@
       />
     {/if}
   </div>
+{:else}
+  <!--
+    Idle: reserve the single-row height the rail occupies when working.
+    The composer is a bottom-anchored overlay whose height drives the
+    timeline's padding-bottom via --composer-height; without this the
+    composer (and the last message) would jump by a row every time a
+    turn starts or completes. A structural twin of the working chip —
+    identical row + chip classes, a transparent border standing in for
+    the rail's 1px separator, and a zero-width space giving the chip its
+    line box — keeps the reserved height pixel-identical by construction,
+    so idle simply reads as a little extra padding.
+  -->
+  <div class="border-b border-transparent" aria-hidden="true" data-testid="activity-rail-spacer">
+    <div class="flex flex-wrap items-center gap-1.5 px-3 py-2 text-[0.6875rem] leading-tight">
+      <span class="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5">{'\u200B'}</span>
+    </div>
+  </div>
 {/if}

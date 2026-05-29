@@ -56,11 +56,39 @@ describe('<ActivityRail>', () => {
     vi.useRealTimers();
   });
 
-  it('renders nothing when idle, no todos, no background', async () => {
+  it('reserves the row height with a spacer when idle (no rail, no todos, no background)', async () => {
+    // The composer is a bottom-anchored overlay whose height drives the
+    // timeline's padding-bottom; an idle spacer holds the rail's row
+    // height so the last message doesn't jump when a turn starts or
+    // completes. The live rail must still be absent — the spacer carries
+    // no working/todos/background chrome, only the reserved height.
     const pane = await buildPane();
     const { queryByTestId } = render(ActivityRail, { props: { pane } });
     await tick();
     expect(queryByTestId('activity-rail')).toBeNull();
+    expect(queryByTestId('activity-rail-spacer')).not.toBeNull();
+  });
+
+  it('swaps the idle spacer for the live rail when a turn becomes active', async () => {
+    // Turn start must REPLACE the reserved spacer with the real rail, not
+    // stack them — otherwise the composer would gain a row of height and
+    // reintroduce the jump the spacer exists to prevent. The {#if/:else}
+    // makes them mutually exclusive; this pins that contract.
+    const pane = await buildPane();
+    const { queryByTestId } = render(ActivityRail, { props: { pane } });
+    await tick();
+    expect(queryByTestId('activity-rail-spacer')).not.toBeNull();
+    expect(queryByTestId('activity-rail')).toBeNull();
+
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() });
+    await tick();
+    expect(queryByTestId('activity-rail')).not.toBeNull();
+    expect(queryByTestId('activity-rail-spacer')).toBeNull();
+
+    pane.clearActiveTurn();
+    await tick();
+    expect(queryByTestId('activity-rail')).toBeNull();
+    expect(queryByTestId('activity-rail-spacer')).not.toBeNull();
   });
 
   it('shows the working segment with elapsed timer when a turn is active', async () => {
@@ -234,6 +262,9 @@ describe('<ActivityRail>', () => {
     await tick();
     expect(await findByTestId('activity-rail')).toBeInTheDocument();
     expect(queryByTestId('activity-rail-working')).toBeNull();
+    // A visible rail (todos-only here) occupies the row itself, so the
+    // reserved idle spacer must not also render alongside it.
+    expect(queryByTestId('activity-rail-spacer')).toBeNull();
   });
 
   it('per-thread expansion state survives a thread switch', async () => {
