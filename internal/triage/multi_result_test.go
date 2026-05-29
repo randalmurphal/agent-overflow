@@ -1508,3 +1508,273 @@ func TestSoftThenInitThenSoftThenReal_ReRoundCascade(t *testing.T) {
 		t.Errorf("expected usage folded from trailing result, got %q", turn.TokenUsageJSON)
 	}
 }
+
+// parentContentBlockStart drives a parent (parent_tool_use_id == "")
+// content_block_start, the wire event that re-arms a settled round in
+// the parent-content-resume path.
+func parentContentBlockStart(threadID, blockType string) provider.ProviderEvent {
+	return provider.ProviderEvent{
+		Kind:      provider.EventContentBlockStart,
+		ThreadID:  threadID,
+		Meta:      json.RawMessage(`{"blockType":"` + blockType + `"}`),
+		Timestamp: time.Now(),
+	}
+}
+
+// TestParentContentResumeReArmsAfterSoftClose pins the Claude 2.1.154+
+// fix: the CLI splits one logical turn into multiple wire messages,
+// closing each segment with a parent message_delta stop_reason (the
+// soft round-close) and resuming the SAME turn with a fresh parent
+// message — no intervening `result` or `system.init`. The soft-close
+// fires provider:turn_completed (clearing the working indicator + Stop
+// button); the first parent content block of the resumed segment must
+// re-emit provider:turn_started so the indicator lights back up.
+//
+// Models the real captured sequence (provider-events-2026-05-28.ndjson.2,
+// thread a20f339e / 501fa978): two soft-close→resume cycles in one
+// logical turn (e.g. ToolSearch end_turn, then ExitPlanMode end_turn),
+// each followed by a thinking/text resume. Asserts the indicator
+// re-arms on EACH cycle — a single-cycle test under-covers it.
+func TestParentContentResumeReArmsAfterSoftClose(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	// Two soft-close → parent-resume cycles within one logical turn.
+	for cycle := 1; cycle <= 2; cycle++ {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventTurnComplete, ThreadID: "t1",
+			TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"},
+			Timestamp:    time.Now(),
+		}); err != nil {
+			t.Fatalf("cycle %d soft close: %v", cycle, err)
+		}
+
+		*emissions = nil // discard this cycle's turn_completed
+
+		// Parent resumes the SAME turn with a fresh content block. First
+		// block re-arms; a second block in the same resumed round must NOT
+		// emit again (no blink per content block).
+		if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
+			t.Fatalf("cycle %d resume block 1: %v", cycle, err)
+		}
+		if err := router.Handle(parentContentBlockStart("t1", "text")); err != nil {
+			t.Fatalf("cycle %d resume block 2: %v", cycle, err)
+		}
+
+		starts := filterEmissions(*emissions, "provider:turn_started")
+		if len(starts) != 1 {
+			t.Fatalf("cycle %d: expected exactly 1 provider:turn_started on parent resume, got %d: %+v",
+				cycle, len(starts), starts)
+		}
+		payload := starts[0].data.(TurnStartedEvent)
+		if payload.TurnID == "" {
+			t.Errorf("cycle %d: re-arm payload.TurnID is empty — must allocate a fresh round uuid", cycle)
+		}
+		if payload.TurnIndex != 0 {
+			t.Errorf("cycle %d: re-arm payload.TurnIndex = %d, want 0 (same logical turn)", cycle, payload.TurnIndex)
+		}
+	}
+}
+
+// TestParentContentResumeDoesNotCollideRowIDs is the row-integrity
+// guard for the parent-content-resume re-arm path — the analogue of
+// TestMultipleResultsPerTurn_TextSegmentsDoNotCollide for the
+// soft-close→content_block_start re-round (rather than the
+// system.init re-round). It pins that re-arming via
+// maybeReopenSettledRound does NOT call setOpenTurn: the id-allocating
+// segment counter must survive the segment boundary so post-resume
+// text rows get fresh ids instead of overwriting earlier rows.
+//
+// Without the emission-only tests this is uncovered: a regression
+// making maybeReopenSettledRound reset counters (e.g. calling
+// setOpenTurn) would still emit the right turn_started events and pass
+// all four emission tests, while silently reintroducing the
+// multi-result id-collision data-loss bug. This test fails in that
+// case because the resumed segment would collide with text:0:0.
+//
+// It also asserts the wire-round cadence directly: exactly one
+// provider:turn_completed per soft-close (proving each re-armed round
+// is properly closed — no stuck-open round).
+func TestParentContentResumeDoesNotCollideRowIDs(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	// Segment 1 (round 1): one text block, then the parent soft-closes.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1",
+		Content: "Segment one before the soft close.", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seg1 delta: %v", err)
+	}
+	if err := router.settleStreamingScope("t1", ""); err != nil {
+		t.Fatalf("close seg1: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"},
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("soft close 1: %v", err)
+	}
+
+	// Parent resumes the SAME logical turn: content_block_start re-arms
+	// (no system.init, no fresh EventTurnStart), then segment 2 streams.
+	if err := router.Handle(parentContentBlockStart("t1", "text")); err != nil {
+		t.Fatalf("resume block: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1",
+		Content: "Segment two after the resume.", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seg2 delta: %v", err)
+	}
+	if err := router.settleStreamingScope("t1", ""); err != nil {
+		t.Fatalf("close seg2: %v", err)
+	}
+
+	// Real wire result terminates the logical turn.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("final complete: %v", err)
+	}
+
+	// Row integrity: two distinct assistant_text rows, no collision.
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	textItems := make(map[string]string)
+	for _, it := range items {
+		if it.Kind == itemKindAssistantText {
+			textItems[it.ID] = it.Summary
+		}
+	}
+	if len(textItems) != 2 {
+		t.Fatalf("expected 2 distinct assistant_text rows across the resume, got %d: %+v", len(textItems), textItems)
+	}
+	if !strings.Contains(textItems["text:0:0"], "Segment one") {
+		t.Errorf("text:0:0 = %q, want segment-1 content (counter must survive the resume, not overwrite)", textItems["text:0:0"])
+	}
+	if !strings.Contains(textItems["text:0:1"], "Segment two") {
+		t.Errorf("text:0:1 = %q, want segment-2 content at a fresh id", textItems["text:0:1"])
+	}
+
+	// Wire-round cadence: one turn_completed per soft-close + one for the
+	// final result = the round re-armed by the resume was properly closed.
+	completes := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completes) != 2 {
+		t.Fatalf("expected exactly 2 provider:turn_completed (soft close + final result), got %d: %+v",
+			len(completes), completes)
+	}
+}
+
+// TestSubagentContentDoesNotReArmDuringSoftClose pins invariant 27: in
+// the local_agent-outlives case the parent legitimately ends (soft
+// end_turn) while a Task subagent keeps running until the trailing
+// `result`. The indicator SHOULD stay cleared through that wait, so
+// subagent content (parent_tool_use_id != "") must NOT re-arm the
+// parent's round. Without the parent-only gate in handleContentBlockStart
+// this would wrongly light the indicator during the subagent wait.
+func TestSubagentContentDoesNotReArmDuringSoftClose(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"},
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("soft close: %v", err)
+	}
+	*emissions = nil
+
+	// Subagent streams content while the parent round is closed.
+	subBlock := parentContentBlockStart("t1", "text")
+	subBlock.ParentToolUseID = "task-abc"
+	if err := router.Handle(subBlock); err != nil {
+		t.Fatalf("subagent content block: %v", err)
+	}
+
+	starts := filterEmissions(*emissions, "provider:turn_started")
+	if len(starts) != 0 {
+		t.Fatalf("subagent content must NOT re-arm the parent round (invariant 27), got %d turn_started: %+v",
+			len(starts), starts)
+	}
+}
+
+// TestParentContentDoesNotReArmMidRound guards against over-firing: a
+// parent content block while the round is still OPEN (ordinary
+// streaming, no soft-close yet) must not emit a spurious
+// provider:turn_started. Round 1 is not settled until its first
+// complete, so the settled guard alone covers this — but the
+// no-open-round guard is the belt-and-suspenders that keeps every
+// in-round block start a no-op.
+func TestParentContentDoesNotReArmMidRound(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	*emissions = nil // discard round-1 turn_started
+
+	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
+		t.Fatalf("mid-round content block: %v", err)
+	}
+	starts := filterEmissions(*emissions, "provider:turn_started")
+	if len(starts) != 0 {
+		t.Fatalf("mid-round (open, unsettled) content must not re-arm, got %d: %+v", len(starts), starts)
+	}
+}
+
+// TestParentContentDoesNotReArmFreshSession guards the fresh-attach
+// case: a session attaches to a thread (no prior turn settled in this
+// process) and the model streams. A parent content block must not
+// synthesize a turn_started out of nothing — only a thread with a
+// settled logical turn (a real prior complete) is eligible for re-round.
+func TestParentContentDoesNotReArmFreshSession(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventInit, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	*emissions = nil
+
+	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
+		t.Fatalf("fresh-session content block: %v", err)
+	}
+	starts := filterEmissions(*emissions, "provider:turn_started")
+	if len(starts) != 0 {
+		t.Fatalf("fresh-session content must not synthesize a round, got %d: %+v", len(starts), starts)
+	}
+}

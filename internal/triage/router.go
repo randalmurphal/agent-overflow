@@ -678,31 +678,69 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 	return nil
 }
 
-// maybeEmitReRoundOnInit detects the multi-result-per-turn re-round
-// case and emits a fresh `provider:turn_started` so the frontend
-// re-lights its working indicator for the next wire round.
-//
-// Claude's CLI synthesizes a `type:"user"` envelope from a
-// `task_notification` and follows it with a fresh `system.init`
-// envelope before the next `result`. Round 1 of every Claude logical
-// turn is opened from `handleInit`'s pending-send branch (which calls
-// handleTurnStart); Codex's round 1 is opened from the wire
-// `EventTurnStart`. This re-round entry point is the ONLY place a
-// second round of the same logical turn can be opened.
-// Critically, this path does NOT call
-// setOpenTurn — id-allocating counters (segmentIndexByScope,
-// blockIndexByScope, errorSeqByScope, terminalInteractionSeq) MUST
-// survive across the multi-result boundary, otherwise text/think/error
-// ids collide with rows already persisted under the same logical turn
-// (see internal/triage/multi_result_test.go).
-//
-// A real session start (no prior settled turn) yields no emission.
-// The settled-turn marker is the wire-typed signal that disambiguates
-// re-round from "fresh session attaching to a thread that has no
-// in-flight logical turn" — turn-marker-present means handleTurnComplete
-// has fired at least once for this logical turn, which is precisely
-// the condition for "Claude is starting a follow-up round."
+// maybeEmitReRoundOnInit is the `system.init` re-round entry point: it
+// re-lights the working indicator when an EventInit arrives for a
+// thread whose current logical turn is already settled (the
+// multi-result cascade — see maybeReopenSettledRound for the full
+// mechanism and the second, parent-content-resume entry point). Named
+// so call sites and the area guides have a system.init-specific hook.
 func (r *Router) maybeEmitReRoundOnInit(evt provider.ProviderEvent) {
+	r.maybeReopenSettledRound(evt)
+}
+
+// maybeReopenSettledRound opens a fresh wire round (emitting
+// `provider:turn_started`) when the current logical turn is already
+// settled and no round is currently open. It is the shared mechanism
+// behind both re-round entry points:
+//
+//   - system.init re-round (maybeEmitReRoundOnInit) — Claude's CLI
+//     synthesizes a `type:"user"` envelope from a task_notification and
+//     follows it with a fresh `system.init` before the next `result`.
+//   - parent-content resume (handleContentBlockStart, parent-only) —
+//     Claude 2.1.154+ splits one logical turn into multiple wire
+//     messages, closing each segment with a parent `message_delta`
+//     stop_reason (the soft round-close, parse_stream.go) and then
+//     resuming the SAME turn with a fresh parent `message_start` and no
+//     intervening `result`/`system.init`. The soft-close already fired
+//     `provider:turn_completed` (clearing the working indicator + Stop
+//     button); without this re-arm the indicator stays dead for the
+//     rest of the turn even though the agent is actively streaming.
+//     See invariants.md §27.
+//
+// Critically, this path does NOT call setOpenTurn — id-allocating
+// counters (segmentIndexByScope, blockIndexByScope, errorSeqByScope,
+// terminalInteractionSeq) MUST survive across the multi-result/segment
+// boundary, otherwise text/think/error ids collide with rows already
+// persisted under the same logical turn (see multi_result_test.go).
+//
+// Two guards keep this from over-firing:
+//
+//   - settled — handleTurnComplete has fired at least once for this
+//     logical turn. This disambiguates re-round from "fresh session
+//     attaching to a thread that has no in-flight logical turn" (a real
+//     session start yields no emission) AND from ordinary mid-round
+//     content (round 1 is not settled until its first complete).
+//   - no open round — once re-opened, subsequent content blocks in the
+//     same wire round are no-ops. Only the FIRST parent content after a
+//     soft-close re-arms; everything until the next close rides the
+//     open round. This is what stops the indicator from blinking on
+//     every content block of a resumed segment.
+//
+// The no-open-round guard is also why this is safe against the
+// legitimate local_agent-outlives soft-close (invariant 27): there the
+// parent has genuinely stopped and only the SUBAGENT streams until the
+// trailing `result`. handleContentBlockStart gates this call on
+// parent_tool_use_id == "" so subagent content never re-arms the
+// parent's round — the indicator correctly stays cleared through the
+// subagent wait.
+func (r *Router) maybeReopenSettledRound(evt provider.ProviderEvent) {
+	// Already-open round: nothing to re-arm. Cheap check first so the
+	// common in-round content_block_start path returns immediately
+	// without touching settledTurns or the store.
+	if r.openRoundID(evt.ThreadID) != "" {
+		return
+	}
+
 	// Resolve the logical-turn index: prefer the in-memory open turn
 	// (round 1 of the same logical turn opened by handleTurnStart but
 	// since closed by clearOpenTurn at handleTurnComplete will leave

@@ -183,16 +183,19 @@ Round entry points:
   BOTH `setOpenTurn` (per-turn flow-control + counter re-init) AND
   `setOpenRoundSnapshot` (per-round id allocation), then emits
   `provider:turn_started` with the per-round uuid as TurnID.
-- **`handleInit` re-round branch** (`maybeEmitReRoundOnInit`) opens
-  round 2+ when an `EventInit` arrives for a thread whose current
-  logical turn is already settled (`settledTurns[turnKey]==true`).
-  Calls `setOpenRoundSnapshot` ONLY — does **not** call `setOpenTurn`. This
-  is load-bearing: id-allocating counters (`segmentIndexByScope`,
-  `blockIndexByScope`, `errorSeqByScope`, `terminalInteractionSeq`)
-  must survive the multi-result-per-turn boundary so post-round-1
-  text/think/error rows don't collide with rows already persisted
-  under the same logical turn. See `multi_result_test.go` for the
-  regression coverage.
+- **Re-round** (`maybeReopenSettledRound`) opens round 2+ when the
+  current logical turn is already settled (`settledTurns[turnKey]==
+  true`) and no wire round is open. Two entry points feed it:
+  `handleInit` (`maybeEmitReRoundOnInit`) for the `system.init`-driven
+  cascade re-round, and `handleContentBlockStart` (parent-only) for the
+  Claude 2.1.154+ parent-content-resume case (see the dedicated bullet
+  below). It calls `setOpenRoundSnapshot` ONLY — does **not** call
+  `setOpenTurn`. This is load-bearing: id-allocating counters
+  (`segmentIndexByScope`, `blockIndexByScope`, `errorSeqByScope`,
+  `terminalInteractionSeq`) must survive the multi-result/segment
+  boundary so post-round-1 text/think/error rows don't collide with
+  rows already persisted under the same logical turn. See
+  `multi_result_test.go` for the regression coverage.
 - **`handleTurnComplete`** uses `takeOpenRound` (read-and-clear) to
   decide whether to emit `provider:turn_completed`. An empty slot
   means a synthetic complete already raced ahead (the
@@ -214,6 +217,23 @@ Round entry points:
   `claimTurnSettlement` gate makes this a no-op for everything else.
   See
   [`invariants.md §27`](../../docs/architecture/invariants.md#27-soft-round-close-from-message_deltastop_reason-is-wire-typed).
+- **Parent-content resume** (Claude 2.1.154+) — `handleContentBlockStart`
+  calls `maybeReopenSettledRound` when a **parent**
+  (`parent_tool_use_id == ""`) content block starts while the logical
+  turn is settled and no round is open. Claude 2.1.154+ splits one
+  logical turn into multiple wire messages, closing each segment with a
+  parent soft round-close (above) and resuming the SAME turn with a
+  fresh `message_start` — no intervening `result`/`system.init`. The
+  soft-close already cleared the working indicator + Stop button; this
+  re-arms the round so the indicator lights back up. Gated parent-only
+  so subagent content during a legitimate `local_agent`-outlives wait
+  never re-arms (invariant 27 stays intact); the settled + no-open-round
+  guards keep ordinary mid-round block starts a no-op (no per-block
+  blink). The reactive design is forced: at the `end_turn` the "done",
+  "parked", and "resuming" cases are byte-identical on the wire, so the
+  only safe discriminator is the parent resume itself. See
+  [`invariants.md §27`](../../docs/architecture/invariants.md#27-soft-round-close-from-message_deltastop_reason-is-wire-typed)
+  "Parent-content resume re-arm".
 
 The state diagram lives in
 [`turn-lifecycle.md §Wire-round vs logical-turn cadence`](../../docs/architecture/turn-lifecycle.md#wire-round-vs-logical-turn-cadence).
@@ -238,9 +258,11 @@ with opaque wire turn ids.
 - Turn activity on the frontend is wire-pushed only — never derived
   from item state.
 - No session-liveness probing for turn state inference.
-- `setOpenTurn` does NOT fire from `handleInit` (re-round path).
-  Calling it there would reset the id-allocating counters and
-  re-introduce the multi-result-per-turn id-collision regression.
+- `setOpenTurn` does NOT fire from the re-round path
+  (`maybeReopenSettledRound`, reached via `handleInit` or
+  parent-content resume). Calling it there would reset the
+  id-allocating counters and re-introduce the multi-result-per-turn
+  id-collision regression.
 
 ## Responsibility boundary
 

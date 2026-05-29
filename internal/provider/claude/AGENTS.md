@@ -177,7 +177,14 @@ back to the parent tool call.
   [`invariants.md §27`](../../../docs/architecture/invariants.md#27-soft-round-close-from-message_deltastop_reason-is-wire-typed)
   and the
   [`local_agent_outlives.ndjson`](../../../docs/references/fixtures/claude/local_agent_outlives.ndjson)
-  fixture.
+  fixture. Claude 2.1.154+ also emits this soft-close at *intermediate*
+  message boundaries (one logical turn split into multiple wire
+  messages, resumed with a fresh parent `message_start` and no
+  intervening `result`/`system.init`); the parser still just emits the
+  soft `EventTurnComplete` per segment — triage owns re-lighting the
+  working indicator on the parent resume (`maybeReopenSettledRound`,
+  invariant 27 "Parent-content resume re-arm"). No parser change is
+  needed for that case.
 
 Do NOT derive turn activity from item state. Do NOT emit lifecycle
 state from `task_notification`. Do NOT rewrite `tool_use_id` between

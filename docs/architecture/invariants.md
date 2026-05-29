@@ -836,6 +836,48 @@ Claude CLI accepts mid-wait stdin within 32ms (re-rounds cleanly,
 parent processes the new message coherently, original subagent
 keeps running uninterrupted).
 
+**Parent-content resume re-arm (Claude 2.1.154+).** The soft-close
+above is correct when the parent has genuinely stopped (a subagent
+outlives it, or the turn is truly done — the trailing `result`
+follows within ~milliseconds). But Claude Code 2.1.154+ also emits a
+parent `end_turn` at *intermediate* message boundaries: it splits one
+logical turn (interleaved thinking + tool use) into multiple wire
+messages and resumes the SAME turn with a fresh parent `message_start`
+— no intervening `result` or `system.init`. The soft-close has
+already fired `provider:turn_completed` (clearing the working
+indicator + Stop button), so without a re-arm the indicator stays
+dead for the rest of the turn while the agent is visibly still
+streaming. This was the user-reported "working indicator vanished
+mid-thinking, couldn't interrupt, but it kept going" bug; it did not
+exist before 2.1.154 (verified: 0 occurrences across 25 days of
+pre-2.1.154 wire logs, 14 the day 2.1.154 landed).
+
+The fix is reactive, not predictive — at the `end_turn` the three
+cases ("done", "parked waiting on subagent", "about to resume") are
+byte-identical on the wire, so the only safe discriminator is what
+happens *next*. When the FIRST **parent** (`parent_tool_use_id == ""`)
+content block of a resumed segment arrives while the logical turn is
+already settled and no wire round is open, triage re-opens the round
+(`maybeReopenSettledRound`, the shared mechanism behind both this and
+the `system.init` re-round) and re-emits `provider:turn_started`.
+
+Two guards keep this invariant-27-safe:
+
+- **parent-only** — subagent content (`parent_tool_use_id != ""`)
+  never re-arms. In the `local_agent`-outlives case the parent IS
+  done and only the subagent streams until the trailing `result`; the
+  indicator correctly stays cleared through that wait. Verified
+  against production 2.1.154+ wire: 14/14 real parent resumes
+  re-armed, 0 subagent parks lit.
+- **settled + no-open-round** — only the first parent block after a
+  soft-close re-arms; subsequent blocks in the same resumed round are
+  no-ops (no per-block blink), and an ordinary mid-round block start
+  (round not yet settled) never fires.
+
+Stuck-ON is structurally impossible: re-arm only ever *opens* a round;
+the real `result` (reliably emitted — 36/36 turns on 2.1.154+) and
+`CleanupThread`/the next send always terminate it.
+
 **Enforcement.** Only `parse_stream.go`'s `message_delta` case may
 emit `provider.SoftRoundCloseMeta`. The gating logic
 (`parent_tool_use_id == null` + closed stop_reason set) is unit-
@@ -852,6 +894,14 @@ column on the persisted row converges on the FINAL round's id via
 - Fixture replay test using `local_agent_outlives.ndjson` asserts
   `EventTurnComplete` fires from the parent's message_delta
   stop_reason=end_turn before the wire `result` envelope.
+- `multi_result_test.go` parent-content-resume re-arm coverage:
+  `TestParentContentResumeReArmsAfterSoftClose` (two soft-close→resume
+  cycles in one logical turn each re-emit `provider:turn_started`),
+  `TestSubagentContentDoesNotReArmDuringSoftClose` (the parent-only
+  guard — subagent content never re-arms),
+  `TestParentContentDoesNotReArmMidRound` and
+  `TestParentContentDoesNotReArmFreshSession` (the settled +
+  no-open-round guards).
 
 **See also.**
 [`claude-wire.md §Soft round close`](../references/claude-wire.md#soft-round-close--message_deltastop_reason),

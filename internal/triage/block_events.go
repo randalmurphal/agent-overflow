@@ -7,9 +7,26 @@ import (
 )
 
 func (r *Router) handleContentBlockStart(evt provider.ProviderEvent) error {
-	// Block starts are preserved from the provider so stop events can
-	// deterministically settle the right streaming item, but the first
-	// actual delta still owns item creation/index assignment.
+	// Parent-content resume re-round (Claude 2.1.154+): a parent
+	// content block starting while the logical turn is already settled
+	// and no round is open means the model emitted a soft round-close
+	// (parent message_delta stop_reason) and is now resuming the SAME
+	// turn with a fresh message — no intervening result/system.init. The
+	// soft-close already cleared the working indicator; re-open the wire
+	// round so it lights back up. Gated on parent_tool_use_id == "" so
+	// subagent content during a legitimate local_agent-outlives wait
+	// (invariant 27) never re-arms the parent's round. The settled +
+	// no-open-round guards inside maybeReopenSettledRound make this a
+	// no-op for ordinary mid-round block starts. eventParentID trims so
+	// a whitespace-only parent id still reads as a parent resume — the
+	// same canonical parent-scoping the sibling handleContentBlockStop
+	// and turnCountsAsThreadActivity use.
+	if eventParentID(evt) == "" {
+		r.maybeReopenSettledRound(evt)
+	}
+	// Block starts are otherwise preserved from the provider so stop
+	// events can deterministically settle the right streaming item, but
+	// the first actual delta still owns item creation/index assignment.
 	return nil
 }
 
