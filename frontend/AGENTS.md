@@ -566,12 +566,24 @@ frontend layers on top:
   `beginWarmup()` without the paired `cancelSpring()` would open the gate
   during streaming.
 
-- **Reserved-slot banners** — `ProviderStatusBanner.svelte` and
-  `TransportStatusBanner.svelte` both use `min-h-N` wrappers +
-  `transition:fade` so banner mount/unmount does not animate adjacent
-  height. Cost: ~100px of always-reserved chrome across the two
-  surfaces; banners appear in a stable location and never push the
-  scroll viewport.
+- **Status banners are absolute overlays, not reserved slots.** Neither
+  reserves layout height, so neither leaves a permanent gap on the happy
+  path, and neither changes a scroll surface's `clientHeight` on
+  mount/unmount (that would fight the scroll controller). Both use
+  `transition:fade` (opacity only) so entrance/exit alone never animates
+  adjacent height. They differ only in what they anchor to:
+  - `TransportStatusBanner.svelte` is an `absolute inset-x-0 top-0 z-50`
+    overlay on `.app-shell` (above pane content, below modals at
+    `z-[60]+`). It renders nothing when healthy and floats over the top
+    edge of the shell when the transport drops. Replaced a permanent
+    ~28px reservation above the chat header.
+  - `ProviderStatusBanner.svelte` is an `absolute inset-x-0 top-0 z-20`
+    overlay anchored to the `chat-surface-ground` relative container in
+    ChatView, so it pins to the top of the timeline (below the header).
+    It stacks its two banners (provider status + session/reconnect)
+    top-down and covers the topmost message rows while shown — the user
+    can scroll up or dismiss/resolve them. Replaced two stacked `min-h-9`
+    slots that reserved ~72px of empty space below the header forever.
 - **Row state survives virtua remount via pane-level registries.**
   Expansion state for tool-call payloads, attachment-blob URLs, and
   subagent-group expanded flag all live on the `ThreadPane` keyed by

@@ -478,6 +478,6 @@ animateScrollTo's easeOutCubic interpolation is deterministic.
 
 `scroll.test.ts` covers the MessageTimeline-level integration: snapshot
 save/restore, load-older flow, scroll-to-item routing, and layout
-invariants (composer-height variable, reserved-slot banners). Heavy
+invariants (composer-height variable, banner overlays). Heavy
 reliance on real layout is avoided — assertions are written so they
 hold under happy-dom's missing geometry.

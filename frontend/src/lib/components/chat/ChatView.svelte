@@ -519,8 +519,6 @@
   >
     <ChatHeader {pane} {onPaneDragStart} />
 
-    <ProviderStatusBanner {pane} />
-
     <!--
       Single growing region: the timeline takes the entire remaining
       vertical space, and the composer + below-bar float over its bottom.
@@ -529,7 +527,8 @@
       --composer-height, which the timeline reads as bottom padding so
       the last row clears the overlay.
     -->
-    <div class="chat-surface-ground relative flex-1 min-h-0">
+    <div class="chat-surface-ground relative flex-1 min-h-0 pt-6">
+      <ProviderStatusBanner {pane} />
       <MessageTimeline
         {pane}
         onImageExpand={openImagePreview}

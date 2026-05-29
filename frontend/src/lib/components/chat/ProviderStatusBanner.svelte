@@ -183,17 +183,21 @@
 </script>
 
 <!--
-  Reserved-slot pattern: each banner sits in a fixed-height wrapper so the
-  banner showing/hiding never animates the height of the chat column. The
-  scroll surface adjacent to the slots stays geometrically stable.
-
-  Cost: ~36px reserved per slot whether or not a banner is shown. This is
-  the right trade-off — banners signal system state (auth expired, provider
-  missing, reconnecting) that the user benefits from seeing in a stable
-  location, and the alternative (height-animated mount) shifts every visible
-  message under the user's cursor.
+  Overlay pattern: both status banners float over the top edge of the chat
+  surface instead of reserving layout height. On the happy path nothing
+  renders and the timeline sits flush under the header; when a banner shows
+  it overlays the top of the message list without changing the scroller's
+  clientHeight, so messages never reflow — the property the old reserved
+  slots bought, except those held ~36px each (~72px of empty space under
+  the header) forever. Anchored to the `chat-surface-ground` relative
+  container in ChatView, stacking both banners top-down; z-20 matches the
+  composer overlay in that container. A shown banner covers the topmost
+  rows — intended: scroll up, or dismiss/resolve the banner, to reveal them.
 -->
-<div class="relative shrink-0 min-h-9" data-testid="provider-status-slot">
+<div
+  class="absolute inset-x-0 top-0 z-20 flex flex-col"
+  data-testid="provider-status-overlay"
+>
   {#if providerStatus && pane.thread}
     <div
       transition:fade={{ duration: 150 }}
@@ -228,9 +232,7 @@
       {/if}
     </div>
   {/if}
-</div>
 
-<div class="relative shrink-0 min-h-9" data-testid="session-status-slot">
   {#if sessionBannerVisible && pane.thread}
     <div transition:fade={{ duration: 150 }} role="alert" aria-live="assertive" class="border-b {sessionBannerClasses} px-4 py-2 flex items-center gap-2">
       <p class="text-xs flex-1 line-clamp-2" title={sessionMessage}>{sessionMessage}</p>

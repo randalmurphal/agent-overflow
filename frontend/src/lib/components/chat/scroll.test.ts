@@ -1,7 +1,7 @@
 // Integration tests for the chat scroll system after the virtua/svelte
 // rebuild. These tests cover the seams between MessageTimeline,
 // useStickToBottom, the per-thread snapshot store, and the layout
-// surrounding the timeline (absolute composer, reserved-slot banners).
+// surrounding the timeline (absolute composer, banner overlays).
 //
 // What is NOT tested here:
 //   - virtua's per-row anchor-preservation algorithm. That's owned by the
@@ -826,22 +826,23 @@ describe('scroll integration — composer height + layout invariance', () => {
   });
 });
 
-describe('scroll integration — banner reserved slot stability', () => {
-  it('reserves provider-status and session-status slots regardless of banner state', async () => {
+describe('scroll integration — banner overlay (no reserved height)', () => {
+  it('overlays the status banners instead of reserving slot height', async () => {
     const pane = await buildPane(makeThread(), [
       makeItem({ id: 'tail', summary: 'tail' }),
     ]);
 
-    const { getByTestId } = render(ChatView, { props: { pane } });
+    const { getByTestId, queryByTestId } = render(ChatView, { props: { pane } });
     await tick();
 
-    // Reserved slots are always rendered, even when the banner content
-    // is empty, so the timeline geometry stays stable when a banner
-    // mounts/unmounts. Test ids let us assert the contract independent
-    // of the underlying CSS class names (Tailwind utility names can
-    // change with config without breaking the contract).
-    expect(getByTestId('provider-status-slot')).toBeInTheDocument();
-    expect(getByTestId('session-status-slot')).toBeInTheDocument();
+    // Overlay pattern (replaces the old reserved slots): on the happy path
+    // no banner renders and nothing reserves height under the header, so the
+    // timeline never reflows. The wrapper is absolutely positioned, so even
+    // when a banner shows it can't change the scroller's clientHeight. Test
+    // ids assert the contract independent of Tailwind utility class names.
+    expect(queryByTestId('provider-status-slot')).toBeNull();
+    expect(queryByTestId('session-status-slot')).toBeNull();
+    expect(getByTestId('provider-status-overlay').className).toContain('absolute');
   });
 });
 

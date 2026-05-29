@@ -1,9 +1,10 @@
 <script lang="ts">
-  // Sticky banner across the top of the app shell that surfaces the
+  // Overlay banner pinned to the top of the app shell that surfaces the
   // wsClient's current connection state. Hidden on the happy path
-  // ('connected') so it doesn't compete with the chat header for screen
-  // real estate; only renders when the transport is reconnecting or has
-  // settled into an idle disconnected state.
+  // ('connected') so it reserves no space above the chat header; only
+  // renders — as an absolute overlay, see the markup comment below — when
+  // the transport is reconnecting or has settled into an idle
+  // disconnected state.
   //
   // The reconnecting state can carry a scheduled-attempt timestamp
   // (`nextAttemptAt`) when the wsClient has queued a backoff timer; we
@@ -114,33 +115,40 @@
   }
 </script>
 
-<!-- Reserved-slot pattern: the wrapper always occupies a stable height so
-     mounting / unmounting the inner banner never animates the chat
-     column's clientHeight. Inner banner uses transition:fade so the visual
-     entrance/exit is smooth without changing surrounding layout. Same
-     pattern as ProviderStatusBanner.svelte. min-h-7 matches the inner
-     banner's natural height (px-4 py-1.5 + border-b + ~16px text). -->
-<div class="relative shrink-0 min-h-7" data-testid="transport-status-slot">
-  {#if visible}
-    <div
-      transition:fade={{ duration: 150 }}
-      role="alert"
-      aria-live="polite"
-      data-testid="transport-status-banner"
-      data-status={snapshot.status}
-      class="border-b {bannerClasses} px-4 py-1.5 flex items-center gap-2 shrink-0 text-xs"
-    >
-      <p class="flex-1 line-clamp-1" title={message}>{message}</p>
-      {#if snapshot.status === 'disconnected' || snapshot.status === 'reconnecting'}
-        <button
-          type="button"
-          onclick={handleRetry}
-          data-testid="transport-status-retry"
-          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          Retry
-        </button>
-      {/if}
-    </div>
-  {/if}
-</div>
+<!-- Overlay pattern: the banner is absolutely positioned at the top of the
+     app shell, so it reserves NO layout height. On the happy path nothing
+     renders here and the chat header sits flush with the top of the window;
+     when the transport drops the banner floats over the top edge of the
+     content without changing the panes' clientHeight. A clientHeight change
+     would fight the scroll controller (see frontend/AGENTS.md § Scroll
+     architecture), which is why the old reserved-slot version permanently
+     held ~28px — but this banner spans the whole shell and a transport
+     reconnect is rare, so overlaying beats reserving that space forever.
+     z-50 keeps it above pane content and below modals (z-[60]+), matching
+     the pre-overlay behavior where a full-screen modal covered the banner.
+     transition:fade animates opacity only, so entrance/exit never shifts
+     layout either. (ProviderStatusBanner stays a reserved slot: it sits
+     between the header and the timeline, a narrower surface where a stable
+     slot is the simpler win.) -->
+{#if visible}
+  <div
+    transition:fade={{ duration: 150 }}
+    role="alert"
+    aria-live="polite"
+    data-testid="transport-status-banner"
+    data-status={snapshot.status}
+    class="absolute inset-x-0 top-0 z-50 border-b {bannerClasses} px-4 py-1.5 flex items-center gap-2 text-xs"
+  >
+    <p class="flex-1 line-clamp-1" title={message}>{message}</p>
+    {#if snapshot.status === 'disconnected' || snapshot.status === 'reconnecting'}
+      <button
+        type="button"
+        onclick={handleRetry}
+        data-testid="transport-status-retry"
+        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        Retry
+      </button>
+    {/if}
+  </div>
+{/if}
