@@ -48,7 +48,7 @@
     hasRuntimeModeDraft,
     runtimeModeForThread,
   } from '../../stores/runtimeModeDraft.svelte';
-  import { getActiveTurn, isSendInFlight } from '../../stores/threadStatuses.svelte';
+  import { getActiveTurn, isSendInFlight, isThreadWorking } from '../../stores/threadStatuses.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
@@ -119,6 +119,20 @@
   let hasBlockingPrompt = $derived(Boolean(activeApproval));
   let hasUserInputPrompt = $derived(!hasBlockingPrompt && Boolean(activeUserInput));
   let hasInteractivePrompt = $derived(hasBlockingPrompt || hasUserInputPrompt);
+
+  // Reserve the activity row's height ABOVE the composer card whenever the
+  // ActivityRail isn't occupying it, so the composer's measured height — and
+  // the timeline's padding-bottom it drives via --composer-height — stays
+  // constant across turn start/complete and the last message doesn't jump.
+  // Derives from the same shared state ActivityRail reads to decide its own
+  // visibility (`isThreadWorking` + `pane.liveTodo`), so the spacer and the
+  // rail swap within a single reactive flush — net composer height unchanged,
+  // no 1-frame blip. Background tasks are intentionally excluded: their
+  // liveness lives in a per-mount controller, not shared pane state, so a bg
+  // task that outlives its turn (no active turn, no todos) leaves one extra
+  // row of padding until it ends — rare, and never a jump on the common
+  // turn boundary.
+  let reserveActivityRow = $derived(!isThreadWorking(pane.threadId) && !pane.liveTodo);
   let userInputSubmitSignal = $state(0);
   let userInputCustomAnswer = $state('');
   let sending = $state(false);
@@ -646,6 +660,22 @@
 </script>
 
 <div class="relative px-6 pb-4 pt-1 pointer-events-none">
+  {#if reserveActivityRow}
+    <!--
+      Reserve the ActivityRail's single-row height here, ABOVE the card and
+      transparent, rather than inside it — the card must look identical to
+      when a turn is running. Height-twin of ActivityRail.svelte's working
+      row: same row + chip classes, a transparent border standing in for the
+      rail's 1px separator, and a zero-width space giving the chip its line
+      box, so the reserved height matches by construction. Keep these classes
+      in sync with that row if its metrics ever change.
+    -->
+    <div aria-hidden="true" data-testid="composer-activity-reserve" class="border-b border-transparent">
+      <div class="flex flex-wrap items-center gap-1.5 px-3 py-2 text-[0.6875rem] leading-tight">
+        <span class="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5">{'\u200B'}</span>
+      </div>
+    </div>
+  {/if}
   <div
     bind:this={composerRoot}
     class="pointer-events-auto mx-auto w-full max-w-[68rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden

@@ -1442,6 +1442,59 @@ describe('<Composer>', () => {
     expect(rail.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('reserves the activity row height above the card when idle and yields it to the rail on turn start/end', async () => {
+    // The composer is a bottom-anchored overlay whose height drives the
+    // timeline's padding-bottom (--composer-height); the ActivityRail's
+    // working row mounting/unmounting at turn boundaries is what made the
+    // last message jump. The reservation swaps in lockstep with the rail
+    // (net composer height unchanged) and lives ABOVE the card so the card
+    // itself looks identical whether or not a turn is running.
+    setBindingMock('ListLiveBackgroundTasks', async () => []);
+    const pane = await buildPane();
+    const draft = await buildDraft();
+
+    const { getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
+    await tick();
+    await tick();
+
+    // Idle: rail collapsed; the reservation is present and sits OUTSIDE
+    // (before) the visible card — not a dead-space lump inside it.
+    const reserve = getByTestId('composer-activity-reserve');
+    const card = getByTestId('composer-root');
+    expect(queryByTestId('activity-rail')).toBeNull();
+    expect(card.contains(reserve)).toBe(false);
+    expect(reserve.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Turn starts: the rail takes the row inside the card, reservation collapses.
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    await tick();
+    expect(getByTestId('activity-rail')).toBeInTheDocument();
+    expect(queryByTestId('composer-activity-reserve')).toBeNull();
+
+    // Turn ends: rail collapses, reservation returns.
+    pane.clearActiveTurn();
+    await tick();
+    expect(queryByTestId('activity-rail')).toBeNull();
+    expect(queryByTestId('composer-activity-reserve')).not.toBeNull();
+  });
+
+  it('does not double-reserve: a todos-only rail (no active turn) occupies the row and the spacer stays collapsed', async () => {
+    // reserveActivityRow mirrors the rail's own visibility predicate for
+    // the synchronous cases (working + todos), so a settled-turn rail that
+    // still shows todos doesn't stack an extra transparent row above the card.
+    setBindingMock('ListLiveBackgroundTasks', async () => []);
+    const pane = await buildPane();
+    pane.setLiveTodo([{ step: 'one', status: 'inProgress' }]);
+    const draft = await buildDraft();
+
+    const { getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
+    await tick();
+    await tick();
+
+    expect(getByTestId('activity-rail')).toBeInTheDocument();
+    expect(queryByTestId('composer-activity-reserve')).toBeNull();
+  });
+
   it('scopes pointer-events and drag-and-drop to the visible card', async () => {
     // The outer wrapper is pointer-events-none so the transparent
     // moat around the visible card is click-through. Clicks on the
