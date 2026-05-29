@@ -259,8 +259,18 @@ pre, code, kbd, samp, .ansi-body {
   font-size: var(--text-sm);
   line-height: var(--markdown-body-line-height);
 }
-.markdown-body > :first-child { margin-top: 0; }
-.markdown-body > :last-child { margin-bottom: 0; }
+/* Zero the first block's top margin and the last block's bottom margin so a
+   message sits flush in its row. ChatMarkdown always nests blocks one level
+   deep inside the .md-committed / .md-volatile wrapper (see the seam rule
+   below), so these must reach THROUGH the wrapper to the real block — a bare
+   `> :first-child` matches the wrapper instead, leaving the block's own margin
+   to collapse up and out. That's harmless only while every ancestor up to the
+   row stays plain; a wrapper that gained padding/overflow/display-BFC would
+   trap it as stray top space. Same "wrappers stay plain" dependency as the
+   seam rule. (`.md-committed`/`.md-volatile` carry no margin themselves, so
+   the wrapper is never the intended target here.) */
+.markdown-body > :first-child > :first-child { margin-top: 0; }
+.markdown-body > :last-child > :last-child { margin-bottom: 0; }
 .markdown-body h1 {
   font-size: 1.125rem;
   font-weight: 600;
@@ -285,17 +295,31 @@ pre, code, kbd, samp, .ansi-body {
 }
 /* Streaming committed-prefix / volatile-tail split: ChatMarkdown renders the
    committed prefix and the volatile tail as two separate Streamdown
-   containers (.md-committed + .md-volatile), so the adjacent-sibling `p + p`
-   rule above can't match across the container boundary and the
-   inter-paragraph gap collapses at the seam — until the next block commits
-   into the prefix and the gap pops back in (the user-visible "spacing drops
-   then reformats" while streaming). Re-establish the gap at the seam. Scoped
-   to the split: a settled message renders as a single .md-committed
-   container, so this never matches once streaming ends. The fixed
-   paragraph-sized gap is a deliberate approximation — a non-paragraph seam
-   (e.g. code → paragraph) gets a slightly larger gap for the brief moment
-   it's split, which resolves to exact spacing on settle. */
-.markdown-body > .md-committed + .md-volatile {
+   containers (.md-committed + .md-volatile). Both are plain block-level divs
+   (svelte-streamdown roots `<div class={…}>` with no padding/border/overflow),
+   so block margins COLLAPSE across the seam exactly as they would inside a
+   single container — for every block transition EXCEPT paragraph→paragraph.
+   A paragraph has `margin: 0`; its whole inter-paragraph gap comes from the
+   `.markdown-body p + p` rule above, which can't match across the container
+   boundary and so collapses to 0 at the seam. Every other block (heading,
+   list, code, table, blockquote, math, hr) carries its own intrinsic
+   top/bottom margin, which survives the split and collapses to the correct
+   settled gap on its own.
+
+   So re-establish the gap ONLY for the true p→p seam, and let collapsing
+   reproduce the rest. The prior blanket `margin-top` here over-spaced every
+   non-p→p seam by +9–17px while split, snapping to the smaller real gap when
+   the block committed — a visible upward shift mid-stream. Settled messages
+   render as a single .md-committed container, so neither `:has()` condition
+   can match once streaming ends.
+
+   DEPENDS on .md-committed/.md-volatile staying plain: any padding, border,
+   overflow≠visible, or display that forms a block formatting context on
+   either wrapper would block the cross-seam margin collapse and reintroduce
+   the gaps. */
+.markdown-body
+  > .md-committed:has(> p:last-child)
+  + .md-volatile:has(> p:first-child) {
   margin-top: calc(var(--markdown-body-line-height) * 1em);
 }
 .markdown-body ul,

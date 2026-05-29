@@ -166,12 +166,15 @@
   keeps incremental markdown).
 
   `wrapperClass` (`md-committed` / `md-volatile`) marks each Streamdown's
-  root div so `.markdown-body > .md-committed + .md-volatile` in app.css
-  can re-establish the inter-paragraph gap at the seam: the two instances
-  are separate containers, so the adjacent-sibling `p + p` spacing rule
-  can't match across them and the gap would otherwise collapse until the
-  next block commits. A settled (non-streaming) message renders as a
-  single `md-committed` container and never matches the seam rule.
+  root div so the `:has()`-gated seam rule in app.css can re-establish the
+  gap at a paragraph→paragraph seam: the two instances are separate
+  containers, so the adjacent-sibling `p + p` spacing rule can't match
+  across them and a p→p gap (paragraphs are `margin: 0`) would otherwise
+  collapse until the next block commits. Non-paragraph seams need no rule —
+  their blocks' intrinsic margins collapse across the (plain) container
+  boundary to the correct gap on their own. A settled (non-streaming)
+  message renders as a single `md-committed` container and never matches
+  the seam rule.
 -->
 {#snippet streamdownInstance(content: string, parseIncompleteMarkdown: boolean, wrapperClass: string)}
   <Streamdown
