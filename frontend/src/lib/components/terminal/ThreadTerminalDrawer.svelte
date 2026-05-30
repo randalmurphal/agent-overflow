@@ -11,7 +11,6 @@
     TerminalSessionSummary,
   } from '../../types/terminal';
   import { addToast } from '../../stores/toast.svelte';
-  import { FOCUS_TERMINAL_EVENT } from '../../stores/events';
   import { errString } from '../../utils/errors';
   import {
     getThreadTerminalState,
@@ -25,36 +24,25 @@
   let { surface, manual = false }: ThreadTerminalDrawerProps = $props();
 
   let bodyEl: { focus: () => void } | undefined = $state(undefined);
-  // Latch a "focus terminal once it exists" intent. The chord that
-  // first opens the drawer fires FOCUS_TERMINAL_EVENT in the same
-  // frame as `setShowTerminal(true)`, well before `onMount`'s
-  // `OpenTerminal` (async, ~50–200 ms) has resolved — so bodyEl is
-  // undefined when the event lands. We can't focus what doesn't
-  // exist yet; instead set the flag here and have a separate effect
-  // consume it the moment TerminalBody binds. When the drawer is
-  // already open the flag is set and consumed in the same tick.
+  // Latch a "focus terminal once it exists" intent. runTerminalToggle (the ⌘`
+  // chord and the header button) calls pane.requestTerminalFocus() before
+  // setShowTerminal(true); we read-and-clear that intent in onMount below.
+  // This is consumed in *this* (real) drawer's onMount, not the lazy wrapper's
+  // — the wrapper mounts first and its dynamic import('./ThreadTerminalDrawer')
+  // resolves frames later, so consuming there would clear the flag before the
+  // body that needs focusing exists. On a cold first open, onMount's
+  // OpenTerminal (async, ~50–200 ms) hasn't resolved, so bodyEl is undefined
+  // when we consume; the effect below holds the intent and focuses the moment
+  // TerminalBody binds.
   let pendingFocus = $state(false);
-
-  // Listen for the smart-toggle's "focus terminal" intent so mod+`
-  // can hand DOM focus to the active terminal even when the drawer
-  // was already open.
-  $effect(() => {
-    if (typeof window === 'undefined') return;
-    const handler = (event: Event): void => {
-      const detail = (event as CustomEvent<{ paneId?: string }>).detail;
-      if (!detail || detail.paneId !== surface.paneId) return;
-      pendingFocus = true;
-    };
-    window.addEventListener(FOCUS_TERMINAL_EVENT, handler);
-    return () => window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
-  });
 
   $effect(() => {
     if (!pendingFocus || !bodyEl) return;
     const el = bodyEl;
     pendingFocus = false;
-    // Defer to next frame so the drawer's first paint completes
-    // before we try to focus into the xterm canvas.
+    // Defer one frame past the mount flush so the terminal claims focus after
+    // any focus changes that ran during this commit (e.g. the composer's own
+    // mount/autofocus), rather than being immediately overridden by them.
     requestAnimationFrame(() => el.focus());
   });
 
@@ -124,6 +112,9 @@
   });
 
   onMount(async () => {
+    // Read-and-clear the pane's focus intent. A true result latches focus; the
+    // pendingFocus effect above lands it in the xterm once TerminalBody binds.
+    if (surface.consumeFocusRequest()) pendingFocus = true;
     const threadId = surface.threadId;
     if (manual || !threadId) return;
 

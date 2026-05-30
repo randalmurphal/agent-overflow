@@ -33,7 +33,10 @@ import {
   resetForTest as resetSendQueueForTest,
 } from '../../lib/stores/sendQueue.svelte';
 import { getThreads } from '../../lib/stores/threads.svelte';
-import { resetThreadTerminalStatesForTest } from '../../lib/components/terminal/terminalStore.svelte';
+import {
+  resetThreadTerminalStatesForTest,
+  resetTerminalFocusForTest,
+} from '../../lib/components/terminal/terminalStore.svelte';
 import { clearThreadScrollSnapshotsForTest } from '../../lib/utils/threadScrollSnapshots';
 import { makeSettings } from '../helpers/settings';
 
@@ -67,6 +70,11 @@ export function resetAppState(): void {
   // next test's first SendMessage call.
   resetSendQueueForTest();
   resetThreadTerminalStatesForTest();
+  // The terminal-focus registry is a module-scoped counter shared across
+  // every pane; clearing the tab map above does not zero it, so a focused
+  // terminal in one test would otherwise leave `terminalFocus` stuck true
+  // for the next.
+  resetTerminalFocusForTest();
   clearThreadScrollSnapshotsForTest();
 }
 

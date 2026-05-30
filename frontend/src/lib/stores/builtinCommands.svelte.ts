@@ -25,11 +25,7 @@ import {
   openThreadInPane,
   syncThread,
 } from './panes.svelte';
-import {
-  focusPaneComposer,
-  focusPaneComposerIfEditableActive,
-  isPaneComposerFocused,
-} from '../components/panes/paneComposerFocus';
+import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
 import {
   archiveThreadAction,
@@ -39,6 +35,7 @@ import {
 } from '../components/sidebar/threadRowActions';
 import { userFacingError } from '../utils/userFacingError';
 import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
+import { runTerminalToggle } from '../components/terminal/terminalToggle';
 import {
   ApprovalResponse,
   GitPull,
@@ -64,7 +61,7 @@ import {
   type ComposerPickerId,
 } from './composerPickerRegistry.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
-import { FOCUS_TERMINAL_EVENT, PICKER_TOGGLE_INPUT_EVENT } from './events';
+import { PICKER_TOGGLE_INPUT_EVENT } from './events';
 
 export interface BuiltinCommandHooks {
   openSettings: () => void;
@@ -630,32 +627,16 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'terminal.toggle',
-    label: 'Terminal: Smart Toggle',
+    label: 'Terminal: Toggle',
     description:
-      'Open the terminal if closed; if open, flip focus between the terminal and the chat composer.',
+      'Open the terminal and focus it; if it is already open, close it.',
     icon: '▶',
     when: 'hasActiveThread',
+    // Reachable from editable targets so the chord still fires while the
+    // xterm <textarea> holds focus — that's the press that closes it.
     editableReachable: true,
     run: (ctx) =>
-      withMaterializedThread(ctx, (_id, pane) => {
-        const paneId = pane.paneId;
-        if (!pane.showTerminal) {
-          pane.setShowTerminal(true);
-          requestAnimationFrame(() => {
-            window.dispatchEvent(
-              new CustomEvent(FOCUS_TERMINAL_EVENT, { detail: { paneId } }),
-            );
-          });
-          return;
-        }
-        if (getTerminalFocused() && !isPaneComposerFocused(paneId)) {
-          focusPaneComposer(paneId);
-        } else {
-          window.dispatchEvent(
-            new CustomEvent(FOCUS_TERMINAL_EVENT, { detail: { paneId } }),
-          );
-        }
-      }),
+      withMaterializedThread(ctx, (_id, pane) => runTerminalToggle(pane)),
   });
 
   registerCommand({

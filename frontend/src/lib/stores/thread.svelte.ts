@@ -500,6 +500,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // placeholder can materialize on its own.
   let materializingThreadPromise: Promise<string | null> | null = null;
   let showTerminal: boolean = $state(false);
+  // One-shot "focus the terminal once it exists" intent, set by
+  // runTerminalToggle on open and consumed by the drawer when it mounts.
+  // A plain closure `let` (not $state): nothing renders off it — the drawer
+  // reads it imperatively in onMount. Its job is to survive the async gap
+  // between "open requested" and "lazy drawer chunk loaded + mounted", which
+  // a closure variable does without any reactivity. Replaces the old
+  // fire-once FOCUS_TERMINAL_EVENT, whose listener didn't exist yet when the
+  // event fired on a cold first open (the lazy import hadn't resolved).
+  let pendingTerminalFocus = false;
   // Diff panel is per-pane; created once and reset on thread switch so its
   // caches don't leak between threads.
   const diffPanel: DiffPanelState = createDiffPanelState();
@@ -2568,17 +2577,39 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       contextWindow = seedContextWindow(nextThread);
     },
 
-    toggleTerminal(): void {
-      // Bottom drawer mount/unmount reflows the chat column. Hold a
-      // brief lease so the controller's content-RO sync-pin no-ops
-      // while the column's clientHeight is settling.
-      leaseDuringSettle(scrollController);
-      showTerminal = !showTerminal;
-    },
-
     setShowTerminal(value: boolean): void {
+      // Bottom drawer mount/unmount reflows the chat column. Hold a brief
+      // lease on a real visibility change so the controller's content-RO
+      // sync-pin no-ops while the column's clientHeight is settling.
       if (value !== showTerminal) leaseDuringSettle(scrollController);
       showTerminal = value;
+      // Scope the focus intent to the current open session: if the drawer is
+      // hidden before it ever mounted to consume the request (e.g. a rapid
+      // open→close), drop it so a later visibility-only reopen — or a
+      // thread-restore that mounts the drawer with showTerminal persisted —
+      // doesn't inherit a stale "steal focus" intent.
+      if (!value) pendingTerminalFocus = false;
+    },
+
+    /**
+     * Latch intent to move DOM focus into the terminal once its drawer mounts.
+     * Called by runTerminalToggle BEFORE setShowTerminal(true) so the flag is
+     * already set when the (lazily-loaded) drawer's onMount consumes it,
+     * however many frames later the import resolves.
+     */
+    requestTerminalFocus(): void {
+      pendingTerminalFocus = true;
+    },
+
+    /**
+     * Read-and-clear the terminal focus intent. Returns true at most once per
+     * requestTerminalFocus() so a drawer remount (e.g. {#key threadId}) can't
+     * re-grab focus the user didn't ask for.
+     */
+    consumeTerminalFocusRequest(): boolean {
+      const requested = pendingTerminalFocus;
+      pendingTerminalFocus = false;
+      return requested;
     },
 
     toggleDiffPanel(): void {

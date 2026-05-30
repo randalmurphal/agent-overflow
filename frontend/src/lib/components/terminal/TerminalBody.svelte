@@ -33,8 +33,10 @@
   // Track whether we've already told the focus registry we're focused so
   // we don't double-decrement on teardown.
   let focusCounted = false;
+  // A focus() request can arrive before hydrate() has opened the xterm (it
+  // awaits a replay round-trip). Latch it here; hydrate()'s tail focuses once
+  // the terminal exists.
   let pendingFocus = false;
-  let focusFramePending = false;
 
   function handleFocusIn(): void {
     if (focusCounted) return;
@@ -100,6 +102,7 @@
     scheduleFit();
 
     if (pendingFocus) {
+      pendingFocus = false;
       focus();
     }
   }
@@ -173,15 +176,19 @@
   });
 
   export function focus() {
-    pendingFocus = true;
-    if (focusFramePending) return;
-    focusFramePending = true;
-    requestAnimationFrame(() => {
-      focusFramePending = false;
-      if (destroyed || !term) return;
-      pendingFocus = false;
-      term.focus();
-    });
+    if (destroyed) return;
+    if (!term) {
+      // hydrate() hasn't opened the terminal yet; its tail focuses on completion.
+      pendingFocus = true;
+      return;
+    }
+    // xterm attaches its helper textarea synchronously inside term.open(), and
+    // that textarea is immediately focusable — it's hidden via opacity/offscreen
+    // position, never display:none, so focus() is not gated on the first render.
+    // A single call lands; no deferral or retry needed. (Verified against the
+    // installed @xterm/xterm 6.0.0: Terminal.focus -> core.focus ->
+    // this.textarea.focus(), guarded only by the textarea existing.)
+    term.focus();
   }
 </script>
 

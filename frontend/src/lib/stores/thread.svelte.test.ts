@@ -467,6 +467,50 @@ describe('createThreadPane', () => {
     expect(pane.activeDiffPayload).toBeNull();
   });
 
+  // The terminal-focus intent is a pane-owned, consume-once flag that replaced
+  // the old fire-once FOCUS_TERMINAL_EVENT. runTerminalToggle sets it before
+  // showing the drawer; the drawer reads-and-clears it in onMount — whenever
+  // its lazily-loaded chunk resolves. These pin the request/consume/clear
+  // contract that makes the cold-open focus race impossible (the flag waits
+  // for the drawer however late it mounts, instead of an event firing into a
+  // window with no listener yet).
+  describe('terminal focus intent', () => {
+    it('has no pending request on a fresh pane', () => {
+      const pane = createThreadPane();
+      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    });
+
+    it('consumes a latched request exactly once', () => {
+      const pane = createThreadPane();
+      pane.requestTerminalFocus();
+      // First consume sees the intent...
+      expect(pane.consumeTerminalFocusRequest()).toBe(true);
+      // ...and clears it, so a drawer remount ({#key threadId}) can't
+      // re-grab focus the user never asked for.
+      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    });
+
+    it('keeps the request across setShowTerminal(true) so the drawer can consume it', () => {
+      const pane = createThreadPane();
+      // runTerminalToggle requests BEFORE showing the drawer; opening must not
+      // clear the intent or the cold-open focus would be lost again.
+      pane.requestTerminalFocus();
+      pane.setShowTerminal(true);
+      expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    });
+
+    it('drops a pending request when the terminal is hidden before it mounts', () => {
+      const pane = createThreadPane();
+      // Rapid open→close: focus was requested but the drawer never mounted to
+      // consume it. Hiding must clear the intent so a later visibility-only
+      // reopen — or a thread-restore mounting the drawer with showTerminal
+      // persisted — doesn't inherit a stale "steal focus".
+      pane.requestTerminalFocus();
+      pane.setShowTerminal(false);
+      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    });
+  });
+
   describe('right-side panel mutex', () => {
     it('opening plan sidebar closes diff panel and diff sidebar', async () => {
       const pane = createThreadPane();

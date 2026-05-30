@@ -49,6 +49,7 @@
     runtimeModeForThread,
   } from '../../stores/runtimeModeDraft.svelte';
   import { getActiveTurn, isSendInFlight, isThreadWorking } from '../../stores/threadStatuses.svelte';
+  import { getTerminalFocused } from '../terminal/terminalStore.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
@@ -266,6 +267,16 @@
     if (draftThreadId !== expectedThreadId) return;
     if (hydrating) return;
     focusInitialized = true;
+    // Don't yank focus away from a terminal that already owns it. Opening the
+    // bottom terminal (⌘`/⌘J) on a placeholder thread materializes the thread,
+    // which re-arms this initial-focus pass; by the time the draft re-hydrates
+    // the xterm may already hold DOM focus, and focusing the composer here
+    // would steal it back (the reported cold-open regression). Consuming the
+    // one-shot above means a later terminal blur won't trigger a delayed
+    // re-steal. `getTerminalFocused` reads a plain module counter, not reactive
+    // state, so this adds no dependency — it's a point-in-time check at the
+    // moment focus would otherwise move.
+    if (getTerminalFocused()) return;
     focusTextareaAtEnd(node);
   });
 

@@ -131,15 +131,25 @@
     return targetPane ? makeAppCommandContext(targetPane) : null;
   }
 
-  let paletteContext = $derived(
-    makeAppCommandContext(getPane(getPaletteTargetPaneId() ?? '') ?? getFocusedPaneOrNull()),
-  );
-  let messageSearchPane = $derived(
-    getPane(getMessageSearchTargetPaneId() ?? '') ?? getFocusedPaneOrNull(),
-  );
-  let threadPickerPane = $derived(
-    getPane(getThreadPickerTargetPaneId() ?? '') ?? getFocusedPaneOrNull(),
-  );
+  // Resolve the pane an overlay/command targets: the overlay's pinned pane when
+  // it's open, otherwise the focused pane. Each overlay pins its own target so
+  // command enablement tracks the pane the user invoked from, not wherever focus
+  // later drifted (frontend/CLAUDE.md: "resolve against an explicit target pane").
+  function resolveContextPane(targetPaneId: string | null) {
+    return getPane(targetPaneId ?? '') ?? getFocusedPaneOrNull();
+  }
+
+  // Shared by the reactive `paletteContext` $derived and the fresh per-keypress
+  // build in handleGlobalKeydown so both resolve a command's target pane the
+  // same way (resolveContextPane above documents the palette-target-else-focused
+  // rule).
+  function currentContextPane() {
+    return resolveContextPane(getPaletteTargetPaneId());
+  }
+
+  let paletteContext = $derived(makeAppCommandContext(currentContextPane()));
+  let messageSearchPane = $derived(resolveContextPane(getMessageSearchTargetPaneId()));
+  let threadPickerPane = $derived(resolveContextPane(getThreadPickerTargetPaneId()));
 
   function handleGlobalKeydown(ev: KeyboardEvent): void {
     if (ev.defaultPrevented) return;
@@ -153,14 +163,24 @@
       tag === 'SELECT' ||
       target?.isContentEditable === true;
 
+    // Build the context FRESH for dispatch rather than reading the memoized
+    // `paletteContext` $derived. The terminal-focus signal is a plain counter,
+    // not $state (terminalStore.svelte.ts), so focusing an xterm while its pane
+    // is already focused changes nothing the $derived tracks — it would stay
+    // stale-false. A stale `terminalFocus` lets `terminalFocus`-gated chords
+    // misfire from inside the terminal: most visibly `pane.close` (mod+w), which
+    // is `editableReachable` and guarded only by `when: '!terminalFocus'`, would
+    // close the pane instead of passing ctrl-w through as the shell's werase.
+    const ctx = makeAppCommandContext(currentContextPane());
+
     // Editable target: a keybinding in EDITABLE_REACHABLE_COMMANDS wins
     // ahead of the word-op fallback. This is what lets alt+arrow drive
     // pane.focusLeft / focusRight from inside the composer; for chords
     // that DON'T match a reachable command (alt+backspace, ctrl+arrow,
     // etc.) the word-op fallback still runs.
     if (editable) {
-      if (eventMatchesKeybindingCommand(ev, paletteContext, EDITABLE_REACHABLE_COMMANDS)) {
-        if (dispatchKey(ev, paletteContext)) ev.preventDefault();
+      if (eventMatchesKeybindingCommand(ev, ctx, EDITABLE_REACHABLE_COMMANDS)) {
+        if (dispatchKey(ev, ctx)) ev.preventDefault();
         return;
       }
       if (dispatchTextEditing(ev)) {
@@ -171,7 +191,7 @@
 
     // Non-editable target: word-op fallback is a no-op (its own
     // editableTarget gate returns null), so go straight to dispatch.
-    const handled = dispatchKey(ev, paletteContext);
+    const handled = dispatchKey(ev, ctx);
     if (handled) ev.preventDefault();
   }
 

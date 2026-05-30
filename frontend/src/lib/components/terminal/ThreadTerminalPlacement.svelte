@@ -19,6 +19,9 @@
     acquireResizeLease() {
       return pane.scrollController?.pauseAutoScroll() ?? null;
     },
+    consumeFocusRequest() {
+      return pane.consumeTerminalFocusRequest();
+    },
   });
 </script>
 

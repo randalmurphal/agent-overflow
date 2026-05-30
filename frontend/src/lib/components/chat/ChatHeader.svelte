@@ -28,6 +28,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
   import { resolvePaneAttentionDot } from '../panes/paneAttention';
+  import { runTerminalToggle } from '../terminal/terminalToggle';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -259,13 +260,16 @@
 
       <GitActionsControl {pane} />
 
+      <!-- Shares runTerminalToggle with the mod+` chord (terminal.toggle) so
+           opening focuses the terminal and closing hands focus back to the
+           composer — same behavior whether opened by click or keyboard. -->
       <Button
         variant="secondary"
         size="xs"
         pressed={pane.showTerminal}
         ariaLabel="Toggle Terminal"
         title={`Toggle Terminal (${terminalToggleChord})`}
-        onclick={() => void ensureThenToggle(() => pane.toggleTerminal())}
+        onclick={() => void ensureThenToggle(() => runTerminalToggle(pane))}
         testId="terminal-toggle"
         class="shrink-0 w-6 px-0"
       >

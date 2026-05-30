@@ -39,6 +39,11 @@ import {
 } from '../../stores/worktreeIntent.svelte';
 import { getThreadById, removeThread } from '../../stores/threads.svelte';
 import type { Project } from '../../types/models';
+import * as composerKeyboard from './composerKeyboard';
+import {
+  notifyTerminalFocus,
+  resetTerminalFocusForTest,
+} from '../terminal/terminalStore.svelte';
 
 function installDraftMocks() {
   setBindingMock('GetDraft', async (threadId: string) => ({
@@ -126,6 +131,7 @@ describe('<Composer>', () => {
     resetWorktreeIntent();
     resetSendQueueForTest();
     resetThreadStatuses();
+    resetTerminalFocusForTest();
     installDraftMocks();
     setBindingMock('SendMessageWithOptions', async () => makeTestThread({ runtimeMode: 'full-access' }));
     setBindingMock('InterruptTurn', async () => {});
@@ -1955,6 +1961,48 @@ describe('<Composer>', () => {
     await tick();
     expect(textarea.disabled).toBe(true);
     expect(document.activeElement).not.toBe(textarea);
+  });
+
+  // Regression — cold terminal open must not lose focus to the composer.
+  // Opening the bottom terminal (⌘`/⌘J) on a placeholder thread materializes
+  // it, which re-arms the composer's initial-focus pass. By the time the draft
+  // re-hydrates, the xterm may already hold DOM focus; the composer must not
+  // steal it back. These two tests are a self-validating pair: the control
+  // proves the initial-focus pass fires (and the spy is wired to the
+  // component's call) under this exact setup, so the guarded test's
+  // "not called" can't be a false pass from the effect simply not running.
+  it('control: focuses the textarea on entry when no terminal holds focus', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    const focusSpy = vi.spyOn(composerKeyboard, 'focusTextareaAtEnd');
+    try {
+      render(Composer, { props: { pane, draft } });
+      await waitFor(() => expect(focusSpy).toHaveBeenCalledTimes(1));
+    } finally {
+      focusSpy.mockRestore();
+    }
+  });
+
+  it('does not steal focus from a terminal that already owns it on entry', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    // The xterm grabbed DOM focus when the drawer opened, reflected in the
+    // module-level terminal-focus registry the guard reads.
+    notifyTerminalFocus(true);
+    const focusSpy = vi.spyOn(composerKeyboard, 'focusTextareaAtEnd');
+    try {
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      // Settle to the same steady state the control reaches: the textarea is
+      // enabled and the initial-focus effect has run (waitFor polls on a
+      // macrotask, after Svelte's effect flush). The control proves the effect
+      // calls focusTextareaAtEnd at this point absent a focused terminal.
+      await waitFor(() => expect(textarea.disabled).toBe(false));
+      await tick();
+      expect(focusSpy).not.toHaveBeenCalled();
+    } finally {
+      focusSpy.mockRestore();
+    }
   });
 
   it('yields Shift+Tab to the global keydown handler without preventDefault', async () => {

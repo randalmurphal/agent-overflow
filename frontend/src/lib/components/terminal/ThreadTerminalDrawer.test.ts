@@ -102,6 +102,9 @@ function makeSurface() {
     get workspacePath() { return thread.workspacePath; },
     setVisible: vi.fn(),
     acquireResizeLease: vi.fn(() => null),
+    // No focus intent by default — these tests cover lifecycle/tabs, not the
+    // open-focus handoff. Tests that exercise focus override this.
+    consumeFocusRequest: vi.fn(() => false),
   };
 }
 

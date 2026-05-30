@@ -37,7 +37,6 @@ import {
 } from './threadActionConfirmations.svelte';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
 import type { Project, Thread } from '../types/models';
-import { FOCUS_TERMINAL_EVENT } from './events';
 
 function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThreadPane> {
   setBindingMock('SwitchThread', async (threadId: unknown) => ({
@@ -891,11 +890,13 @@ describe('thread.fork command', () => {
   });
 });
 
-// --- terminal.toggle smart toggle ---
+// --- terminal.toggle (VS Code-style visibility toggle) ---
 //
-// The mod+` chord is three-state: closed → open + focus terminal; open
-// with chat focused → focus terminal; open with terminal focused →
-// focus chat composer. Pin all three states.
+// The mod+` chord is a two-state toggle: closed → open + focus the
+// terminal; open → close it, regardless of where focus currently sits.
+// On close, focus returns to the composer ONLY when the terminal itself
+// held focus — so the caret doesn't strand on <body> after the drawer
+// unmounts, and isn't yanked away when the user toggled from elsewhere.
 
 describe('terminal.toggle command', () => {
   beforeEach(() => {
@@ -903,91 +904,64 @@ describe('terminal.toggle command', () => {
     resetTerminalFocusForTest();
   });
 
-  it('opens the terminal drawer and dispatches focus-terminal when closed', async () => {
+  it('opens the terminal drawer and latches a focus request when closed', () => {
     const pane = readyPane();
     pane.setShowTerminal(false);
     registerFixtureCommands(pane);
-    const events: CustomEvent[] = [];
-    const handler = (e: Event): void => {
-      events.push(e as CustomEvent);
-    };
-    window.addEventListener(FOCUS_TERMINAL_EVENT, handler);
-    try {
-      runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
-      expect(pane.showTerminal).toBe(true);
-      // Event fires inside requestAnimationFrame — wait one frame.
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      expect(events).toHaveLength(1);
-      expect(events[0].detail).toEqual({ paneId: pane.paneId });
-    } finally {
-      window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
-    }
+
+    runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
+    expect(pane.showTerminal).toBe(true);
+    // Opening latches a one-shot focus intent synchronously (no rAF). The
+    // drawer consumes it in onMount — whenever its lazily-loaded chunk
+    // resolves — so the intent survives the cold-open mount delay.
+    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    // Read-and-clear: a second consume (e.g. a drawer remount) returns false,
+    // so focus is never re-grabbed without a fresh open.
+    expect(pane.consumeTerminalFocusRequest()).toBe(false);
   });
 
-  it('dispatches focus-terminal when drawer is open and chat is focused', () => {
-    const pane = readyPane();
-    pane.setShowTerminal(true);
-    notifyTerminalFocus(false);
-    registerFixtureCommands(pane);
-    const events: CustomEvent[] = [];
-    const handler = (e: Event): void => {
-      events.push(e as CustomEvent);
-    };
-    window.addEventListener(FOCUS_TERMINAL_EVENT, handler);
-    try {
-      runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
-      expect(events).toHaveLength(1);
-      expect(events[0].detail).toEqual({ paneId: pane.paneId });
-    } finally {
-      window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
-    }
-  });
-
-  it('dispatches focus-terminal when drawer is open and composer is focused even if terminal focus is stale', () => {
+  it('closes the terminal and returns focus to the composer when the terminal was focused', () => {
     const pane = readyPane();
     pane.setShowTerminal(true);
     notifyTerminalFocus(true);
     registerFixtureCommands(pane);
 
     const composer = mountComposerForPane(pane.paneId);
-    const { textarea } = composer;
-    textarea.focus();
 
-    const events: CustomEvent[] = [];
-    const handler = (e: Event): void => {
-      events.push(e as CustomEvent);
-    };
-    window.addEventListener(FOCUS_TERMINAL_EVENT, handler);
     try {
       runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
-      expect(events).toHaveLength(1);
-      expect(events[0].detail).toEqual({ paneId: pane.paneId });
+      expect(pane.showTerminal).toBe(false);
+      // Focus handed back to the composer so the unmount doesn't orphan it.
+      expect(document.activeElement).toBe(composer.textarea);
+      // A close never latches a focus request — it only ever closes.
+      expect(pane.consumeTerminalFocusRequest()).toBe(false);
     } finally {
-      window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
       composer.cleanup();
     }
   });
 
-  it('focuses the chat composer when drawer is open and terminal is focused', () => {
+  it('closes the terminal without stealing focus when the terminal was not focused', () => {
     const pane = readyPane();
     pane.setShowTerminal(true);
-    notifyTerminalFocus(true);
+    notifyTerminalFocus(false);
     registerFixtureCommands(pane);
 
+    // A composer exists, but focus is parked on an unrelated element. The
+    // toggle must NOT pull focus into the composer here — the terminal
+    // didn't hold focus, so there's nothing to rescue. This guards the
+    // `if (terminalHadFocus)` condition against being dropped.
     const composer = mountComposerForPane(pane.paneId);
-    const { textarea } = composer;
+    const sentinel = document.createElement('button');
+    document.body.appendChild(sentinel);
+    sentinel.focus();
 
-    const events: CustomEvent[] = [];
-    const handler = (e: Event): void => {
-      events.push(e as CustomEvent);
-    };
-    window.addEventListener(FOCUS_TERMINAL_EVENT, handler);
     try {
       runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
-      expect(document.activeElement).toBe(textarea);
-      expect(events).toHaveLength(0);
+      expect(pane.showTerminal).toBe(false);
+      expect(document.activeElement).toBe(sentinel);
+      expect(pane.consumeTerminalFocusRequest()).toBe(false);
     } finally {
-      window.removeEventListener(FOCUS_TERMINAL_EVENT, handler);
+      document.body.removeChild(sentinel);
       composer.cleanup();
     }
   });

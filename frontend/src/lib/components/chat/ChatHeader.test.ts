@@ -221,13 +221,18 @@ describe('<ChatHeader>', () => {
     expect(pane.showDesignPreviewPanel).toBe(false);
   });
 
-  it('toggles the terminal drawer via the terminal button', async () => {
+  it('toggles the terminal drawer and latches focus-on-open via the terminal button', async () => {
     const pane = await buildPane();
     const { getByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
     expect(pane.showTerminal).toBe(false);
     await fireEvent.click(getByTestId('terminal-toggle'));
     expect(pane.showTerminal).toBe(true);
+    // The button must open AND focus, identical to the ⌘`/⌘J chord: it routes
+    // through runTerminalToggle, which latches the focus intent the drawer
+    // consumes on mount. consumeTerminalFocusRequest is read-and-clear, so the
+    // open click must have set it exactly once.
+    expect(pane.consumeTerminalFocusRequest()).toBe(true);
     await fireEvent.click(getByTestId('terminal-toggle'));
     expect(pane.showTerminal).toBe(false);
   });

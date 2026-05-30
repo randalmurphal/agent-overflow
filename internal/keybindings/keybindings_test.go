@@ -74,6 +74,31 @@ func TestDefaultsIncludeNewHelpSearchAndInterruptBindings(t *testing.T) {
 	}
 }
 
+// TestModWClosesPaneAndYieldsToTerminalFocus pins the behavior change behind
+// "ctrl/cmd+w shouldn't do anything in the terminal": mod+w must be the
+// pane.close binding gated on !terminalFocus (so a focused xterm receives
+// ctrl-w as werase instead of the pane closing), and the old
+// terminalFocus-gated terminal.close twin must stay removed. Without this,
+// a regression re-adding {mod+w, terminal.close, terminalFocus} would pass
+// every other Defaults test.
+func TestModWClosesPaneAndYieldsToTerminalFocus(t *testing.T) {
+	var modW []Keybinding
+	for _, b := range Defaults {
+		if b.Key == "mod+w" {
+			modW = append(modW, b)
+		}
+		if b.Command == "terminal.close" {
+			t.Errorf("Defaults still bind terminal.close (%+v); mod+w must fall through to the shell as werase", b)
+		}
+	}
+	if len(modW) != 1 {
+		t.Fatalf("want exactly one mod+w binding, got %d: %+v", len(modW), modW)
+	}
+	if modW[0].Command != "pane.close" || modW[0].When != "!terminalFocus" {
+		t.Errorf("mod+w = {Command:%q When:%q}, want {pane.close, !terminalFocus}", modW[0].Command, modW[0].When)
+	}
+}
+
 // TestDefaultsHaveUniqueKeyWhenTuples guarantees no two defaults
 // collide on the same (key, when) pair. Multiple chords for one
 // command is fine (e.g. mod+n and mod+shift+o both → thread.new),

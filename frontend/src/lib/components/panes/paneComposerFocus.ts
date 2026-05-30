@@ -20,15 +20,12 @@ export function focusPaneComposerIfEditableActive(paneId: string): void {
   focusPaneComposer(paneId);
 }
 
-export function isPaneComposerFocused(paneId: string): boolean {
-  const textarea = findPaneComposer(paneId);
-  return textarea !== null && document.activeElement === textarea;
-}
-
 /**
- * Unconditionally move DOM focus to the named pane's composer
- * textarea. Used by the terminal smart-toggle to flip focus from
- * the terminal back to the chat composer.
+ * Move DOM focus to the named pane's composer textarea. Returns false
+ * when the textarea is missing or disabled, so callers can fall back:
+ * composer-toolbar pickers refocus their trigger button, and the
+ * terminal-close path uses it to keep the caret off <body> after the
+ * drawer unmounts.
  */
 export function focusPaneComposer(paneId: string): boolean {
   const textarea = findPaneComposer(paneId);

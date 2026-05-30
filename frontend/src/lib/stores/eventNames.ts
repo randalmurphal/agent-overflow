@@ -15,7 +15,6 @@ export const DESIGN_OPTIONS_UPDATE_EVENT = 'ao-design:options-update';
 
 // Cross-component messaging (sidebar → drawer → composer, picker chord
 // → picker components, settings launcher, etc.).
-export const FOCUS_TERMINAL_EVENT = 'agent-overflow:focus-terminal';
 export const PICKER_TOGGLE_INPUT_EVENT = 'agent-overflow:picker-toggle-input';
 export const RENAME_THREAD_EVENT = 'agent-overflow:rename-thread';
 export const OPEN_SHIP_CHANGES_EVENT = 'agent-overflow:open-ship-changes';

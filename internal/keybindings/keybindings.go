@@ -55,9 +55,10 @@ const (
 var Defaults = []Keybinding{
 	// Keybinding-overhaul swap: mod+j / mod+k are reserved for the
 	// sidebar visual selector (no DOM focus change). Terminal
-	// smart-toggle moves to mod+` (matches VS Code), the sidebar
-	// search input moves to mod+/, and the cheat sheet moves to
-	// mod+shift+/. The sidebar.focus-search binding fires globally
+	// toggle moves to mod+` (matches VS Code: open+focus when closed,
+	// close when open), the sidebar search input moves to mod+/, and
+	// the cheat sheet moves to mod+shift+/. The sidebar.focus-search
+	// binding fires globally
 	// (empty `when`) so it works from the composer, the diff panel,
 	// the terminal, etc.
 	{Key: "mod+shift+k", Command: "palette.open", DefaultID: "palette.open"},
@@ -69,7 +70,17 @@ var Defaults = []Keybinding{
 	{Key: "mod+shift+enter", Command: "sidebar.cursor.openInNewPane", When: "sidebarCursorActive && !anyModalOpen", DefaultID: "sidebar.cursor.openInNewPane"},
 	{Key: "mod+/", Command: "picker.toggleInput", When: "anyPickerOpen", DefaultID: "picker.toggleInput"},
 	{Key: "mod+n", Command: "terminal.new", When: "terminalFocus", DefaultID: "terminal.new"},
-	{Key: "mod+w", Command: "terminal.close", When: "terminalFocus", DefaultID: "terminal.close"},
+	// NOTE: the `!terminalFocus`-gated chords below (mod+w → pane.close, the
+	// thread.new family, the pane-navigation alts) must NOT fire from inside a
+	// focused xterm — ctrl-w in particular has to reach the shell as werase. The
+	// gate only holds because the keydown dispatcher reads terminalFocus FRESH
+	// per keypress; see App.svelte handleGlobalKeydown for why a memoized read
+	// regressed it.
+	//
+	// mod+w intentionally has no terminalFocus twin (ctrl-w → werase). The twins
+	// that do exist (mod+n → terminal.new above) are inert from inside the xterm
+	// for a separate reason: terminal.new isn't editableReachable, so it can't
+	// reach the editable xterm textarea and falls through to the shell.
 	{Key: "mod+n", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.primary"},
 	{Key: "mod+shift+n", Command: "thread.newPane", When: "!terminalFocus", DefaultID: "thread.newPane"},
 	{Key: "mod+shift+o", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.alternate"},
