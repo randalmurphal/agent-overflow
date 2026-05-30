@@ -670,7 +670,7 @@
   });
 </script>
 
-<div class="relative px-6 pb-4 pt-1 pointer-events-none">
+<div class="relative px-6 pb-4 pointer-events-none">
   {#if reserveActivityRow}
     <!--
       Reserve the ActivityRail's single-row height here, ABOVE the card and

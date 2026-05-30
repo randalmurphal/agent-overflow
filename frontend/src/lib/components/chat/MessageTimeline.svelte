@@ -55,7 +55,7 @@
   const BUFFER_SIZE_PX = 1800;
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
-  const BOTTOM_PAD_PX = 24;
+  const BOTTOM_PAD_PX = 8;
   // Soft fade at the top of the scroll viewport: content dissolves under
   // the chat header instead of meeting a hard gap. Paint-only mask, so
   // (unlike padding or a spacer) it never changes
