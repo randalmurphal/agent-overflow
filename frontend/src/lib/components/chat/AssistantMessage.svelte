@@ -34,7 +34,7 @@
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? []);
 </script>
 
-<div class="group mb-3" data-item-kind={item.kind}>
+<div class="group" data-item-kind={item.kind}>
   <div
     class="text-fg-muted"
     data-testid="assistant-message-body"

@@ -351,10 +351,14 @@ export function sliceRevealedNodes(
 }
 
 /**
- * Visual-cadence bucket for the timeline. Tool rows pack tight; prose
- * rows carry their own bottom margin; everything else (notifications,
- * compaction, errors, thinking) is treated as transparent for boundary
- * purposes so it neither triggers nor breaks a tool↔text transition.
+ * Visual-cadence bucket for the timeline. The tool↔text boundary (the
+ * `mt-4` driven by `isToolTextBoundary` below) is the only inter-row
+ * spacer: tool rows pack tight, and prose runs tight against adjacent
+ * prose and thinking (assistant messages no longer carry a bottom
+ * margin). The single deliberate gap is the transition between a tool
+ * block and prose. Everything else (notifications, compaction, errors,
+ * thinking) is treated as transparent for boundary purposes so it
+ * neither triggers nor breaks a tool↔text transition.
  */
 export type NodeRole = 'tool' | 'text' | 'other';
 
