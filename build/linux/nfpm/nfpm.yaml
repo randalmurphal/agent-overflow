@@ -1,7 +1,7 @@
 name: "agent-overflow"
 arch: ${GOARCH}
 platform: "linux"
-version: "0.0.5"
+version: "0.0.6"
 section: "devel"
 priority: "optional"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
