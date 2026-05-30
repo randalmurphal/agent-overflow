@@ -56,6 +56,26 @@
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
   const BOTTOM_PAD_PX = 24;
+  // Soft fade at the top of the scroll viewport: content dissolves under
+  // the chat header instead of meeting a hard gap. Paint-only mask, so
+  // (unlike padding or a spacer) it never changes
+  // scrollHeight/clientHeight/scrollTop and never fires the content
+  // ResizeObserver — it stays entirely clear of the scroll controller.
+  //
+  // Two mask layers composited as a union: layer 1 is the fade over the
+  // content column; layer 2 is a solid strip that keeps the right
+  // SCROLLBAR_SAFE_PX fully opaque so the SCROLLBAR itself never fades at
+  // the top (a single full-width gradient would fade the scrollbar too,
+  // since it's part of this element's paint). SCROLLBAR_SAFE_PX is an
+  // approximate scrollbar width — overshooting just leaves a thin unfaded
+  // margin on the right, where the centered content never reaches anyway.
+  // Tune either number to taste.
+  const TOP_FADE_PX = 32;
+  const SCROLLBAR_SAFE_PX = 16;
+  const TOP_FADE_MASK =
+    `linear-gradient(to bottom, transparent 0, #000 ${TOP_FADE_PX}px) ` +
+    `left top / calc(100% - ${SCROLLBAR_SAFE_PX}px) 100% no-repeat, ` +
+    `linear-gradient(#000, #000) right top / ${SCROLLBAR_SAFE_PX}px 100% no-repeat`;
   const TARGET_FLASH_MS = 900;
   // Auto-load-older trigger thresholds. When the user scrolls within
   // AUTO_LOAD_OFFSET_PX of the top AND the topmost rendered row is one
@@ -1068,6 +1088,12 @@
      `entry.contentRect.height`, so a contentEl padding wouldn't
      re-pin via the contentRO seam. ChatView's composer-overlay RO
      calls `notifyContentMaybeGrew()` to handle that case explicitly.
+     The top `mask` fades the first TOP_FADE_PX of content as it rises
+     under the header (replacing the old hard top padding), while a solid
+     mask layer over the right SCROLLBAR_SAFE_PX keeps the scrollbar from
+     fading with it. It's a paint-only effect, so like the padding-bottom
+     above it never changes scrollHeight/clientHeight/scrollTop and stays
+     clear of the controller.
      Layout shape mirrors discussion/ChannelView.svelte
      (`relative flex h-full flex-col` + `flex-1 min-h-0 overflow-y-auto`)
      so the two surfaces stay in lockstep. -->
@@ -1078,6 +1104,8 @@
     style:overscroll-behavior-y="contain"
     style:overflow-anchor="none"
     style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
+    style:mask={TOP_FADE_MASK}
+    style:-webkit-mask={TOP_FADE_MASK}
     tabindex="-1"
     data-testid="message-timeline-scroll"
     role="log"

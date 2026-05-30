@@ -527,7 +527,7 @@
       --composer-height, which the timeline reads as bottom padding so
       the last row clears the overlay.
     -->
-    <div class="chat-surface-ground relative flex-1 min-h-0 pt-6">
+    <div class="chat-surface-ground relative flex-1 min-h-0">
       <ProviderStatusBanner {pane} />
       <MessageTimeline
         {pane}
