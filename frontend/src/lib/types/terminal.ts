@@ -5,6 +5,8 @@
  * anything heavier than needed.
  */
 
+import { base64ToBytes } from '../utils/base64';
+
 export interface TerminalSessionSummary {
   terminalID: string;
   threadID: string;
@@ -78,12 +80,7 @@ export function normalizeTerminalReplay(value: unknown): TerminalReplay {
  */
 export function decodeTerminalOutput(dataB64: string): Uint8Array {
   if (!dataB64) return new Uint8Array(0);
-  const binary = atob(dataB64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
+  return base64ToBytes(dataB64);
 }
 
 /**

@@ -4,6 +4,7 @@ import {
   parseUserMessageAttachments,
   type AttachmentPreviewSource,
 } from './userMessageMeta';
+import { base64ToBytes } from './base64';
 
 export {
   parseUserMessageAttachments,
@@ -74,12 +75,7 @@ function imagePreviewUrl(mimeType: string, base64Data: string): string {
   if (typeof URL.createObjectURL !== 'function') {
     return `data:${mimeType};base64,${base64Data}`;
   }
-  const binary = atob(base64Data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  return URL.createObjectURL(new Blob([base64ToBytes(base64Data)], { type: mimeType }));
 }
 
 function revokePreview(preview: ImagePreviewItem | undefined): void {
