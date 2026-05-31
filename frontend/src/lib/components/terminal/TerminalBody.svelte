@@ -38,6 +38,13 @@
   // awaits a replay round-trip). Latch it here; hydrate()'s tail focuses once
   // the terminal exists.
   let pendingFocus = false;
+  // hydrate() awaits the replay round-trip before draining buffered output, so
+  // there's a window where `term` exists but the replay hasn't been written.
+  // The drain $effect must stay closed across that window: output that lands
+  // mid-await has to flow through hydrate()'s post-markReplayed drain (so the
+  // replay buffer lands first and replay-covered chunks get deduped), not the
+  // effect. Reactive so flipping it re-runs the effect to drain what queued.
+  let hydrated = $state(false);
 
   function handleFocusIn(): void {
     if (focusCounted) return;
@@ -51,10 +58,11 @@
     notifyTerminalFocus(false);
   }
 
-  async function hydrate() {
-    if (!mountEl || destroyed) return;
-
-    term = new Terminal({
+  // Build the xterm instance with its addons attached to the mount node.
+  // Extracted from hydrate() so the long renderer-choice rationale doesn't bury
+  // the replay/drain ordering that the rest of hydrate() turns on.
+  function buildTerminal(mount: HTMLDivElement): { term: Terminal; fit: FitAddon } {
+    const terminal = new Terminal({
       convertEol: false,
       cursorBlink: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
@@ -69,10 +77,10 @@
       theme: getXtermTheme(getResolvedTheme()),
     });
 
-    fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
-    term.open(mountEl);
+    const fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.loadAddon(new WebLinksAddon());
+    terminal.open(mount);
 
     // Renderer choice is load-bearing for TUI art, not just perf. xterm draws
     // box-drawing AND block/quadrant glyphs (U+2500–259F — the ▀ ▄ █ ▌ ▐ and
@@ -92,7 +100,7 @@
         console.warn('terminal: WebGL context lost; reverting to DOM renderer');
         webgl.dispose();
       });
-      term.loadAddon(webgl);
+      terminal.loadAddon(webgl);
     } catch (err) {
       console.warn(
         'terminal: WebGL renderer unavailable; using DOM renderer ' +
@@ -100,6 +108,16 @@
         err,
       );
     }
+
+    return { term: terminal, fit: fitAddon };
+  }
+
+  async function hydrate() {
+    if (!mountEl || destroyed) return;
+
+    const built = buildTerminal(mountEl);
+    term = built.term;
+    fit = built.fit;
 
     // Wire focus/blur listeners on the xterm mount. xterm puts a focusable
     // textarea inside mountEl, so focusin/focusout bubble up reliably.
@@ -119,10 +137,24 @@
 
     if (destroyed || !term) return;
 
-    // Drain any output that arrived while we were mounting.
+    // Drain output buffered during the await, after markReplayed so
+    // replay-covered chunks are already dropped. Each write is guarded: a throw
+    // escaping here would reject the un-awaited hydrate() silently and leave the
+    // gate (`hydrated`, set below) shut forever, stranding all future output.
+    // The steady-state $effect needs no guard — it runs with the gate already
+    // open and re-drains on the next event. Log and continue so the gate opens.
     for (const chunk of handle.drainOutput(terminalID)) {
-      term.write(chunk);
+      try {
+        term.write(chunk);
+      } catch (err) {
+        console.error('terminal: write during hydrate drain failed', err);
+      }
     }
+
+    // Replay applied and we're caught up — open the drain $effect for live
+    // output from here on. (Flipping this re-runs the effect, which finds the
+    // queue empty after the drain above; subsequent output drains normally.)
+    hydrated = true;
 
     dataDisposable = term.onData((data) => {
       WriteTerminal(terminalID, encodeTerminalInput(data)).catch((err) => {
@@ -165,8 +197,11 @@
   }
 
   // React to output chunks accumulated in the store. An $effect fires whenever
-  // the tab's pendingOutput array is mutated.
+  // the tab's pendingOutput array is mutated. Gated on `hydrated` so output that
+  // arrives mid-hydrate stays queued for hydrate()'s ordered drain — see the
+  // `hydrated` declaration for the ordering/dedup hazard this closes.
   $effect(() => {
+    if (!hydrated) return;
     const tab = handle.tabs.find((t) => t.terminalID === terminalID);
     if (!tab || !term || tab.pendingOutput.length === 0) return;
     for (const chunk of handle.drainOutput(terminalID)) {
