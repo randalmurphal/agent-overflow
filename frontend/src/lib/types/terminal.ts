@@ -69,24 +69,21 @@ export function normalizeTerminalReplay(value: unknown): TerminalReplay {
 }
 
 /**
- * Decode a base64 output chunk into a plain JS string. Uses atob first and
- * then re-encodes through TextDecoder so control bytes and multi-byte
- * sequences survive intact.
+ * Decode a base64 output chunk into the raw PTY bytes. xterm's `write()`
+ * treats a `Uint8Array` as UTF-8 and its decoder is stream-aware, so a
+ * multi-byte character split across two PTY read chunks still composes
+ * correctly. Decoding to a string instead would make xterm interpret each
+ * byte value as a UTF-16 code unit, mojibaking every non-ASCII glyph
+ * (box-drawing, `·`, emoji) — the classic TUI-renders-as-garbage bug.
  */
-export function decodeTerminalOutput(dataB64: string): string {
-  if (!dataB64) return '';
+export function decodeTerminalOutput(dataB64: string): Uint8Array {
+  if (!dataB64) return new Uint8Array(0);
   const binary = atob(dataB64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
-  // Let xterm handle non-UTF-8 gracefully; we decode to Latin-1 so bytes
-  // round-trip byte-for-byte to xterm.write.
-  let out = '';
-  for (let i = 0; i < bytes.length; i++) {
-    out += String.fromCharCode(bytes[i]);
-  }
-  return out;
+  return bytes;
 }
 
 /**

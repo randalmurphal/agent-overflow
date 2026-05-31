@@ -7,14 +7,23 @@ describe('terminal encoding helpers', () => {
     // Hi + ANSI reset
     const b64 = btoa(String.fromCharCode(...bytes));
     const decoded = decodeTerminalOutput(b64);
-    expect(decoded.length).toBe(bytes.length);
-    for (let i = 0; i < bytes.length; i++) {
-      expect(decoded.charCodeAt(i)).toBe(bytes[i]);
-    }
+    expect(decoded).toBeInstanceOf(Uint8Array);
+    expect(Array.from(decoded)).toEqual(Array.from(bytes));
   });
 
-  it('returns an empty string for empty input', () => {
-    expect(decodeTerminalOutput('')).toBe('');
+  it('returns the multi-byte UTF-8 bytes intact, not a Latin-1 string', () => {
+    // Regression for the TUI-renders-as-mojibake bug: `─` (U+2500) is the
+    // 3-byte UTF-8 sequence 0xE2 0x94 0x80. The decoder must hand xterm those
+    // exact bytes so xterm's own UTF-8 decoder composes the glyph. Decoding to
+    // a string would split it into three Latin-1 code points (`â`, `”`, ``).
+    const boxDrawing = new Uint8Array([0xe2, 0x94, 0x80]);
+    const b64 = btoa(String.fromCharCode(...boxDrawing));
+    const decoded = decodeTerminalOutput(b64);
+    expect(Array.from(decoded)).toEqual([0xe2, 0x94, 0x80]);
+  });
+
+  it('returns an empty byte array for empty input', () => {
+    expect(decodeTerminalOutput('')).toEqual(new Uint8Array(0));
   });
 
   it('encodes string input as base64 UTF-8', () => {

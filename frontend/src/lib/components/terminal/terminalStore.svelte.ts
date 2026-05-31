@@ -5,8 +5,8 @@ export interface TerminalTabState {
   terminalID: string;
   /** Pre-output summary from OpenTerminal/RestartTerminal/ListTerminals. */
   summary: TerminalSessionSummary;
-  /** Incoming output events queue while the xterm instance is mounting. */
-  pendingOutput: string[];
+  /** Incoming output bytes queue while the xterm instance is mounting. */
+  pendingOutput: Uint8Array[];
 }
 
 export interface ThreadTerminalState {
@@ -20,45 +20,43 @@ const MIN_DRAWER_HEIGHT = 160;
 const MAX_DRAWER_HEIGHT = 1200;
 
 /**
- * Cap pendingOutput at roughly 1 MB of UTF-16 characters per terminal tab.
- * A runaway process (e.g. `yes`) while TerminalBody is unmounted would
- * otherwise grow the queue without bound. We measure by `.length` because
- * that's what the xterm sink writes anyway; a few-byte overshoot due to
- * multi-byte characters is acceptable.
+ * Cap pendingOutput at 1 MB of PTY bytes per terminal tab. A runaway process
+ * (e.g. `yes`) while TerminalBody is unmounted would otherwise grow the queue
+ * without bound. Chunks are raw `Uint8Array` bytes straight from the PTY, so
+ * `.length` is the exact byte count and the cap is precise.
  */
-const PENDING_OUTPUT_CHAR_CAP = 1_000_000;
+const PENDING_OUTPUT_BYTE_CAP = 1_000_000;
 const TERMINAL_STATE_CACHE_LIMIT = 32;
 
 export const PENDING_OUTPUT_LIMITS = {
-  chars: PENDING_OUTPUT_CHAR_CAP,
+  bytes: PENDING_OUTPUT_BYTE_CAP,
 };
 
 /**
  * Append `chunk` to a pending-output queue, dropping oldest chunks when the
- * total character count would exceed the cap. If the single incoming chunk
- * is larger than the cap we slice its tail and discard the queue. Exported
- * as a pure helper so the logic is unit-testable without a Svelte state
- * wrapper.
+ * total byte count would exceed the cap. If the single incoming chunk is
+ * larger than the cap we slice its tail and discard the queue. Exported as a
+ * pure helper so the logic is unit-testable without a Svelte state wrapper.
  */
 function trimPendingOutputEntries(
-  existing: string[],
-  chunk: string,
+  existing: Uint8Array[],
+  chunk: Uint8Array,
   existingSequences: number[] | null = null,
   sequence = 0,
-): { output: string[]; sequences: number[] | null } {
+): { output: Uint8Array[]; sequences: number[] | null } {
   if (chunk.length === 0) {
     return { output: existing, sequences: existingSequences };
   }
-  if (chunk.length >= PENDING_OUTPUT_CHAR_CAP) {
+  if (chunk.length >= PENDING_OUTPUT_BYTE_CAP) {
     // A single jumbo chunk exceeds the cap — keep just the tail of it.
     return {
-      output: [chunk.slice(chunk.length - PENDING_OUTPUT_CHAR_CAP)],
+      output: [chunk.slice(chunk.length - PENDING_OUTPUT_BYTE_CAP)],
       sequences: existingSequences ? [sequence] : null,
     };
   }
-  let totalChars = chunk.length;
-  for (const s of existing) totalChars += s.length;
-  if (totalChars <= PENDING_OUTPUT_CHAR_CAP) {
+  let totalBytes = chunk.length;
+  for (const s of existing) totalBytes += s.length;
+  if (totalBytes <= PENDING_OUTPUT_BYTE_CAP) {
     return {
       output: [...existing, chunk],
       sequences: existingSequences ? [...existingSequences, sequence] : null,
@@ -68,14 +66,14 @@ function trimPendingOutputEntries(
   // still overflow. The resulting queue is always <= the cap.
   const next = existing.slice();
   const nextSequences = existingSequences?.slice() ?? null;
-  let size = totalChars;
-  while (next.length > 0 && size > PENDING_OUTPUT_CHAR_CAP) {
+  let size = totalBytes;
+  while (next.length > 0 && size > PENDING_OUTPUT_BYTE_CAP) {
     const first = next[0]!;
     size -= first.length;
     next.shift();
     nextSequences?.shift();
   }
-  if (size > PENDING_OUTPUT_CHAR_CAP && next.length > 0) {
+  if (size > PENDING_OUTPUT_BYTE_CAP && next.length > 0) {
     // Shouldn't happen with the loop above but keeps the invariant obvious.
     next.length = 0;
     if (nextSequences) nextSequences.length = 0;
@@ -86,16 +84,16 @@ function trimPendingOutputEntries(
   return { output: next, sequences: nextSequences };
 }
 
-export function trimPendingOutput(existing: string[], chunk: string): string[] {
+export function trimPendingOutput(existing: Uint8Array[], chunk: Uint8Array): Uint8Array[] {
   return trimPendingOutputEntries(existing, chunk).output;
 }
 
 function trimPendingOutputWithSequences(
-  existing: string[],
+  existing: Uint8Array[],
   existingSequences: number[],
-  chunk: string,
+  chunk: Uint8Array,
   sequence: number,
-): { output: string[]; sequences: number[] } {
+): { output: Uint8Array[]; sequences: number[] } {
   const trimmed = trimPendingOutputEntries(existing, chunk, existingSequences, sequence);
   return { output: trimmed.output, sequences: trimmed.sequences ?? [] };
 }
@@ -157,7 +155,7 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       }
     },
 
-    appendOutput(terminalID: string, data: string, sequence = 0): void {
+    appendOutput(terminalID: string, data: Uint8Array, sequence = 0): void {
       const watermark = replayWatermarkByTerminal.get(terminalID) ?? 0;
       if (sequence > 0 && sequence <= watermark) return;
       tabs = tabs.map((t) => {
@@ -173,7 +171,7 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       });
     },
 
-    drainOutput(terminalID: string): string[] {
+    drainOutput(terminalID: string): Uint8Array[] {
       const match = tabs.find((t) => t.terminalID === terminalID);
       if (!match || match.pendingOutput.length === 0) return [];
       const drained = match.pendingOutput;
@@ -194,7 +192,7 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       const match = tabs.find((t) => t.terminalID === terminalID);
       if (!match || match.pendingOutput.length === 0 || sequences.length === 0) return;
 
-      const nextOutput: string[] = [];
+      const nextOutput: Uint8Array[] = [];
       const nextSequences: number[] = [];
       for (let i = 0; i < match.pendingOutput.length; i += 1) {
         const sequence = sequences[i] ?? 0;
@@ -234,8 +232,8 @@ export interface ThreadTerminalStateHandle {
   addTab(summary: TerminalSessionSummary): void;
   removeTab(terminalID: string): void;
   setActive(terminalID: string): void;
-  appendOutput(terminalID: string, data: string, sequence?: number): void;
-  drainOutput(terminalID: string): string[];
+  appendOutput(terminalID: string, data: Uint8Array, sequence?: number): void;
+  drainOutput(terminalID: string): Uint8Array[];
   markReplayed(terminalID: string, fromSequence: number, throughSequence: number): void;
   updateSummary(summary: TerminalSessionSummary): void;
   setDrawerHeight(height: number): void;

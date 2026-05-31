@@ -838,9 +838,26 @@ func wslSingleInstanceMode() string {
 // The unconditional set turns off browser-grade subsystems that don't
 // apply to a desktop shell pointing at a single trusted localhost
 // origin: telemetry, sync, translation, autofill, casting, phishing
-// detection, ping beacons, BFCache (we never navigate), prerendering,
-// and 3D APIs (no WebGL/WebGPU in the app). Each is pure overhead;
-// none affect rendering perf or correctness.
+// detection, ping beacons, BFCache (we never navigate), and
+// prerendering. Each is pure overhead; none affect rendering perf or
+// correctness.
+//
+// 3D APIs are deliberately left ENABLED. The terminal's xterm renderer
+// loads the WebGL addon to draw box-drawing and block/quadrant glyphs
+// (U+2500–259F — the half-blocks and quadrants TUI sprite art like
+// Claude Code's startup banner is built from) through xterm's
+// pixel-perfect custom-glyph atlas. That atlas only runs on the
+// canvas/WebGL renderers; the DOM fallback defers those glyphs to the
+// system font, which tiles them with visible seams. An earlier
+// `--disable-3d-apis` here forced the DOM fallback (WebGL2 context
+// creation throws when 3D APIs are off), so block-art rendered
+// fragmented — keeping WebGL available is the fix. That flag is
+// all-or-nothing: it gates WebGL and WebGPU together, so leaving it off
+// also re-enables WebGPU, which the SPA never uses. Exposing the unused
+// API is acceptable here because the WebView2 only ever renders the
+// bundled SPA over loopback — no untrusted origin reaches the GPU
+// stack. Revisit only if a real memory measurement justifies switching
+// the terminal to the (CPU) canvas renderer instead.
 //
 // devMode adds the loopback CDP attach point so a developer can talk
 // Chrome DevTools / wsjson to the WebView2 from inside WSL. The
@@ -864,7 +881,6 @@ func browserArgs(devMode bool) []string {
 		"--disable-sync",
 		"--disable-domain-reliability",
 		"--disable-client-side-phishing-detection",
-		"--disable-3d-apis",
 		"--no-pings",
 		"--no-experiments",
 		"--no-default-browser-check",

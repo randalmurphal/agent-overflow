@@ -3,6 +3,7 @@
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import { WebLinksAddon } from '@xterm/addon-web-links';
+  import { WebglAddon } from '@xterm/addon-webgl';
   import '@xterm/xterm/css/xterm.css';
   import {
     WriteTerminal,
@@ -58,7 +59,11 @@
       cursorBlink: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
       fontSize: 13,
-      lineHeight: 1.2,
+      // 1.0 so Unicode half-block / box-drawing glyphs (▀ ▄ █) tile with no
+      // vertical gap — TUI sprite art and box borders render contiguously.
+      // A larger line-height makes each cell taller than the glyph and breaks
+      // block art into banded strips.
+      lineHeight: 1.0,
       scrollback: 4000,
       allowProposedApi: true,
       theme: getXtermTheme(getResolvedTheme()),
@@ -68,6 +73,33 @@
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(mountEl);
+
+    // Renderer choice is load-bearing for TUI art, not just perf. xterm draws
+    // box-drawing AND block/quadrant glyphs (U+2500–259F — the ▀ ▄ █ ▌ ▐ and
+    // quadrant ▖▗▘▙▚▛▜▝▞▟ that Claude Code's startup sprite is built from) with
+    // its own pixel-perfect custom-glyph atlas, but ONLY on the canvas/WebGL
+    // renderers. The default DOM renderer emits text and defers those glyphs to
+    // the system font, which tiles them with seams/misalignment (the fragmented-
+    // sprite bug). WebGL needs a WebGL2 context; construction throws if it's
+    // unavailable (headless tests, or any webview that disables 3D APIs —
+    // the WSL WebView2 launcher used to ship `--disable-3d-apis`, which
+    // silently forced this DOM fallback; see cmd/agent-overflow-windows
+    // browserArgs), and onContextLoss reverts to the DOM renderer if the GPU
+    // drops the context at runtime.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        console.warn('terminal: WebGL context lost; reverting to DOM renderer');
+        webgl.dispose();
+      });
+      term.loadAddon(webgl);
+    } catch (err) {
+      console.warn(
+        'terminal: WebGL renderer unavailable; using DOM renderer ' +
+          '(block/box glyphs fall back to the system font)',
+        err,
+      );
+    }
 
     // Wire focus/blur listeners on the xterm mount. xterm puts a focusable
     // textarea inside mountEl, so focusin/focusout bubble up reliably.
