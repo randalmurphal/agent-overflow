@@ -1,10 +1,11 @@
 # Claude Code MITM Spike — Findings
 
-**Goal.** Anthropic is cutting subscription (Pro/Max OAuth) auth from the SDK /
-headless mode (`claude -p --output-format stream-json`). Interactive mode keeps
-subscription auth. We want to drive Claude in interactive mode but still recover
-the same **token-level structured stream** we get from headless, for Agent
-Overflow's own UI.
+**Goal.** AO moves from headless `stream-json` (`claude -p --output-format
+stream-json`), which **bills API tokens**, to driving the **interactive** TUI,
+which runs on the already-paid Pro/Max subscription. We want to drive Claude in
+interactive mode but still recover the same **token-level structured stream** we
+get from headless, for Agent Overflow's own UI. (A cost + coverage/reliability
+move — **not** a ToS workaround; headless is still permitted.)
 
 **Bottom line.** It works, and *not* by modifying the binary. Pointing Claude at
 a local logging **reverse proxy** via `ANTHROPIC_BASE_URL` captures the full
@@ -159,14 +160,26 @@ launcher knowledge, and `message_delta` usage.
   `NODE_EXTRA_CA_CERTS`"), and it's hard to block without breaking enterprise
   proxies. `proxy/main.go` already has a `--tls-cert/--tls-key` HTTPS-listener
   path for this; you'd add on-the-fly cert generation for `api.anthropic.com`.
+- **TLS/HTTP fingerprint of the re-originated connection.** A re-originating proxy
+  (the chosen path *and* the transparent-MITM fallback) presents its own runtime's
+  JA3 + HTTP signature to Anthropic's edge, not claude's — a detectable mismatch
+  against a "claude" OAuth session. **Resolved** by opening the outbound leg from a
+  version-pinned Bun `fetch` (claude's own runtime), which reproduces both layers
+  byte-for-byte — and the matching Bun is the **stock GitHub release** (a different
+  build of `1.3.14` than claude embeds still matches, so the fingerprint tracks the
+  version, not the build), so AO just downloads it; no extraction from the claude
+  binary. Full validation, rules, and residual caveats in **§12**.
 - **Version drift.** SSE shape and the `[1m]` alias quirk are version-specific
-  (`2.1.150`). Re-validate on upgrades.
+  (`2.1.150`); the TLS/h1 fingerprint is pinned to the embedded **Bun** version
+  (`1.3.14`, §12). Re-validate both on upgrades.
 - **PTY automation brittleness.** See §7.4.
 
 ## 9. Recommended path for Agent Overflow
 
-1. Spawn `claude` in a PTY (interactive), env `ANTHROPIC_BASE_URL` → embedded Go
-   proxy, `--dangerously-skip-permissions` (or configured `allowedTools`).
+1. Spawn `claude` in a PTY (interactive), env `ANTHROPIC_BASE_URL` → embedded
+   capture proxy, `--dangerously-skip-permissions` (or configured `allowedTools`).
+   The proxy's **outbound** leg must be version-pinned Bun `fetch` for fingerprint
+   parity (see §12); the Go side handles the plaintext inbound read + capture.
 2. Render the UI from the **proxy SSE** (token-level), filtering quota/title
    calls; reconstruct `tool_result` from request diffs or read the transcript.
 3. Use the proxy's `end_turn` as the turn-complete signal to gate the next
@@ -175,7 +188,11 @@ launcher knowledge, and `message_delta` usage.
 
 A Go reverse proxy fits the existing stack and could later live under
 `internal/` (it does not violate the triage-and-pipe principle — it's a
-capture/transport shim, not an orchestration engine).
+capture/transport shim, not an orchestration engine). **One caveat from §12:** the
+upstream-facing leg cannot be Go — to avoid false-flagging genuine subscription
+traffic, the connection to Anthropic must be opened by a version-pinned Bun `fetch`
+(claude's own runtime), so the production shape is Go inbound/capture + a small Bun
+outbound sidecar.
 
 ---
 
@@ -426,6 +443,217 @@ permissions**, which interactive does not expose programmatically — a product
 decision (curated allow-list + permission mode, or surface Claude's own prompt),
 not a blocker for the output stream.
 
+> **Superseded (see `HOOKS_COVERAGE_MAP.md`).** This "single substantive gap"
+> conclusion predates the hook-channel characterization. The narrow finding here
+> stays true — `--permission-prompt-tool` does **not** redirect a permission
+> request interactively — but the broader conclusion that interactive offers *no*
+> programmatic per-call interception is **wrong as of the hook work**: a
+> `PreToolUse` hook returns `allow`/`deny`/`ask` per call (LIVE-confirmed,
+> `probe_hook_permission.py`). Dynamic per-call permissions are recovered via a
+> *different* mechanism (hooks, not the print-only control channel) — **not a
+> gap.** The validated-vs-unvalidated edges are catalogued in
+> `HOOKS_COVERAGE_MAP.md#whats-not-recovered--open-items--risks`.
+
+---
+
+## 12. TLS/HTTP fingerprint preservation — the proxy's outbound leg (validated)
+
+Validated 2026-05-30 on `2.1.158` (Bun **v1.3.14** embedded), subscription OAuth.
+Probes: `ja3_diff.py`, `probe_bun_provenance.py`, `probe_tls_clients.py`,
+`probe_h1_serialize.py`, `probe_h1_headerforms.py`, `probe_h1_interactive.py`.
+
+### Why this matters (and why it isn't evasion)
+
+The chosen architecture (§3) **re-originates** the upstream connection: claude→proxy
+is plaintext `http://` (so the proxy can read everything), and proxy→Anthropic is a
+**fresh TLS connection the proxy opens**. That outbound connection carries the TLS
+fingerprint (JA3/JA4) and HTTP/1.1 header signature of **whatever runtime opened
+it — not claude's**. The current spike proxy is Go, so Anthropic's edge (Cloudflare,
+which exposes JA3 to origins) sees Go's fingerprint, not claude's.
+
+This is not about defeating a control. The traffic *is* genuine subscription
+traffic — same OAuth bearer, same request bodies, same endpoint — merely relayed
+through a local capture shim AO runs for its own UI. The goal is that routing
+legitimate usage through that shim does not make it **look** anomalous (a Go/OpenSSL
+JA3 hitting a "claude" OAuth session is a trivially detectable mismatch that could
+false-flag the user). Reproducing claude's fingerprint keeps genuine usage looking
+genuine. We do it by **originating the connection from the same runtime claude uses
+(Bun/BoringSSL)** — not by spoofing/uTLS/eBPF. It genuinely *is* a Bun connection.
+
+### SSLKEYLOGFILE is a dead end (don't try to decrypt in place)
+
+The tidy alternative — let claude keep its own TLS and just log the session keys —
+does **not** work. The `SSLKEYLOGFILE` string is **absent** from both the claude and
+bun binaries; setting it produces **no keylog file**; and the statically-linked
+BoringSSL precludes an `LD_PRELOAD` shim. There is no in-place key extraction. The
+re-originating proxy is the only viable capture, which is why the outbound
+fingerprint has to be handled.
+
+### Version pin: `Bun/1.3.14` (loose coupling, but it IS coupled)
+
+The fingerprint is **runtime-version-specific**. Detect claude's embedded Bun with
+`grep -aoE 'Bun/[0-9]+\.[0-9]+\.[0-9]+' <binary> | head -1`. All four on-disk builds
+(2.1.154→2.1.158) embed the single string `Bun/1.3.14` — so the coupling is *loose*
+(Bun revs move slower than claude revs), but it is real: **Bun 1.3.11 already
+differs** (it adds extension `65037`/ECH-GREASE → different fingerprint). The proxy
+must run a Bun pinned to claude's embedded version, re-checked on claude upgrades.
+
+### Provenance: a STOCK Bun download matches — no extraction from claude needed
+
+The integration-gating question is *where the pinned Bun comes from*. Answer
+(`probe_bun_provenance.py`, measured 2026-05-30): **the official stock release is
+sufficient — AO downloads it, it need not carve Bun out of the claude binary.**
+
+- The Bun used in every fingerprint test this spike, `/tmp/bun1314/bun`, is **byte-identical
+  to the official GitHub release** `bun-v1.3.14/bun-linux-x64.zip`
+  (both sha256 `9fd36f87e4b90b07632b987a2e4ec81ca15a62c81bf983190cea6d715be2ad74`,
+  both revision `1.3.14+0d9b296af`). A *fresh, independent* re-download was verified
+  to produce the same ClientHello `7513169a…`.
+- **claude embeds a *different build* of the same version** — revision
+  `1.3.14+521eedd6d` (vs the stock release's `0d9b296af`). The two builds were already
+  compared head-to-head in the Layer-1 table and **matched** (`7513169a…`). So the
+  ClientHello is determined by the **Bun minor version** (BoringSSL version + default
+  `SSL_CTX`, which Anthropic does not customize), **not** the exact build hash. This is
+  why a stock download is safe: it need not be bit-for-bit claude's build, only the
+  same `1.3.x` line.
+- **Integration consequence:** ship/download stock Bun pinned by version, choosing the
+  stock release whose version equals claude's embedded `Bun/x.y.z` string, re-checked
+  on claude upgrades. No binary-extraction step, no dependence on claude's internal
+  layout. Pin the **per-platform** sha256 for supply-chain integrity — the `9fd36f87…`
+  above is the **linux-x64** binary's; macOS (`darwin-arm64`/`x64`) and Windows ship
+  *different* binaries with *different* shas, so pin each (ideally cross-checked against
+  Bun's own published `SHASUMS`, not just a locally computed one).
+
+### Layer 1 — TLS ClientHello: Bun 1.3.14 is byte-identical to claude
+
+`ja3_diff.py` captures each runtime's real ClientHello at a raw socket and compares a
+GREASE-stripped, extension-as-set normalized fingerprint (BoringSSL shuffles
+extension order per-connection, so the *set* is the stable identity; claude+bun were
+each run twice to confirm intra-client stability):
+
+| Runtime | normalized fp | ext set (GREASE-stripped) | ciphers | ALPN | vs claude |
+|---|---|---|---|---|---|
+| **claude 2.1.158** (embeds Bun `…521eedd6d`) | `7513169a…` | `5,10,11,13,16,18,23,35,43,45,51,65281` | 17 | h1 | baseline |
+| **Bun 1.3.14 stock** (`…0d9b296af`) | `7513169a…` | *identical* | 17 | h1 | ✅ **MATCH** (diff build, same fp) |
+| Bun 1.3.11 (older) | `dd31589e…` | `…+65037` (ECH) | 17 | h1 | ❌ differs |
+| Node 24 (undici/OpenSSL) | `cda9e5b8…` | `…22…`, no `5`/`18` | 52 | h1 | ❌ differs |
+| Go 1.25 (spike proxy) | `8a6d0b37…` | `…50…`, no `16` | 13 | none | ❌ differs |
+
+So a **version-pinned Bun** proxy reproduces claude's ClientHello byte-for-byte;
+Go, Node, and even a one-minor-version-off Bun do not.
+
+### Layer 2 — HTTP/1.1 headers: a SEPARATE code path, also reproduced by `fetch`
+
+A matching ClientHello only proves the proxy uses Bun's default TLS config — it does
+**not** prove the HTTP client serializes headers like claude. That (casing,
+ordering, auto-headers, framing) is a distinct code path and was measured end to end.
+
+claude's `POST /v1/messages` application headers are emitted in a **case-sensitive
+ASCII sort** with **original casing preserved** — well-known headers Title-Cased
+(`Accept, Authorization, Content-Type, User-Agent`), then `X-*` Title-Cased
+(`X-Claude-Code-Session-Id, X-Stainless-*`), then lowercase `anthropic-*`, then
+`x-app` — followed by framing (`Connection, Host, Accept-Encoding, Content-Length`).
+
+The result (after correcting a confound — see below):
+
+- **Bun `fetch`, given claude's headers as a plain object with original casing,
+  reproduces claude's COMPLETE wire header block byte-for-byte** — application
+  headers in the exact case-sensitive sort *and* framing regenerated in claude's
+  exact order, down to `Accept-Encoding: gzip, deflate, br, zstd`
+  (`probe_h1_headerforms.py`, "FULL wire block match: True"). fetch sorts
+  case-sensitively and preserves the casing it is handed.
+- **`node:http`/`node:https` LOWERCASES header names in every construction form**
+  (object, array, pairs, `setHeader`). So `node:https` — despite matching the
+  ClientHello — **cannot** reproduce claude's h1 and is **not** the outbound client.
+- **Interactive == headless.** `probe_h1_interactive.py` PTY-drives the *interactive*
+  TUI and diffs its request against `claude -p`: the 17-header application block is
+  **identical in name, order, and casing**. The byte-identical h1 match proven
+  against headless applies to the live interactive path AO taps. No interactive-only
+  header to anticipate.
+
+**The confound worth remembering:** an earlier forwarder test (`probe_h1_serialize.py`)
+appeared to show fetch *mangling* headers. That was `Bun.serve` lowercasing names on
+**ingest** before fetch ever saw them — fetch faithfully preserved the
+already-lowercased names. fetch was never the problem; the *ingest* was.
+
+### Why only high-level clients match the ClientHello
+
+`probe_tls_clients.py`: bare `tls.connect` and native `Bun.connect` — which *would*
+let you write claude's exact h1 bytes raw — produce a **different** ClientHello: they
+omit ext `5` (OCSP `status_request`) and `18` (SCT), which only Bun's **high-level**
+clients (`fetch`, `node:https`) enable. `requestOCSP:true` does **not** add them.
+So the raw-socket "write exact bytes" path is a dead end for fingerprint parity.
+`fetch` is the one client that reproduces **both** layers.
+
+### Architecture rules (forced by the measurements)
+
+1. **Outbound leg = version-pinned Bun `fetch`**, fed claude's headers as a **plain
+   object with original casing**. Reproduces both the ClientHello and the h1 block.
+2. **The inbound read must preserve claude's raw header casing.** This is a real
+   trap: **Go's `net/http` canonicalizes** names to Title-Case
+   (`anthropic-version`→`Anthropic-Version`) and **`Bun.serve` lowercases** them —
+   *both* corrupt the casing fetch would otherwise reproduce. The proxy must capture
+   claude's header names from the **raw request bytes** (as the probes' `_parse`
+   does), not via a normalizing HTTP-server parser.
+3. **Strip hop-by-hop/framing headers before forwarding** (`Host, Connection,
+   Content-Length, Accept-Encoding`, …); fetch regenerates them, and because it is
+   the same Bun fetch, the regenerated framing matches claude's.
+
+### Two ways to inject this (decision for the integration phase)
+
+- **(Recommended) Go proxy + Bun outbound sidecar.** AO's proxy stays Go (fits the
+  stack; handles the plaintext inbound read with raw-casing capture, logging, and the
+  SSE relay back to claude); a small **version-pinned Bun** child process performs
+  the `fetch()` to Anthropic and streams the response back to Go. The Bun dependency
+  is isolated to the one fingerprint-bearing leg. Go ↔ Bun can talk over a local
+  socket/pipe.
+- **Whole-Bun proxy.** The entire reverse proxy is one Bun program. Simpler process
+  topology, but it (a) introduces a Bun runtime into AO's Go/Wails stack and (b) must
+  **still** avoid the `Bun.serve` ingest-lowercasing trap (read the raw inbound bytes,
+  don't trust `req.headers` for casing).
+
+Either way the §3 `http://`-base-URL design is unchanged and correct — only the
+**runtime of the outbound leg** moves from Go to Bun. `proxy/main.go` (Go) is
+**fingerprint-NON-preserving** by construction; it is fine for signal validation (it
+proved the SSE/transcript story) but is not the production upstream client.
+
+### Residual caveats (measured honestly)
+
+- **Platform: only `linux-x64` was measured.** Every capture here — claude's baseline
+  *and* the stock Bun — is the Linux build, on WSL2. AO is a multi-platform desktop app
+  (Wails ships macOS/Windows/Linux); macOS-claude is a Mach-O Bun and Windows another
+  build, each paired with a *different* stock Bun binary. The version-determined logic
+  (same BoringSSL version + uncustomized default `SSL_CTX`) predicts the per-platform
+  claude-vs-stock-Bun ClientHello match holds on `darwin-arm64`/`darwin-x64`/`win-x64`
+  too — but that is **inference, not measurement**, and it's the same inference class
+  that misfired earlier this spike. **Re-run `ja3_diff.py` + `probe_bun_provenance.py`
+  on each target platform during integration** before relying on the match there.
+- **SNI (ext 0) was omitted in measurement** because probes connect to `127.0.0.1`
+  (an IP literal — RFC forbids SNI), on *every* leg, so the comparison stays
+  apples-to-apples. Production connects to the hostname `api.anthropic.com`, which
+  adds an **identical** `server_name` to both claude and the proxy's fetch (same
+  hostname, same Bun) — parity holds by construction, but the real-hostname
+  ClientHello was not directly captured (would need MITM of claude's genuine
+  outbound).
+- **ALPN/HTTP version — *offer* proven, *negotiated* protocol to eyeball.** What is
+  measured and solid is the ALPN **offer**: claude advertises `http/1.1` **only**, and
+  Bun fetch advertises the identical `alpn=['http/1.1']`. The offer is **client-fixed**
+  — it is the same bytes regardless of destination — so this part holds against the
+  real origin by construction (it's in the ClientHello that already matches). What the
+  spike did **not** exercise is the **negotiated** protocol against a real *h2-capable*
+  origin: both probes hit a local h1-only sink, so there was no h2 on the table to
+  decline. Because the offer is h1-only, a compliant origin *must* negotiate h1 — but
+  integration should confirm the production fetch to `api.anthropic.com` in fact stays
+  on HTTP/1.1 (and re-measure if a Bun upgrade ever widens the offer to `h2,http/1.1`).
+- **TLS session resumption is unmeasured.** All captures are fresh full handshakes.
+  Keep-alive reuse sends no new ClientHello; a *resumed* new connection sends a
+  different (PSK-bearing) hello. Both sides are BoringSSL so resumption behavior is
+  expected to align, but the proxy's connection lifecycle differs from claude's and
+  this was not exercised.
+- **`NODE_EXTRA_CA_CERTS` fallback (§8) is documented, not live-tested**, and being a
+  re-originating MITM it inherits the *same* outbound-fingerprint requirement — the
+  Bun-fetch outbound leg applies there too.
+
 ---
 
 ## Repro
@@ -448,6 +676,26 @@ Artifacts in this dir:
 - `preload.js` — the original Node-preload attempt; **dead against the native
   binary**, kept only as a record.
 
+Fingerprint probes (§12), runnable independently (need claude on `PATH` + a Bun
+1.3.14 at `/tmp/bun1314/bun` — the **stock** linux-x64 release, sha256 `9fd36f87…`:
+`curl -sL -o /tmp/b.zip https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64.zip && unzip -o /tmp/b.zip -d /tmp/bun1314_stock && cp /tmp/bun1314_stock/bun-linux-x64/bun /tmp/bun1314/bun`):
+- `ja3_diff.py` — captures each runtime's TLS ClientHello at a raw socket; proves
+  Bun 1.3.14 == claude and Go/Node/older-Bun differ. Writes `/tmp/ja3_results.json`.
+- `probe_bun_provenance.py` — **provenance keystone**: the stock release reproduces
+  claude's ClientHello even though claude embeds a *different* build of 1.3.14 →
+  fingerprint is version-determined, AO downloads stock Bun, no extraction needed.
+- `probe_tls_clients.py` — ClientHello of each candidate **outbound** client
+  (fetch / node:https / raw tls.connect / Bun.connect); only the high-level clients
+  match (carry OCSP+SCT).
+- `probe_h1_headerforms.py` — **the h1 proof**: which Bun construction form
+  reproduces claude's header serialization (answer: `fetch` + plain object), and a
+  full-17-header byte-for-byte round-trip.
+- `probe_h1_serialize.py` — earlier forwarder-based h1 probe; **superseded** by
+  `probe_h1_headerforms.py`, kept because it surfaced the `Bun.serve`
+  ingest-lowercasing trap (a real architecture lesson).
+- `probe_h1_interactive.py` — confirms interactive claude emits the identical
+  header block as headless `claude -p`.
+
 ```bash
 # 1. capture (headless, fast transport check)
 /tmp/ao-proxy --listen 127.0.0.1:8090 --log /tmp/cap.jsonl &
@@ -460,6 +708,12 @@ AO_BASE_URL=http://127.0.0.1:8090 AO_CWD=<trusted-dir> \
 
 # 3. compare
 python3 analyze.py /tmp/cap.jsonl ~/.claude/projects/<proj>/<session>.jsonl /tmp/ref-headless-stream.jsonl
+
+# 4. fingerprint validation (§12) — needs stock Bun 1.3.14 at /tmp/bun1314/bun
+python3 ja3_diff.py              # TLS ClientHello: Bun 1.3.14 == claude
+python3 probe_bun_provenance.py # stock download matches; no extraction from claude
+python3 probe_h1_headerforms.py # HTTP/1.1: Bun fetch reproduces claude's headers
+python3 probe_h1_interactive.py # interactive == headless header block
 ```
 
 > Spike branch `spike/claude-mitm`; not for merge to `main`. Per
