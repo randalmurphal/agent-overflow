@@ -200,6 +200,146 @@ describe('groupItemsBySubagent', () => {
     expect(expectLeaf(nodes[1]).item.id).toBe('codex-agent');
   });
 
+  it('suppresses backgrounded Claude subagent child rows, keeping launch and completion', () => {
+    // A backgrounded Claude Agent launches at the top level (parentId
+    // empty — the main agent launched it). Its inner transcript carries
+    // parentId === launch.id and must NOT leak into the main timeline
+    // interleaved with the main agent's own rows. The launch stays a
+    // leaf and the completion sibling (parentId empty, completionOf ===
+    // launch.id) surfaces the result "on completion".
+    const nodes = groupItemsBySubagent([
+      mkItem({ id: 'main-think', itemIndex: 0, kind: 'thinking', summary: 'planning' }),
+      mkItem({
+        id: 'bg-agent',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        summary: 'Agent: investigate',
+        meta: toolMeta({ toolName: 'Agent', input: { description: 'investigate' } }),
+      }),
+      mkItem({ id: 'child-bash', itemIndex: 2, kind: 'tool_call', toolName: 'Bash', parentId: 'bg-agent', summary: 'Bash: ls' }),
+      mkItem({
+        id: 'child-bash-done',
+        itemIndex: 3,
+        kind: 'tool_completion',
+        toolName: 'Bash',
+        parentId: 'bg-agent',
+        completionOf: 'child-bash',
+        summary: 'Bash: ls',
+      }),
+      mkItem({ id: 'child-text', itemIndex: 4, kind: 'assistant_text', parentId: 'bg-agent', summary: 'found it' }),
+      mkItem({ id: 'main-text', itemIndex: 5, kind: 'assistant_text', summary: 'main agent continues' }),
+      mkItem({
+        id: 'complete:bg-agent',
+        itemIndex: 6,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'bg-agent',
+        summary: 'Agent: investigate',
+      }),
+    ]);
+
+    // Only the main-agent rows, the launch (leaf), and the completion
+    // sibling survive as roots — no subagent child leaks between them.
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual([
+      'main-think',
+      'bg-agent',
+      'main-text',
+      'complete:bg-agent',
+    ]);
+    for (const childId of ['child-bash', 'child-bash-done', 'child-text']) {
+      expect(nodes.some((node) => nodeContainsItem(node, childId))).toBe(false);
+    }
+  });
+
+  it('nests foreground subagent children while suppressing background ones in the same turn', () => {
+    // Both launch types coexisting in one turn: the foreground Agent must
+    // still group its child; the background Agent must still suppress its
+    // child. Guards the two code paths against future refactors that share
+    // the launch predicates.
+    const nodes = groupItemsBySubagent([
+      agentLaunch('fg-agent', 0),
+      mkItem({ id: 'fg-child', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'fg-agent', summary: 'Bash: fg' }),
+      mkItem({
+        id: 'bg-agent',
+        itemIndex: 2,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        summary: 'Agent: bg',
+        meta: toolMeta({ toolName: 'Agent' }),
+      }),
+      mkItem({ id: 'bg-child', itemIndex: 3, kind: 'tool_call', toolName: 'Bash', parentId: 'bg-agent', summary: 'Bash: bg' }),
+    ]);
+
+    expect(nodes).toHaveLength(2);
+    const fgGroup = expectGroup(nodes[0]);
+    expect(fgGroup.parent.id).toBe('fg-agent');
+    expect(fgGroup.children.map((child) => expectLeaf(child).item.id)).toEqual(['fg-child']);
+    const bgLeaf = expectLeaf(nodes[1]);
+    expect(bgLeaf.item.id).toBe('bg-agent');
+    expect(nodes.some((node) => nodeContainsItem(node, 'bg-child'))).toBe(false);
+  });
+
+  it('surfaces a failed background subagent on its completion item, not as a leaked inner row', () => {
+    // The user-facing contract for a backgrounded subagent that fails:
+    // the failure shows on the completion item, never as an interleaved
+    // inner row. On the wire a failing background subagent terminates via
+    // `task_updated{failed}`, which triage maps to an `errored` completion
+    // sibling (parentId empty, completionOf === launch.id — verified
+    // against 238 real Agent completions). Suppression is structural
+    // (parentId-keyed), so it must preserve that completion regardless of
+    // status while still dropping the inner transcript, including the
+    // child rows that themselves errored.
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'bg-agent',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        summary: 'Agent: investigate',
+        meta: toolMeta({ toolName: 'Agent' }),
+      }),
+      mkItem({ id: 'child-bash', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'bg-agent', summary: 'Bash: failing' }),
+      mkItem({
+        id: 'child-bash-done',
+        itemIndex: 2,
+        kind: 'tool_completion',
+        toolName: 'Bash',
+        status: 'errored',
+        parentId: 'bg-agent',
+        completionOf: 'child-bash',
+        summary: 'Bash: failing',
+      }),
+      mkItem({
+        id: 'complete:bg-agent',
+        itemIndex: 3,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        status: 'errored',
+        isBackground: true,
+        completionOf: 'bg-agent',
+        summary: 'Agent: investigate',
+      }),
+    ]);
+
+    // Launch leaf + errored completion item survive; the inner (failed)
+    // transcript is suppressed.
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual([
+      'bg-agent',
+      'complete:bg-agent',
+    ]);
+    const completion = expectLeaf(nodes[1]).item;
+    expect(completion.status).toBe('errored');
+    expect(completion.completionOf).toBe('bg-agent');
+    for (const childId of ['child-bash', 'child-bash-done']) {
+      expect(nodes.some((node) => nodeContainsItem(node, childId))).toBe(false);
+    }
+  });
+
   it('keeps Codex spawn rows flat when spawn metadata lives in meta', () => {
     const nodes = groupItemsBySubagent([
       mkItem({

@@ -16,6 +16,13 @@
 //   - Normal rows always stay leaves.
 //   - Claude foreground Agent/Task launch rows are groups from first render,
 //     even before any child activity arrives.
+//   - Claude backgrounded Agent/Task launch rows stay leaves; their inner
+//     transcript (rows whose parentId is the launch id) is withheld from the
+//     main timeline. The launch's live status shows in the background tray,
+//     and the subagent's result surfaces on the completion sibling row
+//     (expandable) when it finishes — not in the tray, which only carries
+//     launch/completion status. This is the same child-suppression Codex
+//     spawn rows get (next rule).
 //   - Codex spawn_agent launch rows stay leaves. Their child transcript is
 //     provider-internal detail represented by the background tray while live
 //     and explicit completion rows after wait/notification signals.
@@ -39,10 +46,33 @@ import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
 import { isCodexSubagentLaunchItem } from './subagentLaunch';
 
-function isSubagentLaunch(item: Item): boolean {
+// Shared core for the two launch predicates below. The Agent/Task tool-name
+// set is the one thing that must stay identical between foreground grouping
+// and background suppression — factor it so a new subagent tool name can't
+// drift the two apart.
+function isAgentOrTaskLaunch(item: Item): boolean {
   return item.kind === 'tool_call'
-    && !item.isBackground
     && (item.toolName === 'Agent' || item.toolName === 'Task');
+}
+
+// Foreground Agent/Task launches anchor a group from first render.
+// `isBackground` is optional on the wire; undefined and false both mean
+// foreground, so this is the negation — deliberately NOT a strict `=== false`.
+function isSubagentLaunch(item: Item): boolean {
+  return isAgentOrTaskLaunch(item) && !item.isBackground;
+}
+
+// Backgrounded Claude Agent/Task launches are deliberately NOT inline group
+// anchors — an expanding card would crowd the main thread with live subagent
+// churn (the exact "tool calls jumping around" symptom). Their inner
+// transcript (rows whose parentId is the launch id) is suppressed from the
+// main timeline the same way Codex spawn-agent children are; the outcome —
+// success or failure alike — surfaces on the completion sibling row (whose
+// parentId is empty, so this suppression never swallows it), and live status
+// shows in the background tray. The launch row stays a leaf so the thread
+// records where it began.
+function isBackgroundSubagentLaunch(item: Item): boolean {
+  return isAgentOrTaskLaunch(item) && item.isBackground === true;
 }
 
 export const MAX_DEPTH = 3;
@@ -507,6 +537,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   const sortedWithCarriers = alreadySorted ? items : [...items].sort(compareItems);
   const itemByID = new Map<string, Item>();
   const codexSpawnIDs = new Set<string>();
+  const backgroundSubagentIDs = new Set<string>();
   const waitCompletionPayloadCarrierByPayloadID = new Map<string, string>();
   const waitChildrenByCarrierID = new Map<string, Item[]>();
   const waitChildIDs = new Set<string>();
@@ -529,6 +560,9 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
     itemByID.set(item.id, item);
     if (isCodexSubagentLaunchItem(item)) {
       codexSpawnIDs.add(item.id);
+    }
+    if (isBackgroundSubagentLaunch(item)) {
+      backgroundSubagentIDs.add(item.id);
     }
   }
 
@@ -560,7 +594,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   }
   const sorted = sortedWithCarriers.filter((item) => {
     const parentID = item.parentId ?? '';
-    if (parentID && codexSpawnIDs.has(parentID)) {
+    if (parentID && (codexSpawnIDs.has(parentID) || backgroundSubagentIDs.has(parentID))) {
       return false;
     }
     if (waitChildIDs.has(item.id)) return false;
