@@ -132,6 +132,50 @@ describe('payloadExpansion', () => {
     expect(data).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps expanded content visible across a streaming->settled version flip', async () => {
+    // Regression: an expanded thinking block must not blink to empty when the
+    // next item arrives. At settle the thinking payload version flips
+    // ["id","streaming"] -> ["id",status,updatedAt] (metadata only; identical
+    // bytes) and keepExpandedPayloadFresh refetches. loadPreview must keep the
+    // loaded body visible and overwrite in place rather than clearing first —
+    // a transient null collapses the block height, clamps the timeline
+    // scrollTop, and makes the stick-to-bottom spring chase from the top.
+    let payloadBytes = 'FULL THINKING TEXT';
+    let version = JSON.stringify(['pid', 'streaming']);
+    let settled = false;
+    const data = setBindingMock('GetPayloadData', async () => ({ data: payloadBytes }));
+
+    const expansion = createPayloadExpansion(
+      () => 'pid',
+      () => 'tid',
+      {
+        loadMode: 'full',
+        payloadVersion: () => version,
+        // Mirrors ThinkingBlock: cache disabled while streaming, enabled at settle.
+        cacheEnabled: () => settled,
+      },
+    );
+
+    await expansion.expand();
+    expansion.appendLiveDelta(' more', version);
+    expect(expansion.displayData).toBe('FULL THINKING TEXT more');
+
+    // Settle: smoother disposes, status flips, version changes, cache opens, and
+    // the backend now holds the full text the smoother had already revealed.
+    payloadBytes = 'FULL THINKING TEXT more';
+    settled = true;
+    version = JSON.stringify(['pid', 'completed', 1234]);
+
+    // keepExpandedPayloadFresh fires this on the version change.
+    const reload = expansion.ensureLoaded();
+
+    // No blink: the body stays at full height through the relabel and refetch.
+    expect(expansion.displayData).toBe('FULL THINKING TEXT more');
+    await reload;
+    expect(expansion.displayData).toBe('FULL THINKING TEXT more');
+    expect(data).toHaveBeenCalledTimes(2);
+  });
+
   it('repairs a stale full payload from the previous live tail before appending a delta', async () => {
     setBindingMock('GetPayloadData', async () => ({ data: 'full before ' }));
 
@@ -145,6 +189,38 @@ describe('payloadExpansion', () => {
     expansion.appendLiveDelta(' more', 'streaming', 'live tail');
 
     expect(expansion.displayData).toBe('full before live tail more');
+  });
+
+  it('does not duplicate already-buffered text when the smoother reveals behind a fresh snapshot', async () => {
+    // Regression: mid-stream expand. GetPayloadData flushes the live buffer
+    // (app_payloads.go) so the snapshot is the FULL text received so far — a
+    // longer prefix of the thinking text than the smoother has revealed. The
+    // smoother then reveals already-buffered text, calling appendLiveDelta with
+    // previousLiveTail = the prior revealed PREFIX. That prefix is already
+    // contained in displayData, so the merge must be a no-op. The old
+    // nonOverlappingSuffix-only path could not detect prefix containment and
+    // appended a second copy of the revealed-so-far text — the user-reported
+    // "entire thinking block is duplicated" on completion.
+    const snapshot = 'Para one. Para two. Para three.';
+    setBindingMock('GetPayloadData', async () => ({ data: snapshot }));
+
+    const expansion = createPayloadExpansion(
+      'payload-buffer-ahead',
+      'thread-buffer-ahead',
+      { loadMode: 'full', payloadVersion: () => 'streaming' },
+    );
+
+    await expansion.expand();
+    expect(expansion.displayData).toBe(snapshot);
+
+    // Smoother reveals 'Para two. ', having previously revealed 'Para one. '.
+    // previousLiveTail + delta = 'Para one. Para two. ' is a prefix of snapshot.
+    expansion.appendLiveDelta('Para two. ', 'streaming', 'Para one. ');
+    expect(expansion.displayData).toBe(snapshot);
+
+    // Smoother reveals genuinely-new content that arrived after the snapshot.
+    expansion.appendLiveDelta('Para four.', 'streaming', 'Para one. Para two. Para three.');
+    expect(expansion.displayData).toBe('Para one. Para two. Para three.Para four.');
   });
 
   it('queues live deltas while the initial full payload load is pending', async () => {
@@ -193,6 +269,89 @@ describe('payloadExpansion', () => {
     expect(expansion.displayData).toBe('full before live tail more');
   });
 
+  it('does not duplicate buffered text when replaying multiple queued deltas behind a fresh snapshot', async () => {
+    // Multi-delta variant of the buffer-ahead regression, exercising the
+    // replayPendingLiveDeltas() loop rather than a single direct append.
+    // Several smoother reveals queue while the initial full load is in flight,
+    // then the load resolves with a flushed snapshot AHEAD of the early
+    // reveals. Each queued revealed-so-far prefix is already contained in the
+    // snapshot and must replay as a no-op; only the reveal that overtakes the
+    // snapshot appends its genuine continuation. Without revealedSuffix's
+    // prefix guard, every queued prefix would re-append and stack duplicates.
+    let resolvePayload!: (value: { data: string }) => void;
+    setBindingMock('GetPayloadData', async () => (
+      new Promise<{ data: string }>((resolve) => {
+        resolvePayload = resolve;
+      })
+    ));
+
+    const expansion = createPayloadExpansion(
+      'payload-multi-replay',
+      'thread-multi-replay',
+      { loadMode: 'full', payloadVersion: () => 'streaming' },
+    );
+
+    const expand = expansion.expand();
+    await vi.waitFor(() => expect(getBindingMock('GetPayloadData')).toHaveBeenCalledTimes(1));
+
+    // Three reveals queue while the load is pending. The first two stay behind
+    // the snapshot (each revealed-so-far is a prefix of it); the third overtakes
+    // it with content that arrived after the flush.
+    expansion.appendLiveDelta('Para one. ', 'streaming', '');
+    expansion.appendLiveDelta('Para two. ', 'streaming', 'Para one. ');
+    expansion.appendLiveDelta('Para four.', 'streaming', 'Para one. Para two. Para three.');
+
+    resolvePayload({ data: 'Para one. Para two. Para three.' });
+    await expand;
+
+    expect(expansion.displayData).toBe('Para one. Para two. Para three.Para four.');
+  });
+
+  it('suppresses an interior-window reconnect reveal already contained in the flushed snapshot', async () => {
+    // On reconnect the per-item smoother reseeds from the bounded thinking tail,
+    // so its revealed window is an INTERIOR slice of the canonical reasoning
+    // rather than an offset-0 prefix. revealedSuffix's containment check
+    // (textOverlap.ts) recognises the window is already present in the flushed
+    // snapshot and appends nothing, so the live merge no longer duplicates the
+    // snapshot's interior into chunks while streaming. At settle the version
+    // relabel drives keepExpandedPayloadFresh -> ensureLoaded -> loadPreview,
+    // whose `chunks = [result.data]` reloads the complete reasoning.
+    let version = 'streaming';
+    let flushCall = 0;
+    setBindingMock('GetPayloadData', async () => {
+      flushCall += 1;
+      // 1st call (expand, mid-reconnect): partial flush. 2nd call (settle
+      // refetch): the completed reasoning, authoritative and clean.
+      return {
+        data: flushCall === 1 ? 'alpha beta gamma delta ' : 'alpha beta gamma delta epsilon ',
+      };
+    });
+
+    const expansion = createPayloadExpansion('payload-heal', 'thread-heal', {
+      loadMode: 'full',
+      payloadVersion: () => version,
+      cacheEnabled: () => version !== 'streaming',
+    });
+
+    await expansion.expand();
+    expect(expansion.displayData).toBe('alpha beta gamma delta ');
+
+    // Interior-window reveal: previousLiveTail='gamma ' is the reseeded tail;
+    // revealed 'gamma delt' is a verbatim interior substring of the flush. It is
+    // already shown, so the merge is a no-op (previously it duplicated the
+    // interior into the buffer).
+    expansion.appendLiveDelta('delt', 'streaming', 'gamma ');
+    expect(expansion.displayData).toBe('alpha beta gamma delta ');
+
+    // Turn settles: the payload version relabels. In production
+    // keepExpandedPayloadFresh's $effect observes the version change and calls
+    // ensureLoaded(); drive that path directly here.
+    version = 'settled';
+    await expansion.ensureLoaded();
+
+    expect(flushCall).toBe(2);
+    expect(expansion.displayData).toBe('alpha beta gamma delta epsilon ');
+  });
 
   it('skips cache reads and writes when cache is disabled', async () => {
     writePayloadCache('thread-cache-off', 'payload-cache-off', 1, {

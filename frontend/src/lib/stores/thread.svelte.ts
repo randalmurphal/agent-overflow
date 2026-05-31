@@ -191,6 +191,11 @@ const SPINNER_THRESHOLD_MS = 100;
  * 12px italic with `leading-relaxed`) at realistic chat-pane widths so
  * the CSS clip + tail scroll-pin show a consistent 3 lines regardless
  * of pane width.
+ *
+ * Also load-bearing for merge correctness: textOverlap.revealedSuffix treats a
+ * reconnect interior reveal (always at least this long) as already-shown via
+ * substring containment. Lowering this toward the length of a commonly-repeated
+ * phrase would let a genuine new tail false-match and be dropped until settle.
  */
 const THINKING_TAIL_RUNES = 400;
 

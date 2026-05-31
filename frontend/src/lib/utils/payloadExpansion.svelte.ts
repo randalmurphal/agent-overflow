@@ -1,7 +1,7 @@
 import { GetPayloadChunk, GetPayloadData, GetPayloadPreview } from '../stores/bindings';
 import { payloadVersionKey, readPayloadCache, writePayloadCache } from './payloadDataCache';
 import { boundedPayloadVersionString } from './payloadVersion';
-import { nonOverlappingSuffix } from './textOverlap';
+import { revealedSuffix } from './textOverlap';
 
 export const DEFAULT_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
 export const DEFAULT_PAYLOAD_CHUNK_BYTES = 256 * 1024;
@@ -244,7 +244,14 @@ export function createPayloadExpansion(
       return false;
     }
     if (hydrateFromCache({ expandOnHit: false })) return false;
-    if (chunks.length > 0) clearLoadedData();
+    // Only drop loaded content when the payload identity actually changes. A
+    // same-id reload — e.g. a thinking row's streaming->settled version relabel,
+    // which carries identical bytes — keeps its current chunks visible and lets
+    // the fetch below overwrite them in place (no null frame). Clearing here
+    // would blink the expanded body to empty for a frame, collapsing its height
+    // and clamping the timeline scrollTop: the reported "expanded block jumps to
+    // the top, then springs back to the bottom when the next item arrives".
+    if (chunks.length > 0 && loadedPayloadID !== id) clearLoadedData();
     if (!ownerThreadID) {
       error = 'Missing thread context for payload read';
       return false;
@@ -360,11 +367,24 @@ export function createPayloadExpansion(
     loadedPayloadVersion = nextPayloadVersion;
   }
 
-  function appendMissingLiveTail(previousLiveTail: string | undefined, nextPayloadVersion: unknown): void {
-    if (!previousLiveTail) return;
-    const existing = displayData ?? '';
-    const suffix = nonOverlappingSuffix(existing, previousLiveTail);
-    appendLoadedLiveDelta(suffix, nextPayloadVersion);
+  // Merge the smoother's freshly-revealed text into the loaded body.
+  // `previousLiveTail + delta` is everything the smoother has revealed through
+  // this delta; `displayData` is what we already hold (the flushed
+  // GetPayloadData snapshot plus prior live appends). Both are prefixes of the
+  // SAME canonical payload — a streaming thinking row is seeded with an empty
+  // summary and fed full provider deltas (stream_items.go blanks the
+  // block-start summary and ships evt.Content per delta), so each revealed
+  // window is untrimmed text from offset 0. revealedSuffix (textOverlap.ts)
+  // owns the containment-aware merge and documents why the prefix guard is
+  // load-bearing here (flush-before-read leaves the snapshot ahead of the
+  // reveal) and where it stops being exact (reconnect interior windows).
+  function appendRevealedSuffix(
+    previousLiveTail: string | undefined,
+    delta: string,
+    nextPayloadVersion: unknown,
+  ): void {
+    const revealed = (previousLiveTail ?? '') + delta;
+    appendLoadedLiveDelta(revealedSuffix(displayData ?? '', revealed), nextPayloadVersion);
   }
 
   function replayPendingLiveDeltas(): void {
@@ -373,8 +393,7 @@ export function createPayloadExpansion(
     pendingLiveDeltas = [];
     for (const live of pending) {
       if (live.payloadID !== loadedPayloadID) continue;
-      appendMissingLiveTail(live.previousLiveTail, live.payloadVersion);
-      appendLoadedLiveDelta(nonOverlappingSuffix(displayData ?? '', live.delta), live.payloadVersion);
+      appendRevealedSuffix(live.previousLiveTail, live.delta, live.payloadVersion);
     }
   }
 
@@ -397,8 +416,7 @@ export function createPayloadExpansion(
     }
     if (loadedPayloadID !== id) return;
     if (!hasFullChunks) return;
-    appendMissingLiveTail(previousLiveTail, nextPayloadVersion);
-    appendLoadedLiveDelta(nonOverlappingSuffix(displayData ?? '', delta), nextPayloadVersion);
+    appendRevealedSuffix(previousLiveTail, delta, nextPayloadVersion);
   }
 
   function collapse(): void {

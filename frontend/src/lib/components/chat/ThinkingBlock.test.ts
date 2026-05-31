@@ -317,6 +317,37 @@ describe('<ThinkingBlock>', () => {
     });
   });
 
+  it('does not duplicate the persisted prefix when the snapshot leads the live tail', async () => {
+    // Mid-stream expand where GetPayloadData's flush-before-read returns a body
+    // AHEAD of the smoother's revealed tail, so the live tail is a strict PREFIX
+    // of the persisted snapshot. The render-time merge must recognise prefix
+    // containment and append nothing — not re-append the whole revealed prefix.
+    // Regression for the containment-blind `nonOverlappingSuffix` merge, which
+    // rendered 'The quick brown fox The quick '. The sibling tests above use
+    // disjoint strings and never exercised this path.
+    const thinking = makeItem({
+      id: 'think:0:0',
+      kind: 'thinking',
+      status: 'streaming',
+      summary: 'The quick ',
+      payloadId: 'thinking-payload',
+      updatedAt: 1,
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
+    setBindingMock('GetPayloadData', async () => ({ data: 'The quick brown fox ' }));
+
+    const { container, getByRole } = render(ThinkingBlock, {
+      props: { pane, item: pane.items[0] },
+    });
+
+    await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="thinking-body"]')?.textContent)
+        .toBe('The quick brown fox ');
+    });
+  });
+
   it('repairs a stale expanded streaming payload before appending the next live delta', async () => {
     const thinking = makeItem({
       id: 'think:0:0',

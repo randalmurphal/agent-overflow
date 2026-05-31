@@ -15,7 +15,7 @@
     THINKING_PAYLOAD_EXPANSION_STATE_KEY,
     thinkingPayloadVersionForItem,
   } from '../../utils/payloadVersion';
-  import { nonOverlappingSuffix } from '../../utils/textOverlap';
+  import { revealedSuffix } from '../../utils/textOverlap';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -120,10 +120,12 @@
 
   const canCopy = $derived(!isStreaming && /\S/.test(item.summary ?? ''));
 
+  // Merge the loaded snapshot with the live reveal into the longer view of the
+  // same canonical stream. revealedSuffix (textOverlap.ts) is containment-aware:
+  // when the flushed snapshot leads the reveal (liveTail is a prefix of
+  // persisted), it appends nothing instead of re-appending the whole prefix.
   function mergeStreamingExpandedText(persisted: string, liveTail: string): string {
-    if (!persisted) return liveTail;
-    if (!liveTail) return persisted;
-    return persisted + nonOverlappingSuffix(persisted, liveTail);
+    return persisted + revealedSuffix(persisted, liveTail);
   }
 </script>
 
