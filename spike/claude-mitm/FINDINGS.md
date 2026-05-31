@@ -14,7 +14,10 @@ with **no TLS interception and no binary patching**. Pair that with the
 `~/.claude` transcript for clean tool results and you can reconstruct (a
 superset of) the headless `stream-json` shape.
 
-Date: 2026-05-26. Binary: Claude Code `2.1.150` (Bun v1.3.14 standalone ELF).
+Date: 2026-05-26 … 2026-05-31. Binary: Claude Code `2.1.150` → `2.1.158` (Bun
+v1.3.14 standalone ELF). §1–11 are the capture/signal story; **§12** validates the
+outbound TLS+HTTP fingerprint (version-pinned Bun `fetch`); **§13** validates the
+Go-inbound + Bun-sidecar topology end-to-end (streams + fingerprint + gzip handling).
 
 ---
 
@@ -656,6 +659,181 @@ proved the SSE/transcript story) but is not the production upstream client.
 
 ---
 
+## 13. Tier-0 architecture gate — the Go-inbound + Bun-outbound topology streams while preserving the fingerprint (validated)
+
+§12 proved the *pieces*: Bun 1.3.14 reproduces claude's ClientHello and h1 block,
+and recommended the **Go proxy + Bun outbound sidecar** topology. It left one
+load-bearing hinge unproven: does that topology **stream SSE incrementally**
+(token-level UI must survive) **while carrying claude's fingerprint through the
+Go→Bun handoff**? This section closes that gate with a staged build — isolate each
+hop, then the full hermetic topology, then real subscription turns. Verdict up
+front: **GO.** The topology streams end-to-end and preserves the fingerprint, and
+the real turn surfaced a response-side requirement §12 didn't state (gzip).
+
+### The components (throwaway validation prototypes — not production)
+
+- `tier0_sink.py` — hermetic origin: raw-parses the inbound h1 block (casing
+  intact, via `probe_h1_serialize._parse`) and emits a chunked SSE stream of N
+  events DELAY apart, each flushed immediately. Plain TCP on `127.0.0.1` — no real
+  traffic, no tokens.
+- `tier0_sidecar.js` — the outbound leg: Bun.serve receives a JSON **envelope**
+  (`{url, method, headers:[[name,value]…], body}`; claude's headers ride in the
+  *body* so Bun.serve's ingest-lowercasing never touches their casing), rebuilds a
+  **plain headers object** (casing preserved, fetch re-sorts), calls the
+  version-pinned Bun `fetch`, and streams `Response(up.body)` straight back.
+- `tier0_proxy.go` — the claude-facing leg: accepts **raw** (not `net/http`, which
+  canonicalizes), hand-parses the request preserving claude's header casing, strips
+  the framing fetch regenerates, envelopes the rest to the sidecar, and relays the
+  response chunk-by-chunk with an immediate flush each chunk.
+- `probe_tier0_stream.py` (hops a+b), `probe_tier0_full.py` (full hermetic),
+  `probe_tier0_real.py` (real origin, prompt env-overridable).
+
+### Streaming — incremental through all three hops
+
+Q1 ("does it stream?") is really three hops: (a) Bun `fetch` *reads* the upstream
+SSE incrementally, (b) Bun.serve *writes* a `Response(stream)` body without
+buffering-until-close, (c) Go reads Bun.serve incrementally. Discriminator = the
+**arrival span** (last − first chunk): streamed ⇒ span ≈ (N−1)·DELAY; buffered ⇒
+span ≈ 0.
+
+- **(a) and (b) isolated** (`probe_tier0_stream.py`, 8 events × 100 ms): bare
+  `bun fetch` span **699 ms** / 8 reads; minimal Bun.serve span **702 ms** / 8
+  reads. Hop (b) — the one §12 couldn't vouch for — adds essentially zero buffering
+  (first arrival 3.8 ms vs fetch's 5.2 ms). No stdout-pipe fallback needed.
+- **(c) + end-to-end hermetic** (`probe_tier0_full.py`): the Go flush-relay's
+  `response_chunk` span **701 ms** over 8 chunks; the synthetic client received
+  **8/8** SSE events intact through de-chunk/re-chunk.
+- **End-to-end real, the strong proof** (`probe_tier0_real.py`): the span **scales
+  with generation time**, which buffering (constant ≈0 span regardless of length)
+  cannot produce:
+
+  | prompt | main-response chunks | span |
+  |---|---|---|
+  | one word (`PONG`) | 6 | 366 ms |
+  | 40 numbered lines | 6 | 809 ms |
+  | ~500-word essay | **36** | **13,786 ms** |
+
+  A 14-second span across 36 chunks is live, token-by-token streaming.
+
+### Fingerprint — survives the Go→envelope→fetch handoff
+
+`probe_tier0_full.py` drives a synthetic claude request (claude's 17 app headers +
+its own framing, synthetic bearer) through the real path and checks the sink:
+
+- **h1 block** at the sink == `CLAUDE_FULL` exactly — the 17 app headers in claude's
+  case-sensitive order, then fetch's regenerated framing. (Q2 i.)
+- **Casing survived on both ends**: the sidecar's *handed-to-fetch* names (input
+  side) == `CLAUDE_APP`, and the sink's app block (output side) == `CLAUDE_APP`. The
+  raw-read → envelope → object-rebuild chain never lowercased. (Q2 ii.)
+- The **TLS ClientHello is invariant under forwarding** — it's whatever Bun's fetch
+  opens, already proven == claude by `ja3_diff.py`; the sidecar sits above TLS and
+  cannot regress it. Tier-0 does **not** re-measure TLS, and shouldn't.
+
+### Content-encoding — Anthropic gzips the SSE; the outbound leg MUST decompress (a fourth rule)
+
+This is the finding the hermetic sink could not surface and the real turn did.
+Because §12 rule 3 strips `Accept-Encoding` and lets fetch regenerate it, the
+fingerprint-preserving leg necessarily **advertises** claude's full
+`Accept-Encoding: gzip, deflate, br, zstd` — and so **receives compressed
+responses**. Across all real turns, **every `200` SSE response came back
+`content-encoding: gzip`** (`text/event-stream; charset=utf-8`), as did the `404`
+JSON error body. Handling, all validated by correct rendering ×3:
+
+- Bun `fetch` **auto-decompresses, and this is not luck — it follows from rule 3.**
+  Because the Go proxy strips `Accept-Encoding` (`stripForward`), the sidecar never
+  sets that header itself, so `fetch` *owns* it: fetch advertises the encodings, so
+  fetch decompresses them. A client inflating what it offered is the contract, not a
+  happy accident. And it decompresses **incrementally**: the essay's 36 chunks spread
+  over 13.8 s prove the gzip stream is inflated progressively (not
+  buffer-then-inflate-at-close), so streaming survives compression.
+- The sidecar's `STRIP_RESP` drops the now-stale `Content-Encoding`/`Content-Length`
+  (and framing) before relaying, so claude receives coherent **identity** SSE
+  (claude offered gzip but accepts identity — a server may always decline to
+  compress).
+
+The Go-only `proxy/main.go` dodges this entirely by stripping `Accept-Encoding`
+outbound to force plaintext — which is *precisely why it is fingerprint-NON-
+preserving*. The fingerprint path cannot take that shortcut, so:
+
+> **Architecture rule 4 (addendum to §12).** Because rule 3 hands `Accept-Encoding`
+> ownership to `fetch`, the response arrives decompressed for free; the sidecar's
+> *only* added duty is to strip the now-stale `Content-Encoding`/`Content-Length`
+> before relaying, so claude never double-decodes. Verified for **gzip**; see caveats
+> for `br`/`zstd`.
+>
+> **Integration note (not now).** Rule 4 moves the decompression boundary into the
+> sidecar, so AO's token capture (§1–11) consumes the **post-sidecar plaintext** at
+> the Go inbound layer — which already sees the stream incrementally (hop c). Capture
+> survives the topology change; the transform reads identity SSE, never gzip.
+
+### The `404` pattern is claude's own model-fallback, not topology-induced
+
+Every real turn showed statuses `[404, 404, 200, 200, …]`. Neither 404 is a topology
+bug; both are claude's own behavior, and both reproduce identically in the older
+Go-fingerprint `proxy/main.go` capture (`/tmp/ao-cap-danger.jsonl`):
+
+- **`HEAD / → 404`** is claude's base-URL connectivity probe (`404 ×10` in the old
+  cap).
+- **`POST /v1/messages?beta=true → 404`** is a **1M-context model probe + fallback.**
+  In *both* captures, every 404 POST carries `"model":"claude-opus-4-8[1m]"` in its
+  request body and the origin answers `not_found_error: model: claude-opus-4-8[1m]`;
+  claude then re-issues with `"model":"claude-opus-4-8"` (no `[1m]`) and gets `200`.
+  The 404 is keyed to what claude puts in its *own request body*, which the topology
+  relays verbatim — so it would occur on genuine direct claude too; the transport is
+  transparent to it.
+
+The turn completes regardless (`Stop` fires, the answer renders). (Honest scope: both
+caps share the proxied path via `ANTHROPIC_BASE_URL`; we didn't snapshot a fully
+un-proxied direct-claude session. But since the 404 is driven by claude's request
+body rather than the transport, that gap doesn't change the conclusion.)
+
+### What this discharges from §12's residual caveats
+
+- **SNI / real hostname** — the real turns point the sidecar's fetch at
+  `api.anthropic.com` (hermetic probes used `127.0.0.1`, which omits SNI), so the
+  real-hostname ClientHello is now *exercised* on the wire. But a served turn is
+  **not** evidence the fingerprint is *right*: the old Go-fingerprint `proxy/main.go`
+  — whose ClientHello and h1 block do **not** match claude — also got `200`s (`31×`
+  in the same cap). Acceptance discriminates working plumbing from broken plumbing
+  and nothing finer; it can't even show "not soft-flagged," since a mismatched client
+  is served too. Fingerprint *fidelity* rests entirely on the **hermetic byte-match**
+  (sink == `CLAUDE_FULL`) and the **§12 ClientHello invariant** — the real turn adds
+  reach, not fidelity. The hello itself is still not captured (would need to MITM
+  claude's genuine outbound).
+- **ALPN/negotiated protocol** — the turns succeeded against the real *h2-capable*
+  origin; since Bun fetch's offer is h1-only (§12), h1 is what gets negotiated. The
+  "negotiated protocol against a real origin" gap §12 flagged is now exercised
+  (though the negotiated value wasn't separately logged).
+
+### Residual caveats (Tier-0)
+
+- **Only `gzip` was exercised.** Anthropic chose gzip from claude's offered set;
+  Bun fetch auto-decompresses gzip/deflate/br, but **`zstd` decompression by Bun
+  fetch is unverified**. If the origin ever serves `br`/`zstd`, confirm Bun inflates
+  it and that `STRIP_RESP` still yields coherent bytes.
+- **Prototypes, not production.** One request per connection, `Connection: close`,
+  no keep-alive/auth/LAN-block/reconnect. They close the *gate*; they are not the AO
+  proxy. Integration is a separate, **currently-unauthorized** step.
+- **`linux-x64` only** (carried from §12) — re-run the fingerprint probes per target
+  platform during integration.
+- The real-hostname ClientHello and the negotiated ALPN value are **exercised but not
+  captured** — and (see SNI above) a served turn is not evidence they are *correct*;
+  correctness rests on the hermetic byte-match + §12 invariant, not on the real origin.
+
+### Verdict
+
+**Go/no-go: GO.** The §12-recommended Go-inbound + Bun-outbound topology streams SSE
+token-by-token end-to-end (hermetic *and* real, span scaling to 13.8 s) and carries
+claude's h1 fingerprint + casing intact through the handoff. Fingerprint fidelity
+comes from the hermetic byte-match plus the §12 ClientHello invariant; the live origin
+served all three real turns, which confirms the path *reaches and works* — not that
+the fingerprint is right (a served turn can't show that). The one new requirement —
+auto-decompress + strip stale encoding headers (rule 4), itself a consequence of
+rule 3 — is implemented and validated. Nothing here authorizes AO integration; it
+confirms the architecture is sound to integrate when that work is scoped.
+
+---
+
 ## Repro
 
 Artifacts in this dir:
@@ -696,6 +874,18 @@ Fingerprint probes (§12), runnable independently (need claude on `PATH` + a Bun
 - `probe_h1_interactive.py` — confirms interactive claude emits the identical
   header block as headless `claude -p`.
 
+Tier-0 topology probes (§13), runnable independently (need the stock Bun above +
+`go build -o /tmp/tier0_proxy tier0_proxy.go`):
+- `tier0_sink.py` / `tier0_sidecar.js` / `tier0_proxy.go` — the hermetic origin,
+  the Bun outbound fingerprint sidecar, and the Go raw-inbound proxy.
+- `probe_tier0_stream.py` — isolates the two Bun streaming hops (fetch-read,
+  serve-write) against the sink.
+- `probe_tier0_full.py` — full hermetic topology: h1 block == `CLAUDE_FULL`, casing
+  survives the handoff, the Go flush-relay streams, body integrity.
+- `probe_tier0_real.py` — one real subscription turn through the topology
+  (`TIER0_REAL_PROMPT`/`TIER0_REAL_MARK` override the prompt); proves e2e render,
+  streaming that scales with output, and surfaces the gzip content-encoding.
+
 ```bash
 # 1. capture (headless, fast transport check)
 /tmp/ao-proxy --listen 127.0.0.1:8090 --log /tmp/cap.jsonl &
@@ -714,6 +904,12 @@ python3 ja3_diff.py              # TLS ClientHello: Bun 1.3.14 == claude
 python3 probe_bun_provenance.py # stock download matches; no extraction from claude
 python3 probe_h1_headerforms.py # HTTP/1.1: Bun fetch reproduces claude's headers
 python3 probe_h1_interactive.py # interactive == headless header block
+
+# 5. Tier-0 topology validation (§13) — Go-inbound + Bun-sidecar streams + fingerprint
+go build -o /tmp/tier0_proxy tier0_proxy.go
+python3 probe_tier0_stream.py   # Bun fetch-read + Bun.serve-write both stream
+python3 probe_tier0_full.py     # hermetic: h1 block + casing survive, flush-relay streams
+python3 probe_tier0_real.py     # real turn: e2e render, incremental SSE, gzip observed
 ```
 
 > Spike branch `spike/claude-mitm`; not for merge to `main`. Per
