@@ -211,6 +211,30 @@ describe('<ThinkingBlock>', () => {
     expect(queryByLabelText('Copy thinking')).toBeNull();
   });
 
+  it('reserves the copy button slot before completed content can be copied', async () => {
+    const streamingItem = makeItem({
+      kind: 'thinking',
+      status: 'streaming',
+      summary: 'live partial reasoning',
+      payloadId: 'thinking-payload',
+    });
+    const completedItem = { ...streamingItem, status: 'completed' as const };
+    const { container, getByLabelText, queryByLabelText, rerender } = render(ThinkingBlock, {
+      props: { item: streamingItem },
+    });
+
+    const streamingSlot = container.querySelector('[data-testid="thinking-copy-slot"]');
+    expect(streamingSlot?.className).toContain('h-7');
+    expect(streamingSlot?.className).toContain('w-7');
+    expect(queryByLabelText('Copy thinking')).toBeNull();
+
+    await rerender({ item: completedItem });
+
+    const completedSlot = container.querySelector('[data-testid="thinking-copy-slot"]');
+    expect(completedSlot?.className).toBe(streamingSlot?.className);
+    expect(getByLabelText('Copy thinking')).toBeInTheDocument();
+  });
+
   it('copies the full payload via the getter, even without an explicit expand', async () => {
     setBindingMock('GetPayloadData', async () => ({ data: 'loaded reasoning text' }));
     const writeText = vi.fn(async () => {});

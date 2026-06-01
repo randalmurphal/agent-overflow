@@ -154,15 +154,17 @@
     {/snippet}
     {#snippet actions()}
       <div class="shrink-0 flex items-center gap-1.5 text-[0.625rem] text-fg-hint pt-[2px]">
-        {#if canCopy}
-          <span class="opacity-0 transition-opacity duration-150 group-hover/thinking:opacity-100 focus-within:opacity-100">
-            <CopyButton
-              text={getCopyText}
-              label="Copy thinking"
-              onError={() => addToast('error', 'Failed to copy')}
-            />
-          </span>
-        {/if}
+        <span data-testid="thinking-copy-slot" class="flex h-7 w-7 shrink-0 items-center justify-center">
+          {#if canCopy}
+            <span class="opacity-0 transition-opacity duration-150 group-hover/thinking:opacity-100 focus-within:opacity-100">
+              <CopyButton
+                text={getCopyText}
+                label="Copy thinking"
+                onError={() => addToast('error', 'Failed to copy')}
+              />
+            </span>
+          {/if}
+        </span>
         <time class="tabular-nums" datetime={isoTime}>{timestamp}</time>
       </div>
     {/snippet}
