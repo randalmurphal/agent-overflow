@@ -90,6 +90,34 @@ describe('<PlanSidebar>', () => {
     expect(getByTestId('plan-sidebar-empty')).toBeInTheDocument();
   });
 
+  it('shows accepted state for the current plan in the sidebar', async () => {
+    setBindingMock('ListThreadProposedPlans', async () => [
+      makeItem({
+        id: 'plan-1',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'tool_call',
+        payloadId: 'payload-1',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({
+          title: 'Sidebar plan',
+          preview: 'preview',
+          lineCount: 1,
+          charCount: 7,
+        }),
+        meta: JSON.stringify({ planImplementedAt: 123 }),
+      }),
+    ]);
+    setBindingMock('GetPayloadData', async () => ({ data: '# Sidebar body' }));
+    const pane = await buildPane();
+    pane.setShowPlanSidebar(true);
+
+    const { findByText } = await renderSidebar(pane);
+
+    await findByText('Sidebar body');
+    await findByText(/Accepted/);
+  });
+
   it('closes when the close button is clicked', async () => {
     const pane = await buildPane();
     pane.setShowPlanSidebar(true);

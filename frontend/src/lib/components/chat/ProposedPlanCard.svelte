@@ -4,7 +4,6 @@
   import { addToast } from '../../stores/toast.svelte';
   import type { Item, ProposedPlanMeta } from '../../types/models';
   import {
-    parseProposedPlanItemMeta,
     parseProposedPlanPayloadMeta,
     proposedPlanPayloadVersion,
     shouldCapProposedPlanBody,
@@ -42,8 +41,6 @@
     },
   }));
 
-  const itemMeta = $derived(parseProposedPlanItemMeta(item));
-  const isAccepted = $derived(Boolean(itemMeta.planImplementedAt));
   const currentPlan = $derived(getThreadCurrentProposedPlan(pane.threadId));
   const canOpenCurrentPlanSidebar = $derived(Boolean(item?.id) && currentPlan?.id === item?.id);
   const cappedBody = $derived(shouldCapProposedPlanBody(meta));
@@ -104,11 +101,6 @@
       workspacePath={paneWorkspacePath(pane)}
       {pathRefs}
     />
-    {#if isAccepted}
-      <p class="mt-2 text-[0.6875rem] text-fg-hint" data-testid="proposed-plan-accepted">
-        Accepted
-      </p>
-    {/if}
   </div>
 </div>
 

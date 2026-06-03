@@ -1192,6 +1192,36 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByText("Deploy thing")).toBeNull();
   });
 
+  it("does not append accepted state to proposed plan chat history", async () => {
+    const planMarkdown = "# implementation plan\n\nKeep the transcript stable.";
+    setBindingMock("GetPayloadData", async () => ({ data: planMarkdown }));
+    const item = makeItem({
+      id: "plan-accepted",
+      kind: "tool_call",
+      status: "completed",
+      toolName: "ExitPlanMode",
+      payloadId: "payload-plan",
+      payloadKind: "proposed_plan",
+      payloadMeta: JSON.stringify({
+        title: "Implementation plan",
+        lineCount: 3,
+        charCount: 57,
+        preview: planMarkdown,
+      }),
+      meta: JSON.stringify({ planImplementedAt: 123 }),
+    });
+    const pane = await buildPane(makeThread(), [item]);
+
+    const { getByTestId, queryByTestId, queryByText } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    expect(getByTestId("proposed-plan-card")).toBeInTheDocument();
+    expect(getByTestId("proposed-plan-body-shell").textContent).toContain("Keep the transcript stable.");
+    expect(queryByTestId("proposed-plan-accepted")).toBeNull();
+    expect(queryByText("Accepted")).toBeNull();
+  });
+
   it("does not show the plan-sidebar action on an older proposed plan", async () => {
     const olderPlan = makeItem({
       id: "plan-old",
