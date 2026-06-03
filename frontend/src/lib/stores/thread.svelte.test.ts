@@ -4734,4 +4734,283 @@ describe('createThreadPane', () => {
       expect(pane.revealBoundary).toBeNull();
     });
   });
+
+  // `pane.lastLiveContentAt` is the source the chat scroll controller
+  // latches on to decide spring vs sync-pin (MessageTimeline's
+  // animationModeForScroll → latchedSpringMode). It must advance ONLY on
+  // genuine live timeline content arriving — text reveals, streaming
+  // deltas, final-summary patches, new provider rows — and must NOT
+  // advance on thread switch, bulk history loads, meta-only updates, or
+  // the optimistic-send / rollback paths that drive `upsertItems`
+  // directly. Each test ticks the fake clock to a nonzero base first so a
+  // `=== 0` assertion genuinely means "never stamped" rather than
+  // "stamped at time 0".
+  describe('live-content stamp (scroll animation latch source)', () => {
+    // Long backlog so the smoother reveals across many frames (never
+    // caught up in 2-3 ticks). 120 words ≈ 840 chars; even at the
+    // fast-drain cap that is ~60 frames, so frames 1-3 always reveal.
+    const longText = (n: number) =>
+      Array.from({ length: n }, (_, i) => `word${i}`).join(' ') + ' ';
+
+    it('stamps on each smoother reveal frame, never on switch/upsert/delta-append', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        clock.tickFrame(100); // base now()=100 so the `=== 0` checks are real
+        const pane = await buildPane(makeThread({ id: 'stamp-reveal' }));
+        // Switching into a thread (bulk slice load) is not live content.
+        expect(pane.lastLiveContentAt).toBe(0);
+
+        pane.upsertItem(makeItem({
+          id: 'a:0:0',
+          threadId: 'stamp-reveal',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: 'seed ',
+          updatedAt: 1,
+        }));
+        // Creating the streaming row is not yet a reveal.
+        expect(pane.lastLiveContentAt).toBe(0);
+
+        pane.applyItemDelta({
+          threadId: 'stamp-reveal',
+          itemId: 'a:0:0',
+          kind: 'assistant_text',
+          delta: longText(60),
+          updatedAt: 2,
+        });
+        // A smoothed delta only FEEDS the smoother; the reveal (and its
+        // stamp) lands on the next rAF tick, not synchronously here.
+        expect(pane.lastLiveContentAt).toBe(0);
+
+        clock.tickFrame(16); // now()=116, first reveal fires onReveal
+        expect(pane.lastLiveContentAt).toBe(116);
+        clock.tickFrame(16); // now()=132, more words reveal
+        expect(pane.lastLiveContentAt).toBe(132);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('keeps stamping through the drain tail after a turn-completed patch', async () => {
+      // The bug-2 case: the wire turn completes (getActiveTurn → null)
+      // while the smoother still has seconds of word-by-word text to
+      // reveal. Those trailing reveals must keep stamping so the tail
+      // springs instead of jumping.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'stamp-drain' }));
+        pane.upsertItem(makeItem({
+          id: 'a:0:0',
+          threadId: 'stamp-drain',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: 'seed ',
+          updatedAt: 1,
+        }));
+        pane.applyItemDelta({
+          threadId: 'stamp-drain',
+          itemId: 'a:0:0',
+          kind: 'assistant_text',
+          delta: longText(120),
+          updatedAt: 2,
+        });
+
+        clock.tickFrame(16); // now()=16, partial reveal — far from caught up
+        expect(pane.lastLiveContentAt).toBe(16);
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+
+        // Turn completes on the wire: a bare status patch with no summary.
+        pane.applyItemPatch({
+          threadId: 'stamp-drain',
+          itemId: 'a:0:0',
+          kind: 'assistant_text',
+          patch: { status: 'completed', updatedAt: 3 },
+        });
+        // The bare status patch itself adds no stamp (rigorous no-stamp
+        // proof for status/meta patches is the next test); the smoother
+        // survives because it is not caught up.
+        expect(pane.lastLiveContentAt).toBe(16);
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+
+        // Reveals continue AFTER completion → stamps continue advancing.
+        clock.tickFrame(16);
+        expect(pane.lastLiveContentAt).toBe(32);
+        clock.tickFrame(16);
+        expect(pane.lastLiveContentAt).toBe(48);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('stamps on a non-smoothed streaming delta (bypasses the smoother)', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        clock.tickFrame(16); // base now()=16
+        const pane = await buildPane(makeThread({ id: 'stamp-nonsmooth' }));
+        // tool_call is not a smoothable kind — applyItemDelta writes
+        // summary directly and must stamp inline (no onReveal to do it).
+        pane.upsertItem(makeItem({
+          id: 'tool:0:0',
+          threadId: 'stamp-nonsmooth',
+          kind: 'tool_call',
+          role: 'assistant',
+          status: 'streaming',
+          summary: 'out',
+          updatedAt: 1,
+        }));
+        expect(pane.lastLiveContentAt).toBe(0);
+
+        pane.applyItemDelta({
+          threadId: 'stamp-nonsmooth',
+          itemId: 'tool:0:0',
+          kind: 'tool_call',
+          delta: 'put',
+          updatedAt: 2,
+        });
+        expect(pane.lastLiveContentAt).toBe(16);
+        expect(pane.items[0].summary).toBe('output');
+        expect(pane.__itemSmootherCountForTest()).toBe(0); // never smoothed
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('stamps on a direct-summary patch, not on status-only or meta-only patches', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        clock.tickFrame(10); // base now()=10
+        const pane = await buildPane(makeThread({ id: 'stamp-patch' }));
+        // Settled row: no smoother, so a later summary patch writes
+        // directly through applyItemPatch's direct-summary branch.
+        pane.upsertItem(makeItem({
+          id: 'a:0:0',
+          threadId: 'stamp-patch',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'completed',
+          summary: 'hello',
+          updatedAt: 1,
+        }));
+        expect(pane.lastLiveContentAt).toBe(0);
+
+        // Status-only patch: no summary growth → no stamp.
+        pane.applyItemPatch({
+          threadId: 'stamp-patch',
+          itemId: 'a:0:0',
+          kind: 'assistant_text',
+          patch: { status: 'errored', updatedAt: 2 },
+        });
+        expect(pane.lastLiveContentAt).toBe(0);
+
+        // Meta-only patch: no summary growth → no stamp.
+        pane.applyItemPatch({
+          threadId: 'stamp-patch',
+          itemId: 'a:0:0',
+          kind: 'assistant_text',
+          patch: { meta: '{"pathRefs":[]}' },
+        });
+        expect(pane.lastLiveContentAt).toBe(0);
+
+        // Direct summary overwrite (no smoother present) → stamps.
+        pane.applyItemPatch({
+          threadId: 'stamp-patch',
+          itemId: 'a:0:0',
+          kind: 'assistant_text',
+          patch: { summary: 'hello world' },
+        });
+        expect(pane.lastLiveContentAt).toBe(10);
+        expect(pane.items[0].summary).toBe('hello world');
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('does not stamp on applyItemMeta, bulk merge, or direct upsertItems; markLiveContentAdvanced does', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        clock.tickFrame(20); // base now()=20
+        // Bulk slice load on switch (mergeMissingItemsById) is history,
+        // not live content — must not stamp.
+        const pane = await buildPane(
+          makeThread({ id: 'stamp-neg' }),
+          [makeItem({ id: 'seed:0:0', threadId: 'stamp-neg', summary: 'pre' })],
+        );
+        expect(pane.lastLiveContentAt).toBe(0);
+
+        // applyItemMeta is the streaming path-link allowlist — meta only,
+        // never content height → never stamps.
+        pane.applyItemMeta({
+          threadId: 'stamp-neg',
+          itemId: 'seed:0:0',
+          kind: 'assistant_text',
+          meta: '{"pathRefs":[]}',
+          updatedAt: 2,
+        });
+        expect(pane.lastLiveContentAt).toBe(0);
+
+        // Driving pane.upsertItems directly (the Composer optimistic-send
+        // echo and revertOnInterrupt rollback paths) must NOT stamp — only
+        // the events.ts provider fan-out marks live content. This is what
+        // keeps a user's own sent message and rollback restores sync-pinned.
+        pane.upsertItems([makeItem({
+          id: 'new:1:0',
+          threadId: 'stamp-neg',
+          turnIndex: 1,
+          kind: 'assistant_text',
+          summary: 'fresh',
+        })]);
+        expect(pane.lastLiveContentAt).toBe(0);
+
+        // The public seam events.ts calls on a changed provider upsert.
+        pane.markLiveContentAdvanced();
+        expect(pane.lastLiveContentAt).toBe(20);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('resets lastLiveContentAt on thread switch (no stale stamp bleeds into the next thread)', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        clock.tickFrame(100);
+        const pane = await buildPane(makeThread({ id: 'A' }));
+        pane.upsertItem(makeItem({
+          id: 'a:0:0',
+          threadId: 'A',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: 'seed ',
+          updatedAt: 1,
+        }));
+        pane.applyItemDelta({
+          threadId: 'A',
+          itemId: 'a:0:0',
+          kind: 'assistant_text',
+          delta: longText(60),
+          updatedAt: 2,
+        });
+        clock.tickFrame(16); // reveal stamps A as recently streaming
+        expect(pane.lastLiveContentAt).toBe(116);
+
+        // Switch to a settled thread B. A's recent stamp must NOT carry
+        // over — otherwise B's late typesetting reflow (which never stamps)
+        // would read 'spring' off A's timestamp within the 500ms hold and
+        // chase B's settled content. The reset makes the latch read
+        // 'instant' for B until B itself streams.
+        await pane.switchThread(makeThread({ id: 'B' }));
+        expect(pane.lastLiveContentAt).toBe(0);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+  });
 });

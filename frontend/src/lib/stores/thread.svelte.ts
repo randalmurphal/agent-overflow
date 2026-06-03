@@ -137,6 +137,21 @@ export function __setSmoothingClockForTest(clock: SmoothingClock | undefined): v
   smoothingClockForTest = clock;
 }
 
+// Live-content stamp timebase. Reuses the smoother's clock so a stamp
+// written from inside `onReveal` (which runs on the smoothing clock)
+// shares that callback's time source. In production this resolves to
+// `performance.now()` — the same source MessageTimeline's `animationMode`
+// getter compares against — so the stamp and the latch read share one
+// monotonic timebase. Under `__setSmoothingClockForTest` the fake clock
+// drives THIS stamp (making pane-stamp assertions deterministic); the
+// MessageTimeline getter still reads real `performance.now()`, so the
+// spring-vs-instant decision is covered by the controller tests (which
+// stub `animationMode`) and the pure-fn latch tests, not by fake-clock
+// stamp tests.
+function nowForLiveContent(): number {
+  return smoothingClockForTest?.now() ?? performance.now();
+}
+
 /**
  * Default raw-item budget passed to `ListItemsBeforeTurn` for an
  * explicit "Load older" page. The backend walks turns DESC summing
@@ -415,6 +430,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // summary-only streaming deltas. Bump whenever the item window's array
   // changes shape or identity; `applyItemDelta` intentionally does not bump.
   let timelineRevision = $state(0);
+  // Non-reactive timestamp of the last LIVE timeline content advance — a
+  // smoother reveal, a non-smoothed streaming delta, an overwrite patch,
+  // or a new provider row. Read imperatively by the scroll controller
+  // (MessageTimeline's `animationMode` getter) to choose spring vs
+  // sync-pin; see utils/springAnimationLatch.ts. Deliberately NOT
+  // `$state`: it is stamped up to ~60×/sec during a drain and is never
+  // read in a reactive scope, so `$state` would churn every dependent
+  // derivation for no benefit. Bulk loads (thread switch, load-older) and
+  // the optimistic user-send / rollback-restore upserts deliberately do
+  // NOT stamp it, so they stay sync-pinned.
+  let lastLiveContentAt = 0;
+  function stampLiveContent(): void {
+    lastLiveContentAt = nowForLiveContent();
+  }
   const itemIndexById: Map<string, number> = new Map();
   function getItemById(itemId: string): Item | undefined {
     const index = itemIndexById.get(itemId);
@@ -827,6 +856,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           itemLiveThinkingTail.delete(itemId);
           return;
         }
+        // A reveal is genuine live content advancing the bottom — stamp
+        // so the controller spring-chases it. Runs every revealed frame,
+        // INCLUDING the multi-second drain tail after the wire turn ends
+        // (the smoother keeps revealing until caught up), which is what
+        // makes the end-of-turn tail spring instead of jump.
+        stampLiveContent();
         const current = items[idx];
         const prevRevealed = previousRevealed;
         previousRevealed = revealed;
@@ -1229,6 +1264,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     }
     rowUiState.clear();
     disposeAllSmoothers();
+    // Reset the live-content stamp so a recent stamp from the OUTGOING
+    // thread can't bleed into the incoming one. Without this, switching
+    // away from an actively-streaming thread leaves `lastLiveContentAt`
+    // recent; the warm gate re-flips within the 500ms hold window, and
+    // the incoming (settled) thread's late async-typesetting reflow would
+    // read 'spring' off the stale stamp and chase its settled content.
+    // A streaming incoming thread re-stamps on its first reveal/delta.
+    lastLiveContentAt = 0;
     loadingOlder = false;
     return { cached, sliceAnchorId };
   }
@@ -1424,6 +1467,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get hasDraftPlaceholder() { return draftPlaceholder !== null; },
     get canCompose() { return Boolean(thread || draftPlaceholder); },
     get items() { return items; },
+    // Imperative read for the scroll controller's content-keyed spring
+    // latch. Non-reactive on purpose (see the `lastLiveContentAt`
+    // declaration); callers must read it inside an imperative context,
+    // not a `$derived`/`$effect`.
+    get lastLiveContentAt() { return lastLiveContentAt; },
+    // Stamp a live content advance from a site OUTSIDE the pane's own
+    // mutation methods — specifically the live provider-upsert fan-out in
+    // events.ts (a new row arriving). The optimistic user-send echo and
+    // rollback-restore call `upsertItems` directly and intentionally do
+    // NOT route through here, so they stay sync-pinned.
+    markLiveContentAdvanced: stampLiveContent,
     /**
      * "Locked in" — the user has sent at least one message, so the
      * provider/model selection is committed for this thread. UI
@@ -1664,6 +1718,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       replaceTimelineItems([]);
       rowUiState.clear();
       disposeAllSmoothers();
+      // Clearing to empty: drop the live-content stamp too (see
+      // installCacheOrFreshState — keeps a stale stamp from springing the
+      // next thread's settled content).
+      lastLiveContentAt = 0;
       pendingInteractiveState.clear();
       contextWindow = null;
       providerBanner = undefined;
@@ -2159,6 +2217,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // unchanged rows; the streaming row is genuinely growing, so a
       // fresh reference is the correct signal.
       if (!shouldSmoothKind(current.kind)) {
+        // Non-smoothed streaming kinds (tool output growth, etc.) grow
+        // content height directly here, bypassing the smoother's onReveal
+        // stamp — mark the advance so the controller spring-chases.
+        stampLiveContent();
         items[index] = {
           ...current,
           summary: current.summary + evt.delta,
@@ -2313,6 +2375,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         const stillSmoothing = itemSmoothers.has(evt.itemId);
         if (!stillSmoothing) {
           next.summary = evt.patch.summary;
+          // Final/overwrite summary written directly (no smoother to own
+          // the reveal) — genuine content landing at the bottom. Stamp so
+          // a turn that completes mid-stream still spring-lands its tail.
+          // Meta-only / status-only patches never reach here (gated on
+          // `evt.patch.summary !== undefined` above), so they stay instant.
+          stampLiveContent();
         }
       }
       if (evt.patch.meta !== undefined) next.meta = evt.patch.meta;

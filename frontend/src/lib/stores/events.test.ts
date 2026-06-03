@@ -198,6 +198,59 @@ describe('setupEventListeners', () => {
     cacheModule.threadItemCache.clear();
   });
 
+  it('stamps lastLiveContentAt when a provider upsert changes the pane window', async () => {
+    // A new provider row arriving is live content — the events.ts fan-out
+    // marks it so the chat scroll controller spring-chases (content-keyed
+    // animation latch). lastLiveContentAt is 0 until something streams,
+    // then carries a real performance.now() reading.
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    getAllPanes().set('a', pane);
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    const before = performance.now();
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: makeItem({ id: 'fresh', threadId: 'thread-a', kind: 'assistant_text' }),
+    });
+    await nextFrame();
+    const after = performance.now();
+
+    expect(pane.items.map((item) => item.id)).toEqual(['fresh']);
+    expect(pane.lastLiveContentAt).toBeGreaterThan(0);
+    // Bracket the stamp inside the real-clock window: this pins the stamp
+    // to the SAME `performance.now()` timebase the MessageTimeline latch
+    // reads. A regression that stamped via a different clock (e.g. Date.now,
+    // ~1.7e12) would pass `> 0` but blow past `after` — and would make the
+    // production latch compute a huge negative delta → permanently 'spring'.
+    expect(pane.lastLiveContentAt).toBeGreaterThanOrEqual(before);
+    expect(pane.lastLiveContentAt).toBeLessThanOrEqual(after);
+  });
+
+  it('does not stamp lastLiveContentAt for a redundant upsert that leaves the window unchanged', async () => {
+    // The stamp lives inside `if (pane.upsertItems(...))` — gated on a real
+    // change. An echo of an existing row dedupes to no change, so the
+    // controller stays sync-pinned.
+    const item = makeItem({
+      id: 'cached-a',
+      threadId: 'thread-a',
+      kind: 'assistant_text',
+      summary: 'same',
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    getAllPanes().set('a', pane);
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: { ...item },
+    });
+    await nextFrame();
+
+    expect(pane.lastLiveContentAt).toBe(0);
+  });
+
   it('drops item_event upserts whose item thread does not match the event envelope', async () => {
     const paneA = await buildPane(makeThread({ id: 'thread-a' }));
     const paneB = await buildPane(makeThread({ id: 'thread-b' }));

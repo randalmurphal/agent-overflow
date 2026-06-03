@@ -54,7 +54,7 @@ shape. Operational rules for code in this directory:
   controller's warm-up gate so any subsequent contentRO fires for
   `QUIET_MS=100ms` (or up to `FAILSAFE_MS=2500ms`) sync-pin instead
   of triggering the spring chase — this is the load-bearing guarantee
-  that a thread restore lands silently even while a turn is in flight
+  that a thread restore lands silently even while content is streaming
   (`animationMode='spring'`). The trailing rAF
   `notifyContentMaybeGrew()` covers late layout settling: composer-
   height RO updating scrollEl's `padding-bottom` (padding-only growth
@@ -67,8 +67,9 @@ shape. Operational rules for code in this directory:
   guarded explicitly via a captured-`restoredThreadId` check inside
   the rAF. Subsequent contentEl growth gets handled by the controller's
   contentRO path: while warming, positive deltas sync-pin (mount
-  settling stays invisible); once warm and a turn is running, positive
-  deltas trigger the velocity-spring chase so streaming chunks animate.
+  settling stays invisible); once warm and live content advanced within
+  the latch's hold window, positive deltas trigger the velocity-spring
+  chase so streaming chunks animate.
   **Don't pair `listRef.scrollToIndex(last, 'end')` with
   `stick.markAtBottom()` here** — virtua's measurement loop would
   keep writing scrollTop on every ACTION_ITEM_RESIZE tick for
@@ -78,17 +79,32 @@ shape. Operational rules for code in this directory:
   of the viewport on every Streamdown async typesetting tick. Single
   synchronous writer (forceStick) plus a deferred escape-aware re-pin
   (notifyContentMaybeGrew) — never the two-loop fight.
-- **MessageTimeline wires `animationMode` to streaming state.**
-  `createUseStickToBottomController({ animationMode: () =>
-  getActiveTurn(pane.threadId) ? 'spring' : 'instant' })`. The getter
-  is called per-contentRO-fire, so transitions between idle and
-  running take effect on the next chunk without re-attaching. Late
-  Streamdown typesetting on settled content (`getActiveTurn` returns
-  null) sync-pins invisibly — no viewport motion while the user is
-  reading a finished response. Streaming chunks (`getActiveTurn`
-  returns the active turn) spring-chase the moving bottom. The
-  warm-up gate prevents thread-restore-while-streaming from
-  spring-chasing the post-mount measurement loop.
+- **MessageTimeline wires `animationMode` to a content-keyed latch.**
+  `createUseStickToBottomController({ animationMode:
+  animationModeForScroll })`, where `animationModeForScroll()` returns
+  `latchedSpringMode(performance.now(), pane.lastLiveContentAt,
+  SPRING_MODE_HOLD_MS)` (`utils/springAnimationLatch.ts`). The pane
+  stamps `lastLiveContentAt` on every genuine live timeline advance —
+  smoother reveal, non-smoothed streaming delta, final-summary patch,
+  and new provider rows (the events.ts fan-out) — so the latch reports
+  `'spring'` for `SPRING_MODE_HOLD_MS=500ms` after the last advance and
+  `'instant'` otherwise. The getter is called per-contentRO-fire, so
+  the mode tracks content arrival without re-attaching. This keys the
+  spring on CONTENT, not on the provider turn (`getActiveTurn`): it
+  springs whenever the user is stuck to the bottom and content is
+  arriving — including a turn that completes while the agent keeps
+  streaming, and the end-of-turn smoother drain that reveals
+  word-by-word for seconds after the wire turn ends. Late Streamdown
+  typesetting on SETTLED content grows row height but never stamps
+  `lastLiveContentAt` (it doesn't mutate `pane.items`), so it sync-pins
+  invisibly — no viewport motion while the user reads a finished
+  response. A user's own sent message and rollback restores call
+  `pane.upsertItems` directly (bypassing the events.ts stamp), so they
+  also stay sync-pinned. The warm-up gate independently prevents
+  thread-restore-while-streaming from spring-chasing the post-mount
+  measurement loop. Invariant: `SPRING_MODE_HOLD_MS >
+  RETAIN_ANIMATION_DURATION_MS` (the spring sentinel lifetime) — see
+  the `HOLD > RETAIN` guard in `useStickToBottom.svelte.test.ts`.
 - **contentEl hides during virtua's fresh-mount measurement cascade.**
   On thread switch, virtua starts with
   `ESTIMATED_ROW_SIZE × N` for totalSize. The per-row RO measurement
@@ -193,10 +209,10 @@ shape. Operational rules for code in this directory:
 - The auto-follow `$effect` is gone. Streaming flow is: text rewrites in
   the streaming row → row's height changes → virtua's per-row RO bumps
   `totalSize` → `contentEl.scrollHeight` changes → our content-RO fires
-  before paint → controller chases the new target (spring while a turn
-  is running and the warm-up gate has cleared; sync-pin otherwise).
-  Don't reintroduce a length-watching effect that calls
-  `scrollToIndex(last)`.
+  before paint → controller chases the new target (spring while live
+  content advanced within the latch hold window and the warm-up gate has
+  cleared; sync-pin otherwise). Don't reintroduce a length-watching
+  effect that calls `scrollToIndex(last)`.
 - **Auto-load-older trigger.** Virtualizer's `onscroll` calls
   `maybeAutoLoadOlder(offset)` which fires `pane.loadOlder()` when the
   user scrolls within `AUTO_LOAD_OFFSET_PX=800` of the top AND the

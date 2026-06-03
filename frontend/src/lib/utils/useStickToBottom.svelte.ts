@@ -11,15 +11,16 @@
 //     contentEl grows also lands scrollTop at the new target, so the
 //     user sees content arriving at the bottom with no perceptible
 //     scroll motion. Used by Discussion's ChannelView and by chat
-//     whenever a turn is NOT actively streaming — late Streamdown
+//     whenever no live content has advanced recently — late Streamdown
 //     typesetting on settled content, virtua row remeasurement on a
 //     freshly-mounted thread, etc.
 //
 //   - 'spring': velocity-spring chase. The viewport interpolates toward
 //     the moving bottom across rAF ticks so the user sees a smooth
-//     scroll-follow. Used by chat MessageTimeline while a turn is
-//     running (`getActiveTurn(threadId) != null`) so streaming chunks
-//     flow in with a smooth animation. Gated by a quiescence-based warm
+//     scroll-follow. Chat MessageTimeline selects it via a content-keyed
+//     latch (`latchedSpringMode` over `pane.lastLiveContentAt`), so
+//     streaming chunks — and the end-of-turn drain after the turn signal
+//     clears — flow in with a smooth animation. Gated by a quiescence-based warm
 //     state: spring stays off until contentRO has been quiet for
 //     QUIET_MS or the FAILSAFE_MS deadline trips, whichever comes
 //     first. The warm gate defends against the original 80LoC-spring-
@@ -104,8 +105,15 @@ const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
 // external write gate and negative-delta carve-out stay engaged
 // across gaps > 350ms (async shiki loads, parseIncompleteMarkdown
 // rebalances). The sentinel cancels on the next tick where
-// animationMode flips to 'instant' (turn ended).
-const RETAIN_ANIMATION_DURATION_MS = 350;
+// animationMode flips to 'instant' (no live content advanced within the
+// consumer's hold window — see MessageTimeline's content-keyed latch).
+//
+// Exported so the colocated test can assert the load-bearing relationship
+// SPRING_MODE_HOLD_MS > RETAIN_ANIMATION_DURATION_MS against the LIVE
+// constant: the latch must keep reporting 'spring' for at least the full
+// sentinel lifetime after the last content stamp, or the gate opens
+// mid-sentinel and virtua's $fixScrollJump snaps scrollTop.
+export const RETAIN_ANIMATION_DURATION_MS = 350;
 // Spring arrival thresholds: distance ≤1px from target AND velocity
 // below 0.5 px-per-60fps-frame means we've effectively settled.
 const ARRIVAL_DISTANCE_PX = 1;
@@ -384,10 +392,11 @@ export interface UseStickToBottomOptions {
    * to () => 'instant' (sync-pin everywhere) so existing callers behave
    * identically to the pre-spring-restoration controller.
    *
-   * Chat's MessageTimeline wires this to
-   * `() => getActiveTurn(pane.threadId) != null ? 'spring' : 'instant'`
-   * so streaming chunks animate; idle threads and Discussion's polled
-   * channel surface stay on sync-pin.
+   * Chat's MessageTimeline wires this to a content-keyed latch
+   * (`latchedSpringMode(performance.now(), pane.lastLiveContentAt,
+   * SPRING_MODE_HOLD_MS)`) so streaming chunks — and the end-of-turn
+   * drain after the turn signal clears — animate; idle/settled threads
+   * and Discussion's polled channel surface stay on sync-pin.
    */
   animationMode?: () => 'spring' | 'instant';
   /**

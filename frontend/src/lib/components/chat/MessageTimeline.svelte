@@ -5,6 +5,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { createUseStickToBottomController } from '../../utils/useStickToBottom.svelte';
+  import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../../utils/springAnimationLatch';
   import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
   import {
     getThreadScrollSnapshot,
@@ -261,16 +262,20 @@
     ].join('|');
   });
 
-  // Animation mode is keyed on whether the thread has an in-flight
-  // turn. Streaming chunks come in fast enough that the contentRO
-  // sync-pin would land them invisibly; the spring chase gives the
-  // user the familiar "viewport follows the text as it streams in" UX.
-  // When the turn settles, mode flips back to 'instant' — late
-  // Streamdown typesetting on completed content doesn't move the
-  // viewport. The controller's warm gate (quiescence-based, with a
-  // 2.5s failsafe) defends against the e00723f regression where
-  // mount-time virtua remeasurement + Streamdown typesetting would
-  // spring-chase a thread restore visibly.
+  // Animation mode is keyed on whether LIVE timeline content advanced
+  // recently (`pane.lastLiveContentAt`), NOT on whether a provider turn
+  // is active. Streaming chunks come in fast enough that the contentRO
+  // sync-pin would land them invisibly; the spring chase gives the user
+  // the familiar "viewport follows the text as it streams in" UX. Keying
+  // on content rather than turn lifecycle is what makes the spring follow
+  // a turn that ends mid-stream and the word-by-word drain tail that
+  // reveals for seconds after the wire turn closes; it also keeps late
+  // Streamdown typesetting on settled content sync-pinned, because
+  // typesetting grows row height but never advances content (it never
+  // stamps `lastLiveContentAt`). The controller's warm gate (quiescence-
+  // based, with a 2.5s failsafe) independently defends against the
+  // e00723f regression where mount-time virtua remeasurement + Streamdown
+  // typesetting would spring-chase a thread restore visibly.
   // Warm-gate aggregation: rising-edge-once boolean that flips true the
   // first time ANY ChatMarkdown rendered inside the timeline tree fires
   // `onsettled` since the last `armWarmup()` call. Reset to false by
@@ -284,29 +289,19 @@
   // typesetting is done.
   let anyMarkdownSettledSinceArm = $state(false);
 
-  // Latch spring mode for a brief window after the per-wire-round
-  // active turn signal clears. Between wire rounds (tool-call emission
-  // → tool-result processing), getActiveTurn() returns null for
-  // 50–200ms. Without hysteresis that null flips animationMode to
-  // 'instant', which cancels the spring sentinel, opens the external
-  // write gate, and lets virtua's $fixScrollJump snap scrollTop —
-  // visible as a "snap up, spring down" that repeats per boundary.
-  // The hold window (500ms) covers typical inter-round gaps. For
-  // long-running tools (>500ms) the sentinel has been idle long enough
-  // that the transition to instant is clean — no in-flight spring to
-  // disrupt and no pending virtua corrections to race.
-  const SPRING_MODE_HOLD_MS = 500;
-  let lastActiveTurnSeenAt = 0;
-
+  // Spring while live content advanced within SPRING_MODE_HOLD_MS, else
+  // sync-pin. The pane stamps `lastLiveContentAt` on every reveal /
+  // streaming delta / overwrite patch / new provider row, so during a
+  // stream the latch reads 'spring' continuously and falls to 'instant'
+  // ~SPRING_MODE_HOLD_MS after the last advance. The hold also covers
+  // inter-round gaps (tool-call emission → tool-result processing) where
+  // the previous round's content stamp is still recent, keeping the
+  // spring sentinel alive and the external-write gate closed across the
+  // gap — the wire-round-gap protection, now content-driven. The hold
+  // (500ms) stays > the controller's spring sentinel lifetime
+  // (RETAIN_ANIMATION_DURATION_MS = 350ms); see springAnimationLatch.ts.
   function animationModeForScroll(): 'spring' | 'instant' {
-    if (getActiveTurn(pane.threadId)) {
-      lastActiveTurnSeenAt = performance.now();
-      return 'spring';
-    }
-    if (performance.now() - lastActiveTurnSeenAt < SPRING_MODE_HOLD_MS) {
-      return 'spring';
-    }
-    return 'instant';
+    return latchedSpringMode(performance.now(), pane.lastLiveContentAt, SPRING_MODE_HOLD_MS);
   }
 
   const stick = createUseStickToBottomController({

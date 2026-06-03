@@ -671,7 +671,16 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
     const threadItems = itemsByThread.get(threadId);
     if (!threadItems) continue;
     activeThreadIds.add(threadId);
-    if (pane.upsertItems(threadItems)) changedThreadIds.add(threadId);
+    if (pane.upsertItems(threadItems)) {
+      changedThreadIds.add(threadId);
+      // A live provider upsert that actually changed the window is new
+      // content arriving — mark it so the scroll controller spring-chases
+      // (content-keyed animation latch). Only the provider fan-out routes
+      // here; the optimistic user-send echo (Composer) and rollback
+      // restore (revertOnInterrupt) call pane.upsertItems directly and
+      // intentionally stay sync-pinned.
+      pane.markLiveContentAdvanced();
+    }
   }
   // Evict cached snapshots only when this batch produced an observable
   // active-pane change. Inactive threads still evict defensively because

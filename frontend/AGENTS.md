@@ -178,14 +178,21 @@ frontend layers on top:
     growth — no perceptible scroll motion, content just arrives at
     the bottom. This is the default for Discussion's `ChannelView`
     (polled batches, no streaming chunks to chase) and for chat
-    whenever a turn is NOT actively running.
+    whenever no live content has advanced recently (idle thread,
+    settled response, async typesetting reflow).
   - **`'spring'`**: velocity-spring chase. The viewport interpolates
     toward the moving bottom across rAF ticks so the user sees a
-    smooth scroll-follow. Used by chat MessageTimeline while a turn
-    is in flight (`getActiveTurn(threadId) != null`) so streaming
-    chunks flow in with the familiar "viewport follows the text" UX.
-    Spring uses upstream's tuning (`damping: 0.7, stiffness: 0.05,
-    mass: 1.25`).
+    smooth scroll-follow. Chat's MessageTimeline selects it via a
+    **content-keyed latch** (`animationModeForScroll` →
+    `latchedSpringMode`): every genuine live timeline advance stamps
+    `pane.lastLiveContentAt`, and the latch reports `'spring'` for
+    `SPRING_MODE_HOLD_MS` (500ms) after the last stamp. This decouples
+    the spring from the provider turn signal — it springs whenever the
+    user is stuck to the bottom and content is arriving, including the
+    end-of-turn smoother drain that reveals for seconds AFTER the wire
+    turn ends, and a turn that completes while the agent keeps
+    streaming. It is NOT keyed on `getActiveTurn`. Spring uses
+    upstream's tuning (`damping: 0.7, stiffness: 0.05, mass: 1.25`).
   Both paths share a **warm-up gate** that defends against the
   e00723f regression (mount-time virtua remeasurement + Streamdown
   async typesetting would spring-chase a thread restore visibly).
@@ -554,7 +561,7 @@ frontend layers on top:
   | Condition | Fragility | Coupling | Test coverage |
   |-----------|-----------|----------|---------------|
   | `pauseDepth` | **HIGH** | Independent — `pauseAutoScroll()` flips it without canceling the spring. ~16ms race window before the spring tick bails. 13 row components trigger via `preserveScrollAnchor`. | "pauseDepth during active spring" describe block |
-  | `animationMode` | **Covered** | Independent — reads a consumer-supplied getter. Wire-round gap regression fixed via 500ms hysteresis latch in `MessageTimeline.svelte`. | "wire-round gap regression" describe block |
+  | `animationMode` | **Covered** | Independent — reads a consumer-supplied getter. Chat's getter is the content-keyed latch (`latchedSpringMode` over `pane.lastLiveContentAt`, `SPRING_MODE_HOLD_MS=500`); the inter-round gap and end-of-turn drain stay `'spring'` because content advanced <500ms ago. `SPRING_MODE_HOLD_MS > RETAIN_ANIMATION_DURATION_MS` keeps the sentinel covered. | "wire-round gap regression" describe block (+ the `HOLD > RETAIN` guard) |
   | `springToken` | **Covered** | Downstream of other conditions — canceled by escape, pause bail, mode flip. Velocity-freeze bug fixed (diff===0 zeroes velocity). | "stuck spring from instant pin" + "sentinel-alive" describe blocks |
   | `isAtBottomState` | LOW | Coupled — every `=false` write goes through `setEscapedFromLock(true)` which also calls `cancelSpring()`. | "gate condition coupling invariants" describe block |
   | `escapedFromLockState` | LOW | Coupled — every `=true` write routes through `setEscapedFromLock(true)` which also calls `cancelSpring()`. | "gate condition coupling invariants" describe block |

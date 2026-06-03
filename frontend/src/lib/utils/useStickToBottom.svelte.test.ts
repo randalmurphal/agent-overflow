@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createUseStickToBottomController,
   resetUseStickToBottomModuleStateForTest,
+  RETAIN_ANIMATION_DURATION_MS,
   type UseStickToBottomController,
 } from './useStickToBottom.svelte';
+import { latchedSpringMode, SPRING_MODE_HOLD_MS } from './springAnimationLatch';
 import { clearUiRenderTrace, setUiRenderTraceEnabled } from './uiRenderTrace';
 
 // happy-dom doesn't measure layout, so tests stub scrollHeight /
@@ -5057,7 +5059,7 @@ describe('createUseStickToBottomController — spring chase', () => {
     it('passes an external scrollTop write through when animationMode is instant (the controller would sync-pin, not spring-chase)', async () => {
       // Regression for the thread-switch flicker on idle threads
       // (bug-report-20260524T183128Z): on a switch into a non-streaming
-      // thread (getActiveTurn===null → animationMode='instant'), a late
+      // thread (no live content advanced recently → animationMode='instant'), a late
       // ResizeObserver fire after warm causes virtua's $fixScrollJump
       // and the controller's contentRO to both want to pin scrollTop
       // to the new bottom. They fire in DIFFERENT RO delivery loops
@@ -5091,7 +5093,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
     it('still suppresses external writes when animationMode is spring (gate stays load-bearing during streaming)', async () => {
       // Counterpart to the previous test: when animationMode='spring'
-      // (a turn is running and the controller wants to smoothly chase
+      // (live content is arriving and the controller wants to smoothly chase
       // the moving bottom), virtua's $fixScrollJump landing in one
       // paint would pre-empt the spring's interpolation. The gate
       // must still drop in that case. This is the original
@@ -5150,40 +5152,39 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
 
     describe('wire-round gap regression — brief animationMode flip during sentinel', () => {
-      // Between tool-call emission and tool-result processing,
-      // getActiveTurn() can briefly return null (per-wire-round
-      // emission cadence), flipping animationMode to 'instant'. Without
-      // hysteresis, the spring sentinel cancels, the external write gate
-      // opens, and virtua's $fixScrollJump snaps scrollTop — visible as
-      // a "snap up, spring down" that repeats per wire-round boundary.
+      // The controller-level invariant: animationMode must NOT flip to
+      // 'instant' while a spring sentinel is alive, or the external write
+      // gate opens and virtua's $fixScrollJump snaps scrollTop — visible
+      // as a "snap up, spring down" that repeats per gap boundary.
       //
-      // The fix is in the animationMode getter (MessageTimeline.svelte):
-      // a time-based hysteresis holds 'spring' for SPRING_MODE_HOLD_MS
-      // after the active turn clears. These tests exercise the
-      // controller with a hysteresis-backed mode getter to verify the
-      // gate stays closed during the gap.
-      //
-      // The hold constant must match MessageTimeline's SPRING_MODE_HOLD_MS.
-      const HOLD_MS = 500;
+      // In production the mode getter is the CONTENT-KEYED latch in
+      // MessageTimeline (animationModeForScroll → latchedSpringMode):
+      // every live timeline advance stamps `pane.lastLiveContentAt`, and
+      // the latch reports 'spring' for SPRING_MODE_HOLD_MS after the last
+      // stamp. Between live chunks (a tool round-trip, the inter-round gap,
+      // the end-of-turn smoother drain) the stamp simply stops advancing
+      // for a beat; the hold window keeps the mode 'spring' so the sentinel
+      // and gate survive the gap. These tests exercise the controller with
+      // that exact latch — `latchedSpringMode` and the real
+      // `SPRING_MODE_HOLD_MS` — so the controller assertions can't drift
+      // from the production source.
+      const HOLD_MS = SPRING_MODE_HOLD_MS;
 
-      // Simulates the hysteresis getter from MessageTimeline: holds
-      // 'spring' for HOLD_MS after the underlying turn signal clears.
+      // Mirrors MessageTimeline: while live content is advancing, stamp
+      // lastContentAt = now (mode is 'spring'); once it stops, the real
+      // latch holds 'spring' for HOLD_MS past the last stamp, then flips.
       function createHysteresisMode() {
-        let turnActive = true;
-        let lastActiveAt = 0;
+        let contentAdvancing = true;
+        let lastContentAt = 0;
         return {
           get getter(): () => 'spring' | 'instant' {
             return () => {
-              if (turnActive) {
-                lastActiveAt = mockNow;
-                return 'spring';
-              }
-              if (mockNow - lastActiveAt < HOLD_MS) return 'spring';
-              return 'instant';
+              if (contentAdvancing) lastContentAt = mockNow;
+              return latchedSpringMode(mockNow, lastContentAt, HOLD_MS);
             };
           },
-          set active(v: boolean) { turnActive = v; },
-          get active() { return turnActive; },
+          set contentAdvancing(v: boolean) { contentAdvancing = v; },
+          get contentAdvancing() { return contentAdvancing; },
         };
       }
 
@@ -5203,10 +5204,10 @@ describe('createUseStickToBottomController — spring chase', () => {
         while (mockNow < 360) await nextFrame();
 
         // Wire-round gap: turn signal clears.
-        hmode.active = false;
+        hmode.contentAdvancing = false;
         // Advance a few frames — well within the hold window.
         for (let i = 0; i < 5; i++) await nextFrame();
-        // mockNow is ~443ms. lastActiveAt was ~360ms. Gap = ~83ms < 500ms.
+        // mockNow is ~443ms. lastContentAt was ~360ms. Gap = ~83ms < 500ms.
 
         geom.scrollHeight = 1200;
         scrollEl.scrollTop = 450;
@@ -5230,7 +5231,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         while (mockNow < 360) await nextFrame();
 
         // Wire-round gap.
-        hmode.active = false;
+        hmode.contentAdvancing = false;
         for (let i = 0; i < 3; i++) await nextFrame();
 
         // Virtua $fixScrollJump — blocked by hysteresis-backed gate.
@@ -5239,7 +5240,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop).toBe(500);
 
         // Round resumes.
-        hmode.active = true;
+        hmode.contentAdvancing = true;
 
         // New content. Spring starts from 500 (correct), not 420.
         geom.scrollHeight = 1300;
@@ -5268,7 +5269,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         for (let cycle = 0; cycle < 3; cycle++) {
           const before = geom.scrollTop;
 
-          hmode.active = false;
+          hmode.contentAdvancing = false;
           for (let i = 0; i < 3; i++) await nextFrame();
 
           // Virtua writes — blocked by hysteresis.
@@ -5277,7 +5278,7 @@ describe('createUseStickToBottomController — spring chase', () => {
           expect(geom.scrollTop).toBe(before);
 
           // Round resumes.
-          hmode.active = true;
+          hmode.contentAdvancing = true;
           geom.scrollHeight += 50;
           geom.contentHeight += 50;
           ro.fire(contentEl, geom.contentHeight);
@@ -5287,7 +5288,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         }
       });
 
-      it('hysteresis expires after hold window — sentinel cancels and gate opens for real turn-end', async () => {
+      it('hysteresis expires after hold window — sentinel cancels and gate opens for real end-of-content', async () => {
         const hmode = createHysteresisMode();
         controller.detach();
         controller = createUseStickToBottomController({ animationMode: hmode.getter });
@@ -5302,9 +5303,9 @@ describe('createUseStickToBottomController — spring chase', () => {
         await advanceUntil(() => geom.scrollTop === 500);
         while (mockNow < 360) await nextFrame();
 
-        // Turn ends for real.
-        hmode.active = false;
-        // Advance well past HOLD_MS (500ms from lastActiveAt). Need
+        // Live content stops for real (no more reveals/deltas).
+        hmode.contentAdvancing = false;
+        // Advance well past HOLD_MS (500ms from lastContentAt). Need
         // enough frames for (a) mockNow to pass the hold window AND
         // (b) the sentinel tick to fire and see wantsSpringNow=false.
         // 60 frames ≈ 1000ms from current position, safely past 500ms.
@@ -5317,7 +5318,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop).toBe(510);
       });
 
-      it('hysteresis re-latches when turn resumes within hold window', async () => {
+      it('hysteresis re-latches when content resumes within hold window', async () => {
         const hmode = createHysteresisMode();
         controller.detach();
         controller = createUseStickToBottomController({ animationMode: hmode.getter });
@@ -5333,20 +5334,20 @@ describe('createUseStickToBottomController — spring chase', () => {
         while (mockNow < 360) await nextFrame();
 
         // First gap.
-        hmode.active = false;
+        hmode.contentAdvancing = false;
         for (let i = 0; i < 3; i++) await nextFrame();
 
-        // Resume — resets the latch timer.
-        hmode.active = true;
+        // Content resumes (next chunk arrives) — refreshes the latch stamp.
+        hmode.contentAdvancing = true;
         geom.scrollHeight = 1200;
         geom.contentHeight = 1000;
         ro.fire(contentEl, 1000);
         await advanceUntil(() => geom.scrollTop === 600);
         while (mockNow - 360 < 360) await nextFrame();
 
-        // Second gap — hysteresis still protects because lastActiveAt
+        // Second gap — hysteresis still protects because lastContentAt
         // was refreshed during the resumed round.
-        hmode.active = false;
+        hmode.contentAdvancing = false;
         for (let i = 0; i < 3; i++) await nextFrame();
 
         geom.scrollHeight = 1300;
@@ -5357,8 +5358,8 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       it('without hysteresis, raw mode flip during sentinel opens the gate (documents the underlying bug)', async () => {
         // This test uses the raw `mode` variable (no hysteresis) to
-        // document the controller-level behavior that the upstream
-        // hysteresis fix guards against.
+        // document the controller-level behavior that the content-keyed
+        // latch guards against.
         const ro = getRO();
         ro.fire(contentEl, 800);
         await waitMs(150);
@@ -5376,6 +5377,20 @@ describe('createUseStickToBottomController — spring chase', () => {
         scrollEl.scrollTop = 450;
         // Without hysteresis, the gate opens and the write passes.
         expect(geom.scrollTop).toBe(450);
+      });
+
+      it('keeps the content-latch hold window longer than the spring sentinel lifetime', () => {
+        // Load-bearing invariant, asserted against the LIVE controller
+        // constant (not a hardcoded mirror): the spring sentinel keeps the
+        // external-write gate closed only while animationMode === 'spring',
+        // and it can stay alive up to RETAIN_ANIMATION_DURATION_MS after the
+        // last target change. The content-keyed latch therefore MUST report
+        // 'spring' for at least that long after the last content stamp, or
+        // the gate opens mid-sentinel and virtua's $fixScrollJump snaps
+        // scrollTop — the very wire-round-gap regression this block covers.
+        // Bumping RETAIN in the controller past SPRING_MODE_HOLD_MS would
+        // reintroduce that bug; this guard fails the moment it does.
+        expect(SPRING_MODE_HOLD_MS).toBeGreaterThan(RETAIN_ANIMATION_DURATION_MS);
       });
     });
 
