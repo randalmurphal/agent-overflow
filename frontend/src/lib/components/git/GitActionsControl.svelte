@@ -4,33 +4,19 @@
   // Menu + MenuItem primitives so it inherits portaling, arrow-key nav,
   // typeahead, and focus management from the shared implementation.
   //
-  // Status freshness model: this component does NOT poll. It subscribes
-  // to the backend gitwatch stream when the workspace path becomes
-  // known, then receives push updates whenever the working tree, .git
-  // refs, or anything else under the workspace changes. The backend
-  // dedups identical statuses, so the wire stays quiet during heavy fs
-  // churn (build outputs, ignored files). The subscription is keyed on
-  // `pane.thread?.worktreePath ?? workspacePath`, derived through
-  // $derived so the effect short-circuits on value-equality —
-  // pane.replaceThread() calls that change unrelated thread metadata
-  // (token usage, mode, etc.) no longer thrash the git status pipe.
+  // Status freshness model: this control does NOT own a subscription. It reads
+  // the pane-owned gitStatus slot (`pane.gitStatus`), which holds the single
+  // gitwatch stream for the workspace — subscribed/retried/pushed by
+  // ChatHeaderActions, shared with the header's diff/PR badges. After a git
+  // action completes, it asks the slot for a one-shot `refreshNow()` so the
+  // button label catches up immediately instead of waiting on the ~250ms
+  // fs-watcher debounce.
 
   import { onMount, onDestroy } from 'svelte';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { GitStatus } from '../../types/git';
-  import { errString } from '../../utils/errors';
   import { forgeLabels } from '../../utils/forgeLabels';
-  import { OPEN_SHIP_CHANGES_EVENT, wailsEventOn } from '../../stores/events';
-  import { getTransportStatus } from '../../stores/transportStatus.svelte';
-  import {
-    GetGitStatus,
-    GitStatusSubscribe,
-    GitStatusUnsubscribe,
-    UpdateThreadBranch,
-    type GitStatusSubscriptionResult,
-  } from '../../stores/bindings';
-  import { syncThread } from '../../stores/panes.svelte';
+  import { OPEN_SHIP_CHANGES_EVENT } from '../../stores/events';
   import CommitDialog from './CommitDialog.svelte';
   import ShipChangesDrawer from './ShipChangesDrawer.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
@@ -51,20 +37,13 @@
 
   let { pane }: { pane: ThreadPane } = $props();
 
-  // Wire payload shape for "git:status" events. Wails doesn't generate
-  // a TS type for this (event payloads aren't part of the binding
-  // surface), so the shape is declared locally and kept in sync with
-  // GitStatusEvent in app_gitwatch.go.
-  interface GitStatusEvent {
-    subscriptionId: string;
-    status: GitStatus;
-  }
+  // Live status for this pane's workspace, observed by the shared gitStatus
+  // slot. Reading through $derived keeps this control reactive to the single
+  // subscription without owning it.
+  let status = $derived(pane.gitStatus.status);
+  let statusError = $derived(pane.gitStatus.statusError);
 
-  let status = $state<GitStatus | null>(null);
-  let statusError = $state(false);
   let actionLoading = $state(false);
-  let queuedBranchPersist: { threadId: string; branch: string } | null = null;
-  let branchPersistRunning = false;
 
   let showCommit = $state(false);
   let showShip = $state(false);
@@ -72,26 +51,6 @@
   let showRemoveWorktreeConfirm = $state(false);
 
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
-
-  // gitCwd is a derived primitive — Svelte's $derived value-equality
-  // means the subscribe effect only re-runs when the actual cwd
-  // *value* changes, not on every pane.replaceThread() call (which
-  // also fires for token-usage updates, mode changes, hasIncompleteTurn
-  // patches, etc.). This is what kills the per-token flicker the
-  // previous pane.threadId-tracking $effect had: the underlying
-  // signal still fires, but the derived's value-equal recomputation
-  // suppresses the downstream re-run.
-  let threadId = $derived(pane.threadId);
-  let gitCwd = $derived(
-    pane.thread?.worktreePath ?? pane.thread?.workspacePath ?? null,
-  );
-
-  // transportConnected gates subscription on the WS being live. On
-  // reconnect (disconnected → connected) the effect re-runs and
-  // re-subscribes; the backend drops subscriptions on raw disconnect
-  // via transport.ConnState cleanup, so any old subscriptionId we
-  // held is stale.
-  let transportConnected = $derived(getTransportStatus().status === 'connected');
 
   function handleOpenShip(event: Event): void {
     const detail = (event as CustomEvent<{ paneId?: string }>).detail;
@@ -125,130 +84,13 @@
       status.forge !== undefined,
   );
 
-  // Manual one-shot refresh used after git actions (commit/push/pull/PR).
-  // The subscribe stream will re-emit ~250ms later via the fs watcher,
-  // but explicit fetch removes that perceptible debounce delay between
-  // the action completing and the button label catching up.
-  async function refreshStatusNow(): Promise<void> {
-    const id = threadId;
-    if (!id) return;
-    try {
-      const result = (await GetGitStatus(id)) as GitStatus;
-      applyObservedStatus(result);
-      statusError = false;
-    } catch (err) {
-      console.error('Failed to refresh git status:', err);
-      statusError = true;
-    }
-  }
-
-  function applyObservedStatus(nextStatus: GitStatus): void {
-    status = nextStatus;
-    if (!nextStatus.isRepo) return;
-    const thread = pane.thread;
-    if (!thread) return;
-    const branch = nextStatus.branch ?? '';
-    if ((thread.branch ?? '') === branch) return;
-
-    const updated = { ...thread, branch };
-    syncThread(updated);
-    persistObservedBranch(thread.id, branch);
-  }
-
-  function persistObservedBranch(threadId: string, branch: string): void {
-    queuedBranchPersist = { threadId, branch };
-    if (branchPersistRunning) return;
-    branchPersistRunning = true;
-    void drainBranchPersistQueue();
-  }
-
-  async function drainBranchPersistQueue(): Promise<void> {
-    while (queuedBranchPersist !== null) {
-      const next = queuedBranchPersist;
-      queuedBranchPersist = null;
-      try {
-        await UpdateThreadBranch(next.threadId, next.branch);
-      } catch (err) {
-        console.error('Failed to persist observed git branch:', err);
-        if (pane.threadId === next.threadId) {
-          pane.setGeneralError(`Failed to update thread branch: ${errString(err)}`);
-        }
-      }
-    }
-    branchPersistRunning = false;
-  }
-
-  $effect(() => {
-    const id = threadId;
-    const cwd = gitCwd;
-    const connected = transportConnected;
-
-    if (!id || !cwd || !connected) {
-      // Reset on real disqualifiers: thread cleared, workspace gone,
-      // or transport down. No subscribe to issue, no listener to
-      // attach — but DO NOT touch showDropdown/showCommit/etc., those
-      // are independent UI state owned by the user's interactions.
-      status = null;
-      statusError = false;
-      return;
-    }
-
-    const subscribeTo = id;
-    let cancelled = false;
-    let cancelEvent: (() => void) | null = null;
-    let activeId: string | null = null;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    let retryDelayMs = 3_000;
-    const MAX_RETRY_DELAY_MS = 30_000;
-
-    async function attemptSubscribe(): Promise<void> {
-      try {
-        const result = (await GitStatusSubscribe(subscribeTo)) as GitStatusSubscriptionResult;
-        if (cancelled) {
-          void GitStatusUnsubscribe(result.id).catch(() => undefined);
-          return;
-        }
-        activeId = result.id;
-        applyObservedStatus(result.status);
-        statusError = false;
-        retryDelayMs = 3_000;
-
-        cancelEvent = wailsEventOn<GitStatusEvent>('git:status', (payload) => {
-          if (!payload || payload.subscriptionId !== activeId) return;
-          applyObservedStatus(payload.status);
-        });
-      } catch (err) {
-        if (cancelled) return;
-        console.error('GitStatusSubscribe failed:', err);
-        statusError = true;
-        retryTimer = setTimeout(() => {
-          if (cancelled) return;
-          retryTimer = null;
-          void attemptSubscribe();
-        }, retryDelayMs);
-        retryDelayMs = Math.min(retryDelayMs * 2, MAX_RETRY_DELAY_MS);
-      }
-    }
-
-    void attemptSubscribe();
-
-    return () => {
-      cancelled = true;
-      if (retryTimer !== null) clearTimeout(retryTimer);
-      if (cancelEvent) cancelEvent();
-      if (activeId) {
-        void GitStatusUnsubscribe(activeId).catch(() => undefined);
-      }
-    };
-  });
-
   let primaryAction = $derived(primaryActionFor(status));
 
   function ctx(): GitActionCtx {
     return {
       threadId: pane.threadId!,
       reportError: (msg) => pane.setGeneralError(msg),
-      refreshStatus: () => refreshStatusNow(),
+      refreshStatus: () => pane.gitStatus.refreshNow(),
       forge: status?.forge,
     };
   }
@@ -285,7 +127,7 @@
 
   function handleCommitClose() {
     showCommit = false;
-    void refreshStatusNow();
+    void pane.gitStatus.refreshNow();
   }
 </script>
 
@@ -293,7 +135,7 @@
   <Button
     variant="danger-outline"
     size="sm"
-    onclick={() => void refreshStatusNow()}
+    onclick={() => void pane.gitStatus.refreshNow()}
     testId="git-actions-error"
     title="Failed to load git status. Click to retry."
   >
@@ -393,7 +235,7 @@
     open={showShip}
     onClose={() => {
       showShip = false;
-      void refreshStatusNow();
+      void pane.gitStatus.refreshNow();
     }}
   />
 

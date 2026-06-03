@@ -6,14 +6,15 @@ import { destroyPane, getFocusedPaneId } from '../../stores/panes.svelte';
 import { getProject } from '../../stores/projects.svelte';
 import { resetThreadTerminalStatesForTest } from './terminalStore.svelte';
 import { setupEventListeners } from '../../stores/events';
+import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 
 // Same mock layer as ThreadTerminalDrawer.test.ts: control the Wails bindings
-// and event bus so the pane surface can be exercised without a backend. The one
-// addition is panes.svelte — TerminalView is the only terminal component that
-// imports a runtime symbol from it (destroyPane), so we stub just that.
+// here; the event bus is the global @wailsio/runtime mock (vitest alias →
+// src/test/mocks/wailsio-runtime.ts). The one addition is panes.svelte —
+// TerminalView is the only terminal component that imports a runtime symbol
+// from it (destroyPane), so we stub just that.
 
 const callLog: Array<{ fn: string; args: unknown[] }> = [];
-const eventListeners: Record<string, ((ev: { data: unknown }) => void)[]> = {};
 let cleanupEvents: (() => void) | null = null;
 
 function terminalSummary(terminalID: string, threadID: string) {
@@ -69,18 +70,6 @@ vi.mock('../../stores/panes.svelte', () => ({
 // The header shows the project name; a home terminal (no project) shows "~".
 vi.mock('../../stores/projects.svelte', () => ({ getProject: vi.fn(() => undefined) }));
 
-vi.mock('@wailsio/runtime', () => ({
-  Events: {
-    On: (eventName: string, handler: (ev: { data: unknown }) => void) => {
-      eventListeners[eventName] = eventListeners[eventName] ?? [];
-      eventListeners[eventName]!.push(handler);
-      return () => {
-        eventListeners[eventName] = (eventListeners[eventName] ?? []).filter((h) => h !== handler);
-      };
-    },
-  },
-}));
-
 interface MakePaneOpts {
   paneId?: string;
   focus?: boolean;
@@ -122,7 +111,7 @@ beforeEach(() => {
   vi.mocked(destroyPane).mockClear();
   vi.mocked(getFocusedPaneId).mockReturnValue(null);
   vi.mocked(getProject).mockReturnValue(undefined as never);
-  for (const key of Object.keys(eventListeners)) delete eventListeners[key];
+  resetWailsMocks();
   cleanupEvents = setupEventListeners();
 });
 

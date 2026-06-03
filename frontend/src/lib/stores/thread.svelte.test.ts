@@ -663,6 +663,26 @@ describe('createThreadPane', () => {
       expect(pane.activeDiffPayload).toBeNull();
     });
 
+    it('toggleDiffPanel opens on the workspace tab by default and honors an explicit tab', async () => {
+      const pane = createThreadPane();
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      // No-arg toggle (header diff badge + diff.panel.toggle keybinding) lands
+      // on the workspace tab.
+      pane.toggleDiffPanel();
+      expect(pane.diffPanel.open).toBe(true);
+      expect(pane.diffPanel.tabMode).toBe('workspace');
+
+      // Toggling again closes it.
+      pane.toggleDiffPanel();
+      expect(pane.diffPanel.open).toBe(false);
+
+      // An explicit tab is respected on open.
+      pane.toggleDiffPanel('messages');
+      expect(pane.diffPanel.open).toBe(true);
+      expect(pane.diffPanel.tabMode).toBe('messages');
+    });
+
     it('closeActivePanel clears all three panel flags', async () => {
       const pane = createThreadPane();
       await pane.switchThread(makeThread({ id: 't' }));

@@ -1,0 +1,194 @@
+<script lang="ts">
+  // Right-aligned action cluster for the chat header. Split out of
+  // ChatHeader.svelte (which kept it under the file-size budget and gave the
+  // shared git-status subscription a single home).
+  //
+  // Cluster order, chat threads:  [ PR#123 ] [ +X −Y ] [ Open ] [ git ] [ term ]
+  // Cluster order, design threads: [ Open ] [ git ] [ term ] [ Preview ]
+  //
+  // The PR badge and workspace +/- render only on normal chat threads; design
+  // threads keep their existing Design Preview button instead. GitActionsControl
+  // (commit/push/ship) and the terminal toggle are unchanged on both.
+  //
+  // This component owns the pane's single gitwatch subscription via the
+  // $effect below — GitActionsControl and the two badges all read the resulting
+  // status from `pane.gitStatus`, so there is exactly one subscription per pane.
+  import FolderClosed from 'lucide-svelte/icons/folder-closed';
+  import SquareTerminal from 'lucide-svelte/icons/square-terminal';
+  import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
+  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { OpenInEditor } from '../../stores/bindings';
+  import { errString } from '../../utils/errors';
+  import { getProject } from '../../stores/projects.svelte';
+  import { addToast } from '../../stores/toast.svelte';
+  import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
+  import { getTransportStatus } from '../../stores/transportStatus.svelte';
+  import { runTerminalToggle } from '../terminal/terminalToggle';
+  import { openTerminalThread } from '../../stores/threadCreation.svelte';
+  import GitActionsControl from '../git/GitActionsControl.svelte';
+  import PrBadge from '../git/PrBadge.svelte';
+  import WorkspaceDiffBadge from '../git/WorkspaceDiffBadge.svelte';
+  import Button from '../primitives/Button.svelte';
+  import Icon from '../primitives/Icon.svelte';
+
+  let { pane }: { pane: ThreadPane } = $props();
+
+  let isDesignThread = $derived(pane.thread?.mode === 'design');
+
+  let terminalToggleChord = $derived(
+    formatChord(keybindingForCommand('terminal.toggle') ?? 'mod+`'),
+  );
+  let diffPanelToggleChord = $derived(
+    formatChord(keybindingForCommand('diff.panel.toggle') ?? 'mod+shift+g'),
+  );
+
+  // Subscription deps. Derived primitives so the attach $effect re-runs only
+  // when the actual value changes — pane.replaceThread() for unrelated metadata
+  // (token usage, mode) won't thrash the git-status pipe (value-equality on the
+  // derived suppresses the downstream re-run). gitCwd resolves to the worktree
+  // dir for worktree threads, so the subscription is worktree-correct.
+  let threadId = $derived(pane.threadId);
+  let gitCwd = $derived(
+    pane.thread?.worktreePath ?? pane.thread?.workspacePath ?? null,
+  );
+  let transportConnected = $derived(getTransportStatus().status === 'connected');
+
+  // Single gitwatch subscription for this pane's workspace. Lives here (not in
+  // GitActionsControl) so the commit/push control and the header badges share
+  // one stream. The slot owns the subscribe / retry-backoff / git:status
+  // listener / observed-branch persist; this effect just wires the reactive
+  // deps and returns the slot's cleanup.
+  $effect(() => {
+    return pane.gitStatus.attach({
+      threadId,
+      cwd: gitCwd,
+      connected: transportConnected,
+      getThread: () => pane.thread ?? null,
+      getLiveThreadId: () => pane.threadId,
+      reportError: (message) => pane.setGeneralError(message),
+    });
+  });
+
+  // Project lookup for the badge. The projects store is a singleton;
+  // undefined is fine (we just don't render the badge). projectId is derived as
+  // a primitive first so the badge lookup only re-runs when the id actually
+  // changes — pane.replaceThread() mints a fresh thread object on every
+  // token-usage push during streaming, but the id string is value-equal, so the
+  // $derived short-circuits (same guard the subscription deps above use).
+  let projectId = $derived(pane.thread?.projectId ?? null);
+  let projectBadge = $derived.by(() => {
+    if (!projectId) return null;
+    const project = getProject(projectId);
+    if (!project) return null;
+    return {
+      id: project.project.id,
+      name: project.project.name,
+      path: project.project.path,
+    };
+  });
+
+  async function openProjectInEditor(): Promise<void> {
+    if (!projectBadge) return;
+    try {
+      // projectBadge.path is already absolute; workspacePath is unused.
+      await OpenInEditor(projectBadge.path, 0, 0, '');
+    } catch (err) {
+      addToast('error', errString(err));
+    }
+  }
+
+  // Terminal / Diff / Design panels need a real thread row — terminal
+  // session id, diff backend bindings, design preview URL all key off
+  // it. On a placeholder, materialize before toggling so the click
+  // actually opens the panel instead of flipping the pressed state of
+  // a button whose downstream gate (ThreadTerminalPlacement.threadId,
+  // DiffPanelDrawer's backend bindings, /design/{threadId}/main/ URL)
+  // would otherwise reject the synthetic draft id.
+  async function ensureThenToggle(toggle: () => void): Promise<void> {
+    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+    if (!threadId) return;
+    toggle();
+  }
+</script>
+
+<!-- Right cluster: wraps, doesn't disappear, at narrow widths. Visible on
+     placeholders too — the caller's `pane.thread` gate already filters out
+     "no thread at all" panes, and the subcomponents self-gate on
+     `pane.threadId` for the pieces that genuinely need a persisted row. -->
+<div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+  {#if !isDesignThread}
+    <PrBadge status={pane.gitStatus.status} />
+    <WorkspaceDiffBadge
+      status={pane.gitStatus.status}
+      pressed={pane.diffPanel.open}
+      chord={diffPanelToggleChord}
+      onActivate={() => void ensureThenToggle(() => pane.toggleDiffPanel('workspace'))}
+    />
+  {/if}
+
+  {#if projectBadge}
+    <Button
+      variant="secondary"
+      size="xs"
+      onclick={openProjectInEditor}
+      ariaLabel={`Open ${projectBadge.name} in editor`}
+      title={`Open ${projectBadge.name} in editor`}
+      testId="chat-header-open-editor"
+      class="shrink-0"
+    >
+      {#snippet leading()}
+        <Icon icon={FolderClosed} size={12} strokeWidth={2} class="opacity-90" />
+      {/snippet}
+      {#snippet children()}Open{/snippet}
+    </Button>
+  {/if}
+
+  <GitActionsControl {pane} />
+
+  <!-- Plain click shares runTerminalToggle with the mod+` chord
+       (terminal.toggle) so opening focuses the terminal and closing hands
+       focus back to the composer. Ctrl/Cmd-click instead opens a FRESH
+       terminal in a new pane (rooted at this thread's workspace) — the same
+       gesture the sidebar uses for "open in new pane", and the mod+shift+~
+       chord's pointer twin. -->
+  <Button
+    variant="secondary"
+    size="xs"
+    pressed={pane.showTerminal}
+    ariaLabel="Toggle Terminal"
+    title={`Toggle Terminal (${terminalToggleChord})`}
+    onclick={(e) => {
+      if (e.metaKey || e.ctrlKey) {
+        void openTerminalThread({
+          projectId: pane.thread?.projectId,
+          cwd: pane.thread?.workspacePath,
+        });
+      } else {
+        void ensureThenToggle(() => runTerminalToggle(pane));
+      }
+    }}
+    testId="terminal-toggle"
+    class="shrink-0 w-6 px-0"
+  >
+    {#snippet children()}
+      <Icon icon={SquareTerminal} size={12} strokeWidth={2} class="opacity-90" />
+    {/snippet}
+  </Button>
+
+  {#if isDesignThread}
+    <Button
+      variant="secondary"
+      size="xs"
+      pressed={pane.showDesignPreviewPanel}
+      ariaLabel="Toggle Design Preview"
+      title="Toggle Design Preview"
+      onclick={() => void ensureThenToggle(() => pane.toggleDesignPreviewPanel())}
+      testId="design-preview-toggle"
+      class="shrink-0 w-6 px-0"
+    >
+      {#snippet children()}
+        <Icon icon={PanelRightOpen} size={12} strokeWidth={2} class="opacity-90" />
+      {/snippet}
+    </Button>
+  {/if}
+</div>

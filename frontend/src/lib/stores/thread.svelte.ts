@@ -1,6 +1,6 @@
 import type { Item, ItemKind, Project, Thread } from '../types/models';
 import { asProviderID } from '../types/providers';
-import type { Checkpoint } from '../types/checkpoint';
+import type { Checkpoint, DiffPanelTab } from '../types/checkpoint';
 import type {
   ApprovalRequest,
   ContextWindow,
@@ -52,6 +52,7 @@ import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 
 import { addToast } from './toast.svelte';
 import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
+import { createGitStatusSlot, type GitStatusSlot } from './gitStatus.svelte';
 import {
   createRhsPanelSlot,
   type DiffSidebarUIState,
@@ -519,6 +520,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // Diff panel is per-pane; created once and reset on thread switch so its
   // caches don't leak between threads.
   const diffPanel: DiffPanelState = createDiffPanelState();
+
+  // Live git-status for this pane's workspace. Owns the single gitwatch
+  // subscription (driven by ChatHeaderActions via attach); GitActionsControl
+  // and the header diff/PR badges read it. Reset on thread switch like
+  // diffPanel so a stale count never flashes for the incoming thread.
+  const gitStatus: GitStatusSlot = createGitStatusSlot();
 
   const channelState = createThreadChannelState();
   const designState = createThreadDesignState();
@@ -1188,6 +1195,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     liveTodoState.resetForThread(newThread.id);
     diffPanel.clearForThread();
+    gitStatus.reset();
   }
 
   /**
@@ -1459,6 +1467,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get sendInFlight() { return sendInFlight; },
     get showTerminal() { return showTerminal; },
     get diffPanel() { return diffPanel; },
+    get gitStatus() { return gitStatus; },
     refreshCheckpoints: refreshCheckpointsForThread,
     applyCheckpointCaptured(payload: CheckpointCapturedEvent | null): void {
       if (!payload || payload.threadId !== thread?.id) return;
@@ -1693,6 +1702,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // `scrollToItemRequest.nonce` stay monotonic for the pane's
       // lifetime so no consumer observes a regressed counter.
       diffPanel.clearForThread();
+      gitStatus.reset();
       // Invalidate any in-flight switchThread so its late resolutions can't
       // repopulate the pane we just cleared.
       switchGeneration++;
@@ -2619,10 +2629,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return requested;
     },
 
-    toggleDiffPanel(): void {
+    toggleDiffPanel(tab: DiffPanelTab = 'workspace'): void {
       if (thread?.mode === 'design') return;
-      if (diffPanel.open) activatePanel(null);
-      else activatePanel({ kind: 'diff-checkpoint' });
+      if (diffPanel.open) {
+        activatePanel(null);
+        return;
+      }
+      // Land on the requested tab before the panel mounts so it never
+      // flashes the messages tab on the way to workspace. The header diff
+      // badge and the diff.panel.toggle keybinding both open on 'workspace';
+      // checkpoint-click / setDiffPanelOpen stay messages-oriented.
+      diffPanel.setTabMode(tab);
+      activatePanel({ kind: 'diff-checkpoint' });
     },
 
     togglePlanSidebar(): void {

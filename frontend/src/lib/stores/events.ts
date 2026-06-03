@@ -1,4 +1,3 @@
-import { Events } from '@wailsio/runtime';
 import type {
   ApprovalEvent,
   ItemDeltaEvent,
@@ -57,7 +56,13 @@ import {
   projectUserInputRequest,
   projectUserInputResolution,
 } from './threadStatuses.svelte';
-import { parseTokenUsage } from './thread.svelte';
+// Import parseTokenUsage from its leaf home, not via the thread.svelte barrel,
+// so this module no longer depends on the 2800-line thread store at all.
+import { parseTokenUsage } from './threadTurnProjection';
+// wailsEventOn lives in a leaf module so low-level stores can subscribe to
+// backend events without importing this handler module; imported here for
+// setupEventListeners() use and re-exported below for existing import sites.
+import { wailsEventOn } from './wailsEvents';
 import { threadItemCache } from './threadItemCache';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import {
@@ -283,28 +288,11 @@ function notifyItemUpserts(items: Item[]): void {
   }
 }
 
-/**
- * wailsEventOn wraps Events.On so callers receive the inner Go payload.
- * The transport (wsClient.ts) is payload-agnostic and Phase C made the
- * production wire deliver raw payloads, so this helper is just an
- * import-path shim — the wsClient already hands `ev.data` through as
- * the bare payload.
- *
- * Per-channel gap detection lives in the transport: the wsClient
- * surfaces gaps via the synthetic `transport:gap` channel and the
- * `gap:true` flag on `event` frames. Subscribers that care about gap
- * recovery should consume that channel directly rather than
- * re-implementing seq tracking here.
- *
- * Exported so subscribers outside this file (terminal drawer, diff
- * panel) keep a single import path.
- */
-export function wailsEventOn<T = unknown>(
-  name: string,
-  handler: (data: T) => void,
-): () => void {
-  return Events.On(name, (ev) => handler(ev.data as T));
-}
+// wailsEventOn is defined in ./wailsEvents (a leaf module) and re-exported here
+// so existing subscribers (terminal drawer, diff panel, mcpServers, …) keep
+// importing it from './events'. It lives in a leaf so low-level stores can
+// subscribe without importing this handler module — see wailsEvents.ts.
+export { wailsEventOn };
 
 /**
  * Payload for the backend-emitted thread:mode_changed event. Mirrors

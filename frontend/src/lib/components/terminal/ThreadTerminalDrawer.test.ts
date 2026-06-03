@@ -4,13 +4,17 @@ import { tick } from 'svelte';
 import ThreadTerminalDrawer from './ThreadTerminalDrawer.svelte';
 import { resetThreadTerminalStatesForTest } from './terminalStore.svelte';
 import { setupEventListeners } from '../../stores/events';
+import { emitWailsEvent, wailsListenerCount, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 
 // --- Mock layer --- //
-// We control the Wails bindings and event bus so drawer logic can be exercised
-// without an actual backend.
+// We control the Wails bindings here; the event bus is the global @wailsio/
+// runtime mock (vitest alias → src/test/mocks/wailsio-runtime.ts), driven with
+// emitWailsEvent / wailsListenerCount. We deliberately do NOT mock
+// @wailsio/runtime locally: wailsEventOn now lives in a leaf module that the
+// global alias intercepts at any import depth, whereas a bespoke per-file
+// factory only caught events.ts's old direct import.
 
 const callLog: Array<{ fn: string; args: unknown[] }> = [];
-const eventListeners: Record<string, ((ev: { data: unknown }) => void)[]> = {};
 let cleanupEvents: (() => void) | null = null;
 
 vi.mock('../../stores/bindings', () => ({
@@ -66,24 +70,6 @@ vi.mock('../../stores/toast.svelte', () => ({
   addToast: vi.fn(),
 }));
 
-vi.mock('@wailsio/runtime', () => ({
-  Events: {
-    On: (eventName: string, handler: (ev: { data: unknown }) => void) => {
-      eventListeners[eventName] = eventListeners[eventName] ?? [];
-      eventListeners[eventName]!.push(handler);
-      return () => {
-        eventListeners[eventName] = (eventListeners[eventName] ?? []).filter((h) => h !== handler);
-      };
-    },
-  },
-}));
-
-function emitEvent(name: string, data: unknown) {
-  for (const h of eventListeners[name] ?? []) {
-    h({ data });
-  }
-}
-
 function makeSurface() {
   const thread = {
     id: 'thread-A',
@@ -134,7 +120,7 @@ async function defaultOpenTerminalImpl(threadID: string, opts: unknown) {
 beforeEach(async () => {
   callLog.length = 0;
   resetThreadTerminalStatesForTest();
-  for (const key of Object.keys(eventListeners)) delete eventListeners[key];
+  resetWailsMocks();
   cleanupEvents = setupEventListeners();
   const bindings = await import('../../stores/bindings');
   (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
@@ -156,8 +142,8 @@ describe('ThreadTerminalDrawer', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(eventListeners['terminal:output']).toBeDefined();
-    expect(eventListeners['terminal:exit']).toBeDefined();
+    expect(wailsListenerCount('terminal:output')).toBeGreaterThan(0);
+    expect(wailsListenerCount('terminal:exit')).toBeGreaterThan(0);
   });
 
   it('does not list or open terminals when mounted in manual mode', async () => {
@@ -247,7 +233,7 @@ describe('ThreadTerminalDrawer', () => {
 
     // PTY exited (Ctrl+D, kill, process death). Backend already cleaned
     // up — frontend must just drop the tab.
-    emitEvent('terminal:exit', {
+    emitWailsEvent('terminal:exit', {
       terminalID: 't1',
       threadID: 'thread-A',
       code: 0,
@@ -299,7 +285,7 @@ describe('ThreadTerminalDrawer', () => {
     await Promise.resolve();
     await tick();
 
-    emitEvent('terminal:exit', {
+    emitWailsEvent('terminal:exit', {
       terminalID: 't1',
       threadID: 'thread-A',
       code: 0,
@@ -322,7 +308,7 @@ describe('ThreadTerminalDrawer', () => {
     await Promise.resolve();
     await tick();
 
-    emitEvent('terminal:exit', {
+    emitWailsEvent('terminal:exit', {
       terminalID: 't1',
       threadID: 'thread-OTHER',
       code: 0,
@@ -408,7 +394,7 @@ describe('ThreadTerminalDrawer', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    emitEvent('terminal:output', {
+    emitWailsEvent('terminal:output', {
       terminalID: 't1',
       threadID: 'thread-A',
       sequence: 1,
@@ -428,7 +414,7 @@ describe('ThreadTerminalDrawer', () => {
 
     // Emitting an event for a different thread must not crash even if no tabs
     // match: the payload is simply ignored.
-    expect(() => emitEvent('terminal:output', {
+    expect(() => emitWailsEvent('terminal:output', {
       terminalID: 'other',
       threadID: 'thread-B',
       sequence: 1,
