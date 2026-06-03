@@ -22,11 +22,14 @@ export interface Thread {
   worktreePath?: string;
   branch?: string;
   /**
-   * Canonical mode column. "chat" | "plan" | "design" | "discussion".
+   * Canonical mode column.
+   * "chat" | "plan" | "design" | "discussion" | "terminal".
    * Optional in the TS layer so older fixtures omit it cleanly; new UI
-   * code defaults to "chat" when missing.
+   * code defaults to "chat" when missing. "terminal" threads are
+   * persistent terminal panes — no provider session, rendered by
+   * TerminalView instead of the chat surface.
    */
-  mode?: "chat" | "plan" | "design" | "discussion";
+  mode?: "chat" | "plan" | "design" | "discussion" | "terminal";
   /**
    * Reasoning effort tier. The selected provider/model controls which
    * subset is valid.

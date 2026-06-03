@@ -214,6 +214,28 @@ export function eventMatchesKeybindingCommand(
   return false;
 }
 
+// A context that models exactly one fact: a terminal is focused. The xterm key
+// handler uses it to decide whether a chord should *escape* the terminal to the
+// app. `when` evaluation only reads `flags`, and the pane-nav commands carry no
+// command-level `when`, so modelling terminalFocus alone is sufficient — a
+// chord still rule-gated on `!terminalFocus` (alt+arrow) evaluates false and is
+// left for the shell, while an un-gated chord (alt+h/l) matches and escapes.
+const TERMINAL_FOCUSED_CTX = { flags: { terminalFocus: true } } as unknown as CommandContext;
+
+/**
+ * Should this terminal keydown bubble to the app instead of the PTY? True when
+ * the event matches one of `commandIds` whose binding stays enabled while a
+ * terminal is focused. Reads the live resolved bindings, so user rebinds take
+ * effect without remounting the terminal.
+ */
+export function eventEscapesTerminalToCommand(
+  event: KeyboardEvent,
+  commandIds: ReadonlySet<string>,
+  options: { isMac?: boolean } = {},
+): boolean {
+  return eventMatchesKeybindingCommand(event, TERMINAL_FOCUSED_CTX, commandIds, options);
+}
+
 function evaluateRuleWhen(node: WhenNode, ctx: CommandContext): boolean {
   const flags = ctx.flags ?? ctx;
   switch (node.type) {

@@ -1,34 +1,26 @@
 <script lang="ts">
-  // Chat header: thread title + project chip on the left, action cluster
-  // on the right (Open-in-editor, git actions, terminal toggle, diff
-  // toggle). Thread mode (chat vs design) is read from `pane.thread.mode`
-  // and surfaced by the composer's ThreadModePicker; nothing here needs
-  // to render mode chrome.
-  //
-  // The inline-rename flow below mirrors the behavior the old
-  // ChatView.svelte header used: click the title to switch to an input,
-  // Enter to submit (RenameThread), Escape / blur to cancel.
+  // Chat header: the shared pane title (PaneTitleHandle — renameable,
+  // draggable, focus-outlined) plus an attention dot on the left, and the
+  // action cluster on the right (Open-in-editor, git actions, terminal
+  // toggle, diff toggle). Thread mode (chat vs design) is read from
+  // `pane.thread.mode` and surfaced by the composer's ThreadModePicker;
+  // nothing here needs to render mode chrome.
 
-  import { tick } from 'svelte';
   import FolderClosed from 'lucide-svelte/icons/folder-closed';
   import SquareTerminal from 'lucide-svelte/icons/square-terminal';
   import Diff from 'lucide-svelte/icons/diff';
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
-  import X from 'lucide-svelte/icons/x';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { Thread } from '../../types/models';
-  import {
-    RenameThread,
-    GetThread,
-    OpenInEditor,
-  } from '../../stores/bindings';
-  import { destroyPane, getFocusedPaneId, syncThread } from '../../stores/panes.svelte';
+  import { OpenInEditor } from '../../stores/bindings';
   import { errString } from '../../utils/errors';
   import { getProject } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
   import { resolvePaneAttentionDot } from '../panes/paneAttention';
   import { runTerminalToggle } from '../terminal/terminalToggle';
+  import { openTerminalThread } from '../../stores/threadCreation.svelte';
+  import PaneTitleHandle from '../panes/PaneTitleHandle.svelte';
+  import PaneCloseButton from '../panes/PaneCloseButton.svelte';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -41,7 +33,6 @@
   let { pane, onPaneDragStart }: Props = $props();
   let attentionDot = $derived(resolvePaneAttentionDot(pane.thread ?? null));
   let titleGlow = $derived(attentionDot?.pill.glowClass ?? '');
-  let isFocusedPane = $derived(getFocusedPaneId() === pane.paneId);
   let isDesignThread = $derived(pane.thread?.mode === 'design');
 
   let terminalToggleChord = $derived(
@@ -50,25 +41,6 @@
   let diffPanelToggleChord = $derived(
     formatChord(keybindingForCommand('diff.panel.toggle') ?? 'mod+shift+g'),
   );
-
-  // Inline-rename state. Mirrors the old header's pattern — local string
-  // buffer + editing toggle so Svelte's input can treat the field as
-  // controlled without disturbing the pane state.
-  let editing = $state(false);
-  let draftTitle = $state('');
-  let inputEl: HTMLInputElement | undefined = $state(undefined);
-  let renamePending = $state(false);
-
-  // Whenever the thread id changes, bail out of any in-flight rename —
-  // otherwise a user-switched-thread-mid-edit scenario would silently
-  // rename the wrong thread when they hit Enter.
-  $effect(() => {
-    const id = pane.thread?.id;
-    if (id == null) return;
-    editing = false;
-    draftTitle = '';
-    renamePending = false;
-  });
 
   // Project lookup for the badge. The projects store is a singleton;
   // undefined is fine (we just don't render the badge).
@@ -83,58 +55,6 @@
       path: project.project.path,
     };
   });
-
-  function startRename(): void {
-    if (!pane.thread || !pane.threadId) return;
-    draftTitle = pane.thread.title;
-    editing = true;
-    void tick().then(() => {
-      inputEl?.focus();
-      inputEl?.select();
-    });
-  }
-
-  function cancelRename(): void {
-    editing = false;
-    draftTitle = '';
-  }
-
-  async function commitRename(): Promise<void> {
-    if (!pane.thread || !pane.threadId) return;
-    const next = draftTitle.trim();
-    // Empty submits and no-op submits both bail out quietly. The user
-    // already sees their current title — no need to toast a no-op.
-    if (next === '' || next === pane.thread.title) {
-      cancelRename();
-      return;
-    }
-    const threadId = pane.threadId;
-    renamePending = true;
-    try {
-      await RenameThread(threadId, next);
-      // RenameThread returns void; re-read the row so the pane + sidebar
-      // pick up the new title without hand-assembling a Thread.
-      const updated = (await GetThread(threadId)) as Thread;
-      syncThread(updated);
-    } catch (err) {
-      console.error('Rename thread failed:', err);
-      pane.setGeneralError(`Failed to rename thread: ${errString(err)}`);
-    } finally {
-      renamePending = false;
-      editing = false;
-      draftTitle = '';
-    }
-  }
-
-  function handleKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      void commitRename();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      cancelRename();
-    }
-  }
 
   async function openProjectInEditor(): Promise<void> {
     if (!projectBadge) return;
@@ -180,59 +100,14 @@
         data-status={attentionDot.status}
       ></span>
     {/if}
-    <!-- Title is the pane drag-handle. Right-click renames; mousedown +
-         drag reorders the pane. Left-click is reserved for the drag
-         gesture so a fast click doesn't accidentally start an edit. -->
-    {#if editing}
-      <input
-        bind:this={inputEl}
-        type="text"
-        bind:value={draftTitle}
-        onkeydown={handleKeydown}
-        onblur={() => void commitRename()}
-        disabled={renamePending}
-        data-testid="chat-header-title-input"
-        aria-label="Rename Thread"
-        class="text-sm font-medium text-fg bg-surface-2/60 rounded-[var(--radius-field)] px-1.5 py-0.5 min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
-      />
-    {:else}
-      <button
-        type="button"
-        oncontextmenu={(event) => {
-          event.preventDefault();
-          startRename();
-        }}
-        draggable={onPaneDragStart != null}
-        ondragstart={(event) => onPaneDragStart?.(event)}
-        data-testid="chat-header-title"
-        data-focused={isFocusedPane}
-        title={`${pane.thread.title} (right-click to rename)`}
-        class={[
-          'text-sm font-medium truncate min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 rounded-[var(--radius-field)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-          onPaneDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
-          isFocusedPane
-            ? 'bg-accent/15 text-fg ring-1 ring-accent/40'
-            : 'text-fg hover:bg-surface-2/40',
-          titleGlow,
-        ].join(' ')}
-      >
-        {pane.thread.title}
-      </button>
-    {/if}
-    <button
-      type="button"
-      aria-label="Close Pane"
-      title="Close Pane"
-      onpointerdown={(event) => event.stopPropagation()}
-      onclick={(event) => {
-        event.stopPropagation();
-        destroyPane(pane.paneId);
-      }}
-      data-testid="pane-close"
-      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-field)] text-fg-hint opacity-70 transition-colors hover:bg-surface-2/70 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-    >
-      <Icon icon={X} size={12} strokeWidth={2} />
-    </button>
+    <PaneTitleHandle
+      {pane}
+      {onPaneDragStart}
+      glowClass={titleGlow}
+      titleTestId="chat-header-title"
+      inputTestId="chat-header-title-input"
+    />
+    <PaneCloseButton paneId={pane.paneId} testId="pane-close" />
 
     <!-- Right cluster: wraps, doesn't disappear, at narrow widths.
          Visible on placeholders too — the outer `pane.thread` gate
@@ -260,16 +135,28 @@
 
       <GitActionsControl {pane} />
 
-      <!-- Shares runTerminalToggle with the mod+` chord (terminal.toggle) so
-           opening focuses the terminal and closing hands focus back to the
-           composer — same behavior whether opened by click or keyboard. -->
+      <!-- Plain click shares runTerminalToggle with the mod+` chord
+           (terminal.toggle) so opening focuses the terminal and closing hands
+           focus back to the composer. Ctrl/Cmd-click instead opens a FRESH
+           terminal in a new pane (rooted at this thread's workspace) — the same
+           gesture the sidebar uses for "open in new pane", and the mod+shift+~
+           chord's pointer twin. -->
       <Button
         variant="secondary"
         size="xs"
         pressed={pane.showTerminal}
         ariaLabel="Toggle Terminal"
         title={`Toggle Terminal (${terminalToggleChord})`}
-        onclick={() => void ensureThenToggle(() => runTerminalToggle(pane))}
+        onclick={(e) => {
+          if (e.metaKey || e.ctrlKey) {
+            void openTerminalThread({
+              projectId: pane.thread?.projectId,
+              cwd: pane.thread?.workspacePath,
+            });
+          } else {
+            void ensureThenToggle(() => runTerminalToggle(pane));
+          }
+        }}
         testId="terminal-toggle"
         class="shrink-0 w-6 px-0"
       >

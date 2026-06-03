@@ -7,7 +7,9 @@
     onOpen: () => void;
     onClose: (terminalID: string) => void;
     onSelect: (terminalID: string) => void;
-    onCollapse: () => void;
+    /** Collapse the bottom drawer. Omitted in a full terminal pane, where
+     *  there is nothing to collapse into — the ▾ button is hidden then. */
+    onCollapse?: () => void;
     /** Workspace path for the terminal's owning thread. Optional —
      *  falls back to hiding the open-in-editor button when absent so
      *  detached / pre-thread states stay quiet. */
@@ -92,11 +94,13 @@
       />
     </div>
   {/if}
-  <button
-    type="button"
-    class="h-6 px-2 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mr-1"
-    data-testid="terminal-collapse"
-    onclick={onCollapse}
-    aria-label="Hide Terminal Drawer"
-  >▾</button>
+  {#if onCollapse}
+    <button
+      type="button"
+      class="h-6 px-2 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mr-1"
+      data-testid="terminal-collapse"
+      onclick={onCollapse}
+      aria-label="Hide Terminal Drawer"
+    >▾</button>
+  {/if}
 </div>

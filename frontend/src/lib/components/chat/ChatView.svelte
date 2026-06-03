@@ -6,6 +6,7 @@
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
+  import TerminalView from '../terminal/TerminalView.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignClarificationPicker from '../design/DesignClarificationPicker.svelte';
   import RhsSidebarShell from './RhsSidebarShell.svelte';
@@ -322,6 +323,12 @@
   let inDesignMode = $derived(
     !!pane.thread && pane.thread.mode === 'design',
   );
+  // Terminal threads render a full-pane terminal surface instead of the chat
+  // machinery (composer, timeline, RHS panels) — the same whole-surface swap
+  // discussion mode does. No provider session is ever started for these.
+  let inTerminalMode = $derived(
+    !!pane.thread && pane.thread.mode === 'terminal',
+  );
 
   function openImagePreview(preview: ExpandedImagePreview): void {
     // If a previous preview is still open (rapid re-click on a different
@@ -558,6 +565,8 @@
 
 {#if pane.thread && inDiscussionMode}
   <DiscussionView {pane} />
+{:else if pane.thread && inTerminalMode}
+  <TerminalView {pane} {onPaneDragStart} />
 {:else if pane.thread}
   <!-- Standard chat surface. RhsSidebarShell carries plan, diff, payload,
        and design preview panels. -->

@@ -220,6 +220,47 @@ describe('<ProjectItem>', () => {
     expect(onNewThread).toHaveBeenCalledTimes(1);
   });
 
+  it('new-terminal button is hidden by default but invokes onNewTerminal when clicked', async () => {
+    const onNewTerminal = vi.fn();
+    const pane = createThreadPane();
+    const { getByTestId } = render(ProjectItem, {
+      props: {
+        project: wrap('p1'),
+        threads: [],
+        pane,
+        onNewTerminal,
+      },
+    });
+    const newTerminalButton = getByTestId('project-item-new-terminal') as HTMLButtonElement;
+    // Hover-revealed like the new-thread button (CSS-only; happy-dom can't :hover).
+    expect(newTerminalButton.className).toContain('group-hover:opacity-100');
+    await fireEvent.click(newTerminalButton);
+    // No options object — terminals always open in a fresh pane, so the
+    // gesture carries no modifier meaning (unlike onNewThread).
+    expect(onNewTerminal).toHaveBeenCalledWith('p1');
+  });
+
+  it('clicking the new-terminal button does not bubble to the row toggle or fire onNewThread', async () => {
+    const onNewThread = vi.fn();
+    const onNewTerminal = vi.fn();
+    const pane = createThreadPane();
+    const { getByTestId } = render(ProjectItem, {
+      props: {
+        project: wrap('p1'),
+        threads: [],
+        pane,
+        onNewThread,
+        onNewTerminal,
+      },
+    });
+    await fireEvent.click(getByTestId('project-item-new-terminal'));
+    // Default is expanded; the click must not toggle it, and the +terminal
+    // button must be wired to its own handler (not onNewThread).
+    expect(isProjectExpanded('p1')).toBe(true);
+    expect(onNewTerminal).toHaveBeenCalledWith('p1');
+    expect(onNewThread).not.toHaveBeenCalled();
+  });
+
   it('keeps an explicitly-collapsed running project collapsed and shows status plus active thread pin', async () => {
     // The collapsed-state render path: status dot + active-thread pin
     // surface the running work without the user needing to expand. We

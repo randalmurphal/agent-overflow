@@ -71,29 +71,42 @@ var Defaults = []Keybinding{
 	{Key: "mod+/", Command: "picker.toggleInput", When: "anyPickerOpen", DefaultID: "picker.toggleInput"},
 	{Key: "mod+n", Command: "terminal.new", When: "terminalFocus", DefaultID: "terminal.new"},
 	// NOTE: the `!terminalFocus`-gated chords below (mod+w → pane.close, the
-	// thread.new family, the pane-navigation alts) must NOT fire from inside a
-	// focused xterm — ctrl-w in particular has to reach the shell as werase. The
-	// gate only holds because the keydown dispatcher reads terminalFocus FRESH
-	// per keypress; see App.svelte handleGlobalKeydown for why a memoized read
-	// regressed it.
+	// thread.new family) must NOT fire from inside a focused xterm — ctrl-w in
+	// particular has to reach the shell as werase. The gate only holds because
+	// the keydown dispatcher reads terminalFocus FRESH per keypress; see
+	// App.svelte handleGlobalKeydown for why a memoized read regressed it.
 	//
 	// mod+w intentionally has no terminalFocus twin (ctrl-w → werase). The twins
 	// that do exist (mod+n → terminal.new above) are inert from inside the xterm
 	// for a separate reason: terminal.new isn't editableReachable, so it can't
 	// reach the editable xterm textarea and falls through to the shell.
+	//
+	// Pane navigation is deliberately ASYMMETRIC across its alt twins. The vim
+	// chords (alt+h/l, alt+shift+h/l) carry NO terminalFocus gate so they drive
+	// pane focus/move even from inside a terminal: TerminalBody's xterm key
+	// handler recognises exactly these and lets them bubble to the app instead
+	// of writing them to the PTY (writing them is what made alt+l run `ls`).
+	// Their arrow twins KEEP the `!terminalFocus` gate so the shell still owns
+	// alt+arrow word-motion; the same xterm handler leaves those for the PTY.
 	{Key: "mod+n", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.primary"},
 	{Key: "mod+shift+n", Command: "thread.newPane", When: "!terminalFocus", DefaultID: "thread.newPane"},
+	// Uses the SHIFTED glyph `~`, not the bare backtick: Ctrl/Cmd+Shift+` yields
+	// event.key="~", and the matcher compares event.key.toLowerCase() without
+	// folding punctuation, so a `mod+shift+\`` binding would never fire. The
+	// !terminalFocus gate keeps it out of a focused xterm; the command itself
+	// carries no `when`, so it stays palette-runnable.
+	{Key: "mod+shift+~", Command: "terminal.newPane", When: "!terminalFocus", DefaultID: "terminal.newPane"},
 	{Key: "mod+shift+o", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.alternate"},
 	{Key: "mod+shift+d", Command: "thread.new.discussion", When: "!terminalFocus", DefaultID: "thread.new.discussion"},
 	{Key: "mod+w", Command: "pane.close", When: "!terminalFocus", DefaultID: "pane.close"},
 	{Key: "alt+arrowleft", Command: "pane.focusLeft", When: "!terminalFocus", DefaultID: "pane.focusLeft.arrow"},
-	{Key: "alt+h", Command: "pane.focusLeft", When: "!terminalFocus", DefaultID: "pane.focusLeft.vim"},
+	{Key: "alt+h", Command: "pane.focusLeft", DefaultID: "pane.focusLeft.vim"},
 	{Key: "alt+arrowright", Command: "pane.focusRight", When: "!terminalFocus", DefaultID: "pane.focusRight.arrow"},
-	{Key: "alt+l", Command: "pane.focusRight", When: "!terminalFocus", DefaultID: "pane.focusRight.vim"},
+	{Key: "alt+l", Command: "pane.focusRight", DefaultID: "pane.focusRight.vim"},
 	{Key: "alt+shift+arrowleft", Command: "pane.moveLeft", When: "!terminalFocus", DefaultID: "pane.moveLeft.arrow"},
-	{Key: "alt+shift+h", Command: "pane.moveLeft", When: "!terminalFocus", DefaultID: "pane.moveLeft.vim"},
+	{Key: "alt+shift+h", Command: "pane.moveLeft", DefaultID: "pane.moveLeft.vim"},
 	{Key: "alt+shift+arrowright", Command: "pane.moveRight", When: "!terminalFocus", DefaultID: "pane.moveRight.arrow"},
-	{Key: "alt+shift+l", Command: "pane.moveRight", When: "!terminalFocus", DefaultID: "pane.moveRight.vim"},
+	{Key: "alt+shift+l", Command: "pane.moveRight", DefaultID: "pane.moveRight.vim"},
 	{Key: "mod+shift+g", Command: "diff.panel.toggle", When: "hasActiveThread && !terminalFocus", DefaultID: "diff.panel.toggle"},
 	{Key: "mod+f", Command: "search.threads", When: "!terminalFocus", DefaultID: "search.threads"},
 	{Key: "mod+,", Command: "settings.open", DefaultID: "settings.open"},

@@ -275,26 +275,36 @@ function evictEmptyTerminalStates(): void {
   }
 }
 
-// Module-level terminal-focus registry. The keybindings dispatcher reads
-// `getTerminalFocused()` via makeCommandContext to gate `terminalFocus`-scoped
-// chords. TerminalBody registers/deregisters via notifyTerminalFocus — the
-// counter tolerates multiple mounts (e.g. keyed remount when swapping active
-// tab) without flipping the flag prematurely.
-let focusedTerminals = 0;
+// Module-level terminal-focus registry, keyed by paneId. The keybindings
+// dispatcher reads `getTerminalFocused(paneId)` via makeCommandContext to gate
+// a specific pane's `terminalFocus`-scoped chords. TerminalBody
+// registers/deregisters via `notifyTerminalFocus(paneId, focused)` — the
+// per-pane count tolerates multiple mounts (e.g. keyed remount when swapping
+// the active tab) without flipping that pane's flag prematurely. Keying by pane
+// is what keeps two terminal panes independent: focusing one must not suppress
+// the other pane's `!terminalFocus` chords. Entries are deleted at count zero so
+// the map only holds panes that currently have a focused terminal.
+const focusedTerminalsByPane = new Map<string, number>();
 
-export function getTerminalFocused(): boolean {
-  return focusedTerminals > 0;
+export function getTerminalFocused(paneId: string): boolean {
+  return (focusedTerminalsByPane.get(paneId) ?? 0) > 0;
 }
 
-export function notifyTerminalFocus(focused: boolean): void {
+export function notifyTerminalFocus(paneId: string, focused: boolean): void {
+  const current = focusedTerminalsByPane.get(paneId) ?? 0;
   if (focused) {
-    focusedTerminals += 1;
+    focusedTerminalsByPane.set(paneId, current + 1);
+    return;
+  }
+  const next = Math.max(0, current - 1);
+  if (next === 0) {
+    focusedTerminalsByPane.delete(paneId);
   } else {
-    focusedTerminals = Math.max(0, focusedTerminals - 1);
+    focusedTerminalsByPane.set(paneId, next);
   }
 }
 
-/** Test helper — bring the registry back to zero between suites. */
+/** Test helper — clear the registry between suites. */
 export function resetTerminalFocusForTest(): void {
-  focusedTerminals = 0;
+  focusedTerminalsByPane.clear();
 }

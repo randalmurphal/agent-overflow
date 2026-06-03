@@ -888,7 +888,206 @@ func TestChatBarFavoritesAndProfilesCHECK(t *testing.T) {
 	}
 }
 
+// --- v5: terminal mode + nullable project_id ---
+
+func TestThreadsModeCheckAcceptsTerminal(t *testing.T) {
+	s := newTestStore(t)
+
+	for _, m := range []string{"chat", "plan", "design", "discussion", "terminal"} {
+		if _, err := s.db.Exec(`
+			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+				created_at, updated_at, archived, mode)
+			VALUES (?, ?, 'M', 'claude', '/tmp', '', 1, 1, 0, ?)
+		`, "t-mode-"+m, defaultTestProjectID, m); err != nil {
+			t.Errorf("INSERT with mode=%q must satisfy CHECK: %v", m, err)
+		}
+	}
+
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-mode-bogus', ?, 'B', 'claude', '/tmp', '', 1, 1, 0, 'terminator')
+	`, defaultTestProjectID); err == nil {
+		t.Fatal("INSERT with mode='terminator' must violate CHECK constraint")
+	}
+}
+
+func TestThreadsProjectIDNullable(t *testing.T) {
+	s := newTestStore(t)
+
+	// A standalone "home" terminal carries no project. Post-v5 the FK is
+	// nullable; the NULL must round-trip rather than coerce to ''.
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-home', NULL, 'Home Terminal', 'claude', '/home/u', '', 1, 1, 0, 'terminal')
+	`); err != nil {
+		t.Fatalf("INSERT with NULL project_id must be allowed post-v5: %v", err)
+	}
+
+	var projectID sql.NullString
+	if err := s.db.QueryRow(`SELECT project_id FROM threads WHERE id = 't-home'`).Scan(&projectID); err != nil {
+		t.Fatalf("select project_id: %v", err)
+	}
+	if projectID.Valid {
+		t.Errorf("project_id = %q, want NULL", projectID.String)
+	}
+}
+
+// TestThreadsV5RebuildPreservesChildren is the guard against silent
+// cascade data loss. The v5 migration rebuilds the threads table
+// (DROP + recreate) to alter the mode CHECK and drop project_id's NOT
+// NULL; with foreign-key enforcement naively left on, that DROP would
+// fire ON DELETE CASCADE against every child table. This test seeds a
+// thread with a spread of CASCADE children across distinct tables, runs
+// the real v5 rebuild, and asserts the children survive, integrity is
+// clean, enforcement is restored, and CASCADE still works afterward.
+func TestThreadsV5RebuildPreservesChildren(t *testing.T) {
+	db := migrateThrough(t, 4)
+
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v5', '/v5', 'v5', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode)
+		VALUES ('t-v5', 'p-v5', 'Keep my children', 'claude', '/tmp', '', 1, 1, 0, 'chat')`)
+	mustExec(t, db, `INSERT INTO turns (turn_id, thread_id, turn_index, started_at)
+		VALUES ('turn-v5', 't-v5', 0, 1)`)
+	// The item doubles as the checkpoint's composite-FK referent
+	// (thread_checkpoints(thread_id, user_item_id) -> items(thread_id, id)),
+	// so a single user_text item is both a CASCADE child and a valid parent.
+	mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+		summary, parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+		VALUES ('t-v5-user:0', 't-v5', 0, 0, 'user_text', 'user', 'completed', 'hi', '', 0, '', '', '', '{}', 1, 1)`)
+	mustExec(t, db, `INSERT INTO thread_checkpoints
+		(id, thread_id, user_item_id, turn_index, ref_name, captured_at, workspace_path)
+		VALUES ('chk-v5', 't-v5', 't-v5-user:0', 0, 'refs/x', 1000, '/tmp')`)
+
+	// Pre-v5 the new affordances must not exist yet — proves migrateThrough
+	// really stopped at the old schema, so the survival assertion is meaningful.
+	if _, err := db.Exec(`UPDATE threads SET mode = 'terminal' WHERE id = 't-v5'`); err == nil {
+		t.Fatal("pre-v5: mode='terminal' must violate CHECK")
+	}
+	if _, err := db.Exec(`UPDATE threads SET project_id = NULL WHERE id = 't-v5'`); err == nil {
+		t.Fatal("pre-v5: NULL project_id must violate NOT NULL")
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 5)); err != nil {
+		t.Fatalf("apply v5 rebuild: %v", err)
+	}
+
+	for _, c := range []struct{ table, where string }{
+		{"threads", "id = 't-v5'"},
+		{"turns", "thread_id = 't-v5'"},
+		{"items", "thread_id = 't-v5'"},
+		{"thread_checkpoints", "thread_id = 't-v5'"},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM `+c.table+` WHERE `+c.where).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", c.table, err)
+		}
+		if n != 1 {
+			t.Errorf("expected %s row to survive rebuild, got %d", c.table, n)
+		}
+	}
+
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	if rows.Next() {
+		t.Error("foreign_key_check reported a violation after rebuild")
+	}
+	rows.Close()
+
+	var fk int
+	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk); err != nil {
+		t.Fatalf("read foreign_keys: %v", err)
+	}
+	if fk != 1 {
+		t.Errorf("foreign_keys = %d after rebuild, want 1 (re-enabled)", fk)
+	}
+
+	// Post-v5 affordances now work.
+	if _, err := db.Exec(`UPDATE threads SET mode = 'terminal' WHERE id = 't-v5'`); err != nil {
+		t.Fatalf("post-v5: mode='terminal' must be accepted: %v", err)
+	}
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode)
+		VALUES ('t-standalone', NULL, 'Home', 'claude', '/home', '', 1, 1, 0, 'terminal')`)
+
+	// CASCADE still wired after the rebuild: deleting the project drops its
+	// (now terminal-mode) thread, while the project-less terminal survives.
+	mustExec(t, db, `DELETE FROM projects WHERE id = 'p-v5'`)
+	var withProject, standalone int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM threads WHERE id = 't-v5'`).Scan(&withProject); err != nil {
+		t.Fatalf("count t-v5 after project delete: %v", err)
+	}
+	if withProject != 0 {
+		t.Errorf("post-v5 CASCADE broken: project delete left %d threads", withProject)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM threads WHERE id = 't-standalone'`).Scan(&standalone); err != nil {
+		t.Fatalf("count standalone after project delete: %v", err)
+	}
+	if standalone != 1 {
+		t.Errorf("standalone terminal should survive project delete, got %d", standalone)
+	}
+}
+
 // --- Helpers ---
+
+// migrateThrough opens an in-memory DB configured like production
+// (SetMaxOpenConns(1), so the single shared :memory: connection is reused
+// across calls and the rebuild migration's pinned-connection FK toggle
+// lands on it) and applies every migration up to and including target. It
+// is the pre-image builder for migration-transition tests: seed against
+// the schema at `target`, then drive the next migration.
+func migrateThrough(t *testing.T, target int) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure database: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version > target {
+			break
+		}
+		apply := applyMigration
+		if m.Rebuild {
+			apply = applyRebuildMigration
+		}
+		if err := apply(db, m); err != nil {
+			t.Fatalf("apply migration v%d: %v", m.Version, err)
+		}
+	}
+	return db
+}
+
+func migrationByVersion(t *testing.T, v int) Migration {
+	t.Helper()
+	for _, m := range migrations {
+		if m.Version == v {
+			return m
+		}
+	}
+	t.Fatalf("no migration with version %d", v)
+	return Migration{}
+}
+
+func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
+	t.Helper()
+	if _, err := db.Exec(query, args...); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
+	}
+}
 
 func readIndexSQL(t *testing.T, db *sql.DB, indexName string) string {
 	t.Helper()

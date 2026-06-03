@@ -267,16 +267,18 @@
     if (draftThreadId !== expectedThreadId) return;
     if (hydrating) return;
     focusInitialized = true;
-    // Don't yank focus away from a terminal that already owns it. Opening the
-    // bottom terminal (⌘`/⌘J) on a placeholder thread materializes the thread,
-    // which re-arms this initial-focus pass; by the time the draft re-hydrates
-    // the xterm may already hold DOM focus, and focusing the composer here
-    // would steal it back (the reported cold-open regression). Consuming the
-    // one-shot above means a later terminal blur won't trigger a delayed
-    // re-steal. `getTerminalFocused` reads a plain module counter, not reactive
-    // state, so this adds no dependency — it's a point-in-time check at the
-    // moment focus would otherwise move.
-    if (getTerminalFocused()) return;
+    // Don't yank focus away from a terminal in THIS pane that already owns it.
+    // Opening the bottom terminal (⌘`/⌘J) on a placeholder thread materializes
+    // the thread, which re-arms this initial-focus pass; by the time the draft
+    // re-hydrates the xterm may already hold DOM focus, and focusing the
+    // composer here would steal it back (the reported cold-open regression).
+    // Consuming the one-shot above means a later terminal blur won't trigger a
+    // delayed re-steal. Scoped to `pane.paneId` so a focused terminal in a
+    // different pane never blocks this composer's initial focus.
+    // `getTerminalFocused` reads a plain module map, not reactive state, so
+    // this adds no dependency — it's a point-in-time check at the moment focus
+    // would otherwise move.
+    if (getTerminalFocused(pane.paneId)) return;
     focusTextareaAtEnd(node);
   });
 

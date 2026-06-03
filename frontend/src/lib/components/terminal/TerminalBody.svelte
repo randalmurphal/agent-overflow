@@ -17,13 +17,18 @@
     notifyTerminalFocus,
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
+  import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
+  import { PANE_NAV_COMMAND_IDS } from '../../stores/paneNavCommands';
 
   interface Props {
     handle: ThreadTerminalStateHandle;
     terminalID: string;
+    // The owning pane's id. The focus registry is keyed by pane so two
+    // terminal panes gate their `terminalFocus` chords independently.
+    paneId: string;
   }
 
-  let { handle, terminalID }: Props = $props();
+  let { handle, terminalID, paneId }: Props = $props();
 
   let mountEl: HTMLDivElement | undefined = $state();
   let term: Terminal | null = null;
@@ -49,13 +54,13 @@
   function handleFocusIn(): void {
     if (focusCounted) return;
     focusCounted = true;
-    notifyTerminalFocus(true);
+    notifyTerminalFocus(paneId, true);
   }
 
   function handleFocusOut(): void {
     if (!focusCounted) return;
     focusCounted = false;
-    notifyTerminalFocus(false);
+    notifyTerminalFocus(paneId, false);
   }
 
   // Build the xterm instance with its addons attached to the mount node.
@@ -81,6 +86,42 @@
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
     terminal.open(mount);
+
+    // Let app pane-navigation chords that stay active inside a focused terminal
+    // (alt+h/l, alt+shift+h/l) bubble to App.svelte's window keydown handler
+    // instead of being encoded to the PTY. Returning false makes xterm skip its
+    // own handling WITHOUT preventDefault/stopPropagation, so the event reaches
+    // the app. Chords still gated on !terminalFocus (alt+arrow word-motion) are
+    // not matched by the predicate and fall through to the shell as before. The
+    // predicate reads live bindings, so a user rebind takes effect immediately.
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
+      // Shift+Enter inserts a newline instead of submitting. xterm's default
+      // sends CR (which the shell submits); we send LF (\n) — the byte Claude
+      // Code / Codex (and anything binding Ctrl+J) read as "new line, don't
+      // submit". At a bare shell LF is accept-line, identical to the CR it
+      // replaces, so the prompt is unaffected. We write the byte ourselves and
+      // fully consume the event: returning false stops xterm's CR,
+      // preventDefault stops the browser inserting a stray newline into xterm's
+      // helper textarea, and stopPropagation keeps it from reaching App.svelte's
+      // window keydown handler. Only the bare chord qualifies — Ctrl/Alt/Meta+
+      // Enter fall through so mod+enter (sidebar.cursor.open) isn't stolen.
+      if (
+        event.key === 'Enter' &&
+        event.shiftKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.metaKey
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        WriteTerminal(terminalID, encodeTerminalInput('\n')).catch((err) => {
+          console.error('terminal: WriteTerminal (shift+enter) failed', err);
+        });
+        return false;
+      }
+      return !eventEscapesTerminalToCommand(event, PANE_NAV_COMMAND_IDS);
+    });
 
     // Renderer choice is load-bearing for TUI art, not just perf. xterm draws
     // box-drawing AND block/quadrant glyphs (U+2500–259F — the ▀ ▄ █ ▌ ▐ and
@@ -227,11 +268,11 @@
       mountEl.removeEventListener('focusin', handleFocusIn);
       mountEl.removeEventListener('focusout', handleFocusOut);
     }
-    // If the terminal was focused when the drawer closed, drop the counter
-    // so terminalFocus doesn't remain sticky in the keybindings context.
+    // If the terminal was focused when the drawer closed, drop this pane's
+    // count so terminalFocus doesn't remain sticky in the keybindings context.
     if (focusCounted) {
       focusCounted = false;
-      notifyTerminalFocus(false);
+      notifyTerminalFocus(paneId, false);
     }
     dataDisposable?.dispose();
     dataDisposable = null;

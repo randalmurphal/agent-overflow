@@ -149,51 +149,69 @@ describe('ThreadTerminalState', () => {
   });
 });
 
-// --- Bug D5 regression: terminalFocus registry ---
+// --- Bug D5 regression: terminalFocus registry (pane-scoped) ---
 describe('terminal focus registry', () => {
+  const PANE = 'pane-a';
+
   beforeEach(() => {
     resetTerminalFocusForTest();
   });
 
   it('starts unfocused', () => {
-    expect(getTerminalFocused()).toBe(false);
+    expect(getTerminalFocused(PANE)).toBe(false);
   });
 
-  it('becomes focused on a single notifyTerminalFocus(true)', () => {
-    notifyTerminalFocus(true);
-    expect(getTerminalFocused()).toBe(true);
+  it('becomes focused on a single notifyTerminalFocus(pane, true)', () => {
+    notifyTerminalFocus(PANE, true);
+    expect(getTerminalFocused(PANE)).toBe(true);
   });
 
   it('flips back to false when paired false notification arrives', () => {
-    notifyTerminalFocus(true);
-    notifyTerminalFocus(false);
-    expect(getTerminalFocused()).toBe(false);
+    notifyTerminalFocus(PANE, true);
+    notifyTerminalFocus(PANE, false);
+    expect(getTerminalFocused(PANE)).toBe(false);
   });
 
   it('stays focused while at least one component holds focus (e.g. remount overlap)', () => {
-    notifyTerminalFocus(true);
-    notifyTerminalFocus(true);
-    notifyTerminalFocus(false);
+    notifyTerminalFocus(PANE, true);
+    notifyTerminalFocus(PANE, true);
+    notifyTerminalFocus(PANE, false);
     // One component is still focused.
-    expect(getTerminalFocused()).toBe(true);
-    notifyTerminalFocus(false);
-    expect(getTerminalFocused()).toBe(false);
+    expect(getTerminalFocused(PANE)).toBe(true);
+    notifyTerminalFocus(PANE, false);
+    expect(getTerminalFocused(PANE)).toBe(false);
   });
 
   it('never dips below zero (extra unfocus calls are tolerated)', () => {
-    notifyTerminalFocus(false);
-    notifyTerminalFocus(false);
-    expect(getTerminalFocused()).toBe(false);
-    notifyTerminalFocus(true);
-    expect(getTerminalFocused()).toBe(true);
+    notifyTerminalFocus(PANE, false);
+    notifyTerminalFocus(PANE, false);
+    expect(getTerminalFocused(PANE)).toBe(false);
+    notifyTerminalFocus(PANE, true);
+    expect(getTerminalFocused(PANE)).toBe(true);
   });
 
   it('rapid toggling ends up in the expected state', () => {
     for (let i = 0; i < 20; i += 1) {
-      notifyTerminalFocus(true);
-      notifyTerminalFocus(false);
+      notifyTerminalFocus(PANE, true);
+      notifyTerminalFocus(PANE, false);
     }
-    expect(getTerminalFocused()).toBe(false);
+    expect(getTerminalFocused(PANE)).toBe(false);
+  });
+
+  // The reason the registry is keyed by pane: focusing one terminal pane must
+  // not report focus for another, or it would suppress the other pane's
+  // `!terminalFocus` chords. This fails under the old module-global counter.
+  it('isolates focus per pane — focusing one pane does not report focus for another', () => {
+    notifyTerminalFocus('pane-a', true);
+    expect(getTerminalFocused('pane-a')).toBe(true);
+    expect(getTerminalFocused('pane-b')).toBe(false);
+
+    // Focusing the second pane is independent; blurring the first leaves the
+    // second focused.
+    notifyTerminalFocus('pane-b', true);
+    notifyTerminalFocus('pane-a', false);
+    expect(getTerminalFocused('pane-a')).toBe(false);
+    expect(getTerminalFocused('pane-b')).toBe(true);
   });
 });
 

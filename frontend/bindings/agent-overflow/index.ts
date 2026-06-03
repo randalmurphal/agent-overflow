@@ -34,6 +34,7 @@ export {
     SendMessageOptions,
     SourceDiffReview,
     SourceProposedPlan,
+    StartTerminalOptions,
     TerminalChip,
     TerminalHandle,
     TerminalOpenOptions,

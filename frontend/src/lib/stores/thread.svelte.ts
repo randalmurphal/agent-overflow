@@ -505,15 +505,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // placeholder can materialize on its own.
   let materializingThreadPromise: Promise<string | null> | null = null;
   let showTerminal: boolean = $state(false);
-  // One-shot "focus the terminal once it exists" intent, set by
-  // runTerminalToggle on open and consumed by the drawer when it mounts.
-  // A plain closure `let` (not $state): nothing renders off it — the drawer
-  // reads it imperatively in onMount. Its job is to survive the async gap
-  // between "open requested" and "lazy drawer chunk loaded + mounted", which
-  // a closure variable does without any reactivity. Replaces the old
+  // One-shot "focus the terminal once it exists" intent. Set by
+  // runTerminalToggle on a drawer open (cold start) and by pane.focusLeft/Right
+  // when navigating INTO an already-mounted terminal pane (warm start). It is
+  // `$state` so the terminal surface can consume it reactively in a $effect:
+  // the warm path mutates it on a live surface, which a plain closure `let`
+  // (consumed once in onMount) would miss. The latch still survives the async
+  // gap between "open requested" and "lazy drawer chunk loaded + mounted" — it
+  // stays set until the surface mounts and reads it. Replaces the old
   // fire-once FOCUS_TERMINAL_EVENT, whose listener didn't exist yet when the
   // event fired on a cold first open (the lazy import hadn't resolved).
-  let pendingTerminalFocus = false;
+  let pendingTerminalFocus = $state(false);
   // Diff panel is per-pane; created once and reset on thread switch so its
   // caches don't leak between threads.
   const diffPanel: DiffPanelState = createDiffPanelState();

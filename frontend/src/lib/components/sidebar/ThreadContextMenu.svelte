@@ -37,6 +37,7 @@
   import { getThreadById } from '../../stores/threads.svelte';
   import { openThreadFromNavigation, openThreadInNewPane } from '../../stores/panes.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { getSettings } from '../../stores/settings.svelte';
 
   interface Props {
     thread: Thread;
@@ -157,6 +158,20 @@
       else addToast('error', message);
     }
   }
+
+  // Single-row Delete gate. Mirrors ThreadRow's `handleDelete` (the
+  // terminal row-X): honor the global confirmDelete setting — off →
+  // delete immediately, on → confirm first. Bulk delete (runBulk via
+  // showBulkDeleteConfirm) keeps its own always-on confirm; a
+  // multi-thread delete is a higher-stakes action.
+  function handleDelete(): void {
+    onClose();
+    if (getSettings().confirmDelete) {
+      showDeleteConfirm = true;
+    } else {
+      void deleteThreadAction(ctx());
+    }
+  }
 </script>
 
 <Popover
@@ -244,14 +259,7 @@
           />
           {#if canDelete}
             <MenuDivider />
-            <MenuItem
-              label="Delete"
-              variant="danger"
-              onSelect={() => {
-                onClose();
-                showDeleteConfirm = true;
-              }}
-            />
+            <MenuItem label="Delete" variant="danger" onSelect={handleDelete} />
           {/if}
         {/if}
       {/snippet}

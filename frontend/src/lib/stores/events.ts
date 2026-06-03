@@ -39,13 +39,14 @@ import {
   replaceQueueForThread,
 } from './sendQueue.svelte';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
-import { findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
+import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { setProviderRateLimits } from './rateLimitsInfo.svelte';
 import { addToast } from './toast.svelte';
-import { getThreadById, getThreads, refreshThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { getThreadById, getThreads, refreshThreads, removeThread, replaceThread, touchThreadActivity } from './threads.svelte';
 import { parseJsonObject } from '../utils/parseJsonObject';
+import { errString } from '../utils/errors';
 import {
   projectApprovalRequest,
   projectApprovalResolution,
@@ -62,7 +63,7 @@ import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import {
   getThreadTerminalState,
 } from '../components/terminal/terminalStore.svelte';
-import { GetThread } from './bindings';
+import { DeleteThread, GetThread } from './bindings';
 import {
   DESIGN_RELOAD_MAIN_EVENT,
   DESIGN_OPTIONS_UPDATE_EVENT,
@@ -1099,10 +1100,44 @@ function applyTerminalOutput(payload: TerminalOutputEventPayload): void {
   );
 }
 
-function applyTerminalExit(payload: TerminalExitEventPayload): void {
+async function applyTerminalExit(payload: TerminalExitEventPayload): Promise<void> {
   if (!payload?.threadID || !payload.terminalID) return;
   const handle = getThreadTerminalState(payload.threadID);
   handle.removeTab(payload.terminalID);
+
+  // A terminal thread exists only while it has a live shell. When its last
+  // session ends — ctrl+D, or the × on the last tab — the terminal is done:
+  // tear down any pane showing it and drop it from the sidebar + store. This
+  // is the single seam for issue #2 (the pane must close) and #3 (the sidebar
+  // must clear). Closing just the *pane* never kills the shell, so no exit
+  // fires and the terminal stays backgrounded — exactly the desired split.
+  //
+  // Guards:
+  //  - mode === 'terminal' — a chat thread's bottom-drawer terminal exiting
+  //    (ctrl+D) must NOT delete the chat thread; only its tab is removed.
+  //  - thread still present — an explicit context-menu delete already removed
+  //    it from the store (and emits an exit via CloseThread); the lookup
+  //    returns undefined, so the redundant re-delete is skipped.
+  //  - app shutdown never reaches here — Go suppresses terminal:exit while
+  //    shuttingDown, so backgrounded terminals persist across restart.
+  //
+  // The shell is already dead, so close any pane showing it immediately (#2).
+  // The sidebar row, by contrast, is dropped only once the backend DeleteThread
+  // resolves — mirroring the canonical deleteThreadAction order. Removing it
+  // first would resurrect a shell-less ghost on the next thread-list refresh if
+  // the RPC failed; instead we keep the row and surface the failure, since
+  // "errors are user-facing state, not log entries."
+  if (handle.tabs.length > 0) return;
+  const thread = getThreadById(payload.threadID);
+  if (thread?.mode !== 'terminal') return;
+  closePanesShowingThread(payload.threadID);
+  try {
+    await DeleteThread(payload.threadID);
+    removeThread(payload.threadID);
+  } catch (err) {
+    console.error('terminal: delete thread after last exit failed', err);
+    addToast('error', `Could not remove terminal: ${errString(err)}`);
+  }
 }
 
 /**

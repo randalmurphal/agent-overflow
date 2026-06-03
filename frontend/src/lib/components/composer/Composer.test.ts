@@ -1987,8 +1987,9 @@ describe('<Composer>', () => {
     const pane = await buildPane();
     const draft = await buildDraft();
     // The xterm grabbed DOM focus when the drawer opened, reflected in the
-    // module-level terminal-focus registry the guard reads.
-    notifyTerminalFocus(true);
+    // pane-keyed terminal-focus registry the guard reads. Register under THIS
+    // pane's id so the guard (scoped to `pane.paneId`) sees it.
+    notifyTerminalFocus(pane.paneId, true);
     const focusSpy = vi.spyOn(composerKeyboard, 'focusTextareaAtEnd');
     try {
       const { getByLabelText } = render(Composer, { props: { pane, draft } });

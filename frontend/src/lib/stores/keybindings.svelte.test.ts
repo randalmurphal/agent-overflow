@@ -10,12 +10,14 @@ import {
   resetKeybindingsToDefaults,
   formatChord,
   eventMatchesKeybindingCommand,
+  eventEscapesTerminalToCommand,
 } from './keybindings.svelte';
 import {
   clearCommandRegistry,
   registerCommand,
   type CommandContext,
 } from './commandRegistry.svelte';
+import { PANE_NAV_COMMAND_IDS } from './paneNavCommands';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function baseCtx(extra: Partial<CommandContext> = {}): CommandContext {
@@ -159,6 +161,51 @@ describe('keybindings store — dispatch', () => {
     const allowed = new Set(['thread.jump.2']);
     expect(
       eventMatchesKeybindingCommand(ev('2', { ctrlKey: true }), baseCtx({ hasActiveThread: false }), allowed, { isMac: false }),
+    ).toBe(false);
+  });
+});
+
+describe('eventEscapesTerminalToCommand (terminal key-escape predicate)', () => {
+  // Mirrors the real defaults' asymmetry: the vim chord is un-gated (escapes a
+  // focused terminal to drive pane nav) while its arrow twin keeps the
+  // !terminalFocus rule-gate (stays in the shell as word-motion).
+  const PANE_NAV_RULES = [
+    { key: 'alt+h', command: 'pane.focusLeft' },
+    { key: 'alt+arrowleft', command: 'pane.focusLeft', when: '!terminalFocus' },
+  ];
+
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetKeybindingsStore();
+    registerCommand({ id: 'pane.focusLeft', label: 'Pane Left', run: vi.fn() });
+  });
+
+  it('lets an un-gated vim chord escape the terminal', () => {
+    setKeybindingsForTest(PANE_NAV_RULES);
+    expect(
+      eventEscapesTerminalToCommand(ev('h', { altKey: true }), PANE_NAV_COMMAND_IDS, { isMac: false }),
+    ).toBe(true);
+  });
+
+  it('keeps a !terminalFocus-gated arrow chord in the shell', () => {
+    setKeybindingsForTest(PANE_NAV_RULES);
+    expect(
+      eventEscapesTerminalToCommand(ev('ArrowLeft', { altKey: true }), PANE_NAV_COMMAND_IDS, { isMac: false }),
+    ).toBe(false);
+  });
+
+  it('ignores keys not bound to a pane-nav command', () => {
+    setKeybindingsForTest(PANE_NAV_RULES);
+    expect(
+      eventEscapesTerminalToCommand(ev('x', { altKey: true }), PANE_NAV_COMMAND_IDS, { isMac: false }),
+    ).toBe(false);
+  });
+
+  it('does not escape a chord bound to a non-pane-nav command, even un-gated', () => {
+    registerCommand({ id: 'other.cmd', label: 'Other', run: vi.fn() });
+    setKeybindingsForTest([{ key: 'alt+h', command: 'other.cmd' }]);
+    expect(
+      eventEscapesTerminalToCommand(ev('h', { altKey: true }), PANE_NAV_COMMAND_IDS, { isMac: false }),
     ).toBe(false);
   });
 });

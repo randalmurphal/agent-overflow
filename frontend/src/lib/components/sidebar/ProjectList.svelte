@@ -7,7 +7,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { autoAnimate } from '../../utils/autoAnimate';
   import ProjectItem from './ProjectItem.svelte';
-  import type { ProjectNewThreadHandler } from './projectNewThread';
+  import type { ProjectNewThreadHandler, ProjectNewTerminalHandler } from './projectNewThread';
 
   interface Props {
     projects: readonly ProjectWithCounts[];
@@ -15,12 +15,14 @@
     threadsByProject: Map<string, Thread[]>;
     pane: ThreadPane | null;
     onNewThread?: ProjectNewThreadHandler;
+    onNewTerminal?: ProjectNewTerminalHandler;
     /** Drag-reorder commit. Wired by ProjectsSection only when manual
      *  sort mode is active; ProjectItem ignores it otherwise. */
     onReorder?: (newOrderedIds: string[]) => void;
   }
 
-  let { projects, threadsByProject, pane, onNewThread, onReorder }: Props = $props();
+  let { projects, threadsByProject, pane, onNewThread, onNewTerminal, onReorder }: Props =
+    $props();
 
   let orderedIds = $derived(projects.map((p) => p.project.id));
 </script>
@@ -34,7 +36,7 @@
   </div>
 {:else}
   <div
-    class="flex-1 overflow-y-auto px-2 py-1"
+    class="px-2 py-1"
     data-testid="sidebar-project-list"
     use:autoAnimate
   >
@@ -44,6 +46,7 @@
         threads={threadsByProject.get(project.project.id) ?? []}
         {pane}
         {onNewThread}
+        {onNewTerminal}
         {orderedIds}
         {onReorder}
         separatedFromPrevious={index > 0}

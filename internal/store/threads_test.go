@@ -809,6 +809,240 @@ func TestListThreadsWithItemsHidesEmptyDrafts(t *testing.T) {
 	}
 }
 
+// --- v5 terminal-mode store behavior ---
+
+// TestCreateStandaloneTerminalPersistsNullProject covers a project-less
+// "home" terminal: CreateThread must write SQL NULL (not '') so the
+// projects FK is satisfied, GetThread must read it back as "" without a
+// scan error, and the raw column must be NULL.
+func TestCreateStandaloneTerminalPersistsNullProject(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UnixMilli()
+	term := Thread{
+		ID:            "term-home",
+		ProjectID:     "", // standalone: no project
+		Title:         "Home Terminal",
+		Provider:      "claude",
+		WorkspacePath: "/home/u",
+		Model:         "claude-sonnet-4-6",
+		Mode:          "terminal",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := s.CreateThread(term); err != nil {
+		t.Fatalf("CreateThread standalone terminal: %v", err)
+	}
+
+	got, err := s.GetThread("term-home")
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.ProjectID != "" {
+		t.Errorf("ProjectID = %q, want \"\"", got.ProjectID)
+	}
+	if got.Mode != "terminal" {
+		t.Errorf("Mode = %q, want terminal", got.Mode)
+	}
+	if got.ProjectPath != "" {
+		t.Errorf("ProjectPath = %q, want \"\" (no project)", got.ProjectPath)
+	}
+
+	var rawProject sql.NullString
+	if err := s.db.QueryRow(`SELECT project_id FROM threads WHERE id = 'term-home'`).Scan(&rawProject); err != nil {
+		t.Fatalf("scan raw project_id: %v", err)
+	}
+	if rawProject.Valid {
+		t.Errorf("raw project_id = %q, want NULL (else the projects FK breaks)", rawProject.String)
+	}
+}
+
+// TestUpdateStandaloneTerminalPreservesNullProject ensures the UPDATE path
+// also writes NULL for an empty ProjectID. Writing '' would violate the
+// projects FK; we assert both that the update succeeds and that the column
+// stays NULL.
+func TestUpdateStandaloneTerminalPreservesNullProject(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UnixMilli()
+	term := Thread{
+		ID: "term-rename", ProjectID: "", Title: "Before",
+		Provider: "claude", WorkspacePath: "/home/u", Model: "claude-sonnet-4-6",
+		Mode: "terminal", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreateThread(term); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	term.Title = "After"
+	if err := s.UpdateThread(term); err != nil {
+		t.Fatalf("UpdateThread standalone terminal: %v", err)
+	}
+
+	got, err := s.GetThread("term-rename")
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.Title != "After" {
+		t.Errorf("Title = %q, want After", got.Title)
+	}
+	var rawProject sql.NullString
+	if err := s.db.QueryRow(`SELECT project_id FROM threads WHERE id = 'term-rename'`).Scan(&rawProject); err != nil {
+		t.Fatalf("scan raw project_id: %v", err)
+	}
+	if rawProject.Valid {
+		t.Errorf("raw project_id = %q after update, want NULL", rawProject.String)
+	}
+}
+
+// TestListThreadsWithItemsIncludesItemlessTerminal proves terminal threads
+// bypass the item/draft visibility gate (they never carry either) while a
+// plain chat thread with no items stays hidden. Both a project-scoped and a
+// standalone terminal must surface.
+func TestListThreadsWithItemsIncludesItemlessTerminal(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-term", "/tmp/term")
+	now := time.Now().UnixMilli()
+
+	emptyChat := Thread{
+		ID: "chat-empty", ProjectID: proj.ID, Title: "Empty Chat",
+		Provider: "claude", WorkspacePath: "/tmp/term", Model: "claude-sonnet-4-6",
+		Mode: "chat", CreatedAt: now, UpdatedAt: now,
+	}
+	projTerminal := Thread{
+		ID: "term-proj", ProjectID: proj.ID, Title: "Project Terminal",
+		Provider: "claude", WorkspacePath: "/tmp/term", Model: "claude-sonnet-4-6",
+		Mode: "terminal", CreatedAt: now, UpdatedAt: now + 1,
+	}
+	homeTerminal := Thread{
+		ID: "term-home2", ProjectID: "", Title: "Home Terminal",
+		Provider: "claude", WorkspacePath: "/home/u", Model: "claude-sonnet-4-6",
+		Mode: "terminal", CreatedAt: now, UpdatedAt: now + 2,
+	}
+	for _, th := range []Thread{emptyChat, projTerminal, homeTerminal} {
+		if err := s.CreateThread(th); err != nil {
+			t.Fatalf("CreateThread(%s): %v", th.ID, err)
+		}
+	}
+
+	got, err := s.ListThreadsWithItems()
+	if err != nil {
+		t.Fatalf("ListThreadsWithItems: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, th := range got {
+		ids[th.ID] = true
+	}
+	if ids["chat-empty"] {
+		t.Error("item-less chat thread must stay hidden")
+	}
+	if !ids["term-proj"] {
+		t.Error("item-less project terminal must be visible")
+	}
+	if !ids["term-home2"] {
+		t.Error("item-less standalone terminal must be visible")
+	}
+}
+
+// TestItemlessTerminalReportsAsDraft pins the backend half of the
+// per-project terminal sidebar-placement decision. IsDraft is computed
+// purely from item-lessness (store.go: "no items have been persisted for
+// the thread"), independent of mode — so an item-less terminal (terminals
+// carry no items by design) reads back as IsDraft=true, while a chat thread
+// reads false once it has an item.
+//
+// The sidebar depends on this coupling: a draft-flagged thread renders in
+// the always-visible / top tier (frontend sidebarTree previewSidebarThreads),
+// which is how a per-project terminal stays pinned-visible instead of sinking
+// into the truncated "Show more" tail. Terminals have no meaningful activity
+// to sort by (no turns, no items), so pinned-visible is the deliberate chosen
+// behavior, not an accident.
+//
+// If a future change makes IsDraft mode-aware (reporting false for terminals
+// for cleaner "draft" semantics), it MUST also add deliberate
+// terminal-always-visible handling to sidebarTree, or per-project terminals
+// silently fall into the truncated tail. This test fails first to force that
+// decision into the open.
+func TestItemlessTerminalReportsAsDraft(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-draftflag", "/tmp/df")
+	now := time.Now().UnixMilli()
+
+	terminal := Thread{
+		ID: "term-draftflag", ProjectID: proj.ID, Title: "Terminal",
+		Provider: "claude", WorkspacePath: "/tmp/df", Model: "claude-sonnet-4-6",
+		Mode: "terminal", CreatedAt: now, UpdatedAt: now,
+	}
+	chatWithItem := Thread{
+		ID: "chat-witem", ProjectID: proj.ID, Title: "Chat",
+		Provider: "claude", WorkspacePath: "/tmp/df", Model: "claude-sonnet-4-6",
+		Mode: "chat", CreatedAt: now, UpdatedAt: now,
+	}
+	for _, th := range []Thread{terminal, chatWithItem} {
+		if err := s.CreateThread(th); err != nil {
+			t.Fatalf("CreateThread(%s): %v", th.ID, err)
+		}
+	}
+	// One item flips the chat thread out of draft state; the terminal keeps none.
+	if err := s.InsertItem(Item{
+		ID: "i-witem", ThreadID: chatWithItem.ID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "user_text", Role: "user", Summary: "hi", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+
+	gotTerm, err := s.GetThread("term-draftflag")
+	if err != nil {
+		t.Fatalf("GetThread terminal: %v", err)
+	}
+	if !gotTerm.IsDraft {
+		t.Error("item-less terminal must report IsDraft=true so the sidebar keeps it in the always-visible tier; if you intentionally changed this, add deliberate terminal-always-visible handling to sidebarTree")
+	}
+
+	gotChat, err := s.GetThread("chat-witem")
+	if err != nil {
+		t.Fatalf("GetThread chat: %v", err)
+	}
+	if gotChat.IsDraft {
+		t.Error("a chat thread with an item must report IsDraft=false (proves IsDraft tracks item-lessness, the mechanism per-project terminals rely on)")
+	}
+}
+
+// TestPerProjectTerminalListedUnderProject confirms a terminal that DOES
+// carry a project still resolves its project path and appears in the
+// project's thread list (it is badge-distinguished in the UI, not
+// separated in the store).
+func TestPerProjectTerminalListedUnderProject(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-pt", "/tmp/pt")
+	now := time.Now().UnixMilli()
+	term := Thread{
+		ID: "term-pt", ProjectID: proj.ID, Title: "PT",
+		Provider: "claude", WorkspacePath: "/tmp/pt", Model: "claude-sonnet-4-6",
+		Mode: "terminal", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreateThread(term); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	got, err := s.GetThread("term-pt")
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.ProjectID != proj.ID {
+		t.Errorf("ProjectID = %q, want %q", got.ProjectID, proj.ID)
+	}
+	if got.ProjectPath != "/tmp/pt" {
+		t.Errorf("ProjectPath = %q, want /tmp/pt", got.ProjectPath)
+	}
+
+	listed, err := s.ListThreadsByProject(proj.ID)
+	if err != nil {
+		t.Fatalf("ListThreadsByProject: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != "term-pt" {
+		t.Fatalf("ListThreadsByProject = %v, want [term-pt]", listed)
+	}
+}
+
 func TestListArchivedThreads(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-archive-list", "/tmp/archive")

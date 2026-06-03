@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -231,6 +232,95 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	a.rememberChatModelProfile(t)
 	if a.settings != nil {
 		a.settings.AddRecentWorkspace(workspace)
+	}
+	return a.store.GetThread(t.ID)
+}
+
+// StartTerminalOptions selects where a new terminal thread is rooted.
+// ProjectID empty roots a standalone "home" terminal at the user's home
+// directory with a NULL project; otherwise the terminal roots at the
+// project path and is listed under the project. Cwd overrides the
+// resolved root when the caller already knows the working directory
+// (e.g. the chat header's ctrl-click passes the source thread's
+// workspace). Title empty defaults to "Terminal".
+type StartTerminalOptions struct {
+	ProjectID string `json:"projectId,omitempty"`
+	Cwd       string `json:"cwd,omitempty"`
+	Title     string `json:"title,omitempty"`
+}
+
+// StartTerminal mints a persistent terminal-mode thread and returns it.
+// A terminal is a first-class sidebar entity that never runs a provider
+// session: it carries a CHECK-valid sentinel provider/model/effort purely
+// so the threads table's coupled (provider, reasoning_effort) constraint
+// passes — no session is ever started from it, and seedChatModelProfile is
+// read-only so the sentinel is NOT remembered as a user model choice.
+//
+// It deliberately does NOT spawn a PTY: the frontend opens one via
+// OpenTerminal on pane mount, which is also why a terminal thread restored
+// after restart re-spawns a fresh shell in its saved workspace (PTYs are
+// ephemeral across restart; the saved cwd is what persists).
+func (a *App) StartTerminal(opts StartTerminalOptions) (store.Thread, error) {
+	if a.store == nil {
+		return store.Thread{}, fmt.Errorf("start terminal: store unavailable")
+	}
+
+	projectID := strings.TrimSpace(opts.ProjectID)
+	var projectPath string
+	if projectID != "" {
+		project, err := a.store.GetProject(projectID)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("start terminal: resolve project %s: %w", projectID, err)
+		}
+		projectPath = project.Path
+	}
+
+	// cwd precedence: explicit override → project root → home directory.
+	workspace := strings.TrimSpace(opts.Cwd)
+	if workspace == "" {
+		workspace = projectPath
+	}
+	if workspace == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("start terminal: resolve home directory: %w", err)
+		}
+		workspace = home
+	}
+
+	// Sentinel provider/model/effort. The terminal never starts a session,
+	// but CreateThread still validates the coupled CHECK; mirror the
+	// normalize+coerce CreateThread runs so the pairing is always legal.
+	seed := a.seedChatModelProfile("", "")
+	providerName := seed.Provider
+	model := provider.NormalizeModelSlug(providerName, seed.Model)
+	effort := string(provider.CoerceReasoningEffortForModel(
+		providerName,
+		model,
+		provider.NormalizeReasoningEffort(seed.ReasoningEffort),
+	))
+
+	title := strings.TrimSpace(opts.Title)
+	if title == "" {
+		title = "Terminal"
+	}
+
+	now := time.Now().UnixMilli()
+	t := store.Thread{
+		ID:              uuid.New().String(),
+		ProjectID:       projectID, // "" => store persists NULL (standalone)
+		ProjectPath:     projectPath,
+		Title:           title,
+		Provider:        providerName,
+		Model:           model,
+		WorkspacePath:   workspace,
+		Mode:            "terminal",
+		ReasoningEffort: effort,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := a.store.CreateThread(t); err != nil {
+		return store.Thread{}, fmt.Errorf("start terminal: %w", err)
 	}
 	return a.store.GetThread(t.ID)
 }

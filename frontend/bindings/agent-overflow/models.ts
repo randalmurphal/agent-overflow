@@ -996,6 +996,35 @@ export const SourceProposedPlan = store$0.ProposedPlanSourceRef;
 export type SourceProposedPlan = store$0.ProposedPlanSourceRef;
 
 /**
+ * StartTerminalOptions selects where a new terminal thread is rooted.
+ * ProjectID empty roots a standalone "home" terminal at the user's home
+ * directory with a NULL project; otherwise the terminal roots at the
+ * project path and is listed under the project. Cwd overrides the
+ * resolved root when the caller already knows the working directory
+ * (e.g. the chat header's ctrl-click passes the source thread's
+ * workspace). Title empty defaults to "Terminal".
+ */
+export class StartTerminalOptions {
+    "projectId"?: string;
+    "cwd"?: string;
+    "title"?: string;
+
+    /** Creates a new StartTerminalOptions instance. */
+    constructor($$source: Partial<StartTerminalOptions> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StartTerminalOptions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): StartTerminalOptions {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new StartTerminalOptions($$parsedSource as Partial<StartTerminalOptions>);
+    }
+}
+
+/**
  * TerminalChip is the frontend-owned shape of a "terminal context" snippet
  * captured from the terminal drawer. The Go side treats these as opaque —
  * we store and echo them back intact.

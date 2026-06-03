@@ -563,6 +563,32 @@ describe('<ChatView>', () => {
     expect(shell).not.toContainElement(picker);
   });
 
+  it('renders TerminalView instead of the chat surface for terminal-mode threads', async () => {
+    // Terminal threads swap the WHOLE surface — same one-for-one branch as
+    // discussion mode. No chat header, composer, or timeline mounts; no
+    // provider session is started.
+    setBindingMock('ListTerminals', async () => []);
+    setBindingMock('OpenTerminal', async (threadID: string) => ({
+      terminalID: 't1',
+      threadID,
+      summary: {
+        terminalID: 't1', threadID, shell: '/bin/bash', cwd: '/tmp',
+        rows: 24, cols: 80, pid: 1, startedAt: 0, running: true,
+        exitCode: 0, exitReason: '',
+      },
+    }));
+    setBindingMock('GetTerminalReplay', async () => '');
+    const pane = await buildPane({ ...seedThread(), mode: 'terminal' });
+    const { getByTestId, queryByTestId, container } = render(ChatView, { props: { pane } });
+    await tick();
+
+    expect(container.querySelector('[data-ui-surface="terminal"]')).not.toBeNull();
+    expect(getByTestId('terminal-pane-close')).toBeInTheDocument();
+    // The chat machinery must be absent — proves the branch replaces, not overlays.
+    expect(queryByTestId('chat-header')).toBeNull();
+    expect(queryByTestId('composer-overlay')).toBeNull();
+  });
+
   it('does not blur or dim the timeline for pending composer prompts', async () => {
     const pane = await buildPane(seedThread());
     pane.addApproval({

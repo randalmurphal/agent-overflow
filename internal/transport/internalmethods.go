@@ -233,10 +233,14 @@ var LocalOnlyMethods = map[string]bool{
 	// Thread creation can spawn a worktree / probe the provider; the
 	// branch fork variant runs git ops, and the PR variant shells `gh`.
 	// GetThreadDefaults reads project FS to detect the current git
-	// branch, so it sits in the same FS-touching bucket.
+	// branch, so it sits in the same FS-touching bucket. StartTerminal
+	// resolves the host home directory and persists a terminal-mode
+	// thread whose workspace is a local path the frontend then spawns a
+	// PTY in — same FS-touching thread-creation class.
 	"CreateThread":          true,
 	"CreateThreadFromPR":    true,
 	"GetThreadDefaults":     true,
+	"StartTerminal":         true,
 	"ForkThread":            true,
 	"ForkThreadFromMessage": true,
 	// Background-task control terminates host subprocesses.

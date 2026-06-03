@@ -509,6 +509,38 @@ describe('createThreadPane', () => {
       pane.setShowTerminal(false);
       expect(pane.consumeTerminalFocusRequest()).toBe(false);
     });
+
+    it('reactively re-fires the consume effect when focus is requested on a LIVE pane', () => {
+      // TerminalSurface consumes the intent inside a reactive $effect, so an
+      // alt-h/l nav INTO an already-mounted terminal (requestTerminalFocus on a
+      // warm surface) must re-run that effect. This only works because
+      // pendingTerminalFocus is $state — a plain `let` would not re-fire the
+      // effect, and the focus would never land on a warm nav-into. Requesting
+      // AFTER the effect is live (not before) is the load-bearing scenario; a
+      // pre-mount request would be consumed on first run regardless of $state.
+      const pane = createThreadPane();
+      let consumes = 0;
+      const stop = $effect.root(() => {
+        $effect(() => {
+          if (pane.consumeTerminalFocusRequest()) consumes += 1;
+        });
+      });
+
+      try {
+        flushSync();
+        // Surface is "mounted": the effect ran once and consumed nothing.
+        expect(consumes).toBe(0);
+
+        // Warm nav-into: focus requested AFTER the effect is established.
+        pane.requestTerminalFocus();
+        flushSync();
+        // The effect re-ran and consumed the intent. A non-$state flag leaves
+        // this at 0 (no re-run) — the regression this guards.
+        expect(consumes).toBe(1);
+      } finally {
+        stop();
+      }
+    });
   });
 
   describe('right-side panel mutex', () => {

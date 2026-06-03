@@ -32,6 +32,7 @@ const SORT_MODE_KEY = 'agent-overflow:sidebar:projectSortMode';
 const EXPANDED_DISCUSSIONS_KEY = 'agent-overflow:sidebar:expandedDiscussions';
 const LEGACY_EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
 const THREAD_LIST_VISIBLE_LIMITS_KEY = 'agent-overflow:sidebar:threadListVisibleLimits';
+const TERMINALS_GROUP_COLLAPSED_KEY = 'agent-overflow:sidebar:terminalsGroupCollapsed';
 
 const DEFAULT_PROJECT_SORT_MODE: ProjectSortMode = 'lastActivity';
 
@@ -142,10 +143,35 @@ function writeThreadListVisibleLimits(limits: Record<string, number>): void {
   }
 }
 
+function readBooleanFlag(key: string): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeBooleanFlag(key: string, value: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (value) localStorage.setItem(key, '1');
+    else localStorage.removeItem(key);
+  } catch {
+    // Ignore quota / access errors — in-memory state stays consistent.
+  }
+}
+
 let collapsedProjects: Set<string> = $state(readCollapsed());
 let expandedDiscussions: Set<string> = $state(readStringSet(EXPANDED_DISCUSSIONS_KEY));
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
+// Standalone "Terminals" sidebar group collapse. localStorage-only, like
+// discussion expansion below — low-stakes view state that's fine to lose on a
+// webview that clears localStorage (it just defaults back to expanded). Stored
+// as a *collapsed* flag so the unset default is expanded, matching the
+// project-row convention.
+let terminalsGroupCollapsed: boolean = $state(readBooleanFlag(TERMINALS_GROUP_COLLAPSED_KEY));
 
 export function isProjectExpanded(id: string): boolean {
   return !collapsedProjects.has(id);
@@ -175,6 +201,33 @@ export function collapseProject(id: string): void {
   collapsedProjects = next;
   writeCollapsed(next);
   void updateSettingsPatch({ collapsedProjects: [...next] });
+}
+
+/**
+ * Standalone "Terminals" group expansion. A single boolean rather than the
+ * per-id sets above — there is exactly one Terminals group. The header is
+ * always rendered (so the global +terminal is always reachable); this only
+ * controls whether the terminal rows below it are shown.
+ */
+export function isTerminalsGroupExpanded(): boolean {
+  return !terminalsGroupCollapsed;
+}
+
+export function expandTerminalsGroup(): void {
+  if (!terminalsGroupCollapsed) return;
+  terminalsGroupCollapsed = false;
+  writeBooleanFlag(TERMINALS_GROUP_COLLAPSED_KEY, false);
+}
+
+export function collapseTerminalsGroup(): void {
+  if (terminalsGroupCollapsed) return;
+  terminalsGroupCollapsed = true;
+  writeBooleanFlag(TERMINALS_GROUP_COLLAPSED_KEY, true);
+}
+
+export function toggleTerminalsGroup(): void {
+  if (terminalsGroupCollapsed) expandTerminalsGroup();
+  else collapseTerminalsGroup();
 }
 
 export function getProjectSortMode(): ProjectSortMode {
@@ -325,6 +378,7 @@ export function resetSidebarForTest(): void {
   expandedDiscussions = new Set();
   threadListVisibleLimits = {};
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
+  terminalsGroupCollapsed = false;
   if (typeof localStorage !== 'undefined') {
     try {
       localStorage.removeItem(COLLAPSED_STORAGE_KEY);
@@ -333,6 +387,7 @@ export function resetSidebarForTest(): void {
       localStorage.removeItem(LEGACY_EXPANDED_THREAD_LISTS_KEY);
       localStorage.removeItem(THREAD_LIST_VISIBLE_LIMITS_KEY);
       localStorage.removeItem(SORT_MODE_KEY);
+      localStorage.removeItem(TERMINALS_GROUP_COLLAPSED_KEY);
     } catch {
       // ignore
     }

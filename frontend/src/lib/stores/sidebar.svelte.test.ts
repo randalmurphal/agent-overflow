@@ -3,9 +3,12 @@ import {
   collapseProject,
   expandProject,
   collapseThreadList,
+  collapseTerminalsGroup,
+  expandTerminalsGroup,
   getProjectSortMode,
   getThreadListVisibleLimit,
   isProjectExpanded,
+  isTerminalsGroupExpanded,
   isThreadListExpanded,
   resetSidebarForTest,
   revealMoreThreadList,
@@ -13,6 +16,7 @@ import {
   setProjectSortMode,
   syncSidebarFromSettings,
   toggleProject,
+  toggleTerminalsGroup,
 } from './sidebar.svelte';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -58,6 +62,47 @@ describe('sidebar store', () => {
       // a write/read round-trip serializes over the garbage cleanly.
       toggleProject('p1');
       expect(isProjectExpanded('p1')).toBe(false);
+    });
+  });
+
+  describe('terminals group', () => {
+    const KEY = 'agent-overflow:sidebar:terminalsGroupCollapsed';
+
+    it('defaults to expanded and toggleTerminalsGroup persists a collapsed flag', () => {
+      expect(isTerminalsGroupExpanded()).toBe(true);
+
+      toggleTerminalsGroup();
+      expect(isTerminalsGroupExpanded()).toBe(false);
+      expect(localStorage.getItem(KEY)).toBe('1');
+
+      toggleTerminalsGroup();
+      expect(isTerminalsGroupExpanded()).toBe(true);
+      // Stored as a *collapsed* flag → returning to expanded clears the key.
+      expect(localStorage.getItem(KEY)).toBeNull();
+    });
+
+    it('expandTerminalsGroup / collapseTerminalsGroup are idempotent', () => {
+      // The search auto-expand effect drives these as setters (not toggles),
+      // so a repeated call must be a no-op rather than flipping state.
+      collapseTerminalsGroup();
+      collapseTerminalsGroup();
+      expect(isTerminalsGroupExpanded()).toBe(false);
+      expect(localStorage.getItem(KEY)).toBe('1');
+
+      expandTerminalsGroup();
+      expandTerminalsGroup();
+      expect(isTerminalsGroupExpanded()).toBe(true);
+      expect(localStorage.getItem(KEY)).toBeNull();
+    });
+
+    it('resetSidebarForTest restores the default expanded state and clears storage', () => {
+      toggleTerminalsGroup();
+      expect(isTerminalsGroupExpanded()).toBe(false);
+
+      resetSidebarForTest();
+
+      expect(isTerminalsGroupExpanded()).toBe(true);
+      expect(localStorage.getItem(KEY)).toBeNull();
     });
   });
 

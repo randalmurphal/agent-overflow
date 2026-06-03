@@ -181,8 +181,9 @@ describe('App integration — terminal drawer', () => {
     // registry on focusin, and that focusin bubbles to ChatView's
     // onfocusin={() => focusPane(paneId)} — a no-op when the pane is already
     // focused. That no-op is the exact condition that strands the memoized
-    // context, so we DON'T move focusedPaneId here.
-    notifyTerminalFocus(true);
+    // context, so we DON'T move focusedPaneId here. The active thread opened in
+    // the main pane, so register focus under 'main' (the registry is pane-keyed).
+    notifyTerminalFocus('main', true);
 
     const textarea = document.createElement('textarea');
     document.body.appendChild(textarea);
@@ -203,7 +204,7 @@ describe('App integration — terminal drawer', () => {
       expect(rendered.getByTestId('terminal-drawer')).toBeInTheDocument();
     } finally {
       document.body.removeChild(textarea);
-      notifyTerminalFocus(false);
+      notifyTerminalFocus('main', false);
     }
   });
 
@@ -303,7 +304,9 @@ describe('App integration — terminal drawer', () => {
   // the drawer after the rAF. The pane-owned flag removes the race entirely.
   it('lands focus in the terminal on a cold first open', async () => {
     const rendered = await mountWithActiveThread();
-    expect(getTerminalFocused()).toBe(false);
+    // The active thread opened in the main pane; the real TerminalBody registers
+    // its focus under that pane id, so query the registry for 'main'.
+    expect(getTerminalFocused('main')).toBe(false);
 
     pressModJ();
 
@@ -314,7 +317,7 @@ describe('App integration — terminal drawer', () => {
     // rAFs before xterm's focusin bumps the registry. waitFor polls on real
     // timers so those macrotasks resolve.
     await waitFor(() => {
-      expect(getTerminalFocused()).toBe(true);
+      expect(getTerminalFocused('main')).toBe(true);
     });
   });
 });

@@ -18,6 +18,7 @@
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import FileText from 'lucide-svelte/icons/file-text';
   import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
+  import Terminal from 'lucide-svelte/icons/terminal';
   import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { relativeTime } from '../../utils/format';
@@ -28,6 +29,7 @@
   import ThreadRowPinButton from './ThreadRowPinButton.svelte';
   import {
     archiveThreadAction,
+    deleteThreadAction,
     renameThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
@@ -81,6 +83,9 @@
 
   let isActive = $derived(pane?.threadId === thread.id);
   let isCursorTarget = $derived(getSidebarCursorThreadId() === thread.id);
+  // Terminals aren't archivable — the row offers Delete (X) instead of
+  // Archive, and the leading glyph is the terminal icon.
+  let isTerminal = $derived(thread.mode === 'terminal');
 
   let liveStatus = $derived(getEffectiveThreadStatus(thread));
   let effectiveStatus = $derived(displayLiveStatus ?? liveStatus);
@@ -124,8 +129,12 @@
   let saving = $state(false);
 
   // Archive-confirm dialog (shown when settings.confirmArchive is true).
-  // Delete's confirm dialog lives inside ThreadContextMenu.
+  // The right-click Delete path's confirm dialog lives inside
+  // ThreadContextMenu; the terminal row-X's lives here (showDeleteConfirm).
   let showArchiveConfirm = $state(false);
+  // Delete-confirm dialog for the terminal row-X (shown when
+  // settings.confirmDelete is true).
+  let showDeleteConfirm = $state(false);
 
   // Context menu anchor + state.
   let rowEl: HTMLDivElement | undefined = $state(undefined);
@@ -198,6 +207,15 @@
       showArchiveConfirm = true;
     } else {
       void archiveThreadAction(ctx());
+    }
+  }
+
+  function handleDelete(e: MouseEvent) {
+    e.stopPropagation();
+    if (getSettings().confirmDelete) {
+      showDeleteConfirm = true;
+    } else {
+      void deleteThreadAction(ctx());
     }
   }
 
@@ -380,7 +398,29 @@
       onclick={(e) => e.stopPropagation()}
     />
   {:else}
-    {#if thread.isDraft}
+    {#if isTerminal}
+      <!--
+        Terminal rows render the boxless lucide `Terminal` glyph (a `>_`
+        prompt) — the SAME glyph the chat history shows for bash/terminal
+        tool calls (ToolKindIcon kind="terminal"), in the matching green
+        `text-ico-terminal` — so a terminal reads as "a terminal" at a glance.
+
+        This is checked BEFORE the draft branch on purpose. The backend marks
+        any thread with no persisted items as a draft (store.go: IsDraft is
+        "no items exist for the thread"), and a terminal is a degenerate,
+        item-less thread, so it reaches this row with isDraft === true. Mode is
+        the stronger signal — a terminal is never a composer draft — so it must
+        win the icon slot regardless of the draft flag.
+      -->
+      <span
+        class="inline-flex items-center shrink-0 text-ico-terminal"
+        data-testid="thread-row-terminal-icon"
+        aria-label="Terminal thread"
+        title="Terminal"
+      >
+        <Icon icon={Terminal} size={11} strokeWidth={1.75} />
+      </span>
+    {:else if thread.isDraft}
       <span
         class="inline-flex items-center shrink-0 text-fg-subtle"
         data-testid="thread-row-draft-icon"
@@ -401,9 +441,12 @@
 
     <!--
       Right-side slot. A fixed min-w-7 keeps the layout stable when the
-      time label fades out on hover and the archive button fades in.
-      Both live in `relative` so the button can absolute-position over
-      the time without pushing layout.
+      time label fades out and the action button (archive or delete)
+      fades in on hover / keyboard focus. Both live in `relative` so the
+      button can absolute-position over the time without pushing layout.
+      The keyboard reveal keys off `group-has-[:focus-visible]/thread-row`
+      (a focus-VISIBLE descendant) rather than `:focus-within`, so a mouse
+      click on the tabindex=0 row doesn't leave the action stuck visible.
     -->
     <div class="ml-auto relative shrink-0 flex items-center justify-end min-w-7">
       {#if jumpShortcut}
@@ -421,17 +464,18 @@
         </span>
       {:else}
         <span
-          class="text-[0.625rem] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-item:opacity-0 group-focus-within/thread-row:opacity-0"
+          class="text-[0.625rem] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-item:opacity-0 group-has-[:focus-visible]/thread-row:opacity-0"
           data-testid="thread-row-time"
         >
           {sidebarTimeLabel(thread.updatedAt)}
         </span>
       {/if}
       <div
-        class="absolute inset-y-0 right-0 flex items-center opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-focus-within/thread-row:opacity-100 group-focus-within/thread-row:pointer-events-auto"
+        class="absolute inset-y-0 right-0 flex items-center opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto"
       >
         <ThreadRowActions
-          onArchive={handleArchive}
+          onArchive={isTerminal ? undefined : handleArchive}
+          onDelete={isTerminal ? handleDelete : undefined}
         />
       </div>
     </div>
@@ -479,4 +523,14 @@
   confirmLabel="Archive"
   onConfirm={() => { showArchiveConfirm = false; void archiveThreadAction(ctx()); }}
   onCancel={() => { showArchiveConfirm = false; }}
+/>
+
+<ConfirmDialog
+  open={showDeleteConfirm}
+  title="Delete Terminal"
+  description="This will remove the terminal from the sidebar and close its shell. This cannot be undone."
+  confirmLabel="Delete"
+  destructive={true}
+  onConfirm={() => { showDeleteConfirm = false; void deleteThreadAction(ctx()); }}
+  onCancel={() => { showDeleteConfirm = false; }}
 />

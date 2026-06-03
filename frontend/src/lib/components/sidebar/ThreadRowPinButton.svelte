@@ -2,8 +2,11 @@
   // Per-row pin/unpin affordance. Sits in the row's leading pin slot
   // (the gutter between the project rail and the row content). Pinned
   // state is rendered at rest as a filled pin; unpinned rows reveal an
-  // outlined pin only on row hover / focus-within so the gutter reads
-  // empty until the user signals intent.
+  // outlined pin only on row hover or keyboard focus so the gutter reads
+  // empty until the user signals intent. Keyboard reveal keys off
+  // `group-has-[:focus-visible]/thread-row` (a focus-VISIBLE descendant),
+  // NOT `:focus-within` — the row button is tabindex=0, so a plain mouse
+  // click focuses it and `:focus-within` would leave the pin stuck on.
   //
   // Render-time guard: top-level rows only (indent ≤ 1). Discussion
   // children don't pin individually — the parent thread is the pin
@@ -49,7 +52,7 @@
     'transition-opacity duration-150 ' +
     (isPinned
       ? 'text-accent opacity-100 pointer-events-auto'
-      : 'opacity-0 pointer-events-none group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-focus-within/thread-row:opacity-100 group-focus-within/thread-row:pointer-events-auto')
+      : 'opacity-0 pointer-events-none group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto')
   }
 >
   <Icon

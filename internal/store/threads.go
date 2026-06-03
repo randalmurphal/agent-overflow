@@ -10,12 +10,14 @@ import (
 // threadColumns lists every column in the order scanThread expects. The
 // COALESCE-ing of nullable text columns returns "" instead of NULL so the
 // Go struct has a clean empty-string value for unset optional fields.
-// last_read_at and pinned_at are deliberately NOT coalesced — scanThread
-// keeps the NULL / non-NULL distinction via *int64 pointers so the
-// frontend can tell "never tracked" / "unpinned" apart from a zero
+// project_id is coalesced because v5 made it nullable: a standalone "home"
+// terminal thread has no project, and scanThread reads it into a plain
+// string. last_read_at and pinned_at are deliberately NOT coalesced —
+// scanThread keeps the NULL / non-NULL distinction via *int64 pointers so
+// the frontend can tell "never tracked" / "unpinned" apart from a zero
 // timestamp. The two boolean tail columns are derived sidebar state:
 // they are cheap scalar probes over indexed tables, not threads columns.
-const threadColumns = `id, project_id,
+const threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
     workspace_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
@@ -80,12 +82,13 @@ var (
 
 // legalModes maps every valid mode value to struct{}{} so membership
 // checks are constant-time. Kept in sync with the CHECK constraint on
-// threads.mode (see migrate.go::v13SQL).
+// threads.mode (see migrate.go rebuildThreadsV5SQL).
 var legalModes = map[string]struct{}{
 	"chat":       {},
 	"plan":       {},
 	"design":     {},
 	"discussion": {},
+	"terminal":   {},
 }
 
 var legalEfforts = map[string]struct{}{
@@ -203,7 +206,7 @@ func (s *Store) CreateThread(t Thread) error {
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
 		    created_at, updated_at, archived, disabled_mcp_servers)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.ProjectID, t.Title, t.Provider, t.Model,
+		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
@@ -252,13 +255,16 @@ func (s *Store) ListThreads() ([]Thread, error) {
 // one persisted item. Local placeholder panes do not create backend rows; once
 // a draft has real persisted content (typed text, attachments, terminal chips,
 // or a pending plan implementation) it is visible so the sidebar reflects work
-// the user would otherwise lose track of.
+// the user would otherwise lose track of. Terminal-mode threads are always
+// included: they are first-class sidebar fixtures that never carry items or
+// drafts, so the item/draft gates would otherwise hide them.
 func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 	rows, err := s.db.Query(
 		`SELECT ` + threadColumns + ` FROM threads
 		 WHERE archived = 0
 		   AND (
-		       EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id)
+		       threads.mode = 'terminal'
+		    OR EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id)
 		    OR EXISTS (
 		         SELECT 1 FROM thread_drafts
 		          WHERE thread_drafts.thread_id = threads.id
@@ -419,7 +425,7 @@ func normalizeThreadForUpdate(t Thread) (Thread, error) {
 
 func updateThreadArgs(t Thread) []any {
 	return []any{
-		t.ProjectID, t.Title, t.Provider, t.Model,
+		nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
@@ -790,9 +796,11 @@ func (s *Store) UpdateProvider(threadID, prov string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update provider for %s", threadID))
 }
 
-// UpdateMode overwrites the thread's mode (chat, plan, design, or
-// discussion). Empty strings are normalized to "chat" to match
-// CreateThread/UpdateThread.
+// UpdateMode overwrites the thread's mode (chat, plan, design,
+// discussion, or terminal). Empty strings are normalized to "chat" to
+// match CreateThread/UpdateThread. This is the permissive store
+// primitive; user-driven toggles route through threadmode.ValidateSet,
+// which restricts the reachable set to chat/plan.
 func (s *Store) UpdateMode(threadID, mode string) error {
 	mode = normalizeMode(mode)
 	if _, ok := legalModes[mode]; !ok {

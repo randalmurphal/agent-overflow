@@ -33,6 +33,7 @@
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import FolderOpen from 'lucide-svelte/icons/folder-open';
   import Plus from 'lucide-svelte/icons/plus';
+  import Terminal from 'lucide-svelte/icons/terminal';
   import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
   import ProjectThreadList from './ProjectThreadList.svelte';
@@ -41,6 +42,7 @@
   import {
     shouldOpenProjectThreadInNewPane,
     type ProjectNewThreadHandler,
+    type ProjectNewTerminalHandler,
   } from './projectNewThread';
   import {
     beginProjectDrag,
@@ -59,6 +61,9 @@
     /** Called with the project id when the user clicks the new-thread button
      * (or otherwise signals "create a new thread in this project"). */
     onNewThread?: ProjectNewThreadHandler;
+    /** Called with the project id when the user clicks the new-terminal
+     *  button — opens a fresh terminal pane rooted at this project. */
+    onNewTerminal?: ProjectNewTerminalHandler;
     /** Current rendered ordering of project ids (visible projects in
      *  ProjectsSection). Required for DnD to compute the new order on
      *  drop without an extra round-trip. */
@@ -74,6 +79,7 @@
     threads,
     pane,
     onNewThread,
+    onNewTerminal,
     orderedIds,
     onReorder,
     separatedFromPrevious = false,
@@ -150,6 +156,11 @@
     e.stopPropagation();
     lastNewThreadContextMenuAt = Date.now();
     onNewThread?.(project.project.id, { openInNewPane: true });
+  }
+
+  function handleNewTerminalClick(e: MouseEvent): void {
+    e.stopPropagation();
+    onNewTerminal?.(project.project.id);
   }
 
   function handleContextMenu(e: MouseEvent): void {
@@ -346,6 +357,16 @@
       >
         {project.project.name}
       </span>
+      <button
+        type="button"
+        onclick={handleNewTerminalClick}
+        title="New Terminal in This Project"
+        aria-label="New Terminal in This Project"
+        data-testid="project-item-new-terminal"
+        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      >
+        <Icon icon={Terminal} size={12} strokeWidth={2} class="opacity-90" />
+      </button>
       <button
         type="button"
         onclick={handleNewThreadClick}

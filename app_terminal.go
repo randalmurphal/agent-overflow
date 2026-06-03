@@ -158,7 +158,18 @@ func (a *App) terminalOutputCallback(threadID, terminalID string, sequence uint6
 }
 
 // terminalExitCallback emits a `terminal:exit` event to the frontend.
+//
+// Suppressed during shutdown: Manager.Shutdown SIGTERMs every PTY, which fires
+// each session's exit callback. The frontend treats a real terminal exit as
+// "this terminal is gone" and drops the thread from the sidebar (ctrl+D / last
+// tab close). Terminal threads must instead PERSIST across restart, so we must
+// not let the shutdown-time mass-kill reach the frontend as exits. shuttingDown
+// is CAS'd true at the very top of Shutdown, before terminals close, so every
+// shutdown-induced exit observes it.
 func (a *App) terminalExitCallback(threadID, terminalID string, status terminal.ExitStatus) {
+	if a.shuttingDown.Load() {
+		return
+	}
 	a.emit("terminal:exit", TerminalExitEvent{
 		TerminalID: terminalID,
 		ThreadID:   threadID,

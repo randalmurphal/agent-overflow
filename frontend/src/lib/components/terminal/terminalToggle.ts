@@ -28,25 +28,13 @@ export function runTerminalToggle(pane: ThreadPane): void {
     pane.setShowTerminal(true);
     return;
   }
-  // `getTerminalFocused()` is a global query, but the close path only ever runs
-  // for the pane whose terminal is (or just was) focused, so it never yanks
-  // focus across panes:
-  //   • Chord (terminal.toggle): the command context resolves to the focused
-  //     pane, and focusing an xterm bubbles up to ChatView's
-  //     `onfocusin={() => focusPane(paneId)}` — so the targeted pane IS the one
-  //     holding terminal focus.
-  //   • Header button: clicking it moves DOM focus to the button, blurring the
-  //     xterm first, so `getTerminalFocused()` is already false here and no
-  //     composer rescue fires.
-  //   • Palette: terminal.toggle can run against the palette's pinned target
-  //     pane (CommandPalette resolves it via `contextForPane(targetPaneId)`),
-  //     which may differ from the focused pane. Still safe: opening the palette
-  //     focuses its list and blurs the xterm, so the counter is already false
-  //     before the command runs.
-  // If the terminal ever moves out of that focusPane wrapper (e.g. into an RHS
-  // panel — a documented future policy), revisit this: the rescue would then
-  // need to be pane-scoped (`getTerminalFocused(paneId)`).
-  const terminalHadFocus = getTerminalFocused();
+  // Scope the focus query to THIS pane so the rescue only fires when the pane
+  // being toggled is the one holding terminal focus — never yanking focus from
+  // a different pane's terminal. (Previously a module-global query that relied
+  // on the close path only ever running for the focused pane; now that
+  // terminals can live in their own panes, the pane-scoped read is the correct
+  // primitive rather than a happens-to-be-safe global.)
+  const terminalHadFocus = getTerminalFocused(paneId);
   pane.setShowTerminal(false);
   if (terminalHadFocus) focusPaneComposer(paneId);
 }

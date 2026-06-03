@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import TerminalBody from './TerminalBody.svelte';
 import { createThreadTerminalState } from './terminalStore.svelte';
 import type { TerminalSessionSummary } from '../../types/terminal';
+import { encodeTerminalInput } from '../../types/terminal';
+import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
 
 // xterm can't render under happy-dom (no real canvas/WebGL context), and these
 // tests need to observe the exact ORDER of write() calls — so swap in a fake
@@ -16,13 +18,20 @@ const mocks = vi.hoisted(() => {
   // failure mid-drain (drives the gate-stays-open regression test).
   const throwOn = new Set<string>();
   const decoder = new TextDecoder();
+  let lastTerminal: FakeTerminal | null = null;
   class FakeTerminal {
     options: Record<string, unknown>;
+    // Captured so a test can invoke the registered handler directly.
+    keyEventHandler: ((event: KeyboardEvent) => boolean) | null = null;
     constructor(options: Record<string, unknown> = {}) {
       this.options = { ...options };
+      lastTerminal = this;
     }
     loadAddon(): void {}
     open(): void {}
+    attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
+      this.keyEventHandler = handler;
+    }
     write(data: Uint8Array | string): void {
       const text = typeof data === 'string' ? data : decoder.decode(data);
       if (throwOn.has(text)) throw new Error(`xterm write failed: ${text}`);
@@ -44,11 +53,19 @@ const mocks = vi.hoisted(() => {
     writes,
     throwOn,
     FakeTerminal,
+    getLastTerminal: (): FakeTerminal | null => lastTerminal,
     GetTerminalReplay: vi.fn(),
     WriteTerminal: vi.fn(async () => {}),
     ResizeTerminal: vi.fn(async () => {}),
   };
 });
+
+// The key handler delegates the escape decision to this predicate; its own
+// logic (which chords escape) is unit-tested in keybindings.svelte.test.ts.
+// Here we mock it to verify the handler's wiring in isolation.
+vi.mock('../../stores/keybindings.svelte', () => ({
+  eventEscapesTerminalToCommand: vi.fn(() => false),
+}));
 
 vi.mock('@xterm/xterm', () => ({ Terminal: mocks.FakeTerminal }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }));
@@ -105,7 +122,7 @@ async function mountWithPendingReplay(terminalID: string) {
     }),
   );
 
-  render(TerminalBody, { props: { handle, terminalID } });
+  render(TerminalBody, { props: { handle, terminalID, paneId: 'pane-test' } });
   // Let onMount → hydrate() run up to the awaited GetTerminalReplay.
   await tick();
   await Promise.resolve();
@@ -233,5 +250,117 @@ describe('TerminalBody hydrate ordering', () => {
     await Promise.resolve();
 
     expect(mocks.writes).toEqual(['REPLAY', 'AFTER']);
+  });
+});
+
+// The xterm custom key handler decides per-keydown whether a chord should
+// bubble to the app (pane navigation) or be written to the PTY. The escape
+// decision itself lives in eventEscapesTerminalToCommand (mocked here, unit-
+// tested in keybindings.svelte.test.ts); this asserts the handler's wiring.
+describe('TerminalBody pane-nav key handler', () => {
+  beforeEach(() => {
+    mocks.GetTerminalReplay.mockReset();
+    vi.mocked(eventEscapesTerminalToCommand).mockReset();
+    vi.mocked(eventEscapesTerminalToCommand).mockReturnValue(false);
+  });
+
+  afterEach(() => cleanup());
+
+  it('bubbles an escaping chord (false) and keeps every other key for the PTY (true)', async () => {
+    const { resolveReplay } = await mountWithPendingReplay('t-keys');
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await tick();
+
+    const handler = mocks.getLastTerminal()?.keyEventHandler;
+    expect(handler).toBeTypeOf('function');
+    const keydown = (key: string): KeyboardEvent => ({ type: 'keydown', key }) as KeyboardEvent;
+
+    // Non-keydown events (keyup/keypress) are always left to xterm → the PTY,
+    // without even consulting the predicate.
+    expect(handler!({ type: 'keyup', key: 'h' } as KeyboardEvent)).toBe(true);
+    expect(vi.mocked(eventEscapesTerminalToCommand)).not.toHaveBeenCalled();
+
+    // keydown matching an escaping command → false: xterm skips its own
+    // handling (no PTY write, no preventDefault) so the event bubbles to the app.
+    vi.mocked(eventEscapesTerminalToCommand).mockReturnValue(true);
+    expect(handler!(keydown('h'))).toBe(false);
+
+    // keydown for anything else → true: xterm writes it to the PTY as usual.
+    vi.mocked(eventEscapesTerminalToCommand).mockReturnValue(false);
+    expect(handler!(keydown('x'))).toBe(true);
+  });
+});
+
+// Shift+Enter is special-cased ahead of the escape predicate: it writes a
+// newline (LF) to the PTY and fully consumes the event, instead of letting
+// xterm send its default carriage-return submit. LF is what Claude Code /
+// Codex read as "newline, don't submit" (= Ctrl+J); at a bare shell it is
+// accept-line, identical to the CR it replaces.
+describe('TerminalBody Shift+Enter newline', () => {
+  beforeEach(() => {
+    mocks.GetTerminalReplay.mockReset();
+    mocks.WriteTerminal.mockClear();
+    vi.mocked(eventEscapesTerminalToCommand).mockReset();
+    vi.mocked(eventEscapesTerminalToCommand).mockReturnValue(false);
+  });
+
+  afterEach(() => cleanup());
+
+  function enterEvent(over: Partial<KeyboardEvent>): KeyboardEvent {
+    return {
+      type: 'keydown',
+      key: 'Enter',
+      shiftKey: false,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+      ...over,
+    } as unknown as KeyboardEvent;
+  }
+
+  it('writes a single LF and consumes the event on bare Shift+Enter', async () => {
+    const { resolveReplay } = await mountWithPendingReplay('t-se');
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await tick();
+    mocks.WriteTerminal.mockClear();
+
+    const handler = mocks.getLastTerminal()?.keyEventHandler;
+    expect(handler).toBeTypeOf('function');
+
+    const event = enterEvent({ shiftKey: true });
+    // false → xterm must NOT also send its default CR.
+    expect(handler!(event)).toBe(false);
+    // Consumed: no stray textarea newline (preventDefault), no bubble to the
+    // app's window keydown handler (stopPropagation).
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(event.stopPropagation).toHaveBeenCalledOnce();
+    // Exactly one LF, encoded the same way onData encodes keystrokes.
+    expect(mocks.WriteTerminal).toHaveBeenCalledTimes(1);
+    expect(mocks.WriteTerminal).toHaveBeenCalledWith('t-se', encodeTerminalInput('\n'));
+    // The escape predicate is never consulted — the chord short-circuits it.
+    expect(vi.mocked(eventEscapesTerminalToCommand)).not.toHaveBeenCalled();
+  });
+
+  it('leaves plain Enter and modifier-combined Enter to the PTY', async () => {
+    const { resolveReplay } = await mountWithPendingReplay('t-se2');
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await tick();
+    mocks.WriteTerminal.mockClear();
+
+    const handler = mocks.getLastTerminal()?.keyEventHandler;
+    expect(handler).toBeTypeOf('function');
+
+    // Plain Enter → xterm owns it (default CR submit); no custom write.
+    expect(handler!(enterEvent({}))).toBe(true);
+    // Ctrl+Shift+Enter is NOT the bare chord — it falls through so
+    // mod+shift+enter (sidebar.cursor.openInNewPane) isn't stolen.
+    expect(handler!(enterEvent({ shiftKey: true, ctrlKey: true }))).toBe(true);
+    // Alt+Shift+Enter and Meta+Shift+Enter likewise fall through.
+    expect(handler!(enterEvent({ shiftKey: true, altKey: true }))).toBe(true);
+    expect(handler!(enterEvent({ shiftKey: true, metaKey: true }))).toBe(true);
+
+    expect(mocks.WriteTerminal).not.toHaveBeenCalled();
   });
 });

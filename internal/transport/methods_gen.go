@@ -179,6 +179,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "StartDiscussion", ID: 3188309099},                      // main.App.StartDiscussion
 	{Name: "StartDiscussionByID", ID: 2336869067},                  // main.App.StartDiscussionByID
 	{Name: "StartSession", ID: 2850159713},                         // main.App.StartSession
+	{Name: "StartTerminal", ID: 3009548683},                        // main.App.StartTerminal
 	{Name: "SteerMessageWithOptions", ID: 1698485705},              // main.App.SteerMessageWithOptions
 	{Name: "StopClaudeTask", ID: 536320598},                        // main.App.StopClaudeTask
 	{Name: "StopSession", ID: 3838500111},                          // main.App.StopSession

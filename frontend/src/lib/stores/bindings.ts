@@ -299,6 +299,7 @@ import {
   CreateThread as CreateThreadRaw,
   GetThreadDefaults as GetThreadDefaultsRaw,
   SendMessageWithOptions as SendMessageWithOptionsRaw,
+  StartTerminal as StartTerminalRaw,
   UpdateContextSettingsProfile as UpdateContextSettingsProfileRaw,
   UpdateThreadContextSettings as UpdateThreadContextSettingsRaw,
 } from '../../../bindings/agent-overflow/app.js';
@@ -306,6 +307,7 @@ import {
   CreateThreadOptions as CreateThreadOptionsClass,
   ContextSettingsUpdate as ContextSettingsUpdateClass,
   SendMessageOptions as SendMessageOptionsClass,
+  StartTerminalOptions as StartTerminalOptionsClass,
 } from '../../../bindings/agent-overflow/models.js';
 import type { SourceDiffReview, SourceProposedPlan, Thread } from '../types/models';
 
@@ -344,6 +346,19 @@ export function UpdateThreadContextSettings(
 
 export function CreateThread(opts: CreateThreadOptions): Promise<Thread> {
   return CreateThreadRaw(new CreateThreadOptionsClass(opts)) as unknown as Promise<Thread>;
+}
+
+// StartTerminal wrapper. Same plain-object-in / class-wrap pattern as
+// CreateThread. projectId empty roots a standalone "home" terminal; cwd
+// overrides the resolved root; title defaults to "Terminal" backend-side.
+export interface StartTerminalOptions {
+  projectId?: string;
+  cwd?: string;
+  title?: string;
+}
+
+export function StartTerminal(opts: StartTerminalOptions): Promise<Thread> {
+  return StartTerminalRaw(new StartTerminalOptionsClass(opts)) as unknown as Promise<Thread>;
 }
 
 export interface ThreadDefaults {

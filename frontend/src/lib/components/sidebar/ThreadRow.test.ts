@@ -84,11 +84,113 @@ describe('<ThreadRow> archive action', () => {
     resetKeyboardModifiersForTest();
   });
 
-  it('shows the archive action button', async () => {
+  it('shows the archive action (and no delete X) for a chat thread', async () => {
     const thread = makeThread({ archived: false });
     const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
     expect(getByTestId('thread-row-archive')).toBeInTheDocument();
+    expect(queryByTestId('thread-row-delete')).toBeNull();
+  });
+});
+
+describe('<ThreadRow> terminal delete action', () => {
+  // Terminals aren't archivable — the row offers an X that deletes the
+  // terminal thread. The new behavior under test is the confirmDelete
+  // gate: off → delete immediately, on → confirm first. deleteThreadAction
+  // itself (StopSession → DeleteThread → store/pane cleanup) is shared with
+  // the right-click Delete path and already covered there.
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    resetKeybindingsStore();
+    resetKeyboardModifiersForTest();
+    // Best-effort stop the (sentinel-provider) session before delete.
+    setBindingMock('StopSession', async () => {});
+  });
+
+  it('shows a delete X (not archive) for a terminal thread', async () => {
+    await primeSettings();
+    const thread = makeThread({ mode: 'terminal' });
+    const pane = createThreadPane();
+    const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row-delete')).toBeInTheDocument();
+    expect(queryByTestId('thread-row-archive')).toBeNull();
+  });
+
+  it('deletes immediately, without a confirm dialog, when confirmDelete is off', async () => {
+    await primeSettings({ confirmDelete: false });
+    let deletedId: string | null = null;
+    setBindingMock('DeleteThread', async (id: string) => { deletedId = id; });
+
+    const thread = makeThread({ id: 'term-off', mode: 'terminal' });
+    const pane = createThreadPane();
+    const { getByTestId, queryByRole } = render(ThreadRow, { props: { thread, pane } });
+
+    await fireEvent.click(getByTestId('thread-row-delete'));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(deletedId).toBe('term-off');
+    // No confirm dialog opened — the X's accessible name is "Delete
+    // Terminal", so a button named exactly "Delete" only exists if the
+    // dialog rendered its confirm button.
+    expect(queryByRole('button', { name: 'Delete' })).toBeNull();
+  });
+
+  it('confirms first when confirmDelete is on, deleting only after confirm', async () => {
+    await primeSettings({ confirmDelete: true });
+    let deletedId: string | null = null;
+    setBindingMock('DeleteThread', async (id: string) => { deletedId = id; });
+
+    const thread = makeThread({ id: 'term-on', mode: 'terminal' });
+    const pane = createThreadPane();
+    const { getByTestId, getByRole } = render(ThreadRow, { props: { thread, pane } });
+
+    await fireEvent.click(getByTestId('thread-row-delete'));
+    await tick();
+
+    // The X opened the confirm dialog; nothing deleted yet.
+    const confirmBtn = getByRole('button', { name: 'Delete' });
+    expect(confirmBtn).toBeInTheDocument();
+    expect(deletedId).toBeNull();
+
+    await fireEvent.click(confirmBtn);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(deletedId).toBe('term-on');
+  });
+});
+
+describe('<ThreadRow> leading mode icon', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+  });
+
+  it('renders the terminal icon (not the draft icon) for a terminal thread the backend marks as a draft', () => {
+    const pane = createThreadPane();
+    // Real backend shape: a terminal is an item-less thread, so the store
+    // computes isDraft=true for it (store.go: IsDraft is "no items exist").
+    // ThreadRow must still show the terminal glyph, not the draft document
+    // icon — mode is the stronger signal and is checked first. This is the
+    // regression guard for the sidebar showing a document icon on terminals;
+    // it fails if the isDraft branch is ever allowed to win again.
+    const thread = makeThread({ mode: 'terminal', isDraft: true });
+    const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
+    // The green terminal glyph (boxless `>_`, matching the chat-history bash
+    // tool-call icon) that distinguishes terminal rows from chat rows (mirrors
+    // the draft icon's leading slot).
+    expect(getByTestId('thread-row-terminal-icon')).toBeInTheDocument();
+    expect(queryByTestId('thread-row-draft-icon')).toBeNull();
+  });
+
+  it('renders no terminal icon for a chat thread', () => {
+    const pane = createThreadPane();
+    const thread = makeThread({ mode: 'chat' });
+    const { queryByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(queryByTestId('thread-row-terminal-icon')).toBeNull();
   });
 });
 
@@ -469,6 +571,68 @@ describe('<ThreadRow> pin affordance placement', () => {
     });
 
     expect(queryByTestId('thread-row-pin')).toBeNull();
+  });
+});
+
+describe('<ThreadRow> hover-action reveal trigger', () => {
+  // Regression: the pin (left) and the archive/delete action (right) reveal
+  // on row HOVER or KEYBOARD focus only. They previously keyed off
+  // `group-focus-within/thread-row`, but the row is a tabindex=0 button, so a
+  // plain mouse click focuses it and `:focus-within` left both affordances
+  // stuck visible on the active row after the pointer left (reported on
+  // terminal rows — which, unlike chat, don't hand focus off to a composer on
+  // open, so the row keeps focus). The correct trigger is
+  // `group-has-[:focus-visible]/thread-row`: a focus-VISIBLE descendant
+  // (keyboard Tab into an action), which a mouse click on the row never
+  // produces. happy-dom doesn't compute `:has()`/`:focus-visible` against
+  // Tailwind CSS (the stylesheet isn't loaded in unit tests), so this asserts
+  // the class contract — the same proxy the pin-placement tests above use.
+  beforeEach(async () => {
+    resetPanesForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+  });
+
+  it('reveals the unpinned pin on hover and keyboard focus-visible, never on focus-within', () => {
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane } });
+    const pin = getByTestId('thread-row-pin');
+
+    expect(pin.className).toContain('opacity-0');
+    expect(pin.className).toContain('group-hover/thread-item:opacity-100');
+    expect(pin.className).toContain('group-has-[:focus-visible]/thread-row:opacity-100');
+    // The mouse-click-sticks bug: focus-within must never be a reveal trigger.
+    expect(pin.className).not.toContain('focus-within');
+  });
+
+  it('reveals the terminal delete action on hover and keyboard focus-visible, never on focus-within', () => {
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ mode: 'terminal' }), pane },
+    });
+    // The delete X lives inside the absolute right-side action wrapper, which
+    // owns the reveal opacity (a child's opacity can't override an opacity-0
+    // parent), so assert the wrapper's trigger classes.
+    const wrapper = getByTestId('thread-row-delete').parentElement as HTMLElement;
+
+    expect(wrapper.className).toContain('opacity-0');
+    expect(wrapper.className).toContain('group-hover/thread-item:opacity-100');
+    expect(wrapper.className).toContain('group-has-[:focus-visible]/thread-row:opacity-100');
+    expect(wrapper.className).not.toContain('focus-within');
+  });
+
+  it('cross-fades the timestamp out on the same hover / keyboard-focus trigger', () => {
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane } });
+    const time = getByTestId('thread-row-time');
+
+    expect(time.className).toContain('group-hover/thread-item:opacity-0');
+    expect(time.className).toContain('group-has-[:focus-visible]/thread-row:opacity-0');
+    expect(time.className).not.toContain('focus-within');
+    // Visible at rest: only the hover/focus-scoped fades carry opacity-0;
+    // no standalone opacity-0 token that would hide the stamp by default.
+    expect(time.className.split(/\s+/)).not.toContain('opacity-0');
   });
 });
 

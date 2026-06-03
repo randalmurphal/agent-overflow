@@ -99,6 +99,47 @@ func TestModWClosesPaneAndYieldsToTerminalFocus(t *testing.T) {
 	}
 }
 
+// TestPaneNavVimChordsEscapeTerminalFocus pins the asymmetry behind "alt+h/l
+// must navigate panes from inside a terminal, but alt+l must not run `ls`": the
+// vim pane-nav chords are UN-gated (no !terminalFocus) so they bubble out of a
+// focused xterm (TerminalBody's key handler recognises exactly these), while
+// their alt+arrow twins KEEP the !terminalFocus gate so the shell still owns
+// alt+arrow word-motion. A regression re-adding the gate to a vim chord would
+// silently re-break alt+h/l inside the terminal.
+func TestPaneNavVimChordsEscapeTerminalFocus(t *testing.T) {
+	whenByKey := func(key string) (when string, count int) {
+		for _, b := range Defaults {
+			if b.Key == key {
+				when = b.When
+				count++
+			}
+		}
+		return when, count
+	}
+
+	// Vim chords: un-gated (escape a focused terminal).
+	for _, key := range []string{"alt+h", "alt+l", "alt+shift+h", "alt+shift+l"} {
+		when, count := whenByKey(key)
+		if count != 1 {
+			t.Fatalf("want exactly one %q binding, got %d", key, count)
+		}
+		if when != "" {
+			t.Errorf("%q When = %q, want \"\" (un-gated so it escapes a focused terminal)", key, when)
+		}
+	}
+
+	// Arrow twins: keep the gate (shell owns alt+arrow word-motion).
+	for _, key := range []string{"alt+arrowleft", "alt+arrowright", "alt+shift+arrowleft", "alt+shift+arrowright"} {
+		when, count := whenByKey(key)
+		if count != 1 {
+			t.Fatalf("want exactly one %q binding, got %d", key, count)
+		}
+		if when != "!terminalFocus" {
+			t.Errorf("%q When = %q, want %q (gated so the shell keeps alt+arrow word-motion)", key, when, "!terminalFocus")
+		}
+	}
+}
+
 // TestDefaultsHaveUniqueKeyWhenTuples guarantees no two defaults
 // collide on the same (key, when) pair. Multiple chords for one
 // command is fine (e.g. mod+n and mod+shift+o both → thread.new),

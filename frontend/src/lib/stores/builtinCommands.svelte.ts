@@ -27,6 +27,7 @@ import {
 } from './panes.svelte';
 import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
+import { openTerminalThread } from './threadCreation.svelte';
 import {
   archiveThreadAction,
   deleteThreadAction,
@@ -224,15 +225,23 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     },
   });
 
+  // Pane navigation stays reachable from inside a focused terminal: the vim
+  // chords (alt+h/l, alt+shift+h/l) are un-gated here AND in the Go defaults,
+  // and TerminalBody's xterm key handler lets exactly those chords bubble out
+  // instead of writing them to the PTY. The alt+arrow twins keep their
+  // !terminalFocus rule-gate so the shell still owns alt+arrow word-motion.
   registerCommand({
     id: 'pane.focusLeft',
     label: 'Pane: Focus Left',
     icon: '←',
-    when: '!terminalFocus',
     editableReachable: true,
     run: () => {
       const next = focusAdjacentPane(-1);
-      if (next) focusPaneComposerIfEditableActive(next.paneId);
+      if (!next) return;
+      // Into a terminal pane: latch focus so the xterm grabs the keyboard — a
+      // terminal has no composer for focusPaneComposerIfEditableActive to hit.
+      if (next.thread?.mode === 'terminal') next.requestTerminalFocus();
+      else focusPaneComposerIfEditableActive(next.paneId);
     },
   });
 
@@ -240,11 +249,12 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'pane.focusRight',
     label: 'Pane: Focus Right',
     icon: '→',
-    when: '!terminalFocus',
     editableReachable: true,
     run: () => {
       const next = focusAdjacentPane(1);
-      if (next) focusPaneComposerIfEditableActive(next.paneId);
+      if (!next) return;
+      if (next.thread?.mode === 'terminal') next.requestTerminalFocus();
+      else focusPaneComposerIfEditableActive(next.paneId);
     },
   });
 
@@ -252,7 +262,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'pane.moveLeft',
     label: 'Pane: Move Left',
     icon: '⇠',
-    when: '!terminalFocus',
     editableReachable: true,
     run: () => { moveFocusedPane(-1); },
   });
@@ -261,7 +270,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'pane.moveRight',
     label: 'Pane: Move Right',
     icon: '⇢',
-    when: '!terminalFocus',
     editableReachable: true,
     run: () => { moveFocusedPane(1); },
   });
@@ -692,6 +700,25 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   });
 
   registerCommand({
+    id: 'terminal.newPane',
+    label: 'Terminal: New in New Pane',
+    icon: '▶',
+    // No `when` — unlike terminal.toggle this must work with no active thread
+    // (the global +terminal opens a home terminal). The `!terminalFocus` gate
+    // that keeps the `mod+shift+~` chord out of a focused xterm lives on the
+    // keybinding (mirroring thread.newPane), so the command stays palette-
+    // runnable. `editableReachable` lets the chord fire from the composer.
+    editableReachable: true,
+    run: (ctx) => {
+      const thread = ctx.pane?.thread;
+      void openTerminalThread({
+        projectId: thread?.projectId,
+        cwd: thread?.workspacePath,
+      });
+    },
+  });
+
+  registerCommand({
     id: 'git.commit',
     label: 'Git: Commit All',
     icon: '✓',
@@ -766,9 +793,12 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
   const flags: CommandFlags = {
     paletteOpen: false,
     terminalOpen: pane?.showTerminal ?? false,
-    // terminalFocus mirrors whether an xterm element has DOM focus. The
-    // TerminalBody component bumps the registry on focus/blur events.
-    terminalFocus: getTerminalFocused(),
+    // terminalFocus mirrors whether THIS pane's xterm element has DOM focus.
+    // The TerminalBody component bumps the per-pane registry on focus/blur
+    // events. With no pane there's no terminal to gate against, so false —
+    // never fall through to "any terminal anywhere is focused", which would
+    // suppress an unrelated pane's chords.
+    terminalFocus: pane ? getTerminalFocused(pane.paneId) : false,
     approvalPending: pane ? pane.pendingApprovals.length > 0 : false,
     anyModalOpen: false,
     hasActiveThread: thread !== null,

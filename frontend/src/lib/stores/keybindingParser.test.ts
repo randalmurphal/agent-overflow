@@ -93,6 +93,42 @@ describe('keybindingParser — chordMatches', () => {
     const chord = parseChord('mod+k');
     expect(chordMatches(chord, ev('K', { metaKey: true }), true)).toBe(true);
   });
+
+  // The default terminal.newPane chord is `mod+shift+~` — the SHIFTED glyph,
+  // not the bare backtick. Pressing Ctrl/Cmd+Shift+` produces event.key="~"
+  // (the shift layer), and chordMatches compares event.key.toLowerCase()
+  // against the chord key WITHOUT folding punctuation, so the binding MUST be
+  // `~`. A `mod+shift+\`` default would parse fine but never fire. This pins
+  // both halves so the footgun the plan warns about can't regress.
+  describe('terminal.newPane glyph (mod+shift+~)', () => {
+    it('parses to the tilde glyph with mod+shift and no other modifiers', () => {
+      expect(tryParseChord('mod+shift+~')).toMatchObject({
+        key: '~',
+        modKey: true,
+        shiftKey: true,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+      });
+    });
+
+    it('matches Ctrl+Shift+Backtick (event.key="~") on non-mac', () => {
+      const chord = parseChord('mod+shift+~');
+      expect(chordMatches(chord, ev('~', { ctrlKey: true, shiftKey: true }), false)).toBe(true);
+    });
+
+    it('matches Cmd+Shift+Backtick (event.key="~") on mac', () => {
+      const chord = parseChord('mod+shift+~');
+      expect(chordMatches(chord, ev('~', { metaKey: true, shiftKey: true }), true)).toBe(true);
+    });
+
+    it('does NOT match the bare backtick glyph', () => {
+      // If the platform reported "`" (no shift layer) the tilde chord must not
+      // fire — this is exactly why the binding is `~`, not a backtick.
+      const chord = parseChord('mod+shift+~');
+      expect(chordMatches(chord, ev('`', { ctrlKey: true, shiftKey: true }), false)).toBe(false);
+    });
+  });
 });
 
 describe('keybindingParser — when expressions', () => {

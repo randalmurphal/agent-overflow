@@ -203,3 +203,62 @@ func TestResizeTerminalOnMissingIsErrorFromManager(t *testing.T) {
 		t.Fatalf("expected ErrTerminalNotFound, got %v", err)
 	}
 }
+
+// TestTerminalExitCallback_EmitsWhenRunning confirms a real, running-time
+// terminal exit (ctrl+D or last-tab close) reaches the frontend as a
+// `terminal:exit` event with the status copied across. That event is the
+// single seam the frontend uses to close the terminal pane (#2) and drop the
+// terminal thread from the sidebar (#3); dropping it would strand both.
+func TestTerminalExitCallback_EmitsWhenRunning(t *testing.T) {
+	app := NewApp()
+
+	got := make(chan TerminalExitEvent, 1)
+	app.testEmitHook = func(name string, data any) {
+		if name != "terminal:exit" {
+			return
+		}
+		evt, ok := data.(TerminalExitEvent)
+		if !ok {
+			t.Errorf("terminal:exit payload type = %T, want TerminalExitEvent", data)
+			return
+		}
+		select {
+		case got <- evt:
+		default:
+		}
+	}
+
+	app.terminalExitCallback("thread-x", "term-x", terminal.ExitStatus{Code: 137, Reason: "signal:SIGKILL"})
+
+	select {
+	case evt := <-got:
+		if evt.ThreadID != "thread-x" || evt.TerminalID != "term-x" {
+			t.Fatalf("ids = (%q,%q), want (thread-x,term-x)", evt.ThreadID, evt.TerminalID)
+		}
+		if evt.Code != 137 || evt.Reason != "signal:SIGKILL" {
+			t.Fatalf("status = (%d,%q), want (137,signal:SIGKILL)", evt.Code, evt.Reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no terminal:exit event emitted for a running-time exit")
+	}
+}
+
+// TestTerminalExitCallback_SkipsOnShutdown pins the shutdown-suppression
+// guard. Manager.Shutdown SIGTERMs every PTY during app quit, firing each
+// session's exit callback; without the guard those mass-kill exits would
+// reach the frontend and wrongly delete every terminal thread from the
+// sidebar. Terminal threads must persist across restart, so a shutdown-time
+// exit must NOT emit. A regression that drops the guard fails here.
+func TestTerminalExitCallback_SkipsOnShutdown(t *testing.T) {
+	app := NewApp()
+	app.shuttingDown.Store(true)
+
+	emitted := false
+	app.testEmitHook = func(string, any) { emitted = true }
+
+	app.terminalExitCallback("thread-x", "term-x", terminal.ExitStatus{})
+
+	if emitted {
+		t.Error("terminal:exit should not fire after shuttingDown is set")
+	}
+}

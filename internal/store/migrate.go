@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -19,7 +20,93 @@ type Migration struct {
 	Version int
 	Name    string
 	SQL     string
+	// Rebuild marks a migration whose SQL performs a full table rebuild
+	// (CREATE new / copy / DROP old / RENAME) to change a CHECK or drop a
+	// NOT NULL that SQLite can't alter in place. Such a migration MUST run
+	// with foreign_keys disabled so DROP TABLE doesn't fire ON DELETE
+	// CASCADE against child tables — and foreign_keys can only be toggled
+	// outside a transaction, so these run through applyRebuildMigration.
+	Rebuild bool
 }
+
+// rebuildThreadsV5SQL rebuilds the threads table to (a) extend the mode
+// CHECK with 'terminal' (so a terminal-mode thread can be persisted) and
+// (b) drop NOT NULL from project_id (so a standalone "home" terminal can
+// exist with no project). SQLite cannot alter a CHECK or drop a NOT NULL in
+// place, so the whole table is rebuilt. Every column is preserved verbatim
+// except those two changes; the explicit INSERT/SELECT column lists guard
+// against schema drift. Runs with foreign_keys OFF (see
+// applyRebuildMigration) so DROP TABLE threads does not cascade-delete the
+// many child tables that REFERENCE threads(id) ON DELETE CASCADE. The five
+// threads indexes are dropped with the old table and recreated here; the
+// only triggers in the schema are on items, so none need recreating.
+const rebuildThreadsV5SQL = `
+CREATE TABLE threads_new (
+    id                       TEXT    PRIMARY KEY,
+    project_id               TEXT    REFERENCES projects(id) ON DELETE CASCADE,
+    title                    TEXT    NOT NULL DEFAULT 'New Thread',
+    provider                 TEXT    NOT NULL CHECK(provider IN ('claude','codex')),
+    model                    TEXT    NOT NULL DEFAULT '',
+    workspace_path           TEXT    NOT NULL,
+    worktree_path            TEXT,
+    branch                   TEXT,
+    session_ref              TEXT,
+    pending_fork_session_ref TEXT,
+    mode                     TEXT    NOT NULL DEFAULT 'chat'
+        CHECK(mode IN ('chat','plan','design','discussion','terminal')),
+    reasoning_effort         TEXT    NOT NULL DEFAULT 'high'
+        CHECK(
+            (provider = 'codex' AND reasoning_effort IN ('none','minimal','low','medium','high','xhigh'))
+            OR (provider = 'claude' AND reasoning_effort IN ('low','medium','high','xhigh','max'))
+        ),
+    fast_mode                INTEGER NOT NULL DEFAULT 0 CHECK(fast_mode IN (0,1)),
+    context_window           INTEGER NOT NULL DEFAULT 1000000 CHECK(context_window > 0),
+    auto_compact_standard_percent INTEGER NOT NULL DEFAULT 0
+        CHECK(auto_compact_standard_percent BETWEEN 0 AND 90),
+    auto_compact_extended_percent INTEGER NOT NULL DEFAULT 0
+        CHECK(auto_compact_extended_percent BETWEEN 0 AND 90),
+    runtime_mode             TEXT    NOT NULL DEFAULT 'full-access'
+        CHECK(runtime_mode IN ('approval-required','auto-accept-edits','full-access')),
+    discussion_id            TEXT    REFERENCES channels(id) ON DELETE SET NULL,
+    parent_thread_id         TEXT    REFERENCES threads(id) ON DELETE SET NULL,
+    forked_from_thread_id    TEXT    REFERENCES threads(id) ON DELETE SET NULL,
+    last_token_usage         TEXT    NOT NULL DEFAULT ''
+        CHECK(last_token_usage = '' OR json_valid(last_token_usage)),
+    last_read_at             INTEGER,
+    pinned_at                INTEGER,
+    created_at               INTEGER NOT NULL,
+    updated_at               INTEGER NOT NULL,
+    archived                 INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
+    disabled_mcp_servers     TEXT NULL CHECK(disabled_mcp_servers IS NULL OR json_valid(disabled_mcp_servers))
+);
+
+INSERT INTO threads_new (
+    id, project_id, title, provider, model, workspace_path, worktree_path,
+    branch, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+    fast_mode, context_window, auto_compact_standard_percent,
+    auto_compact_extended_percent, runtime_mode, discussion_id,
+    parent_thread_id, forked_from_thread_id, last_token_usage, last_read_at,
+    pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+)
+SELECT
+    id, project_id, title, provider, model, workspace_path, worktree_path,
+    branch, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+    fast_mode, context_window, auto_compact_standard_percent,
+    auto_compact_extended_percent, runtime_mode, discussion_id,
+    parent_thread_id, forked_from_thread_id, last_token_usage, last_read_at,
+    pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+FROM threads;
+
+DROP TABLE threads;
+
+ALTER TABLE threads_new RENAME TO threads;
+
+CREATE INDEX idx_threads_forked_from ON threads(forked_from_thread_id);
+CREATE INDEX idx_threads_parent      ON threads(parent_thread_id);
+CREATE INDEX idx_threads_pinned_at   ON threads(pinned_at) WHERE pinned_at IS NOT NULL;
+CREATE INDEX idx_threads_project     ON threads(project_id, updated_at DESC);
+CREATE INDEX idx_threads_updated     ON threads(updated_at DESC);
+`
 
 // migrations is the ordered list of all schema migrations. Squashed
 // for v0.0.1: the prior 51-migration chain produced this schema; old
@@ -55,6 +142,12 @@ CREATE INDEX idx_thread_drafts_has_content
 		Version: 4,
 		Name:    "thread_disabled_mcp_servers",
 		SQL:     `ALTER TABLE threads ADD COLUMN disabled_mcp_servers TEXT NULL CHECK(disabled_mcp_servers IS NULL OR json_valid(disabled_mcp_servers));`,
+	},
+	{
+		Version: 5,
+		Name:    "thread_terminal_mode",
+		SQL:     rebuildThreadsV5SQL,
+		Rebuild: true,
 	},
 }
 
@@ -180,7 +273,11 @@ func applyPendingMigrations(db *sql.DB, applied int) error {
 		if m.Version <= applied {
 			continue
 		}
-		if err := applyMigration(db, m); err != nil {
+		apply := applyMigration
+		if m.Rebuild {
+			apply = applyRebuildMigration
+		}
+		if err := apply(db, m); err != nil {
 			return err
 		}
 	}
@@ -212,4 +309,85 @@ func applyMigration(db *sql.DB, m Migration) error {
 
 	log.Printf("store: migration v%d applied", m.Version)
 	return nil
+}
+
+// applyRebuildMigration runs a table-rebuild migration with foreign keys
+// disabled. PRAGMA foreign_keys is a no-op inside a transaction, so the
+// toggle must happen on a connection with no transaction open — we pin a
+// single *sql.Conn for the whole operation rather than leaning on
+// SetMaxOpenConns(1), keeping the FK-off window scoped to exactly this
+// connection. Sequence: disable FK, run the rebuild + version bump in one
+// transaction, verify integrity with foreign_key_check, commit, re-enable FK.
+func applyRebuildMigration(db *sql.DB, m Migration) error {
+	log.Printf("store: applying rebuild migration v%d: %s", m.Version, m.Name)
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("pin connection for rebuild v%d: %w", m.Version, err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys for rebuild v%d: %w", m.Version, err)
+	}
+	// Always restore enforcement before the connection returns to the pool,
+	// even on failure — a leaked foreign_keys=OFF would silently disable
+	// cascade integrity for the rest of the process. Deferred after
+	// conn.Close so it runs first (LIFO).
+	defer func() {
+		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+			log.Printf("store: WARNING failed to re-enable foreign_keys after rebuild v%d: %v", m.Version, err)
+		}
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin rebuild v%d: %w", m.Version, err)
+	}
+	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("rebuild v%d (%s) failed: %w", m.Version, m.Name, err)
+	}
+	if err := assertForeignKeysIntact(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("rebuild v%d (%s): %w", m.Version, m.Name, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO migration_versions (version, name) VALUES (?, ?)",
+		m.Version, m.Name,
+	); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("record rebuild v%d: %w", m.Version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit rebuild v%d: %w", m.Version, err)
+	}
+
+	log.Printf("store: rebuild migration v%d applied", m.Version)
+	return nil
+}
+
+// assertForeignKeysIntact runs PRAGMA foreign_key_check and returns an error
+// if any row references a missing parent. After a rebuild that copies ids
+// verbatim this is always clean; the check is cheap insurance that turns a
+// botched rebuild (which would otherwise silently strand child rows) into a
+// loud migration failure + rollback. foreign_key_check works regardless of
+// whether enforcement is currently enabled.
+func assertForeignKeysIntact(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("foreign_key_check: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		// Columns: child table, child rowid, referenced table, fk index.
+		var table, referred sql.NullString
+		var rowid, fkid sql.NullInt64
+		if err := rows.Scan(&table, &rowid, &referred, &fkid); err != nil {
+			return fmt.Errorf("foreign_key_check scan: %w", err)
+		}
+		return fmt.Errorf("foreign key violation after rebuild: table %q row %d references missing %q",
+			table.String, rowid.Int64, referred.String)
+	}
+	return rows.Err()
 }

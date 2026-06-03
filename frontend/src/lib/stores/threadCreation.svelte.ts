@@ -1,14 +1,18 @@
-import { GetThreadDefaults } from './bindings';
+import { GetThreadDefaults, StartTerminal } from './bindings';
 import { getProject, getProjects } from './projects.svelte';
 import {
   ensureMainPane,
   ensurePaneInLayout,
   getFocusedPaneOrNull,
   openEmptyPane,
+  replaceThreadInPane,
 } from './panes.svelte';
-import { expandProject } from './sidebar.svelte';
+import { expandProject, expandTerminalsGroup } from './sidebar.svelte';
+import { prependThread } from './threads.svelte';
+import { addToast } from './toast.svelte';
+import { errString } from '../utils/errors';
 import type { DraftPlaceholderDefaults, ThreadPane } from './thread.svelte';
-import type { Project } from '../types/models';
+import type { Project, Thread } from '../types/models';
 
 export type DraftMode = 'chat' | 'design';
 
@@ -111,5 +115,67 @@ export async function openDraftThreadForProject(
     console.warn('GetThreadDefaults failed; using empty placeholder defaults', err);
   }
   pane.startDraftPlaceholder(project, mode, defaults);
+  return pane;
+}
+
+export interface OpenTerminalThreadOptions {
+  /** Project to root the terminal in. Omitted → a standalone home terminal. */
+  projectId?: string;
+  /** Explicit working directory. Omitted → backend resolves (project root or home). */
+  cwd?: string;
+}
+
+/**
+ * Create a persistent `mode:'terminal'` thread and open it in a fresh pane.
+ * Every terminal entry point routes here — the per-project / global `+terminal`
+ * buttons, the `mod+shift+~` chord, and the ChatHeader ctrl/cmd-click — so a
+ * terminal always lands in its own new pane (locked decision: always fresh).
+ *
+ * `StartTerminal` writes the SQLite row (sentinel provider; `workspacePath` =
+ * resolved cwd — project root when `projectId` is set, else home) but does NOT
+ * spawn a PTY. The shell is opened by `TerminalSurface.onMount` once the pane
+ * mounts, which is why a restored terminal re-spawns a fresh shell in its saved
+ * cwd for free. The new row is prepended to the sidebar store (mirroring draft
+ * materialization) so it shows immediately rather than only after the next
+ * thread-list refresh.
+ *
+ * Two timing decisions are load-bearing:
+ *  - The focus latch is set BEFORE `replaceThreadInPane`. `switchThread` mounts
+ *    `TerminalView` synchronously inside its await and `TerminalSurface.onMount`
+ *    consumes the latch on that mount — latching after the open is one tick too
+ *    late and the new shell never grabs focus.
+ *  - `replaceThreadInPane` is called directly rather than `openThreadInPane`.
+ *    The thread is brand-new, so the `revealThreadIfOpen` probe can never hit;
+ *    skipping it also removes the extra await between minting the empty pane and
+ *    `switchThread`, keeping the empty-pane → terminal transition in a single
+ *    paint frame (no "pick a project" flash).
+ *
+ * Returns the opened pane, or `null` when `StartTerminal` fails — the failure is
+ * surfaced as an error toast rather than an unhandled rejection, since the user
+ * clicked expecting a terminal.
+ */
+export async function openTerminalThread(
+  options: OpenTerminalThreadOptions = {},
+): Promise<ThreadPane | null> {
+  const { projectId, cwd } = options;
+  let thread: Thread;
+  try {
+    thread = await StartTerminal({ projectId, cwd });
+  } catch (err) {
+    console.error('StartTerminal failed', err);
+    addToast('error', `Could not start terminal: ${errString(err)}`);
+    return null;
+  }
+  // Reveal wherever the new row will land so the create isn't invisible: a
+  // per-project terminal under its project, a home terminal under the
+  // (possibly collapsed) Terminals group.
+  if (projectId) expandProject(projectId);
+  else expandTerminalsGroup();
+  // Surface the new terminal in the sidebar immediately (mirrors how draft
+  // materialization prepends), instead of waiting for a thread-list refresh.
+  prependThread(thread);
+  const pane = openEmptyPane();
+  pane.requestTerminalFocus();
+  await replaceThreadInPane(thread, pane, 'committed');
   return pane;
 }

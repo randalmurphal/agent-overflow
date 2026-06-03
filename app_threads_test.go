@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,114 @@ func TestCreateThreadNormalizesModelAlias(t *testing.T) {
 	}
 	if stored.Model != "gpt-5.4" {
 		t.Fatalf("stored Model = %q, want gpt-5.4", stored.Model)
+	}
+}
+
+// --- StartTerminal (terminal-mode thread creation) ---
+
+func TestStartTerminalPerProjectRootsAtProjectPath(t *testing.T) {
+	app := newTestAppWithStore(t)
+	project, err := app.ensureProjectForWorkspace("/tmp/term-proj")
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace: %v", err)
+	}
+
+	term, err := app.StartTerminal(StartTerminalOptions{ProjectID: project.ID})
+	if err != nil {
+		t.Fatalf("StartTerminal: %v", err)
+	}
+	if term.Mode != "terminal" {
+		t.Errorf("Mode = %q, want terminal", term.Mode)
+	}
+	if term.ProjectID != project.ID {
+		t.Errorf("ProjectID = %q, want %q", term.ProjectID, project.ID)
+	}
+	if term.WorkspacePath != project.Path {
+		t.Errorf("WorkspacePath = %q, want %q", term.WorkspacePath, project.Path)
+	}
+	if term.Title != "Terminal" {
+		t.Errorf("Title = %q, want Terminal (default)", term.Title)
+	}
+	// The sentinel must satisfy the coupled (provider, reasoning_effort)
+	// CHECK: a real provider and a non-empty effort.
+	if term.Provider != "claude" && term.Provider != "codex" {
+		t.Errorf("Provider = %q, want a real provider sentinel", term.Provider)
+	}
+	if term.ReasoningEffort == "" {
+		t.Error("ReasoningEffort is empty; the coupled CHECK would reject it")
+	}
+
+	stored, err := app.store.GetThread(term.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if stored.Mode != "terminal" || stored.ProjectID != project.ID {
+		t.Errorf("stored = {mode:%q project:%q}, want {terminal %q}", stored.Mode, stored.ProjectID, project.ID)
+	}
+}
+
+func TestStartTerminalStandaloneRootsAtHome(t *testing.T) {
+	app := newTestAppWithStore(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home directory available: %v", err)
+	}
+
+	term, err := app.StartTerminal(StartTerminalOptions{})
+	if err != nil {
+		t.Fatalf("StartTerminal: %v", err)
+	}
+	if term.Mode != "terminal" {
+		t.Errorf("Mode = %q, want terminal", term.Mode)
+	}
+	if term.ProjectID != "" {
+		t.Errorf("ProjectID = %q, want empty (standalone)", term.ProjectID)
+	}
+	if term.WorkspacePath != home {
+		t.Errorf("WorkspacePath = %q, want home %q", term.WorkspacePath, home)
+	}
+
+	// A standalone terminal persists project_id as NULL; the binding must
+	// round-trip it back as "" without a scan error.
+	stored, err := app.store.GetThread(term.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if stored.ProjectID != "" {
+		t.Errorf("stored ProjectID = %q, want empty", stored.ProjectID)
+	}
+}
+
+func TestStartTerminalCwdOverrideAndCustomTitle(t *testing.T) {
+	app := newTestAppWithStore(t)
+	project, err := app.ensureProjectForWorkspace("/tmp/term-cwd-proj")
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace: %v", err)
+	}
+
+	term, err := app.StartTerminal(StartTerminalOptions{
+		ProjectID: project.ID,
+		Cwd:       "/tmp/term-cwd-proj/sub",
+		Title:     "Logs",
+	})
+	if err != nil {
+		t.Fatalf("StartTerminal: %v", err)
+	}
+	if term.WorkspacePath != "/tmp/term-cwd-proj/sub" {
+		t.Errorf("WorkspacePath = %q, want the cwd override", term.WorkspacePath)
+	}
+	if term.ProjectID != project.ID {
+		t.Errorf("ProjectID = %q, want %q (cwd override keeps the project)", term.ProjectID, project.ID)
+	}
+	if term.Title != "Logs" {
+		t.Errorf("Title = %q, want Logs", term.Title)
+	}
+}
+
+func TestStartTerminalRejectsUnknownProject(t *testing.T) {
+	app := newTestAppWithStore(t)
+	if _, err := app.StartTerminal(StartTerminalOptions{ProjectID: "does-not-exist"}); err == nil {
+		t.Fatal("StartTerminal(unknown project) error = nil, want resolve error")
 	}
 }
 

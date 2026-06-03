@@ -26,7 +26,15 @@ import {
   resetProjectsForTest,
 } from '../../stores/projects.svelte';
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
+import { openTerminalThread } from '../../stores/threadCreation.svelte';
 import type { Project, Thread } from '../../types/models';
+
+// The terminal button's ctrl/cmd-click opens a fresh terminal pane via
+// openTerminalThread; stub it so the gesture can be asserted without standing
+// up the real StartTerminal binding + pane registry. ChatHeader is the only
+// threadCreation consumer in this test's module graph, so a minimal factory is
+// safe (the draft-helper exports stay unused here).
+vi.mock('../../stores/threadCreation.svelte', () => ({ openTerminalThread: vi.fn() }));
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -92,6 +100,7 @@ describe('<ChatHeader>', () => {
     resetSidebarForTest();
     resetPanesForTest();
     resetPaneLayoutForTest();
+    vi.mocked(openTerminalThread).mockClear();
   });
 
   it('shows the thread title as a button in view mode', async () => {
@@ -234,6 +243,38 @@ describe('<ChatHeader>', () => {
     // open click must have set it exactly once.
     expect(pane.consumeTerminalFocusRequest()).toBe(true);
     await fireEvent.click(getByTestId('terminal-toggle'));
+    expect(pane.showTerminal).toBe(false);
+    // Plain clicks must never spawn a new pane — that path is modifier-gated.
+    expect(vi.mocked(openTerminalThread)).not.toHaveBeenCalled();
+  });
+
+  it('ctrl-click opens a fresh terminal pane rooted at the thread workspace and skips the drawer toggle', async () => {
+    const pane = await buildPane(makeThread({ projectId: 'proj-7', workspacePath: '/tmp/ws7' }));
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    expect(pane.showTerminal).toBe(false);
+
+    await fireEvent.click(getByTestId('terminal-toggle'), { ctrlKey: true });
+
+    expect(vi.mocked(openTerminalThread)).toHaveBeenCalledWith({
+      projectId: 'proj-7',
+      cwd: '/tmp/ws7',
+    });
+    // The drawer toggle is bypassed — ctrl-click is "new pane", not "show here".
+    expect(pane.showTerminal).toBe(false);
+  });
+
+  it('cmd-click (macOS) also opens a fresh terminal pane', async () => {
+    const pane = await buildPane(makeThread({ projectId: 'proj-7', workspacePath: '/tmp/ws7' }));
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+
+    await fireEvent.click(getByTestId('terminal-toggle'), { metaKey: true });
+
+    expect(vi.mocked(openTerminalThread)).toHaveBeenCalledWith({
+      projectId: 'proj-7',
+      cwd: '/tmp/ws7',
+    });
     expect(pane.showTerminal).toBe(false);
   });
 

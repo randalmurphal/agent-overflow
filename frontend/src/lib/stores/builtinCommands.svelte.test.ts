@@ -16,6 +16,9 @@ import {
   runCommand,
   type CommandContext,
 } from './commandRegistry.svelte';
+import { focusPane, registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { PANE_NAV_COMMAND_IDS } from './paneNavCommands';
+import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import {
   closeMessageSearch,
   isMessageSearchOpen,
@@ -36,7 +39,15 @@ import {
   resetThreadActionConfirmationsForTest,
 } from './threadActionConfirmations.svelte';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
+import { openTerminalThread } from './threadCreation.svelte';
 import type { Project, Thread } from '../types/models';
+
+// builtinCommands imports openTerminalThread directly (like runTerminalToggle);
+// stub it so terminal.newPane's wiring can be asserted without standing up the
+// real StartTerminal binding + pane registry. builtinCommands is the only
+// consumer of threadCreation in this test's module graph, so a minimal factory
+// is safe.
+vi.mock('./threadCreation.svelte', () => ({ openTerminalThread: vi.fn() }));
 
 function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThreadPane> {
   setBindingMock('SwitchThread', async (threadId: unknown) => ({
@@ -133,23 +144,40 @@ describe('makeCommandContext', () => {
 
   it('terminalFocus flips to true when the registry reports focus', () => {
     const pane = readyPane();
-    notifyTerminalFocus(true);
+    notifyTerminalFocus(pane.paneId, true);
     const ctx = makeCommandContext(pane, {});
     expect(ctx.terminalFocus).toBe(true);
   });
 
   it('terminalFocus flips back to false after a matching unfocus', () => {
     const pane = readyPane();
-    notifyTerminalFocus(true);
-    notifyTerminalFocus(false);
+    notifyTerminalFocus(pane.paneId, true);
+    notifyTerminalFocus(pane.paneId, false);
     const ctx = makeCommandContext(pane, {});
     expect(ctx.terminalFocus).toBe(false);
   });
 
   it('explicit override in `extra` wins over the live registry', () => {
     const pane = readyPane();
-    notifyTerminalFocus(true);
+    notifyTerminalFocus(pane.paneId, true);
     const ctx = makeCommandContext(pane, { terminalFocus: false });
+    expect(ctx.terminalFocus).toBe(false);
+  });
+
+  // Pane-scoped registry: a terminal focused in another pane must not leak into
+  // this pane's context, and a null pane never reports terminal focus. Both
+  // would be true under the old module-global counter — the exact cross-pane
+  // suppression this refactor removes.
+  it('terminalFocus stays false when only another pane has terminal focus', () => {
+    const pane = readyPane();
+    notifyTerminalFocus('some-other-pane', true);
+    const ctx = makeCommandContext(pane, {});
+    expect(ctx.terminalFocus).toBe(false);
+  });
+
+  it('terminalFocus is false for a null pane even while another terminal is focused', () => {
+    notifyTerminalFocus('some-other-pane', true);
+    const ctx = makeCommandContext(null, {});
     expect(ctx.terminalFocus).toBe(false);
   });
 
@@ -513,6 +541,53 @@ describe('thread archive/delete command safety', () => {
 
     expect(getPendingThreadActionConfirmation()).toBeNull();
     expect(deleteMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('terminal.newPane command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetTerminalFocusForTest();
+    vi.mocked(openTerminalThread).mockClear();
+  });
+
+  it('stays enabled even while a terminal is focused (the gate lives on the keybinding, not the command)', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    expect(getCommand('terminal.newPane')).toBeDefined();
+    // No `when` on the command: unlike terminal.toggle it must run with no
+    // active thread (global +terminal) and from the palette while an xterm
+    // holds focus. The `!terminalFocus` chord gate is what keeps `~` reaching
+    // the shell — proven here by the command remaining enabled under focus.
+    const ctx = makeCommandContext(pane, { terminalFocus: true }) as CommandContext;
+    expect(isCommandEnabled('terminal.newPane', ctx)).toBe(true);
+  });
+
+  it('opens a fresh terminal rooted at the active thread project + workspace', () => {
+    const pane = readyPane({ projectId: 'proj-9', workspacePath: '/ws/9' });
+    registerFixtureCommands(pane);
+
+    const ran = runCommand('terminal.newPane', makeCommandContext(pane, {}));
+
+    expect(ran).toBe(true);
+    expect(vi.mocked(openTerminalThread)).toHaveBeenCalledWith({
+      projectId: 'proj-9',
+      cwd: '/ws/9',
+    });
+  });
+
+  it('opens a standalone home terminal when no thread context is present', () => {
+    // ctx.pane is null (no focused pane) → projectId/cwd resolve to undefined,
+    // and the backend roots the terminal at home.
+    registerFixtureCommands(readyPane());
+    const ctx = makeCommandContext(null, {}) as CommandContext;
+
+    runCommand('terminal.newPane', ctx);
+
+    expect(vi.mocked(openTerminalThread)).toHaveBeenCalledWith({
+      projectId: undefined,
+      cwd: undefined,
+    });
   });
 });
 
@@ -923,7 +998,7 @@ describe('terminal.toggle command', () => {
   it('closes the terminal and returns focus to the composer when the terminal was focused', () => {
     const pane = readyPane();
     pane.setShowTerminal(true);
-    notifyTerminalFocus(true);
+    notifyTerminalFocus(pane.paneId, true);
     registerFixtureCommands(pane);
 
     const composer = mountComposerForPane(pane.paneId);
@@ -943,7 +1018,7 @@ describe('terminal.toggle command', () => {
   it('closes the terminal without stealing focus when the terminal was not focused', () => {
     const pane = readyPane();
     pane.setShowTerminal(true);
-    notifyTerminalFocus(false);
+    notifyTerminalFocus(pane.paneId, false);
     registerFixtureCommands(pane);
 
     // A composer exists, but focus is parked on an unrelated element. The
@@ -1196,5 +1271,77 @@ describe('withMaterializedThread (terminal/diff commands on placeholders)', () =
       expect(pane.threadId).toBe('materialized-diff');
       expect(pane.diffPanel.open).toBe(true);
     });
+  });
+});
+
+// --- pane.focusLeft / focusRight: focus-into-terminal ---
+//
+// Navigating INTO a terminal pane must latch the pane's terminal-focus intent
+// so the xterm grabs the keyboard (a terminal has no composer for the editable-
+// focus helper to target). Navigating into a chat pane must NOT latch it.
+describe('pane navigation into a terminal pane', () => {
+  function makeThread(over: Partial<Thread> = {}): Thread {
+    return {
+      id: 'thread-x',
+      title: 'T',
+      provider: 'claude',
+      workspacePath: '/w',
+      projectPath: '/p',
+      projectId: 'p1',
+      mode: 'chat',
+      model: 'claude-sonnet-4-6',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+      ...over,
+    };
+  }
+
+  // main (chat, focused) | right (caller-supplied). focusRight lands on `right`.
+  function twoPaneLayout(rightThread: Thread) {
+    const left = createThreadPane({ paneId: 'main' });
+    left.replaceThread(makeThread({ id: 'left', mode: 'chat' }));
+    const right = createThreadPane({ paneId: 'right' });
+    right.replaceThread(rightThread);
+    registerPaneForTest('main', left);
+    registerPaneForTest('right', right);
+    setPaneLayoutItemsForTest([
+      { id: 'i-main', paneId: 'main', kind: 'thread', ratio: 1 },
+      { id: 'i-right', paneId: 'right', kind: 'thread', ratio: 1 },
+    ]);
+    focusPane('main');
+    registerFixtureCommands(left);
+    return { left, right };
+  }
+
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+  });
+
+  it('latches terminal focus when focusRight lands on a terminal pane', () => {
+    const { left, right } = twoPaneLayout(makeThread({ id: 'term', mode: 'terminal' }));
+    const ran = runCommand('pane.focusRight', makeCommandContext(left, {}));
+    expect(ran).toBe(true);
+    // requestTerminalFocus was called → the read-and-clear intent is set.
+    expect(right.consumeTerminalFocusRequest()).toBe(true);
+  });
+
+  it('does not latch terminal focus when focusRight lands on a chat pane', () => {
+    const { left, right } = twoPaneLayout(makeThread({ id: 'chat2', mode: 'chat' }));
+    runCommand('pane.focusRight', makeCommandContext(left, {}));
+    expect(right.consumeTerminalFocusRequest()).toBe(false);
+  });
+
+  it('every PANE_NAV_COMMAND_IDS entry is a registered builtin command', () => {
+    // The xterm escape predicate (eventEscapesTerminalToCommand) and the Go
+    // un-gated alt-chord defaults both key off this hand-maintained set. If a
+    // pane-nav command id is renamed in builtinCommands without updating the
+    // set (or vice versa), its chord would silently fall back to the PTY — this
+    // pins the set to the registry so that drift fails loudly.
+    registerFixtureCommands(createThreadPane({ paneId: 'reg' }));
+    const missing = [...PANE_NAV_COMMAND_IDS].filter((id) => !getCommand(id));
+    expect(missing).toEqual([]);
   });
 });
