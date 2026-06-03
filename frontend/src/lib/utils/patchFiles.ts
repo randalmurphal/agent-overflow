@@ -67,6 +67,13 @@ export function parsePatchFiles(patch: string): PatchFile[] {
       const next = cleanPath(line.slice(4));
       if (next && next !== '/dev/null') current.path = next;
     }
+    // INVARIANT: this +/- accounting is the panel's authoritative line count,
+    // and the header badge must match it. Go mirrors this rule in
+    // internal/git/status.go (countAddedLines, for the badge's untracked
+    // tally) and its test twin countPatchAddsDels. If you change the add/del
+    // rule here — the +++/--- header skips especially — update countAddedLines
+    // and the badge==panel tests in status_test.go, or the badge will silently
+    // diverge from this panel.
     if (line.startsWith('+') && !line.startsWith('+++')) current.additions += 1;
     if (line.startsWith('-') && !line.startsWith('---')) current.deletions += 1;
     current.lines.push({
