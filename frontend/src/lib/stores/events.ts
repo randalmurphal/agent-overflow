@@ -45,6 +45,7 @@ import { setProviderRateLimits } from './rateLimitsInfo.svelte';
 import { addToast } from './toast.svelte';
 import { getThreadById, getThreads, refreshThreads, removeThread, replaceThread, touchThreadActivity } from './threads.svelte';
 import { parseJsonObject } from '../utils/parseJsonObject';
+import { deriveCompletionStatus } from '../utils/toolCompletionStatus';
 import { errString } from '../utils/errors';
 import {
   projectApprovalRequest,
@@ -633,6 +634,45 @@ function itemUpsertCountsAsActivity(upsert: PendingItemUpsert): boolean {
   return userTextCountsAsActivity(upsert.item);
 }
 
+function statusAddsVisibleErrorRow(status: Item['status']): boolean {
+  return status === 'errored' || status === 'declined' || status === 'killed';
+}
+
+function itemAddsVisibleFailureChrome(item: Item): boolean {
+  return deriveCompletionStatus(item) === 'failure';
+}
+
+function isSameRowSuccessfulCommandOutputChrome(existing: Item, incoming: Item): boolean {
+  return existing.kind === 'tool_call'
+    && incoming.kind === 'tool_call'
+    && incoming.payloadKind === 'command_output'
+    && !incoming.completionOf
+    && existing.summary === incoming.summary
+    && existing.meta === incoming.meta
+    && !itemAddsVisibleFailureChrome(incoming);
+}
+
+function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming: Item): boolean {
+  if (!existing) return true;
+  if (existing.summary !== incoming.summary) return true;
+  if (
+    existing.kind !== incoming.kind
+    || existing.turnIndex !== incoming.turnIndex
+    || existing.itemIndex !== incoming.itemIndex
+    || existing.parentId !== incoming.parentId
+    || existing.completionOf !== incoming.completionOf
+  ) return true;
+  if (statusAddsVisibleErrorRow(incoming.status) && existing.status !== incoming.status) {
+    return true;
+  }
+  if (isSameRowSuccessfulCommandOutputChrome(existing, incoming)) {
+    return false;
+  }
+  return existing.payloadId !== incoming.payloadId
+    || existing.payloadKind !== incoming.payloadKind
+    || existing.payloadMeta !== incoming.payloadMeta;
+}
+
 function applyItemUpserts(upserts: PendingItemUpsert[]): void {
   if (upserts.length === 0) return;
   const itemsByThread = new Map<string, Item[]>();
@@ -671,15 +711,23 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
     const threadItems = itemsByThread.get(threadId);
     if (!threadItems) continue;
     activeThreadIds.add(threadId);
-    if (pane.upsertItems(threadItems)) {
+    const previousItemsById = new Map(
+      threadItems.map((item) => [item.id, pane.getItemById(item.id)] as const),
+    );
+    const applied = pane.applyProviderItemUpserts(threadItems);
+    if (applied) {
       changedThreadIds.add(threadId);
-      // A live provider upsert that actually changed the window is new
-      // content arriving — mark it so the scroll controller spring-chases
-      // (content-keyed animation latch). Only the provider fan-out routes
-      // here; the optimistic user-send echo (Composer) and rollback
-      // restore (revertOnInterrupt) call pane.upsertItems directly and
-      // intentionally stay sync-pinned.
-      pane.markLiveContentAdvanced();
+      const hasLiveContentAdvance = applied.changedItems.some((item) =>
+        providerUpsertAdvancesLiveContent(previousItemsById.get(item.id), item),
+      );
+      // A provider upsert that advances visible row content marks the
+      // scroll-animation latch so the controller spring-chases. Same-row
+      // success chrome, such as an inline Bash completion attaching a
+      // collapsed command_output payload, deliberately does not stamp:
+      // it can re-render the row without changing bottom geometry, and
+      // keeping the spring latch alive for that churn makes unrelated
+      // late measurements animate.
+      if (hasLiveContentAdvance) pane.markLiveContentAdvanced();
     }
   }
   // Evict cached snapshots only when this batch produced an observable

@@ -2112,6 +2112,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     /**
+     * Provider event fan-out needs the applied changed rows, not just a
+     * boolean, so scroll latches are based on visible-window changes after
+     * the pane has filtered below-floor history rows.
+     */
+    applyProviderItemUpserts(incoming: Item[]): ApplyItemUpsertsToWindowResult | null {
+      return upsertItemsBatch(incoming);
+    },
+
+    /**
      * Remove a single item from the pane's timeline by id. Returns the
      * removed Item so optimistic callers (revert-on-interrupt) can
      * re-insert it on rollback. Idempotent: returns null when the row

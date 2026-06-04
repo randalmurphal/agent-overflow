@@ -1705,6 +1705,57 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(notifyWatch.instantCalls()).toBe(0);
   });
 
+  it('does not nudge sticky follow for same-row Bash completion churn', async () => {
+    const thread = makeThread({ id: 'thread-bash-complete-follow' });
+    const pane = await buildPane(thread, [
+      makeItem({
+        id: 'bash-1',
+        threadId: thread.id,
+        kind: 'tool_call',
+        role: 'assistant',
+        status: 'running',
+        toolName: 'Bash',
+        summary: 'Bash: sleep 1',
+        meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+        updatedAt: 1,
+      }),
+    ]);
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const notifyWatch = watchStickNotifications(pane);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await waitForAnimationFrame();
+    notifyWatch.reset();
+
+    pane.upsertItem(makeItem({
+      id: 'bash-1',
+      threadId: thread.id,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'completed',
+      toolName: 'Bash',
+      summary: 'Bash: sleep 1',
+      payloadId: 'payload-bash-1',
+      payloadKind: 'command_output',
+      payloadMeta: JSON.stringify({
+        command: 'sleep 1',
+        exitCode: 0,
+        lineCount: 1,
+        preview: 'done',
+      }),
+      meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+      updatedAt: 2,
+    }));
+    await tick();
+    await waitForAnimationFrame();
+    await waitForScrollIntent();
+
+    expect(notifyWatch.liveCalls()).toBe(0);
+    expect(notifyWatch.instantCalls()).toBe(0);
+  });
+
   it('thread switch off a prior thread keeps contentEl hidden for the new thread (warm does not leak)', async () => {
     // The flaky-fix bug: warm carries over from the previous thread on
     // pane switch. MessageTimeline isn't keyed on threadId (the inner

@@ -1901,10 +1901,26 @@ export function createUseStickToBottomController(
     if (!gate.canPin) return;
 
     const target = targetScrollTop();
-    if (willSpring && scrollEl && scrollEl.scrollTop < target) {
-      lastTargetChangedAt = nowMs();
-      startSpringIfNeeded();
-      return;
+    if (willSpring && scrollEl) {
+      const current = scrollEl.scrollTop;
+      if (current < target) {
+        lastTargetChangedAt = nowMs();
+        startSpringIfNeeded();
+        return;
+      }
+      const overshootMagnitude = current - target;
+      if (
+        overshootMagnitude > 0
+        && springToken !== 0
+        && overshootMagnitude <= SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX
+      ) {
+        // Match contentRO's spring policy: a small corrected-target
+        // overshoot while the spring is already chasing should damp
+        // through the symmetric spring, not snap via the structural
+        // nudge's instant fallback.
+        lastTargetChangedAt = nowMs();
+        return;
+      }
     }
 
     // Same instant fallback as notifyContentMaybeGrew for non-spring

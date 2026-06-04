@@ -5463,6 +5463,44 @@ describe('createUseStickToBottomController — spring chase', () => {
         // Spring sentinel absorbs the 1px and lands at 500.
         await advanceUntil(() => geom.scrollTop === 500);
       });
+
+      it('delayed structural nudge does not snap a small corrected-target overshoot mid-spring', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        // Row identity changed at the tail (for example Read ->
+        // read_group). Virtua first publishes the 90px estimate, which
+        // starts a spring chase toward target 490.
+        geom.scrollHeight = 1090;
+        geom.contentHeight = 890;
+        ro.fire(contentEl, 890);
+
+        // Let the spring chase far enough that the later measured
+        // correction leaves scrollTop slightly above the true target.
+        // This is the exact case contentRO's small-overshoot threshold
+        // is meant to damp instead of snapping.
+        await advanceUntil(() => geom.scrollTop > 445);
+        const beforeCorrection = geom.scrollTop;
+
+        // The row measures at 40px. Corrected target = 1040 - 600 =
+        // 440. contentRO must not snap the small overshoot; the spring
+        // remains the single writer and will damp down naturally.
+        geom.scrollHeight = 1040;
+        geom.contentHeight = 840;
+        ro.fire(contentEl, 840);
+        expect(geom.scrollTop).toBe(beforeCorrection);
+        expect(geom.scrollTop - 440).toBeGreaterThan(0);
+        expect(geom.scrollTop - 440).toBeLessThan(50);
+
+        // MessageTimeline's structural-signature nudge runs after
+        // tick+rAF. It must not bypass the contentRO overshoot policy
+        // and instantly clamp the same small overshoot.
+        controller.notifyLiveContentMaybeGrew();
+        expect(geom.scrollTop).toBe(beforeCorrection);
+
+        await advanceUntil(() => Math.abs(geom.scrollTop - 440) <= 1);
+      });
     });
 
     it('restores the original scrollTop descriptor on detach', async () => {

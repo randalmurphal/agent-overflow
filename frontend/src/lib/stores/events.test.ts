@@ -251,6 +251,141 @@ describe('setupEventListeners', () => {
     expect(pane.lastLiveContentAt).toBe(0);
   });
 
+  it('does not stamp lastLiveContentAt for same-row Bash completion chrome', async () => {
+    const item = makeItem({
+      id: 'bash-1',
+      threadId: 'thread-a',
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      toolName: 'Bash',
+      summary: 'Bash: sleep 1',
+      meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    getAllPanes().set('a', pane);
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: {
+        ...item,
+        status: 'completed',
+        payloadId: 'payload-bash-1',
+        payloadKind: 'command_output',
+        payloadMeta: JSON.stringify({
+          command: 'sleep 1',
+          exitCode: 0,
+          lineCount: 1,
+          preview: 'done',
+        }),
+        updatedAt: item.updatedAt + 1,
+      },
+    });
+    await nextFrame();
+
+    expect(pane.items[0].status).toBe('completed');
+    expect(pane.items[0].payloadKind).toBe('command_output');
+    expect(pane.lastLiveContentAt).toBe(0);
+  });
+
+  it('stamps lastLiveContentAt when same-row Bash completion adds failure chrome', async () => {
+    const item = makeItem({
+      id: 'bash-1',
+      threadId: 'thread-a',
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      toolName: 'Bash',
+      summary: 'Bash: false',
+      meta: JSON.stringify({ input: { command: 'false' } }),
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    getAllPanes().set('a', pane);
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    const before = performance.now();
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: {
+        ...item,
+        status: 'completed',
+        payloadId: 'payload-bash-1',
+        payloadKind: 'command_output',
+        payloadMeta: JSON.stringify({
+          command: 'false',
+          exitCode: 1,
+          lineCount: 0,
+          preview: '',
+        }),
+        updatedAt: item.updatedAt + 1,
+      },
+    });
+    await nextFrame();
+    const after = performance.now();
+
+    expect(pane.items[0].status).toBe('completed');
+    expect(pane.items[0].payloadKind).toBe('command_output');
+    expect(pane.lastLiveContentAt).toBeGreaterThanOrEqual(before);
+    expect(pane.lastLiveContentAt).toBeLessThanOrEqual(after);
+  });
+
+  it('does not let off-window new rows stamp over visible same-row Bash success chrome', async () => {
+    const item = makeItem({
+      id: 'bash-1',
+      threadId: 'thread-a',
+      turnIndex: 5,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      toolName: 'Bash',
+      summary: 'Bash: sleep 1',
+      meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    getAllPanes().set('a', pane);
+    expect(pane.oldestLoadedTurnIndex).toBe(5);
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: {
+        ...item,
+        status: 'completed',
+        payloadId: 'payload-bash-1',
+        payloadKind: 'command_output',
+        payloadMeta: JSON.stringify({
+          command: 'sleep 1',
+          exitCode: 0,
+          lineCount: 1,
+          preview: 'done',
+        }),
+        updatedAt: item.updatedAt + 1,
+      },
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: makeItem({
+        id: 'below-window',
+        threadId: 'thread-a',
+        turnIndex: 2,
+        itemIndex: 0,
+        kind: 'assistant_text',
+        summary: 'older content',
+      }),
+    });
+    await nextFrame();
+
+    expect(pane.items.map((item) => item.id)).toEqual(['bash-1']);
+    expect(pane.items[0].status).toBe('completed');
+    expect(pane.lastLiveContentAt).toBe(0);
+  });
+
   it('drops item_event upserts whose item thread does not match the event envelope', async () => {
     const paneA = await buildPane(makeThread({ id: 'thread-a' }));
     const paneB = await buildPane(makeThread({ id: 'thread-b' }));
