@@ -1852,6 +1852,21 @@ func emittedQueueStates(rec *emitRecorder) []QueueStateChangedEvent {
 	return out
 }
 
+func emittedQueueRestored(rec *emitRecorder) []QueueRestoredEvent {
+	out := make([]QueueRestoredEvent, 0)
+	for _, c := range rec.snapshot() {
+		if c.Channel != "provider:queue_restored" {
+			continue
+		}
+		evt, ok := c.Data.(QueueRestoredEvent)
+		if !ok {
+			continue
+		}
+		out = append(out, evt)
+	}
+	return out
+}
+
 func (r *emitRecorder) lastQueueState(t *testing.T) QueueStateChangedEvent {
 	t.Helper()
 	calls := r.snapshot()
@@ -1907,6 +1922,235 @@ func TestRegisterQueueItem_AppendsAndEmitsState(t *testing.T) {
 	}
 	if state.Items[0].ID != queued.ID {
 		t.Errorf("event item id: got %q, want %q", state.Items[0].ID, queued.ID)
+	}
+}
+
+func TestSessionDeathRestoresQueuedFlushItemsToDraft(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("restore-queued-on-death")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
+		ID:         "queue:first",
+		Message:    "first queued",
+		Payload:    json.RawMessage(`{}`),
+		EnqueuedAt: 10,
+	})
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
+		ID:         "queue:second",
+		Message:    "second queued",
+		Payload:    json.RawMessage(`{}`),
+		EnqueuedAt: 20,
+	})
+
+	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
+
+	if app.triage.HasQueuedFlushItems(thread.ID) {
+		t.Fatal("queued flush items still live after session-death restore")
+	}
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft: %v", err)
+	}
+	if draft.Content != "first queued\n\nsecond queued" {
+		t.Fatalf("draft content = %q, want joined queued messages", draft.Content)
+	}
+	state := rec.lastQueueState(t)
+	if len(state.Items) != 0 {
+		t.Fatalf("queue state items = %+v, want empty after restore", state.Items)
+	}
+	restored := emittedQueueRestored(rec)
+	if len(restored) != 1 {
+		t.Fatalf("queue restored events = %+v, want one", restored)
+	}
+	if strings.Join(restored[0].QueueItemIDs, ",") != "queue:first,queue:second" {
+		t.Fatalf("restored queue ids = %+v", restored[0].QueueItemIDs)
+	}
+}
+
+func TestSessionStatusErrorRestoresQueuedFlushItemsToDraft(t *testing.T) {
+	for _, providerType := range []provider.ProviderKind{provider.Claude, provider.Codex} {
+		t.Run(string(providerType), func(t *testing.T) {
+			app, rec := newAppForFlushQueueRPC(t)
+
+			thread := testThread("restore-handler-" + string(providerType))
+			thread.Provider = string(providerType)
+			thread.WorkspacePath = t.TempDir()
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			if err := app.triage.Handle(provider.ProviderEvent{
+				Kind:      provider.EventTurnStart,
+				ThreadID:  thread.ID,
+				TurnIndex: 0,
+				Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("turn start: %v", err)
+			}
+			app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
+				ID:         "queue:handler",
+				Message:    "restore through handler",
+				Payload:    json.RawMessage(`{}`),
+				EnqueuedAt: 10,
+			})
+
+			handler := app.sessionEventHandler(thread.ID, "session-token", string(providerType))
+			handler(provider.ProviderEvent{
+				Kind:      provider.EventSessionStatus,
+				ThreadID:  thread.ID,
+				Content:   "error",
+				Timestamp: time.Now(),
+			})
+
+			draft, _, err := app.store.GetThreadDraft(thread.ID)
+			if err != nil {
+				t.Fatalf("GetThreadDraft: %v", err)
+			}
+			if draft.Content != "restore through handler" {
+				t.Fatalf("draft content = %q", draft.Content)
+			}
+			if app.triage.HasQueuedFlushItems(thread.ID) {
+				t.Fatal("queued flush items still live after handler restore")
+			}
+			if restored := emittedQueueRestored(rec); len(restored) != 1 {
+				t.Fatalf("queue restored events = %+v, want one", restored)
+			}
+		})
+	}
+}
+
+func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("restore-flushed-on-death")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	quiet := store.Item{
+		ID:        "user:0:flush:1",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "quiet pending",
+		Meta:      `{"attachments":[{"id":"att-1","threadId":"restore-flushed-on-death","filename":"a.png","mimeType":"image/png","size":1}]}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := app.triage.PersistItemQuiet(quiet, nil); err != nil {
+		t.Fatalf("PersistItemQuiet: %v", err)
+	}
+	app.triage.RegisterPendingQuietFlushSend(thread.ID, "queue:quiet", quiet, 0, 10)
+	deferred := store.Item{
+		ID:        "user:1:flush:1",
+		ThreadID:  thread.ID,
+		TurnIndex: 1,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "deferred pending",
+		CreatedAt: now + 1,
+		UpdatedAt: now + 1,
+	}
+	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:deferred", deferred, 20)
+
+	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
+
+	if app.triage.HasPendingSendForThread(thread.ID) {
+		t.Fatal("pending queued sends still live after session-death restore")
+	}
+	if _, found, err := app.store.GetThreadItem(thread.ID, quiet.ID); err != nil {
+		t.Fatalf("GetThreadItem quiet: %v", err)
+	} else if found {
+		t.Fatal("quiet pending flush row still exists after restore")
+	}
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft: %v", err)
+	}
+	if draft.Content != "quiet pending\n\ndeferred pending" {
+		t.Fatalf("draft content = %q, want quiet then deferred", draft.Content)
+	}
+	if draft.Attachments != `["att-1"]` {
+		t.Fatalf("draft attachments = %s, want att-1", draft.Attachments)
+	}
+	restored := emittedQueueRestored(rec)
+	if len(restored) != 1 {
+		t.Fatalf("queue restored events = %+v, want one", restored)
+	}
+	if strings.Join(restored[0].UserItemIDs, ",") != "user:0:flush:1,user:1:flush:1" {
+		t.Fatalf("restored user ids = %+v", restored[0].UserItemIDs)
+	}
+}
+
+func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("restore-current-dedupe")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.flushDispatchMu.Lock()
+	app.ensureFlushDispatchMapsLocked()
+	app.flushDispatchCurrent[thread.ID] = flushDispatchBatch{
+		items: []triage.QueuedFlushItem{{
+			ID:         "queue:same",
+			Message:    "queued payload copy",
+			Payload:    json.RawMessage(`{}`),
+			EnqueuedAt: 10,
+		}},
+		generation: app.flushDispatchGeneration[thread.ID],
+	}
+	app.flushDispatchInflightItems[thread.ID] = 1
+	app.flushDispatchMu.Unlock()
+	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:same", store.Item{
+		ID:        "user:1:flush:1",
+		ThreadID:  thread.ID,
+		TurnIndex: 1,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "pending richer copy",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}, 10)
+
+	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
+
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft: %v", err)
+	}
+	if draft.Content != "pending richer copy" {
+		t.Fatalf("draft content = %q, want one pending copy", draft.Content)
+	}
+	restored := emittedQueueRestored(rec)
+	if len(restored) != 1 {
+		t.Fatalf("queue restored events = %+v, want one", restored)
+	}
+	if strings.Join(restored[0].QueueItemIDs, ",") != "queue:same" {
+		t.Fatalf("restored queue ids = %+v", restored[0].QueueItemIDs)
+	}
+	if strings.Join(restored[0].UserItemIDs, ",") != "user:1:flush:1" {
+		t.Fatalf("restored user ids = %+v", restored[0].UserItemIDs)
 	}
 }
 

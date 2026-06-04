@@ -7,6 +7,7 @@ import {
   getQueueForThread,
   hasQueueItems,
   markItemsFlushed,
+  removeRestoredQueueItems,
   replaceFlushedForThread,
   replaceQueueForThread,
   resetForTest as resetSendQueueForTest,
@@ -149,6 +150,41 @@ describe('sendQueue store', () => {
       markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
       confirmFlushedByUserItemId('t1', 'u:0');
       expect(getFlushedForThread('t1')).toHaveLength(0);
+    });
+
+    it('removeRestoredQueueItems removes restored Zone 1 and Zone 2 markers', () => {
+      replaceQueueForThread('t1', [
+        makeItem({ id: 'q:queued', threadId: 't1', message: 'queued' }),
+        makeItem({ id: 'q:kept', threadId: 't1', message: 'kept queued' }),
+      ]);
+      markItemsFlushed('t1', [
+        { queueItemId: 'q:quiet', userItemId: 'u:quiet', message: 'quiet' },
+        { queueItemId: 'q:deferred', userItemId: 'u:deferred', message: 'deferred' },
+        { queueItemId: 'q:kept-flushed', userItemId: 'u:kept', message: 'kept flushed' },
+      ]);
+
+      removeRestoredQueueItems('t1', {
+        queueItemIds: ['q:queued', 'q:quiet'],
+        userItemIds: ['u:deferred'],
+      });
+
+      expect(getQueueForThread('t1').map((item) => item.id)).toEqual(['q:kept']);
+      expect(getFlushedForThread('t1').map((item) => item.userItemId)).toEqual(['u:kept']);
+    });
+
+    it('removeRestoredQueueItems is a no-op for unknown ids', () => {
+      replaceQueueForThread('t1', [makeItem({ id: 'q:0', threadId: 't1', message: 'queued' })]);
+      markItemsFlushed('t1', [{ queueItemId: 'q:1', userItemId: 'u:1', message: 'flushed' }]);
+      const revisionBefore = getQueueRevisionForThread('t1');
+
+      removeRestoredQueueItems('t1', {
+        queueItemIds: ['missing-queue'],
+        userItemIds: ['missing-user'],
+      });
+
+      expect(getQueueRevisionForThread('t1')).toBe(revisionBefore);
+      expect(getQueueForThread('t1').map((item) => item.id)).toEqual(['q:0']);
+      expect(getFlushedForThread('t1').map((item) => item.userItemId)).toEqual(['u:1']);
     });
   });
 

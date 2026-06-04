@@ -78,6 +78,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" {
 			deathReported = true
+			a.restoreUnconfirmedQueueOnSessionDeath(threadID)
 		}
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {

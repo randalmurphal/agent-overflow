@@ -63,6 +63,16 @@ type QueuedFlushItem struct {
 	EnqueuedAt int64
 }
 
+type UnconfirmedFlushItem struct {
+	QueueItemID  string
+	UserItemID   string
+	Message      string
+	Payload      json.RawMessage
+	EnqueuedAt   int64
+	DeferredItem *store.Item
+	QuietItem    *store.Item
+}
+
 // FlushDispatcher is the app-layer callback invoked when triage drains
 // queued user messages.
 // Triage hands ownership of the consumed batch over; the dispatcher is
@@ -349,4 +359,57 @@ func (r *Router) hasActiveCodexUnifiedExec(threadID string) bool {
 // a fresh one.
 func (r *Router) clearFlushQueueLocked(threadID string) {
 	delete(r.queuedFlushItems, threadID)
+}
+
+func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushItem {
+	if threadID == "" {
+		return nil
+	}
+
+	r.mu.Lock()
+	var drained []UnconfirmedFlushItem
+	for _, item := range r.queuedFlushItems[threadID] {
+		payload := append(json.RawMessage(nil), item.Payload...)
+		drained = append(drained, UnconfirmedFlushItem{
+			QueueItemID: item.ID,
+			Message:     item.Message,
+			Payload:     payload,
+			EnqueuedAt:  item.EnqueuedAt,
+		})
+	}
+	delete(r.queuedFlushItems, threadID)
+
+	pending := r.pendingByThread[threadID]
+	if len(pending) > 0 {
+		kept := make([]pendingSend, 0, len(pending))
+		for _, entry := range pending {
+			if entry.QueueItemID == "" || !strings.Contains(entry.AOItemID, ":flush:") {
+				kept = append(kept, entry)
+				continue
+			}
+			restored := UnconfirmedFlushItem{
+				QueueItemID: entry.QueueItemID,
+				UserItemID:  entry.AOItemID,
+				EnqueuedAt:  entry.EnqueuedAt,
+			}
+			if entry.DeferredItem != nil {
+				item := *entry.DeferredItem
+				restored.DeferredItem = &item
+				restored.Message = item.Summary
+			}
+			if entry.QuietItem != nil {
+				item := *entry.QuietItem
+				restored.QuietItem = &item
+				restored.Message = item.Summary
+			}
+			drained = append(drained, restored)
+		}
+		if len(kept) == 0 {
+			delete(r.pendingByThread, threadID)
+		} else {
+			r.pendingByThread[threadID] = kept
+		}
+	}
+	r.mu.Unlock()
+	return drained
 }

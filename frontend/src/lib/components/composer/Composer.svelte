@@ -417,10 +417,19 @@
         : undefined;
       const midTurnThreadId = pane.threadId;
       if (!midTurnThreadId) return;
+      const queuedAttachmentIds = draft.attachments.map((attachment) => attachment.id);
+      const queuedDraftSnapshot = {
+        content: draft.content,
+        attachments: [...draft.attachments],
+        terminalChips: [...draft.terminalChips],
+        sourceProposedPlan: draft.sourceProposedPlan,
+      };
+      draft.clearLocalAfterQueue();
+      resetTextareaHeight();
 
       try {
         await registerQueueItem(midTurnThreadId, message, {
-          attachmentIds: draft.attachments.map((attachment) => attachment.id),
+          attachmentIds: queuedAttachmentIds,
           sourceProposedPlan: draftSourcePlan ?? null,
           revisionSourceProposedPlan: revisionPlanForMidTurn ?? null,
           revisionSourceCommentIds: revisionCommentIdsForMidTurn,
@@ -429,10 +438,9 @@
         });
       } catch (err) {
         pane.setGeneralError(`Failed to queue message: ${String(err)}`);
+        await draft.restoreDraftFor(midTurnThreadId, queuedDraftSnapshot);
         return;
       }
-      draft.clearAfterSend();
-      resetTextareaHeight();
       return;
     }
 

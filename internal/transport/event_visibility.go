@@ -5,6 +5,7 @@ var loopbackOnlyEventChannels = map[string]bool{
 	"provider:approval":              true,
 	"provider:status":                true,
 	"provider:queue_flushed":         true,
+	"provider:queue_restored":        true,
 	"provider:queue_state_changed":   true,
 	"provider:background_task_state": true,
 	"provider:user_input":            true,

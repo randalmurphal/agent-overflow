@@ -8,6 +8,7 @@ func TestEventVisibleToOrigin(t *testing.T) {
 		"provider:approval",
 		"provider:status",
 		"provider:queue_flushed",
+		"provider:queue_restored",
 		"provider:queue_state_changed",
 		"provider:background_task_state",
 		"provider:user_input",

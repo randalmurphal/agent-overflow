@@ -59,6 +59,7 @@ type pendingSend struct {
 	TurnIndex    int
 	EnqueuedAt   int64
 	DeferredItem *store.Item
+	QuietItem    *store.Item
 }
 
 type PendingFlushItemSnapshot struct {
@@ -95,7 +96,7 @@ func (r *Router) PeekPendingSendHeadForTest(threadID string) (PendingSendSnapsho
 // for diagnostics on stranded entries and the wall clock at the
 // register call is the natural reference.
 func (r *Router) RegisterPendingSend(threadID, aoItemID string, turnIndex int) {
-	r.registerPendingSend(threadID, aoItemID, turnIndex, "", nil)
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil)
 }
 
 // RegisterPendingFlushSend registers a deferred user_text row whose
@@ -104,20 +105,32 @@ func (r *Router) RegisterPendingSend(threadID, aoItemID string, turnIndex int) {
 // message lands after content the model emitted between dispatch and
 // echo — see the pendingSend doc comment.
 func (r *Router) RegisterPendingFlushSend(threadID, queueItemID string, item store.Item) {
-	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, &item)
+	r.RegisterPendingFlushSendWithEnqueuedAt(threadID, queueItemID, item, 0)
 }
 
-func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, deferredItem *store.Item) {
+func (r *Router) RegisterPendingFlushSendWithEnqueuedAt(threadID, queueItemID string, item store.Item, enqueuedAt int64) {
+	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, enqueuedAt, &item, nil)
+}
+
+func (r *Router) RegisterPendingQuietFlushSend(threadID, queueItemID string, item store.Item, turnIndex int, enqueuedAt int64) {
+	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item)
+}
+
+func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, enqueuedAt int64, deferredItem, quietItem *store.Item) {
 	if threadID == "" || aoItemID == "" {
 		return
+	}
+	if enqueuedAt == 0 {
+		enqueuedAt = time.Now().UnixMilli()
 	}
 	r.mu.Lock()
 	r.pendingByThread[threadID] = append(r.pendingByThread[threadID], pendingSend{
 		AOItemID:     aoItemID,
 		QueueItemID:  queueItemID,
 		TurnIndex:    turnIndex,
-		EnqueuedAt:   time.Now().UnixMilli(),
+		EnqueuedAt:   enqueuedAt,
 		DeferredItem: deferredItem,
+		QuietItem:    quietItem,
 	})
 	r.mu.Unlock()
 }

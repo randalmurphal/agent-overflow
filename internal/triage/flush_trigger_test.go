@@ -121,6 +121,39 @@ func TestHandleToolComplete_FlushesWhenNoBlockingWorkRemains(t *testing.T) {
 	}
 }
 
+func TestTruncatedTurnComplete_DoesNotFlushQueuedMessages(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	rec := &recordingDispatcher{}
+	router.SetFlushDispatcher(rec.dispatch)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "restore me"))
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		Timestamp:    time.Now(),
+		TurnComplete: &provider.TruncatedTurnCompleteMeta{Synthetic: true},
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	if calls := rec.snapshot(); len(calls) != 0 {
+		t.Fatalf("truncated turn complete flushed queued messages: %+v", calls)
+	}
+	if !router.HasQueuedFlushItems("t1") {
+		t.Fatalf("queue should remain for session-death rollback")
+	}
+}
+
 func TestHandleToolComplete_CodexUnifiedExecCompletionFlushesBoundary(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexQueueTestThread(t, st, "t1")

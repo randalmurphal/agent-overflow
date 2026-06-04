@@ -445,6 +445,27 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     },
 
     /**
+     * Clear only the visible composer after the backend has accepted a queued
+     * send. RegisterQueueItem owns the durable draft clear; issuing a separate
+     * ClearDraft here can race a session-death restore and delete the restored
+     * draft after it was written.
+     */
+    clearLocalAfterQueue(): void {
+      const id = threadId;
+      markOptimisticRestoredDraftDirty();
+      clearDebounce();
+      pendingSaveGeneration++;
+      content = '';
+      attachments = [];
+      terminalChips = [];
+      sourceProposedPlan = null;
+      hasPendingSave = false;
+      if (id) {
+        forgetDraftSnapshot(id);
+      }
+    },
+
+    /**
      * Restore a draft snapshot to a specific thread. Used when a send
      * rejects AFTER the user has switched panes: we don't want to silently
      * dump thread A's failed message into thread B's composer. If the draft

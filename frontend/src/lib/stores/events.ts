@@ -35,6 +35,7 @@ import {
   confirmFlushedByUserItemId,
   markItemsFlushed,
   queueItemFromWire,
+  removeRestoredQueueItems,
   replaceQueueForThread,
 } from './sendQueue.svelte';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
@@ -1288,6 +1289,10 @@ export function setupEventListeners(): () => void {
     'provider:queue_flushed',
     applyQueueFlushed,
   );
+  const cancelQueueRestored = wailsEventOn<QueueRestoredPayload>(
+    'provider:queue_restored',
+    applyQueueRestored,
+  );
 
   const cancelCheckpointCaptured = wailsEventOn<CheckpointCapturedEvent | null>(
     'checkpoint:captured',
@@ -1544,6 +1549,7 @@ export function setupEventListeners(): () => void {
     cancelTerminalExit();
     cancelQueueStateChanged();
     cancelQueueFlushed();
+    cancelQueueRestored();
     cancelCheckpointCaptured();
     cancelCheckpointUnavailable();
     cancelCheckpointError();
@@ -1577,6 +1583,13 @@ interface QueueFlushedPayload {
   items: Array<{ queueItemId: string; userItemId: string; message: string }>;
 }
 
+interface QueueRestoredPayload {
+  threadId: string;
+  reason: string;
+  queueItemIds?: string[];
+  userItemIds?: string[];
+}
+
 function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined): void {
   if (!evt || !evt.threadId) return;
   const items = (evt.items ?? []).map(queueItemFromWire);
@@ -1586,4 +1599,19 @@ function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined): void
 function applyQueueFlushed(evt: QueueFlushedPayload | undefined): void {
   if (!evt || !evt.threadId || !evt.items || evt.items.length === 0) return;
   markItemsFlushed(evt.threadId, evt.items);
+}
+
+function applyQueueRestored(evt: QueueRestoredPayload | undefined): void {
+  if (!evt || !evt.threadId) return;
+  removeRestoredQueueItems(evt.threadId, {
+    queueItemIds: evt.queueItemIds ?? [],
+    userItemIds: evt.userItemIds ?? [],
+  });
+  for (const pane of iterPanes()) {
+    if (pane.threadId !== evt.threadId) continue;
+    const draft = getComposerDraftForPane(pane.paneId);
+    if (draft) {
+      void draft.reloadFromBackend(evt.threadId);
+    }
+  }
 }

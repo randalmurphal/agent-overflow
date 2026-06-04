@@ -423,6 +423,23 @@ func (s *Store) BumpItemToTurnEnd(threadID, itemID string) (Item, error) {
 	return item, nil
 }
 
+// DeleteThreadItem removes one item scoped by thread and id. Intended for
+// rows that were reserved internally but never became visible history, such as
+// quietly-persisted queued flush rows whose provider session died before echo.
+func (s *Store) DeleteThreadItem(threadID, itemID string) error {
+	result, err := s.db.Exec(
+		`DELETE FROM items WHERE thread_id = ? AND id = ?`,
+		threadID, itemID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: delete item %s/%s: %w", threadID, itemID, err)
+	}
+	return requireRowsAffected(
+		result,
+		fmt.Sprintf("store: delete item %s/%s", threadID, itemID),
+	)
+}
+
 // DeleteConversationFromTurn removes items and turn rows with turn_index >=
 // fromTurnIndex. Reverting to a user-message checkpoint deletes that selected
 // prompt too, so the predicate is inclusive.

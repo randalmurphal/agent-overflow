@@ -284,6 +284,32 @@ export function confirmFlushedByUserItemId(
   rememberFlushedConfirmation(threadId, userItemId);
 }
 
+export function removeRestoredQueueItems(
+  threadId: string,
+  restored: {
+    queueItemIds?: readonly string[];
+    userItemIds?: readonly string[];
+  },
+): void {
+  if (!threadId) return;
+  const queueItemIds = new Set(restored.queueItemIds ?? []);
+  const userItemIds = new Set(restored.userItemIds ?? []);
+  let changed = false;
+  if (queueItemIds.size > 0) {
+    changed = removeQueuedItemsById(threadId, queueItemIds) || changed;
+  }
+  if (userItemIds.size > 0 || queueItemIds.size > 0) {
+    changed = filterZoneItems(flushedByThread, threadId, (entry) => {
+      if (userItemIds.has(entry.userItemId)) return false;
+      if (queueItemIds.has(entry.queueItemId)) return false;
+      return true;
+    }) || changed;
+  }
+  if (changed) {
+    bumpQueueRevision(threadId);
+  }
+}
+
 /** Drop every entry in both zones for a thread. Called from
  * `clearThreadStatus` on thread archive/delete; also from the
  * thread-switch path so a previously-loaded thread's queue doesn't

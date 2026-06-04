@@ -5,15 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
 	attachmentstore "agent-overflow/internal/attachment"
+	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
 
 // QueuedItem is the wire-side projection of a triage QueuedFlushItem.
@@ -65,6 +68,13 @@ type QueueFlushedItem struct {
 	QueueItemID string `json:"queueItemId"`
 	UserItemID  string `json:"userItemId"`
 	Message     string `json:"message"`
+}
+
+type QueueRestoredEvent struct {
+	ThreadID     string   `json:"threadId"`
+	Reason       string   `json:"reason"`
+	QueueItemIDs []string `json:"queueItemIds"`
+	UserItemIDs  []string `json:"userItemIds"`
 }
 
 func (a *App) configureTriageQueueCallbacks() {
@@ -125,11 +135,13 @@ func (a *App) runFlushDispatchWorker(threadID string) {
 		} else {
 			a.flushDispatchQueues[threadID] = queue[1:]
 		}
+		a.flushDispatchCurrent[threadID] = batch
 		a.flushDispatchMu.Unlock()
 
 		a.dispatchFlushWithGeneration(threadID, batch.items, batch.generation)
 
 		a.flushDispatchMu.Lock()
+		delete(a.flushDispatchCurrent, threadID)
 		if a.flushDispatchGeneration[threadID] == batch.generation {
 			a.flushDispatchInflightItems[threadID] -= len(batch.items)
 			if a.flushDispatchInflightItems[threadID] <= 0 {
@@ -150,6 +162,9 @@ func (a *App) ensureFlushDispatchMapsLocked() {
 	if a.flushDispatchQueues == nil {
 		a.flushDispatchQueues = make(map[string][]flushDispatchBatch)
 	}
+	if a.flushDispatchCurrent == nil {
+		a.flushDispatchCurrent = make(map[string]flushDispatchBatch)
+	}
 	if a.flushDispatchRunning == nil {
 		a.flushDispatchRunning = make(map[string]bool)
 	}
@@ -166,8 +181,27 @@ func (a *App) clearFlushDispatchForRollback(threadID string) {
 	a.ensureFlushDispatchMapsLocked()
 	a.flushDispatchGeneration[threadID]++
 	delete(a.flushDispatchQueues, threadID)
+	delete(a.flushDispatchCurrent, threadID)
 	delete(a.flushDispatchInflightItems, threadID)
 	a.flushDispatchMu.Unlock()
+}
+
+func (a *App) drainFlushDispatchForSessionEnd(threadID string) []triage.QueuedFlushItem {
+	a.flushDispatchMu.Lock()
+	a.ensureFlushDispatchMapsLocked()
+	a.flushDispatchGeneration[threadID]++
+	var drained []triage.QueuedFlushItem
+	if current, ok := a.flushDispatchCurrent[threadID]; ok {
+		drained = append(drained, current.items...)
+		delete(a.flushDispatchCurrent, threadID)
+	}
+	for _, batch := range a.flushDispatchQueues[threadID] {
+		drained = append(drained, batch.items...)
+	}
+	delete(a.flushDispatchQueues, threadID)
+	delete(a.flushDispatchInflightItems, threadID)
+	a.flushDispatchMu.Unlock()
+	return drained
 }
 
 func (a *App) currentFlushDispatchGeneration(threadID string) uint64 {
@@ -201,6 +235,234 @@ func (a *App) drainFlushDispatch(ctx context.Context, timeout time.Duration) err
 	case <-drainCtx.Done():
 		return drainCtx.Err()
 	}
+}
+
+func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) {
+	if a.triage == nil || strings.TrimSpace(threadID) == "" {
+		return
+	}
+
+	dispatchItems := a.drainFlushDispatchForSessionEnd(threadID)
+
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+
+	drained := a.triage.DrainUnconfirmedFlushItems(threadID)
+	for _, item := range dispatchItems {
+		payload := append(json.RawMessage(nil), item.Payload...)
+		drained = append(drained, triage.UnconfirmedFlushItem{
+			QueueItemID: item.ID,
+			Message:     item.Message,
+			Payload:     payload,
+			EnqueuedAt:  item.EnqueuedAt,
+		})
+	}
+	drained = dedupeUnconfirmedFlushItems(drained)
+	sort.SliceStable(drained, func(i, j int) bool {
+		left := drained[i].EnqueuedAt
+		right := drained[j].EnqueuedAt
+		if left == 0 || right == 0 {
+			return left != 0
+		}
+		return left < right
+	})
+	if len(drained) == 0 {
+		return
+	}
+
+	queueItemIDs := make([]string, 0, len(drained))
+	userItemIDs := make([]string, 0, len(drained))
+	parts := make([]composerdraft.Part, 0, len(drained))
+	quietItemsToDelete := make([]store.Item, 0, len(drained))
+	for _, item := range drained {
+		if item.QueueItemID != "" {
+			queueItemIDs = append(queueItemIDs, item.QueueItemID)
+		}
+		if item.UserItemID != "" {
+			userItemIDs = append(userItemIDs, item.UserItemID)
+		}
+		part := a.restoredFlushDraftPart(threadID, item)
+		if strings.TrimSpace(part.Content) != "" || len(part.AttachmentIDs) > 0 || part.SourceProposedPlan != nil {
+			parts = append(parts, part)
+		}
+		if item.QuietItem != nil {
+			quietItemsToDelete = append(quietItemsToDelete, *item.QuietItem)
+		}
+	}
+
+	if len(parts) > 0 {
+		if err := a.restoreFlushDraft(threadID, parts); err != nil {
+			log.Printf("flush queue: restore draft after session death for %s: %v", threadID, err)
+			a.requeueUnconfirmedFlushItems(threadID, drained)
+			a.emitQueueStateChanged(threadID)
+			return
+		}
+	}
+
+	for _, item := range quietItemsToDelete {
+		if err := a.store.DeleteThreadItem(threadID, item.ID); err != nil {
+			log.Printf("flush queue: delete unconfirmed quiet row %s/%s: %v", threadID, item.ID, err)
+		}
+	}
+
+	a.emitQueueStateChanged(threadID)
+	a.emit("provider:queue_restored", QueueRestoredEvent{
+		ThreadID:     threadID,
+		Reason:       "session_died",
+		QueueItemIDs: queueItemIDs,
+		UserItemIDs:  userItemIDs,
+	})
+}
+
+func (a *App) restoredFlushDraftPart(threadID string, item triage.UnconfirmedFlushItem) composerdraft.Part {
+	switch {
+	case item.DeferredItem != nil:
+		return draftPartFromUserItem(*item.DeferredItem)
+	case item.QuietItem != nil:
+		return draftPartFromUserItem(*item.QuietItem)
+	default:
+		return a.restoredDraftPartFromQueuedPayload(threadID, item)
+	}
+}
+
+func dedupeUnconfirmedFlushItems(items []triage.UnconfirmedFlushItem) []triage.UnconfirmedFlushItem {
+	out := make([]triage.UnconfirmedFlushItem, 0, len(items))
+	indexByKey := make(map[string]int, len(items))
+	for _, item := range items {
+		key := item.QueueItemID
+		if key == "" {
+			key = item.UserItemID
+		}
+		if key == "" {
+			out = append(out, item)
+			continue
+		}
+		index, exists := indexByKey[key]
+		if !exists {
+			indexByKey[key] = len(out)
+			out = append(out, item)
+			continue
+		}
+		if unconfirmedFlushRestoreScore(item) > unconfirmedFlushRestoreScore(out[index]) {
+			out[index] = item
+		}
+	}
+	return out
+}
+
+func unconfirmedFlushRestoreScore(item triage.UnconfirmedFlushItem) int {
+	score := 0
+	if item.UserItemID != "" {
+		score++
+	}
+	if item.DeferredItem != nil {
+		score += 2
+	}
+	if item.QuietItem != nil {
+		score += 2
+	}
+	return score
+}
+
+func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.UnconfirmedFlushItem) {
+	if a.triage == nil {
+		return
+	}
+	for _, item := range items {
+		queued, ok := queuedFlushItemFromUnconfirmed(item)
+		if !ok {
+			continue
+		}
+		a.triage.RegisterQueueItem(threadID, queued)
+	}
+}
+
+func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem) (triage.QueuedFlushItem, bool) {
+	queueItemID := strings.TrimSpace(item.QueueItemID)
+	message := strings.TrimSpace(item.Message)
+	payload := append(json.RawMessage(nil), item.Payload...)
+	if item.DeferredItem != nil {
+		message = strings.TrimSpace(item.DeferredItem.Summary)
+		payload = queuePayloadFromUserItem(*item.DeferredItem, payload)
+	}
+	if item.QuietItem != nil {
+		message = strings.TrimSpace(item.QuietItem.Summary)
+		payload = queuePayloadFromUserItem(*item.QuietItem, payload)
+	}
+	if queueItemID == "" {
+		queueItemID = flushqueue.NewItemID()
+	}
+	if message == "" && len(payload) == 0 {
+		return triage.QueuedFlushItem{}, false
+	}
+	return triage.QueuedFlushItem{
+		ID:         queueItemID,
+		Message:    message,
+		Payload:    payload,
+		EnqueuedAt: item.EnqueuedAt,
+	}, true
+}
+
+func queuePayloadFromUserItem(item store.Item, fallback json.RawMessage) json.RawMessage {
+	meta, err := usermessage.FromItem(item)
+	if err != nil {
+		return fallback
+	}
+	attachmentIDs := make([]string, 0, len(meta.Attachments))
+	for _, attachment := range meta.Attachments {
+		id := strings.TrimSpace(attachment.ID)
+		if id != "" {
+			attachmentIDs = append(attachmentIDs, id)
+		}
+	}
+	payload, err := json.Marshal(flushQueuePayload{
+		AttachmentIDs:                attachmentIDs,
+		SourceProposedPlan:           meta.SourceProposedPlan,
+		RevisionSourceProposedPlan:   meta.RevisionSourceProposedPlan,
+		RevisionSourceCommentIDs:     meta.RevisionSourceCommentIDs,
+		RevisionSourceDiffReview:     meta.RevisionSourceDiffReview,
+		RevisionSourceDiffCommentIDs: meta.RevisionSourceDiffCommentIDs,
+	})
+	if err != nil {
+		return fallback
+	}
+	return payload
+}
+
+func draftPartFromUserItem(item store.Item) composerdraft.Part {
+	part, err := composerdraft.PartFromUserItem(item)
+	if err != nil {
+		log.Printf("flush queue: decode restored user item meta %s/%s: %v", item.ThreadID, item.ID, err)
+		return composerdraft.Part{Content: item.Summary}
+	}
+	return part
+}
+
+func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.UnconfirmedFlushItem) composerdraft.Part {
+	var payload flushQueuePayload
+	if len(item.Payload) > 0 {
+		if err := json.Unmarshal(item.Payload, &payload); err != nil {
+			log.Printf("flush queue: decode queued restore payload %s/%s: %v", threadID, item.QueueItemID, err)
+			return composerdraft.Part{Content: item.Message}
+		}
+	}
+	return composerdraft.Part{
+		Content:            item.Message,
+		AttachmentIDs:      payload.AttachmentIDs,
+		SourceProposedPlan: payload.SourceProposedPlan,
+	}
+}
+
+func (a *App) restoreFlushDraft(threadID string, parts []composerdraft.Part) error {
+	current, _, err := a.store.GetThreadDraft(threadID)
+	if err != nil {
+		return err
+	}
+	draft, err := composerdraft.MergeParts(threadID, current, parts, time.Now().UnixMilli())
+	if err != nil {
+		return err
+	}
+	return a.store.UpsertThreadDraft(draft)
 }
 
 // flushQueuePayload is the local-scope alias for flushqueue.Payload.
@@ -392,10 +654,10 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// emits the provider:item_event upsert that clears Zone 2.
 		// resolveTurnIndexOnStart reads responseTurnIndex from the
 		// FIFO to open a new turn for the response.
-		a.triage.RegisterPendingSend(threadID, userItem.ID, responseTurnIndex)
+		a.triage.RegisterPendingQuietFlushSend(threadID, item.ID, userItem, responseTurnIndex, item.EnqueuedAt)
 	} else {
 		// Deferred: row persists at echo time via persistDeferredUserText.
-		a.triage.RegisterPendingFlushSend(threadID, item.ID, userItem)
+		a.triage.RegisterPendingFlushSendWithEnqueuedAt(threadID, item.ID, userItem, item.EnqueuedAt)
 	}
 	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
 		log.Printf("flush queue: delete draft for thread %s: %v", threadID, draftErr)
@@ -427,7 +689,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			userItem.TurnIndex = responseTurnIndex
 			userItem.CreatedAt = time.Now().UnixMilli()
 			userItem.UpdatedAt = userItem.CreatedAt
-			a.triage.RegisterPendingFlushSend(threadID, item.ID, userItem)
+			a.triage.RegisterPendingFlushSendWithEnqueuedAt(threadID, item.ID, userItem, item.EnqueuedAt)
 			sess.liveness.bumpActivity(time.Now())
 			if sendErr := sess.codex.Send(context.Background(), content, sendOpts); sendErr != nil {
 				a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
@@ -691,6 +953,9 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		EnqueuedAt:                   enqueuedAt,
+	}
+	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
+		log.Printf("register queue item: delete draft for thread %s: %v", threadID, draftErr)
 	}
 	a.emitQueueStateChanged(threadID)
 	if _, ok := a.sessionManager().get(threadID); ok {

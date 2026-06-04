@@ -1624,6 +1624,42 @@ describe('<Composer>', () => {
     expect(draft.content).toBe('');
   });
 
+  it('does not clear a restored draft when queue restore arrives before RegisterQueueItem resolves', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    let restored = false;
+    setBindingMock('GetDraft', async (threadId: string) => ({
+      threadId,
+      content: restored ? 'restored after session death' : '',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: restored ? 2 : 1,
+    }));
+    const draft = await buildDraft();
+    setBindingMock('RegisterQueueItem', async () => {
+      restored = true;
+      await draft.reloadFromBackend('thread-1');
+      return {
+        id: 'q-restored',
+        threadId: 'thread-1',
+        message: 'queue then restore',
+        attachmentIds: [],
+        sourceProposedPlan: null,
+        revisionSourceProposedPlan: null,
+        enqueuedAt: 1,
+      };
+    });
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'queue then restore' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await tick();
+
+    expect(draft.content).toBe('restored after session death');
+  });
+
   it('enqueues mid-turn when the Send button is clicked', async () => {
     const pane = await buildPane();
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });

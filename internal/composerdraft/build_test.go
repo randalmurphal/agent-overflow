@@ -123,3 +123,82 @@ func TestFromUserItemSkipsBlankAttachmentIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestMergePartsAppendsContentAndDedupesAttachments(t *testing.T) {
+	current := store.ThreadDraft{
+		ThreadID:      "t-1",
+		Content:       "existing",
+		Attachments:   `["att-1"]`,
+		TerminalChips: `["chip"]`,
+		UpdatedAt:     10,
+	}
+
+	draft, err := MergeParts("t-1", current, []Part{
+		{Content: "first restored", AttachmentIDs: []string{"att-1", "att-2"}},
+		{Content: "second restored", AttachmentIDs: []string{"att-3"}},
+	}, 99)
+	if err != nil {
+		t.Fatalf("MergeParts: %v", err)
+	}
+	if draft.Content != "existing\n\nfirst restored\n\nsecond restored" {
+		t.Fatalf("Content = %q", draft.Content)
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(draft.Attachments), &ids); err != nil {
+		t.Fatalf("decode attachments: %v", err)
+	}
+	if len(ids) != 3 || ids[0] != "att-1" || ids[1] != "att-2" || ids[2] != "att-3" {
+		t.Fatalf("attachments = %v, want [att-1 att-2 att-3]", ids)
+	}
+	if draft.TerminalChips != `["chip"]` {
+		t.Fatalf("TerminalChips = %q, want existing chips", draft.TerminalChips)
+	}
+	if draft.UpdatedAt != 99 {
+		t.Fatalf("UpdatedAt = %d, want 99", draft.UpdatedAt)
+	}
+}
+
+func TestMergePartsPreservesExistingPendingPlan(t *testing.T) {
+	current := store.ThreadDraft{
+		ThreadID:                  "t-1",
+		Attachments:               "[]",
+		TerminalChips:             "[]",
+		PendingPlanImplementation: `{"itemId":"existing"}`,
+	}
+	nextPlan := &store.ProposedPlanSourceRef{ThreadID: "t-1", ItemID: "new", PayloadID: "payload-new"}
+
+	draft, err := MergeParts("t-1", current, []Part{{Content: "restored", SourceProposedPlan: nextPlan}}, 1)
+	if err != nil {
+		t.Fatalf("MergeParts: %v", err)
+	}
+	if draft.PendingPlanImplementation != current.PendingPlanImplementation {
+		t.Fatalf("PendingPlanImplementation = %q, want existing", draft.PendingPlanImplementation)
+	}
+}
+
+func TestMergePartsEncodesCommonSourcePlan(t *testing.T) {
+	plan := &store.ProposedPlanSourceRef{ThreadID: "t-1", ItemID: "plan-1", PayloadID: "payload-1"}
+	draft, err := MergeParts("t-1", store.ThreadDraft{ThreadID: "t-1", Attachments: "[]"}, []Part{
+		{Content: "one", SourceProposedPlan: plan},
+		{Content: "two", SourceProposedPlan: plan},
+	}, 1)
+	if err != nil {
+		t.Fatalf("MergeParts: %v", err)
+	}
+	if draft.PendingPlanImplementation == "" {
+		t.Fatal("PendingPlanImplementation must be populated for a common source plan")
+	}
+}
+
+func TestMergePartsDropsConflictingSourcePlans(t *testing.T) {
+	draft, err := MergeParts("t-1", store.ThreadDraft{ThreadID: "t-1", Attachments: "[]"}, []Part{
+		{Content: "one", SourceProposedPlan: &store.ProposedPlanSourceRef{ThreadID: "t-1", ItemID: "plan-1"}},
+		{Content: "two", SourceProposedPlan: &store.ProposedPlanSourceRef{ThreadID: "t-1", ItemID: "plan-2"}},
+	}, 1)
+	if err != nil {
+		t.Fatalf("MergeParts: %v", err)
+	}
+	if draft.PendingPlanImplementation != "" {
+		t.Fatalf("PendingPlanImplementation = %q, want empty for conflicting plans", draft.PendingPlanImplementation)
+	}
+}

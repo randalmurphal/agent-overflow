@@ -174,6 +174,7 @@ type App struct {
 	// Send/Steer locking stay in the same layer.
 	flushDispatchMu            sync.Mutex
 	flushDispatchQueues        map[string][]flushDispatchBatch
+	flushDispatchCurrent       map[string]flushDispatchBatch
 	flushDispatchRunning       map[string]bool
 	flushDispatchInflightItems map[string]int
 	flushDispatchGeneration    map[string]uint64
