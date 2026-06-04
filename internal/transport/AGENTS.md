@@ -97,8 +97,8 @@ The profile is immutable for the connection's lifetime. Replay events
 
 ## References
 
-- Root `CLAUDE.md` § "Implemented (was previously deferred) — Remote/web
-  access" for the cross-cutting boundary rules.
+- Root `AGENTS.md` § "Permanent invariants" for the cross-cutting
+  transport-boundary rule.
 - `docs/architecture/data-flow.md` — how triage events reach the bus.
 - `frontend/bindings/agent-overflow/app.ts` — generated TS bindings
   the wire-format must keep working.

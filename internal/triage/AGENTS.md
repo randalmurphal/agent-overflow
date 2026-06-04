@@ -102,167 +102,38 @@ none fits.
 
 Authoritative mental model:
 [`turn-lifecycle.md`](../../docs/architecture/turn-lifecycle.md).
+Keep this guide to local editing rules; do not duplicate the full
+lifecycle spec here.
 
-- **Tool lifecycle** — `EventToolStart`/`EventToolComplete` keyed by
-  tool_use_id. Triage upserts `tool_call` rows. Claude background
-  placeholders stay `status=running` until the task lifecycle writes the
-  `tool_completion` sibling. Codex spawn_agent launch rows settle as the
-  completed "spawned" event; child completion is a separate sibling row.
-- **Task lifecycle (Claude only)** — two-phase decoupling between
-  the host-side process exit and the agent-observation event:
-  - `EventBackgroundTaskTerminal` with `source="task_updated"` and
-    `status` in `{completed, failed}` → write a row to
-    `pending_background_task_terminals` (PK
-    `(thread_id, task_id)`); the tray query hides the launch via a
-    `NOT EXISTS` join. **No chat sibling yet.**
-  - `EventBackgroundTaskTerminal` with `source="task_output"` (agent
-    polled via TaskOutput) → drain the stash, merge stash data with
-    the observation, write the `tool_completion` sibling at the
-    current write head.
-  - `EventBackgroundTaskNotification` → persist the notification row;
-    if a stash exists for the same `task_id`, drain it through the
-    same shared helper (the agent saw the queued attachment now).
-  - `EventBackgroundTaskTerminal` with `source="task_updated"` and
-    `status="killed"` (user clicked Stop) is the carve-out: write
-    the sibling immediately because the user already knows the
-    process was stopped — there's no "agent will observe later"
-    phase to wait for.
-  - **Crash recovery** — `Router.RecoverOrphanedBackgroundTasks`
-    runs once at app boot for recoverable Claude launches whose owning
-    provider session did not survive the previous app instance. A row is
-    recoverable only when it still has no completion sibling and carries
-    `items.meta.task_id`. It writes the `tool_completion` sibling
-    directly (with `source="session_died"` on the sibling's meta)
-    without staging a stash row, so a crash mid-sweep leaves the launch
-    re-discoverable on the next boot.
-- **Background-terminal projection (Codex only)** —
-  `codex_background.go` tracks unifiedExec items as transient state and
-  shows them in the running tray immediately. They only become
-  backgrounded after a typed terminal-interaction notification for an explicit
-  empty write_stdin poll. Typed unifiedExec completions always clear transient
-  live state; they persist normal command rows using the original item id only
-  while the frontend-visible Codex wire round is active. Raw exec output never
-  creates, delays, or backgrounds transcript history.
-  Spawn-agent starts are tracker-only until terminal spawn completion creates
-  the visible tool row. Child-agent transcript completions are owned by
-  wait_agent or subagent_notification; direct child lifecycle only updates live
-  state.
-  Authorized only by the wire-typed signals in Meta (invariant 25); no
-  heuristic classifiers.
-- **Turn lifecycle** — `EventTurnStart` writes a `turns` row with
-  `completed_at=null`; `EventTurnComplete` updates it. Triage
-  force-closes any `tool_call` row with `status='running' &&
-  !is_background && turn_index=currentTurn` as a safety net.
-  Frontend emissions follow a separate per-wire-round cadence — see
-  "Wire-round vs logical-turn" below.
+- **Tool lifecycle** — `EventToolStart` / `EventToolComplete` keyed by
+  the provider tool id. Triage upserts `tool_call` rows; Claude
+  background placeholders and Codex `spawn_agent` child completions
+  have their separate sibling-row rules in the lifecycle doc.
+- **Task lifecycle (Claude only)** — host process exit and agent
+  observation are deliberately decoupled. `task_updated` can hide a
+  launch from the tray before chat gets the later observed
+  `tool_completion` row.
+- **Codex background projection** — `unifiedExecStartup` starts are
+  transient tray-visible live state; typed item completion clears the
+  tracker and persists command history only while the Codex wire round
+  is active. Empty `write_stdin` waits and `spawn_agent` child state
+  are the only authorization signals for `is_background=true`. See
+  [`invariant 25`](../../docs/architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics).
+- **Turn lifecycle** — `EventTurnStart` inserts a `turns` row and
+  `EventTurnComplete` settles it. Frontend activity is pushed per wire
+  round, while persistence settles per logical turn. See
+  [`turn-lifecycle.md §Wire-round vs logical-turn cadence`](../../docs/architecture/turn-lifecycle.md#wire-round-vs-logical-turn-cadence)
+  and
+  [`invariant 27`](../../docs/architecture/invariants.md#27-soft-round-close-from-message_deltastop_reason-is-wire-typed).
 
-⚠ **Wire-round vs logical-turn cadence**:
+Load-bearing reminders:
 
-`provider:turn_started` and `provider:turn_completed` fire **per wire
-round**, not per logical turn. A round corresponds to one Claude
-`result` envelope, one Claude soft message_delta stop_reason, or one
-Codex `turn/completed`; a logical agent-overflow turn — one
-user-typed prompt — can span multiple
-rounds when Claude's CLI synthesizes a `type:"user"` envelope from a
-`task_notification` and the model issues another response. The
-frontend uses these per-round emissions to drive its working
-indicator, Stop button, and composer-block state
-— all of which want "model is engaged right now" semantics rather
-than "user-typed prompt is in flight."
-
-Two cadences run in parallel:
-
-| Cadence | Driver | Granularity | Owner |
-|---|---|---|---|
-| Frontend visibility | `currentRoundByThread` / `setOpenRoundSnapshot` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions |
-| Persistence | `claimTurnSettlement` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, streaming-item settlement |
-
-Round entry points:
-
-- **`handleTurnStart`** opens round 1 of every logical turn. It calls
-  BOTH `setOpenTurn` (per-turn flow-control + counter re-init) AND
-  `setOpenRoundSnapshot` (per-round id allocation), then emits
-  `provider:turn_started` with the per-round uuid as TurnID.
-- **Re-round** (`maybeReopenSettledRound`) opens round 2+ when the
-  current logical turn is already settled (`settledTurns[turnKey]==
-  true`) and no wire round is open. Two entry points feed it:
-  `handleInit` (`maybeEmitReRoundOnInit`) for the `system.init`-driven
-  cascade re-round, and `handleContentBlockStart` (parent-only) for the
-  Claude 2.1.154+ parent-content-resume case (see the dedicated bullet
-  below). It calls `setOpenRoundSnapshot` ONLY — does **not** call
-  `setOpenTurn`. This is load-bearing: id-allocating counters
-  (`segmentIndexByScope`, `blockIndexByScope`, `errorSeqByScope`,
-  `terminalInteractionSeq`) must survive the multi-result/segment
-  boundary so post-round-1 text/think/error rows don't collide with
-  rows already persisted under the same logical turn. See
-  `multi_result_test.go` for the regression coverage.
-- **`handleTurnComplete`** uses `takeOpenRound` (read-and-clear) to
-  decide whether to emit `provider:turn_completed`. An empty slot
-  means a synthetic complete already raced ahead (the
-  fatal-error-then-real-result pattern in `handleError`); the second
-  wire complete then emits nothing, so the frontend sees exactly one
-  `turn_completed` per round. Persistence work (settleTurnRow,
-  checkpoint, streaming settle) stays gated by `claimTurnSettlement` at
-  logical-turn granularity.
-- **Soft round-close** (Claude only) — `EventTurnComplete` with
-  `provider.SoftRoundCloseMeta` arrives from `parse_stream.go` when
-  the parent message ends with stop_reason ∈ `{end_turn,
-  stop_sequence, refusal}` and `parent_tool_use_id` is null. Triage
-  handles this identically to the `result`-driven complete:
-  per-round emission + per-logical-turn settlement. The trailing wire
-  `result` envelope arrives later (especially when a `local_agent`
-  subagent is in flight — Claude CLI delays it until the subagent
-  completes) and folds in cumulative usage / cost /
-  `assistant_message_id` via `persistLateTurnPayload` — the
-  `claimTurnSettlement` gate makes this a no-op for everything else.
-  See
-  [`invariants.md §27`](../../docs/architecture/invariants.md#27-soft-round-close-from-message_deltastop_reason-is-wire-typed).
-- **Parent-content resume** (Claude 2.1.154+) — `handleContentBlockStart`
-  calls `maybeReopenSettledRound` when a **parent**
-  (`parent_tool_use_id == ""`) content block starts while the logical
-  turn is settled and no round is open. Claude 2.1.154+ splits one
-  logical turn into multiple wire messages, closing each segment with a
-  parent soft round-close (above) and resuming the SAME turn with a
-  fresh `message_start` — no intervening `result`/`system.init`. The
-  soft-close already cleared the working indicator + Stop button; this
-  re-arms the round so the indicator lights back up. Gated parent-only
-  so subagent content during a legitimate `local_agent`-outlives wait
-  never re-arms (invariant 27 stays intact); the settled + no-open-round
-  guards keep ordinary mid-round block starts a no-op (no per-block
-  blink). The reactive design is forced: at the `end_turn` the "done",
-  "parked", and "resuming" cases are byte-identical on the wire, so the
-  only safe discriminator is the parent resume itself. See
-  [`invariants.md §27`](../../docs/architecture/invariants.md#27-soft-round-close-from-message_deltastop_reason-is-wire-typed)
-  "Parent-content resume re-arm".
-
-The state diagram lives in
-[`turn-lifecycle.md §Wire-round vs logical-turn cadence`](../../docs/architecture/turn-lifecycle.md#wire-round-vs-logical-turn-cadence).
-
-Round id format: opaque per-round `uuid.NewString()` allocated in Go.
-Carried as `TurnStartedEvent.TurnID` / `TurnCompletedEvent.TurnID`.
-The persisted `turns.turn_id` is chosen at turn-start granularity:
-provider-supplied `ProviderEvent.TurnID` wins, and `resolveTurnID`
-is the fallback. Completion paths must settle that existing row; when
-a completion event has no `TurnID`, use the persisted `(thread_id,
-turn_index)` row before falling back to `resolveTurnID`. This keeps
-multi-round logical turns on one row and prevents synthetic
-completion paths from inventing `thread:index` rows for providers
-with opaque wire turn ids.
-
-⚠ **Load-bearing invariants** (see
-[`invariants.md`](../../docs/architecture/invariants.md)):
-
-- `task_notification` is NOT a completion source; drop parser
-  emission into the lifecycle. Route it through a distinct
-  notification row instead.
-- Turn activity on the frontend is wire-pushed only — never derived
-  from item state.
-- No session-liveness probing for turn state inference.
-- `setOpenTurn` does NOT fire from the re-round path
-  (`maybeReopenSettledRound`, reached via `handleInit` or
-  parent-content resume). Calling it there would reset the
-  id-allocating counters and re-introduce the multi-result-per-turn
-  id-collision regression.
+- `task_notification` is not a completion source.
+- Turn activity on the frontend is wire-pushed only.
+- Do not infer turn state from session liveness probes.
+- Re-round paths (`maybeReopenSettledRound`) must not call
+  `setOpenTurn`; that would reset id-allocating counters and collide
+  with rows already persisted under the same logical turn.
 
 ## Responsibility boundary
 
@@ -281,106 +152,34 @@ with opaque wire turn ids.
 
 ## Correlation state (bounded, not derived)
 
-The Router carries a narrow set of per-thread maps (interrupt queue,
-open turn index, content-block counters, active streaming block flags,
-pending approvals / approval decisions, pending command inline diffs,
-turn spans, stopped-thread markers, streaming render throttle) that
-exist purely to correlate one event to the next
-within a turn — not to duplicate the store or the provider session.
-All of these are bounded and have an explicit cleanup path.
+Router maps exist only to correlate adjacent provider events; they are
+not a cache of store or provider-session data. Every map needs a clear
+owner and cleanup path.
 
-⚠ **Three distinct lifecycles intersect in this package and MUST stay
-separate**:
+Use these categories when adding or moving state:
 
-- **Per-turn flow-control state** — `openTurns`, `interruptQueue`,
-  `streamingItemCounts`, `activeTextBlocks`, `activeThinkingBlocks`,
-  `pendingCommandDiffs`, `pendingApprovals`, `pendingApprovalItems`,
-  `pendingUserInputs`. Cleared at turn end via
-  `clearOpenTurn` (which fires from `handleTurnComplete`). These maps
-  answer "is this turn live right now / what's queued behind a
-  streaming row / what's mid-resolution."
-- **Id-allocating counters** — `segmentIndexByScope`, `blockIndexByScope`,
-  `errorSeqByScope`, `terminalInteractionSeq`. Cleared at
-  `CleanupThread` only — except `setOpenTurn` resets the per-scope key
-  to seed a fresh re-init (Claude `system.init` resend after interrupt
-  is a deliberate from-scratch re-stream). They allocate primary keys
-  (`text:N:S`, `think:N:B`, `error:N:S`, `waited:pid:N:S`) for `items`
-  rows whose lifetime is the **thread**, not the turn. Wiping them at
-  turn boundaries (which is what `clearOpenTurn` MUST NOT do) causes id
-  collisions when the wire emits two `result` envelopes for one
-  logical turn (Claude's `task_notification` → CLI-synthesized
-  `type:"user"` envelope → second `result`, and the fatal-error
-  synthetic-truncate then real-wire-complete race). The `LastTurnIndex`
-  fallback in `currentTurnIndex` re-attaches post-`clearOpenTurn`
-  events to the same turn so the surviving counter advances correctly
-  and the next id never collides with rows already persisted under
-  this turn. See `multi_result_test.go` for the regression coverage.
-- **Logical-turn settlement state** — `settledTurns`. Survives wire
-  round boundaries by design. It is reset by `setOpenTurn` (so a
-  re-init can re-settle the same logical turn) and swept by
-  `CleanupThread`. Tool paths are staged in `pendingToolPaths` between
-  mutating tool start and successful completion, then written durably to
-  `thread_tracked_files`.
+- **Per-turn flow-control** (`openTurns`, streaming block flags,
+  approvals, user-inputs, pending inline diffs): clean in
+  `clearOpenTurn` or the correlated resolver.
+- **Id-allocating counters** (`segmentIndexByScope`,
+  `blockIndexByScope`, `errorSeqByScope`, `terminalInteractionSeq`):
+  clean in `CleanupThread`, not at turn boundaries. These allocate
+  thread-lifetime `items.id` values.
+- **Logical-turn settlement** (`settledTurns`): survives wire-round
+  boundaries and is reset by a fresh `setOpenTurn`.
+- **Durable user-visible state**: persist it as soon as it becomes
+  known instead of keeping it in a router map.
 
-When adding a new map, ask **three** questions:
+If a new map represents user-blocking live state, add it to
+`HasPendingWork` in `interactive_requests.go` and cover it in
+`interactive_requests_test.go`.
 
-1. Do the values written here become primary keys of persisted rows? If
-   yes, it's an id-allocating counter — clean it in `CleanupThread` (and
-   selectively in `setOpenTurn` for re-init), never in `clearOpenTurn`.
-2. Does its data need to survive the wire-level turn boundary because
-   it represents durable user-visible state? If yes, persist it in the
-   store at the point it becomes known. Otherwise, it's per-turn
-   flow-control — clean it in `clearOpenTurn`.
-3. Does this map represent user-blocking live state that should prevent
-   session reaping? (Pending approvals, user-input requests, queued
-   flush items, and pending sends qualify.) If yes, add it to
-   `HasPendingWork` in `interactive_requests.go` and add a test in
-   `interactive_requests_test.go`.
-
-`handleTurnComplete` is **idempotent** at logical-turn granularity
-via `claimTurnSettlement`. The first complete drains streaming items,
-and UPDATE-s the `turns` row. A second wire complete on the
-already-settled logical turn folds late token usage onto the existing
-row and otherwise no-ops. Turn token/cost accounting is captured on
-the first completion, while context-window meter updates arrive
-separately on `EventTokenUsage`. `setOpenTurn` clears the settled
-marker so a re-init (Claude `system.init` resend after interrupt;
-Codex `turn/started` resend) can re-settle the same turn.
-
-Frontend `provider:turn_completed` emissions are gated INDEPENDENTLY
-per wire round via `currentRoundByThread` / `takeOpenRound` (see
-"Wire-round vs logical-turn cadence" above) — so a multi-result-per-
-turn cascade emits one `turn_completed` per `result` envelope while
-persistence stays at one settle per logical turn.
-
-Cleanup paths:
-
-- Per-turn state clears on `EventTurnComplete` (and on a matching
-  error branch for errored turns).
-- Per-thread state clears on `CleanupThread`.
-- Approval and interrupt-queue entries clear when their correlated
-  event resolves.
-
-The one deliberate exception is the interrupt queue, which can span a
-turn boundary because its contract is "persist queued events once the
-interrupt lifts."
-
-⚠ **Async settle bookkeeping**: `settleStreamingTextAsync` /
-`settleStreamingThinkingAsync` move the heavy SQLite work off the
-provider read-loop (content-block-stop is the freeze hot path). The
-sync prelude (`takeActiveTextBlock` / `takeActiveThinkingBlock`) still
-runs under `r.mu` to flip `activeTextBlocks` / `activeThinkingBlocks`
-before returning, so duplicate settle attempts no-op even while the
-goroutine is in flight. The `streamingItemCounts` decrement and
-`drainInterruptQueueIfIdle` call BOTH live inside the goroutine
-(`finishSettle`) so the count's `0 → drain` transition is durable —
-incoming non-streaming rows queue correctly until the settle's persist
-commits. `r.settleWG` tracks every fire-and-forget settle goroutine for
-shutdown drain; `app.Close` blocks on `WaitForPendingSettles` with a
-5s timeout so SQLite isn't torn down underneath an in-flight write.
-`settleTurnStreaming` uses a per-turn `WaitGroup` to fan out per-scope
-settles in parallel while still blocking on its caller (so the turns
-row UPDATE sequences after all per-scope item writes).
+Async streaming settlement is intentionally off the provider read loop.
+Keep the synchronous state flip under `r.mu`, and keep the
+`streamingItemCounts` decrement plus interrupt-queue drain inside the
+settle goroutine so the `0 -> drain` transition happens after SQLite
+has the row. See `stream_state.go` and `multi_result_test.go` before
+changing the cleanup cadence.
 
 ## Raw chat content
 

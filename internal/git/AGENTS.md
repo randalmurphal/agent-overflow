@@ -18,12 +18,17 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   destructive flows in the app layer. Also `RandomStashSuffix()` —
   short hex token for collision-free stash-message tagging.
 - `status.go` — `GitStatus` shape + status aggregation (branch,
-  ahead/behind, pending merge/rebase/bisect, open PR, detected forge).
-  Also hosts the smaller `CountWorkingTreeChanges`,
-  `CountUnpushedCommits`, and `upstreamFor` primitives used by the
-  worktree-cleanup safety classifier. `Core.CurrentBranch(cwd)` and
-  `Core.BranchIsDefault(cwd, branch)` are the error-eating lookup
-  helpers used by every app-side workspace-change site.
+  ahead/behind, open PR, detected forge) and small status-related
+  primitives (`CountWorkingTreeChanges`, `CountUnpushedCommits`,
+  `upstreamFor`, `CurrentBranch`, `BranchIsDefault`).
+- `status_branches.go` — `GitBranch` shape, branch-list parsing,
+  default-branch helpers, and remote-name helpers.
+- `status_pr_cache.go` — open-PR lookup cache used by `Status` /
+  `StatusFast`; `InvalidatePRCache` lives here too.
+- `status_untracked.go` — untracked-file insertion/file counting for
+  the status badge, including the bounded line scanner.
+- `status_pending.go` — pending merge/rebase/bisect detection via the
+  resolved git directory.
 - `worktree_paths.go` — pure path helpers backing the app layer's
   worktree creation: `SanitizeWorktreePathSegment` (branch → fs-safe
   directory name), `DefaultWorktreesBaseDir` (the `<repo>-worktrees`

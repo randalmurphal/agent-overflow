@@ -158,20 +158,14 @@ and [invariant 25](docs/architecture/invariants.md#25-codex-backgrounding-uses-w
 ## Permanent invariants
 
 - **Transport boundary stays clean.** Go → frontend goes through
-  `app.Event.Emit` and Wails bindings only; UI code must never reach
-  into Go internals in ways that lock out the existing HTTP+WS
-  network transport. The webview path and the `--connect` remote
-  client share the same wire shape (`internal/transport/frame.go`);
-  any new App-bound method you add immediately becomes both a Wails
-  binding and a wire RPC — that's deliberate, don't add a parallel
-  back-channel. Methods that touch the local FS, spawn external
-  processes (provider CLIs, git, gh), control provider sessions,
-  mutate settings, or write attachments must additionally be
-  classified into `internal/transport/internalmethods.go`
-  `LocalOnlyMethods` so they're refused from non-loopback peers.
-  The dispatcher returns the same `method_not_found` shape for both
-  unregistered and LAN-blocked methods, so the privileged surface
-  stays unenumerable from the wire.
+  `app.Event.Emit` and Wails bindings only; UI code must not add a
+  back-channel that bypasses `internal/transport/`. The embedded
+  webview, `agent-overflow --connect`, and remote browser access share
+  the same HTTP+WS wire shape. Any new App-bound method also becomes a
+  wire RPC; if it touches local FS, external processes, provider
+  sessions, settings, credentials, or attachments, classify it in
+  `internal/transport/internalmethods.go` `LocalOnlyMethods`. See
+  `internal/transport/AGENTS.md` for the authz and replay rules.
 
 - **`.claude/` and `.playwright-mcp/` MUST stay excluded from the
   Wails3 dev watcher.** Claude Code's parallel-agent harness creates
@@ -209,14 +203,3 @@ them without a scope conversation first.
   Revisit only if workflows land. If a "let me course-correct
   mid-turn" primitive is wanted independently, it becomes its own
   feature, not forge parity.
-
-## Implemented (was previously deferred)
-
-- **Remote / web access** — implemented across `internal/transport/`
-  (HTTP+WebSocket dispatch + event push), `internal/clientmode/`
-  (`agent-overflow --connect <url>` stub), and the LAN-bind toggle in
-  Settings. Method-level authz refuses RCE-equivalent and
-  settings-mutation methods from non-loopback peers
-  (`internal/transport/internalmethods.go` `LocalOnlyMethods`). TLS
-  termination is out-of-process — public exposure goes behind
-  Tailscale Serve / SSH tunnel / reverse proxy.
