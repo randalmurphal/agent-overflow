@@ -95,6 +95,17 @@ function makeClipboardPaste(files: File[]): ClipboardEvent {
   return event;
 }
 
+function makeFileDrop(files: File[]): DragEvent {
+  const event = new Event('drop', { bubbles: true, cancelable: true }) as DragEvent;
+  Object.defineProperty(event, 'dataTransfer', {
+    value: {
+      files,
+      types: ['Files'],
+    },
+  });
+  return event;
+}
+
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
     id: 'project-placeholder',
@@ -265,6 +276,372 @@ describe('<Composer>', () => {
     ));
     expect(draft.threadId).toBe('materialized-upload');
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['uploaded']);
+  });
+
+  it('cleans up a materialized placeholder after rejecting the first pasted image', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-rejected-upload' });
+    pane.startDraftPlaceholder(makeProject(), 'chat');
+    const draft = await buildDraft(null);
+    const created = makeTestThread({
+      id: 'materialized-rejected-upload',
+      projectId: 'project-placeholder',
+      workspacePath: '/tmp/placeholder',
+      projectPath: '/tmp/placeholder',
+      isDraft: true,
+    });
+    const create = setBindingMock('CreateThread', async () => created);
+    const upload = setBindingMock('UploadAttachment', async () =>
+      makeAttachment('should-not-upload'));
+    const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent(textarea, makeClipboardPaste([
+      new File(['bmp'], 'scan.bmp', { type: 'image/bmp' }),
+    ]));
+
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(upload).not.toHaveBeenCalled();
+    await waitFor(() => expect(deleteEmpty).toHaveBeenCalledWith(created.id));
+    await waitFor(() => {
+      expect(pane.threadId).toBeNull();
+      expect(pane.hasDraftPlaceholder).toBe(true);
+      expect(draft.threadId).toBeNull();
+      expect(draft.attachments).toEqual([]);
+    });
+  });
+
+  it('uploads dropped images after materializing a placeholder', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-drop-upload' });
+    pane.startDraftPlaceholder(makeProject(), 'chat');
+    const draft = await buildDraft(null);
+    const created = makeTestThread({
+      id: 'materialized-drop-upload',
+      projectId: 'project-placeholder',
+      workspacePath: '/tmp/placeholder',
+      projectPath: '/tmp/placeholder',
+      isDraft: true,
+    });
+    setBindingMock('CreateThread', async () => created);
+    const save = setBindingMock('SaveDraft', async () => {});
+    const upload = setBindingMock('UploadAttachment', async (
+      threadId: string,
+      filename: string,
+      mimeType: string,
+    ) => ({
+      ...makeAttachment('dropped', filename),
+      threadId,
+      mimeType,
+    }));
+
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+
+    await fireEvent(getByTestId('composer-root'), makeFileDrop([
+      new File(['png'], 'dropped.png', { type: 'image/png' }),
+    ]));
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(
+      created.id,
+      'dropped.png',
+      'image/png',
+      expect.any(String),
+    ));
+    expect(draft.content).toBe('[Image #1]');
+    expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['dropped']);
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith(created.id, '[Image #1]', ['dropped'], [], null);
+    });
+  });
+
+  it('materializes once and preserves ordered placeholders for multiple first-pasted images', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-multi-upload' });
+    pane.startDraftPlaceholder(makeProject(), 'chat');
+    const draft = await buildDraft(null);
+    const created = makeTestThread({
+      id: 'materialized-multi-upload',
+      projectId: 'project-placeholder',
+      workspacePath: '/tmp/placeholder',
+      projectPath: '/tmp/placeholder',
+      isDraft: true,
+    });
+    const create = setBindingMock('CreateThread', async () => created);
+    const save = setBindingMock('SaveDraft', async () => {});
+    let nextId = 1;
+    const upload = setBindingMock('UploadAttachment', async (
+      threadId: string,
+      filename: string,
+      mimeType: string,
+    ) => ({
+      ...makeAttachment(`att-${nextId++}`, filename),
+      threadId,
+      mimeType,
+    }));
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent(textarea, makeClipboardPaste([
+      new File(['png-one'], 'one.png', { type: 'image/png' }),
+      new File(['png-two'], 'two.png', { type: 'image/png' }),
+    ]));
+
+    await waitFor(() => expect(upload).toHaveBeenCalledTimes(2));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(upload.mock.calls.map((call) => call[0])).toEqual([created.id, created.id]);
+    expect(draft.content).toBe('[Image #1] [Image #2]');
+    expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-2']);
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith(created.id, '[Image #1] [Image #2]', ['att-1', 'att-2'], [], null);
+    });
+  });
+
+  it('does not delete a just-materialized placeholder while the first pasted image is uploading', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-upload-race' });
+    pane.startDraftPlaceholder(makeProject(), 'chat');
+    const draft = await buildDraft(null);
+    const created = makeTestThread({
+      id: 'materialized-upload-race',
+      projectId: 'project-placeholder',
+      workspacePath: '/tmp/placeholder',
+      projectPath: '/tmp/placeholder',
+      isDraft: true,
+    });
+    setBindingMock('CreateThread', async () => created);
+    const save = setBindingMock('SaveDraft', async () => {});
+    const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
+    let releaseUpload: (() => void) | undefined;
+    const uploadStarted = new Promise<void>((resolve) => {
+      setBindingMock('UploadAttachment', async (
+        threadId: string,
+        filename: string,
+        mimeType: string,
+      ) => {
+        resolve();
+        await new Promise<void>((finish) => {
+          releaseUpload = finish;
+        });
+        return {
+          ...makeAttachment('uploaded', filename),
+          threadId,
+          mimeType,
+        };
+      });
+    });
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent(textarea, makeClipboardPaste([
+      new File(['png'], 'first.png', { type: 'image/png' }),
+    ]));
+    await uploadStarted;
+    await tick();
+    expect(deleteEmpty).not.toHaveBeenCalled();
+
+    releaseUpload?.();
+
+    await waitFor(() => {
+      expect(draft.threadId).toBe(created.id);
+      expect(draft.content).toBe('[Image #1]');
+      expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['uploaded']);
+    });
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith(created.id, '[Image #1]', ['uploaded'], [], null);
+    });
+    expect(deleteEmpty).not.toHaveBeenCalled();
+    expect(pane.threadId).toBe(created.id);
+  });
+
+  it('does not attach a delayed placeholder upload after the pane leaves that draft', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-upload-switch' });
+    const firstProject = makeProject({ id: 'project-upload-switch-first', path: '/tmp/upload-switch-first', name: 'First' });
+    const secondProject = makeProject({ id: 'project-upload-switch-second', path: '/tmp/upload-switch-second', name: 'Second' });
+    pane.startDraftPlaceholder(firstProject, 'chat');
+    const draft = await buildDraft(null);
+    const created = makeTestThread({
+      id: 'materialized-upload-switch',
+      projectId: firstProject.id,
+      workspacePath: firstProject.path,
+      projectPath: firstProject.path,
+      isDraft: true,
+    });
+    setBindingMock('CreateThread', async () => created);
+    let releaseUpload: (() => void) | undefined;
+    const uploadStarted = new Promise<void>((resolve) => {
+      setBindingMock('UploadAttachment', async (
+        threadId: string,
+        filename: string,
+        mimeType: string,
+      ) => {
+        resolve();
+        await new Promise<void>((finish) => {
+          releaseUpload = finish;
+        });
+        return {
+          ...makeAttachment('uploaded-after-switch', filename),
+          threadId,
+          mimeType,
+        };
+      });
+    });
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent(textarea, makeClipboardPaste([
+      new File(['png'], 'first.png', { type: 'image/png' }),
+    ]));
+    await uploadStarted;
+
+    pane.startDraftPlaceholder(secondProject, 'chat');
+    await draft.setThread(null);
+    releaseUpload?.();
+    await tick();
+
+    expect(pane.draftPlaceholder?.projectId).toBe(secondProject.id);
+    expect(draft.threadId).toBeNull();
+    expect(draft.content).toBe('');
+    expect(draft.attachments).toEqual([]);
+  });
+
+  it('uploads pasted images to a replacement thread when empty cleanup is already pending', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-upload-pending-cleanup' });
+    const project = makeProject({ id: 'project-upload-pending-cleanup' });
+    pane.startDraftPlaceholder(project, 'chat');
+    const draft = await buildDraft(null);
+    const first = makeTestThread({
+      id: 'materialized-upload-pending-cleanup',
+      projectId: project.id,
+      workspacePath: project.path,
+      projectPath: project.path,
+      isDraft: true,
+    });
+    const replacement = makeTestThread({
+      id: 'materialized-upload-pending-cleanup-replacement',
+      projectId: project.id,
+      workspacePath: project.path,
+      projectPath: project.path,
+      isDraft: true,
+    });
+    let createCount = 0;
+    const create = setBindingMock('CreateThread', async () => {
+      createCount += 1;
+      return createCount === 1 ? first : replacement;
+    });
+    const save = setBindingMock('SaveDraft', async () => {});
+    const deleteGate = deferred<boolean>();
+    const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => deleteGate.promise);
+    const upload = setBindingMock('UploadAttachment', async (
+      threadId: string,
+      filename: string,
+      mimeType: string,
+    ) => ({
+      ...makeAttachment('uploaded', filename),
+      threadId,
+      mimeType,
+    }));
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'draft text' } });
+    await waitFor(() => expect(draft.threadId).toBe(first.id));
+    await fireEvent.input(textarea, { target: { value: '' } });
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith(first.id, '', [], [], null);
+    });
+    await waitFor(() => expect(deleteEmpty).toHaveBeenCalledWith(first.id));
+
+    await fireEvent(textarea, makeClipboardPaste([
+      new File(['png'], 'first.png', { type: 'image/png' }),
+    ]));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(upload).toHaveBeenCalledWith(
+        replacement.id,
+        'first.png',
+        'image/png',
+        expect.any(String),
+      );
+    });
+    deleteGate.resolve(true);
+
+    await waitFor(() => {
+      expect(pane.threadId).toBe(replacement.id);
+      expect(draft.threadId).toBe(replacement.id);
+      expect(draft.content).toBe('[Image #1]');
+      expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['uploaded']);
+    });
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith(replacement.id, '[Image #1]', ['uploaded'], [], null);
+    });
+  });
+
+  it('deletes the attachment before cleaning up after the only first-pasted image is removed', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-remove-only-image' });
+    pane.startDraftPlaceholder(makeProject(), 'chat');
+    const draft = await buildDraft(null);
+    const created = makeTestThread({
+      id: 'materialized-remove-only-image',
+      projectId: 'project-placeholder',
+      workspacePath: '/tmp/placeholder',
+      projectPath: '/tmp/placeholder',
+      isDraft: true,
+    });
+    setBindingMock('CreateThread', async () => created);
+    const save = setBindingMock('SaveDraft', async () => {});
+    const upload = setBindingMock('UploadAttachment', async (
+      threadId: string,
+      filename: string,
+      mimeType: string,
+    ) => ({
+      ...makeAttachment('uploaded', filename),
+      threadId,
+      mimeType,
+    }));
+    let releaseDelete!: () => void;
+    const deleteStarted = new Promise<void>((resolve) => {
+      setBindingMock('DeleteAttachment', async () => {
+        resolve();
+        await new Promise<void>((finish) => {
+          releaseDelete = finish;
+        });
+      });
+    });
+    const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent(textarea, makeClipboardPaste([
+      new File(['png'], 'first.png', { type: 'image/png' }),
+    ]));
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(
+      created.id,
+      'first.png',
+      'image/png',
+      expect.any(String),
+    ));
+
+    await fireEvent.click(getByLabelText('Remove first.png'));
+    await deleteStarted;
+    await tick();
+    expect(deleteEmpty).not.toHaveBeenCalled();
+
+    releaseDelete();
+
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith(created.id, '', [], [], null);
+    });
+    await waitFor(() => expect(deleteEmpty).toHaveBeenCalledWith(created.id));
+    await waitFor(() => {
+      expect(pane.threadId).toBeNull();
+      expect(pane.hasDraftPlaceholder).toBe(true);
+      expect(draft.threadId).toBeNull();
+      expect(draft.attachments).toEqual([]);
+    });
   });
 
   it('does not commit stale placeholder materialization after the pane changes drafts', async () => {

@@ -51,6 +51,7 @@ export interface ComposerUploadsOptions {
 
 export interface ComposerUploadsHandle {
   readonly dragActive: boolean;
+  readonly uploading: boolean;
   handleDragEnter(event: DragEvent): void;
   handleDragLeave(event: DragEvent): void;
   handleDragOver(event: DragEvent): void;
@@ -65,6 +66,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
   const maxAttachments = opts.maxAttachments ?? DEFAULT_MAX_ATTACHMENT_COUNT;
 
   let dragDepth = $state(0);
+  let activeUploadBatches = $state(0);
 
   async function uploadOne(
     threadId: string,
@@ -105,25 +107,32 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
     files: FileList | File[],
     insertion: UploadInsertionPoint | null,
   ): Promise<void> {
-    const threadId = opts.getThreadId() ?? await opts.ensureThreadId?.() ?? null;
-    if (!threadId) return;
-    const existingCount = opts.getAttachmentCount?.() ?? 0;
-    const availableSlots = Math.max(0, maxAttachments - existingCount);
-    if (availableSlots === 0) {
-      addToast('warning', `You can attach up to ${maxAttachments} images per message.`);
-      return;
-    }
     const list = Array.from(files);
-    let acceptedCount = 0;
-    let processedCount = 0;
-    for (const file of list) {
-      if (acceptedCount >= availableSlots) break;
-      processedCount += 1;
-      const accepted = await uploadOne(threadId, file, insertion);
-      if (accepted) acceptedCount += 1;
-    }
-    if (processedCount < list.length) {
-      addToast('warning', `Only the first ${availableSlots} valid image${availableSlots === 1 ? '' : 's'} were attached.`);
+    if (list.length === 0) return;
+
+    activeUploadBatches += 1;
+    try {
+      const threadId = opts.getThreadId() ?? await opts.ensureThreadId?.() ?? null;
+      if (!threadId) return;
+      const existingCount = opts.getAttachmentCount?.() ?? 0;
+      const availableSlots = Math.max(0, maxAttachments - existingCount);
+      if (availableSlots === 0) {
+        addToast('warning', `You can attach up to ${maxAttachments} images per message.`);
+        return;
+      }
+      let acceptedCount = 0;
+      let processedCount = 0;
+      for (const file of list) {
+        if (acceptedCount >= availableSlots) break;
+        processedCount += 1;
+        const accepted = await uploadOne(threadId, file, insertion);
+        if (accepted) acceptedCount += 1;
+      }
+      if (processedCount < list.length) {
+        addToast('warning', `Only the first ${availableSlots} valid image${availableSlots === 1 ? '' : 's'} were attached.`);
+      }
+    } finally {
+      activeUploadBatches = Math.max(0, activeUploadBatches - 1);
     }
   }
 
@@ -138,6 +147,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
 
   return {
     get dragActive() { return dragDepth > 0; },
+    get uploading() { return activeUploadBatches > 0; },
 
     handleDragEnter(event: DragEvent): void {
       if (!hasImagePayload(event)) return;

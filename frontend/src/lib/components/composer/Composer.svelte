@@ -82,8 +82,8 @@
   });
 
   const uploads = createComposerUploads({
-    getThreadId: () => pane.threadId,
-    ensureThreadId: () => pane.ensureMaterializedThread(),
+    getThreadId: threadIdForUpload,
+    ensureThreadId: ensureThreadIdForUpload,
     getAttachmentCount: () => draft.attachments.length,
     addAttachment: (a, insertion) => imagePlaceholders.addUploadedAttachment(a, insertion),
     removeAttachment: (id) => draft.removeAttachment(id),
@@ -234,16 +234,37 @@
     );
   }
 
-  async function handleEmptyDraftCleanupResult(threadId: string, deleted: boolean): Promise<void> {
-    if (pane.threadId !== threadId) return;
-    if (
+  function emptyDraftCleanupHasActiveWork(): boolean {
+    return (
       draft.hydrating ||
       draft.hasPendingSave ||
       sending ||
       pane.sendInFlight ||
       isTurnActive ||
-      draftHasContentOrSourceNow()
-    ) {
+      uploads.uploading
+    );
+  }
+
+  function threadIdForUpload(): string | null {
+    const threadId = pane.threadId;
+    if (threadId && emptyDraftCleanupKey === threadId) return null;
+    return threadId;
+  }
+
+  async function ensureThreadIdForUpload(): Promise<string | null> {
+    const threadId = pane.threadId;
+    if (threadId && emptyDraftCleanupKey === threadId) {
+      emptyDraftCleanupKey = null;
+      if (pane.dematerializeEmptyDraftThread()) {
+        resetTextareaHeight();
+      }
+    }
+    return pane.ensureMaterializedThread();
+  }
+
+  async function handleEmptyDraftCleanupResult(threadId: string, deleted: boolean): Promise<void> {
+    if (pane.threadId !== threadId) return;
+    if (emptyDraftCleanupHasActiveWork() || draftHasContentOrSourceNow()) {
       emptyDraftCleanupKey = null;
       if (deleted && pane.dematerializeEmptyDraftThread()) {
         const replacementId = await pane.ensureMaterializedThread();
@@ -264,7 +285,7 @@
   $effect(() => {
     const threadId = pane.threadId;
     if (!threadId || draft.threadId !== threadId || draft.hydrating) return;
-    if (pane.hasDraftPlaceholder || sending || pane.sendInFlight || isTurnActive) return;
+    if (pane.hasDraftPlaceholder || emptyDraftCleanupHasActiveWork()) return;
     if (pane.thread?.isDraft !== true) return;
     if (pane.items.length > 0) return;
     const draftHasContentOrSource = hasDraftContent || draft.sourceProposedPlan !== null;
