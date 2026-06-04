@@ -237,29 +237,46 @@
     const activeTurn = getActiveTurn(threadId);
     if (!threadId || !activeTurn) return '';
 
-    // Tail of the REVEALED set so the nudge fires when a row actually
-    // appears (reveal advances), not when a still-withheld item arrives.
-    const tailNodeKeys = revealedNodes
-      .slice(-LIVE_FOLLOW_TAIL_NODE_COUNT)
-      .map((node) => timelineNodeKey(node))
-      .join(',');
-    const tailItemKeys = pane.items
-      .slice(-LIVE_FOLLOW_TAIL_ITEM_COUNT)
-      .map((item) => [
-        item.id,
-        item.kind,
-        item.turnIndex,
-        item.itemIndex,
-      ].join(':'))
-      .join(',');
+    // The signature must change only when the active turn's tail row
+    // identity changes — a new row appearing (item-window structural
+    // change) or the reveal gate advancing — NOT on every streaming
+    // summary delta. Track `timelineRevision` (bumps only on structural
+    // item-window change) and `revealBoundary` (the reveal gate), then
+    // read `revealedNodes` / `pane.items` inside `untrack`: both array
+    // refs churn on every delta (`groupedNodes` swaps fresh item refs
+    // each chunk) even though the tail IDENTITY keys below do not, so
+    // tracking them rebuilt these slice/map/join strings ~per chunk
+    // only for the downstream effect to compare-equal and bail. The
+    // tracked deps above flip exactly when the output can change.
+    // Mirrors the `rowDecorations` derived above.
+    pane.timelineRevision;
+    pane.revealBoundary;
 
-    return [
-      threadId,
-      activeTurn.turnId,
-      activeTurn.turnIndex,
-      tailNodeKeys,
-      tailItemKeys,
-    ].join('|');
+    return untrack(() => {
+      // Tail of the REVEALED set so the nudge fires when a row actually
+      // appears (reveal advances), not when a still-withheld item arrives.
+      const tailNodeKeys = revealedNodes
+        .slice(-LIVE_FOLLOW_TAIL_NODE_COUNT)
+        .map((node) => timelineNodeKey(node))
+        .join(',');
+      const tailItemKeys = pane.items
+        .slice(-LIVE_FOLLOW_TAIL_ITEM_COUNT)
+        .map((item) => [
+          item.id,
+          item.kind,
+          item.turnIndex,
+          item.itemIndex,
+        ].join(':'))
+        .join(',');
+
+      return [
+        threadId,
+        activeTurn.turnId,
+        activeTurn.turnIndex,
+        tailNodeKeys,
+        tailItemKeys,
+      ].join('|');
+    });
   });
 
   // Animation mode is keyed on whether LIVE timeline content advanced
