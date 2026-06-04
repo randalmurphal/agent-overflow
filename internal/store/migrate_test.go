@@ -41,7 +41,7 @@ func TestMigrationFreshDB(t *testing.T) {
 		"channels", "channel_messages", "discussion_definitions",
 		"attachments", "thread_drafts", "thread_checkpoints", "turns",
 		"proposed_plans", "proposed_plan_comments",
-		"chat_bar_favorites", "chat_model_profiles",
+		"chat_bar_favorites", "chat_model_profiles", "new_thread_mcp_defaults",
 		"diff_review_comments", "pending_background_task_terminals",
 		"projects", "thread_tracked_files",
 	}
@@ -982,7 +982,7 @@ func TestThreadsV5RebuildPreservesChildren(t *testing.T) {
 		{"thread_checkpoints", "thread_id = 't-v5'"},
 	} {
 		var n int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM `+c.table+` WHERE `+c.where).Scan(&n); err != nil {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + c.table + ` WHERE ` + c.where).Scan(&n); err != nil {
 			t.Fatalf("count %s: %v", c.table, err)
 		}
 		if n != 1 {

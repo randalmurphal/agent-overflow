@@ -614,6 +614,7 @@ func (p *privilegedApp) GitPush() string                              { return "
 func (p *privilegedApp) GitStatusSubscribe() string                   { return "ok" }
 func (p *privilegedApp) GitStatusUnsubscribe() string                 { return "ok" }
 func (p *privilegedApp) GetGitStatus() string                         { return "ok" }
+func (p *privilegedApp) GetGitStatusForProject() string               { return "ok" }
 func (p *privilegedApp) GitCheckout() string                          { return "ok" }
 func (p *privilegedApp) GitCreateBranch() string                      { return "ok" }
 func (p *privilegedApp) GitCreateBranchFrom() string                  { return "ok" }
@@ -621,8 +622,11 @@ func (p *privilegedApp) GitCreateWorktree() string                    { return "
 func (p *privilegedApp) GitRemoveWorktree() string                    { return "ok" }
 func (p *privilegedApp) GitWorktreeStatus() string                    { return "ok" }
 func (p *privilegedApp) GitListBranches() string                      { return "ok" }
+func (p *privilegedApp) GitListBranchesForProject() string            { return "ok" }
 func (p *privilegedApp) GitListWorktrees() string                     { return "ok" }
+func (p *privilegedApp) GitListWorktreesForProject() string           { return "ok" }
 func (p *privilegedApp) GitMaybeFetchRemotes() string                 { return "ok" }
+func (p *privilegedApp) GitMaybeFetchRemotesForProject() string       { return "ok" }
 func (p *privilegedApp) GitPruneRemotes() string                      { return "ok" }
 func (p *privilegedApp) GitSyncBranch() string                        { return "ok" }
 func (p *privilegedApp) RemoveOtherWorktree() string                  { return "ok" }
@@ -670,6 +674,7 @@ func (p *privilegedApp) GetThreadLiveState() string             { return "ok" }
 func (p *privilegedApp) SaveDraft() string                      { return "ok" }
 func (p *privilegedApp) GetDraft() string                       { return "ok" }
 func (p *privilegedApp) ClearDraft() string                     { return "ok" }
+func (p *privilegedApp) DeleteEmptyDraftThread() string         { return "ok" }
 func (p *privilegedApp) StartDiscussion() string                { return "ok" }
 func (p *privilegedApp) StartDiscussionByID() string            { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string               { return "ok" }
@@ -691,6 +696,7 @@ func (p *privilegedApp) RespondToUserInput() string             { return "ok" }
 func (p *privilegedApp) CreateThread() string                   { return "ok" }
 func (p *privilegedApp) CreateThreadFromPR() string             { return "ok" }
 func (p *privilegedApp) GetThreadDefaults() string              { return "ok" }
+func (p *privilegedApp) UpdateNewThreadDefaults() string        { return "ok" }
 func (p *privilegedApp) StartTerminal() string                  { return "ok" }
 func (p *privilegedApp) ForkThread() string                     { return "ok" }
 func (p *privilegedApp) ForkThreadFromMessage() string          { return "ok" }
@@ -745,14 +751,20 @@ func (p *privilegedApp) GetWSLDistroPreference() string { return "ok" }
 // 8. MCP library / per-thread config and status.
 func (p *privilegedApp) ListMcpServers() string          { return "ok" }
 func (p *privilegedApp) ListMcpServersForThread() string { return "ok" }
-func (p *privilegedApp) CreateMcpServer() string         { return "ok" }
-func (p *privilegedApp) UpdateMcpServer() string         { return "ok" }
-func (p *privilegedApp) DeleteMcpServer() string         { return "ok" }
-func (p *privilegedApp) SetMcpServerEnabled() string     { return "ok" }
-func (p *privilegedApp) GetMcpServerStatus() string      { return "ok" }
-func (p *privilegedApp) ListMcpServerStatuses() string   { return "ok" }
-func (p *privilegedApp) RefreshMcpServerStatus() string  { return "ok" }
-func (p *privilegedApp) TriggerMcpAuth() string          { return "ok" }
+func (p *privilegedApp) ListMcpServersForNewThread() string {
+	return "ok"
+}
+func (p *privilegedApp) CreateMcpServer() string     { return "ok" }
+func (p *privilegedApp) UpdateMcpServer() string     { return "ok" }
+func (p *privilegedApp) DeleteMcpServer() string     { return "ok" }
+func (p *privilegedApp) SetMcpServerEnabled() string { return "ok" }
+func (p *privilegedApp) SetNewThreadMcpServerEnabled() string {
+	return "ok"
+}
+func (p *privilegedApp) GetMcpServerStatus() string     { return "ok" }
+func (p *privilegedApp) ListMcpServerStatuses() string  { return "ok" }
+func (p *privilegedApp) RefreshMcpServerStatus() string { return "ok" }
+func (p *privilegedApp) TriggerMcpAuth() string         { return "ok" }
 
 // TestDispatcher_LocalOnlyRefusedFromNonLoopback pins the LAN-bind
 // safety contract on the dispatcher itself. ResolveForOrigin must

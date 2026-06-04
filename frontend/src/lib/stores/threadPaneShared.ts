@@ -137,7 +137,7 @@ export function paneWorkspacePath(pane: { thread: Thread | null } | undefined): 
   return pane?.thread?.workspacePath ?? '';
 }
 
-export type DraftPlaceholderMode = 'chat' | 'design';
+export type DraftPlaceholderMode = 'chat' | 'plan' | 'design';
 
 export interface DraftThreadPlaceholder {
   id: string;

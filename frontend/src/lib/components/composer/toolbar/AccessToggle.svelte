@@ -1,19 +1,18 @@
 <script lang="ts">
-  // Runtime/access mode selector. The selected value is a composer draft until
-  // send; dispatchSend applies it to the thread immediately before starting the
-  // provider turn.
+  // Runtime/access mode selector. Placeholder changes update new-thread
+  // defaults; materialized threads persist the selected runtime mode directly.
 
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Lock from 'lucide-svelte/icons/lock';
   import LockOpen from 'lucide-svelte/icons/lock-open';
   import PenLine from 'lucide-svelte/icons/pen-line';
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import type { RuntimeMode } from '../../../types/models';
-  import {
-    hasRuntimeModeDraft,
-    runtimeModeForThread,
-    setRuntimeModeDraft,
-  } from '../../../stores/runtimeModeDraft.svelte';
+  import type { RuntimeMode, Thread } from '../../../types/models';
+  import { UpdateThreadRuntimeMode } from '../../../stores/bindings';
+  import { updatePlaceholderDefaults } from '../../../stores/newThreadDefaults';
+  import { syncThread } from '../../../stores/panes.svelte';
+  import { addToast } from '../../../stores/toast.svelte';
+  import { errString } from '../../../utils/errors';
   import Icon from '../../primitives/Icon.svelte';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
@@ -62,8 +61,11 @@
   ];
 
   let current = $derived<RuntimeMode>(runtimeModeForThread(pane.thread));
-  let staged = $derived(hasRuntimeModeDraft(pane.thread));
   let currentMeta = $derived(TIERS.find((t) => t.mode === current) ?? TIERS[2]);
+
+  function runtimeModeForThread(thread: Thread | null | undefined): RuntimeMode {
+    return (thread?.runtimeMode as RuntimeMode | undefined) ?? 'full-access';
+  }
 
   function closeMenu(): void {
     open = false;
@@ -88,13 +90,20 @@
       closeMenu();
       return;
     }
-    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
-    if (!threadId) {
+    try {
+      if (pane.hasDraftPlaceholder) {
+        await updatePlaceholderDefaults(pane, { runtimeMode: mode });
+      } else {
+        const threadId = pane.threadId;
+        if (!threadId) return;
+        const updated = (await UpdateThreadRuntimeMode(threadId, mode)) as Thread;
+        syncThread(updated);
+      }
+    } catch (err) {
+      addToast('error', `Failed to set access mode: ${errString(err)}`);
+    } finally {
       closeMenu();
-      return;
     }
-    setRuntimeModeDraft(threadId, mode);
-    closeMenu();
   }
 
   $effect(() => {
@@ -119,7 +128,6 @@
   aria-label={`Runtime Access Mode: ${currentMeta.label}`}
   data-testid="composer-access-toggle"
   data-mode={current}
-  data-staged={staged}
   title={currentMeta.description}
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',

@@ -10,6 +10,21 @@ import (
 	"agent-overflow/internal/store"
 )
 
+func (a *App) gitProjectPath(projectID string) (string, error) {
+	if a.store == nil {
+		return "", fmt.Errorf("git project path: store unavailable")
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return "", fmt.Errorf("git project path: projectId is required")
+	}
+	project, err := a.store.GetProject(projectID)
+	if err != nil {
+		return "", fmt.Errorf("git project path: resolve project %s: %w", projectID, err)
+	}
+	return project.Path, nil
+}
+
 // GetGitStatus returns git status for the thread's active workspace.
 func (a *App) GetGitStatus(threadID string) (gitops.GitStatus, error) {
 	thread, err := a.store.GetThread(threadID)
@@ -23,6 +38,16 @@ func (a *App) GetGitStatus(threadID string) (gitops.GitStatus, error) {
 	}
 
 	return a.gitCore().Status(workspace)
+}
+
+// GetGitStatusForProject returns git status for a project root without
+// requiring a thread row. Used by local draft placeholders.
+func (a *App) GetGitStatusForProject(projectID string) (gitops.GitStatus, error) {
+	project, err := a.gitProjectPath(projectID)
+	if err != nil {
+		return gitops.GitStatus{}, err
+	}
+	return a.gitCore().Status(project)
 }
 
 // GetWorkingTreeDiff returns the current combined staged and unstaged diff.
@@ -55,6 +80,16 @@ func (a *App) GitListBranches(threadID string) ([]gitops.GitBranch, error) {
 	return a.gitCore().ListBranches(project)
 }
 
+// GitListBranchesForProject lists repository branches from a project root
+// without requiring a thread row.
+func (a *App) GitListBranchesForProject(projectID string) ([]gitops.GitBranch, error) {
+	project, err := a.gitProjectPath(projectID)
+	if err != nil {
+		return nil, err
+	}
+	return a.gitCore().ListBranches(project)
+}
+
 // GitMaybeFetchRemotes runs `git fetch --all` in the background if the
 // last successful fetch for this repo is older than the stale window.
 // Returns true when a fetch actually ran, false when the cache was
@@ -70,6 +105,16 @@ func (a *App) GitMaybeFetchRemotes(threadID string) (bool, error) {
 		return false, err
 	}
 	project, _, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return false, err
+	}
+	return a.gitCore().MaybeFetchRemotes(project)
+}
+
+// GitMaybeFetchRemotesForProject is the project-root counterpart to
+// GitMaybeFetchRemotes for draft placeholders.
+func (a *App) GitMaybeFetchRemotesForProject(projectID string) (bool, error) {
+	project, err := a.gitProjectPath(projectID)
 	if err != nil {
 		return false, err
 	}

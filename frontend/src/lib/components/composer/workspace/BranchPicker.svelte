@@ -31,10 +31,13 @@
   import type { Thread } from '../../../types/models';
   import {
     GetGitStatus,
+    GetGitStatusForProject,
     GetThread,
     GitCheckout,
     GitListBranches,
+    GitListBranchesForProject,
     GitMaybeFetchRemotes,
+    GitMaybeFetchRemotesForProject,
     GitPruneRemotes,
     GitSyncBranch,
     UpdateThreadWorkspace,
@@ -130,21 +133,25 @@
 
   let isLocalSelected = $derived(intent.creatingBranch && isLocalBase(intent.newBranchBase));
 
-  function branchRefreshKey(threadId: string | undefined, branch: string): string {
-    return `${threadId ?? ''}\0${branch}`;
+  function branchRefreshKey(threadIdentity: string | undefined, branch: string): string {
+    return `${threadIdentity ?? ''}\0${branch}`;
   }
 
-  async function refreshBranches(threadId: string): Promise<void> {
+  async function refreshBranches(threadIdentity: string): Promise<void> {
     const seq = ++branchRefreshSeq;
     try {
-      const res = (await GitListBranches(threadId)) as GitBranch[] | null;
+      const res = pane.threadId
+        ? (await GitListBranches(pane.threadId)) as GitBranch[] | null
+        : pane.thread?.projectId
+          ? (await GitListBranchesForProject(pane.thread.projectId)) as GitBranch[] | null
+          : [];
       if (seq !== branchRefreshSeq) return;
-      if (pane.thread?.id !== threadId || !open) return;
+      if (pane.thread?.id !== threadIdentity || !open) return;
       branches = Array.isArray(res) ? res : [];
     } catch (err) {
       console.error('GitListBranches failed:', err);
       if (seq !== branchRefreshSeq) return;
-      if (pane.thread?.id === threadId && open) branches = [];
+      if (pane.thread?.id === threadIdentity && open) branches = [];
     }
   }
 
@@ -152,20 +159,21 @@
     open = !open;
     if (!open) return;
     if (!pane.thread || loading) return;
-    // BranchPicker needs a real thread to fetch git state. If the
-    // current pane only carries a placeholder, materialize before
-    // running the fetch pipeline.
-    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
-    if (!threadId || pane.thread?.id !== threadId) {
-      open = false;
-      return;
-    }
-    lastOpenBranchKey = branchRefreshKey(threadId, currentBranch);
+    const projectId = pane.thread.projectId;
+    if (!pane.threadId && !projectId) return;
+    const threadIdentity = pane.thread.id;
+    lastOpenBranchKey = branchRefreshKey(threadIdentity, currentBranch);
     loading = true;
-    const fetchBranches = refreshBranches(threadId);
+    const fetchBranches = refreshBranches(threadIdentity);
     const fetchStatus = (async () => {
       try {
-        const status = (await GetGitStatus(threadId)) as GitStatus;
+        let status: GitStatus;
+        if (pane.threadId) {
+          status = (await GetGitStatus(pane.threadId)) as GitStatus;
+        } else {
+          if (!projectId) return;
+          status = (await GetGitStatusForProject(projectId)) as GitStatus;
+        }
         workspaceDirty = !!status?.hasChanges;
       } catch (err) {
         console.error('GetGitStatus failed:', err);
@@ -174,10 +182,16 @@
     })();
     void (async () => {
       try {
-        const fetched = await GitMaybeFetchRemotes(threadId);
+        let fetched: boolean;
+        if (pane.threadId) {
+          fetched = await GitMaybeFetchRemotes(pane.threadId);
+        } else {
+          if (!projectId) return;
+          fetched = await GitMaybeFetchRemotesForProject(projectId);
+        }
         if (!fetched) return;
-        if (pane.thread?.id !== threadId || !open) return;
-        await refreshBranches(threadId);
+        if (pane.thread?.id !== threadIdentity || !open) return;
+        await refreshBranches(threadIdentity);
       } catch (err) {
         console.error('background fetch failed:', err);
       }
@@ -191,15 +205,15 @@
 
   $effect(() => {
     const branch = currentBranch;
-    const threadId = pane.thread?.id;
-    const key = branchRefreshKey(threadId, branch);
-    if (!open || !threadId) {
+    const threadIdentity = pane.thread?.id;
+    const key = branchRefreshKey(threadIdentity, branch);
+    if (!open || !threadIdentity) {
       lastOpenBranchKey = key;
       return;
     }
     if (key === lastOpenBranchKey) return;
     lastOpenBranchKey = key;
-    void refreshBranches(threadId);
+    void refreshBranches(threadIdentity);
   });
 
   // FF-only sync. Diverged rows render the icon disabled with a
@@ -222,9 +236,9 @@
   }
 
   async function handleSync(branch: GitBranch): Promise<void> {
-    if (!pane.thread || !canSync(branch)) return;
+    if (!pane.thread || !pane.threadId || !canSync(branch)) return;
     if (syncingBranch) return;
-    const threadId = pane.thread.id;
+    const threadId = pane.threadId;
     syncingBranch = branch.name;
     try {
       const res = (await GitSyncBranch(threadId, branch.name)) as GitBranch[] | null;
@@ -240,8 +254,8 @@
   }
 
   async function handlePrune(): Promise<void> {
-    if (!pane.thread || pruning) return;
-    const threadId = pane.thread.id;
+    if (!pane.thread || !pane.threadId || pruning) return;
+    const threadId = pane.threadId;
     pruning = true;
     try {
       const res = (await GitPruneRemotes(threadId)) as GitBranch[] | null;
@@ -379,6 +393,16 @@
           return;
         }
         setThreadEnvMode(pane.thread, 'local');
+        if (pane.hasDraftPlaceholder) {
+          pane.applyDraftPlaceholderWorkspace({
+            workspacePath: branch.worktreePath,
+            worktreePath: branch.worktreePath,
+            branch: branch.name,
+          });
+          addToast('info', `Selected existing worktree for ${branch.name}`);
+          closeMenu();
+          return;
+        }
         applying = true;
         try {
           const updated = (await UpdateThreadWorkspace(
@@ -401,6 +425,20 @@
       return;
     }
     if (isSelectedBranch(branch)) {
+      closeMenu();
+      return;
+    }
+    if (pane.hasDraftPlaceholder) {
+      if (branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace)) {
+        pane.applyDraftPlaceholderWorkspace({
+          workspacePath: branch.worktreePath,
+          worktreePath: branch.worktreePath,
+          branch: branch.name,
+        });
+        addToast('info', `Selected existing worktree for ${branch.name}`);
+      } else {
+        addToast('info', 'Start the thread before checking out branches.');
+      }
       closeMenu();
       return;
     }
@@ -490,7 +528,7 @@
     {/if}
     <MenuItem
       label={pruning ? 'Pruning…' : 'Prune stale branches'}
-      disabled={pruning}
+      disabled={pruning || !pane.threadId}
       onSelect={handlePrune}
     >
       {#snippet icon()}
@@ -551,7 +589,7 @@
               actionLabel={syncingBranch === branch.name
                 ? `Syncing ${branch.name}`
                 : `Sync ${branch.name} from upstream`}
-              actionDisabled={!canSync(branch) || syncingBranch !== null}
+              actionDisabled={!pane.threadId || !canSync(branch) || syncingBranch !== null}
               actionTitle={syncDisabledTitle(branch)}
               onAction={() => handleSync(branch)}
             />

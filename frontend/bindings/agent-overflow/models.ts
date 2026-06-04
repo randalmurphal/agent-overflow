@@ -741,6 +741,40 @@ export class MCPServer {
     }
 }
 
+/**
+ * NewThreadDefaultsUpdate persists chat-bar defaults for future threads without
+ * requiring a thread row. ProjectID is used only to return the same defaults
+ * projection the draft-placeholder flow already consumes.
+ */
+export class NewThreadDefaultsUpdate {
+    "projectId": string;
+    "provider"?: string;
+    "model"?: string;
+    "reasoningEffort"?: string;
+    "fastMode"?: boolean | null;
+    "contextWindow"?: number;
+    "autoCompactStandardPercent"?: number | null;
+    "autoCompactExtendedPercent"?: number | null;
+    "runtimeMode"?: string;
+
+    /** Creates a new NewThreadDefaultsUpdate instance. */
+    constructor($$source: Partial<NewThreadDefaultsUpdate> = {}) {
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new NewThreadDefaultsUpdate instance from a string or object.
+     */
+    static createFrom($$source: any = {}): NewThreadDefaultsUpdate {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new NewThreadDefaultsUpdate($$parsedSource as Partial<NewThreadDefaultsUpdate>);
+    }
+}
+
 export class PayloadChunk {
     "data": string;
     "offset": number;

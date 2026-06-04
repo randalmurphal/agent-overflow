@@ -129,7 +129,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	if designServers == nil && t.Provider == string(provider.Codex) {
 		if servers, err := a.buildCodexMCPServersForThread(t); err != nil {
 			log.Printf("start session: build codex mcp for thread %s: %v", threadID, err)
-		} else if len(servers) > 0 {
+		} else if servers != nil {
 			designCfg.MCPServers = servers
 		}
 	}

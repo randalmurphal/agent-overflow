@@ -37,6 +37,7 @@
   import DiscussionsSubmenu from './DiscussionsSubmenu.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
+  import { updatePlaceholderDefaults } from '../../../stores/newThreadDefaults';
 
   interface Props {
     pane: ThreadPane;
@@ -125,7 +126,11 @@
 
     applying = true;
     try {
-      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      if (pane.hasDraftPlaceholder) {
+        await updatePlaceholderDefaults(pane, { provider, model: slug });
+        return;
+      }
+      const threadId = pane.threadId;
       if (!threadId) return;
       const updated = (await UpdateThreadModelSelection(threadId, provider, slug)) as Thread;
       syncThread(updated);
@@ -183,8 +188,11 @@
     if (!pane.thread) return;
     closeMenu();
     try {
-      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
-      if (!threadId) return;
+      const threadId = pane.threadId;
+      if (!threadId) {
+        addToast('info', 'Start the thread before adding a discussion.');
+        return;
+      }
       await StartDiscussionByID(threadId, fav.value);
       try {
         const refreshed = (await GetThread(threadId)) as Thread;

@@ -82,9 +82,9 @@
   let providerID = $derived(asProviderID(pane.thread?.provider));
   // Pickers render against either a persisted thread or a draft
   // placeholder. The pane carries a synthetic thread object in both
-  // cases so the pickers can read its mode/provider/etc.; on
-  // placeholders, the picker actions individually call
-  // `pane.ensureMaterializedThread()` before talking to the backend.
+  // cases so the pickers can read its mode/provider/etc.; placeholder
+  // actions update local state or new-thread defaults without creating
+  // a row.
   let hasComposableSurface = $derived(pane.canCompose);
   let toolbarEl: HTMLDivElement | undefined = $state(undefined);
   let compactToolbar = $state(true);

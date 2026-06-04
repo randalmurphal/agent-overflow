@@ -11,11 +11,6 @@ import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Attachment } from '../../types/attachment';
 import {
-  hasRuntimeModeDraft,
-  resetRuntimeModeDraftsForTest,
-  setRuntimeModeDraft,
-} from '../../stores/runtimeModeDraft.svelte';
-import {
   resetProposedPlanCacheForTests,
   upsertProposedPlanForTests,
 } from '../../stores/proposedPlans.svelte';
@@ -55,6 +50,7 @@ function installDraftMocks() {
   }));
   setBindingMock('SaveDraft', async () => {});
   setBindingMock('ClearDraft', async () => {});
+  setBindingMock('DeleteEmptyDraftThread', async () => false);
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
   setBindingMock('ListLiveBackgroundTasks', async () => []);
@@ -125,7 +121,6 @@ function deferred<T>() {
 describe('<Composer>', () => {
   beforeEach(() => {
     resetBindingMocks();
-    resetRuntimeModeDraftsForTest();
     resetComposerDraftSnapshotsForTest();
     resetProposedPlanCacheForTests();
     resetWorktreeIntent();
@@ -223,7 +218,12 @@ describe('<Composer>', () => {
     await waitFor(() => expect(send).toHaveBeenCalledWith('materialized-send', 'first send', {
       attachmentIds: [],
     }));
-    expect(create).toHaveBeenCalledWith({ projectId: 'project-placeholder', mode: 'chat' });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-placeholder',
+      provider: 'codex',
+      mode: 'chat',
+      workspaceOverride: '/tmp/placeholder',
+    }));
     expect(save).not.toHaveBeenCalled();
     await waitFor(() => expect(clear).toHaveBeenCalledWith('materialized-send'));
     expect(draft.threadId).toBe('materialized-send');
@@ -299,13 +299,13 @@ describe('<Composer>', () => {
     expect(getThreadById('materialized-stale')).toBeUndefined();
   });
 
-  it('hides an emptied materialized draft and re-shows the same draft when text returns', async () => {
-    const pane = createThreadPane({ paneId: 'placeholder-retype' });
-    const project = makeProject({ id: 'project-retype' });
+  it('deletes an emptied materialized draft and returns the pane to a placeholder', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-empty-cleanup' });
+    const project = makeProject({ id: 'project-empty-cleanup' });
     pane.startDraftPlaceholder(project, 'chat');
     const draft = await buildDraft(null);
     const created = makeTestThread({
-      id: 'materialized-retype',
+      id: 'materialized-empty-cleanup',
       projectId: project.id,
       workspacePath: project.path,
       projectPath: project.path,
@@ -313,22 +313,83 @@ describe('<Composer>', () => {
     });
     removeThread(created.id);
     setBindingMock('CreateThread', async () => created);
+    const save = setBindingMock('SaveDraft', async () => {});
+    const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
 
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
     await fireEvent.input(textarea, { target: { value: 'draft text' } });
-    await waitFor(() => expect(getThreadById(created.id)?.id).toBe(created.id));
+    await waitFor(() => expect(draft.threadId).toBe(created.id));
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith(created.id, 'draft text', [], [], null);
+    });
     expect(getThreadById(created.id)?.isDraft).toBe(true);
 
     await fireEvent.input(textarea, { target: { value: '' } });
-    await waitFor(() => expect(getThreadById(created.id)).toBeUndefined());
-    // Pane retains the materialized thread; only the sidebar row is hidden.
-    expect(pane.thread?.id).toBe(created.id);
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith(created.id, '', [], [], null);
+    });
+    await waitFor(() => {
+      expect(deleteEmpty).toHaveBeenCalledWith(created.id);
+    });
+    await waitFor(() => {
+      expect(pane.threadId).toBeNull();
+      expect(pane.hasDraftPlaceholder).toBe(true);
+      expect(draft.threadId).toBeNull();
+    });
+    expect(pane.thread?.id.startsWith('draft:')).toBe(true);
+    expect(getThreadById(created.id)).toBeUndefined();
+  });
 
-    await fireEvent.input(textarea, { target: { value: 'draft text again' } });
-    await waitFor(() => expect(getThreadById(created.id)?.id).toBe(created.id));
-    expect(getThreadById(created.id)?.isDraft).toBe(true);
+  it('rematerializes and preserves content when typing resumes during empty cleanup', async () => {
+    const pane = createThreadPane({ paneId: 'placeholder-empty-cleanup-race' });
+    const project = makeProject({ id: 'project-empty-cleanup-race' });
+    pane.startDraftPlaceholder(project, 'chat');
+    const draft = await buildDraft(null);
+    const first = makeTestThread({
+      id: 'materialized-empty-race',
+      projectId: project.id,
+      workspacePath: project.path,
+      projectPath: project.path,
+      isDraft: true,
+    });
+    const replacement = makeTestThread({
+      id: 'materialized-empty-race-replacement',
+      projectId: project.id,
+      workspacePath: project.path,
+      projectPath: project.path,
+      isDraft: true,
+    });
+    let createCount = 0;
+    const create = setBindingMock('CreateThread', async () => {
+      createCount += 1;
+      return createCount === 1 ? first : replacement;
+    });
+    const save = setBindingMock('SaveDraft', async () => {});
+    const deleteGate = deferred<boolean>();
+    const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => deleteGate.promise);
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'draft text' } });
+    await waitFor(() => expect(draft.threadId).toBe(first.id));
+    await fireEvent.input(textarea, { target: { value: '' } });
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith(first.id, '', [], [], null);
+    });
+    await waitFor(() => expect(deleteEmpty).toHaveBeenCalledWith(first.id));
+
+    await fireEvent.input(textarea, { target: { value: 'typed again' } });
+    deleteGate.resolve(true);
+
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(pane.threadId).toBe(replacement.id));
+    expect(draft.content).toBe('typed again');
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith(replacement.id, 'typed again', [], [], null);
+    });
   });
 
   it('sends the draft and clears it on success', async () => {
@@ -1131,25 +1192,20 @@ describe('<Composer>', () => {
     expect(button.textContent?.trim()).toBe('Plan');
   });
 
-  it('sends a staged runtime mode and clears the staged value on success', async () => {
-    const pane = await buildPane(makeTestThread({ runtimeMode: 'approval-required' }));
+  it('does not attach runtime mode overrides to send options', async () => {
+    const pane = await buildPane(makeTestThread({ runtimeMode: 'auto-accept-edits' }));
     const draft = await buildDraft();
-    setRuntimeModeDraft('thread-1', 'auto-accept-edits');
     const send = setBindingMock('SendMessageWithOptions', async () =>
       makeTestThread({ runtimeMode: 'auto-accept-edits' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'use this access' } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'use persisted access' } });
     await fireEvent.click(getByTestId('composer-send'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'use this access', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted access', {
         attachmentIds: [],
-        runtimeMode: 'auto-accept-edits',
       });
-    });
-    await waitFor(() => {
-      expect(hasRuntimeModeDraft(pane.thread)).toBe(false);
     });
   });
 
@@ -1246,7 +1302,6 @@ describe('<Composer>', () => {
     const threadTwo = makeTestThread({ id: 'thread-2', runtimeMode: 'full-access' });
     const pane = await buildPane(threadOne);
     const draft = await buildDraft('thread-1');
-    setRuntimeModeDraft('thread-1', 'auto-accept-edits');
 
     let releaseClear!: () => void;
     const clearStarted = vi.fn();
@@ -1257,7 +1312,7 @@ describe('<Composer>', () => {
       });
     });
     const send = setBindingMock('SendMessageWithOptions', async () =>
-      makeTestThread({ id: 'thread-1', runtimeMode: 'auto-accept-edits' }));
+      makeTestThread({ id: 'thread-1' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
     await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'race send' } });
@@ -1270,7 +1325,6 @@ describe('<Composer>', () => {
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith('thread-1', 'race send', {
         attachmentIds: [],
-        runtimeMode: 'auto-accept-edits',
       });
     });
     expect(pane.thread?.id).toBe('thread-2');
@@ -1657,14 +1711,9 @@ describe('<Composer>', () => {
     expect(getQueueForThread('thread-1')).toEqual([]);
   });
 
-  // Note: the old test "captures the staged runtimeMode on the queued
-  // item so drain replays it" was removed when the queue moved to the
-  // backend. RuntimeMode is no longer a QueueItem field — staged
-  // overrides apply at registerQueueItem-call time via the backend
-  // RegisterQueueItem path, which doesn't carry a separate runtimeMode
-  // arg today (the dispatcher reads the thread's persisted Mode at
-  // dispatch time). Re-add a runtimeMode-on-flush carry-over test only
-  // when we wire mid-flush mode override delivery.
+  // Runtime mode is persisted on the thread/defaults before send time.
+  // Queue items intentionally carry message payload only; the backend
+  // dispatch path reads the thread's current runtime mode.
 
   it('refuses to enqueue when a blocking approval is pending', async () => {
     // canSend gates on `!hasBlockingPrompt`, so a click during a

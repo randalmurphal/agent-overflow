@@ -37,17 +37,13 @@ import {
   SwitchThread,
   AutoResumeThread,
 } from './bindings';
-import { prependThread, replaceThread } from './threads.svelte';
+import { prependThread, removeThread, replaceThread } from './threads.svelte';
 import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
 import {
   clearWorktreeIntent,
   migrateWorktreeIntent,
   seedDefaultWorktreeIntentForDraft,
 } from './worktreeIntent.svelte';
-import {
-  clearRuntimeModeDraft,
-  migrateRuntimeModeDraft,
-} from './runtimeModeDraft.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 
 import { addToast } from './toast.svelte';
@@ -1258,6 +1254,86 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // rollback-restore call `upsertItems` directly and intentionally do
     // NOT route through here, so they stay sync-pinned.
     markLiveContentAdvanced: stampLiveContent,
+    setDraftPlaceholderMode(mode: DraftPlaceholderMode): boolean {
+      if (!draftPlaceholder || !thread) return false;
+      const now = Date.now();
+      draftPlaceholder = { ...draftPlaceholder, mode };
+      thread = {
+        ...thread,
+        mode,
+        updatedAt: now,
+      };
+      switchGeneration++;
+      return true;
+    },
+    applyDraftPlaceholderDefaults(defaults: DraftPlaceholderDefaults): boolean {
+      if (!draftPlaceholder || !thread) return false;
+      const provider = asProviderID(defaults.provider) ?? thread.provider;
+      thread = {
+        ...thread,
+        provider,
+        model: defaults.model ?? thread.model,
+        reasoningEffort: (
+          defaults.reasoningEffort ?? thread.reasoningEffort
+        ) as Thread['reasoningEffort'],
+        fastMode: defaults.fastMode ?? thread.fastMode,
+        contextWindow: defaults.contextWindow ?? thread.contextWindow,
+        runtimeMode: (
+          defaults.runtimeMode ?? thread.runtimeMode
+        ) as Thread['runtimeMode'],
+        updatedAt: Date.now(),
+      };
+      contextWindow = seedContextWindow(thread);
+      switchGeneration++;
+      return true;
+    },
+    applyDraftPlaceholderWorkspace(workspace: {
+      workspacePath: string;
+      worktreePath?: string;
+      branch?: string;
+    }): boolean {
+      if (!draftPlaceholder || !thread) return false;
+      const workspacePath = workspace.workspacePath.trim();
+      if (!workspacePath) return false;
+      thread = {
+        ...thread,
+        workspacePath,
+        worktreePath: workspace.worktreePath ?? '',
+        branch: workspace.branch ?? thread.branch,
+        updatedAt: Date.now(),
+      };
+      switchGeneration++;
+      return true;
+    },
+    dematerializeEmptyDraftThread(): boolean {
+      if (draftPlaceholder || !thread || items.length > 0) return false;
+      const current = thread;
+      if (current.mode !== 'chat' && current.mode !== 'plan') return false;
+      if (!current.projectId || !current.projectPath) return false;
+      const now = Date.now();
+      const mode = current.mode as DraftPlaceholderMode;
+      const placeholder: DraftThreadPlaceholder = {
+        id: `draft:${paneId}:${current.projectId}:${mode}:${now}`,
+        projectId: current.projectId,
+        projectName: '',
+        projectPath: current.projectPath,
+        mode,
+        createdAt: now,
+      };
+      migrateWorktreeIntent(current.id, placeholder.id);
+      draftPlaceholder = placeholder;
+      thread = {
+        ...current,
+        id: placeholder.id,
+        title: 'New Thread',
+        createdAt: now,
+        updatedAt: now,
+        isDraft: true,
+      };
+      removeThread(current.id);
+      switchGeneration++;
+      return true;
+    },
     /**
      * "Locked in" — the user has sent at least one message, so the
      * provider/model selection is committed for this thread. UI
@@ -1491,7 +1567,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // is removed by the backend.
       if (draftPlaceholder) {
         clearWorktreeIntent(draftPlaceholder.id);
-        clearRuntimeModeDraft(draftPlaceholder.id);
       }
       thread = null;
       draftPlaceholder = null;
@@ -1598,9 +1673,19 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     async materializeDraftPlaceholder(): Promise<Thread | null> {
       const placeholder = draftPlaceholder;
       if (!placeholder) return thread;
+      const current = thread;
       const created = (await CreateThread({
         projectId: placeholder.projectId,
-        mode: placeholder.mode,
+        provider: current?.provider,
+        model: current?.model,
+        mode: current?.mode ?? placeholder.mode,
+        reasoningEffort: current?.reasoningEffort,
+        fastMode: current?.fastMode,
+        contextWindow: current?.contextWindow,
+        runtimeMode: current?.runtimeMode,
+        worktreePath: current?.worktreePath,
+        workspaceOverride: current?.workspacePath,
+        branch: current?.branch,
       })) as Thread;
       return created;
     },
@@ -1616,8 +1701,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     /**
      * Materialize a draft placeholder into a real thread row, or return the
      * existing thread id when one is already present. Coalesces concurrent
-     * callers so composer-input, paste/upload, send, and toolbar pickers
-     * don't each race to `CreateThread`. Resolves to null when the pane
+     * callers so composer-input, paste/upload, and send don't each race
+     * to `CreateThread`. Resolves to null when the pane
      * has neither a thread nor a placeholder, or when the placeholder was
      * replaced (e.g. another "+ New" click) before the create resolved —
      * the stale-create guard checks the placeholder id at completion.
@@ -1641,11 +1726,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           if (!created) return null;
           if (draftPlaceholder?.id !== placeholderId) return null;
           // Re-key any intent staged against the placeholder id BEFORE we
-          // adopt the real thread — worktree/branch picks and runtime-mode
-          // toggles made on the placeholder otherwise become orphaned when
-          // the lookups switch to the materialized thread id.
+          // adopt the real thread. Worktree/branch picks made on the
+          // placeholder otherwise become orphaned when lookups switch to
+          // the materialized thread id.
           migrateWorktreeIntent(placeholderId, created.id);
-          migrateRuntimeModeDraft(placeholderId, created.id);
           seedDefaultWorktreeIntentForDraft(created);
           prependThread(created);
           this.adoptMaterializedDraftThread(created);

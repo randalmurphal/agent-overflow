@@ -477,28 +477,18 @@ describe('<ChatHeader>', () => {
     // Outer gate still passes (pane.thread is set), title renders.
     expect(getByTestId('chat-header-title').textContent?.trim()).toBe('New Thread');
     // Right cluster: each button must be present even though the row
-    // hasn't materialized yet. The actions self-materialize on click.
+    // hasn't materialized yet. Thread-bound actions refuse to open
+    // until real content creates the row.
     expect(getByTestId('chat-header-open-editor')).toBeTruthy();
     expect(getByTestId('terminal-toggle')).toBeTruthy();
     expect(getByTestId('diff-panel-toggle')).toBeTruthy();
   });
 
-  it('terminal-toggle click on a placeholder materializes the thread before flipping showTerminal', async () => {
+  it('terminal-toggle click on a placeholder does not create a thread', async () => {
     const { pane } = placeholderPane('placeholder-term-click');
-    const created: Thread = {
-      id: 'materialized-header-term',
-      title: 'New Thread',
-      provider: 'claude',
-      workspacePath: '/tmp/placeholder-header',
-      projectPath: '/tmp/placeholder-header',
-      projectId: 'project-placeholder-header',
-      mode: 'chat',
-      model: 'claude-sonnet-4-6',
-      createdAt: 0,
-      updatedAt: 0,
-      archived: false,
-    };
-    const create = setBindingMock('CreateThread', async () => created);
+    const create = setBindingMock('CreateThread', async () => {
+      throw new Error('CreateThread must not be called for terminal-toggle on a placeholder');
+    });
 
     const { getByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
@@ -507,14 +497,10 @@ describe('<ChatHeader>', () => {
 
     await fireEvent.click(getByTestId('terminal-toggle'));
 
-    // Wait for the materialization promise to resolve, then assert the
-    // create binding fired exactly once and showTerminal flipped on the
-    // (now-materialized) pane.
-    await new Promise((resolve) => setTimeout(resolve, 0));
     await tick();
 
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(pane.threadId).toBe('materialized-header-term');
-    expect(pane.showTerminal).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+    expect(pane.threadId).toBeNull();
+    expect(pane.showTerminal).toBe(false);
   });
 });

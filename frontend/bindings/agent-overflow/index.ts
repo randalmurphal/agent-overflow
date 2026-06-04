@@ -24,6 +24,7 @@ export {
     LiveStateTodoStep,
     MCPAuthInitResult,
     MCPServer,
+    NewThreadDefaultsUpdate,
     PayloadChunk,
     PayloadContent,
     PayloadPreview,

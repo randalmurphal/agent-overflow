@@ -453,6 +453,16 @@ func (a *App) GitListWorktrees(threadID string) ([]gitops.Worktree, error) {
 	return a.gitCore().ListWorktrees(project)
 }
 
+// GitListWorktreesForProject lists worktrees for a project without requiring
+// a thread row.
+func (a *App) GitListWorktreesForProject(projectID string) ([]gitops.Worktree, error) {
+	project, err := a.gitProjectPath(projectID)
+	if err != nil {
+		return nil, err
+	}
+	return a.gitCore().ListWorktrees(project)
+}
+
 // switchThreadWorkspace switches a thread to the project root or one of the
 // repository's registered worktrees, keeping workspace/worktree/branch metadata
 // in sync.

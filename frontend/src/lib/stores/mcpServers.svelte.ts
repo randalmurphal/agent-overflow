@@ -1,10 +1,12 @@
 import {
   ListMcpServers,
   ListMcpServersForThread,
+  ListMcpServersForNewThread,
   CreateMcpServer,
   UpdateMcpServer,
   DeleteMcpServer,
   SetMcpServerEnabled,
+  SetNewThreadMcpServerEnabled,
   GetMcpServerStatus,
   ListMcpServerStatuses,
   RefreshMcpServerStatus,
@@ -33,26 +35,34 @@ export function mcpStatusKey(provider: string, name: string): string {
   return `${provider}:${name}`;
 }
 
-// servers is the unified library across both providers. Keyed by
-// (provider, name) for de-collision; the list view consumers filter
-// by provider.
-let servers = $state<MCPServer[]>([]);
+// settingsServers is the global Settings library. Composer popups use scoped
+// lists because the Disabled flag can differ by thread/workspace.
+let settingsServers = $state<MCPServer[]>([]);
+let scopedServers = $state(new Map<string, MCPServer[]>());
 let statuses = $state(new Map<string, MCPServerStatus>());
 let refreshingProvider = $state(new Set<string>());
 let eventsSubscribed = false;
 
 function setServers(next: MCPServer[]): void {
-  servers = next ?? [];
+  settingsServers = next ?? [];
 }
 
-function mergeServers(next: MCPServer[], provider: string): void {
-  // Replace every entry that came from the same provider so a
-  // workspace-aware reload doesn't leak stale entries from a previous
-  // thread. Workspace scoping is provider-specific (Claude only); the
-  // adapter handles that — the store just respects the result.
-  const next2 = (next ?? []).filter((s) => s.provider === provider);
-  const others = servers.filter((s) => s.provider !== provider);
-  servers = [...others, ...next2];
+function threadScopeKey(threadId: string): string {
+  return `thread:${threadId}`;
+}
+
+function newThreadScopeKey(provider: string, workspacePath: string): string {
+  return `new:${provider}:${workspacePath}`;
+}
+
+function setScopedServers(scopeKey: string, next: MCPServer[]): void {
+  const updated = new Map(scopedServers);
+  updated.set(scopeKey, next ?? []);
+  scopedServers = updated;
+}
+
+function serversForScope(scopeKey: string, provider: string): MCPServer[] {
+  return (scopedServers.get(scopeKey) ?? []).filter((s) => s.provider === provider);
 }
 
 function setStatus(status: MCPServerStatus): void {
@@ -94,7 +104,7 @@ function subscribeEvents(): void {
 
 export const mcpServersStore = {
   get servers(): readonly MCPServer[] {
-    return servers;
+    return settingsServers;
   },
 
   get statuses(): ReadonlyMap<string, MCPServerStatus> {
@@ -111,7 +121,17 @@ export const mcpServersStore = {
    * loadForThread call.
    */
   serversForProvider(provider: string): MCPServer[] {
-    return servers.filter((s) => s.provider === provider);
+    return settingsServers.filter((s) => s.provider === provider);
+  },
+
+  serversForThread(threadId: string, provider: string): MCPServer[] {
+    if (!threadId || !provider) return [];
+    return serversForScope(threadScopeKey(threadId), provider);
+  },
+
+  serversForNewThread(provider: string, workspacePath: string): MCPServer[] {
+    if (!provider) return [];
+    return serversForScope(newThreadScopeKey(provider, workspacePath), provider);
   },
 
   /**
@@ -121,7 +141,18 @@ export const mcpServersStore = {
   async loadForThread(threadId: string, provider: string): Promise<MCPServer[]> {
     subscribeEvents();
     const list = (await ListMcpServersForThread(threadId)) ?? [];
-    mergeServers(list, provider);
+    setScopedServers(threadScopeKey(threadId), list);
+    return list;
+  },
+
+  /**
+   * loadForNewThread fetches the MCP library using provider-level defaults
+   * that future threads will snapshot. Used by draft placeholders.
+   */
+  async loadForNewThread(provider: string, workspacePath: string): Promise<MCPServer[]> {
+    subscribeEvents();
+    const list = (await ListMcpServersForNewThread(provider, workspacePath)) ?? [];
+    setScopedServers(newThreadScopeKey(provider, workspacePath), list);
     return list;
   },
 
@@ -231,13 +262,24 @@ export const mcpServersStore = {
     await SetMcpServerEnabled(threadId, name, enabled);
   },
 
+  async setDefaultEnabled(
+    provider: string,
+    workspacePath: string,
+    name: string,
+    enabled: boolean,
+  ): Promise<void> {
+    if (!provider || !name) return;
+    await SetNewThreadMcpServerEnabled(provider, workspacePath, name, enabled);
+  },
+
   async triggerAuth(threadId: string, name: string): Promise<MCPAuthInitResult> {
     return TriggerMcpAuth(threadId, name);
   },
 };
 
 export function resetMcpServersForTest(): void {
-  servers = [];
+  settingsServers = [];
+  scopedServers = new Map();
   statuses = new Map();
   refreshingProvider = new Set();
   eventsSubscribed = false;

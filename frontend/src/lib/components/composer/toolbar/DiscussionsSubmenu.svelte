@@ -96,8 +96,11 @@
     // toast/state update lands a moment later.
     onSelect?.();
     try {
-      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
-      if (!threadId) return;
+      const threadId = pane.threadId;
+      if (!threadId) {
+        addToast('info', 'Start the thread before adding a discussion.');
+        return;
+      }
       await StartDiscussionByID(threadId, def.id);
       // StartDiscussion does NOT emit `thread:updated`, so we refresh the
       // thread manually — matching DiscussionStartFlow. Without this the

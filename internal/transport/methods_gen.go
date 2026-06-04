@@ -44,6 +44,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteAttachment", ID: 2428457759},                     // main.App.DeleteAttachment
 	{Name: "DeleteDiffReviewComment", ID: 1303317790},              // main.App.DeleteDiffReviewComment
 	{Name: "DeleteDiscussion", ID: 302062730},                      // main.App.DeleteDiscussion
+	{Name: "DeleteEmptyDraftThread", ID: 3876094070},               // main.App.DeleteEmptyDraftThread
 	{Name: "DeleteMcpServer", ID: 4263017529},                      // main.App.DeleteMcpServer
 	{Name: "DeleteProject", ID: 3379369923},                        // main.App.DeleteProject
 	{Name: "DeleteProposedPlanComment", ID: 554913120},             // main.App.DeleteProposedPlanComment
@@ -63,6 +64,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetDraft", ID: 875977146},                              // main.App.GetDraft
 	{Name: "GetEditorSettings", ID: 1655853383},                    // main.App.GetEditorSettings
 	{Name: "GetGitStatus", ID: 4123560639},                         // main.App.GetGitStatus
+	{Name: "GetGitStatusForProject", ID: 1462513307},               // main.App.GetGitStatusForProject
 	{Name: "GetKeybindings", ID: 3015840904},                       // main.App.GetKeybindings
 	{Name: "GetMcpServerStatus", ID: 4139359668},                   // main.App.GetMcpServerStatus
 	{Name: "GetMessageCheckpointDiff", ID: 1151360951},             // main.App.GetMessageCheckpointDiff
@@ -94,8 +96,11 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitCreatePR", ID: 4106667105},                          // main.App.GitCreatePR
 	{Name: "GitCreateWorktree", ID: 3327650914},                    // main.App.GitCreateWorktree
 	{Name: "GitListBranches", ID: 2693102179},                      // main.App.GitListBranches
+	{Name: "GitListBranchesForProject", ID: 2675387767},            // main.App.GitListBranchesForProject
 	{Name: "GitListWorktrees", ID: 3232495403},                     // main.App.GitListWorktrees
+	{Name: "GitListWorktreesForProject", ID: 409101231},            // main.App.GitListWorktreesForProject
 	{Name: "GitMaybeFetchRemotes", ID: 2000020570},                 // main.App.GitMaybeFetchRemotes
+	{Name: "GitMaybeFetchRemotesForProject", ID: 338919746},        // main.App.GitMaybeFetchRemotesForProject
 	{Name: "GitPruneRemotes", ID: 4131378132},                      // main.App.GitPruneRemotes
 	{Name: "GitPull", ID: 3933172764},                              // main.App.GitPull
 	{Name: "GitPush", ID: 4036251239},                              // main.App.GitPush
@@ -123,6 +128,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListLiveBackgroundTasks", ID: 320784263},               // main.App.ListLiveBackgroundTasks
 	{Name: "ListMcpServerStatuses", ID: 2582096622},                // main.App.ListMcpServerStatuses
 	{Name: "ListMcpServers", ID: 1105613677},                       // main.App.ListMcpServers
+	{Name: "ListMcpServersForNewThread", ID: 3030514258},           // main.App.ListMcpServersForNewThread
 	{Name: "ListMcpServersForThread", ID: 2790948120},              // main.App.ListMcpServersForThread
 	{Name: "ListPayloadMetas", ID: 1007133701},                     // main.App.ListPayloadMetas
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978},       // main.App.ListPendingInteractiveRequests
@@ -175,6 +181,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SetEditorSettings", ID: 3655340267},                    // main.App.SetEditorSettings
 	{Name: "SetMcpServerEnabled", ID: 3696908699},                  // main.App.SetMcpServerEnabled
 	{Name: "SetNetworkSettings", ID: 3915514446},                   // main.App.SetNetworkSettings
+	{Name: "SetNewThreadMcpServerEnabled", ID: 545823411},          // main.App.SetNewThreadMcpServerEnabled
 	{Name: "SetWSLDistroPreference", ID: 3978807241},               // main.App.SetWSLDistroPreference
 	{Name: "StartDiscussion", ID: 3188309099},                      // main.App.StartDiscussion
 	{Name: "StartDiscussionByID", ID: 2336869067},                  // main.App.StartDiscussionByID
@@ -194,6 +201,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UpdateDiscussion", ID: 1706395020},                     // main.App.UpdateDiscussion
 	{Name: "UpdateKeybindings", ID: 3490094229},                    // main.App.UpdateKeybindings
 	{Name: "UpdateMcpServer", ID: 4282105115},                      // main.App.UpdateMcpServer
+	{Name: "UpdateNewThreadDefaults", ID: 595194384},               // main.App.UpdateNewThreadDefaults
 	{Name: "UpdateProjectSortPositions", ID: 3717363955},           // main.App.UpdateProjectSortPositions
 	{Name: "UpdateProposedPlanComment", ID: 2747956806},            // main.App.UpdateProposedPlanComment
 	{Name: "UpdateRemoteEndpoint", ID: 4268476031},                 // main.App.UpdateRemoteEndpoint

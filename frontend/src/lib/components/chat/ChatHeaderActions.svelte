@@ -99,14 +99,12 @@
 
   // Terminal / Diff / Design panels need a real thread row — terminal
   // session id, diff backend bindings, design preview URL all key off
-  // it. On a placeholder, materialize before toggling so the click
-  // actually opens the panel instead of flipping the pressed state of
-  // a button whose downstream gate (ThreadTerminalPlacement.threadId,
-  // DiffPanelDrawer's backend bindings, /design/{threadId}/main/ URL)
-  // would otherwise reject the synthetic draft id.
+  // it. Placeholder clicks do not materialize an empty thread.
   async function ensureThenToggle(toggle: () => void): Promise<void> {
-    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
-    if (!threadId) return;
+    if (!pane.threadId) {
+      addToast('info', 'Start the thread before opening this panel.');
+      return;
+    }
     toggle();
   }
 </script>

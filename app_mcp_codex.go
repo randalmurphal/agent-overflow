@@ -65,6 +65,11 @@ func (a *App) deleteCodexMcpServer(name string) error {
 	if err := st.DeleteServer(name); err != nil {
 		return fmt.Errorf("delete codex mcp server: %w", err)
 	}
+	if a.store != nil {
+		if err := a.store.RemoveNewThreadDisabledMCPServer(mcpProviderCodex, name); err != nil {
+			return err
+		}
+	}
 	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: name})
 	return nil
 }
@@ -74,8 +79,15 @@ func (a *App) setCodexMcpEnabled(thread store.Thread, name string, enabled bool)
 	if err != nil {
 		return err
 	}
+	providerName, workspacePath, name, fallback, err := a.prepareNewThreadMCPDisabledUpdate(thread.Provider, thread.WorkspacePath, name)
+	if err != nil {
+		return err
+	}
 	if err := st.SetEnabled(name, enabled); err != nil {
 		return fmt.Errorf("set codex mcp enabled: %w", err)
+	}
+	if err := a.persistNewThreadMCPDisabledUpdate(providerName, workspacePath, name, enabled, fallback); err != nil {
+		return err
 	}
 	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: name})
 	go func() {

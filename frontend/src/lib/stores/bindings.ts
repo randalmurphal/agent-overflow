@@ -101,10 +101,13 @@ export {
   // Git operations
   GenerateCommitMessage,
   GetGitStatus,
+  GetGitStatusForProject,
   GitStatusSubscribe,
   GitStatusUnsubscribe,
   GitListBranches,
+  GitListBranchesForProject,
   GitListWorktrees,
+  GitListWorktreesForProject,
   GitCommit,
   GitPush,
   GitPull,
@@ -114,6 +117,7 @@ export {
   GitCreatePR,
   GitCreateWorktree,
   GitMaybeFetchRemotes,
+  GitMaybeFetchRemotesForProject,
   GitPruneRemotes,
   GitSyncBranch,
   GitRemoveWorktree,
@@ -160,6 +164,7 @@ export {
   SaveDraft,
   GetDraft,
   ClearDraft,
+  DeleteEmptyDraftThread,
   SearchWorkspaceFiles,
   WriteThreadWorkspaceFile,
   ListChatBarFavorites,
@@ -230,10 +235,12 @@ export {
   // MCP library (1:1 sync with ~/.claude.json + ~/.codex/config.toml)
   ListMcpServers,
   ListMcpServersForThread,
+  ListMcpServersForNewThread,
   CreateMcpServer,
   UpdateMcpServer,
   DeleteMcpServer,
   SetMcpServerEnabled,
+  SetNewThreadMcpServerEnabled,
   GetMcpServerStatus,
   ListMcpServerStatuses,
   RefreshMcpServerStatus,
@@ -301,11 +308,13 @@ import {
   SendMessageWithOptions as SendMessageWithOptionsRaw,
   StartTerminal as StartTerminalRaw,
   UpdateContextSettingsProfile as UpdateContextSettingsProfileRaw,
+  UpdateNewThreadDefaults as UpdateNewThreadDefaultsRaw,
   UpdateThreadContextSettings as UpdateThreadContextSettingsRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import {
   CreateThreadOptions as CreateThreadOptionsClass,
   ContextSettingsUpdate as ContextSettingsUpdateClass,
+  NewThreadDefaultsUpdate as NewThreadDefaultsUpdateClass,
   SendMessageOptions as SendMessageOptionsClass,
   StartTerminalOptions as StartTerminalOptionsClass,
 } from '../../../bindings/agent-overflow/models.js';
@@ -342,6 +351,26 @@ export function UpdateThreadContextSettings(
   update: ContextSettingsUpdateInput,
 ) {
   return UpdateThreadContextSettingsRaw(threadId, new ContextSettingsUpdateClass(update));
+}
+
+export interface NewThreadDefaultsUpdateInput {
+  projectId: string;
+  provider?: 'claude' | 'codex' | string;
+  model?: string;
+  reasoningEffort?: string;
+  fastMode?: boolean | null;
+  contextWindow?: number;
+  autoCompactStandardPercent?: number | null;
+  autoCompactExtendedPercent?: number | null;
+  runtimeMode?: string;
+}
+
+export function UpdateNewThreadDefaults(
+  update: NewThreadDefaultsUpdateInput,
+): Promise<ThreadDefaults> {
+  return UpdateNewThreadDefaultsRaw(
+    new NewThreadDefaultsUpdateClass(update),
+  ) as unknown as Promise<ThreadDefaults>;
 }
 
 export function CreateThread(opts: CreateThreadOptions): Promise<Thread> {

@@ -55,7 +55,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingSaveGeneration = 0;
   let switchGeneration = 0;
-  let hasPendingSave = false;
+  let hasPendingSave: boolean = $state(false);
   let optimisticRestoredDraft: { threadId: string; snapshot: ComposerDraftSnapshot } | null = null;
   let optimisticRestoredDraftDirty = false;
 

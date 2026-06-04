@@ -1,8 +1,10 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -118,6 +120,73 @@ func (a *App) ClearDraft(threadID string) error {
 		return fmt.Errorf("draft store not initialized")
 	}
 	return a.store.DeleteThreadDraft(threadID)
+}
+
+// DeleteEmptyDraftThread removes a materialized chat/plan draft row after the
+// composer is cleared. It returns false when the thread has gained durable
+// state or is currently active.
+func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
+	if a.store == nil {
+		return false, fmt.Errorf("draft store not initialized")
+	}
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	if a.hasActiveSession(threadID) {
+		return false, nil
+	}
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("delete empty draft thread %s: load thread: %w", threadID, err)
+	}
+	empty, err := a.store.IsEmptyDraftThread(threadID)
+	if err != nil {
+		return false, err
+	}
+	if !empty {
+		return false, nil
+	}
+
+	var errs []error
+	if err := a.stopSession(threadID); err != nil {
+		errs = append(errs, fmt.Errorf("stop session: %w", err))
+	}
+	if a.terminals != nil {
+		if err := a.terminals.CloseThread(threadID); err != nil {
+			errs = append(errs, fmt.Errorf("close terminals: %w", err))
+		}
+	}
+	a.clearThreadSystemPrompt(threadID)
+	a.removeDeliberation(thread)
+	a.clearAutoReconnectAttempted(threadID)
+	if err := a.cleanupThreadCheckpoints(threadID, thread, true); err != nil {
+		errs = append(errs, fmt.Errorf("cleanup checkpoints: %w", err))
+	}
+	if err := a.cleanupThreadAttachmentFiles(threadID); err != nil {
+		errs = append(errs, fmt.Errorf("cleanup attachments: %w", err))
+	}
+	if err := a.cleanupThreadDesignWorkdir(threadID); err != nil {
+		errs = append(errs, fmt.Errorf("cleanup design workdir: %w", err))
+	}
+	if a.replay != nil {
+		if err := a.replay.RemoveThreadLog(threadID); err != nil {
+			errs = append(errs, fmt.Errorf("cleanup replay log: %w", err))
+		}
+	}
+	if len(errs) > 0 {
+		return false, fmt.Errorf("delete empty draft thread %s: %w", threadID, errors.Join(errs...))
+	}
+
+	deleted, err := a.store.DeleteEmptyDraftThread(threadID)
+	if err != nil {
+		return false, err
+	}
+	if deleted {
+		a.threadLocks().Forget(threadID)
+	}
+	return deleted, nil
 }
 
 func (a *App) composerDraftFromUserItemWithClonedAttachments(threadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {

@@ -71,6 +71,11 @@ func (a *App) deleteClaudeMcpServer(name string) error {
 	if err := st.DeleteServer(name); err != nil {
 		return fmt.Errorf("delete claude mcp server: %w", err)
 	}
+	if a.store != nil {
+		if err := a.store.RemoveNewThreadDisabledMCPServer(mcpProviderClaude, name); err != nil {
+			return err
+		}
+	}
 	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: name})
 	return nil
 }
@@ -84,8 +89,15 @@ func (a *App) setClaudeMcpDisabled(thread store.Thread, name string, disabled bo
 	if err != nil {
 		return err
 	}
+	providerName, workspacePath, name, fallback, err := a.prepareNewThreadMCPDisabledUpdate(thread.Provider, workspacePath, name)
+	if err != nil {
+		return err
+	}
 	if err := st.SetDisabled(workspacePath, name, disabled); err != nil {
 		return fmt.Errorf("set claude mcp disabled: %w", err)
+	}
+	if err := a.persistNewThreadMCPDisabledUpdate(providerName, workspacePath, name, !disabled, fallback); err != nil {
+		return err
 	}
 	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: name})
 	if thread.Mode == "design" {
@@ -126,9 +138,9 @@ func (a *App) setClaudeMcpDisabled(thread store.Thread, name string, disabled bo
 	return nil
 }
 
-// reconcileClaudeMCPOnInit pushes the per-thread MCP disabled set after
-// a Claude session initializes. Skips design threads and threads with an
-// empty disabled set (nothing to override — native discovery is correct).
+// reconcileClaudeMCPOnInit pushes the per-thread MCP disabled set after a
+// Claude session initializes. Skips design threads and pre-feature threads
+// whose lazy snapshot resolved to "native config already enables everything".
 func (a *App) reconcileClaudeMCPOnInit(threadID string) {
 	t, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -138,13 +150,26 @@ func (a *App) reconcileClaudeMCPOnInit(threadID string) {
 	if t.Mode == "design" {
 		return
 	}
-	disabled, err := a.ensureDisabledMcpSnapshot(t.ID, t.Provider, t.WorkspacePath)
+	disabled, snapshotted, err := a.store.GetDisabledMcpServers(t.ID)
 	if err != nil {
 		log.Printf("mcp: thread %s post-init reconcile: snapshot: %v", threadID, err)
 		return
 	}
-	if len(disabled) == 0 {
-		return
+	if !snapshotted {
+		disabled, err = a.ensureDisabledMcpSnapshot(t.ID, t.Provider, t.WorkspacePath)
+		if err != nil {
+			log.Printf("mcp: thread %s post-init reconcile: snapshot: %v", threadID, err)
+			return
+		}
+		if len(disabled) == 0 {
+			return
+		}
+	}
+	if snapshotted && len(disabled) == 0 {
+		nativeDisabled := a.snapshotProviderDisabledMCPServers(t.Provider, t.WorkspacePath)
+		if len(*nativeDisabled) == 0 {
+			return
+		}
 	}
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()

@@ -94,10 +94,8 @@ function withActiveThread(
 }
 
 /**
- * Run a command that requires a real (materialized) thread row. On a
- * placeholder, this triggers materialization first — same pattern as
- * the composer toolbar pickers. Used by panel-open commands (terminal,
- * diff) whose downstream code keys on a real `pane.threadId`.
+ * Run a command that requires a real (materialized) thread row. Placeholders
+ * are intentionally not materialized by non-content commands.
  */
 function withMaterializedThread(
   ctx: CommandContext,
@@ -108,11 +106,12 @@ function withMaterializedThread(
     addToast('warning', 'Open a thread before running this command.');
     return;
   }
-  void (async () => {
-    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
-    if (!threadId) return;
-    await run(threadId, pane);
-  })();
+  const threadId = pane.threadId;
+  if (!threadId) {
+    addToast('warning', 'Start the thread before running this command.');
+    return;
+  }
+  void run(threadId, pane);
 }
 
 function commandThreadActionCtx(thread: Thread, pane: ThreadPane): ThreadActionCtx {
@@ -296,7 +295,11 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '◆',
     when: 'canStartDiscussion',
     run: (ctx) =>
-      withActiveThread(ctx, (t) => {
+      withActiveThread(ctx, (t, pane) => {
+        if (!pane.threadId) {
+          addToast('warning', 'Start the thread before adding a discussion.');
+          return;
+        }
         requestDiscussion(t);
       }),
   });
@@ -307,7 +310,11 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: 'A',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, (t) => {
+      withActiveThread(ctx, (t, pane) => {
+        if (!pane.threadId) {
+          addToast('warning', 'Start the thread before renaming it.');
+          return;
+        }
         requestRename(t);
       }),
   });
@@ -319,6 +326,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'hasActiveThread',
     run: (ctx) =>
       withActiveThread(ctx, async (t, pane) => {
+        if (!pane.threadId) {
+          addToast('warning', 'Start the thread before archiving it.');
+          return;
+        }
         const actionCtx = commandThreadActionCtx(t, pane);
         if (getSettings().confirmArchive) {
           requestThreadActionConfirmation('archive', actionCtx);
@@ -335,6 +346,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'hasActiveThread',
     run: (ctx) =>
       withActiveThread(ctx, async (t, pane) => {
+        if (!pane.threadId) {
+          addToast('warning', 'Start the thread before deleting it.');
+          return;
+        }
         if (t.parentThreadId) {
           addToast('warning', 'Discussion child threads are deleted with their parent.');
           return;
@@ -355,6 +370,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'canForkActiveThread',
     run: (ctx) =>
       withActiveThread(ctx, async (t, pane) => {
+        if (!pane.threadId) {
+          addToast('warning', 'Start the thread before forking it.');
+          return;
+        }
         await forkThreadAction({
           thread: t,
           isActive: pane.threadId === t.id,
@@ -449,11 +468,15 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'hasActiveThread && !paletteOpen && !anyModalOpen',
     editableReachable: true,
     run: (ctx) =>
-      withActiveThread(ctx, async (t) => {
+      withActiveThread(ctx, async (t, pane) => {
         // Design and discussion threads have immutable types — silently
         // skip the toggle there rather than firing a backend rejection.
         if (t.mode === 'design' || t.mode === 'discussion') return;
         const next = cycleMode(t.mode);
+        if (pane.hasDraftPlaceholder) {
+          pane.setDraftPlaceholderMode(next);
+          return;
+        }
         try {
           const updated = (await UpdateThreadMode(t.id, next)) as Thread;
           syncThread(updated);
@@ -735,9 +758,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '↑',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, async (t) => {
+      withMaterializedThread(ctx, async (threadId) => {
         try {
-          await GitPush(t.id);
+          await GitPush(threadId);
           addToast('success', 'Pushed.');
         } catch (err) {
           addToast('error', userFacingError(err));
@@ -751,9 +774,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '↓',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withActiveThread(ctx, async (t) => {
+      withMaterializedThread(ctx, async (threadId) => {
         try {
-          await GitPull(t.id);
+          await GitPull(threadId);
           addToast('success', 'Pulled.');
         } catch (err) {
           addToast('error', userFacingError(err));

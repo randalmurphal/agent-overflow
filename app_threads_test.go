@@ -391,6 +391,68 @@ func TestUpdateThreadRuntimeModeValidates(t *testing.T) {
 	}
 }
 
+func TestUpdateNewThreadDefaultsPersistsProfileForFutureThreads(t *testing.T) {
+	app := newTestAppWithStore(t)
+	project, err := app.ensureProjectForWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace: %v", err)
+	}
+	fastMode := false
+
+	defaults, err := app.UpdateNewThreadDefaults(NewThreadDefaultsUpdate{
+		ProjectID:       project.ID,
+		Provider:        "codex",
+		Model:           "5.4",
+		ReasoningEffort: "high",
+		FastMode:        &fastMode,
+		RuntimeMode:     "approval-required",
+	})
+	if err != nil {
+		t.Fatalf("UpdateNewThreadDefaults: %v", err)
+	}
+	if defaults.Provider != "codex" || defaults.Model != "gpt-5.4" {
+		t.Fatalf("defaults provider/model = %s/%s, want codex/gpt-5.4", defaults.Provider, defaults.Model)
+	}
+	if defaults.ReasoningEffort != "high" {
+		t.Fatalf("defaults ReasoningEffort = %q, want high", defaults.ReasoningEffort)
+	}
+	if defaults.RuntimeMode != "approval-required" {
+		t.Fatalf("defaults RuntimeMode = %q, want approval-required", defaults.RuntimeMode)
+	}
+
+	thread, err := app.CreateThread(CreateThreadOptions{
+		ProjectID: project.ID,
+		Provider:  "codex",
+		Model:     "gpt-5.4",
+	})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if thread.RuntimeMode != "approval-required" {
+		t.Fatalf("thread RuntimeMode = %q, want approval-required", thread.RuntimeMode)
+	}
+	if thread.ReasoningEffort != "high" {
+		t.Fatalf("thread ReasoningEffort = %q, want high", thread.ReasoningEffort)
+	}
+}
+
+func TestUpdateNewThreadDefaultsValidatesRuntimeMode(t *testing.T) {
+	app := newTestAppWithStore(t)
+	project, err := app.ensureProjectForWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace: %v", err)
+	}
+
+	if _, err := app.UpdateNewThreadDefaults(NewThreadDefaultsUpdate{
+		ProjectID:   project.ID,
+		Provider:    "codex",
+		Model:       "gpt-5.4",
+		RuntimeMode: "yolo",
+	}); err == nil {
+		t.Fatal("UpdateNewThreadDefaults(yolo) error = nil, want validation error")
+	}
+}
+
 func TestUpdateThreadBranchAndWorkspace(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/tbw", "claude-sonnet-4-6", "")

@@ -27,7 +27,13 @@
   import { createComposerUploads } from './composerUploads.svelte';
   import { dispatchSend } from './composerSend';
   import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
-  import { RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
+  import {
+    DeleteEmptyDraftThread,
+    RespondToApproval,
+    RespondToUserInput,
+    type ApprovalResponse,
+    type UserInputResponse,
+  } from '../../stores/bindings';
   import {
     getPlanComments,
     getThreadCurrentProposedPlan,
@@ -43,13 +49,10 @@
   import { addToast } from '../../stores/toast.svelte';
   import { registerQueueItem } from '../../stores/sendQueue.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
-  import { getThreadById, prependThread, removeThread } from '../../stores/threads.svelte';
-  import {
-    hasRuntimeModeDraft,
-    runtimeModeForThread,
-  } from '../../stores/runtimeModeDraft.svelte';
+  import { getThreadById, prependThread } from '../../stores/threads.svelte';
   import { getActiveTurn, isSendInFlight, isThreadWorking } from '../../stores/threadStatuses.svelte';
   import { getTerminalFocused } from '../terminal/terminalStore.svelte';
+  import { errString } from '../../utils/errors';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
@@ -71,6 +74,7 @@
   let lastAutosizedValue = '';
   let focusInitialized = false;
   let focusThreadId: string | null = null;
+  let emptyDraftCleanupKey: string | null = null;
 
   const mentions = createComposerMentions({
     getTextarea: () => textarea,
@@ -221,28 +225,70 @@
     locallyImplementedPlanIds = new Set();
   });
 
-  // Hide an empty materialized-draft thread from the sidebar so a "+ New"
-  // that the user typed into and then fully erased doesn't linger as a
-  // dead row. Backend ListThreadsWithItems already excludes it on the
-  // next refresh; this local prune keeps the sidebar in sync without
-  // waiting for that round-trip. Re-show as soon as content returns.
-  // Only operates on draft threads (isDraft=true) — real threads with
-  // history are never touched by this effect.
+  function draftHasContentOrSourceNow(): boolean {
+    return (
+      draft.content.trim().length > 0 ||
+      draft.attachments.length > 0 ||
+      draft.terminalChips.length > 0 ||
+      draft.sourceProposedPlan !== null
+    );
+  }
+
+  async function handleEmptyDraftCleanupResult(threadId: string, deleted: boolean): Promise<void> {
+    if (pane.threadId !== threadId) return;
+    if (
+      draft.hydrating ||
+      draft.hasPendingSave ||
+      sending ||
+      pane.sendInFlight ||
+      isTurnActive ||
+      draftHasContentOrSourceNow()
+    ) {
+      emptyDraftCleanupKey = null;
+      if (deleted && pane.dematerializeEmptyDraftThread()) {
+        const replacementId = await pane.ensureMaterializedThread();
+        if (replacementId) resetTextareaHeight();
+      }
+      return;
+    }
+    if (!deleted) return;
+    if (pane.dematerializeEmptyDraftThread()) {
+      await draft.setThread(null);
+      resetTextareaHeight();
+    }
+  }
+
+  // Delete an empty materialized draft after its empty state has been saved.
+  // Materialization still happens for first real content, uploads, and sends;
+  // this trims the row back to a placeholder when that content is fully erased.
   $effect(() => {
     const threadId = pane.threadId;
     if (!threadId || draft.threadId !== threadId || draft.hydrating) return;
-    if (sending || pane.sendInFlight || isTurnActive) return;
+    if (pane.hasDraftPlaceholder || sending || pane.sendInFlight || isTurnActive) return;
     if (pane.thread?.isDraft !== true) return;
     if (pane.items.length > 0) return;
-    const draftHasContent = hasDraftContent;
+    const draftHasContentOrSource = hasDraftContent || draft.sourceProposedPlan !== null;
+    const hasPendingSave = draft.hasPendingSave;
     untrack(() => {
-      if (draftHasContent) {
+      if (draftHasContentOrSource) {
+        emptyDraftCleanupKey = null;
         if (pane.thread && !getThreadById(threadId)) {
           prependThread(pane.thread);
         }
         return;
       }
-      removeThread(threadId);
+      if (hasPendingSave) return;
+      if (emptyDraftCleanupKey === threadId) return;
+      emptyDraftCleanupKey = threadId;
+      void (async () => {
+        try {
+          const deleted = await DeleteEmptyDraftThread(threadId);
+          await handleEmptyDraftCleanupResult(threadId, deleted);
+        } catch (err) {
+          emptyDraftCleanupKey = null;
+          pane.setGeneralError(`Failed to clean up empty draft thread: ${errString(err)}`);
+        }
+      })();
     });
   });
 
@@ -268,10 +314,9 @@
     if (hydrating) return;
     focusInitialized = true;
     // Don't yank focus away from a terminal in THIS pane that already owns it.
-    // Opening the bottom terminal (⌘`/⌘J) on a placeholder thread materializes
-    // the thread, which re-arms this initial-focus pass; by the time the draft
-    // re-hydrates the xterm may already hold DOM focus, and focusing the
-    // composer here would steal it back (the reported cold-open regression).
+    // Opening the bottom terminal re-arms this initial-focus pass; by the time
+    // the draft re-hydrates the xterm may already hold DOM focus, and focusing
+    // the composer here would steal it back (the reported cold-open regression).
     // Consuming the one-shot above means a later terminal blur won't trigger a
     // delayed re-steal. Scoped to `pane.paneId` so a focused terminal in a
     // different pane never blocks this composer's initial focus.

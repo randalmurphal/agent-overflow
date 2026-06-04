@@ -19,11 +19,6 @@ import {
   projectSendStarted,
 } from '../../stores/threadStatuses.svelte';
 import type { SourceDiffReview, SourceProposedPlan, Thread } from '../../types/models';
-import {
-  clearRuntimeModeDraft,
-  hasRuntimeModeDraft,
-  runtimeModeForThread,
-} from '../../stores/runtimeModeDraft.svelte';
 import { prepareThreadWorktreeIntent } from '../../stores/worktreeIntentMaterialize';
 import { buildSendOptions } from '../../utils/sendOptions';
 
@@ -96,16 +91,12 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     projectSendStarted(opts.threadId);
     sendStarted = true;
 
-    const runtimeMode = threadForSend?.id === opts.threadId && hasRuntimeModeDraft(threadForSend)
-      ? runtimeModeForThread(threadForSend)
-      : undefined;
     // Single source of truth for the wire payload — the queue's drain
     // path runs through `buildSendOptions` too, so the precedence rule
-    // (revision wins over source-plan) and runtime-mode handling stay
-    // aligned regardless of how the message reaches the backend.
+    // (revision wins over source-plan) stays aligned regardless of how
+    // the message reaches the backend.
     const sendOptions = buildSendOptions({
       attachmentIds: opts.attachmentIds,
-      runtimeMode,
       sourceProposedPlan: opts.sourceProposedPlan,
       revisionSourceProposedPlan: opts.revisionSourceProposedPlan,
       revisionSourceCommentIds: opts.revisionSourceCommentIds,
@@ -114,7 +105,6 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     });
     const updated = (await SendMessageWithOptions(opts.threadId, opts.message, sendOptions)) as Thread;
     syncThread(updated);
-    clearRuntimeModeDraft(opts.threadId);
     return true;
   } catch (err) {
     console.error('Failed to send message:', err);

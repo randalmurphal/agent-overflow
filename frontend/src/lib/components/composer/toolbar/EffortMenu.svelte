@@ -29,6 +29,7 @@
   import Icon from '../../primitives/Icon.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
+  import { updatePlaceholderDefaults } from '../../../stores/newThreadDefaults';
 
   interface Props {
     pane: ThreadPane;
@@ -154,7 +155,11 @@
       return;
     }
     try {
-      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      if (pane.hasDraftPlaceholder) {
+        await updatePlaceholderDefaults(pane, { reasoningEffort: next });
+        return;
+      }
+      const threadId = pane.threadId;
       if (!threadId) return;
       const updated = (await UpdateThreadReasoningEffort(threadId, next)) as Thread;
       syncThread(updated);
@@ -172,7 +177,11 @@
       return;
     }
     try {
-      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      if (pane.hasDraftPlaceholder) {
+        await updatePlaceholderDefaults(pane, { fastMode: on });
+        return;
+      }
+      const threadId = pane.threadId;
       if (!threadId) return;
       const updated = (await UpdateThreadFastMode(threadId, on)) as Thread;
       syncThread(updated);
@@ -190,7 +199,11 @@
       return;
     }
     try {
-      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      if (pane.hasDraftPlaceholder) {
+        await updatePlaceholderDefaults(pane, { contextWindow: tokens });
+        return;
+      }
+      const threadId = pane.threadId;
       if (!threadId) return;
       const updated = (await UpdateThreadContextWindow(threadId, tokens)) as Thread;
       syncThread(updated);

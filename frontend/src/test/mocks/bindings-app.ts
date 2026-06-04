@@ -114,6 +114,7 @@ export const UpdateThreadContextWindow = dispatch('UpdateThreadContextWindow');
 export const UpdateThreadRuntimeMode = dispatch('UpdateThreadRuntimeMode');
 export const UpdateThreadBranch = dispatch('UpdateThreadBranch');
 export const UpdateThreadWorkspace = dispatch('UpdateThreadWorkspace');
+export const UpdateNewThreadDefaults = dispatch('UpdateNewThreadDefaults');
 export const WriteThreadWorkspaceFile = dispatch('WriteThreadWorkspaceFile');
 export const SearchThreadMessages = dispatch('SearchThreadMessages');
 export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
@@ -219,6 +220,7 @@ export const RecheckClaudeAccount = dispatch('RecheckClaudeAccount');
 export const RecheckCodexAccount = dispatch('RecheckCodexAccount');
 
 export const GetGitStatus = dispatch('GetGitStatus');
+export const GetGitStatusForProject = dispatch('GetGitStatusForProject');
 export const GitStatusSubscribe = dispatch('GitStatusSubscribe');
 export const GitStatusUnsubscribe = dispatch('GitStatusUnsubscribe');
 // Class re-export mirroring the generated GitStatusSubscriptionResult.
@@ -233,7 +235,9 @@ export class GitStatusSubscriptionResult {
   }
 }
 export const GitListBranches = dispatch('GitListBranches');
+export const GitListBranchesForProject = dispatch('GitListBranchesForProject');
 export const GitListWorktrees = dispatch('GitListWorktrees');
+export const GitListWorktreesForProject = dispatch('GitListWorktreesForProject');
 export const GitCommit = dispatch('GitCommit');
 export const GitPush = dispatch('GitPush');
 export const GitPull = dispatch('GitPull');
@@ -243,6 +247,7 @@ export const GitCreateBranchFrom = dispatch('GitCreateBranchFrom');
 export const GitCreatePR = dispatch('GitCreatePR');
 export const GitCreateWorktree = dispatch('GitCreateWorktree');
 export const GitMaybeFetchRemotes = dispatch('GitMaybeFetchRemotes');
+export const GitMaybeFetchRemotesForProject = dispatch('GitMaybeFetchRemotesForProject');
 export const GitPruneRemotes = dispatch('GitPruneRemotes');
 export const GitSyncBranch = dispatch('GitSyncBranch');
 export const GitWorktreeStatus = dispatch('GitWorktreeStatus');
@@ -299,6 +304,7 @@ export const GetAttachmentThumbnail = dispatch('GetAttachmentThumbnail');
 export const SaveDraft = dispatch('SaveDraft');
 export const GetDraft = dispatch('GetDraft');
 export const ClearDraft = dispatch('ClearDraft');
+export const DeleteEmptyDraftThread = dispatch('DeleteEmptyDraftThread');
 export const SearchWorkspaceFiles = dispatch('SearchWorkspaceFiles');
 export const ListChatBarFavorites = dispatch('ListChatBarFavorites');
 export const SetChatBarFavorite = dispatch('SetChatBarFavorite');
@@ -364,6 +370,20 @@ export const SendDiffReviewComments = dispatch('SendDiffReviewComments');
 export const CountRunningBackgroundTasks = dispatch('CountRunningBackgroundTasks');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
 export const GetThreadItem = dispatch('GetThreadItem');
+
+// MCP library
+export const ListMcpServers = dispatch('ListMcpServers');
+export const ListMcpServersForThread = dispatch('ListMcpServersForThread');
+export const ListMcpServersForNewThread = dispatch('ListMcpServersForNewThread');
+export const CreateMcpServer = dispatch('CreateMcpServer');
+export const UpdateMcpServer = dispatch('UpdateMcpServer');
+export const DeleteMcpServer = dispatch('DeleteMcpServer');
+export const SetMcpServerEnabled = dispatch('SetMcpServerEnabled');
+export const SetNewThreadMcpServerEnabled = dispatch('SetNewThreadMcpServerEnabled');
+export const GetMcpServerStatus = dispatch('GetMcpServerStatus');
+export const ListMcpServerStatuses = dispatch('ListMcpServerStatuses');
+export const RefreshMcpServerStatus = dispatch('RefreshMcpServerStatus');
+export const TriggerMcpAuth = dispatch('TriggerMcpAuth');
 
 // Send-queue (per-thread mid-turn queue; backend-owned). Tests that
 // exercise mid-turn submits must mock RegisterQueueItem to return the

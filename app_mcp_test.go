@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,6 +150,189 @@ func TestListMcpServers_UnsupportedProvider(t *testing.T) {
 	_, err := app.ListMcpServers("gemini", "")
 	if !errors.Is(err, ErrMCPProviderUnsupported) {
 		t.Fatalf("want ErrMCPProviderUnsupported, got %v", err)
+	}
+}
+
+func TestNewThreadMCPDefaultsOverrideFutureThreadsWithoutMutatingProviderConfig(t *testing.T) {
+	app, claudePath, _ := newMCPTestApp(t)
+	workspace := t.TempDir()
+	writeClaudeConfig(t, claudePath, fmt.Sprintf(`{
+  "mcpServers": {
+    "fs": {"type": "stdio", "command": "fs-bin", "args": ["--root", "/tmp"]}
+  },
+  "projects": {
+    %q: {"disabledMcpServers": ["fs"]}
+  }
+}`, workspace))
+
+	initial, err := app.ListMcpServersForNewThread("claude", workspace)
+	if err != nil {
+		t.Fatalf("ListMcpServersForNewThread initial: %v", err)
+	}
+	if !findServer(initial, "fs").Disabled {
+		t.Fatal("initial new-thread list should fall back to provider config disabled state")
+	}
+
+	if err := app.SetNewThreadMcpServerEnabled("claude", workspace, "fs", true); err != nil {
+		t.Fatalf("SetNewThreadMcpServerEnabled: %v", err)
+	}
+	next, err := app.ListMcpServersForNewThread("claude", workspace)
+	if err != nil {
+		t.Fatalf("ListMcpServersForNewThread next: %v", err)
+	}
+	if findServer(next, "fs").Disabled {
+		t.Fatal("new-thread default override should enable fs")
+	}
+
+	providerScoped, err := app.ListMcpServers("claude", workspace)
+	if err != nil {
+		t.Fatalf("ListMcpServers provider-scoped: %v", err)
+	}
+	if !findServer(providerScoped, "fs").Disabled {
+		t.Fatal("provider config should remain disabled after new-thread override")
+	}
+
+	project, err := app.ensureProjectForWorkspace(workspace)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace: %v", err)
+	}
+	thread, err := app.CreateThread(CreateThreadOptions{
+		ProjectID:         project.ID,
+		Provider:          "claude",
+		Model:             "claude-sonnet-4-6",
+		WorkspaceOverride: workspace,
+	})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	disabled, snapshotted, err := app.store.GetDisabledMcpServers(thread.ID)
+	if err != nil {
+		t.Fatalf("GetDisabledMcpServers: %v", err)
+	}
+	if !snapshotted {
+		t.Fatal("created thread should snapshot MCP defaults")
+	}
+	if len(disabled) != 0 {
+		t.Fatalf("created thread disabled MCP servers = %v, want empty", disabled)
+	}
+}
+
+func TestNewThreadMCPDefaultsAreWorkspaceScopedForClaude(t *testing.T) {
+	app, claudePath, _ := newMCPTestApp(t)
+	workspaceA := t.TempDir()
+	workspaceB := t.TempDir()
+	writeClaudeConfig(t, claudePath, fmt.Sprintf(`{
+  "mcpServers": {
+    "fs": {"type": "stdio", "command": "fs-bin"}
+  },
+  "projects": {
+    %q: {"disabledMcpServers": ["fs"]},
+    %q: {}
+  }
+}`, workspaceA, workspaceB))
+
+	if err := app.SetNewThreadMcpServerEnabled("claude", workspaceA, "fs", true); err != nil {
+		t.Fatalf("SetNewThreadMcpServerEnabled workspaceA: %v", err)
+	}
+	listA, err := app.ListMcpServersForNewThread("claude", workspaceA)
+	if err != nil {
+		t.Fatalf("ListMcpServersForNewThread workspaceA: %v", err)
+	}
+	if findServer(listA, "fs").Disabled {
+		t.Fatal("workspace A override should enable fs")
+	}
+	listB, err := app.ListMcpServersForNewThread("claude", workspaceB)
+	if err != nil {
+		t.Fatalf("ListMcpServersForNewThread workspaceB: %v", err)
+	}
+	if findServer(listB, "fs").Disabled {
+		t.Fatal("workspace A override leaked into workspace B")
+	}
+}
+
+func TestSetMcpServerEnabled_ClaudeValidatesBeforeMutatingConfig(t *testing.T) {
+	app, claudePath, _ := newMCPTestApp(t)
+	workspace := t.TempDir()
+	writeClaudeConfig(t, claudePath, fmt.Sprintf(`{
+  "projects": {
+    %q: {"disabledMcpServers": ["plugin:foo:bar"]}
+  }
+}`, workspace))
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-sonnet-4-5", "chat")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	if err := app.SetMcpServerEnabled(thread.ID, "missing", false); err == nil {
+		t.Fatal("SetMcpServerEnabled missing server error = nil, want validation error")
+	}
+	raw, err := os.ReadFile(claudePath)
+	if err != nil {
+		t.Fatalf("read claude config: %v", err)
+	}
+	if strings.Contains(string(raw), "missing") {
+		t.Fatalf("missing server was written before validation:\n%s", raw)
+	}
+
+	if err := app.SetMcpServerEnabled(thread.ID, "plugin:foo:bar", true); err != nil {
+		t.Fatalf("SetMcpServerEnabled enable plugin: %v", err)
+	}
+	defaults, found, err := app.store.GetNewThreadDisabledMCPServers("claude", workspace)
+	if err != nil {
+		t.Fatalf("GetNewThreadDisabledMCPServers: %v", err)
+	}
+	if !found {
+		t.Fatal("plugin toggle should persist a new-thread defaults row")
+	}
+	if len(defaults) != 0 {
+		t.Fatalf("plugin defaults = %v, want empty enabled set", defaults)
+	}
+	list, err := app.ListMcpServers("claude", workspace)
+	if err != nil {
+		t.Fatalf("ListMcpServers: %v", err)
+	}
+	if found := findServer(list, "plugin:foo:bar"); found.Name != "" {
+		t.Fatalf("enabled disabled-only plugin should disappear from native disabled-only list: %#v", found)
+	}
+}
+
+func TestBuildCodexMCPServersForThreadHonorsExplicitEmptyOverlays(t *testing.T) {
+	app, _, codexPath := newMCPTestApp(t)
+	writeCodexConfig(t, codexPath, `
+[mcp_servers.github]
+command = "gh-mcp"
+
+[mcp_servers.linear]
+url = "https://mcp.linear.app/api"
+`)
+	thread, err := createTestThread(t, app, string(provider.Codex), t.TempDir(), "gpt-5.2", "chat")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	if err := app.store.SetDisabledMcpServers(thread.ID, nil); err != nil {
+		t.Fatalf("SetDisabledMcpServers empty: %v", err)
+	}
+	allEnabled, err := app.buildCodexMCPServersForThread(thread)
+	if err != nil {
+		t.Fatalf("buildCodexMCPServersForThread all enabled: %v", err)
+	}
+	if len(allEnabled) != 2 {
+		t.Fatalf("all-enabled overlay len = %d, want 2 (%#v)", len(allEnabled), allEnabled)
+	}
+
+	if err := app.store.SetDisabledMcpServers(thread.ID, []string{"github", "linear"}); err != nil {
+		t.Fatalf("SetDisabledMcpServers all disabled: %v", err)
+	}
+	allDisabled, err := app.buildCodexMCPServersForThread(thread)
+	if err != nil {
+		t.Fatalf("buildCodexMCPServersForThread all disabled: %v", err)
+	}
+	if allDisabled == nil {
+		t.Fatal("all-disabled overlay is nil, want explicit empty map")
+	}
+	if len(allDisabled) != 0 {
+		t.Fatalf("all-disabled overlay len = %d, want 0 (%#v)", len(allDisabled), allDisabled)
 	}
 }
 

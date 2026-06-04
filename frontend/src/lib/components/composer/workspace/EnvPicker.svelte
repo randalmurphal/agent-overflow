@@ -18,6 +18,7 @@
   import { composerTriggerClasses } from '../triggerClasses';
   import {
     GitListWorktrees,
+    GitListWorktreesForProject,
     GitWorktreeStatus,
     RemoveOtherWorktree,
     UpdateThreadWorkspace,
@@ -97,22 +98,23 @@
       confirm = null;
       return;
     }
-    // The worktree list query needs a real thread row. Materialize a
-    // placeholder before falling through to the fetch.
-    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
-    if (!threadId || pane.thread?.id !== threadId) {
-      open = false;
-      return;
-    }
     await refreshWorktreeList();
   }
 
   async function refreshWorktreeList(): Promise<void> {
     if (!pane.thread) return;
     if (loading) return;
+    const projectId = pane.thread.projectId;
+    if (!pane.threadId && !projectId) return;
     loading = true;
     try {
-      const res = (await GitListWorktrees(pane.thread.id)) as Worktree[] | null;
+      let res: Worktree[] | null;
+      if (pane.threadId) {
+        res = (await GitListWorktrees(pane.threadId)) as Worktree[] | null;
+      } else {
+        if (!projectId) return;
+        res = (await GitListWorktreesForProject(projectId)) as Worktree[] | null;
+      }
       worktrees = Array.isArray(res) ? res : [];
     } catch (err) {
       console.error('GitListWorktrees failed:', err);
@@ -141,6 +143,16 @@
       closeMenu();
       return;
     }
+    if (pane.hasDraftPlaceholder) {
+      const worktree = worktrees.find((candidate) => sameNormalizedPath(candidate.path, path));
+      pane.applyDraftPlaceholderWorkspace({
+        workspacePath: path,
+        worktreePath: sameNormalizedPath(path, projectPath) ? '' : path,
+        branch: worktree?.branch,
+      });
+      closeMenu();
+      return;
+    }
     applying = true;
     try {
       const updated = (await UpdateThreadWorkspace(threadId, path)) as Thread;
@@ -163,7 +175,7 @@
   }
 
   async function requestRemove(wt: Worktree): Promise<void> {
-    if (!pane.thread) return;
+    if (!pane.thread || !pane.threadId) return;
     confirm = {
       path: wt.path,
       label: pathBasename(wt.path) || wt.path,
@@ -223,12 +235,12 @@
   }
 
   async function performRemove(force: boolean): Promise<void> {
-    if (!pane.thread || !confirm) return;
+    if (!pane.thread || !pane.threadId || !confirm) return;
     const path = confirm.path;
     const label = confirm.label;
     confirm = { ...confirm, pending: true, error: null };
     try {
-      await RemoveOtherWorktree(pane.thread.id, path, force);
+      await RemoveOtherWorktree(pane.threadId, path, force);
       addToast('info', `Removed worktree ${label}`);
       // If we just removed the current workspace, the backend has flipped
       // us to the project root and broadcast a thread upsert; the pane
@@ -363,6 +375,7 @@
               onSelect={() => selectPath(wt.path)}
               actionLabel={`Remove worktree ${pathBasename(wt.path) || wt.path}`}
               actionPosition="end"
+              actionDisabled={!pane.threadId}
               onAction={() => requestRemove(wt)}
             >
               {#snippet action()}

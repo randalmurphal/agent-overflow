@@ -149,6 +149,17 @@ CREATE INDEX idx_thread_drafts_has_content
 		SQL:     rebuildThreadsV5SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 6,
+		Name:    "new_thread_mcp_defaults",
+		SQL: `CREATE TABLE new_thread_mcp_defaults (
+    provider         TEXT NOT NULL CHECK(provider IN ('claude','codex')),
+    workspace_path   TEXT NOT NULL DEFAULT '',
+    disabled_servers TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(disabled_servers)),
+    updated_at       INTEGER NOT NULL,
+    PRIMARY KEY (provider, workspace_path)
+);`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

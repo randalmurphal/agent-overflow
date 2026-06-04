@@ -1188,28 +1188,17 @@ function placeholderPane(
   return pane;
 }
 
-describe('withMaterializedThread (terminal/diff commands on placeholders)', () => {
+describe('thread-bound commands on placeholders', () => {
   beforeEach(() => {
     clearCommandRegistry();
     resetThreadStatuses();
   });
 
-  it('terminal.toggle on a placeholder materializes the thread before flipping showTerminal', async () => {
+  it('terminal.toggle on a placeholder does not create a thread', () => {
     const pane = placeholderPane('term-toggle-draft');
-    const created: Thread = {
-      id: 'materialized-term-toggle',
-      title: 'New Thread',
-      provider: 'claude',
-      workspacePath: '/tmp/placeholder-cmd',
-      projectPath: '/tmp/placeholder-cmd',
-      projectId: 'project-placeholder-cmd',
-      mode: 'chat',
-      model: 'claude-sonnet-4-6',
-      createdAt: 0,
-      updatedAt: 0,
-      archived: false,
-    };
-    const create = setBindingMock('CreateThread', async () => created);
+    const create = setBindingMock('CreateThread', async () => {
+      throw new Error('CreateThread must not be called for terminal.toggle on a placeholder');
+    });
     registerFixtureCommands(pane);
 
     expect(pane.threadId).toBeNull();
@@ -1220,11 +1209,9 @@ describe('withMaterializedThread (terminal/diff commands on placeholders)', () =
     expect(ctx.hasActiveThread).toBe(true);
     runCommand('terminal.toggle', ctx);
 
-    await vi.waitFor(() => {
-      expect(create).toHaveBeenCalledTimes(1);
-      expect(pane.threadId).toBe('materialized-term-toggle');
-      expect(pane.showTerminal).toBe(true);
-    });
+    expect(create).not.toHaveBeenCalled();
+    expect(pane.threadId).toBeNull();
+    expect(pane.showTerminal).toBe(false);
   });
 
   it('terminal.toggle on a real thread does not call CreateThread', async () => {
@@ -1243,22 +1230,11 @@ describe('withMaterializedThread (terminal/diff commands on placeholders)', () =
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('diff.panel.toggle on a placeholder materializes the thread before opening the panel', async () => {
+  it('diff.panel.toggle on a placeholder does not create a thread', () => {
     const pane = placeholderPane('diff-toggle-draft');
-    const created: Thread = {
-      id: 'materialized-diff',
-      title: 'New Thread',
-      provider: 'claude',
-      workspacePath: '/tmp/placeholder-cmd',
-      projectPath: '/tmp/placeholder-cmd',
-      projectId: 'project-placeholder-cmd',
-      mode: 'chat',
-      model: 'claude-sonnet-4-6',
-      createdAt: 0,
-      updatedAt: 0,
-      archived: false,
-    };
-    const create = setBindingMock('CreateThread', async () => created);
+    const create = setBindingMock('CreateThread', async () => {
+      throw new Error('CreateThread must not be called for diff.panel.toggle on a placeholder');
+    });
     registerFixtureCommands(pane);
 
     expect(pane.threadId).toBeNull();
@@ -1266,11 +1242,9 @@ describe('withMaterializedThread (terminal/diff commands on placeholders)', () =
 
     runCommand('diff.panel.toggle', makeCommandContext(pane, {}) as CommandContext);
 
-    await vi.waitFor(() => {
-      expect(create).toHaveBeenCalledTimes(1);
-      expect(pane.threadId).toBe('materialized-diff');
-      expect(pane.diffPanel.open).toBe(true);
-    });
+    expect(create).not.toHaveBeenCalled();
+    expect(pane.threadId).toBeNull();
+    expect(pane.diffPanel.open).toBe(false);
   });
 });
 

@@ -23,7 +23,6 @@ import type { Project, ProjectWithCounts, Thread } from '../../lib/types/models'
 import type { GitStatus } from '../../lib/types/git';
 import { resetProjectsForTest } from '../../lib/stores/projects.svelte';
 import { resetSidebarForTest, expandProject } from '../../lib/stores/sidebar.svelte';
-import { resetRuntimeModeDraftsForTest } from '../../lib/stores/runtimeModeDraft.svelte';
 import { resetProviderModelsForTest } from '../../lib/stores/providerModels.svelte';
 import { resetSettingsForTest } from '../../lib/stores/settings.svelte';
 import { resetThreadActionConfirmationsForTest } from '../../lib/stores/threadActionConfirmations.svelte';
@@ -61,7 +60,6 @@ export function resetAppState(): void {
   // project list / collapsed chevrons don't inherit from a prior case.
   resetProjectsForTest();
   resetSidebarForTest();
-  resetRuntimeModeDraftsForTest();
   resetSettingsForTest();
   resetThreadActionConfirmationsForTest();
   resetProviderModelsForTest();

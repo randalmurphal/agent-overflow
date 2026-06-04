@@ -4,53 +4,43 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 
 	"agent-overflow/internal/store"
 )
 
-// snapshotDisabledMcpServers reads the current global disabled set from
-// the provider config file for use as a new thread's initial snapshot.
-func (a *App) snapshotDisabledMcpServers(providerName, workspacePath string) *[]string {
+// snapshotProviderDisabledMCPServers reads the provider-native disabled set.
+// New installs with no AO defaults row still use this so thread creation
+// preserves the user's existing Claude/Codex configuration.
+func (a *App) snapshotProviderDisabledMCPServers(providerName, workspacePath string) *[]string {
 	var disabled []string
-	switch providerName {
-	case mcpProviderClaude:
-		st, err := a.claudeConfig()
-		if err != nil {
-			log.Printf("mcp: snapshot claude disabled: %v", err)
-			return &disabled
-		}
-		servers, err := st.ListServers(workspacePath)
-		if err != nil {
-			log.Printf("mcp: snapshot claude disabled: %v", err)
-			return &disabled
-		}
-		for _, srv := range servers {
-			if srv.Disabled {
-				disabled = append(disabled, srv.Name)
-			}
-		}
-	case mcpProviderCodex:
-		st, err := a.codexConfig()
-		if err != nil {
-			log.Printf("mcp: snapshot codex disabled: %v", err)
-			return &disabled
-		}
-		servers, err := st.ListServers()
-		if err != nil {
-			log.Printf("mcp: snapshot codex disabled: %v", err)
-			return &disabled
-		}
-		for _, srv := range servers {
-			if !srv.Enabled {
-				disabled = append(disabled, srv.Name)
-			}
-		}
+	servers, err := a.ListMcpServers(providerName, workspacePath)
+	if err != nil {
+		log.Printf("mcp: snapshot %s disabled for %q: %v", providerName, workspacePath, err)
+		return &disabled
 	}
+	disabled = disabledMCPServerNames(servers)
 	return &disabled
 }
 
+// snapshotDisabledMcpServers returns the disabled set for a new thread's
+// initial per-thread snapshot. AO defaults win when present; provider-native
+// config is the compatibility fallback.
+func (a *App) snapshotDisabledMcpServers(providerName, workspacePath string) *[]string {
+	if a.store != nil {
+		names, found, err := a.store.GetNewThreadDisabledMCPServers(providerName, workspacePath)
+		if err == nil && found {
+			return &names
+		}
+		if err != nil {
+			log.Printf("mcp: load new-thread defaults for %s/%q: %v", providerName, workspacePath, err)
+		}
+	}
+	return a.snapshotProviderDisabledMCPServers(providerName, workspacePath)
+}
+
 // ensureDisabledMcpSnapshot returns the per-thread disabled set,
-// lazy-snapshotting from the global config if the thread has no
+// lazy-snapshotting from the new-thread defaults if the thread has no
 // snapshot yet (NULL column, pre-feature thread).
 func (a *App) ensureDisabledMcpSnapshot(threadID, providerName, workspacePath string) ([]string, error) {
 	names, snapshotted, err := a.store.GetDisabledMcpServers(threadID)
@@ -67,9 +57,69 @@ func (a *App) ensureDisabledMcpSnapshot(threadID, providerName, workspacePath st
 	return *snapshot, nil
 }
 
+// ListMcpServersForNewThread returns the MCP library with defaults that future
+// threads will snapshot. It does not require or create a thread row.
+func (a *App) ListMcpServersForNewThread(providerName, workspacePath string) ([]MCPServer, error) {
+	servers, err := a.ListMcpServers(providerName, workspacePath)
+	if err != nil {
+		return nil, fmt.Errorf("list mcp servers for new thread: %w", err)
+	}
+	disabled := disabledMCPServerNames(servers)
+	if a.store != nil {
+		names, found, err := a.store.GetNewThreadDisabledMCPServers(providerName, workspacePath)
+		if err == nil && found {
+			disabled = names
+		}
+		if err != nil {
+			log.Printf("mcp: load new-thread defaults for %s/%q: %v", providerName, workspacePath, err)
+		}
+	}
+	return applyDisabledMCPServers(servers, disabled), nil
+}
+
+// SetNewThreadMcpServerEnabled updates only the defaults future threads will
+// snapshot. Existing threads keep their own per-thread MCP state.
+func (a *App) SetNewThreadMcpServerEnabled(providerName, workspacePath, name string, enabled bool) error {
+	providerName, workspacePath, name, fallback, err := a.prepareNewThreadMCPDisabledUpdate(providerName, workspacePath, name)
+	if err != nil {
+		return err
+	}
+	return a.persistNewThreadMCPDisabledUpdate(providerName, workspacePath, name, enabled, fallback)
+}
+
+func (a *App) prepareNewThreadMCPDisabledUpdate(providerName, workspacePath, name string) (string, string, string, []string, error) {
+	providerName = strings.TrimSpace(providerName)
+	workspacePath = strings.TrimSpace(workspacePath)
+	name = strings.TrimSpace(name)
+	if providerName == "" {
+		return "", "", "", nil, fmt.Errorf("set new-thread mcp server enabled: provider is required")
+	}
+	if name == "" {
+		return "", "", "", nil, fmt.Errorf("set new-thread mcp server enabled: server name is required")
+	}
+	servers, err := a.ListMcpServers(providerName, workspacePath)
+	if err != nil {
+		return "", "", "", nil, err
+	}
+	if !mcpServerExists(servers, name) {
+		return "", "", "", nil, fmt.Errorf("mcp server %q not found for %s", name, providerName)
+	}
+	return providerName, workspacePath, name, disabledMCPServerNames(servers), nil
+}
+
+func (a *App) persistNewThreadMCPDisabledUpdate(providerName, workspacePath, name string, enabled bool, fallback []string) error {
+	if a.store == nil {
+		return fmt.Errorf("set new-thread mcp server enabled: store unavailable")
+	}
+	_, err := a.store.MutateNewThreadDisabledMCPServers(providerName, workspacePath, fallback, func(current []string) []string {
+		return mutateDisabledSet(current, name, !enabled)
+	})
+	return err
+}
+
 // ListMcpServersForThread returns the MCP server library with per-thread
-// disabled state from SQLite instead of global config. Used by the
-// composer toolbar popup. Settings UI continues to use ListMcpServers.
+// disabled state from SQLite instead of global config. Used by the composer
+// toolbar popup. Settings UI continues to use ListMcpServers.
 func (a *App) ListMcpServersForThread(threadID string) ([]MCPServer, error) {
 	t, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -79,64 +129,61 @@ func (a *App) ListMcpServersForThread(threadID string) ([]MCPServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list mcp servers for thread: %w", err)
 	}
+	return a.listMcpServersWithDisabled(t.Provider, t.WorkspacePath, disabled, "thread")
+}
+
+func (a *App) listMcpServersWithDisabled(providerName, workspacePath string, disabled []string, scope string) ([]MCPServer, error) {
+	servers, err := a.ListMcpServers(providerName, workspacePath)
+	if err != nil {
+		return nil, fmt.Errorf("list mcp servers for %s: %w", scope, err)
+	}
+	return applyDisabledMCPServers(servers, disabled), nil
+}
+
+func disabledMCPServerNames(servers []MCPServer) []string {
+	names := make([]string, 0)
+	for _, server := range servers {
+		if server.Disabled {
+			names = append(names, server.Name)
+		}
+	}
+	return names
+}
+
+func applyDisabledMCPServers(servers []MCPServer, disabled []string) []MCPServer {
 	disabledSet := make(map[string]bool, len(disabled))
 	for _, name := range disabled {
 		disabledSet[name] = true
 	}
-
-	switch t.Provider {
-	case "claude":
-		st, err := a.claudeConfig()
-		if err != nil {
-			return nil, err
-		}
-		servers, err := st.ListServers(t.WorkspacePath)
-		if err != nil {
-			return nil, fmt.Errorf("list claude mcp servers for thread: %w", err)
-		}
-		out := make([]MCPServer, 0, len(servers))
-		for _, srv := range servers {
-			ws := claudeServerToWire(srv)
-			ws.Disabled = disabledSet[srv.Name]
-			out = append(out, ws)
-		}
-		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-		return out, nil
-
-	case "codex":
-		st, err := a.codexConfig()
-		if err != nil {
-			return nil, err
-		}
-		servers, err := st.ListServers()
-		if err != nil {
-			return nil, fmt.Errorf("list codex mcp servers for thread: %w", err)
-		}
-		out := make([]MCPServer, 0, len(servers))
-		for _, srv := range servers {
-			ws := codexServerToWire(srv)
-			ws.Disabled = disabledSet[srv.Name]
-			out = append(out, ws)
-		}
-		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-		return out, nil
-
-	default:
-		return nil, fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, t.Provider)
+	out := make([]MCPServer, 0, len(servers))
+	for _, server := range servers {
+		next := server
+		next.Disabled = disabledSet[server.Name]
+		out = append(out, next)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
-// buildCodexMCPServersForThread builds the full enabled server set for
-// a Codex thread, reading disabled state from SQLite. The returned map
-// replaces native Codex config discovery via config.mcp_servers in
-// thread start params. Returns nil when nothing is disabled (native
-// discovery gives the correct result).
+func mcpServerExists(servers []MCPServer, name string) bool {
+	for _, server := range servers {
+		if server.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// buildCodexMCPServersForThread builds the full enabled server set for a Codex
+// thread, reading disabled state from SQLite. A nil return means no per-thread
+// snapshot exists and Codex should use native config discovery. A non-nil empty
+// map is an explicit "enable none of the configured servers" overlay.
 func (a *App) buildCodexMCPServersForThread(t store.Thread) (map[string]any, error) {
-	disabled, err := a.ensureDisabledMcpSnapshot(t.ID, t.Provider, t.WorkspacePath)
+	disabled, snapshotted, err := a.store.GetDisabledMcpServers(t.ID)
 	if err != nil {
 		return nil, err
 	}
-	if len(disabled) == 0 {
+	if !snapshotted {
 		return nil, nil
 	}
 	disabledSet := make(map[string]bool, len(disabled))
@@ -182,8 +229,8 @@ func (a *App) buildCodexMCPServersForThread(t store.Thread) (map[string]any, err
 	return out, nil
 }
 
-// mutateDisabledSet returns a copy of the disabled set with name
-// added (disabled=true) or removed (disabled=false).
+// mutateDisabledSet returns a copy of the disabled set with name added
+// (disabled=true) or removed (disabled=false).
 func mutateDisabledSet(current []string, name string, disabled bool) []string {
 	out := make([]string, 0, len(current)+1)
 	for _, n := range current {

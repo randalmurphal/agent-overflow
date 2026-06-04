@@ -43,9 +43,13 @@
   async function handleClick(): Promise<void> {
     if (applying || !pane.thread) return;
     const next = cycleMode(currentMode);
+    if (pane.hasDraftPlaceholder) {
+      pane.setDraftPlaceholderMode(next);
+      return;
+    }
     applying = true;
     try {
-      const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
+      const threadId = pane.threadId;
       if (!threadId) return;
       const updated = (await UpdateThreadMode(threadId, next)) as Thread;
       syncThread(updated);

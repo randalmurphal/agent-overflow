@@ -24,9 +24,15 @@
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
 
-  function loadForThread(): void {
-    if (!pane.threadId || !pane.thread) return;
-    void mcpServersStore.loadForThread(pane.threadId, pane.thread.provider);
+  function loadCurrentScope(): void {
+    if (!pane.thread) return;
+    if (pane.hasDraftPlaceholder) {
+      void mcpServersStore.loadForNewThread(pane.thread.provider, pane.thread.workspacePath ?? '');
+      return;
+    }
+    if (pane.threadId) {
+      void mcpServersStore.loadForThread(pane.threadId, pane.thread.provider);
+    }
   }
 
   function openMenu(): void {
@@ -34,7 +40,7 @@
     open = true;
     // Prime the store on open. McpServersMenu also re-loads when it
     // mounts, but firing here avoids a flash of empty state.
-    loadForThread();
+    loadCurrentScope();
   }
 
   function closeMenu(): void {
@@ -56,9 +62,18 @@
   });
 
   let provider = $derived(pane.thread?.provider ?? '');
+  let threadId = $derived(pane.threadId ?? '');
+  let workspacePath = $derived(pane.thread?.workspacePath ?? '');
+  let isPlaceholder = $derived(pane.hasDraftPlaceholder);
   let enabledCount = $derived(
     provider
-      ? mcpServersStore.serversForProvider(provider).filter((s) => !s.disabled).length
+      ? (
+        isPlaceholder
+          ? mcpServersStore.serversForNewThread(provider, workspacePath)
+          : threadId
+            ? mcpServersStore.serversForThread(threadId, provider)
+            : []
+      ).filter((s) => !s.disabled).length
       : 0,
   );
 </script>

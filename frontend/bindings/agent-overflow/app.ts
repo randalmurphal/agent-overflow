@@ -299,6 +299,15 @@ export function DeleteDiscussion(name: string, scope: string): $CancellablePromi
 }
 
 /**
+ * DeleteEmptyDraftThread removes a materialized chat/plan draft row after the
+ * composer is cleared. It returns false when the thread has gained durable
+ * state or is currently active.
+ */
+export function DeleteEmptyDraftThread(threadID: string): $CancellablePromise<boolean> {
+    return $Call.ByID(3876094070, threadID);
+}
+
+/**
  * DeleteMcpServer removes the entry. For Claude the call also strips
  * the name from every workspace's `disabledMcpServers` so re-adding
  * the server later doesn't silently surface as disabled.
@@ -532,6 +541,16 @@ export function GetEditorSettings(): $CancellablePromise<settings$0.EditorSettin
  */
 export function GetGitStatus(threadID: string): $CancellablePromise<git$0.GitStatus> {
     return $Call.ByID(4123560639, threadID).then(($result: any) => {
+        return $$createType17($result);
+    });
+}
+
+/**
+ * GetGitStatusForProject returns git status for a project root without
+ * requiring a thread row. Used by local draft placeholders.
+ */
+export function GetGitStatusForProject(projectID: string): $CancellablePromise<git$0.GitStatus> {
+    return $Call.ByID(1462513307, projectID).then(($result: any) => {
         return $$createType17($result);
     });
 }
@@ -857,10 +876,30 @@ export function GitListBranches(threadID: string): $CancellablePromise<git$0.Git
 }
 
 /**
+ * GitListBranchesForProject lists repository branches from a project root
+ * without requiring a thread row.
+ */
+export function GitListBranchesForProject(projectID: string): $CancellablePromise<git$0.GitBranch[]> {
+    return $Call.ByID(2675387767, projectID).then(($result: any) => {
+        return $$createType38($result);
+    });
+}
+
+/**
  * GitListWorktrees lists worktrees for the thread's repository.
  */
 export function GitListWorktrees(threadID: string): $CancellablePromise<git$0.Worktree[]> {
     return $Call.ByID(3232495403, threadID).then(($result: any) => {
+        return $$createType40($result);
+    });
+}
+
+/**
+ * GitListWorktreesForProject lists worktrees for a project without requiring
+ * a thread row.
+ */
+export function GitListWorktreesForProject(projectID: string): $CancellablePromise<git$0.Worktree[]> {
+    return $Call.ByID(409101231, projectID).then(($result: any) => {
         return $$createType40($result);
     });
 }
@@ -878,6 +917,14 @@ export function GitListWorktrees(threadID: string): $CancellablePromise<git$0.Wo
  */
 export function GitMaybeFetchRemotes(threadID: string): $CancellablePromise<boolean> {
     return $Call.ByID(2000020570, threadID);
+}
+
+/**
+ * GitMaybeFetchRemotesForProject is the project-root counterpart to
+ * GitMaybeFetchRemotes for draft placeholders.
+ */
+export function GitMaybeFetchRemotesForProject(projectID: string): $CancellablePromise<boolean> {
+    return $Call.ByID(338919746, projectID);
 }
 
 /**
@@ -1224,9 +1271,19 @@ export function ListMcpServers(provider: string, workspacePath: string): $Cancel
 }
 
 /**
+ * ListMcpServersForNewThread returns the MCP library with defaults that future
+ * threads will snapshot. It does not require or create a thread row.
+ */
+export function ListMcpServersForNewThread(providerName: string, workspacePath: string): $CancellablePromise<$models.MCPServer[]> {
+    return $Call.ByID(3030514258, providerName, workspacePath).then(($result: any) => {
+        return $$createType58($result);
+    });
+}
+
+/**
  * ListMcpServersForThread returns the MCP server library with per-thread
- * disabled state from SQLite instead of global config. Used by the
- * composer toolbar popup. Settings UI continues to use ListMcpServers.
+ * disabled state from SQLite instead of global config. Used by the composer
+ * toolbar popup. Settings UI continues to use ListMcpServers.
  */
 export function ListMcpServersForThread(threadID: string): $CancellablePromise<$models.MCPServer[]> {
     return $Call.ByID(2790948120, threadID).then(($result: any) => {
@@ -1879,6 +1936,14 @@ export function SetNetworkSettings(s: network$0.Settings): $CancellablePromise<n
 }
 
 /**
+ * SetNewThreadMcpServerEnabled updates only the defaults future threads will
+ * snapshot. Existing threads keep their own per-thread MCP state.
+ */
+export function SetNewThreadMcpServerEnabled(providerName: string, workspacePath: string, name: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(545823411, providerName, workspacePath, name, enabled);
+}
+
+/**
  * SetWSLDistroPreference persists the new distro pick to the
  * launcher's wsl.json. The change applies on the next Windows-side
  * launch; the running backend stays in its current distro for the
@@ -2093,6 +2158,17 @@ export function UpdateKeybindings(bindings: keybindings$0.Keybinding[]): $Cancel
 export function UpdateMcpServer(input: $models.MCPServer): $CancellablePromise<$models.MCPServer> {
     return $Call.ByID(4282105115, input).then(($result: any) => {
         return $$createType4($result);
+    });
+}
+
+/**
+ * UpdateNewThreadDefaults updates the provider/model profile used to seed
+ * future draft placeholders and newly-created threads. It intentionally does
+ * not mutate any existing thread row.
+ */
+export function UpdateNewThreadDefaults(update: $models.NewThreadDefaultsUpdate): $CancellablePromise<$models.ThreadDefaults> {
+    return $Call.ByID(595194384, update).then(($result: any) => {
+        return $$createType33($result);
     });
 }
 

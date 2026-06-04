@@ -37,14 +37,14 @@ export class GitActionResult {
 /**
  * GitBranch is a branch the picker can offer for checkout. Remote-only
  * branches are projected to their short name (e.g. "feature" rather than
- * "origin/feature") so the UI presents a unified list — `git checkout
- * <name>` against a name that exists only on a remote auto-creates the
- * local tracking branch.
+ * "origin/feature") so the UI presents a unified list; `git checkout <name>`
+ * against a name that exists only on a remote auto-creates the local tracking
+ * branch.
  * 
- * AheadCount and BehindCount are populated from %(upstream:track) when
- * the branch has a configured upstream. Remote-only projected entries
- * (those without a local checkout) have no upstream relationship, so
- * both counts stay 0.
+ * AheadCount and BehindCount are populated from %(upstream:track) when the
+ * branch has a configured upstream. Remote-only projected entries (those
+ * without a local checkout) have no upstream relationship, so both counts stay
+ * 0.
  */
 export class GitBranch {
     "name": string;

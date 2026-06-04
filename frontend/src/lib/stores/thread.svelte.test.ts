@@ -7,11 +7,6 @@ import {
 } from './thread.svelte';
 import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
 import {
-  hasRuntimeModeDraft,
-  resetRuntimeModeDraftsForTest,
-  setRuntimeModeDraft,
-} from './runtimeModeDraft.svelte';
-import {
   resetForTest as resetWorktreeIntent,
   setAttachBranch,
   setThreadEnvMode,
@@ -149,14 +144,13 @@ describe('createThreadPane', () => {
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
   });
 
-  it('drops stale placeholder intent when "+ New" replaces an unsent draft', () => {
+  it('drops stale placeholder worktree intent when "+ New" replaces an unsent draft', () => {
     // Repeated "+ New" without typing would otherwise leak worktree
-    // and runtime-mode entries keyed by the prior placeholder id —
-    // they're unreachable (no Thread points at them) but stay in the
-    // stores until reset. Verify startDraftPlaceholder cleans them up
-    // before staging the next placeholder.
+    // entries keyed by the prior placeholder id — they're unreachable
+    // (no Thread points at them) but stay in the store until reset.
+    // Verify startDraftPlaceholder cleans them up before staging the
+    // next placeholder.
     resetWorktreeIntent();
-    resetRuntimeModeDraftsForTest();
     try {
       const pane = createThreadPane();
       const projectA: Project = {
@@ -181,10 +175,8 @@ describe('createThreadPane', () => {
 
       setThreadEnvMode(firstPlaceholder!, 'new-worktree');
       setAttachBranch(firstPlaceholder!, 'feature/x');
-      setRuntimeModeDraft(firstPlaceholder!.id, 'approval-required');
 
       expect(worktreeIntentForThread(firstPlaceholder!).attachBranch).toBe('feature/x');
-      expect(hasRuntimeModeDraft(firstPlaceholder!)).toBe(true);
 
       pane.startDraftPlaceholder(projectB, 'chat');
       expect(pane.thread?.id).not.toBe(firstPlaceholder!.id);
@@ -193,10 +185,71 @@ describe('createThreadPane', () => {
       // placeholder thread to confirm the entries are gone.
       expect(worktreeIntentForThread(firstPlaceholder!).mode).toBe('local');
       expect(worktreeIntentForThread(firstPlaceholder!).attachBranch).toBe('');
-      expect(hasRuntimeModeDraft(firstPlaceholder!)).toBe(false);
     } finally {
       resetWorktreeIntent();
-      resetRuntimeModeDraftsForTest();
+    }
+  });
+
+  it('keeps selected workspace fields when applying placeholder model defaults', () => {
+    const pane = createThreadPane();
+    const project: Project = {
+      id: 'p-1',
+      path: '/tmp/project',
+      name: 'project',
+      sortPosition: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+
+    pane.startDraftPlaceholder(project, 'chat');
+    pane.applyDraftPlaceholderWorkspace({
+      workspacePath: '/tmp/project-worktree',
+      worktreePath: '/tmp/project-worktree',
+      branch: 'feature/x',
+    });
+    pane.applyDraftPlaceholderDefaults({
+      provider: 'codex',
+      model: 'gpt-5.4',
+      reasoningEffort: 'high',
+      fastMode: true,
+      contextWindow: 200000,
+      runtimeMode: 'full-access',
+      workspacePath: '/tmp/other',
+      branch: 'main',
+    });
+
+    expect(pane.thread?.provider).toBe('codex');
+    expect(pane.thread?.model).toBe('gpt-5.4');
+    expect(pane.thread?.workspacePath).toBe('/tmp/project-worktree');
+    expect(pane.thread?.worktreePath).toBe('/tmp/project-worktree');
+    expect(pane.thread?.branch).toBe('feature/x');
+  });
+
+  it('migrates worktree intent when an empty materialized draft returns to a placeholder', async () => {
+    resetWorktreeIntent();
+    try {
+      const pane = await buildPane(makeThread({
+        id: 'materialized-draft',
+        projectId: 'p-1',
+        projectPath: '/tmp/project',
+        workspacePath: '/tmp/project',
+        mode: 'chat',
+        isDraft: true,
+      }));
+
+      setThreadEnvMode(pane.thread!, 'new-worktree');
+      setAttachBranch(pane.thread!, 'feature/x');
+      expect(worktreeIntentForThread(pane.thread!).attachBranch).toBe('feature/x');
+
+      const oldThread = pane.thread!;
+      expect(pane.dematerializeEmptyDraftThread()).toBe(true);
+      expect(pane.thread?.id).not.toBe(oldThread.id);
+      expect(pane.thread?.id.startsWith('draft:')).toBe(true);
+      expect(worktreeIntentForThread(oldThread).mode).toBe('local');
+      expect(worktreeIntentForThread(pane.thread!).attachBranch).toBe('feature/x');
+    } finally {
+      resetWorktreeIntent();
     }
   });
 

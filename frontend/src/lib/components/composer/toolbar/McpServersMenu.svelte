@@ -43,14 +43,22 @@
   // the popup is mounted.
   let loadProvider = $derived(pane.thread?.provider ?? '');
   let loadThreadId = $derived(pane.threadId ?? '');
+  let loadWorkspacePath = $derived(pane.thread?.workspacePath ?? '');
+  let isPlaceholder = $derived(pane.hasDraftPlaceholder);
 
   $effect(() => {
-    if (!(open && loadProvider && loadThreadId)) return;
+    if (!(open && loadProvider)) return;
     const provider = loadProvider;
     const threadId = loadThreadId;
+    const workspacePath = loadWorkspacePath;
+    const placeholder = isPlaceholder;
     void (async () => {
       const [library] = await Promise.all([
-        mcpServersStore.loadForThread(threadId, provider),
+        placeholder
+          ? mcpServersStore.loadForNewThread(provider, workspacePath)
+          : threadId
+            ? mcpServersStore.loadForThread(threadId, provider)
+            : Promise.resolve([]),
         mcpServersStore.loadStatuses(provider),
       ]);
       // Live sessions feed the cache continuously, so a thread that
@@ -114,11 +122,18 @@
   }
 
   async function toggleServer(server: MCPServer, enable: boolean): Promise<void> {
-    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
-    if (!threadId) return;
     try {
-      await mcpServersStore.setEnabled(threadId, server.name, enable);
-      if (threadId) {
+      const threadId = pane.threadId;
+      if (pane.hasDraftPlaceholder) {
+        await mcpServersStore.setDefaultEnabled(
+          server.provider,
+          pane.thread?.workspacePath ?? '',
+          server.name,
+          enable,
+        );
+        await mcpServersStore.loadForNewThread(server.provider, pane.thread?.workspacePath ?? '');
+      } else if (threadId) {
+        await mcpServersStore.setEnabled(threadId, server.name, enable);
         await mcpServersStore.loadForThread(threadId, pane.thread?.provider ?? '');
       }
     } catch (err) {
@@ -131,8 +146,11 @@
       addToast('info', `Enable ${server.name} first, then sign in.`);
       return;
     }
-    const threadId = pane.threadId ?? (await pane.ensureMaterializedThread());
-    if (!threadId) return;
+    const threadId = pane.threadId;
+    if (!threadId) {
+      addToast('info', 'Start the thread before signing in.');
+      return;
+    }
     try {
       const res = await mcpServersStore.triggerAuth(threadId, server.name);
       if (res?.authUrl) {
@@ -161,7 +179,15 @@
   }
 
   let provider = $derived(pane.thread?.provider ?? '');
-  let visible = $derived(provider ? mcpServersStore.serversForProvider(provider) : []);
+  let visible = $derived(
+    provider
+      ? isPlaceholder
+        ? mcpServersStore.serversForNewThread(provider, loadWorkspacePath)
+        : loadThreadId
+          ? mcpServersStore.serversForThread(loadThreadId, provider)
+          : []
+      : [],
+  );
   let allStatuses = $derived(mcpServersStore.statuses);
   let refreshingProviders = $derived(mcpServersStore.refreshingProvider);
   let providerRefreshing = $derived(provider ? refreshingProviders.has(provider) : false);
