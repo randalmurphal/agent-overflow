@@ -135,7 +135,7 @@ Summary of what `ParseLine` dispatches:
   backgrounded tasks, inverting the documented foreground-only
   interrupt behaviour and silently masking a CLI bug). The
   `mcp_status` subtype is the read-only poll Claude exposes for
-  post-OAuth state — used by `app_mcp_bindings.go:pollClaudeMCPAfterOAuth`
+  post-OAuth state — used by `app_mcp_auth.go:pollClaudeMCPAfterOAuth`
   to mirror Codex's `mcpServer/oauthLogin/completed` notification on
   Claude. See
   [`claude-wire.md §control_request`](../../../docs/references/claude-wire.md#control_request)

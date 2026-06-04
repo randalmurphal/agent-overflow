@@ -1219,7 +1219,7 @@ the array. Polling callers should treat "missing entry" as
 "keep retrying," not as a terminal state.
 
 **Used by AO** in the OAuth-completion poller at
-`app_mcp_bindings.go:pollClaudeMCPAfterOAuth`. Claude emits no
+`app_mcp_auth.go:pollClaudeMCPAfterOAuth`. Claude emits no
 spontaneous post-OAuth wire envelope (`reconnectMcpServerImpl`
 runs inline in `print.ts` and updates state in-process), so AO
 polls `mcp_status` after `TriggerMcpAuth` with a 1+2+3+5+8+13s

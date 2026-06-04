@@ -122,122 +122,28 @@ import { createThreadDesignState } from './threadDesignState.svelte';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import { SvelteMap } from 'svelte/reactivity';
+import { PerItemSmoother } from '../markdown/smoothing/PerItemSmoother';
 import {
-  PerItemSmoother,
-  type SmoothingClock,
-} from '../markdown/smoothing/PerItemSmoother';
-
-// Test-only injection: when set, every PerItemSmoother created by
-// `getOrCreateSmoothing` uses this clock instead of the default rAF +
-// performance.now() pair. Lets reveal-cadence tests run deterministically
-// without globally monkey-patching browser APIs.
-let smoothingClockForTest: SmoothingClock | undefined;
-
-export function __setSmoothingClockForTest(clock: SmoothingClock | undefined): void {
-  smoothingClockForTest = clock;
-}
-
-// Live-content stamp timebase. Reuses the smoother's clock so a stamp
-// written from inside `onReveal` (which runs on the smoothing clock)
-// shares that callback's time source. In production this resolves to
-// `performance.now()` — the same source MessageTimeline's `animationMode`
-// getter compares against — so the stamp and the latch read share one
-// monotonic timebase. Under `__setSmoothingClockForTest` the fake clock
-// drives THIS stamp (making pane-stamp assertions deterministic); the
-// MessageTimeline getter still reads real `performance.now()`, so the
-// spring-vs-instant decision is covered by the controller tests (which
-// stub `animationMode`) and the pure-fn latch tests, not by fake-clock
-// stamp tests.
-function nowForLiveContent(): number {
-  return smoothingClockForTest?.now() ?? performance.now();
-}
-
-/**
- * Default raw-item budget passed to `ListItemsBeforeTurn` for an
- * explicit "Load older" page. The backend walks turns DESC summing
- * each turn's item count (excluding plan_update notifications) until
- * cumulative ≥ this budget, then returns that turn's items plus every
- * newer one strictly below the caller's floor. One click = ~this many
- * items prepended, regardless of per-turn density. Matches the initial
- * slice size so the user sees a consistent "page size."
- */
-const LOAD_OLDER_ITEM_BUDGET = 200;
-
-/**
- * Hard cap on the item budget passed to `loadUntilItem` for explicit
- * jump paths (search hits, plan sidebar clicks, checkpoint jumps). A
- * fixed literal — independent of `LOAD_OLDER_ITEM_BUDGET` — so tuning
- * the per-click page size for UX doesn't silently shrink the search-
- * reachability budget. Sized at roughly 5× the normal page so a search
- * hit deep in a long thread is reachable in one round-trip without
- * unbounded fetches; if a target lives below this cap, the load fails
- * cleanly and the caller shows the existing "couldn't locate that
- * message" toast.
- */
-const LOAD_UNTIL_ITEM_HARD_CAP = 1000;
-
-/**
- * Initial-load slice size on `switchThread`. Sized to cover a desktop
- * viewport (10–15 rendered cards) with several screens of overscan,
- * and large enough that one heavy subagent turn collapsing to a
- * single SubagentGroup card doesn't leave the timeline visually empty.
- * Older items page in lazily as the user scrolls up.
- */
-const SLICE_AROUND_ITEM_BUDGET = 200;
-
-/**
- * Doherty perception threshold. A switch that completes inside this
- * window never paints the loading spinner — the view transitions
- * straight to the loaded content. Above the threshold, the spinner
- * fades in and stays until `loading=false`. 100ms is the standard
- * "instant to the user" budget across UX research.
- */
-const SPINNER_THRESHOLD_MS = 100;
-
-/**
- * Maximum runes the frontend keeps in `items[i].summary` for a streaming
- * thinking row. Mirrors `thinkingPreviewRunes` in
- * `internal/triage/stream_items.go` — the server-side tail cap on the
- * persisted thinking summary. Matching the cap means the completion
- * upsert (which carries the same tail) does not visibly shrink the row
- * at settle. Full thinking content stays on-demand via the payload
- * table, fetched when the user expands the row.
- *
- * Sized to overflow the 3-line collapsed-view box (`max-h-[3lh]` at
- * 12px italic with `leading-relaxed`) at realistic chat-pane widths so
- * the CSS clip + tail scroll-pin show a consistent 3 lines regardless
- * of pane width.
- *
- * Also load-bearing for merge correctness: textOverlap.revealedSuffix treats a
- * reconnect interior reveal (always at least this long) as already-shown via
- * substring containment. Lowering this toward the length of a commonly-repeated
- * phrase would let a genuine new tail false-match and be dropped until settle.
- */
-const THINKING_TAIL_RUNES = 400;
-
-/**
- * Returns the tail of `text` containing at most `maxRunes` Unicode code
- * points. Surrogate-pair safe — walks code points from the end and slices
- * once. Cheap on the common case where `text.length <= maxRunes`.
- */
-function trimToTailRunes(text: string, maxRunes: number): string {
-  if (text.length <= maxRunes) return text;
-  let runes = 0;
-  for (let i = text.length; i > 0; ) {
-    const cp = text.codePointAt(i - 1)!;
-    i -= cp > 0xffff ? 2 : 1;
-    runes += 1;
-    if (runes >= maxRunes) return text.slice(i);
-  }
-  return text;
-}
-
-function sameRhsPanel(left: RhsPanel | null, right: RhsPanel | null): boolean {
-  if (left === null || right === null) return left === right;
-  if (left.kind !== right.kind) return false;
-  if (left.kind !== 'diff-payload' || right.kind !== 'diff-payload') return true;
-  return left.payloadId === right.payloadId && left.filePath === right.filePath;
-}
+  LOAD_OLDER_ITEM_BUDGET,
+  LOAD_UNTIL_ITEM_HARD_CAP,
+  SLICE_AROUND_ITEM_BUDGET,
+  SPINNER_THRESHOLD_MS,
+  THINKING_TAIL_RUNES,
+  getSmoothingClockForTest,
+  loadOlderResult,
+  nowForLiveContent,
+  sameRhsPanel,
+  trimToTailRunes,
+  type DraftThreadPlaceholder,
+  type DraftPlaceholderDefaults,
+  type DraftPlaceholderMode,
+  type LiveStateHydrationGuard,
+  type LoadOlderResult,
+  type PaneScrollController,
+  type ScrollToItemRequest,
+  type ScrollToItemOptions,
+  type ThreadPaneOptions,
+} from './threadPaneShared';
 
 // ActiveTurn now lives in threadStatuses.svelte.ts (single source of
 // truth for the global active-turn registry). Re-exported here so
@@ -247,6 +153,19 @@ export type { ActiveTurn } from './threadStatuses.svelte';
 
 export { parseTokenUsage } from './threadTurnProjection';
 export type { SettledTurn } from './threadTurnProjection';
+
+export {
+  __setSmoothingClockForTest,
+  paneWorkspacePath,
+} from './threadPaneShared';
+export type {
+  DraftPlaceholderDefaults,
+  DraftPlaceholderMode,
+  DraftThreadPlaceholder,
+  LoadOlderResult,
+  PaneScrollController,
+  ScrollToItemOptions,
+} from './threadPaneShared';
 
 export {
   __resetActivityRailUiPrefsForTest,
@@ -264,145 +183,6 @@ export type {
   DiffSidebarUIState,
   RhsPanel,
 } from './rhsPanelSlot.svelte';
-
-export type LoadOlderResult = {
-  insertedBeforeWindow: boolean;
-  insertedRows: boolean;
-  status: 'loaded' | 'noop' | 'stale' | 'error';
-};
-
-/**
- * Minimal surface a registered scroll controller exposes to the pane.
- * Kept narrow on purpose: the pane brokers a `pauseAutoScroll()` lease
- * for outside surfaces (resizers, drawers) and a re-pin nudge for
- * surfaces whose layout change isn't visible to the controller's own
- * content ResizeObserver (e.g. composer growth changes the outer
- * padding-bottom but not the contentEl's scrollHeight). The concrete
- * controller (`useStickToBottom`) has more methods, but only this
- * narrow seam crosses the pane boundary — chat MessageTimeline and
- * Discussion ChannelView both register the same controller shape so
- * one set of resizer/drawer hooks works on both surfaces.
- *
- * `notifyContentMaybeGrew` is called by chat's `ChatView`
- * (composer-overlay growth changes the timeline's bottom padding
- * without growing the contentEl) and as a fallback for host-layout
- * nudges when a controller has not implemented `notifyHostLayoutSettled`.
- * Discussion does not call it today — its textarea sits in a separate
- * `shrink-0` flex section — but the seam is here so a future Discussion
- * composer-height story could reach the controller the same way chat does.
- */
-export interface PaneScrollController {
-  pauseAutoScroll(): () => void;
-  /**
-   * Nudge the controller to re-evaluate "should I scroll to the
-   * bottom?". A no-op unless the user is sticky and no lease is held.
-   * Use this from layout-changing surfaces outside the timeline whose
-   * change isn't observable to the controller's own ResizeObserver
-   * (composer overlay growth, anything that mutates outer scroll
-   * padding without changing the contentEl's scrollHeight).
-   */
-  notifyContentMaybeGrew(): void;
-  /**
-   * Notify the timeline that its pane was moved or reflowed by the host
-   * without any transcript content change. Reconcile the virtualizer against
-   * the settled layout; panes without explicit user escape should restore
-   * bottom intent, while escaped panes should keep their existing virtual
-   * scroll offset.
-   */
-  notifyHostLayoutSettled?(): void;
-  /**
-   * Preserve a clicked disclosure header's viewport position while the
-   * row expands or collapses. Optional so Discussion and simple test
-   * doubles can keep the minimal pause/notify-only shape.
-   */
-  preserveScrollAnchor?(anchor: HTMLElement, action: () => void | Promise<void>): Promise<void>;
-  /**
-   * Optional. True when the timeline should behave as bottom-present:
-   * sticky by intent, or geometrically near the bottom while not escaped.
-   * Explicit user escape returns false even inside the near-bottom band.
-   * Lifecycle-aware rows read this before transitioning their own height
-   * on settle — e.g. ThinkingBlock auto-collapses its body on the
-   * streaming -> settled boundary only when the user is at the bottom,
-   * so a user mid-read of the streamed thinking text doesn't have content
-   * yanked out from under them. Optional so test mocks that don't care
-   * about lifecycle transitions can omit it; rows treat `undefined` as
-   * "at bottom" (the common sticky-mode default).
-   */
-  readonly isAtBottom?: boolean;
-}
-
-export interface ScrollToItemOptions {
-  flash?: boolean;
-}
-
-interface ScrollToItemRequest {
-  itemId: string;
-  nonce: number;
-  flash: boolean;
-}
-
-function loadOlderResult(
-  status: LoadOlderResult['status'],
-  insertedBeforeWindow = false,
-  insertedRows = false,
-): LoadOlderResult {
-  return { status, insertedBeforeWindow, insertedRows };
-}
-
-interface LiveStateHydrationGuard {
-  activeTurnAtRequest: ActiveTurn | null;
-  queueRevisionAtRequest: number;
-  liveTodoRevisionAtRequest: number;
-}
-
-/**
- * Returns the absolute workspace path of a pane's active thread, or
- * '' when the pane is undefined / has no thread / has an empty
- * workspacePath. Lets every chat surface that drives `OpenInEditor`
- * (or threads workspacePath into ChatMarkdown / EditorLink) read
- * through one accessor instead of repeating `pane?.thread?.workspacePath ?? ''`.
- *
- * Centralising the lookup also gives us one place to teach the app
- * about future workspace-source preferences (e.g. preferring
- * thread.worktreePath when set).
- */
-export function paneWorkspacePath(pane: ThreadPane | undefined): string {
-  return pane?.thread?.workspacePath ?? '';
-}
-
-export type DraftPlaceholderMode = 'chat' | 'design';
-
-export interface DraftThreadPlaceholder {
-  id: string;
-  projectId: string;
-  projectName: string;
-  projectPath: string;
-  mode: DraftPlaceholderMode;
-  createdAt: number;
-}
-
-/**
- * Seed values for the synthetic placeholder thread. Callers fetch
- * these via the `GetThreadDefaults` binding so the placeholder's
- * toolbar (model name, effort, runtime mode) and workspace strip
- * (current git branch) render the same values a freshly-created
- * thread would. All fields optional — when omitted, the placeholder
- * falls back to the previous "no model selected / no branch" surface.
- */
-export interface DraftPlaceholderDefaults {
-  provider?: string;
-  model?: string;
-  reasoningEffort?: string;
-  fastMode?: boolean;
-  contextWindow?: number;
-  runtimeMode?: string;
-  branch?: string;
-  workspacePath?: string;
-}
-
-interface ThreadPaneOptions {
-  paneId?: string;
-}
 
 /**
  * Per-item smoothing handle stored in the pane's `itemSmoothers` map.
@@ -716,7 +496,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // gated successor, so the boundary is unaffected and no recompute is
   // needed. A new mutation path that can append rows during a turn MUST
   // call recomputeReveal — there is no reactive backstop (a parallel
-  // $effect over the timeline is forbidden; see frontend/CLAUDE.md).
+  // $effect over the timeline is forbidden; see frontend/AGENTS.md).
 
   function disposeSmootherFor(itemId: string): void {
     const entry = itemSmoothers.get(itemId);
@@ -764,7 +544,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    *
    * INVARIANT: every path that mutates `items` or a smoother's liveness must
    * call this. There is deliberately NO reactive `$effect` watching `items`
-   * (frontend/CLAUDE.md forbids a parallel watcher over the timeline), so the
+   * (frontend/AGENTS.md forbids a parallel watcher over the timeline), so the
    * gate is kept in sync by explicit calls from `applyItemDelta`,
    * `applyItemPatch`, `upsertItemsBatch`, `onReveal` (on catch-up), and the
    * item-removal paths; `disposeAllSmoothers` clears the boundary directly.
@@ -847,7 +627,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // Seed revealed = received so a mid-flight feature deploy or
       // turn-resume sees no visible snap.
       initialRevealed: initialReceived,
-      clock: smoothingClockForTest,
+      clock: getSmoothingClockForTest(),
       onReveal: (revealed, delta) => {
         const idx = itemIndexById.get(itemId);
         if (idx === undefined) {

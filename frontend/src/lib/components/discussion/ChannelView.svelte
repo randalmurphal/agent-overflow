@@ -285,7 +285,7 @@
          async typesetting (shiki / KaTeX / mermaid) growing rows above
          the viewport on a sticky session would produce visible scrollTop
          oscillation between the browser's anchor adjustment and our
-         re-pin. See frontend/AGENTS.md § Scroll architecture. -->
+         re-pin. See docs/architecture/frontend-scroll.md. -->
     <div
       bind:this={scrollEl}
       class="flex-1 min-h-0 overflow-y-auto px-5 py-4"

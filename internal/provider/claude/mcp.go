@@ -137,7 +137,7 @@ type MCPServerStatus struct {
 // Callers that need to detect "still pending" should treat a missing
 // entry as a keep-retrying signal, not a terminal state.
 //
-// Used by the OAuth-completion poller in `app_mcp_bindings.go`: after
+// Used by the OAuth-completion poller in `app_mcp_auth.go`: after
 // `AuthenticateMCP` returns the auth URL and the user finishes the
 // browser hop, AO polls this synchronously until the named server
 // flips out of `needs-auth`. The handler runs entirely against the

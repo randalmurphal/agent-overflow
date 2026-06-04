@@ -19,7 +19,7 @@
 
 ## Deferred due to architectural cost
 
-- **Terminal as RHS panel option.** Kept as the existing per-pane bottom drawer for v1. `frontend/AGENTS.md` anticipates moving the terminal to an RHS panel option in the future; that's a separate change.
+- **Terminal as RHS panel option.** Kept as the existing per-pane bottom drawer for v1. `frontend/src/lib/components/chat/AGENTS.md` anticipates moving the terminal to an RHS panel option in the future; that's a separate change.
 - **`localStorage` durability hardening.** Browser-cache wipe loses the saved layout. Acceptable for v1 — layout is preference, not data. The user re-opens their threads and re-arranges if it happens.
 
 ## Revisit if evidence appears

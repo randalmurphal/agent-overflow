@@ -124,7 +124,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	// config.mcp_servers so each session is isolated from global config
 	// changes. Claude chat/plan sessions use native discovery +
 	// post-init mcp_set_servers reconcile instead (see
-	// reconcileClaudeMCPOnInit in app_mcp_bindings.go).
+	// reconcileClaudeMCPOnInit in app_mcp_claude.go).
 	designCfg.MCPServers = designServers
 	if designServers == nil && t.Provider == string(provider.Codex) {
 		if servers, err := a.buildCodexMCPServersForThread(t); err != nil {

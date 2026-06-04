@@ -120,8 +120,8 @@
      renders here and the chat header sits flush with the top of the window;
      when the transport drops the banner floats over the top edge of the
      content without changing the panes' clientHeight. A clientHeight change
-     would fight the scroll controller (see frontend/AGENTS.md § Scroll
-     architecture), which is why the old reserved-slot version permanently
+     would fight the scroll controller (see
+     docs/architecture/frontend-scroll.md), which is why the old reserved-slot version permanently
      held ~28px — but this banner spans the whole shell and a transport
      reconnect is rare, so overlaying beats reserving that space forever.
      z-50 keeps it above pane content and below modals (z-[60]+), matching

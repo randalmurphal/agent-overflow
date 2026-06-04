@@ -1,0 +1,164 @@
+import type { Thread } from '../types/models';
+import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
+import type { RhsPanel } from './rhsPanelSlot.svelte';
+import type { ActiveTurn } from './threadStatuses.svelte';
+
+// Test-only injection: when set, every PerItemSmoother created by
+// `getOrCreateSmoothing` uses this clock instead of the default rAF +
+// performance.now() pair. Lets reveal-cadence tests run deterministically
+// without globally monkey-patching browser APIs.
+let smoothingClockForTest: SmoothingClock | undefined;
+
+export function __setSmoothingClockForTest(clock: SmoothingClock | undefined): void {
+  smoothingClockForTest = clock;
+}
+
+export function getSmoothingClockForTest(): SmoothingClock | undefined {
+  return smoothingClockForTest;
+}
+
+// Live-content stamp timebase. Reuses the smoother's clock so a stamp
+// written from inside `onReveal` shares that callback's time source.
+export function nowForLiveContent(): number {
+  return smoothingClockForTest?.now() ?? performance.now();
+}
+
+/**
+ * Default raw-item budget passed to `ListItemsBeforeTurn` for an
+ * explicit "Load older" page. The backend walks turns DESC summing
+ * each turn's item count until cumulative >= this budget, then returns
+ * that turn's items plus every newer one below the caller's floor. One
+ * click loads about this many items regardless of per-turn density.
+ */
+export const LOAD_OLDER_ITEM_BUDGET = 200;
+
+/**
+ * Hard cap on the item budget passed to `loadUntilItem` for explicit
+ * jump paths (search hits, plan sidebar clicks, checkpoint jumps).
+ * Independent of LOAD_OLDER_ITEM_BUDGET so tuning normal paging does not
+ * silently shrink search reachability.
+ */
+export const LOAD_UNTIL_ITEM_HARD_CAP = 1000;
+
+/**
+ * Initial-load slice size on `switchThread`. Sized to cover several
+ * desktop viewports and large enough that one dense subagent turn
+ * collapsing to a single card does not leave the timeline visually empty.
+ */
+export const SLICE_AROUND_ITEM_BUDGET = 200;
+
+/**
+ * Doherty perception threshold for suppressing spinner flash on fast
+ * thread switches.
+ */
+export const SPINNER_THRESHOLD_MS = 100;
+
+/**
+ * Maximum runes the frontend keeps in `items[i].summary` for a streaming
+ * thinking row. Mirrors `thinkingPreviewRunes` in
+ * `internal/triage/stream_items.go`.
+ *
+ * Also load-bearing for merge correctness: reconnect interior reveal
+ * matching treats an already-shown suffix at least this long as safe via
+ * substring containment. Lowering this toward the length of common
+ * repeated phrases can false-match genuine new tails and drop them until
+ * settle.
+ */
+export const THINKING_TAIL_RUNES = 400;
+
+/**
+ * Returns the tail of `text` containing at most `maxRunes` Unicode code
+ * points.
+ */
+export function trimToTailRunes(text: string, maxRunes: number): string {
+  if (text.length <= maxRunes) return text;
+  let runes = 0;
+  for (let i = text.length; i > 0; ) {
+    const cp = text.codePointAt(i - 1)!;
+    i -= cp > 0xffff ? 2 : 1;
+    runes += 1;
+    if (runes >= maxRunes) return text.slice(i);
+  }
+  return text;
+}
+
+export function sameRhsPanel(left: RhsPanel | null, right: RhsPanel | null): boolean {
+  if (left === null || right === null) return left === right;
+  if (left.kind !== right.kind) return false;
+  if (left.kind !== 'diff-payload' || right.kind !== 'diff-payload') return true;
+  return left.payloadId === right.payloadId && left.filePath === right.filePath;
+}
+
+export type LoadOlderResult = {
+  insertedBeforeWindow: boolean;
+  insertedRows: boolean;
+  status: 'loaded' | 'noop' | 'stale' | 'error';
+};
+
+/**
+ * Minimal surface a registered scroll controller exposes to the pane.
+ */
+export interface PaneScrollController {
+  pauseAutoScroll(): () => void;
+  notifyContentMaybeGrew(): void;
+  notifyHostLayoutSettled?(): void;
+  preserveScrollAnchor?(anchor: HTMLElement, action: () => void | Promise<void>): Promise<void>;
+  readonly isAtBottom?: boolean;
+}
+
+export interface ScrollToItemOptions {
+  flash?: boolean;
+}
+
+export interface ScrollToItemRequest {
+  itemId: string;
+  nonce: number;
+  flash: boolean;
+}
+
+export function loadOlderResult(
+  status: LoadOlderResult['status'],
+  insertedBeforeWindow = false,
+  insertedRows = false,
+): LoadOlderResult {
+  return { status, insertedBeforeWindow, insertedRows };
+}
+
+export interface LiveStateHydrationGuard {
+  activeTurnAtRequest: ActiveTurn | null;
+  queueRevisionAtRequest: number;
+  liveTodoRevisionAtRequest: number;
+}
+
+/**
+ * Returns the absolute workspace path of a pane's active thread.
+ */
+export function paneWorkspacePath(pane: { thread: Thread | null } | undefined): string {
+  return pane?.thread?.workspacePath ?? '';
+}
+
+export type DraftPlaceholderMode = 'chat' | 'design';
+
+export interface DraftThreadPlaceholder {
+  id: string;
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  mode: DraftPlaceholderMode;
+  createdAt: number;
+}
+
+export interface DraftPlaceholderDefaults {
+  provider?: string;
+  model?: string;
+  reasoningEffort?: string;
+  fastMode?: boolean;
+  contextWindow?: number;
+  runtimeMode?: string;
+  branch?: string;
+  workspacePath?: string;
+}
+
+export interface ThreadPaneOptions {
+  paneId?: string;
+}

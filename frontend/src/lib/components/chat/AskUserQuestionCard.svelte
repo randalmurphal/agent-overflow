@@ -53,7 +53,7 @@
 
   // Expansion state lives on the per-pane registry so it survives
   // virtua remount when the row scrolls past `bufferSize=900` and back
-  // (per the row contract documented in components/chat/CLAUDE.md).
+  // (per the row contract documented in components/chat/AGENTS.md).
   // The handle's payload-fetching codepath is a no-op for AskUserQuestion
   // rows — they have no `payloadId` (questions + answers live on
   // `item.meta` and arrive synchronously) — but the boolean `expanded`
@@ -187,7 +187,7 @@
 
   {#if expansion.expanded}
     <!-- No transition: the timeline scroll surface forbids height-shifting
-         transitions adjacent to it (frontend/CLAUDE.md "Anti-patterns").
+         transitions adjacent to it (frontend/AGENTS.md "Anti-patterns").
          The chevron rotation on the toggle is enough visual feedback. -->
     <div
       id="ask-user-question-body-{item.id}"

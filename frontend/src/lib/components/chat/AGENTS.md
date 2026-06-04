@@ -1,499 +1,113 @@
 # components/chat/
 
-Chat-surface components. The owning module is `MessageTimeline.svelte`.
+Chat-surface components. `MessageTimeline.svelte` owns the virtualized
+timeline; row components render stable transcript records.
 
-## Scroll contract
+## Scroll Contract
 
-See `frontend/AGENTS.md` § Scroll architecture for the high-level
-shape. Operational rules for code in this directory:
+Read
+[`docs/architecture/frontend-scroll.md`](../../../../../docs/architecture/frontend-scroll.md)
+before editing `MessageTimeline.svelte`, `ChatView.svelte`, row expansion,
+load-older behavior, or any code that touches `scrollTop`.
 
-- Use `listRef.findItemIndex(offset)` / `listRef.getItemOffset(index)` /
-  `listRef.scrollToIndex(...)` for anything that needs to know "where am
-  I in the timeline" or "go to row X". `listRef` is now a
-  `VirtualizerHandle` (we use `<Virtualizer>` with our own `scrollRef`
-  rather than `<VList>` which would own the scroller). Don't query the
-  DOM for first-visible-item or write `scrollTop` directly.
-- Programmatic scrolls go through `useStickToBottom` (`forceStick`,
+Operational rules for this directory:
+
+- Use `listRef.findItemIndex(offset)`, `listRef.getItemOffset(index)`,
+  and `listRef.scrollToIndex(...)` for timeline position. Do not query
+  DOM rows for first-visible-item math.
+- Route programmatic scrolls through `useStickToBottom`: `forceStick`,
   `markAtBottom`, `notifyContentMaybeGrew`, `pauseAutoScroll`,
-  `runExternalScroll`, `stopScroll`, `armRestoreSnap`). Any virtua
-  scroll write must run inside `stick.runExternalScroll(() =>
-  listRef.scrollToIndex(...))`; **never pass `smooth: true`** —
-  virtua's smooth path uses
-  `scrollEl.scrollTo({behavior:'smooth'})` natively, which would fight
-  the controller. Never `el.scrollIntoView()` on a row that lives
-  inside the virtualizer; virtua won't see it and will fight the
-  scroll.
-- **`forceStick(opts?: { reason?: 'user' | 'restore' })` has two
-  flavors.** `'user'` (default) is explicit bottom-follow intent, such
-  as clicking the scroll-to-bottom chip, and always proceeds. Ordinary
-  send preserves the current scroll intent. `'restore'` is
-  thread-restore-style and honored ONLY when the entry point armed
-  consent via
-  `armRestoreSnap()` since the last outer-scroll escape intent — otherwise NO-OP, to
-  preserve the user's scroll position when a stale or duplicated
-  restore $effect fires. MessageTimeline's `$effect.pre` calls
-  `stick.armRestoreSnap()` after the defensive
-  `setEscapedFromLock(true)` so the upcoming restoreToBottom's
-  `forceStick({reason:'restore'})` is honored; any wheel/key/touch/pointer
-  intent that can reach the chat scroller between arm and consume
-  re-clears the arm and the restore NO-OPs.
-  Don't call `forceStick({reason:'restore'})` from a restore path
-  without a paired `armRestoreSnap()` from the matching entry point —
-  the call will silently NO-OP. Don't call `armRestoreSnap()` from
-  anywhere other than a thread-switch / channel-mount entry point.
-- **Bottom-snapshot restore on thread switch goes through
-  `stick.forceStick({reason:'restore'})` synchronously inside the
-  restore `$effect`, followed by a single rAF `notifyContentMaybeGrew()`
-  settle pass.**
-  The synchronous forceStick is the primary writer — running it inline
-  (no `pauseAutoScroll` lease, no `await tick()`) keeps the
-  contentRO pin enabled across the new-thread mount and avoids
-  the microtask boundary that races with virtua's deferred scroller
-  attach (`Virtualizer.svelte`'s `tick().then(observe)` defers
-  scrollEl observation by one tick). `forceStick` also re-arms the
-  controller's warm-up gate so any subsequent contentRO fires for
-  `QUIET_MS=100ms` (or up to `FAILSAFE_MS=2500ms`) sync-pin instead
-  of triggering the spring chase — this is the load-bearing guarantee
-  that a thread restore lands silently even while content is streaming
-  (`animationMode='spring'`). The trailing rAF
-  `notifyContentMaybeGrew()` covers late layout settling: composer-
-  height RO updating scrollEl's `padding-bottom` (padding-only growth
-  doesn't refire contentRO), virtua's per-row ResizeObservers refining
-  sizes one frame after mount, and the first burst of Streamdown async
-  typesetting (shiki / KaTeX / mermaid / parseIncompleteMarkdown
-  rebalance). The trailing pin is escape-aware (`notifyContentMaybeGrew`
-  bails on `escapedFromLockState || pauseDepth>0 || !isAtBottomState`)
-  so a user wheel-up between frames cancels it; thread-switch is also
-  guarded explicitly via a captured-`restoredThreadId` check inside
-  the rAF. Subsequent contentEl growth gets handled by the controller's
-  contentRO path: while warming, positive deltas sync-pin (mount
-  settling stays invisible); once warm and live content advanced within
-  the latch's hold window, positive deltas trigger the velocity-spring
-  chase so streaming chunks animate.
-  **Don't pair `listRef.scrollToIndex(last, 'end')` with
-  `stick.markAtBottom()` here** — virtua's measurement loop would
-  keep writing scrollTop on every ACTION_ITEM_RESIZE tick for
-  ~150ms while the controller's pin (enabled by markAtBottom) ALSO
-  wrote scrollTop on every positive contentRO delta, targeting a
-  slightly different value. They oscillate visibly around the middle
-  of the viewport on every Streamdown async typesetting tick. Single
-  synchronous writer (forceStick) plus a deferred escape-aware re-pin
-  (notifyContentMaybeGrew) — never the two-loop fight.
-- **MessageTimeline wires `animationMode` to a content-keyed latch.**
-  `createUseStickToBottomController({ animationMode:
-  animationModeForScroll })`, where `animationModeForScroll()` returns
-  `latchedSpringMode(performance.now(), pane.lastLiveContentAt,
-  SPRING_MODE_HOLD_MS)` (`utils/springAnimationLatch.ts`). The pane
-  stamps `lastLiveContentAt` on every genuine live timeline advance —
-  smoother reveal, non-smoothed streaming delta, final-summary patch,
-  and new provider rows (the events.ts fan-out) — so the latch reports
-  `'spring'` for `SPRING_MODE_HOLD_MS=500ms` after the last advance and
-  `'instant'` otherwise. The getter is called per-contentRO-fire, so
-  the mode tracks content arrival without re-attaching. This keys the
-  spring on CONTENT, not on the provider turn (`getActiveTurn`): it
-  springs whenever the user is stuck to the bottom and content is
-  arriving — including a turn that completes while the agent keeps
-  streaming, and the end-of-turn smoother drain that reveals
-  word-by-word for seconds after the wire turn ends. Late Streamdown
-  typesetting on SETTLED content grows row height but never stamps
-  `lastLiveContentAt` (it doesn't mutate `pane.items`), so it sync-pins
-  invisibly — no viewport motion while the user reads a finished
-  response. A user's own sent message and rollback restores call
-  `pane.upsertItems` directly (bypassing the events.ts stamp), so they
-  also stay sync-pinned. The warm-up gate independently prevents
-  thread-restore-while-streaming from spring-chasing the post-mount
-  measurement loop. Invariant: `SPRING_MODE_HOLD_MS >
-  RETAIN_ANIMATION_DURATION_MS` (the spring sentinel lifetime) — see
-  the `HOLD > RETAIN` guard in `useStickToBottom.svelte.test.ts`.
-- **contentEl hides during virtua's fresh-mount measurement cascade.**
-  On thread switch, virtua starts with
-  `ESTIMATED_ROW_SIZE × N` for totalSize. The per-row RO measurement
-  cascade then corrects each row's actual height across the next
-  ~25ms, which shifts every row's Y-offset AND clamps scrollTop by a
-  fraction of a page (the larger the thread, the larger the clamp —
-  a 216-item thread sample produced a 461px shift). The controller's
-  sync-pin re-pins scrollTop correctly, but the user still sees the
-  row-content shift between two paints. MessageTimeline binds
-  `style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}`
-  on contentEl, with `hideContentForWarmup = !stick.isWarm`. The warm gate fires
-  `QUIET_MS = 100ms` after the last contentRO event ONCE AT LEAST
-  ONE EVENT HAS FIRED (the quiet timer is gated on RO evidence,
-  not the wall clock alone — see `useStickToBottom.svelte.ts`
-  `beginWarmup` / `bumpQuietTimer` for the rationale), or the
-  `FAILSAFE_MS = 2500ms` ceiling, exactly the signal we want: "all
-  in-flight measurements have settled, and we know they actually
-  started." The composer overlay stays
-  visible throughout (it's a sibling, not a child of contentEl), so
-  the user sees a brief unpopulated scroll area with the live
-  composer above it, then the full timeline reveals with rows at
-  their measured offsets.
+  `runExternalScroll`, `stopScroll`, `animateScrollTo`, and
+  `armRestoreSnap`.
+- Wrap every virtua `scrollToIndex` call in
+  `stick.runExternalScroll(() => listRef.scrollToIndex(...))`.
+- Never pass `smooth: true` to virtua and never call `scrollIntoView()` on
+  a virtualized row.
+- Keep `overflow-anchor: none` on the outer scroll container.
+- Keep composer-clearance padding on `scrollEl`, not `contentEl`, and keep
+  `ChatView`'s composer `ResizeObserver` calling
+  `notifyContentMaybeGrew()` after writing `--composer-height`.
 
-  **Critical timing: `armWarmup()` MUST be called from `$effect.pre`
-  on thread switch, not just from `forceStick()` in `$effect`.**
-  MessageTimeline isn't keyed on `pane.threadId` (the inner
-  Virtualizer is, via `{#key pane.threadId}`), so `scrollEl` and
-  `contentEl` are the SAME DOM nodes across switches. The `$effect`
-  that calls `stick.attach(scrollEl, contentEl)` therefore early-
-  returns on switch — its no-op path is hit and `beginWarmup()` is
-  NOT called from there. The restore `$effect` calls `forceStick()`
-  (which DOES call `beginWarmup`), but `$effect` fires AFTER the DOM
-  update — meaning the first paint of the new thread inherits the
-  outgoing thread's settled `isWarm=true`, the $derived
-  `hideContentForWarmup` evaluates to false, and the measurement
-  cascade is visible for the user. `$effect.pre` runs BEFORE the DOM
-  update flush, so calling `stick.armWarmup()` there flips
-  `isWarm=false` synchronously and the new thread's first paint
-  hides contentEl. Symptom of the missing call: the bug looks
-  "flaky" because warm-state coincidentally happened to be false on
-  some switches (e.g. rapid back-to-back switches where the prior
-  thread's QUIET_MS=100ms quiet window hadn't yet closed) and the
-  cascade was hidden by accident.
+Thread-switch restore is intentionally split: `$effect.pre` arms warm-up
+and restore consent before DOM flush; the restore `$effect` calls
+`forceStick({ reason: 'restore' })` and schedules one rAF
+`notifyContentMaybeGrew()` settle pass. Same-thread reloads must watch
+`pane.switchGeneration`, not only `pane.threadId`.
 
-  **The same `$effect.pre` must also react to `pane.switchGeneration`,
-  not just `pane.threadId`.** Revert-to-checkpoint
-  (`executeRevertToUserMessage` in ChatView) calls
-  `pane.switchThread(currentThread)` to reload items in place. The
-  thread id doesn't change, but the pane's switch generation counter
-  bumps. Without watching that counter, the restore reset path
-  (`restoredThreadId = null`, `restoreToken++`, `armWarmup`,
-  `armRestoreSnap`) never fires; `restoredThreadId === threadId` stays
-  true, the restore `$effect` early-returns, and the viewport sticks
-  at scrollTop=0 with the "Load older messages" banner visible —
-  exactly the regression that motivated this discriminator.
-  MessageTimeline tracks both `scrollSnapshotThreadId` and
-  `scrollSnapshotSwitchGeneration` and runs the reset branch when
-  EITHER value changes.
-- **`overflow-anchor: none` on `scrollEl` is load-bearing.** Browser
-  default scroll anchoring adjusts `scrollTop` whenever an element above
-  the viewport changes size, to keep the topmost-visible element fixed.
-  That heuristic fights both virtua's measurement-loop jump correction
-  AND the controller's contentRO sync-pin — Streamdown async typesetting
-  growing rows above the viewport on a sticky session would produce
-  visible scrollTop oscillation between the browser's anchor adjustment
-  and our re-pin. virtua already sets `overflow-anchor: none` on its
-  own container, so a defensive copy on contentEl is redundant; only
-  the outer scrollEl needs the opt-out.
-- **`padding-bottom` for composer clearance stays on `scrollEl`, not
-  on `contentEl`.** Tempting to move it to contentEl so the controller's
-  contentRO catches `--composer-height` changes natively — but the
-  controller observes content-box (W3C ResizeObserver default) and
-  `entry.contentRect.height` reports content-box even when the callback
-  does fire. Padding-only changes to contentEl would not show up as a
-  positive delta and the sync-pin would short-circuit. ChatView's
-  composer RO calls `notifyContentMaybeGrew()` to handle this seam
-  explicitly — that call is the load-bearing pin for composer-height-
-  driven re-pinning on the chat surface; don't drop it. The
-  composer-RO callback writes `--composer-height` directly on
-  chatColumn via `style.setProperty(...)` BEFORE calling
-  `notifyContentMaybeGrew()`. The direct write is what makes the
-  re-pin synchronous and correct: Svelte's reactive flush of
-  `composerHeight = next` runs in a microtask AFTER the RO callback
-  returns, so a synchronous `notifyContentMaybeGrew` without the
-  direct write would force layout against the OLD --composer-height
-  and pin to the pre-grow bottom (originally observed as a
-  "half-a-scroll-tick-from-the-bottom" miss on cached-thread restore,
-  preserved as a regression guard in the trace comment). With the
-  direct write, `targetScrollTop()` forces layout against the NEW
-  variable value, and scrollTop lands on the post-grow bottom — all
-  inside the RO callback, no rAF deferral, no visible 1-frame
-  "appears then settles" gap. The reactive `composerHeight` state is
-  still useful for any future template/derivation that reads it; the
-  microtask flush rewrites the same CSS-variable value, idempotently.
-- **`<Virtualizer>` is wrapped in `{#key pane.threadId}`** so its
-  internal row-size store resets on thread switch. We deliberately do
-  not replay virtua row-size snapshots: those measurements are only
-  valid with the row UI state that produced them, and `switchThread`
-  clears row UI registries to bound memory. Re-entry measures fresh
-  behind the warm-up visibility gate.
-- Don't add a parallel virtualizer over `pane.items` or `groupedNodes`.
-- The auto-follow `$effect` is gone. Streaming flow is: text rewrites in
-  the streaming row → row's height changes → virtua's per-row RO bumps
-  `totalSize` → `contentEl.scrollHeight` changes → our content-RO fires
-  before paint → controller chases the new target (spring while live
-  content advanced within the latch hold window and the warm-up gate has
-  cleared; sync-pin otherwise). Don't reintroduce a length-watching
-  effect that calls `scrollToIndex(last)`.
-- **Auto-load-older trigger.** Virtualizer's `onscroll` calls
-  `maybeAutoLoadOlder(offset)` which fires `pane.loadOlder()` when the
-  user scrolls within `AUTO_LOAD_OFFSET_PX=800` of the top AND the
-  topmost rendered row index is `<= AUTO_LOAD_INDEX_THRESHOLD=5`. Both
-  gates matter: the offset gate keeps fast scrolls past the trigger
-  zone from oversubscribing the binding; the index gate prevents an
-  idle small-thread render from auto-loading just because the whole
-  thing fits in the viewport. Restoration must finish first
-  (`restoredThreadId === pane.threadId`) so `handleLoadOlder`'s anchor
-  capture isn't racing an unstable scrollTop. A
-  `autoLoadAttemptedAtFloor` guard prevents re-firing while
-  `pane.oldestLoadedTurnIndex` hasn't advanced — cleared on thread
-  switch. The "Load older messages" button at the top of the timeline
-  is the explicit fallback path; both routes funnel into the same
-  `handleLoadOlder()`.
-- Scroll-behavior tests live in `scroll.test.ts`. Component-shape tests
-  for individual rows (TimelineLeaf, SubagentGroup, CommandOutput, etc.)
-  stay in their own `*.test.ts` files.
+## Row Contract
 
-## Row contract
+Every row rendered inside `<Virtualizer>`:
 
-Every row rendered inside `<Virtualizer>`'s children snippet:
-
-- Lives inside a `[data-row-index]` outer wrapper. The wrapper is
-  structural and intentionally has NO `data-item-id`. Only `TimelineLeaf`
-  emits `data-item-id` on its root — that's what test queries, message
-  search, and row-boundary markers anchor on. `SubagentGroup` is
-  structural and does not carry `data-item-id`; response dividers
-  therefore can only ever sit before a leaf, not before a subagent card.
-  `shouldRenderTurnBoundaryBefore` in `MessageTimeline.svelte`
-  enforces that contract by returning false for non-leaf nodes. The
-  divider has two visual modes — labeled (`line | gap | pill | gap |
-  line`) when the leaf is the final assistant_text of a settled turn,
-  unlabeled (one continuous full-width line) otherwise. Both modes
-  share a fixed wrapper height (`h-[1.625rem]`); the pill uses
-  `leading-tight` to keep its content inside that wrapper across
-  font-loading variance. Promoting an intermediate divider to "final"
-  on turn settle therefore swaps the inner branch without changing row
-  geometry — satisfies the "no late transcript adornments on
-  completion" rule in `frontend/CLAUDE.md`. Tests discriminate the two
-  modes via `data-final-response` on the wrapper plus presence/absence
-  of "Response" in `divider.textContent`.
-- Keeps its outer shell stable after first render. If a tool row might
-  eventually have payload, render the header affordance from the start
-  and disable the action until the body exists. Do not swap static rows
+- Lives inside a `[data-row-index]` wrapper. Only `TimelineLeaf` emits
+  `data-item-id` on its root; structural nodes such as `SubagentGroup`
+  do not.
+- Keeps its outer shell stable after first render. Do not swap static rows
   into buttons, insert chevrons late, animate body height inside the
   scroll surface, or append completion-only history rows.
-- Uses `TranscriptDisclosureHeader.svelte` for transcript disclosure
-  headers unless there is a specific reason not to. The primitive keeps
-  the chevron/button shell stable, uses `aria-disabled` for temporarily
-  inert disclosures, and renders trailing actions as siblings so editor
-  links / side-panel buttons are never nested inside another button.
-- Is safe to remount when virtua scrolls a row out of and back into the
-  rendered window. Snippets re-receive `pane`, `item`, `depth` on
-  remount; nothing inside should depend on `onMount` running exactly
-  once per item lifetime.
-- Reads any "remembered" state (expansion toggles, loaded payload
-  chunks, attachment blob URLs) out of a per-pane registry on the
-  `ThreadPane`, NOT from local `let foo = $state(false)`. Local row
-  state is wiped when virtua remounts the row; the registries are
-  keyed on `item.id` / `payloadId` and survive remount. See:
-  - `pane.expansionStateFor(item)` — payload expansion handle
-    (preview/full toggle, loaded chunks). Used by
-    `GenericToolCallRow`, `CommandOutput`, `ThinkingBlock`,
-    `LazyContentBlock`. The handle survives virtua remount but is
-    cleared on `switchThread` (toggle state is per-pane, not
-    cross-thread). `DiffFileStack` deliberately uses a LOCAL
-    `createPayloadExpansion` instead — diff rows render always-inline
-    so there is no user-facing expand/collapse, and a per-row local
-    handle keeps the fetch wired straight to the prop without going
-    through the pane's payloadId-by-item lookup (which can lag the
-    prop by a tick during fast switches).
-  - `pane.attachmentCacheFor(itemId)` — image-attachment blob URL
-    cache. `UserMessage` threads this into `createAttachmentPreviews`
-    so a user-message row doesn't re-fetch `GetAttachmentData` on
-    every scroll-back.
-  - `pane.isSubagentGroupExpanded(groupKey)` /
-    `toggleSubagentGroupExpanded(groupKey)` — collapse state for
-    subagent cards. Use `SubagentGroupNode.groupKey`, not a raw parent
-    item id.
-  Read pattern: `const handle = $derived(pane.expansionStateFor(item))`,
-  with any local fallback wrapped in `untrack(() => createPayloadExpansion(...))`
-  so the fallback doesn't bind to initial prop values.
-- Reads any payload BYTES through the module-level data cache in
-  `utils/payloadDataCache.ts`. The per-pane registry above tracks
-  toggle/expansion intent; the data cache tracks the bytes themselves,
-  keyed by a JSON-encoded `(threadId, payloadId, version)` tuple with
-  type-tagged version keys, byte-bounded by a 16 MB LRU. The cache
-  survives `switchThread` so re-entering a thread with already-loaded
-  payloads paints synchronously at full height from frame 0 —
-  eliminating the empty-then-loaded oscillation that whipsaws
-  virtua's per-row size cache and produces visible scroll-anchoring
-  jumps. `createPayloadExpansion` reads the cache synchronously in
-  its constructor and writes back after every successful
-  `loadPreview` / `showFull`. The `loadOnMount` option pairs with
-  the cache: callers like `DiffFileStack` whose body always renders
-  open opt in to "synchronously hydrate AND auto-expand on cache
-  hit". Toggle-style consumers (the `expansionStateFor` callers
-  above) leave `loadOnMount` false so their thread-switch reset of
-  `expanded=false` survives a cache hit — the data is hydrated in
-  the background and flashes in instantly when the user later clicks
-  expand. Eviction: `removeThread` drops the deleted thread's slice
-  via `clearPayloadCacheForThread`; the byte cap evicts oldest
-  entries when exceeded; the `loadOnMount` effect fires once per
-  unique `payloadId` so a future collapse path cannot re-trigger an
-  unwanted re-expand.
-- Defers heavy work (Mermaid render, Shiki highlight, KaTeX typeset,
-  attachment image load) to dynamic imports / IntersectionObserver
-  triggered from the row itself. Module-level singletons in
-  `markdownEnhance.ts` cache the underlying highlighter / mermaid
-  instance so per-row remount is just DOM work.
+- Uses `TranscriptDisclosureHeader.svelte` for disclosure headers unless
+  there is a specific reason not to.
+- Survives virtua remount. Row-local state disappears when scrolled out of
+  the rendered window, so remembered state belongs in per-pane registries
+  keyed by `item.id`, `payloadId`, or `groupKey`.
 
-## Right-side panels
+Use these pane registries instead of local row state:
 
-`RhsSidebarShell.svelte` hosts the right-side panels (plan, diff
-checkpoint, diff payload). Visibility, width, and per-thread snapshot/
-restore live in `stores/rhsPanelSlot.svelte.ts`; the discriminated
-`RhsPanel` union is the wire-shape for the snapshot, so widening it
-without updating `clonePanel` will silently drop fields on thread
-switch.
+- `pane.expansionStateFor(item)` for payload expansion handles.
+- `pane.attachmentCacheFor(itemId)` for image attachment blob URLs.
+- `pane.isSubagentGroupExpanded(groupKey)` /
+  `pane.toggleSubagentGroupExpanded(groupKey)` for subagent cards.
 
-Panel **bodies** receive `ctx: PanelContext` (defined in
-`rhsPanelSlot.svelte.ts`), not `pane: ThreadPane`. The narrow contract
-exposes stable thread/layout fields, generic close/sync hooks, and
-design-panel accessors needed by the design preview — bodies cannot
-reach into chat-only state (`pane.items`, `pane.timelineRevision`,
-streaming flags) and therefore cannot accidentally re-render on every
-chat tick. The legacy
-`pane: ThreadPane` shape on `DiffPanelDrawer` / `LazyDiffSidebar` is
-kept until those bodies need to grow; new panels MUST take
-`PanelContext`.
+Payload bytes go through `utils/payloadDataCache.ts`, keyed by
+`(threadId, payloadId, version)` and byte-bounded by its LRU. Per-pane
+registries track expansion intent; the data cache tracks loaded bytes.
 
-The shell itself keeps `pane: ThreadPane` because it owns the resizer
-chrome (`pane.getRhsSidebarMaxWidth`, `pane.setRhsSidebarWidthLive`,
-`pane.persistRhsSidebarWidth`) and the scroll-controller lease
-(`pane.scrollController`). Don't migrate the shell.
+Heavy work such as Mermaid render, Shiki highlight, KaTeX typeset, and
+attachment image load should stay lazy and row-local. Module-level
+singletons in the markdown pipeline keep remounts cheap.
 
-RHS panel sizing is pane-local. The shell must clamp width through the
-owning pane (`pane.getRhsSidebarMaxWidth`) because `PaneHost` publishes
-measured pane widths by pane id. Do not clamp plan/diff/terminal panels
-against `window.innerWidth`, app-shell width, or total pane-host width;
-those values are wrong as soon as two panes are mounted side by side.
+## Right-Side Panels
 
-Terminal placement is intentionally outside the terminal body. Today
-`ThreadTerminalPlacement` mounts the bottom drawer, but terminal as a
-right-side panel is a valid future policy. Keep terminal actions routed
-through pane/thread context and add a `RhsPanel` variant if terminal
-moves into this shell; don't wire terminal-specific globals into
-`ChatView`.
+`RhsSidebarShell.svelte` hosts plan, diff checkpoint, and diff payload
+panels. Visibility, width, and per-thread snapshot/restore live in
+`stores/rhsPanelSlot.svelte.ts`.
 
-**Future transcript-style panels** (e.g. a subagent's full transcript
-with tool calls): the row primitives in this directory —
-`TimelineLeaf`, `SubagentGroup`, `GenericToolCallRow`, `CommandOutput`,
-etc. — are reusable inside a sidebar transcript when the items rendered
-belong to the same pane. Per-pane registries (`expansionStateFor`,
-`attachmentCacheFor`, `isSubagentGroupExpanded`) key by `item.id` /
-`groupKey`, not array position, so a filtered subset of `pane.items`
-remounts cleanly across the chat and the sidebar simultaneously. To
-expose the registries to a transcript panel, extend `PanelContext`
-with the specific accessors that panel needs — do **not** widen back
-to `pane: ThreadPane`. The "no parallel virtualizer over `pane.items`
-or `groupedNodes`" rule prohibits a competing virtualizer over the
-**full** chat list; a sidebar virtualizer over a filtered subset is
-fine (precedent: `DiffSidebarBody` runs its own file-level
-virtualizer).
+Panel bodies receive `ctx: PanelContext`, not `pane: ThreadPane`. Keep
+the body contract narrow so panels cannot accidentally subscribe to every
+chat tick. The shell itself keeps `pane` because it owns resizer chrome
+and the scroll-controller pause lease.
 
-Adding a new panel kind:
+To add a panel kind:
 
-1. Extend the `RhsPanel` union in `stores/rhsPanelSlot.svelte.ts`. If
-   the variant carries data, add a `clonePanel` branch in the same
-   file so snapshot/restore keeps the field across thread switches.
-2. Add an entry to `PANEL_COMPONENTS` in `RhsSidebarShell.svelte` —
-   the `satisfies` clause makes the type-check fail until you do.
-3. Add a render branch in the `{#key}`-wrapped `{#if}` chain inside
-   the shell. The `{#key pane.thread.id + ':' + activePanel.kind}`
-   wrapper resets the body cleanly on thread switch and on panel-kind
-   swap; rely on it instead of inner `{#key}` wrappers.
+1. Extend the `RhsPanel` union and `clonePanel` in
+   `stores/rhsPanelSlot.svelte.ts`.
+2. Add the component to `PANEL_COMPONENTS` in `RhsSidebarShell.svelte`.
+3. Add a render branch in the keyed shell body.
 
-## Markdown rendering pipeline
+Clamp panel width through the owning pane (`pane.getRhsSidebarMaxWidth`),
+not `window.innerWidth` or the app shell.
 
-`ChatMarkdown.svelte` mounts `<Streamdown>` (svelte-streamdown), which
-owns marked-based parsing, shiki highlighting, KaTeX typesetting,
-mermaid rendering, and block-level `parseIncompleteMarkdown` auto-close
-for streaming sources (open code fences, table rows, blockquotes — but
-NOT inline emphasis; see the patch note below). Three thin Svelte hosts under
-`components/chat/markdown/` wrap the library's built-in Code, Mermaid,
-and Math components and stamp the original source onto a wrapping
-element (`data-code-source` / `data-mermaid-source` / `data-math-source`
-+ legacy `math-inline` / `math-display` / `mermaid` classes) so
-`markdownSerialize.ts`'s copy-as-markdown round-trip and
-`DiagramInteractionHost`'s right-click "copy source" still work.
+## Markdown Rendering
 
-Path linkification runs inside marked's parse, not as a post-render
-DOM walker. `pathLinkExtension.ts` builds an inline marked extension
-keyed on the server-validated `PathRef[]` allowlist on `item.meta`
-(`internal/pathlinks` produces the allowlist on every agent-prose
-surface — assistant_text, channel messages, proposed plans,
-ask-user-question, advisor); each match emits a `link` token whose
-href starts with `PATH_LINK_HREF_PREFIX`
-(`agent-overflow:open?nonce=<per-page-load>&`). Streamdown's
-`transformUrl` admits hrefs starting with that exact prefix only, so
-agent prose written as `[click](agent-overflow:open?path=/etc/passwd)`
-gets filtered out before any anchor is rendered — the nonce is
-unguessable from prose because the agent never observes the rendered
-DOM. Allowlisted paths wrapped in backticks (`` `src/foo.ts` ``) also
-linkify — the emitted link token carries a `codespan` child so the
-rendered DOM is `<a href="agent-overflow:open?…"><code>src/foo.ts</code></a>`,
-preserving the monospace pill UX while routing clicks to the editor.
-Non-allowlisted backtick spans fall through to marked's built-in
-codespan tokenizer and render as plain `<code>`. `markdownEnhance.ts`
-is now a thin file that re-exports the markdown-aware copy delegate
-(`ensureMarkdownCopyDelegate`) and the path-link click delegate
-(`ensurePathLinkClickDelegate`) that routes clicks on validated
-anchors to the `OpenInEditor` binding.
+`ChatMarkdown.svelte` mounts `svelte-streamdown`, with host wrappers under
+`components/chat/markdown/` for Code, Mermaid, and Math. Those wrappers
+stamp original source on `data-code-source`, `data-mermaid-source`, and
+`data-math-source` so markdown copy and diagram actions keep working.
 
-All other module-level caches (shiki highlighter, mermaid SVG promise
-cache, language extension map) live inside `svelte-streamdown` itself.
-Per-row remount is still cheap because Streamdown's caches survive
-component remounts at the library level.
+Path linkification runs inside marked parsing from the server-validated
+`PathRef[]` allowlist on item metadata. The generated href includes a
+per-page-load nonce and is the only `agent-overflow:open` form admitted
+by Streamdown's `transformUrl`.
 
-We ship a pnpm patch against `svelte-streamdown@3.0.1`
-(`frontend/patches/svelte-streamdown@3.0.1.patch`) covering three
-upstream defects in `parseIncompleteMarkdown`:
+The `svelte-streamdown@3.0.1` pnpm patch is intentional. Parser bugs in
+that pipeline go upstream-then-patch; do not duplicate parser fixes in
+`markdownEnhance.ts` or the host wrappers. Regression coverage lives in
+`AssistantMessage.test.ts`.
 
-1. `Block.svelte` did not honor the `parseIncompleteMarkdown={false}`
-   prop, so the auto-balancer ran on settled blocks. The patch
-   short-circuits the parse when streaming is off.
-2. The single-asterisk and single-underscore plugins counted
-   delimiters inside backtick inline-code spans, balancing them with
-   a stray trailing copy at end-of-paragraph (e.g.
-   `` `_CLAIM_SQL` and there. `` rendered as `` `_CLAIM_SQL` and
-   there._ ``). The patch adds an `isWithinInlineCode` helper and
-   excludes those positions from the count.
-3. Streamdown's `createDefaultPlugins` synthesises a closer for any
-   unmatched inline-emphasis delimiter at end-of-line — `**partial`,
-   `` `partial ``, `~~partial`, `_partial`, `*partial`, subscript,
-   superscript, inline math. Mid-stream the synthesised closer
-   migrates outward as the model appends more text, producing a
-   visible "spreading" effect for every assistant response that
-   contains inline markdown (most prominently `~~` strikethrough
-   absorbing unrelated prose). The patch terminates
-   `createDefaultPlugins` with a `.filter()` that drops the ten
-   inline-emphasis plugins (`boldItalic`, `bold`,
-   `doubleUnderscoreItalic`, `strikethrough`,
-   `singleAsteriskItalic`, `inlineCode`,
-   `singleUnderscoreItalic`, `subscript`, `superscript`,
-   `inlineMath`) so unterminated inline markers stay LITERAL until
-   the real closer arrives. Block-level plugins (open code fences,
-   tables, blockquotes) are intentionally kept — they fail less
-   visibly and the closer they synthesise IS the correct one.
+## Test Notes
 
-Parser bugs in this pipeline go upstream-then-patch — do not
-duplicate the fix in `markdownEnhance.ts` or in `ChatMarkdown`'s host
-wrappers. Regression coverage lives in `AssistantMessage.test.ts`:
-the `'does not append a stray ...'` cases pin defects (1) and (2);
-the `'does not synthesise a $name closer mid-stream'` `it.each` matrix
-pins defect (3) for each of the five user-facing delimiters. Pin
-`svelte-streamdown` to an exact version in `package.json` so a
-`pnpm update` cannot silently move past the patch target.
+happy-dom reports zero geometry, so `MessageTimeline.svelte` enables
+virtua `ssrCount` only under `import.meta.env.MODE === 'test'`.
 
-## Test environment notes
-
-happy-dom returns 0 for `clientHeight` / `clientWidth`, which would make
-virtua mount zero rows. `MessageTimeline.svelte` switches virtua into
-`ssrCount` mode under `import.meta.env.MODE === 'test'` so component
-tests can assert on rendered DOM. Production (`vite dev` / `vite build`)
-sees the default `undefined`, leaving virtua free to virtualize.
-
-`useStickToBottom.svelte.test.ts` covers the controller's full state
-machine in isolation: forceStick / markAtBottom / animateScrollTo,
-content-RO positive/negative deltas (sync-pin gating on
-escapedFromLockState / pauseDepth), wheel/scroll/keydown/touch/pointer
-intent handlers, programmatic-write tagging (`ignoreScrollToTop`),
-pause-lease depth-counting, and lifecycle (re-attach detaches old
-listeners; detach clears all timers). Geometry is stubbed per-test via
-`Object.defineProperty` on `scrollHeight`/`clientHeight`/`scrollTop`,
-and `performance.now` is mocked to advance 16.67ms per `nextFrame()` so
-animateScrollTo's easeOutCubic interpolation is deterministic.
-
-`scroll.test.ts` covers the MessageTimeline-level integration: snapshot
+`scroll.test.ts` covers MessageTimeline-level behavior: snapshot
 save/restore, load-older flow, scroll-to-item routing, and layout
-invariants (composer-height variable, banner overlays). Heavy
-reliance on real layout is avoided — assertions are written so they
-hold under happy-dom's missing geometry.
+invariants. Individual row behavior belongs in row-specific tests.

@@ -1249,7 +1249,7 @@
                        divider to "final" on turn settle never shifts row
                        geometry — satisfies the "no late transcript
                        adornments on completion" rule in
-                       `frontend/CLAUDE.md`. Re-derive 1.625rem if the pill
+                       `frontend/AGENTS.md`. Re-derive 1.625rem if the pill
                        classes above change. -->
                   <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
                     <div class="my-3 flex h-[1.625rem] items-center gap-3">

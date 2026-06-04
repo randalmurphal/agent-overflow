@@ -134,7 +134,7 @@
   // Resolve the pane an overlay/command targets: the overlay's pinned pane when
   // it's open, otherwise the focused pane. Each overlay pins its own target so
   // command enablement tracks the pane the user invoked from, not wherever focus
-  // later drifted (frontend/CLAUDE.md: "resolve against an explicit target pane").
+  // later drifted (frontend/AGENTS.md: "resolve against an explicit target pane").
   function resolveContextPane(targetPaneId: string | null) {
     return getPane(targetPaneId ?? '') ?? getFocusedPaneOrNull();
   }

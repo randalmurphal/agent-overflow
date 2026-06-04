@@ -79,7 +79,8 @@ This redesign:
   Streamdown wiring).
 - Composer, sidebar, activity rail, settings, palette, terminal.
 - Wire shapes (`Item` type, payload meta, provider parsers).
-- Scroll architecture (virtua, `useStickToBottom`, the row contract).
+- Scroll architecture (virtua, `useStickToBottom`, the row contract;
+  see `docs/architecture/frontend-scroll.md`).
 - TodoWrite remains in the activity rail
   (`ActivityRailTodosBody`), not the timeline.
 - Phase labels on stamps ("planning · 9:42 PM" etc.) — fragile to
@@ -262,25 +263,22 @@ relitigate.
 
 Project rules that bound this work — pointers, not duplication.
 
-- **`frontend/CLAUDE.md` § Raw-content rendering** — assistant prose
+- **`frontend/AGENTS.md` § Rendering** — assistant prose
   goes through `ChatMarkdown` → `<Streamdown>`. Don't touch.
-- **`frontend/src/lib/components/chat/CLAUDE.md` § Row contract** —
+- **`frontend/src/lib/components/chat/AGENTS.md` § Row Contract** —
   every row inside `<Virtualizer>` keeps a stable outer shell. No
   late chevron insertion, no static-to-button swaps, no
   completion-time history appendages. Row state lives in per-pane
   registries (`pane.expansionStateFor`, `pane.attachmentCacheFor`,
   `pane.isSubagentGroupExpanded`), not local `let foo = $state(false)`.
   Payload bytes route through `utils/payloadDataCache.ts`.
-- **`frontend/CLAUDE.md` § Scroll architecture** — `MessageTimeline`
+- **`docs/architecture/frontend-scroll.md`** — `MessageTimeline`
   owns scroll, `useStickToBottom` owns intent. Don't touch. The rail
   per-row `border-l` approach is chosen specifically to avoid
   changing `groupedNodes` / row geometry.
-- **`frontend/CLAUDE.md` § Anti-patterns** — no `.svelte` past ~300
-  lines (currently `GenericToolCallRow.svelte` at 402 is over;
-  `AskUserQuestionCard.svelte` at 408 is over). The
-  `GenericToolCallRow` split into `+ AgentRow.svelte` resolves the
-  largest violation.
-- **`CLAUDE.md` (root) § Permanent invariants** — transport boundary
+- **`frontend/AGENTS.md` § Anti-Patterns** — no `.svelte` past ~300
+  lines when a clear component split exists.
+- **`AGENTS.md` (root) § Permanent invariants** — transport boundary
   stays clean; `.claude/` and `.playwright-mcp/` stay excluded from
   the dev watcher. Not relevant to this redesign but worth flagging
   if any helper script ends up running in dev mode.

@@ -11,883 +11,122 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 ## Layout
 
 - `src/lib/stores/` — runes-based reactive stores. `thread.svelte.ts`
-  owns the per-thread `ThreadPane` factory (items, payload meta,
-  streaming, approvals, design artifacts, channel messages, token
-  usage). `events.ts` declares custom event names. `bindings.ts` wraps
-  the auto-generated Wails bindings.
+  owns the per-thread `ThreadPane` factory; `events.ts` fans backend
+  events into active panes; `bindings.ts` wraps generated Wails calls.
 - `src/lib/components/panes/` — pane host/layout surfaces. This is the
-  only place that should translate layout items into mounted chat
-  panes.
+  only place that should translate layout items into mounted chat panes.
 - `src/lib/components/chat/` — timeline rendering. Kind-based
-  discrimination; no role/content matching.
+  discrimination; no role/content matching. See its local guide before
+  editing rows, virtualized scrolling, markdown, or RHS panels.
 - `src/lib/components/composer/` — message composer, mode / effort /
   model pickers.
 - `src/lib/components/sidebar/` — projects + thread list.
 - `src/lib/components/primitives/` — reusable Menu / Popover / Modal /
-  dropdown shells. Every picker in the composer toolbar and sidebar
-  composes these rather than rolling its own positioning / focus-trap /
-  keyboard handling.
+  dropdown shells. Pickers compose these rather than rolling their own
+  positioning, focus-trap, or keyboard behavior.
 - `src/lib/components/{design,discussion,git,palette,settings,terminal,shared}/` —
   per-feature component groups.
 - `src/lib/types/` — shared TypeScript types.
 - `src/lib/utils/` — pure helpers.
-- `src/lib/transport/` — WebSocket client + the `@wailsio/runtime` shim
-  the production build aliases the Wails generator's import to. Bindings
-  end up calling `wsClient.ts` over WS in production. Don't import from
-  here directly in feature code; go through `stores/bindings.ts`.
+- `src/lib/transport/` — WebSocket client + `@wailsio/runtime` shim.
+  Feature code should go through `stores/bindings.ts`, not this package.
 - `bindings/` — Wails-generated TypeScript. Never edit by hand.
 
-## Responsibility boundary
+## State Boundaries
 
-- What BELONGS here:
-  - UI rendering, routing between panes, user input capture.
-  - Reactive state for the visible thread (items, approvals, streaming
-    flags, token usage).
-  - On-demand fetching of heavy payloads via bindings.
-- What does NOT belong here:
-  - Business decisions about turns, forks, approvals — those are
-    decided in Go and surfaced via events or bindings.
-  - Direct `window.runtime` calls — always go through the typed
-    wrappers in `stores/bindings.ts`.
-  - Parallel state slices for streaming. `ThreadPane` is the sole
-    owner.
+`ThreadPane` is the sole owner of per-thread runtime UI state: visible
+items, streaming flags, approvals, design artifacts, channel messages,
+token usage, right-side-panel state, terminal placement, and scroll
+controller registration. Do not add a parallel streaming or timeline
+state slice next to it.
 
-## State shape
+Pane layout and pane runtime state are separate. Layout stores own
+placement/order/min-size metadata; `ThreadPane` owns the chat/discussion
+runtime state mounted into that slot. Command palette actions must resolve
+against an explicit target pane because enablement can change while the
+palette is open.
 
-- `ThreadPane` factory (in `stores/thread.svelte.ts`) owns all
-  per-thread reactive state — items, payload meta, streaming,
-  approvals, design artifacts, channel messages, token usage.
-- Panes live in a registry; v1 runs a single main pane but the factory
-  shape leaves room for tiling / multi-pane without a rewrite.
-- The sidebar thread list is its own store — it doesn't hold pane
-  state.
-- Pane layout and pane runtime state are separate. Layout stores own
-  placement/order/min-size metadata. `ThreadPane` owns runtime UI state
-  for that pane. Do not make layout code reach into chat internals to
-  decide behavior, and do not make pane state infer where it is mounted.
-- Global app surfaces (settings, app-level modals, global thread list)
-  are not pane-owned. Render them outside the pane loop unless the
-  product decision is explicitly "one instance per pane".
-- Right-side panel state is pane-owned. Visibility, active panel,
-  width, per-thread restore snapshots, and max-width clamping belong to
-  the owning `ThreadPane`/RHS slot and must use the owning pane's
-  measured width, not the app shell or total pane host width.
-- Command palette actions must resolve against an explicit target pane.
-  Capturing a whole command context at open time is wrong because
-  command enablement changes while the palette is open.
-- Terminal UI is a pane/thread surface. Placement is a layout policy
-  (`ThreadTerminalPlacement` today); terminal bodies should not assume
-  bottom-drawer permanence because the terminal may become a right-side
-  panel option.
-- Registry/layout drift should fail visibly. Do not silently render the
-  main pane as a fallback for a missing layout pane.
+The visible-thread memory budget is load-bearing. Heavy payloads (diffs,
+command output, thinking, attachments) load on demand through bindings.
+Thread switch is a bounded-window load or cache restore, not a full-history
+hydrate.
 
-## Thread switch — cache + tail-only initial load
+## Thread Switch And Scroll
 
-`pane.switchThread` is the entry point. The flow has four pieces:
+The durable contracts for cache restore, tail-only initial load, lazy
+older paging, scroll intent, virtua integration, and scroll-regression
+diagnostics live in
+[`docs/architecture/frontend-scroll.md`](../docs/architecture/frontend-scroll.md).
+Read that before touching:
 
-- **`threadItemCache`** (`stores/threadItemCache.ts`) — bounded LRU
-  (default cap 5) of `{ items, oldestLoadedTurnIndex, hasMoreHistory,
-  latestSettledTurn }` snapshots keyed by thread id. The outgoing pane
-  writes its current state on every `switchThread`; the incoming pane
-  reads it and paints synchronously when present. Memory cost per
-  snapshot is dominated by per-item `summary` and `payloadMeta` strings
-  (unbounded provider text); a soft cap of `MAX_CACHED_SNAPSHOT_ITEMS`
-  (1000 rows) on the write side rejects pathologically large snapshots
-  where the cost-to-benefit inverts. Strings are reference-shared with
-  the live pane until the user navigates away — once a snapshot is the
-  sole root, GC reclaims it on eviction. Three eviction paths keep the
-  cache fresh: (1) LRU drop when capacity is hit; (2) `events.ts`
-  evicts inactive threads touched by an upsert defensively, and evicts
-  an active thread only when the value-deduped pane window actually
-  changes; (3) `removeThread` evicts on delete so a deleted thread
-  can't wedge a multi-MB snapshot.
-  Same-thread re-switch (the revert-then-switchThread UX) skips the
-  outgoing snapshot AND force-evicts the entry so the load fetches
-  fresh state instead of flashing the stale view.
-- **Single initial load.** `App.ListThreadSliceAround(threadID,
-  anchorItemID, 50)` returns a viewport-sized slice (~50 items
-  around the saved scroll anchor, or the tail when the anchor is empty
-  / unknown). That's the only items fetch on switch. It runs
-  concurrently with `SwitchThread`, `hydrateThreadLiveState`,
-  `ListRecentTurns`, and `refreshCheckpointsForThread` under a single
-  `Promise.allSettled` so the wall-clock cost of a switch is bounded
-  by the slowest fetch, not their sum. On cache hit, the load is
-  skipped entirely — the snapshot already covers the visible window
-  and is invariant-fresh (events.ts evicts on every persisted
-  mutation). The previous "Phase 2 wider window" load is gone:
-  scrollHeight stays bounded to ~50 rows from frame 0, eliminating the
-  applyJump per-row anchor preservation fight that produced visible
-  scrollTop oscillation on cache miss.
-- **Auto-load-older.** Older items page in lazily as the user scrolls
-  toward the top. `MessageTimeline.maybeAutoLoadOlder` (driven from
-  Virtualizer's `onscroll`) fires `pane.loadOlder()` when offset is
-  within `AUTO_LOAD_OFFSET_PX=800` of the top AND the topmost
-  rendered row is one of the first `AUTO_LOAD_INDEX_THRESHOLD=5`
-  items. A `autoLoadAttemptedAtFloor` guard prevents hammering the
-  same query while the user lingers near the top — cleared when
-  `pane.oldestLoadedTurnIndex` advances or on thread switch. The
-  manual "Load older messages" button (`MessageTimeline.svelte`) is
-  the explicit fallback. `ListRecentThreadItems` is no longer used on
-  switch; it survives only as the wider-window probe inside
-  `pane.refreshFromBackend()` (transport-gap recovery).
-- **`mergeMissingItemsById`** is the merge contract for both initial
-  load and `loadOlder`: rows already in `pane.items` (from cache or
-  streamed events that landed mid-load) keep their reference; missing
-  rows are added and the array is re-sorted. Reference equality on
-  unchanged rows keeps virtua's per-row ResizeObserver from firing
-  spuriously, and triage's persist-then-emit ordering means any
-  in-flight stream event is already baked into the slice's SQL —
-  preferring the in-memory row over a re-fetch is always correct.
-- **Spinner-flash gate.** `pane.loading` flips true the moment
-  `switchThread` starts; `MessageTimeline` reads
-  `pane.showLoadingSpinner` instead, which only resolves to true after
-  `SPINNER_THRESHOLD_MS` (100ms — the Doherty perception threshold)
-  AND when `pane.items.length === 0`. Cache hits never flash the
-  spinner because items render immediately; sub-100ms cache misses
-  skip it because the slice load populates items before the timer
-  fires.
+- `src/lib/stores/thread.svelte.ts`
+- `src/lib/stores/threadItemCache.ts`
+- `src/lib/stores/threadScrollSnapshots.ts`
+- `src/lib/components/chat/MessageTimeline.svelte`
+- `src/lib/components/discussion/ChannelView.svelte`
+- `src/lib/utils/useStickToBottom.svelte.ts`
 
-## Events in
+Short version: `MessageTimeline` owns the scroll container, `virtua`
+owns row geometry, and `useStickToBottom` owns scroll intent and every
+allowed `scrollTop` write outside virtua internals. Programmatic virtua
+scrolls must be wrapped in `stick.runExternalScroll(...)`; never pass
+`smooth: true`.
 
-- `app.Event.On('provider-event', ...)` — fan out to active panes.
-- `app.Event.On('error', ...)` — toast + status bar.
-- Custom event names per feature are defined in `stores/events.ts`.
-
-## Scroll architecture
-
-The MessageTimeline scroll surface is built on **`virtua/svelte`**'s
-`<Virtualizer scrollRef={ourScrollEl}>`. Virtua owns geometry and per-row
-anchor preservation (ResizeObserver + binary-searched jump-correction);
-the frontend owns the scroll container itself, which is the outer
-`<div class="overflow-y-auto">` in `MessageTimeline.svelte`. Owning the
-container is what lets the controller observe content growth **before
-paint** (single content-element ResizeObserver) and write `scrollTop`
-synchronously in the same paint cycle — eliminating the rAF gap between
-content layout and scroll correction that was the flicker source. The
-frontend layers on top:
-
-- **`useStickToBottom.svelte.ts`** — Svelte-5 port of stackblitz-labs'
-  `use-stick-to-bottom`. Single owner of intent (`isAtBottom` flag) and
-  the only writer to `scrollTop` outside virtua's internals. Two
-  animation behaviors for autonomous content growth, selected per-fire
-  by the consumer via the `animationMode` option on
-  `createUseStickToBottomController({ animationMode })`:
-  - **`'instant'` (default)**: sync-pin. ContentRO callback writes
-    scrollTop synchronously in the same paint frame as contentEl
-    growth — no perceptible scroll motion, content just arrives at
-    the bottom. This is the default for Discussion's `ChannelView`
-    (polled batches, no streaming chunks to chase) and for chat
-    whenever no live content has advanced recently (idle thread,
-    settled response, async typesetting reflow).
-  - **`'spring'`**: velocity-spring chase. The viewport interpolates
-    toward the moving bottom across rAF ticks so the user sees a
-    smooth scroll-follow. Chat's MessageTimeline selects it via a
-    **content-keyed latch** (`animationModeForScroll` →
-    `latchedSpringMode`): every genuine live timeline advance stamps
-    `pane.lastLiveContentAt`, and the latch reports `'spring'` for
-    `SPRING_MODE_HOLD_MS` (500ms) after the last stamp. This decouples
-    the spring from the provider turn signal — it springs whenever the
-    user is stuck to the bottom and content is arriving, including the
-    end-of-turn smoother drain that reveals for seconds AFTER the wire
-    turn ends, and a turn that completes while the agent keeps
-    streaming. It is NOT keyed on `getActiveTurn`. Spring uses
-    upstream's tuning (`damping: 0.7, stiffness: 0.05, mass: 1.25`).
-  Both paths share a **warm-up gate** that defends against the
-  e00723f regression (mount-time virtua remeasurement + Streamdown
-  async typesetting would spring-chase a thread restore visibly).
-  After `attach()`, restore-reason `forceStick()`, or `armWarmup()`, the controller
-  stays in sync-pin mode until either at least one contentRO event
-  has fired AND `QUIET_MS = 100ms` of contentRO silence has passed
-  (the common case — virtua's per-row ResizeObservers fire on row
-  measurement, then go quiet) OR `FAILSAFE_MS = 2500ms` elapses (the
-  worst case — joining a thread mid-stream where contentRO never
-  goes quiet). The quiet timer is INTENTIONALLY gated on contentRO
-  evidence — the original implementation armed it eagerly inside
-  `beginWarmup`, firing at QUIET_MS regardless of whether any
-  cascade had started. On uncached re-entries to long threads, the
-  slice fetch could exceed QUIET_MS while MessageTimeline rendered
-  the loading-spinner branch (no contentEl, no RO); by the time
-  items arrived and contentEl mounted, warm had already flipped via
-  the empty quiet window, the hide-gate had reopened, and the
-  measurement cascade was visible — landing scrollTop at the
-  estimated bottom rather than the measured one (the user-visible
-  "lands half-screen high" symptom). After warm, the
-  selected `animationMode` takes effect. The warm state is exposed as
-  `controller.isWarm` (state-backed) so consumers can co-gate UI on
-  it; chat's MessageTimeline binds `visibility:hidden` to `!stick.isWarm`
-  on contentEl, covering virtua's fresh-mount measurement cascade behind a
-  brief blank rather than a visible "lands wrong, jumps to correct"
-  sequence (the larger the thread, the larger the scrollTop clamp +
-  row-offset shift — a 216-item sample produced a 461px jump).
-  `armWarmup()` is the public re-arm hook for consumers that need
-  `isWarm=false` BEFORE their next DOM flush — chat's MessageTimeline
-  calls it from `$effect.pre` on thread switch because `forceStick()`
-  in the restore `$effect` fires AFTER the DOM update (the new
-  thread's first paint would otherwise inherit the prior thread's
-  settled `isWarm=true`). `attach()` does not re-arm when scrollEl/
-  contentEl are unchanged across a thread switch — MessageTimeline
-  isn't keyed on threadId so those refs are stable, and `attach()`'s
-  early-return path is hit on every switch.
-  **Bottom geometry and intent** are deliberately separate. Geometry
-  answers "where is the viewport?"; intent answers "should new content
-  follow?" The public `isAtBottom` getter returns false while escaped
-  even if the viewport is still within the visual near-bottom band, so
-  the scroll-to-bottom chip appears as soon as the user opts out.
-  - `STICK_TO_BOTTOM_OFFSET_PX = 70` — VISUAL band for the
-    scroll-to-bottom chip when the user has not escaped. The chip is
-    hidden while a sticky user is within 70px of the geometric bottom
-    because that's "essentially in view" and the chip would be noise.
-    Explicit escape wins over this band.
-  - `AUTO_FOLLOW_BOTTOM_EPSILON_PX = 4` — RE-STICK band for the
-    "user scrolled back" path. A down-direction input followed by a
-    real downward scroll that lands within 4px of the bottom flips the
-    user back to sticky. Widened from 0.5 in the 2026-05 gentle-mango plan
-    (matches react-virtuoso's `atBottomThreshold` default) so that
-    virtua row-height estimation + browser scrollTop rounding (which
-    routinely land 1–3px short of the actual bottom on Opus-cadence
-    streams) don't strand the user. Tighter than the visual band on
-    purpose: the chip hides while you can SEE the bottom; auto-follow
-    only re-engages once you've actually REACHED it.
-  Escape is not geometry-confirmed. A wheel-up, PageUp/ArrowUp/Home,
-  touch movement that means "scroll up", middle-button autoscroll
-  pointer, or scrollbar-gutter pointer inside the timeline escapes
-  synchronously. This is intentional: a sub-pixel trackpad nudge that
-  the browser rounds to no scrollTop movement is still user intent to
-  stop following. The outer target guard remains load-bearing: input
-  must target the timeline scroll element or one of its descendants,
-  so wheels in the composer, sidebar, or outside the timeline do not
-  escape chat. Nested overflow rows no longer consume the intent for
-  the outer controller; upward wheel intent inside them still escapes
-  chat auto-follow.
-  **Recent down intent** is the only user-consent window for re-stick.
-  Down input records a 250ms window (`RECENT_DOWN_INTENT_WINDOW_MS`),
-  cleared on any up input, successful re-stick, explicit escape,
-  `forceStick`, `stopScroll`, `animateScrollTo`, detach, or expiry.
-  If escape is true and the viewport is already within the 4px epsilon,
-  the down input re-sticks synchronously because no browser scroll event
-  may follow at the hard bottom. Otherwise, the deferred scroll handler
-  may re-stick only when the window is still active, the observed
-  scrollTop moved down, escape is true, and the event-time distance is
-  within the 4px epsilon. This keeps PageDown/PageDown/End sequences
-  working without letting a stale PageDown re-stick after a later virtua
-  `applyJump` or content-shrink clamp.
-  The asymmetry is load-bearing: re-stick has to tolerate jitter while
-  proving fresh down intent; escape has to honor intent immediately.
-  Don't unify these paths without first reading the regression tests in
-  `useStickToBottom.svelte.test.ts` under "scroll-intent regressions"
-  and "user-reported regression — re-stick invariants across
-  production-like flows".
-  **Sync-captured `distFromBottomAtEvent`** (2026-05, Change 1) is
-  the partner to the widened epsilon. The deferred re-stick check
-  (1ms after the scroll event) uses the distance value captured at
-  EVENT time, not a fresh `distanceFromBottom()` read — a streaming
-  chunk arriving in that 1ms window can grow `scrollHeight` and
-  push the user past the epsilon in the read, even though the user
-  themselves never moved. The captured value reflects what they
-  actually saw.
-  **Pinch-zoom filter** (2026-05, Change 6): `handleWheel`
-  early-returns on `e.ctrlKey` so Mac trackpad pinch-to-zoom
-  (`wheel + ctrlKey=true` per browser convention) doesn't
-  spuriously escape the lock.
-  Programmatic scrolls go through `forceStick(opts?)` / `markAtBottom()` /
-  `notifyContentMaybeGrew()` / `pauseAutoScroll()` /
-  `runExternalScroll()` / `stopScroll()` / `animateScrollTo()` /
-  `armRestoreSnap()`; the one place app code routes virtua to
-  scrollTop is `listRef.scrollToIndex(...)`, which MUST run inside
-  `stick.runExternalScroll(() => listRef.scrollToIndex(...))` so the
-  controller tags virtua's next scroll event and does not auto-restick
-  mid-jump if the measurement loop lands near the bottom. Never write
-  `scrollTop` directly.
-  **`$fixScrollJump` is virtua's OTHER scrollTop writer** —
-  invoked internally from per-row ResizeObservers when a
-  viewport-spanning row remeasures (virtua@0.49.1
-  `core/index.js:259-266`, called via `J:m`). Streaming text growing
-  the assistant row past the viewport top fires it repeatedly. It has
-  no `runExternalScroll` wrapper, no scroll-event tag, and lands
-  exactly at the new bottom in a single paint — pre-empting any
-  in-flight spring chase and producing a user-visible 1–2 line snap.
-  Defense: the controller installs a property-descriptor gate on
-  `scrollEl.scrollTop` in `attach()` and restores the prior descriptor
-  in `detach()`. Controller-owned writes (everything routed through
-  `writeProgrammaticScrollTop`) flip `controllerOwnsScrollTopWrite`
-  to bypass the gate. External writes are evaluated against intent:
-  passed through while escaped, paused, inside a `runExternalScroll`
-  window (so load-older anchor restore and search-hit `scrollToIndex`
-  still land), OR while the warm-up gate is open (`warm===false`, which
-  covers initial `attach()` and `forceStick({reason:'restore'})` —
-  letting virtua's mount-cascade `$fixScrollJump` compensation land on
-  the freshly mounted slice), OR when `animationMode()==='instant'`
-  (the controller's contentRO would respond with a synchronous
-  sync-pin to the same target virtua wants — letting virtua's write
-  land first eliminates the cross-RO-instance timing gap, see below),
-  OR when no spring is currently in flight (`springToken === 0` — the
-  gate's sole purpose is keeping the spring as single writer during a
-  chase; with no chase, suppression has nothing to protect and just
-  desynchronizes virtua's internal scrollOffset from DOM scrollTop,
-  bug-report-20260524T200233Z: 15/15 suppressions at springToken=0
-  produced the thread-switch flicker on actively-streaming threads).
-  Dropped only when warm AND sticking-and-engaged AND
-  `animationMode()==='spring'` AND a spring chase is currently in
-  flight (`springToken !== 0`) — the only case where virtua's
-  one-paint snap would pre-empt the controller's interpolated chase.
-  The pre-warm pass-through is what prevents the original
-  thread-switch flicker and revert-puts-you-at-top regressions,
-  since the consumer hides the surface while `!isWarm` so pre-warm
-  jumps aren't user-visible anyway. The instant-mode pass-through
-  is what fixes the post-warm flicker on idle thread switches
-  (bug-report-20260524T183128Z): virtua's per-row ROs and the
-  controller's contentEl RO are SEPARATE observer instances, so
-  they fire in different RO delivery loops with a ~3ms gap; in
-  that gap the DOM has the new `scrollHeight` but the old
-  `scrollTop`, leaving the bottom of a row that just grew briefly
-  cut off (visible "right → wrong → right" sequence after warm).
-  When the controller would sync-pin (instant), virtua and the
-  controller pick the SAME scrollTop target — letting virtua
-  land first eliminates the gap. The captured descriptor may be
-  inherited from `Element.prototype` (production) OR an
-  own-property accessor (tests' `stubGeometry`); the gate handles
-  both, so unit tests reading `geom.scrollTop` still see the writes
-  that actually pass through. Regression coverage:
-  `useStickToBottom.svelte.test.ts` describe-block "external scrollTop
-  write gate (virtua $fixScrollJump defense)".
-  `prefers-reduced-motion: reduce` forces the sync-pin path
-  unconditionally — the spring is suppressed regardless of
-  `animationMode`.
-  - `forceStick(opts?: { reason?: 'user' | 'restore' })` clears escape,
-    sets sticky, and writes `scrollTop` to the current target. Two
-    flavors:
-    - `'user'` (default): explicit bottom-follow intent — the
-      scroll-to-bottom chip. Ordinary send / post preserves the current
-      scroll intent rather than forcing bottom.
-    - `'restore'`: thread-restore-style snap. Honored ONLY when the
-      entry point armed consent via `armRestoreSnap()` since the
-      last user-initiated escape; otherwise NO-OPs to preserve the
-      user's escape. This stops a stale or duplicated restore $effect
-      from clobbering an existing user escape with a snap they didn't
-      ask for (the seq-509 trace bug). Consent is also cleared by any
-      outer-scroll escape intent that can reach the chat scroller
-      (wheel / key / touch / pointer), by selection,
-      `stopScroll`, `animateScrollTo`, user-reason `forceStick`, and
-      the consume path itself.
-    Used by the scroll-to-bottom chip (`'user'`), by chat's
-    bottom-snapshot restore on thread switch (`'restore'` paired with
-    `$effect.pre`'s `armRestoreSnap()`), and by Discussion's initial
-    channel load (`'restore'` paired with the channel setup $effect's
-    `armRestoreSnap()`). Chat's bottom restore additionally schedules
-    a single rAF `notifyContentMaybeGrew()` after `forceStick()` to
-    catch late layout settling — composer-height RO updating scrollEl's
-    padding-bottom (padding-only growth doesn't refire contentRO),
-    virtua's per-row remeasurement after mount, and the first burst of
-    Streamdown async typesetting can each shift the bottom by a few
-    pixels one frame later. The trailing pin is escape-aware, so a user
-    wheel-up between frames cancels it.
-  - `armRestoreSnap()` is the one-shot consent companion to
-    `forceStick({reason:'restore'})`. The thread-switch entry point
-    calls it AFTER its defensive `setEscapedFromLock(true)` so the
-    upcoming restore-stick is honored; `setEscapedFromLock(true)`
-    itself clears any pending consent, so the order matters. Repeated
-    arms are idempotent. The flag survives `attach()` / `detach()`
-    deliberately because `attach()` calls `detach()` between the
-    consumer's `$effect.pre` arm and the restore `$effect` consume on
-    first mount; it is invalidated by outer-scroll escape intent and
-    consumed by the next restore-stick or `markAtBottom()`.
-  - `markAtBottom()` flips the controller flags to sticky-bottom
-    WITHOUT writing `scrollTop`. Used for the empty-timeline branch of
-    bottom-snapshot restore (no rows to anchor against yet, but the
-    first streamed row's contentRO sync-pin must land at the bottom).
-    Don't pair with `listRef.scrollToIndex(last, 'end')` — that
-    creates two writers (virtua's measurement loop + the controller's
-    sync-pin) targeting slightly different scrollTop values for the
-    same content-grow trigger, and they oscillate around the middle of
-    the viewport.
-  - `animateScrollTo(target, {durationMs})` runs an easeOutCubic
-    interpolation for arbitrary timeline jumps (load-older, scroll-to-
-    item). Owns the scrollTop writes so programmatic-write tagging
-    stays in one place.
-- **`pane.scrollController`** — registration slot. Both
-  `MessageTimeline.svelte` (chat) and `ChannelView.svelte` (Discussion)
-  publish their `useStickToBottom` controller on mount; external
-  surfaces (sidebar resizers, resizable drawers) acquire
-  `pauseAutoScroll()` during their drag to keep auto-follow from
-  yanking the user mid-gesture. The lease is depth-counted and
-  idempotent. The pane only knows the `PaneScrollController` surface:
-  required `pauseAutoScroll()` / `notifyContentMaybeGrew()`, plus
-  optional `notifyHostLayoutSettled()`, `preserveScrollAnchor()`, and
-  `isAtBottom` for consumers that need them. That keeps shared
-  resizer/drawer hooks working on both chat and discussion without
-  reaching into component internals.
-- **`threadScrollSnapshots.ts`** — per-thread LRU of
-  `{kind:'bottom'} | {kind:'anchor', itemId, offsetTop}`. Snapshots are
-  semantic (item id + offset), not virtua's internal cache shape, so
-  they survive virtua version bumps.
-- **No per-thread virtua row-size replay.** `threadItemCache.ts`
-  snapshots the item window only. Virtua's measured row sizes are valid
-  only with the exact row UI state that produced them (expanded payloads,
-  loaded thumbnails, nested scroll bodies). Since `switchThread` clears
-  pane-level row UI registries to bound memory, replaying geometry alone
-  makes virtua trust heights the DOM cannot reproduce. The Virtualizer is
-  still wrapped in `{#key pane.threadId}` so its internal row-size store
-  resets on every thread switch, and MessageTimeline hides content behind
-  the warm-up gate until fresh ResizeObserver measurements settle.
-- **Negative-delta re-pin honors logical intent, not just geometry.**
-  The controller's contentRO re-stick on a shrink fires when EITHER
-  `isAtBottomState` (logical intent) OR `isNearBottomState` (geometric
-  ≤70 px) is true — gated by `!escapedFromLockState && pauseDepth ===
-  0` in both cases. The geometric branch matches the upstream
-  use-stick-to-bottom semantics. The intent branch defends against
-  virtua's row-remeasurement cascade: when rows above the viewport
-  remeasure during the warm-up window (per-row ResizeObservers fire
-  after mount, Streamdown async typesetting growing math/code blocks
-  above the viewport), virtua's binary-searched `applyJump` shifts
-  `scrollTop` by the same delta to preserve the visible row. On
-  uncached loads that shift can be hundreds of pixels, flipping the
-  geometric near-bottom check to false purely as a downstream effect
-  of layout — not user intent. Without the disjunct, the controller
-  abandoned the pin and left the viewport stuck mid-cascade until
-  some later shrink happened to land scrollTop at the new bottom by
-  coincidence (user-visible "half-screen jump" on heavy uncached
-  threads). Regression coverage lives in
-  `useStickToBottom.svelte.test.ts` under "content ResizeObserver"
-  (the disjunction + the escape and pause guards that must still
-  override it).
-
-  **Spring carve-out: the negative-delta sync-pin is gated on
-  `springToken === 0`.** When `animationMode='spring'` is in flight,
-  virtua's estimate→measured row-append cycle fires contentRO twice
-  within ~5ms — first at `ESTIMATED_ROW_SIZE` (e.g., +90 for chat),
-  then a negative correction (e.g., -56). The +90 starts a spring;
-  without the gate, the -56's negative-delta sync-pin would write
-  scrollTop to the corrected target before the spring's first paint,
-  leaving the spring to tick against `current==target` with no
-  perceptible motion (user-visible "tool-call rows snap, only
-  assistant text animates"). The carve-out suppresses the
-  negative-delta synchronous write while a spring is chasing — the
-  spring reads `targetScrollTop()` each tick and absorbs the
-  corrected target on its next frame. The spring is also bidirectional
-  (the tick branch is `if (diff !== 0)`, so the same physics chases
-  either a higher or lower target with the same damping/stiffness/
-  mass). The carve-out's `else` bumps `lastTargetChangedAt = nowMs()`
-  so the retain window stays alive across the suppressed shrink and
-  the spring doesn't arrive-and-stop before the next chunk lands.
-  The overshoot guard above the negative-delta branch
-  (`if (scrollEl.scrollTop > targetScrollTop())`) is **threshold-gated
-  on the spring**: it fires when overshoot is non-zero AND the user is
-  not escaped AND no pause lease is held AND (`springToken === 0` OR
-  `overshootMagnitude > SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX`
-  (50 px)). Small overshoots mid-spring (≤ threshold) are absorbed by
-  the symmetric spring — `parseIncompleteMarkdown` auto-closing an
-  unclosed code fence between streaming chunks shrinks scrollHeight
-  by a handful of pixels, and the old unconditional guard snapped
-  scrollTop inside the RO callback before the spring could damp it,
-  producing the user-visible "viewport jumps up, then springs back
-  down" jitter on plain-text streams. Large overshoots (the existing
-  "negative delta mid-spring lets the spring converge" test's 200+
-  px shrink) still snap inside the RO callback so the user doesn't
-  watch the viewport drift down across many frames. For the
-  +ESTIMATE / -CORRECTION virtua pair the spring has barely moved
-  by the time the correction arrives, so overshoot is false and the
-  negative-delta carve-out is still the path that suppresses the
-  race. The cascade defense above (Bug A) is preserved by
-  **warm-gate ordering**: the row-remeasurement cascade fires while
-  `!warm`, but `springGateOpen` requires `warm`, so the spring
-  never starts during the cascade window and `springToken === 0`
-  lets the sync-pin and the overshoot guard run as before.
-  Regression coverage in `useStickToBottom.svelte.test.ts`:
-  "negative delta while !warm sync-pins via negative-delta branch"
-  (Bug A defense — geometry chosen so overshoot is bypassed,
-  isolating the negative-delta path) + "estimate-correct pair
-  during spring leaves spring as single writer" (Bug B fix) +
-  "small negative delta mid-spring (<50px overshoot) is absorbed by
-  the symmetric spring" + "large negative delta mid-spring (>50px
-  overshoot) still snaps instantly" + "streamdown token-close-then-
-  reopen pattern does not jump the viewport" (the
-  parseIncompleteMarkdown regression coverage).
-- **Layout decoupling** — `ChatView.svelte` positions the composer +
-  live-turn UI + below-bar as an absolute overlay inside the timeline's
-  relative container. A `--composer-height` CSS variable, written by a
-  ResizeObserver on the overlay, drives the timeline's `padding-bottom`
-  on `scrollEl` so composer growth, working/todo panels, attachment
-  trays, and approval panels never alter the scroll surface's
-  `clientHeight`. The padding lives on scrollEl (not contentEl) because
-  the controller's contentRO defaults to observing the content-box —
-  per W3C ResizeObserver spec, padding-only changes neither fire the
-  callback nor change `entry.contentRect.height`, so a contentEl
-  padding wouldn't re-pin via the contentRO seam. ChatView's composer
-  RO calls `notifyContentMaybeGrew()` to stamp the resize and re-pin
-  scrollTop after the padding update flows through. The re-pin runs
-  **synchronously inside the RO callback** — the callback writes
-  `--composer-height` directly on chatColumn via
-  `style.setProperty(...)` (bypassing Svelte's reactive flush
-  microtask, which would otherwise leave the layout-relevant change
-  un-applied until after the callback returned), then
-  `notifyContentMaybeGrew()` forces a layout read inside
-  `targetScrollTop()` so the post-grow scrollHeight is what
-  scrollTop is pinned against. The previous rAF-deferred path left a
-  1-frame gap between composer growth and re-pin — visible as content
-  "appearing then settling" on uncached loads where a working/todo or
-  approval panel mounts late, after the warm gate has already revealed
-  contentEl; the gap is `composerDelta` pixels, large enough on big-
-  composer threads (~200–400 px) to flicker the scroll-to-bottom chip
-  on the way to settling. The reactive `composerHeight` state binding
-  on chatColumn stays in place for any future consumer of the value;
-  Svelte's microtask flush writes the same CSS-variable value a second
-  time, which is idempotent. ChannelView's composer-section RO calls
-  the same `notifyContentMaybeGrew` hook for an analogous reason: in
-  Discussion the composer sits OUTSIDE scrollEl (different layout —
-  flex sibling, not absolute overlay), so composer growth there changes
-  `scrollEl.clientHeight` rather than `scrollHeight`, and the contentRO
-  also doesn't see it.
-- **`overflow-anchor: none` on `scrollEl`.** Both MessageTimeline and
-  ChannelView set `overflow-anchor: none` on the scroll container. The
-  browser's default scroll-anchor heuristic adjusts `scrollTop` when
-  content above the viewport changes size — well-intentioned for static
-  documents, but it actively fights virtua's measurement-loop jump
-  correction AND the controller's contentRO sync-pin. Streamdown async
-  typesetting (shiki / KaTeX / mermaid) growing rows above the viewport
-  on a sticky session would produce visible scrollTop oscillation
-  between the browser's anchor adjustment and our re-pin without this
-  opt-out. virtua already sets `overflow-anchor: none` on its inner
-  container, so the controller doesn't need a defensive copy on
-  contentEl — only the outer scrollEl needs the opt-out.
-- **External write gate — fragility map.** The gate in
-  `useStickToBottom.svelte.ts` blocks virtua's `$fixScrollJump` writes
-  when ALL of: `warm && isAtBottomState && !escapedFromLockState &&
-  pauseDepth === 0 && animationMode === 'spring' && springToken !== 0`.
-  If ANY condition transiently flips during an active spring/sentinel,
-  the gate opens and virtua can snap scrollTop. Conditions ranked by
-  fragility:
-
-  | Condition | Fragility | Coupling | Test coverage |
-  |-----------|-----------|----------|---------------|
-  | `pauseDepth` | **HIGH** | Independent — `pauseAutoScroll()` flips it without canceling the spring. ~16ms race window before the spring tick bails. 13 row components trigger via `preserveScrollAnchor`. | "pauseDepth during active spring" describe block |
-  | `animationMode` | **Covered** | Independent — reads a consumer-supplied getter. Chat's getter is the content-keyed latch (`latchedSpringMode` over `pane.lastLiveContentAt`, `SPRING_MODE_HOLD_MS=500`); the inter-round gap and end-of-turn drain stay `'spring'` because content advanced <500ms ago. `SPRING_MODE_HOLD_MS > RETAIN_ANIMATION_DURATION_MS` keeps the sentinel covered. | "wire-round gap regression" describe block (+ the `HOLD > RETAIN` guard) |
-  | `springToken` | **Covered** | Downstream of other conditions — canceled by escape, pause bail, mode flip. Velocity-freeze bug fixed (diff===0 zeroes velocity). | "stuck spring from instant pin" + "sentinel-alive" describe blocks |
-  | `isAtBottomState` | LOW | Coupled — every `=false` write goes through `setEscapedFromLock(true)` which also calls `cancelSpring()`. | "gate condition coupling invariants" describe block |
-  | `escapedFromLockState` | LOW | Coupled — every `=true` write routes through `setEscapedFromLock(true)` which also calls `cancelSpring()`. | "gate condition coupling invariants" describe block |
-  | `warm` | LOW | Coupled — every `=false` write (`beginWarmup`, `armWarmup`) is preceded by `cancelSpring()`. | "gate condition coupling invariants" describe block |
-
-  When adding new code that touches any of these conditions, verify the
-  coupling still holds. The test describe blocks above are the regression
-  guards — a new call site that sets `pauseDepth > 0` or calls
-  `beginWarmup()` without the paired `cancelSpring()` would open the gate
-  during streaming.
-
-- **Status banners are absolute overlays, not reserved slots.** Neither
-  reserves layout height, so neither leaves a permanent gap on the happy
-  path, and neither changes a scroll surface's `clientHeight` on
-  mount/unmount (that would fight the scroll controller). Both use
-  `transition:fade` (opacity only) so entrance/exit alone never animates
-  adjacent height. They differ only in what they anchor to:
-  - `TransportStatusBanner.svelte` is an `absolute inset-x-0 top-0 z-50`
-    overlay on `.app-shell` (above pane content, below modals at
-    `z-[60]+`). It renders nothing when healthy and floats over the top
-    edge of the shell when the transport drops. Replaced a permanent
-    ~28px reservation above the chat header.
-  - `ProviderStatusBanner.svelte` is an `absolute inset-x-0 top-0 z-20`
-    overlay anchored to the `chat-surface-ground` relative container in
-    ChatView, so it pins to the top of the timeline (below the header).
-    It stacks its two banners (provider status + session/reconnect)
-    top-down and covers the topmost message rows while shown — the user
-    can scroll up or dismiss/resolve them. Replaced two stacked `min-h-9`
-    slots that reserved ~72px of empty space below the header forever.
-- **Row state survives virtua remount via pane-level registries.**
-  Expansion state for tool-call payloads, attachment-blob URLs, and
-  subagent-group expanded flag all live on the `ThreadPane` keyed by
-  `item.id` / `payloadId`. Row components read the handle out of the
-  pane on each mount (using `untrack` so reads don't bind the row to
-  its initial value). This means scrolling a row past the
-  `bufferSize=900` window and back preserves "show full output"
-  toggles, loaded payload chunks, and any image blobs. Registries are
-  cleared on `switchThread` to bound memory.
-- **Expansion-state memory tradeoff.** The expansion registry keeps
-  loaded payload chunks until the user collapses a row or switches
-  thread. Open transcript rows are user-owned UI state; collapsing one
-  from an unrelated row's load changes timeline height outside the
-  user's interaction path and fights virtua.
-- **Stable transcript rows.** Anything rendered inside `<Virtualizer>`
-  is a stable history record. A row may update text/content in place, but it
-  should not change its outer shell after first render: no static
-  div-to-button swaps, no late chevron insertion, no completion-time
-  summary cards appended inside history, and no live working/todo UI in
-  the virtualized data. New transcript structures must decide their
-  shell from provider metadata available at first render and keep later
-  details inside reserved slots. Disclosure-style rows should compose
-  `TranscriptDisclosureHeader.svelte` so toggle chrome and trailing
-  actions keep the same DOM shape across loading/completion updates.
-- **Shiki diff token cache.** `tokenCache.ts` partitions cached lines
-  by `${theme}:${threadId}:${lang}:…` so a thread switch can drop
-  every line tokenized under the outgoing thread without disturbing
-  any other thread's tokens. `pane.switchThread` calls
-  `clearTokensForThread(prevThreadId)` exactly once per switch; the
-  partition + clear-on-switch is what bounds long-session memory.
-  The fixed-cap LRU (5000 entries, ~5 MB worst case) only exists to
-  absorb repeat-visit pressure within a single thread; it's
-  deliberately large enough that a multi-thousand-line diff doesn't
-  self-evict during initial render.
-
-`ChannelView.svelte` (Discussion mode) shares the same
-`useStickToBottom` controller. It scrolls a plain DOM container with no
-virtualizer, but the controller's content-element ResizeObserver is
-agnostic to what's inside contentEl — so the same sync-pin handles
-streaming-driven growth on both surfaces (Discussion's
-`svelte-streamdown` async typesetting passes count as positive
-contentRO deltas just like virtua row remeasurement). Discussion's
-contentEl wraps the `{#each}` over channel messages; the scroll
-element is the surrounding `overflow-y-auto` div. The intervening
-`<div bind:this={contentEl} class="space-y-3">` is intentional — it
-gives the content-RO a target whose height tracks message-list growth
-without including the scroll container's padding, mirroring chat's
-`<div bind:this={contentEl}>` wrapper around the `<Virtualizer>`.
-
-What NOT to add:
-- Manual `scrollTop` writes outside the controller.
-- A row-height signature cache. virtua re-measures via ResizeObserver.
-- A scroll-anchor compensation pass on top of virtua's jump algorithm.
-- A second virtualizer over the same data.
-- A length-watching auto-follow `$effect` that calls
-  `listRef.scrollToIndex(last, 'end')` on streaming. The content-RO inside
-  `useStickToBottom` reproduces this synchronously before paint; a
-  duplicate effect re-introduces the rAF gap that this architecture
-  eliminated.
-- `smooth: true` on any `listRef.scrollToIndex(...)` call. Virtua's
-  smooth path uses the native `scrollTo({behavior:'smooth'})` which
-  fires its own scroll events asynchronously and would race the
-  controller's auto-restick / programmatic-write tagging. Always wrap
-  `scrollToIndex` in `stick.runExternalScroll(...)` and let virtua jump
-  synchronously.
-- `transition:slide` adjacent to the scroll area — animated height
-  shifts visible content under the user's cursor.
-- Late transcript adornments on completion. If the UI needs a marker,
-  attach it to the row boundary when that row first appears; don't add
-  a separate end-of-turn row after the virtualizer has measured the
-  previous bottom.
-
-## Search
-
-- Full-thread message search uses the in-app `MessageSearch` palette
-  (Ctrl/Cmd+F, see `palette/MessageSearch.svelte`). The query goes
-  through the `SearchThreadMessages` Wails binding which reads SQLite
-  directly — coverage is independent of which rows are currently
-  mounted in virtua. This is the canonical search surface, not the
-  browser-native find which only sees mounted rows.
-- A search hit calls `pane.requestScrollToItem(itemId)`;
-  `MessageTimeline` reacts by paging older items in via
-  `pane.loadUntilItem(id)` and then
-  `stick.runExternalScroll(() => listRef.scrollToIndex(idx, { align:
-  'center' }))`. The two-step (load-then-scroll) is necessary because
-  virtua only knows about items present in `pane.items`. Never pass
-  `smooth: true` — virtua's smooth path uses
-  `scrollEl.scrollTo({behavior:'smooth'})` which fires its own scroll
-  events asynchronously and races the controller; if smooth-to-hit is
-  wanted later, route through a controller-owned animateScrollTo call
-  with the per-row offset computed from `listRef.getItemOffset(idx)`.
-
-## Accepted scroll-surface tradeoffs
-
-- **Nested row overflow.** Expanded `SubagentGroup`, `WaitGroup`, and
-  large command-output bodies use bounded internal scroll panes instead
-  of letting a single transcript row grow without limit. `SubagentGroup`
-  children are still rendered eagerly when expanded because the dense
-  overview UX is worth it at current sizes. `WaitGroup` mounts an
-  initial slice and requires an explicit "show more" click for large
-  child sets, and `CommandOutput` fetches a preview before the user
-  asks for the full payload. Revisit only if a real thread shows DOM
-  cost from a 200+-child subagent.
-- **Focus survival across virtua remount.** When the focused element
-  belongs to a row that scrolls past `bufferSize=900` and unmounts,
-  focus jumps to `<body>`. Tab through a long virtualized timeline
-  is therefore fragile. Industry chat surfaces (Slack, Discord, VS
-  Code chat) accept the same tradeoff. Revisit only if user
-  feedback surfaces real keyboard-navigation pain.
-- **`shiki` is still a dependency.** The Go-side SSR plan moved diff
-  highlighting off the client, but `svelte-streamdown` ships a
-  `HighlighterManager` that dynamically loads shiki for code blocks
-  inside assistant markdown (and a small set of payload expansions).
-  Module-level caches inside the library keep per-row remount cheap.
-- **Click-anchor preservation is intent-preserving.** In-row disclosure
-  actions call `preserveScrollAnchor()`, but that helper must not mean
-  "the user escaped." If the controller was sticky when the action
-  started, release re-pins to the bottom and keeps sticky intent. If the
-  user had already escaped, the helper compensates `scrollTop` to keep
-  the clicked anchor fixed and leaves escape intact. This keeps local
-  row UI from unlocking future streaming follow.
-- **Pointerdown-defers-forceStick is deliberately NOT implemented.** The
-  legacy Discussion controller deferred a `forceStick` while the user
-  was mid-drag of the scrollbar. That is a rare-input-mode case
-  (mouse-drag of scrollbar + concurrent explicit chip click) with no
-  recorded user impact in the chat surface; treat as an accepted
-  simplification for the unification.
-
-## Diagnosing scroll regressions
-
-The scroll controller is the hardest surface in the frontend to
-reason about by reading code alone — three independent layers
-(controller flags, virtua's measurement loop, browser layout) write
-`scrollTop` near each other, and the user-visible symptom is usually
-the second-order effect of one layer's correction interacting with
-another's. The recurring class of bug looks like "viewport lands
-slightly off, then snaps to where it should be" or "half-screen jump
-on uncached load" — both produced by a controller decision made
-against state that another layer was about to change.
-
-The `uiRenderTrace.ts` surface exists for exactly these bugs. Enable
-it with `make dev DEBUG=1` (sets `VITE_AGENT_OVERFLOW_UI_TRACE=1`).
-Trace records are written to disk via `AppendUIRenderTraceBatch` and
-also exposed through `window.__agentOverflowUiTrace` in the dev
-console (`.dump()` / `.recent(50)` / `.filePath()`). The scroll
-controller records around every decision point: `scroll.contentRO`
-(every resize delta with `positiveWillPin` / `negativeWillPin` /
-`overshoot` / `overshootMagnitude` / `isAtBottomState` /
-`isNearBottomState` / `escapedFromLockState` / `pauseDepth` snapshot —
-for spring-mode jitter regressions, scan for records with
-`overshootMagnitude > 0 && overshootMagnitude ≤ 50` preceded by
-recent `spring.tick` writes; those are the absorbed-overshoot frames
-where the pre-2026-05 unconditional guard would have snapped scrollTop
-inside the RO callback and the threshold-gated guard does not),
-`scroll.escape.set` (when escape flips),
-`scroll.refreshIsNearBottom` (when the geometric flag changes),
-plus `chat.state` / `chat.dom` snapshot traces from MessageTimeline.
-
-When a regression is reported, the diagnostic flow is:
-
-1. Reproduce with the trace enabled. Capture the dump immediately
-   after the symptom — `window.__agentOverflowUiTrace.dump()` or
-   the file path. Threads with multi-hundred items + heavy
-   Streamdown content (math, code, mermaid) are the most reliable
-   reproducers.
-2. Scan backward from the user-visible symptom for the LAST
-   `scroll.contentRO` record before the viewport landed wrong.
-   Read `positiveWillPin` / `negativeWillPin` directly. A pin that
-   should have fired but shows `false` means one of the gates
-   blocked it; cross-reference the surrounding flags.
-3. The recurring failure mode: `isAtBottomState=true,
-   isNearBottomState=false, negativeWillPin=false` — a geometric
-   flag flickered because of an upstream layout correction
-   (virtua's `applyJump`, browser scroll-anchor, composer-height
-   pad), the controller read the flicker, and abandoned the pin.
-   The fix in this codebase has always been to add the
-   intent-disjunct: gate on `(isAtBottomState ||
-   isNearBottomState)`, with `!escapedFromLockState &&
-   pauseDepth === 0` outside the disjunct. Pre-existing
-   regression tests for that pattern are in
-   `useStickToBottom.svelte.test.ts` under "content ResizeObserver".
-4. Reproduce in a unit test before touching controller code. Each
-   regression in this surface has corresponded to a specific
-   contentRO firing sequence — encode it in
-   `useStickToBottom.svelte.test.ts` so the assertion fails
-   without the fix and passes with it. The test file's
-   `MockResizeObserver` + `stubGeometry` helpers cover the
-   geometry combinations that matter.
-
-What NOT to do when chasing a scroll bug:
-
-- Don't add a defensive `requestAnimationFrame` to "let layout
-  settle." The whole point of the synchronous contentRO seam is to
-  pin scrollTop in the same paint frame as the height change;
-  deferring re-introduces the gap the architecture eliminated.
-- Don't add a second observer or `$effect` watching `pane.items`
-  / `scrollHeight` / `scrollTop`. The controller already owns
-  these decisions. A parallel watcher creates two writers that
-  race.
-- Don't relax the warm-gate or hide-gate without evidence that
-  the cascade-cover is unnecessary on the affected thread —
-  uncached loads of 200+-item threads with heavy Streamdown
-  content are the canonical stressor and the cascade is real.
-
-See the "External write gate — fragility map" section above for which
-gate conditions can transiently flip and which test describe blocks pin
-each one.
-
-## Raw-content rendering
+## Rendering
 
 Raw content is canonical. Go sends raw item summaries, channel message
-content, and payload data; the frontend owns rendering as a viewport-local
-projection.
+content, and payload data; the frontend renders them as viewport-local
+projections. Do not add server-rendered chat HTML or a global DOM
+observer.
 
 Assistant text, discussion messages, and proposed plans render through
-`ChatMarkdown.svelte`, which mounts a `<Streamdown>` (`svelte-streamdown`)
-with our own thin host wrappers (`StreamdownCodeHost`, `StreamdownMermaidHost`,
-`StreamdownMathHost`) that re-stamp the original source on `data-code-source`,
-`data-mermaid-source`, and `data-math-source` so `markdownSerialize.ts`'s
-copy-as-markdown round-trip keeps working. Streamdown owns markdown
-parsing (via `marked`), shiki highlighting, KaTeX typesetting, mermaid
-rendering, link/image URL prefix safety, and BLOCK-LEVEL incomplete-token
-auto-close while streaming (`parseIncompleteMarkdown={streaming}` — see
-`components/chat/AGENTS.md` for the pnpm patch that drops the runaway
-inline-emphasis plugins).
-The library uses a token-keyed `{#each}` over marked blocks under the
-hood, so DOM identity is preserved across content updates — text
-selection, scroll-within-code, and previously-rendered shiki/mermaid
-nodes all survive streaming chunks.
+`ChatMarkdown.svelte` and `svelte-streamdown`. Path linkification happens
+inside marked parsing using server-validated `PathRef[]` metadata and a
+per-page-load nonce; click/copy behavior is delegated by
+`markdownEnhance.ts`.
 
-Path linkification happens INSIDE the initial marked parse, not as a
-post-render walker. `pathLinkExtension.ts` builds an inline marked
-extension keyed on the server-validated `PathRef[]` allowlist on
-`item.meta`; each match emits a `link` token whose href starts with
-`PATH_LINK_HREF_PREFIX` (a per-page-load nonce baked into
-`agent-overflow:open?nonce=…&`). Streamdown's `transformUrl` only
-admits hrefs that start with that exact prefix, so agent prose
-written as `[click](agent-overflow:open?path=/etc/passwd)` is
-filtered out before any anchor is rendered — the agent cannot guess
-the nonce because it never observes the rendered DOM.
-`markdownEnhance.ts` now only owns two document-level delegates:
-`ensurePathLinkClickDelegate` (routes clicks on the validated anchors
-to the `OpenInEditor` binding) and `ensureMarkdownCopyDelegate`
-(markdown-aware copy).
+ANSI-like payloads render through `AnsiText.svelte`, which diffs into a
+stable `<pre>` with Idiomorph so selection survives streaming updates.
 
-ANSI-like payloads render through `AnsiText.svelte`, which builds an
-HTML string from raw bytes and applies it to a stable `<pre>` via
-`Idiomorph.morph(...)`. Idiomorph diffs the live DOM against the new
-HTML and patches only changed nodes — text selection survives streaming
-chunks, no per-line re-tokenization on each update.
+## Anti-Patterns
 
-Do not add a server-rendered chat HTML field or a global DOM observer.
-Copy/download paths read raw `summary` / `content` / `data`.
-
-## Extension points
-
-- To add a new event kind rendered by chat: add a kind constant in
-  `stores/events.ts`, a renderer in `components/chat/`, and a
-  `ThreadPane` reducer branch. See
-  `docs/architecture/how-to.md#add-a-new-event-kind`.
-- To add a composer mode / picker: compose the primitives under
-  `components/primitives/`; don't roll custom positioning.
-- To regenerate Wails bindings: run `wails3 task common:generate:bindings`,
-  which passes `-ts`. Never edit files in `bindings/` by hand.
-
-## Anti-patterns
-
-- Do NOT create legacy stores. Runes only — `$state`, `$derived`,
+- Do NOT create legacy stores. Runes only: `$state`, `$derived`,
   `$effect`, `$props`. No `export let`, no `$:`.
-- Do NOT maintain a parallel state slice for streaming next to the
-  persisted timeline. One owner per pane.
 - Do NOT discriminate timeline items by role or content substring.
   Discriminate via `kind`.
-- Do NOT re-order items per render. Upsert by `(turnIndex, itemIndex)`
+- Do NOT re-order items during render. Upsert by `(turnIndex, itemIndex)`
   and let the store stay sorted.
-- Do NOT implement count-based slicing for virtualization (forge's
-  `useDeferredValue` ping-pong, count-window approaches). Heavy
-  content is on-demand — expand-to-load, not preload.
-- Do NOT stretch a `.svelte` file past ~300 lines. Extract instead.
-- Do NOT add business logic to templates. Derive in `<script>`, render
-  in the template.
+- Do NOT implement count-based slicing for virtualization. Heavy content
+  is expand-to-load, not preload.
+- Do NOT stretch a `.svelte` file past roughly 300 lines when a clear
+  component split exists.
+- Do NOT put business logic in templates. Derive in `<script>`, render in
+  the template.
 - Do NOT call `window.runtime` directly. Use `stores/bindings.ts`.
-- Do NOT preload heavy content. Diffs, command output, thinking —
-  fetch via bindings when the user expands.
+- Do NOT preload heavy payloads.
+- Do NOT add visible in-app explanatory text for internal mechanics,
+  shortcuts, or implementation details.
 
 ## Testing
 
-- Store logic: unit-test with Vitest under `src/lib/stores/*.test.ts`.
-- Component rendering: coverage is thin; when you add or change
-  behavior, add a component test that would fail without the change.
-- A failing `pnpm run check` is a blocker, not a warning.
+Store logic: unit-test with Vitest under `src/lib/stores/*.test.ts`.
+Component behavior: add a component test when changing rendering or
+interaction. Scroll behavior has dedicated coverage in
+`src/lib/utils/useStickToBottom.svelte.test.ts` and
+`src/lib/components/chat/scroll.test.ts`.
+
+`pnpm run check` and `pnpm run build` are blockers. `pnpm test` is the
+frontend unit-test gate.
 
 ## References
 
-- Forge web app: `/Users/randy/repos/forge/apps/web/src/` — UX
-  reference for ambiguous decisions.
-- `docs/references/spike-policy.md` — when Wails binding behavior is
-  unclear.
-- Root `CLAUDE.md` principle 4 ("Frontend memory is bounded by the
-  visible thread").
+- [`docs/architecture/frontend-scroll.md`](../docs/architecture/frontend-scroll.md) —
+  chat/discussion scroll architecture and diagnostics.
+- [`docs/architecture/data-flow.md`](../docs/architecture/data-flow.md) —
+  provider → triage → store → frontend pipeline.
+- [`docs/architecture/how-to.md`](../docs/architecture/how-to.md) —
+  extension playbooks.
+- [`docs/references/spike-policy.md`](../docs/references/spike-policy.md) —
+  when Wails or provider behavior is unclear.
+- `/Users/randy/repos/forge/apps/web/src/` — UX reference for ambiguous
+  decisions.

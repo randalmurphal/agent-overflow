@@ -1,7 +1,7 @@
 // Pure latch deciding chat's autonomous-scroll animation mode: 'spring'
 // (velocity-spring chase that smoothly follows the moving bottom) vs
 // 'instant' (same-paint sync-pin, no perceptible motion). See
-// frontend/AGENTS.md § Scroll architecture for the two behaviors.
+// docs/architecture/frontend-scroll.md for the two behaviors.
 //
 // The latch keys on WHEN live timeline content last advanced — a text
 // reveal, a streaming delta, or a new provider row — NOT on whether a

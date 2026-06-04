@@ -7,7 +7,7 @@
 // expanded body.
 //
 // Pulled out of `ActivityRail.svelte` so the rail file stays under the
-// 300-line ceiling enforced by `frontend/CLAUDE.md`. Lifecycle is
+// 300-line ceiling enforced by `frontend/AGENTS.md`. Lifecycle is
 // driven by `mount(...)` (call from the host's `onMount`) and the
 // returned `dispose` function (call from `onDestroy`). No global
 // state — one controller per ActivityRail mount.

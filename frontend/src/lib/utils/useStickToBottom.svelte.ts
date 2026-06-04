@@ -69,8 +69,8 @@ function trace(label: string, build: () => Record<string, unknown>): void {
   recordUiTrace(label, build());
 }
 
-// Three-band geometry — see frontend/AGENTS.md "Three-band geometry"
-// for the full rationale. Tightening any one of these affects a
+// Three-band geometry — see docs/architecture/frontend-scroll.md for
+// the full rationale. Tightening any one of these affects a
 // different UX surface; the asymmetry is load-bearing.
 //
 // Visual near-bottom band: drives the scroll-to-bottom chip and the
@@ -1268,9 +1268,9 @@ export function createUseStickToBottomController(
         // and left the viewport stuck mid-cascade until the next
         // shrink happened to land scrollTop at the new bottom by
         // coincidence. User-visible as a "half-screen jump to
-        // bottom" on heavy uncached threads — see frontend/AGENTS.md
-        // "Negative-delta re-pin honors logical intent, not just
-        // geometry" for the cascade pattern this defends.
+        // bottom" on heavy uncached threads — see
+        // docs/architecture/frontend-scroll.md for the cascade pattern
+        // this defends.
         if (negativeWillPin) {
           isAtBottomState = true;
           // Spring carve-out: suppress this sync write while a spring
@@ -1297,8 +1297,8 @@ export function createUseStickToBottomController(
           // !warm cascade) is preserved by warm-gate ordering: the
           // cascade fires while `!warm`, springGateOpen requires
           // `warm`, so springToken stays 0 during the cascade and
-          // the sync-pin runs as before. See frontend/AGENTS.md
-          // "Spring carve-out".
+          // the sync-pin runs as before. See
+          // docs/architecture/frontend-scroll.md.
           if (springToken === 0) {
             writeCaller = 'contentRO.negativeDelta';
             writeScrollTop(targetScrollTop());

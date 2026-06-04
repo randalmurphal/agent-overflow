@@ -1755,7 +1755,7 @@ describe('createUseStickToBottomController', () => {
     // Pins the controller refinement from the 2026-05 gentle-mango
     // plan. Headers below mark which change each test guards; the
     // describe-block name is the anchor referenced from
-    // `frontend/AGENTS.md` for diagnosing scroll regressions, so the
+    // `docs/architecture/frontend-scroll.md` for diagnosing scroll regressions, so the
     // label stays even when the plan is archived.
     //
     //   - Change 1: distFromBottom captured at scroll-event time +
