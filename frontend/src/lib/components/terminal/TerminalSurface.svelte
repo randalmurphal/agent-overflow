@@ -74,15 +74,37 @@
   // wrapper and this surface share one handle (the wrapper reads drawerHeight
   // from it to size the Drawer primitive).
   const handle: ThreadTerminalStateHandle = getThreadTerminalState(initialTerminalStateKey());
+  let mounted = true;
+
+  function canUseTerminalResult(threadId: string, workspacePath: string | undefined): boolean {
+    if (!mounted) return false;
+    if (surface.threadId !== threadId) return false;
+    return surface.canAdoptOpenedTerminal?.(threadId, workspacePath) ?? true;
+  }
+
+  async function closeStaleOpenedTerminal(terminalID: string): Promise<void> {
+    try {
+      await CloseTerminal(terminalID);
+    } catch (err) {
+      console.error('terminal: CloseTerminal for stale open failed', err);
+    }
+  }
 
   async function openTerminal() {
     const threadId = surface.threadId;
     if (!threadId) return;
+    const workspacePath = surface.workspacePath;
     try {
       const th = (await OpenTerminal(
         threadId,
-        new TerminalOpenOptions({ cwd: surface.workspacePath }),
+        new TerminalOpenOptions({ cwd: workspacePath }),
       )) as TerminalHandle;
+      if (!canUseTerminalResult(threadId, workspacePath)) {
+        if (th?.terminalID) {
+          await closeStaleOpenedTerminal(th.terminalID);
+        }
+        return;
+      }
       if (th?.summary) {
         handle.addTab(th.summary);
       }
@@ -126,12 +148,21 @@
     previousTabCount = count;
   });
 
+  onMount(() => {
+    mounted = true;
+    return () => {
+      mounted = false;
+    };
+  });
+
   onMount(async () => {
     const threadId = surface.threadId;
+    const workspacePath = surface.workspacePath;
     if (manual || !threadId) return;
 
     try {
       const list = (await ListTerminals(threadId)) as TerminalSessionSummary[] | null;
+      if (!canUseTerminalResult(threadId, workspacePath)) return;
       if (list) {
         const listedIDs = new Set(list.map((s) => s.terminalID));
         for (const tab of handle.tabs) {

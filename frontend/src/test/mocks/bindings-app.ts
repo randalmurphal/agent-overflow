@@ -75,9 +75,11 @@ export const SwitchThread = dispatch('SwitchThread');
 
 // Terminal operations (ThreadTerminalDrawer, TerminalBody, etc).
 export const CloseTerminal = dispatch('CloseTerminal');
+export const CloseThreadTerminals = dispatch('CloseThreadTerminals');
 export const GetTerminalReplay = dispatch('GetTerminalReplay');
 export const ListTerminals = dispatch('ListTerminals');
 export const OpenTerminal = dispatch('OpenTerminal');
+export const MoveThreadTerminals = dispatch('MoveThreadTerminals');
 export const ResizeTerminal = dispatch('ResizeTerminal');
 export const RestartTerminal = dispatch('RestartTerminal');
 export const WriteTerminal = dispatch('WriteTerminal');
@@ -242,6 +244,7 @@ export const GitCommit = dispatch('GitCommit');
 export const GitPush = dispatch('GitPush');
 export const GitPull = dispatch('GitPull');
 export const GitCheckout = dispatch('GitCheckout');
+export const GitCheckoutForProject = dispatch('GitCheckoutForProject');
 export const GitCreateBranch = dispatch('GitCreateBranch');
 export const GitCreateBranchFrom = dispatch('GitCreateBranchFrom');
 export const GitCreatePR = dispatch('GitCreatePR');
@@ -250,11 +253,14 @@ export const GitMaybeFetchRemotes = dispatch('GitMaybeFetchRemotes');
 export const GitMaybeFetchRemotesForProject = dispatch('GitMaybeFetchRemotesForProject');
 export const GitPruneRemotes = dispatch('GitPruneRemotes');
 export const GitSyncBranch = dispatch('GitSyncBranch');
+export const GitSyncBranchForProject = dispatch('GitSyncBranchForProject');
 export const GitWorktreeStatus = dispatch('GitWorktreeStatus');
+export const GitWorktreeStatusForProject = dispatch('GitWorktreeStatusForProject');
 export const PrepareThreadWorktree = dispatch('PrepareThreadWorktree');
 export const AttachThreadWorktree = dispatch('AttachThreadWorktree');
 export const GitRemoveWorktree = dispatch('GitRemoveWorktree');
 export const RemoveOtherWorktree = dispatch('RemoveOtherWorktree');
+export const RemoveOtherWorktreeForProject = dispatch('RemoveOtherWorktreeForProject');
 // WorktreeStatus mirrors the generated class; tests stub the binding
 // to return plain object literals, so the class shape is only here so
 // `import type { WorktreeStatus }` resolves through the mock module.

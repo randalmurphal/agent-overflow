@@ -124,6 +124,68 @@ func TestResizeAndCloseTerminal(t *testing.T) {
 	}
 }
 
+func TestMoveThreadTerminalsRekeysSessions(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.terminals = terminal.NewManager(app.terminalOutputCallback, app.terminalExitCallback)
+	t.Cleanup(func() { _ = app.terminals.Shutdown() })
+	thread := testThread("thread-real")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	handle, err := app.OpenTerminal("draft:thread", TerminalOpenOptions{
+		Cwd:   t.TempDir(),
+		Shell: "/bin/sh",
+	})
+	if err != nil {
+		t.Fatalf("OpenTerminal: %v", err)
+	}
+
+	moved, err := app.MoveThreadTerminals("draft:thread", "thread-real")
+	if err != nil {
+		t.Fatalf("MoveThreadTerminals: %v", err)
+	}
+	if len(moved) != 1 {
+		t.Fatalf("moved summaries = %d, want 1", len(moved))
+	}
+	if moved[0].TerminalID != handle.TerminalID {
+		t.Fatalf("moved TerminalID = %q, want %q", moved[0].TerminalID, handle.TerminalID)
+	}
+	if moved[0].ThreadID != "thread-real" {
+		t.Fatalf("moved ThreadID = %q, want thread-real", moved[0].ThreadID)
+	}
+	oldList, err := app.ListTerminals("draft:thread")
+	if err != nil {
+		t.Fatalf("ListTerminals(old): %v", err)
+	}
+	if len(oldList) != 0 {
+		t.Fatalf("old thread key terminals = %d, want 0", len(oldList))
+	}
+	newList, err := app.ListTerminals("thread-real")
+	if err != nil {
+		t.Fatalf("ListTerminals(new): %v", err)
+	}
+	if len(newList) != 1 || newList[0].TerminalID != handle.TerminalID {
+		t.Fatalf("new thread key list = %+v, want moved terminal", newList)
+	}
+}
+
+func TestMoveThreadTerminalsRequiresDraftSourceAndRealTarget(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.terminals = terminal.NewManager(app.terminalOutputCallback, app.terminalExitCallback)
+	t.Cleanup(func() { _ = app.terminals.Shutdown() })
+
+	if _, err := app.MoveThreadTerminals("thread-real", "thread-target"); err == nil {
+		t.Fatal("expected non-draft source to be rejected")
+	}
+	if _, err := app.MoveThreadTerminals("draft:thread", "missing-thread"); err == nil {
+		t.Fatal("expected missing target thread to be rejected")
+	}
+	if err := app.CloseThreadTerminals("thread-real"); err == nil {
+		t.Fatal("expected non-draft close to be rejected")
+	}
+}
+
 func TestRestartTerminalReturnsNewHandle(t *testing.T) {
 	app := newAppWithTerminals()
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })

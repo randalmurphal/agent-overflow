@@ -4,6 +4,7 @@ export interface ThreadTerminalSurfaceContext {
   workspacePath: string | undefined;
   setVisible(value: boolean): void;
   acquireResizeLease(): (() => void) | null;
+  canAdoptOpenedTerminal?(threadID: string, workspacePath: string | undefined): boolean;
   /**
    * Read-and-clear the pane's "focus the terminal on open" intent. The drawer
    * calls this once when it mounts; a true result means latch focus into the

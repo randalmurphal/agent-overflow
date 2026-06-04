@@ -11,10 +11,13 @@
 
   let surface = $derived<ThreadTerminalSurfaceContext>({
     paneId: pane.paneId,
-    get threadId() { return pane.threadId; },
+    get threadId() { return pane.terminalThreadId; },
     get workspacePath() { return pane.thread?.workspacePath; },
     setVisible(value) {
       pane.setShowTerminal(value);
+    },
+    canAdoptOpenedTerminal(threadID, workspacePath) {
+      return pane.canAdoptOpenedTerminal(threadID, workspacePath);
     },
     acquireResizeLease() {
       return pane.scrollController?.pauseAutoScroll() ?? null;
@@ -25,8 +28,8 @@
   });
 </script>
 
-{#if pane.showTerminal && pane.threadId}
-  {#key pane.threadId}
+{#if pane.showTerminal && pane.terminalThreadId}
+  {#key pane.terminalThreadId}
     <LazyThreadTerminalDrawer {surface} />
   {/key}
 {/if}

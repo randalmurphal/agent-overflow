@@ -18,6 +18,7 @@ export {
     EditorInfo,
     GeneratedCommitMessage,
     GitStatusSubscriptionResult,
+    GitWorkspaceState,
     InterruptAndRevertResult,
     LiveStateActiveTurn,
     LiveStateTodo,

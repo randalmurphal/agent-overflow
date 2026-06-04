@@ -68,7 +68,7 @@ import { wailsEventOn } from './wailsEvents';
 import { threadItemCache } from './threadItemCache';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import {
-  getThreadTerminalState,
+  getThreadTerminalStateForTerminalEvent,
 } from '../components/terminal/terminalStore.svelte';
 import { DeleteThread, GetThread } from './bindings';
 import {
@@ -1139,7 +1139,7 @@ function applyTodoUpdate(evt: TodoUpdateEvent): void {
 function applyTerminalOutput(payload: TerminalOutputEventPayload): void {
   if (!payload?.threadID || !payload.terminalID) return;
   const decoded = decodeTerminalOutput(payload.data);
-  getThreadTerminalState(payload.threadID).appendOutput(
+  getThreadTerminalStateForTerminalEvent(payload.threadID, payload.terminalID).appendOutput(
     payload.terminalID,
     decoded,
     payload.sequence,
@@ -1148,7 +1148,7 @@ function applyTerminalOutput(payload: TerminalOutputEventPayload): void {
 
 async function applyTerminalExit(payload: TerminalExitEventPayload): Promise<void> {
   if (!payload?.threadID || !payload.terminalID) return;
-  const handle = getThreadTerminalState(payload.threadID);
+  const handle = getThreadTerminalStateForTerminalEvent(payload.threadID, payload.terminalID);
   handle.removeTab(payload.terminalID);
 
   // A terminal thread exists only while it has a live shell. When its last

@@ -1161,15 +1161,11 @@ describe('sidebar.cursor.open commands', () => {
   });
 });
 
-// --- withMaterializedThread (terminal/diff command gating on placeholders) ---
+// --- placeholder command gating ---
 //
-// `terminal.toggle`, `terminal.new`, `diff.panel.toggle`, and `diff.panel.open`
-// run through `withMaterializedThread` so that firing them on a placeholder
-// thread (no real DB row yet) creates the row first via `ensureMaterializedThread`.
-// Without this, the toggle would flip `pane.showTerminal=true` while
-// `ThreadTerminalPlacement` (`{#if pane.showTerminal && pane.threadId}`) refused
-// to render — a no-op click — and the diff panel would mount against the
-// synthetic draft id and hit the backend with a non-existent thread.
+// `terminal.toggle` / `terminal.new` may run on placeholders and bind to the synthetic
+// placeholder id. Diff still requires a materialized row because its backend
+// bindings hit persisted thread data.
 
 function placeholderPane(
   paneId = 'placeholder-cmd',
@@ -1194,7 +1190,7 @@ describe('thread-bound commands on placeholders', () => {
     resetThreadStatuses();
   });
 
-  it('terminal.toggle on a placeholder does not create a thread', () => {
+  it('terminal.toggle on a placeholder opens without creating a thread', () => {
     const pane = placeholderPane('term-toggle-draft');
     const create = setBindingMock('CreateThread', async () => {
       throw new Error('CreateThread must not be called for terminal.toggle on a placeholder');
@@ -1211,7 +1207,24 @@ describe('thread-bound commands on placeholders', () => {
 
     expect(create).not.toHaveBeenCalled();
     expect(pane.threadId).toBeNull();
+    expect(pane.showTerminal).toBe(true);
+  });
+
+  it('terminal.new on a placeholder opens without creating a thread', () => {
+    const pane = placeholderPane('term-new-draft');
+    const create = setBindingMock('CreateThread', async () => {
+      throw new Error('CreateThread must not be called for terminal.new on a placeholder');
+    });
+    registerFixtureCommands(pane);
+
+    expect(pane.threadId).toBeNull();
     expect(pane.showTerminal).toBe(false);
+
+    runCommand('terminal.new', makeCommandContext(pane, {}) as CommandContext);
+
+    expect(create).not.toHaveBeenCalled();
+    expect(pane.threadId).toBeNull();
+    expect(pane.showTerminal).toBe(true);
   });
 
   it('terminal.toggle on a real thread does not call CreateThread', async () => {

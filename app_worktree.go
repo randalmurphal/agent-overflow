@@ -241,6 +241,25 @@ func (a *App) RemoveOtherWorktree(threadID, worktreePath string, force bool) err
 	if err != nil {
 		return err
 	}
+	return a.removeProjectWorktree(project, threadID, worktreePath, force)
+}
+
+// RemoveOtherWorktreeForProject removes a project worktree without requiring a
+// thread row. currentWorkspacePath is the caller's transient workspace state;
+// when it points at the removed worktree the returned state resets the caller
+// to the project root.
+func (a *App) RemoveOtherWorktreeForProject(projectID, currentWorkspacePath, worktreePath string, force bool) (GitWorkspaceState, error) {
+	project, err := a.gitProjectPath(projectID)
+	if err != nil {
+		return GitWorkspaceState{}, err
+	}
+	if err := a.removeProjectWorktree(project, "", worktreePath, force); err != nil {
+		return GitWorkspaceState{}, err
+	}
+	return a.resolveProjectWorkspaceStateAfterRemoval(project, currentWorkspacePath, worktreePath)
+}
+
+func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string, force bool) error {
 	worktreePath = strings.TrimSpace(worktreePath)
 	if worktreePath == "" {
 		return fmt.Errorf("worktree path is required")
@@ -276,8 +295,8 @@ func (a *App) RemoveOtherWorktree(threadID, worktreePath string, force bool) err
 	if err != nil {
 		return err
 	}
-	if !slices.Contains(attached, threadID) {
-		attached = append(attached, threadID)
+	if callerThreadID != "" && !slices.Contains(attached, callerThreadID) {
+		attached = append(attached, callerThreadID)
 	}
 	slices.Sort(attached)
 	attached = slices.Compact(attached)
@@ -360,6 +379,52 @@ func (a *App) RemoveOtherWorktree(threadID, worktreePath string, force bool) err
 	return nil
 }
 
+func (a *App) resolveProjectWorkspaceStateAfterRemoval(project, currentWorkspacePath, removedWorktreePath string) (GitWorkspaceState, error) {
+	core := a.gitCore()
+	currentWorkspacePath = strings.TrimSpace(currentWorkspacePath)
+	switch {
+	case currentWorkspacePath == "":
+		return GitWorkspaceState{
+			WorkspacePath: project,
+			Branch:        core.CurrentBranch(project),
+		}, nil
+	case gitops.SameFilesystemPath(currentWorkspacePath, project):
+		return GitWorkspaceState{
+			WorkspacePath: project,
+			Branch:        core.CurrentBranch(project),
+		}, nil
+	case gitops.SameFilesystemPath(currentWorkspacePath, removedWorktreePath):
+		return GitWorkspaceState{
+			WorkspacePath: project,
+			Branch:        core.CurrentBranch(project),
+		}, nil
+	}
+
+	worktree, ok, err := a.findWorktree(project, currentWorkspacePath)
+	if err != nil {
+		log.Printf("worktree removal: refresh workspace %q after removing %q: %v", currentWorkspacePath, removedWorktreePath, err)
+		return GitWorkspaceState{
+			WorkspacePath: project,
+			Branch:        core.CurrentBranch(project),
+		}, nil
+	}
+	if !ok {
+		return GitWorkspaceState{
+			WorkspacePath: project,
+			Branch:        core.CurrentBranch(project),
+		}, nil
+	}
+	branch := strings.TrimSpace(worktree.Branch)
+	if branch == "" {
+		branch = core.CurrentBranch(worktree.Path)
+	}
+	return GitWorkspaceState{
+		WorkspacePath: worktree.Path,
+		WorktreePath:  worktree.Path,
+		Branch:        branch,
+	}, nil
+}
+
 // threadsReferencingWorktree returns every thread id whose workspace or
 // worktree path matches the supplied worktree path.
 func (a *App) threadsReferencingWorktree(worktreePath string) ([]string, error) {
@@ -386,6 +451,16 @@ func (a *App) GitWorktreeStatus(threadID, worktreePath string) (WorktreeStatus, 
 		return WorktreeStatus{}, err
 	}
 	project, _, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return WorktreeStatus{}, err
+	}
+	return a.computeWorktreeStatus(project, worktreePath)
+}
+
+// GitWorktreeStatusForProject classifies a project worktree without requiring a
+// thread row.
+func (a *App) GitWorktreeStatusForProject(projectID, worktreePath string) (WorktreeStatus, error) {
+	project, err := a.gitProjectPath(projectID)
 	if err != nil {
 		return WorktreeStatus{}, err
 	}

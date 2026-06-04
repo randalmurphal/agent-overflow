@@ -20,10 +20,13 @@
     GitListWorktrees,
     GitListWorktreesForProject,
     GitWorktreeStatus,
-    RemoveOtherWorktree,
-    UpdateThreadWorkspace,
-    WorktreeStatus,
-  } from '../../../stores/bindings';
+    GitWorktreeStatusForProject,
+	    RemoveOtherWorktreeForProject,
+	    RemoveOtherWorktree,
+	    UpdateThreadWorkspace,
+	    type GitWorkspaceState,
+	    WorktreeStatus,
+	  } from '../../../stores/bindings';
   import type { Worktree } from '../../../types/git';
   import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
@@ -57,7 +60,7 @@
     error: string | null;
   }
 
-  let { pane, workspaceLock }: Props = $props();
+	  let { pane, workspaceLock }: Props = $props();
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
@@ -175,7 +178,9 @@
   }
 
   async function requestRemove(wt: Worktree): Promise<void> {
-    if (!pane.thread || !pane.threadId) return;
+    if (!pane.thread) return;
+    const projectId = pane.thread.projectId;
+    if (!pane.threadId && !projectId) return;
     confirm = {
       path: wt.path,
       label: pathBasename(wt.path) || wt.path,
@@ -186,7 +191,9 @@
       error: null,
     };
     try {
-      const status = (await GitWorktreeStatus(pane.thread.id, wt.path)) as WorktreeStatus;
+      const status = pane.threadId
+        ? (await GitWorktreeStatus(pane.threadId, wt.path)) as WorktreeStatus
+        : (await GitWorktreeStatusForProject(projectId!, wt.path)) as WorktreeStatus;
       // Guard against the user clicking Cancel and then opening a
       // different row's confirmation between the request and the
       // response — only apply the result if the active confirm is
@@ -235,12 +242,37 @@
   }
 
   async function performRemove(force: boolean): Promise<void> {
-    if (!pane.thread || !pane.threadId || !confirm) return;
-    const path = confirm.path;
-    const label = confirm.label;
-    confirm = { ...confirm, pending: true, error: null };
-    try {
-      await RemoveOtherWorktree(pane.threadId, path, force);
+    if (!pane.thread || !confirm) return;
+	    const projectId = pane.thread.projectId;
+	    if (!pane.threadId && !projectId) return;
+	    const path = confirm.path;
+	    const label = confirm.label;
+	    const placeholderId = pane.draftPlaceholder?.id ?? '';
+	    const requestedWorkspace = pane.thread.workspacePath ?? '';
+	    confirm = { ...confirm, pending: true, error: null };
+	    try {
+	      if (pane.threadId) {
+	        await RemoveOtherWorktree(pane.threadId, path, force);
+	      } else {
+        const next = (await RemoveOtherWorktreeForProject(
+          projectId!,
+          pane.thread.workspacePath ?? '',
+	          path,
+	          force,
+	        )) as GitWorkspaceState;
+	        if (
+	          pane.draftPlaceholder?.id !== placeholderId ||
+	          !sameNormalizedPath(pane.thread?.workspacePath ?? '', requestedWorkspace)
+	        ) {
+	          confirm = null;
+	          return;
+	        }
+	        pane.applyDraftPlaceholderWorkspace({
+	          workspacePath: next.workspacePath,
+          worktreePath: next.worktreePath ?? '',
+          branch: next.branch,
+        });
+      }
       addToast('info', `Removed worktree ${label}`);
       // If we just removed the current workspace, the backend has flipped
       // us to the project root and broadcast a thread upsert; the pane
@@ -375,7 +407,7 @@
               onSelect={() => selectPath(wt.path)}
               actionLabel={`Remove worktree ${pathBasename(wt.path) || wt.path}`}
               actionPosition="end"
-              actionDisabled={!pane.threadId}
+              actionDisabled={!pane.threadId && !pane.thread?.projectId}
               onAction={() => requestRemove(wt)}
             >
               {#snippet action()}

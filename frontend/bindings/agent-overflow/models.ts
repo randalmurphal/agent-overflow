@@ -497,6 +497,32 @@ export class GitStatusSubscriptionResult {
     }
 }
 
+export class GitWorkspaceState {
+    "workspacePath": string;
+    "worktreePath"?: string;
+    "branch": string;
+
+    /** Creates a new GitWorkspaceState instance. */
+    constructor($$source: Partial<GitWorkspaceState> = {}) {
+        if (!("workspacePath" in $$source)) {
+            this["workspacePath"] = "";
+        }
+        if (!("branch" in $$source)) {
+            this["branch"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitWorkspaceState instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitWorkspaceState {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitWorkspaceState($$parsedSource as Partial<GitWorkspaceState>);
+    }
+}
+
 /**
  * InterruptAndRevertResult is returned by InterruptAndRevertIfClean.
  * The frontend uses Reverted to decide whether to commit or roll back

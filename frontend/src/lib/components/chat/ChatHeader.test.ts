@@ -439,8 +439,8 @@ describe('<ChatHeader>', () => {
   // with no Open/Terminal/Diff buttons — and the cluster only popped in
   // after a metadata change materialized the row. The outer `pane.thread`
   // gate is still present, but the right cluster must render on
-  // placeholders too; each button materializes-on-click via
-  // `ensureMaterializedThread()`.
+  // placeholders too; only panels that truly need a persisted row refuse
+  // until content materializes the placeholder.
 
   function placeholderPane(paneId = 'placeholder-header') {
     const project: Project = {
@@ -484,7 +484,7 @@ describe('<ChatHeader>', () => {
     expect(getByTestId('diff-panel-toggle')).toBeTruthy();
   });
 
-  it('terminal-toggle click on a placeholder does not create a thread', async () => {
+  it('terminal-toggle click on a placeholder opens without creating a thread', async () => {
     const { pane } = placeholderPane('placeholder-term-click');
     const create = setBindingMock('CreateThread', async () => {
       throw new Error('CreateThread must not be called for terminal-toggle on a placeholder');
@@ -501,6 +501,6 @@ describe('<ChatHeader>', () => {
 
     expect(create).not.toHaveBeenCalled();
     expect(pane.threadId).toBeNull();
-    expect(pane.showTerminal).toBe(false);
+    expect(pane.showTerminal).toBe(true);
   });
 });

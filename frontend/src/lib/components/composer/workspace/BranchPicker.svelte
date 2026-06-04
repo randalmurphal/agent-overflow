@@ -7,10 +7,8 @@
   //
   //   - mode='local':         pick a row → checkout that branch
   //   - mode='new-worktree':  pick a row → stage as the worktree's
-  //     attach target. If the branch already has a worktree, flip
-  //     mode='local' and switch workspace to the existing one (git's
-  //     own one-branch-one-worktree invariant — no point staging an
-  //     attach that would fail at materialization).
+  //     attach target. Branches already checked out in another worktree
+  //     are disabled here; workspace selection belongs to EnvPicker.
   //
   // The "+ New branch…" entry inside the dropdown is the local-mode
   // entry point into the create-branch flow; the inline "+ new branch"
@@ -34,13 +32,15 @@
     GetGitStatusForProject,
     GetThread,
     GitCheckout,
+    GitCheckoutForProject,
     GitListBranches,
     GitListBranchesForProject,
     GitMaybeFetchRemotes,
     GitMaybeFetchRemotesForProject,
     GitPruneRemotes,
     GitSyncBranch,
-    UpdateThreadWorkspace,
+    GitSyncBranchForProject,
+    type GitWorkspaceState,
   } from '../../../stores/bindings';
   import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
@@ -53,23 +53,21 @@
     LOCAL_BASE_SENTINEL,
     setAttachBranch,
     setNewBranchBase,
-    setThreadEnvMode,
     worktreeIntentForThread,
   } from '../../../stores/worktreeIntent.svelte';
-  import type { WorkspaceChangeLockState } from '../../../stores/workspaceChangeLock.svelte';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
+  import ConfirmDialog from '../../shared/ConfirmDialog.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
 
   interface Props {
     pane: ThreadPane;
-    workspaceLock: WorkspaceChangeLockState;
   }
 
-  let { pane, workspaceLock }: Props = $props();
+  let { pane }: Props = $props();
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
@@ -80,12 +78,12 @@
   let workspaceDirty = $state(false);
   let pruning = $state(false);
   let syncingBranch: string | null = $state(null);
+  let syncConfirmation: { branchName: string; targetWorkspace: string } | null = $state(null);
   let lastOpenBranchKey = $state('');
   let branchRefreshSeq = 0;
 
   let currentBranch = $derived(pane.thread?.branch ?? '');
   let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
-  let projectPath = $derived(pane.thread?.projectPath ?? '');
   let intent = $derived(worktreeIntentForThread(pane.thread));
 
   // Trigger label reflects what picking a row will do next:
@@ -103,8 +101,6 @@
     }
     return currentBranch || 'No branch';
   });
-
-  let workspaceChangingDisabled = $derived(workspaceLock.locked);
 
   function orderBranchesForDisplay(sourceBranches: GitBranch[]): GitBranch[] {
     return sourceBranches
@@ -235,22 +231,74 @@
     return `Branch has diverged from upstream (${branch.aheadCount} ahead, ${branch.behindCount} behind). Push or rebase first.`;
   }
 
-  async function handleSync(branch: GitBranch): Promise<void> {
-    if (!pane.thread || !pane.threadId || !canSync(branch)) return;
+  function syncActionTitle(branch: GitBranch): string | undefined {
+    const disabledTitle = syncDisabledTitle(branch);
+    if (disabledTitle) return disabledTitle;
+    if (branchUsesAnotherWorktree(branch)) {
+      return `Sync ${branch.name} in ${branch.worktreePath}`;
+    }
+    return undefined;
+  }
+
+  function syncActionDisabled(branch: GitBranch): boolean {
+    const requiresProjectWorkspaceSync = !pane.threadId || branchUsesAnotherWorktree(branch);
+    return (requiresProjectWorkspaceSync && !pane.thread?.projectId) ||
+      !canSync(branch) ||
+      syncingBranch !== null;
+  }
+
+  async function performSync(branchName: string, targetWorkspace: string): Promise<void> {
+    if (!pane.thread) return;
     if (syncingBranch) return;
+    const threadIdentity = pane.thread.id;
     const threadId = pane.threadId;
-    syncingBranch = branch.name;
+    const projectId = pane.thread.projectId;
+    const currentThreadWorkspace = pane.thread.workspacePath ?? '';
+    const shouldUseThreadSync = !!threadId && sameNormalizedPath(targetWorkspace, currentThreadWorkspace);
+    if (!shouldUseThreadSync && !projectId) {
+      addToast('error', 'Project is unavailable for sync.');
+      return;
+    }
+    syncingBranch = branchName;
     try {
-      const res = (await GitSyncBranch(threadId, branch.name)) as GitBranch[] | null;
-      if (pane.thread?.id === threadId && Array.isArray(res)) {
+      const res = shouldUseThreadSync
+        ? (await GitSyncBranch(threadId!, branchName)) as GitBranch[] | null
+        : (await GitSyncBranchForProject(
+          projectId!,
+          targetWorkspace,
+          branchName,
+        )) as GitBranch[] | null;
+      if (pane.thread?.id === threadIdentity && Array.isArray(res)) {
         branches = res;
       }
-      addToast('info', `Synced ${branch.name}`);
+      addToast('info', `Synced ${branchName}`);
     } catch (err) {
       addToast('error', `Sync failed: ${errString(err)}`);
     } finally {
       syncingBranch = null;
     }
+  }
+
+  async function handleSync(branch: GitBranch): Promise<void> {
+    if (!pane.thread || !canSync(branch)) return;
+    if (syncingBranch) return;
+    const targetWorkspace = branchUsesAnotherWorktree(branch)
+      ? branch.worktreePath ?? ''
+      : pane.thread.workspacePath ?? '';
+    if (!targetWorkspace) return;
+    if (branchUsesAnotherWorktree(branch)) {
+      syncConfirmation = { branchName: branch.name, targetWorkspace };
+      closeMenu();
+      return;
+    }
+    await performSync(branch.name, targetWorkspace);
+  }
+
+  function confirmCrossWorktreeSync(): void {
+    const pending = syncConfirmation;
+    if (!pending) return;
+    syncConfirmation = null;
+    void performSync(pending.branchName, pending.targetWorkspace);
   }
 
   async function handlePrune(): Promise<void> {
@@ -321,9 +369,29 @@
     return name.slice(0, BRANCH_LABEL_MAX_CHARS - 1) + '…';
   }
 
+  function branchUsesAnotherWorktree(branch: GitBranch): boolean {
+    return !!branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace);
+  }
+
+  function branchUnavailableReason(branch: GitBranch): string | undefined {
+    if (intent.creatingBranch) return undefined;
+    if (!branchUsesAnotherWorktree(branch)) return undefined;
+    return `Branch is checked out in ${branch.worktreePath}. Select that worktree from the environment picker.`;
+  }
+
+  function branchSelectionDisabled(branch: GitBranch): boolean {
+    return !!branchUnavailableReason(branch);
+  }
+
+  function branchRowDisabled(branch: GitBranch): boolean {
+    return branchSelectionDisabled(branch) && !showsSyncAction(branch);
+  }
+
   function branchRowTitle(branch: GitBranch): string | undefined {
-    if (branch.name.length > BRANCH_LABEL_MAX_CHARS) return branch.name;
-    return undefined;
+    const nameTitle = branch.name.length > BRANCH_LABEL_MAX_CHARS ? branch.name : '';
+    const unavailableReason = branchUnavailableReason(branch) ?? '';
+    if (nameTitle && unavailableReason) return `${nameTitle}\n${unavailableReason}`;
+    return nameTitle || unavailableReason || undefined;
   }
 
   function isSelectedBranch(branch: GitBranch): boolean {
@@ -379,47 +447,13 @@
       closeMenu();
       return;
     }
+    const unavailableReason = branchUnavailableReason(branch);
+    if (unavailableReason) {
+      addToast('error', unavailableReason);
+      closeMenu();
+      return;
+    }
     if (intent.mode === 'new-worktree') {
-      // Dedup: a branch can only have one worktree at a time. If one
-      // already exists, switch to it instead of staging an attach that
-      // would fail at materialization.
-      if (
-        branch.worktreePath &&
-        !sameNormalizedPath(branch.worktreePath, currentWorkspace)
-      ) {
-        if (workspaceChangingDisabled) {
-          addToast('error', workspaceLock.reason);
-          closeMenu();
-          return;
-        }
-        setThreadEnvMode(pane.thread, 'local');
-        if (pane.hasDraftPlaceholder) {
-          pane.applyDraftPlaceholderWorkspace({
-            workspacePath: branch.worktreePath,
-            worktreePath: branch.worktreePath,
-            branch: branch.name,
-          });
-          addToast('info', `Selected existing worktree for ${branch.name}`);
-          closeMenu();
-          return;
-        }
-        applying = true;
-        try {
-          const updated = (await UpdateThreadWorkspace(
-            pane.thread.id,
-            branch.worktreePath,
-          )) as Thread;
-          syncThread(updated);
-          addToast('info', `Switched to existing worktree for ${branch.name}`);
-        } catch (err) {
-          console.error('UpdateThreadWorkspace failed:', err);
-          addToast('error', `Failed to switch worktree: ${errString(err)}`);
-        } finally {
-          applying = false;
-          closeMenu();
-        }
-        return;
-      }
       setAttachBranch(pane.thread, branch.name);
       closeMenu();
       return;
@@ -429,43 +463,47 @@
       return;
     }
     if (pane.hasDraftPlaceholder) {
-      if (branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace)) {
+      const projectId = pane.thread.projectId;
+      if (!projectId) {
+        addToast('error', 'Project is unavailable for checkout.');
+        closeMenu();
+        return;
+      }
+      applying = true;
+      const placeholderId = pane.draftPlaceholder?.id ?? '';
+      const requestedWorkspace = pane.thread.workspacePath ?? '';
+      try {
+        const next = (await GitCheckoutForProject(
+          projectId,
+          requestedWorkspace,
+          branch.name,
+        )) as GitWorkspaceState;
+        if (
+          pane.draftPlaceholder?.id !== placeholderId ||
+          !sameNormalizedPath(pane.thread?.workspacePath ?? '', requestedWorkspace)
+        ) {
+          closeMenu();
+          return;
+        }
         pane.applyDraftPlaceholderWorkspace({
-          workspacePath: branch.worktreePath,
-          worktreePath: branch.worktreePath,
-          branch: branch.name,
+          workspacePath: next.workspacePath,
+          worktreePath: next.worktreePath ?? '',
+          branch: next.branch || branch.name,
         });
-        addToast('info', `Selected existing worktree for ${branch.name}`);
-      } else {
-        addToast('info', 'Start the thread before checking out branches.');
+        addToast('info', `Checked out ${next.branch || branch.name}`);
+      } catch (err) {
+        console.error('branch checkout failed:', err);
+        addToast('error', `Failed to checkout: ${errString(err)}`);
+      } finally {
+        applying = false;
       }
       closeMenu();
       return;
     }
     applying = true;
     try {
-      let refreshed: Thread | null;
-      const shouldReturnToProjectRoot =
-        branch.isDefault &&
-        projectPath &&
-        !sameNormalizedPath(currentWorkspace, projectPath) &&
-        (!branch.worktreePath || sameNormalizedPath(branch.worktreePath, projectPath));
-
-      if (shouldReturnToProjectRoot) {
-        await GitCheckout(pane.thread.id, branch.name);
-        refreshed = (await GetThread(pane.thread.id)) as Thread | null;
-      } else if (branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace)) {
-        if (workspaceChangingDisabled) {
-          addToast('error', workspaceLock.reason);
-          closeMenu();
-          applying = false;
-          return;
-        }
-        refreshed = (await UpdateThreadWorkspace(pane.thread.id, branch.worktreePath)) as Thread;
-      } else {
-        await GitCheckout(pane.thread.id, branch.name);
-        refreshed = (await GetThread(pane.thread.id)) as Thread | null;
-      }
+      await GitCheckout(pane.thread.id, branch.name);
+      const refreshed = (await GetThread(pane.thread.id)) as Thread | null;
       if (refreshed) {
         syncThread(refreshed);
       }
@@ -583,19 +621,31 @@
               label={truncateBranchLabel(branch.name)}
               suffix={branchBadge(branch)}
               checked={isBaseSelected(branch)}
+              disabled={branchRowDisabled(branch)}
               title={branchRowTitle(branch)}
               onSelect={() => selectBranch(branch)}
               action={showsSyncAction(branch) ? syncIcon : undefined}
               actionLabel={syncingBranch === branch.name
                 ? `Syncing ${branch.name}`
                 : `Sync ${branch.name} from upstream`}
-              actionDisabled={!pane.threadId || !canSync(branch) || syncingBranch !== null}
-              actionTitle={syncDisabledTitle(branch)}
+              actionDisabled={syncActionDisabled(branch)}
+              actionTitle={syncActionTitle(branch)}
               onAction={() => handleSync(branch)}
             />
           {/each}
         </div>
       {/if}
     {/if}
-  </Menu>
-</Popover>
+	  </Menu>
+	</Popover>
+
+<ConfirmDialog
+  open={!!syncConfirmation}
+  title="Sync Worktree Branch"
+  description={syncConfirmation
+    ? `${syncConfirmation.branchName} is checked out in ${syncConfirmation.targetWorkspace}. Syncing it will run git pull in that worktree.`
+    : ''}
+  confirmLabel="Sync"
+  onConfirm={confirmCrossWorktreeSync}
+  onCancel={() => { syncConfirmation = null; }}
+/>

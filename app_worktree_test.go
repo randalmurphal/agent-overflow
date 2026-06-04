@@ -787,6 +787,45 @@ func TestGitWorktreeStatusReportsDirtyAndAttached(t *testing.T) {
 	}
 }
 
+func TestGitWorktreeStatusForProjectDoesNotRequireThreadID(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-project-status-owner")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	worktreePath, err := app.GitCreateWorktree(thread.ID, "feature/project-status")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("dirty write: %v", err)
+	}
+
+	status, err := app.GitWorktreeStatusForProject(project.ID, worktreePath)
+	if err != nil {
+		t.Fatalf("GitWorktreeStatusForProject() error = %v", err)
+	}
+	if !status.Dirty {
+		t.Fatalf("Dirty = false, want true")
+	}
+	if status.UncommittedCount != 1 {
+		t.Fatalf("UncommittedCount = %d, want 1", status.UncommittedCount)
+	}
+	if status.AttachedThreads != 1 {
+		t.Fatalf("AttachedThreads = %d, want 1", status.AttachedThreads)
+	}
+}
+
 func TestRemoveOtherWorktreeRefusesDirtyWithoutForce(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
@@ -823,6 +862,56 @@ func TestRemoveOtherWorktreeRefusesDirtyWithoutForce(t *testing.T) {
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
 		t.Fatalf("force remove should delete worktree; err = %v", err)
+	}
+}
+
+func TestRemoveOtherWorktreeForProjectRemovesAndReturnsPlaceholderState(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	owner := testThread("thread-project-remove-owner")
+	owner.ProjectID = project.ID
+	owner.WorkspacePath = repo
+	owner.Branch = "main"
+	if err := app.store.CreateThread(owner); err != nil {
+		t.Fatalf("CreateThread(owner): %v", err)
+	}
+
+	worktreePath, err := app.GitCreateWorktree(owner.ID, "feature/project-remove")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+
+	state, err := app.RemoveOtherWorktreeForProject(project.ID, worktreePath, worktreePath, true)
+	if err != nil {
+		t.Fatalf("RemoveOtherWorktreeForProject() error = %v", err)
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("worktree should be removed; stat err = %v", err)
+	}
+	if !samePath(state.WorkspacePath, repo) {
+		t.Fatalf("returned WorkspacePath = %q, want %q", state.WorkspacePath, repo)
+	}
+	if state.WorktreePath != "" {
+		t.Fatalf("returned WorktreePath = %q, want empty", state.WorktreePath)
+	}
+	if state.Branch != "main" {
+		t.Fatalf("returned Branch = %q, want main", state.Branch)
+	}
+
+	refreshedOwner, err := app.store.GetThread(owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread(owner): %v", err)
+	}
+	if !samePath(refreshedOwner.WorkspacePath, repo) {
+		t.Fatalf("owner WorkspacePath = %q, want %q", refreshedOwner.WorkspacePath, repo)
+	}
+	if refreshedOwner.WorktreePath != "" {
+		t.Fatalf("owner WorktreePath = %q, want empty", refreshedOwner.WorktreePath)
 	}
 }
 

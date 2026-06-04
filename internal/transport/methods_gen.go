@@ -33,6 +33,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282},          // main.App.CleanCodexBackgroundTerminals
 	{Name: "ClearDraft", ID: 296814681},                            // main.App.ClearDraft
 	{Name: "CloseTerminal", ID: 2702963191},                        // main.App.CloseTerminal
+	{Name: "CloseThreadTerminals", ID: 1705768020},                 // main.App.CloseThreadTerminals
 	{Name: "CountRunningBackgroundTasks", ID: 2617952423},          // main.App.CountRunningBackgroundTasks
 	{Name: "CreateDiffReviewComment", ID: 565306783},               // main.App.CreateDiffReviewComment
 	{Name: "CreateDiscussion", ID: 757689265},                      // main.App.CreateDiscussion
@@ -90,6 +91,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetWorkingTreeDiff", ID: 1858968113},                   // main.App.GetWorkingTreeDiff
 	{Name: "GetWorkspaceCurrentDiff", ID: 736820142},               // main.App.GetWorkspaceCurrentDiff
 	{Name: "GitCheckout", ID: 1598126927},                          // main.App.GitCheckout
+	{Name: "GitCheckoutForProject", ID: 585511915},                 // main.App.GitCheckoutForProject
 	{Name: "GitCommit", ID: 1971060042},                            // main.App.GitCommit
 	{Name: "GitCreateBranch", ID: 2582897723},                      // main.App.GitCreateBranch
 	{Name: "GitCreateBranchFrom", ID: 429779991},                   // main.App.GitCreateBranchFrom
@@ -109,7 +111,9 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitStatusSubscribe", ID: 3282404643},                   // main.App.GitStatusSubscribe
 	{Name: "GitStatusUnsubscribe", ID: 3263989430},                 // main.App.GitStatusUnsubscribe
 	{Name: "GitSyncBranch", ID: 1057032236},                        // main.App.GitSyncBranch
+	{Name: "GitSyncBranchForProject", ID: 3862053920},              // main.App.GitSyncBranchForProject
 	{Name: "GitWorktreeStatus", ID: 1333748060},                    // main.App.GitWorktreeStatus
+	{Name: "GitWorktreeStatusForProject", ID: 71861776},            // main.App.GitWorktreeStatusForProject
 	{Name: "IngestDiagnosticBatch", ID: 2606775930},                // main.App.IngestDiagnosticBatch
 	{Name: "InterruptAndRevertIfClean", ID: 753394581},             // main.App.InterruptAndRevertIfClean
 	{Name: "InterruptTurn", ID: 850013031},                         // main.App.InterruptTurn
@@ -145,6 +149,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListWSLDistros", ID: 2332614075},                       // main.App.ListWSLDistros
 	{Name: "MarkThreadRead", ID: 1480646012},                       // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375},                      // main.App.MarkThreadUnread
+	{Name: "MoveThreadTerminals", ID: 3013708277},                  // main.App.MoveThreadTerminals
 	{Name: "OpenExternalURL", ID: 3362740399},                      // main.App.OpenExternalURL
 	{Name: "OpenInEditor", ID: 3994295523},                         // main.App.OpenInEditor
 	{Name: "OpenTerminal", ID: 2247958725},                         // main.App.OpenTerminal
@@ -160,6 +165,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RefreshMcpServerStatus", ID: 2215279661},               // main.App.RefreshMcpServerStatus
 	{Name: "RegisterQueueItem", ID: 1034543696},                    // main.App.RegisterQueueItem
 	{Name: "RemoveOtherWorktree", ID: 2899196344},                  // main.App.RemoveOtherWorktree
+	{Name: "RemoveOtherWorktreeForProject", ID: 574548500},         // main.App.RemoveOtherWorktreeForProject
 	{Name: "RenameProject", ID: 3728890856},                        // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435},                          // main.App.RenameThread
 	{Name: "ResetKeybindings", ID: 2775767393},                     // main.App.ResetKeybindings

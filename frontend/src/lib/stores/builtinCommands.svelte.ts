@@ -667,7 +667,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     // xterm <textarea> holds focus — that's the press that closes it.
     editableReachable: true,
     run: (ctx) =>
-      withMaterializedThread(ctx, (_id, pane) => runTerminalToggle(pane)),
+      withActiveThread(ctx, (_thread, pane) => runTerminalToggle(pane)),
   });
 
   registerCommand({
@@ -706,7 +706,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '▶',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withMaterializedThread(ctx, (_id, pane) => {
+      withActiveThread(ctx, (_t, pane) => {
         pane.setShowTerminal(true);
       }),
   });

@@ -120,6 +120,56 @@ func (m *Manager) List(threadID string) []SessionSummary {
 	return summaries
 }
 
+// MoveThread reassigns all active sessions from one thread key to another.
+// The PTYs keep running; only their owner key and future output/exit events
+// change. Returns updated summaries for the moved sessions.
+func (m *Manager) MoveThread(fromThreadID, toThreadID string) ([]SessionSummary, error) {
+	if fromThreadID == "" {
+		return nil, fmt.Errorf("terminal: source thread ID required")
+	}
+	if toThreadID == "" {
+		return nil, fmt.Errorf("terminal: target thread ID required")
+	}
+	if fromThreadID == toThreadID {
+		return m.List(toThreadID), nil
+	}
+
+	m.mu.Lock()
+	allSessions := make([]*Session, 0, len(m.sessions))
+	for _, sess := range m.sessions {
+		allSessions = append(allSessions, sess)
+	}
+	m.mu.Unlock()
+
+	sessions := make([]*Session, 0)
+	for _, sess := range allSessions {
+		if sess.ThreadID() == fromThreadID {
+			sessions = append(sessions, sess)
+		}
+	}
+
+	for _, sess := range sessions {
+		terminalID := sess.ID()
+		sess.rebindThread(
+			toThreadID,
+			m.sessionOutputCB(toThreadID),
+			m.sessionExitCB(toThreadID, terminalID),
+		)
+	}
+
+	summaries := make([]SessionSummary, 0, len(sessions))
+	for _, sess := range sessions {
+		summaries = append(summaries, sess.Summary())
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].StartedAt == summaries[j].StartedAt {
+			return summaries[i].TerminalID < summaries[j].TerminalID
+		}
+		return summaries[i].StartedAt < summaries[j].StartedAt
+	})
+	return summaries, nil
+}
+
 // Replay returns the replay buffer for the given terminal.
 func (m *Manager) Replay(terminalID string) ([]byte, error) {
 	sess, err := m.get(terminalID)

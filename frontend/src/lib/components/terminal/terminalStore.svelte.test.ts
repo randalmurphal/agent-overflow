@@ -1,9 +1,12 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
   createThreadTerminalState,
+  getThreadTerminalState,
+  getThreadTerminalStateForTerminalEvent,
   getTerminalFocused,
   notifyTerminalFocus,
   PENDING_OUTPUT_LIMITS,
+  resetThreadTerminalStatesForTest,
   resetTerminalFocusForTest,
   TERMINAL_DRAWER_LIMITS,
   trimPendingOutput,
@@ -34,6 +37,10 @@ function makeSummary(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
 }
 
 describe('ThreadTerminalState', () => {
+  beforeEach(() => {
+    resetThreadTerminalStatesForTest();
+  });
+
   it('adds a tab and marks it active', () => {
     const s = createThreadTerminalState();
     s.addTab(makeSummary({ terminalID: 'a' }));
@@ -97,6 +104,17 @@ describe('ThreadTerminalState', () => {
     s.updateSummary(makeSummary({ terminalID: 'a', rows: 40, cols: 120 }));
     expect(s.tabs[0]!.summary.rows).toBe(40);
     expect(s.tabs[0]!.pendingOutput.map(dec)).toEqual(['xx']);
+  });
+
+  it('routes terminal events to an existing tab when the event thread bucket moved first', () => {
+    const draftHandle = getThreadTerminalState('draft:thread');
+    draftHandle.addTab(makeSummary({ terminalID: 'a', threadID: 'draft:thread' }));
+
+    const routed = getThreadTerminalStateForTerminalEvent('thread-real', 'a');
+    routed.appendOutput('a', enc('late-output'));
+
+    expect(routed).toBe(draftHandle);
+    expect(draftHandle.tabs[0]!.pendingOutput.map(dec)).toEqual(['late-output']);
   });
 
   it('clear wipes tabs and active state', () => {

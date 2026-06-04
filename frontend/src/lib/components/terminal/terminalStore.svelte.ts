@@ -248,8 +248,12 @@ export const TERMINAL_DRAWER_LIMITS = {
 
 const terminalStatesByThread = new Map<string, ThreadTerminalStateHandle>();
 
+function terminalStateKey(threadID: string): string {
+  return threadID || '__unbound__';
+}
+
 export function getThreadTerminalState(threadID: string): ThreadTerminalStateHandle {
-  const key = threadID || '__unbound__';
+  const key = terminalStateKey(threadID);
   const existing = terminalStatesByThread.get(key);
   if (existing) return existing;
   const handle = createThreadTerminalState();
@@ -258,8 +262,77 @@ export function getThreadTerminalState(threadID: string): ThreadTerminalStateHan
   return handle;
 }
 
+export function getExistingThreadTerminalState(
+  threadID: string,
+): ThreadTerminalStateHandle | null {
+  return terminalStatesByThread.get(terminalStateKey(threadID)) ?? null;
+}
+
+export function getThreadTerminalStateForTerminalEvent(
+  threadID: string,
+  terminalID: string,
+): ThreadTerminalStateHandle {
+  const key = terminalStateKey(threadID);
+  const eventHandle = terminalStatesByThread.get(key);
+  if (eventHandle?.tabs.some((tab) => tab.terminalID === terminalID)) {
+    return eventHandle;
+  }
+  for (const handle of terminalStatesByThread.values()) {
+    if (handle.tabs.some((tab) => tab.terminalID === terminalID)) {
+      return handle;
+    }
+  }
+  return getThreadTerminalState(threadID);
+}
+
+export function clearThreadTerminalState(threadID: string): void {
+  const key = terminalStateKey(threadID);
+  const handle = terminalStatesByThread.get(key);
+  handle?.clear();
+  terminalStatesByThread.delete(key);
+}
+
+export function migrateThreadTerminalState(
+  fromThreadID: string,
+  toThreadID: string,
+  summaries: TerminalSessionSummary[] = [],
+): void {
+  const fromKey = terminalStateKey(fromThreadID);
+  const toKey = terminalStateKey(toThreadID);
+  if (fromKey === toKey) return;
+
+  const source = terminalStatesByThread.get(fromKey);
+  if (!source) return;
+
+  const summaryByID = new Map(summaries.map((summary) => [summary.terminalID, summary]));
+  for (const tab of source.tabs) {
+    source.updateSummary(
+      summaryByID.get(tab.terminalID) ?? {
+        ...tab.summary,
+        threadID: toThreadID,
+      },
+    );
+  }
+
+  const target = terminalStatesByThread.get(toKey);
+  if (target && target !== source && target.tabs.length > 0) {
+    for (const tab of source.tabs) {
+      target.addTab(
+        summaryByID.get(tab.terminalID) ?? {
+          ...tab.summary,
+          threadID: toThreadID,
+        },
+      );
+    }
+    source.clear();
+  } else {
+    terminalStatesByThread.set(toKey, source);
+  }
+  terminalStatesByThread.delete(fromKey);
+}
+
 export function releaseThreadTerminalState(threadID: string): void {
-  terminalStatesByThread.delete(threadID || '__unbound__');
+  terminalStatesByThread.delete(terminalStateKey(threadID));
 }
 
 export function resetThreadTerminalStatesForTest(): void {

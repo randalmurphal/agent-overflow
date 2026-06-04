@@ -25,6 +25,34 @@ func (a *App) gitProjectPath(projectID string) (string, error) {
 	return project.Path, nil
 }
 
+func (a *App) resolveProjectGitPaths(projectID, workspacePath string) (project string, workspace string, worktreePath string, err error) {
+	project, err = a.gitProjectPath(projectID)
+	if err != nil {
+		return "", "", "", err
+	}
+	workspace = strings.TrimSpace(workspacePath)
+	if workspace == "" {
+		return project, project, "", nil
+	}
+	if gitops.SameFilesystemPath(workspace, project) {
+		return project, project, "", nil
+	}
+	worktree, ok, err := a.findWorktree(project, workspace)
+	if err != nil {
+		return "", "", "", fmt.Errorf("git project workspace: validate worktree: %w", err)
+	}
+	if !ok {
+		return "", "", "", fmt.Errorf("git project workspace: %q is not a worktree of project %s", workspace, project)
+	}
+	return project, worktree.Path, worktree.Path, nil
+}
+
+type GitWorkspaceState struct {
+	WorkspacePath string `json:"workspacePath"`
+	WorktreePath  string `json:"worktreePath,omitempty"`
+	Branch        string `json:"branch"`
+}
+
 // GetGitStatus returns git status for the thread's active workspace.
 func (a *App) GetGitStatus(threadID string) (gitops.GitStatus, error) {
 	thread, err := a.store.GetThread(threadID)
@@ -145,13 +173,8 @@ func (a *App) GitPruneRemotes(threadID string) ([]gitops.GitBranch, error) {
 }
 
 // GitSyncBranch fast-forwards branch from its configured upstream.
-// Asymmetric lock by case: syncing the workspace's current branch
-// mutates HEAD/index/working tree (via `git pull --ff-only`) and needs
-// the workspace-change gate; syncing any other branch only updates
-// refs/heads/<branch> via a fetch refspec, same threat shape as
-// GitMaybeFetchRemotes. The thread lock is held across the
-// isCurrent read so a concurrent checkout can't flip the path
-// between the check and the operation.
+// The thread lock is held across the current-branch read so a concurrent
+// checkout can't flip the path between the check and the operation.
 func (a *App) GitSyncBranch(threadID string, branch string) ([]gitops.GitBranch, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -171,22 +194,32 @@ func (a *App) GitSyncBranch(threadID string, branch string) ([]gitops.GitBranch,
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 
-	if core.CurrentBranch(workspace) == branch {
-		if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
-			return nil, err
-		}
-		if err := core.SyncBranch(workspace, branch); err != nil {
-			return nil, err
-		}
-		if a.workspaceFiles != nil {
-			a.workspaceFiles.Invalidate(workspace)
-		}
-	} else {
-		if err := core.SyncBranch(project, branch); err != nil {
-			return nil, err
-		}
+	return a.syncBranchInWorkspace(core, project, workspace, branch)
+}
+
+// GitSyncBranchForProject fast-forwards a branch for a draft placeholder
+// without requiring a thread row.
+func (a *App) GitSyncBranchForProject(projectID, workspacePath, branch string) ([]gitops.GitBranch, error) {
+	project, workspace, _, err := a.resolveProjectGitPaths(projectID, workspacePath)
+	if err != nil {
+		return nil, err
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return nil, fmt.Errorf("git sync branch is required")
 	}
 
+	core := a.gitCore()
+	return a.syncBranchInWorkspace(core, project, workspace, branch)
+}
+
+func (a *App) syncBranchInWorkspace(core *gitops.Core, project, workspace, branch string) ([]gitops.GitBranch, error) {
+	if err := core.SyncBranch(workspace, branch); err != nil {
+		return nil, err
+	}
+	if a.workspaceFiles != nil && core.CurrentBranch(workspace) == branch {
+		a.workspaceFiles.Invalidate(workspace)
+	}
 	return core.ListBranches(project)
 }
 
@@ -298,7 +331,7 @@ func (a *App) GitCheckout(threadID, branch string) error {
 		return err
 	}
 
-	project, workspace, err := a.resolveGitPaths(thread)
+	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return err
 	}
@@ -311,11 +344,6 @@ func (a *App) GitCheckout(threadID, branch string) error {
 	defer unlock()
 
 	core := a.gitCore()
-	if !gitops.SameFilesystemPath(workspace, project) && core.BranchIsDefault(project, branch) {
-		workspace = project
-		thread.WorkspacePath = project
-		thread.WorktreePath = ""
-	}
 	if err := core.Checkout(workspace, branch); err != nil {
 		return err
 	}
@@ -328,6 +356,32 @@ func (a *App) GitCheckout(threadID, branch string) error {
 
 	thread.Branch = core.CurrentBranch(workspace)
 	return a.store.UpdateThread(thread)
+}
+
+// GitCheckoutForProject switches a project/worktree placeholder workspace to an
+// existing branch without requiring a thread row.
+func (a *App) GitCheckoutForProject(projectID, workspacePath, branch string) (GitWorkspaceState, error) {
+	_, workspace, worktreePath, err := a.resolveProjectGitPaths(projectID, workspacePath)
+	if err != nil {
+		return GitWorkspaceState{}, err
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return GitWorkspaceState{}, fmt.Errorf("git checkout branch is required")
+	}
+
+	core := a.gitCore()
+	if err := core.Checkout(workspace, branch); err != nil {
+		return GitWorkspaceState{}, err
+	}
+	if a.workspaceFiles != nil {
+		a.workspaceFiles.Invalidate(workspace)
+	}
+	return GitWorkspaceState{
+		WorkspacePath: workspace,
+		WorktreePath:  worktreePath,
+		Branch:        core.CurrentBranch(workspace),
+	}, nil
 }
 
 // GitCreateBranch creates a branch in the thread's repository.

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { render, cleanup, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadTerminalDrawer from './ThreadTerminalDrawer.svelte';
 import { resetThreadTerminalStatesForTest } from './terminalStore.svelte';
@@ -173,6 +173,58 @@ describe('ThreadTerminalDrawer', () => {
     expect(getByTestId('terminal-tab-t1')).toBeDefined();
   });
 
+  it('closes a terminal when OpenTerminal resolves after the surface is invalidated', async () => {
+    const pane = makeSurface() as ReturnType<typeof makeSurface> & {
+      canAdoptOpenedTerminal: ReturnType<typeof vi.fn>;
+    };
+    let canAdopt = true;
+    pane.canAdoptOpenedTerminal = vi.fn(() => canAdopt);
+    let resolveOpen: ((value: Awaited<ReturnType<typeof defaultOpenTerminalImpl>>) => void) | undefined;
+    const bindings = await import('../../stores/bindings');
+    (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
+      async (threadID: string, opts: unknown) => {
+        callLog.push({ fn: 'OpenTerminal', args: [threadID, opts] });
+        return new Promise((resolve) => {
+          resolveOpen = resolve;
+        });
+      },
+    );
+
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, {
+      surface: pane as never,
+      manual: true,
+    });
+    await tick();
+
+    getByTestId('terminal-open').click();
+    await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
+    canAdopt = false;
+    resolveOpen!({
+      terminalID: 't1',
+      threadID: 'thread-A',
+      summary: {
+        terminalID: 't1',
+        threadID: 'thread-A',
+        shell: '/bin/bash',
+        cwd: '/tmp',
+        rows: 24,
+        cols: 80,
+        pid: 1,
+        startedAt: 0,
+        running: true,
+        exitCode: 0,
+        exitReason: '',
+      },
+    });
+    await Promise.resolve();
+    await tick();
+
+    await waitFor(() => {
+      expect(callLog.filter((c) => c.fn === 'CloseTerminal').map((c) => c.args)).toEqual([['t1']]);
+    });
+    expect(queryByTestId('terminal-tab-t1')).toBeNull();
+  });
+
   it('renders terminal body without the old send-selection header', async () => {
     const pane = makeSurface();
     const { getByTestId, queryByTestId, queryByLabelText } = render(ThreadTerminalDrawer, {
@@ -309,7 +361,7 @@ describe('ThreadTerminalDrawer', () => {
     await tick();
 
     emitWailsEvent('terminal:exit', {
-      terminalID: 't1',
+      terminalID: 'other-terminal',
       threadID: 'thread-OTHER',
       code: 0,
       reason: '',

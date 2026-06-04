@@ -134,7 +134,19 @@ func newSession(id, threadID string, opts SessionOptions, onOutput outputEmitter
 func (s *Session) ID() string { return s.id }
 
 // ThreadID returns the thread the session belongs to.
-func (s *Session) ThreadID() string { return s.threadID }
+func (s *Session) ThreadID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.threadID
+}
+
+func (s *Session) rebindThread(threadID string, onOutput outputEmitter, onExit exitEmitter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.threadID = threadID
+	s.onOutput = onOutput
+	s.onExit = onExit
+}
 
 // Write proxies to the underlying PTY.
 func (s *Session) Write(data []byte) error {
@@ -218,9 +230,10 @@ func (s *Session) pump() {
 		seq := s.sequence.Add(1)
 		s.ring.append(chunk)
 		s.rememberReplayRange(seq, len(chunk))
+		onOutput := s.onOutput
 		s.mu.Unlock()
-		if s.onOutput != nil {
-			s.onOutput(s.id, seq, chunk)
+		if onOutput != nil {
+			onOutput(s.id, seq, chunk)
 		}
 	}
 	// Wait for process exit so we have a final status.
@@ -229,9 +242,10 @@ func (s *Session) pump() {
 	s.mu.Lock()
 	s.exit = status
 	s.running = false
+	onExit := s.onExit
 	s.mu.Unlock()
-	if s.onExit != nil {
-		s.onExit(s.id, status)
+	if onExit != nil {
+		onExit(s.id, status)
 	}
 }
 

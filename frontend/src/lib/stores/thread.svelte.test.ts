@@ -30,6 +30,11 @@ import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import { resetLayoutMetricsForTest, setPaneWidth } from './layoutMetrics.svelte';
 import { RHS_PANEL_MIN_WIDTH } from './rhsPanelSlot.svelte';
+import {
+  getExistingThreadTerminalState,
+  getThreadTerminalState,
+  resetThreadTerminalStatesForTest,
+} from '../components/terminal/terminalStore.svelte';
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
@@ -91,6 +96,7 @@ describe('createThreadPane', () => {
     });
     resetBindingMocks();
     resetLayoutMetricsForTest();
+    resetThreadTerminalStatesForTest();
     resetThreadStatuses();
     resetSendQueueForTest();
     setBindingMock('SwitchThread', async (threadId: unknown) =>
@@ -188,6 +194,182 @@ describe('createThreadPane', () => {
     } finally {
       resetWorktreeIntent();
     }
+  });
+
+  it('closes placeholder terminals when "+ New" replaces an unsent draft', () => {
+    const pane = createThreadPane();
+    const projectA: Project = {
+      id: 'p-1',
+      path: '/tmp/p1',
+      name: 'p1',
+      sortPosition: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+    const projectB: Project = { ...projectA, id: 'p-2', path: '/tmp/p2', name: 'p2' };
+
+    pane.startDraftPlaceholder(projectA, 'chat');
+    const firstPlaceholderId = pane.thread!.id;
+    getThreadTerminalState(firstPlaceholderId).addTab({
+      terminalID: 'term-1',
+      threadID: firstPlaceholderId,
+      shell: '/bin/sh',
+      cwd: '/tmp/p1',
+      rows: 24,
+      cols: 80,
+      pid: 123,
+      startedAt: 1,
+      running: true,
+      exitCode: 0,
+      exitReason: '',
+    });
+    pane.setShowTerminal(true);
+    const close = setBindingMock('CloseThreadTerminals', async () => undefined);
+
+    pane.startDraftPlaceholder(projectB, 'chat');
+
+    expect(close.mock.calls[0]).toEqual([firstPlaceholderId]);
+    expect(getExistingThreadTerminalState(firstPlaceholderId)).toBeNull();
+    expect(pane.showTerminal).toBe(false);
+    expect(pane.thread?.projectId).toBe('p-2');
+  });
+
+  it('closes placeholder terminals when the placeholder workspace cwd changes', () => {
+    const pane = createThreadPane();
+    const project: Project = {
+      id: 'p-1',
+      path: '/tmp/project',
+      name: 'project',
+      sortPosition: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+
+    pane.startDraftPlaceholder(project, 'chat');
+    const placeholderId = pane.thread!.id;
+    getThreadTerminalState(placeholderId).addTab({
+      terminalID: 'term-1',
+      threadID: placeholderId,
+      shell: '/bin/sh',
+      cwd: '/tmp/project',
+      rows: 24,
+      cols: 80,
+      pid: 123,
+      startedAt: 1,
+      running: true,
+      exitCode: 0,
+      exitReason: '',
+    });
+    pane.setShowTerminal(true);
+    const close = setBindingMock('CloseThreadTerminals', async () => undefined);
+
+    pane.applyDraftPlaceholderWorkspace({
+      workspacePath: '/tmp/project-worktree',
+      worktreePath: '/tmp/project-worktree',
+      branch: 'feature/x',
+    });
+
+    expect(close.mock.calls[0]).toEqual([placeholderId]);
+    expect(getExistingThreadTerminalState(placeholderId)).toBeNull();
+    expect(pane.showTerminal).toBe(false);
+    expect(pane.thread?.workspacePath).toBe('/tmp/project-worktree');
+  });
+
+  it('rejects late terminal opens after a placeholder cwd change starts cleanup', () => {
+    const pane = createThreadPane();
+    const project: Project = {
+      id: 'p-1',
+      path: '/tmp/project',
+      name: 'project',
+      sortPosition: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+
+    pane.startDraftPlaceholder(project, 'chat');
+    const placeholderId = pane.thread!.id;
+    pane.setShowTerminal(true);
+    const close = setBindingMock('CloseThreadTerminals', async () => undefined);
+
+    expect(pane.canAdoptOpenedTerminal(placeholderId, '/tmp/project')).toBe(true);
+    pane.applyDraftPlaceholderWorkspace({
+      workspacePath: '/tmp/project-worktree',
+      worktreePath: '/tmp/project-worktree',
+      branch: 'feature/x',
+    });
+
+    expect(close.mock.calls[0]).toEqual([placeholderId]);
+    expect(pane.canAdoptOpenedTerminal(placeholderId, '/tmp/project')).toBe(false);
+  });
+
+  it('migrates placeholder terminals when content materializes the thread', async () => {
+    const pane = createThreadPane();
+    const project: Project = {
+      id: 'p-1',
+      path: '/tmp/project',
+      name: 'project',
+      sortPosition: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+
+    pane.startDraftPlaceholder(project, 'chat', {
+      provider: 'claude',
+      model: 'm',
+      workspacePath: '/tmp/project',
+      branch: 'main',
+    });
+    const placeholderId = pane.thread!.id;
+    getThreadTerminalState(placeholderId).addTab({
+      terminalID: 'term-1',
+      threadID: placeholderId,
+      shell: '/bin/sh',
+      cwd: '/tmp/project',
+      rows: 24,
+      cols: 80,
+      pid: 123,
+      startedAt: 1,
+      running: true,
+      exitCode: 0,
+      exitReason: '',
+    });
+    pane.setShowTerminal(true);
+    setBindingMock('CreateThread', async () => makeThread({
+      id: 'thread-real',
+      projectId: 'p-1',
+      projectPath: '/tmp/project',
+      workspacePath: '/tmp/project',
+      branch: 'main',
+      isDraft: true,
+    }));
+    const move = setBindingMock('MoveThreadTerminals', async () => [{
+      terminalID: 'term-1',
+      threadID: 'thread-real',
+      shell: '/bin/sh',
+      cwd: '/tmp/project',
+      rows: 24,
+      cols: 80,
+      pid: 123,
+      startedAt: 1,
+      running: true,
+      exitCode: 0,
+      exitReason: '',
+    }]);
+
+    const threadId = await pane.ensureMaterializedThread();
+
+    expect(threadId).toBe('thread-real');
+    expect(move.mock.calls[0]).toEqual([placeholderId, 'thread-real']);
+    expect(getExistingThreadTerminalState(placeholderId)).toBeNull();
+    const migrated = getExistingThreadTerminalState('thread-real');
+    expect(migrated?.tabs).toHaveLength(1);
+    expect(migrated?.tabs[0]?.summary.threadID).toBe('thread-real');
+    expect(pane.threadId).toBe('thread-real');
+    expect(pane.showTerminal).toBe(true);
   });
 
   it('keeps selected workspace fields when applying placeholder model defaults', () => {

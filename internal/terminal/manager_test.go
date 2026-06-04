@@ -188,6 +188,60 @@ func TestManagerCloseThreadClosesAll(t *testing.T) {
 	}
 }
 
+func TestManagerMoveThreadRekeysLiveSessions(t *testing.T) {
+	outputs := make(chan string, 8)
+	m := NewManager(
+		func(threadID, terminalID string, seq uint64, data []byte) {
+			outputs <- threadID + ":" + string(data)
+		},
+		nil,
+	)
+	summary, err := m.Open("draft:thread", SessionOptions{
+		Shell: "/bin/sh",
+		Args:  []string{"-c", "cat"},
+		Cwd:   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close(summary.TerminalID) })
+
+	moved, err := m.MoveThread("draft:thread", "thread-real")
+	if err != nil {
+		t.Fatalf("MoveThread: %v", err)
+	}
+	if len(moved) != 1 {
+		t.Fatalf("moved summaries = %d, want 1", len(moved))
+	}
+	if moved[0].ThreadID != "thread-real" {
+		t.Fatalf("moved ThreadID = %q, want thread-real", moved[0].ThreadID)
+	}
+	if len(m.List("draft:thread")) != 0 {
+		t.Fatalf("old thread key should have no sessions after move")
+	}
+	if list := m.List("thread-real"); len(list) != 1 || list[0].TerminalID != summary.TerminalID {
+		t.Fatalf("new thread key list = %+v, want moved terminal", list)
+	}
+
+	if err := m.Write(summary.TerminalID, []byte("after-move\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case output := <-outputs:
+			if strings.Contains(output, "after-move") {
+				if !strings.HasPrefix(output, "thread-real:") {
+					t.Fatalf("output emitted under old key: %q", output)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("did not observe output after terminal move")
+		}
+	}
+}
+
 func TestManagerRestartReplacesSession(t *testing.T) {
 	m := NewManager(nil, nil)
 	summary, err := m.Open("thread-x", SessionOptions{

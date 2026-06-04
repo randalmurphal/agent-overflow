@@ -18,8 +18,9 @@ import { getTerminalFocused } from './terminalStore.svelte';
  * Close: if the terminal currently holds focus, hand it back to the composer
  * so the drawer unmount doesn't strand the caret on <body>.
  *
- * Callers must materialize the pane's thread first — a placeholder thread has
- * no terminal session to bind to.
+ * Placeholder panes bind terminals to their synthetic placeholder id. ThreadPane
+ * tears those sessions down when the draft context changes and migrates them to
+ * the real thread id when content materializes the placeholder.
  */
 export function runTerminalToggle(pane: ThreadPane): void {
   const paneId = pane.paneId;

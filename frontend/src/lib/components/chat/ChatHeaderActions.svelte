@@ -97,9 +97,10 @@
     }
   }
 
-  // Terminal / Diff / Design panels need a real thread row — terminal
-  // session id, diff backend bindings, design preview URL all key off
-  // it. Placeholder clicks do not materialize an empty thread.
+  // Diff / Design panels need a real thread row — their backend bindings and
+  // preview URL key off it. Drawer terminals are allowed on placeholders; they
+  // use the synthetic placeholder id and are cleaned up or migrated by
+  // ThreadPane.
   async function ensureThenToggle(toggle: () => void): Promise<void> {
     if (!pane.threadId) {
       addToast('info', 'Start the thread before opening this panel.');
@@ -162,7 +163,7 @@
           cwd: pane.thread?.workspacePath,
         });
       } else {
-        void ensureThenToggle(() => runTerminalToggle(pane));
+        runTerminalToggle(pane);
       }
     }}
     testId="terminal-toggle"

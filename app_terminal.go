@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/terminal"
 )
@@ -110,6 +111,41 @@ func (a *App) ListTerminals(threadID string) ([]terminal.SessionSummary, error) 
 		return nil, fmt.Errorf("terminal manager not initialized")
 	}
 	return a.terminals.List(threadID), nil
+}
+
+// MoveThreadTerminals rekeys live terminal sessions from a placeholder thread
+// id to the materialized thread id without restarting their PTYs.
+func (a *App) MoveThreadTerminals(fromThreadID, toThreadID string) ([]terminal.SessionSummary, error) {
+	if a.terminals == nil {
+		return nil, fmt.Errorf("terminal manager not initialized")
+	}
+	if !isDraftPlaceholderThreadID(fromThreadID) {
+		return nil, fmt.Errorf("terminal: source thread must be a draft placeholder")
+	}
+	if a.store == nil {
+		return nil, fmt.Errorf("terminal: store unavailable")
+	}
+	if _, err := a.store.GetThread(toThreadID); err != nil {
+		return nil, fmt.Errorf("terminal: resolve target thread %s: %w", toThreadID, err)
+	}
+	return a.terminals.MoveThread(fromThreadID, toThreadID)
+}
+
+// CloseThreadTerminals kills every live terminal session bound to a thread-like
+// key. Placeholder draft ids use this to tear down ephemeral drawer terminals
+// when their workspace context changes or the placeholder is replaced.
+func (a *App) CloseThreadTerminals(threadID string) error {
+	if a.terminals == nil {
+		return fmt.Errorf("terminal manager not initialized")
+	}
+	if !isDraftPlaceholderThreadID(threadID) {
+		return fmt.Errorf("terminal: thread must be a draft placeholder")
+	}
+	return a.terminals.CloseThread(threadID)
+}
+
+func isDraftPlaceholderThreadID(threadID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(threadID), "draft:")
 }
 
 // RestartTerminal kills the given terminal and spawns a fresh replacement

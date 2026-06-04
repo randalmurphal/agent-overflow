@@ -26,6 +26,7 @@ import type {
   DesignViewport,
 } from '../types/design';
 import {
+  CloseThreadTerminals,
   CreateThread,
   GetThreadItem,
   GetThreadLiveState,
@@ -34,6 +35,7 @@ import {
   ListRecentThreadItems,
   ListRecentTurns,
   ListThreadCheckpoints,
+  MoveThreadTerminals,
   SwitchThread,
   AutoResumeThread,
 } from './bindings';
@@ -75,6 +77,12 @@ import {
 } from './threadItems';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { ListThreadSliceAround } from './bindings';
+import { sameNormalizedPath } from '../utils/path';
+import {
+  clearThreadTerminalState,
+  getExistingThreadTerminalState,
+  migrateThreadTerminalState,
+} from '../components/terminal/terminalStore.svelte';
 import {
   THINKING_PAYLOAD_EXPANSION_STATE_KEY,
   thinkingPayloadVersionForItem,
@@ -310,6 +318,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // single CreateThread call. Cleared in `finally` so a subsequent
   // placeholder can materialize on its own.
   let materializingThreadPromise: Promise<string | null> | null = null;
+  const invalidatedDraftTerminalIds = new Set<string>();
   let showTerminal: boolean = $state(false);
   // One-shot "focus the terminal once it exists" intent. Set by
   // runTerminalToggle on a drawer open (cold start) and by pane.focusLeft/Right
@@ -1009,6 +1018,38 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     gitStatus.reset();
   }
 
+  function placeholderHasTerminalState(placeholderId: string): boolean {
+    return showTerminal || (getExistingThreadTerminalState(placeholderId)?.tabs.length ?? 0) > 0;
+  }
+
+  function closeDraftPlaceholderTerminals(placeholderId: string): void {
+    if (!placeholderHasTerminalState(placeholderId)) return;
+    invalidatedDraftTerminalIds.add(placeholderId);
+    showTerminal = false;
+    clearThreadTerminalState(placeholderId);
+    void CloseThreadTerminals(placeholderId).catch((err) => {
+      console.error('Failed to close placeholder terminals:', err);
+      addToast('error', `Could not close terminal: ${errString(err)}`);
+    });
+  }
+
+  async function migrateDraftPlaceholderTerminals(
+    placeholderId: string,
+    materializedThreadId: string,
+  ): Promise<void> {
+    if (!placeholderHasTerminalState(placeholderId)) return;
+    invalidatedDraftTerminalIds.add(placeholderId);
+    try {
+      const summaries = await MoveThreadTerminals(placeholderId, materializedThreadId);
+      migrateThreadTerminalState(placeholderId, materializedThreadId, summaries ?? []);
+    } catch (err) {
+      console.error('Failed to move placeholder terminals:', err);
+      clearThreadTerminalState(placeholderId);
+      showTerminal = false;
+      addToast('error', `Could not keep terminal open: ${errString(err)}`);
+    }
+  }
+
   /**
    * Look up the incoming thread's cached snapshot and saved scroll
    * anchor, install the snapshot (or fresh empty state) onto the pane,
@@ -1239,6 +1280,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get paneId() { return paneId; },
     get thread() { return thread; },
     get threadId() { return draftPlaceholder ? null : thread?.id ?? null; },
+    get terminalThreadId() { return thread?.id ?? null; },
     get draftPlaceholder() { return draftPlaceholder; },
     get hasDraftPlaceholder() { return draftPlaceholder !== null; },
     get canCompose() { return Boolean(thread || draftPlaceholder); },
@@ -1295,6 +1337,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (!draftPlaceholder || !thread) return false;
       const workspacePath = workspace.workspacePath.trim();
       if (!workspacePath) return false;
+      if (!sameNormalizedPath(workspacePath, thread.workspacePath)) {
+        closeDraftPlaceholderTerminals(draftPlaceholder.id);
+      }
       thread = {
         ...thread,
         workspacePath,
@@ -1378,6 +1423,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get showTerminal() { return showTerminal; },
     get diffPanel() { return diffPanel; },
     get gitStatus() { return gitStatus; },
+    canAdoptOpenedTerminal(threadID: string, workspacePath: string | undefined): boolean {
+      if (!threadID) return false;
+      if (invalidatedDraftTerminalIds.has(threadID)) return false;
+      if (draftPlaceholder?.id === threadID) {
+        if (!showTerminal || !thread) return false;
+        if (workspacePath !== undefined && !sameNormalizedPath(workspacePath, thread.workspacePath)) {
+          return false;
+        }
+        return true;
+      }
+      return thread?.id === threadID;
+    },
     refreshCheckpoints: refreshCheckpointsForThread,
     applyCheckpointCaptured(payload: CheckpointCapturedEvent | null): void {
       if (!payload || payload.threadId !== thread?.id) return;
@@ -1467,6 +1524,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // below and by the outer finally to decide whether the spinner
       // can be cleared (a concurrent switch keeps it up).
       const gen = ++switchGeneration;
+      if (draftPlaceholder) {
+        closeDraftPlaceholderTerminals(draftPlaceholder.id);
+      }
       draftPlaceholder = null;
       // Live-state hydration token. The live-state leg always consumes
       // it through `hydrateThreadLiveState`'s own finally; the outer
@@ -1566,6 +1626,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // because real threads keep their entries until the thread itself
       // is removed by the backend.
       if (draftPlaceholder) {
+        closeDraftPlaceholderTerminals(draftPlaceholder.id);
         clearWorktreeIntent(draftPlaceholder.id);
       }
       thread = null;
@@ -1725,6 +1786,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           const created = await this.materializeDraftPlaceholder();
           if (!created) return null;
           if (draftPlaceholder?.id !== placeholderId) return null;
+          await migrateDraftPlaceholderTerminals(placeholderId, created.id);
           // Re-key any intent staged against the placeholder id BEFORE we
           // adopt the real thread. Worktree/branch picks made on the
           // placeholder otherwise become orphaned when lookups switch to

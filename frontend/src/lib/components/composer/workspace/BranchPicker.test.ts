@@ -3,7 +3,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import BranchPicker from './BranchPicker.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
-import type { Thread } from '../../../types/models';
+import type { Project, Thread } from '../../../types/models';
 import {
   getBindingMock,
   resetBindingMocks,
@@ -16,7 +16,6 @@ import {
   setThreadEnvMode,
   worktreeIntentForThread,
 } from '../../../stores/worktreeIntent.svelte';
-import type { WorkspaceChangeLockState } from '../../../stores/workspaceChangeLock.svelte';
 
 function makeThread(branch: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -35,6 +34,19 @@ function makeThread(branch: string, overrides: Partial<Thread> = {}): Thread {
   };
 }
 
+function makeProject(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 'project-1',
+    path: '/repo',
+    name: 'Repo',
+    sortPosition: 0,
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+    ...overrides,
+  };
+}
+
 async function buildPane(branch: string, overrides: Partial<Thread> = {}) {
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
@@ -45,14 +57,15 @@ async function buildPane(branch: string, overrides: Partial<Thread> = {}) {
   return pane;
 }
 
-function makeWorkspaceLock(overrides: Partial<WorkspaceChangeLockState> = {}): WorkspaceChangeLockState {
-  return {
-    locked: false,
-    reason: '',
-    runningBackgroundCount: 0,
-    refresh: async () => {},
-    ...overrides,
-  };
+function buildPlaceholderPane(branch = 'main') {
+  const pane = createThreadPane();
+  pane.startDraftPlaceholder(makeProject(), 'chat', {
+    provider: 'claude',
+    model: 'm',
+    workspacePath: '/repo',
+    branch,
+  });
+  return pane;
 }
 
 describe('<BranchPicker>', () => {
@@ -63,13 +76,13 @@ describe('<BranchPicker>', () => {
 
   it('renders the current branch on the trigger', async () => {
     const pane = await buildPane('main');
-    const { getByTestId } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId } = render(BranchPicker, { props: { pane } });
     expect(getByTestId('branch-picker-trigger').textContent ?? '').toMatch(/main/);
   });
 
   it('updates the trigger when the pane thread branch changes after mount', async () => {
     const pane = await buildPane('main');
-    const { getByTestId } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId } = render(BranchPicker, { props: { pane } });
 
     pane.replaceThread({ ...pane.thread!, branch: 'feature/external' });
 
@@ -84,7 +97,7 @@ describe('<BranchPicker>', () => {
       { name: 'main', isCurrent: true, isDefault: true },
       { name: 'feat/abc', isCurrent: false, isDefault: false },
     ]);
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /feat\/abc/ });
     expect(row).toBeTruthy();
@@ -100,7 +113,7 @@ describe('<BranchPicker>', () => {
     ]);
 
     const { getAllByRole, getByTestId, findByRole } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /main/ });
@@ -146,7 +159,7 @@ describe('<BranchPicker>', () => {
     }));
 
     const { getByTestId, findByRole } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /feature\/external/ });
@@ -189,7 +202,7 @@ describe('<BranchPicker>', () => {
     }));
 
     const { getByTestId, findByRole, queryByRole } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
 
@@ -215,7 +228,7 @@ describe('<BranchPicker>', () => {
     setBindingMock('GitCheckout', async () => {});
     setBindingMock('GetThread', async () => makeThread('feat/abc'));
 
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /feat\/abc/ });
     await fireEvent.click(row);
@@ -228,25 +241,158 @@ describe('<BranchPicker>', () => {
     });
   });
 
-  it('switches to an existing worktree instead of checking out its branch', async () => {
+  it('checks out branches for placeholders without materializing a thread', async () => {
+    const pane = buildPlaceholderPane('main');
+    setBindingMock('GitListBranchesForProject', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+      { name: 'feat/abc', isCurrent: false, isDefault: false },
+    ]);
+    setBindingMock('GetGitStatusForProject', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: false,
+      insertions: 0,
+      deletions: 0,
+      fileCount: 0,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+    setBindingMock('GitMaybeFetchRemotesForProject', async () => false);
+    const checkout = setBindingMock('GitCheckoutForProject', async () => ({
+      workspacePath: '/repo',
+      branch: 'feat/abc',
+    }));
+    setBindingMock('CreateThread', async () => {
+      throw new Error('CreateThread must not run for placeholder checkout');
+    });
+
+    const { getByTestId, findByRole } = render(BranchPicker, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    const row = await findByRole('menuitem', { name: /feat\/abc/ });
+    await fireEvent.click(row);
+
+    await waitFor(() => {
+      expect(checkout.mock.calls[0]).toEqual(['project-1', '/repo', 'feat/abc']);
+      expect(pane.threadId).toBeNull();
+      expect(pane.thread?.branch).toBe('feat/abc');
+    });
+    expect(getBindingMock('GitCheckout')).toBeUndefined();
+    expect(getBindingMock('CreateThread')).not.toHaveBeenCalled();
+  });
+
+  it('ignores a stale placeholder checkout response after the placeholder is replaced', async () => {
+    const pane = buildPlaceholderPane('main');
+    setBindingMock('GitListBranchesForProject', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+      { name: 'feat/abc', isCurrent: false, isDefault: false },
+    ]);
+    setBindingMock('GetGitStatusForProject', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: false,
+      insertions: 0,
+      deletions: 0,
+      fileCount: 0,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+    setBindingMock('GitMaybeFetchRemotesForProject', async () => false);
+    let resolveCheckout: ((value: { workspacePath: string; branch: string }) => void) | undefined;
+    setBindingMock('GitCheckoutForProject', async () => new Promise((resolve) => {
+      resolveCheckout = resolve;
+    }));
+
+    const { getByTestId, findByRole } = render(BranchPicker, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    const row = await findByRole('menuitem', { name: /feat\/abc/ });
+    await fireEvent.click(row);
+    await waitFor(() => expect(resolveCheckout).toBeDefined());
+
+    pane.startDraftPlaceholder(makeProject({ id: 'project-2', path: '/other', name: 'Other' }), 'chat', {
+      provider: 'claude',
+      model: 'm',
+      workspacePath: '/other',
+      branch: 'main',
+    });
+    resolveCheckout!({ workspacePath: '/repo', branch: 'feat/abc' });
+
+    await waitFor(() => {
+      expect(pane.thread?.projectId).toBe('project-2');
+      expect(pane.thread?.workspacePath).toBe('/other');
+      expect(pane.thread?.branch).toBe('main');
+    });
+  });
+
+  it('does not move placeholders to an existing worktree from the branch picker', async () => {
+    const pane = buildPlaceholderPane('main');
+    setBindingMock('GitListBranchesForProject', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+      { name: 'feat/worktree', isCurrent: false, isDefault: false, worktreePath: '/tmp/wt' },
+    ]);
+    setBindingMock('GetGitStatusForProject', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: false,
+      insertions: 0,
+      deletions: 0,
+      fileCount: 0,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+    setBindingMock('GitMaybeFetchRemotesForProject', async () => false);
+    const checkout = setBindingMock('GitCheckoutForProject', async () => ({
+      workspacePath: '/tmp/wt',
+      worktreePath: '/tmp/wt',
+      branch: 'feat/worktree',
+    }));
+
+    const { getByTestId, findByRole } = render(BranchPicker, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    const row = await findByRole('menuitem', { name: /feat\/worktree/ });
+    expect(row).toHaveAttribute('aria-disabled', 'true');
+    expect(row).toHaveAttribute('title', expect.stringContaining('/tmp/wt'));
+    await fireEvent.click(row);
+
+    expect(checkout).not.toHaveBeenCalled();
+    expect(pane.thread?.workspacePath).toBe('/repo');
+    expect(pane.thread?.worktreePath).toBeUndefined();
+    expect(pane.thread?.branch).toBe('main');
+  });
+
+  it('disables a branch checked out in another worktree in local mode', async () => {
     const pane = await buildPane('main');
     setBindingMock('GitListBranches', async () => [
       { name: 'feat/worktree', isCurrent: false, isDefault: false, worktreePath: '/tmp/wt' },
     ]);
-    setBindingMock('UpdateThreadWorkspace', async () => makeThread('feat/worktree'));
+    const checkout = setBindingMock('GitCheckout', async () => {});
 
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /feat\/worktree/ });
+    expect(row).toHaveAttribute('aria-disabled', 'true');
+    expect(row).toHaveAttribute('title', expect.stringContaining('/tmp/wt'));
     await fireEvent.click(row);
 
-    await waitFor(() => {
-      expect(getBindingMock('UpdateThreadWorkspace')!.mock.calls[0]).toEqual(['thread-1', '/tmp/wt']);
-      expect(getBindingMock('GitCheckout')).toBeUndefined();
-    });
+    expect(checkout).not.toHaveBeenCalled();
+    expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
   });
 
-  it('returns to the project checkout when selecting the default branch from a worktree', async () => {
+  it('checks out the default branch in the current worktree', async () => {
     const pane = await buildPane('feature', {
       workspacePath: '/repo-worktrees/feature',
       worktreePath: '/repo-worktrees/feature',
@@ -258,18 +404,19 @@ describe('<BranchPicker>', () => {
     ]);
     setBindingMock('GitCheckout', async () => {});
     setBindingMock('GetThread', async () => makeThread('main', {
-      workspacePath: '/repo',
-      worktreePath: undefined,
+      workspacePath: '/repo-worktrees/feature',
+      worktreePath: '/repo-worktrees/feature',
       projectPath: '/repo',
     }));
 
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /main/ });
     await fireEvent.click(row);
 
     await waitFor(() => {
       expect(getBindingMock('GitCheckout')!.mock.calls[0]).toEqual(['thread-1', 'main']);
+      expect(getBindingMock('GetThread')!.mock.calls[0]).toEqual(['thread-1']);
       expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
     });
   });
@@ -281,7 +428,7 @@ describe('<BranchPicker>', () => {
       { name: 'feature/searchable', isCurrent: false, isDefault: false },
     ]);
 
-    const { getByTestId, getByPlaceholderText, queryByRole, findByRole } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId, getByPlaceholderText, queryByRole, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /feature\/searchable/ });
 
@@ -300,7 +447,7 @@ describe('<BranchPicker>', () => {
       { name: 'release', isCurrent: false, isDefault: false },
     ]);
 
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     // Trigger label reads as the current/attach branch (not "From X")
     // because we're picking which existing branch the new worktree
     // attaches to, not branching off it.
@@ -324,7 +471,7 @@ describe('<BranchPicker>', () => {
       { name: 'release', isCurrent: false, isDefault: false },
     ]);
 
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     expect(getByTestId('branch-picker-trigger').textContent ?? '').toMatch(/From/);
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /release/ });
@@ -334,7 +481,7 @@ describe('<BranchPicker>', () => {
     expect(getBindingMock('GitCheckout')).toBeUndefined();
   });
 
-  it('switches to an existing worktree (no attach) when picking a branch that already has one in new-worktree mode', async () => {
+  it('disables an attach target that is already checked out in another worktree', async () => {
     const pane = await buildPane('main');
     if (!pane.thread) throw new Error('missing test thread');
     setThreadEnvMode(pane.thread, 'new-worktree');
@@ -342,32 +489,21 @@ describe('<BranchPicker>', () => {
       { name: 'main', isCurrent: true, isDefault: true },
       { name: 'feat/has-wt', isCurrent: false, isDefault: false, worktreePath: '/tmp/wt-feat' },
     ]);
-    const updateWorkspace = setBindingMock('UpdateThreadWorkspace', async () => ({
-      ...pane.thread!,
-      branch: 'feat/has-wt',
-      workspacePath: '/tmp/wt-feat',
-      worktreePath: '/tmp/wt-feat',
-    }));
 
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /feat\/has-wt/ });
+    expect(row).toHaveAttribute('aria-disabled', 'true');
+    expect(row).toHaveAttribute('title', expect.stringContaining('/tmp/wt-feat'));
     await fireEvent.click(row);
 
-    await waitFor(() => {
-      expect(updateWorkspace).toHaveBeenCalled();
-    });
-    expect(updateWorkspace.mock.calls[0]).toEqual(['thread-1', '/tmp/wt-feat']);
-    // Mode flips to local since we're now using an existing worktree.
-    expect(worktreeIntentForThread(pane.thread).mode).toBe('local');
+    expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
+    expect(worktreeIntentForThread(pane.thread).mode).toBe('new-worktree');
+    expect(worktreeIntentForThread(pane.thread).attachBranch).toBe('');
   });
 
   it('allows branch checkout while the agent is responding', async () => {
     const pane = await buildPane('main');
-    const workspaceLock = makeWorkspaceLock({
-      locked: true,
-      reason: 'Workspace changes are unavailable while the agent is responding.',
-    });
     const checkout = setBindingMock('GitCheckout', async () => {});
     setBindingMock('GitListBranches', async () => [
       { name: 'main', isCurrent: true, isDefault: true },
@@ -375,7 +511,7 @@ describe('<BranchPicker>', () => {
     ]);
     setBindingMock('GetThread', async () => makeThread('feat/abc'));
 
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /feat\/abc/ });
     expect(row).not.toHaveAttribute('aria-disabled', 'true');
@@ -408,7 +544,7 @@ describe('<BranchPicker>', () => {
     }));
 
     const { getByTestId, findByRole, queryByRole } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
 
@@ -434,7 +570,7 @@ describe('<BranchPicker>', () => {
     ]);
 
     const { getByTestId, findByRole, queryByRole } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
 
@@ -477,7 +613,7 @@ describe('<BranchPicker>', () => {
     }));
 
     const { getByTestId, findByRole } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const localRow = await findByRole('menuitem', { name: /Local \(with changes\)/ });
@@ -495,7 +631,7 @@ describe('<BranchPicker>', () => {
       { name: 'feat/clean', isCurrent: false, isDefault: false },
     ]);
 
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
 
     const mainRow = await findByRole('menuitem', { name: /main/ });
@@ -527,7 +663,7 @@ describe('<BranchPicker>', () => {
     ]);
 
     const { getByTestId, findByTitle, findByRole } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
 
@@ -557,7 +693,7 @@ describe('<BranchPicker>', () => {
     });
     setBindingMock('GitMaybeFetchRemotes', async () => true);
 
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
 
     await waitFor(async () => {
@@ -577,7 +713,7 @@ describe('<BranchPicker>', () => {
     });
     setBindingMock('GitMaybeFetchRemotes', async () => false);
 
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /main/ });
 
@@ -599,7 +735,7 @@ describe('<BranchPicker>', () => {
     setBindingMock('GitMaybeFetchRemotes', () => fetchPromise);
 
     const { getByTestId, findByRole, queryByRole } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /main/ });
@@ -630,7 +766,7 @@ describe('<BranchPicker>', () => {
     });
 
     const { getByTestId, findByRole } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /main/ });
@@ -659,7 +795,7 @@ describe('<BranchPicker>', () => {
     ]);
 
     const { getByTestId, findByRole, queryByRole } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /stale\/branch/ });
@@ -681,7 +817,7 @@ describe('<BranchPicker>', () => {
     ]);
 
     const { getByTestId, findByRole, findByLabelText } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /feat\/behind/ });
@@ -705,7 +841,7 @@ describe('<BranchPicker>', () => {
     ]);
 
     const { getByTestId, findByRole, findByLabelText } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /feat\/diverged/ });
@@ -726,7 +862,7 @@ describe('<BranchPicker>', () => {
     ]);
 
     const { getByTestId, findByRole, queryByLabelText } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /feat\/clean/ });
@@ -748,7 +884,7 @@ describe('<BranchPicker>', () => {
     setBindingMock('GitCheckout', async () => {});
 
     const { getByTestId, findByRole, findByLabelText, queryByLabelText } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /feat\/behind/ });
@@ -767,6 +903,124 @@ describe('<BranchPicker>', () => {
     });
   });
 
+  it('confirms before syncing a branch checked out in another worktree', async () => {
+    const pane = await buildPane('feature', {
+      projectId: 'project-1',
+      workspacePath: '/repo-worktrees/feature',
+      worktreePath: '/repo-worktrees/feature',
+    });
+    setBindingMock('GitListBranches', async () => [
+      { name: 'main', isCurrent: false, isDefault: true, behindCount: 1, worktreePath: '/repo' },
+      { name: 'feature', isCurrent: true, isDefault: false },
+    ]);
+    const sync = setBindingMock('GitSyncBranchForProject', async () => [
+      { name: 'main', isCurrent: false, isDefault: true, worktreePath: '/repo' },
+      { name: 'feature', isCurrent: true, isDefault: false },
+    ]);
+    setBindingMock('GitSyncBranch', async () => {
+      throw new Error('thread sync should not run for another worktree');
+    });
+
+    const { getByTestId, findByRole, findByLabelText, findByText, getByText } = render(BranchPicker, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    const row = await findByRole('menuitem', { name: /main/ });
+    expect(row).not.toHaveAttribute('aria-disabled', 'true');
+
+    const syncBtn = await findByLabelText(/Sync main from upstream/);
+    expect(syncBtn).toHaveAttribute('title', expect.stringContaining('/repo'));
+    await fireEvent.click(syncBtn);
+
+    expect(sync).not.toHaveBeenCalled();
+    expect(getBindingMock('GitSyncBranch')).not.toHaveBeenCalled();
+    await findByText(/main is checked out in \/repo/);
+    await fireEvent.click(getByText('Sync'));
+
+    await waitFor(() => {
+      expect(sync.mock.calls[0]).toEqual(['project-1', '/repo', 'main']);
+    });
+    expect(getBindingMock('GitSyncBranch')).not.toHaveBeenCalled();
+  });
+
+  it('syncs branches for placeholders without materializing a thread', async () => {
+    const pane = buildPlaceholderPane('main');
+    setBindingMock('GitListBranchesForProject', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+      { name: 'feat/behind', isCurrent: false, isDefault: false, behindCount: 3 },
+    ]);
+    setBindingMock('GetGitStatusForProject', async () => ({
+      isRepo: true,
+      branch: 'main',
+      isDefaultBranch: true,
+      hasChanges: false,
+      insertions: 0,
+      deletions: 0,
+      fileCount: 0,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+    }));
+    setBindingMock('GitMaybeFetchRemotesForProject', async () => false);
+    const sync = setBindingMock('GitSyncBranchForProject', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+      { name: 'feat/behind', isCurrent: false, isDefault: false },
+    ]);
+    setBindingMock('CreateThread', async () => {
+      throw new Error('CreateThread must not run for placeholder sync');
+    });
+
+    const { getByTestId, findByRole, findByLabelText, queryByLabelText } = render(BranchPicker, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    await findByRole('menuitem', { name: /feat\/behind/ });
+
+    const syncBtn = await findByLabelText(/Sync feat\/behind from upstream/);
+    await fireEvent.click(syncBtn);
+
+    await waitFor(() => {
+      expect(sync.mock.calls[0]).toEqual(['project-1', '/repo', 'feat/behind']);
+      expect(queryByLabelText(/Sync feat\/behind from upstream/)).toBeNull();
+    });
+    expect(getBindingMock('GitSyncBranch')).toBeUndefined();
+    expect(getBindingMock('CreateThread')).not.toHaveBeenCalled();
+    expect(pane.threadId).toBeNull();
+  });
+
+  it('confirms cross-worktree sync while keeping create-branch base selection enabled', async () => {
+    const pane = await buildPane('main');
+    if (!pane.thread) throw new Error('missing test thread');
+    pane.replaceThread({ ...pane.thread, projectId: 'project-1' });
+    enterCreateBranchMode(pane.thread, { workspaceDirty: false, currentBranch: 'main' });
+    setBindingMock('GitListBranches', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+      { name: 'feat/has-wt', isCurrent: false, isDefault: false, behindCount: 2, worktreePath: '/tmp/wt-feat' },
+    ]);
+    const sync = setBindingMock('GitSyncBranchForProject', async () => [
+      { name: 'main', isCurrent: true, isDefault: true },
+      { name: 'feat/has-wt', isCurrent: false, isDefault: false, worktreePath: '/tmp/wt-feat' },
+    ]);
+
+    const { getByTestId, findByRole, findByLabelText, findByText, getByText } = render(BranchPicker, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('branch-picker-trigger'));
+    const row = await findByRole('menuitem', { name: /feat\/has-wt/ });
+    expect(row).not.toHaveAttribute('aria-disabled', 'true');
+
+    const syncBtn = await findByLabelText(/Sync feat\/has-wt from upstream/);
+    await fireEvent.click(syncBtn);
+    await findByText(/feat\/has-wt is checked out in \/tmp\/wt-feat/);
+    await fireEvent.click(getByText('Sync'));
+
+    await waitFor(() => {
+      expect(sync.mock.calls[0]).toEqual(['project-1', '/tmp/wt-feat', 'feat/has-wt']);
+    });
+    expect(worktreeIntentForThread(pane.thread).creatingBranch).toBe(true);
+  });
+
   it('surfaces a toast on sync failure and keeps the row clickable', async () => {
     const pane = await buildPane('main');
     setBindingMock('GitListBranches', async () => [
@@ -778,7 +1032,7 @@ describe('<BranchPicker>', () => {
     });
 
     const { getByTestId, findByRole, findByLabelText } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /feat\/behind/ });
@@ -810,7 +1064,7 @@ describe('<BranchPicker>', () => {
     setBindingMock('GitSyncBranch', async () => []);
 
     const { getByTestId, findByRole, findByLabelText } = render(BranchPicker, {
-      props: { pane, workspaceLock: makeWorkspaceLock() },
+      props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /feat\/diverged/ });
@@ -823,11 +1077,6 @@ describe('<BranchPicker>', () => {
 
   it('allows branch checkout while background tasks are running', async () => {
     const pane = await buildPane('main');
-    const workspaceLock = makeWorkspaceLock({
-      locked: true,
-      reason: 'Workspace changes are unavailable while background tasks are running.',
-      runningBackgroundCount: 1,
-    });
     const checkout = setBindingMock('GitCheckout', async () => {});
     setBindingMock('GitListBranches', async () => [
       { name: 'main', isCurrent: true, isDefault: true },
@@ -835,7 +1084,7 @@ describe('<BranchPicker>', () => {
     ]);
     setBindingMock('GetThread', async () => makeThread('feat/abc'));
 
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane, workspaceLock } });
+    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /feat\/abc/ });
 
