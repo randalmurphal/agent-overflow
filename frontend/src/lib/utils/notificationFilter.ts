@@ -10,7 +10,7 @@
 // notification's `parentId` would have placed it inside a SubagentGroup.
 
 import type { Item } from '../types/models';
-import { extractClaudeTaskID } from './backgroundTray';
+import { extractClaudeTaskID } from './claudeTaskMeta';
 
 export function filterRedundantNotifications(items: readonly Item[]): readonly Item[] {
   // Hot path: no notifications → nothing to filter, return the original

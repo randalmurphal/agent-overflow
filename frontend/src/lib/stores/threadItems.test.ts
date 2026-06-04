@@ -202,6 +202,153 @@ describe('threadItems', () => {
     expect(next?.items[0]).toBe(decided);
   });
 
+  it('does not flag same-row successful command output chrome as structural', () => {
+    const current = [
+      makeItem({
+        id: 'bash',
+        threadId: 'thread-1',
+        kind: 'tool_call',
+        status: 'running',
+        toolName: 'Bash',
+        summary: 'Bash: sleep 1',
+        meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+      }),
+    ];
+    const completed = {
+      ...current[0]!,
+      status: 'completed' as const,
+      payloadId: 'payload-bash',
+      payloadKind: 'command_output',
+      payloadMeta: JSON.stringify({ command: 'sleep 1', exitCode: 0 }),
+      updatedAt: current[0]!.updatedAt + 1,
+    };
+
+    const next = applyItemUpsertsToWindow({
+      current,
+      incoming: [completed],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 0,
+    });
+
+    expect(next?.items[0]).toBe(completed);
+    expect(next?.structureChanged).toBe(false);
+  });
+
+  it('flags task lifecycle completion as structural because it can hide notifications', () => {
+    const current = [
+      makeItem({
+        id: 'task',
+        threadId: 'thread-1',
+        kind: 'tool_call',
+        status: 'running',
+        toolName: 'Task',
+        meta: JSON.stringify({ task_id: 'task-1' }),
+      }),
+    ];
+    const completed = {
+      ...current[0]!,
+      status: 'completed' as const,
+      updatedAt: current[0]!.updatedAt + 1,
+    };
+
+    const next = applyItemUpsertsToWindow({
+      current,
+      incoming: [completed],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 0,
+    });
+
+    expect(next?.structureChanged).toBe(true);
+  });
+
+  it('flags wait-carrier metadata changes as structural', () => {
+    const current = [
+      makeItem({
+        id: 'wait',
+        threadId: 'thread-1',
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+        meta: JSON.stringify({ input: { tool: 'noop' } }),
+      }),
+    ];
+    const enriched = {
+      ...current[0]!,
+      meta: JSON.stringify({ input: { tool: 'wait_agent' } }),
+      updatedAt: current[0]!.updatedAt + 1,
+    };
+
+    const next = applyItemUpsertsToWindow({
+      current,
+      incoming: [enriched],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 0,
+    });
+
+    expect(next?.structureChanged).toBe(true);
+  });
+
+  it('does not flag collab-agent status-only chrome as structural', () => {
+    const current = [
+      makeItem({
+        id: 'agent',
+        threadId: 'thread-1',
+        kind: 'tool_call',
+        status: 'running',
+        toolName: 'collab_agent',
+        meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
+        payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Reviewer' } }),
+      }),
+    ];
+    const completed = {
+      ...current[0]!,
+      status: 'completed' as const,
+      updatedAt: current[0]!.updatedAt + 1,
+    };
+
+    const next = applyItemUpsertsToWindow({
+      current,
+      incoming: [completed],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 0,
+    });
+
+    expect(next?.items[0]).toBe(completed);
+    expect(next?.structureChanged).toBe(false);
+  });
+
+  it('flags collab-agent receiver metadata changes as structural', () => {
+    const current = [
+      makeItem({
+        id: 'agent',
+        threadId: 'thread-1',
+        kind: 'tool_call',
+        status: 'running',
+        toolName: 'collab_agent',
+        meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
+        payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Reviewer' } }),
+      }),
+    ];
+    const renamed = {
+      ...current[0]!,
+      payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Implementer' } }),
+      updatedAt: current[0]!.updatedAt + 1,
+    };
+
+    const next = applyItemUpsertsToWindow({
+      current,
+      incoming: [renamed],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 0,
+    });
+
+    expect(next?.structureChanged).toBe(true);
+  });
+
   it('returns the current reference when every incoming upsert is ignored', () => {
     const current = [
       makeItem({ id: 'existing', threadId: 'thread-1', turnIndex: 3 }),

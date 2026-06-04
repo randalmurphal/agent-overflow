@@ -28,26 +28,60 @@ interface RunningElapsed {
   readonly label: string;
 }
 
+let sharedNow = $state(Date.now());
+let sharedTicker: ReturnType<typeof setInterval> | null = null;
+let activeTickerSubscriberCount = 0;
+let reactiveTickerSubscriberCount = $state(0);
+let stopQueued = false;
+
+function stopSharedTickerIfIdle(): void {
+  stopQueued = false;
+  if (activeTickerSubscriberCount > 0 || sharedTicker === null) return;
+  clearInterval(sharedTicker);
+  sharedTicker = null;
+}
+
+function queueSharedTickerStop(): void {
+  if (stopQueued) return;
+  stopQueued = true;
+  queueMicrotask(stopSharedTickerIfIdle);
+}
+
+function acquireRunningElapsedTicker(): () => void {
+  activeTickerSubscriberCount += 1;
+  reactiveTickerSubscriberCount = activeTickerSubscriberCount;
+  sharedNow = Date.now();
+  if (sharedTicker === null) {
+    sharedTicker = setInterval(() => {
+      sharedNow = Date.now();
+    }, 1_000);
+  }
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeTickerSubscriberCount -= 1;
+    reactiveTickerSubscriberCount = activeTickerSubscriberCount;
+    if (activeTickerSubscriberCount === 0) queueSharedTickerStop();
+  };
+}
+
 export function createRunningElapsed(
   isTicking: () => boolean,
   createdAt: () => number,
   thresholdMs: number = RUNNING_ELAPSED_THRESHOLD_MS,
 ): RunningElapsed {
-  let now = $state(Date.now());
   $effect(() => {
     if (!isTicking()) return;
-    now = Date.now();
-    const id = setInterval(() => {
-      now = Date.now();
-    }, 1_000);
-    return () => clearInterval(id);
+    return acquireRunningElapsedTicker();
   });
 
   const label = $derived.by<string>(() => {
     if (!isTicking()) return '';
     const created = createdAt();
     if (!Number.isFinite(created) || created <= 0) return '';
-    const elapsedMs = now - created;
+    const elapsedMs = sharedNow - created;
     if (elapsedMs < thresholdMs) return '';
     return formatElapsedSeconds(Math.floor(elapsedMs / 1_000));
   });
@@ -57,4 +91,23 @@ export function createRunningElapsed(
       return label;
     },
   };
+}
+
+export function __runningElapsedTickerSubscribersForTest(): number {
+  return reactiveTickerSubscriberCount;
+}
+
+export function __runningElapsedTickerActiveForTest(): boolean {
+  return sharedTicker !== null;
+}
+
+export function __resetRunningElapsedTickerForTest(): void {
+  if (sharedTicker !== null) {
+    clearInterval(sharedTicker);
+    sharedTicker = null;
+  }
+  activeTickerSubscriberCount = 0;
+  reactiveTickerSubscriberCount = 0;
+  stopQueued = false;
+  sharedNow = Date.now();
 }

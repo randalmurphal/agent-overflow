@@ -1,4 +1,5 @@
 import type { Item, CommandOutputMeta } from '../../types/models';
+import { parseJsonObject } from '../../utils/parseJsonObject';
 
 export interface CommandRowError {
   code?: string;
@@ -70,14 +71,8 @@ export function terminalInteractionLabelFromSummary(summary: string | undefined)
 }
 
 function commandFromJSON(raw: string | undefined): string {
-  if (!raw) return '';
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== 'object') return '';
-    return commandFromRecord(parsed as Record<string, unknown>);
-  } catch {
-    return '';
-  }
+  const parsed = parseJsonObject(raw);
+  return parsed ? commandFromRecord(parsed) : '';
 }
 
 function readCommandExitCode(record: Record<string, unknown> | null): number | null {

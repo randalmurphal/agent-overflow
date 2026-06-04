@@ -32,12 +32,12 @@
   import { getContext } from 'svelte';
   import { Streamdown } from 'svelte-streamdown';
   import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
-  import StreamdownCodeHost from './markdown/StreamdownCodeHost.svelte';
-  import StreamdownMermaidHost from './markdown/StreamdownMermaidHost.svelte';
-  import StreamdownMermaidHostDeferred from './markdown/StreamdownMermaidHostDeferred.svelte';
-  import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
-  import StreamdownMathHostDeferred from './markdown/StreamdownMathHostDeferred.svelte';
   import { chatMarkdownTheme, extraShikiLanguages } from './markdown/streamdownTheme';
+  import {
+    STREAMDOWN_ALLOWED_IMAGE_PREFIXES,
+    STREAMDOWN_CONTROLS,
+    streamdownComponentsFor,
+  } from './markdown/streamdownConfig';
   import { unwrapMarkdownFence } from './markdown/unwrapMarkdownFence';
   import {
     ensureMarkdownCopyDelegate,
@@ -185,16 +185,12 @@
     theme={chatMarkdownTheme}
     shikiLanguages={extraShikiLanguages}
     {allowedLinkPrefixes}
-    allowedImagePrefixes={['*']}
+    allowedImagePrefixes={STREAMDOWN_ALLOWED_IMAGE_PREFIXES}
     renderHtml={false}
-    controls={{ code: false, table: false }}
+    controls={STREAMDOWN_CONTROLS}
     {extensions}
     onsettled={handleSettled}
-    components={{
-      code: StreamdownCodeHost,
-      mermaid: parseIncompleteMarkdown ? StreamdownMermaidHostDeferred : StreamdownMermaidHost,
-      math: parseIncompleteMarkdown ? StreamdownMathHostDeferred : StreamdownMathHost,
-    }}
+    components={streamdownComponentsFor(parseIncompleteMarkdown)}
   />
 {/snippet}
 

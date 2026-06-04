@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { makeItem } from '../../../test/helpers/chat';
+import { __resetParseJsonObjectCacheForTest } from '../../utils/parseJsonObject';
 import {
   commandTextForItem,
   displayCommandForItem,
@@ -63,6 +64,24 @@ describe('commandDisplay', () => {
 
     expect(commandTextForItem(item, meta)).toBe("/usr/bin/zsh -lc 'git log --oneline -1'");
     expect(displayCommandForItem(item, meta)).toBe('git log --oneline -1');
+  });
+
+  it('uses the shared JSON cache for repeated item-meta command extraction', () => {
+    __resetParseJsonObjectCacheForTest();
+    const item = makeItem({
+      meta: JSON.stringify({ input: { command: 'pwd' } }),
+      payloadMeta: JSON.stringify({ command: 'fallback' }),
+      summary: 'Bash: echo fallback',
+    });
+    const parseSpy = vi.spyOn(JSON, 'parse');
+
+    try {
+      expect(commandTextForItem(item, null)).toBe('pwd');
+      expect(commandTextForItem(item, null)).toBe('pwd');
+      expect(parseSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      parseSpy.mockRestore();
+    }
   });
 
   it('strips summary outcome suffixes from fallback command text', () => {

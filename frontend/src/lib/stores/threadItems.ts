@@ -1,4 +1,5 @@
 import type { Item } from '../types/models';
+import { itemTimelineStructureChanged } from '../utils/timelineStructure';
 
 export function compareItemsByTimelinePosition(a: Item, b: Item): number {
   if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
@@ -157,6 +158,7 @@ export interface ApplyItemUpsertsToWindowResult {
   appendedItems: readonly Item[];
   changedItems: readonly Item[];
   indexesNeedRebuild: boolean;
+  structureChanged: boolean;
 }
 
 /**
@@ -180,6 +182,7 @@ export function applyItemUpsertsToWindow({
   const changedItems: Item[] = [];
   let changed = false;
   let needsSort = false;
+  let structureChanged = false;
 
   const workingItems = (): Item[] => {
     if (next === null) next = current.slice();
@@ -203,6 +206,9 @@ export function applyItemUpsertsToWindow({
       if (itemsAreEqual(previous, item)) continue;
       workingItems()[existingIndex] = item;
       changed = true;
+      if (itemTimelineStructureChanged(previous, item)) {
+        structureChanged = true;
+      }
       changedItems.push(item);
       if (appendedIndexById.has(item.id)) {
         const appendedOffset = existingIndex - current.length;
@@ -227,6 +233,7 @@ export function applyItemUpsertsToWindow({
     appendedIndexById.set(item.id, target.length);
     target.push(item);
     changed = true;
+    structureChanged = true;
     appendedItems.push(item);
     changedItems.push(item);
   }
@@ -242,5 +249,6 @@ export function applyItemUpsertsToWindow({
     appendedItems,
     changedItems,
     indexesNeedRebuild: needsSort,
+    structureChanged,
   };
 }

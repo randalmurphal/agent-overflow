@@ -186,6 +186,38 @@ describe('<MessageTimeline>', () => {
     expect(getByTestId('command-output-row').textContent).toContain('exit 1');
   });
 
+  it('keeps a same-row Bash completion visually fresh without a structural rebuild', async () => {
+    const running = makeItem({
+      id: 'bash-inline',
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'Bash',
+      summary: 'Bash: sleep 1',
+      meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+    });
+    const pane = await buildPane(undefined, [running]);
+    const { getByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
+
+    expect(getByTestId('command-output-command').textContent?.trim()).toBe('sleep 1');
+    expect(getByTestId('command-output-status').getAttribute('data-state')).toBe('running');
+    const revision = pane.timelineRevision;
+
+    pane.upsertItem(makeItem({
+      ...running,
+      status: 'completed',
+      payloadId: 'payload-bash-inline',
+      payloadKind: 'command_output',
+      payloadMeta: JSON.stringify({ command: 'sleep 1', exitCode: 0, preview: 'done' }),
+      updatedAt: running.updatedAt + 1,
+    }));
+    await tick();
+
+    expect(pane.timelineRevision).toBe(revision);
+    expect(getByTestId('command-output-command').textContent?.trim()).toBe('sleep 1');
+    expect(queryByTestId('command-output-status')).toBeNull();
+    expect(getByTestId('command-output-toggle')).toHaveAttribute('aria-expanded', 'false');
+  });
+
   it('hides redundant Codex wait_agent completion signals when child completions are grouped', async () => {
     const wait = makeItem({
       id: 'wait-agents',

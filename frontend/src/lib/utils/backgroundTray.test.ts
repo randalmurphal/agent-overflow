@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Item } from '../types/models';
+import { __resetParseJsonObjectCacheForTest } from './parseJsonObject';
 import {
   completionStatusFor,
   deriveTrayTasks,
@@ -71,6 +72,20 @@ describe('extractClaudeTaskID', () => {
   it('tolerates extra meta fields (triage merges unrelated data in)', () => {
     const item = makeItem({ meta: JSON.stringify({ task_id: 'tsk-99', other: 'x' }) });
     expect(extractClaudeTaskID(item)).toBe('tsk-99');
+  });
+
+  it('uses the shared JSON cache for repeated task-id extraction', () => {
+    __resetParseJsonObjectCacheForTest();
+    const item = makeItem({ meta: JSON.stringify({ task_id: 'tsk-cache' }) });
+    const parseSpy = vi.spyOn(JSON, 'parse');
+
+    try {
+      expect(extractClaudeTaskID(item)).toBe('tsk-cache');
+      expect(extractClaudeTaskID(item)).toBe('tsk-cache');
+      expect(parseSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      parseSpy.mockRestore();
+    }
   });
 
   it('returns null when meta is missing or empty', () => {

@@ -944,7 +944,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         itemIndexById.set(next.appendedItems[index].id, firstAppendIndex + index);
       }
     }
-    timelineRevision++;
+    if (next.structureChanged) timelineRevision++;
 
     // Reconcile per-item smoothers with the upsert state. A completion /
     // failure upsert replaces items[index] entirely, so a still-running

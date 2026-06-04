@@ -1113,6 +1113,80 @@ describe('createThreadPane', () => {
     expect(pane.timelineRevision).toBe(1);
   });
 
+  it('does not bump timeline revision for same-row Bash completion chrome', () => {
+    const pane = createThreadPane();
+    pane.upsertItem(makeItem({
+      id: 'bash',
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'Bash',
+      summary: 'Bash: sleep 1',
+      meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+    }));
+    const revision = pane.timelineRevision;
+
+    pane.upsertItem(makeItem({
+      id: 'bash',
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'Bash',
+      summary: 'Bash: sleep 1',
+      payloadId: 'payload-bash',
+      payloadKind: 'command_output',
+      payloadMeta: JSON.stringify({ command: 'sleep 1', exitCode: 0 }),
+      meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+      updatedAt: 1,
+    }));
+
+    expect(pane.items[0].status).toBe('completed');
+    expect(pane.items[0].payloadKind).toBe('command_output');
+    expect(pane.timelineRevision).toBe(revision);
+  });
+
+  it('does not bump timeline revision for collab-agent status-only chrome', () => {
+    const pane = createThreadPane();
+    pane.upsertItem(makeItem({
+      id: 'agent',
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'collab_agent',
+      meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
+      payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Reviewer' } }),
+    }));
+    const revision = pane.timelineRevision;
+
+    pane.upsertItem(makeItem({
+      id: 'agent',
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'collab_agent',
+      meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
+      payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Reviewer' } }),
+      updatedAt: 1,
+    }));
+
+    expect(pane.items[0].status).toBe('completed');
+    expect(pane.timelineRevision).toBe(revision);
+  });
+
+  it('bumps timeline revision when an upsert changes timeline structure', () => {
+    const pane = createThreadPane();
+    pane.upsertItem(makeItem({
+      id: 'read',
+      kind: 'tool_call',
+      toolName: 'Read',
+    }));
+    const revision = pane.timelineRevision;
+
+    pane.upsertItem(makeItem({
+      id: 'read',
+      kind: 'tool_call',
+      toolName: 'Edit',
+    }));
+
+    expect(pane.timelineRevision).toBe(revision + 1);
+  });
+
   it('preserves arrival order for rows with the same turn and item position', () => {
     const pane = createThreadPane();
 

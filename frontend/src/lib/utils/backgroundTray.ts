@@ -4,7 +4,10 @@
 // the 300-line ceiling.
 
 import type { Item } from '../types/models';
+import { extractClaudeTaskID } from './claudeTaskMeta';
 import { isCodexSubagentLaunchItem } from './subagentLaunch';
+
+export { extractClaudeTaskID } from './claudeTaskMeta';
 
 export interface TrayTask {
   /** Stable id used for the row key and scroll-to-item request. */
@@ -38,34 +41,11 @@ export function completionStatusFor(completion: Item): TrayTask['status'] {
 }
 
 /**
- * Extract the Claude `task_id` from a launch item's `meta` JSON blob.
- * The Claude parser stamps `task_id` onto `items.meta` via
- * `mergeItemMetaTaskID` in triage — returned verbatim here so the tray
- * can hand it to `StopClaudeTask(threadID, taskID)`.
- *
- * Returns null when the meta string is missing, unparseable, or does
- * not carry a non-empty `task_id` field. Codex launches never carry a
- * task_id; this is the signal the tray uses to decide whether to
- * render a per-row Stop button.
- */
-export function extractClaudeTaskID(item: Item): string | null {
-  const raw = item.meta;
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as { task_id?: unknown };
-    const id = parsed?.task_id;
-    if (typeof id === 'string' && id.length > 0) return id;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Codex subagent rows are detected from the normalized spawn-agent
- * launch metadata. They represent child threads with no client-side kill path. The Stop-all button
- * must hide when the tray only contains these, because neither
- * StopClaudeTask nor CleanCodexBackgroundTerminals can touch them.
+ * launch metadata. They represent child threads with no client-side kill
+ * path. The Stop-all button must hide when the tray only contains these,
+ * because neither StopClaudeTask nor CleanCodexBackgroundTerminals can
+ * touch them.
  */
 export function isCodexSubagentTask(task: TrayTask): boolean {
   const item = task.launch ?? task.completion;
