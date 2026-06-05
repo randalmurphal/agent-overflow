@@ -104,9 +104,11 @@ type Thread struct {
 	LatestTurnCompletedAt *int64 `json:"latestTurnCompletedAt,omitempty"`
 	Archived              bool   `json:"archived"`
 	// LastReadAt is the Unix-ms timestamp of when the user last viewed
-	// the thread. NULL (nil) means "never tracked" and is treated as
-	// read by the UI so pre-migration rows don't all show as unread on
-	// first launch. Set by MarkThreadRead, stamped to zero by
+	// the thread. New rows are seeded with a creation-time baseline so a
+	// later completion can be detected as unread even if the user switched
+	// away before the first turn settled. NULL (nil) means "never tracked"
+	// and is treated as read by the UI so pre-migration rows don't all show
+	// as unread on first launch. Set by MarkThreadRead, stamped to zero by
 	// MarkThreadUnread, and auto-refreshed when the user switches into a
 	// thread.
 	LastReadAt *int64 `json:"lastReadAt,omitempty"`

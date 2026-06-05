@@ -198,21 +198,26 @@ func (s *Store) CreateThread(t Thread) error {
 	if !validAutoCompactPercent(t.AutoCompactExtendedPercent) {
 		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactExtendedPercent)
 	}
+	lastReadAt := t.LastReadAt
+	if lastReadAt == nil {
+		lastReadAt = &t.CreatedAt
+	}
+	lastReadAtArg := nullableInt64(lastReadAt)
 	_, err := s.db.Exec(
 		`INSERT INTO threads (id, project_id, title, provider, model,
 		    workspace_path, worktree_path, branch, session_ref, pending_fork_session_ref,
 		    mode, reasoning_effort, fast_mode, context_window,
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
-		    created_at, updated_at, archived, disabled_mcp_servers)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    created_at, updated_at, archived, last_read_at, disabled_mcp_servers)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
-		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived), marshalDisabledMcpServers(t.DisabledMcpServers),
+		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived), lastReadAtArg, marshalDisabledMcpServers(t.DisabledMcpServers),
 	)
 	if err != nil {
 		return fmt.Errorf("store: create thread: %w", err)
@@ -610,7 +615,7 @@ func (s *Store) MarkThreadReadNow(id string) error {
 	}
 
 	if lastReadAt.Valid {
-		if !hasReadTarget || lastReadAt.Int64 >= readTarget {
+		if hasReadTarget && lastReadAt.Int64 >= readTarget {
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
 			}
@@ -621,6 +626,12 @@ func (s *Store) MarkThreadReadNow(id string) error {
 	readAt := now
 	if hasReadTarget && readTarget > readAt {
 		readAt = readTarget
+	}
+	if lastReadAt.Valid && lastReadAt.Int64 >= readAt {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
+		}
+		return nil
 	}
 	result, err := tx.Exec(`UPDATE threads SET last_read_at = ? WHERE id = ?`, readAt, id)
 	if err != nil {

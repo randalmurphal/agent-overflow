@@ -812,9 +812,9 @@ func TestListThreadsWithItemsHidesEmptyDrafts(t *testing.T) {
 // --- v5 terminal-mode store behavior ---
 
 // TestCreateStandaloneTerminalPersistsNullProject covers a project-less
-// "home" terminal: CreateThread must write SQL NULL (not '') so the
-// projects FK is satisfied, GetThread must read it back as "" without a
-// scan error, and the raw column must be NULL.
+// "home" terminal: CreateThread must write SQL NULL rather than an empty
+// string to satisfy the projects FK. GetThread must read it back as ""
+// without a scan error, and the raw column must be NULL.
 func TestCreateStandaloneTerminalPersistsNullProject(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
@@ -857,9 +857,9 @@ func TestCreateStandaloneTerminalPersistsNullProject(t *testing.T) {
 }
 
 // TestUpdateStandaloneTerminalPreservesNullProject ensures the UPDATE path
-// also writes NULL for an empty ProjectID. Writing '' would violate the
-// projects FK; we assert both that the update succeeds and that the column
-// stays NULL.
+// also writes NULL for an empty ProjectID. Writing an empty string would
+// violate the projects FK; we assert both that the update succeeds and that
+// the column stays NULL.
 func TestUpdateStandaloneTerminalPreservesNullProject(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
@@ -1264,11 +1264,12 @@ func TestListThreadsWithItemsDerivesIncompleteNewestTurn(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 	seedItem(t, s, thread.ID, "item-1", 0, 0, "")
+	startedAt := thread.CreatedAt + 100
 	if err := s.InsertTurn(Turn{
 		TurnID:    "turn-1",
 		ThreadID:  thread.ID,
 		TurnIndex: 0,
-		StartedAt: 100,
+		StartedAt: startedAt,
 	}); err != nil {
 		t.Fatalf("InsertTurn(): %v", err)
 	}
@@ -1278,7 +1279,7 @@ func TestListThreadsWithItemsDerivesIncompleteNewestTurn(t *testing.T) {
 		t.Fatal("HasIncompleteTurn = false, want true")
 	}
 
-	if err := s.UpdateTurnCompleted("turn-1", 200, "end_turn", "", "", ""); err != nil {
+	if err := s.UpdateTurnCompleted("turn-1", startedAt+100, "end_turn", "", "", ""); err != nil {
 		t.Fatalf("UpdateTurnCompleted(): %v", err)
 	}
 	got = mustListSingleThreadWithItems(t, s)
@@ -1294,16 +1295,17 @@ func TestListThreadsWithItemsClearsIncompleteNewestTurnAfterRead(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 	seedItem(t, s, thread.ID, "item-1", 0, 0, "")
+	startedAt := thread.CreatedAt + 100
 	if err := s.InsertTurn(Turn{
 		TurnID:    "turn-1",
 		ThreadID:  thread.ID,
 		TurnIndex: 0,
-		StartedAt: 100,
+		StartedAt: startedAt,
 	}); err != nil {
 		t.Fatalf("InsertTurn(): %v", err)
 	}
 
-	lastReadAt := int64(99)
+	lastReadAt := startedAt - 1
 	if err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
 		t.Fatalf("setThreadLastRead(before): %v", err)
 	}
@@ -1312,7 +1314,7 @@ func TestListThreadsWithItemsClearsIncompleteNewestTurnAfterRead(t *testing.T) {
 		t.Fatal("HasIncompleteTurn = false before read, want true")
 	}
 
-	lastReadAt = 100
+	lastReadAt = startedAt
 	if err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
 		t.Fatalf("setThreadLastRead(equal): %v", err)
 	}
@@ -1329,23 +1331,25 @@ func TestListThreadsWithItemsDerivesIncompleteOnlyForNewestTurn(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 	seedItem(t, s, thread.ID, "item-1", 0, 0, "")
+	oldStartedAt := thread.CreatedAt + 100
 	if err := s.InsertTurn(Turn{
 		TurnID:    "turn-old",
 		ThreadID:  thread.ID,
 		TurnIndex: 0,
-		StartedAt: 100,
+		StartedAt: oldStartedAt,
 	}); err != nil {
 		t.Fatalf("InsertTurn(old): %v", err)
 	}
+	newStartedAt := oldStartedAt + 200
 	if err := s.InsertTurn(Turn{
 		TurnID:    "turn-new",
 		ThreadID:  thread.ID,
 		TurnIndex: 1,
-		StartedAt: 300,
+		StartedAt: newStartedAt,
 	}); err != nil {
 		t.Fatalf("InsertTurn(new): %v", err)
 	}
-	if err := s.UpdateTurnCompleted("turn-new", 400, "end_turn", "", "", ""); err != nil {
+	if err := s.UpdateTurnCompleted("turn-new", newStartedAt+100, "end_turn", "", "", ""); err != nil {
 		t.Fatalf("UpdateTurnCompleted(new): %v", err)
 	}
 
@@ -1445,13 +1449,14 @@ func TestSetThreadLastReadRoundTrip(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	// Fresh threads start with last_read_at = NULL (nil pointer).
+	// New threads start with a concrete read baseline. NULL is reserved
+	// for legacy rows and explicit clears.
 	got, err := s.GetThread(thr.ID)
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	if got.LastReadAt != nil {
-		t.Fatalf("fresh thread LastReadAt = %v, want nil", *got.LastReadAt)
+	if got.LastReadAt == nil || *got.LastReadAt != thr.CreatedAt {
+		t.Fatalf("fresh thread LastReadAt = %v, want CreatedAt %d", got.LastReadAt, thr.CreatedAt)
 	}
 
 	// Set to a concrete timestamp.
@@ -1483,6 +1488,25 @@ func TestSetThreadLastReadRoundTrip(t *testing.T) {
 	// mutation helpers above.
 	if err := s.setThreadLastRead("missing", &ts); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("setThreadLastRead(missing) error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestCreateThreadPersistsInitialLastReadAt(t *testing.T) {
+	s := newTestStore(t)
+
+	lastReadAt := int64(1_700_000_000_000)
+	thr := makeThread("thread-create-last-read", "claude")
+	thr.LastReadAt = &lastReadAt
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.LastReadAt == nil || *got.LastReadAt != lastReadAt {
+		t.Fatalf("LastReadAt = %v, want %d", got.LastReadAt, lastReadAt)
 	}
 }
 
@@ -1572,6 +1596,33 @@ func TestMarkThreadReadNowAlreadyReadDoesNotRewrite(t *testing.T) {
 	}
 	if got.LastReadAt == nil || *got.LastReadAt != ts {
 		t.Fatalf("LastReadAt = %v, want %d", got.LastReadAt, ts)
+	}
+}
+
+func TestMarkThreadReadNowRefreshesEmptyThreadBaseline(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-read-empty-refresh", "claude")
+	initialReadAt := int64(1)
+	thr.LastReadAt = &initialReadAt
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	before := nowMillis()
+	if err := s.MarkThreadReadNow(thr.ID); err != nil {
+		t.Fatalf("MarkThreadReadNow: %v", err)
+	}
+
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.LastReadAt == nil {
+		t.Fatal("LastReadAt = nil, want refreshed timestamp")
+	}
+	if *got.LastReadAt < before {
+		t.Fatalf("LastReadAt = %d, want >= %d", *got.LastReadAt, before)
 	}
 }
 

@@ -69,10 +69,11 @@ export interface Thread {
   latestTurnCompletedAt?: number;
   archived: boolean;
   /**
-   * Unix-ms timestamp of when the user last viewed the thread. Undefined
-   * means "never tracked" (pre-v20 rows and freshly-created threads) and
-   * is treated as read so sidebar pills don't flood on first deploy.
-   * Written by MarkThreadRead; explicit MarkThreadUnread persists 0.
+   * Unix-ms timestamp of when the user last viewed the thread. New rows
+   * start with a creation-time baseline; undefined means "never tracked"
+   * for legacy rows and is treated as read so sidebar pills don't flood
+   * on first deploy. Written by MarkThreadRead; explicit MarkThreadUnread
+   * persists 0.
    */
   lastReadAt?: number;
   /**

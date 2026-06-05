@@ -58,6 +58,42 @@ func TestCreateThreadNormalizesModelAlias(t *testing.T) {
 	}
 }
 
+func TestCreateThreadStampsInitialReadBaseline(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/thread-baseline", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	if thread.LastReadAt == nil {
+		t.Fatal("created thread LastReadAt = nil, want creation-time read baseline")
+	}
+	if *thread.LastReadAt != thread.CreatedAt {
+		t.Fatalf("created thread LastReadAt = %d, want CreatedAt %d", *thread.LastReadAt, thread.CreatedAt)
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if stored.LastReadAt == nil || *stored.LastReadAt != *thread.LastReadAt {
+		t.Fatalf("stored LastReadAt = %v, want returned value %d", stored.LastReadAt, *thread.LastReadAt)
+	}
+
+	completedAt := thread.CreatedAt + 1
+	insertCompletedTurnForAppTest(t, app, thread.ID, "turn-after-create", thread.CreatedAt, completedAt)
+	afterCompletion, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread after completion: %v", err)
+	}
+	if afterCompletion.LatestTurnCompletedAt == nil || *afterCompletion.LatestTurnCompletedAt != completedAt {
+		t.Fatalf("LatestTurnCompletedAt = %v, want %d", afterCompletion.LatestTurnCompletedAt, completedAt)
+	}
+	if afterCompletion.LastReadAt == nil || *afterCompletion.LatestTurnCompletedAt <= *afterCompletion.LastReadAt {
+		t.Fatalf("completion is not unread: latest=%v lastRead=%v", afterCompletion.LatestTurnCompletedAt, afterCompletion.LastReadAt)
+	}
+}
+
 // --- StartTerminal (terminal-mode thread creation) ---
 
 func TestStartTerminalPerProjectRootsAtProjectPath(t *testing.T) {
