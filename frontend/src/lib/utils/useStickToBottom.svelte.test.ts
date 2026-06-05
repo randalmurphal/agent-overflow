@@ -59,13 +59,13 @@ class MockResizeObserver {
   disconnect(): void {
     this.observed = [];
   }
-  /** Fire the callback synchronously with a single entry for the given element + height. */
-  fire(el: Element, height: number): void {
+  /** Fire the callback synchronously with a single entry for the given element, height, and optional width. */
+  fire(el: Element, height: number, width = 0): void {
     this.callback(
       [
         {
           target: el,
-          contentRect: { height, width: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRectReadOnly,
+          contentRect: { height, width, top: 0, left: 0, right: width, bottom: height, x: 0, y: 0, toJSON: () => ({}) } as DOMRectReadOnly,
           borderBoxSize: [],
           contentBoxSize: [],
           devicePixelContentBoxSize: [],
@@ -2488,6 +2488,84 @@ describe('createUseStickToBottomController — spring chase', () => {
       for (let i = 0; i < 3; i++) await nextFrame();
       expect(geom.scrollTop).toBeGreaterThan(400);
       expect(geom.scrollTop).toBeLessThan(800);
+    });
+
+    it('sync-pins a positive delta caused by content width reflow instead of spring-chasing it', async () => {
+      // Mermaid diagrams rendered with useMaxWidth can change height when
+      // the pane width changes. If that row is still mounted in virtua's
+      // overscan window while live content recently advanced, the spring
+      // latch still reports "spring" even though the resize is layout
+      // correction, not new assistant output. That must land instantly;
+      // otherwise the user watches the viewport chase a stale bottom by
+      // a third or half screen.
+      const ro = getRO();
+      ro.fire(contentEl, 800, 900);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1300;
+      geom.contentHeight = 1100;
+      ro.fire(contentEl, 1100, 640);
+
+      expect(geom.scrollTop).toBe(700);
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(700);
+    });
+
+    it('sync-pins height correction when width and height reflow arrive in separate ResizeObserver deliveries', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800, 900);
+      await waitMs(150); // warm
+
+      // Width-only delivery first. This happens on some pane/window
+      // reflows before async renderer layout reports the new height.
+      ro.fire(contentEl, 800, 640);
+
+      geom.scrollHeight = 1300;
+      geom.contentHeight = 1100;
+      ro.fire(contentEl, 1100, 640);
+
+      expect(geom.scrollTop).toBe(700);
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(700);
+    });
+
+    it('springs same-width live growth after the width-reflow settle window expires', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800, 900);
+      await waitMs(150); // warm
+
+      ro.fire(contentEl, 800, 640);
+      for (let i = 0; i < 20; i++) await nextFrame();
+
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000, 640);
+
+      expect(geom.scrollTop).toBe(400);
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(600);
+    });
+
+    it('sync-pins a negative delta caused by content width reflow even during an active spring', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800, 900);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200, 900);
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(800);
+
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000, 640);
+
+      expect(geom.scrollTop).toBe(600);
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(600);
     });
 
     it('notifyLiveContentMaybeGrew spring-chases when warm AND mode=spring', async () => {
@@ -5120,6 +5198,27 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Gate suppressed it: scrollTop did not jump to 800; the spring
       // is still the single writer.
       expect(geom.scrollTop).toBe(springStart);
+    });
+
+    it('passes an external scrollTop write through during a width-reflow settle window', async () => {
+      mode = 'spring';
+
+      const ro = getRO();
+      ro.fire(contentEl, 800, 900);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200, 900);
+      await nextFrame();
+      const springStart = geom.scrollTop;
+      expect(springStart).toBeGreaterThan(400);
+      expect(springStart).toBeLessThan(800);
+
+      ro.fire(contentEl, 1200, 640);
+      scrollEl.scrollTop = 800;
+
+      expect(geom.scrollTop).toBe(800);
     });
 
     it('passes an external scrollTop write through when no spring is in flight (mode=spring, dormant chase)', async () => {

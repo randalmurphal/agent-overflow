@@ -83,6 +83,14 @@ const STICK_TO_BOTTOM_OFFSET_PX = 70;
 // height estimation + browser scrollTop rounding that routinely lands
 // 1-3px short during streaming.
 const AUTO_FOLLOW_BOTTOM_EPSILON_PX = 4;
+// ResizeObserver width jitter below half a CSS pixel is usually rounding
+// noise. Wider changes mean the content column reflowed; any paired height
+// delta is layout correction, not new live transcript content.
+const CONTENT_REFLOW_WIDTH_EPSILON_PX = 0.5;
+// Width and height can arrive in separate ResizeObserver deliveries. Keep
+// the layout-correction classification alive briefly so a width-only fire
+// followed by renderer height settle still sync-pins.
+const CONTENT_REFLOW_SETTLE_WINDOW_MS = 250;
 const RESIZE_CLEAR_PADDING_MS = 1;
 const DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS = 420;
 const PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX = 1;
@@ -211,6 +219,10 @@ function isSelectingInside(scrollEl: HTMLElement): boolean {
 
 function nowMs(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function roundCssPx(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 export interface UseStickToBottomController {
@@ -387,16 +399,18 @@ export interface UseStickToBottomController {
 export interface UseStickToBottomOptions {
   /**
    * Picks animation behavior for autonomous content growth (contentRO
-   * positive deltas). Called per-fire — return 'spring' to chase the
-   * new bottom with a velocity spring, 'instant' to sync-pin. Defaults
-   * to () => 'instant' (sync-pin everywhere) so existing callers behave
-   * identically to the pre-spring-restoration controller.
+   * positive deltas). Called per-fire — return 'spring' to make the
+   * delta spring-eligible, 'instant' to sync-pin. Width-driven layout
+   * correction still sync-pins even when this returns 'spring'.
+   * Defaults to () => 'instant' (sync-pin everywhere) so existing
+   * callers behave identically to the pre-spring-restoration controller.
    *
    * Chat's MessageTimeline wires this to a content-keyed latch
    * (`latchedSpringMode(performance.now(), pane.lastLiveContentAt,
    * SPRING_MODE_HOLD_MS)`) so streaming chunks — and the end-of-turn
-   * drain after the turn signal clears — animate; idle/settled threads
-   * and Discussion's polled channel surface stay on sync-pin.
+   * drain after the turn signal clears — animate; idle/settled threads,
+   * width reflow corrections, and Discussion's polled channel surface
+   * stay on sync-pin.
    */
   animationMode?: () => 'spring' | 'instant';
   /**
@@ -516,6 +530,8 @@ export function createUseStickToBottomController(
   let scrollbarDragSessionFailsafeTimer: ReturnType<typeof setTimeout> | null = null;
   let detachScrollbarDragEnd: (() => void) | undefined;
   let previousHeight: number | undefined;
+  let previousWidth: number | undefined;
+  let contentReflowSettleUntil = 0;
   let touchStartY: number | null = null;
   let resizeCorrelatedUntaggedScrollBudget = 0;
   // Controller-scope baseline so `scrolledDown` can be computed for the
@@ -1104,8 +1120,16 @@ export function createUseStickToBottomController(
       const entry = entries[0];
       if (!entry || !contentEl || !scrollEl) return;
       const nextHeight = entry.contentRect.height;
+      const nextWidth = entry.contentRect.width;
       const prev = previousHeight;
+      const prevWidth = previousWidth;
       previousHeight = nextHeight;
+      previousWidth = nextWidth;
+      const widthChanged = prevWidth !== undefined
+        && Math.abs(nextWidth - prevWidth) > CONTENT_REFLOW_WIDTH_EPSILON_PX;
+      if (widthChanged) {
+        contentReflowSettleUntil = nowMs() + CONTENT_REFLOW_SETTLE_WINDOW_MS;
+      }
 
       // Every RO activity counts as "still settling" — reset the quiet
       // timer regardless of delta direction. virtua's per-row
@@ -1138,10 +1162,23 @@ export function createUseStickToBottomController(
       }
 
       const delta = nextHeight - prev;
+      const widthReflowActive = widthChanged || contentReflowSettleUntil > nowMs();
       // Common case: virtua re-measures a same-height row, padding-bottom
       // CSS variable updates with identical computed value, etc. No
       // geometry change → nothing to chase, no scroll-event tagging needed.
-      if (delta === 0) return;
+      if (delta === 0) {
+        if (widthChanged && isUiRenderTraceEnabled()) trace('scroll.contentRO.widthReflow', () => ({
+          prevWidth: prevWidth === undefined ? null : roundCssPx(prevWidth),
+          nextWidth: roundCssPx(nextWidth),
+          widthDelta: prevWidth === undefined ? null : roundCssPx(nextWidth - prevWidth),
+          widthReflowActive,
+          settleWindowMs: CONTENT_REFLOW_SETTLE_WINDOW_MS,
+          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+          scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+          clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+        }));
+        return;
+      }
       resizeDifference = delta;
       // Virtua can emit one untagged scroll jump as part of the same
       // measurement correction that produced this content resize. The
@@ -1179,6 +1216,11 @@ export function createUseStickToBottomController(
         escapedFromLockState,
         pauseDepth,
         isNearBottomState,
+        prevWidth: prevWidth === undefined ? null : roundCssPx(prevWidth),
+        nextWidth: roundCssPx(nextWidth),
+        widthDelta: prevWidth === undefined ? null : roundCssPx(nextWidth - prevWidth),
+        widthChanged,
+        widthReflowActive,
         scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
         scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
         clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
@@ -1244,8 +1286,18 @@ export function createUseStickToBottomController(
         // positive delta during the chase bumps `lastTargetChangedAt` so
         // the spring keeps chasing across chunk boundaries instead of
         // arriving-then-restarting (visibly jittery).
+        //
+        // Width reflow carve-out: Mermaid, KaTeX, Shiki, images, and
+        // normal prose can all change height when the content column width
+        // changes. If live content advanced in the last few hundred ms,
+        // the animation latch still reports "spring", but this resize is
+        // layout correction for already-rendered content. Width and height
+        // can arrive in separate ResizeObserver deliveries, so the reflow
+        // classification is held briefly after a width change. Sync-pin it
+        // so a pane/sidebar/window reflow cannot produce a half-viewport
+        // spring chase from a stale bottom.
         if (positiveWillPin) {
-          if (warm && springGateOpen()) {
+          if (warm && springGateOpen() && !widthReflowActive) {
             lastTargetChangedAt = nowMs();
             startSpringIfNeeded();
           } else {
@@ -1299,8 +1351,10 @@ export function createUseStickToBottomController(
           // `warm`, so springToken stays 0 during the cascade and
           // the sync-pin runs as before. See
           // docs/architecture/frontend-scroll.md.
-          if (springToken === 0) {
-            writeCaller = 'contentRO.negativeDelta';
+          if (springToken === 0 || widthReflowActive) {
+            writeCaller = widthReflowActive
+              ? 'contentRO.negativeDeltaReflow'
+              : 'contentRO.negativeDelta';
             writeScrollTop(targetScrollTop());
           } else {
             // Spring is the single writer mid-chase; sync write is
@@ -2032,6 +2086,14 @@ export function createUseStickToBottomController(
           origSet.call(el, value);
           return;
         }
+        // Active content-width reflow: the paired contentRO is going to
+        // sync-pin, not spring-chase. Let virtua's anchor-preserving
+        // compensation land in the same paint instead of suppressing it
+        // and waiting for the later contentRO delivery.
+        if (contentReflowSettleUntil > nowMs()) {
+          origSet.call(el, value);
+          return;
+        }
         // animationMode === 'instant': the controller's contentRO
         // would respond to this growth with a synchronous sync-pin,
         // not a spring chase. virtua's `$fixScrollJump` and the
@@ -2239,6 +2301,8 @@ export function createUseStickToBottomController(
     resizeDifference = 0;
     resizeCorrelatedUntaggedScrollBudget = 0;
     previousHeight = undefined;
+    previousWidth = undefined;
+    contentReflowSettleUntil = 0;
     touchStartY = null;
     lastObservedScrollTopForRestick = -1;
     // DELIBERATELY leave `restoreSnapArmed` untouched. attach() calls

@@ -129,10 +129,20 @@ late Streamdown typesetting on settled content sync-pins invisibly.
 `SPRING_MODE_HOLD_MS` must remain greater than the spring sentinel
 retain duration.
 
+`spring` is an eligibility signal, not an unconditional animation. If
+`contentRO` observes a content-width change, the controller opens a short
+width-reflow settle window and sync-pins paired height corrections. This
+keeps pane, sidebar, and window reflows — including Mermaid `useMaxWidth`
+height changes in virtua's rendered buffer — from producing a visible
+half-viewport spring chase just because live content advanced recently.
+During that window, virtua's anchor-preserving `scrollTop` writes pass
+through the external-write gate for the same reason.
+
 Negative content deltas usually sync-pin when the user intends to stick,
 but a small negative correction during an active spring is absorbed by
 the spring so estimate/correct row measurement pairs do not snap the
-viewport. Large overshoots still snap immediately.
+viewport. Width-driven shrink corrections and large overshoots still
+snap immediately.
 
 ## Layout Rules
 
@@ -195,7 +205,9 @@ flags, virtua measurement, and browser layout. Reproduce with
 
 Useful trace records:
 
-- `scroll.contentRO` — resize delta and pin decisions.
+- `scroll.contentRO` — resize delta, width-reflow state, and pin decisions.
+- `scroll.contentRO.widthReflow` — width-only content reflow that armed
+  the short layout-correction window.
 - `scroll.escape.set` — escape state changes.
 - `scroll.refreshIsNearBottom` — geometric near-bottom changes.
 - `chat.state` / `chat.dom` — MessageTimeline snapshots.
