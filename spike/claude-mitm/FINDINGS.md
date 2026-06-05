@@ -1,23 +1,30 @@
-# Claude Code MITM Spike — Findings
+# Claude Code Local Gateway Spike — Findings
 
-**Goal.** AO moves from headless `stream-json` (`claude -p --output-format
-stream-json`), which **bills API tokens**, to driving the **interactive** TUI,
-which runs on the already-paid Pro/Max subscription. We want to drive Claude in
-interactive mode but still recover the same **token-level structured stream** we
-get from headless, for Agent Overflow's own UI. (A cost + coverage/reliability
-move — **not** a ToS workaround; headless is still permitted.)
+**Goal.** Determine whether Agent Overflow (AO) can host a real local,
+user-authenticated interactive `claude` process while still recovering the
+token-level structured stream and control signals it gets from headless
+`stream-json`, for AO's own UI.
 
 **Bottom line.** It works, and *not* by modifying the binary. Pointing Claude at
-a local logging **reverse proxy** via `ANTHROPIC_BASE_URL` captures the full
-raw Anthropic Messages API SSE stream — token-level text/thinking/tool_use —
-with **no TLS interception and no binary patching**. Pair that with the
-`~/.claude` transcript for clean tool results and you can reconstruct (a
-superset of) the headless `stream-json` shape.
+a local logging gateway via the documented `ANTHROPIC_BASE_URL` captures the
+full raw Anthropic Messages API SSE stream — token-level text/thinking/tool_use
+— with **no TLS interception and no binary patching**. Pair that with Claude
+Code hooks and the `~/.claude` transcript for control, clean tool results, and
+durable backfill, and AO can reconstruct a superset of the headless
+`stream-json` shape.
+
+**Posture update (2026-06-05).** AO's production path is the documented local
+gateway plus hooks/transcript/PTY. The transparent TLS MITM variant,
+TLS/HTTP-fingerprint preservation sidecar, and remote-control protocol
+replication are retained below as historical spike evidence only. They are not
+the product plan. If `ANTHROPIC_BASE_URL` with the user's Claude Code auth is
+blocked, AO should stop using this path and fall back to documented API / Agent
+SDK / explicit vendor guidance, not attempt TLS interception or first-party
+client impersonation.
 
 Date: 2026-05-26 … 2026-05-31. Binary: Claude Code `2.1.150` → `2.1.158` (Bun
-v1.3.14 standalone ELF). §1–11 are the capture/signal story; **§12** validates the
-outbound TLS+HTTP fingerprint (version-pinned Bun `fetch`); **§13** validates the
-Go-inbound + Bun-sidecar topology end-to-end (streams + fingerprint + gzip handling).
+v1.3.14 standalone ELF). §1–11 are the capture/signal story. **§12** and **§13**
+are historical fingerprint/topology probes, not integration requirements.
 
 ---
 
@@ -37,26 +44,26 @@ Go-inbound + Bun-sidecar topology end-to-end (streams + fingerprint + gzip handl
 
 | Path | Mechanism | Binary mod? | Granularity | Verdict |
 |------|-----------|-------------|-------------|---------|
-| **Reverse proxy** (chosen) | `ANTHROPIC_BASE_URL=http://127.0.0.1:PORT` | none (env) | token-level | ✅ simplest, proven |
-| Transparent MITM | `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` | none (env) | token-level | ✅ fallback (see §7) |
+| **Local gateway** (chosen) | `ANTHROPIC_BASE_URL=http://127.0.0.1:PORT` | none (env) | token-level | simplest, proven, production posture |
+| Transparent TLS MITM | `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` | none (env) | token-level | historical transparent-interception variant only; do not ship for AO |
 | Bun inspector | attach CDP via `BUN_INSPECT` | none (env) | anything | viable, unused |
 | Node preload | `NODE_OPTIONS=--require` on npm `cli.js` | n/a | anything | ❌ native binary ignores it |
 | Transcript tail | read `~/.claude/projects/*.jsonl` | none | per-message | ✅ structural backbone |
 
 The binary heavily respects proxy/CA env (`HTTP(S)_PROXY`,
 `CLAUDE_CODE_HTTP(S)_PROXY`, `NODE_EXTRA_CA_CERTS`) and honors
-`ANTHROPIC_BASE_URL`. Auth is subscription OAuth (`~/.claude/.credentials.json`
-→ `claudeAiOauth`), and the proxy run reported `apiKeySource: "none"` — i.e. the
-captured stream is the **subscription-authed** path, exactly what survives the
-cutoff.
+`ANTHROPIC_BASE_URL`. Auth in the probe was the user's local Claude Code OAuth
+(`~/.claude/.credentials.json` → `claudeAiOauth`), and the proxy run reported
+`apiKeySource: "none"` — i.e. the captured stream stayed on the user's Claude
+Code auth and did not fall back to API-key billing.
 
 **Closed door — do not reach for `--bare`.** The natural instinct to suppress
 interactive noise (hooks, auto-memory, prefetches, the auxiliary calls in §7) is
 the `--bare` "Minimal mode" flag — but the `2.1.150` `--help` is explicit that it
 makes *"Anthropic auth … strictly `ANTHROPIC_API_KEY` or `apiKeyHelper` via
-`--settings` (OAuth and keychain are never read)."* So `--bare` **forecloses
-subscription auth entirely**: it would force the very API-key path the cutoff
-pushes us off. The subscription path requires the normal (non-`--bare`) launch.
+`--settings` (OAuth and keychain are never read)."* So `--bare` **forecloses the
+user's Claude Code OAuth path entirely** and forces API-key-style auth. The local
+interactive wrapper path requires the normal (non-`--bare`) launch.
 
 ## 3. Proven architecture
 
@@ -75,7 +82,7 @@ pushes us off. The subscription path requires the normal (non-`--bare`) launch.
 - Confirmed identical transport in **headless and interactive** — interactive
   routed `HEAD /` + `POST /v1/messages` through the proxy the same way.
 
-## 4. What the MITM gives you (token-level)
+## 4. What the local gateway gives you (token-level)
 
 Raw `/v1/messages` SSE, captured verbatim:
 
@@ -104,14 +111,17 @@ AGENT_TURN 2  tools=30  → SSE blocks=[text]                stop=end_turn
      + tool_result for toolu_01WFK9mhbTTw: 'spike-interactive-99999'
 ```
 
-The `~/.claude` transcript closes this gap directly: it records
-`user:[tool_result]` plus a richer record-level `toolUseResult` sidecar at
-turn completion. **Recommended: MITM for token streaming + transcript for clean
-tool results / structure.**
+The `~/.claude` transcript and hooks close this gap directly: the transcript
+records `user:[tool_result]` plus a richer record-level `toolUseResult` sidecar
+at turn completion, and hooks provide structured tool success/failure events.
+**Recommended: local gateway for token streaming; hooks + transcript for clean
+tool results / structure.** Request-body diffing remains validation/fallback
+only, using a bounded cursor or rolling hash; do not persist growing full
+`messages[]` bodies just to recover tool results.
 
 ## 6. Three-way mapping: headless event → where to source it
 
-| Headless `stream-json` event | From MITM | From transcript |
+| Headless `stream-json` event | From local gateway | From transcript |
 |------|------|------|
 | `system:init` (session_id, tools, model, cwd, mcp) | not in stream; tools/model/system live in the **request body**; cwd/session_id known to launcher | early records (`sessionId`, `cwd`, `version`, `gitBranch`) |
 | `stream_event:message_start` | ✅ SSE `message_start` | — (per-message) |
@@ -145,66 +155,63 @@ launcher knowledge, and `message_delta` usage.
    driver needed a trust handler and a submit nudge (the positional prompt was
    pre-filled, not auto-sent). Turn completion is cleanly detectable **from the
    proxy** (an `end_turn` after a `tool_use` turn) — use that as the app's
-   "turn done" signal rather than scraping the TUI. Permissions: bypass with
-   `--dangerously-skip-permissions` / `allowedTools`, or parse+answer the TUI
-   prompt (fragile).
+   "turn done" signal rather than scraping the TUI. The old bypass/TUI-prompt
+   permission advice is superseded by the hook relay in
+   `HOOKS_COVERAGE_MAP.md`: launch in `default`, keep the env clean, and let
+   `PreToolUse` return explicit decisions.
 
 ## 8. Risks / fragilities
 
-- **`ANTHROPIC_BASE_URL`-with-OAuth could be blocked.** The same crackdown could
-  refuse custom base URLs under OAuth (token-exfiltration hardening). *Currently
-  the door is wide open*: the headless probe ran with `ANTHROPIC_BASE_URL` pointed
-  at the local HTTP proxy and OAuth active (no API key), and `system:init`
-  reported `apiKeySource:"none"` with a clean exit — the subscription path flowed
-  through a custom HTTP base URL with no warning or refusal on `2.1.150` (2026-05).
-  The risk is forward-looking, not present. If it does shut, fall
-  back to the **transparent MITM**: `HTTPS_PROXY` + a CA in `NODE_EXTRA_CA_CERTS`.
-  The binary explicitly supports this ("TLS-intercepting firewall… set
-  `NODE_EXTRA_CA_CERTS`"), and it's hard to block without breaking enterprise
-  proxies. `proxy/main.go` already has a `--tls-cert/--tls-key` HTTPS-listener
-  path for this; you'd add on-the-fly cert generation for `api.anthropic.com`.
-- **TLS/HTTP fingerprint of the re-originated connection.** A re-originating proxy
-  (the chosen path *and* the transparent-MITM fallback) presents its own runtime's
-  JA3 + HTTP signature to Anthropic's edge, not claude's — a detectable mismatch
-  against a "claude" OAuth session. **Resolved** by opening the outbound leg from a
-  version-pinned Bun `fetch` (claude's own runtime), which reproduces both layers
-  byte-for-byte — and the matching Bun is the **stock GitHub release** (a different
-  build of `1.3.14` than claude embeds still matches, so the fingerprint tracks the
-  version, not the build), so AO just downloads it; no extraction from the claude
-  binary. Full validation, rules, and residual caveats in **§12**.
-- **Version drift.** SSE shape and the `[1m]` alias quirk are version-specific
-  (`2.1.150`); the TLS/h1 fingerprint is pinned to the embedded **Bun** version
-  (`1.3.14`, §12). Re-validate both on upgrades.
+- **`ANTHROPIC_BASE_URL`-with-OAuth could be blocked.** The probe showed the
+  user's Claude Code auth flowing through a custom loopback base URL with no API
+  key (`apiKeySource:"none"`), but Anthropic could later refuse that combination.
+  AO's production response is to treat the path as unsupported and fall back to
+  documented API / Agent SDK / explicit vendor guidance. It should **not** switch
+  to transparent TLS MITM as a fallback.
+- **TLS/HTTP fingerprint of the re-originated connection.** A re-originating
+  gateway presents its own runtime fingerprint to Anthropic, not Claude Code's.
+  The spike proved a version-pinned Bun sidecar can preserve Claude's byte-level
+  fingerprint (§12), but AO should not ship that as a product requirement without
+  explicit legal/vendor signoff. A gateway having its own network fingerprint is
+  consistent with the documented gateway model; hiding that fact makes the design
+  harder to defend.
+- **Version drift.** SSE shape, hook payloads, and the `[1m]` alias quirk are
+  version-specific (`2.1.150`/`2.1.158`). Re-validate the gateway + hooks path on
+  Claude Code upgrades. The TLS/h1 fingerprint probes in §12 are historical and
+  not a production compatibility gate.
 - **PTY automation brittleness.** See §7.4.
 
 ## 9. Recommended path for Agent Overflow
 
-1. Spawn `claude` in a PTY (interactive), env `ANTHROPIC_BASE_URL` → embedded
-   capture proxy, `--dangerously-skip-permissions` (or configured `allowedTools`).
-   The proxy's **outbound** leg must be version-pinned Bun `fetch` for fingerprint
-   parity (see §12); the Go side handles the plaintext inbound read + capture.
-2. Render the UI from the **proxy SSE** (token-level), filtering quota/title
+1. Spawn `claude` in a PTY (interactive), with
+   `ANTHROPIC_BASE_URL=<per-session loopback gateway>` and
+   `--permission-mode default` in a clean environment. The hook relay is the
+   permission posture.
+2. Render the UI from the local gateway SSE (token-level), filtering quota/title
    calls; reconstruct `tool_result` from request diffs or read the transcript.
-3. Use the proxy's `end_turn` as the turn-complete signal to gate the next
-   prompt write.
-4. Keep the transparent-MITM fallback ready in case base-URL-with-OAuth is shut.
+3. Use hooks for per-call permission decisions, `AskUserQuestion`, plan capture,
+   tool success/failure, and subagent/session metadata.
+4. Use the transcript for durable backfill, interrupt discrimination, and crash
+   recovery.
+5. Drive only user-originated input through the PTY: prompt submit, Esc
+   interrupt, attachment paste, and rare native dialogs.
 
-A Go reverse proxy fits the existing stack and could later live under
-`internal/` (it does not violate the triage-and-pipe principle — it's a
-capture/transport shim, not an orchestration engine). **One caveat from §12:** the
-upstream-facing leg cannot be Go — to avoid false-flagging genuine subscription
-traffic, the connection to Anthropic must be opened by a version-pinned Bun `fetch`
-(claude's own runtime), so the production shape is Go inbound/capture + a small Bun
-outbound sidecar.
+A Go local gateway fits the existing stack and could later live under
+`internal/` (it does not violate the triage-and-pipe principle: it is a
+capture/transport shim, not an orchestration engine). No transparent TLS MITM,
+remote-control protocol replication, or fingerprint-preserving Bun sidecar is
+part of the production plan.
 
 ---
 
-## 10. ADDENDUM — "Remote Control" reframes the whole problem (validated)
+## 10. Historical addendum — Remote Control investigation (validated)
 
 `claude --help` surfaced `--remote-control`. Running it end-to-end against the
 real cloud (under subscription) and reading the bridge + worker debug logs
-revealed the actual mechanism. **This changes the spike's premise** and partly
-supersedes §9. Validated 2026-05-26 on `2.1.150`.
+revealed the actual mechanism. This addendum superseded the older pre-hook
+interpretation of available signal paths; it does **not** supersede the current
+§9 recommendation. Remote-control protocol replication is historical evidence
+only and is not part of AO's production plan. Validated 2026-05-26 on `2.1.150`.
 
 ### What Remote Control actually is — a cloud-mediated relay, NOT a local RPC
 
@@ -307,12 +314,13 @@ the most aggressive posture.
   it reads a debug-grade surface with no stability contract; format churns
   release to release, and granularity is whatever the bridge logs (no
   `--include-partial-messages` control). Fastest to prototype, first to break.
-- **B. Run `claude remote-control` + transparent-MITM the worker.** Same posture
-  as §1's proxy approach — intercepting AO's *own* machine's outbound HTTPS via
-  a locally-installed CA — just pointed at the worker's
-  `/v1/code/sessions/.../worker/events` SSE instead of `/v1/messages`. Token
-  granularity only if we can influence worker args (`--include-partial-messages`);
-  otherwise per-message. Inherits §1's forward-looking risk (TLS pinning / attestation).
+- **B. Run `claude remote-control` + transparent-MITM the worker.** Historical,
+  more aggressive path requiring local CA-based HTTPS interception of the worker's
+  `/v1/code/sessions/.../worker/events` SSE. This is materially different from
+  the documented `ANTHROPIC_BASE_URL` local gateway and is not a production path.
+  Token granularity only if we can influence worker args
+  (`--include-partial-messages`); otherwise per-message. Inherits forward-looking
+  risk (TLS pinning / attestation).
 - **C. Run `claude remote-control`, be the cloud client.** Let the bridge spawn
   workers; AO connects to `api.anthropic.com /v1/code/sessions/<id>` as the
   "remote UI" (what claude.ai/code does over WS). Structured first-party I/O —
@@ -327,6 +335,13 @@ the most aggressive posture.
   worker's stdout *is* a documented stream-json contract — but it rebuilds the
   exact first-party client Anthropic is gating, against an undocumented,
   ToS-sensitive, version-coupled `/v1/code` work API.
+
+**Production decision (2026-06-05): do not pursue B/C/D for AO.** B depends on
+transparent TLS interception. C means speaking as Anthropic's remote UI. D means
+replicating the first-party bridge against an undocumented `/v1/code` API. All
+three are worse than the local gateway + hooks path and should remain spike
+record only. Option A is passive enough to keep as a debugging reference, but it
+is too unstable to be the product contract.
 
 The granularity gap (token vs message) collapses into this choice: **B and D
 give `--include-partial-messages` control (token-level); A and C do not** (A
@@ -370,7 +385,7 @@ counts differ, because interactive ran more turns).
 | rate limits | response headers `anthropic-ratelimit-*` | ✅ (proxy redaction fixed, below) |
 | WebSearch / WebFetch | **client tools** → ordinary `tool_use` + reconstructed result | ✅ |
 | session_id, cwd, mcp, permissionMode | **NOT on the wire** → transcript or AO's own knowledge | ⚠ off-wire |
-| **per-call permission prompts** | **not available in interactive** (see below) | ❌ real gap |
+| **per-call permission prompts** | not available from the wire/transcript alone; **closed by hooks** in `HOOKS_COVERAGE_MAP.md` | superseded gap |
 
 ### Two findings that change the picture
 
@@ -437,9 +452,9 @@ real credential headers (`authorization`, `x-api-key`, `cookie`, `set-cookie`,
 `*-{access,refresh,session,auth}-token`). Verified: OAuth/api-key/cookies still
 redacted; rate-limit token headers now pass through.
 
-### Bottom line
+### Historical bottom line before hooks
 
-The interactive + local-proxy path delivers **headless-equivalent structured
+The interactive + local-gateway path delivers **headless-equivalent structured
 output** for every signal AO renders, with the transform proven against a
 headless reference. The single substantive gap is **dynamic per-call
 permissions**, which interactive does not expose programmatically — a product
@@ -459,13 +474,24 @@ not a blocker for the output stream.
 
 ---
 
-## 12. TLS/HTTP fingerprint preservation — the proxy's outbound leg (validated)
+## 12. Historical: TLS/HTTP fingerprint preservation — the proxy's outbound leg (validated)
+
+**Production status (2026-06-05): not part of AO's planned implementation.**
+This section remains because the probes are technically useful and explain why a
+re-originating proxy has a different network fingerprint. AO should not ship
+fingerprint-preserving behavior without explicit legal/vendor signoff. A normal
+gateway/proxy fingerprint is the defensible posture; trying to look byte-for-byte
+like Claude Code is not.
 
 Validated 2026-05-30 on `2.1.158` (Bun **v1.3.14** embedded), subscription OAuth.
 Probes: `ja3_diff.py`, `probe_bun_provenance.py`, `probe_tls_clients.py`,
 `probe_h1_serialize.py`, `probe_h1_headerforms.py`, `probe_h1_interactive.py`.
 
-### Why this matters (and why it isn't evasion)
+### Original rationale (historical; superseded for production posture)
+
+The text below captures the rationale used during the spike. The 2026-06-05
+production decision above supersedes it: AO should use an ordinary documented
+gateway and should not require fingerprint preservation.
 
 The chosen architecture (§3) **re-originates** the upstream connection: claude→proxy
 is plaintext `http://` (so the proxy can read everything), and proxy→Anthropic is a
@@ -498,8 +524,9 @@ The fingerprint is **runtime-version-specific**. Detect claude's embedded Bun wi
 `grep -aoE 'Bun/[0-9]+\.[0-9]+\.[0-9]+' <binary> | head -1`. All four on-disk builds
 (2.1.154→2.1.158) embed the single string `Bun/1.3.14` — so the coupling is *loose*
 (Bun revs move slower than claude revs), but it is real: **Bun 1.3.11 already
-differs** (it adds extension `65037`/ECH-GREASE → different fingerprint). The proxy
-must run a Bun pinned to claude's embedded version, re-checked on claude upgrades.
+differs** (it adds extension `65037`/ECH-GREASE → different fingerprint). If this
+historical no-go path were ever re-scoped, the proxy would have to run a Bun
+pinned to Claude's embedded version and re-check it on Claude upgrades.
 
 ### Provenance: a STOCK Bun download matches — no extraction from claude needed
 
@@ -519,13 +546,12 @@ sufficient — AO downloads it, it need not carve Bun out of the claude binary.*
   `SSL_CTX`, which Anthropic does not customize), **not** the exact build hash. This is
   why a stock download is safe: it need not be bit-for-bit claude's build, only the
   same `1.3.x` line.
-- **Integration consequence:** ship/download stock Bun pinned by version, choosing the
-  stock release whose version equals claude's embedded `Bun/x.y.z` string, re-checked
-  on claude upgrades. No binary-extraction step, no dependence on claude's internal
-  layout. Pin the **per-platform** sha256 for supply-chain integrity — the `9fd36f87…`
-  above is the **linux-x64** binary's; macOS (`darwin-arm64`/`x64`) and Windows ship
-  *different* binaries with *different* shas, so pin each (ideally cross-checked against
-  Bun's own published `SHASUMS`, not just a locally computed one).
+- **Historical consequence if fingerprint preservation is ever re-scoped:** the
+  no-go path would need a stock Bun pinned by version, choosing the release whose
+  version equals Claude's embedded `Bun/x.y.z` string, re-checked on Claude
+  upgrades. No binary-extraction step is needed, and there is no dependence on
+  Claude's internal layout. Pinning per-platform sha256s would be a supply-chain
+  requirement for that no-go path, not a production AO requirement.
 
 ### Layer 1 — TLS ClientHello: Bun 1.3.14 is byte-identical to claude
 
@@ -588,7 +614,7 @@ clients (`fetch`, `node:https`) enable. `requestOCSP:true` does **not** add them
 So the raw-socket "write exact bytes" path is a dead end for fingerprint parity.
 `fetch` is the one client that reproduces **both** layers.
 
-### Architecture rules (forced by the measurements)
+### Historical architecture rules for this no-go path
 
 1. **Outbound leg = version-pinned Bun `fetch`**, fed claude's headers as a **plain
    object with original casing**. Reproduces both the ClientHello and the h1 block.
@@ -602,23 +628,24 @@ So the raw-socket "write exact bytes" path is a dead end for fingerprint parity.
    Content-Length, Accept-Encoding`, …); fetch regenerates them, and because it is
    the same Bun fetch, the regenerated framing matches claude's.
 
-### Two ways to inject this (decision for the integration phase)
+### Two implementation forms considered during the spike
 
-- **(Recommended) Go proxy + Bun outbound sidecar.** AO's proxy stays Go (fits the
-  stack; handles the plaintext inbound read with raw-casing capture, logging, and the
-  SSE relay back to claude); a small **version-pinned Bun** child process performs
-  the `fetch()` to Anthropic and streams the response back to Go. The Bun dependency
-  is isolated to the one fingerprint-bearing leg. Go ↔ Bun can talk over a local
-  socket/pipe.
+- **Previously considered: Go proxy + Bun outbound sidecar.** AO's proxy stays Go
+  (fits the stack; handles the plaintext inbound read with raw-casing capture,
+  logging, and the SSE relay back to claude); a small **version-pinned Bun** child
+  process performs the `fetch()` to Anthropic and streams the response back to Go.
+  The Bun dependency is isolated to the one fingerprint-bearing leg. Go ↔ Bun can
+  talk over a local socket/pipe.
 - **Whole-Bun proxy.** The entire reverse proxy is one Bun program. Simpler process
   topology, but it (a) introduces a Bun runtime into AO's Go/Wails stack and (b) must
   **still** avoid the `Bun.serve` ingest-lowercasing trap (read the raw inbound bytes,
   don't trust `req.headers` for casing).
 
-Either way the §3 `http://`-base-URL design is unchanged and correct — only the
-**runtime of the outbound leg** moves from Go to Bun. `proxy/main.go` (Go) is
-**fingerprint-NON-preserving** by construction; it is fine for signal validation (it
-proved the SSE/transcript story) but is not the production upstream client.
+Either historical form keeps the §3 `http://` base-URL capture shape and changes
+only the **runtime of the outbound leg** from Go to Bun. `proxy/main.go` (Go) is
+**fingerprint-NON-preserving** by construction; that is fine for AO's ordinary
+local gateway posture. The Bun outbound sidecar is not the production upstream
+client unless this no-go path is explicitly re-scoped with legal/vendor signoff.
 
 ### Residual caveats (measured honestly)
 
@@ -629,8 +656,10 @@ proved the SSE/transcript story) but is not the production upstream client.
   (same BoringSSL version + uncustomized default `SSL_CTX`) predicts the per-platform
   claude-vs-stock-Bun ClientHello match holds on `darwin-arm64`/`darwin-x64`/`win-x64`
   too — but that is **inference, not measurement**, and it's the same inference class
-  that misfired earlier this spike. **Re-run `ja3_diff.py` + `probe_bun_provenance.py`
-  on each target platform during integration** before relying on the match there.
+  that misfired earlier this spike. **Only re-run `ja3_diff.py` +
+  `probe_bun_provenance.py` if the fingerprint-preserving no-go path is explicitly
+  re-scoped**; production upgrade validation should rerun the local gateway + hook
+  probes instead.
 - **SNI (ext 0) was omitted in measurement** because probes connect to `127.0.0.1`
   (an IP literal — RFC forbids SNI), on *every* leg, so the comparison stays
   apples-to-apples. Production connects to the hostname `api.anthropic.com`, which
@@ -653,22 +682,29 @@ proved the SSE/transcript story) but is not the production upstream client.
   different (PSK-bearing) hello. Both sides are BoringSSL so resumption behavior is
   expected to align, but the proxy's connection lifecycle differs from claude's and
   this was not exercised.
-- **`NODE_EXTRA_CA_CERTS` fallback (§8) is documented, not live-tested**, and being a
-  re-originating MITM it inherits the *same* outbound-fingerprint requirement — the
-  Bun-fetch outbound leg applies there too.
+- **Historical `NODE_EXTRA_CA_CERTS` transparent-interception variant is
+  documented by Claude Code but not live-tested here.** Because it is a
+  re-originating MITM, it inherits the same fingerprint observations. It is not a
+  fallback for AO production.
 
 ---
 
-## 13. Tier-0 architecture gate — the Go-inbound + Bun-outbound topology streams while preserving the fingerprint (validated)
+## 13. Historical: Tier-0 Bun-outbound topology streams while preserving the fingerprint (validated)
+
+**Production status (2026-06-05): technical validation only, not authorization to
+integrate.** The topology proved the Bun sidecar can stream and preserve the
+fingerprint, but the product plan no longer requires or recommends preserving
+Claude Code's fingerprint. Keep this section as evidence for future discussion,
+not as an implementation target.
 
 §12 proved the *pieces*: Bun 1.3.14 reproduces claude's ClientHello and h1 block,
-and recommended the **Go proxy + Bun outbound sidecar** topology. It left one
+and measured the **Go proxy + Bun outbound sidecar** topology. It left one
 load-bearing hinge unproven: does that topology **stream SSE incrementally**
 (token-level UI must survive) **while carrying claude's fingerprint through the
 Go→Bun handoff**? This section closes that gate with a staged build — isolate each
-hop, then the full hermetic topology, then real subscription turns. Verdict up
-front: **GO.** The topology streams end-to-end and preserves the fingerprint, and
-the real turn surfaced a response-side requirement §12 didn't state (gzip).
+hop, then the full hermetic topology, then real subscription turns. Technical
+verdict: the topology streams end-to-end and preserves the fingerprint. Product
+verdict: it is not the planned AO integration path.
 
 ### The components (throwaway validation prototypes — not production)
 
@@ -822,15 +858,12 @@ body rather than the transport, that gap doesn't change the conclusion.)
 
 ### Verdict
 
-**Go/no-go: GO.** The §12-recommended Go-inbound + Bun-outbound topology streams SSE
-token-by-token end-to-end (hermetic *and* real, span scaling to 13.8 s) and carries
-claude's h1 fingerprint + casing intact through the handoff. Fingerprint fidelity
-comes from the hermetic byte-match plus the §12 ClientHello invariant; the live origin
-served all three real turns, which confirms the path *reaches and works* — not that
-the fingerprint is right (a served turn can't show that). The one new requirement —
-auto-decompress + strip stale encoding headers (rule 4), itself a consequence of
-rule 3 — is implemented and validated. Nothing here authorizes AO integration; it
-confirms the architecture is sound to integrate when that work is scoped.
+**Technical verdict: GO. Product verdict: NO-GO without explicit legal/vendor
+signoff.** The §12 Go-inbound + Bun-outbound topology streams SSE token-by-token
+end-to-end (hermetic *and* real, span scaling to 13.8 s) and carries Claude's h1
+fingerprint + casing intact through the handoff. That proves feasibility, not
+appropriateness. AO's production plan is the ordinary documented local gateway,
+hooks, transcript, and PTY path.
 
 ---
 
@@ -899,13 +932,13 @@ AO_BASE_URL=http://127.0.0.1:8090 AO_CWD=<trusted-dir> \
 # 3. compare
 python3 analyze.py /tmp/cap.jsonl ~/.claude/projects/<proj>/<session>.jsonl /tmp/ref-headless-stream.jsonl
 
-# 4. fingerprint validation (§12) — needs stock Bun 1.3.14 at /tmp/bun1314/bun
+# 4. historical no-go fingerprint validation (§12) — needs stock Bun 1.3.14 at /tmp/bun1314/bun
 python3 ja3_diff.py              # TLS ClientHello: Bun 1.3.14 == claude
 python3 probe_bun_provenance.py # stock download matches; no extraction from claude
 python3 probe_h1_headerforms.py # HTTP/1.1: Bun fetch reproduces claude's headers
 python3 probe_h1_interactive.py # interactive == headless header block
 
-# 5. Tier-0 topology validation (§13) — Go-inbound + Bun-sidecar streams + fingerprint
+# 5. historical no-go topology validation (§13) — Go-inbound + Bun-sidecar streams + fingerprint
 go build -o /tmp/tier0_proxy tier0_proxy.go
 python3 probe_tier0_stream.py   # Bun fetch-read + Bun.serve-write both stream
 python3 probe_tier0_full.py     # hermetic: h1 block + casing survive, flush-relay streams

@@ -1,18 +1,29 @@
 # Driving Interactive Claude Code from Agent Overflow — Complete Behavioral Spec
 
-**What this is.** A complete set of instructions for how Agent Overflow (AO)
-drives a *real interactive* `claude` process (subscription OAuth, survives the
-headless-auth cutoff) and handles every situation that arises, with each
+**Superseded production posture (2026-06-05).** This document is preserved as
+the historical PTY-driving spec. Do not use its `bypassPermissions` /
+`--dangerously-skip-permissions` default posture as the AO implementation plan.
+The current plan is the documented local `ANTHROPIC_BASE_URL` gateway plus
+Claude Code hooks, transcript backfill, and PTY input, launched in
+`--permission-mode default` with the hook relay as the gate. Transparent TLS MITM,
+TLS/HTTP fingerprint preservation, and Claude remote-control protocol replication
+are out of scope for production integration. See
+[`HOOKS_COVERAGE_MAP.md`](HOOKS_COVERAGE_MAP.md) for the authoritative plan.
+
+**What this is.** A complete set of historical instructions for how Agent
+Overflow (AO) drives a *real interactive* `claude` process with the user's local
+Claude Code auth and handles every situation that arises, with each
 behavior grounded in either the captured wire stream, the real-binary PTY
 probes in this dir, or the Claude Code source (`~/repos/claude-code-source-code`,
 cross-checked against binary `2.1.150`).
 
-Read [`FINDINGS.md`](FINDINGS.md) first for *why* the architecture is
-interactive-in-a-PTY + a local logging reverse proxy. This document is the
-*how*: the operations AO exposes, how each is driven and detected, and what AO
-must implement itself.
+Read [`HOOKS_COVERAGE_MAP.md`](HOOKS_COVERAGE_MAP.md) for the current
+implementation plan. This document is a historical record of the earlier
+PTY-driving probes and evidence index; it is not the current "how to implement
+AO" guide.
 
-Validated 2026-05-26/27 on `claude 2.1.150` / `claude-opus-4-7`, subscription OAuth.
+Validated 2026-05-26/27 on `claude 2.1.150` / `claude-opus-4-7`, using the
+user's local Claude Code OAuth.
 
 ---
 
@@ -62,7 +73,7 @@ launch-config or AO's own UI; AO **never enters** the corresponding TUI context.
 | 2 | Render the streaming turn (text/thinking/tools/results/usage) | ✅ v1 | core; wire |
 | 3 | Interrupt a running turn | ✅ v1 | core |
 | 4 | Revert / rewind (conversation, code, or both) | ✅ v1 | user-flagged; §3.4 |
-| 5 | Permission posture (static = `bypassPermissions`) | ✅ v1 | launch-config; §4 |
+| 5 | Permission posture | historical v1 | older static `bypassPermissions` plan; superseded by default-mode hook relay in `HOOKS_COVERAGE_MAP.md` |
 | 6 | Model + thinking-effort selection | ✅ v1 | launch-config |
 | 7 | Exit / shutdown | ✅ v1 | core |
 | 8 | Session resume / continue | ✅ v1 | launch-config |
@@ -70,7 +81,7 @@ launch-config or AO's own UI; AO **never enters** the corresponding TUI context.
 | 10 | Surface rate-limit / API / tool errors | ✅ v1 | wire |
 | 11 | Image / file attachment in a prompt | ✅ v1 | AO-layer (§4) |
 | 12 | Slash commands that mutate the session (`/compact`, `/clear`) | 🟡 v1.1 | drive-TUI; §3.6 |
-| 13 | Plan mode + plan approval | ✅ v1 | bypass launch + runtime shift+tab into plan + drive one approval; §3.8 |
+| 13 | Plan mode + plan approval | historical v1 | older bypass + shift+tab plan; superseded by hook-based `ExitPlanMode` capture/decision |
 | 14 | Compaction (auto, near context limit) | ✅ v1 detect / 🟡 drive | wire-detect in v1 |
 | 15 | Mid-turn message queueing | 🟡 v1.1 | drive-TUI |
 | — | Theme, tabs, history-search, transcript-view, diff-dialog, plugin UI, todo panel | ❌ out | AO renders its own; never enter these contexts |
@@ -90,8 +101,8 @@ once via CLI flags/`--settings` at spawn; never touched at runtime.
 | Stream rendering | **AO-layer** (wire) | proxy SSE → `ao_transform` event stream; AO's own UI |
 | Interrupt | **drive-TUI** (Esc) + wire-detect | keystroke to stop; aborted request is the signal |
 | Revert/rewind | **drive-TUI** (`/rewind`) + wire/fs-detect | Claude's rewind restores files+convo correctly; reimplementing file-restore is the hard part we get for free |
-| Permission posture | **launch-config** (`bypassPermissions` + `--dangerously-skip-permissions`) | interactive has no per-call hook; bypass = nothing prompts mid-turn, so AO never drives a per-call dialog (§4) |
-| Plan mode + approval | **launch bypass** + **drive-TUI** (shift+tab → plan, then approval `Select`) + wire/footer-detect | launch flag keeps bypass available all session; runtime shift+tab enters plan (footer-confirmed); plan-ready = `ExitPlanMode` tool_use; approve = `\r` on idx0 → back to bypass; reject = `Esc` (§3.8) |
+| Permission posture | **superseded** | older spec used `bypassPermissions` + `--dangerously-skip-permissions`; current plan launches `--permission-mode default` and lets the hook relay decide per call (§4 note, `HOOKS_COVERAGE_MAP.md`) |
+| Plan mode + approval | **superseded** | older spec used bypass launch + shift+tab + approval `Select`; current plan captures/approves `ExitPlanMode` through `PreToolUse` hooks (§3.8 note, `HOOKS_COVERAGE_MAP.md`) |
 | Model / effort | **launch-config** (`--model`, settings) | no need to drive the in-TUI picker |
 | Exit | **drive-TUI** (`/exit` or Ctrl-D) | clean shutdown of the child |
 | Resume / continue | **launch-config** (`--resume`/`--continue`) | chosen at spawn |
@@ -296,13 +307,20 @@ launch** and never drives this dialog.
 
 ### 3.8 Plan mode + plan approval  *(v1 — user-selected; confidence: high — end-to-end verified on `2.1.150`, `probe_planmode{,2,3}.py`)*
 
+**Superseded for production.** The current plan captures `ExitPlanMode` through
+`PreToolUse`, renders the plan in AO, and returns `allow`/`deny` through the hook
+relay. The bypass + shift-tab + `Select` runbook below is historical probe
+evidence only.
+
 Plan mode lets Claude research and present a plan **without executing workspace
 changes**, then asks the user to approve before edits run. The user pulled plan
 + approval into v1.
 
-**Entry is the subtle part — and the "obvious" launch flag is wrong (verified):**
+**Historical bypass-era entry was subtle — and the "obvious" launch flag was
+wrong (verified):**
 
-- **Launch in bypass, NOT in plan — pass `--dangerously-skip-permissions` only.**
+- **Historical probe launched in bypass, NOT in plan — passed
+  `--dangerously-skip-permissions` only.**
   Do **not** add `--permission-mode plan` at launch:
   - `--permission-mode plan --dangerously-skip-permissions` resolves to
     **bypass, not plan**. `--dangerously-skip-permissions` pushes
@@ -417,49 +435,26 @@ For each capability AO owns, the data source and the state AO maintains.
 | **revert outcome** | wire (messages shrink) + transcript (fork file) + fs (restored files) | follow the forked session id; reconcile AO's thread to the truncation |
 | **compaction** | wire (summary request, shrunk history) | mark the compaction point in AO's thread |
 
-**Permissions are launch-config, fully wire-observable.** AO picks a static
-posture at spawn — there is **no programmatic per-call interception** in
-interactive mode (that surface, `can_use_tool`, is `--print`-only), so AO can't
-render per-call approvals; a tool either auto-runs or it doesn't, and the wire
-shows which.
-
-- **v1 posture (user-selected): `bypassPermissions`**, launched with
-  `--dangerously-skip-permissions` (the flag that actually enables it —
-  permissionSetup.ts:725). Nothing prompts mid-turn, so AO never has to detect
-  and drive a per-call `Confirmation` dialog — the cleanest fit for the
-  curated-host model. **Tradeoff, stated plainly:** the agent auto-runs
-  everything, including arbitrary `Bash`. Acceptable here because AO is a curated
-  host the user runs against their own machine and subscription; it would not be
-  an acceptable default for an untrusted/remote context.
-- The mechanism still composes with `--allowedTools`/`--disallowedTools`/
-  `--settings permissions` if a future posture wants a narrower allowlist;
-  `--permission-mode acceptEdits` was verified to auto-run `Write` with no
-  prompt. (Under `acceptEdits` or `default`, Bash/other non-edit tools *do*
-  prompt — which is why v1 uses `bypassPermissions` to avoid the per-call dialog
-  entirely.)
-- **Posture self-check (reliability):** if the `bypassPermissions` killswitch is
-  active (org/Statsig/settings, permissionSetup.ts:778) the mode silently
-  degrades and tools start prompting. AO detects the **stall** — a `tool_use`
-  with no tool_result and no further request — as "a permission prompt is
-  blocking; posture is not what we launched with," and surfaces it rather than
-  hanging.
-- Do **not** use `--bare` (it forces API-key auth and forecloses subscription
-  auth — see FINDINGS §2).
+**Permissions section superseded for production.** This older spec assumed
+interactive mode had no programmatic per-call interception and selected
+`bypassPermissions` to avoid native prompts. The hook work invalidated that
+assumption. Current AO launches with `--permission-mode default`, strips ambient
+auto-accept env, and uses `PreToolUse` hooks to return explicit `allow`/`deny`/
+`ask` decisions. Do **not** use `--dangerously-skip-permissions` as the default
+AO posture. Do **not** use `--bare` (it forces API-key-style auth and forecloses
+the user's Claude Code OAuth path — see FINDINGS §2).
 
 ---
 
 ## 5. Decisions, deferrals, and things to probe
 
-**Resolved this round (user-confirmed):**
-- **Permission posture = `bypassPermissions`** (`--dangerously-skip-permissions`).
-  Nothing prompts mid-turn; AO never drives a per-call `Confirmation` dialog (§4).
-- **Plan mode = v1** — launch in **bypass** (`--dangerously-skip-permissions`),
-  shift+tab into plan at runtime (footer-confirmed), drive the approval `Select`:
-  approve = `\r` (idx0 "Yes, and bypass permissions" → back to bypass), reject =
-  `Esc` (stays in plan, re-plannable). The combo
-  `--permission-mode plan --dangerously-skip-permissions` was empirically found
-  to resolve to **bypass, not plan**, so plan is entered at runtime, not launch
-  (§3.8).
+**Historical decisions from this older spec (superseded where noted):**
+- **Superseded:** the older v1 posture selected `bypassPermissions`
+  (`--dangerously-skip-permissions`) to avoid native prompts. Current AO uses
+  `--permission-mode default` plus the hook relay.
+- **Superseded:** the older plan-mode path launched in bypass, shift-tabbed into
+  plan, and drove the approval `Select`. Current AO captures and decides
+  `ExitPlanMode` through `PreToolUse`.
 - **Revert** — drive `/rewind`; navigation is now concrete (mirror
   `selectableUserMessagesFilter`, count from the newest, use `k`/`j`); the L2
   scope sub-choice (code+conversation / conversation-only) is handled, with the
@@ -487,7 +482,7 @@ shows which.
   gap: AO surfaces it (auth error on the wire = 401 / SSE `error`) for the user
   to resolve out-of-band; it does not drive the login flow.
 
-**Probe before shipping (low-confidence rows above):**
+**Historical open probes from this older spec, not production gates:**
 - **Multi-line input** (§3.7) — confirm bracketed-paste injects a multi-line
   prompt cleanly on `2.1.150`.
 - **Late-interrupt partial-content persistence** (§3.2 case a) — source says the

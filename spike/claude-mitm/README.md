@@ -1,18 +1,44 @@
-# Claude Code MITM Spike
+# Claude Code Local Gateway Spike
 
-Throwaway spike answering one question for Agent Overflow (AO): AO wants to move
-from headless `stream-json` (which **bills API tokens**) to driving the
-**interactive** TUI (which runs on the already-paid **Pro/Max subscription**).
-**Can AO drive *interactive* `claude` and still recover the same token-level
-structured stream it gets from headless?** (A cost + coverage/reliability move —
-**not** a ToS workaround; headless is still permitted.)
+Throwaway spike answering one question for Agent Overflow (AO): can AO host a
+real, local, user-authenticated interactive `claude` process and recover the
+same structured signals it gets from headless `stream-json`, without turning
+interactive mode into an unsupported protocol client?
 
 **Finding: yes, with no binary patching and no TLS interception.** Point Claude
-at a local logging **reverse proxy** via `ANTHROPIC_BASE_URL`; it captures the
-full raw Anthropic Messages API SSE stream (text / thinking / tool_use deltas,
-usage, stop_reason, rate-limit headers). Pair that with the `~/.claude`
-transcript for clean tool results and you reconstruct a superset of the headless
-`stream-json` shape — over the subscription-authed path that survives the cutoff.
+at a local logging gateway via the documented `ANTHROPIC_BASE_URL`; it captures
+the full raw Anthropic Messages API SSE stream (text / thinking / tool_use
+deltas, usage, stop_reason, rate-limit headers). Pair that with Claude Code
+hooks and the `~/.claude` transcript for control, tool results, and durable
+backfill, and AO can reconstruct a superset of the headless `stream-json` shape
+for its own local UI.
+
+**Posture update (2026-06-05).** The production interpretation is a local
+desktop shell for the user's own Claude Code process, not a hosted service, not
+a Claude.ai credential broker, and not an automation layer pretending to be a
+human. The implementation plan is:
+
+- use the documented local gateway path (`ANTHROPIC_BASE_URL`) for wire capture;
+- use hooks, transcript tailing, and PTY input for the rest of the product
+  surface;
+- do **not** ship transparent TLS interception as a fallback;
+- do **not** ship TLS/HTTP fingerprint parity as a product requirement;
+- do **not** replicate the Claude Code remote-control cloud protocol;
+- launch in `default` permission mode with the hook relay as the gate, not
+  `--dangerously-skip-permissions` as the default posture.
+
+If Anthropic ever blocks OAuth through custom base URLs, AO treats that as an
+unsupported path and falls back to documented API / Agent SDK / explicit vendor
+guidance, not TLS MITM or first-party protocol impersonation.
+
+Relevant official references checked 2026-06-05: Claude Code legal/auth guidance
+(`https://code.claude.com/docs/en/legal-and-compliance`), LLM gateway support
+(`https://code.claude.com/docs/en/llm-gateway`), authentication precedence
+(`https://code.claude.com/docs/en/authentication`), and enterprise proxy/custom
+CA support (`https://code.claude.com/docs/en/network-config`). The safe reading:
+gateways are documented; routing other users through Free/Pro/Max credentials,
+transparent interception after a block, or first-party client impersonation is
+not the product posture.
 
 **Update (2026-05-30) — the hook channel.** A third tap makes this far stronger
 than "drive PTY, watch wire": Claude Code **hooks** (`settings.json` in an
@@ -34,22 +60,19 @@ completion** signals (subagent via `SubagentStop`; bg-Bash via the wire
 human-approval hold** under a configured hook `timeout`.
 
 The governing design rule: AO sees/controls Claude through three taps — **wire**
-(proxy SSE, token-level output, OAuth-authed), **hooks** (structured control +
-lifecycle + tool I/O + permission gating), and **transcript** (durable backfill).
+(local gateway SSE, token-level output, user's Claude Code auth), **hooks**
+(structured control + lifecycle + tool I/O + permission gating), and
+**transcript** (durable backfill).
 **Drive input through the PTY (text, Esc, attachment paste); gate/answer/observe
 through hooks + wire — never by scraping TUI text.**
 
-**Update (2026-05-30) — fingerprint parity.** Because the proxy *re-originates* the
-upstream connection (claude→proxy is plaintext `http://`; proxy→Anthropic is a fresh
-TLS connection), its outbound leg presents its **own runtime's** TLS/HTTP fingerprint
-to Anthropic's edge — not claude's. A Go/OpenSSL JA3 on a "claude" OAuth session is a
-detectable mismatch that could false-flag genuine subscription use. Measured fix:
-open that leg from a **version-pinned Bun `fetch`** (`Bun/1.3.14`, claude's own
-runtime), which reproduces both claude's TLS ClientHello *and* its HTTP/1.1 header
-block byte-for-byte — not spoofed, genuinely Bun/BoringSSL. So the production shape is
-**Go inbound/capture + a small Bun outbound sidecar**. Full validation, the
-construction rules (preserve raw header casing; strip framing), and residual caveats
-in [`FINDINGS.md`](FINDINGS.md) §12.
+**Update (2026-06-05) — fingerprint work is historical evidence, not the product
+plan.** The spike validated a version-pinned Bun outbound sidecar that can mimic
+Claude Code's TLS/HTTP fingerprint, but AO should not ship that as a production
+requirement. A normal gateway/proxy fingerprint is consistent with the documented
+gateway model; trying to preserve Claude's byte-level fingerprint makes the design
+look like evasion even when the traffic is local and user-authenticated. Sections
+12-13 in [`FINDINGS.md`](FINDINGS.md) remain as technical record only.
 
 > ⚠️ Make-or-break rules: (1) a gate hook **killed at its timeout reverts to
 > Claude's native permission flow** — which AO can't answer (the turn gets stuck), or
@@ -65,8 +88,9 @@ in [`FINDINGS.md`](FINDINGS.md) §12.
    complete capability coverage map (hook-channel architecture), the hook
    contract, the critical design rules, open items, and the AO integration
    sketch. Every claim tagged by confidence + linked to its probe.
-2. [`FINDINGS.md`](FINDINGS.md) — *why* the proxy architecture: the four
-   interception paths tried, why the reverse proxy won, what the binary forecloses.
+2. [`FINDINGS.md`](FINDINGS.md) — *why* the local gateway architecture works,
+   which interception paths were tried, and which historical paths are no-go for
+   production.
 3. [`INTERACTIVE_DRIVING_SPEC.md`](INTERACTIVE_DRIVING_SPEC.md) — the earlier
    end-to-end driving spec. **Superseded for control operations by the coverage
    map** (its Select-widget/shift+tab driving is no longer needed); still the
@@ -76,7 +100,7 @@ in [`FINDINGS.md`](FINDINGS.md) §12.
 
 | Path | What it is |
 |---|---|
-| `proxy/main.go` | The logging reverse proxy. Records request/response bodies as JSONL; redacts credential headers (auth/cookie/`*-token`/`*api-key`). The whole mechanism. |
+| `proxy/main.go` | The spike wire-capture gateway. Records request/response bodies as JSONL for development evidence and redacts credential headers (auth/cookie/`*-token`/`*api-key`). Production should persist AO-normalized events by default; raw body capture is dev-only, local-only, short-retention, and excluded from logs, panics, crash reports, and commits. |
 | `ao_transform.py` | **The portable artifact.** Transforms a proxy capture of interactive `/v1/messages` into AO's event stream — the logic that ports to Go. |
 | `analyze.py` | Three-way diff: proxy capture vs `~/.claude` transcript vs a headless `stream-json` reference. Backs the transform-equivalence claim (FINDINGS §11). |
 | `drive_interactive.py` / `drive_multi.py` | PTY drivers: prove single- and multi-turn interactive sessions route `/v1/messages` through the proxy and can be driven + exited cleanly. |
@@ -84,7 +108,7 @@ in [`FINDINGS.md`](FINDINGS.md) §12.
 | `probe_interrupt.py` | Esc-while-working — aborted SSE (no `message_stop`), session-usable-after. |
 | `probe_planmode.py` / `2` / `3` | Plan mode: launch-flag resolution (combo → bypass, not plan), end-to-end shift+tab→plan→`ExitPlanMode`→approve, and the Esc-reject path. |
 | `perm_probe.py` / `perm_world.py` | Permission surface: confirm `can_use_tool` / `--permission-prompt-tool` is print-only, and that a static launch policy works interactively. |
-| **`aoprobe.py`** | **Shared hook-channel harness.** Seeds an isolated `CLAUDE_CONFIG_DIR` (copied creds + pre-trusted cwd + hook settings; optional `permissions.defaultMode`/`ask` rules), forks `claude` in a PTY at the proxy, pumps + detects outcomes on the filesystem/wire. **Strips inherited `CLAUDE*`/`ANTHROPIC*` env** so the child starts in a clean (non-auto-accept) posture; detects native prompts from a **de-ANSI'd** buffer; teardown sends **Esc, never Enter** (so it can't accidentally accept an open prompt). Backs all `probe_hook_*` scripts. |
+| **`aoprobe.py`** | **Shared hook-channel harness.** Seeds an isolated `CLAUDE_CONFIG_DIR` (local copied config for the test harness + pre-trusted cwd + hook settings; optional `permissions.defaultMode`/`ask` rules), forks `claude` in a PTY at the proxy, pumps + detects outcomes on the filesystem/wire. **Strips inherited `CLAUDE*`/`ANTHROPIC*` env** so the child starts in a clean (non-auto-accept) posture; detects native prompts from a **de-ANSI'd** buffer; teardown sends **Esc, never Enter** (so it can't accidentally accept an open prompt). Backs all `probe_hook_*` scripts. |
 | **`hook_relay.py`** | The hook command Claude runs: logs each payload, optionally blocks, returns the decision (allow/deny/ask, or answers `AskUserQuestion` via `updatedInput`). The thing AO's real relay becomes. |
 | **`probe_hook_permission.py`** | PreToolUse per-call permission round-trip: allow runs (no TUI prompt), deny blocks, hook holds the tool while it deliberates. |
 | **`probe_hook_answer.py`** | **AskUserQuestion answered via hook** + `updatedInput.answers`, **0 keystrokes** — the Select-widget elimination. |
@@ -105,10 +129,10 @@ in [`FINDINGS.md`](FINDINGS.md) §12.
 | **`probe_hook_escrevert.py`** | **Think-only Esc-revert** characterization: the Esc **aborts `/v1/messages`** (no `message_stop` + `upstream_read` cancel — the same signature as an interrupt, thinking-only content), so revert is **wire-detectable, not TUI-only**; `UserPromptSubmit` + an orphaned transcript `user` row fire at submit; no `Stop`, no `[Request interrupted by user]` row. |
 | **`probe_hook_revertcontext.py`** | **Revert re-entry (settled ×2):** after a think-only revert, a follow-up prompt's request `messages[]` is `[user:B, system]` with the reverted prompt **absent** → **DROPPED** from live context (not re-sent). AO drops it live; the durable transcript keeps an orphaned `user` row AO filters on backfill. |
 | **`probe_hook_steer.py`** | **Mid-turn steering** captured off the hook channel: consumed same-turn; transcript `queue-operation` (`enqueue`→`remove`) + `queued_command` attachment + wire `system` message; **`UserPromptSubmit` does NOT fire**; submit needs render-then-`\r` (paste/enter coalescing). |
-| **`ja3_diff.py`** | **TLS fingerprint (FINDINGS §12):** captures each runtime's ClientHello at a raw socket; proves version-pinned **Bun 1.3.14 == claude** byte-for-byte while Go/Node/older-Bun differ. Why the proxy's outbound leg must be Bun. |
-| **`probe_bun_provenance.py`** | **Provenance keystone (FINDINGS §12):** the **stock** Bun 1.3.14 release (sha256 `9fd36f87…`, build `0d9b296af`) reproduces claude's ClientHello even though claude embeds a *different* build (`521eedd6d`) → fingerprint is version-determined; AO downloads stock Bun, **no extraction** from the claude binary. |
+| **`ja3_diff.py`** | **Historical TLS fingerprint probe (FINDINGS §12):** captures each runtime's ClientHello at a raw socket; proves version-pinned **Bun 1.3.14 == claude** byte-for-byte while Go/Node/older-Bun differ. Not a production requirement. |
+| **`probe_bun_provenance.py`** | **Historical provenance probe (FINDINGS §12):** the **stock** Bun 1.3.14 release reproduces claude's ClientHello even though claude embeds a different build. Useful technical evidence; not part of the product plan. |
 | **`probe_tls_clients.py`** | ClientHello of each candidate **outbound** client (fetch / node:https / raw tls.connect / Bun.connect); only the **high-level** clients carry claude's OCSP(5)+SCT(18) extensions — bare sockets can't match. |
-| **`probe_h1_headerforms.py`** | **HTTP/1.1 proof (FINDINGS §12):** Bun **`fetch` + a plain header object** reproduces claude's complete wire header block byte-for-byte (case-sensitive sort + regenerated framing); `node:http`/`node:https` lowercases. |
+| **`probe_h1_headerforms.py`** | **Historical HTTP/1.1 proof (FINDINGS §12):** Bun **`fetch` + a plain header object** reproduces claude's complete wire header block byte-for-byte (case-sensitive sort + regenerated framing); `node:http`/`node:https` lowercases. Not a production requirement. |
 | **`probe_h1_serialize.py`** | Earlier forwarder-based h1 probe; **superseded** by `probe_h1_headerforms.py`, kept because it surfaced the `Bun.serve` ingest-lowercasing trap (the inbound read must preserve raw casing). |
 | **`probe_h1_interactive.py`** | Confirms **interactive** claude emits the identical application header block as headless `claude -p` — the byte-for-byte h1 match applies to the live path AO taps. |
 | `captures/cap-*.jsonl` | Raw proxy wire captures (the `--log` output) — the ground truth the transform/analysis run against. One per probe (`-headless` is the reference for the equivalence check). |
@@ -118,15 +142,22 @@ in [`FINDINGS.md`](FINDINGS.md) §12.
 ## Re-running
 
 ```sh
-go build -C proxy -o /tmp/ao-proxy .
-/tmp/ao-proxy --listen 127.0.0.1:8090 --log /tmp/cap.jsonl &
-# probes read AO_BASE_URL / AO_CAP_LOG; each forks its own PTY:
-AO_BASE_URL=http://127.0.0.1:8090 AO_CAP_LOG=/tmp/cap.jsonl python3 probe_planmode2.py
+PRIVATE_TMP="$(mktemp -d)"
+umask 077
+go build -C proxy -o "$PRIVATE_TMP/ao-proxy" .
+"$PRIVATE_TMP/ao-proxy" --listen 127.0.0.1:8090 --log "$PRIVATE_TMP/cap.jsonl" &
+
+# Current production-path probes: gateway + default-mode hook relay.
+AO_BASE_URL=http://127.0.0.1:8090 AO_CAP_LOG="$PRIVATE_TMP/cap.jsonl" python3 probe_hook_permission.py
+AO_BASE_URL=http://127.0.0.1:8090 AO_CAP_LOG="$PRIVATE_TMP/cap.jsonl" python3 probe_hook_failopen.py
+AO_BASE_URL=http://127.0.0.1:8090 AO_CAP_LOG="$PRIVATE_TMP/cap.jsonl" python3 probe_hook_failcomplete.py
 ```
 
-Scripts default to `/tmp` for scratch + capture output; the committed
-`captures/` and `artifacts/` are the frozen run that backs the spec, so re-runs
-regenerate to `/tmp` rather than overwriting the record.
+Raw captures and transcripts are secret-bearing. Use a private temp directory
+(`umask 077`) for reruns, delete it after probing, and do not commit fresh raw
+captures unless they have been reviewed and intentionally frozen as spike
+evidence. Historical bypass/shift-tab plan probes such as `probe_planmode2.py`
+remain evidence only; they are not production-path rerun gates.
 
 ## Status
 
@@ -135,5 +166,5 @@ this is a **throwaway spike, not for merge to `main`** — the *learning* ports
 into AO's real Claude provider package; this tree is the durable record of what
 was probed and verified (proxy/PTY work `claude 2.1.150`, 2026-05-26/27;
 hook-channel coverage map + permission-posture and turn-lifecycle (revert /
-steering) probes `claude 2.1.158`, 2026-05-30/31; subscription OAuth
+steering) probes `claude 2.1.158`, 2026-05-30/31; user's local Claude Code auth
 throughout).

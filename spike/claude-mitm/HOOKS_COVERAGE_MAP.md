@@ -1,15 +1,20 @@
 # Interactive Claude Code — Complete Coverage Map (Hook-Channel Architecture)
 
-**Status:** authoritative as of 2026-05-30. Supersedes the TUI-driving parts of
+**Status:** authoritative production plan as of 2026-06-05. Hook behavior was
+validated 2026-05-30/31 and supersedes the TUI-driving parts of
 `INTERACTIVE_DRIVING_SPEC.md` (see [§Relationship](#relationship-to-the-earlier-spec)).
 **Binary under test:** `claude` **2.1.158** (installed), driven in a real PTY.
-**Goal restated (corrected):** AO moves from headless `stream-json`
-(`claude -p --output-format stream-json`, which bills API tokens) to the
-**interactive TUI**, which runs on the already-paid Pro/Max subscription. This is
-*not* a ToS workaround — headless is still permitted; the move is about cost and
-about not depending on a channel Anthropic is squeezing. The axis that matters is
-**coverage + reliability**: recover every capability AO uses today, through a
-**non-TUI tap**, without parsing/driving the Ink React tree in the terminal.
+**Goal restated (corrected):** AO hosts the user's own local, authenticated
+interactive `claude` process and recovers every capability AO uses today through
+structured taps, without parsing/driving the Ink React tree in the terminal.
+
+**Posture update (2026-06-05):** the production path is a documented local
+gateway via `ANTHROPIC_BASE_URL` plus hooks/transcript/PTY. Transparent TLS MITM,
+TLS/HTTP fingerprint preservation, remote-control protocol replication, and
+`--dangerously-skip-permissions` as the default posture are not part of the
+implementation plan. If a custom base URL with the user's Claude Code auth stops
+working, AO treats that path as unsupported and falls back to documented API /
+Agent SDK / explicit vendor guidance.
 
 ---
 
@@ -19,10 +24,10 @@ Three taps, together a **superset** of what `stream-json` gave AO — and one of
 them (hooks) is a *structured control channel* nobody documented as such for this
 use:
 
-1. **Proxy wire** (`ANTHROPIC_BASE_URL` → local logging reverse proxy): token-level
-   model output (SSE), under **subscription OAuth** (confirmed live on 2.1.158 —
-   `Authorization: Bearer …`, never `x-api-key`). This is the streaming text/thinking
-   AO renders.
+1. **Local gateway wire** (`ANTHROPIC_BASE_URL` → per-session loopback gateway):
+   token-level model output (SSE), under the user's local Claude Code auth
+   (confirmed live on 2.1.158 — `Authorization: Bearer …`, never `x-api-key`).
+   This is the streaming text/thinking AO renders.
 2. **Hooks** (`settings.json` `hooks` in an isolated `CLAUDE_CONFIG_DIR`): the
    structured control + lifecycle + tool-I/O channel. **PreToolUse gates and even
    *answers* tools**; lifecycle events recover subagent start/stop; payloads carry
@@ -143,32 +148,39 @@ one settings file:
 
 ```
 CLAUDE_CONFIG_DIR=<isolated per-AO dir>     # relocates the whole .claude tree
-ANTHROPIC_BASE_URL=http://127.0.0.1:<port>  # → AO's local logging reverse proxy
+ANTHROPIC_BASE_URL=http://127.0.0.1:<port>  # → AO's local logging gateway
 TERM=xterm-256color
 # <CLAUDE_CONFIG_DIR>/settings.json carries AO's hooks
-# <CLAUDE_CONFIG_DIR>/.credentials.json + .claude.json seed OAuth + trust
+# auth comes from Claude Code's own login/setup flow or a local-only copied config
+# <CLAUDE_CONFIG_DIR>/.claude.json seeds workspace trust
 ```
 
-### Tap 1 — Proxy wire (token-level output, under subscription OAuth)
+### Tap 1 — Local gateway wire (token-level output, user's Claude Code auth)
 
 A stdlib Go reverse proxy (`proxy/main.go`) sits at `ANTHROPIC_BASE_URL` and
 forwards to `https://api.anthropic.com`, logging request/response. It does **no TLS
-interception** — Claude speaks plain HTTP to loopback, the proxy speaks TLS upstream.
+interception** — Claude speaks plain HTTP to loopback, the gateway speaks TLS
+upstream.
 
-> **Production caveat (FINDINGS §12):** "speaks TLS upstream" is where the proxy's
-> own runtime fingerprint leaks. The Go proxy presents a Go/OpenSSL JA3 — a mismatch
-> against a genuine claude OAuth session. For production, the **upstream leg must be a
-> version-pinned Bun `fetch`** (`Bun/1.3.14`), which reproduces claude's TLS
-> ClientHello + HTTP/1.1 header block byte-for-byte. `proxy/main.go` is fine for
-> signal capture (this spike) but is **fingerprint-non-preserving**.
+> **Production posture (2026-06-05):** the gateway should be an ordinary local
+> gateway, not a fingerprint-preserving clone of Claude Code's outbound TLS/HTTP
+> stack. The fingerprint work in `FINDINGS.md` §12-13 is historical spike
+> evidence only. If Anthropic rejects this custom-base-URL path, AO should stop
+> using it rather than fall back to transparent TLS interception or fingerprint
+> mimicry.
 
 - **OAuth survives the custom base URL. LIVE-confirmed on 2.1.158:** across a probe
   run, **38 × `200` on `POST /v1/messages`**, every request carrying
   `Authorization: Bearer …` (len ≈ 115) and **no `x-api-key`**. So driving through
   the proxy does not silently fall back to API-key billing — it stays on the
-  subscription. (`apiKeySource: none` is the corresponding internal signal.)
+  user's Claude Code auth. (`apiKeySource: none` is the corresponding internal
+  signal.)
 - This is where AO gets streaming assistant text and thinking (the SSE
   `content_block_delta` stream), i.e. the `--include-partial-messages` equivalent.
+- The gateway treats every captured body as secret-bearing. Production capture
+  stores AO-normalized events by default; raw request/response capture is
+  development-only, local-only, short-retention, and credential headers are
+  redacted before any log, trace, panic output, or persisted record.
 - **The non-200s are all benign and accounted for** (verified by correlating each
   request's path+body with its response status in the capture — not assumed):
   - **12 × `404` on `POST /v1/messages`** are each a fixed **317-byte quota probe**
@@ -203,7 +215,11 @@ contract below.
 In the spike, `hook_relay.py` is that process: it logs every payload to
 `payloads.jsonl` (so we can see the exact shapes), optionally blocks, and emits a
 decision read from a control file. In AO, the equivalent relay forwards the payload
-over AO's existing transport to the Go side and blocks on the human/UI decision.
+over a privileged local AO channel to the Go side and blocks on the human/UI decision.
+That relay is a privileged boundary: use a local authenticated channel or
+per-session capability token, validate peer/origin, reject browser/LAN-origin
+approval calls unless the session was explicitly exposed, and keep raw hook
+payload logs development-only, local-only, and short-retention.
 
 ### Tap 3 — Transcript / checkpoint (durable backfill + the interrupt discriminator)
 
@@ -315,6 +331,11 @@ discriminated `hookSpecificOutput`:
   (the relay still imposes its *own* shorter deadline per Rule 1). 70 s is the observed
   floor; multi-minute follows from the no-clamp. (Earlier `probe_hook_failopen.py` sanity
   showed 6 s.)
+- **AO still caps waits deliberately.** Configure a finite hook timeout, set the
+  relay's own decision deadline shorter than Claude's timeout, allow at most one
+  pending gate per provider session, return `deny` on AO disconnect/session close,
+  and clean up abandoned relay processes with a timer. "No upstream clamp" is not a
+  license to pin provider turns indefinitely.
 - **The gating hook must be synchronous.** `async:true`/`asyncRewake` hooks return
   immediately and run detached — the tool proceeds. **Do not configure AO's gate as
   async.** (SRC.)
@@ -328,11 +349,14 @@ discriminated `hookSpecificOutput`:
   restriction) can suppress them. (SRC, with the `--settings`→`flagSettings` parse
   step inferred — trivially confirmable.)
 - **`CLAUDE_CONFIG_DIR` relocates the *entire* `.claude` tree** (credentials, projects/
-  sessions, settings, CLAUDE.md, keybindings, plugins) — 150+ call sites (SRC). AO
-  must seed `.credentials.json` (OAuth) **and** project trust into the isolated dir,
-  or the session starts unauthenticated/untrusted. The spike harness
-  (`aoprobe.seed_config`) does exactly this: copies real creds + `.claude.json`, and
-  pre-sets `projects[cwd].hasTrustDialogAccepted = true`.
+  sessions, settings, CLAUDE.md, keybindings, plugins) — 150+ call sites (SRC). If AO
+  uses an isolated config dir, the user must still authenticate through Claude Code's
+  own login/setup flow or AO must copy only the user's local Claude Code config into a
+  local-only AO config dir. AO must never collect Claude.ai credentials, expose them to
+  remote clients, or log credential-bearing files/headers. It must also seed project
+  trust into the isolated dir before relying on hooks. The spike harness
+  (`aoprobe.seed_config`) copied real creds + `.claude.json`; that is a local test
+  harness shortcut, not a remote credential-routing pattern.
 
 ---
 
@@ -668,7 +692,9 @@ The lifecycle splits into three subsystems that do **not** share state — AO's
   - **Drive a follow-up turn.** The notification is *enqueued* and only flushed onto the
     wire on the next request — if AO never sends another turn, the completion signal never
     arrives (the probe sends a follow-up to flush it). Mid-run progress: tail the
-    deterministic `output-file` path.
+    deterministic `output-file` path with offset-based chunk reads, bounded live preview,
+    maximum per-read/file limits, and full output spilled to SQLite payload storage or a
+    private temp spool for on-demand reads.
 
 **Kill one task by id (`stop_task` replacement):** the SDK `stop_task` control request
 is `--print`-only and gone in interactive. Two interactive routes, both now characterized:
@@ -886,13 +912,22 @@ The remaining edges:
 ## AO integration sketch
 
 Maps onto the existing `provider.Session` interface (`internal/provider/session.go`)
-with **no new transport back-channel** — the relay rides AO's existing transport.
+with **no new transport back-channel** — the relay uses AO's existing Wails/wire
+RPC surface only as a privileged local path. Any App-bound method added or changed
+for this path must use that surface. If it spawns or steers provider processes,
+touches local files,
+mutates config/trust, handles credentials, or writes attachments, register it in
+`internal/transport/internalmethods.go` `LocalOnlyMethods` so non-loopback peers
+cannot enumerate or invoke it.
 
-- **Launch:** `claude` in a PTY, `CLAUDE_CONFIG_DIR=<isolated>`,
-  `ANTHROPIC_BASE_URL=<per-session loopback proxy>`, `--permission-mode default`, with a
-  **clean, curated env** (no inherited `CLAUDE*`/`CLAUDECODE` auto-accept state — Rule 1).
-  Seed `.credentials.json` (OAuth) + `.claude.json` (trust for the workspace cwd) +
-  `settings.json` (AO's hooks) into the config dir.
+- **Launch:** `claude` in a PTY, `CLAUDE_CONFIG_DIR=<isolated-or-user-config>`,
+  `ANTHROPIC_BASE_URL=<per-session loopback gateway>`, `--permission-mode default`,
+  with a **clean, curated env** (no inherited `CLAUDE*`/`CLAUDECODE` auto-accept
+  state — Rule 1). If using an isolated config dir, authenticate through Claude
+  Code's own login/setup flow or copy the user's local Claude Code config only into
+  that local-only dir; never collect Claude.ai credentials or expose credential files
+  over AO's transport. Seed `.claude.json` trust for the workspace cwd and
+  `settings.json` with AO's hooks.
 - **`Send`:** type the prompt into the PTY (bracketed-paste for safety) + Enter;
   attachments via Strategy A (temp file + bracketed-paste path).
 - **`RespondToApproval`:** the `PreToolUse` relay blocks; AO renders the permission UI;
