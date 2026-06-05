@@ -46,14 +46,32 @@ func expectNoUpdate(t *testing.T, sub *Subscription, d time.Duration) {
 	}
 }
 
+func waitForCompletedCallCount(t *testing.T, stub *stubStatus, want int, d time.Duration) {
+	t.Helper()
+	deadline := time.After(d)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if got := stub.completedCallCount(); got >= want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("completed status calls = %d, want at least %d within %s", stub.completedCallCount(), want, d)
+		case <-ticker.C:
+		}
+	}
+}
+
 // stubStatus is a thread-safe StatusFn that returns whatever was last
 // set via setStatus. Useful for tests that want to control exactly what
 // the watcher sees on each refresh, without shelling out to git.
 type stubStatus struct {
-	mu       sync.Mutex
-	current  gitops.GitStatus
-	calls    int32
-	failNext atomic.Bool
+	mu        sync.Mutex
+	current   gitops.GitStatus
+	calls     int32
+	completed int32
+	failNext  atomic.Bool
 }
 
 func newStubStatus(initial gitops.GitStatus) *stubStatus {
@@ -68,7 +86,9 @@ func (s *stubStatus) fn() StatusFn {
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.current, nil
+		status := s.current
+		atomic.AddInt32(&s.completed, 1)
+		return status, nil
 	}
 }
 
@@ -80,6 +100,10 @@ func (s *stubStatus) setStatus(next gitops.GitStatus) {
 
 func (s *stubStatus) callCount() int {
 	return int(atomic.LoadInt32(&s.calls))
+}
+
+func (s *stubStatus) completedCallCount() int {
+	return int(atomic.LoadInt32(&s.completed))
 }
 
 // makeRepoDir creates an empty directory under t.TempDir that callers
@@ -792,6 +816,54 @@ func TestFastStatusFnSkipsPRThenRefreshDelivers(t *testing.T) {
 	}
 	if got.OpenPRNumber != 42 {
 		t.Fatalf("follow-up update OpenPRNumber = %d, want 42", got.OpenPRNumber)
+	}
+}
+
+func TestSharedWatcherMissingPRRefreshesForNewSubscriber(t *testing.T) {
+	t.Parallel()
+	noPRStatus := gitops.GitStatus{
+		IsRepo: true, Branch: "feat", Forge: "gitlab",
+	}
+	withPRStatus := gitops.GitStatus{
+		IsRepo: true, Branch: "feat", Forge: "gitlab",
+		OpenPRURL: "https://gitlab.com/o/r/-/merge_requests/130", OpenPRNumber: 130,
+	}
+
+	fastStub := newStubStatus(noPRStatus)
+	fullStub := newStubStatus(noPRStatus)
+	mgr := NewManager(ManagerConfig{StatusFn: fullStub.fn(), FastStatusFn: fastStub.fn()})
+	t.Cleanup(mgr.Close)
+
+	dir := makeRepoDir(t)
+	subA, err := mgr.Subscribe(dir)
+	if err != nil {
+		t.Fatalf("subscribe A: %v", err)
+	}
+	defer subA.Close()
+	if got := subA.Initial(); got.OpenPRURL != "" {
+		t.Fatalf("subscriber A initial OpenPRURL = %q, want empty", got.OpenPRURL)
+	}
+
+	waitForCompletedCallCount(t, fullStub, 1, 5*time.Second)
+	expectNoUpdate(t, subA, 100*time.Millisecond)
+
+	fullStub.setStatus(withPRStatus)
+	subB, err := mgr.Subscribe(dir)
+	if err != nil {
+		t.Fatalf("subscribe B: %v", err)
+	}
+	defer subB.Close()
+	if got := subB.Initial(); got.OpenPRURL != "" {
+		t.Fatalf("subscriber B initial OpenPRURL = %q, want stale empty snapshot before refresh", got.OpenPRURL)
+	}
+
+	gotA := recvWithin(t, subA, 5*time.Second)
+	if gotA.OpenPRURL != withPRStatus.OpenPRURL || gotA.OpenPRNumber != withPRStatus.OpenPRNumber {
+		t.Fatalf("subscriber A update = (%q, %d), want MR !130", gotA.OpenPRURL, gotA.OpenPRNumber)
+	}
+	gotB := recvWithin(t, subB, 5*time.Second)
+	if gotB.OpenPRURL != withPRStatus.OpenPRURL || gotB.OpenPRNumber != withPRStatus.OpenPRNumber {
+		t.Fatalf("subscriber B update = (%q, %d), want MR !130", gotB.OpenPRURL, gotB.OpenPRNumber)
 	}
 }
 

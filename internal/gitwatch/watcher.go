@@ -290,15 +290,6 @@ func (w *workspaceWatcher) refresh() {
 	}
 }
 
-// snapshotStatus returns the watcher's last broadcasted status under
-// w.mu. Used by Manager.Subscribe to seed a new subscriber's Initial()
-// with the freshest known value when an existing watcher is reused.
-func (w *workspaceWatcher) snapshotStatus() gitops.GitStatus {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.lastStatus
-}
-
 func (w *workspaceWatcher) addSubscriber(initial gitops.GitStatus) *Subscription {
 	sub := &Subscription{
 		cwd:     w.cwd,
@@ -309,6 +300,22 @@ func (w *workspaceWatcher) addSubscriber(initial gitops.GitStatus) *Subscription
 	w.subscribers = append(w.subscribers, sub)
 	w.mu.Unlock()
 	return sub
+}
+
+// addSubscriberFromSnapshot seeds a subscriber with the watcher's latest
+// status while holding w.mu, so a refresh cannot broadcast a newer status
+// between the snapshot and registration.
+func (w *workspaceWatcher) addSubscriberFromSnapshot() (*Subscription, gitops.GitStatus) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	initial := w.lastStatus
+	sub := &Subscription{
+		cwd:     w.cwd,
+		initial: initial,
+		updates: make(chan gitops.GitStatus, 1),
+	}
+	w.subscribers = append(w.subscribers, sub)
+	return sub, initial
 }
 
 func (w *workspaceWatcher) removeSubscriber(target *Subscription) int {

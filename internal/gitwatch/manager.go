@@ -82,10 +82,10 @@ func NewManager(config ManagerConfig) *Manager {
 // for the first fs event; Updates() yields subsequent changes.
 //
 // Fast path: if a watcher already exists for cwd, the new subscriber
-// uses that watcher's cached lastStatus as Initial() — no statusFn
-// call. This matters because statusFn shells out to git (and on the
-// production path, also runs `gh pr list`), and watchers are commonly
-// shared across panes pointing at the same workspace.
+// uses that watcher's cached lastStatus as Initial() — no synchronous
+// statusFn call. If that cached status has branch+forge but no PR URL,
+// Subscribe still asks the watcher for an async full refresh so remote
+// PR/MR creation can become visible without a local filesystem event.
 //
 // Slow path: when there's no existing watcher, the initial fetch runs
 // BEFORE the watcher is installed so a bad path / non-repo / git binary
@@ -109,9 +109,12 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 		return nil, errors.New("gitwatch: manager closed")
 	}
 	if w, ok := m.watchers[canon]; ok {
-		sub := w.addSubscriber(w.snapshotStatus())
+		sub, initial := w.addSubscriberFromSnapshot()
 		m.mu.Unlock()
 		sub.closer = func() { m.releaseSubscriber(canon, sub) }
+		if m.shouldRefreshMissingPR(initial) {
+			w.requestRefresh()
+		}
 		return sub, nil
 	}
 	m.mu.Unlock()
@@ -143,9 +146,12 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 	// watcher while we were fetching. If so, prefer its lastStatus
 	// (the freshest broadcast) over our own fetch.
 	if w, ok := m.watchers[canon]; ok {
-		sub := w.addSubscriber(w.snapshotStatus())
+		sub, initial := w.addSubscriberFromSnapshot()
 		m.mu.Unlock()
 		sub.closer = func() { m.releaseSubscriber(canon, sub) }
+		if m.shouldRefreshMissingPR(initial) {
+			w.requestRefresh()
+		}
 		return sub, nil
 	}
 	w := newWorkspaceWatcher(canon, m.statusFn, initial, watchRoots)
@@ -161,11 +167,23 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 	// lookup, populate the cache, and broadcast the updated status to
 	// all subscribers. This keeps the network call off the Subscribe
 	// RPC critical path.
-	if m.fastStatusFn != nil && initial.Branch != "" && initial.Forge != "" && initial.OpenPRURL == "" {
+	if m.shouldRefreshMissingPR(initial) {
 		w.requestRefresh()
 	}
 
 	return sub, nil
+}
+
+func (m *Manager) shouldRefreshMissingPR(status gitops.GitStatus) bool {
+	// GitStatus intentionally does not distinguish "no PR exists" from
+	// "PR lookup has not been warmed yet". Re-checking on subscriber
+	// attach is the remote-change hook: creating an MR does not touch
+	// the local filesystem, while refreshCh coalescing and the PR cache
+	// keep repeated attaches from turning into a CLI storm.
+	return m.fastStatusFn != nil &&
+		status.Branch != "" &&
+		status.Forge != "" &&
+		status.OpenPRURL == ""
 }
 
 func (m *Manager) watchRoots(cwd string) ([]gitops.WatchRoot, error) {

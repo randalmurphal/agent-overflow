@@ -73,6 +73,10 @@ func (a *App) GitStatusSubscribe(ctx context.Context, threadID string) (GitStatu
 		return GitStatusSubscriptionResult{}, err
 	}
 
+	// Opening a thread is an explicit UI attach. Drop cached open-PR lookups so
+	// the async full refresh requested by gitwatch can see remote-only MR
+	// creation that did not touch the local filesystem.
+	a.gitCore().InvalidatePRCache(workspace)
 	sub, err := a.gitWatch.Subscribe(workspace)
 	if err != nil {
 		return GitStatusSubscriptionResult{}, fmt.Errorf("gitwatch subscribe: %w", err)
