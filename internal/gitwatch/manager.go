@@ -14,6 +14,19 @@ import (
 // Production wires gitops.Core.Status; tests can stub.
 type StatusFn func(cwd string) (gitops.GitStatus, error)
 
+// WatchRootsFn returns the filesystem roots that should trigger status
+// refreshes for cwd. The first root should be cwd; extra roots cover git
+// metadata that can live outside linked worktree directories.
+type WatchRootsFn func(cwd string) ([]gitops.WatchRoot, error)
+
+// ManagerConfig names the optional status/watch hooks so tests and app startup
+// do not rely on positional nil function arguments.
+type ManagerConfig struct {
+	StatusFn     StatusFn
+	FastStatusFn StatusFn
+	WatchRootsFn WatchRootsFn
+}
+
 // Manager owns the per-cwd watchers and subscriber fan-out. One Manager
 // per *App is the expected wiring. Safe for concurrent use.
 type Manager struct {
@@ -35,20 +48,30 @@ type Manager struct {
 	// installFn lets tests force the polling-fallback path without
 	// actually exhausting inotify limits. Production leaves it nil and
 	// the watcher uses installNotifyWatcher.
-	installFn func(cwd string, ch chan<- notify.EventInfo) error
+	installFn func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error
+
+	watchRootsFn WatchRootsFn
 }
 
-// NewManager constructs a Manager. statusFn is required; fastStatusFn
-// is optional (when nil, statusFn is used for the initial subscribe
+// NewManager constructs a Manager. StatusFn is required; FastStatusFn
+// is optional (when nil, StatusFn is used for the initial subscribe
 // fetch too — legacy behavior).
-func NewManager(statusFn StatusFn, fastStatusFn StatusFn) *Manager {
+func NewManager(config ManagerConfig) *Manager {
+	statusFn := config.StatusFn
 	if statusFn == nil {
 		panic("gitwatch: NewManager requires a non-nil StatusFn")
 	}
+	watchRootsFn := config.WatchRootsFn
+	if watchRootsFn == nil {
+		watchRootsFn = func(cwd string) ([]gitops.WatchRoot, error) {
+			return []gitops.WatchRoot{{Path: cwd, Recursive: true}}, nil
+		}
+	}
 	return &Manager{
 		statusFn:     statusFn,
-		fastStatusFn: fastStatusFn,
+		fastStatusFn: config.FastStatusFn,
 		watchers:     make(map[string]*workspaceWatcher),
+		watchRootsFn: watchRootsFn,
 	}
 }
 
@@ -106,6 +129,10 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 	if err != nil {
 		return nil, err
 	}
+	watchRoots, err := m.watchRoots(canon)
+	if err != nil {
+		return nil, err
+	}
 
 	m.mu.Lock()
 	if m.closed {
@@ -121,7 +148,7 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 		sub.closer = func() { m.releaseSubscriber(canon, sub) }
 		return sub, nil
 	}
-	w := newWorkspaceWatcher(canon, m.statusFn, initial)
+	w := newWorkspaceWatcher(canon, m.statusFn, initial, watchRoots)
 	w.start(m.installFn)
 	m.watchers[canon] = w
 	sub := w.addSubscriber(initial)
@@ -139,6 +166,14 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 	}
 
 	return sub, nil
+}
+
+func (m *Manager) watchRoots(cwd string) ([]gitops.WatchRoot, error) {
+	roots, err := m.watchRootsFn(cwd)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeWatchRoots(cwd, roots)
 }
 
 func (m *Manager) releaseSubscriber(cwd string, sub *Subscription) {

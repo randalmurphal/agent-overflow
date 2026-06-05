@@ -88,6 +88,59 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	}
 }
 
+func TestGetWorkspaceCurrentDiffUsesLinkedWorktree(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-worktree-current-diff")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	worktreePath, err := app.GitCreateWorktree(thread.ID, "feature/workspace-current-diff")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true)
+	})
+
+	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("hello\nmain-root-change\n"), 0o644); err != nil {
+		t.Fatalf("write main worktree change: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, "README.txt"), []byte("hello\nlinked-worktree-change\n"), 0o644); err != nil {
+		t.Fatalf("write linked worktree change: %v", err)
+	}
+
+	diff, err := app.GetWorkspaceCurrentDiff(thread.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspaceCurrentDiff() error = %v", err)
+	}
+	if !strings.Contains(diff, "linked-worktree-change") {
+		t.Fatalf("diff did not include linked worktree change:\n%s", diff)
+	}
+	if strings.Contains(diff, "main-root-change") {
+		t.Fatalf("diff included project-root change instead of only worktree change:\n%s", diff)
+	}
+
+	testutil.RunGit(t, worktreePath, "add", "README.txt")
+	testutil.RunGit(t, worktreePath, "commit", "-m", "commit linked worktree change")
+
+	diff, err = app.GetWorkspaceCurrentDiff(thread.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspaceCurrentDiff(clean worktree) error = %v", err)
+	}
+	if strings.TrimSpace(diff) != "" {
+		t.Fatalf("diff after committing linked worktree = %q, want empty", diff)
+	}
+}
+
 func TestGitCreateWorktreePreservesExplicitBranchCase(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

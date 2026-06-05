@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
+
+	gitops "agent-overflow/internal/git"
 )
 
 // canonicalize resolves p to an absolute, symlink-free path AND
@@ -84,4 +88,74 @@ func rejectSystemPath(abs, canon string) error {
 		return errors.New("gitwatch: cwd is not a directory")
 	}
 	return nil
+}
+
+func normalizeWatchRoots(cwd string, roots []gitops.WatchRoot) ([]gitops.WatchRoot, error) {
+	if len(roots) == 0 {
+		roots = []gitops.WatchRoot{{Path: cwd, Recursive: true}}
+	}
+
+	candidates := make([]gitops.WatchRoot, 0, len(roots)+1)
+	indexByPath := make(map[string]int, len(roots)+1)
+	for _, root := range append([]gitops.WatchRoot{{Path: cwd, Recursive: true}}, roots...) {
+		path := strings.TrimSpace(root.Path)
+		if path == "" {
+			continue
+		}
+		abs, canon, err := canonicalize(path)
+		if err != nil {
+			return nil, err
+		}
+		if err := rejectSystemPath(abs, canon); err != nil {
+			return nil, err
+		}
+		if index, ok := indexByPath[canon]; ok {
+			candidates[index].Recursive = candidates[index].Recursive || root.Recursive
+			continue
+		}
+		indexByPath[canon] = len(candidates)
+		candidates = append(candidates, gitops.WatchRoot{Path: canon, Recursive: root.Recursive})
+	}
+	if len(candidates) == 0 {
+		return nil, errors.New("gitwatch: no valid watch roots")
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if len(candidates[i].Path) != len(candidates[j].Path) {
+			return len(candidates[i].Path) < len(candidates[j].Path)
+		}
+		if candidates[i].Path != candidates[j].Path {
+			return candidates[i].Path < candidates[j].Path
+		}
+		return candidates[i].Recursive && !candidates[j].Recursive
+	})
+
+	pruned := make([]gitops.WatchRoot, 0, len(candidates))
+	for _, candidate := range candidates {
+		if isCoveredByAnyRoot(candidate, pruned) {
+			continue
+		}
+		pruned = append(pruned, candidate)
+	}
+	return pruned, nil
+}
+
+func isCoveredByAnyRoot(path gitops.WatchRoot, roots []gitops.WatchRoot) bool {
+	for _, root := range roots {
+		if root.Recursive && sameOrDescendant(root.Path, path.Path) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameOrDescendant(parent, child string) bool {
+	if parent == child {
+		return true
+	}
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }

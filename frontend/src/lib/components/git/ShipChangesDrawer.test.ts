@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ShipChangesDrawer from './ShipChangesDrawer.svelte';
@@ -130,6 +130,26 @@ describe('<ShipChangesDrawer>', () => {
     expect(await findByTestId('ship-changes-step-push')).toBeInTheDocument();
   });
 
+  it('refreshes the pane git-status slot after a successful commit', async () => {
+    const pane = await buildPane();
+    const refreshNow = vi.spyOn(pane.gitStatus, 'refreshNow').mockResolvedValue();
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    setBindingMock('GitCommit', async () => ({
+      action: 'commit',
+      commitSha: 'sha-123',
+    } as GitActionResult));
+    const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
+      props: { open: true, pane, onClose: () => {} },
+    });
+    const subject = await findByTestId('ship-changes-commit-subject') as HTMLInputElement;
+    await fireEvent.input(subject, { target: { value: 'Refresh status' } });
+    await flush();
+    await fireEvent.click(getByTestId('ship-changes-commit-submit'));
+    await flush(10);
+
+    expect(refreshNow).toHaveBeenCalledTimes(1);
+  });
+
   it('surfaces a commit error inline and offers a retry', async () => {
     const pane = await buildPane();
     setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
@@ -163,6 +183,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('calls GitPush and advances to PR step on success', async () => {
     const pane = await buildPane();
+    const refreshNow = vi.spyOn(pane.gitStatus, 'refreshNow').mockResolvedValue();
     setBindingMock('GetGitStatus', async () => status({ hasChanges: false, aheadCount: 1 }));
     const push = setBindingMock('GitPush', async () => ({ action: 'push' } as GitActionResult));
     const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
@@ -172,6 +193,7 @@ describe('<ShipChangesDrawer>', () => {
     await fireEvent.click(getByTestId('ship-changes-push-submit'));
     await flush(10);
     expect(push.mock.calls.length).toBe(1);
+    expect(refreshNow).toHaveBeenCalledTimes(1);
     expect(await findByTestId('ship-changes-step-pr')).toBeInTheDocument();
   });
 
@@ -193,6 +215,7 @@ describe('<ShipChangesDrawer>', () => {
 
   it('calls GitCreatePR with the trimmed title/body and shows the URL', async () => {
     const pane = await buildPane();
+    const refreshNow = vi.spyOn(pane.gitStatus, 'refreshNow').mockResolvedValue();
     setBindingMock('GetGitStatus', async () => status({ hasChanges: false, aheadCount: 0 }));
     const createPR = setBindingMock('GitCreatePR', async () => ({
       action: 'pr',
@@ -210,6 +233,7 @@ describe('<ShipChangesDrawer>', () => {
     expect(createPR.mock.calls.length).toBe(1);
     expect(createPR.mock.calls[0][1]).toBe('Add widget');
     expect(createPR.mock.calls[0][2]).toBe('');
+    expect(refreshNow).toHaveBeenCalledTimes(1);
     const url = await findByTestId('ship-changes-pr-url');
     expect(url.getAttribute('href')).toBe('https://github.com/owner/repo/pull/42');
   });

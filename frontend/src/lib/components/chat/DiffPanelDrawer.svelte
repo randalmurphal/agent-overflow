@@ -19,7 +19,8 @@
     updateDiffReviewComment,
   } from '../../stores/diffReviewComments.svelte';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
-  import type { Checkpoint } from '../../types/checkpoint';
+  import type { Checkpoint, DiffPanelTab } from '../../types/checkpoint';
+  import type { GitStatus } from '../../types/git';
   import type { DiffReviewComment, DiffReviewCommentInput, DiffReviewScope } from '../../types/models';
   import { parsePatchFiles, patchFileRowId } from '../../utils/patchFiles';
   import Icon from '../primitives/Icon.svelte';
@@ -45,6 +46,8 @@
   let checkpointRequestID = 0;
   let diffRequestID = 0;
   let commentsRequestID = 0;
+  let diffLoadRunning = false;
+  let diffLoadQueued = false;
 
   const checkpoints = $derived(pane.diffPanel.checkpoints);
   const visibleCheckpoints = $derived(
@@ -60,6 +63,8 @@
   const viewMode = $derived(pane.diffPanel.viewMode);
   const tabMode = $derived(pane.diffPanel.tabMode);
   const threadId = $derived(pane.thread?.id ?? null);
+  const workspaceStatus = $derived(pane.gitStatus.status);
+  const workspaceDiffReloadKey = $derived(workspaceDiffReloadKeyFor(tabMode, workspaceStatus));
   const files = $derived(parsePatchFiles(diffText));
   const fileRows = $derived(files.map((file, index) => ({ file, rowId: patchFileRowId(file, index) })));
   const totals = $derived.by(() => files.reduce(
@@ -137,6 +142,26 @@
       pane.diffPanel.setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (requestID === diffRequestID) loading = false;
+    }
+  }
+
+  function requestLoadDiff(): void {
+    if (diffLoadRunning) {
+      diffLoadQueued = true;
+      return;
+    }
+    void drainDiffLoadQueue();
+  }
+
+  async function drainDiffLoadQueue(): Promise<void> {
+    diffLoadRunning = true;
+    try {
+      do {
+        diffLoadQueued = false;
+        await loadDiff();
+      } while (diffLoadQueued);
+    } finally {
+      diffLoadRunning = false;
     }
   }
 
@@ -252,7 +277,8 @@
     threadId;
     selectedUserItemId;
     tabMode;
-    void loadDiff();
+    workspaceDiffReloadKey;
+    requestLoadDiff();
   });
 
   $effect(() => {
@@ -273,6 +299,20 @@
       hash = Math.imul(hash, 0x01000193) >>> 0;
     }
     return `fnv1a:${hash.toString(16).padStart(8, '0')}:${text.length}`;
+  }
+
+  function workspaceDiffReloadKeyFor(mode: DiffPanelTab, status: GitStatus | null): string {
+    if (mode !== 'workspace') return '';
+    if (!status) return 'status:null';
+    return [
+      status.isRepo ? 'repo' : 'not-repo',
+      status.branch,
+      status.hasChanges ? 'dirty' : 'clean',
+      status.insertions,
+      status.deletions,
+      status.fileCount,
+      status.pendingOperation ?? '',
+    ].join('\0');
   }
 </script>
 

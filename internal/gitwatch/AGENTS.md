@@ -11,26 +11,34 @@ share a watcher per canonical cwd via refcount.
   refcount bookkeeping.
 - `watcher.go` — per-cwd `workspaceWatcher` + `Subscription`. Owns the
   debounce timer, polling fallback, and subscriber fan-out.
-- `paths.go` — `canonicalize` helper so `/tmp` symlinks don't spawn
-  duplicate watchers on macOS.
+- `paths.go` — path canonicalization and watch-root normalization so
+  `/tmp` symlinks don't spawn duplicate watchers on macOS, and nested
+  git metadata roots are pruned before watcher installation.
 
 ## How it works
 
 1. `Manager.Subscribe(cwd)` canonicalizes the path, fetches the initial
    `GitStatus` via the injected `StatusFn`, and either reuses an
    existing watcher for that cwd or starts a new one.
-2. The watcher attaches `rjeczalik/notify` recursively at `cwd/...` and
-   feeds events into a per-cwd channel. A trailing-edge 250ms debounce
-   coalesces bursts, then re-runs `StatusFn` and broadcasts to
-   subscribers.
-3. `lastStatus` is compared with `reflect.DeepEqual` — unchanged status
+2. Before installing the watcher, `Manager` asks the injected
+   `WatchRootsFn` for the workspace plus any git metadata directories
+   that should trigger refreshes. Each root declares whether it is
+   recursive. Linked worktrees need this because their `.git` file
+   points to metadata under the main repo's `.git/worktrees/` directory;
+   watching only `cwd/...` misses commits, index writes, and ref updates
+   performed outside the app.
+3. The watcher attaches `rjeczalik/notify` at each normalized root and
+   uses the `path/...` recursive suffix only for roots that requested it.
+   A trailing-edge 250ms debounce coalesces bursts, then re-runs
+   `StatusFn` and broadcasts to subscribers.
+4. `lastStatus` is compared with `GitStatus.Equal` — unchanged status
    does not emit, keeping the wire quiet during heavy fs activity that
    doesn't affect the working tree (build outputs, ignored files).
-4. If `notify.Watch` fails at install time (most commonly Linux
+5. If `notify.Watch` fails at install time (most commonly Linux
    inotify watch-limit exhaustion), the watcher transparently falls
    back to polling at `pollFallbackInterval`. Subscribers see the same
    `Updates()` shape; only cadence changes.
-5. Subscribers receive a single buffered channel; on overflow the
+6. Subscribers receive a single buffered channel; on overflow the
    newest status supersedes the older one (the run loop drains the
    pending value before sending).
 
@@ -39,6 +47,11 @@ share a watcher per canonical cwd via refcount.
 - What BELONGS here:
   - Watching a workspace path and turning fs activity into deduplicated
     `GitStatus` updates.
+  - Watching git metadata roots supplied by the git package so linked
+    worktree commits refresh the same workspace status stream.
+  - Respecting recursive vs non-recursive root intent. The common git
+    dir is intentionally watched non-recursively so `objects/` and pack
+    churn do not explode watcher count or refresh volume.
   - Refcounting watchers so multiple panes/threads pointing at the same
     workspace share a single fs watcher and a single git status pump.
 - What does NOT belong here:

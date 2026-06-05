@@ -29,6 +29,9 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   the status badge, including the bounded line scanner.
 - `status_pending.go` — pending merge/rebase/bisect detection via the
   resolved git directory.
+- `watch_roots.go` — live-status watcher root discovery, including
+  linked-worktree gitdir/common-dir metadata roots and recursive vs
+  non-recursive watch intent.
 - `worktree_paths.go` — pure path helpers backing the app layer's
   worktree creation: `SanitizeWorktreePathSegment` (branch → fs-safe
   directory name), `DefaultWorktreesBaseDir` (the `<repo>-worktrees`

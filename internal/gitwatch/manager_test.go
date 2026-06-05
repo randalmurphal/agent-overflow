@@ -12,6 +12,7 @@ import (
 	"github.com/rjeczalik/notify"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/testutil"
 )
 
 // recvWithin reads one update from sub.Updates() or fails the test.
@@ -96,7 +97,7 @@ func makeRepoDir(t *testing.T) string {
 func TestSubscribeReturnsInitialStatus(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -115,7 +116,7 @@ func TestSubscribeReturnsErrorOnInitialFetchFailure(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{})
 	stub.failNext.Store(true)
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -129,7 +130,7 @@ func TestSubscribeReturnsErrorOnInitialFetchFailure(t *testing.T) {
 func TestFsEventTriggersDedupedUpdate(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -160,10 +161,90 @@ func TestFsEventTriggersDedupedUpdate(t *testing.T) {
 	expectNoUpdate(t, sub, debounceWindow+200*time.Millisecond)
 }
 
+func TestMetadataRootEventTriggersUpdate(t *testing.T) {
+	t.Parallel()
+	workspace := makeRepoDir(t)
+	metadataRoot := filepath.Join(t.TempDir(), "gitdir")
+	if err := os.MkdirAll(metadataRoot, 0o755); err != nil {
+		t.Fatalf("mkdir metadata root: %v", err)
+	}
+
+	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
+	mgr := NewManager(ManagerConfig{
+		StatusFn: stub.fn(),
+		WatchRootsFn: func(cwd string) ([]gitops.WatchRoot, error) {
+			return []gitops.WatchRoot{
+				{Path: cwd, Recursive: true},
+				{Path: metadataRoot, Recursive: true},
+			}, nil
+		},
+	})
+	t.Cleanup(mgr.Close)
+
+	sub, err := mgr.Subscribe(workspace)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	stub.setStatus(gitops.GitStatus{IsRepo: true, Branch: "main", HasChanges: true})
+	if err := os.WriteFile(filepath.Join(metadataRoot, "index"), []byte("updated"), 0o644); err != nil {
+		t.Fatalf("write metadata trigger: %v", err)
+	}
+
+	got := recvWithin(t, sub, 5*time.Second)
+	if !got.HasChanges {
+		t.Fatalf("expected metadata-triggered dirty status, got %+v", got)
+	}
+}
+
+func TestLinkedWorktreeCommitEmitsCleanStatus(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature/gitwatch-worktree")
+	worktreePath := filepath.Join(t.TempDir(), "feature-gitwatch-worktree")
+	testutil.RunGit(t, repo, "worktree", "add", worktreePath, "feature/gitwatch-worktree")
+
+	readme := filepath.Join(worktreePath, "README.txt")
+	if err := os.WriteFile(readme, []byte("hello\nchanged in worktree\n"), 0o644); err != nil {
+		t.Fatalf("write worktree change: %v", err)
+	}
+
+	core := gitops.NewCore()
+	mgr := NewManager(ManagerConfig{StatusFn: core.Status, FastStatusFn: core.StatusFast, WatchRootsFn: core.WatchRoots})
+	t.Cleanup(mgr.Close)
+
+	sub, err := mgr.Subscribe(worktreePath)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer sub.Close()
+	if !sub.Initial().HasChanges {
+		t.Fatalf("initial status HasChanges = false, want dirty worktree")
+	}
+
+	testutil.RunGit(t, worktreePath, "add", "README.txt")
+	testutil.RunGit(t, worktreePath, "commit", "-m", "commit from linked worktree")
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case got, ok := <-sub.Updates():
+			if !ok {
+				t.Fatalf("subscription closed while waiting for clean post-commit status")
+			}
+			if !got.HasChanges {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for clean post-commit status")
+		}
+	}
+}
+
 func TestMultipleSubscribersShareWatcher(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -200,7 +281,7 @@ func TestMultipleSubscribersShareWatcher(t *testing.T) {
 func TestLastUnsubscribeStopsWatcher(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -245,11 +326,11 @@ func TestLastUnsubscribeStopsWatcher(t *testing.T) {
 func TestPollingFallbackEmitsUpdates(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 	// Force watcher install to fail so the watcher uses the polling
 	// fallback. This validates the inotify-exhaustion path without
 	// actually running out of watches.
-	mgr.installFn = func(string, chan<- notify.EventInfo) error {
+	mgr.installFn = func([]gitops.WatchRoot, chan<- notify.EventInfo) error {
 		return errors.New("forced fallback")
 	}
 	t.Cleanup(mgr.Close)
@@ -281,7 +362,7 @@ func TestPollingFallbackEmitsUpdates(t *testing.T) {
 func TestManagerCloseDrainsSubscribers(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 
 	dir := makeRepoDir(t)
 	sub, err := mgr.Subscribe(dir)
@@ -309,7 +390,7 @@ func TestManagerCloseDrainsSubscribers(t *testing.T) {
 func TestStatusFnFailureDoesNotEmit(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -352,7 +433,7 @@ func TestConcurrentRefreshAndUnsubscribe(t *testing.T) {
 		n := current.Add(1)
 		return gitops.GitStatus{IsRepo: true, Branch: "main", AheadCount: int(n)}, nil
 	}
-	mgr := NewManager(statusFn, nil)
+	mgr := NewManager(ManagerConfig{StatusFn: statusFn})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -435,7 +516,7 @@ func TestConcurrentRefreshAndUnsubscribe(t *testing.T) {
 func TestSupersedeOnOverflow(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main", AheadCount: 1})
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -491,7 +572,7 @@ func TestWatcherPanicRecovery(t *testing.T) {
 		}
 		panic("simulated statusFn panic")
 	}
-	mgr := NewManager(statusFn, nil)
+	mgr := NewManager(ManagerConfig{StatusFn: statusFn})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -527,7 +608,7 @@ func TestManagerCloseBlocksUntilWatchersExit(t *testing.T) {
 		<-release
 		return gitops.GitStatus{IsRepo: true, Branch: "main"}, nil
 	}
-	mgr := NewManager(statusFn, nil)
+	mgr := NewManager(ManagerConfig{StatusFn: statusFn})
 
 	dir := makeRepoDir(t)
 	subDone := make(chan struct{})
@@ -574,7 +655,7 @@ func TestManagerCloseBlocksUntilWatchersExit(t *testing.T) {
 // and the system-path defense-in-depth backstop.
 func TestSubscribeRejectsEmptyCwd(t *testing.T) {
 	t.Parallel()
-	mgr := NewManager(newStubStatus(gitops.GitStatus{}).fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: newStubStatus(gitops.GitStatus{}).fn()})
 	t.Cleanup(mgr.Close)
 	if _, err := mgr.Subscribe(""); err == nil {
 		t.Fatalf("Subscribe(\"\") must error")
@@ -583,7 +664,7 @@ func TestSubscribeRejectsEmptyCwd(t *testing.T) {
 
 func TestSubscribeRejectsNonexistentPath(t *testing.T) {
 	t.Parallel()
-	mgr := NewManager(newStubStatus(gitops.GitStatus{}).fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: newStubStatus(gitops.GitStatus{}).fn()})
 	t.Cleanup(mgr.Close)
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	if _, err := mgr.Subscribe(missing); err == nil {
@@ -599,7 +680,7 @@ func TestSubscribeRejectsNonexistentPath(t *testing.T) {
 
 func TestSubscribeRejectsSystemPath(t *testing.T) {
 	t.Parallel()
-	mgr := NewManager(newStubStatus(gitops.GitStatus{}).fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: newStubStatus(gitops.GitStatus{}).fn()})
 	t.Cleanup(mgr.Close)
 	for _, p := range []string{"/", "/etc", "/var"} {
 		if _, err := os.Stat(p); err != nil {
@@ -618,7 +699,7 @@ func TestSubscribeSurfacesInitialFetchFailureWithoutLeak(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{})
 	stub.failNext.Store(true)
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -639,7 +720,7 @@ func TestSubscribeSurfacesInitialFetchFailureWithoutLeak(t *testing.T) {
 func TestSharedCwdReusesFreshLastStatus(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -688,7 +769,7 @@ func TestFastStatusFnSkipsPRThenRefreshDelivers(t *testing.T) {
 
 	fastStub := newStubStatus(fastStatus)
 	fullStub := newStubStatus(fullStatus)
-	mgr := NewManager(fullStub.fn(), fastStub.fn())
+	mgr := NewManager(ManagerConfig{StatusFn: fullStub.fn(), FastStatusFn: fastStub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -722,7 +803,7 @@ func TestFastStatusFnNilFallsBackToStatusFn(t *testing.T) {
 		IsRepo: true, Branch: "main",
 		OpenPRURL: "https://github.com/o/r/pull/1", OpenPRNumber: 1,
 	})
-	mgr := NewManager(stub.fn(), nil)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)
@@ -752,7 +833,7 @@ func TestNoAsyncRefreshWithoutForge(t *testing.T) {
 		return fastStatus, nil
 	}
 	fastStub := newStubStatus(fastStatus)
-	mgr := NewManager(fullFn, fastStub.fn())
+	mgr := NewManager(ManagerConfig{StatusFn: fullFn, FastStatusFn: fastStub.fn()})
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)

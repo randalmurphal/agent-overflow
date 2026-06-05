@@ -173,7 +173,11 @@ func (a *App) initStores() (string, *store.Store, error) {
 
 	a.store = st
 	a.git = gitops.NewCore()
-	a.gitWatch = gitwatch.NewManager(a.git.Status, a.git.StatusFast)
+	a.gitWatch = gitwatch.NewManager(gitwatch.ManagerConfig{
+		StatusFn:     a.git.Status,
+		FastStatusFn: a.git.StatusFast,
+		WatchRootsFn: a.git.WatchRoots,
+	})
 	a.settings = settings.NewService(dbDir)
 	// Seed the git Core's GitLab self-hosted host snapshot from the
 	// persisted settings before any Status / DetectForge call sees a

@@ -176,9 +176,11 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 	// gitwatch.Manager has no real watchers in this test (no Subscribe
 	// calls), but Close() still records the "close gitwatch" step, so
 	// we wire it for parity with production.
-	app.gitWatch = gitwatch.NewManager(func(string) (gitops.GitStatus, error) {
-		return gitops.GitStatus{}, nil
-	}, nil)
+	app.gitWatch = gitwatch.NewManager(gitwatch.ManagerConfig{
+		StatusFn: func(string) (gitops.GitStatus, error) {
+			return gitops.GitStatus{}, nil
+		},
+	})
 	// A never-started screenshot.Manager Closes cleanly (the package
 	// treats Close as a no-op when allocCancel/browserCancel are nil)
 	// so we wire it for parity with production without paying the

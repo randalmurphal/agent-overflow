@@ -235,9 +235,9 @@ func (a *App) GetWorkspaceCurrentDiff(threadID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get workspace current diff: %w", err)
 	}
-	workspace := thread.WorkspacePath
-	if workspace == "" {
-		return "", errors.New("get workspace current diff: thread has no workspace path")
+	_, workspace, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return "", fmt.Errorf("get workspace current diff: %w", err)
 	}
 	if !a.checkpointStore().IsGitRepository(context.Background(), workspace) {
 		return "", nil

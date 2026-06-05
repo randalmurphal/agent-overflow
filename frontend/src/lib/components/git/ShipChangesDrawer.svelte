@@ -65,6 +65,12 @@
     }
   }
 
+  async function refreshAfterAction(threadId: string): Promise<void> {
+    await refreshStatus(threadId);
+    if (pane.threadId !== threadId) return;
+    await pane.gitStatus.refreshNow();
+  }
+
   $effect(() => {
     if (!open) {
       // Wrap mutations in untrack so the reset-on-close pass doesn't
@@ -98,14 +104,15 @@
   });
 
   async function handleCommit(): Promise<void> {
-    if (!pane.threadId) return;
+    const threadId = pane.threadId;
+    if (!threadId) return;
     if (!wizard.canCommit) return;
     const subject = wizard.commitSubject.trim();
     const body = wizard.commitBody.trim();
     const startGeneration = wizard.generation;
     wizard.beginCommit();
     try {
-      const result = (await GitCommit(pane.threadId, subject, body)) as GitActionResult;
+      const result = (await GitCommit(threadId, subject, body)) as GitActionResult;
       // Dialog may have been closed (or reopened on a new thread) while the
       // commit was in flight; resuming would blow up the state machine.
       if (wizard.generation !== startGeneration) return;
@@ -118,7 +125,7 @@
       // again in the common one-commit-per-PR flow.
       if (wizard.prTitle === '') wizard.seedPR(subject, body);
       addToast('success', `Committed ${(result.commitSha ?? '').slice(0, 7)}`);
-      await refreshStatus(pane.threadId);
+      await refreshAfterAction(threadId);
     } catch (err) {
       if (wizard.generation !== startGeneration) return;
       wizard.failCommit(err instanceof Error ? err.message : String(err));
@@ -130,12 +137,13 @@
   }
 
   async function handlePush(): Promise<void> {
-    if (!pane.threadId) return;
+    const threadId = pane.threadId;
+    if (!threadId) return;
     if (!wizard.canPush) return;
     const startGeneration = wizard.generation;
     wizard.beginPush();
     try {
-      const result = (await GitPush(pane.threadId)) as GitActionResult;
+      const result = (await GitPush(threadId)) as GitActionResult;
       if (wizard.generation !== startGeneration) return;
       if (result.error) {
         wizard.failPush(result.error);
@@ -143,7 +151,7 @@
       }
       wizard.completePush();
       addToast('success', 'Pushed');
-      await refreshStatus(pane.threadId);
+      await refreshAfterAction(threadId);
     } catch (err) {
       if (wizard.generation !== startGeneration) return;
       wizard.failPush(err instanceof Error ? err.message : String(err));
@@ -155,7 +163,8 @@
   }
 
   async function handleCreatePR(): Promise<void> {
-    if (!pane.threadId) return;
+    const threadId = pane.threadId;
+    if (!threadId) return;
     if (!wizard.canCreatePR) return;
     const title = wizard.prTitle.trim();
     const body = wizard.prBody.trim();
@@ -163,7 +172,7 @@
     const startGeneration = wizard.generation;
     wizard.beginCreatePR();
     try {
-      const result = (await GitCreatePR(pane.threadId, title, body, draft)) as GitActionResult;
+      const result = (await GitCreatePR(threadId, title, body, draft)) as GitActionResult;
       if (wizard.generation !== startGeneration) return;
       if (result.error) {
         wizard.failCreatePR(result.error);
@@ -171,7 +180,7 @@
       }
       wizard.completeCreatePR(result.prUrl ?? '');
       addToast('success', `${forgeLabels(wizard.status?.forge).longSingular} opened`);
-      await refreshStatus(pane.threadId);
+      await refreshAfterAction(threadId);
     } catch (err) {
       if (wizard.generation !== startGeneration) return;
       wizard.failCreatePR(err instanceof Error ? err.message : String(err));

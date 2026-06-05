@@ -95,9 +95,10 @@ type workspaceWatcher struct {
 	mu          sync.Mutex
 	subscribers []*Subscription
 	lastStatus  gitops.GitStatus
+	watchRoots  []gitops.WatchRoot
 }
 
-func newWorkspaceWatcher(cwd string, statusFn StatusFn, initial gitops.GitStatus) *workspaceWatcher {
+func newWorkspaceWatcher(cwd string, statusFn StatusFn, initial gitops.GitStatus, watchRoots []gitops.WatchRoot) *workspaceWatcher {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &workspaceWatcher{
 		cwd:        cwd,
@@ -108,6 +109,7 @@ func newWorkspaceWatcher(cwd string, statusFn StatusFn, initial gitops.GitStatus
 		refreshCh:  make(chan struct{}, 1),
 		done:       make(chan struct{}),
 		lastStatus: initial,
+		watchRoots: append([]gitops.WatchRoot(nil), watchRoots...),
 	}
 }
 
@@ -116,24 +118,33 @@ func newWorkspaceWatcher(cwd string, statusFn StatusFn, initial gitops.GitStatus
 // most common cause is the user's inotify watch limit being exhausted
 // on Linux). The fallback uses the same Updates() channel, so callers
 // see a uniform interface.
-func (w *workspaceWatcher) start(installFn func(cwd string, ch chan<- notify.EventInfo) error) {
+func (w *workspaceWatcher) start(installFn func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error) {
 	install := installFn
 	if install == nil {
 		install = installNotifyWatcher
 	}
-	if err := install(w.cwd, w.eventsCh); err != nil {
-		log.Printf("gitwatch: fs watch unavailable for %s (%v); falling back to %s polling",
-			w.cwd, err, pollFallbackInterval)
+	if err := install(w.watchRoots, w.eventsCh); err != nil {
+		log.Printf("gitwatch: fs watch unavailable for %s roots=%v (%v); falling back to %s polling",
+			w.cwd, w.watchRoots, err, pollFallbackInterval)
 		w.fallbackPolling = true
 	}
 	go w.run()
 }
 
-// installNotifyWatcher attaches a recursive watcher rooted at cwd.
-// rjeczalik/notify uses the path/... glob suffix for recursive on
-// Linux/Darwin/Windows.
-func installNotifyWatcher(cwd string, ch chan<- notify.EventInfo) error {
-	return notify.Watch(filepath.Join(cwd, "..."), ch, notify.All)
+// installNotifyWatcher attaches watchers rooted at each path. rjeczalik/notify
+// uses the path/... glob suffix for recursive watches on Linux/Darwin/Windows.
+func installNotifyWatcher(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error {
+	for _, root := range roots {
+		path := root.Path
+		if root.Recursive {
+			path = filepath.Join(path, "...")
+		}
+		if err := notify.Watch(path, ch, notify.All); err != nil {
+			notify.Stop(ch)
+			return err
+		}
+	}
+	return nil
 }
 
 // stop cancels the run loop and unregisters the fs watcher. Blocks
