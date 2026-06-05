@@ -30,6 +30,11 @@
     buildSplitDisplayRows,
   } from '../../utils/patchFiles';
   import { lineTintClass } from '../../utils/diffLineTint';
+  import {
+    diffFlexLineContentClass,
+    diffScrollContentClass,
+    diffSplitGridColumnsClass,
+  } from '../../utils/diffLineLayout';
   import type { FileVirtualizerHandle } from '../../utils/diffSidebarVirtualizer.svelte';
   import { languageFromPath } from '../../utils/diffLanguage';
   import type { DiffTheme } from '../../utils/diffHighlighterPool';
@@ -79,7 +84,9 @@
   let cachedHeight = $derived(virtualizer.height(rowId));
   let shouldRender = $derived(expanded);
 
-  let wrapClass = $derived(wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre');
+  let scrollContentClass = $derived(diffScrollContentClass(wordWrap));
+  let splitGridColumnsClass = $derived(diffSplitGridColumnsClass(wordWrap));
+  let lineContentClass = $derived(diffFlexLineContentClass(wordWrap));
 
   // Renamed files show `old → new` so the change kind reads from the
   // path itself; +/- counts convey added (all-add) / deleted
@@ -207,11 +214,11 @@
   </header>
 
   {#if expanded}
-    <div id="diff-sidebar-file-{safeId}" class="ml-5 border-l border-border-subtle bg-surface-0/35">
+    <div id="diff-sidebar-file-{safeId}" class="ml-5 overflow-x-auto border-l border-border-subtle bg-surface-0/35" data-testid="diff-sidebar-file-body">
       {#if shouldRender}
         {#if viewMode === 'split'}
           <div
-            class="grid grid-cols-2 gap-px bg-border-subtle font-mono text-[0.6875rem] leading-tight"
+            class="grid {scrollContentClass} {splitGridColumnsClass} gap-px bg-border-subtle font-mono text-[0.6875rem] leading-tight"
             style="--gutter-w: {gutterChars + 1}ch"
             data-testid="diff-sidebar-split-body"
           >
@@ -222,25 +229,25 @@
           </div>
         {:else}
           <div
-            class="py-2 font-mono text-[0.6875rem] leading-tight"
+            class="{scrollContentClass} py-2 font-mono text-[0.6875rem] leading-tight"
             style="--gutter-w: {gutterChars + 1}ch"
             data-testid="diff-sidebar-stacked-body"
           >
             {#each displayRows as row, i (row.id)}
-              <div class="flex {lineTintClass(row.line.type)}">
+              <div class="flex min-w-full {lineTintClass(row.line.type)}">
                 <span
                   class="select-none tabular-nums text-fg-subtle px-3 text-right shrink-0"
                   style="width: var(--gutter-w)"
                   aria-hidden="true"
                   data-testid="diff-sidebar-line-gutter"
                 >{row.newLine || row.oldLine || ''}</span><span
-                  class="pl-1 pr-3 flex-1 min-w-0 {wrapClass}"
+                  class="pl-1 pr-3 {lineContentClass}"
                   data-testid="diff-sidebar-line-content"
                 ><DiffLineContent line={row.line} tokens={getTokens(row.line)} /></span>
               </div>
               {#if separatorAfter.has(i)}
                 <div
-                  class="my-1 flex items-center gap-2 px-3 select-none"
+                  class="my-1 flex min-w-full items-center gap-2 px-3 select-none"
                   aria-hidden="true"
                   data-testid="diff-sidebar-hunk-separator"
                 >
@@ -265,14 +272,14 @@
 </section>
 
 {#snippet splitSide(side: PatchDisplayRow | null, lineNo: number)}
-  <div class="flex py-px {side ? lineTintClass(side.line.type) : 'bg-surface-0/40'} {side?.line.type === 'context' ? 'bg-surface-0' : ''}">
+  <div class="flex min-w-full py-px {side ? lineTintClass(side.line.type) : 'bg-surface-0/40'} {side?.line.type === 'context' ? 'bg-surface-0' : ''}">
     <span
       class="select-none tabular-nums text-fg-subtle px-2 text-right shrink-0"
       style="width: var(--gutter-w)"
       aria-hidden="true"
       data-testid="diff-sidebar-line-gutter"
     >{lineNo || ''}</span><span
-      class="pl-1 pr-2 flex-1 min-w-0 {wrapClass}"
+      class="pl-1 pr-2 {lineContentClass}"
       data-testid="diff-sidebar-line-content"
     >{#if side}<DiffLineContent line={side.line} tokens={getTokens(side.line)} />{:else}{' '}{/if}</span>
   </div>

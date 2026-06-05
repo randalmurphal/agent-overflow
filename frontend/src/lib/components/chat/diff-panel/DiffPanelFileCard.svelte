@@ -18,6 +18,11 @@
     type PatchLine,
   } from '../../../utils/patchFiles';
   import { lineTintClass } from '../../../utils/diffLineTint';
+  import {
+    diffLineContentClass,
+    diffScrollContentClass,
+    diffSplitGridColumnsClass,
+  } from '../../../utils/diffLineLayout';
   import type { LineToken } from '../../../utils/tokenCache';
   import { getCachedTokensForLine } from '../../../utils/tokenCacheReactive.svelte';
   import type { DiffReviewComment, DiffReviewCommentInput, DiffReviewScope } from '../../../types/models';
@@ -100,6 +105,9 @@
   // buildSplitDisplayRows is pure over displayRows, so $derived gives us a
   // per-instance cache that invalidates when the diff text changes.
   const splitRows = $derived(viewMode === 'split' && open ? buildSplitDisplayRows(displayRows) : null);
+  const scrollContentClass = $derived(diffScrollContentClass(wordWrap));
+  const splitGridColumnsClass = $derived(diffSplitGridColumnsClass(wordWrap));
+  const lineContentClass = $derived(diffLineContentClass(wordWrap));
   const commentsByAnchor = $derived.by(() => {
     const index = new Map<string, DiffReviewComment[]>();
     for (const comment of comments) {
@@ -239,38 +247,42 @@
     {/if}
     {#if viewMode === 'split' && splitRows}
       <div class="mt-1 max-h-[42rem] overflow-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 font-mono text-[0.75rem] leading-relaxed">
-        {#each splitRows as row}
-          <div class="grid grid-cols-2 border-b border-border-subtle/40 last:border-b-0">
-            <div class="min-w-0 border-r border-border-subtle/50 {splitCellClass(row.left)}">
-              {#if row.left}
-                {@const left = row.left}
-                {@render diffLineRow(left, left.oldLine, wordWrap, commentable, () => startComment(rowAnchor(left)))}
-              {:else}
-                <div class="px-3 py-0.5 text-fg-muted/40">&nbsp;</div>
-              {/if}
+        <div class={scrollContentClass} data-testid="diff-panel-split-content">
+          {#each splitRows as row}
+            <div class="grid min-w-full {splitGridColumnsClass} border-b border-border-subtle/40 last:border-b-0">
+              <div class="border-r border-border-subtle/50 {splitCellClass(row.left)}">
+                {#if row.left}
+                  {@const left = row.left}
+                  {@render diffLineRow(left, left.oldLine, wordWrap, commentable, () => startComment(rowAnchor(left)))}
+                {:else}
+                  <div class="min-w-full px-3 py-0.5 text-fg-muted/40">&nbsp;</div>
+                {/if}
+              </div>
+              <div class={splitCellClass(row.right)}>
+                {#if row.right}
+                  {@const right = row.right}
+                  {@render diffLineRow(right, right.newLine, wordWrap, commentable, () => startComment(rowAnchor(right)))}
+                {:else}
+                  <div class="min-w-full px-3 py-0.5 text-fg-muted/40">&nbsp;</div>
+                {/if}
+              </div>
             </div>
-            <div class="min-w-0 {splitCellClass(row.right)}">
-              {#if row.right}
-                {@const right = row.right}
-                {@render diffLineRow(right, right.newLine, wordWrap, commentable, () => startComment(rowAnchor(right)))}
-              {:else}
-                <div class="px-3 py-0.5 text-fg-muted/40">&nbsp;</div>
-              {/if}
-            </div>
-          </div>
-          {#if draftAnchor && (row.left && anchorKey(draftAnchor) === anchorKey(rowAnchor(row.left)) || row.right && anchorKey(draftAnchor) === anchorKey(rowAnchor(row.right)))}
-            {@render commentForm()}
-          {/if}
-        {/each}
+            {#if draftAnchor && (row.left && anchorKey(draftAnchor) === anchorKey(rowAnchor(row.left)) || row.right && anchorKey(draftAnchor) === anchorKey(rowAnchor(row.right)))}
+              {@render commentForm()}
+            {/if}
+          {/each}
+        </div>
       </div>
     {:else}
       <div class="mt-1 max-h-[42rem] overflow-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 font-mono text-[0.75rem] leading-relaxed">
-        {#each displayRows as row (row.id)}
-          {@render diffLineRow(row, row.newLine || row.oldLine, wordWrap, commentable, () => startComment(rowAnchor(row)))}
-          {#if draftAnchor && anchorKey(draftAnchor) === anchorKey(rowAnchor(row))}
-            {@render commentForm()}
-          {/if}
-        {/each}
+        <div class={scrollContentClass} data-testid="diff-panel-stacked-content">
+          {#each displayRows as row (row.id)}
+            {@render diffLineRow(row, row.newLine || row.oldLine, wordWrap, commentable, () => startComment(rowAnchor(row)))}
+            {#if draftAnchor && anchorKey(draftAnchor) === anchorKey(rowAnchor(row))}
+              {@render commentForm()}
+            {/if}
+          {/each}
+        </div>
       </div>
     {/if}
   {/if}
@@ -282,7 +294,7 @@
     keyboard focus inside the row) the line number fades and the "+" button
     paints in its place — same cell, no separate gutter.
   -->
-  <div class="group/diff-line relative grid grid-cols-[2rem_minmax(0,1fr)] items-start {lineTintClass(row.line.type)}">
+  <div class="group/diff-line relative grid min-w-full grid-cols-[2rem_auto] items-start {lineTintClass(row.line.type)}" data-testid="diff-panel-line-row">
     <div class="relative h-full">
       <div class="select-none px-1 py-0.5 text-right text-[0.625rem] tabular-nums text-fg-subtle/65 transition-opacity {commentable ? 'group-hover/diff-line:opacity-0 group-focus-within/diff-line:opacity-0' : ''}">{displayLine || ''}</div>
       {#if commentable}
@@ -299,7 +311,7 @@
         </button>
       {/if}
     </div>
-    <pre class="min-w-0 px-2 py-0.5 {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}"><DiffLineContent line={row.line} tokens={getTokens(row.line)} /></pre>
+    <pre class="px-2 py-0.5 {lineContentClass}" data-testid="diff-panel-line-content"><DiffLineContent line={row.line} tokens={getTokens(row.line)} /></pre>
   </div>
 {/snippet}
 

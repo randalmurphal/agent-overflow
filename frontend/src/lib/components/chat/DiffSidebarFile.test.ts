@@ -45,16 +45,20 @@ describe('<DiffSidebarFile>', () => {
 
     const stackedBody = getByTestId('diff-sidebar-stacked-body');
     expect(stackedBody.className).not.toContain('whitespace-pre');
+    expect(stackedBody.className).toContain('w-max');
+    expect(stackedBody.className).toContain('min-w-full');
     const rows = Array.from(stackedBody.children).filter(
       (child) => child instanceof HTMLElement && !child.dataset.testid,
     );
     expect(rows).toHaveLength(3);
+    expect(rows.every((row) => row.className.includes('min-w-full'))).toBe(true);
 
     const contents = rows.map((row) =>
       row.querySelector('[data-testid="diff-sidebar-line-content"]'),
     );
     expect(contents.every((c) => c instanceof HTMLElement)).toBe(true);
     expect(contents.every((c) => c!.className.includes('whitespace-pre'))).toBe(true);
+    expect(contents.every((c) => c!.className.includes('min-w-max'))).toBe(true);
     expect(contents.map((c) => c!.textContent)).toEqual([
       ' existing();',
       '+addedOne();',
@@ -90,9 +94,12 @@ describe('<DiffSidebarFile>', () => {
 
     const splitBody = getByTestId('diff-sidebar-split-body');
     expect(splitBody.className).not.toContain('whitespace-pre');
+    expect(splitBody.className).toContain('w-full');
+    expect(splitBody.className).toContain('min-w-full');
 
     const cells = Array.from(splitBody.children);
     expect(cells).toHaveLength(4);
+    expect(cells.every((cell) => cell.className.includes('min-w-full'))).toBe(true);
 
     const contents = cells.map((cell) =>
       cell.querySelector('[data-testid="diff-sidebar-line-content"]'),
@@ -100,12 +107,54 @@ describe('<DiffSidebarFile>', () => {
     expect(contents.every((c) => c instanceof HTMLElement)).toBe(true);
     expect(contents.every((c) => c!.className.includes('whitespace-pre-wrap'))).toBe(true);
     expect(contents.every((c) => c!.className.includes('break-all'))).toBe(true);
+    expect(contents.every((c) => c!.className.includes('min-w-0'))).toBe(true);
+    expect(contents.every((c) => !c!.className.includes('min-w-max'))).toBe(true);
     expect(contents.map((c) => c!.textContent)).toEqual([
       '-oldValue();',
       '+newValue();',
       ' unchanged();',
       ' unchanged();',
     ]);
+  });
+
+  it('keeps wrapped stacked rows constrained to the viewport width', () => {
+    const rowId = '0:src/example.ts';
+    const longLine = `const value = "${'x'.repeat(180)}";`;
+    const [file] = parsePatchFiles(`diff --git a/src/example.ts b/src/example.ts
+--- a/src/example.ts
++++ b/src/example.ts
+@@ -1 +1 @@
+-${longLine}
++${longLine.replace('value', 'nextValue')}
+`);
+
+    const { getByTestId } = render(DiffSidebarFile, {
+      props: {
+        file,
+        rowId,
+        expanded: true,
+        threadId: 'thread-1',
+        workspacePath: '/tmp/project',
+        viewMode: 'stacked',
+        wordWrap: true,
+        theme: 'github-dark',
+        virtualizer: fakeVirtualizer(rowId),
+        onToggle: vi.fn(),
+      },
+    });
+
+    const stackedBody = getByTestId('diff-sidebar-stacked-body');
+    expect(stackedBody.className).toContain('w-full');
+    expect(stackedBody.className).toContain('min-w-full');
+    expect(stackedBody.className).not.toContain('w-max');
+
+    const contents = Array.from(
+      stackedBody.querySelectorAll('[data-testid="diff-sidebar-line-content"]'),
+    ) as HTMLElement[];
+    expect(contents.every((c) => c.className.includes('whitespace-pre-wrap'))).toBe(true);
+    expect(contents.every((c) => c.className.includes('break-all'))).toBe(true);
+    expect(contents.every((c) => c.className.includes('min-w-0'))).toBe(true);
+    expect(contents.every((c) => !c.className.includes('min-w-max'))).toBe(true);
   });
 
   it('renders new-side line numbers in the stacked-mode gutter', () => {

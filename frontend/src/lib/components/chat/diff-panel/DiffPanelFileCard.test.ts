@@ -64,6 +64,128 @@ index 0000000..572d5d9
     expect(container.textContent).not.toContain('@@ -0,0 +1,2 @@');
   });
 
+  it('sizes stacked no-wrap rows to the horizontal scroll content', () => {
+    const longLine = 'const value = "' + 'x'.repeat(180) + '";';
+    const [file] = parsePatchFiles(`diff --git a/src/long.ts b/src/long.ts
+--- a/src/long.ts
++++ b/src/long.ts
+@@ -1 +1 @@
+-${longLine}
++${longLine.replace('value', 'nextValue')}
+`);
+
+    const { getByTestId, getAllByTestId } = render(DiffPanelFileCard, {
+      props: {
+        file,
+        open: true,
+        threadId: 'thread-test',
+        workspacePath: '/tmp/project',
+        viewMode: 'stacked',
+        wordWrap: false,
+        onToggle: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('diff-panel-stacked-content').className).toContain('w-max');
+    expect(getByTestId('diff-panel-stacked-content').className).toContain('min-w-full');
+    expect(getAllByTestId('diff-panel-line-row').every((row) => row.className.includes('min-w-full'))).toBe(true);
+    expect(getAllByTestId('diff-panel-line-content').every((line) => line.className.includes('min-w-max'))).toBe(true);
+    expect(getAllByTestId('diff-panel-line-content').every((line) => line.className.includes('whitespace-pre'))).toBe(true);
+  });
+
+  it('keeps stacked word-wrap rows constrained to the viewport width', () => {
+    const longLine = 'const value = "' + 'x'.repeat(180) + '";';
+    const [file] = parsePatchFiles(`diff --git a/src/long.ts b/src/long.ts
+--- a/src/long.ts
++++ b/src/long.ts
+@@ -1 +1 @@
+-${longLine}
++${longLine.replace('value', 'nextValue')}
+`);
+
+    const { getAllByTestId, getByTestId } = render(DiffPanelFileCard, {
+      props: {
+        file,
+        open: true,
+        threadId: 'thread-test',
+        workspacePath: '/tmp/project',
+        viewMode: 'stacked',
+        wordWrap: true,
+        onToggle: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('diff-panel-stacked-content').className).toContain('w-full');
+    expect(getByTestId('diff-panel-stacked-content').className).toContain('min-w-full');
+    expect(getByTestId('diff-panel-stacked-content').className).not.toContain('w-max');
+    const contents = getAllByTestId('diff-panel-line-content');
+    expect(contents.every((line) => line.className.includes('min-w-0'))).toBe(true);
+    expect(contents.every((line) => line.className.includes('whitespace-pre-wrap'))).toBe(true);
+    expect(contents.every((line) => line.className.includes('break-all'))).toBe(true);
+    expect(contents.every((line) => !line.className.includes('min-w-max'))).toBe(true);
+  });
+
+  it('sizes split no-wrap rows to the horizontal scroll content', () => {
+    const longLine = 'const value = "' + 'x'.repeat(180) + '";';
+    const [file] = parsePatchFiles(`diff --git a/src/long.ts b/src/long.ts
+--- a/src/long.ts
++++ b/src/long.ts
+@@ -1 +1 @@
+-${longLine}
++${longLine.replace('value', 'nextValue')}
+`);
+
+    const { getByTestId, getAllByTestId } = render(DiffPanelFileCard, {
+      props: {
+        file,
+        open: true,
+        threadId: 'thread-test',
+        workspacePath: '/tmp/project',
+        viewMode: 'split',
+        wordWrap: false,
+        onToggle: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('diff-panel-split-content').className).toContain('w-max');
+    expect(getByTestId('diff-panel-split-content').className).toContain('min-w-full');
+    expect(getAllByTestId('diff-panel-line-row').every((row) => row.className.includes('min-w-full'))).toBe(true);
+    expect(getAllByTestId('diff-panel-line-content').every((line) => line.className.includes('min-w-max'))).toBe(true);
+  });
+
+  it('keeps split word-wrap rows constrained to the viewport width', () => {
+    const longLine = 'const value = "' + 'x'.repeat(180) + '";';
+    const [file] = parsePatchFiles(`diff --git a/src/long.ts b/src/long.ts
+--- a/src/long.ts
++++ b/src/long.ts
+@@ -1 +1 @@
+-${longLine}
++${longLine.replace('value', 'nextValue')}
+`);
+
+    const { getByTestId, getAllByTestId } = render(DiffPanelFileCard, {
+      props: {
+        file,
+        open: true,
+        threadId: 'thread-test',
+        workspacePath: '/tmp/project',
+        viewMode: 'split',
+        wordWrap: true,
+        onToggle: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('diff-panel-split-content').className).toContain('w-full');
+    expect(getByTestId('diff-panel-split-content').className).toContain('min-w-full');
+    expect(getByTestId('diff-panel-split-content').className).not.toContain('w-max');
+
+    const contents = getAllByTestId('diff-panel-line-content');
+    expect(contents.every((line) => line.className.includes('min-w-0'))).toBe(true);
+    expect(contents.every((line) => line.className.includes('whitespace-pre-wrap'))).toBe(true);
+    expect(contents.every((line) => line.className.includes('break-all'))).toBe(true);
+    expect(contents.every((line) => !line.className.includes('min-w-max'))).toBe(true);
+  });
+
   it('shows line and file comment affordances only for commentable diffs', async () => {
     const [file] = parsePatchFiles(`diff --git a/test-ui.txt b/test-ui.txt
 --- a/test-ui.txt

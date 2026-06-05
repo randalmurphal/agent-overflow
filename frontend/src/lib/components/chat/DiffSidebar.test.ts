@@ -86,6 +86,32 @@ describe('<DiffSidebar>', () => {
     expect(getByText('Retry')).toBeTruthy();
   });
 
+  it('keeps horizontal diff overflow inside the expanded file body', async () => {
+    const patch = [
+      'diff --git a/src/foo.ts b/src/foo.ts',
+      '--- a/src/foo.ts',
+      '+++ b/src/foo.ts',
+      '@@ -1 +1 @@',
+      `-const value = "${'x'.repeat(180)}";`,
+      `+const nextValue = "${'x'.repeat(180)}";`,
+    ].join('\n');
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: patch,
+      nextOffset: patch.length,
+      totalSize: patch.length,
+      isComplete: true,
+    }));
+    const pane = await buildPane();
+    pane.openDiffSidebar({ payloadId: 'p-horizontal' });
+
+    const { getByTestId } = render(DiffSidebar, { props: { pane } });
+    await waitFor(() => {
+      expect(getByTestId('diff-sidebar-file-body')).toBeTruthy();
+    });
+    expect(getByTestId('diff-sidebar-body').className).toContain('overflow-y-auto');
+    expect(getByTestId('diff-sidebar-file-body').className).toContain('overflow-x-auto');
+  });
+
   it('dispatches tokenization on expand without waiting for IntersectionObserver', async () => {
     // happy-dom does not fire IntersectionObserver — same hole as
     // production for a fully-visible diff that never re-fires the
