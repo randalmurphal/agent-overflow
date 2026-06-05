@@ -14,6 +14,11 @@ import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
 // to no-ops; only the write sequence matters here.
 const mocks = vi.hoisted(() => {
   const writes: string[] = [];
+  // [cols, rows] of each term.resize() call, plus a unified ordered timeline of
+  // resize/write calls, so a test can assert the grid is sized to the backend
+  // dimensions BEFORE the replay frame is written (Fix A — reopen corruption).
+  const resizes: Array<[number, number]> = [];
+  const timeline: string[] = [];
   // Decoded payloads added here make write() throw, simulating an xterm write
   // failure mid-drain (drives the gate-stays-open regression test).
   const throwOn = new Set<string>();
@@ -36,6 +41,11 @@ const mocks = vi.hoisted(() => {
       const text = typeof data === 'string' ? data : decoder.decode(data);
       if (throwOn.has(text)) throw new Error(`xterm write failed: ${text}`);
       writes.push(text);
+      timeline.push(`write:${text}`);
+    }
+    resize(columns: number, rows: number): void {
+      resizes.push([columns, rows]);
+      timeline.push(`resize:${columns}x${rows}`);
     }
     onData(): { dispose(): void } {
       return { dispose(): void {} };
@@ -51,6 +61,8 @@ const mocks = vi.hoisted(() => {
   }
   return {
     writes,
+    resizes,
+    timeline,
     throwOn,
     FakeTerminal,
     getLastTerminal: (): FakeTerminal | null => lastTerminal,
@@ -82,14 +94,17 @@ vi.mock('../../stores/bindings', () => ({
   ResizeTerminal: mocks.ResizeTerminal,
 }));
 
-function makeSummary(terminalID: string): TerminalSessionSummary {
+function makeSummary(
+  terminalID: string,
+  dims: { rows?: number; cols?: number } = {},
+): TerminalSessionSummary {
   return {
     terminalID,
     threadID: 'thread-1',
     shell: '/bin/bash',
     cwd: '/home/user',
-    rows: 24,
-    cols: 80,
+    rows: dims.rows ?? 24,
+    cols: dims.cols ?? 80,
     pid: 4242,
     startedAt: 0,
     running: true,
@@ -109,9 +124,12 @@ interface ReplayResult {
 // Mount TerminalBody with GetTerminalReplay parked on an unresolved promise so
 // the test controls exactly when the replay round-trip completes — reproducing
 // the window where a live `terminal:output` event arrives mid-hydrate.
-async function mountWithPendingReplay(terminalID: string) {
+async function mountWithPendingReplay(
+  terminalID: string,
+  dims: { rows?: number; cols?: number } = {},
+) {
   const handle = createThreadTerminalState();
-  handle.addTab(makeSummary(terminalID));
+  handle.addTab(makeSummary(terminalID, dims));
 
   let resolveReplay!: (replay: ReplayResult) => void;
   let rejectReplay!: (reason: unknown) => void;
@@ -145,6 +163,8 @@ describe('TerminalBody hydrate ordering', () => {
 
   beforeEach(() => {
     mocks.writes.length = 0;
+    mocks.resizes.length = 0;
+    mocks.timeline.length = 0;
     mocks.throwOn.clear();
     mocks.GetTerminalReplay.mockReset();
     mocks.WriteTerminal.mockClear();
@@ -155,6 +175,24 @@ describe('TerminalBody hydrate ordering', () => {
     consoleErrorSpy?.mockRestore();
     consoleErrorSpy = null;
     cleanup();
+  });
+
+  it('sizes the grid to the backend dimensions before writing the replay', async () => {
+    // Reopen a pane whose last-known PTY size (120x30) differs from xterm's
+    // 80x24 default, so a missing pre-replay resize would be observable: the
+    // provider's last frame was drawn for 120 cols, and writing it into a
+    // default 80-col grid is exactly the close→reopen corruption.
+    const { resolveReplay } = await mountWithPendingReplay('t-resize', { rows: 30, cols: 120 });
+
+    resolveReplay({ data: btoa('REPLAY'), fromSequence: 0, throughSequence: 0 });
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    // The grid is resized to the summary's (cols, rows) — the width the provider
+    // drew its last frame at — and that resize precedes the replay write.
+    expect(mocks.resizes[0]).toEqual([120, 30]);
+    expect(mocks.timeline).toEqual(['resize:120x30', 'write:REPLAY']);
   });
 
   it('writes the replay buffer before live output buffered during hydrate', async () => {

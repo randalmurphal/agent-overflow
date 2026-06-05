@@ -606,6 +606,7 @@ func (p *privilegedApp) RestartTerminal() string                      { return "
 func (p *privilegedApp) CloseTerminal() string                        { return "ok" }
 func (p *privilegedApp) CloseThreadTerminals() string                 { return "ok" }
 func (p *privilegedApp) ResizeTerminal() string                       { return "ok" }
+func (p *privilegedApp) RefreshTerminal() string                      { return "ok" }
 func (p *privilegedApp) MoveThreadTerminals() string                  { return "ok" }
 func (p *privilegedApp) OpenInEditor() string                         { return "ok" }
 func (p *privilegedApp) OpenExternalURL() string                      { return "ok" }

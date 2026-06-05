@@ -140,6 +140,35 @@ func TestPaneNavVimChordsEscapeTerminalFocus(t *testing.T) {
 	}
 }
 
+// TestTerminalRefreshDefaultBinding pins the in-terminal repaint chord. The
+// chord is behaviour-critical and NOT free to change silently: alt+shift+r is
+// deliberate because the webview reserves Ctrl/Cmd+R and Ctrl/Cmd+Shift+R for
+// reload (internal/uikeys), so a regression moving terminal.refresh to a mod+r
+// chord would be swallowed by the webview and never reach the SPA. The
+// terminalFocus gate scopes it to the recovery press from inside the terminal.
+// Both properties pass every generic Defaults test, so pin them explicitly.
+func TestTerminalRefreshDefaultBinding(t *testing.T) {
+	var refresh []Keybinding
+	for _, b := range Defaults {
+		if b.Command == "terminal.refresh" {
+			refresh = append(refresh, b)
+		}
+	}
+	if len(refresh) != 1 {
+		t.Fatalf("want exactly one terminal.refresh binding, got %d: %+v", len(refresh), refresh)
+	}
+	b := refresh[0]
+	if b.Key != "alt+shift+r" {
+		t.Errorf("terminal.refresh Key = %q, want %q (mod+r chords are reserved by the webview reload)", b.Key, "alt+shift+r")
+	}
+	if b.When != "terminalFocus" {
+		t.Errorf("terminal.refresh When = %q, want %q (scopes the chord to the in-terminal recovery press)", b.When, "terminalFocus")
+	}
+	if b.DefaultID != "terminal.refresh" {
+		t.Errorf("terminal.refresh DefaultID = %q, want %q", b.DefaultID, "terminal.refresh")
+	}
+}
+
 // TestDefaultsHaveUniqueKeyWhenTuples guarantees no two defaults
 // collide on the same (key, when) pair. Multiple chords for one
 // command is fine (e.g. mod+n and mod+shift+o both → thread.new),

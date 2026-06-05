@@ -101,6 +101,7 @@ var LocalOnlyMethods = map[string]bool{
 	"CloseTerminal":                  true,
 	"CloseThreadTerminals":           true,
 	"ResizeTerminal":                 true,
+	"RefreshTerminal":                true,
 	"MoveThreadTerminals":            true,
 	"OpenInEditor":                   true,
 	"OpenExternalURL":                true,

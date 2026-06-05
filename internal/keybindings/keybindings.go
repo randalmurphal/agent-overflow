@@ -70,6 +70,15 @@ var Defaults = []Keybinding{
 	{Key: "mod+shift+enter", Command: "sidebar.cursor.openInNewPane", When: "sidebarCursorActive && !anyModalOpen", DefaultID: "sidebar.cursor.openInNewPane"},
 	{Key: "mod+/", Command: "picker.toggleInput", When: "anyPickerOpen", DefaultID: "picker.toggleInput"},
 	{Key: "mod+n", Command: "terminal.new", When: "terminalFocus", DefaultID: "terminal.new"},
+	// terminal.refresh repaints a glitched terminal from inside it (PTY winsize
+	// nudge → provider redraw, no visible xterm resize). alt+shift+r, NOT
+	// mod+(shift+)r: the webview reserves Ctrl/Cmd+R and Ctrl/Cmd+Shift+R for
+	// reload / force-reload (internal/uikeys), so those never reach the SPA.
+	// Unlike terminal.new above, this one DOES fire from inside the xterm: it is
+	// both editableReachable AND a member of the frontend TERMINAL_ESCAPE_COMMAND_IDS
+	// set, so the chord escapes the focused terminal (like alt+shift+h/l) instead
+	// of encoding to the PTY. The terminalFocus gate scopes it to that recovery press.
+	{Key: "alt+shift+r", Command: "terminal.refresh", When: "terminalFocus", DefaultID: "terminal.refresh"},
 	// NOTE: the `!terminalFocus`-gated chords below (mod+w → pane.close, the
 	// thread.new family) must NOT fire from inside a focused xterm — ctrl-w in
 	// particular has to reach the shell as werase. The gate only holds because

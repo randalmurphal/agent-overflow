@@ -48,6 +48,9 @@ vi.mock('../../stores/bindings', () => ({
   ResizeTerminal: vi.fn(async (terminalID: string, rows: number, cols: number) => {
     callLog.push({ fn: 'ResizeTerminal', args: [terminalID, rows, cols] });
   }),
+  RefreshTerminal: vi.fn(async (terminalID: string) => {
+    callLog.push({ fn: 'RefreshTerminal', args: [terminalID] });
+  }),
   WriteTerminal: vi.fn(async (terminalID: string, data: string) => {
     callLog.push({ fn: 'WriteTerminal', args: [terminalID, data] });
   }),

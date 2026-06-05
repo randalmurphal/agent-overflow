@@ -97,6 +97,17 @@ func (a *App) ResizeTerminal(terminalID string, rows uint16, cols uint16) error 
 	return a.terminals.Resize(terminalID, rows, cols)
 }
 
+// RefreshTerminal forces the terminal's child process to repaint by briefly
+// nudging the PTY winsize and restoring it — the programmatic form of the manual
+// resize users do to clear a glitched provider TUI frame (e.g. Claude Code's Ink
+// renderer after a reflow desync). The visible grid size is unchanged.
+func (a *App) RefreshTerminal(terminalID string) error {
+	if a.terminals == nil {
+		return fmt.Errorf("terminal manager not initialized")
+	}
+	return a.terminals.Refresh(terminalID)
+}
+
 // CloseTerminal kills the terminal's process group and removes the session.
 func (a *App) CloseTerminal(terminalID string) error {
 	if a.terminals == nil {

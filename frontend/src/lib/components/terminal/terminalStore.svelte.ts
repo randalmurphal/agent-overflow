@@ -252,6 +252,23 @@ function terminalStateKey(threadID: string): string {
   return threadID || '__unbound__';
 }
 
+/**
+ * Resolves the identity a pane's terminal state is keyed under: its thread when
+ * bound, otherwise its pane id so an unbound/draft pane keeps its own isolated
+ * terminals. Pass the result to getThreadTerminalState /
+ * getExistingThreadTerminalState, which apply the unbound-thread normalization.
+ *
+ * This is the single source of truth for the key so the terminal surfaces and
+ * the keybinding command can't drift: a refresh or command must resolve the
+ * SAME state the surface mounted, or it targets the wrong terminal.
+ */
+export function terminalStateKeyForPane(
+  threadId: string | null | undefined,
+  paneId: string,
+): string {
+  return threadId ?? paneId;
+}
+
 export function getThreadTerminalState(threadID: string): ThreadTerminalStateHandle {
   const key = terminalStateKey(threadID);
   const existing = terminalStatesByThread.get(key);

@@ -7,6 +7,10 @@
     onOpen: () => void;
     onClose: (terminalID: string) => void;
     onSelect: (terminalID: string) => void;
+    /** Repaint the active terminal (PTY winsize nudge → provider redraw).
+     *  Omitted when the host doesn't wire it; the ↻ button is hidden then,
+     *  as it is whenever there are no tabs to refresh. */
+    onRefresh?: () => void;
     /** Collapse the bottom drawer. Omitted in a full terminal pane, where
      *  there is nothing to collapse into — the ▾ button is hidden then. */
     onCollapse?: () => void;
@@ -16,7 +20,8 @@
     workspacePath?: string;
   }
 
-  let { handle, onOpen, onClose, onSelect, onCollapse, workspacePath }: Props = $props();
+  let { handle, onOpen, onClose, onSelect, onRefresh, onCollapse, workspacePath }: Props =
+    $props();
 
   function labelFor(shell: string): string {
     if (!shell) return 'shell';
@@ -79,6 +84,21 @@
     onclick={onOpen}
     aria-label="Open New Terminal"
   >+</button>
+  {#if onRefresh && handle.tabs.length > 0}
+    <!-- Repaint the active terminal. Nudges the PTY winsize (rows blip +
+         restore) so the provider's TUI reconciles a corrupted frame; the
+         xterm grid is never resized, so the view shows only the provider's
+         own redraw. Recovers the close→reopen glitch and any provider-side
+         render desync without the user reaching for a manual window resize. -->
+    <button
+      type="button"
+      class="h-6 px-2 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mr-1"
+      data-testid="terminal-refresh"
+      onclick={() => onRefresh?.()}
+      aria-label="Refresh Terminal"
+      title="Refresh Terminal"
+    >↻</button>
+  {/if}
   {#if workspacePath}
     <!-- Open the terminal's working directory in the user's editor.
          The terminal is bound to `cwd: pane.thread.workspacePath`

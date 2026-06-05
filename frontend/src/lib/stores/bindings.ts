@@ -137,6 +137,7 @@ export {
   ListTerminals,
   OpenTerminal,
   MoveThreadTerminals,
+  RefreshTerminal,
   ResizeTerminal,
   RestartTerminal,
   WriteTerminal,

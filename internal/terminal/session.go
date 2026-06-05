@@ -73,6 +73,18 @@ type Session struct {
 
 	proc *Process
 
+	// resizeMu serializes PTY winsize operations (Resize and Refresh) so a
+	// resize landing inside Refresh's shrink→restore window can't be clobbered
+	// by the restore (and vice versa); the last size operation wins. Distinct
+	// from mu, which guards cached metadata: Refresh holds resizeMu across its
+	// ~40ms pause, and mu must never be held that long.
+	//
+	// Invariant: this is complete only because every PTY winsize mutation routes
+	// through Session.Resize / Session.Refresh. Don't add a path that calls
+	// Process.Resize (or pty.resize) directly — it would bypass resizeMu and
+	// reopen the lost-update race.
+	resizeMu sync.Mutex
+
 	ring     *ringBuffer
 	sequence atomic.Uint64
 	ranges   []replayChunkRange
@@ -153,8 +165,12 @@ func (s *Session) Write(data []byte) error {
 	return s.proc.Write(data)
 }
 
-// Resize proxies to the underlying PTY and updates the cached size.
+// Resize proxies to the underlying PTY and updates the cached size. resizeMu is
+// held across the PTY write and the cache update so a concurrent Refresh can't
+// observe a torn (size-written-but-cache-stale) state or restore over this size.
 func (s *Session) Resize(rows, cols uint16) error {
+	s.resizeMu.Lock()
+	defer s.resizeMu.Unlock()
 	if err := s.proc.Resize(rows, cols); err != nil {
 		return err
 	}
@@ -163,6 +179,22 @@ func (s *Session) Resize(rows, cols uint16) error {
 	s.cols = cols
 	s.mu.Unlock()
 	return nil
+}
+
+// Refresh forces the underlying child to repaint at its current size without
+// changing the visible dimensions. resizeMu is held across the whole nudge —
+// including Process.Refresh's ~40ms shrink/restore pause — so a concurrent
+// Resize can't land between the shrink and the restore and get clobbered (which
+// would leave the PTY mis-sized against the xterm grid, the exact desync Refresh
+// exists to clear). See Process.Refresh for the winsize-nudge mechanism and why
+// a bare SIGWINCH is insufficient.
+func (s *Session) Refresh() error {
+	s.resizeMu.Lock()
+	defer s.resizeMu.Unlock()
+	s.mu.Lock()
+	rows, cols := s.rows, s.cols
+	s.mu.Unlock()
+	return s.proc.Refresh(rows, cols)
 }
 
 // Replay returns the entire current replay buffer as a single byte slice.

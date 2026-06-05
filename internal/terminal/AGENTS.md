@@ -8,12 +8,15 @@ session for replay on reconnect.
 
 - `manager.go` — `Manager` type: owns the map of active sessions, the
   `OutputCallback` / `ExitCallback` fan-out, and the public API
-  (`Create`, `Write`, `Resize`, `Close`, `List`).
+  (`Open`, `Write`, `Resize`, `Refresh`, `Close`, `List`).
 - `session.go` — `Session`: a `Process` + ring buffer + subscriber
   fan-out. Owns the replay snapshot that re-hydrates an xterm on
-  reconnect.
+  reconnect. `resizeMu` serializes `Resize`/`Refresh` so the latter's
+  shrink→restore nudge can't be clobbered by a concurrent resize.
 - `process.go` — `Process`: wraps the PTY master fd + child `*os.Process`
-  + output pump goroutine. Pure spawn/read/signal; no policy.
+  + output pump goroutine. Pure spawn/read/signal; no policy. `Refresh`
+  forces a TUI repaint via a one-row winsize nudge (shrink, pause,
+  restore) — see its doc comment for why a bare SIGWINCH is insufficient.
 - `ring.go` — byte-oriented circular buffer capped at 256 KiB per
   session.
 - `shell.go` — `resolveShell`: explicit > `$SHELL` > `/bin/sh`.
@@ -49,6 +52,12 @@ session for replay on reconnect.
   caller's problem.
 - Do NOT leak file descriptors on exit. The close path in `Session` /
   `Process` is the regression-tested shape — keep it.
+- Do NOT mutate a PTY's winsize outside `Session.Resize` /
+  `Session.Refresh`. Those serialize on `resizeMu` so Refresh's
+  shrink→restore nudge can't be clobbered by a concurrent resize. A new
+  path that calls `Process.Resize` (or `pty.resize`) directly bypasses
+  that lock and reopens the lost-update race
+  (`TestManagerRefreshSerializesWithConcurrentResize` guards it).
 
 ## References
 

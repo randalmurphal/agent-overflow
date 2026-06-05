@@ -18,7 +18,7 @@
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
   import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
-  import { PANE_NAV_COMMAND_IDS } from '../../stores/paneNavCommands';
+  import { TERMINAL_ESCAPE_COMMAND_IDS } from '../../stores/paneNavCommands';
 
   interface Props {
     handle: ThreadTerminalStateHandle;
@@ -87,12 +87,13 @@
     terminal.loadAddon(new WebLinksAddon());
     terminal.open(mount);
 
-    // Let app pane-navigation chords that stay active inside a focused terminal
-    // (alt+h/l, alt+shift+h/l) bubble to App.svelte's window keydown handler
-    // instead of being encoded to the PTY. Returning false makes xterm skip its
-    // own handling WITHOUT preventDefault/stopPropagation, so the event reaches
-    // the app. Chords still gated on !terminalFocus (alt+arrow word-motion) are
-    // not matched by the predicate and fall through to the shell as before. The
+    // Let app chords that stay active inside a focused terminal bubble to
+    // App.svelte's window keydown handler instead of being encoded to the PTY:
+    // pane navigation (alt+h/l, alt+shift+h/l) and terminal.refresh
+    // (alt+shift+r → repaint). Returning false makes xterm skip its own handling
+    // WITHOUT preventDefault/stopPropagation, so the event reaches the app.
+    // Chords still gated on !terminalFocus (alt+arrow word-motion) are not
+    // matched by the predicate and fall through to the shell as before. The
     // predicate reads live bindings, so a user rebind takes effect immediately.
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
@@ -120,7 +121,7 @@
         });
         return false;
       }
-      return !eventEscapesTerminalToCommand(event, PANE_NAV_COMMAND_IDS);
+      return !eventEscapesTerminalToCommand(event, TERMINAL_ESCAPE_COMMAND_IDS);
     });
 
     // Renderer choice is load-bearing for TUI art, not just perf. xterm draws
@@ -164,6 +165,28 @@
     // textarea inside mountEl, so focusin/focusout bubble up reliably.
     mountEl.addEventListener('focusin', handleFocusIn);
     mountEl.addEventListener('focusout', handleFocusOut);
+
+    // Size the grid to the width the provider last drew at BEFORE writing the
+    // replay. A fresh xterm defaults to 80x24; the replay blob is the provider's
+    // most recent frame, laid out for the PTY's current (rows, cols). Writing it
+    // into an 80-col grid bakes the provider's cursor/erase escapes against the
+    // wrong width — the later fit() reflow rewraps cells but can't re-run those
+    // already-consumed escapes, so the frame stays mangled until a real resize
+    // forces a repaint. That is the close→reopen corruption: a same-size reopen
+    // never changes the PTY winsize, so no SIGWINCH ever arrives to heal it. The
+    // backend reports its cached size in the summary (== the width the frame was
+    // drawn for), so sizing to it here makes the replay land correctly no matter
+    // when flex layout settles. scheduleFit() below then measures the real pane;
+    // if it genuinely differs, that resize round-trips a SIGWINCH and the
+    // provider repaints at the new width.
+    const summary = handle.tabs.find((t) => t.terminalID === terminalID)?.summary;
+    if (summary && summary.cols > 0 && summary.rows > 0) {
+      try {
+        term.resize(summary.cols, summary.rows);
+      } catch (err) {
+        console.error('terminal: pre-replay resize to backend size failed', err);
+      }
+    }
 
     // Load replay buffer before draining pending output so order is correct.
     try {

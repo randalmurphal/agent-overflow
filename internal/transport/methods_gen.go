@@ -163,6 +163,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ReconfigureObservability", ID: 225050321},              // main.App.ReconfigureObservability
 	{Name: "ReconnectSession", ID: 1420075138},                     // main.App.ReconnectSession
 	{Name: "RefreshMcpServerStatus", ID: 2215279661},               // main.App.RefreshMcpServerStatus
+	{Name: "RefreshTerminal", ID: 2618043580},                      // main.App.RefreshTerminal
 	{Name: "RegisterQueueItem", ID: 1034543696},                    // main.App.RegisterQueueItem
 	{Name: "RemoveOtherWorktree", ID: 2899196344},                  // main.App.RemoveOtherWorktree
 	{Name: "RemoveOtherWorktreeForProject", ID: 574548500},         // main.App.RemoveOtherWorktreeForProject

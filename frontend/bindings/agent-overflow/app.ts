@@ -1030,13 +1030,8 @@ export function GitStatusUnsubscribe(subscriptionID: string): $CancellablePromis
 
 /**
  * GitSyncBranch fast-forwards branch from its configured upstream.
- * Asymmetric lock by case: syncing the workspace's current branch
- * mutates HEAD/index/working tree (via `git pull --ff-only`) and needs
- * the workspace-change gate; syncing any other branch only updates
- * refs/heads/<branch> via a fetch refspec, same threat shape as
- * GitMaybeFetchRemotes. The thread lock is held across the
- * isCurrent read so a concurrent checkout can't flip the path
- * between the check and the operation.
+ * The thread lock is held across the current-branch read so a concurrent
+ * checkout can't flip the path between the check and the operation.
  */
 export function GitSyncBranch(threadID: string, branch: string): $CancellablePromise<git$0.GitBranch[]> {
     return $Call.ByID(1057032236, threadID, branch).then(($result: any) => {
@@ -1739,6 +1734,16 @@ export function RefreshMcpServerStatus(providerName: string): $CancellablePromis
     return $Call.ByID(2215279661, providerName).then(($result: any) => {
         return $$createType58($result);
     });
+}
+
+/**
+ * RefreshTerminal forces the terminal's child process to repaint by briefly
+ * nudging the PTY winsize and restoring it — the programmatic form of the manual
+ * resize users do to clear a glitched provider TUI frame (e.g. Claude Code's Ink
+ * renderer after a reflow desync). The visible grid size is unchanged.
+ */
+export function RefreshTerminal(terminalID: string): $CancellablePromise<void> {
+    return $Call.ByID(2618043580, terminalID);
 }
 
 /**

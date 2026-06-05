@@ -4,6 +4,7 @@
     OpenTerminal,
     CloseTerminal,
     ListTerminals,
+    RefreshTerminal,
     TerminalOpenOptions,
   } from '../../stores/bindings';
   import type {
@@ -14,6 +15,7 @@
   import { errString } from '../../utils/errors';
   import {
     getThreadTerminalState,
+    terminalStateKeyForPane,
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
   import TerminalTabStrip from './TerminalTabStrip.svelte';
@@ -66,7 +68,7 @@
   // handle in place). The helper keeps that intent explicit and reads `surface`
   // inside a function so it isn't flagged as a stale top-level capture.
   function initialTerminalStateKey(): string {
-    return surface.threadId ?? surface.paneId;
+    return terminalStateKeyForPane(surface.threadId, surface.paneId);
   }
 
   // Thread-owned state lets this renderer unmount/remount without losing tabs.
@@ -134,6 +136,19 @@
     handle.setActive(terminalID);
   }
 
+  // Repaint the active terminal. RefreshTerminal blips the PTY winsize (rows
+  // shrink + restore) to deliver a SIGWINCH so the provider's TUI redraws a
+  // corrupted frame — the same recovery a manual window resize triggers, minus
+  // the visible resize. The xterm grid is untouched, so the user sees only the
+  // provider's own reconciliation. No-op when there is no active terminal.
+  function refreshActiveTerminal() {
+    const terminalID = handle.activeTerminalID;
+    if (!terminalID) return;
+    RefreshTerminal(terminalID).catch((err) => {
+      console.error('terminal: RefreshTerminal failed', err);
+    });
+  }
+
   function collapseDrawer() {
     surface.setVisible(false);
   }
@@ -189,6 +204,7 @@
   onOpen={openTerminal}
   onClose={closeTerminal}
   onSelect={selectTerminal}
+  onRefresh={refreshActiveTerminal}
   onCollapse={collapsible ? collapseDrawer : undefined}
   workspacePath={surface.workspacePath}
 />

@@ -17,7 +17,7 @@ import {
   registerCommand,
   type CommandContext,
 } from './commandRegistry.svelte';
-import { PANE_NAV_COMMAND_IDS } from './paneNavCommands';
+import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function baseCtx(extra: Partial<CommandContext> = {}): CommandContext {
@@ -206,6 +206,61 @@ describe('eventEscapesTerminalToCommand (terminal key-escape predicate)', () => 
     setKeybindingsForTest([{ key: 'alt+h', command: 'other.cmd' }]);
     expect(
       eventEscapesTerminalToCommand(ev('h', { altKey: true }), PANE_NAV_COMMAND_IDS, { isMac: false }),
+    ).toBe(false);
+  });
+
+  // terminal.refresh (alt+shift+r) must escape a focused terminal the same way
+  // the pane-nav chords do, so the in-terminal repaint press reaches the app
+  // instead of being encoded to the PTY as a meta sequence. This needs BOTH the
+  // escape-set membership AND a command `when` that holds under the synthetic
+  // terminalFocus-only context the predicate evaluates against; the next three
+  // tests pin each half so a regression in either fails loudly.
+  function registerTerminalRefresh(when = 'terminalFocus || terminalOpen'): void {
+    registerCommand({
+      id: 'terminal.refresh',
+      label: 'Refresh',
+      when,
+      editableReachable: true,
+      run: vi.fn(),
+    });
+    setKeybindingsForTest([
+      { key: 'alt+shift+r', command: 'terminal.refresh', when: 'terminalFocus' },
+    ]);
+  }
+
+  it('lets alt+shift+r escape the terminal via the terminal-escape set', () => {
+    registerTerminalRefresh();
+    expect(
+      eventEscapesTerminalToCommand(
+        ev('r', { altKey: true, shiftKey: true }),
+        TERMINAL_ESCAPE_COMMAND_IDS,
+        { isMac: false },
+      ),
+    ).toBe(true);
+  });
+
+  it('would NOT escape alt+shift+r through the pane-nav-only set — escape-set entry is load-bearing', () => {
+    registerTerminalRefresh();
+    expect(
+      eventEscapesTerminalToCommand(
+        ev('r', { altKey: true, shiftKey: true }),
+        PANE_NAV_COMMAND_IDS,
+        { isMac: false },
+      ),
+    ).toBe(false);
+  });
+
+  it('requires the command `when` to hold under the synthetic terminalFocus ctx — bare terminalOpen would not escape', () => {
+    // The predicate evaluates against `{ terminalFocus: true }` only, so a
+    // command gated solely on `terminalOpen` evaluates false there and stays in
+    // the PTY. This is exactly why the real command uses `terminalFocus || ...`.
+    registerTerminalRefresh('terminalOpen');
+    expect(
+      eventEscapesTerminalToCommand(
+        ev('r', { altKey: true, shiftKey: true }),
+        TERMINAL_ESCAPE_COMMAND_IDS,
+        { isMac: false },
+      ),
     ).toBe(false);
   });
 });

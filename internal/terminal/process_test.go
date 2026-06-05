@@ -98,6 +98,75 @@ func TestProcessResize(t *testing.T) {
 	}
 }
 
+// TestProcessRefreshNudgesAndRestores verifies Refresh delivers a SIGWINCH by
+// briefly shrinking the winsize and then restores the original. A shell traps
+// WINCH and reports `stty size` on each one: the shrunk "23 80" proves the nudge
+// reached the child, and the trailing "24 80" proves the size was restored.
+//
+// The shell echoes READY only after installing the trap, and the test waits for
+// it before nudging. Without that sync, a startup race lets the first (shrink)
+// SIGWINCH reach the default handler before the trap is installed — it is then
+// dropped and the test observes only the restore. In production the provider's
+// SIGWINCH handler is installed long before any refresh, so READY models the
+// steady state Refresh actually runs against.
+func TestProcessRefreshNudgesAndRestores(t *testing.T) {
+	p, err := Start(ProcessConfig{
+		Shell: "/bin/sh",
+		Args:  []string{"-c", "trap 'stty size' WINCH; echo READY; while :; do sleep 0.02; done"},
+		Cwd:   t.TempDir(),
+		Rows:  24,
+		Cols:  80,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Kill() })
+
+	// Wait for the trap to be installed before nudging (see doc comment).
+	ready := drainUntil(t, p.Output(), "READY", 3*time.Second)
+	if !strings.Contains(ready, "READY") {
+		t.Fatalf("shell did not signal trap readiness, got %q", ready)
+	}
+
+	if err := p.Refresh(24, 80); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	// The shrink nudge fires SIGWINCH and the child reports the smaller "23 80";
+	// the restore returns it to the original "24 80" (fail-safe: never mis-sized).
+	// Both are matched against one accumulating buffer so the two reports landing
+	// in a single read chunk can't strand the second assertion.
+	needles := []string{"23 80", "24 80"}
+	out := drainOrdered(t, p.Output(), needles, 3*time.Second)
+	if !containsInOrder(out, needles) {
+		t.Fatalf("expected nudged '23 80' then restored '24 80' in output, got %q", out)
+	}
+}
+
+// TestNudgeRows pins the pure size arithmetic Refresh relies on. The rows==1
+// boundary is load-bearing: a single-row terminal must grow (not shrink to a
+// invalid 0-row winsize), so this guards a future "rows <= 1" → "rows < 1"
+// style regression that would emit an invalid winsize.
+func TestNudgeRows(t *testing.T) {
+	cases := []struct {
+		rows   uint16
+		want   uint16
+		wantOk bool
+	}{
+		{rows: 0, want: 0, wantOk: false},        // invalid winsize → no nudge
+		{rows: 1, want: 2, wantOk: true},         // can't shrink to 0 → grow
+		{rows: 2, want: 1, wantOk: true},         // smallest size that still shrinks
+		{rows: 24, want: 23, wantOk: true},       // typical
+		{rows: 65535, want: 65534, wantOk: true}, // max, no overflow
+	}
+	for _, c := range cases {
+		got, ok := nudgeRows(c.rows)
+		if got != c.want || ok != c.wantOk {
+			t.Errorf("nudgeRows(%d) = (%d, %v), want (%d, %v)", c.rows, got, ok, c.want, c.wantOk)
+		}
+	}
+}
+
 // TestProcessKillsGroup ensures that a shell which forks a long-running child
 // is fully killed when we call Close/Kill. We accomplish this by having the
 // shell print the child pid to stdout and then asserting that the child pid
@@ -189,6 +258,46 @@ func drainUntil(t *testing.T, ch <-chan []byte, needle string, timeout time.Dura
 			return sb.String()
 		}
 	}
+}
+
+// drainOrdered reads chunks into one accumulating buffer until every needle has
+// appeared in order, or the deadline passes. Unlike chaining drainUntil calls,
+// the single buffer means two needles arriving in one read chunk are both seen —
+// chaining would consume both while matching the first and then block forever on
+// the second.
+func drainOrdered(t *testing.T, ch <-chan []byte, needles []string, timeout time.Duration) string {
+	t.Helper()
+	var sb strings.Builder
+	deadline := time.After(timeout)
+	for {
+		if containsInOrder(sb.String(), needles) {
+			return sb.String()
+		}
+		select {
+		case chunk, ok := <-ch:
+			if !ok {
+				return sb.String()
+			}
+			sb.Write(chunk)
+		case <-deadline:
+			return sb.String()
+		}
+	}
+}
+
+// containsInOrder reports whether every needle occurs in s in the given order
+// (each match consuming the text before it, so repeats must be distinct
+// occurrences).
+func containsInOrder(s string, needles []string) bool {
+	off := 0
+	for _, n := range needles {
+		i := strings.Index(s[off:], n)
+		if i < 0 {
+			return false
+		}
+		off += i + len(n)
+	}
+	return true
 }
 
 func extractChildPID(t *testing.T, ch <-chan []byte, timeout time.Duration) int {

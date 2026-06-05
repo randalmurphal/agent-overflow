@@ -152,6 +152,65 @@ func (p *Process) Resize(rows, cols uint16) error {
 	return nil
 }
 
+// refreshNudgePause is how long Refresh holds the one-row-smaller winsize before
+// restoring it. A back-to-back change+restore is coalesced by Node's tty layer
+// (which Claude Code's Ink renderer sits on) into a net no-op, so the child
+// never observes a change and never repaints. The pause must outlast one of the
+// child's event-loop turns so it sees the shrink before the restore. 40ms sits
+// comfortably above an idle Node turn (a spike measured ~25ms as sufficient)
+// while staying imperceptible for a rare, user-initiated repaint.
+const refreshNudgePause = 40 * time.Millisecond
+
+// nudgeRows returns the transient row count Refresh shrinks (or grows) to before
+// restoring rows, plus whether a nudge should run at all. A zero rows is not a
+// valid winsize, so it reports ok=false. Shrinking by one row is the default; a
+// single-row terminal can't shrink to a valid zero-row winsize, so it grows by
+// one instead. Either result is a real winsize that differs from rows, which is
+// what forces the child's SIGWINCH handler to observe a change and repaint.
+func nudgeRows(rows uint16) (nudged uint16, ok bool) {
+	switch rows {
+	case 0:
+		return 0, false
+	case 1:
+		return rows + 1, true
+	default:
+		return rows - 1, true
+	}
+}
+
+// Refresh forces the child to repaint by briefly shrinking the PTY by one row
+// and restoring it — the programmatic form of the manual terminal resize users
+// do to clear a glitched TUI frame. A bare SIGWINCH is not enough: Node-based
+// TUIs only re-render when the kernel reports a *changed* winsize, so we make a
+// real change and undo it. Nudging rows (not cols) keeps the intermediate frame
+// at the correct width, so the only visible transient is a one-row blip, never a
+// horizontal reflow; shrinking (not growing) blanks the bottom row briefly
+// instead of scrolling the whole screen.
+//
+// Refresh ends by restoring (rows, cols), so a child that ignores the nudge is a
+// no-op. That fail-safe only holds because callers serialize size operations:
+// Session.Refresh holds resizeMu across this whole call so a concurrent
+// Session.Resize can't slip a different size in between the shrink and the
+// restore (which would leave the PTY restored to the stale size). Don't call
+// this on a PTY that another goroutine may resize concurrently.
+func (p *Process) Refresh(rows, cols uint16) error {
+	if cols == 0 {
+		return nil
+	}
+	nudged, ok := nudgeRows(rows)
+	if !ok {
+		return nil
+	}
+	if err := p.pty.resize(nudged, cols); err != nil {
+		return fmt.Errorf("terminal: refresh nudge: %w", err)
+	}
+	time.Sleep(refreshNudgePause)
+	if err := p.pty.resize(rows, cols); err != nil {
+		return fmt.Errorf("terminal: refresh restore: %w", err)
+	}
+	return nil
+}
+
 // Kill sends SIGKILL to the process group and waits for exit.
 // pty.StartWithSize sets Setsid=true, so the PTY creates a new session whose
 // session leader pid equals the child pid. Signalling the process group via

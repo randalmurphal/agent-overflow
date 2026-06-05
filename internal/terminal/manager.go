@@ -85,6 +85,17 @@ func (m *Manager) Resize(terminalID string, rows, cols uint16) error {
 	return sess.Resize(rows, cols)
 }
 
+// Refresh forces the given terminal's child to repaint (a winsize nudge that
+// leaves the visible size unchanged). Backs the UI "refresh" affordance that
+// clears a glitched provider TUI frame without the user resizing by hand.
+func (m *Manager) Refresh(terminalID string) error {
+	sess, err := m.get(terminalID)
+	if err != nil {
+		return err
+	}
+	return sess.Refresh()
+}
+
 // Close terminates the terminal. Returns without error if the terminal does
 // not exist (idempotent close).
 func (m *Manager) Close(terminalID string) error {

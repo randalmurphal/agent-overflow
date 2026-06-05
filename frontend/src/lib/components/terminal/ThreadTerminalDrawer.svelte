@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     getThreadTerminalState,
+    terminalStateKeyForPane,
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
   import Drawer from '../primitives/Drawer.svelte';
@@ -13,7 +14,7 @@
   // on the thread). The helper reads `surface` inside a function so it isn't
   // flagged as a stale top-level capture.
   function initialTerminalStateKey(): string {
-    return surface.threadId ?? surface.paneId;
+    return terminalStateKeyForPane(surface.threadId, surface.paneId);
   }
 
   // getThreadTerminalState is memoized per key — so this wrapper and the surface

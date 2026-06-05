@@ -158,6 +158,9 @@ func TestManagerMissingTerminalErrors(t *testing.T) {
 	if err := m.Resize("x", 1, 1); !errors.Is(err, ErrTerminalNotFound) {
 		t.Fatalf("Resize: expected ErrTerminalNotFound, got %v", err)
 	}
+	if err := m.Refresh("x"); !errors.Is(err, ErrTerminalNotFound) {
+		t.Fatalf("Refresh: expected ErrTerminalNotFound, got %v", err)
+	}
 	if _, err := m.Replay("x"); !errors.Is(err, ErrTerminalNotFound) {
 		t.Fatalf("Replay: expected ErrTerminalNotFound, got %v", err)
 	}
@@ -287,4 +290,138 @@ func TestManagerShutdownClosesEverything(t *testing.T) {
 	if len(m.List("a")) != 0 || len(m.List("b")) != 0 {
 		t.Fatalf("expected no sessions after shutdown")
 	}
+}
+
+// TestManagerRefreshSerializesWithConcurrentResize is the regression guard for
+// the Refresh-vs-Resize lost-update race. Refresh shrinks the PTY by one row,
+// pauses ~40ms, then restores the size it snapshotted. If a Resize lands inside
+// that pause without serialization, Refresh's restore overwrites the new size
+// with the stale one — the PTY ends mis-sized against the xterm grid, recreating
+// the exact desync the refresh feature exists to clear.
+//
+// The shell traps WINCH and reports `stty size` per signal. We start a Refresh,
+// wait for its shrink ("23 80") so it is provably mid-pause, then Resize to
+// 30x120. With resizeMu the Resize blocks until Refresh's restore completes, so
+// the PTY settles at the resized 30x120. Without it, the restore lands last and
+// rolls the child back to 24x80 — which fails the settle assertion.
+func TestManagerRefreshSerializesWithConcurrentResize(t *testing.T) {
+	var mu sync.Mutex
+	var buf strings.Builder
+	captured := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.String()
+	}
+	onOutput := func(threadID, terminalID string, seq uint64, data []byte) {
+		mu.Lock()
+		buf.Write(data)
+		mu.Unlock()
+	}
+
+	m := NewManager(onOutput, nil)
+	summary, err := m.Open("thread-refresh-race", SessionOptions{
+		Shell: "/bin/sh",
+		Args:  []string{"-c", "trap 'stty size' WINCH; echo READY; while :; do sleep 0.02; done"},
+		Cwd:   t.TempDir(),
+		Rows:  24,
+		Cols:  80,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	id := summary.TerminalID
+	t.Cleanup(func() { _ = m.Close(id) })
+
+	// Wait for the trap to be installed before nudging (same startup-race guard
+	// as TestProcessRefreshNudgesAndRestores).
+	waitForOutput(t, captured, "READY", 3*time.Second)
+
+	done := make(chan error, 1)
+	go func() { done <- m.Refresh(id) }()
+
+	// Block until the shrink nudge is observed: Refresh has snapshotted the
+	// pre-resize size (24) and is now inside its restore pause. Issuing Resize
+	// here lands it squarely in the shrink→restore window.
+	waitForOutput(t, captured, "23 80", 3*time.Second)
+
+	if err := m.Resize(id, 30, 120); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	// The PTY must settle at the resized size, not roll back to the snapshot.
+	mustSettleAtSize(t, captured, "30 120", 2*time.Second)
+
+	list := m.List("thread-refresh-race")
+	if len(list) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(list))
+	}
+	if list[0].Rows != 30 || list[0].Cols != 120 {
+		t.Errorf("cached size after resize: %dx%d, want 30x120", list[0].Rows, list[0].Cols)
+	}
+}
+
+// waitForOutput polls the captured PTY output until it contains needle.
+func waitForOutput(t *testing.T, captured func() string, needle string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if strings.Contains(captured(), needle) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("did not observe %q within %v; got %q", needle, timeout, captured())
+}
+
+// mustSettleAtSize waits until the last `stty size` line the child reported is
+// target and stays there. The confirm re-check guards against the lost-update
+// bug's transient: without serialization the resized size appears briefly before
+// Refresh's restore rolls it back, so a single check could pass spuriously.
+func mustSettleAtSize(t *testing.T, captured func() string, target string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if lastSizeLine(captured()) == target {
+			time.Sleep(100 * time.Millisecond)
+			if lastSizeLine(captured()) == target {
+				return
+			}
+			continue
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("PTY did not settle at %q; last size line = %q\nfull output: %q",
+		target, lastSizeLine(captured()), captured())
+}
+
+// lastSizeLine returns the last "<rows> <cols>" line in s (a child `stty size`
+// report), or "" if none. PTY output terminates lines with \r\n.
+func lastSizeLine(s string) string {
+	last := ""
+	for _, raw := range strings.Split(s, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		if isSizeLine(line) {
+			last = line
+		}
+	}
+	return last
+}
+
+// isSizeLine reports whether line is exactly two space-separated integer fields.
+func isSizeLine(line string) bool {
+	fields := strings.Fields(line)
+	if len(fields) != 2 {
+		return false
+	}
+	for _, f := range fields {
+		for _, r := range f {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }

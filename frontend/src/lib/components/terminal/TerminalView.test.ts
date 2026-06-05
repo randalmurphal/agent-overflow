@@ -46,6 +46,7 @@ vi.mock('../../stores/bindings', () => ({
     return [];
   }),
   ResizeTerminal: vi.fn(async () => {}),
+  RefreshTerminal: vi.fn(async () => {}),
   WriteTerminal: vi.fn(async () => {}),
   GetTerminalReplay: vi.fn(async () => ''),
   RestartTerminal: vi.fn(),

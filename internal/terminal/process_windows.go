@@ -93,6 +93,13 @@ func (p *Process) Resize(rows, cols uint16) error {
 	return errWindows
 }
 
+// Refresh errors out — no PTY exists to nudge.
+func (p *Process) Refresh(rows, cols uint16) error {
+	_ = rows
+	_ = cols
+	return errWindows
+}
+
 // Kill is a no-op so Manager.Shutdown stays idempotent.
 func (p *Process) Kill() error { return nil }
 

@@ -35,13 +35,18 @@ import {
   type ThreadActionCtx,
 } from '../components/sidebar/threadRowActions';
 import { userFacingError } from '../utils/userFacingError';
-import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
+import {
+  getTerminalFocused,
+  getExistingThreadTerminalState,
+  terminalStateKeyForPane,
+} from '../components/terminal/terminalStore.svelte';
 import { runTerminalToggle } from '../components/terminal/terminalToggle';
 import {
   ApprovalResponse,
   GitPull,
   GitPush,
   InterruptTurn,
+  RefreshTerminal,
   RespondToApproval,
   RespondToUserInput,
   UpdateThreadMode,
@@ -737,6 +742,39 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       void openTerminalThread({
         projectId: thread?.projectId,
         cwd: thread?.workspacePath,
+      });
+    },
+  });
+
+  registerCommand({
+    id: 'terminal.refresh',
+    label: 'Terminal: Refresh',
+    description: 'Repaint the active terminal.',
+    icon: '↻',
+    // `terminalFocus || terminalOpen`, not bare `terminalOpen`: the xterm escape
+    // predicate (TERMINAL_ESCAPE_COMMAND_IDS) evaluates this `when` against a
+    // synthetic context that sets only `terminalFocus`, so the command must stay
+    // enabled there for alt+shift+r to bubble out of a focused terminal. The
+    // `terminalOpen` arm keeps it palette-visible when a terminal is open but
+    // unfocused.
+    when: 'terminalFocus || terminalOpen',
+    // Reachable from editable targets so the chord fires while the xterm
+    // <textarea> holds focus — that's the in-terminal recovery press.
+    editableReachable: true,
+    run: (ctx) => {
+      const pane = ctx.pane;
+      if (!pane) return;
+      // Resolve the focused pane's terminal state under the same key the surface
+      // mounted it with (see terminalStateKeyForPane), then nudge the active
+      // terminal's PTY so the provider redraws. No-op when the pane has no
+      // terminal open.
+      const state = getExistingThreadTerminalState(
+        terminalStateKeyForPane(pane.threadId, pane.paneId),
+      );
+      const terminalID = state?.activeTerminalID;
+      if (!terminalID) return;
+      RefreshTerminal(terminalID).catch((err) => {
+        console.error('terminal: RefreshTerminal failed', err);
       });
     },
   });

@@ -17,7 +17,7 @@ import {
   type CommandContext,
 } from './commandRegistry.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from './panes.svelte';
-import { PANE_NAV_COMMAND_IDS } from './paneNavCommands';
+import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import {
   closeMessageSearch,
@@ -32,6 +32,8 @@ import {
 import {
   notifyTerminalFocus,
   resetTerminalFocusForTest,
+  getThreadTerminalState,
+  resetThreadTerminalStatesForTest,
 } from '../components/terminal/terminalStore.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import {
@@ -1330,5 +1332,70 @@ describe('pane navigation into a terminal pane', () => {
     registerFixtureCommands(createThreadPane({ paneId: 'reg' }));
     const missing = [...PANE_NAV_COMMAND_IDS].filter((id) => !getCommand(id));
     expect(missing).toEqual([]);
+  });
+
+  it('every TERMINAL_ESCAPE_COMMAND_IDS entry is a registered builtin command', () => {
+    // The terminal key handler lets exactly these ids bubble out of a focused
+    // xterm (pane nav + terminal.refresh). If terminal.refresh were renamed in
+    // builtinCommands without updating the set (or vice versa), alt+shift+r would
+    // silently fall back to the PTY — pin the set to the registry so drift fails.
+    registerFixtureCommands(createThreadPane({ paneId: 'reg' }));
+    const missing = [...TERMINAL_ESCAPE_COMMAND_IDS].filter((id) => !getCommand(id));
+    expect(missing).toEqual([]);
+  });
+
+  it('terminal.refresh nudges the focused pane\'s active terminal via RefreshTerminal', async () => {
+    resetThreadTerminalStatesForTest();
+    registerFixtureCommands(createThreadPane({ paneId: 'reg' }));
+
+    // Seed the focused pane's terminal state under the same key the surface uses
+    // (pane id here, since the bare pane has no thread) with TWO tabs, then make
+    // the first one active. addTab activates the last-added tab, so selecting
+    // term-1 here proves refresh targets the *active* terminal, not "the only
+    // tab" or "the last tab".
+    const pane = createThreadPane({ paneId: 'term-pane' });
+    const state = getThreadTerminalState(pane.threadId ?? pane.paneId);
+    const seedTab = (terminalID: string) =>
+      state.addTab({
+        terminalID,
+        threadID: 'thread-x',
+        shell: '/bin/bash',
+        cwd: '/tmp',
+        rows: 24,
+        cols: 80,
+        pid: 1,
+        startedAt: 0,
+        running: true,
+        exitCode: 0,
+        exitReason: '',
+      });
+    seedTab('term-1');
+    seedTab('term-2');
+    state.setActive('term-1');
+    expect(state.activeTerminalID).toBe('term-1');
+
+    let refreshedID: string | null = null;
+    setBindingMock('RefreshTerminal', async (id: unknown) => {
+      refreshedID = id as string;
+    });
+
+    getCommand('terminal.refresh')!.run(makeCommandContext(pane, {}));
+    await Promise.resolve();
+
+    expect(refreshedID).toBe('term-1');
+  });
+
+  it('terminal.refresh is a no-op when the focused pane has no terminal open', () => {
+    resetThreadTerminalStatesForTest();
+    registerFixtureCommands(createThreadPane({ paneId: 'reg' }));
+
+    const pane = createThreadPane({ paneId: 'empty-pane' });
+    let called = false;
+    setBindingMock('RefreshTerminal', async () => {
+      called = true;
+    });
+
+    getCommand('terminal.refresh')!.run(makeCommandContext(pane, {}));
+    expect(called).toBe(false);
   });
 });
