@@ -182,6 +182,41 @@ describe('<GitActionsControl> forge labels', () => {
     expect(getByText('Create MR')).toBeTruthy();
   });
 
+  it('renders "Open MR" instead of "Create MR" when a GitLab MR is already open', async () => {
+    const pane = await buildPane();
+    pane.gitStatus.set(status({
+      forge: 'gitlab',
+      branch: 'feature',
+      isDefaultBranch: false,
+      openPrUrl: 'https://gitlab.com/o/r/-/merge_requests/45',
+      openPrNumber: 45,
+    }));
+    const { findByLabelText, getByText, queryByText } = render(GitActionsControl, { props: { pane } });
+    await fireEvent.click(await findByLabelText('More git actions'));
+    await flush();
+
+    const item = getByText('Open MR').closest('[role="menuitem"]');
+    expect(item?.getAttribute('aria-disabled')).toBeNull();
+    expect(queryByText('Create MR')).toBeNull();
+  });
+
+  it('disables Create MR when checking for an existing MR failed', async () => {
+    const pane = await buildPane();
+    pane.gitStatus.set(status({
+      forge: 'gitlab',
+      branch: 'feature',
+      isDefaultBranch: false,
+      openPrLookupError: 'glab auth required',
+    }));
+    const { findByLabelText, getByText } = render(GitActionsControl, { props: { pane } });
+    await fireEvent.click(await findByLabelText('More git actions'));
+    await flush();
+
+    const item = getByText('Create MR').closest('[role="menuitem"]');
+    expect(item?.getAttribute('aria-disabled')).toBe('true');
+    expect(getByText(/Could not check existing MR/)).toBeTruthy();
+  });
+
   it('disables the Create PR menu item when the forge is unsupported', async () => {
     const pane = await buildPane();
     pane.gitStatus.set(status({ forge: '', branch: 'feature', isDefaultBranch: false }));

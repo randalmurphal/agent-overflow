@@ -66,7 +66,7 @@ JSON
 	}
 }
 
-func TestGitLabListOpenPRsPassesSourceBranchFlag(t *testing.T) {
+func TestGitLabListOpenPRsUsesAPIEndpointWithEncodedSourceBranch(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script mock glab is unix-only")
 	}
@@ -74,7 +74,7 @@ func TestGitLabListOpenPRsPassesSourceBranchFlag(t *testing.T) {
 	binDir := t.TempDir()
 	argLog := filepath.Join(binDir, "args.log")
 	glabPath := filepath.Join(binDir, "glab")
-	// Record argv to a file so the test can verify --source-branch was passed.
+	// Record argv to verify the API endpoint and encoded source_branch query.
 	script := fmt.Sprintf(`#!/bin/sh
 echo "$@" > %q
 echo '[]'
@@ -94,15 +94,48 @@ echo '[]'
 		t.Fatalf("read arg log: %v", err)
 	}
 	got := strings.TrimSpace(string(args))
-	if !strings.Contains(got, "--source-branch feature/demo") {
-		t.Errorf("argv = %q, want it to contain --source-branch feature/demo", got)
+	if !strings.Contains(got, "api projects/:fullpath/merge_requests?") {
+		t.Errorf("argv = %q, want glab api project merge requests endpoint", got)
 	}
-	if !strings.Contains(got, "--output json") {
-		t.Errorf("argv = %q, want --output json", got)
+	if !strings.Contains(got, "source_branch=feature%2Fdemo") {
+		t.Errorf("argv = %q, want URL-encoded source branch", got)
 	}
-	// State flag must NOT be passed — glab defaults to opened.
-	if strings.Contains(got, "--state") {
-		t.Errorf("argv = %q, must not contain --state (glab default is opened)", got)
+	if !strings.Contains(got, "state=opened") {
+		t.Errorf("argv = %q, want state=opened filter", got)
+	}
+	if strings.Contains(got, "--output") {
+		t.Errorf("argv = %q, must not use newer glab --output flag", got)
+	}
+}
+
+func TestGitLabListOpenPRsDoesNotRequireMROutputFlag(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock glab is unix-only")
+	}
+
+	binDir := t.TempDir()
+	glabPath := filepath.Join(binDir, "glab")
+	script := `#!/bin/sh
+if [ "$1" = "mr" ] && [ "$2" = "list" ]; then
+  echo "unknown flag: --output" 1>&2
+  exit 1
+fi
+cat <<'JSON'
+[{"web_url": "https://gitlab.com/group/repo/-/merge_requests/8", "iid": 8, "title": "Old glab compatible", "state": "opened"}]
+JSON
+`
+	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock glab: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	core := NewCore()
+	prs, err := core.ForgeByID("gitlab").ListOpenPRs(t.TempDir(), "feature/demo")
+	if err != nil {
+		t.Fatalf("ListOpenPRs returned error: %v", err)
+	}
+	if len(prs) != 1 || prs[0].Number != 8 {
+		t.Fatalf("prs = %+v, want one MR !8", prs)
 	}
 }
 
@@ -158,7 +191,7 @@ func TestGitLabListOpenPRsHandlesNonZeroExit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-zero exit")
 	}
-	if !strings.Contains(err.Error(), "glab mr list failed") {
+	if !strings.Contains(err.Error(), "glab api merge request list failed") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

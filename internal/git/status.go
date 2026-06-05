@@ -26,6 +26,9 @@ type GitStatus struct {
 	Forge        string `json:"forge,omitempty"`
 	OpenPRURL    string `json:"openPrUrl,omitempty"`
 	OpenPRNumber int    `json:"openPrNumber,omitempty"`
+	// OpenPRLookupError is set when the forge lookup failed, distinct from
+	// a successful lookup that found no open PR/MR for the branch.
+	OpenPRLookupError string `json:"openPrLookupError,omitempty"`
 	// PendingOperation surfaces any in-progress multi-step operation that
 	// blocks new commits. Values: "merge", "rebase", "bisect", or "" when
 	// the repo is clean. Callers gate Ship Changes on this being empty.
@@ -53,6 +56,7 @@ func (s GitStatus) Equal(other GitStatus) bool {
 		s.Forge == other.Forge &&
 		s.OpenPRURL == other.OpenPRURL &&
 		s.OpenPRNumber == other.OpenPRNumber &&
+		s.OpenPRLookupError == other.OpenPRLookupError &&
 		s.PendingOperation == other.PendingOperation
 }
 
@@ -62,8 +66,8 @@ func (c *Core) Status(cwd string) (GitStatus, error) {
 	if err != nil || !status.IsRepo {
 		return status, err
 	}
-	if status.Branch != "" {
-		status.OpenPRURL, status.OpenPRNumber = c.lookupOpenPR(cwd, status.Branch)
+	if status.Branch != "" && status.Forge != "" {
+		status.OpenPRURL, status.OpenPRNumber, status.OpenPRLookupError = c.lookupOpenPR(cwd, status.Branch)
 	}
 	return status, nil
 }
@@ -77,8 +81,8 @@ func (c *Core) StatusFast(cwd string) (GitStatus, error) {
 	if err != nil || !status.IsRepo {
 		return status, err
 	}
-	if status.Branch != "" {
-		status.OpenPRURL, status.OpenPRNumber = c.lookupOpenPRCached(cwd, status.Branch)
+	if status.Branch != "" && status.Forge != "" {
+		status.OpenPRURL, status.OpenPRNumber, status.OpenPRLookupError = c.lookupOpenPRCached(cwd, status.Branch)
 	}
 	return status, nil
 }

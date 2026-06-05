@@ -23,6 +23,10 @@ const (
 	// network round-trip per branch per 30s; explicit invalidation
 	// after CreatePR keeps the freshly-opened PR visible immediately.
 	prLookupTTL = 30 * time.Second
+	// prLookupErrorTTL dampens watcher retry storms without making the user
+	// wait after fixing auth/version problems; explicit refreshes invalidate
+	// the cwd cache before re-checking.
+	prLookupErrorTTL = 5 * time.Second
 
 	// FetchStaleWindow is how long after a successful `git fetch` the
 	// app considers remote-tracking refs fresh enough to skip another
@@ -52,9 +56,9 @@ type Core struct {
 
 	// prCache memoizes lookupOpenPR results so a refresh storm (gitwatch
 	// firing every fs-event-debounce) doesn't translate into a `gh pr
-	// list` storm. Keyed on (cwd, branch); cleared per-cwd on
-	// CreatePR. A process-global TTL'd cache is the documented
-	// carve-out in internal/CLAUDE.md anti-patterns.
+	// list` storm. Keyed on (cwd, branch); cleared per-cwd after PR/MR
+	// creation and explicit refresh paths. A process-global TTL'd cache is
+	// the documented carve-out in internal/CLAUDE.md anti-patterns.
 	//
 	// RWMutex: the hot path (gitwatch refresh → lookupOpenPR) hits the
 	// cache as a read most of the time; only cache misses + explicit
@@ -96,9 +100,10 @@ type Core struct {
 }
 
 type prCacheEntry struct {
-	url       string
-	number    int
-	expiresAt time.Time
+	url         string
+	number      int
+	lookupError string
+	expiresAt   time.Time
 }
 
 func prCacheKey(cwd, branch string) string {

@@ -130,8 +130,9 @@ function assertPhase(actual: ShipChangesPhase, allowed: ShipChangesPhase[]): voi
  * Decide which review phase to start on given the current git status. If
  * there are uncommitted changes we start at commit.review; otherwise if the
  * branch is ahead of upstream we jump to push.review; otherwise if the
- * branch has an upstream and no open PR we jump to pr.review. If all three
- * are already done there's nothing to ship and we land on pr.done.
+ * branch has an upstream and no open PR we jump to pr.review. If the lookup
+ * failed, pr.review shows the failure instead of offering creation. If all
+ * three are already done there's nothing to ship and we land on pr.done.
  */
 function initialPhaseForStatus(status: GitStatus): ShipChangesPhase {
   if (status.hasChanges) return 'commit.review';
@@ -198,7 +199,9 @@ export function createShipChangesState(): ShipChangesState {
       return phase === 'push.review';
     },
     get canCreatePR() {
-      return phase === 'pr.review' && prTitle.trim().length > 0;
+      return phase === 'pr.review'
+        && prTitle.trim().length > 0
+        && (status?.openPrLookupError?.trim() ?? '') === '';
     },
     get finished() { return phase === 'pr.done'; },
 
@@ -307,6 +310,9 @@ export function createShipChangesState(): ShipChangesState {
       assertPhase(phase, ['pr.review']);
       if (prTitle.trim() === '') {
         throw new Error('shipChanges: title is required');
+      }
+      if ((status?.openPrLookupError?.trim() ?? '') !== '') {
+        throw new Error('shipChanges: cannot create PR while existing PR lookup failed');
       }
       error = null;
       phase = 'pr.busy';

@@ -530,6 +530,38 @@ func TestStatusReportsForge(t *testing.T) {
 	}
 }
 
+func TestStatusSkipsPRLookupWithoutSupportedForge(t *testing.T) {
+	cases := []struct {
+		name      string
+		originURL string
+	}{
+		{"unsupported remote", "https://git.example.com/owner/repo.git"},
+		{"no remote", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := testutil.InitGitRepo(t)
+			if tc.originURL != "" {
+				testutil.RunGit(t, repo, "remote", "add", "origin", tc.originURL)
+			}
+
+			status, err := NewCore().Status(repo)
+			if err != nil {
+				t.Fatalf("Status returned error: %v", err)
+			}
+			if status.Forge != "" {
+				t.Fatalf("Forge = %q, want empty", status.Forge)
+			}
+			if status.OpenPRLookupError != "" {
+				t.Fatalf("OpenPRLookupError = %q, want empty", status.OpenPRLookupError)
+			}
+			if status.OpenPRURL != "" || status.OpenPRNumber != 0 {
+				t.Fatalf("open PR = (%q, %d), want empty", status.OpenPRURL, status.OpenPRNumber)
+			}
+		})
+	}
+}
+
 func TestWorkingTreeDiff(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	readmePath := filepath.Join(repo, "README.txt")

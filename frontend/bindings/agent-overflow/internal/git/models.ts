@@ -105,6 +105,12 @@ export class GitStatus {
     "openPrNumber"?: number;
 
     /**
+     * OpenPRLookupError is set when the forge lookup failed, distinct from
+     * a successful lookup that found no open PR/MR for the branch.
+     */
+    "openPrLookupError"?: string;
+
+    /**
      * PendingOperation surfaces any in-progress multi-step operation that
      * blocks new commits. Values: "merge", "rebase", "bisect", or "" when
      * the repo is clean. Callers gate Ship Changes on this being empty.

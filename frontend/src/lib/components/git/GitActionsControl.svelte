@@ -16,6 +16,7 @@
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { forgeLabels } from '../../utils/forgeLabels';
+  import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
   import { OPEN_SHIP_CHANGES_EVENT } from '../../stores/events';
   import CommitDialog from './CommitDialog.svelte';
   import ShipChangesDrawer from './ShipChangesDrawer.svelte';
@@ -73,11 +74,15 @@
   // when status.forge is empty (no origin or unsupported host) — the
   // canCreatePR gate keeps the action disabled in that case.
   let labels = $derived(forgeLabels(status?.forge));
-  let createPRLabel = $derived(labels.createAction);
+  let hasOpenPR = $derived(!!status?.openPrUrl);
+  let openPRURL = $derived(safeExternalURL(status?.openPrUrl));
+  let prMenuLabel = $derived(hasOpenPR ? labels.openAction : labels.createAction);
+  let prLookupError = $derived(status?.openPrLookupError?.trim() ?? '');
   let canCreatePR = $derived(
     status !== null &&
       status.hasUpstream &&
-      !status.openPrUrl &&
+      !hasOpenPR &&
+      prLookupError === '' &&
       !status.isDefaultBranch &&
       // Disable when no recognised forge — we have nothing to dispatch to.
       status.forge !== '' &&
@@ -198,11 +203,23 @@
           }}
         />
         <MenuItem
-          label={createPRLabel}
-          disabled={!canCreatePR}
+          label={prMenuLabel}
+          description={prLookupError && !hasOpenPR ? `Could not check existing ${labels.noun}: ${prLookupError}` : undefined}
+          title={
+            hasOpenPR && !openPRURL
+              ? `Invalid ${labels.longSingular} URL`
+              : prLookupError
+                ? `Could not check existing ${labels.longSingular}: ${prLookupError}`
+                : undefined
+          }
+          disabled={hasOpenPR ? openPRURL === null : !canCreatePR}
           onSelect={() => {
             showDropdown = false;
-            void guard(() => runCreatePRAction(ctx()));
+            if (openPRURL) {
+              void handleExternalURL(openPRURL);
+            } else {
+              void guard(() => runCreatePRAction(ctx()));
+            }
           }}
         />
         <MenuDivider />

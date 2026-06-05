@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -54,54 +55,59 @@ func (f *gitlabForge) CreatePR(cwd, title, body string, draft bool) (string, err
 }
 
 // ListOpenPRs returns open merge requests for the given source branch.
-// glab's default state is `opened`, matching gh's `--state open` model
-// — we omit the state flag rather than passing one.
+// The implementation uses `glab api` instead of `glab mr list --output json`:
+// older glab builds support `api` but do not expose JSON formatting on
+// `mr list`, and the header badge needs this lookup to work across both.
 func (f *gitlabForge) ListOpenPRs(cwd, head string) ([]GitPR, error) {
-	if strings.TrimSpace(head) == "" {
+	sourceBranch := strings.TrimSpace(head)
+	if sourceBranch == "" {
 		return nil, errors.New("merge request source branch is required")
 	}
-	result, err := f.core.runBinary(
-		"glab",
-		cwd,
-		"mr", "list",
-		"--source-branch", head,
-		"--output", "json",
-	)
+	result, err := f.core.runBinary("glab", cwd, "api", gitLabOpenMRsEndpoint(sourceBranch))
 	if err != nil {
 		return nil, normalizeGitLabCLIError(err)
 	}
 	if result.exitCode != 0 {
-		return nil, fmt.Errorf("glab mr list failed: %s", commandOutputMessage(result.stdout, result.stderr))
+		return nil, fmt.Errorf("glab api merge request list failed: %s", commandOutputMessage(result.stdout, result.stderr))
 	}
 	stdout := strings.TrimSpace(result.stdout)
 	if stdout == "" || stdout == "[]" || stdout == "null" {
 		return nil, nil
 	}
 
-	// glab exposes web_url and iid (project-internal MR number) which
-	// we map onto the forge-agnostic GitPR shape. State values are
-	// lowercase ("opened" / "closed" / "merged" / "locked").
+	// The GitLab REST API exposes web_url and iid (project-internal MR number),
+	// which map onto the forge-agnostic GitPR shape. Accept webUrl as a
+	// defensive compatibility alias for CLI-shaped JSON.
 	var raw []struct {
-		WebURL string `json:"web_url"`
-		IID    int    `json:"iid"`
-		Title  string `json:"title"`
-		State  string `json:"state"`
+		WebURL      string `json:"web_url"`
+		WebURLCamel string `json:"webUrl"`
+		IID         int    `json:"iid"`
+		Title       string `json:"title"`
+		State       string `json:"state"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
-		return nil, fmt.Errorf("decode glab mr list output: %w", err)
+		return nil, fmt.Errorf("decode glab api merge request list output: %w", err)
 	}
 	pulls := make([]GitPR, 0, len(raw))
 	for _, r := range raw {
+		webURL := r.WebURL
+		if webURL == "" {
+			webURL = r.WebURLCamel
+		}
 		pulls = append(pulls, GitPR{
-			URL:    r.WebURL,
+			URL:    webURL,
 			Number: r.IID,
 			Title:  r.Title,
-			// glab returns "opened"/"closed"/"merged"/"locked"; collapse
-			// "opened" → "open" so callers see one canonical vocabulary.
-			State: NormalizePRState(r.State),
+			State:  NormalizePRState(r.State),
 		})
 	}
 	return pulls, nil
+}
+
+func gitLabOpenMRsEndpoint(sourceBranch string) string {
+	return "projects/:fullpath/merge_requests?state=opened&source_branch=" +
+		url.QueryEscape(sourceBranch) +
+		"&per_page=1&view=simple"
 }
 
 // ViewPR fetches MR metadata via `glab mr view <n> -R <project> --output json`.

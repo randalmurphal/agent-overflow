@@ -53,22 +53,25 @@
   // resetting the user's typed content onto a different thread's state.
   let openedForThreadId: string | null = null;
 
-  async function refreshStatus(threadId: string): Promise<void> {
+  async function refreshStatus(threadId: string): Promise<GitStatus | null> {
     const generation = ++statusLoadGeneration;
     try {
       const fetched = (await GetGitStatus(threadId)) as GitStatus;
-      if (generation !== statusLoadGeneration) return;
+      if (generation !== statusLoadGeneration) return null;
       wizard.setStatus(fetched);
+      return fetched;
     } catch (err) {
       console.error('ship-changes: GetGitStatus failed', err);
       pane.setGeneralError(`Failed to load git status: ${errString(err)}`);
+      return null;
     }
   }
 
   async function refreshAfterAction(threadId: string): Promise<void> {
-    await refreshStatus(threadId);
-    if (pane.threadId !== threadId) return;
-    await pane.gitStatus.refreshNow();
+    const fetched = await refreshStatus(threadId);
+    if (pane.threadId !== threadId || fetched === null) return;
+    pane.gitStatus.set(fetched);
+    pane.gitStatus.setError(false);
   }
 
   $effect(() => {

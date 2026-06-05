@@ -20,6 +20,8 @@
   let alreadyHasPR = $derived(!!status?.openPrUrl);
   let labels = $derived(forgeLabels(status?.forge));
   let unsupportedForge = $derived(status !== null && !status.forge);
+  let lookupError = $derived(status?.openPrLookupError?.trim() ?? '');
+  let doneURL = $derived(state.prUrl ?? status?.openPrUrl ?? '');
 </script>
 
 <div class="space-y-3" data-testid="ship-changes-step-pr">
@@ -28,6 +30,10 @@
     {#if unsupportedForge}
       <p class="text-[0.6875rem] text-text-secondary" data-testid="ship-changes-pr-unsupported">
         This remote is not GitHub or GitLab — pull/merge request creation is not supported.
+      </p>
+    {:else if lookupError}
+      <p class="text-[0.6875rem] text-error break-words" data-testid="ship-changes-pr-lookup-error">
+        Could not check existing {labels.noun}: {lookupError}
       </p>
     {:else if alreadyHasPR}
       <p class="text-[0.6875rem] text-text-secondary">
@@ -49,20 +55,20 @@
     {/if}
   </header>
 
-  {#if done}
+  {#if done && doneURL}
     <div class="space-y-1" data-testid="ship-changes-pr-done">
       <p class="text-xs text-text-secondary">{labels.longSingular} opened:</p>
       <a
-        href={state.prUrl ?? ''}
+        href={doneURL}
         target="_blank"
         rel="noopener noreferrer"
         data-testid="ship-changes-pr-url"
         class="inline-block text-xs text-accent underline break-all hover:opacity-90"
       >
-        {state.prUrl}
+        {doneURL}
       </a>
     </div>
-  {:else if !alreadyHasPR && !unsupportedForge}
+  {:else if !alreadyHasPR && !unsupportedForge && !lookupError}
     <div class="space-y-2">
       <label class="text-xs text-text-secondary block" for="ship-pr-title">Title</label>
       <input
@@ -110,7 +116,7 @@
     </p>
   {/if}
 
-  {#if !done && !alreadyHasPR && !unsupportedForge}
+  {#if !done && !alreadyHasPR && !unsupportedForge && !lookupError}
     <div class="flex justify-end gap-2 pt-1">
       <Button
         variant="primary"

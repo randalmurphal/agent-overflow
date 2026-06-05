@@ -65,7 +65,9 @@ func (a *App) GetGitStatus(threadID string) (gitops.GitStatus, error) {
 		return gitops.GitStatus{}, err
 	}
 
-	return a.gitCore().Status(workspace)
+	core := a.gitCore()
+	core.InvalidatePRCache(workspace)
+	return core.Status(workspace)
 }
 
 // GetGitStatusForProject returns git status for a project root without
@@ -75,7 +77,9 @@ func (a *App) GetGitStatusForProject(projectID string) (gitops.GitStatus, error)
 	if err != nil {
 		return gitops.GitStatus{}, err
 	}
-	return a.gitCore().Status(project)
+	core := a.gitCore()
+	core.InvalidatePRCache(project)
+	return core.Status(project)
 }
 
 // GetWorkingTreeDiff returns the current combined staged and unstaged diff.

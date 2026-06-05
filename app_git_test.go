@@ -38,6 +38,56 @@ func TestGetGitStatusUsesWorkspacePath(t *testing.T) {
 	}
 }
 
+func TestGetGitStatusBypassesCachedPRLookupError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping PATH override in short mode")
+	}
+
+	app := newTestAppWithStore(t)
+	app.git = gitops.NewCore()
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/owner/repo.git")
+
+	binDir := t.TempDir()
+	counterFile := filepath.Join(binDir, "calls")
+	ghPath := filepath.Join(binDir, "gh")
+	script := "#!/bin/sh\ncount=0\nif [ -f " + counterFile + " ]; then count=$(wc -c < " + counterFile + "); fi\nprintf x >> " + counterFile + "\nif [ \"$count\" = \"0\" ]; then echo 'auth required' 1>&2; exit 1; fi\necho '[{\"url\":\"https://github.com/owner/repo/pull/9\",\"number\":9,\"title\":\"Demo\",\"state\":\"OPEN\"}]'\n"
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock gh: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	seeded, err := app.git.Status(repo)
+	if err != nil {
+		t.Fatalf("seed Status() error = %v", err)
+	}
+	if seeded.OpenPRLookupError == "" {
+		t.Fatal("seed Status() did not cache a PR lookup error")
+	}
+
+	thread := testThread("thread-status-pr-error")
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	status, err := app.GetGitStatus(thread.ID)
+	if err != nil {
+		t.Fatalf("GetGitStatus() error = %v", err)
+	}
+	if status.OpenPRLookupError != "" {
+		t.Fatalf("OpenPRLookupError = %q, want retried success", status.OpenPRLookupError)
+	}
+	if status.OpenPRURL != "https://github.com/owner/repo/pull/9" || status.OpenPRNumber != 9 {
+		t.Fatalf("open PR = (%q, %d), want PR #9", status.OpenPRURL, status.OpenPRNumber)
+	}
+}
+
 func TestGitListBranchesUsesProjectPath(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

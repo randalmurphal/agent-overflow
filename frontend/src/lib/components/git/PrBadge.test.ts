@@ -32,7 +32,7 @@ describe('<PrBadge>', () => {
     expect(queryByTestId('chat-header-pr-badge')).toBeNull();
   });
 
-  it('renders PR#<n> with the GitHub url for a github forge', () => {
+  it('renders PR #<n> with the GitHub url for a github forge', () => {
     const { getByTestId } = render(PrBadge, {
       props: {
         status: status({
@@ -43,11 +43,11 @@ describe('<PrBadge>', () => {
       },
     });
     const link = getByTestId('chat-header-pr-badge');
-    expect(link.textContent?.replace(/\s+/g, '')).toBe('PR#123');
+    expect(link.textContent?.trim()).toBe('PR #123');
     expect(link.getAttribute('href')).toBe('https://github.com/o/r/pull/123');
   });
 
-  it('renders MR!<n> with the GitLab sigil for a gitlab forge', () => {
+  it('renders MR !<n> with the GitLab sigil for a gitlab forge', () => {
     const { getByTestId } = render(PrBadge, {
       props: {
         status: status({
@@ -58,7 +58,7 @@ describe('<PrBadge>', () => {
       },
     });
     const link = getByTestId('chat-header-pr-badge');
-    expect(link.textContent?.replace(/\s+/g, '')).toBe('MR!45');
+    expect(link.textContent?.trim()).toBe('MR !45');
     expect(link.getAttribute('href')).toBe('https://gitlab.com/o/r/-/merge_requests/45');
   });
 

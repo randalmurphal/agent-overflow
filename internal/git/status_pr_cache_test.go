@@ -36,7 +36,10 @@ func TestLookupOpenPRUsesGHWhenAvailable(t *testing.T) {
 	cwd := t.TempDir()
 	seedForgeCacheGitHub(t, core, cwd)
 
-	url, number := core.lookupOpenPR(cwd, "main")
+	url, number, lookupErr := core.lookupOpenPR(cwd, "main")
+	if lookupErr != "" {
+		t.Fatalf("lookupErr = %q, want empty", lookupErr)
+	}
 	if url != "https://example.com/pr/7" {
 		t.Fatalf("url = %q, want https://example.com/pr/7", url)
 	}
@@ -68,12 +71,12 @@ func TestLookupOpenPRCachesResults(t *testing.T) {
 	seedForgeCacheGitHub(t, core, cwd)
 
 	// First call: cold cache -> shell out.
-	if url, _ := core.lookupOpenPR(cwd, "feat-a"); url == "" {
+	if url, _, lookupErr := core.lookupOpenPR(cwd, "feat-a"); url == "" || lookupErr != "" {
 		t.Fatalf("cold lookup returned empty url")
 	}
 	// Subsequent calls within TTL: warm cache -> no shell out.
 	for i := 0; i < 5; i++ {
-		if url, _ := core.lookupOpenPR(cwd, "feat-a"); url == "" {
+		if url, _, lookupErr := core.lookupOpenPR(cwd, "feat-a"); url == "" || lookupErr != "" {
 			t.Fatalf("warm lookup #%d returned empty url", i)
 		}
 	}
@@ -86,7 +89,7 @@ func TestLookupOpenPRCachesResults(t *testing.T) {
 	}
 
 	// Different branch -> different cache key -> fresh shell out.
-	if url, _ := core.lookupOpenPR(cwd, "feat-b"); url == "" {
+	if url, _, lookupErr := core.lookupOpenPR(cwd, "feat-b"); url == "" || lookupErr != "" {
 		t.Fatalf("different-branch lookup returned empty url")
 	}
 	calls, _ = os.ReadFile(counterFile)
@@ -96,7 +99,7 @@ func TestLookupOpenPRCachesResults(t *testing.T) {
 
 	// TTL expiry -> fresh shell out. Drive nowFn forward past the TTL.
 	core.nowFn = func() time.Time { return time.Now().Add(prLookupTTL + time.Second) }
-	if url, _ := core.lookupOpenPR(cwd, "feat-a"); url == "" {
+	if url, _, lookupErr := core.lookupOpenPR(cwd, "feat-a"); url == "" || lookupErr != "" {
 		t.Fatalf("post-TTL lookup returned empty url")
 	}
 	calls, _ = os.ReadFile(counterFile)
@@ -141,5 +144,51 @@ func TestInvalidatePRCacheClearsCwdEntries(t *testing.T) {
 	calls, _ := os.ReadFile(counterFile)
 	if got := len(calls); got != 3 {
 		t.Fatalf("gh invocations = %d, want 3 (2 seeds + 1 post-invalidate refetch)", got)
+	}
+}
+
+func TestLookupOpenPRCachesErrorsBriefly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock gh is unix-only")
+	}
+
+	binDir := t.TempDir()
+	counterFile := filepath.Join(binDir, "calls")
+	ghPath := filepath.Join(binDir, "gh")
+	script := "#!/bin/sh\nprintf x >> " + counterFile + "\necho 'auth required' 1>&2\nexit 1\n"
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock gh: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	core := NewCore()
+	cwd := t.TempDir()
+	seedForgeCacheGitHub(t, core, cwd)
+
+	url, number, lookupErr := core.lookupOpenPR(cwd, "main")
+	if url != "" || number != 0 {
+		t.Fatalf("lookup result = (%q, %d), want empty on error", url, number)
+	}
+	if lookupErr == "" {
+		t.Fatal("expected lookup error")
+	}
+
+	if _, _, cachedErr := core.lookupOpenPRCached(cwd, "main"); cachedErr == "" {
+		t.Fatal("cached lookup error is empty")
+	}
+	core.lookupOpenPR(cwd, "main")
+	calls, err := os.ReadFile(counterFile)
+	if err != nil {
+		t.Fatalf("read counter: %v", err)
+	}
+	if got := len(calls); got != 1 {
+		t.Fatalf("gh invocations before error TTL = %d, want 1", got)
+	}
+
+	core.nowFn = func() time.Time { return time.Now().Add(prLookupErrorTTL + time.Second) }
+	core.lookupOpenPR(cwd, "main")
+	calls, _ = os.ReadFile(counterFile)
+	if got := len(calls); got != 2 {
+		t.Fatalf("gh invocations after error TTL = %d, want 2", got)
 	}
 }

@@ -132,8 +132,13 @@ describe('<ShipChangesDrawer>', () => {
 
   it('refreshes the pane git-status slot after a successful commit', async () => {
     const pane = await buildPane();
-    const refreshNow = vi.spyOn(pane.gitStatus, 'refreshNow').mockResolvedValue();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    let statusCalls = 0;
+    setBindingMock('GetGitStatus', async () => {
+      statusCalls += 1;
+      return statusCalls === 1
+        ? status({ hasChanges: true })
+        : status({ hasChanges: false, aheadCount: 1 });
+    });
     setBindingMock('GitCommit', async () => ({
       action: 'commit',
       commitSha: 'sha-123',
@@ -147,7 +152,8 @@ describe('<ShipChangesDrawer>', () => {
     await fireEvent.click(getByTestId('ship-changes-commit-submit'));
     await flush(10);
 
-    expect(refreshNow).toHaveBeenCalledTimes(1);
+    expect(pane.gitStatus.status?.hasChanges).toBe(false);
+    expect(pane.gitStatus.status?.aheadCount).toBe(1);
   });
 
   it('surfaces a commit error inline and offers a retry', async () => {
@@ -183,8 +189,13 @@ describe('<ShipChangesDrawer>', () => {
 
   it('calls GitPush and advances to PR step on success', async () => {
     const pane = await buildPane();
-    const refreshNow = vi.spyOn(pane.gitStatus, 'refreshNow').mockResolvedValue();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: false, aheadCount: 1 }));
+    let statusCalls = 0;
+    setBindingMock('GetGitStatus', async () => {
+      statusCalls += 1;
+      return statusCalls === 1
+        ? status({ hasChanges: false, aheadCount: 1 })
+        : status({ hasChanges: false, aheadCount: 0 });
+    });
     const push = setBindingMock('GitPush', async () => ({ action: 'push' } as GitActionResult));
     const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => {} },
@@ -193,7 +204,7 @@ describe('<ShipChangesDrawer>', () => {
     await fireEvent.click(getByTestId('ship-changes-push-submit'));
     await flush(10);
     expect(push.mock.calls.length).toBe(1);
-    expect(refreshNow).toHaveBeenCalledTimes(1);
+    expect(pane.gitStatus.status?.aheadCount).toBe(0);
     expect(await findByTestId('ship-changes-step-pr')).toBeInTheDocument();
   });
 
@@ -215,8 +226,13 @@ describe('<ShipChangesDrawer>', () => {
 
   it('calls GitCreatePR with the trimmed title/body and shows the URL', async () => {
     const pane = await buildPane();
-    const refreshNow = vi.spyOn(pane.gitStatus, 'refreshNow').mockResolvedValue();
-    setBindingMock('GetGitStatus', async () => status({ hasChanges: false, aheadCount: 0 }));
+    let statusCalls = 0;
+    setBindingMock('GetGitStatus', async () => {
+      statusCalls += 1;
+      return statusCalls === 1
+        ? status({ hasChanges: false, aheadCount: 0 })
+        : status({ hasChanges: false, aheadCount: 0, openPrUrl: 'https://github.com/owner/repo/pull/42', openPrNumber: 42 });
+    });
     const createPR = setBindingMock('GitCreatePR', async () => ({
       action: 'pr',
       prUrl: 'https://github.com/owner/repo/pull/42',
@@ -233,7 +249,7 @@ describe('<ShipChangesDrawer>', () => {
     expect(createPR.mock.calls.length).toBe(1);
     expect(createPR.mock.calls[0][1]).toBe('Add widget');
     expect(createPR.mock.calls[0][2]).toBe('');
-    expect(refreshNow).toHaveBeenCalledTimes(1);
+    expect(pane.gitStatus.status?.openPrUrl).toBe('https://github.com/owner/repo/pull/42');
     const url = await findByTestId('ship-changes-pr-url');
     expect(url.getAttribute('href')).toBe('https://github.com/owner/repo/pull/42');
   });
@@ -270,6 +286,9 @@ describe('<ShipChangesDrawer>', () => {
     // pr.done lands us here; no title form, no submit.
     await findByTestId('ship-changes-step-pr');
     await flush();
+    const url = await findByTestId('ship-changes-pr-url');
+    expect(url.getAttribute('href')).toBe('https://github.com/o/r/pull/7');
+    expect(url.textContent).toBe('https://github.com/o/r/pull/7');
     expect(queryByTestId('ship-changes-pr-title')).toBeNull();
     expect(queryByTestId('ship-changes-pr-submit')).toBeNull();
   });
@@ -616,5 +635,22 @@ describe('<ShipChangesDrawer>', () => {
     });
     const note = await findByTestId('ship-changes-pr-unsupported');
     expect(note.textContent).toMatch(/not GitHub or GitLab/);
+  });
+
+  it('blocks PR creation when checking for an existing MR failed', async () => {
+    const pane = await buildPane();
+    setBindingMock('GetGitStatus', async () => status({
+      forge: 'gitlab',
+      hasChanges: false,
+      aheadCount: 0,
+      openPrLookupError: 'glab auth required',
+    }));
+    const { findByTestId, queryByTestId } = render(ShipChangesDrawer, {
+      props: { open: true, pane, onClose: () => {} },
+    });
+    const note = await findByTestId('ship-changes-pr-lookup-error');
+    expect(note.textContent).toMatch(/Could not check existing MR/);
+    expect(queryByTestId('ship-changes-pr-submit')).toBeNull();
+    expect(queryByTestId('ship-changes-pr-title')).toBeNull();
   });
 });

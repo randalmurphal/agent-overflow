@@ -267,6 +267,13 @@ describe('createShipChangesState', () => {
       expect(store.canCreatePR).toBe(true);
     });
 
+    it('canCreatePR stays false when the existing PR lookup failed', () => {
+      store.setStatus(status({ openPrLookupError: 'gh auth required' }));
+      store.setPRTitle('Open PR');
+      expect(store.canCreatePR).toBe(false);
+      expect(() => store.beginCreatePR()).toThrow(/lookup failed/i);
+    });
+
     it('seedPR() sets title and body together', () => {
       store.seedPR('PR Title', 'PR Body');
       expect(store.prTitle).toBe('PR Title');

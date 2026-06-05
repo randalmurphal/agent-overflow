@@ -19,6 +19,11 @@ export interface GitStatus {
   openPrUrl?: string;
   openPrNumber?: number;
   /**
+   * Set when checking the current branch's open PR/MR failed. Distinct from
+   * a successful lookup that found no open PR/MR.
+   */
+  openPrLookupError?: string;
+  /**
    * Identifier of an in-progress multi-step git operation that blocks new
    * commits. Empty string when the repo is idle. Known values: "merge",
    * "rebase", "bisect".
