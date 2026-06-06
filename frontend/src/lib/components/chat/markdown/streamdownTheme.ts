@@ -63,20 +63,20 @@ export const chatMarkdownTheme: ThemeOverride = {
     header: 'hidden',
     buttons: 'hidden',
     language: 'hidden',
-    skeleton: 'block rounded-md font-mono text-transparent bg-surface-2/60 scale-y-90 w-fit animate-pulse whitespace-nowrap',
+    skeleton: 'block max-w-full rounded-md font-mono text-transparent bg-surface-2/60 scale-y-90 w-fit animate-pulse whitespace-pre-wrap wrap-anywhere',
     // The pre/code body. Transparent bg so it inherits the wrapper's
     // surface-1; tightened horizontal padding.
-    pre: 'whitespace-pre-wrap break-words overflow-x-hidden font-mono p-3 bg-transparent',
+    pre: 'whitespace-pre-wrap wrap-anywhere overflow-x-visible font-mono p-3 bg-transparent',
     line: 'block',
   },
   // Inline code. `app.css` already styles `.markdown-body code` via
   // `--code-inline-bg`, so we just clear Streamdown's hardcoded gray
   // bg and let the cascade win. Layout stays here because it is
-  // specific to Streamdown codespans: keep flags like `--validate`
-  // atomic, but cap long inline code at the message width.
+  // specific to Streamdown codespans: they participate in normal
+  // inline layout, and long paths / hashes may break under constraint.
   codespan: {
     base: [
-      'inline-block max-w-full overflow-x-auto whitespace-nowrap align-middle',
+      'inline whitespace-pre-wrap wrap-anywhere align-baseline',
       'rounded px-1.5 py-0.5 font-mono text-[0.9em] leading-[1.35] bg-transparent',
     ].join(' '),
   },

@@ -247,7 +247,7 @@ describe('<AssistantMessage>', () => {
     },
   );
 
-  it('keeps inline command flags visually atomic', async () => {
+  it('wraps inline command flags instead of scrolling horizontally', async () => {
     const { getByTestId } = render(AssistantMessage, {
       props: {
         item: makeItem({
@@ -263,13 +263,16 @@ describe('<AssistantMessage>', () => {
       expect(code).not.toBeNull();
       expect(code?.textContent).toBe('--validate');
       expect(code).toHaveClass(
-        'inline-block',
-        'max-w-full',
-        'overflow-x-auto',
-        'whitespace-nowrap',
-        'align-middle',
+        'inline',
+        'whitespace-pre-wrap',
+        'wrap-anywhere',
+        'align-baseline',
         'leading-[1.35]',
       );
+      expect(code).not.toHaveClass('inline-block');
+      expect(code).not.toHaveClass('overflow-x-auto');
+      expect(code).not.toHaveClass('whitespace-nowrap');
+      expect(code).not.toHaveClass('align-middle');
     });
   });
 

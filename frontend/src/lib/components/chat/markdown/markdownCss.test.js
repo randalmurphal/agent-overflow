@@ -4,6 +4,16 @@ import { describe, expect, it } from 'vitest';
 const appCss = readFileSync('src/app.css', 'utf8');
 
 describe('markdown CSS', () => {
+  it('wraps markdown code spans and code blocks instead of scrolling horizontally', () => {
+    expect(appCss).toMatch(/\.markdown-body\s+code\s*\{[^}]*display:\s*inline;/s);
+    expect(appCss).toMatch(/\.markdown-body\s+code\s*\{[^}]*white-space:\s*pre-wrap;/s);
+    expect(appCss).toMatch(/\.markdown-body\s+code\s*\{[^}]*overflow-wrap:\s*anywhere;/s);
+    expect(appCss).toMatch(/\.markdown-body\s+code\s*\{[^}]*overflow-x:\s*visible;/s);
+    expect(appCss).toMatch(/\.markdown-body\s+pre\s*\{[^}]*white-space:\s*pre-wrap;/s);
+    expect(appCss).toMatch(/\.markdown-body\s+pre\s*\{[^}]*overflow-wrap:\s*anywhere;/s);
+    expect(appCss).toMatch(/\.markdown-body\s+pre\s*\{[^}]*overflow-x:\s*visible;/s);
+  });
+
   it('wraps Streamdown tables within the markdown width', () => {
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s*\{[^}]*max-width:\s*100%;/s);
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s*\{[^}]*overflow-x:\s*visible;/s);

@@ -340,11 +340,18 @@ pre, code, kbd, samp, .ansi-body {
 .markdown-body a { color: var(--accent); }
 .markdown-body a:hover { text-decoration: underline; }
 .markdown-body code {
+  display: inline;
   font-family: var(--font-mono);
   font-size: 0.9em;
   background: var(--code-inline-bg);
   padding: 0.05rem 0.3rem;
   border-radius: 0.25rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-x: visible;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 .markdown-body pre {
   font-family: var(--font-mono);
@@ -358,7 +365,9 @@ pre, code, kbd, samp, .ansi-body {
   padding: 0.75rem;
   margin: 0.5rem 0;
   white-space: pre-wrap;
-  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-x: visible;
 }
 .markdown-body pre code {
   background: transparent;
