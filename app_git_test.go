@@ -799,6 +799,47 @@ func TestGitCreateBranchFromCurrentBaseKeepsDirtyTree(t *testing.T) {
 	}
 }
 
+func TestGitCreateBranchFromCurrentBaseRejectsExistingBranch(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "BLITZ-187")
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-create-branch-existing")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	readmePath := filepath.Join(repo, "README.txt")
+	if err := os.WriteFile(readmePath, []byte("dirty edit\n"), 0o644); err != nil {
+		t.Fatalf("dirty write: %v", err)
+	}
+
+	_, err = app.GitCreateBranchFrom(thread.ID, "BLITZ-187", "main", true)
+	if err == nil {
+		t.Fatal("expected duplicate branch error")
+	}
+	if !strings.Contains(err.Error(), `create branch: branch "BLITZ-187" already exists`) {
+		t.Fatalf("GitCreateBranchFrom() error = %v, want duplicate branch message", err)
+	}
+	if got := app.gitCore().CurrentBranch(repo); got != "main" {
+		t.Fatalf("current branch = %q, want unchanged main", got)
+	}
+	contents, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if string(contents) != "dirty edit\n" {
+		t.Fatalf("dirty tree changed; README = %q", string(contents))
+	}
+}
+
 func TestGitCreateBranchFromOtherBaseDiscardsDirtyTree(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
@@ -860,6 +901,92 @@ func TestGitCreateBranchFromOtherBaseDiscardsDirtyTree(t *testing.T) {
 	}
 	if strings.TrimSpace(stdout) != "" {
 		t.Fatalf("expected empty stash; got %q", stdout)
+	}
+}
+
+func TestGitCreateBranchFromOtherBaseRejectsExistingBranchBeforeWorkspaceMutation(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	testutil.RunGit(t, repo, "checkout", "-b", "release")
+	if err := os.WriteFile(filepath.Join(repo, "RELEASE.txt"), []byte("release marker\n"), 0o644); err != nil {
+		t.Fatalf("release write: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "RELEASE.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "release marker")
+	testutil.RunGit(t, repo, "checkout", "main")
+	testutil.RunGit(t, repo, "branch", "feature/existing")
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-create-branch-existing-other-base")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	thread.UpdatedAt = 1_700_000_000_000
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	readmePath := filepath.Join(repo, "README.txt")
+	if err := os.WriteFile(readmePath, []byte("dirty edit\n"), 0o644); err != nil {
+		t.Fatalf("dirty write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "staged.txt"), []byte("staged\n"), 0o644); err != nil {
+		t.Fatalf("staged write: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "staged.txt")
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatalf("untracked write: %v", err)
+	}
+	statusBeforeOut, _, err := app.gitCore().Execute(repo, "status", "--short")
+	if err != nil {
+		t.Fatalf("status before: %v", err)
+	}
+	statusBefore := strings.TrimSpace(statusBeforeOut)
+
+	_, err = app.GitCreateBranchFrom(thread.ID, "feature/existing", "release", false)
+	if err == nil {
+		t.Fatal("expected duplicate branch error")
+	}
+	if !strings.Contains(err.Error(), `create branch: branch "feature/existing" already exists`) {
+		t.Fatalf("GitCreateBranchFrom() error = %v, want duplicate branch message", err)
+	}
+	if got := app.gitCore().CurrentBranch(repo); got != "main" {
+		t.Fatalf("current branch = %q, want unchanged main", got)
+	}
+	contents, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if string(contents) != "dirty edit\n" {
+		t.Fatalf("dirty tree changed; README = %q", string(contents))
+	}
+	statusAfterOut, _, err := app.gitCore().Execute(repo, "status", "--short")
+	if err != nil {
+		t.Fatalf("status after: %v", err)
+	}
+	if got := strings.TrimSpace(statusAfterOut); got != statusBefore {
+		t.Fatalf("status changed\ngot:  %q\nwant: %q", got, statusBefore)
+	}
+	stashOut, _, err := app.gitCore().Execute(repo, "stash", "list")
+	if err != nil {
+		t.Fatalf("stash list: %v", err)
+	}
+	if got := strings.TrimSpace(stashOut); got != "" {
+		t.Fatalf("stash list = %q, want empty", got)
+	}
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.Branch != "main" {
+		t.Fatalf("stored Branch = %q, want unchanged main", stored.Branch)
+	}
+	if stored.UpdatedAt != thread.UpdatedAt {
+		t.Fatalf("stored UpdatedAt = %d, want unchanged %d", stored.UpdatedAt, thread.UpdatedAt)
 	}
 }
 

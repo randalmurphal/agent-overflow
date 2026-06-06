@@ -218,6 +218,9 @@ func (c *Core) CreateWorktreeFromBranch(cwd, path, baseBranch, newBranch string)
 			return err
 		}
 	}
+	if err := c.ensureBranchDoesNotExist(cwd, newBranch); err != nil {
+		return err
+	}
 
 	args := []string{"worktree", "add", "-b", newBranch, path}
 	if baseBranch != "" {
@@ -225,6 +228,9 @@ func (c *Core) CreateWorktreeFromBranch(cwd, path, baseBranch, newBranch string)
 	}
 	_, stderr, err := c.Execute(cwd, args...)
 	if err != nil {
+		if c.branchAlreadyExistsAfterCreationError(cwd, stderr, newBranch) {
+			return branchAlreadyExistsError(newBranch)
+		}
 		message := strings.TrimSpace(stderr)
 		if message == "" {
 			message = err.Error()

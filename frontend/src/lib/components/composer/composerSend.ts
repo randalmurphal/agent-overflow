@@ -12,7 +12,7 @@ import {
 import type { Attachment } from '../../types/attachment';
 import type { TerminalChip } from '../../types/draft';
 import { addToast } from '../../stores/toast.svelte';
-import { errString } from '../../utils/errors';
+import { userFacingError } from '../../utils/userFacingError';
 import { syncThread } from '../../stores/panes.svelte';
 import {
   projectSendResolved,
@@ -118,13 +118,14 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     // moved on, surface a toast so the failed send is visible rather than
     // silent.
     await opts.restoreDraft(opts.threadId, opts.snapshot);
+    const readableError = userFacingError(err);
     if (opts.draftThreadId() !== opts.threadId) {
       addToast(
         'error',
-        `Message to the previous thread failed to send; draft preserved (${errString(err)}).`,
+        `Message to the previous thread failed to send; draft preserved: ${readableError}`,
       );
     } else {
-      opts.reportError(`Failed to send message: ${errString(err)}`);
+      opts.reportError(`Failed to send message: ${readableError}`);
     }
     return false;
   }

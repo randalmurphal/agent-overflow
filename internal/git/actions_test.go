@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -140,6 +141,74 @@ func TestCreateBranchAndCheckout(t *testing.T) {
 	branch := strings.TrimSpace(runGitStdout(t, repo, "rev-parse", "--abbrev-ref", "HEAD"))
 	if branch != "feature/demo" {
 		t.Fatalf("branch = %q, want feature/demo", branch)
+	}
+}
+
+func TestCreateBranchRejectsExistingBranch(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	err := core.CreateBranch(repo, "main")
+	if err == nil {
+		t.Fatal("expected duplicate branch error")
+	}
+	if !strings.Contains(err.Error(), `branch "main" already exists`) {
+		t.Fatalf("CreateBranch(main) error = %v, want duplicate branch message", err)
+	}
+}
+
+func TestCheckoutNewBranchRejectsExistingBranch(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	if err := core.CheckoutNewBranch(repo, "main"); err == nil {
+		t.Fatal("expected duplicate branch error")
+	} else if !strings.Contains(err.Error(), `branch "main" already exists`) {
+		t.Fatalf("CheckoutNewBranch(main) error = %v, want duplicate branch message", err)
+	}
+
+	branch := strings.TrimSpace(runGitStdout(t, repo, "rev-parse", "--abbrev-ref", "HEAD"))
+	if branch != "main" {
+		t.Fatalf("branch = %q, want unchanged main", branch)
+	}
+}
+
+func TestBranchCreationNormalizesBranchCreatedAfterPreflight(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock git is unix-only")
+	}
+
+	tests := []struct {
+		name string
+		run  func(*Core, string) error
+	}{
+		{
+			name: "checkout new branch",
+			run: func(core *Core, repo string) error {
+				return core.CheckoutNewBranch(repo, "race")
+			},
+		},
+		{
+			name: "create branch",
+			run: func(core *Core, repo string) error {
+				return core.CreateBranch(repo, "race")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			branchExistsMarker := filepath.Join(t.TempDir(), "branch-exists")
+			installBranchRaceGit(t, branchExistsMarker)
+
+			err := tt.run(NewCore(), t.TempDir())
+			if err == nil {
+				t.Fatal("expected duplicate branch error")
+			}
+			if !strings.Contains(err.Error(), `branch "race" already exists`) {
+				t.Fatalf("error = %v, want duplicate branch message", err)
+			}
+		})
 	}
 }
 
@@ -324,4 +393,44 @@ func runGitAllowErrorOutput(cwd string, args ...string) (string, error) {
 		return "", fmt.Errorf("%w\n%s", err, string(output))
 	}
 	return string(output), nil
+}
+
+func installBranchRaceGit(t *testing.T, branchExistsMarker string) {
+	t.Helper()
+
+	binDir := t.TempDir()
+	gitPath := filepath.Join(binDir, "git")
+	script := `#!/bin/sh
+case "$1" in
+  show-ref)
+    if [ -f "$AO_BRANCH_EXISTS_MARKER" ]; then
+      exit 0
+    fi
+    exit 1
+    ;;
+  checkout)
+    touch "$AO_BRANCH_EXISTS_MARKER"
+    echo "fatal: cannot lock ref" >&2
+    exit 128
+    ;;
+  branch)
+    touch "$AO_BRANCH_EXISTS_MARKER"
+    echo "fatal: cannot lock ref" >&2
+    exit 128
+    ;;
+  worktree)
+    touch "$AO_BRANCH_EXISTS_MARKER"
+    echo "fatal: cannot lock ref" >&2
+    exit 128
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock git: %v", err)
+	}
+	t.Setenv("AO_BRANCH_EXISTS_MARKER", branchExistsMarker)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

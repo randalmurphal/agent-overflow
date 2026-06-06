@@ -243,8 +243,11 @@ func (c *Core) CheckoutNewBranch(cwd, name string) error {
 	if err := validateBranchName(name); err != nil {
 		return err
 	}
-	_, _, err := c.Execute(cwd, "checkout", "-b", name)
-	return err
+	if err := c.ensureBranchDoesNotExist(cwd, name); err != nil {
+		return err
+	}
+	_, stderr, err := c.Execute(cwd, "checkout", "-b", name)
+	return c.branchCreationError(cwd, err, stderr, name)
 }
 
 // CreateBranch creates a branch without switching to it.
@@ -256,9 +259,12 @@ func (c *Core) CreateBranch(cwd, name string) error {
 	if err := validateBranchName(name); err != nil {
 		return err
 	}
+	if err := c.ensureBranchDoesNotExist(cwd, name); err != nil {
+		return err
+	}
 
-	_, _, err := c.Execute(cwd, "branch", name)
-	return err
+	_, stderr, err := c.Execute(cwd, "branch", name)
+	return c.branchCreationError(cwd, err, stderr, name)
 }
 
 // RenameBranch renames a local branch, appending a numeric suffix if the
@@ -362,8 +368,83 @@ func (c *Core) pushRemoteName(cwd string) (string, error) {
 }
 
 func (c *Core) branchExists(cwd, branch string) bool {
+	exists, err := c.branchExistsChecked(cwd, branch)
+	return err == nil && exists
+}
+
+func (c *Core) EnsureLocalBranchDoesNotExist(cwd, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("git branch name is required")
+	}
+	if err := validateBranchName(name); err != nil {
+		return err
+	}
+	return c.ensureBranchDoesNotExist(cwd, name)
+}
+
+func branchAlreadyExistsError(name string) error {
+	return fmt.Errorf("branch %q already exists", name)
+}
+
+func (c *Core) ensureBranchDoesNotExist(cwd, name string) error {
+	exists, err := c.branchExistsChecked(cwd, name)
+	if err != nil {
+		return fmt.Errorf("check branch %q: %w", name, err)
+	}
+	if exists {
+		return branchAlreadyExistsError(name)
+	}
+	return nil
+}
+
+func (c *Core) branchExistsChecked(cwd, branch string) (bool, error) {
 	result, err := c.run(cwd, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	return err == nil && result.exitCode == 0
+	if err != nil {
+		return false, err
+	}
+	switch result.exitCode {
+	case 0:
+		return true, nil
+	case 1:
+		return false, nil
+	default:
+		message := strings.TrimSpace(result.stderr)
+		if message == "" {
+			message = fmt.Sprintf("git show-ref refs/heads/%s exited with code %d", branch, result.exitCode)
+		}
+		return false, fmt.Errorf("%s", message)
+	}
+}
+
+func (c *Core) branchCreationError(cwd string, err error, stderr, name string) error {
+	if err == nil {
+		return nil
+	}
+	if c.branchAlreadyExistsAfterCreationError(cwd, stderr, name) {
+		return branchAlreadyExistsError(name)
+	}
+	return err
+}
+
+func (c *Core) branchAlreadyExistsAfterCreationError(cwd, stderr, name string) bool {
+	if gitReportsBranchAlreadyExists(stderr, name) {
+		return true
+	}
+	exists, err := c.branchExistsChecked(cwd, name)
+	return err == nil && exists
+}
+
+func gitReportsBranchAlreadyExists(stderr, name string) bool {
+	message := strings.ToLower(stderr)
+	if !strings.Contains(message, "exists") {
+		return false
+	}
+	normalizedName := strings.ToLower(strings.TrimSpace(name))
+	if normalizedName != "" && !strings.Contains(message, normalizedName) {
+		return false
+	}
+	return strings.Contains(message, "branch") || strings.Contains(message, "refs/heads/")
 }
 
 func (c *Core) localBranchFromRemote(cwd, branch string) (string, bool) {

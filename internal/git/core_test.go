@@ -188,8 +188,25 @@ func TestCreateWorktreeFailsOnConflictingBranch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for duplicate branch name")
 	}
-	if !strings.Contains(err.Error(), "worktree add failed") {
+	if !strings.Contains(err.Error(), `branch "main" already exists`) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCreateWorktreeNormalizesBranchCreatedAfterPreflight(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock git is unix-only")
+	}
+
+	branchExistsMarker := filepath.Join(t.TempDir(), "branch-exists")
+	installBranchRaceGit(t, branchExistsMarker)
+
+	err := NewCore().CreateWorktreeFromBranch(t.TempDir(), filepath.Join(t.TempDir(), "wt"), "", "race")
+	if err == nil {
+		t.Fatal("expected duplicate branch error")
+	}
+	if !strings.Contains(err.Error(), `branch "race" already exists`) {
+		t.Fatalf("error = %v, want duplicate branch message", err)
 	}
 }
 

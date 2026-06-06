@@ -466,6 +466,9 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 		if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
 			return store.Thread{}, err
 		}
+		if err := core.EnsureLocalBranchDoesNotExist(workspace, sanitized); err != nil {
+			return store.Thread{}, fmt.Errorf("create branch: %w", err)
+		}
 	}
 
 	if baseIsCurrent {
