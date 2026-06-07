@@ -2687,6 +2687,16 @@ describe('createUseStickToBottomController — spring chase', () => {
       // value (e.g., 28). When content then grows slightly (+10px), the
       // frozen velocity causes an immediate overshoot+clamp instead of
       // the smooth interpolation a clean sentinel would produce.
+      //
+      // These three cases also pin the UPPER bound of
+      // SPRING_CARRY_VELOCITY_CEILING. The momentum-carry change (see the
+      // sibling 'momentum carry across catch-up' describe) keeps a gentle
+      // upward velocity across diff === 0 instead of always zeroing it, but
+      // only below the ceiling (4). The remnant velocities here (~28, ~8,
+      // ~14) all exceed it, so they are still shed and these tests still
+      // pass. The cross-target-clamp case (~8) below is the tightest:
+      // raising the ceiling to >= 8 would let that remnant be carried into
+      // the follow-up growth and reintroduce the overshoot these guard.
 
       it('content growth after instant pin during spring should chase smoothly, not overshoot+clamp', async () => {
         const ro = getRO();
@@ -2797,6 +2807,110 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop).toBeLessThan(605);
 
         await advanceUntil(() => geom.scrollTop === 605);
+      });
+    });
+
+    describe('momentum carry across catch-up during streaming', () => {
+      // Content height grows in line-sized quanta while streaming, so the
+      // spring repeatedly reaches the bottom and idles between line wraps.
+      // Unconditionally zeroing velocity on every catch-up forced each new
+      // line to re-accelerate from rest — a steady stream read as a series
+      // of slow-start lurches. While still inside the retain window the
+      // spring now KEEPS a gentle (<= SPRING_CARRY_VELOCITY_CEILING) upward
+      // follow velocity across the catch-up so the next line continues the
+      // existing motion instead of restarting it. Carry is scoped to
+      // growth-follow: downward (shrink-follow) remnants are shed so a
+      // resumed growth never starts by nudging the viewport the wrong way.
+
+      it('keeps gentle velocity across a catch-up within the retain window so the next line does not restart from rest', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150); // warm
+
+        // Build a gentle follow velocity (below the carry ceiling), then a
+        // cross-target clamp lands exactly on target so the diff === 0
+        // catch-up tick runs quickly — well inside the retain window,
+        // where the carry path (not the settle path) applies. A natural
+        // single-growth catch-up takes ~24 frames (> the retain window),
+        // which is the streaming case where consecutive lines keep
+        // refreshing the window; the clamp reproduces "caught up shortly
+        // after the last growth" deterministically.
+        geom.scrollHeight = 1050;
+        geom.contentHeight = 850;
+        ro.fire(contentEl, 850); // target = 450
+        for (let i = 0; i < 2; i++) await nextFrame();
+        const mid = geom.scrollTop;
+        const nearTarget = Math.ceil(mid) + 1;
+        geom.scrollHeight = nearTarget + 600;
+        geom.contentHeight = nearTarget + 400;
+        ro.fire(contentEl, nearTarget + 400);
+        await advanceUntil(() => geom.scrollTop === nearTarget, 50);
+        await nextFrame(); // diff === 0 catch-up tick — velocity carried
+        expect(performance.now()).toBeLessThan(RETAIN_ANIMATION_DURATION_MS);
+
+        // Small +3px growth. With momentum carried, the first frame moves
+        // noticeably more than a cold start from rest would (cold
+        // first-frame move for a 3px diff is ~0.12px); with velocity zeroed
+        // (old behavior) it would BE that cold value.
+        geom.scrollHeight = nearTarget + 603;
+        geom.contentHeight = nearTarget + 403;
+        ro.fire(contentEl, nearTarget + 403); // target = nearTarget + 3
+        const beforeWarm = geom.scrollTop; // nearTarget
+        await nextFrame();
+        const warmFirstFrameMove = geom.scrollTop - beforeWarm;
+
+        expect(warmFirstFrameMove).toBeGreaterThan(0.3); // > cold (~0.12)
+        // Still a smooth chase, not a snap to the new bottom.
+        expect(geom.scrollTop).toBeLessThan(nearTarget + 3);
+      });
+
+      it('sheds a downward (shrink-follow) remnant so a resumed growth never starts the wrong way', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150); // warm
+
+        // Phase 1: jump up and cross-clamp. The clamp velocity is well
+        // above the carry ceiling, so the diff === 0 tick sheds it and the
+        // spring is left at rest at `up` — a clean start for a downward
+        // chase with no leftover upward momentum to overshoot.
+        geom.scrollHeight = 1300;
+        geom.contentHeight = 1100;
+        ro.fire(contentEl, 1100); // target = 700
+        for (let i = 0; i < 2; i++) await nextFrame();
+        const up = Math.ceil(geom.scrollTop) + 1;
+        geom.scrollHeight = up + 600;
+        geom.contentHeight = up + 400;
+        ro.fire(contentEl, up + 400); // target = up
+        await advanceUntil(() => geom.scrollTop === up, 50);
+        await nextFrame(); // diff === 0: above-ceiling velocity shed → at rest
+
+        // Phase 2: shrink so the spring chases DOWN from rest and
+        // cross-clamps onto the lower target with a NEGATIVE velocity. The
+        // negative delta bumps the retain timestamp, so the catch-up lands
+        // inside the retain window — the carry path applies, and the sign
+        // gate is what decides shed-vs-carry here. The 12px drop keeps the
+        // clamp velocity solidly negative (~-0.8), not a near-zero remnant
+        // that both code paths would treat alike.
+        const down = up - 12;
+        geom.scrollHeight = down + 600;
+        geom.contentHeight = down + 400;
+        ro.fire(contentEl, down + 400); // target = down (shrink)
+        await advanceUntil(() => geom.scrollTop === down, 60);
+        await nextFrame(); // diff === 0 catch-up — downward remnant must shed
+
+        // Resumed growth. Carry is scoped to growth-follow, so the negative
+        // remnant was dropped and this is a clean cold start that moves
+        // TOWARD the new bottom. Without the sign gate the carried negative
+        // velocity would pull scrollTop the wrong way (away from bottom)
+        // on the first frame.
+        geom.scrollHeight = down + 603;
+        geom.contentHeight = down + 403;
+        ro.fire(contentEl, down + 403); // target = down + 3
+        const beforeResume = geom.scrollTop; // down
+        await nextFrame();
+        expect(geom.scrollTop).toBeGreaterThan(beforeResume);
+        // A real (small) move toward the bottom, not a snap.
+        expect(geom.scrollTop).toBeLessThan(down + 3);
       });
     });
 

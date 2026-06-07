@@ -126,6 +126,32 @@ export const RETAIN_ANIMATION_DURATION_MS = 350;
 // below 0.5 px-per-60fps-frame means we've effectively settled.
 const ARRIVAL_DISTANCE_PX = 1;
 const ARRIVAL_VELOCITY_THRESHOLD = 0.5;
+// Velocity (px per 60fps frame) at or below which the spring KEEPS its
+// upward follow momentum when it catches up to the bottom mid-stream,
+// instead of zeroing it. Content height grows in line-sized quanta during
+// streaming — a wrap moves the bottom ~20px, but the word-by-word reveals
+// between wraps don't change height — so the spring repeatedly reaches the
+// bottom and idles in the gaps. Carrying a gentle follow velocity across
+// those gaps lets the next line continue the existing motion rather than
+// re-accelerating from a dead stop: the difference between one continuous
+// glide and a string of slow-start lurches (the reported jank).
+//
+// The ceiling keeps this from reintroducing the big→small snap that the
+// diff===0 zeroing originally fixed. A velocity left over from a LARGE
+// motion — a 200–400px jump, or an external instant-pin
+// (notifyContentMaybeGrew) that froze velocity mid-chase at ~8–28 — would,
+// if carried into a small ~3–10px growth, cross the target on the first
+// frame and snap instead of gliding. Those remnants sit well above this
+// ceiling and are still shed; only genuine line-follow momentum
+// (~1–2 px/frame) is kept. The snap threshold is exact: a carried velocity
+// crosses a growth of size D on the first frame when
+// velocity > D · (mass − stiffness) / damping — i.e. D · 1.714… for
+// DEFAULT_SPRING — so a sub-line ~3px growth tolerates carry up to ~5; 4
+// leaves margin while still exceeding single/double-line follow speed. If
+// DEFAULT_SPRING is retuned that margin shifts; the "stuck spring"
+// snap-guard tests pin the upper bound (their remnant velocities ~8/14/28
+// all exceed it, so they zero exactly as before).
+const SPRING_CARRY_VELOCITY_CEILING = 4;
 // Spring tick writes fire at 60Hz during a chase. Sample so the
 // dev-only trace file isn't dominated by predictable +1px increments.
 // 12 ≈ 5Hz, which is enough to see the spring is running without
@@ -1008,6 +1034,15 @@ export function createUseStickToBottomController(
       const current = scrollEl.scrollTop;
       const diff = target - current;
 
+      // Whether the consumer still wants spring follow, and whether a
+      // target change landed recently enough that more content is probably
+      // still arriving. Hoisted above the diff branch so the caught-up
+      // (diff === 0) case can decide whether to KEEP momentum for the next
+      // growth or shed it and settle; the arrival check below reuses both.
+      const wantsSpringNow = options.animationMode?.() === 'spring';
+      const withinTargetChangeRetainWindow =
+        wantsSpringNow && now - lastTargetChangedAt < RETAIN_ANIMATION_DURATION_MS;
+
       if (diff !== 0) {
         // Content oscillation guard: if the sentinel was idle
         // (sentinelEntryTarget set) and the target returned to the
@@ -1046,14 +1081,31 @@ export function createUseStickToBottomController(
           if (scrollEl.scrollTop !== current) accumulated = 0;
         }
       } else {
-        // Nothing to chase — zero residual velocity so the arrival
-        // check can pass. Without this, an external instant-pin
-        // (notifyContentMaybeGrew) or cross-target clamp landing at
-        // exactly the target freezes velocity at its mid-chase value;
-        // the arrival check (|velocity| < 0.5) never passes and the
-        // spring ticks at 60fps forever without writing.
-        velocity = 0;
+        // Caught up to the bottom. `accumulated` is always dropped — we're
+        // exactly on target, so there is no sub-pixel position carry to
+        // keep. Nothing is written in this branch, so a retained velocity
+        // can't move the viewport on its own; it only seeds the next
+        // diff > 0 tick, where the cross-target clamp still bounds overshoot.
+        //
+        // KEEP a gentle upward follow velocity across the catch-up instead
+        // of zeroing it — that is what turns a line-by-line stream into one
+        // glide rather than a slow-start per line. See
+        // SPRING_CARRY_VELOCITY_CEILING for why the ceiling is load-bearing.
+        // Shed velocity otherwise:
+        //   - outside the retain window → streaming paused; the arrival
+        //     check below needs |velocity| < 0.5 to settle the spring (or
+        //     hand it to the sentinel), else it ticks at 60fps forever;
+        //   - above the ceiling → a large-motion remnant that would snap a
+        //     small follow-up growth (the big→small case the zeroing fixed);
+        //   - downward (velocity <= 0) → carry is scoped to growth-follow;
+        //     a shrink-follow remnant carried into a resumed growth would
+        //     nudge the viewport the wrong way for a frame.
         accumulated = 0;
+        const carryMomentum =
+          withinTargetChangeRetainWindow
+          && velocity > 0
+          && velocity <= SPRING_CARRY_VELOCITY_CEILING;
+        if (!carryMomentum) velocity = 0;
       }
 
       // Arrival check uses the cached `target` for the position
@@ -1062,11 +1114,10 @@ export function createUseStickToBottomController(
       // mocked to read the same source rAF passes the callback).
       // Mode flip mid-flight (turn ended) or RETAIN_ANIMATION_DURATION_MS
       // elapsing without another target-change event makes
-      // `withinTargetChangeRetainWindow` false, so the spring lands on
-      // its next arrival check rather than chasing forever. Bidirectional
-      // — applies to downward chases (shrinks) as well as upward (growth).
-      const wantsSpringNow = options.animationMode?.() === 'spring';
-      const withinTargetChangeRetainWindow = wantsSpringNow && now - lastTargetChangedAt < RETAIN_ANIMATION_DURATION_MS;
+      // `withinTargetChangeRetainWindow` (computed above) false, so the
+      // spring lands on its next arrival check rather than chasing forever.
+      // Bidirectional — applies to downward chases (shrinks) as well as
+      // upward (growth).
       const arrived =
         Math.abs(scrollEl.scrollTop - target) < ARRIVAL_DISTANCE_PX
         && Math.abs(velocity) < ARRIVAL_VELOCITY_THRESHOLD;
