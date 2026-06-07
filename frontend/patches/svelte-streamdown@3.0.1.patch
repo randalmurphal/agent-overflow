@@ -368,15 +368,24 @@ index 1131b2c3261d104c151289c31e126dea2167ab30..4325191ac0af03ce76ab8c114fb68c1d
          return getContext('POPOVER')
              ? undefined
 diff --git a/dist/marked/index.js b/dist/marked/index.js
-index fe8c295baecc3f82c02f7b401325fb32a88514e8..3afa89debab17b9675e8a3b6636139844352ec44 100644
+index fe8c295baecc3f82c02f7b401325fb32a88514e8..735a5b761f732a5819ac9cfa1fa75812b4ec99bb 100644
 --- a/dist/marked/index.js
 +++ b/dist/marked/index.js
-@@ -1,4 +1,8 @@
+@@ -1,4 +1,17 @@
  import { Lexer } from 'marked';
 +// marked 16's GFM del regex treats ~text~ (single tilde) as strikethrough,
 +// producing false positives on approximate values like ~240MB. Require ~~.
 +const _fixedDel = /^(~~)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/;
 +Lexer.rules.inline.gfm.del = Lexer.rules.inline.breaks.del = _fixedDel;
++// marked's GFM inline `text` rule begins with `[`~]+` — a COMBINED run of
++// backticks AND tildes — so a `~` fused to a backtick (e.g. ~`code`) gets
++// swallowed into a literal text run and the code span never opens (it can
++// also mis-pair onto a later backtick, producing a stray pill mid-line).
++// Split that leading class into homogeneous runs so a backtick is never
++// consumed as part of a tilde run. Mirrors the _fixedDel override above.
++const _fixText = (re) => new RegExp(re.source.replace('[`~]+|[^`~]', '`+|~+|[^`~]'), re.flags);
++Lexer.rules.inline.gfm.text = _fixText(Lexer.rules.inline.gfm.text);
++Lexer.rules.inline.breaks.text = _fixText(Lexer.rules.inline.breaks.text);
  import { markedAlert } from './marked-alert.js';
  import { markedFootnote } from './marked-footnotes.js';
  import { markedMath } from './marked-math.js';
@@ -419,15 +428,17 @@ index 893ba7e456c000e18817c495e8949733ac18efde..1b4288fa6fa4c038787850d2c3e33af2
                      type: 'math',
                      isInline: false,
 diff --git a/dist/marked/marked-subsup.js b/dist/marked/marked-subsup.js
-index 7e63670452888e539d36d95e8580eeba09eb20b2..f823cb14b3791a644a317c66e69c636b0ba8bdee 100644
+index 7e63670452888e539d36d95e8580eeba09eb20b2..65f2e02cb5c011bbf914a5f75a364e4e9a97ab28 100644
 --- a/dist/marked/marked-subsup.js
 +++ b/dist/marked/marked-subsup.js
-@@ -1,4 +1,4 @@
+@@ -1,5 +1,5 @@
 -const subRule = /^~([^~\s](?:[^~]*[^~\s])?)~/; // ~text~
-+const subRule = /^~([^~\s]+)~/; // ~text~ — no spaces allowed in subscript content
- const supRule = /^\^([^\^\s](?:[^\^]*[^\^\s])?)\^/; // ^text^
+-const supRule = /^\^([^\^\s](?:[^\^]*[^\^\s])?)\^/; // ^text^
++const subRule = /^~([^~`\s]+)~/; // ~text~ — no spaces/backticks (code spans bind tighter)
++const supRule = /^\^([^\^`\s](?:[^\^`]*[^\^`\s])?)\^/; // ^text^ — no backticks (code spans bind tighter)
  export const markedSub = {
      name: 'sub',
+     level: 'inline',
 diff --git a/dist/utils/hightlighter.svelte.js b/dist/utils/hightlighter.svelte.js
 index 44ad02dae663a9666a57e514f0d235482041b3bd..ff190a15393b475b2bd00e0acbb117a0ea26b9f2 100644
 --- a/dist/utils/hightlighter.svelte.js

@@ -158,6 +158,146 @@ describe('<AssistantMessage>', () => {
     });
   });
 
+  // Regression (Tier 1): marked's GFM inline `text` rule begins with the
+  // alternation `[`~]+|[^`~]`, whose `[`~]+` branch is a COMBINED run of
+  // backticks AND tildes — so a `~` fused to a backtick (no space) was
+  // swallowed into a literal text run and the code span never opened:
+  // `` ~`x` `` rendered as plain text. The patch
+  // (`patches/svelte-streamdown@*.patch`, `_fixText` next to `_fixedDel`)
+  // splits that leading class into homogeneous runs so a backtick is never
+  // eaten as part of a tilde run. A `~` glued to a code span must now leave
+  // a literal tilde and a real `<code>`. These Tier-1 cases also guard
+  // against a future marked upgrade silently no-op'ing `_fixText`'s
+  // source-`.replace` — if the override stops applying, they fail.
+  it('renders a code span when a tilde is glued to the opening backtick', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({ status: 'completed', summary: 'see ~`config.value` here' }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const code = body.querySelector('code[data-streamdown-codespan]');
+      expect(code).not.toBeNull();
+      // The tilde is literal text OUTSIDE the span, not consumed into it:
+      // the code holds exactly the value and the `~` still shows in the body.
+      expect(code?.textContent).toBe('config.value');
+      expect(code?.textContent).not.toContain('~');
+      expect(body.textContent).toContain('~');
+    });
+  });
+
+  // Regression for the exact reported symptom: `` ~`a` ... ~`b` `` produced a
+  // STRAY code pill over the middle text and left the real content unstyled,
+  // because the first `~`-glued backtick was eaten as literal text and the
+  // remaining backticks mis-paired. Both code spans must render with their
+  // correct contents and nothing spurious between them.
+  it('renders both code spans (no stray mid-line pill) for two glued tilde-code pairs', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({ status: 'completed', summary: 'set ~`alpha` then ~`beta`' }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const codes = [...body.querySelectorAll('code[data-streamdown-codespan]')];
+      expect(codes.map((c) => c.textContent)).toEqual(['alpha', 'beta']);
+    });
+  });
+
+  // Positive control: a tilde INSIDE a code span (home-dir paths are the
+  // common case) must survive verbatim — the text-rule split must not
+  // disturb code-span tokenization that starts at a backtick.
+  it('preserves a tilde inside an inline code span', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({ status: 'completed', summary: 'run `cd ~/proj` now' }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const code = body.querySelector('code[data-streamdown-codespan]');
+      expect(code).not.toBeNull();
+      expect(code?.textContent).toBe('cd ~/proj');
+    });
+  });
+
+  // Regression (Tier 2): the `markedSub` extension's `subRule` treated a
+  // backtick as ordinary subscript content and ran BEFORE the code-span
+  // tokenizer, so `` ~`~/etc` `` became a `<sub>` of a lone backtick
+  // (garbage) instead of a code span. The patch excludes backticks from
+  // sub/sup content so code spans win (CommonMark precedence).
+  it('lets a code span win over subscript when a tilde precedes it', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({ status: 'completed', summary: '~`~/etc` config' }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const code = body.querySelector('code[data-streamdown-codespan]');
+      expect(code).not.toBeNull();
+      expect(code?.textContent).toBe('~/etc');
+      // No subscript should have been synthesised around the code span.
+      expect(body.querySelector('sub')).toBeNull();
+    });
+  });
+
+  // Positive control for the Tier-2 narrowing: excluding backticks from
+  // sub/sup content must NOT disable subscript on ordinary text. `H~2~O`
+  // must still render `<sub>2</sub>`.
+  it('still renders subscript on plain text after the sub-rule narrowing', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({ status: 'completed', summary: 'formula H~2~O here' }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const sub = body.querySelector('sub');
+      expect(sub).not.toBeNull();
+      expect(sub?.textContent).toBe('2');
+    });
+  });
+
+  // Regression (Tier 2, superscript half): `supRule` had the same defect as
+  // `subRule` — a backtick counted as superscript content and the rule ran
+  // before the code-span tokenizer, so `` ^`x`^ `` became a `<sup>` wrapping
+  // a raw backtick. The patch excludes backticks from `supRule` too, so the
+  // code span wins. Without this case the `supRule` half of the change would
+  // be entirely unguarded.
+  it('lets a code span win over superscript when a caret wraps it', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({ status: 'completed', summary: 'see ^`config`^ ok' }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const code = body.querySelector('code[data-streamdown-codespan]');
+      expect(code).not.toBeNull();
+      expect(code?.textContent).toBe('config');
+      // No superscript should have been synthesised around the code span.
+      expect(body.querySelector('sup')).toBeNull();
+    });
+  });
+
+  // Positive control mirroring `H~2~O`: the `supRule` narrowing must not
+  // disable superscript on ordinary text — `mc^2^` still renders `<sup>2</sup>`.
+  it('still renders superscript on plain text after the sup-rule narrowing', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({ status: 'completed', summary: 'energy E=mc^2^ today' }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const sup = body.querySelector('sup');
+      expect(sup).not.toBeNull();
+      expect(sup?.textContent).toBe('2');
+    });
+  });
+
   // Regression for the "runaway-spread" streaming jitter: Streamdown's
   // inline-emphasis plugins used to speculatively close unmatched
   // delimiters at end-of-line. On the next chunk the synthesized closer
