@@ -296,11 +296,13 @@ describe('PaneHost', () => {
     leftPane.attachScrollController({
       pauseAutoScroll: () => () => {},
       notifyContentMaybeGrew: vi.fn(),
+      notifyLiveContentMaybeGrew: vi.fn(),
       notifyHostLayoutSettled: leftNotify,
     });
     rightPane.attachScrollController({
       pauseAutoScroll: () => () => {},
       notifyContentMaybeGrew: vi.fn(),
+      notifyLiveContentMaybeGrew: vi.fn(),
       notifyHostLayoutSettled: rightNotify,
     });
 

@@ -152,8 +152,11 @@ overlay. A `--composer-height` CSS variable drives `scrollEl`
 surface's `clientHeight`.
 
 The composer ResizeObserver writes `--composer-height` directly before
-calling `notifyContentMaybeGrew()`. Waiting for Svelte's microtask flush
-would pin against stale layout.
+notifying the scroll controller. Waiting for Svelte's microtask flush
+would pin against stale layout. Idle composer geometry resolves to the
+same same-paint pin as `notifyContentMaybeGrew()`; when live content is
+inside the spring hold window, the live-capable hook keeps following the
+moving bottom instead of sync-pinning mid-chase.
 
 `overflow-anchor: none` belongs on the outer scroll container. Browser
 scroll anchoring otherwise fights both virtua's jump correction and the

@@ -45,6 +45,38 @@ function waitForAnimationFrame(): Promise<void> {
   });
 }
 
+function installResizeObserverCapture(): {
+  callbacksByTarget: Map<HTMLElement, ResizeObserverCallback>;
+  restore(): void;
+} {
+  const callbacksByTarget = new Map<HTMLElement, ResizeObserverCallback>();
+  const originalRO = globalThis.ResizeObserver;
+
+  class StubResizeObserver {
+    constructor(private readonly callback: ResizeObserverCallback) {}
+    observe(target: HTMLElement): void {
+      callbacksByTarget.set(target, this.callback);
+    }
+    unobserve(target: HTMLElement): void {
+      callbacksByTarget.delete(target);
+    }
+    disconnect(): void {
+      for (const [target, cb] of callbacksByTarget) {
+        if (cb === this.callback) callbacksByTarget.delete(target);
+      }
+    }
+  }
+
+  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+
+  return {
+    callbacksByTarget,
+    restore() {
+      globalThis.ResizeObserver = originalRO;
+    },
+  };
+}
+
 function watchStickNotifications(pane: ThreadPane): {
   instantCalls(): number;
   liveCalls(): number;
@@ -639,10 +671,10 @@ describe('scroll integration — composer height + layout invariance', () => {
     expect(styleAttr).toContain('--composer-height:');
   });
 
-  it('composer-height growth calls notifyContentMaybeGrew synchronously inside the RO callback', async () => {
+  it('composer-height growth notifies the scroll controller synchronously inside the RO callback', async () => {
     // Regression guard for the "appears then settles" symptom on uncached
     // loads. The previous composer-RO implementation deferred
-    // `notifyContentMaybeGrew` to the next animation frame because a
+    // the scroll notification to the next animation frame because a
     // synchronous read of `scrollEl.scrollHeight` would see stale padding
     // (Svelte's reactive flush runs in a microtask AFTER the RO callback,
     // so the style binding for `--composer-height` wouldn't have applied
@@ -654,47 +686,26 @@ describe('scroll integration — composer height + layout invariance', () => {
     //
     // Fix: write `--composer-height` directly on chatColumn via
     // `style.setProperty`, bypassing the Svelte microtask boundary for
-    // the layout-relevant change, then call `notifyContentMaybeGrew`
-    // synchronously inside the same RO callback. The forced layout
-    // inside `targetScrollTop()` applies the new CSS variable, so
-    // scrollHeight is post-grow when scrollTop is written.
+    // the layout-relevant change, then notify the scroll controller
+    // synchronously inside the same RO callback. The controller's
+    // layout read applies the new CSS variable, so scrollHeight is
+    // post-grow when scrollTop is written.
     //
     // This test stubs ResizeObserver so we can drive the composer-RO
     // callback with a specific height entry, then asserts that the
-    // controller's `notifyContentMaybeGrew` count incremented inside the
-    // synchronous callback (i.e. before any rAF could fire).
-    const callbacksByTarget = new Map<HTMLElement, ResizeObserverCallback>();
-    const originalRO = globalThis.ResizeObserver;
-    class StubResizeObserver {
-      constructor(private readonly callback: ResizeObserverCallback) {}
-      observe(target: HTMLElement): void {
-        callbacksByTarget.set(target, this.callback);
-      }
-      unobserve(target: HTMLElement): void {
-        callbacksByTarget.delete(target);
-      }
-      disconnect(): void {
-        // Best-effort: drop all observations registered against this
-        // callback instance. The test only cares that the composer-RO
-        // callback survives until we trigger it.
-        for (const [target, cb] of callbacksByTarget) {
-          if (cb === this.callback) callbacksByTarget.delete(target);
-        }
-      }
-    }
-    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+    // controller's live-capable notification count incremented inside
+    // the synchronous callback (i.e. before any rAF could fire).
+    const roCapture = installResizeObserverCapture();
 
     try {
       const pane = await buildPane(makeThread(), [
         makeItem({ id: 'tail', summary: 'tail' }),
       ]);
 
-      let notifySpy: ReturnType<typeof vi.spyOn> | null = null;
+      let liveNotifySpy: ReturnType<typeof vi.spyOn> | null = null;
       const origAttach = pane.attachScrollController.bind(pane);
-      pane.attachScrollController = (
-        ctrl: PaneScrollController & { notifyContentMaybeGrew(): void },
-      ) => {
-        notifySpy = vi.spyOn(ctrl, 'notifyContentMaybeGrew');
+      pane.attachScrollController = (ctrl: PaneScrollController) => {
+        liveNotifySpy = vi.spyOn(ctrl, 'notifyLiveContentMaybeGrew');
         origAttach(ctrl);
       };
 
@@ -704,34 +715,78 @@ describe('scroll integration — composer height + layout invariance', () => {
       // settling so it doesn't pollute the baseline call count.
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-      expect(notifySpy).not.toBeNull();
-      const callsBeforeFire = notifySpy!.mock.calls.length;
+      expect(liveNotifySpy).not.toBeNull();
+      const callsBeforeFire = liveNotifySpy!.mock.calls.length;
 
       // Find the composer overlay and its registered callback. The
       // composer-RO is the one that observes `composerOverlay` in
       // ChatView's $effect — the only target with the
       // `composer-overlay` testid.
       const composerOverlay = getByTestId('composer-overlay');
-      const composerCallback = callbacksByTarget.get(composerOverlay);
+      const composerCallback = roCapture.callbacksByTarget.get(composerOverlay);
       expect(composerCallback).toBeDefined();
       if (!composerCallback) return;
 
       // Synthesize a composer-height change. Composer overlay grew from
       // its initial height (120 default) to 200. The RO callback should
       // detect the change, write the CSS variable directly, AND call
-      // notifyContentMaybeGrew synchronously.
+      // the controller synchronously.
       const fakeEntry = {
         contentRect: { height: 200 } as DOMRectReadOnly,
       } as ResizeObserverEntry;
       composerCallback([fakeEntry], {} as ResizeObserver);
 
-      // The synchronous notifyContentMaybeGrew call must have happened
-      // before this assertion runs (no rAF awaited). Previously the call
-      // was queued inside a `requestAnimationFrame` and the assertion
-      // would fail until a frame elapsed.
-      expect(notifySpy!.mock.calls.length).toBeGreaterThan(callsBeforeFire);
+      // The synchronous notification must have happened before this
+      // assertion runs (no rAF awaited). Previously the call was queued
+      // inside a `requestAnimationFrame` and the assertion would fail
+      // until a frame elapsed.
+      expect(liveNotifySpy!.mock.calls.length).toBeGreaterThan(callsBeforeFire);
     } finally {
-      globalThis.ResizeObserver = originalRO;
+      roCapture.restore();
+    }
+  });
+
+  it('composer-height growth uses the live-capable notification path during live output', async () => {
+    const roCapture = installResizeObserverCapture();
+
+    try {
+      const pane = await buildPane(makeThread(), [
+        makeItem({ id: 'tail', summary: 'tail' }),
+      ]);
+
+      let notifySpy: ReturnType<typeof vi.spyOn> | null = null;
+      let liveNotifySpy: ReturnType<typeof vi.spyOn> | null = null;
+      const origAttach = pane.attachScrollController.bind(pane);
+      pane.attachScrollController = (ctrl: PaneScrollController) => {
+        notifySpy = vi.spyOn(ctrl, 'notifyContentMaybeGrew');
+        liveNotifySpy = vi.spyOn(ctrl, 'notifyLiveContentMaybeGrew');
+        origAttach(ctrl);
+      };
+
+      const { getByTestId } = render(ChatView, { props: { pane } });
+      await tick();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+      expect(notifySpy).not.toBeNull();
+      expect(liveNotifySpy).not.toBeNull();
+      notifySpy!.mockClear();
+      liveNotifySpy!.mockClear();
+
+      const composerOverlay = getByTestId('composer-overlay');
+      const composerCallback = roCapture.callbacksByTarget.get(composerOverlay);
+      expect(composerCallback).toBeDefined();
+      if (!composerCallback) return;
+
+      pane.markLiveContentAdvanced();
+      const fakeEntry = {
+        contentRect: { height: 200 } as DOMRectReadOnly,
+      } as ResizeObserverEntry;
+      composerCallback([fakeEntry], {} as ResizeObserver);
+
+      expect(liveNotifySpy!.mock.calls.length).toBe(1);
+      expect(notifySpy!.mock.calls.length).toBe(0);
+    } finally {
+      roCapture.restore();
     }
   });
 
@@ -742,23 +797,7 @@ describe('scroll integration — composer height + layout invariance', () => {
     // the old --composer-height and pin to the pre-grow bottom. This
     // test asserts the inline style on chatColumn reflects the new
     // height BEFORE any tick/microtask/frame is awaited.
-    const callbacksByTarget = new Map<HTMLElement, ResizeObserverCallback>();
-    const originalRO = globalThis.ResizeObserver;
-    class StubResizeObserver {
-      constructor(private readonly callback: ResizeObserverCallback) {}
-      observe(target: HTMLElement): void {
-        callbacksByTarget.set(target, this.callback);
-      }
-      unobserve(target: HTMLElement): void {
-        callbacksByTarget.delete(target);
-      }
-      disconnect(): void {
-        for (const [target, cb] of callbacksByTarget) {
-          if (cb === this.callback) callbacksByTarget.delete(target);
-        }
-      }
-    }
-    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+    const roCapture = installResizeObserverCapture();
 
     try {
       const pane = await buildPane(makeThread(), [
@@ -774,7 +813,7 @@ describe('scroll integration — composer height + layout invariance', () => {
       if (!chatColumn) return;
 
       const composerOverlay = getByTestId('composer-overlay');
-      const composerCallback = callbacksByTarget.get(composerOverlay);
+      const composerCallback = roCapture.callbacksByTarget.get(composerOverlay);
       expect(composerCallback).toBeDefined();
       if (!composerCallback) return;
 
@@ -788,7 +827,7 @@ describe('scroll integration — composer height + layout invariance', () => {
       // between the callback and this assertion.
       expect(chatColumn.style.getPropertyValue('--composer-height')).toBe('247px');
     } finally {
-      globalThis.ResizeObserver = originalRO;
+      roCapture.restore();
     }
   });
 
@@ -1383,10 +1422,11 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
     expect(pane.scrollController).not.toBeNull();
     // The published controller satisfies the PaneScrollController contract —
-    // depth-counted lease + grow notification — that sidebar resizers,
+    // depth-counted lease + geometry notifications — that sidebar resizers,
     // resizable drawers, and ChatView's composer-height publication depend on.
     expect(typeof pane.scrollController?.pauseAutoScroll).toBe('function');
     expect(typeof pane.scrollController?.notifyContentMaybeGrew).toBe('function');
+    expect(typeof pane.scrollController?.notifyLiveContentMaybeGrew).toBe('function');
     expect(typeof pane.scrollController?.notifyHostLayoutSettled).toBe('function');
   });
 
@@ -1492,11 +1532,9 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
     await tick();
 
-    // The pane interface only exposes pauseAutoScroll / notifyContentMaybeGrew
-    // (PaneScrollController is narrow by design — see thread.svelte.ts);
-    // peek at the underlying controller's intent state to verify
-    // stickiness survives the upsert without inferring up intent from
-    // scrollTop direction.
+    // PaneScrollController is narrow by design — see thread.svelte.ts.
+    // Peek at the underlying controller's intent state to verify stickiness
+    // survives the upsert without inferring up intent from scrollTop direction.
     const ctrl = pane.scrollController as
       | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
       | null;

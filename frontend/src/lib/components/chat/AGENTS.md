@@ -16,17 +16,19 @@ Operational rules for this directory:
   and `listRef.scrollToIndex(...)` for timeline position. Do not query
   DOM rows for first-visible-item math.
 - Route programmatic scrolls through `useStickToBottom`: `forceStick`,
-  `markAtBottom`, `notifyContentMaybeGrew`, `pauseAutoScroll`,
-  `runExternalScroll`, `stopScroll`, `animateScrollTo`, and
-  `armRestoreSnap`.
+  `markAtBottom`, `notifyContentMaybeGrew`,
+  `notifyLiveContentMaybeGrew`, `pauseAutoScroll`, `runExternalScroll`,
+  `stopScroll`, `animateScrollTo`, and `armRestoreSnap`.
 - Wrap every virtua `scrollToIndex` call in
   `stick.runExternalScroll(() => listRef.scrollToIndex(...))`.
 - Never pass `smooth: true` to virtua and never call `scrollIntoView()` on
   a virtualized row.
 - Keep `overflow-anchor: none` on the outer scroll container.
 - Keep composer-clearance padding on `scrollEl`, not `contentEl`, and keep
-  `ChatView`'s composer `ResizeObserver` calling
-  `notifyContentMaybeGrew()` after writing `--composer-height`.
+  `ChatView`'s composer `ResizeObserver` notifying the scroll controller
+  after writing `--composer-height`. Use the live-capable notification path
+  so active output can spring through activity-rail height changes; idle
+  composer geometry must still sync-pin.
 
 Thread-switch restore is intentionally split: `$effect.pre` arms warm-up
 and restore consent before DOM flush; the restore `$effect` calls

@@ -113,6 +113,7 @@ export type LoadOlderResult = {
 export interface PaneScrollController {
   pauseAutoScroll(): () => void;
   notifyContentMaybeGrew(): void;
+  notifyLiveContentMaybeGrew(): void;
   notifyHostLayoutSettled?(): void;
   preserveScrollAnchor?(
     anchor: HTMLElement,

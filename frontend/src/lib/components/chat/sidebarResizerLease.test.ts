@@ -50,7 +50,11 @@ describe('SidebarResizer pause-lease wiring', () => {
   it('acquires a pause-lease on pointerdown and releases on pointerup', async () => {
     const pane = await buildPane(makeThread(), []);
     const { pauseAutoScroll, pauseCalls, releases } = makeMockController();
-    pane.attachScrollController({ pauseAutoScroll, notifyContentMaybeGrew: () => {} });
+    pane.attachScrollController({
+      pauseAutoScroll,
+      notifyContentMaybeGrew: () => {},
+      notifyLiveContentMaybeGrew: () => {},
+    });
 
     const { getByTestId } = render(SidebarResizer, {
       props: {
@@ -75,7 +79,11 @@ describe('SidebarResizer pause-lease wiring', () => {
   it('releases the lease on pointercancel as well', async () => {
     const pane = await buildPane(makeThread(), []);
     const { pauseAutoScroll, releases } = makeMockController();
-    pane.attachScrollController({ pauseAutoScroll, notifyContentMaybeGrew: () => {} });
+    pane.attachScrollController({
+      pauseAutoScroll,
+      notifyContentMaybeGrew: () => {},
+      notifyLiveContentMaybeGrew: () => {},
+    });
 
     const { getByTestId } = render(SidebarResizer, {
       props: {
@@ -132,7 +140,11 @@ describe('RhsSidebarResizer pause-lease wiring', () => {
   it('acquires a pause-lease on pointerdown and releases on pointerup', async () => {
     const pane = await buildPane(makeThread(), []);
     const { pauseAutoScroll, pauseCalls, releases } = makeMockController();
-    pane.attachScrollController({ pauseAutoScroll, notifyContentMaybeGrew: () => {} });
+    pane.attachScrollController({
+      pauseAutoScroll,
+      notifyContentMaybeGrew: () => {},
+      notifyLiveContentMaybeGrew: () => {},
+    });
 
     const { getByTestId } = render(RhsSidebarResizer, {
       props: {
@@ -160,7 +172,11 @@ describe('RhsSidebarResizer pause-lease wiring', () => {
   it('releases the lease on pointercancel as well', async () => {
     const pane = await buildPane(makeThread(), []);
     const { pauseAutoScroll, releases } = makeMockController();
-    pane.attachScrollController({ pauseAutoScroll, notifyContentMaybeGrew: () => {} });
+    pane.attachScrollController({
+      pauseAutoScroll,
+      notifyContentMaybeGrew: () => {},
+      notifyLiveContentMaybeGrew: () => {},
+    });
 
     const { getByTestId } = render(RhsSidebarResizer, {
       props: {
@@ -212,10 +228,12 @@ describe('PaneDivider pause-lease wiring', () => {
     left.attachScrollController({
       pauseAutoScroll: leftController.pauseAutoScroll,
       notifyContentMaybeGrew: () => {},
+      notifyLiveContentMaybeGrew: () => {},
     });
     right.attachScrollController({
       pauseAutoScroll: rightController.pauseAutoScroll,
       notifyContentMaybeGrew: () => {},
+      notifyLiveContentMaybeGrew: () => {},
     });
     setPaneLayoutItemsForTest([
       { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },

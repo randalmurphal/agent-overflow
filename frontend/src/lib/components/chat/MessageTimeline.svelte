@@ -482,8 +482,10 @@
   // itemIndex), not status transitions or summary deltas, so normal
   // streaming chunks and tool-call lifecycle status changes use the
   // contentRO path. The nudge uses the live-content controller hook,
-  // which honors spring mode; composer/sidebar layout nudges keep using the
-  // instant notifyContentMaybeGrew path.
+  // which honors spring mode. Sidebar/host layout nudges keep using the
+  // instant notifyContentMaybeGrew path; ChatView composer-height changes
+  // use the live-capable hook so activity-rail changes during streaming
+  // can continue the spring.
   $effect(() => {
     const signature = activeTurnStructuralSignature;
     if (!signature) {

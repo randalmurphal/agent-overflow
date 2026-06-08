@@ -121,22 +121,20 @@
             delta: next - composerHeight,
           });
         }
-        // Re-pin synchronously, in the same RO phase as the composer
-        // growth, so the user never sees a frame where padding has
-        // grown but scrollTop is still pointing at the old bottom.
+        // Publish the layout-affecting CSS variable synchronously, in
+        // the same RO phase as the composer growth, so the user never
+        // sees a frame where padding has grown but scrollTop still
+        // targets the old bottom.
         //
-        // The naive synchronous read (writing `composerHeight = next`
-        // and calling `notifyContentMaybeGrew()`) reads stale
-        // `scrollEl.scrollHeight` because Svelte's reactive flush
-        // happens in a microtask AFTER this RO callback. The fix:
-        // write the CSS variable DIRECTLY on chatColumn, bypassing
-        // Svelte's microtask boundary for the layout-relevant change.
-        // When `notifyContentMaybeGrew()` reads scrollHeight, the
-        // browser forces layout, applies the new `--composer-height`,
-        // recomputes scrollEl's padding-bottom, and returns the
-        // post-grow scrollHeight. writeScrollTop then writes the
-        // correct target — all before the RO callback returns and
-        // therefore before the next paint.
+        // The naive synchronous path (writing only `composerHeight =
+        // next`, then notifying the controller) reads stale
+        // `scrollEl.scrollHeight` because Svelte's reactive flush happens
+        // in a microtask AFTER this RO callback. The fix: write the CSS
+        // variable DIRECTLY on chatColumn, bypassing Svelte's microtask
+        // boundary for the layout-relevant change. When the controller
+        // reads scrollHeight, the browser forces layout, applies the new
+        // `--composer-height`, recomputes scrollEl's padding-bottom, and
+        // returns the post-grow scrollHeight before the next paint.
         //
         // composerHeight is still written as Svelte state for the
         // template's style binding; Svelte's microtask flush writes
@@ -147,14 +145,13 @@
         if (chatColumn) {
           chatColumn.style.setProperty('--composer-height', `${next}px`);
         }
-        // notifyContentMaybeGrew is escape-aware (bails on
-        // escapedFromLockState / pauseDepth>0 / !isAtBottomState) so
-        // a user who scrolled up between thread switches isn't yanked
-        // back to the bottom by composer growth. The pane's controller
-        // is stable across threadId changes within the same pane, so
-        // no threadId guard is needed — the call always targets the
-        // currently-mounted controller's geometry.
-        pane.scrollController?.notifyContentMaybeGrew();
+        // The notification is escape-aware (bails on escapedFromLockState /
+        // pauseDepth>0 / !isAtBottomState) so a user who scrolled up between
+        // thread switches isn't yanked back to the bottom by composer growth.
+        // The live-capable hook owns the spring-vs-instant decision: idle
+        // geometry still sync-pins, while active live output can keep
+        // spring-chasing through a working/todo rail height change.
+        pane.scrollController?.notifyLiveContentMaybeGrew();
       }
     });
     obs.observe(observed);
