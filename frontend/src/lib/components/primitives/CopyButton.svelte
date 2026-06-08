@@ -46,10 +46,15 @@
   });
 
   async function handleCopy(): Promise<void> {
-    const value = typeof text === 'function' ? await text() : text;
-    if (!value) return;
-    const ok = await copyToClipboard(value);
-    if (!ok) {
+    try {
+      const value = typeof text === 'function' ? await text() : text;
+      if (!value) return;
+      const ok = await copyToClipboard(value);
+      if (!ok) {
+        onError?.();
+        return;
+      }
+    } catch {
       onError?.();
       return;
     }

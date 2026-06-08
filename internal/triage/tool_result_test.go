@@ -436,6 +436,40 @@ func TestBuildInlineDiffFromChangesStoresLineBoundedFilePreviews(t *testing.T) {
 	}
 }
 
+func TestBuildInlineDiffFromChangesCapsPreviewFiles(t *testing.T) {
+	changes := make([]fileChange, 0, inlineDiffPreviewFileCount+3)
+	for i := 0; i < inlineDiffPreviewFileCount+3; i++ {
+		changes = append(changes, fileChange{
+			Path: fmt.Sprintf("src/file-%02d.txt", i),
+			Kind: "added",
+			Diff: fmt.Sprintf("line-%02d", i),
+		})
+	}
+
+	inlineDiff, combinedDiff := buildInlineDiffFromChanges(changes)
+	if inlineDiff == nil {
+		t.Fatal("inline diff = nil")
+	}
+	if inlineDiff.Availability != "exact_patch" {
+		t.Fatalf("availability = %q, want exact_patch", inlineDiff.Availability)
+	}
+	if len(inlineDiff.Files) != inlineDiffPreviewFileCount {
+		t.Fatalf("preview files = %d, want %d", len(inlineDiff.Files), inlineDiffPreviewFileCount)
+	}
+	if inlineDiff.TotalFiles != len(changes) {
+		t.Fatalf("total files = %d, want %d", inlineDiff.TotalFiles, len(changes))
+	}
+	if inlineDiff.OmittedFiles != 3 || !inlineDiff.FilesTruncated {
+		t.Fatalf("truncation metadata = omitted %d truncated %v, want omitted 3 truncated true", inlineDiff.OmittedFiles, inlineDiff.FilesTruncated)
+	}
+	if !strings.Contains(combinedDiff, "src/file-27.txt") {
+		t.Fatal("combined exact patch should retain omitted file content")
+	}
+	if got := fileChangeTitle(inlineDiff); got != "Edited 28 files (+28 -0)" {
+		t.Fatalf("title = %q, want total-file count", got)
+	}
+}
+
 func TestLineBoundedDiffPreviewCountsPatchLikeBodyLines(t *testing.T) {
 	var content strings.Builder
 	for i := 1; i <= 35; i++ {
@@ -491,6 +525,35 @@ func TestBuildExactInlineDiffPreservesRenamePreviousPath(t *testing.T) {
 	}
 	if file.PreviewPatch == "" || !strings.Contains(file.PreviewPatch, "rename from src/old.ts") {
 		t.Fatalf("preview patch = %q, want rename section", file.PreviewPatch)
+	}
+}
+
+func TestBuildExactInlineDiffCapsPreviewFiles(t *testing.T) {
+	sections := make([]string, 0, inlineDiffPreviewFileCount+2)
+	for i := 0; i < inlineDiffPreviewFileCount+2; i++ {
+		path := fmt.Sprintf("src/exact-%02d.ts", i)
+		sections = append(sections, strings.Join([]string{
+			fmt.Sprintf("diff --git a/%s b/%s", path, path),
+			fmt.Sprintf("--- a/%s", path),
+			fmt.Sprintf("+++ b/%s", path),
+			"@@ -1 +1 @@",
+			"-old",
+			"+new",
+		}, "\n"))
+	}
+
+	inlineDiff := buildExactInlineDiff(strings.Join(sections, "\n"))
+	if inlineDiff == nil {
+		t.Fatal("inline diff = nil")
+	}
+	if len(inlineDiff.Files) != inlineDiffPreviewFileCount {
+		t.Fatalf("preview files = %d, want %d", len(inlineDiff.Files), inlineDiffPreviewFileCount)
+	}
+	if inlineDiff.TotalFiles != inlineDiffPreviewFileCount+2 {
+		t.Fatalf("total files = %d, want %d", inlineDiff.TotalFiles, inlineDiffPreviewFileCount+2)
+	}
+	if inlineDiff.OmittedFiles != 2 || !inlineDiff.FilesTruncated {
+		t.Fatalf("truncation metadata = omitted %d truncated %v, want omitted 2 truncated true", inlineDiff.OmittedFiles, inlineDiff.FilesTruncated)
 	}
 }
 

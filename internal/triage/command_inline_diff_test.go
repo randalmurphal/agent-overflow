@@ -1,7 +1,10 @@
 package triage
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +66,129 @@ func TestBuildCommandExecutionInlineDiffArtifactFallsBackToSummaryOnly(t *testin
 	}
 	if patch != "" {
 		t.Fatalf("expected empty patch, got %q", patch)
+	}
+}
+
+func TestBuildCommandExecutionInlineDiffArtifactCapsPreviewFiles(t *testing.T) {
+	operations := make([]capturedShellMutationOperation, 0, inlineDiffPreviewFileCount+4)
+	for i := 0; i < inlineDiffPreviewFileCount+4; i++ {
+		content := "old"
+		operations = append(operations, capturedShellMutationOperation{
+			Kind:            "delete",
+			Path:            filepath.ToSlash(filepath.Join("src", fmt.Sprintf("remove-%02d.ts", i))),
+			OriginalContent: &content,
+			Exact:           true,
+		})
+	}
+
+	inlineDiff, patch := buildCommandExecutionInlineDiffArtifact(operations)
+	if inlineDiff == nil {
+		t.Fatal("expected inline diff")
+	}
+	if inlineDiff.Availability != "exact_patch" {
+		t.Fatalf("availability = %q, want exact_patch", inlineDiff.Availability)
+	}
+	if len(inlineDiff.Files) != inlineDiffPreviewFileCount {
+		t.Fatalf("preview files = %d, want %d", len(inlineDiff.Files), inlineDiffPreviewFileCount)
+	}
+	if inlineDiff.TotalFiles != len(operations) {
+		t.Fatalf("total files = %d, want %d", inlineDiff.TotalFiles, len(operations))
+	}
+	if inlineDiff.OmittedFiles != 4 || !inlineDiff.FilesTruncated {
+		t.Fatalf("truncation metadata = omitted %d truncated %v, want omitted 4 truncated true", inlineDiff.OmittedFiles, inlineDiff.FilesTruncated)
+	}
+	if !strings.Contains(patch, "remove-") {
+		t.Fatal("expected exact patch data to remain populated")
+	}
+}
+
+func TestCaptureShellMutationOperationsRejectsUnsafePathsBeforeReading(t *testing.T) {
+	workspace := t.TempDir()
+	outside := filepath.Join(workspace, "..", "outside-secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write outside secret: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(workspace, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".git", "config"), []byte("git-secret"), 0o600); err != nil {
+		t.Fatalf("write git config: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		operation supportedShellMutationOperation
+	}{
+		{
+			name: "delete traversal",
+			operation: supportedShellMutationOperation{
+				Kind: "delete",
+				Path: "../outside-secret.txt",
+			},
+		},
+		{
+			name: "delete git metadata",
+			operation: supportedShellMutationOperation{
+				Kind: "delete",
+				Path: ".git/config",
+			},
+		},
+		{
+			name: "rename source traversal",
+			operation: supportedShellMutationOperation{
+				Kind:    "rename",
+				OldPath: "../outside-secret.txt",
+				NewPath: "src/inside.txt",
+			},
+		},
+		{
+			name: "rename destination git metadata",
+			operation: supportedShellMutationOperation{
+				Kind:    "rename",
+				OldPath: "src/inside.txt",
+				NewPath: ".git/config",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			captured, ok := captureShellMutationOperations(
+				[]supportedShellMutationOperation{tc.operation},
+				workspace,
+			)
+			if ok {
+				t.Fatalf("expected unsafe operation to be rejected, got %+v", captured)
+			}
+		})
+	}
+}
+
+func TestCaptureShellMutationOperationsSkipsOversizedDeleteContent(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "huge.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatalf("create huge file: %v", err)
+	}
+	if err := os.Truncate(path, commandInlineDiffDeleteCaptureMaxBytes+1); err != nil {
+		t.Fatalf("grow huge file: %v", err)
+	}
+
+	captured, ok := captureShellMutationOperations(
+		[]supportedShellMutationOperation{{Kind: "delete", Path: "huge.txt"}},
+		workspace,
+	)
+	if !ok {
+		t.Fatal("expected oversized delete to be captured as summary-only")
+	}
+	if len(captured) != 1 {
+		t.Fatalf("captured operations = %d, want 1", len(captured))
+	}
+	if captured[0].Exact {
+		t.Fatal("oversized delete should not be exact")
+	}
+	if captured[0].OriginalContent != nil {
+		t.Fatal("oversized delete should not retain original content")
 	}
 }
 

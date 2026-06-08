@@ -342,14 +342,26 @@ func (r *Router) doSettleStreamingText(threadID, itemID, status, finalContent st
 	if item.Status != statusStreaming {
 		return nil
 	}
+	pathRefSource := item.Summary
 	if finalContentPresent {
+		pathRefSource = finalContent
 		item.Summary = finalContent
 	}
 	if status == statusErrored {
 		item.Summary = interruptedSummary(item.Summary)
 	}
 	now := time.Now().UnixMilli()
-	r.enrichPathRefs(threadID, &item)
+	r.enrichPathRefsFromTexts(threadID, &item, pathRefSource)
+	if finalContentPresent && item.PayloadID != "" {
+		metaJSON := buildPayloadMeta(itemKindAssistantText, provider.ProviderEvent{
+			ThreadID:  threadID,
+			Content:   finalContent,
+			Timestamp: time.UnixMilli(now),
+		})
+		if err := r.store.ReplacePayloadData(item.PayloadID, []byte(finalContent), metaJSON, now); err != nil {
+			return fmt.Errorf("assistant text replace payload %s: %w", item.PayloadID, err)
+		}
+	}
 
 	update := store.ItemPartialUpdate{
 		Status:    &status,
@@ -444,8 +456,9 @@ func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int
 			item.Summary = content
 			item.Status = statusCompleted
 			item.UpdatedAt = time.Now().UnixMilli()
-			r.enrichPathRefs(threadID, &item)
-			return r.persistItem(item, nil)
+			r.enrichPathRefsFromTexts(threadID, &item, content)
+			payload := assistantTextPayload(threadID, item.ID, content, item.UpdatedAt)
+			return r.persistItem(item, &payload)
 		}
 	}
 	return r.persistCompletedTextItem(threadID, turnIndex, scope, providerItemID, content)
@@ -462,13 +475,15 @@ func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope,
 		Role:      "assistant",
 		Status:    statusCompleted,
 		Summary:   content,
+		PayloadID: assistantTextPayloadID(threadID, itemID),
 		ParentID:  scope,
 		Meta:      providerItemMeta(providerItemID),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	r.enrichPathRefs(threadID, &item)
-	return r.persistItem(item, nil)
+	r.enrichPathRefsFromTexts(threadID, &item, content)
+	payload := assistantTextPayload(threadID, item.ID, content, now)
+	return r.persistItem(item, &payload)
 }
 
 func (r *Router) nextTextItemID(threadID string, turnIndex int, scope string) string {

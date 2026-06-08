@@ -124,6 +124,23 @@ describe('<CopyButton>', () => {
     expect(button.getAttribute('aria-label')).toBe('Copy');
   });
 
+  it('invokes onError when an async text getter rejects', async () => {
+    const onError = vi.fn();
+    const { getByRole } = render(CopyButton, {
+      props: {
+        text: async () => {
+          throw new Error('load failed');
+        },
+        onError,
+      },
+    });
+    const button = getByRole('button');
+    await fireEvent.click(button);
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(writeText).not.toHaveBeenCalled();
+    expect(button.getAttribute('aria-label')).toBe('Copy');
+  });
+
   it('does not throw when clipboard fails and no onError is provided', async () => {
     writeText.mockRejectedValueOnce(new Error('denied'));
     const { getByRole } = render(CopyButton, { props: { text: 'x' } });

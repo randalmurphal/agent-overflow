@@ -1,4 +1,5 @@
 import type { Item } from '../types/models';
+import type { TimelineCursorLike } from './threadItems';
 import type { SettledTurn } from './threadTurnProjection';
 
 /**
@@ -22,8 +23,12 @@ import type { SettledTurn } from './threadTurnProjection';
  */
 export interface ThreadItemSnapshot {
   items: Item[];
+  oldestLoadedCursor?: TimelineCursorLike | null;
+  newestLoadedCursor?: TimelineCursorLike | null;
   oldestLoadedTurnIndex: number | null;
+  newestLoadedTurnIndex: number | null;
   hasMoreHistory: boolean;
+  hasMoreNewer: boolean;
   latestSettledTurn: SettledTurn | null;
 }
 
@@ -33,14 +38,12 @@ export interface ThreadItemSnapshot {
  * the timeline immediately while phase 2 of the load runs in parallel.
  *
  * Capacity stays small (default 5). Memory cost per snapshot is
- * dominated by per-item `summary` and `payloadMeta` strings, which are
- * unbounded provider text — typical threads land at a few MB total
- * across the cache, but a long streaming-heavy thread can push a single
- * snapshot into the tens of MB. `MAX_CACHED_SNAPSHOT_ITEMS` rejects
- * snapshots above the size where caching pays off, keeping the worst-
- * case footprint bounded. Strings are reference-shared with the live
- * pane until the user navigates away; once an entry is the sole root,
- * eviction (LRU or event-bus invalidation) lets GC reclaim the strings.
+ * dominated by per-item `summary`, `meta`, and `payloadMeta` strings,
+ * which are unbounded provider text. The item-count cap catches broad
+ * windows; the character budgets catch normal-sized windows with huge
+ * assistant prose. Strings are reference-shared with the live pane until
+ * the user navigates away; once an entry is the sole root, eviction (LRU,
+ * budget pressure, or event-bus invalidation) lets GC reclaim the strings.
  */
 export const THREAD_ITEM_CACHE_CAP = 5;
 
@@ -51,6 +54,13 @@ export const THREAD_ITEM_CACHE_CAP = 5;
  * initial slice already paints the visible viewport quickly).
  */
 export const MAX_CACHED_SNAPSHOT_ITEMS = 1000;
+export const MAX_CACHED_SNAPSHOT_CHARS = 2 * 1024 * 1024;
+export const THREAD_ITEM_CACHE_MAX_CHARS = 6 * 1024 * 1024;
+
+interface StoredThreadItemSnapshot {
+  snapshot: ThreadItemSnapshot;
+  chars: number;
+}
 
 export interface ThreadItemCache {
   get(threadId: string): ThreadItemSnapshot | null;
@@ -64,7 +74,8 @@ export interface ThreadItemCache {
 
 export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): ThreadItemCache {
   if (cap < 1) cap = 1;
-  const byThread = new Map<string, ThreadItemSnapshot>();
+  const byThread = new Map<string, StoredThreadItemSnapshot>();
+  let cachedChars = 0;
 
   return {
     get(threadId) {
@@ -79,41 +90,70 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
       // `mergeMissingItemsById` which always allocates a fresh
       // array. Skipping the read-side clone halves snapshot
       // allocation cost on a hot toggle-back.
-      return entry;
+      return entry.snapshot;
     },
 
     set(threadId, snapshot) {
+      const chars = estimateSnapshotChars(snapshot);
+      if (snapshot.items.length > MAX_CACHED_SNAPSHOT_ITEMS || chars > MAX_CACHED_SNAPSHOT_CHARS) {
+        const existing = byThread.get(threadId);
+        if (existing) cachedChars -= existing.chars;
+        byThread.delete(threadId);
+        return;
+      }
       // Snapshot the array with one shallow per-item clone so a
       // post-set caller mutation can't poison the cache. Item is a
       // flat primitive shape (see frontend/src/lib/types/models.ts);
       // strings/numbers are value types or reference-immutable.
       const stored: ThreadItemSnapshot = {
         items: snapshot.items.map((it) => ({ ...it })),
+        oldestLoadedCursor: snapshot.oldestLoadedCursor ? { ...snapshot.oldestLoadedCursor } : null,
+        newestLoadedCursor: snapshot.newestLoadedCursor ? { ...snapshot.newestLoadedCursor } : null,
         oldestLoadedTurnIndex: snapshot.oldestLoadedTurnIndex,
+        newestLoadedTurnIndex: snapshot.newestLoadedTurnIndex,
         hasMoreHistory: snapshot.hasMoreHistory,
+        hasMoreNewer: snapshot.hasMoreNewer,
         latestSettledTurn: snapshot.latestSettledTurn,
       };
+      const existing = byThread.get(threadId);
+      if (existing) cachedChars -= existing.chars;
       byThread.delete(threadId);
-      byThread.set(threadId, stored);
-      while (byThread.size > cap) {
+      byThread.set(threadId, { snapshot: stored, chars });
+      cachedChars += chars;
+      while (byThread.size > cap || cachedChars > THREAD_ITEM_CACHE_MAX_CHARS) {
         const oldest = byThread.keys().next().value;
         if (!oldest) break;
+        const evicted = byThread.get(oldest);
         byThread.delete(oldest);
+        if (evicted) cachedChars -= evicted.chars;
       }
     },
 
     evict(threadId) {
+      const existing = byThread.get(threadId);
+      if (existing) cachedChars -= existing.chars;
       byThread.delete(threadId);
     },
 
     clear() {
       byThread.clear();
+      cachedChars = 0;
     },
 
     get size() {
       return byThread.size;
     },
   };
+}
+
+function estimateSnapshotChars(snapshot: ThreadItemSnapshot): number {
+  let chars = 0;
+  for (const item of snapshot.items) {
+    chars += item.summary?.length ?? 0;
+    chars += item.meta?.length ?? 0;
+    chars += item.payloadMeta?.length ?? 0;
+  }
+  return chars;
 }
 
 /**

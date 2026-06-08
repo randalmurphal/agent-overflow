@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Item } from '../types/models';
 import { makeItem } from '../../test/helpers/chat';
-import { __resetPayloadCacheForTest, writePayloadCache } from '../utils/payloadDataCache';
+import {
+  __resetPayloadCacheForTest,
+  readPayloadCache,
+  writePayloadCache,
+} from '../utils/payloadDataCache';
 import { THINKING_PAYLOAD_EXPANSION_STATE_KEY } from '../utils/payloadVersion';
 import { createThreadRowUiState } from './threadRowUiState.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
@@ -398,6 +402,207 @@ describe('createThreadRowUiState', () => {
     expect(rowUiState.attachmentCacheFor('item-a').get('after-clear')).toBeUndefined();
     expect(revoke).toHaveBeenCalledWith('blob:before-clear');
     expect(revoke).toHaveBeenCalledWith('blob:after-clear');
+    revoke.mockRestore();
+  });
+
+  it('disposes per-item expansion and attachment state', () => {
+    const item = makeItem({
+      id: 'tool:5:0',
+      kind: 'tool_call',
+      payloadId: 'payload-a',
+      threadId: 'thread-a',
+    });
+    const rowUiState = createThreadRowUiState({
+      getItemById(itemId: string): Item | undefined {
+        return itemId === item.id ? item : undefined;
+      },
+    });
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    const beforeDispose = rowUiState.expansionStateFor(item);
+    const beforePayloadDispose = rowUiState.expansionStateForPayload(
+      'payload-a',
+      'thread-a',
+    );
+    rowUiState.toggleSubagentGroupExpanded(item.id);
+    rowUiState.toggleSubagentGroupExpanded(`wait:${item.id}`);
+    const staleCache = rowUiState.attachmentCacheFor(item.id);
+    staleCache.set('before-dispose', {
+      id: 'before-dispose',
+      filename: 'before.png',
+      mimeType: 'image/png',
+      size: 1,
+      url: 'blob:before-dispose',
+    });
+
+    expect(rowUiState.debugStats().itemExpansionStates).toBe(1);
+    expect(rowUiState.debugStats().payloadExpansionStates).toBe(1);
+    rowUiState.disposeItems([item]);
+
+    expect(rowUiState.debugStats().itemExpansionStates).toBe(0);
+    expect(rowUiState.debugStats().payloadExpansionStates).toBe(0);
+    expect(rowUiState.debugStats().attachmentItems).toBe(0);
+    expect(rowUiState.isSubagentGroupExpanded(item.id)).toBe(false);
+    expect(rowUiState.isSubagentGroupExpanded(`wait:${item.id}`)).toBe(false);
+    expect(revoke).toHaveBeenCalledWith('blob:before-dispose');
+
+    staleCache.set('after-dispose', {
+      id: 'after-dispose',
+      filename: 'after.png',
+      mimeType: 'image/png',
+      size: 1,
+      url: 'blob:after-dispose',
+    });
+    expect(revoke).toHaveBeenCalledWith('blob:after-dispose');
+
+    const afterDispose = rowUiState.expansionStateFor(item);
+    expect(Object.is(afterDispose, beforeDispose)).toBe(false);
+    expect(rowUiState.expansionStateForPayload('payload-a', 'thread-a')).not.toBe(beforePayloadDispose);
+    revoke.mockRestore();
+  });
+
+  it('cancels in-flight payload loads when pruning an expansion handle', async () => {
+    let resolvePreview: ((value: {
+      data: string;
+      nextOffset: number;
+      totalSize: number;
+      isComplete: boolean;
+    }) => void) | undefined;
+    setBindingMock('GetPayloadPreview', () => new Promise((resolve) => {
+      resolvePreview = resolve;
+    }));
+    const item = makeItem({
+      id: 'tool:inflight',
+      kind: 'tool_call',
+      payloadId: 'payload-inflight',
+      threadId: 'thread-a',
+    });
+    const rowUiState = createThreadRowUiState({
+      getItemById(itemId: string): Item | undefined {
+        return itemId === item.id ? item : undefined;
+      },
+    });
+
+    const expansion = rowUiState.expansionStateFor(item);
+    const load = expansion.expand();
+    await vi.waitFor(() => expect(resolvePreview).toBeDefined());
+
+    rowUiState.disposeItems([item]);
+    resolvePreview?.({
+      data: 'late payload',
+      nextOffset: 12,
+      totalSize: 12,
+      isComplete: true,
+    });
+    await load;
+
+    expect(readPayloadCache('thread-a', 'payload-inflight', 'payload-inflight')).toBeUndefined();
+    const replacement = rowUiState.expansionStateFor(item);
+    expect(replacement).not.toBe(expansion);
+    expect(replacement.displayData).toBeNull();
+  });
+
+  it('prunes old expansion, attachment, and group state outside the retained row window', () => {
+    const items = new Map<string, Item>();
+    const oldItem = makeItem({
+      id: 'tool:old',
+      kind: 'tool_call',
+      payloadId: 'payload-old',
+      threadId: 'thread-a',
+    });
+    const retainedItem = makeItem({
+      id: 'tool:retained',
+      kind: 'tool_call',
+      payloadId: 'payload-retained',
+      threadId: 'thread-a',
+    });
+    items.set(oldItem.id, oldItem);
+    items.set(retainedItem.id, retainedItem);
+    const rowUiState = createThreadRowUiState({
+      getItemById(itemId: string): Item | undefined {
+        return items.get(itemId);
+      },
+    });
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    const oldItemExpansion = rowUiState.expansionStateFor(oldItem);
+    const retainedItemExpansion = rowUiState.expansionStateFor(retainedItem);
+    const oldPayloadExpansion = rowUiState.expansionStateForPayload(
+      'payload-old',
+      'thread-a',
+    );
+    const retainedPayloadExpansion = rowUiState.expansionStateForPayload(
+      'payload-retained',
+      'thread-a',
+    );
+    rowUiState.toggleSubagentGroupExpanded('group-old');
+    rowUiState.toggleSubagentGroupExpanded('group-retained');
+    const oldAttachmentCache = rowUiState.attachmentCacheFor(oldItem.id);
+    const retainedAttachmentCache = rowUiState.attachmentCacheFor(retainedItem.id);
+    oldAttachmentCache.set('old-attachment', {
+      id: 'old-attachment',
+      filename: 'old.png',
+      mimeType: 'image/png',
+      size: 1,
+      url: 'blob:old-attachment',
+    });
+    retainedAttachmentCache.set('retained-attachment', {
+      id: 'retained-attachment',
+      filename: 'retained.png',
+      mimeType: 'image/png',
+      size: 1,
+      url: 'blob:retained-attachment',
+    });
+
+    expect(rowUiState.debugStats()).toMatchObject({
+      expansionStates: 4,
+      itemExpansionStates: 2,
+      payloadExpansionStates: 2,
+      subagentGroups: 2,
+      attachmentItems: 2,
+    });
+
+    rowUiState.pruneRowUiState({
+      itemIds: [retainedItem.id],
+      payloads: [{ threadId: 'thread-a', payloadId: 'payload-retained' }],
+      groupKeys: ['group-retained'],
+    });
+
+    expect(rowUiState.debugStats()).toMatchObject({
+      expansionStates: 2,
+      itemExpansionStates: 1,
+      payloadExpansionStates: 1,
+      subagentGroups: 1,
+      attachmentItems: 1,
+    });
+    expect(revoke).toHaveBeenCalledWith('blob:old-attachment');
+    expect(rowUiState.isSubagentGroupExpanded('group-old')).toBe(false);
+    expect(rowUiState.isSubagentGroupExpanded('group-retained')).toBe(true);
+    expect(retainedAttachmentCache.get('retained-attachment')).toBeTruthy();
+    expect(oldAttachmentCache.get('old-attachment')).toBeUndefined();
+
+    retainedAttachmentCache.set('retained-after-prune', {
+      id: 'retained-after-prune',
+      filename: 'retained-after.png',
+      mimeType: 'image/png',
+      size: 1,
+      url: 'blob:retained-after-prune',
+    });
+    expect(retainedAttachmentCache.get('retained-after-prune')).toBeTruthy();
+    expect(revoke).not.toHaveBeenCalledWith('blob:retained-after-prune');
+
+    oldAttachmentCache.set('after-prune', {
+      id: 'after-prune',
+      filename: 'after.png',
+      mimeType: 'image/png',
+      size: 1,
+      url: 'blob:after-prune',
+    });
+    expect(revoke).toHaveBeenCalledWith('blob:after-prune');
+    expect(rowUiState.expansionStateFor(retainedItem)).toBe(retainedItemExpansion);
+    expect(rowUiState.expansionStateForPayload('payload-retained', 'thread-a')).toBe(retainedPayloadExpansion);
+    expect(rowUiState.expansionStateFor(oldItem)).not.toBe(oldItemExpansion);
+    expect(rowUiState.expansionStateForPayload('payload-old', 'thread-a')).not.toBe(oldPayloadExpansion);
     revoke.mockRestore();
   });
 

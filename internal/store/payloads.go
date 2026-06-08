@@ -5,6 +5,20 @@ import (
 	"fmt"
 )
 
+func upsertPayloadTx(exec sqlExecutor, payload Payload, label string) error {
+	if _, err := exec.Exec(`DELETE FROM payload_chunks WHERE payload_id = ?`, payload.ID); err != nil {
+		return fmt.Errorf("%s clear chunks: %w", label, err)
+	}
+	if _, err := exec.Exec(
+		`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	return nil
+}
+
 func insertPayloadTx(exec sqlExecutor, payload Payload, label string) error {
 	if _, err := exec.Exec(
 		`INSERT INTO payloads (id, kind, meta, data, created_at)
@@ -83,13 +97,16 @@ func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
 }
 
 func (s *Store) UpsertPayload(p Payload) error {
-	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		p.ID, p.Kind, p.Meta, p.Data, p.CreatedAt,
-	)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: upsert payload %s: %w", p.ID, err)
+		return fmt.Errorf("store: begin upsert payload %s: %w", p.ID, err)
+	}
+	defer tx.Rollback()
+	if err := upsertPayloadTx(tx, p, fmt.Sprintf("store: upsert payload %s", p.ID)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit upsert payload %s: %w", p.ID, err)
 	}
 	return nil
 }
@@ -131,12 +148,8 @@ func (s *Store) UpsertTurnPayload(threadID string, turnIndex int, kind string, p
 		payload.ID = existingID
 	}
 
-	if _, err = tx.Exec(
-		`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
-	); err != nil {
-		return fmt.Errorf("store: upsert turn payload: %w", err)
+	if err := upsertPayloadTx(tx, payload, "store: upsert turn payload"); err != nil {
+		return err
 	}
 
 	// Fallback path: we may have just inserted a brand new payload. If there
@@ -190,38 +203,47 @@ func (s *Store) GetPayloadData(id string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: get payload data %s: %w", id, err)
 	}
+	rows, err := s.db.Query(
+		`SELECT data
+		   FROM payload_chunks
+		  WHERE payload_id = ?
+		  ORDER BY chunk_index`,
+		id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: get payload data chunks %s: %w", id, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var chunk []byte
+		if err := rows.Scan(&chunk); err != nil {
+			return nil, fmt.Errorf("store: scan payload chunk %s: %w", id, err)
+		}
+		data = append(data, chunk...)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: payload chunk rows %s: %w", id, err)
+	}
 	return data, nil
 }
 
 // GetPayloadPreview returns up to maxBytes of the payload prefix together
-// with the full payload length and a completion flag. The payload is
-// sliced inside SQLite via substr() so a 10 MB blob does not ever cross
-// into Go memory when the caller only wants the first 8 KB. The
-// completion flag is true only when total <= maxBytes.
+// with the full payload length and a completion flag. For blob-backed
+// payloads the slice still happens inside SQLite; for append-backed
+// payloads only chunks that overlap the requested prefix are read.
+// The completion flag is true only when total <= maxBytes.
 func (s *Store) GetPayloadPreview(id string, maxBytes int) ([]byte, int, bool, error) {
 	if maxBytes < 0 {
 		maxBytes = 0
 	}
-	var head []byte
-	var total int
-	// substr(blob, 1, N) is 1-indexed and clamps to the blob length, so
-	// passing a maxBytes larger than the payload returns the full data
-	// without an extra branch. length(blob) returns the byte count even
-	// for NULL, so the NULL guard is superfluous (INSERT paths never
-	// store NULL for data).
-	err := s.db.QueryRow(
-		`SELECT substr(data, 1, ?) AS head, length(data) AS total FROM payloads WHERE id = ?`,
-		maxBytes, id,
-	).Scan(&head, &total)
-	if err != nil {
-		return nil, 0, false, fmt.Errorf("store: get payload preview %s: %w", id, err)
-	}
-	return head, total, total <= maxBytes, nil
+	return s.GetPayloadChunk(id, 0, maxBytes)
 }
 
 // GetPayloadChunk returns a bounded payload slice starting at byte offset.
-// Slicing happens inside SQLite, so loading the next 256 KB chunk of a 50 MB
-// command output never materializes the full blob in Go memory.
+// Slicing happens inside SQLite for the base blob and uses payload chunk
+// offsets for append-backed data, so loading the next 256 KB chunk of a
+// 50 MB command output never materializes the full payload in Go memory.
 func (s *Store) GetPayloadChunk(id string, offset, maxBytes int) ([]byte, int, bool, error) {
 	if offset < 0 {
 		offset = 0
@@ -229,52 +251,182 @@ func (s *Store) GetPayloadChunk(id string, offset, maxBytes int) ([]byte, int, b
 	if maxBytes < 0 {
 		maxBytes = 0
 	}
-	var chunk []byte
-	var total int
-	err := s.db.QueryRow(
-		`SELECT substr(data, ?, ?) AS chunk, length(data) AS total FROM payloads WHERE id = ?`,
-		offset+1, maxBytes, id,
-	).Scan(&chunk, &total)
+	baseLen, total, err := s.payloadLengths(id)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("store: get payload chunk %s: %w", id, err)
+		return nil, 0, false, err
 	}
-	nextOffset := offset + len(chunk)
-	return chunk, total, nextOffset >= total, nil
+	if maxBytes == 0 || offset >= total {
+		return []byte{}, total, offset >= total, nil
+	}
+
+	requestOffset := offset
+	limit := offset + maxBytes
+	if limit > total {
+		limit = total
+	}
+	result := make([]byte, 0, limit-offset)
+	if offset < baseLen {
+		baseLimit := limit
+		if baseLimit > baseLen {
+			baseLimit = baseLen
+		}
+		var base []byte
+		err := s.db.QueryRow(
+			`SELECT substr(data, ?, ?) FROM payloads WHERE id = ?`,
+			offset+1, baseLimit-offset, id,
+		).Scan(&base)
+		if err != nil {
+			return nil, 0, false, fmt.Errorf("store: get payload base chunk %s: %w", id, err)
+		}
+		result = append(result, base...)
+		offset = baseLimit
+	}
+	if offset < limit {
+		rows, err := s.db.Query(
+			`SELECT substr(
+			            data,
+			            CASE WHEN ? > start_offset THEN ? - start_offset + 1 ELSE 1 END,
+			            ?
+			        )
+			   FROM payload_chunks
+			  WHERE payload_id = ?
+			    AND start_offset + length(data) > ?
+			    AND start_offset < ?
+			  ORDER BY chunk_index`,
+			offset, offset, limit-offset, id, offset, limit,
+		)
+		if err != nil {
+			return nil, 0, false, fmt.Errorf("store: get payload chunks %s: %w", id, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var chunk []byte
+			if err := rows.Scan(&chunk); err != nil {
+				return nil, 0, false, fmt.Errorf("store: scan payload chunk %s: %w", id, err)
+			}
+			remaining := limit - (requestOffset + len(result))
+			if remaining <= 0 {
+				break
+			}
+			if len(chunk) > remaining {
+				chunk = chunk[:remaining]
+			}
+			result = append(result, chunk...)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, 0, false, fmt.Errorf("store: payload chunk rows %s: %w", id, err)
+		}
+	}
+	nextOffset := requestOffset + len(result)
+	return result, total, nextOffset >= total, nil
 }
 
-// AppendPayloadData appends delta to an existing payload's data blob
-// in-place, updating its meta and created_at stamp inside one UPDATE.
-// Unlike read-append-write (which pulled the full blob through Go on
-// every delta), this streams the concatenation inside SQLite so repeated
-// appends stay linear rather than quadratic in cumulative size.
+func (s *Store) payloadLengths(id string) (int, int, error) {
+	var baseLen int
+	var appendedEnd sql.NullInt64
+	err := s.db.QueryRow(
+		`SELECT length(data),
+		        (SELECT MAX(start_offset + length(data))
+		           FROM payload_chunks
+		          WHERE payload_id = payloads.id)
+		   FROM payloads
+		  WHERE id = ?`,
+		id,
+	).Scan(&baseLen, &appendedEnd)
+	if err != nil {
+		return 0, 0, fmt.Errorf("store: get payload length %s: %w", id, err)
+	}
+	totalSize := baseLen
+	if appendedEnd.Valid && int(appendedEnd.Int64) > totalSize {
+		totalSize = int(appendedEnd.Int64)
+	}
+	return baseLen, totalSize, nil
+}
+
+// AppendPayloadData appends delta to an existing payload as a new ordered
+// payload_chunks row and updates its meta and created_at stamp. This keeps
+// live streaming payload writes O(delta) instead of rewriting the cumulative
+// payload blob on every flush.
 //
 // Returns sql.ErrNoRows (wrapped) if no payload matches id. Callers
 // must handle "no row yet" by inserting via InsertPayload first; this
 // method only handles the append path.
 func (s *Store) AppendPayloadData(id string, delta []byte, meta string, createdAt int64) error {
-	result, err := s.db.Exec(
-		`UPDATE payloads SET data = data || ?, meta = ?, created_at = ? WHERE id = ?`,
-		delta, meta, createdAt, id,
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin append payload data %s: %w", id, err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(
+		`UPDATE payloads SET meta = ?, created_at = ? WHERE id = ?`,
+		meta, createdAt, id,
 	)
 	if err != nil {
 		return fmt.Errorf("store: append payload data %s: %w", id, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: append payload data %s", id))
+	if err := requireRowsAffected(result, fmt.Sprintf("store: append payload data %s", id)); err != nil {
+		return err
+	}
+	if len(delta) > 0 {
+		var chunkIndex int
+		var startOffset int
+		err := tx.QueryRow(
+			`SELECT COALESCE(MAX(chunk_index) + 1, 0),
+			        COALESCE(
+			            MAX(start_offset + length(data)),
+			            (SELECT length(data) FROM payloads WHERE id = ?)
+			        )
+			   FROM payload_chunks
+			  WHERE payload_id = ?`,
+			id, id,
+		).Scan(&chunkIndex, &startOffset)
+		if err != nil {
+			return fmt.Errorf("store: append payload next chunk %s: %w", id, err)
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO payload_chunks (payload_id, chunk_index, start_offset, data, created_at)
+			 VALUES (?, ?, ?, ?, ?)`,
+			id, chunkIndex, startOffset, delta, createdAt,
+		); err != nil {
+			return fmt.Errorf("store: insert payload chunk %s: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit append payload data %s: %w", id, err)
+	}
+	return nil
 }
 
 // ReplacePayloadData replaces an existing payload's data blob in-place,
-// updating its meta and created_at stamp in the same UPDATE. Streaming paths
-// use this when a provider completion sends an authoritative final payload
-// that should supersede accumulated deltas.
+// clearing any append chunks and updating its meta and created_at stamp in
+// the same transaction. Streaming paths use this when a provider completion
+// sends an authoritative final payload that should supersede accumulated
+// deltas.
 func (s *Store) ReplacePayloadData(id string, data []byte, meta string, createdAt int64) error {
-	result, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin replace payload data %s: %w", id, err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(
 		`UPDATE payloads SET data = ?, meta = ?, created_at = ? WHERE id = ?`,
 		data, meta, createdAt, id,
 	)
 	if err != nil {
 		return fmt.Errorf("store: replace payload data %s: %w", id, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: replace payload data %s", id))
+	if err := requireRowsAffected(result, fmt.Sprintf("store: replace payload data %s", id)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM payload_chunks WHERE payload_id = ?`, id); err != nil {
+		return fmt.Errorf("store: replace payload data clear chunks %s: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit replace payload data %s: %w", id, err)
+	}
+	return nil
 }
 
 // UpdatePayloadMeta updates only the meta column of an existing payload

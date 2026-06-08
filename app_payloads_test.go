@@ -186,6 +186,52 @@ func TestGetPayloadDataIncludesThinkingDeltaBeforeWireEmission(t *testing.T) {
 	}
 }
 
+func TestGetPayloadDataIncludesAssistantTextDeltaBeforeWireEmission(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-live-text-wire-order")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	var payloadDuringDelta string
+	app.triage = triage.NewRouter(app.store, func(eventName string, data any) {
+		if eventName != "provider:item_event" {
+			return
+		}
+		evt, ok := data.(triage.ItemStreamEvent)
+		if !ok || evt.Action != "delta" || evt.Kind != "assistant_text" {
+			return
+		}
+		payloadID := "assistant-text:" + thread.ID + ":" + evt.ItemID
+		got, err := app.GetPayloadData(thread.ID, payloadID)
+		if err != nil {
+			t.Fatalf("GetPayloadData during delta emission: %v", err)
+		}
+		payloadDuringDelta = got.Data
+	})
+
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  thread.ID,
+		Content:   "first",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text first: %v", err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  thread.ID,
+		Content:   " second",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text second: %v", err)
+	}
+
+	if payloadDuringDelta != "first second" {
+		t.Fatalf("GetPayloadData during delta emission = %q, want full visible assistant text", payloadDuringDelta)
+	}
+}
+
 // TestSavePayloadToFileWritesBytesAndReturnsPath covers the happy path:
 // the picker returns a chosen path, SavePayloadToFile writes the
 // payload body to disk, and the returned value is the chosen path.

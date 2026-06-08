@@ -26,15 +26,26 @@ import {
   resetForTest as resetSendQueueForTest,
 } from './sendQueue.svelte';
 import type { Item } from '../types/models';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import {
+  resetBindingMocks,
+  setBindingMock,
+} from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
-import { resetLayoutMetricsForTest, setPaneWidth } from './layoutMetrics.svelte';
+import {
+  resetLayoutMetricsForTest,
+  setPaneWidth,
+} from './layoutMetrics.svelte';
 import { RHS_PANEL_MIN_WIDTH } from './rhsPanelSlot.svelte';
 import {
   getExistingThreadTerminalState,
   getThreadTerminalState,
   resetThreadTerminalStatesForTest,
 } from '../components/terminal/terminalStore.svelte';
+import {
+  ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+  ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+  SLICE_AROUND_ITEM_BUDGET,
+} from './threadPaneShared';
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
@@ -48,20 +59,26 @@ class FakeSmoothingClock implements SmoothingClock {
   private current = 0;
   private nextHandle = 1;
   private pending = new Map<number, () => void>();
-  now(): number { return this.current; }
+  now(): number {
+    return this.current;
+  }
   schedule(cb: () => void): number {
     const h = this.nextHandle++;
     this.pending.set(h, cb);
     return h;
   }
-  cancel(h: number): void { this.pending.delete(h); }
+  cancel(h: number): void {
+    this.pending.delete(h);
+  }
   tickFrame(ms: number): void {
     this.current += ms;
     const toFire = [...this.pending.values()];
     this.pending.clear();
     for (const cb of toFire) cb();
   }
-  pendingCount(): number { return this.pending.size; }
+  pendingCount(): number {
+    return this.pending.size;
+  }
 }
 
 // Helper: how much *new content* appeared at the end of `cur` that
@@ -80,11 +97,7 @@ function smoothingNewTailChars(prev: string, cur: string): number {
 }
 
 function designFence(payload: unknown): string {
-  return [
-    '```aoflow-design',
-    JSON.stringify(payload),
-    '```',
-  ].join('\n');
+  return ['```aoflow-design', JSON.stringify(payload), '```'].join('\n');
 }
 
 describe('createThreadPane', () => {
@@ -100,7 +113,8 @@ describe('createThreadPane', () => {
     resetThreadStatuses();
     resetSendQueueForTest();
     setBindingMock('SwitchThread', async (threadId: unknown) =>
-      makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
+      makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }),
+    );
     // switchThread loads the initial slice via ListThreadSliceAround
     // (works for both bottom-snapshot and saved-anchor cases — empty
     // anchor id resolves to the tail at the backend). Tests override
@@ -111,13 +125,28 @@ describe('createThreadPane', () => {
       oldestTurnIndex: -1,
       hasMore: false,
     }));
-    // ListRecentThreadItems is still used by `refreshFromBackend` for the
-    // transport-gap recovery path. Default to empty so tests that don't
-    // exercise that path don't have to plumb the mock.
+    // Legacy/broad tail loader. Active panes should use ListThreadSliceAround;
+    // tests that intentionally touch this older RPC override the mock.
     setBindingMock('ListRecentThreadItems', async () => ({
       items: [] as Item[],
       oldestTurnIndex: -1,
       hasMore: false,
+    }));
+    setBindingMock('ListItemsBeforeCursor', async () => ({
+      items: [] as Item[],
+      oldestTurnIndex: -1,
+      newestTurnIndex: -1,
+      hasMore: false,
+      hasMoreOlder: false,
+      hasMoreNewer: false,
+    }));
+    setBindingMock('ListItemsAfterCursor', async () => ({
+      items: [] as Item[],
+      oldestTurnIndex: -1,
+      newestTurnIndex: -1,
+      hasMore: false,
+      hasMoreOlder: false,
+      hasMoreNewer: false,
     }));
     setBindingMock('ListPendingInteractiveRequests', async () => ({
       approvals: [],
@@ -172,7 +201,12 @@ describe('createThreadPane', () => {
       // synthesised draft id differs even when both startDraftPlaceholder
       // calls land in the same millisecond — otherwise the cleanup and
       // a "no-op" cannot be distinguished by querying the same id back.
-      const projectB: Project = { ...projectA, id: 'p-2', path: '/tmp/p2', name: 'p2' };
+      const projectB: Project = {
+        ...projectA,
+        id: 'p-2',
+        path: '/tmp/p2',
+        name: 'p2',
+      };
 
       pane.startDraftPlaceholder(projectA, 'chat');
       const firstPlaceholder = pane.thread;
@@ -182,7 +216,9 @@ describe('createThreadPane', () => {
       setThreadEnvMode(firstPlaceholder!, 'new-worktree');
       setAttachBranch(firstPlaceholder!, 'feature/x');
 
-      expect(worktreeIntentForThread(firstPlaceholder!).attachBranch).toBe('feature/x');
+      expect(worktreeIntentForThread(firstPlaceholder!).attachBranch).toBe(
+        'feature/x',
+      );
 
       pane.startDraftPlaceholder(projectB, 'chat');
       expect(pane.thread?.id).not.toBe(firstPlaceholder!.id);
@@ -207,7 +243,12 @@ describe('createThreadPane', () => {
       updatedAt: 0,
       archived: false,
     };
-    const projectB: Project = { ...projectA, id: 'p-2', path: '/tmp/p2', name: 'p2' };
+    const projectB: Project = {
+      ...projectA,
+      id: 'p-2',
+      path: '/tmp/p2',
+      name: 'p2',
+    };
 
     pane.startDraftPlaceholder(projectA, 'chat');
     const firstPlaceholderId = pane.thread!.id;
@@ -294,7 +335,9 @@ describe('createThreadPane', () => {
     pane.setShowTerminal(true);
     const close = setBindingMock('CloseThreadTerminals', async () => undefined);
 
-    expect(pane.canAdoptOpenedTerminal(placeholderId, '/tmp/project')).toBe(true);
+    expect(pane.canAdoptOpenedTerminal(placeholderId, '/tmp/project')).toBe(
+      true,
+    );
     pane.applyDraftPlaceholderWorkspace({
       workspacePath: '/tmp/project-worktree',
       worktreePath: '/tmp/project-worktree',
@@ -302,7 +345,9 @@ describe('createThreadPane', () => {
     });
 
     expect(close.mock.calls[0]).toEqual([placeholderId]);
-    expect(pane.canAdoptOpenedTerminal(placeholderId, '/tmp/project')).toBe(false);
+    expect(pane.canAdoptOpenedTerminal(placeholderId, '/tmp/project')).toBe(
+      false,
+    );
   });
 
   it('migrates placeholder terminals when content materializes the thread', async () => {
@@ -338,27 +383,31 @@ describe('createThreadPane', () => {
       exitReason: '',
     });
     pane.setShowTerminal(true);
-    setBindingMock('CreateThread', async () => makeThread({
-      id: 'thread-real',
-      projectId: 'p-1',
-      projectPath: '/tmp/project',
-      workspacePath: '/tmp/project',
-      branch: 'main',
-      isDraft: true,
-    }));
-    const move = setBindingMock('MoveThreadTerminals', async () => [{
-      terminalID: 'term-1',
-      threadID: 'thread-real',
-      shell: '/bin/sh',
-      cwd: '/tmp/project',
-      rows: 24,
-      cols: 80,
-      pid: 123,
-      startedAt: 1,
-      running: true,
-      exitCode: 0,
-      exitReason: '',
-    }]);
+    setBindingMock('CreateThread', async () =>
+      makeThread({
+        id: 'thread-real',
+        projectId: 'p-1',
+        projectPath: '/tmp/project',
+        workspacePath: '/tmp/project',
+        branch: 'main',
+        isDraft: true,
+      }),
+    );
+    const move = setBindingMock('MoveThreadTerminals', async () => [
+      {
+        terminalID: 'term-1',
+        threadID: 'thread-real',
+        shell: '/bin/sh',
+        cwd: '/tmp/project',
+        rows: 24,
+        cols: 80,
+        pid: 123,
+        startedAt: 1,
+        running: true,
+        exitCode: 0,
+        exitReason: '',
+      },
+    ]);
 
     const threadId = await pane.ensureMaterializedThread();
 
@@ -411,25 +460,31 @@ describe('createThreadPane', () => {
   it('migrates worktree intent when an empty materialized draft returns to a placeholder', async () => {
     resetWorktreeIntent();
     try {
-      const pane = await buildPane(makeThread({
-        id: 'materialized-draft',
-        projectId: 'p-1',
-        projectPath: '/tmp/project',
-        workspacePath: '/tmp/project',
-        mode: 'chat',
-        isDraft: true,
-      }));
+      const pane = await buildPane(
+        makeThread({
+          id: 'materialized-draft',
+          projectId: 'p-1',
+          projectPath: '/tmp/project',
+          workspacePath: '/tmp/project',
+          mode: 'chat',
+          isDraft: true,
+        }),
+      );
 
       setThreadEnvMode(pane.thread!, 'new-worktree');
       setAttachBranch(pane.thread!, 'feature/x');
-      expect(worktreeIntentForThread(pane.thread!).attachBranch).toBe('feature/x');
+      expect(worktreeIntentForThread(pane.thread!).attachBranch).toBe(
+        'feature/x',
+      );
 
       const oldThread = pane.thread!;
       expect(pane.dematerializeEmptyDraftThread()).toBe(true);
       expect(pane.thread?.id).not.toBe(oldThread.id);
       expect(pane.thread?.id.startsWith('draft:')).toBe(true);
       expect(worktreeIntentForThread(oldThread).mode).toBe('local');
-      expect(worktreeIntentForThread(pane.thread!).attachBranch).toBe('feature/x');
+      expect(worktreeIntentForThread(pane.thread!).attachBranch).toBe(
+        'feature/x',
+      );
     } finally {
       resetWorktreeIntent();
     }
@@ -445,17 +500,28 @@ describe('createThreadPane', () => {
     const pane = await buildPane(makeThread({ id: 'thread-lock' }));
     expect(pane.isLocked).toBe(false);
 
-    pane.upsertItem(makeItem({ id: 'user:0', threadId: 'thread-lock', kind: 'user_text', role: 'user' }));
+    pane.upsertItem(
+      makeItem({
+        id: 'user:0',
+        threadId: 'thread-lock',
+        kind: 'user_text',
+        role: 'user',
+      }),
+    );
     expect(pane.isLocked).toBe(true);
   });
 
   it('marks live state as hydrating before the backend switch round-trip returns', async () => {
     const pane = createThreadPane();
     let releaseSwitch!: (value: unknown) => void;
-    setBindingMock('SwitchThread', (threadId: unknown) => new Promise((resolve) => {
-      releaseSwitch = resolve;
-      void threadId;
-    }));
+    setBindingMock(
+      'SwitchThread',
+      (threadId: unknown) =>
+        new Promise((resolve) => {
+          releaseSwitch = resolve;
+          void threadId;
+        }),
+    );
 
     const switching = pane.switchThread(makeThread({ id: 'thread-hydrating' }));
     expect(isThreadLiveStateHydrating('thread-hydrating')).toBe(true);
@@ -468,7 +534,12 @@ describe('createThreadPane', () => {
   it('loads items and seeds the context window from thread.lastTokenUsage', async () => {
     const pane = createThreadPane();
     const items = [
-      makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
+      makeItem({
+        id: 'user:0',
+        kind: 'user_text',
+        role: 'user',
+        summary: 'hi',
+      }),
       makeItem({ id: 'text:0:0', itemIndex: 1, summary: 'hello back' }),
     ];
     setBindingMock('ListThreadSliceAround', async () => ({
@@ -477,13 +548,15 @@ describe('createThreadPane', () => {
       hasMore: false,
     }));
 
-    await pane.switchThread(makeThread({
-      lastTokenUsage: JSON.stringify({
-        usedTokens: 1200,
-        maxTokens: 200000,
-        contextPercent: 0.6,
+    await pane.switchThread(
+      makeThread({
+        lastTokenUsage: JSON.stringify({
+          usedTokens: 1200,
+          maxTokens: 200000,
+          contextPercent: 0.6,
+        }),
       }),
-    }));
+    );
 
     expect(pane.items).toEqual(items);
     expect(pane.contextWindow).toEqual({
@@ -502,42 +575,58 @@ describe('createThreadPane', () => {
       activeTurn: null,
       queueItems: [],
       interactive: {
-        approvals: [{
-          requestId: 'approval-1',
-          threadId: 'thread-a',
-          toolName: 'Bash',
-          description: 'Run command',
-          input: { command: 'pwd' },
-          title: 'Approve command',
-        }],
-        userInputs: [{
-          requestId: 'input-1',
-          threadId: 'thread-a',
-          toolName: 'user_input',
-          title: 'User Input Required',
-          questions: [{
-            id: 'scope',
-            header: 'Scope',
-            question: 'Choose a scope',
-            options: [{ label: 'turn', description: 'Apply only to this turn' }],
-          }],
-        }],
+        approvals: [
+          {
+            requestId: 'approval-1',
+            threadId: 'thread-a',
+            toolName: 'Bash',
+            description: 'Run command',
+            input: { command: 'pwd' },
+            title: 'Approve command',
+          },
+        ],
+        userInputs: [
+          {
+            requestId: 'input-1',
+            threadId: 'thread-a',
+            toolName: 'user_input',
+            title: 'User Input Required',
+            questions: [
+              {
+                id: 'scope',
+                header: 'Scope',
+                question: 'Choose a scope',
+                options: [
+                  { label: 'turn', description: 'Apply only to this turn' },
+                ],
+              },
+            ],
+          },
+        ],
       },
       todo: null,
     }));
 
     await pane.switchThread(makeThread({ id: 'thread-a' }));
 
-    expect(pane.pendingApprovals.map((request) => request.requestId)).toEqual(['approval-1']);
-    expect(pane.pendingUserInputs[0]?.questions[0]?.options?.[0]?.label).toBe('turn');
+    expect(pane.pendingApprovals.map((request) => request.requestId)).toEqual([
+      'approval-1',
+    ]);
+    expect(pane.pendingUserInputs[0]?.questions[0]?.options?.[0]?.label).toBe(
+      'turn',
+    );
   });
 
   it('does not re-add a prompt resolved while pending snapshot hydration is in flight', async () => {
     const pane = createThreadPane();
     let releaseSnapshot!: (value: unknown) => void;
-    setBindingMock('GetThreadLiveState', () => new Promise((resolve) => {
-      releaseSnapshot = resolve;
-    }));
+    setBindingMock(
+      'GetThreadLiveState',
+      () =>
+        new Promise((resolve) => {
+          releaseSnapshot = resolve;
+        }),
+    );
 
     const switching = pane.switchThread(makeThread({ id: 'thread-a' }));
     await Promise.resolve();
@@ -548,17 +637,21 @@ describe('createThreadPane', () => {
       queueItems: [],
       interactive: {
         approvals: [],
-        userInputs: [{
-          requestId: 'input-1',
-          threadId: 'thread-a',
-          toolName: 'user_input',
-          title: 'User Input Required',
-          questions: [{
-            id: 'scope',
-            header: 'Scope',
-            question: 'Choose a scope',
-          }],
-        }],
+        userInputs: [
+          {
+            requestId: 'input-1',
+            threadId: 'thread-a',
+            toolName: 'user_input',
+            title: 'User Input Required',
+            questions: [
+              {
+                id: 'scope',
+                header: 'Scope',
+                question: 'Choose a scope',
+              },
+            ],
+          },
+        ],
       },
       todo: null,
     });
@@ -869,7 +962,9 @@ describe('createThreadPane', () => {
       pane.closeRhsPanel();
       expect(pane.activeRhsPanel).toBeNull();
 
-      const designPane = await buildPane(makeThread({ id: 'design-t', mode: 'design' }));
+      const designPane = await buildPane(
+        makeThread({ id: 'design-t', mode: 'design' }),
+      );
       designPane.setShowDesignPreviewPanel(true);
       expect(designPane.activeRhsPanel?.kind).toBe('design-preview');
       designPane.closeRhsPanel();
@@ -1008,14 +1103,18 @@ describe('createThreadPane', () => {
     });
 
     it('does not auto-open design preview for a fresh design thread', async () => {
-      const pane = await buildPane(makeThread({ id: 'thread-a', mode: 'design' }));
+      const pane = await buildPane(
+        makeThread({ id: 'thread-a', mode: 'design' }),
+      );
 
       expect(pane.showDesignPreviewPanel).toBe(false);
       expect(pane.activeRhsPanel).toBeNull();
     });
 
     it('does not auto-open design preview when options hydrate while closed', async () => {
-      const pane = await buildPane(makeThread({ id: 'thread-a', mode: 'design' }));
+      const pane = await buildPane(
+        makeThread({ id: 'thread-a', mode: 'design' }),
+      );
       setBindingMock('LatestDesignOptionSet', async () => ({
         setId: 'set-1',
         optionIds: ['alpha'],
@@ -1101,7 +1200,10 @@ describe('createThreadPane', () => {
 
       // Switch back — sidebar re-arms with the saved payload + UI state.
       await pane.switchThread(makeThread({ id: 'thread-a' }));
-      expect(pane.activeDiffPayload).toEqual({ payloadId: 'pa', filePath: 'src/foo.ts' });
+      expect(pane.activeDiffPayload).toEqual({
+        payloadId: 'pa',
+        filePath: 'src/foo.ts',
+      });
 
       const restored = pane.consumeDiffSidebarRestoreState();
       expect(restored).toEqual({
@@ -1129,7 +1231,10 @@ describe('createThreadPane', () => {
       await pane.switchThread(makeThread({ id: 'thread-b' }));
       await pane.switchThread(makeThread({ id: 'thread-a' }));
 
-      expect(pane.activeDiffPayload).toEqual({ payloadId: 'pa', filePath: 'src/foo.ts' });
+      expect(pane.activeDiffPayload).toEqual({
+        payloadId: 'pa',
+        filePath: 'src/foo.ts',
+      });
       expect(pane.consumeDiffSidebarRestoreState()).toEqual({
         viewMode: 'split',
         wordWrap: true,
@@ -1162,7 +1267,9 @@ describe('createThreadPane', () => {
       // switch back to the first — its snapshot should have evicted.
       const pane = createThreadPane();
       const threadCount = 22;
-      const threads = Array.from({ length: threadCount }, (_, i) => makeThread({ id: `t${i}` }));
+      const threads = Array.from({ length: threadCount }, (_, i) =>
+        makeThread({ id: `t${i}` }),
+      );
 
       for (let i = 0; i < threadCount; i += 1) {
         const next = threads[i];
@@ -1211,12 +1318,16 @@ describe('createThreadPane', () => {
     type Paged = { items: Item[]; oldestTurnIndex: number; hasMore: boolean };
     let resolveA!: (paged: Paged) => void;
     let resolveB!: (paged: Paged) => void;
-    const listA = new Promise<Paged>((resolve) => { resolveA = resolve; });
-    const listB = new Promise<Paged>((resolve) => { resolveB = resolve; });
+    const listA = new Promise<Paged>((resolve) => {
+      resolveA = resolve;
+    });
+    const listB = new Promise<Paged>((resolve) => {
+      resolveB = resolve;
+    });
 
-    setBindingMock('ListThreadSliceAround', (threadId: string) => (
-      threadId === 'thread-a' ? listA : listB
-    ));
+    setBindingMock('ListThreadSliceAround', (threadId: string) =>
+      threadId === 'thread-a' ? listA : listB,
+    );
 
     const switchA = pane.switchThread(makeThread({ id: 'thread-a' }));
     const switchB = pane.switchThread(makeThread({ id: 'thread-b' }));
@@ -1245,12 +1356,24 @@ describe('createThreadPane', () => {
     pane.upsertItem(makeItem({ id: 'early', turnIndex: 0, itemIndex: 1 }));
     pane.upsertItem(makeItem({ id: 'first', turnIndex: 0, itemIndex: 0 }));
 
-    expect(pane.items.map((item) => item.id)).toEqual(['first', 'early', 'late']);
+    expect(pane.items.map((item) => item.id)).toEqual([
+      'first',
+      'early',
+      'late',
+    ]);
 
-    pane.upsertItem(makeItem({ id: 'early', turnIndex: 0, itemIndex: 1, summary: 'updated' }));
+    pane.upsertItem(
+      makeItem({ id: 'early', turnIndex: 0, itemIndex: 1, summary: 'updated' }),
+    );
 
-    expect(pane.items.map((item) => item.id)).toEqual(['first', 'early', 'late']);
-    expect(pane.items.find((item) => item.id === 'early')?.summary).toBe('updated');
+    expect(pane.items.map((item) => item.id)).toEqual([
+      'first',
+      'early',
+      'late',
+    ]);
+    expect(pane.items.find((item) => item.id === 'early')?.summary).toBe(
+      'updated',
+    );
   });
 
   it('allows upsertItem to be used as an unbound callback', () => {
@@ -1271,7 +1394,11 @@ describe('createThreadPane', () => {
       makeItem({ id: 'first', turnIndex: 0, itemIndex: 0 }),
     ]);
 
-    expect(pane.items.map((item) => item.id)).toEqual(['first', 'early', 'late']);
+    expect(pane.items.map((item) => item.id)).toEqual([
+      'first',
+      'early',
+      'late',
+    ]);
     expect(pane.timelineRevision).toBe(1);
 
     pane.upsertItems([
@@ -1279,15 +1406,23 @@ describe('createThreadPane', () => {
       makeItem({ id: 'early', turnIndex: 0, itemIndex: 1, summary: 'updated' }),
     ]);
 
-    expect(pane.items.map((item) => item.id)).toEqual(['first', 'early', 'late']);
-    expect(pane.items.find((item) => item.id === 'late')?.summary).toBe('moved');
+    expect(pane.items.map((item) => item.id)).toEqual([
+      'first',
+      'early',
+      'late',
+    ]);
+    expect(pane.items.find((item) => item.id === 'late')?.summary).toBe(
+      'moved',
+    );
     expect(pane.timelineRevision).toBe(2);
   });
 
   it('bumps timeline revision when switchThread installs the initial item window', async () => {
     const pane = createThreadPane();
     setBindingMock('ListThreadSliceAround', async () => ({
-      items: [makeItem({ id: 'loaded', threadId: 't', turnIndex: 0, itemIndex: 0 })],
+      items: [
+        makeItem({ id: 'loaded', threadId: 't', turnIndex: 0, itemIndex: 0 }),
+      ],
       oldestTurnIndex: 0,
       hasMore: false,
     }));
@@ -1306,7 +1441,14 @@ describe('createThreadPane', () => {
       const id = String(threadId);
       loadCalls.push(id);
       return {
-        items: [makeItem({ id: `${id}-row`, threadId: id, turnIndex: 0, itemIndex: 0 })],
+        items: [
+          makeItem({
+            id: `${id}-row`,
+            threadId: id,
+            turnIndex: 0,
+            itemIndex: 0,
+          }),
+        ],
         oldestTurnIndex: 0,
         hasMore: false,
       };
@@ -1350,28 +1492,32 @@ describe('createThreadPane', () => {
 
   it('does not bump timeline revision for same-row Bash completion chrome', () => {
     const pane = createThreadPane();
-    pane.upsertItem(makeItem({
-      id: 'bash',
-      kind: 'tool_call',
-      status: 'running',
-      toolName: 'Bash',
-      summary: 'Bash: sleep 1',
-      meta: JSON.stringify({ input: { command: 'sleep 1' } }),
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'bash',
+        kind: 'tool_call',
+        status: 'running',
+        toolName: 'Bash',
+        summary: 'Bash: sleep 1',
+        meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+      }),
+    );
     const revision = pane.timelineRevision;
 
-    pane.upsertItem(makeItem({
-      id: 'bash',
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'Bash',
-      summary: 'Bash: sleep 1',
-      payloadId: 'payload-bash',
-      payloadKind: 'command_output',
-      payloadMeta: JSON.stringify({ command: 'sleep 1', exitCode: 0 }),
-      meta: JSON.stringify({ input: { command: 'sleep 1' } }),
-      updatedAt: 1,
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'bash',
+        kind: 'tool_call',
+        status: 'completed',
+        toolName: 'Bash',
+        summary: 'Bash: sleep 1',
+        payloadId: 'payload-bash',
+        payloadKind: 'command_output',
+        payloadMeta: JSON.stringify({ command: 'sleep 1', exitCode: 0 }),
+        meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+        updatedAt: 1,
+      }),
+    );
 
     expect(pane.items[0].status).toBe('completed');
     expect(pane.items[0].payloadKind).toBe('command_output');
@@ -1380,25 +1526,37 @@ describe('createThreadPane', () => {
 
   it('does not bump timeline revision for collab-agent status-only chrome', () => {
     const pane = createThreadPane();
-    pane.upsertItem(makeItem({
-      id: 'agent',
-      kind: 'tool_call',
-      status: 'running',
-      toolName: 'collab_agent',
-      meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
-      payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Reviewer' } }),
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'agent',
+        kind: 'tool_call',
+        status: 'running',
+        toolName: 'collab_agent',
+        meta: JSON.stringify({
+          input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] },
+        }),
+        payloadMeta: JSON.stringify({
+          input: { newAgentNickname: 'Reviewer' },
+        }),
+      }),
+    );
     const revision = pane.timelineRevision;
 
-    pane.upsertItem(makeItem({
-      id: 'agent',
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'collab_agent',
-      meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
-      payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Reviewer' } }),
-      updatedAt: 1,
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'agent',
+        kind: 'tool_call',
+        status: 'completed',
+        toolName: 'collab_agent',
+        meta: JSON.stringify({
+          input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] },
+        }),
+        payloadMeta: JSON.stringify({
+          input: { newAgentNickname: 'Reviewer' },
+        }),
+        updatedAt: 1,
+      }),
+    );
 
     expect(pane.items[0].status).toBe('completed');
     expect(pane.timelineRevision).toBe(revision);
@@ -1406,18 +1564,22 @@ describe('createThreadPane', () => {
 
   it('bumps timeline revision when an upsert changes timeline structure', () => {
     const pane = createThreadPane();
-    pane.upsertItem(makeItem({
-      id: 'read',
-      kind: 'tool_call',
-      toolName: 'Read',
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'read',
+        kind: 'tool_call',
+        toolName: 'Read',
+      }),
+    );
     const revision = pane.timelineRevision;
 
-    pane.upsertItem(makeItem({
-      id: 'read',
-      kind: 'tool_call',
-      toolName: 'Edit',
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'read',
+        kind: 'tool_call',
+        toolName: 'Edit',
+      }),
+    );
 
     expect(pane.timelineRevision).toBe(revision + 1);
   });
@@ -1427,8 +1589,18 @@ describe('createThreadPane', () => {
 
     pane.upsertItems([
       makeItem({ id: 'later-position', turnIndex: 1, itemIndex: 0 }),
-      makeItem({ id: 'first-arrived', turnIndex: 0, itemIndex: 0, createdAt: 200 }),
-      makeItem({ id: 'second-arrived', turnIndex: 0, itemIndex: 0, createdAt: 100 }),
+      makeItem({
+        id: 'first-arrived',
+        turnIndex: 0,
+        itemIndex: 0,
+        createdAt: 200,
+      }),
+      makeItem({
+        id: 'second-arrived',
+        turnIndex: 0,
+        itemIndex: 0,
+        createdAt: 100,
+      }),
     ]);
 
     expect(pane.items.map((item) => item.id)).toEqual([
@@ -1440,12 +1612,14 @@ describe('createThreadPane', () => {
 
   it('applies streaming deltas in place via replace-pattern', async () => {
     const pane = createThreadPane();
-    pane.upsertItem(makeItem({
-      id: 'text:0:0',
-      kind: 'assistant_text',
-      status: 'streaming',
-      summary: 'hello',
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'text:0:0',
+        kind: 'assistant_text',
+        status: 'streaming',
+        summary: 'hello',
+      }),
+    );
     const initialItems = pane.items;
     const initialRevision = pane.timelineRevision;
     const initialLength = initialItems.length;
@@ -1477,8 +1651,52 @@ describe('createThreadPane', () => {
     expect(pane.items).toBe(initialItems);
     expect(pane.items.length).toBe(initialLength);
     expect(pane.timelineRevision).toBe(initialRevision);
-    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('hello world!');
-    expect(pane.items.find((item) => item.id === 'text:0:0')?.updatedAt).toBe(124);
+    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe(
+      'hello world!',
+    );
+    expect(pane.items.find((item) => item.id === 'text:0:0')?.updatedAt).toBe(
+      124,
+    );
+  });
+
+  it('keeps assistant text full even when the row has a payload link', async () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    try {
+      const pane = createThreadPane();
+      pane.upsertItem(
+        makeItem({
+          id: 'text:0:0',
+          kind: 'assistant_text',
+          status: 'streaming',
+          summary: 'seed',
+          payloadId: 'assistant-text:thread-1:text:0:0',
+          payloadKind: 'assistant_text',
+        }),
+      );
+
+      const delta = Array.from({ length: 200 }, (_, index) => `word${index}`).join(' ');
+      const expected = `seed${delta}`;
+      pane.applyItemDelta({
+        threadId: 'thread-1',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        delta,
+        updatedAt: 125,
+      });
+      for (let frame = 0; frame < 500; frame += 1) {
+        if ((pane.items.find((item) => item.id === 'text:0:0')?.summary ?? '') === expected) {
+          break;
+        }
+        clock.tickFrame(16);
+      }
+
+      const summary =
+        pane.items.find((item) => item.id === 'text:0:0')?.summary ?? '';
+      expect(summary).toBe(expected);
+    } finally {
+      __setSmoothingClockForTest(undefined);
+    }
   });
 
   it('thinking-row deltas trim to the 400-rune tail in place', async () => {
@@ -1487,13 +1705,15 @@ describe('createThreadPane', () => {
     // not visibly shrink the row at settle. Full thinking content stays
     // on-demand via the expansion handle.
     const pane = createThreadPane();
-    pane.upsertItem(makeItem({
-      id: 'think:0:0',
-      kind: 'thinking',
-      status: 'streaming',
-      summary: 'seed',
-      payloadId: 'thinking-payload',
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'think:0:0',
+        kind: 'thinking',
+        status: 'streaming',
+        summary: 'seed',
+        payloadId: 'thinking-payload',
+      }),
+    );
 
     // Send an 800-rune block; only the last 400 should survive.
     const bigChunk = 'a'.repeat(800);
@@ -1508,20 +1728,25 @@ describe('createThreadPane', () => {
     // callback has actually written through to the row.
     pane.__flushItemSmoothersForTest();
 
-    const after = pane.items.find((item) => item.id === 'think:0:0')?.summary ?? '';
+    const after =
+      pane.items.find((item) => item.id === 'think:0:0')?.summary ?? '';
     expect([...after].length).toBe(400);
     expect(after.endsWith('a'.repeat(400))).toBe(true);
-    expect(pane.items.find((item) => item.id === 'think:0:0')?.updatedAt).toBe(100);
+    expect(pane.items.find((item) => item.id === 'think:0:0')?.updatedAt).toBe(
+      100,
+    );
   });
 
   it('replaces the streaming row on completion upsert', async () => {
     const pane = createThreadPane();
-    pane.upsertItem(makeItem({
-      id: 'text:0:0',
-      kind: 'assistant_text',
-      status: 'streaming',
-      summary: 'hello',
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'text:0:0',
+        kind: 'assistant_text',
+        status: 'streaming',
+        summary: 'hello',
+      }),
+    );
     pane.applyItemDelta({
       threadId: 'thread-1',
       itemId: 'text:0:0',
@@ -1533,24 +1758,30 @@ describe('createThreadPane', () => {
     // summary catches up on rAF. The completion upsert below carries
     // the authoritative final summary, so the visible result snaps
     // through it regardless of how much the smoother had revealed.
-    pane.upsertItem(makeItem({
-      id: 'text:0:0',
-      kind: 'assistant_text',
-      status: 'completed',
-      summary: 'hello world',
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'text:0:0',
+        kind: 'assistant_text',
+        status: 'completed',
+        summary: 'hello world',
+      }),
+    );
 
-    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('hello world');
+    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe(
+      'hello world',
+    );
   });
 
   it('ignores stale deltas for an item that already settled', async () => {
     const pane = createThreadPane();
-    pane.upsertItem(makeItem({
-      id: 'text:0:0',
-      kind: 'assistant_text',
-      status: 'completed',
-      summary: 'yield timeouts',
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'text:0:0',
+        kind: 'assistant_text',
+        status: 'completed',
+        summary: 'yield timeouts',
+      }),
+    );
 
     pane.applyItemDelta({
       threadId: 'thread-1',
@@ -1560,7 +1791,9 @@ describe('createThreadPane', () => {
       updatedAt: 124,
     });
 
-    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('yield timeouts');
+    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe(
+      'yield timeouts',
+    );
   });
 
   it('expansionStateFor returns the same handle across calls (survives row remount)', () => {
@@ -1570,7 +1803,11 @@ describe('createThreadPane', () => {
     // the SAME handle reference for the same itemId, so toggle state
     // and loaded chunks survive the round-trip.
     const pane = createThreadPane();
-    const item = makeItem({ id: 'tool:5:0', kind: 'tool_call', payloadId: 'p-foo' });
+    const item = makeItem({
+      id: 'tool:5:0',
+      kind: 'tool_call',
+      payloadId: 'p-foo',
+    });
     pane.upsertItem(item);
 
     const h1 = pane.expansionStateFor(item);
@@ -1601,12 +1838,20 @@ describe('createThreadPane', () => {
     }));
 
     const pane = createThreadPane();
-    const first = pane.expansionStateForPayload('p-versioned', 'thread-1', version);
+    const first = pane.expansionStateForPayload(
+      'p-versioned',
+      'thread-1',
+      version,
+    );
     await first.expand();
     expect(first.displayData).toBe('payload v1');
 
     version = 2;
-    const second = pane.expansionStateForPayload('p-versioned', 'thread-1', version);
+    const second = pane.expansionStateForPayload(
+      'p-versioned',
+      'thread-1',
+      version,
+    );
     expect(second).toBe(first);
 
     await second.ensureLoaded();
@@ -1632,7 +1877,13 @@ describe('createThreadPane', () => {
     // factory seeds from it and writes loaded previews back.
     const pane = createThreadPane();
     const cacheA = pane.attachmentCacheFor('item-1');
-    cacheA.set('att-1', { id: 'att-1', filename: 'a.png', mimeType: 'image/png', size: 1, url: 'data:img' });
+    cacheA.set('att-1', {
+      id: 'att-1',
+      filename: 'a.png',
+      mimeType: 'image/png',
+      size: 1,
+      url: 'data:img',
+    });
     const cacheA2 = pane.attachmentCacheFor('item-1');
     expect(cacheA2.get('att-1')).toBeTruthy();
     expect(cacheA2.get('att-1')?.url).toBe('data:img');
@@ -1644,14 +1895,28 @@ describe('createThreadPane', () => {
   it('clears row UI state on switchThread', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-a' }));
-    pane.upsertItem(makeItem({ id: 'tool:0:0', kind: 'tool_call', payloadId: 'p-1', threadId: 'thread-a' }));
+    pane.upsertItem(
+      makeItem({
+        id: 'tool:0:0',
+        kind: 'tool_call',
+        payloadId: 'p-1',
+        threadId: 'thread-a',
+      }),
+    );
     expect(pane.items.length).toBe(1);
     const h1 = pane.expansionStateFor(pane.items[0]);
     pane.toggleSubagentGroupExpanded('parent-x');
     expect(pane.isSubagentGroupExpanded('parent-x')).toBe(true);
 
     await pane.switchThread(makeThread({ id: 'thread-b' }));
-    pane.upsertItem(makeItem({ id: 'tool:0:0', kind: 'tool_call', payloadId: 'p-2', threadId: 'thread-b' }));
+    pane.upsertItem(
+      makeItem({
+        id: 'tool:0:0',
+        kind: 'tool_call',
+        payloadId: 'p-2',
+        threadId: 'thread-b',
+      }),
+    );
     const h2 = pane.expansionStateFor(pane.items[0]);
     // Different thread → different handle (the previous one was cleared).
     expect(h2).not.toBe(h1);
@@ -1662,16 +1927,18 @@ describe('createThreadPane', () => {
   it('clears discussion channel state on switchThread', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-a' }));
-    pane.mergeChannelMessages([{
-      id: 'channel-message-1',
-      channelId: 'channel-1',
-      sequence: 1,
-      fromType: 'agent',
-      fromId: 'agent-1',
-      fromRole: 'advocate',
-      content: 'channel text',
-      createdAt: 0,
-    }]);
+    pane.mergeChannelMessages([
+      {
+        id: 'channel-message-1',
+        channelId: 'channel-1',
+        sequence: 1,
+        fromType: 'agent',
+        fromId: 'agent-1',
+        fromRole: 'advocate',
+        content: 'channel text',
+        createdAt: 0,
+      },
+    ]);
     pane.setChannelStatus('concluded');
 
     await pane.switchThread(makeThread({ id: 'thread-b' }));
@@ -1712,33 +1979,44 @@ describe('createThreadPane', () => {
   it('resets design payload dedupe keys on thread switch', async () => {
     const pane = createThreadPane();
     setBindingMock('SwitchThread', async (threadId: unknown) =>
-      makeThread({ id: typeof threadId === 'string' ? threadId : 'design-a', mode: 'design' }));
-    const clarification = (questionId: string) => designFence({
-      kind: 'clarification_request',
-      requestId: 'clarify-same-id',
-      questions: [{
-        id: questionId,
-        prompt: 'Choose',
-        choices: [{ id: 'yes', label: 'Yes' }],
-      }],
-    });
+      makeThread({
+        id: typeof threadId === 'string' ? threadId : 'design-a',
+        mode: 'design',
+      }),
+    );
+    const clarification = (questionId: string) =>
+      designFence({
+        kind: 'clarification_request',
+        requestId: 'clarify-same-id',
+        questions: [
+          {
+            id: questionId,
+            prompt: 'Choose',
+            choices: [{ id: 'yes', label: 'Yes' }],
+          },
+        ],
+      });
 
     await pane.switchThread(makeThread({ id: 'design-a', mode: 'design' }));
-    pane.upsertItem(makeItem({
-      id: 'assistant-a',
-      threadId: 'design-a',
-      kind: 'assistant_text',
-      summary: clarification('first-thread'),
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'assistant-a',
+        threadId: 'design-a',
+        kind: 'assistant_text',
+        summary: clarification('first-thread'),
+      }),
+    );
     expect(pane.pendingClarification?.questions[0]?.id).toBe('first-thread');
 
     await pane.switchThread(makeThread({ id: 'design-b', mode: 'design' }));
-    pane.upsertItem(makeItem({
-      id: 'assistant-b',
-      threadId: 'design-b',
-      kind: 'assistant_text',
-      summary: clarification('second-thread'),
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'assistant-b',
+        threadId: 'design-b',
+        kind: 'assistant_text',
+        summary: clarification('second-thread'),
+      }),
+    );
 
     expect(pane.pendingClarification?.threadId).toBe('design-b');
     expect(pane.pendingClarification?.questions[0]?.id).toBe('second-thread');
@@ -1756,20 +2034,24 @@ describe('createThreadPane', () => {
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
 
     // A streaming assistant item alone doesn't flip the flag.
-    pane.upsertItem(makeItem({
-      id: 'text:0:0',
-      kind: 'assistant_text',
-      status: 'streaming',
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'text:0:0',
+        kind: 'assistant_text',
+        status: 'streaming',
+      }),
+    );
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
 
     // A running foreground tool_call alone doesn't flip the flag either.
-    pane.upsertItem(makeItem({
-      id: 'tool-1',
-      kind: 'tool_call',
-      status: 'running',
-      isBackground: false,
-    }));
+    pane.upsertItem(
+      makeItem({
+        id: 'tool-1',
+        kind: 'tool_call',
+        status: 'running',
+        isBackground: false,
+      }),
+    );
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
 
     // Pending approvals no longer count on their own — they live INSIDE
@@ -1813,27 +2095,33 @@ describe('createThreadPane', () => {
         turnIndex: 4,
         startedAt: 1_700_000_000_000,
       },
-      queueItems: [{
-        id: 'queue-1',
-        threadId,
-        message: 'queued while working',
-        attachmentIds: ['att-1'],
-        enqueuedAt: 1_700_000_000_100,
-      }],
-      flushedItems: [{
-        queueItemId: 'queue-flushed',
-        userItemId: 'user:4:flush:1',
-        message: 'already sent to provider',
-      }],
-      interactive: {
-        approvals: [{
-          requestId: 'approval-1',
+      queueItems: [
+        {
+          id: 'queue-1',
           threadId,
-          toolName: 'Edit',
-          description: 'Allow edit?',
-          input: null,
-          title: 'Approve edit',
-        }],
+          message: 'queued while working',
+          attachmentIds: ['att-1'],
+          enqueuedAt: 1_700_000_000_100,
+        },
+      ],
+      flushedItems: [
+        {
+          queueItemId: 'queue-flushed',
+          userItemId: 'user:4:flush:1',
+          message: 'already sent to provider',
+        },
+      ],
+      interactive: {
+        approvals: [
+          {
+            requestId: 'approval-1',
+            threadId,
+            toolName: 'Edit',
+            description: 'Allow edit?',
+            input: null,
+            title: 'Approve edit',
+          },
+        ],
         userInputs: [],
       },
       todo: {
@@ -1850,30 +2138,40 @@ describe('createThreadPane', () => {
       turnIndex: 4,
       startedAt: 1_700_000_000_000,
     });
-    expect(getQueueForThread('thread-live')).toEqual([{
-      id: 'queue-1',
-      threadId: 'thread-live',
-      message: 'queued while working',
-      attachmentIds: ['att-1'],
-      sourceProposedPlan: null,
-      revisionSourceProposedPlan: null,
-      revisionSourceCommentIds: undefined,
-      revisionSourceDiffReview: null,
-      revisionSourceDiffCommentIds: undefined,
-      enqueuedAt: 1_700_000_000_100,
-    }]);
-    expect(getFlushedForThread('thread-live').map((item) => ({
-      queueItemId: item.queueItemId,
-      userItemId: item.userItemId,
-      message: item.message,
-    }))).toEqual([{
-      queueItemId: 'queue-flushed',
-      userItemId: 'user:4:flush:1',
-      message: 'already sent to provider',
-    }]);
-    expect(pane.pendingApprovals.map((approval) => approval.requestId)).toEqual(['approval-1']);
+    expect(getQueueForThread('thread-live')).toEqual([
+      {
+        id: 'queue-1',
+        threadId: 'thread-live',
+        message: 'queued while working',
+        attachmentIds: ['att-1'],
+        sourceProposedPlan: null,
+        revisionSourceProposedPlan: null,
+        revisionSourceCommentIds: undefined,
+        revisionSourceDiffReview: null,
+        revisionSourceDiffCommentIds: undefined,
+        enqueuedAt: 1_700_000_000_100,
+      },
+    ]);
+    expect(
+      getFlushedForThread('thread-live').map((item) => ({
+        queueItemId: item.queueItemId,
+        userItemId: item.userItemId,
+        message: item.message,
+      })),
+    ).toEqual([
+      {
+        queueItemId: 'queue-flushed',
+        userItemId: 'user:4:flush:1',
+        message: 'already sent to provider',
+      },
+    ]);
+    expect(pane.pendingApprovals.map((approval) => approval.requestId)).toEqual(
+      ['approval-1'],
+    );
     expect(getThreadStatus('thread-live')).toBe('pending-approval');
-    expect(pane.liveTodo?.steps).toEqual([{ step: 'keep working', status: 'inProgress' }]);
+    expect(pane.liveTodo?.steps).toEqual([
+      { step: 'keep working', status: 'inProgress' },
+    ]);
   });
 
   it('does not revive stale all-completed live todos from backend snapshot', async () => {
@@ -1909,9 +2207,13 @@ describe('createThreadPane', () => {
   it('does not let a delayed idle live snapshot clear a newer active turn', async () => {
     const pane = createThreadPane();
     let releaseSnapshot!: (value: unknown) => void;
-    setBindingMock('GetThreadLiveState', () => new Promise((resolve) => {
-      releaseSnapshot = resolve;
-    }));
+    setBindingMock(
+      'GetThreadLiveState',
+      () =>
+        new Promise((resolve) => {
+          releaseSnapshot = resolve;
+        }),
+    );
 
     const switching = pane.switchThread(makeThread({ id: 'thread-race' }));
     await Promise.resolve();
@@ -1937,14 +2239,20 @@ describe('createThreadPane', () => {
     await pane.switchThread(makeThread({ id: 'thread-hydration-order' }));
 
     const releases: Array<(value: unknown) => void> = [];
-    setBindingMock('GetThreadLiveState', () => new Promise((resolve) => {
-      releases.push(resolve);
-    }));
+    setBindingMock(
+      'GetThreadLiveState',
+      () =>
+        new Promise((resolve) => {
+          releases.push(resolve);
+        }),
+    );
 
     const older = pane.refreshFromBackend();
-    for (let i = 0; i < 4 && releases.length < 1; i += 1) await Promise.resolve();
+    for (let i = 0; i < 4 && releases.length < 1; i += 1)
+      await Promise.resolve();
     const newer = pane.refreshFromBackend();
-    for (let i = 0; i < 4 && releases.length < 2; i += 1) await Promise.resolve();
+    for (let i = 0; i < 4 && releases.length < 2; i += 1)
+      await Promise.resolve();
     expect(releases).toHaveLength(2);
 
     releases[1]({
@@ -1969,22 +2277,26 @@ describe('createThreadPane', () => {
         turnIndex: 2,
         startedAt: 20,
       },
-      queueItems: [{
-        id: 'stale-queue',
-        threadId: 'thread-hydration-order',
-        message: 'stale',
-        attachmentIds: [],
-        enqueuedAt: 1,
-      }],
-      interactive: {
-        approvals: [{
-          requestId: 'stale-approval',
+      queueItems: [
+        {
+          id: 'stale-queue',
           threadId: 'thread-hydration-order',
-          toolName: 'Edit',
-          description: 'stale',
-          input: null,
-          title: 'Stale',
-        }],
+          message: 'stale',
+          attachmentIds: [],
+          enqueuedAt: 1,
+        },
+      ],
+      interactive: {
+        approvals: [
+          {
+            requestId: 'stale-approval',
+            threadId: 'thread-hydration-order',
+            toolName: 'Edit',
+            description: 'stale',
+            input: null,
+            title: 'Stale',
+          },
+        ],
         userInputs: [],
       },
       todo: {
@@ -2008,21 +2320,29 @@ describe('createThreadPane', () => {
   it('does not let a delayed queue snapshot wipe a newer queue projection', async () => {
     const pane = createThreadPane();
     let releaseSnapshot!: (value: unknown) => void;
-    setBindingMock('GetThreadLiveState', () => new Promise((resolve) => {
-      releaseSnapshot = resolve;
-    }));
+    setBindingMock(
+      'GetThreadLiveState',
+      () =>
+        new Promise((resolve) => {
+          releaseSnapshot = resolve;
+        }),
+    );
 
-    const switching = pane.switchThread(makeThread({ id: 'thread-queue-race' }));
+    const switching = pane.switchThread(
+      makeThread({ id: 'thread-queue-race' }),
+    );
     await Promise.resolve();
-    replaceQueueForThread('thread-queue-race', [{
-      id: 'queue-new',
-      threadId: 'thread-queue-race',
-      message: 'newer queue',
-      attachmentIds: [],
-      sourceProposedPlan: null,
-      revisionSourceProposedPlan: null,
-      enqueuedAt: 5,
-    }]);
+    replaceQueueForThread('thread-queue-race', [
+      {
+        id: 'queue-new',
+        threadId: 'thread-queue-race',
+        message: 'newer queue',
+        attachmentIds: [],
+        sourceProposedPlan: null,
+        revisionSourceProposedPlan: null,
+        enqueuedAt: 5,
+      },
+    ]);
     releaseSnapshot({
       threadId: 'thread-queue-race',
       activeTurn: null,
@@ -2032,14 +2352,22 @@ describe('createThreadPane', () => {
     });
     await switching;
 
-    expect(getQueueForThread('thread-queue-race').map((item) => item.message)).toEqual(['newer queue']);
+    expect(
+      getQueueForThread('thread-queue-race').map((item) => item.message),
+    ).toEqual(['newer queue']);
   });
 
   it('clear resets the pane completely', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread());
-    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
-    const item = makeItem({ id: 'x', kind: 'tool_call', payloadId: 'payload-x' });
+    const revoke = vi
+      .spyOn(URL, 'revokeObjectURL')
+      .mockImplementation(() => {});
+    const item = makeItem({
+      id: 'x',
+      kind: 'tool_call',
+      payloadId: 'payload-x',
+    });
     pane.upsertItem(item);
     const revisionBeforeClear = pane.timelineRevision;
     pane.setGeneralError('boom');
@@ -2051,16 +2379,18 @@ describe('createThreadPane', () => {
       input: null,
       title: 'Approve bash',
     });
-    pane.mergeChannelMessages([{
-      id: 'channel-message-1',
-      channelId: 'channel-1',
-      sequence: 1,
-      fromType: 'agent',
-      fromId: 'agent-1',
-      fromRole: 'advocate',
-      content: 'channel text',
-      createdAt: 0,
-    }]);
+    pane.mergeChannelMessages([
+      {
+        id: 'channel-message-1',
+        channelId: 'channel-1',
+        sequence: 1,
+        fromType: 'agent',
+        fromId: 'agent-1',
+        fromRole: 'advocate',
+        content: 'channel text',
+        createdAt: 0,
+      },
+    ]);
     pane.setChannelStatus('concluded');
     const expansion = pane.expansionStateFor(item);
     pane.toggleSubagentGroupExpanded('group-x');
@@ -2084,7 +2414,9 @@ describe('createThreadPane', () => {
     expect(pane.generalError).toBeNull();
     expect(pane.expansionStateFor(item)).not.toBe(expansion);
     expect(pane.isSubagentGroupExpanded('group-x')).toBe(false);
-    expect(pane.attachmentCacheFor(item.id).get('attachment-x')).toBeUndefined();
+    expect(
+      pane.attachmentCacheFor(item.id).get('attachment-x'),
+    ).toBeUndefined();
     expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:pane-clear');
     revoke.mockRestore();
   });
@@ -2093,7 +2425,12 @@ describe('createThreadPane', () => {
     it('upsertItem drops new items below the window floor', async () => {
       const pane = createThreadPane();
       const seed: Item[] = [
-        makeItem({ id: 'at-floor', threadId: 'thread-windowed', turnIndex: 5, itemIndex: 0 }),
+        makeItem({
+          id: 'at-floor',
+          threadId: 'thread-windowed',
+          turnIndex: 5,
+          itemIndex: 0,
+        }),
       ];
       setBindingMock('ListThreadSliceAround', async () => ({
         items: seed,
@@ -2106,14 +2443,27 @@ describe('createThreadPane', () => {
       // Upsert for a turn below the floor (e.g. interrupt-queue replay
       // of an older tool_completion). Must NOT land in the window — the
       // canonical row stays in SQLite and surfaces via loadOlder later.
-      pane.upsertItem(makeItem({ id: 'below', threadId: 'thread-windowed', turnIndex: 2, itemIndex: 0 }));
+      pane.upsertItem(
+        makeItem({
+          id: 'below',
+          threadId: 'thread-windowed',
+          turnIndex: 2,
+          itemIndex: 0,
+        }),
+      );
       expect(pane.items.map((it) => it.id)).toEqual(['at-floor']);
     });
 
     it('upsertItem still accepts replacements for known ids below the floor', async () => {
       const pane = createThreadPane();
       const seed: Item[] = [
-        makeItem({ id: 'known', threadId: 't', turnIndex: 5, itemIndex: 0, summary: 'old' }),
+        makeItem({
+          id: 'known',
+          threadId: 't',
+          turnIndex: 5,
+          itemIndex: 0,
+          summary: 'old',
+        }),
       ];
       setBindingMock('ListThreadSliceAround', async () => ({
         items: seed,
@@ -2124,27 +2474,44 @@ describe('createThreadPane', () => {
 
       // Known id, turn below floor — cross-turn correction path. Must
       // still replace because the id is clearly in-window already.
-      pane.upsertItem(makeItem({ id: 'known', threadId: 't', turnIndex: 2, itemIndex: 0, summary: 'new' }));
+      pane.upsertItem(
+        makeItem({
+          id: 'known',
+          threadId: 't',
+          turnIndex: 2,
+          itemIndex: 0,
+          summary: 'new',
+        }),
+      );
       expect(pane.items.find((it) => it.id === 'known')?.summary).toBe('new');
     });
 
     it('upsertItem rejects new streaming rows below the floor', async () => {
       const pane = createThreadPane();
       setBindingMock('ListThreadSliceAround', async () => ({
-        items: [makeItem({ id: 'at-floor', threadId: 't', turnIndex: 5, itemIndex: 0 })],
+        items: [
+          makeItem({
+            id: 'at-floor',
+            threadId: 't',
+            turnIndex: 5,
+            itemIndex: 0,
+          }),
+        ],
         oldestTurnIndex: 5,
         hasMore: true,
       }));
       await pane.switchThread(makeThread({ id: 't' }));
 
-      pane.upsertItem(makeItem({
-        id: 'below-streaming',
-        threadId: 't',
-        turnIndex: 2,
-        itemIndex: 0,
-        status: 'streaming',
-        summary: 'old output',
-      }));
+      pane.upsertItem(
+        makeItem({
+          id: 'below-streaming',
+          threadId: 't',
+          turnIndex: 2,
+          itemIndex: 0,
+          status: 'streaming',
+          summary: 'old output',
+        }),
+      );
 
       // Window-floor guard rejects the below-floor item; nothing
       // lingers anywhere because the pane no longer carries a parallel
@@ -2162,7 +2529,7 @@ describe('createThreadPane', () => {
         oldestTurnIndex: 5,
         hasMore: true,
       }));
-      setBindingMock('ListItemsBeforeTurn', async () => ({
+      setBindingMock('ListItemsBeforeCursor', async () => ({
         items: [
           makeItem({ id: 't3', threadId: 't', turnIndex: 3, itemIndex: 0 }),
           makeItem({ id: 't4', threadId: 't', turnIndex: 4, itemIndex: 0 }),
@@ -2179,7 +2546,11 @@ describe('createThreadPane', () => {
       expect(pane.oldestLoadedTurnIndex).toBe(3);
       expect(pane.hasMoreHistory).toBe(true);
       expect(pane.loadingOlder).toBe(false);
-      expect(result).toEqual({ status: 'loaded', insertedBeforeWindow: true, insertedRows: true });
+      expect(result).toEqual({
+        status: 'loaded',
+        insertedBeforeWindow: true,
+        insertedRows: true,
+      });
     });
 
     it('loadOlder is a no-op when hasMoreHistory is false', async () => {
@@ -2190,30 +2561,40 @@ describe('createThreadPane', () => {
         hasMore: false,
       }));
       let calls = 0;
-      setBindingMock('ListItemsBeforeTurn', async () => {
+      setBindingMock('ListItemsBeforeCursor', async () => {
         calls += 1;
         return { items: [], oldestTurnIndex: -1, hasMore: false };
       });
       await pane.switchThread(makeThread({ id: 't' }));
       const result = await pane.loadOlder();
       expect(calls).toBe(0);
-      expect(result).toEqual({ status: 'noop', insertedBeforeWindow: false, insertedRows: false });
+      expect(result).toEqual({
+        status: 'noop',
+        insertedBeforeWindow: false,
+        insertedRows: false,
+      });
     });
 
     it('loadOlder guards against a thread swap mid-fetch', async () => {
       const pane = createThreadPane();
       let resolveOlder!: (v: {
-        items: Item[]; oldestTurnIndex: number; hasMore: boolean;
+        items: Item[];
+        oldestTurnIndex: number;
+        hasMore: boolean;
       }) => void;
       const olderPromise = new Promise<{
-        items: Item[]; oldestTurnIndex: number; hasMore: boolean;
-      }>((r) => { resolveOlder = r; });
+        items: Item[];
+        oldestTurnIndex: number;
+        hasMore: boolean;
+      }>((r) => {
+        resolveOlder = r;
+      });
       setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'tail', turnIndex: 5 })],
         oldestTurnIndex: 5,
         hasMore: true,
       }));
-      setBindingMock('ListItemsBeforeTurn', () => olderPromise);
+      setBindingMock('ListItemsBeforeCursor', () => olderPromise);
 
       await pane.switchThread(makeThread({ id: 'thread-a' }));
       const olderPending = pane.loadOlder();
@@ -2252,26 +2633,42 @@ describe('createThreadPane', () => {
 
     it('loadUntilItem replaces the window to cover a below-floor item', async () => {
       const pane = createThreadPane();
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [makeItem({ id: 't5', threadId: 't', turnIndex: 5 })],
-        oldestTurnIndex: 5,
-        hasMore: true,
-      }));
-      setBindingMock('GetThreadItem', async (_threadId: string, itemId: string) =>
-        itemId === 'target'
-          ? makeItem({ id: 'target', threadId: 't', turnIndex: 1 })
-          : null,
+      let sliceCalls = 0;
+      setBindingMock(
+        'ListThreadSliceAround',
+        async (_threadId: string, anchorItemId: string) => {
+          sliceCalls += 1;
+          if (anchorItemId === 'target') {
+            return {
+              items: [
+                makeItem({ id: 'target', threadId: 't', turnIndex: 1 }),
+                makeItem({ id: 't2', threadId: 't', turnIndex: 2 }),
+                makeItem({ id: 't3', threadId: 't', turnIndex: 3 }),
+              ],
+              oldestTurnIndex: 1,
+              newestTurnIndex: 3,
+              hasMore: false,
+              hasMoreOlder: false,
+              hasMoreNewer: true,
+            };
+          }
+          return {
+            items: [makeItem({ id: 't5', threadId: 't', turnIndex: 5 })],
+            oldestTurnIndex: 5,
+            newestTurnIndex: 5,
+            hasMore: true,
+            hasMoreOlder: true,
+            hasMoreNewer: false,
+          };
+        },
       );
-      setBindingMock('ListItemsBeforeTurn', async () => ({
-        items: [
-          makeItem({ id: 'target', threadId: 't', turnIndex: 1 }),
-          makeItem({ id: 't2', threadId: 't', turnIndex: 2 }),
-          makeItem({ id: 't3', threadId: 't', turnIndex: 3 }),
-          makeItem({ id: 't4', threadId: 't', turnIndex: 4 }),
-        ],
-        oldestTurnIndex: 1,
-        hasMore: false,
-      }));
+      setBindingMock(
+        'GetThreadItem',
+        async (_threadId: string, itemId: string) =>
+          itemId === 'target'
+            ? makeItem({ id: 'target', threadId: 't', turnIndex: 1 })
+            : null,
+      );
       await pane.switchThread(makeThread({ id: 't' }));
       const revisionBeforeLoadUntil = pane.timelineRevision;
       const ok = await pane.loadUntilItem('target');
@@ -2279,7 +2676,10 @@ describe('createThreadPane', () => {
       expect(ok).toBe(true);
       expect(pane.timelineRevision).toBeGreaterThan(revisionBeforeLoadUntil);
       expect(pane.oldestLoadedTurnIndex).toBe(1);
-      expect(pane.items.map((it) => it.id)).toEqual(['target', 't2', 't3', 't4', 't5']);
+      expect(pane.newestLoadedTurnIndex).toBe(3);
+      expect(pane.hasMoreNewer).toBe(true);
+      expect(pane.items.map((it) => it.id)).toEqual(['target', 't2', 't3']);
+      expect(sliceCalls).toBe(2);
     });
 
     it('loadUntilItem returns false when the item is unknown to the backend', async () => {
@@ -2344,32 +2744,45 @@ describe('createThreadPane', () => {
       // to pull in history when the user triggers scroll-to-item from
       // search — not skip the fetch and short-circuit to `true`.
       const pane = createThreadPane();
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [],
-        oldestTurnIndex: -1,
-        hasMore: false,
-      }));
+      let sliceAnchor: string | null = null;
+      setBindingMock(
+        'ListThreadSliceAround',
+        async (_threadId: string, anchorItemId: string) => {
+          sliceAnchor = anchorItemId;
+          if (anchorItemId === 'deep') {
+            return {
+              items: [makeItem({ id: 'deep', threadId: 't', turnIndex: 3 })],
+              oldestTurnIndex: 3,
+              newestTurnIndex: 3,
+              hasMore: true,
+              hasMoreOlder: true,
+              hasMoreNewer: true,
+            };
+          }
+          return {
+            items: [],
+            oldestTurnIndex: -1,
+            newestTurnIndex: -1,
+            hasMore: false,
+            hasMoreOlder: false,
+            hasMoreNewer: false,
+          };
+        },
+      );
       setBindingMock('GetThreadItem', async () =>
         makeItem({ id: 'deep', threadId: 't', turnIndex: 3 }),
       );
-      let beforeTurnCalled: number | null = null;
-      setBindingMock('ListItemsBeforeTurn', async (_id, beforeTurn) => {
-        beforeTurnCalled = beforeTurn as number;
-        return {
-          items: [makeItem({ id: 'deep', threadId: 't', turnIndex: 3 })],
-          oldestTurnIndex: 3,
-          hasMore: false,
-        };
-      });
 
       await pane.switchThread(makeThread({ id: 't' }));
       expect(pane.oldestLoadedTurnIndex).toBeNull();
 
       const ok = await pane.loadUntilItem('deep');
       expect(ok).toBe(true);
-      expect(beforeTurnCalled).toBe(4);
+      expect(sliceAnchor).toBe('deep');
       expect(pane.items.some((it) => it.id === 'deep')).toBe(true);
       expect(pane.oldestLoadedTurnIndex).toBe(3);
+      expect(pane.newestLoadedTurnIndex).toBe(3);
+      expect(pane.hasMoreNewer).toBe(true);
     });
 
     it('loadUntilItem rejects an item whose threadId does not match the current pane', async () => {
@@ -2387,7 +2800,7 @@ describe('createThreadPane', () => {
         makeItem({ id: 'wrong', threadId: 'other-thread', turnIndex: 1 }),
       );
       let paged = 0;
-      setBindingMock('ListItemsBeforeTurn', async () => {
+      setBindingMock('ListItemsBeforeCursor', async () => {
         paged += 1;
         return { items: [], oldestTurnIndex: -1, hasMore: false };
       });
@@ -2400,7 +2813,7 @@ describe('createThreadPane', () => {
 
     it('loadOlder disables hasMoreHistory when the backend cannot advance the floor', async () => {
       // Pathological scenario: turns table claims more history exists
-      // but the item range [newFloor, beforeTurn) is empty (a sparse
+      // but the item range before the current cursor is empty (a sparse
       // turn row with no items). Without a progress guard the Load
       // Older button would keep firing the same query. The store must
       // break the loop by forcing hasMoreHistory=false when no rows
@@ -2412,7 +2825,7 @@ describe('createThreadPane', () => {
         hasMore: true,
       }));
       let calls = 0;
-      setBindingMock('ListItemsBeforeTurn', async () => {
+      setBindingMock('ListItemsBeforeCursor', async () => {
         calls += 1;
         // Backend cooperates: no items, floor unchanged, but still
         // claims more exists. Common when a turn row has zero items.
@@ -2443,12 +2856,18 @@ describe('createThreadPane', () => {
         hasMore: true,
       }));
       let releaseOlder!: (v: {
-        items: ReturnType<typeof makeItem>[]; oldestTurnIndex: number; hasMore: boolean;
+        items: ReturnType<typeof makeItem>[];
+        oldestTurnIndex: number;
+        hasMore: boolean;
       }) => void;
       const olderPending = new Promise<{
-        items: ReturnType<typeof makeItem>[]; oldestTurnIndex: number; hasMore: boolean;
-      }>((r) => { releaseOlder = r; });
-      setBindingMock('ListItemsBeforeTurn', () => olderPending);
+        items: ReturnType<typeof makeItem>[];
+        oldestTurnIndex: number;
+        hasMore: boolean;
+      }>((r) => {
+        releaseOlder = r;
+      });
+      setBindingMock('ListItemsBeforeCursor', () => olderPending);
 
       await pane.switchThread(makeThread({ id: 't' }));
       const olderPromise = pane.loadOlder();
@@ -2457,9 +2876,17 @@ describe('createThreadPane', () => {
       // Kick off loadUntilItem, which increments pagingGeneration and
       // takes its own path. It must not deadlock loadOlder's cleanup.
       setBindingMock('GetThreadItem', async () =>
-        makeItem({ id: 'tail', threadId: 't', turnIndex: 10 }),
+        makeItem({ id: 'deep', threadId: 't', turnIndex: 3 }),
       );
-      await pane.loadUntilItem('tail');
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [makeItem({ id: 'deep', threadId: 't', turnIndex: 3 })],
+        oldestTurnIndex: 3,
+        newestTurnIndex: 3,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: true,
+      }));
+      await pane.loadUntilItem('deep');
 
       releaseOlder({ items: [], oldestTurnIndex: 10, hasMore: false });
       await olderPromise;
@@ -2467,41 +2894,49 @@ describe('createThreadPane', () => {
       expect(pane.loadingOlder).toBe(false);
     });
 
-    it('loadUntilItem uses the bounded item budget when the pane floor is null', async () => {
-      // Regression pin for the MAX_SAFE_INTEGER itemBudget bug: when
-      // currentFloor is null (empty window), the request must pass a
-      // bounded item budget rather than a sentinel number. Check that
-      // the actual itemBudget argument is the LOAD_UNTIL_ITEM_HARD_CAP.
+    it('loadUntilItem uses a bounded centered slice when the pane floor is null', async () => {
+      // Regression pin for the MAX_SAFE_INTEGER itemBudget bug: search
+      // jumps must request a bounded centered slice, not an unbounded
+      // page from the target to the tail.
       const pane = createThreadPane();
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [],
-        oldestTurnIndex: -1,
-        hasMore: false,
-      }));
+      let capturedAnchor = '';
+      let capturedTargetCount = 0;
+      setBindingMock(
+        'ListThreadSliceAround',
+        async (_id, anchor, targetCount) => {
+          capturedAnchor = anchor as string;
+          capturedTargetCount = targetCount as number;
+          if (anchor === 'deep') {
+            return {
+              items: [makeItem({ id: 'deep', threadId: 't', turnIndex: 3 })],
+              oldestTurnIndex: 3,
+              newestTurnIndex: 3,
+              hasMore: true,
+              hasMoreOlder: true,
+              hasMoreNewer: true,
+            };
+          }
+          return {
+            items: [],
+            oldestTurnIndex: -1,
+            newestTurnIndex: -1,
+            hasMore: false,
+            hasMoreOlder: false,
+            hasMoreNewer: false,
+          };
+        },
+      );
       setBindingMock('GetThreadItem', async () =>
         makeItem({ id: 'deep', threadId: 't', turnIndex: 3 }),
       );
-      let capturedBeforeTurn: number | null = null;
-      let capturedBudget: number | null = null;
-      setBindingMock('ListItemsBeforeTurn', async (_id, beforeTurn, budget) => {
-        capturedBeforeTurn = beforeTurn as number;
-        capturedBudget = budget as number;
-        return {
-          items: [makeItem({ id: 'deep', threadId: 't', turnIndex: 3 })],
-          oldestTurnIndex: 3,
-          hasMore: false,
-        };
-      });
 
       await pane.switchThread(makeThread({ id: 't' }));
       expect(pane.oldestLoadedTurnIndex).toBeNull();
       const ok = await pane.loadUntilItem('deep');
       expect(ok).toBe(true);
-      // LOAD_UNTIL_ITEM_HARD_CAP (1000) bounds the per-call item
-      // budget so a deep search hit doesn't request the entire history.
-      expect(capturedBudget).toBeLessThanOrEqual(1000);
-      expect(capturedBudget).toBeGreaterThan(0);
-      expect(capturedBeforeTurn).toBe(4);
+      expect(capturedAnchor).toBe('deep');
+      expect(capturedTargetCount).toBeLessThanOrEqual(500);
+      expect(capturedTargetCount).toBeGreaterThan(0);
     });
 
     it('pagingGeneration stays monotonic across switchThread', async () => {
@@ -2517,7 +2952,7 @@ describe('createThreadPane', () => {
         oldestTurnIndex: 0,
         hasMore: true,
       }));
-      setBindingMock('ListItemsBeforeTurn', async () => ({
+      setBindingMock('ListItemsBeforeCursor', async () => ({
         items: [],
         oldestTurnIndex: -1,
         hasMore: false,
@@ -2540,7 +2975,7 @@ describe('createThreadPane', () => {
         oldestTurnIndex: 3,
         hasMore: true,
       }));
-      setBindingMock('ListItemsBeforeTurn', async () => {
+      setBindingMock('ListItemsBeforeCursor', async () => {
         postSwitchCalls += 1;
         return { items: [], oldestTurnIndex: 2, hasMore: false };
       });
@@ -2550,7 +2985,7 @@ describe('createThreadPane', () => {
     });
 
     it('loadOlder dedupes by id when the backend re-returns an ancestor', async () => {
-      // Backend contract: `ListItemsBeforeTurn` can legitimately
+      // Backend contract: `ListItemsBeforeCursor` can legitimately
       // return an ancestor row that was already in the window (pulled
       // in by the initial load via `ListRecentItemsWithAncestors`'s
       // ancestor CTE). The store must not duplicate the row in
@@ -2564,7 +2999,7 @@ describe('createThreadPane', () => {
         oldestTurnIndex: 5,
         hasMore: true,
       }));
-      setBindingMock('ListItemsBeforeTurn', async () => ({
+      setBindingMock('ListItemsBeforeCursor', async () => ({
         // Backend legitimately returns the ancestor again (it sits
         // below the new paging floor and the recursive CTE pulls it
         // in for any child-in-range query).
@@ -2586,7 +3021,11 @@ describe('createThreadPane', () => {
       // Ordering: the newly prepended 'between' sits before the
       // existing tail. The duplicate ancestor row was dropped so the
       // original position is preserved.
-      expect(pane.items.map((it) => it.id)).toEqual(['ancestor', 'between', 'child']);
+      expect(pane.items.map((it) => it.id)).toEqual([
+        'ancestor',
+        'between',
+        'child',
+      ]);
     });
 
     it('loadOlder replaces duplicate rows with enriched backend copies', async () => {
@@ -2604,7 +3043,7 @@ describe('createThreadPane', () => {
         oldestTurnIndex: 5,
         hasMore: true,
       }));
-      setBindingMock('ListItemsBeforeTurn', async () => ({
+      setBindingMock('ListItemsBeforeCursor', async () => ({
         items: [
           makeItem({
             id: 'ancestor',
@@ -2638,7 +3077,7 @@ describe('createThreadPane', () => {
         oldestTurnIndex: 5,
         hasMore: true,
       }));
-      setBindingMock('ListItemsBeforeTurn', async () => ({
+      setBindingMock('ListItemsBeforeCursor', async () => ({
         items: [makeItem({ id: 'between', threadId: 't', turnIndex: 3 })],
         oldestTurnIndex: 3,
         hasMore: false,
@@ -2647,7 +3086,11 @@ describe('createThreadPane', () => {
       await pane.switchThread(makeThread({ id: 't' }));
       const result = await pane.loadOlder();
 
-      expect(pane.items.map((it) => it.id)).toEqual(['ancestor', 'between', 'child']);
+      expect(pane.items.map((it) => it.id)).toEqual([
+        'ancestor',
+        'between',
+        'child',
+      ]);
       expect(result).toEqual({
         status: 'loaded',
         insertedBeforeWindow: false,
@@ -2656,36 +3099,49 @@ describe('createThreadPane', () => {
     });
 
     it('loadUntilItem dedupes by id when pulling in a below-floor target', async () => {
-      // Same contract as loadOlder's dedup, but via the
-      // scroll-to-item entry point. If `ListItemsBeforeTurn` returns
-      // a row already present by id (e.g. the subagent ancestor), no
-      // duplicate should land in the window.
+      // Same contract as loadOlder's dedup, but via the scroll-to-item
+      // entry point. The centered replacement can include rows that were
+      // already present by id; no duplicate should land in the window.
       const pane = createThreadPane();
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [
-          makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
-          makeItem({ id: 'tail', threadId: 't', turnIndex: 5 }),
-        ],
-        oldestTurnIndex: 5,
-        hasMore: true,
-      }));
+      setBindingMock(
+        'ListThreadSliceAround',
+        async (_threadId: string, anchorItemId: string) => {
+          if (anchorItemId === 'deep') {
+            return {
+              items: [
+                makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
+                makeItem({ id: 'deep', threadId: 't', turnIndex: 2 }),
+              ],
+              oldestTurnIndex: 2,
+              newestTurnIndex: 2,
+              hasMore: false,
+              hasMoreOlder: false,
+              hasMoreNewer: true,
+            };
+          }
+          return {
+            items: [
+              makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
+              makeItem({ id: 'tail', threadId: 't', turnIndex: 5 }),
+            ],
+            oldestTurnIndex: 5,
+            newestTurnIndex: 5,
+            hasMore: true,
+            hasMoreOlder: true,
+            hasMoreNewer: false,
+          };
+        },
+      );
       setBindingMock('GetThreadItem', async () =>
         makeItem({ id: 'deep', threadId: 't', turnIndex: 2 }),
       );
-      setBindingMock('ListItemsBeforeTurn', async () => ({
-        items: [
-          makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
-          makeItem({ id: 'deep', threadId: 't', turnIndex: 2 }),
-        ],
-        oldestTurnIndex: 2,
-        hasMore: false,
-      }));
 
       await pane.switchThread(makeThread({ id: 't' }));
       const ok = await pane.loadUntilItem('deep');
       expect(ok).toBe(true);
       expect(pane.items.filter((it) => it.id === 'ancestor').length).toBe(1);
       expect(pane.items.some((it) => it.id === 'deep')).toBe(true);
+      expect(pane.hasMoreNewer).toBe(true);
     });
 
     it('upsertItem accepts new items when the pane floor is null (empty thread)', async () => {
@@ -2701,8 +3157,281 @@ describe('createThreadPane', () => {
       }));
       await pane.switchThread(makeThread({ id: 't' }));
       expect(pane.oldestLoadedTurnIndex).toBeNull();
-      pane.upsertItem(makeItem({ id: 'first', threadId: 't', turnIndex: 0, itemIndex: 0 }));
+      pane.upsertItem(
+        makeItem({ id: 'first', threadId: 't', turnIndex: 0, itemIndex: 0 }),
+      );
       expect(pane.items.map((it) => it.id)).toEqual(['first']);
+    });
+
+    it('holds newer upserts behind the newer-history gap when reading an old window', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({
+            id: 'old-window',
+            threadId: 't',
+            turnIndex: 3,
+            itemIndex: 0,
+          }),
+        ],
+        oldestTurnIndex: 3,
+        newestTurnIndex: 3,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: true,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      const changed = pane.upsertItem(
+        makeItem({ id: 'newer', threadId: 't', turnIndex: 9, itemIndex: 0 }),
+      );
+
+      expect(changed).toBe(true);
+      expect(pane.items.map((it) => it.id)).toEqual(['old-window']);
+      expect(pane.hasMoreNewer).toBe(true);
+      expect(pane.newestLoadedTurnIndex).toBe(3);
+    });
+
+    it('loadNewer pages forward from the current ceiling', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({ id: 't3', threadId: 't', turnIndex: 3, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 3,
+        newestTurnIndex: 3,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: true,
+      }));
+      let afterCursor: unknown = null;
+      setBindingMock('ListItemsAfterCursor', async (_threadId, after) => {
+        afterCursor = after;
+        return {
+          items: [
+            makeItem({ id: 't4', threadId: 't', turnIndex: 4, itemIndex: 0 }),
+            makeItem({ id: 't5', threadId: 't', turnIndex: 5, itemIndex: 0 }),
+          ],
+          oldestTurnIndex: 4,
+          newestTurnIndex: 5,
+          hasMore: true,
+          hasMoreOlder: true,
+          hasMoreNewer: false,
+        };
+      });
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      const result = await pane.loadNewer();
+
+      expect(afterCursor).toEqual({ turnIndex: 3, itemIndex: 0, itemId: 't3' });
+      expect(result).toEqual({
+        status: 'loaded',
+        insertedBeforeWindow: true,
+        insertedRows: true,
+      });
+      expect(pane.items.map((it) => it.id)).toEqual(['t3', 't4', 't5']);
+      expect(pane.newestLoadedTurnIndex).toBe(5);
+      expect(pane.hasMoreNewer).toBe(false);
+    });
+
+    it('loadNewer preserves the older-history flag when the merged window still starts at the thread head', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({ id: 't0', threadId: 't', turnIndex: 0, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 0,
+        newestTurnIndex: 0,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: true,
+      }));
+      setBindingMock('ListItemsAfterCursor', async () => ({
+        items: [
+          makeItem({ id: 't1', threadId: 't', turnIndex: 1, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 1,
+        newestTurnIndex: 1,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: false,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      await pane.loadNewer();
+
+      expect(pane.items.map((it) => it.id)).toEqual(['t0', 't1']);
+      expect(pane.oldestLoadedTurnIndex).toBe(0);
+      expect(pane.hasMoreHistory).toBe(false);
+      expect(pane.hasMoreNewer).toBe(false);
+    });
+
+    it('loadNewer preserves the newer-history gap when pruning older head rows', async () => {
+      const pane = createThreadPane();
+      const initial = Array.from(
+        { length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS },
+        (_, index) =>
+          makeItem({
+            id: `t${index}`,
+            threadId: 't',
+            turnIndex: index,
+            itemIndex: 0,
+          }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS - 1,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: true,
+      }));
+      setBindingMock('ListItemsAfterCursor', async () => ({
+        items: [
+          makeItem({
+            id: `t${ACTIVE_TIMELINE_WINDOW_MAX_ITEMS}`,
+            threadId: 't',
+            turnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+            itemIndex: 0,
+          }),
+        ],
+        oldestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: true,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      await pane.loadNewer();
+
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+      expect(pane.hasMoreHistory).toBe(true);
+      expect(pane.hasMoreNewer).toBe(true);
+    });
+
+    it('loadOlder does not invent a newer-history gap from the older page response', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({ id: 'tail', threadId: 't', turnIndex: 5, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 5,
+        newestTurnIndex: 5,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: false,
+      }));
+      setBindingMock('ListItemsBeforeCursor', async () => ({
+        items: [
+          makeItem({ id: 'older', threadId: 't', turnIndex: 4, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 4,
+        newestTurnIndex: 4,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: true,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      await pane.loadOlder();
+
+      expect(pane.items.map((it) => it.id)).toEqual(['older', 'tail']);
+      expect(pane.hasMoreNewer).toBe(false);
+    });
+
+    it('refreshFromBackend reloads through the bounded slice API instead of the broad recent loader', async () => {
+      const pane = createThreadPane();
+      const sliceCalls: Array<{ anchor: unknown; budget: unknown }> = [];
+      setBindingMock('AutoResumeThread', async () => {});
+      setBindingMock('ListThreadCheckpoints', async () => []);
+      setBindingMock(
+        'ListThreadSliceAround',
+        async (_threadId, anchor, budget) => {
+          sliceCalls.push({ anchor, budget });
+          if (sliceCalls.length === 1) {
+            return {
+              items: [
+                makeItem({
+                  id: 'window-ceiling',
+                  threadId: 't',
+                  turnIndex: 3,
+                  itemIndex: 0,
+                }),
+              ],
+              oldestTurnIndex: 3,
+              newestTurnIndex: 3,
+              hasMore: true,
+              hasMoreOlder: true,
+              hasMoreNewer: true,
+            };
+          }
+          return {
+            items: [
+              makeItem({
+                id: 'refreshed',
+                threadId: 't',
+                turnIndex: 4,
+                itemIndex: 0,
+              }),
+            ],
+            oldestTurnIndex: 4,
+            newestTurnIndex: 4,
+            hasMore: true,
+            hasMoreOlder: true,
+            hasMoreNewer: true,
+          };
+        },
+      );
+      setBindingMock('ListRecentThreadItems', async () => {
+        throw new Error(
+          'refreshFromBackend should not use the broad recent loader',
+        );
+      });
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      await pane.refreshFromBackend();
+
+      expect(sliceCalls).toEqual([
+        { anchor: '', budget: SLICE_AROUND_ITEM_BUDGET },
+        {
+          anchor: 'window-ceiling',
+          budget: ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+        },
+      ]);
+      expect(pane.items.map((it) => it.id)).toEqual(['refreshed']);
+    });
+
+    it('prunes older rows when live tail growth exceeds the active window cap', async () => {
+      const pane = createThreadPane();
+      const initial = Array.from({ length: 800 }, (_, index) =>
+        makeItem({
+          id: `t${index}`,
+          threadId: 't',
+          turnIndex: index,
+          itemIndex: 0,
+        }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: 799,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      pane.upsertItem(
+        makeItem({ id: 't800', threadId: 't', turnIndex: 800, itemIndex: 0 }),
+      );
+
+      expect(pane.items).toHaveLength(500);
+      expect(pane.items[0].id).toBe('t301');
+      expect(pane.items.at(-1)?.id).toBe('t800');
+      expect(pane.oldestLoadedTurnIndex).toBe(301);
+      expect(pane.hasMoreHistory).toBe(true);
+      expect(pane.hasMoreNewer).toBe(false);
     });
   });
 
@@ -2715,7 +3444,9 @@ describe('createThreadPane', () => {
       ];
       // Initial switch: cache is empty, the load returns the items.
       setBindingMock('ListThreadSliceAround', async () => ({
-        items, oldestTurnIndex: 0, hasMore: false,
+        items,
+        oldestTurnIndex: 0,
+        hasMore: false,
       }));
       await pane.switchThread(makeThread({ id: 't' }));
       expect(pane.items.map((it) => it.id)).toEqual(['a', 'b']);
@@ -2749,7 +3480,9 @@ describe('createThreadPane', () => {
         makeItem({ id: 'x', threadId: 'other', turnIndex: 0, itemIndex: 0 }),
       ];
       setBindingMock('ListThreadSliceAround', async () => ({
-        items: other, oldestTurnIndex: 0, hasMore: false,
+        items: other,
+        oldestTurnIndex: 0,
+        hasMore: false,
       }));
       await pane.switchThread(makeThread({ id: 'other' }));
 
@@ -2772,9 +3505,13 @@ describe('createThreadPane', () => {
       // Stage: load hangs so a streamed upsert can land before its
       // result.
       let releaseLoad!: (value: unknown) => void;
-      setBindingMock('ListThreadSliceAround', () => new Promise((resolve) => {
-        releaseLoad = resolve;
-      }));
+      setBindingMock(
+        'ListThreadSliceAround',
+        () =>
+          new Promise((resolve) => {
+            releaseLoad = resolve;
+          }),
+      );
 
       const switching = pane.switchThread(makeThread({ id: 't' }));
       // Drain microtasks so the switch sets up.
@@ -2783,9 +3520,14 @@ describe('createThreadPane', () => {
 
       // Streamed event arrives mid-load — upsert into the same items
       // array. mergeMissingItemsById in the load callback must keep it.
-      pane.upsertItem(makeItem({
-        id: 'streamed', threadId: 't', turnIndex: 1, itemIndex: 0,
-      }));
+      pane.upsertItem(
+        makeItem({
+          id: 'streamed',
+          threadId: 't',
+          turnIndex: 1,
+          itemIndex: 0,
+        }),
+      );
       expect(pane.items.map((it) => it.id)).toEqual(['streamed']);
 
       // Load returns the canonical view. Triage's persist-then-emit
@@ -2794,7 +3536,12 @@ describe('createThreadPane', () => {
       releaseLoad({
         items: [
           makeItem({ id: 'load', threadId: 't', turnIndex: 0, itemIndex: 0 }),
-          makeItem({ id: 'streamed', threadId: 't', turnIndex: 1, itemIndex: 0 }),
+          makeItem({
+            id: 'streamed',
+            threadId: 't',
+            turnIndex: 1,
+            itemIndex: 0,
+          }),
         ],
         oldestTurnIndex: 0,
         hasMore: false,
@@ -2810,9 +3557,13 @@ describe('createThreadPane', () => {
       const pane = createThreadPane();
       // First switch: load hangs.
       let releaseFirstLoad!: (value: unknown) => void;
-      setBindingMock('ListThreadSliceAround', () => new Promise((resolve) => {
-        releaseFirstLoad = resolve;
-      }));
+      setBindingMock(
+        'ListThreadSliceAround',
+        () =>
+          new Promise((resolve) => {
+            releaseFirstLoad = resolve;
+          }),
+      );
 
       const firstSwitch = pane.switchThread(makeThread({ id: 't' }));
 
@@ -2822,7 +3573,9 @@ describe('createThreadPane', () => {
         makeItem({ id: 'second', threadId: 't', turnIndex: 0, itemIndex: 0 }),
       ];
       setBindingMock('ListThreadSliceAround', async () => ({
-        items: secondItems, oldestTurnIndex: 0, hasMore: false,
+        items: secondItems,
+        oldestTurnIndex: 0,
+        hasMore: false,
       }));
       const secondSwitch = pane.switchThread(makeThread({ id: 't' }));
       await secondSwitch;
@@ -2835,9 +3588,7 @@ describe('createThreadPane', () => {
       // to 'second' (no id collision). The assertion below confirms
       // the guard short-circuits the callback before the merge runs.
       releaseFirstLoad({
-        items: [
-          makeItem({ id: 'stale-only', threadId: 't', turnIndex: 99 }),
-        ],
+        items: [makeItem({ id: 'stale-only', threadId: 't', turnIndex: 99 })],
         oldestTurnIndex: 99,
         hasMore: true,
       });
@@ -2854,7 +3605,9 @@ describe('createThreadPane', () => {
         makeItem({ id: 'b', threadId: 't', turnIndex: 1, itemIndex: 0 }),
       ];
       setBindingMock('ListThreadSliceAround', async () => ({
-        items: initialItems, oldestTurnIndex: 0, hasMore: false,
+        items: initialItems,
+        oldestTurnIndex: 0,
+        hasMore: false,
       }));
       await pane.switchThread(makeThread({ id: 't' }));
       expect(pane.items.map((it) => it.id)).toEqual(['a', 'b']);
@@ -2866,7 +3619,9 @@ describe('createThreadPane', () => {
         makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
       ];
       setBindingMock('ListThreadSliceAround', async () => ({
-        items: revertedItems, oldestTurnIndex: 0, hasMore: false,
+        items: revertedItems,
+        oldestTurnIndex: 0,
+        hasMore: false,
       }));
 
       await pane.switchThread(makeThread({ id: 't' }));
@@ -2952,9 +3707,13 @@ describe('createThreadPane', () => {
       // mid-load so we can assert the load's merge keeps the
       // upserted reference rather than overwriting it.
       let releaseLoad!: (value: unknown) => void;
-      setBindingMock('ListThreadSliceAround', () => new Promise((resolve) => {
-        releaseLoad = resolve;
-      }));
+      setBindingMock(
+        'ListThreadSliceAround',
+        () =>
+          new Promise((resolve) => {
+            releaseLoad = resolve;
+          }),
+      );
 
       const switching = pane.switchThread(makeThread({ id: 't' }));
       // Drain microtasks so the switch sets up.
@@ -2962,7 +3721,9 @@ describe('createThreadPane', () => {
       await Promise.resolve();
 
       // Streamed upsert lands BEFORE the load resolves, seeding `a`.
-      pane.upsertItem(makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }));
+      pane.upsertItem(
+        makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
+      );
       const aRefBeforeLoad = pane.items[0];
       expect(aRefBeforeLoad.id).toBe('a');
 
@@ -2998,7 +3759,9 @@ describe('createThreadPane', () => {
       // empty in-flight pane and a future switch back would paint
       // empty even though the real thread has content.
       setBindingMock('ListThreadSliceAround', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
+        items: [],
+        oldestTurnIndex: -1,
+        hasMore: false,
       }));
       await pane.switchThread(makeThread({ id: 'second' }));
 
@@ -3047,9 +3810,8 @@ describe('createThreadPane', () => {
     it('does not call ListRecentThreadItems on switchThread (single-load contract)', async () => {
       // Pin the no-Phase-2 invariant: if the wider-window probe ever
       // creeps back into the switch path, the residual flicker
-      // (Phase 2 prepend → applyJump fight with the controller's
-      // sync-pin) returns. ListRecentThreadItems is reserved for
-      // refreshFromBackend (transport-gap recovery), nothing else.
+      // (wide prepend → applyJump fight with the controller's
+      // sync-pin) returns.
       const calls: string[] = [];
       setBindingMock('ListThreadSliceAround', async () => {
         calls.push('ListThreadSliceAround');
@@ -3068,17 +3830,22 @@ describe('createThreadPane', () => {
       const { setThreadScrollSnapshot, clearThreadScrollSnapshotsForTest } =
         await import('../utils/threadScrollSnapshots');
       clearThreadScrollSnapshotsForTest();
-      setThreadScrollSnapshot('t', { kind: 'anchor', itemId: 'wanted', offsetTop: -42 });
+      setThreadScrollSnapshot('t', {
+        kind: 'anchor',
+        itemId: 'wanted',
+        offsetTop: -42,
+      });
 
       const pane = createThreadPane();
       let observedAnchor = '';
-      setBindingMock('ListThreadSliceAround', async (
-        threadID: unknown, anchorID: unknown, _count: unknown,
-      ) => {
-        observedAnchor = String(anchorID ?? '');
-        void threadID;
-        return { items: [], oldestTurnIndex: -1, hasMore: false };
-      });
+      setBindingMock(
+        'ListThreadSliceAround',
+        async (threadID: unknown, anchorID: unknown, _count: unknown) => {
+          observedAnchor = String(anchorID ?? '');
+          void threadID;
+          return { items: [], oldestTurnIndex: -1, hasMore: false };
+        },
+      );
       await pane.switchThread(makeThread({ id: 't' }));
       expect(observedAnchor).toBe('wanted');
       clearThreadScrollSnapshotsForTest();
@@ -3092,13 +3859,14 @@ describe('createThreadPane', () => {
 
       const pane = createThreadPane();
       let observedAnchor = 'unset';
-      setBindingMock('ListThreadSliceAround', async (
-        threadID: unknown, anchorID: unknown, _count: unknown,
-      ) => {
-        observedAnchor = String(anchorID ?? '');
-        void threadID;
-        return { items: [], oldestTurnIndex: -1, hasMore: false };
-      });
+      setBindingMock(
+        'ListThreadSliceAround',
+        async (threadID: unknown, anchorID: unknown, _count: unknown) => {
+          observedAnchor = String(anchorID ?? '');
+          void threadID;
+          return { items: [], oldestTurnIndex: -1, hasMore: false };
+        },
+      );
       await pane.switchThread(makeThread({ id: 't' }));
       expect(observedAnchor).toBe('');
       clearThreadScrollSnapshotsForTest();
@@ -3108,7 +3876,9 @@ describe('createThreadPane', () => {
       const pane = createThreadPane();
       const items = [makeItem({ id: 'cached', threadId: 't', turnIndex: 0 })];
       setBindingMock('ListThreadSliceAround', async () => ({
-        items, oldestTurnIndex: 0, hasMore: false,
+        items,
+        oldestTurnIndex: 0,
+        hasMore: false,
       }));
       await pane.switchThread(makeThread({ id: 't' }));
       await pane.switchThread(makeThread({ id: 'other' }));
@@ -3133,17 +3903,28 @@ describe('createThreadPane', () => {
       // First switch: load hangs forever (a Promise that will be
       // rejected later).
       let rejectFirstLoad!: (err: Error) => void;
-      setBindingMock('ListThreadSliceAround', () => new Promise((_, reject) => {
-        rejectFirstLoad = reject;
-      }));
+      setBindingMock(
+        'ListThreadSliceAround',
+        () =>
+          new Promise((_, reject) => {
+            rejectFirstLoad = reject;
+          }),
+      );
       const firstSwitch = pane.switchThread(makeThread({ id: 'first' }));
 
       // Second switch supersedes; populates with real data.
       const secondItems = [
-        makeItem({ id: 'live', threadId: 'second', turnIndex: 0, itemIndex: 0 }),
+        makeItem({
+          id: 'live',
+          threadId: 'second',
+          turnIndex: 0,
+          itemIndex: 0,
+        }),
       ];
       setBindingMock('ListThreadSliceAround', async () => ({
-        items: secondItems, oldestTurnIndex: 0, hasMore: false,
+        items: secondItems,
+        oldestTurnIndex: 0,
+        hasMore: false,
       }));
       await pane.switchThread(makeThread({ id: 'second' }));
       expect(pane.items.map((it) => it.id)).toEqual(['live']);
@@ -3159,7 +3940,6 @@ describe('createThreadPane', () => {
       // generalError still null — stale onError did not stamp.
       expect(pane.generalError).toBeNull();
     });
-
   });
 
   describe('switchThread spinner-flash gate', () => {
@@ -3171,7 +3951,9 @@ describe('createThreadPane', () => {
           makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
         ];
         setBindingMock('ListThreadSliceAround', async () => ({
-          items, oldestTurnIndex: 0, hasMore: false,
+          items,
+          oldestTurnIndex: 0,
+          hasMore: false,
         }));
         await pane.switchThread(makeThread({ id: 't' }));
         await pane.switchThread(makeThread({ id: 'other' }));
@@ -3219,7 +4001,9 @@ describe('createThreadPane', () => {
           makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
         ];
         setBindingMock('ListThreadSliceAround', async () => ({
-          items, oldestTurnIndex: 0, hasMore: false,
+          items,
+          oldestTurnIndex: 0,
+          hasMore: false,
         }));
         const switching = pane.switchThread(makeThread({ id: 't' }));
         // Resolve fully before threshold elapses.
@@ -3248,7 +4032,11 @@ describe('createThreadPane', () => {
 
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
 
-    expect(getActiveTurn(pane.threadId)).toEqual({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
+    expect(getActiveTurn(pane.threadId)).toEqual({
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1000,
+    });
     expect(getActiveTurn(pane.threadId) !== null).toBe(true);
   });
 
@@ -3522,7 +4310,9 @@ describe('createThreadPane', () => {
 
     it('ignores patches for a different thread', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-a' }));
-      pane.upsertItem(makeItem({ id: 'text:0:0', threadId: 'thread-a', status: 'streaming' }));
+      pane.upsertItem(
+        makeItem({ id: 'text:0:0', threadId: 'thread-a', status: 'streaming' }),
+      );
 
       pane.applyItemPatch({
         threadId: 'thread-b',
@@ -3536,12 +4326,14 @@ describe('createThreadPane', () => {
 
     it('applies meta and decision patch fields', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-patch' }));
-      pane.upsertItem(makeItem({
-        id: 'tool:0:0',
-        threadId: 'thread-patch',
-        kind: 'tool_call',
-        meta: '{"toolName":"Bash"}',
-      }));
+      pane.upsertItem(
+        makeItem({
+          id: 'tool:0:0',
+          threadId: 'thread-patch',
+          kind: 'tool_call',
+          meta: '{"toolName":"Bash"}',
+        }),
+      );
 
       pane.applyItemPatch({
         threadId: 'thread-patch',
@@ -3569,15 +4361,17 @@ describe('createThreadPane', () => {
       // be stuck at the mid-stream cursor when the smoother eventually
       // ticked the auto-cleanup branch.
       const pane = await buildPane(makeThread({ id: 'thread-patch' }));
-      pane.upsertItem(makeItem({
-        id: 'text:0:0',
-        threadId: 'thread-patch',
-        kind: 'assistant_text',
-        role: 'assistant',
-        status: 'streaming',
-        summary: 'initial',
-        updatedAt: 1,
-      }));
+      pane.upsertItem(
+        makeItem({
+          id: 'text:0:0',
+          threadId: 'thread-patch',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: 'initial',
+          updatedAt: 1,
+        }),
+      );
 
       pane.applyItemDelta({
         threadId: 'thread-patch',
@@ -3612,15 +4406,17 @@ describe('createThreadPane', () => {
       // reveal doesn't trample the patch, and the patch summary is
       // written through to items[index] as the final wire shape.
       const pane = await buildPane(makeThread({ id: 'thread-patch' }));
-      pane.upsertItem(makeItem({
-        id: 'text:0:0',
-        threadId: 'thread-patch',
-        kind: 'assistant_text',
-        role: 'assistant',
-        status: 'streaming',
-        summary: 'initial received',
-        updatedAt: 1,
-      }));
+      pane.upsertItem(
+        makeItem({
+          id: 'text:0:0',
+          threadId: 'thread-patch',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: 'initial received',
+          updatedAt: 1,
+        }),
+      );
 
       pane.applyItemDelta({
         threadId: 'thread-patch',
@@ -3652,15 +4448,17 @@ describe('createThreadPane', () => {
       // "[interrupted] …" prefix or similar; it must land as the final
       // visible text, not be overwritten by a trailing reveal.
       const pane = await buildPane(makeThread({ id: 'thread-patch' }));
-      pane.upsertItem(makeItem({
-        id: 'text:0:0',
-        threadId: 'thread-patch',
-        kind: 'assistant_text',
-        role: 'assistant',
-        status: 'streaming',
-        summary: 'partial reveal so far',
-        updatedAt: 1,
-      }));
+      pane.upsertItem(
+        makeItem({
+          id: 'text:0:0',
+          threadId: 'thread-patch',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: 'partial reveal so far',
+          updatedAt: 1,
+        }),
+      );
 
       pane.applyItemDelta({
         threadId: 'thread-patch',
@@ -3693,15 +4491,17 @@ describe('createThreadPane', () => {
       // characters and the onReveal auto-cleanup branch disposes the
       // entry once `current.status !== 'streaming' && isCaughtUp()`.
       const pane = await buildPane(makeThread({ id: 'thread-patch' }));
-      pane.upsertItem(makeItem({
-        id: 'text:0:0',
-        threadId: 'thread-patch',
-        kind: 'assistant_text',
-        role: 'assistant',
-        status: 'streaming',
-        summary: 'seed',
-        updatedAt: 1,
-      }));
+      pane.upsertItem(
+        makeItem({
+          id: 'text:0:0',
+          threadId: 'thread-patch',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: 'seed',
+          updatedAt: 1,
+        }),
+      );
 
       pane.applyItemDelta({
         threadId: 'thread-patch',
@@ -3744,16 +4544,18 @@ describe('createThreadPane', () => {
         // then a long sequence of wire deltas — same shape Claude produces
         // for reasoning that flows past the 400-rune tail.
         const initial = 'seed ';
-        pane.upsertItem(makeItem({
-          id: 'think:0:0',
-          threadId: 'thread-think',
-          kind: 'thinking',
-          role: 'assistant',
-          status: 'streaming',
-          summary: initial,
-          payloadId: 'thinking:think:0:0',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-think',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: initial,
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
 
         const words = buildWords(80); // ~7 chars × 80 ≈ 560 chars total.
         // Stream each word as its own wire delta with a few rAF frames
@@ -3826,16 +4628,18 @@ describe('createThreadPane', () => {
           const clock2 = new FakeSmoothingClock();
           __setSmoothingClockForTest(clock2);
           const pane2 = await buildPane(makeThread({ id: 'thread-think-2' }));
-          pane2.upsertItem(makeItem({
-            id: 'think:0:0',
-            threadId: 'thread-think-2',
-            kind: 'thinking',
-            role: 'assistant',
-            status: 'streaming',
-            summary: initial,
-            payloadId: 'thinking:think:0:0',
-            updatedAt: 1,
-          }));
+          pane2.upsertItem(
+            makeItem({
+              id: 'think:0:0',
+              threadId: 'thread-think-2',
+              kind: 'thinking',
+              role: 'assistant',
+              status: 'streaming',
+              summary: initial,
+              payloadId: 'thinking:think:0:0',
+              updatedAt: 1,
+            }),
+          );
           let prev = initial;
           for (let i = 0; i < words.length; i++) {
             pane2.applyItemDelta({
@@ -3906,16 +4710,18 @@ describe('createThreadPane', () => {
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 'thread-burst' }));
-        pane.upsertItem(makeItem({
-          id: 'think:0:0',
-          threadId: 'thread-burst',
-          kind: 'thinking',
-          role: 'assistant',
-          status: 'streaming',
-          summary: '',
-          payloadId: 'thinking:think:0:0',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-burst',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
 
         // 50-char wire bursts with realistic word distribution (5–8 char
         // words separated by spaces). Each burst is ~7 words.
@@ -4023,19 +4829,22 @@ describe('createThreadPane', () => {
         // (initialRevealed = initialReceived = seed), so this isolates
         // the per-tick reveal of the NEXT delta.
         const seedWords: string[] = [];
-        for (let i = 0; i < 80; i++) seedWords.push(`word${String(i).padStart(2, '0')}`);
+        for (let i = 0; i < 80; i++)
+          seedWords.push(`word${String(i).padStart(2, '0')}`);
         const seed = seedWords.join(' ') + ' ';
         expect(seed.length).toBeGreaterThan(400);
-        pane.upsertItem(makeItem({
-          id: 'think:0:0',
-          threadId: 'thread-think-burst',
-          kind: 'thinking',
-          role: 'assistant',
-          status: 'streaming',
-          summary: seed,
-          payloadId: 'thinking:think:0:0',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-think-burst',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: seed,
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
         // Seed the smoother by sending a zero-impact delta. The
         // production path creates the smoother in applyItemDelta with
         // initialReceived = current.summary = seed; revealed = seed.
@@ -4089,22 +4898,25 @@ describe('createThreadPane', () => {
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 'thread-drain' }));
-        pane.upsertItem(makeItem({
-          id: 'think:0:0',
-          threadId: 'thread-drain',
-          kind: 'thinking',
-          role: 'assistant',
-          status: 'streaming',
-          summary: '',
-          payloadId: 'thinking:think:0:0',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-drain',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
         // Stream the first half (~150 chars) as deltas, then complete
         // with an extending summary that adds another ~150 chars on
         // top. This is the actual extending-summary path: smoother
         // received < patchSummary AND patchSummary.startsWith(received).
         const allWords: string[] = [];
-        for (let i = 0; i < 50; i++) allWords.push(`item${String(i).padStart(2, '0')}`);
+        for (let i = 0; i < 50; i++)
+          allWords.push(`item${String(i).padStart(2, '0')}`);
         const fullText = allWords.join(' ') + ' ';
         const streamed = allWords.slice(0, 25).join(' ') + ' ';
         pane.applyItemDelta({
@@ -4155,20 +4967,23 @@ describe('createThreadPane', () => {
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 'thread-live-tail' }));
-        pane.upsertItem(makeItem({
-          id: 'think:0:0',
-          threadId: 'thread-live-tail',
-          kind: 'thinking',
-          role: 'assistant',
-          status: 'streaming',
-          summary: '',
-          payloadId: 'thinking:think:0:0',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-live-tail',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
 
         // Stream enough text to push well past 400 runes.
         const words: string[] = [];
-        for (let i = 0; i < 100; i++) words.push(`tok${String(i).padStart(2, '0')}`);
+        for (let i = 0; i < 100; i++)
+          words.push(`tok${String(i).padStart(2, '0')}`);
         // Feed in word-by-word so the smoother has lag throughout.
         for (let i = 0; i < words.length; i++) {
           pane.applyItemDelta({
@@ -4201,16 +5016,18 @@ describe('createThreadPane', () => {
         const clock2 = new FakeSmoothingClock();
         __setSmoothingClockForTest(clock2);
         const pane2 = await buildPane(makeThread({ id: 'thread-live-tail-2' }));
-        pane2.upsertItem(makeItem({
-          id: 'think:0:0',
-          threadId: 'thread-live-tail-2',
-          kind: 'thinking',
-          role: 'assistant',
-          status: 'streaming',
-          summary: '',
-          payloadId: 'thinking:think:0:0',
-          updatedAt: 1,
-        }));
+        pane2.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-live-tail-2',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
         let prev = '';
         let pastTrimSamples = 0;
         let growthPastTrimSamples = 0;
@@ -4234,7 +5051,8 @@ describe('createThreadPane', () => {
               // sitting idle re-reading the same value) — guards
               // against a regression that quietly clamps the live tail
               // to the trimmed-summary length.
-              if (cur.length > 400 && cur.length > prev.length) growthPastTrimSamples++;
+              if (cur.length > 400 && cur.length > prev.length)
+                growthPastTrimSamples++;
               prev = cur;
             }
           }
@@ -4264,18 +5082,21 @@ describe('createThreadPane', () => {
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 'thread-tail-cleanup' }));
-        pane.upsertItem(makeItem({
-          id: 'think:0:0',
-          threadId: 'thread-tail-cleanup',
-          kind: 'thinking',
-          role: 'assistant',
-          status: 'streaming',
-          summary: '',
-          payloadId: 'thinking:think:0:0',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-tail-cleanup',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
         const words: string[] = [];
-        for (let i = 0; i < 80; i++) words.push(`tok${String(i).padStart(2, '0')}`);
+        for (let i = 0; i < 80; i++)
+          words.push(`tok${String(i).padStart(2, '0')}`);
         const fullText = words.join(' ') + ' ';
         pane.applyItemDelta({
           threadId: 'thread-tail-cleanup',
@@ -4317,16 +5138,18 @@ describe('createThreadPane', () => {
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 'thread-bare-status' }));
-        pane.upsertItem(makeItem({
-          id: 'think:0:0',
-          threadId: 'thread-bare-status',
-          kind: 'thinking',
-          role: 'assistant',
-          status: 'streaming',
-          summary: '',
-          payloadId: 'thinking:think:0:0',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-bare-status',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
         pane.applyItemDelta({
           threadId: 'thread-bare-status',
           itemId: 'think:0:0',
@@ -4374,15 +5197,17 @@ describe('createThreadPane', () => {
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 'thread-equal-text' }));
-        pane.upsertItem(makeItem({
-          id: 'text:0:0',
-          threadId: 'thread-equal-text',
-          kind: 'assistant_text',
-          role: 'assistant',
-          status: 'streaming',
-          summary: '',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 'thread-equal-text',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            updatedAt: 1,
+          }),
+        );
         pane.applyItemDelta({
           threadId: 'thread-equal-text',
           itemId: 'text:0:0',
@@ -4426,15 +5251,17 @@ describe('createThreadPane', () => {
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 'thread-snap-nosum' }));
-        pane.upsertItem(makeItem({
-          id: 'text:0:0',
-          threadId: 'thread-snap-nosum',
-          kind: 'assistant_text',
-          role: 'assistant',
-          status: 'streaming',
-          summary: 'partial so far',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 'thread-snap-nosum',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            summary: 'partial so far',
+            updatedAt: 1,
+          }),
+        );
         // Append a tail the smoother has received but NOT yet revealed
         // (no clock ticks fired), so snap has real work to do.
         pane.applyItemDelta({
@@ -4472,8 +5299,9 @@ describe('createThreadPane', () => {
     // Bound should cap at 32 (subagentNotificationLimit). The newest
     // entry is at the tail; oldest entries have fallen off.
     expect(pane.subagentNotifications.length).toBe(32);
-    expect(pane.subagentNotifications[pane.subagentNotifications.length - 1].meta)
-      .toContain('agent-39');
+    expect(
+      pane.subagentNotifications[pane.subagentNotifications.length - 1].meta,
+    ).toContain('agent-39');
     expect(pane.subagentNotifications[0].meta).toContain('agent-8');
   });
 
@@ -4498,15 +5326,17 @@ describe('createThreadPane', () => {
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 'thread-vis-a' }));
-        pane.upsertItem(makeItem({
-          id: 'text:0:0',
-          threadId: 'thread-vis-a',
-          kind: 'assistant_text',
-          role: 'assistant',
-          status: 'streaming',
-          summary: '',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 'thread-vis-a',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            updatedAt: 1,
+          }),
+        );
         // ~700 chars in one delta — far more than one tick's 14-char cap.
         const big = manyWords('word', 100);
         pane.applyItemDelta({
@@ -4557,15 +5387,17 @@ describe('createThreadPane', () => {
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 'thread-vis-b' }));
-        pane.upsertItem(makeItem({
-          id: 'text:0:0',
-          threadId: 'thread-vis-b',
-          kind: 'assistant_text',
-          role: 'assistant',
-          status: 'streaming',
-          summary: '',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 'thread-vis-b',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            updatedAt: 1,
+          }),
+        );
         const full = manyWords('tok', 100);
         pane.applyItemDelta({
           threadId: 'thread-vis-b',
@@ -4608,15 +5440,17 @@ describe('createThreadPane', () => {
         // No smoothers yet: safe to call.
         expect(() => pane.snapSmoothersToReceived()).not.toThrow();
 
-        pane.upsertItem(makeItem({
-          id: 'text:0:0',
-          threadId: 'thread-vis-c',
-          kind: 'assistant_text',
-          role: 'assistant',
-          status: 'streaming',
-          summary: '',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 'thread-vis-c',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            updatedAt: 1,
+          }),
+        );
         pane.applyItemDelta({
           threadId: 'thread-vis-c',
           itemId: 'text:0:0',
@@ -4642,7 +5476,11 @@ describe('createThreadPane', () => {
   });
 
   describe('reveal sequencer (revealBoundary)', () => {
-    function streamingThinking(id: string, itemIndex: number, threadId: string) {
+    function streamingThinking(
+      id: string,
+      itemIndex: number,
+      threadId: string,
+    ) {
       return makeItem({
         id,
         threadId,
@@ -4700,17 +5538,19 @@ describe('createThreadPane', () => {
           updatedAt: 2,
         });
         // Wire moves on: a tool call appears while the thinking still lags.
-        pane.upsertItem(makeItem({
-          id: 'tool:0:1',
-          threadId: 't',
-          kind: 'tool_call',
-          status: 'running',
-          turnIndex: 0,
-          itemIndex: 1,
-          toolName: 'Bash',
-          summary: 'Bash',
-          updatedAt: 3,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'tool:0:1',
+            threadId: 't',
+            kind: 'tool_call',
+            status: 'running',
+            turnIndex: 0,
+            itemIndex: 1,
+            toolName: 'Bash',
+            summary: 'Bash',
+            updatedAt: 3,
+          }),
+        );
         // Gate stays at the thinking row — the tool call is withheld.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
         // Fast-drain finishes the thinking within ~200ms (≈13 frames).
@@ -4749,17 +5589,19 @@ describe('createThreadPane', () => {
           delta: 'word '.repeat(40),
           updatedAt: 2,
         });
-        gated.upsertItem(makeItem({
-          id: 'tool:0:1',
-          threadId: 'gated',
-          kind: 'tool_call',
-          status: 'running',
-          turnIndex: 0,
-          itemIndex: 1,
-          toolName: 'Bash',
-          summary: 'Bash',
-          updatedAt: 3,
-        }));
+        gated.upsertItem(
+          makeItem({
+            id: 'tool:0:1',
+            threadId: 'gated',
+            kind: 'tool_call',
+            status: 'running',
+            turnIndex: 0,
+            itemIndex: 1,
+            toolName: 'Bash',
+            summary: 'Bash',
+            updatedAt: 3,
+          }),
+        );
         for (let i = 0; i < 14; i++) clock.tickFrame(16);
         expect(gated.revealBoundary).toBeNull();
       } finally {
@@ -4782,16 +5624,18 @@ describe('createThreadPane', () => {
         });
         // A streaming assistant_text successor arrives and gets its deltas
         // while still withheld behind the thinking row.
-        pane.upsertItem(makeItem({
-          id: 'text:0:1',
-          threadId: 't',
-          kind: 'assistant_text',
-          status: 'streaming',
-          turnIndex: 0,
-          itemIndex: 1,
-          summary: '',
-          updatedAt: 3,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:1',
+            threadId: 't',
+            kind: 'assistant_text',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 1,
+            summary: '',
+            updatedAt: 3,
+          }),
+        );
         pane.applyItemDelta({
           threadId: 't',
           itemId: 'text:0:1',
@@ -4811,7 +5655,9 @@ describe('createThreadPane', () => {
         for (let i = 0; i < 14; i++) clock.tickFrame(16);
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
         for (let i = 0; i < 80; i++) clock.tickFrame(16);
-        expect(pane.items[textIdx].summary).toBe('Hello world this is the answer');
+        expect(pane.items[textIdx].summary).toBe(
+          'Hello world this is the answer',
+        );
         expect(pane.revealBoundary).toBeNull();
       } finally {
         __setSmoothingClockForTest(undefined);
@@ -4824,29 +5670,33 @@ describe('createThreadPane', () => {
       try {
         const pane = await buildPane(makeThread({ id: 't' }));
         // Agent launch (top-level, non-smoothed) + a streaming child thinking.
-        pane.upsertItem(makeItem({
-          id: 'agent:0:0',
-          threadId: 't',
-          kind: 'tool_call',
-          toolName: 'Agent',
-          status: 'running',
-          turnIndex: 0,
-          itemIndex: 0,
-          summary: 'Agent',
-          updatedAt: 1,
-        }));
-        pane.upsertItem(makeItem({
-          id: 'child:0:1',
-          threadId: 't',
-          kind: 'thinking',
-          parentId: 'agent:0:0',
-          status: 'streaming',
-          turnIndex: 0,
-          itemIndex: 1,
-          summary: '',
-          payloadId: 'thinking:child',
-          updatedAt: 2,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'agent:0:0',
+            threadId: 't',
+            kind: 'tool_call',
+            toolName: 'Agent',
+            status: 'running',
+            turnIndex: 0,
+            itemIndex: 0,
+            summary: 'Agent',
+            updatedAt: 1,
+          }),
+        );
+        pane.upsertItem(
+          makeItem({
+            id: 'child:0:1',
+            threadId: 't',
+            kind: 'thinking',
+            parentId: 'agent:0:0',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 1,
+            summary: '',
+            payloadId: 'thinking:child',
+            updatedAt: 2,
+          }),
+        );
         pane.applyItemDelta({
           threadId: 't',
           itemId: 'child:0:1',
@@ -4858,16 +5708,18 @@ describe('createThreadPane', () => {
         expect(pane.revealBoundary).toBeNull();
 
         // A later top-level text becomes the frontier; the child is ignored.
-        pane.upsertItem(makeItem({
-          id: 'text:0:2',
-          threadId: 't',
-          kind: 'assistant_text',
-          status: 'streaming',
-          turnIndex: 0,
-          itemIndex: 2,
-          summary: '',
-          updatedAt: 4,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:2',
+            threadId: 't',
+            kind: 'assistant_text',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 2,
+            summary: '',
+            updatedAt: 4,
+          }),
+        );
         pane.applyItemDelta({
           threadId: 't',
           itemId: 'text:0:2',
@@ -4894,17 +5746,19 @@ describe('createThreadPane', () => {
           delta: 'word '.repeat(40),
           updatedAt: 2,
         });
-        pane.upsertItem(makeItem({
-          id: 'tool:0:1',
-          threadId: 't',
-          kind: 'tool_call',
-          status: 'running',
-          turnIndex: 0,
-          itemIndex: 1,
-          toolName: 'Bash',
-          summary: 'Bash',
-          updatedAt: 3,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'tool:0:1',
+            threadId: 't',
+            kind: 'tool_call',
+            status: 'running',
+            turnIndex: 0,
+            itemIndex: 1,
+            toolName: 'Bash',
+            summary: 'Bash',
+            updatedAt: 3,
+          }),
+        );
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
         // Interrupt kills the thinking row → snap + dispose → gate drops.
         pane.applyItemPatch({
@@ -4924,22 +5778,50 @@ describe('createThreadPane', () => {
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 't' }));
-        pane.upsertItem(makeItem({
-          id: 'text:0:0', threadId: 't', kind: 'assistant_text', role: 'assistant',
-          status: 'streaming', turnIndex: 0, itemIndex: 0, summary: '', updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 't',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 0,
+            summary: '',
+            updatedAt: 1,
+          }),
+        );
         pane.applyItemDelta({
-          threadId: 't', itemId: 'text:0:0', kind: 'assistant_text', delta: 'hello ', updatedAt: 2,
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: 'hello ',
+          updatedAt: 2,
         });
-        pane.upsertItem(makeItem({
-          id: 'tool:0:1', threadId: 't', kind: 'tool_call', status: 'running',
-          turnIndex: 0, itemIndex: 1, toolName: 'Bash', summary: 'Bash', updatedAt: 3,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'tool:0:1',
+            threadId: 't',
+            kind: 'tool_call',
+            status: 'running',
+            turnIndex: 0,
+            itemIndex: 1,
+            toolName: 'Bash',
+            summary: 'Bash',
+            updatedAt: 3,
+          }),
+        );
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
         // Turn-completion patch carries the final text, extending what streamed.
         pane.applyItemPatch({
-          threadId: 't', itemId: 'text:0:0', kind: 'assistant_text',
-          patch: { status: 'completed', summary: 'hello world done', updatedAt: 4 },
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          patch: {
+            status: 'completed',
+            summary: 'hello world done',
+            updatedAt: 4,
+          },
         });
         // Gate still held — the appended suffix hasn't revealed yet.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
@@ -4959,19 +5841,45 @@ describe('createThreadPane', () => {
         const pane = await buildPane(makeThread({ id: 't' }));
         pane.upsertItem(streamingThinking('think:0:0', 0, 't'));
         pane.applyItemDelta({
-          threadId: 't', itemId: 'think:0:0', kind: 'thinking', delta: 'word '.repeat(40), updatedAt: 2,
+          threadId: 't',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'word '.repeat(40),
+          updatedAt: 2,
         });
-        pane.upsertItem(makeItem({
-          id: 'text:0:1', threadId: 't', kind: 'assistant_text', role: 'assistant',
-          status: 'streaming', turnIndex: 0, itemIndex: 1, summary: '', updatedAt: 3,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:1',
+            threadId: 't',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 1,
+            summary: '',
+            updatedAt: 3,
+          }),
+        );
         pane.applyItemDelta({
-          threadId: 't', itemId: 'text:0:1', kind: 'assistant_text', delta: 'the answer here', updatedAt: 4,
+          threadId: 't',
+          itemId: 'text:0:1',
+          kind: 'assistant_text',
+          delta: 'the answer here',
+          updatedAt: 4,
         });
-        pane.upsertItem(makeItem({
-          id: 'tool:0:2', threadId: 't', kind: 'tool_call', status: 'running',
-          turnIndex: 0, itemIndex: 2, toolName: 'Bash', summary: 'Bash', updatedAt: 5,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'tool:0:2',
+            threadId: 't',
+            kind: 'tool_call',
+            status: 'running',
+            turnIndex: 0,
+            itemIndex: 2,
+            toolName: 'Bash',
+            summary: 'Bash',
+            updatedAt: 5,
+          }),
+        );
         // Gate at thinking; text AND tool both withheld.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
         // thinking drains → gate steps to the text row (not straight to null).
@@ -4992,14 +5900,31 @@ describe('createThreadPane', () => {
         const pane = await buildPane(makeThread({ id: 't' }));
         pane.upsertItem(streamingThinking('think:0:0', 0, 't'));
         pane.applyItemDelta({
-          threadId: 't', itemId: 'think:0:0', kind: 'thinking', delta: 'word '.repeat(40), updatedAt: 2,
+          threadId: 't',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'word '.repeat(40),
+          updatedAt: 2,
         });
-        pane.upsertItem(makeItem({
-          id: 'text:0:1', threadId: 't', kind: 'assistant_text', role: 'assistant',
-          status: 'streaming', turnIndex: 0, itemIndex: 1, summary: '', updatedAt: 3,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:1',
+            threadId: 't',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 1,
+            summary: '',
+            updatedAt: 3,
+          }),
+        );
         pane.applyItemDelta({
-          threadId: 't', itemId: 'text:0:1', kind: 'assistant_text', delta: 'the answer', updatedAt: 4,
+          threadId: 't',
+          itemId: 'text:0:1',
+          kind: 'assistant_text',
+          delta: 'the answer',
+          updatedAt: 4,
         });
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
         // Optimistic revert removes the streaming frontier row.
@@ -5007,7 +5932,9 @@ describe('createThreadPane', () => {
         // The withheld successor becomes the frontier and resumes from its start.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
         for (let i = 0; i < 60; i++) clock.tickFrame(16);
-        expect(pane.items.find((i) => i.id === 'text:0:1')?.summary).toBe('the answer');
+        expect(pane.items.find((i) => i.id === 'text:0:1')?.summary).toBe(
+          'the answer',
+        );
         expect(pane.revealBoundary).toBeNull();
       } finally {
         __setSmoothingClockForTest(undefined);
@@ -5021,12 +5948,25 @@ describe('createThreadPane', () => {
         const pane = await buildPane(makeThread({ id: 't' }));
         pane.upsertItem(streamingThinking('think:0:0', 0, 't'));
         pane.applyItemDelta({
-          threadId: 't', itemId: 'think:0:0', kind: 'thinking', delta: 'word '.repeat(40), updatedAt: 2,
+          threadId: 't',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'word '.repeat(40),
+          updatedAt: 2,
         });
-        pane.upsertItem(makeItem({
-          id: 'tool:0:1', threadId: 't', kind: 'tool_call', status: 'running',
-          turnIndex: 0, itemIndex: 1, toolName: 'Bash', summary: 'Bash', updatedAt: 3,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'tool:0:1',
+            threadId: 't',
+            kind: 'tool_call',
+            status: 'running',
+            turnIndex: 0,
+            itemIndex: 1,
+            toolName: 'Bash',
+            summary: 'Bash',
+            updatedAt: 3,
+          }),
+        );
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
         await pane.switchThread(makeThread({ id: 'other-thread' }));
         expect(pane.revealBoundary).toBeNull();
@@ -5037,8 +5977,23 @@ describe('createThreadPane', () => {
 
     it('leaves the gate null for a settled thread (no streaming)', async () => {
       const pane = await buildPane(makeThread({ id: 't' }), [
-        makeItem({ id: 'u:0', threadId: 't', kind: 'user_text', role: 'user', summary: 'hi', turnIndex: 0, itemIndex: 0 }),
-        makeItem({ id: 'a:1', threadId: 't', kind: 'assistant_text', summary: 'done', turnIndex: 0, itemIndex: 1 }),
+        makeItem({
+          id: 'u:0',
+          threadId: 't',
+          kind: 'user_text',
+          role: 'user',
+          summary: 'hi',
+          turnIndex: 0,
+          itemIndex: 0,
+        }),
+        makeItem({
+          id: 'a:1',
+          threadId: 't',
+          kind: 'assistant_text',
+          summary: 'done',
+          turnIndex: 0,
+          itemIndex: 1,
+        }),
       ]);
       expect(pane.revealBoundary).toBeNull();
     });
@@ -5070,15 +6025,17 @@ describe('createThreadPane', () => {
         // Switching into a thread (bulk slice load) is not live content.
         expect(pane.lastLiveContentAt).toBe(0);
 
-        pane.upsertItem(makeItem({
-          id: 'a:0:0',
-          threadId: 'stamp-reveal',
-          kind: 'assistant_text',
-          role: 'assistant',
-          status: 'streaming',
-          summary: 'seed ',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'a:0:0',
+            threadId: 'stamp-reveal',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            summary: 'seed ',
+            updatedAt: 1,
+          }),
+        );
         // Creating the streaming row is not yet a reveal.
         expect(pane.lastLiveContentAt).toBe(0);
 
@@ -5111,15 +6068,17 @@ describe('createThreadPane', () => {
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 'stamp-drain' }));
-        pane.upsertItem(makeItem({
-          id: 'a:0:0',
-          threadId: 'stamp-drain',
-          kind: 'assistant_text',
-          role: 'assistant',
-          status: 'streaming',
-          summary: 'seed ',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'a:0:0',
+            threadId: 'stamp-drain',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            summary: 'seed ',
+            updatedAt: 1,
+          }),
+        );
         pane.applyItemDelta({
           threadId: 'stamp-drain',
           itemId: 'a:0:0',
@@ -5163,15 +6122,17 @@ describe('createThreadPane', () => {
         const pane = await buildPane(makeThread({ id: 'stamp-nonsmooth' }));
         // tool_call is not a smoothable kind — applyItemDelta writes
         // summary directly and must stamp inline (no onReveal to do it).
-        pane.upsertItem(makeItem({
-          id: 'tool:0:0',
-          threadId: 'stamp-nonsmooth',
-          kind: 'tool_call',
-          role: 'assistant',
-          status: 'streaming',
-          summary: 'out',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'tool:0:0',
+            threadId: 'stamp-nonsmooth',
+            kind: 'tool_call',
+            role: 'assistant',
+            status: 'streaming',
+            summary: 'out',
+            updatedAt: 1,
+          }),
+        );
         expect(pane.lastLiveContentAt).toBe(0);
 
         pane.applyItemDelta({
@@ -5197,15 +6158,17 @@ describe('createThreadPane', () => {
         const pane = await buildPane(makeThread({ id: 'stamp-patch' }));
         // Settled row: no smoother, so a later summary patch writes
         // directly through applyItemPatch's direct-summary branch.
-        pane.upsertItem(makeItem({
-          id: 'a:0:0',
-          threadId: 'stamp-patch',
-          kind: 'assistant_text',
-          role: 'assistant',
-          status: 'completed',
-          summary: 'hello',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'a:0:0',
+            threadId: 'stamp-patch',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'completed',
+            summary: 'hello',
+            updatedAt: 1,
+          }),
+        );
         expect(pane.lastLiveContentAt).toBe(0);
 
         // Status-only patch: no summary growth → no stamp.
@@ -5247,10 +6210,9 @@ describe('createThreadPane', () => {
         clock.tickFrame(20); // base now()=20
         // Bulk slice load on switch (mergeMissingItemsById) is history,
         // not live content — must not stamp.
-        const pane = await buildPane(
-          makeThread({ id: 'stamp-neg' }),
-          [makeItem({ id: 'seed:0:0', threadId: 'stamp-neg', summary: 'pre' })],
-        );
+        const pane = await buildPane(makeThread({ id: 'stamp-neg' }), [
+          makeItem({ id: 'seed:0:0', threadId: 'stamp-neg', summary: 'pre' }),
+        ]);
         expect(pane.lastLiveContentAt).toBe(0);
 
         // applyItemMeta is the streaming path-link allowlist — meta only,
@@ -5268,13 +6230,15 @@ describe('createThreadPane', () => {
         // echo and revertOnInterrupt rollback paths) must NOT stamp — only
         // the events.ts provider fan-out marks live content. This is what
         // keeps a user's own sent message and rollback restores sync-pinned.
-        pane.upsertItems([makeItem({
-          id: 'new:1:0',
-          threadId: 'stamp-neg',
-          turnIndex: 1,
-          kind: 'assistant_text',
-          summary: 'fresh',
-        })]);
+        pane.upsertItems([
+          makeItem({
+            id: 'new:1:0',
+            threadId: 'stamp-neg',
+            turnIndex: 1,
+            kind: 'assistant_text',
+            summary: 'fresh',
+          }),
+        ]);
         expect(pane.lastLiveContentAt).toBe(0);
 
         // The public seam events.ts calls on a changed provider upsert.
@@ -5291,15 +6255,17 @@ describe('createThreadPane', () => {
       try {
         clock.tickFrame(100);
         const pane = await buildPane(makeThread({ id: 'A' }));
-        pane.upsertItem(makeItem({
-          id: 'a:0:0',
-          threadId: 'A',
-          kind: 'assistant_text',
-          role: 'assistant',
-          status: 'streaming',
-          summary: 'seed ',
-          updatedAt: 1,
-        }));
+        pane.upsertItem(
+          makeItem({
+            id: 'a:0:0',
+            threadId: 'A',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            summary: 'seed ',
+            updatedAt: 1,
+          }),
+        );
         pane.applyItemDelta({
           threadId: 'A',
           itemId: 'a:0:0',

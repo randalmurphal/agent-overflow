@@ -1242,14 +1242,46 @@ export function ListItems(threadID: string): $CancellablePromise<store$0.Item[]>
 }
 
 /**
- * ListItemsBeforeTurn loads older items on demand, strictly below
- * `beforeTurnIndex` (the frontend's current window floor). The third
- * parameter is an **item budget**: the backend walks turns DESC,
- * summing each turn's item count (excluding plan_update notifications),
- * and stops at the first turn that pushes cumulative ≥ itemBudget.
- * Defaults to paginationItems when <= 0, capped at maxWindowItems to
- * defend against a malicious LAN-attached caller asking for the whole
- * thread in one round-trip.
+ * ListItemsAfterCursor loads newer items on demand, strictly after the
+ * frontend's current item-coordinate window ceiling. It is the forward pager
+ * companion to ListItemsBeforeCursor.
+ */
+export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCursor, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
+    return $Call.ByID(2915892537, threadID, after, itemBudget).then(($result: any) => {
+        return $$createType57($result);
+    });
+}
+
+/**
+ * ListItemsAfterTurn is the legacy turn-ceiling pager. Active panes use
+ * ListItemsAfterCursor so long single turns remain item-bounded. The synthetic
+ * cursor points at the end of afterTurnIndex, so rows strictly above that turn
+ * are loaded with a hard primary-row budget.
+ */
+export function ListItemsAfterTurn(threadID: string, afterTurnIndex: number, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
+    return $Call.ByID(932754656, threadID, afterTurnIndex, itemBudget).then(($result: any) => {
+        return $$createType57($result);
+    });
+}
+
+/**
+ * ListItemsBeforeCursor loads older items on demand, strictly before the
+ * frontend's current item-coordinate window floor. The item budget is a hard
+ * primary-row cap; render-support ancestors can be stitched in above it, but
+ * same-turn rows outside the cursor range stay omitted until explicitly paged.
+ */
+export function ListItemsBeforeCursor(threadID: string, before: store$0.TimelineCursor, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
+    return $Call.ByID(162135710, threadID, before, itemBudget).then(($result: any) => {
+        return $$createType57($result);
+    });
+}
+
+/**
+ * ListItemsBeforeTurn is the legacy turn-floor pager. Active panes use
+ * ListItemsBeforeCursor so long single turns remain item-bounded. Keep this
+ * public compatibility surface item-bounded too: the synthetic cursor points
+ * at the start of beforeTurnIndex, so rows strictly below that turn are loaded
+ * with a hard primary-row budget.
  */
 export function ListItemsBeforeTurn(threadID: string, beforeTurnIndex: number, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(2147361923, threadID, beforeTurnIndex, itemBudget).then(($result: any) => {
@@ -1367,12 +1399,9 @@ export function ListProposedPlanComments(threadID: string, planItemID: string): 
 }
 
 /**
- * ListRecentThreadItems loads the tail of a thread's history into the
- * timeline pane: the last `turnLimit` turns (defaulting to
- * initialTurnWindow when <= 0) plus enough surrounding turns to keep
- * the total item count in [500, maxWindowItems], plus any subagent
- * ancestors those items reference. This is the binding the frontend
- * calls on thread switch.
+ * ListRecentThreadItems loads a broad recent tail window. Active chat panes
+ * use ListThreadSliceAround for bounded switch/refresh loads; this method is
+ * retained for legacy callers and any future full-tail refresh surfaces.
  */
 export function ListRecentThreadItems(threadID: string, turnLimit: number): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(2604956482, threadID, turnLimit).then(($result: any) => {
@@ -1438,16 +1467,12 @@ export function ListThreadProposedPlans(threadID: string): $CancellablePromise<s
 }
 
 /**
- * ListThreadSliceAround loads a small slice of items around an anchor
- * for the phase-1 fast path on thread switch. Roughly `targetItemCount`
- * items are returned (defaulting to sliceAroundDefaultItems when <= 0):
- * half above and half below the anchor's turn position. When
- * `anchorItemID` is "" or no longer exists, the function returns the
- * tail `targetItemCount` items — the bottom-snapshot restore case.
- * 
- * Phase 2 of the thread switch always re-runs `ListRecentThreadItems`
- * to fill in the full window; this binding exists to paint the visible
- * viewport quickly while phase 2 runs in parallel.
+ * ListThreadSliceAround loads the bounded active-pane window around an anchor.
+ * Roughly `targetItemCount` items are returned (defaulting to
+ * sliceAroundDefaultItems when <= 0): half at-or-before and half after the
+ * anchor's item coordinate. When `anchorItemID` is "" or no longer exists,
+ * the function returns the tail `targetItemCount` items — the bottom-snapshot
+ * restore case.
  */
 export function ListThreadSliceAround(threadID: string, anchorItemID: string, targetItemCount: number): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(4176102096, threadID, anchorItemID, targetItemCount).then(($result: any) => {

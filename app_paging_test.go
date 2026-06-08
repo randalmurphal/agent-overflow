@@ -198,12 +198,11 @@ func TestListItemsBeforeTurn_DefaultsItemBudgetWhenNonPositive(t *testing.T) {
 	}
 }
 
-// TestListItemsBeforeTurn_ItemBudgetSemantics verifies the new
-// item-budget shape. With 3 turns of 4 items each (12 total) below
-// the floor, a budget of 5 walks newest-first until cumulative ≥ 5:
-// turn-2 (4 items, cumulative 4 < 5) then turn-1 (4 items, cumulative
-// 8 ≥ 5, stop). The floor lands on turn 1; turns 1 and 2 are returned
-// (8 items). HasMore=true because turn 0 still has items below.
+// TestListItemsBeforeTurn_ItemBudgetSemantics verifies the app-level legacy
+// turn pager is now item-coordinate bounded. With 3 turns of 4 items each
+// below the floor, a budget of 5 returns exactly the five newest primary rows
+// below turn 3, even though that splits turn 1. HasMore=true because older
+// rows still exist below the returned cursor.
 func TestListItemsBeforeTurn_ItemBudgetSemantics(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/w-budget", "claude-sonnet-4-6", "")
@@ -233,14 +232,17 @@ func TestListItemsBeforeTurn_ItemBudgetSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListItemsBeforeTurn: %v", err)
 	}
-	if len(paged.Items) != 8 {
-		t.Errorf("Items: got %d, want 8 (turns 1 and 2 once cumulative ≥ 5)", len(paged.Items))
+	if len(paged.Items) != 5 {
+		t.Errorf("Items: got %d, want 5 item-budgeted rows", len(paged.Items))
 	}
 	if paged.OldestTurnIndex != 1 {
 		t.Errorf("OldestTurnIndex: got %d, want 1", paged.OldestTurnIndex)
 	}
+	if paged.OldestCursor.ItemID != "t1-i3" || paged.NewestCursor.ItemID != "t2-i3" {
+		t.Errorf("cursor items = (%q, %q), want t1-i3/t2-i3", paged.OldestCursor.ItemID, paged.NewestCursor.ItemID)
+	}
 	if !paged.HasMore {
-		t.Error("HasMore: got false, want true (turn 0 still below floor)")
+		t.Error("HasMore: got false, want true (older rows still below cursor)")
 	}
 }
 

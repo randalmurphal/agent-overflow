@@ -38,30 +38,24 @@ function readPayloadSignature(meta: string | undefined): string | undefined {
 
 export function payloadVersionForItem(item: Item | undefined): unknown {
   if (!item) return undefined;
-  const payloadMeta = item.payloadMeta && item.payloadMeta.trim() !== ''
-    ? item.payloadMeta
-    : undefined;
+  const payloadMeta =
+    item.payloadMeta && item.payloadMeta.trim() !== ''
+      ? item.payloadMeta
+      : undefined;
   return (
-    readPayloadSignature(item.payloadMeta)
-    ?? readPayloadSignature(item.meta)
-    ?? item.payloadId
-    ?? item.inputPayloadId
-    ?? (payloadMeta ? boundedPayloadVersionString(payloadMeta) : undefined)
-    ?? item.updatedAt
+    readPayloadSignature(item.payloadMeta) ??
+    readPayloadSignature(item.meta) ??
+    item.payloadId ??
+    item.inputPayloadId ??
+    (payloadMeta ? boundedPayloadVersionString(payloadMeta) : undefined) ??
+    item.updatedAt
   );
 }
 
 export function thinkingPayloadVersionForItem(item: Item | undefined): unknown {
   if (!item) return undefined;
   if (item.status === 'streaming') {
-    return JSON.stringify([
-      item.payloadId ?? '',
-      'streaming',
-    ]);
+    return JSON.stringify([item.payloadId ?? '', 'streaming']);
   }
-  return JSON.stringify([
-    item.payloadId ?? '',
-    item.status,
-    item.updatedAt,
-  ]);
+  return JSON.stringify([item.payloadId ?? '', item.status, item.updatedAt]);
 }

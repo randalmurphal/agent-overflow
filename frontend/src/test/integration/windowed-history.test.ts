@@ -2,7 +2,7 @@
 // level. These tests pin the end-to-end contracts that the unit and
 // component tests exercise in isolation:
 //
-//   1) Load Older button — click → ListItemsBeforeTurn → prepend lands
+//   1) Load Older button — click → ListItemsBeforeCursor → prepend lands
 //      in the DOM and the button clears when the backend reports
 //      no more history.
 //   2) MessageSearch hit with an out-of-window itemId — click triggers
@@ -79,7 +79,7 @@ describe('App integration — windowed thread history', () => {
     // Seed the thread so the initial-slice load returns a tail window
     // with hasMore=true. The MessageTimeline must render the "Load older
     // messages" control; the click path must flow through
-    // pane.loadOlder → ListItemsBeforeTurn → store prepend, and the
+    // pane.loadOlder → ListItemsBeforeCursor → store prepend, and the
     // newly loaded item must be visible in the timeline.
     let beforeCall!: ReturnType<typeof setBindingMock>;
     const { findByTestId, queryByTestId, findByText } = await mountAndActivateThread(
@@ -100,7 +100,7 @@ describe('App integration — windowed thread history', () => {
           oldestTurnIndex: 10,
           hasMore: true,
         }));
-        beforeCall = setBindingMock('ListItemsBeforeTurn', async () => ({
+        beforeCall = setBindingMock('ListItemsBeforeCursor', async () => ({
           items: [
             makeItem({
               id: 'older-1',
@@ -136,7 +136,11 @@ describe('App integration — windowed thread history', () => {
     // and scroll-anchor tick are observed by flush().
     await waitFor(() => expect(beforeCall).toHaveBeenCalled());
     expect(beforeCall.mock.calls[0][0]).toBe('thread-1');
-    expect(beforeCall.mock.calls[0][1]).toBe(10); // floor before the prepend
+    expect(beforeCall.mock.calls[0][1]).toEqual({
+      turnIndex: 10,
+      itemIndex: 0,
+      itemId: 'tail-1',
+    });
 
     // The prepended row appears in the timeline.
     await findByText('older-user-text');
@@ -158,26 +162,49 @@ describe('App integration — windowed thread history', () => {
     // Seed a hit whose itemId is NOT in the initial window. The flow
     // must: open the dialog, switchThread, publish the nonce. The
     // live MessageTimeline's $effect then fires loadUntilItem — which
-    // calls GetThreadItem (item out of window) and ListItemsBeforeTurn
-    // to page the target in.
+    // calls GetThreadItem (item out of window) and ListThreadSliceAround
+    // to recenter the bounded window on the target.
     let getItemCall!: ReturnType<typeof setBindingMock>;
-    let beforeCall!: ReturnType<typeof setBindingMock>;
+    let sliceCall!: ReturnType<typeof setBindingMock>;
     const { findByTestId } = await mountAndActivateThread(
       makeThread({ title: 'Windowed Thread' }),
       () => {
-        setBindingMock('ListThreadSliceAround', async () => ({
-          items: [
-            makeItem({
-              id: 'tail-1',
-              threadId: 'thread-1',
-              turnIndex: 10,
-              itemIndex: 0,
-              summary: 'recent',
-            }),
-          ],
-          oldestTurnIndex: 10,
-          hasMore: true,
-        }));
+        sliceCall = setBindingMock('ListThreadSliceAround', async (_threadId: string, anchorItemId: string) => {
+          if (anchorItemId === 'old-hit') {
+            return {
+              items: [
+                makeItem({
+                  id: 'old-hit',
+                  threadId: 'thread-1',
+                  turnIndex: 3,
+                  itemIndex: 0,
+                  summary: 'hit body',
+                }),
+              ],
+              oldestTurnIndex: 3,
+              newestTurnIndex: 3,
+              hasMore: true,
+              hasMoreOlder: true,
+              hasMoreNewer: true,
+            };
+          }
+          return {
+            items: [
+              makeItem({
+                id: 'tail-1',
+                threadId: 'thread-1',
+                turnIndex: 10,
+                itemIndex: 0,
+                summary: 'recent',
+              }),
+            ],
+            oldestTurnIndex: 10,
+            newestTurnIndex: 10,
+            hasMore: true,
+            hasMoreOlder: true,
+            hasMoreNewer: false,
+          };
+        });
         setBindingMock('SearchThreadMessages', async () => [
           {
             threadId: 'thread-1',
@@ -200,19 +227,6 @@ describe('App integration — windowed thread history', () => {
             summary: 'hit body',
           }),
         );
-        beforeCall = setBindingMock('ListItemsBeforeTurn', async () => ({
-          items: [
-            makeItem({
-              id: 'old-hit',
-              threadId: 'thread-1',
-              turnIndex: 3,
-              itemIndex: 0,
-              summary: 'hit body',
-            }),
-          ],
-          oldestTurnIndex: 3,
-          hasMore: false,
-        }));
       },
     );
 
@@ -239,12 +253,13 @@ describe('App integration — windowed thread history', () => {
     expect(scrollSpy).toHaveBeenCalledWith('old-hit');
     // MessageTimeline's $effect should have picked up the nonce and
     // routed through loadUntilItem. loadUntilItem fetches the target
-    // item, then pages backward via ListItemsBeforeTurn.
+    // item, then recenters via ListThreadSliceAround.
     await waitFor(() => expect(getItemCall).toHaveBeenCalledWith('thread-1', 'old-hit'));
-    await waitFor(() => expect(beforeCall).toHaveBeenCalled());
+    await waitFor(() => expect(sliceCall).toHaveBeenCalledWith('thread-1', 'old-hit', expect.any(Number)));
     // The paged-in window now covers turn 3 — the store state confirms
-    // the window actually grew rather than stopping at a no-op.
+    // the window actually moved rather than stopping at a no-op.
     await waitFor(() => expect(pane.oldestLoadedTurnIndex).toBe(3));
+    expect(pane.hasMoreNewer).toBe(true);
     expect(pane.items.some((it) => it.id === 'old-hit')).toBe(true);
   });
 
@@ -298,7 +313,7 @@ describe('App integration — windowed thread history', () => {
             summary: 'plan body',
           }),
         );
-        setBindingMock('ListItemsBeforeTurn', async () => ({
+        setBindingMock('ListItemsBeforeCursor', async () => ({
           items: [],
           oldestTurnIndex: 2,
           hasMore: false,

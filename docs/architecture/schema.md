@@ -11,7 +11,8 @@ the migrations win.
 | `projects` | User-defined grouping of threads rooted at a directory. `path` (UNIQUE), `name`, `color`, `sort_position`, `archived`. Each thread belongs to exactly one project. |
 | `threads` | One row per conversation. Provider, session_ref, workspace/project paths, model, `mode` (chat/plan/design/discussion), `reasoning_effort`, `fast_mode`, `context_window`, per-tier auto-compact percentages (`auto_compact_standard_percent`, `auto_compact_extended_percent`), `runtime_mode`, archived flag, fork lineage (`parent_thread_id`, `pending_fork_session_ref`, `forked_from_thread_id`), discussion membership (`discussion_id`), `last_token_usage`. |
 | `items` | Timeline items per thread. `turn_index`, `item_index`, `kind`, `role`, `status`, `summary` (always-loaded preview), `payload_id`, `parent_id` (subagent / nested-tool correlation), `is_background`, `completion_of` (back-reference from tool_completion to its launch), `tool_name`, `decision`, `meta`. |
-| `payloads` | Heavy content. `kind`, `meta` (JSON, loaded with items), `data` (BLOB, on-demand). |
+| `payloads` | Heavy content. `kind`, `meta` (JSON, loaded with items), `data` (base BLOB, on-demand). |
+| `payload_chunks` | Append-only payload data for live streaming payloads. Rows are keyed by `(payload_id, chunk_index)` and carry `start_offset` so chunk reads can jump to the requested byte range. `ON DELETE CASCADE` keeps lifecycle owned by `payloads`. |
 | `channels` | Deliberation channels for multi-agent discussions. Belongs to a thread. |
 | `channel_messages` | Ordered messages within a channel. `sequence`, `from_type`/`from_id`/`from_role`, `content`. |
 | `discussion_definitions` | Reusable discussion templates. Scoped global or per-project. `UNIQUE(name, scope, project_id)`. |
@@ -37,9 +38,10 @@ implementation markers and revision parent links.
 
 - `threads` — list, always loaded for sidebar.
 - `items` — loaded per visible thread. `summary` is raw always-loaded
-  text or a bounded raw preview; full body lives in the linked payload.
+  text, except for deliberately collapsed heavy rows such as thinking.
 - `payloads.meta` — loaded alongside items (JSON preview/stats).
-- `payloads.data` — BLOB, fetched only when the user expands.
+- `payloads.data` + `payload_chunks.data` — composed on demand when the
+  user expands, copies, or saves a heavy payload.
 
 ## Key Indexes
 
@@ -48,6 +50,7 @@ implementation markers and revision parent links.
 - `idx_items_thread` — load thread timeline.
 - `idx_items_parent` — group subagent / nested-tool items under a parent (partial index on non-empty `parent_id`).
 - `idx_items_completion_of` — pair a `tool_completion` row with its launch (partial index on non-empty `completion_of`).
+- `idx_payload_chunks_payload_start` — seek chunk-backed payload reads by payload id and byte offset.
 - `idx_threads_forked_from` — fork lineage walks.
 - `idx_channels_thread`, `idx_design_artifacts_thread` — per-thread feature lookups.
 - `turns_thread_index` on `turns(thread_id, turn_index DESC)` — backs `ListRecentTurns` for the newest-first rehydration the frontend runs on thread-switch.

@@ -128,6 +128,9 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListDiscussions", ID: 942288562},                       // main.App.ListDiscussions
 	{Name: "ListDiscussionsForThread", ID: 2502562885},             // main.App.ListDiscussionsForThread
 	{Name: "ListItems", ID: 2158085763},                            // main.App.ListItems
+	{Name: "ListItemsAfterCursor", ID: 2915892537},                 // main.App.ListItemsAfterCursor
+	{Name: "ListItemsAfterTurn", ID: 932754656},                    // main.App.ListItemsAfterTurn
+	{Name: "ListItemsBeforeCursor", ID: 162135710},                 // main.App.ListItemsBeforeCursor
 	{Name: "ListItemsBeforeTurn", ID: 2147361923},                  // main.App.ListItemsBeforeTurn
 	{Name: "ListLiveBackgroundTasks", ID: 320784263},               // main.App.ListLiveBackgroundTasks
 	{Name: "ListMcpServerStatuses", ID: 2582096622},                // main.App.ListMcpServerStatuses

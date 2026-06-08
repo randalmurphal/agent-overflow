@@ -253,10 +253,13 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
       offsetTop: -120,
     });
     setBindingMock('GetThreadItem', async () => target);
-    setBindingMock('ListItemsBeforeTurn', async () => ({
+    setBindingMock('ListThreadSliceAround', async () => ({
       items: [target],
       oldestTurnIndex: target.turnIndex,
+      newestTurnIndex: target.turnIndex,
       hasMore: false,
+      hasMoreOlder: false,
+      hasMoreNewer: false,
     }));
     const loadUntilItem = vi.spyOn(pane, 'loadUntilItem');
 

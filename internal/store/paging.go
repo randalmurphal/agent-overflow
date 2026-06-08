@@ -18,17 +18,39 @@ import (
 const visibleItemsFilter = "NOT (kind = 'notification' AND tool_name = 'plan_update')"
 const visibleItemsFilterQualified = "NOT (items.kind = 'notification' AND items.tool_name = 'plan_update')"
 
+// TimelineCursor is a stable position in a thread timeline. The item id is
+// carried for diagnostics/snapshot readability; ordering is by
+// (turn_index, item_index), which is the store's unique timeline coordinate.
+type TimelineCursor struct {
+	TurnIndex int    `json:"turnIndex"`
+	ItemIndex int    `json:"itemIndex"`
+	ItemID    string `json:"itemId"`
+}
+
 // PagedItems is the return shape for windowed item loads. `Items` is sorted
-// by (turn_index, item_index) ASC so callers can append the slice directly
-// to a timeline. `OldestTurnIndex` is the inclusive floor of the returned
-// set — the smallest turn_index that appears in `Items`. It is -1 when
-// `Items` is empty. `HasMore` is true when the database has at least one
-// item with `turn_index < OldestTurnIndex` for this thread, which is the
-// signal the frontend uses to render "Load older messages".
+// by (turn_index, item_index) ASC so callers can append or replace the slice
+// directly in a timeline. `OldestCursor` / `NewestCursor` are the inclusive
+// item-coordinate bounds of the logical page. Render-support ancestors can be
+// returned outside those bounds; they must not become pagination cursors.
+// Cursor turn/item indexes are -1 when `Items` is empty.
+//
+// `OldestTurnIndex` / `NewestTurnIndex` are legacy turn-only aliases derived
+// from the cursors. Active-pane callers should use the cursor fields so one
+// dense turn cannot punch through the item window cap.
+//
+// HasMoreOlder / HasMoreNewer report whether visible items exist outside
+// the cursor bounds. HasMore is the legacy older-history alias kept for
+// frontend and transport compatibility while callers migrate to the explicit
+// names.
 type PagedItems struct {
-	Items           []Item `json:"items"`
-	OldestTurnIndex int    `json:"oldestTurnIndex"`
-	HasMore         bool   `json:"hasMore"`
+	Items           []Item         `json:"items"`
+	OldestCursor    TimelineCursor `json:"oldestCursor"`
+	NewestCursor    TimelineCursor `json:"newestCursor"`
+	OldestTurnIndex int            `json:"oldestTurnIndex"`
+	NewestTurnIndex int            `json:"newestTurnIndex"`
+	HasMore         bool           `json:"hasMore"`
+	HasMoreOlder    bool           `json:"hasMoreOlder"`
+	HasMoreNewer    bool           `json:"hasMoreNewer"`
 }
 
 // ancestorCTE is the recursive common table expression used by every paged
@@ -78,14 +100,14 @@ const openUpperBound = int64(1 << 31)
 // still render as a proper SubagentGroup instead of an orphan.
 //
 // Pass `floorTurnIndex = 0` (or any value ≤ the thread's smallest
-// turn_index) to load the entire thread. Empty threads return
-// PagedItems{Items: nil, OldestTurnIndex: -1, HasMore: false}.
+// turn_index) to load the entire thread. Empty threads return a stable
+// empty PagedItems shape with both turn bounds set to -1.
 func (s *Store) ListRecentItemsWithAncestors(threadID string, floorTurnIndex int) (PagedItems, error) {
 	items, err := s.queryPagedItems(threadID, int64(floorTurnIndex), openUpperBound, floorTurnIndex, "")
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.finalizePagedItems(threadID, items)
+	return s.finalizePagedItemsWithTurnRange(threadID, items, floorTurnIndex, int(openUpperBound))
 }
 
 // ListItemsBeforeTurn loads older items strictly below `beforeTurnIndex`
@@ -109,7 +131,7 @@ func (s *Store) ListRecentItemsWithAncestors(threadID string, floorTurnIndex int
 // Returns PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}
 // when no older turns exist or itemBudget is non-positive.
 func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget int) (PagedItems, error) {
-	empty := PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}
+	empty := emptyPagedItems()
 	if itemBudget <= 0 {
 		return empty, nil
 	}
@@ -134,11 +156,133 @@ func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget
 	if err != nil {
 		return PagedItems{}, err
 	}
+	primaryItems := itemsInTurnRange(items, newFloor, beforeTurnIndex)
+	if len(primaryItems) == 0 {
+		return empty, nil
+	}
+	oldestCursor := cursorFromItem(primaryItems[0])
+	newestCursor := cursorFromItem(primaryItems[len(primaryItems)-1])
+	newest := newestCursor.TurnIndex
+	hasMoreNewer, err := s.hasNewerTurns(threadID, newest)
+	if err != nil {
+		return PagedItems{}, err
+	}
 	return PagedItems{
 		Items:           items,
+		OldestCursor:    oldestCursor,
+		NewestCursor:    newestCursor,
 		OldestTurnIndex: newFloor,
+		NewestTurnIndex: newest,
 		HasMore:         hasMore,
+		HasMoreOlder:    hasMore,
+		HasMoreNewer:    hasMoreNewer,
 	}, nil
+}
+
+// ListItemsAfterTurn loads newer items strictly above `afterTurnIndex`
+// until cumulative item count reaches `itemBudget`. Ancestor items below
+// the new floor are stitched in so subagent chains stay renderable when
+// the caller has pruned older context out of the active window.
+func (s *Store) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget int) (PagedItems, error) {
+	empty := emptyPagedItems()
+	if itemBudget <= 0 {
+		return empty, nil
+	}
+
+	upper, ok, err := s.ceilingTurnByItemBudget(threadID, int64(afterTurnIndex), itemBudget)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	if !ok {
+		return empty, nil
+	}
+
+	floor := afterTurnIndex + 1
+	items, err := s.queryPagedItems(threadID, int64(floor), int64(upper)+1, floor, "")
+	if err != nil {
+		return PagedItems{}, err
+	}
+
+	primaryItems := itemsInTurnRange(items, floor, upper+1)
+	if len(primaryItems) == 0 {
+		return empty, nil
+	}
+	oldestCursor := cursorFromItem(primaryItems[0])
+	newestCursor := cursorFromItem(primaryItems[len(primaryItems)-1])
+	hasMoreNewer, err := s.hasNewerTurns(threadID, newestCursor.TurnIndex)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	hasMoreOlder, err := s.hasOlderTurns(threadID, oldestCursor.TurnIndex)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	return PagedItems{
+		Items:           items,
+		OldestCursor:    oldestCursor,
+		NewestCursor:    newestCursor,
+		OldestTurnIndex: oldestCursor.TurnIndex,
+		NewestTurnIndex: newestCursor.TurnIndex,
+		HasMore:         hasMoreOlder,
+		HasMoreOlder:    hasMoreOlder,
+		HasMoreNewer:    hasMoreNewer,
+	}, nil
+}
+
+// ListItemsBeforeCursor loads older visible items strictly before `before`
+// until `itemBudget` primary rows have been selected. Ancestors needed to
+// render those rows are stitched into Items but do not affect the returned
+// cursors or HasMore probes.
+func (s *Store) ListItemsBeforeCursor(threadID string, before TimelineCursor, itemBudget int) (PagedItems, error) {
+	if itemBudget <= 0 || !cursorIsValid(before) {
+		return emptyPagedItems(), nil
+	}
+	selectedSQL := `SELECT id FROM (
+		SELECT id
+		  FROM items
+		 WHERE thread_id = ?
+		   AND ` + visibleItemsFilter + `
+		   AND (turn_index < ? OR (turn_index = ? AND item_index < ?))
+		 ORDER BY turn_index DESC, item_index DESC
+		 LIMIT ?
+	)`
+	items, primaryItems, err := s.querySelectedPagedItems(
+		threadID,
+		selectedSQL,
+		threadID, before.TurnIndex, before.TurnIndex, before.ItemIndex, itemBudget,
+	)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	return s.finalizePagedItemsWithPrimary(threadID, items, primaryItems)
+}
+
+// ListItemsAfterCursor loads newer visible items strictly after `after`
+// until `itemBudget` primary rows have been selected. Ancestors below the
+// page are stitched in as render support for partially loaded subagent
+// groups, but cursor bounds remain tied to the selected primary rows.
+func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, itemBudget int) (PagedItems, error) {
+	if itemBudget <= 0 || !cursorIsValid(after) {
+		return emptyPagedItems(), nil
+	}
+	selectedSQL := `SELECT id FROM (
+		SELECT id
+		  FROM items
+		 WHERE thread_id = ?
+		   AND ` + visibleItemsFilter + `
+		   AND (turn_index > ? OR (turn_index = ? AND item_index > ?))
+		 ORDER BY turn_index ASC, item_index ASC
+		 LIMIT ?
+	)`
+	items, primaryItems, err := s.querySelectedPagedItems(
+		threadID,
+		selectedSQL,
+		threadID, after.TurnIndex, after.TurnIndex, after.ItemIndex, itemBudget,
+	)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	return s.finalizePagedItemsWithPrimary(threadID, items, primaryItems)
 }
 
 // queryPagedItems runs the "items in [floor, upper) plus any ancestor"
@@ -221,22 +365,210 @@ func (s *Store) queryPagedItems(threadID string, floor, upper int64, ancestorCut
 	return decorated, nil
 }
 
-// finalizePagedItems attaches OldestTurnIndex + HasMore to an items
-// slice for the initial-load entry point. Empty results yield a stable
-// empty slice so the JSON response shape matches the paged-load branch.
-func (s *Store) finalizePagedItems(threadID string, items []Item) (PagedItems, error) {
-	if len(items) == 0 {
-		return PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}, nil
+// querySelectedPagedItems runs the cursor-based paging shape used by active
+// panes. `selectedSQL` must return a single `id` column containing only the
+// primary page rows. This function adds the recursive ancestor stitch and
+// returns both:
+//
+//   - all returned items, sorted for rendering, including ancestors
+//   - primary page items only, sorted by timeline coordinate, for cursors
+//
+// Keeping the selected/primary distinction is what lets a page render a
+// subagent shell from an older parent without letting that parent move the
+// logical pagination floor.
+func (s *Store) querySelectedPagedItems(threadID, selectedSQL string, selectedArgs ...any) ([]Item, []Item, error) {
+	args := append([]any{}, selectedArgs...)
+	args = append(args,
+		threadID, // ancestor seed
+		threadID, // ancestor recursion
+		threadID, // outer SELECT
+	)
+	rows, err := s.db.Query(`
+		WITH RECURSIVE selected(id) AS (
+			`+selectedSQL+`
+		),
+		ancestors(id) AS (
+			SELECT DISTINCT i.parent_id
+			  FROM items i
+			  JOIN selected s ON s.id = i.id
+			 WHERE i.thread_id = ?
+			   AND i.parent_id <> ''
+			UNION
+			SELECT i.parent_id
+			  FROM items i
+			  JOIN ancestors a ON i.id = a.id
+			 WHERE i.thread_id = ?
+			   AND i.parent_id <> ''
+		)
+		SELECT `+itemColumns+`,
+		       CASE WHEN selected.id IS NULL THEN 0 ELSE 1 END AS selected_item
+		  FROM items
+		  LEFT JOIN payloads ON payloads.id = items.payload_id
+		  LEFT JOIN selected ON selected.id = items.id
+		 WHERE items.thread_id = ?
+		   AND `+visibleItemsFilterQualified+`
+		   AND (
+		     selected.id IS NOT NULL
+		     OR items.id IN (SELECT id FROM ancestors)
+		   )
+		 ORDER BY items.turn_index, items.item_index`,
+		args...,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: query selected paged items for %s: %w", threadID, err)
 	}
-	// Items are returned ORDER BY turn_index ASC, so the smallest
-	// turn_index is on the first row. Using items[0] rather than a min
-	// scan keeps this a constant-time read.
-	oldest := items[0].TurnIndex
-	hasMore, err := s.hasOlderTurns(threadID, oldest)
+	defer rows.Close()
+
+	items := []Item{}
+	primaryItems := []Item{}
+	for rows.Next() {
+		item, selected, err := scanPagedItemRow(rows)
+		if err != nil {
+			return nil, nil, fmt.Errorf("store: scan selected paged item row: %w", err)
+		}
+		items = append(items, item)
+		if selected {
+			primaryItems = append(primaryItems, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("store: iterate selected paged items for %s: %w", threadID, err)
+	}
+	decorated, err := s.decorateProposedPlanItems(threadID, items)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: decorate selected paged proposed plans for %s: %w", threadID, err)
+	}
+	if len(decorated) != len(items) {
+		return decorated, primaryItems, nil
+	}
+	primaryByID := make(map[string]struct{}, len(primaryItems))
+	for _, item := range primaryItems {
+		primaryByID[item.ID] = struct{}{}
+	}
+	primaryItems = primaryItems[:0]
+	for _, item := range decorated {
+		if _, ok := primaryByID[item.ID]; ok {
+			primaryItems = append(primaryItems, item)
+		}
+	}
+	return decorated, primaryItems, nil
+}
+
+func scanPagedItemRow(scanner interface{ Scan(...any) error }) (Item, bool, error) {
+	var it Item
+	var isBackground int
+	var selected int
+	if err := scanner.Scan(
+		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
+		&it.Kind, &it.Role, &it.Status, &it.Summary,
+		&it.PayloadID, &it.PayloadKind, &it.PayloadMeta,
+		&it.InputPayloadID,
+		&it.ParentID, &isBackground, &it.CompletionOf,
+		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
+		&selected,
+	); err != nil {
+		return Item{}, false, err
+	}
+	it.IsBackground = isBackground != 0
+	return it, selected != 0, nil
+}
+
+func (s *Store) finalizePagedItemsWithTurnRange(
+	threadID string,
+	items []Item,
+	floorTurnIndex int,
+	upperTurnIndex int,
+) (PagedItems, error) {
+	primaryItems := itemsInTurnRange(items, floorTurnIndex, upperTurnIndex)
+	if len(primaryItems) == 0 {
+		return emptyPagedItems(), nil
+	}
+	oldest := cursorFromItem(primaryItems[0])
+	newest := cursorFromItem(primaryItems[len(primaryItems)-1])
+	hasMoreOlder, err := s.hasOlderTurns(threadID, oldest.TurnIndex)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return PagedItems{Items: items, OldestTurnIndex: oldest, HasMore: hasMore}, nil
+	hasMoreNewer, err := s.hasNewerTurns(threadID, newest.TurnIndex)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	return PagedItems{
+		Items:           items,
+		OldestCursor:    oldest,
+		NewestCursor:    newest,
+		OldestTurnIndex: oldest.TurnIndex,
+		NewestTurnIndex: newest.TurnIndex,
+		HasMore:         hasMoreOlder,
+		HasMoreOlder:    hasMoreOlder,
+		HasMoreNewer:    hasMoreNewer,
+	}, nil
+}
+
+func emptyPagedItems() PagedItems {
+	return PagedItems{
+		Items:           []Item{},
+		OldestCursor:    emptyTimelineCursor(),
+		NewestCursor:    emptyTimelineCursor(),
+		OldestTurnIndex: -1,
+		NewestTurnIndex: -1,
+		HasMore:         false,
+		HasMoreOlder:    false,
+		HasMoreNewer:    false,
+	}
+}
+
+func emptyTimelineCursor() TimelineCursor {
+	return TimelineCursor{TurnIndex: -1, ItemIndex: -1}
+}
+
+func cursorFromItem(item Item) TimelineCursor {
+	return TimelineCursor{
+		TurnIndex: item.TurnIndex,
+		ItemIndex: item.ItemIndex,
+		ItemID:    item.ID,
+	}
+}
+
+func cursorIsValid(cursor TimelineCursor) bool {
+	return cursor.TurnIndex >= 0 && cursor.ItemIndex >= 0
+}
+
+func (s *Store) finalizePagedItemsWithPrimary(threadID string, items []Item, primaryItems []Item) (PagedItems, error) {
+	if len(primaryItems) == 0 {
+		return emptyPagedItems(), nil
+	}
+	oldest := cursorFromItem(primaryItems[0])
+	newest := cursorFromItem(primaryItems[len(primaryItems)-1])
+	hasMoreOlder, err := s.hasOlderItems(threadID, oldest)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	hasMoreNewer, err := s.hasNewerItems(threadID, newest)
+	if err != nil {
+		return PagedItems{}, err
+	}
+	return PagedItems{
+		Items:           items,
+		OldestCursor:    oldest,
+		NewestCursor:    newest,
+		OldestTurnIndex: oldest.TurnIndex,
+		NewestTurnIndex: newest.TurnIndex,
+		HasMore:         hasMoreOlder,
+		HasMoreOlder:    hasMoreOlder,
+		HasMoreNewer:    hasMoreNewer,
+	}, nil
+}
+
+func itemsInTurnRange(items []Item, floorTurnIndex, upperTurnIndex int) []Item {
+	primaryItems := make([]Item, 0, len(items))
+	for _, item := range items {
+		if item.TurnIndex < floorTurnIndex || item.TurnIndex >= upperTurnIndex {
+			continue
+		}
+		primaryItems = append(primaryItems, item)
+	}
+	return primaryItems
 }
 
 // hasOlderTurns answers "does the thread have any visible item with
@@ -246,7 +578,7 @@ func (s *Store) finalizePagedItems(threadID string, items []Item) (PagedItems, e
 //
 // Filters out `plan_update` notifications via the shared
 // `visibleItemsFilter` to match every other loader (`queryPagedItems`,
-// `floorTurnByItemBudget`, `walkSliceTurns`). Without the filter,
+// `floorTurnByItemBudget`, cursor pagers). Without the filter,
 // threads whose only sub-floor rows are plan_update notifications would
 // report `hasMore=true`, the frontend would render a "Load older
 // messages" button, and clicking it would load zero rows before the
@@ -261,6 +593,53 @@ func (s *Store) hasOlderTurns(threadID string, floorTurnIndex int) (bool, error)
 	).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("store: probe older turns for %s: %w", threadID, err)
+	}
+	return exists != 0, nil
+}
+
+// hasNewerTurns answers "does the thread have any visible item with
+// turn_index > ceiling?" in one probe. It is the newer-side companion to
+// hasOlderTurns and drives the frontend's bottom history-gap affordance.
+func (s *Store) hasNewerTurns(threadID string, ceilingTurnIndex int) (bool, error) {
+	var exists int
+	err := s.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM items
+		   WHERE thread_id = ? AND turn_index > ?
+		     AND `+visibleItemsFilter+`)`,
+		threadID, ceilingTurnIndex,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("store: probe newer turns for %s: %w", threadID, err)
+	}
+	return exists != 0, nil
+}
+
+func (s *Store) hasOlderItems(threadID string, cursor TimelineCursor) (bool, error) {
+	var exists int
+	err := s.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM items
+		   WHERE thread_id = ?
+		     AND `+visibleItemsFilter+`
+		     AND (turn_index < ? OR (turn_index = ? AND item_index < ?)))`,
+		threadID, cursor.TurnIndex, cursor.TurnIndex, cursor.ItemIndex,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("store: probe older items for %s: %w", threadID, err)
+	}
+	return exists != 0, nil
+}
+
+func (s *Store) hasNewerItems(threadID string, cursor TimelineCursor) (bool, error) {
+	var exists int
+	err := s.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM items
+		   WHERE thread_id = ?
+		     AND `+visibleItemsFilter+`
+		     AND (turn_index > ? OR (turn_index = ? AND item_index > ?)))`,
+		threadID, cursor.TurnIndex, cursor.TurnIndex, cursor.ItemIndex,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("store: probe newer items for %s: %w", threadID, err)
 	}
 	return exists != 0, nil
 }
@@ -316,25 +695,65 @@ func (s *Store) floorTurnByItemBudget(threadID string, beforeTurnIndex int64, it
 	return floor, saw, nil
 }
 
-// ListThreadSliceAround loads a small slice of items around an anchor
-// for the phase-1 fast path on thread switch. The slice contains roughly
-// `targetItemCount` items (defaults to 50 when <= 0), split half above
-// and half below the anchor's turn position. Subagent ancestors above
-// the floor are stitched in via the same recursive CTE other paged loads
-// use. When the anchor itself sits inside a subagent group
-// (anchor.parent_id != ""), every sibling under that parent is included
-// so the group renders intact even if some siblings live outside the
-// turn window.
+// ceilingTurnByItemBudget is the newer-side companion to
+// floorTurnByItemBudget. It walks turns ASC strictly above afterTurnIndex
+// and returns the largest turn_index reached once cumulative ≥ itemBudget.
+func (s *Store) ceilingTurnByItemBudget(threadID string, afterTurnIndex int64, itemBudget int) (int, bool, error) {
+	if itemBudget < 1 {
+		itemBudget = 1
+	}
+	limit := boundedSliceTurnLimit(itemBudget)
+	rows, err := s.db.Query(
+		`SELECT turn_index, COUNT(*) AS item_count
+		   FROM items
+		  WHERE thread_id = ? AND turn_index > ?
+		    AND `+visibleItemsFilter+`
+		  GROUP BY turn_index
+		  ORDER BY turn_index ASC
+		  LIMIT ?`,
+		threadID, afterTurnIndex, limit,
+	)
+	if err != nil {
+		return 0, false, fmt.Errorf("store: ceiling turn by item budget for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	cumulative := 0
+	ceiling := 0
+	saw := false
+	for rows.Next() {
+		var ti, cnt int
+		if err := rows.Scan(&ti, &cnt); err != nil {
+			return 0, false, fmt.Errorf("store: scan ceiling turn by item budget row: %w", err)
+		}
+		ceiling = ti
+		saw = true
+		cumulative += cnt
+		if cumulative >= itemBudget {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, fmt.Errorf("store: iterate ceiling turn by item budget for %s: %w", threadID, err)
+	}
+	return ceiling, saw, nil
+}
+
+// ListThreadSliceAround loads the bounded active-pane window around an
+// anchor. The primary slice contains roughly `targetItemCount` items
+// (defaults to 50 when <= 0), split half at-or-before and half after the
+// anchor's item coordinate. Subagent ancestors below the selected item
+// window are stitched in so partially loaded groups still have their shell;
+// siblings outside the item window deliberately stay omitted so one
+// several-hour subagent turn cannot bypass the active-pane memory cap.
 //
 // When `anchorItemID` is "" or the item doesn't belong to `threadID`
 // (bottom-snapshot restore, stale snapshot whose anchor has been
 // deleted), the function returns the tail `targetItemCount` items.
 //
-// `OldestTurnIndex` and `HasMore` populate the same way the other paged
-// loads do, so the frontend's pagination controls work without
-// special-casing this entry point. Phase 2 of the switch always re-runs
-// `ListRecentThreadItems` to fill in the full window — this slice is a
-// fast first paint, not the canonical history view.
+// `OldestCursor` / `NewestCursor` report the logical slice bounds, not any
+// stitched ancestors that render groups around the slice, so the frontend's
+// pagination controls continue to expose omitted items.
 func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int) (PagedItems, error) {
 	if targetItemCount <= 0 {
 		targetItemCount = 50
@@ -350,126 +769,69 @@ func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemC
 		return s.listTailSlice(threadID, targetItemCount)
 	}
 
-	floor, upper, err := s.pickSliceTurnRange(threadID, anchor.TurnIndex, targetItemCount)
+	atOrBeforeBudget := targetItemCount / 2
+	if atOrBeforeBudget < 1 {
+		atOrBeforeBudget = 1
+	}
+	afterBudget := targetItemCount - atOrBeforeBudget
+	if afterBudget < 1 {
+		afterBudget = 1
+	}
+	selectedSQL := `SELECT id FROM (
+		SELECT id
+		  FROM items
+		 WHERE thread_id = ?
+		   AND ` + visibleItemsFilter + `
+		   AND (turn_index < ? OR (turn_index = ? AND item_index <= ?))
+		 ORDER BY turn_index DESC, item_index DESC
+		 LIMIT ?
+	)
+	UNION
+	SELECT id FROM (
+		SELECT id
+		  FROM items
+		 WHERE thread_id = ?
+		   AND ` + visibleItemsFilter + `
+		   AND (turn_index > ? OR (turn_index = ? AND item_index > ?))
+		 ORDER BY turn_index ASC, item_index ASC
+		 LIMIT ?
+	)`
+	items, primaryItems, err := s.querySelectedPagedItems(
+		threadID,
+		selectedSQL,
+		threadID, anchor.TurnIndex, anchor.TurnIndex, anchor.ItemIndex, atOrBeforeBudget,
+		threadID, anchor.TurnIndex, anchor.TurnIndex, anchor.ItemIndex, afterBudget,
+	)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	items, err := s.queryPagedItems(threadID, int64(floor), int64(upper)+1, floor, anchor.ParentID)
-	if err != nil {
-		return PagedItems{}, err
-	}
-	return s.finalizePagedItems(threadID, items)
+	return s.finalizePagedItemsWithPrimary(threadID, items, primaryItems)
 }
 
 // listTailSlice returns the newest `targetItemCount` items with subagent
 // ancestors stitched in. Used when the snapshot is a bottom-restore or
 // the anchor item has been deleted.
 func (s *Store) listTailSlice(threadID string, targetItemCount int) (PagedItems, error) {
-	floor, found, err := s.floorTurnByItemBudget(threadID, openUpperBound, targetItemCount)
+	selectedSQL := `SELECT id FROM (
+		SELECT id
+		  FROM items
+		 WHERE thread_id = ?
+		   AND ` + visibleItemsFilter + `
+		 ORDER BY turn_index DESC, item_index DESC
+		 LIMIT ?
+	)`
+	items, primaryItems, err := s.querySelectedPagedItems(threadID, selectedSQL, threadID, targetItemCount)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	if !found {
-		return PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}, nil
-	}
-	items, err := s.queryPagedItems(threadID, int64(floor), openUpperBound, floor, "")
-	if err != nil {
-		return PagedItems{}, err
-	}
-	return s.finalizePagedItems(threadID, items)
+	return s.finalizePagedItemsWithPrimary(threadID, items, primaryItems)
 }
 
-// pickSliceTurnRange returns inclusive (floor, upper) turn_index bounds
-// covering enough turns above and below the anchor to total roughly
-// `targetItemCount` items, split evenly. Either side may fall short if
-// the thread has fewer items on that side — the missing items are filled
-// in by phase 2 of the thread switch.
-func (s *Store) pickSliceTurnRange(threadID string, anchorTurnIndex, targetItemCount int) (floor, upper int, err error) {
-	half := targetItemCount / 2
-	if half < 1 {
-		half = 1
-	}
-	floor, err = s.walkSliceTurns(threadID, anchorTurnIndex, half, sliceWalkAtOrBelow)
-	if err != nil {
-		return 0, 0, err
-	}
-	upper, err = s.walkSliceTurns(threadID, anchorTurnIndex, half, sliceWalkAbove)
-	if err != nil {
-		return 0, 0, err
-	}
-	return floor, upper, nil
-}
-
-type sliceWalkDir int
-
-const (
-	sliceWalkAtOrBelow sliceWalkDir = iota
-	sliceWalkAbove
-)
-
-// walkSliceTurns scans turn rows around an anchor in the given direction,
-// accumulating item counts until cumulative >= budget, and returns the
-// outermost turn_index reached. For sliceWalkAtOrBelow the scan is
-// `turn_index <= anchor` ORDER BY turn_index DESC; for sliceWalkAbove
-// it's `turn_index > anchor` ORDER BY turn_index ASC. When the side is
-// empty the anchor's own turn_index is returned, which is harmless
-// because the caller's [floor, upper] window still includes the anchor
-// turn via the other walk.
-func (s *Store) walkSliceTurns(threadID string, anchorTurnIndex, budget int, dir sliceWalkDir) (int, error) {
-	if budget < 1 {
-		budget = 1
-	}
-	limit := boundedSliceTurnLimit(budget)
-	var query string
-	switch dir {
-	case sliceWalkAtOrBelow:
-		query = `SELECT turn_index, COUNT(*) AS item_count
-		   FROM items
-		  WHERE thread_id = ? AND turn_index <= ?
-		    AND ` + visibleItemsFilter + `
-		  GROUP BY turn_index
-		  ORDER BY turn_index DESC
-		  LIMIT ?`
-	case sliceWalkAbove:
-		query = `SELECT turn_index, COUNT(*) AS item_count
-		   FROM items
-		  WHERE thread_id = ? AND turn_index > ?
-		    AND ` + visibleItemsFilter + `
-		  GROUP BY turn_index
-		  ORDER BY turn_index ASC
-		  LIMIT ?`
-	default:
-		return 0, fmt.Errorf("store: walk slice turns invalid direction %d", dir)
-	}
-	rows, err := s.db.Query(query, threadID, anchorTurnIndex, limit)
-	if err != nil {
-		return 0, fmt.Errorf("store: walk slice turns for %s: %w", threadID, err)
-	}
-	defer rows.Close()
-	cumulative := 0
-	outer := anchorTurnIndex
-	for rows.Next() {
-		var ti, cnt int
-		if err := rows.Scan(&ti, &cnt); err != nil {
-			return 0, fmt.Errorf("store: scan slice turn count: %w", err)
-		}
-		outer = ti
-		cumulative += cnt
-		if cumulative >= budget {
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("store: iterate slice turns for %s: %w", threadID, err)
-	}
-	return outer, nil
-}
-
-// boundedSliceTurnLimit caps the number of turn rows scanned per slice
-// walk. Worst case (one item per turn) needs `budget` turns; a 4×
-// overshoot keeps the planner honest on burst threads where a turn might
-// be a no-item placeholder, and the absolute cap prevents pathological
-// scans on multi-thousand-turn threads.
+// boundedSliceTurnLimit caps the number of turn rows scanned by the legacy
+// turn-budget pagers. Worst case (one item per turn) needs `budget` turns; a
+// 4x overshoot keeps the planner honest on burst threads where a turn might be
+// a no-item placeholder, and the absolute cap prevents pathological scans on
+// multi-thousand-turn threads.
 func boundedSliceTurnLimit(budget int) int {
 	const overshoot = 4
 	const absoluteCap = 5000

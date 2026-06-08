@@ -64,6 +64,9 @@ var wireSafeMethods = map[string]bool{
 	// Timeline reads (item slice / turn / search).
 	"GetThreadItem":         true,
 	"ListItems":             true,
+	"ListItemsAfterCursor":  true,
+	"ListItemsAfterTurn":    true,
+	"ListItemsBeforeCursor": true,
 	"ListItemsBeforeTurn":   true,
 	"ListRecentThreadItems": true,
 	"ListRecentTurns":       true,

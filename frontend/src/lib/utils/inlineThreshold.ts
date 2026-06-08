@@ -45,6 +45,24 @@ export function truncateForPreview(text: string, max = MAX_INLINE_BYTES): string
 export const INLINE_DIFF_PREVIEW_LINE_COUNT = 15;
 
 /**
+ * Maximum number of files rendered directly inside chat for a multi-file
+ * diff. Full exact patch payloads remain available in the side panel.
+ */
+export const INLINE_DIFF_PREVIEW_FILE_COUNT = 25;
+
+export function inlineDiffPreviewFiles<T>(files: readonly T[] | null | undefined): T[] {
+  return (files ?? []).slice(0, INLINE_DIFF_PREVIEW_FILE_COUNT);
+}
+
+export function inlineDiffOmittedFiles(
+  totalFiles: number,
+  previewFileCount: number,
+  reportedOmittedFiles?: number,
+): number {
+  return Math.max(0, reportedOmittedFiles ?? 0, totalFiles - previewFileCount);
+}
+
+/**
  * Payload preview budget for inline chat diff rows. The sidebar owns the full
  * diff; chat only needs enough bytes to parse the capped preview above.
  */

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Item } from '../types/models';
 import {
+  MAX_CACHED_SNAPSHOT_CHARS,
   THREAD_ITEM_CACHE_CAP,
+  THREAD_ITEM_CACHE_MAX_CHARS,
   createThreadItemCache,
 } from './threadItemCache';
 
@@ -21,10 +23,20 @@ function makeItem(id: string, turnIndex = 0, itemIndex = 0): Item {
 }
 
 function makeSnapshot(items: Item[]) {
+  const oldest = items[0];
+  const newest = items.at(-1);
   return {
     items,
+    oldestLoadedCursor: oldest
+      ? { turnIndex: oldest.turnIndex, itemIndex: oldest.itemIndex, itemId: oldest.id }
+      : null,
+    newestLoadedCursor: newest
+      ? { turnIndex: newest.turnIndex, itemIndex: newest.itemIndex, itemId: newest.id }
+      : null,
     oldestLoadedTurnIndex: items[0]?.turnIndex ?? null,
+    newestLoadedTurnIndex: items.at(-1)?.turnIndex ?? null,
     hasMoreHistory: false,
+    hasMoreNewer: false,
     latestSettledTurn: null,
   };
 }
@@ -43,9 +55,13 @@ describe('threadItemCache', () => {
     const got = cache.get('t1');
     expect(got).not.toBeNull();
     expect(got?.items.map((i) => i.id)).toEqual(['a', 'b']);
+    expect(got?.oldestLoadedCursor).toEqual({ turnIndex: 0, itemIndex: 0, itemId: 'a' });
+    expect(got?.newestLoadedCursor).toEqual({ turnIndex: 1, itemIndex: 0, itemId: 'b' });
     expect(got?.oldestLoadedTurnIndex).toBe(0);
+    expect(got?.newestLoadedTurnIndex).toBe(1);
     expect(got?.latestSettledTurn).toBeNull();
     expect(got?.hasMoreHistory).toBe(false);
+    expect(got?.hasMoreNewer).toBe(false);
   });
 
   it('clones items on write so caller mutations do not poison the cache', () => {
@@ -143,6 +159,49 @@ describe('threadItemCache', () => {
     expect(cache.get('b')).not.toBeNull();
   });
 
+  it('skips snapshots whose text exceeds the per-entry character budget', () => {
+    const cache = createThreadItemCache();
+    const huge = makeItem('huge');
+    huge.summary = 'x'.repeat(MAX_CACHED_SNAPSHOT_CHARS + 1);
+
+    cache.set('huge-thread', makeSnapshot([huge]));
+
+    expect(cache.get('huge-thread')).toBeNull();
+    expect(cache.size).toBe(0);
+  });
+
+  it('replacing an existing entry with an oversized snapshot evicts the old entry', () => {
+    const cache = createThreadItemCache();
+    cache.set('thread', makeSnapshot([makeItem('small')]));
+
+    const huge = makeItem('huge');
+    huge.summary = 'x'.repeat(MAX_CACHED_SNAPSHOT_CHARS + 1);
+    cache.set('thread', makeSnapshot([huge]));
+
+    expect(cache.get('thread')).toBeNull();
+    expect(cache.size).toBe(0);
+  });
+
+  it('evicts least-recently-used snapshots when the total character budget is exceeded', () => {
+    const cache = createThreadItemCache(THREAD_ITEM_CACHE_CAP);
+    const charsPerEntry = Math.floor(THREAD_ITEM_CACHE_MAX_CHARS / 3);
+    for (let index = 0; index < 3; index += 1) {
+      const item = makeItem(`item-${index}`);
+      item.summary = 'x'.repeat(charsPerEntry);
+      cache.set(`thread-${index}`, makeSnapshot([item]));
+    }
+    expect(cache.get('thread-0')).not.toBeNull();
+
+    const last = makeItem('item-3');
+    last.summary = 'x'.repeat(charsPerEntry);
+    cache.set('thread-3', makeSnapshot([last]));
+
+    expect(cache.get('thread-0')).not.toBeNull();
+    expect(cache.get('thread-1')).toBeNull();
+    expect(cache.get('thread-2')).not.toBeNull();
+    expect(cache.get('thread-3')).not.toBeNull();
+  });
+
   it('default cap matches the documented constant', () => {
     const cache = createThreadItemCache();
     for (let i = 0; i < THREAD_ITEM_CACHE_CAP + 2; i++) {
@@ -170,14 +229,20 @@ describe('threadItemCache', () => {
     } as never;
     cache.set('t1', {
       items: [makeItem('a', 5), makeItem('b', 9)],
+      oldestLoadedCursor: { turnIndex: 5, itemIndex: 0, itemId: 'a' },
+      newestLoadedCursor: { turnIndex: 9, itemIndex: 0, itemId: 'b' },
       oldestLoadedTurnIndex: 5,
+      newestLoadedTurnIndex: 9,
       hasMoreHistory: true,
+      hasMoreNewer: true,
       latestSettledTurn: settled,
     });
 
     const got = cache.get('t1')!;
     expect(got.oldestLoadedTurnIndex).toBe(5);
+    expect(got.newestLoadedTurnIndex).toBe(9);
     expect(got.hasMoreHistory).toBe(true);
+    expect(got.hasMoreNewer).toBe(true);
     expect(got.latestSettledTurn).toBe(settled);
   });
 

@@ -245,15 +245,13 @@ func TestListRecentItemsWithAncestors_OneLevel(t *testing.T) {
 	if !equalStringSlice(gotIDs, wantIDs) {
 		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
 	}
-	// The ancestor-included item reports the actual smallest turn_index
-	// in the set — not the requested floor.
-	if paged.OldestTurnIndex != 0 {
-		t.Errorf("oldest: got %d, want 0", paged.OldestTurnIndex)
+	// Ancestors are render-support rows; the cursor floor stays at the
+	// requested logical window so unrelated omitted turns remain reachable.
+	if paged.OldestTurnIndex != 2 {
+		t.Errorf("oldest: got %d, want 2", paged.OldestTurnIndex)
 	}
-	// HasMore probes for turn_index < OldestTurnIndex; nothing below 0 so
-	// HasMore should be false.
-	if paged.HasMore {
-		t.Error("expected HasMore=false when parent turn already at 0")
+	if !paged.HasMoreOlder {
+		t.Error("expected HasMoreOlder=true because turn 1 is below the logical floor")
 	}
 }
 
@@ -283,6 +281,15 @@ func TestListRecentItemsWithAncestors_MultiLevel(t *testing.T) {
 	wantIDs := []string{"grand", "parent", "child"}
 	if !equalStringSlice(gotIDs, wantIDs) {
 		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+	if paged.OldestTurnIndex != 5 {
+		t.Errorf("oldest: got %d, want logical child turn 5", paged.OldestTurnIndex)
+	}
+	if paged.OldestCursor.ItemID != "child" || paged.NewestCursor.ItemID != "child" {
+		t.Errorf("cursor items = (%q, %q), want child/child", paged.OldestCursor.ItemID, paged.NewestCursor.ItemID)
+	}
+	if !paged.HasMoreOlder {
+		t.Error("expected HasMoreOlder=true because noise turns below the logical floor are omitted")
 	}
 }
 
@@ -1067,8 +1074,17 @@ func TestListThreadSliceAround_EmptyAnchorReturnsTail(t *testing.T) {
 	if paged.OldestTurnIndex != 2 {
 		t.Errorf("oldest: got %d, want 2", paged.OldestTurnIndex)
 	}
+	if paged.NewestTurnIndex != 4 {
+		t.Errorf("newest: got %d, want 4", paged.NewestTurnIndex)
+	}
 	if !paged.HasMore {
 		t.Error("expected HasMore=true (turns 0,1 below floor)")
+	}
+	if !paged.HasMoreOlder {
+		t.Error("expected HasMoreOlder=true (turns 0,1 below floor)")
+	}
+	if paged.HasMoreNewer {
+		t.Error("tail slice should not report newer history")
 	}
 }
 
@@ -1088,8 +1104,14 @@ func TestListThreadSliceAround_EmptyThreadReturnsEmpty(t *testing.T) {
 	if paged.OldestTurnIndex != -1 {
 		t.Errorf("oldest: got %d, want -1", paged.OldestTurnIndex)
 	}
+	if paged.NewestTurnIndex != -1 {
+		t.Errorf("newest: got %d, want -1", paged.NewestTurnIndex)
+	}
 	if paged.HasMore {
 		t.Error("empty thread should not report HasMore")
+	}
+	if paged.HasMoreOlder || paged.HasMoreNewer {
+		t.Error("empty thread should not report older/newer history")
 	}
 }
 
@@ -1119,8 +1141,176 @@ func TestListThreadSliceAround_AnchorInMiddle(t *testing.T) {
 	if paged.OldestTurnIndex != 4 {
 		t.Errorf("oldest: got %d, want 4", paged.OldestTurnIndex)
 	}
+	if paged.NewestTurnIndex != 7 {
+		t.Errorf("newest: got %d, want 7", paged.NewestTurnIndex)
+	}
 	if !paged.HasMore {
 		t.Error("expected HasMore=true (turns 0..3 below floor)")
+	}
+	if !paged.HasMoreOlder {
+		t.Error("expected HasMoreOlder=true (turns 0..3 below floor)")
+	}
+	if !paged.HasMoreNewer {
+		t.Error("expected HasMoreNewer=true (turns 8..9 above ceiling)")
+	}
+}
+
+func TestListItemsAfterTurn_ItemBudgetSemantics(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	for turn := 0; turn < 6; turn++ {
+		seedItem(t, s, "t", idForTurn(turn), turn, 0, "")
+	}
+
+	paged, err := s.ListItemsAfterTurn("t", 1, 2)
+	if err != nil {
+		t.Fatalf("items after turn: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	wantIDs := []string{idForTurn(2), idForTurn(3)}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+	if paged.OldestTurnIndex != 2 {
+		t.Errorf("oldest: got %d, want 2", paged.OldestTurnIndex)
+	}
+	if paged.NewestTurnIndex != 3 {
+		t.Errorf("newest: got %d, want 3", paged.NewestTurnIndex)
+	}
+	if !paged.HasMore || !paged.HasMoreOlder {
+		t.Error("expected older history below turn 2")
+	}
+	if !paged.HasMoreNewer {
+		t.Error("expected newer history above turn 3")
+	}
+}
+
+func TestListItemsAfterTurn_AncestorBelowPageDoesNotBecomeCursor(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedItem(t, s, "t", "parent", 0, 0, "")
+	seedItem(t, s, "t", "omitted", 4, 0, "")
+	seedItem(t, s, "t", "child", 10, 0, "parent")
+
+	paged, err := s.ListItemsAfterTurn("t", 5, 1)
+	if err != nil {
+		t.Fatalf("list after: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	wantIDs := []string{"parent", "child"}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+	if paged.OldestTurnIndex != 10 || paged.NewestTurnIndex != 10 {
+		t.Errorf("turn aliases = (%d, %d), want logical child turn 10", paged.OldestTurnIndex, paged.NewestTurnIndex)
+	}
+	if paged.OldestCursor.ItemID != "child" || paged.NewestCursor.ItemID != "child" {
+		t.Errorf("cursor items = (%q, %q), want child/child", paged.OldestCursor.ItemID, paged.NewestCursor.ItemID)
+	}
+	if !paged.HasMoreOlder {
+		t.Error("expected HasMoreOlder=true because turn 4 is still omitted below the logical page")
+	}
+}
+
+func TestListItemsBeforeCursor_CapsWithinDenseTurn(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	for index := 0; index < 10; index++ {
+		seedItem(t, s, "t", fmt.Sprintf("i-%d", index), 0, index, "")
+	}
+
+	paged, err := s.ListItemsBeforeCursor("t", TimelineCursor{TurnIndex: 0, ItemIndex: 8, ItemID: "i-8"}, 3)
+	if err != nil {
+		t.Fatalf("items before cursor: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	wantIDs := []string{"i-5", "i-6", "i-7"}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+	if paged.OldestCursor.ItemIndex != 5 {
+		t.Errorf("oldest item cursor = %d, want 5", paged.OldestCursor.ItemIndex)
+	}
+	if paged.NewestCursor.ItemIndex != 7 {
+		t.Errorf("newest item cursor = %d, want 7", paged.NewestCursor.ItemIndex)
+	}
+	if !paged.HasMoreOlder {
+		t.Error("expected older items before i-5")
+	}
+	if !paged.HasMoreNewer {
+		t.Error("expected newer items after i-7")
+	}
+}
+
+func TestListItemsAfterCursor_CapsWithinDenseTurn(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	for index := 0; index < 10; index++ {
+		seedItem(t, s, "t", fmt.Sprintf("i-%d", index), 0, index, "")
+	}
+
+	paged, err := s.ListItemsAfterCursor("t", TimelineCursor{TurnIndex: 0, ItemIndex: 1, ItemID: "i-1"}, 3)
+	if err != nil {
+		t.Fatalf("items after cursor: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	wantIDs := []string{"i-2", "i-3", "i-4"}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+	if paged.OldestCursor.ItemIndex != 2 {
+		t.Errorf("oldest item cursor = %d, want 2", paged.OldestCursor.ItemIndex)
+	}
+	if paged.NewestCursor.ItemIndex != 4 {
+		t.Errorf("newest item cursor = %d, want 4", paged.NewestCursor.ItemIndex)
+	}
+	if !paged.HasMoreOlder {
+		t.Error("expected older items before i-2")
+	}
+	if !paged.HasMoreNewer {
+		t.Error("expected newer items after i-4")
+	}
+}
+
+func TestListThreadSliceAround_CapsWithinDenseTurn(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	for index := 0; index < 10; index++ {
+		seedItem(t, s, "t", fmt.Sprintf("i-%d", index), 0, index, "")
+	}
+
+	paged, err := s.ListThreadSliceAround("t", "i-5", 4)
+	if err != nil {
+		t.Fatalf("slice around dense turn: %v", err)
+	}
+
+	gotIDs := collectIDs(paged.Items)
+	wantIDs := []string{"i-4", "i-5", "i-6", "i-7"}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+	if paged.OldestCursor.ItemIndex != 4 {
+		t.Errorf("oldest item cursor = %d, want 4", paged.OldestCursor.ItemIndex)
+	}
+	if paged.NewestCursor.ItemIndex != 7 {
+		t.Errorf("newest item cursor = %d, want 7", paged.NewestCursor.ItemIndex)
+	}
+	if !paged.HasMoreOlder || !paged.HasMoreNewer {
+		t.Error("expected both older and newer items around dense-turn slice")
 	}
 }
 
@@ -1171,16 +1361,23 @@ func TestListThreadSliceAround_PullsAncestorBelowFloor(t *testing.T) {
 	if !equalStringSlice(gotIDs, wantIDs) {
 		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
 	}
+	if paged.OldestTurnIndex != 5 {
+		t.Errorf("oldest cursor: got %d, want logical floor 5", paged.OldestTurnIndex)
+	}
+	if !paged.HasMoreOlder {
+		t.Error("expected HasMoreOlder=true because turns 1-4 remain omitted below the slice")
+	}
 }
 
-func TestListThreadSliceAround_AnchorChildExpandsSiblings(t *testing.T) {
+func TestListThreadSliceAround_AnchorChildKeepsSiblingWindowBounded(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 	// Subagent group: parent in turn 1, six children spanning turns 1-6.
-	// Anchor on the child in turn 4 with half-budget windows that would
-	// otherwise miss the children at turns 1 and 6.
+	// Anchor on the child in turn 4 with a tiny item budget. The active
+	// window must keep the parent shell but must not pull every sibling,
+	// otherwise one several-hour subagent group bypasses memory caps.
 	seedItem(t, s, "t", "parent", 1, 0, "")
 	seedItem(t, s, "t", "c-1", 1, 1, "parent")
 	seedItem(t, s, "t", "c-2", 2, 0, "parent")
@@ -1199,17 +1396,14 @@ func TestListThreadSliceAround_AnchorChildExpandsSiblings(t *testing.T) {
 	}
 
 	gotIDs := collectIDs(paged.Items)
-	// Half=1 each side. Floor walk at-or-below 4 picks turn 4 (cum=1,
-	// stop; floor=4). Upper walk above 4 picks turn 5 (cum=1, stop;
-	// upper=5). Window [4,5] alone yields "c-4","c-5". Sibling-expansion
-	// adds every item with parent_id="parent": c-1,c-2,c-3,c-4,c-5,c-6.
-	// Ancestor CTE adds "parent" itself (turn 1, below floor).
-	// "noise-0" and "noise-7" stay excluded.
-	wantIDs := []string{
-		"parent", "c-1", "c-2", "c-3", "c-4", "c-5", "c-6",
-	}
+	// Half=1 each side: selected primary rows are c-4 and c-5. Ancestor
+	// stitching adds only the parent shell; c-1/c-2/c-3/c-6 remain paged out.
+	wantIDs := []string{"parent", "c-4", "c-5"}
 	if !equalStringSlice(gotIDs, wantIDs) {
 		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	}
+	if paged.OldestCursor.ItemID != "c-4" {
+		t.Errorf("oldest cursor = %q, want c-4", paged.OldestCursor.ItemID)
 	}
 }
 

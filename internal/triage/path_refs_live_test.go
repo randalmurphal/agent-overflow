@@ -23,12 +23,12 @@ import (
 //
 //  1. small first delta carries the path token; creates the row,
 //     emits an upsert, does NOT pass through the buffer
-//     (firstBlock=true never calls bufferTextPersistence)
+//     (firstBlock=true persists the initial payload directly)
 //  2. second delta of non-path text large enough to trip
-//     streamPersistByteThreshold; bufferTextPersistence flushes
-//     synchronously, enrichStreamingPathRefsAndEmit runs against the
-//     combined summary, sees src/foo.ts in the prior text, and emits
-//     a meta event BEFORE we touch the block-stop boundary
+//     streamPersistByteThreshold; staged text persistence flushes
+//     after the wire delta, enrichStreamingPathRefsAndEmit runs
+//     against the combined summary, sees src/foo.ts in the prior text,
+//     and emits a meta event BEFORE we touch the block-stop boundary
 //  3. another non-path delta over the threshold; flushes again but
 //     the per-row dedupe cache short-circuits the meta emit because
 //     the merged pathRefs JSON is byte-identical
@@ -77,8 +77,8 @@ func TestStreamingTextEmitsPathRefsMidStream(t *testing.T) {
 	}
 
 	// Delta 2 — large enough to trip streamPersistByteThreshold.
-	// bufferTextPersistence returns flushNow=true and synchronously
-	// flushes the buffer; flushStreamPersistence calls
+	// stageTextPersistenceForEmit returns flushNow=true and flushes
+	// after the wire delta; flushStreamPersistence calls
 	// enrichStreamingPathRefsAndEmit which sees src/foo.ts in the
 	// combined summary and emits action:"meta".
 	padding := strings.Repeat("x", streamPersistByteThreshold+1)

@@ -23,5 +23,6 @@ export {
     ProposedPlanSourceRef,
     Thread,
     ThreadMessageHit,
+    TimelineCursor,
     Turn
 } from "./models.js";

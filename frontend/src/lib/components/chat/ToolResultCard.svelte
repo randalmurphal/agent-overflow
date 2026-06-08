@@ -25,6 +25,10 @@
   import RowError from './RowError.svelte';
   import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
+  import {
+    inlineDiffOmittedFiles,
+    inlineDiffPreviewFiles,
+  } from '../../utils/inlineThreshold';
 
   let { pane, item, meta, payloadId }: { pane?: ThreadPane; item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
 
@@ -64,6 +68,15 @@
   const hasInlineDiff = $derived(Boolean(meta.inlineDiff && meta.inlineDiff.files.length > 0));
   const hasExactPatch = $derived(meta.inlineDiff?.availability === 'exact_patch');
   const canExpandExactPatch = $derived(hasExactPatch && Boolean(payloadId));
+  const inlinePreviewFiles = $derived(inlineDiffPreviewFiles(meta.inlineDiff?.files));
+  const inlineTotalFiles = $derived(meta.inlineDiff?.totalFiles ?? meta.inlineDiff?.files.length ?? 0);
+  const inlineOmittedFiles = $derived(
+    inlineDiffOmittedFiles(
+      inlineTotalFiles,
+      inlinePreviewFiles.length,
+      meta.inlineDiff?.omittedFiles,
+    ),
+  );
   const wrapClass = $derived(getSettings().diffWordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre');
   const resultMeta = $derived(meta as unknown as Record<string, unknown>);
   const completionStatus = $derived(deriveCompletionStatus(item, { meta: resultMeta }));
@@ -135,7 +148,7 @@
       {/if}
       {#if hasInlineDiff}
         <div class="mt-2 flex flex-wrap gap-1.5" data-testid="tool-result-inline-diffs">
-          {#each meta.inlineDiff?.files ?? [] as file (file.path)}
+          {#each inlinePreviewFiles as file (file.path)}
             <span class="group/chip inline-flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle px-2 py-1 text-[0.6875rem] {kindClasses(file)}">
               <span class="font-mono">{fileLabel(file)}</span>
               {#if file.insertions || file.deletions}
@@ -163,6 +176,23 @@
               />
             </span>
           {/each}
+          {#if inlineOmittedFiles > 0}
+            <span class="inline-flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/35 px-2 py-1 text-[0.6875rem] text-text-secondary">
+              <span>{inlineOmittedFiles} more</span>
+              {#if canOpenSidebar}
+                <button
+                  type="button"
+                  onclick={(e) => { e.stopPropagation(); openSidebarForPatch(); }}
+                  title="Open full diff in side panel"
+                  aria-label="Open Full Diff in Side Panel"
+                  data-testid="tool-result-overflow-open-sidebar"
+                  class="opacity-70 hover:opacity-100 hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded p-0.5"
+                >
+                  <Icon icon={PanelRightOpen} size={12} />
+                </button>
+              {/if}
+            </span>
+          {/if}
         </div>
       {/if}
     </div>

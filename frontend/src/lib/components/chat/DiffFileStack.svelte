@@ -16,12 +16,20 @@
    * placeholder so the row still appears with its metadata.
   */
   import { untrack } from 'svelte';
+  import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { parsePatchFiles, type PatchFile, type PatchLine } from '../../utils/patchFiles';
-  import { INLINE_DIFF_PAYLOAD_PREVIEW_BYTES } from '../../utils/inlineThreshold';
+  import {
+    INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
+    inlineDiffOmittedFiles,
+    inlineDiffPreviewFiles,
+  } from '../../utils/inlineThreshold';
   import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
+  import Button from '../primitives/Button.svelte';
+  import Icon from '../primitives/Icon.svelte';
   import DiffFileBlock from './DiffFileBlock.svelte';
+  import { openDiffSidebar } from './diffSidebarTrigger';
 
   interface Props {
     pane?: ThreadPane;
@@ -78,7 +86,7 @@
   });
 
   let renderableFiles = $derived.by(() => {
-    const files = meta.inlineDiff?.files ?? [];
+    const files = previewFiles();
     const lastParsedFilePath = parsedFiles.at(-1)?.path ?? null;
     return files.map((metaFile) => {
       const parsedFile = previewFileFromMeta(metaFile) ?? parsedByPath.get(metaFile.path);
@@ -94,9 +102,19 @@
 
   let legacyFilesNeedMorePayload = $derived.by(() => {
     if (!expansion.hasMore) return false;
-    const files = meta.inlineDiff?.files ?? [];
+    const files = previewFiles();
     return files.some((metaFile) => !metaFile.previewPatch && !parsedByPath.get(metaFile.path));
   });
+
+  let totalFiles = $derived(meta.inlineDiff?.totalFiles ?? meta.inlineDiff?.files.length ?? 0);
+  let omittedFiles = $derived.by(() => {
+    return inlineDiffOmittedFiles(
+      totalFiles,
+      previewFiles().length,
+      meta.inlineDiff?.omittedFiles,
+    );
+  });
+  let canOpenFullDiff = $derived(Boolean(pane && payloadId));
 
   $effect(() => {
     const needsMore = legacyFilesNeedMorePayload;
@@ -113,9 +131,18 @@
   }
 
   function legacyPayloadId(): string | undefined {
-    const files = meta.inlineDiff?.files ?? [];
+    const files = previewFiles();
     if (files.every((file) => file.previewPatch)) return undefined;
     return payloadId;
+  }
+
+  function previewFiles(): ToolInlineDiffFile[] {
+    return inlineDiffPreviewFiles(meta.inlineDiff?.files);
+  }
+
+  function openFullDiff(): void {
+    if (!pane || !payloadId) return;
+    openDiffSidebar(pane, { payloadId });
   }
 
   function applyMetaToPatchFile(
@@ -153,3 +180,28 @@
     {hasMoreDiffContent}
   />
 {/each}
+
+{#if omittedFiles > 0}
+  <div
+    class="mx-auto mt-1 flex w-full max-w-[62rem] items-center justify-between gap-3 rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/35 px-3 py-2 text-[0.75rem] text-text-secondary"
+    data-testid="diff-file-overflow"
+  >
+    <span class="min-w-0 truncate">
+      {omittedFiles} more {omittedFiles === 1 ? 'file' : 'files'} changed
+      {#if totalFiles > 0}<span class="text-fg-subtle"> · {totalFiles} total</span>{/if}
+    </span>
+    {#if canOpenFullDiff}
+      <Button
+        variant="ghost"
+        size="xs"
+        onclick={openFullDiff}
+        ariaLabel="Open Full Diff in Side Panel"
+        title="Open full diff in side panel"
+        testId="diff-file-overflow-open-sidebar"
+      >
+        {#snippet leading()}<Icon icon={PanelRightOpen} size={12} />{/snippet}
+        {#snippet children()}Open full diff{/snippet}
+      </Button>
+    {/if}
+  </div>
+{/if}

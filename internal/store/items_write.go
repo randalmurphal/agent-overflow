@@ -272,12 +272,8 @@ func upsertPayload(tx *sql.Tx, payload *Payload, item *Item) error {
 	if payload == nil {
 		return nil
 	}
-	if _, err := tx.Exec(
-		`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
-	); err != nil {
-		return fmt.Errorf("store: upsert item payload %s: %w", payload.ID, err)
+	if err := upsertPayloadTx(tx, *payload, fmt.Sprintf("store: upsert item payload %s", payload.ID)); err != nil {
+		return err
 	}
 	item.PayloadID = payload.ID
 	return nil
@@ -293,12 +289,8 @@ func upsertInputPayload(tx *sql.Tx, payload *Payload, item *Item) error {
 	if payload == nil {
 		return nil
 	}
-	if _, err := tx.Exec(
-		`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
-	); err != nil {
-		return fmt.Errorf("store: upsert item input payload %s: %w", payload.ID, err)
+	if err := upsertPayloadTx(tx, *payload, fmt.Sprintf("store: upsert item input payload %s", payload.ID)); err != nil {
+		return err
 	}
 	item.InputPayloadID = payload.ID
 	return nil

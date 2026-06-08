@@ -9,7 +9,9 @@ import type { ActiveTurn } from './threadStatuses.svelte';
 // without globally monkey-patching browser APIs.
 let smoothingClockForTest: SmoothingClock | undefined;
 
-export function __setSmoothingClockForTest(clock: SmoothingClock | undefined): void {
+export function __setSmoothingClockForTest(
+  clock: SmoothingClock | undefined,
+): void {
   smoothingClockForTest = clock;
 }
 
@@ -33,12 +35,18 @@ export function nowForLiveContent(): number {
 export const LOAD_OLDER_ITEM_BUDGET = 200;
 
 /**
- * Hard cap on the item budget passed to `loadUntilItem` for explicit
- * jump paths (search hits, plan sidebar clicks, checkpoint jumps).
- * Independent of LOAD_OLDER_ITEM_BUDGET so tuning normal paging does not
- * silently shrink search reachability.
+ * Target loaded item count after pruning or recentering a long active
+ * timeline window. This is intentionally larger than the initial slice so
+ * paging has room to preserve reading context without keeping a whole thread.
  */
-export const LOAD_UNTIL_ITEM_HARD_CAP = 1000;
+export const ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS = 500;
+
+/**
+ * Hard loaded item count that triggers pruning/recentering. The pane keeps
+ * a single contiguous window; exceeding this cap drops the far side and
+ * exposes an older/newer gap control.
+ */
+export const ACTIVE_TIMELINE_WINDOW_MAX_ITEMS = 800;
 
 /**
  * Initial-load slice size on `switchThread`. Sized to cover several
@@ -74,18 +82,22 @@ export function trimToTailRunes(text: string, maxRunes: number): string {
   if (text.length <= maxRunes) return text;
   let runes = 0;
   for (let i = text.length; i > 0; ) {
-    const cp = text.codePointAt(i - 1)!;
-    i -= cp > 0xffff ? 2 : 1;
+    const codeUnit = text.charCodeAt(i - 1);
+    i -= codeUnit >= 0xdc00 && codeUnit <= 0xdfff && i > 1 ? 2 : 1;
     runes += 1;
     if (runes >= maxRunes) return text.slice(i);
   }
   return text;
 }
 
-export function sameRhsPanel(left: RhsPanel | null, right: RhsPanel | null): boolean {
+export function sameRhsPanel(
+  left: RhsPanel | null,
+  right: RhsPanel | null,
+): boolean {
   if (left === null || right === null) return left === right;
   if (left.kind !== right.kind) return false;
-  if (left.kind !== 'diff-payload' || right.kind !== 'diff-payload') return true;
+  if (left.kind !== 'diff-payload' || right.kind !== 'diff-payload')
+    return true;
   return left.payloadId === right.payloadId && left.filePath === right.filePath;
 }
 
@@ -102,7 +114,10 @@ export interface PaneScrollController {
   pauseAutoScroll(): () => void;
   notifyContentMaybeGrew(): void;
   notifyHostLayoutSettled?(): void;
-  preserveScrollAnchor?(anchor: HTMLElement, action: () => void | Promise<void>): Promise<void>;
+  preserveScrollAnchor?(
+    anchor: HTMLElement,
+    action: () => void | Promise<void>,
+  ): Promise<void>;
   readonly isAtBottom?: boolean;
 }
 
@@ -133,7 +148,9 @@ export interface LiveStateHydrationGuard {
 /**
  * Returns the absolute workspace path of a pane's active thread.
  */
-export function paneWorkspacePath(pane: { thread: Thread | null } | undefined): string {
+export function paneWorkspacePath(
+  pane: { thread: Thread | null } | undefined,
+): string {
   return pane?.thread?.workspacePath ?? '';
 }
 

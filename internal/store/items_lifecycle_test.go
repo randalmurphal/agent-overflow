@@ -928,10 +928,10 @@ func strconvItoa(n int) string {
 	return string(buf[i:])
 }
 
-// TestAppendPayloadDataAppendsInPlace mirrors AppendItemSummary: the
-// payload.data blob extends in one UPDATE without reading the full
-// blob into Go memory first.
-func TestAppendPayloadDataAppendsInPlace(t *testing.T) {
+// TestAppendPayloadDataAppendsAsChunks mirrors AppendItemSummary at the API
+// level while keeping the write path append-only. Appended bytes live in
+// payload_chunks so streaming writers do not rewrite the cumulative blob.
+func TestAppendPayloadDataAppendsAsChunks(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.InsertPayload(Payload{
 		ID: "p", Kind: "command_output", Meta: `{"v":1}`,
@@ -950,6 +950,13 @@ func TestAppendPayloadDataAppendsInPlace(t *testing.T) {
 	if string(data) != "hello world" {
 		t.Errorf("data = %q, want %q", data, "hello world")
 	}
+	var chunks int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payload_chunks WHERE payload_id = 'p'`).Scan(&chunks); err != nil {
+		t.Fatalf("count chunks: %v", err)
+	}
+	if chunks != 1 {
+		t.Errorf("chunks = %d, want 1", chunks)
+	}
 	meta, err := s.GetPayloadMeta("p")
 	if err != nil {
 		t.Fatalf("get meta: %v", err)
@@ -959,6 +966,47 @@ func TestAppendPayloadDataAppendsInPlace(t *testing.T) {
 	}
 	if meta.CreatedAt != 2000 {
 		t.Errorf("CreatedAt = %d, want 2000", meta.CreatedAt)
+	}
+}
+
+func TestPayloadChunkReadsSpanBaseAndAppendedChunks(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.InsertPayload(Payload{
+		ID: "p", Kind: "command_output", Meta: `{"v":1}`,
+		Data: []byte("abcd"), CreatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert payload: %v", err)
+	}
+	if err := s.AppendPayloadData("p", []byte("efgh"), `{"v":2}`, 2); err != nil {
+		t.Fatalf("append first chunk: %v", err)
+	}
+	if err := s.AppendPayloadData("p", []byte("ijkl"), `{"v":3}`, 3); err != nil {
+		t.Fatalf("append second chunk: %v", err)
+	}
+
+	chunk, total, complete, err := s.GetPayloadChunk("p", 2, 7)
+	if err != nil {
+		t.Fatalf("chunk: %v", err)
+	}
+	if string(chunk) != "cdefghi" {
+		t.Fatalf("chunk = %q, want cdefghi", chunk)
+	}
+	if total != 12 {
+		t.Fatalf("total = %d, want 12", total)
+	}
+	if complete {
+		t.Fatal("chunk should not complete payload")
+	}
+
+	tail, total, complete, err := s.GetPayloadChunk("p", 9, 99)
+	if err != nil {
+		t.Fatalf("tail chunk: %v", err)
+	}
+	if string(tail) != "jkl" {
+		t.Fatalf("tail = %q, want jkl", tail)
+	}
+	if total != 12 || !complete {
+		t.Fatalf("tail result total=%d complete=%v, want total=12 complete=true", total, complete)
 	}
 }
 
@@ -978,9 +1026,19 @@ func TestReplacePayloadDataReplacesInPlace(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
 	}
+	if err := s.AppendPayloadData("p", []byte(" plus chunk"), `{"v":1}`, 1500); err != nil {
+		t.Fatalf("append chunk before replace: %v", err)
+	}
 
 	if err := s.ReplacePayloadData("p", []byte("final text"), `{"v":2}`, 2000); err != nil {
 		t.Fatalf("replace: %v", err)
+	}
+	var chunks int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payload_chunks WHERE payload_id = 'p'`).Scan(&chunks); err != nil {
+		t.Fatalf("count chunks: %v", err)
+	}
+	if chunks != 0 {
+		t.Fatalf("chunks = %d, want 0 after replace", chunks)
 	}
 	data, err := s.GetPayloadData("p")
 	if err != nil {

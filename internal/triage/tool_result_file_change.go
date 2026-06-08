@@ -12,6 +12,7 @@ const (
 	toolResultPayloadKind      = "tool_result"
 	toolResultItemKind         = "tool_result"
 	inlineDiffPreviewLineCount = 30
+	inlineDiffPreviewFileCount = 25
 )
 
 type ToolResultMeta struct {
@@ -23,10 +24,13 @@ type ToolResultMeta struct {
 }
 
 type ToolInlineDiff struct {
-	Availability string               `json:"availability"`
-	Files        []ToolInlineDiffFile `json:"files"`
-	Insertions   int                  `json:"insertions,omitempty"`
-	Deletions    int                  `json:"deletions,omitempty"`
+	Availability   string               `json:"availability"`
+	Files          []ToolInlineDiffFile `json:"files"`
+	TotalFiles     int                  `json:"totalFiles,omitempty"`
+	OmittedFiles   int                  `json:"omittedFiles,omitempty"`
+	FilesTruncated bool                 `json:"filesTruncated,omitempty"`
+	Insertions     int                  `json:"insertions,omitempty"`
+	Deletions      int                  `json:"deletions,omitempty"`
 }
 
 type ToolInlineDiffFile struct {
@@ -221,7 +225,7 @@ func decodeFileChanges(raw json.RawMessage) ([]map[string]json.RawMessage, bool)
 }
 
 func buildInlineDiffFromChanges(changes []fileChange) (*ToolInlineDiff, string) {
-	files := make([]ToolInlineDiffFile, 0, len(changes))
+	files := make([]ToolInlineDiffFile, 0, min(len(changes), inlineDiffPreviewFileCount))
 	var patchBuilder strings.Builder
 	exact := true
 	totalInsertions := 0
@@ -251,28 +255,44 @@ func buildInlineDiffFromChanges(changes []fileChange) (*ToolInlineDiff, string) 
 		} else {
 			exact = false
 		}
-		files = append(files, file)
+		if len(files) < inlineDiffPreviewFileCount {
+			files = append(files, file)
+		}
 	}
 
-	if len(files) == 0 {
+	totalFiles := len(changes)
+	if totalFiles == 0 {
 		return nil, ""
 	}
 	if !exact {
 		return &ToolInlineDiff{
-			Availability: "summary_only",
-			Files:        files,
-			Insertions:   totalInsertions,
-			Deletions:    totalDeletions,
+			Availability:   "summary_only",
+			Files:          files,
+			TotalFiles:     totalFiles,
+			OmittedFiles:   omittedInlineDiffFiles(totalFiles, len(files)),
+			FilesTruncated: totalFiles > len(files),
+			Insertions:     totalInsertions,
+			Deletions:      totalDeletions,
 		}, ""
 	}
 
 	return &ToolInlineDiff{
-			Availability: "exact_patch",
-			Files:        files,
-			Insertions:   totalInsertions,
-			Deletions:    totalDeletions,
+			Availability:   "exact_patch",
+			Files:          files,
+			TotalFiles:     totalFiles,
+			OmittedFiles:   omittedInlineDiffFiles(totalFiles, len(files)),
+			FilesTruncated: totalFiles > len(files),
+			Insertions:     totalInsertions,
+			Deletions:      totalDeletions,
 		},
 		patchBuilder.String()
+}
+
+func omittedInlineDiffFiles(totalFiles, renderedFiles int) int {
+	if totalFiles <= renderedFiles {
+		return 0
+	}
+	return totalFiles - renderedFiles
 }
 
 func applyInlineDiffPreview(file *ToolInlineDiffFile, patch string) {
@@ -670,17 +690,18 @@ func toolPreview(meta ToolResultMeta) string {
 	if meta.InlineDiff == nil || len(meta.InlineDiff.Files) == 0 {
 		return meta.Title
 	}
-	if len(meta.InlineDiff.Files) == 1 {
+	if inlineDiffTotalFiles(meta.InlineDiff) == 1 {
 		return meta.InlineDiff.Files[0].Path
 	}
-	return fmt.Sprintf("%d files changed", len(meta.InlineDiff.Files))
+	return fmt.Sprintf("%d files changed", inlineDiffTotalFiles(meta.InlineDiff))
 }
 
 func fileChangeTitle(inlineDiff *ToolInlineDiff) string {
 	if inlineDiff == nil || len(inlineDiff.Files) == 0 {
 		return "File change"
 	}
-	if len(inlineDiff.Files) == 1 {
+	totalFiles := inlineDiffTotalFiles(inlineDiff)
+	if totalFiles == 1 {
 		file := inlineDiff.Files[0]
 		verb := "Edited"
 		switch file.Kind {
@@ -691,7 +712,17 @@ func fileChangeTitle(inlineDiff *ToolInlineDiff) string {
 		}
 		return fmt.Sprintf("%s %s %s", verb, displayInlineDiffPath(file), formatInlineDiffCounts(file.Insertions, file.Deletions))
 	}
-	return fmt.Sprintf("Edited %d files %s", len(inlineDiff.Files), formatInlineDiffCounts(inlineDiff.Insertions, inlineDiff.Deletions))
+	return fmt.Sprintf("Edited %d files %s", totalFiles, formatInlineDiffCounts(inlineDiff.Insertions, inlineDiff.Deletions))
+}
+
+func inlineDiffTotalFiles(inlineDiff *ToolInlineDiff) int {
+	if inlineDiff == nil {
+		return 0
+	}
+	if inlineDiff.TotalFiles > 0 {
+		return inlineDiff.TotalFiles
+	}
+	return len(inlineDiff.Files)
 }
 
 func displayInlineDiffPath(file ToolInlineDiffFile) string {

@@ -1186,3 +1186,117 @@ func TestTextBlockStartStreamsFirstChunkAsDelta(t *testing.T) {
 			events[2].Action, events[2].Delta, second)
 	}
 }
+
+func TestAssistantTextPayloadKeepsStreamingSummaryFull(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	first := strings.Repeat("a", 32*1024)
+	second := strings.Repeat("b", 32*1024)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   first,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first text delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   second,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second text delta: %v", err)
+	}
+
+	item := firstItemByKind(t, st, "t1", itemKindAssistantText)
+	if item.PayloadID == "" || item.PayloadKind != itemKindAssistantText {
+		t.Fatalf("assistant text payload link = (%q, %q), want assistant_text payload", item.PayloadID, item.PayloadKind)
+	}
+	if item.Summary != first+second {
+		t.Fatalf("summary length/content mismatch: got %d bytes, want full assistant text", len(item.Summary))
+	}
+	data, err := st.GetPayloadData(item.PayloadID)
+	if err != nil {
+		t.Fatalf("get payload: %v", err)
+	}
+	if string(data) != first+second {
+		t.Fatalf("payload length/content mismatch: got %d bytes, want full assistant text", len(data))
+	}
+
+	final := "final " + strings.Repeat("c", 32*1024)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:           provider.EventContentBlockStop,
+		ThreadID:       "t1",
+		Content:        final,
+		ContentPresent: true,
+		Meta:           json.RawMessage(`{"blockType":"text"}`),
+		Timestamp:      time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	settled := firstItemByKind(t, st, "t1", itemKindAssistantText)
+	if settled.Status != statusCompleted {
+		t.Fatalf("status = %q, want completed", settled.Status)
+	}
+	if settled.Summary != final {
+		t.Fatalf("settled summary length/content mismatch: got %d bytes, want authoritative final content", len(settled.Summary))
+	}
+	data, err = st.GetPayloadData(settled.PayloadID)
+	if err != nil {
+		t.Fatalf("get settled payload: %v", err)
+	}
+	if string(data) != final {
+		t.Fatalf("settled payload = %d bytes, want authoritative final content", len(data))
+	}
+}
+
+func TestAssistantTextPayloadIDsAreThreadScoped(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "thread-a")
+	createTestThread(t, st, "thread-b")
+
+	for _, tc := range []struct {
+		threadID string
+		content  string
+	}{
+		{threadID: "thread-a", content: "assistant body for A"},
+		{threadID: "thread-b", content: "assistant body for B"},
+	} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventTextDelta,
+			ThreadID:  tc.threadID,
+			Content:   tc.content,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("text delta for %s: %v", tc.threadID, err)
+		}
+	}
+
+	itemA := firstItemByKind(t, st, "thread-a", itemKindAssistantText)
+	itemB := firstItemByKind(t, st, "thread-b", itemKindAssistantText)
+	if itemA.ID != itemB.ID {
+		t.Fatalf("test setup expected matching item ids, got %q and %q", itemA.ID, itemB.ID)
+	}
+	if itemA.PayloadID == itemB.PayloadID {
+		t.Fatalf("payload ids should be thread-scoped, both were %q", itemA.PayloadID)
+	}
+
+	dataA, err := st.GetPayloadData(itemA.PayloadID)
+	if err != nil {
+		t.Fatalf("payload A: %v", err)
+	}
+	dataB, err := st.GetPayloadData(itemB.PayloadID)
+	if err != nil {
+		t.Fatalf("payload B: %v", err)
+	}
+	if string(dataA) != "assistant body for A" {
+		t.Fatalf("payload A = %q", dataA)
+	}
+	if string(dataB) != "assistant body for B" {
+		t.Fatalf("payload B = %q", dataB)
+	}
+}

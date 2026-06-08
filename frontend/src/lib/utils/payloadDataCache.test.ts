@@ -90,6 +90,19 @@ describe('payloadDataCache', () => {
     expect(readPayloadCache('thread-1', 'payload-a', 1)?.chunks).toEqual(['abcdef']);
   });
 
+  it('does not cache a single entry larger than the cache budget', () => {
+    writePayloadCache('thread-1', 'payload-huge', 1, {
+      chunks: ['x'.repeat(17 * 1024 * 1024)],
+      hasFullChunks: true,
+      totalSize: 17 * 1024 * 1024,
+      isComplete: true,
+      loadedBytes: 17 * 1024 * 1024,
+    });
+
+    expect(readPayloadCache('thread-1', 'payload-huge', 1)).toBeUndefined();
+    expect(__payloadCacheStatsForTest()).toEqual({ entries: 0, bytes: 0 });
+  });
+
   it('clearPayloadCacheForThread evicts only the specified thread', () => {
     writePayloadCache('thread-1', 'payload-a', 1, {
       chunks: ['t1a'], hasFullChunks: true, totalSize: 3, isComplete: true, loadedBytes: 3,

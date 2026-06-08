@@ -48,6 +48,8 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 		now = time.Now().UnixMilli()
 	}
 
+	payloadID := assistantTextPayloadID(evt.ThreadID, itemID)
+
 	if firstBlock {
 		item := store.Item{
 			ID:        itemID,
@@ -57,13 +59,22 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 			Role:      "assistant",
 			Status:    statusStreaming,
 			Summary:   evt.Content,
+			PayloadID: payloadID,
 			ParentID:  eventParentID(evt),
 			Meta:      withProviderItemMeta(validJSONObjectString(evt.Meta), evt.ItemID),
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
-		return r.emitStreamingBlockStart(item, nil, evt.Content, now)
+		payload := store.Payload{
+			ID:        payloadID,
+			Kind:      itemKindAssistantText,
+			Meta:      buildPayloadMeta(itemKindAssistantText, evt),
+			Data:      []byte(evt.Content),
+			CreatedAt: now,
+		}
+		return r.emitStreamingBlockStart(item, &payload, evt.Content, now)
 	}
+	flushTextAfterEmit := r.stageTextPersistenceForEmit(evt.ThreadID, itemID, payloadID, evt.Content, now)
 	r.emitItemDelta(ItemDeltaEvent{
 		ThreadID:  evt.ThreadID,
 		ItemID:    itemID,
@@ -71,8 +82,10 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 		Delta:     evt.Content,
 		UpdatedAt: now,
 	})
-	if err := r.bufferTextPersistence(evt.ThreadID, itemID, evt.Content, now); err != nil {
-		return fmt.Errorf("text delta buffer %s: %w", itemID, err)
+	if flushTextAfterEmit {
+		if err := r.flushStreamingItem(evt.ThreadID, itemID); err != nil {
+			return fmt.Errorf("text delta flush %s: %w", itemID, err)
+		}
 	}
 	return r.emitInline(evt)
 }
@@ -218,6 +231,20 @@ func thinkingItemID(turnIndex int, scope string, blockIndex int) string {
 		return fmt.Sprintf("think:%d:%d", turnIndex, blockIndex)
 	}
 	return fmt.Sprintf("think:%d:%s:%d", turnIndex, scope, blockIndex)
+}
+
+func assistantTextPayloadID(threadID, itemID string) string {
+	return "assistant-text:" + threadID + ":" + itemID
+}
+
+func assistantTextPayload(threadID, itemID, content string, now int64) store.Payload {
+	return store.Payload{
+		ID:        assistantTextPayloadID(threadID, itemID),
+		Kind:      itemKindAssistantText,
+		Meta:      buildPayloadMeta(itemKindAssistantText, provider.ProviderEvent{Content: content, Timestamp: time.UnixMilli(now)}),
+		Data:      []byte(content),
+		CreatedAt: now,
+	}
 }
 
 // settleStreamingScope is the per-scope settle hook used by

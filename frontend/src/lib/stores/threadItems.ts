@@ -1,10 +1,45 @@
 import type { Item } from '../types/models';
 import { itemTimelineStructureChanged } from '../utils/timelineStructure';
 
+export interface TimelineCursorLike {
+  turnIndex: number;
+  itemIndex: number;
+  itemId?: string;
+}
+
 export function compareItemsByTimelinePosition(a: Item, b: Item): number {
   if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
   if (a.itemIndex !== b.itemIndex) return a.itemIndex - b.itemIndex;
   return 0;
+}
+
+export function compareCursors(a: TimelineCursorLike, b: TimelineCursorLike): number {
+  if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
+  if (a.itemIndex !== b.itemIndex) return a.itemIndex - b.itemIndex;
+  return 0;
+}
+
+export function compareItemToCursor(item: Item, cursor: TimelineCursorLike): number {
+  return compareCursors(
+    { turnIndex: item.turnIndex, itemIndex: item.itemIndex, itemId: item.id },
+    cursor,
+  );
+}
+
+export function cursorFromItem(item: Item): TimelineCursorLike {
+  return {
+    turnIndex: item.turnIndex,
+    itemIndex: item.itemIndex,
+    itemId: item.id,
+  };
+}
+
+export function cursorIsValid(cursor: TimelineCursorLike | null | undefined): cursor is TimelineCursorLike {
+  if (!cursor) return false;
+  return Number.isFinite(cursor.turnIndex)
+    && Number.isFinite(cursor.itemIndex)
+    && cursor.turnIndex >= 0
+    && cursor.itemIndex >= 0;
 }
 
 /**
@@ -150,7 +185,12 @@ export interface ApplyItemUpsertsToWindowOptions {
   incoming: readonly Item[];
   itemIndexById: ReadonlyMap<string, number>;
   currentThreadId: string | null;
-  oldestLoadedTurnIndex: number | null;
+  oldestLoadedCursor?: TimelineCursorLike | null;
+  newestLoadedCursor?: TimelineCursorLike | null;
+  oldestLoadedTurnIndex?: number | null;
+  newestLoadedTurnIndex?: number | null;
+  hasMoreHistory?: boolean;
+  hasMoreNewer: boolean;
 }
 
 export interface ApplyItemUpsertsToWindowResult {
@@ -159,6 +199,7 @@ export interface ApplyItemUpsertsToWindowResult {
   changedItems: readonly Item[];
   indexesNeedRebuild: boolean;
   structureChanged: boolean;
+  droppedNewerItems: boolean;
 }
 
 /**
@@ -172,7 +213,12 @@ export function applyItemUpsertsToWindow({
   incoming,
   itemIndexById,
   currentThreadId,
+  oldestLoadedCursor,
+  newestLoadedCursor,
   oldestLoadedTurnIndex,
+  newestLoadedTurnIndex,
+  hasMoreHistory,
+  hasMoreNewer,
 }: ApplyItemUpsertsToWindowOptions): ApplyItemUpsertsToWindowResult | null {
   if (incoming.length === 0) return null;
 
@@ -183,6 +229,15 @@ export function applyItemUpsertsToWindow({
   let changed = false;
   let needsSort = false;
   let structureChanged = false;
+  let droppedNewerItems = false;
+  const floorCursor = oldestLoadedCursor
+    ?? (oldestLoadedTurnIndex === null || oldestLoadedTurnIndex === undefined
+      ? null
+      : { turnIndex: oldestLoadedTurnIndex, itemIndex: 0 });
+  const ceilingCursor = newestLoadedCursor
+    ?? (newestLoadedTurnIndex === null || newestLoadedTurnIndex === undefined
+      ? null
+      : { turnIndex: newestLoadedTurnIndex, itemIndex: Number.MAX_SAFE_INTEGER });
 
   const workingItems = (): Item[] => {
     if (next === null) next = current.slice();
@@ -220,7 +275,20 @@ export function applyItemUpsertsToWindow({
       continue;
     }
 
-    if (oldestLoadedTurnIndex !== null && item.turnIndex < oldestLoadedTurnIndex) {
+    if (
+      floorCursor
+      && compareItemToCursor(item, floorCursor) < 0
+      && (item.turnIndex < floorCursor.turnIndex || hasMoreHistory === true)
+    ) {
+      continue;
+    }
+
+    if (
+      ceilingCursor !== null
+      && hasMoreNewer
+      && compareItemToCursor(item, ceilingCursor) > 0
+    ) {
+      droppedNewerItems = true;
       continue;
     }
 
@@ -238,7 +306,17 @@ export function applyItemUpsertsToWindow({
     changedItems.push(item);
   }
 
-  if (!changed) return null;
+  if (!changed && !droppedNewerItems) return null;
+  if (!changed) {
+    return {
+      items: current as Item[],
+      appendedItems,
+      changedItems,
+      indexesNeedRebuild: false,
+      structureChanged: false,
+      droppedNewerItems,
+    };
+  }
   const result = next ?? current.slice();
 
   if (needsSort) {
@@ -250,5 +328,6 @@ export function applyItemUpsertsToWindow({
     changedItems,
     indexesNeedRebuild: needsSort,
     structureChanged,
+    droppedNewerItems,
   };
 }

@@ -87,14 +87,11 @@ export function writePayloadCache(
   // The cap name reflects "char budget" — see PAYLOAD_CACHE_MAX_BYTES.
   let bytes = 0;
   for (const c of entry.chunks) bytes += c.length;
+  if (bytes > PAYLOAD_CACHE_MAX_BYTES) return;
   const stored: PayloadCacheEntry = { ...entry, bytes };
   payloadCache.set(key, stored);
   payloadCacheBytes += bytes;
-  // Keep at least one entry — a single >cap payload still benefits its
-  // caller and will be evicted by the next write that pushes a smaller
-  // sibling past the cap. Without the size>1 floor, an oversized entry
-  // self-evicts before it ever gets read back.
-  while (payloadCacheBytes > PAYLOAD_CACHE_MAX_BYTES && payloadCache.size > 1) {
+  while (payloadCacheBytes > PAYLOAD_CACHE_MAX_BYTES) {
     const oldestKey = payloadCache.keys().next().value;
     if (oldestKey === undefined) break;
     const oldest = payloadCache.get(oldestKey);

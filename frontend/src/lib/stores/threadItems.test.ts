@@ -9,6 +9,19 @@ import {
   reconcileItemWindow,
 } from './threadItems';
 
+type ApplyItemUpsertsOptions = Parameters<typeof applyItemUpsertsToWindow>[0];
+
+function applyWindowUpserts(
+  options: Omit<ApplyItemUpsertsOptions, 'newestLoadedTurnIndex' | 'hasMoreNewer'>
+    & Partial<Pick<ApplyItemUpsertsOptions, 'newestLoadedTurnIndex' | 'hasMoreNewer'>>,
+) {
+  return applyItemUpsertsToWindow({
+    newestLoadedTurnIndex: null,
+    hasMoreNewer: false,
+    ...options,
+  });
+}
+
 describe('threadItems', () => {
   it('sorts by turn index and item index', () => {
     const sorted = [
@@ -134,7 +147,7 @@ describe('threadItems', () => {
       summary: 'moved earlier',
     });
 
-    const next = applyItemUpsertsToWindow({
+    const next = applyWindowUpserts({
       current,
       incoming: [
         makeItem({ id: 'foreign', threadId: 'thread-2', turnIndex: 0 }),
@@ -162,7 +175,7 @@ describe('threadItems', () => {
       summary: 'corrected below floor',
     });
 
-    const next = applyItemUpsertsToWindow({
+    const next = applyWindowUpserts({
       current,
       incoming: [
         makeItem({ id: 'too-old', threadId: 'thread-1', turnIndex: 1 }),
@@ -171,10 +184,51 @@ describe('threadItems', () => {
       itemIndexById: new Map(current.map((item, index) => [item.id, index])),
       currentThreadId: 'thread-1',
       oldestLoadedTurnIndex: 3,
+      hasMoreHistory: true,
     });
 
     expect(next?.items.map((item) => item.id)).toEqual(['existing']);
     expect(next?.items[0]).toBe(corrected);
+  });
+
+  it('drops new rows below the loaded floor cursor inside the same turn', () => {
+    const current = [
+      makeItem({ id: 'floor', threadId: 'thread-1', turnIndex: 3, itemIndex: 5 }),
+    ];
+
+    const next = applyWindowUpserts({
+      current,
+      incoming: [
+        makeItem({ id: 'same-turn-old', threadId: 'thread-1', turnIndex: 3, itemIndex: 4 }),
+        makeItem({ id: 'same-turn-new', threadId: 'thread-1', turnIndex: 3, itemIndex: 6 }),
+      ],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      oldestLoadedCursor: { turnIndex: 3, itemIndex: 5, itemId: 'floor' },
+      hasMoreHistory: true,
+    });
+
+    expect(next?.items.map((item) => item.id)).toEqual(['floor', 'same-turn-new']);
+  });
+
+  it('holds same-turn rows beyond the loaded ceiling when a newer gap exists', () => {
+    const current = [
+      makeItem({ id: 'ceiling', threadId: 'thread-1', turnIndex: 3, itemIndex: 5 }),
+    ];
+
+    const next = applyWindowUpserts({
+      current,
+      incoming: [
+        makeItem({ id: 'same-turn-newer', threadId: 'thread-1', turnIndex: 3, itemIndex: 6 }),
+      ],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      newestLoadedCursor: { turnIndex: 3, itemIndex: 5, itemId: 'ceiling' },
+      hasMoreNewer: true,
+    });
+
+    expect(next?.items).toBe(current);
+    expect(next?.droppedNewerItems).toBe(true);
   });
 
   it('applies existing-row upserts when only an observable optional field changes', () => {
@@ -191,7 +245,7 @@ describe('threadItems', () => {
       decision: 'approved' as const,
     };
 
-    const next = applyItemUpsertsToWindow({
+    const next = applyWindowUpserts({
       current,
       incoming: [decided],
       itemIndexById: new Map(current.map((item, index) => [item.id, index])),
@@ -223,7 +277,7 @@ describe('threadItems', () => {
       updatedAt: current[0]!.updatedAt + 1,
     };
 
-    const next = applyItemUpsertsToWindow({
+    const next = applyWindowUpserts({
       current,
       incoming: [completed],
       itemIndexById: new Map(current.map((item, index) => [item.id, index])),
@@ -252,7 +306,7 @@ describe('threadItems', () => {
       updatedAt: current[0]!.updatedAt + 1,
     };
 
-    const next = applyItemUpsertsToWindow({
+    const next = applyWindowUpserts({
       current,
       incoming: [completed],
       itemIndexById: new Map(current.map((item, index) => [item.id, index])),
@@ -279,7 +333,7 @@ describe('threadItems', () => {
       updatedAt: current[0]!.updatedAt + 1,
     };
 
-    const next = applyItemUpsertsToWindow({
+    const next = applyWindowUpserts({
       current,
       incoming: [enriched],
       itemIndexById: new Map(current.map((item, index) => [item.id, index])),
@@ -308,7 +362,7 @@ describe('threadItems', () => {
       updatedAt: current[0]!.updatedAt + 1,
     };
 
-    const next = applyItemUpsertsToWindow({
+    const next = applyWindowUpserts({
       current,
       incoming: [completed],
       itemIndexById: new Map(current.map((item, index) => [item.id, index])),
@@ -338,7 +392,7 @@ describe('threadItems', () => {
       updatedAt: current[0]!.updatedAt + 1,
     };
 
-    const next = applyItemUpsertsToWindow({
+    const next = applyWindowUpserts({
       current,
       incoming: [renamed],
       itemIndexById: new Map(current.map((item, index) => [item.id, index])),
@@ -354,7 +408,7 @@ describe('threadItems', () => {
       makeItem({ id: 'existing', threadId: 'thread-1', turnIndex: 3 }),
     ];
 
-    expect(applyItemUpsertsToWindow({
+    expect(applyWindowUpserts({
       current,
       incoming: [
         makeItem({ id: 'foreign', threadId: 'thread-2', turnIndex: 3 }),
@@ -363,6 +417,7 @@ describe('threadItems', () => {
       itemIndexById: new Map(current.map((item, index) => [item.id, index])),
       currentThreadId: 'thread-1',
       oldestLoadedTurnIndex: 2,
+      hasMoreHistory: true,
     })).toBeNull();
   });
 });

@@ -209,12 +209,14 @@ export {
   ListRecentTurns,
 
   // Windowed history + thread-wide aggregates. See /app_paging.go.
-  // `ListRecentThreadItems` replaces `ListItems` on thread switch; the
-  // others back dedicated panel/sidebar surfaces (plans, tray)
-  // so they don't under-report against a partial timeline window.
+  // Active panes use bounded slice/cursor pagers; broad recent and
+  // turn-based pagers remain available for legacy/full-tail surfaces.
   ListRecentThreadItems,
   ListThreadSliceAround,
+  ListItemsBeforeCursor,
   ListItemsBeforeTurn,
+  ListItemsAfterCursor,
+  ListItemsAfterTurn,
   ListThreadProposedPlans,
   ListProposedPlanComments,
   CountRunningBackgroundTasks,

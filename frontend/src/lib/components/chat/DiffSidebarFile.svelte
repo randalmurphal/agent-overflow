@@ -69,20 +69,12 @@
     return () => virtualizer.unregister(rowId);
   });
 
-  // Render the body whenever the file is expanded. The
-  // IntersectionObserver-based virtualization gate previously gated
-  // body rendering on `expanded && inViewport`, but the observer
-  // hadn't reliably fired before the user looked at the sidebar in
-  // some cases — the body would stay stuck on the empty placeholder
-  // until the first scroll-triggered tick. The body's tokenizer
-  // dispatcher had the same hole (the lower portion of a long diff
-  // would stay plain even after scrolling, because a fully-visible
-  // file never re-fires the observer); dispatch is now gated on
-  // expand, not visibility. The IO is still observed for `cachedHeight`
-  // — kept so future per-file priority ordering has a viewport signal
-  // to read — but the dispatch path no longer depends on it.
+  // Render heavy diff lines only while the expanded file is inside the
+  // sidebar virtualizer's overscan window. The virtualizer runs a
+  // synchronous visibility pass on register/init, so the first visible file
+  // does not wait for an async IntersectionObserver tick.
   let cachedHeight = $derived(virtualizer.height(rowId));
-  let shouldRender = $derived(expanded);
+  let shouldRender = $derived(expanded && virtualizer.isVisible(rowId));
 
   let scrollContentClass = $derived(diffScrollContentClass(wordWrap));
   let splitGridColumnsClass = $derived(diffSplitGridColumnsClass(wordWrap));

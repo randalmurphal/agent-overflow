@@ -51,7 +51,9 @@ describe('<AssistantMessage>', () => {
 
     const updatedBody = getByTestId('assistant-message-body');
     expect(updatedBody).toBe(originalBody);
-    expect(updatedBody.getAttribute('data-render-mode')).toBe('client-markdown');
+    expect(updatedBody.getAttribute('data-render-mode')).toBe(
+      'client-markdown',
+    );
     await waitFor(() => {
       // Streamdown emits `<strong data-streamdown-strong=... class=...>`
       // — anchor on the wrapping element + its text rather than an
@@ -60,6 +62,26 @@ describe('<AssistantMessage>', () => {
       expect(strong).not.toBeNull();
       expect(strong?.textContent).toBe('markdown');
     });
+  });
+
+  it('renders payload-linked assistant text as normal full output', async () => {
+    const { container, getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({
+          status: 'completed',
+          summary: 'normal assistant body',
+          payloadId: 'assistant-text:thread-1:text:0:1',
+          payloadKind: 'assistant_text',
+        }),
+      },
+    });
+
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.textContent).toContain('normal assistant body');
+    });
+    expect(container.textContent).not.toContain('Show full message');
+    expect(container.textContent).not.toContain('Show preview');
   });
 
   // Regression: svelte-streamdown's `parseIncompleteMarkdown` used to
@@ -172,7 +194,10 @@ describe('<AssistantMessage>', () => {
   it('renders a code span when a tilde is glued to the opening backtick', async () => {
     const { getByTestId } = render(AssistantMessage, {
       props: {
-        item: makeItem({ status: 'completed', summary: 'see ~`config.value` here' }),
+        item: makeItem({
+          status: 'completed',
+          summary: 'see ~`config.value` here',
+        }),
       },
     });
     const body = getByTestId('assistant-message-body');
@@ -195,12 +220,17 @@ describe('<AssistantMessage>', () => {
   it('renders both code spans (no stray mid-line pill) for two glued tilde-code pairs', async () => {
     const { getByTestId } = render(AssistantMessage, {
       props: {
-        item: makeItem({ status: 'completed', summary: 'set ~`alpha` then ~`beta`' }),
+        item: makeItem({
+          status: 'completed',
+          summary: 'set ~`alpha` then ~`beta`',
+        }),
       },
     });
     const body = getByTestId('assistant-message-body');
     await waitFor(() => {
-      const codes = [...body.querySelectorAll('code[data-streamdown-codespan]')];
+      const codes = [
+        ...body.querySelectorAll('code[data-streamdown-codespan]'),
+      ];
       expect(codes.map((c) => c.textContent)).toEqual(['alpha', 'beta']);
     });
   });
@@ -287,7 +317,10 @@ describe('<AssistantMessage>', () => {
   it('still renders superscript on plain text after the sup-rule narrowing', async () => {
     const { getByTestId } = render(AssistantMessage, {
       props: {
-        item: makeItem({ status: 'completed', summary: 'energy E=mc^2^ today' }),
+        item: makeItem({
+          status: 'completed',
+          summary: 'energy E=mc^2^ today',
+        }),
       },
     });
     const body = getByTestId('assistant-message-body');
@@ -319,17 +352,20 @@ describe('<AssistantMessage>', () => {
     { name: 'unmatched strikethrough', delimiter: '~~', dom: 'del' as const },
     { name: 'unmatched underscore italic', delimiter: '_', dom: 'em' as const },
     { name: 'unmatched asterisk italic', delimiter: '*', dom: 'em' as const },
-  ])('does not synthesise a $name closer mid-stream', async ({ delimiter, dom }) => {
-    const partial = `mid-stream ${delimiter}this is a longer phrase that should not auto-close`;
-    const { getByTestId } = render(AssistantMessage, {
-      props: { item: makeItem({ status: 'streaming', summary: partial }) },
-    });
-    const body = getByTestId('assistant-message-body');
-    await waitFor(() => {
-      expect(body.textContent).toContain(partial);
-      expect(body.querySelector(dom)).toBeNull();
-    });
-  });
+  ])(
+    'does not synthesise a $name closer mid-stream',
+    async ({ delimiter, dom }) => {
+      const partial = `mid-stream ${delimiter}this is a longer phrase that should not auto-close`;
+      const { getByTestId } = render(AssistantMessage, {
+        props: { item: makeItem({ status: 'streaming', summary: partial }) },
+      });
+      const body = getByTestId('assistant-message-body');
+      await waitFor(() => {
+        expect(body.textContent).toContain(partial);
+        expect(body.querySelector(dom)).toBeNull();
+      });
+    },
+  );
 
   // Progressive-streaming regression: the user-visible "spreading"
   // symptom required watching DOM stability across multiple incremental
@@ -369,7 +405,9 @@ describe('<AssistantMessage>', () => {
       // the styled element.
       for (let i = 1; i <= inner.length; i++) {
         const partial = `${opener}${inner.slice(0, i)}`;
-        await rerender({ item: makeItem({ status: 'streaming', summary: partial }) });
+        await rerender({
+          item: makeItem({ status: 'streaming', summary: partial }),
+        });
         await waitFor(() => {
           expect(body.textContent).toContain(partial);
           expect(body.querySelector(dom)).toBeNull();
@@ -378,7 +416,9 @@ describe('<AssistantMessage>', () => {
 
       // Closer arrives — the styled element should now exist with the
       // correct inner text only, NOT some grown-out runaway span.
-      await rerender({ item: makeItem({ status: 'streaming', summary: closingSummary }) });
+      await rerender({
+        item: makeItem({ status: 'streaming', summary: closingSummary }),
+      });
       await waitFor(() => {
         const el = body.querySelector(dom);
         expect(el).not.toBeNull();
@@ -427,26 +467,35 @@ describe('<AssistantMessage>', () => {
       name: 'unordered',
       summary: '- First predicate\n- Second predicate',
       selector: 'ul[data-streamdown-ul]',
-      expectedClasses: ['ml-0', 'pl-5', 'list-outside', 'list-disc', 'whitespace-normal'],
+      expectedClasses: [
+        'ml-0',
+        'pl-5',
+        'list-outside',
+        'list-disc',
+        'whitespace-normal',
+      ],
     },
-  ])('keeps $name list markers inside the markdown clipping box', async ({ summary, selector, expectedClasses }) => {
-    const { getByTestId } = render(AssistantMessage, {
-      props: {
-        item: makeItem({
-          status: 'completed',
-          summary,
-        }),
-      },
-    });
+  ])(
+    'keeps $name list markers inside the markdown clipping box',
+    async ({ summary, selector, expectedClasses }) => {
+      const { getByTestId } = render(AssistantMessage, {
+        props: {
+          item: makeItem({
+            status: 'completed',
+            summary,
+          }),
+        },
+      });
 
-    const body = getByTestId('assistant-message-body');
-    await waitFor(() => {
-      const list = body.querySelector(selector);
-      expect(list).not.toBeNull();
-      expect(list).toHaveClass(...expectedClasses);
-      expect(list).not.toHaveClass('ml-4');
-    });
-  });
+      const body = getByTestId('assistant-message-body');
+      await waitFor(() => {
+        const list = body.querySelector(selector);
+        expect(list).not.toBeNull();
+        expect(list).toHaveClass(...expectedClasses);
+        expect(list).not.toHaveClass('ml-4');
+      });
+    },
+  );
 
   it('renders blank-line markdown as adjacent paragraph elements', async () => {
     const { getByTestId } = render(AssistantMessage, {
@@ -464,7 +513,9 @@ describe('<AssistantMessage>', () => {
       // → a stable `[data-streamdown-paragraph]` element. We anchor on
       // that attribute instead of a positional `.markdown-body > p`
       // selector because Streamdown wraps its output in its own div.
-      const paragraphs = [...body.querySelectorAll('p[data-streamdown-paragraph]')];
+      const paragraphs = [
+        ...body.querySelectorAll('p[data-streamdown-paragraph]'),
+      ];
       expect(paragraphs.map((node) => node.textContent?.trim())).toEqual([
         'first paragraph',
         'second paragraph',
@@ -485,7 +536,9 @@ describe('<AssistantMessage>', () => {
 
     const time = container.querySelector('time');
     expect(time).not.toBeNull();
-    expect(time?.getAttribute('datetime')).toBe(new Date(createdAt).toISOString());
+    expect(time?.getAttribute('datetime')).toBe(
+      new Date(createdAt).toISOString(),
+    );
     expect(time?.className).not.toContain('opacity-0');
     expect(time?.className).not.toContain('group-hover:opacity-100');
   });
@@ -499,7 +552,9 @@ describe('<AssistantMessage>', () => {
 
   it('hides the copy button while the message is streaming', () => {
     const { container } = render(AssistantMessage, {
-      props: { item: makeItem({ status: 'streaming', summary: 'streaming text' }) },
+      props: {
+        item: makeItem({ status: 'streaming', summary: 'streaming text' }),
+      },
     });
     expect(container.querySelector('[aria-label="Copy message"]')).toBeNull();
   });

@@ -55,7 +55,7 @@ export class Attachment {
 
 /**
  * ChannelMessage is one ordered message within a channel.
- * 
+ *
  * Meta is JSON-shaped optional sidecar data persisted alongside the
  * raw message content. Today it carries the pathlinks allowlist
  * (`pathRefs`) stamped at PostMessage time so the frontend's markdown
@@ -496,28 +496,56 @@ export class Item {
 
 /**
  * PagedItems is the return shape for windowed item loads. `Items` is sorted
- * by (turn_index, item_index) ASC so callers can append the slice directly
- * to a timeline. `OldestTurnIndex` is the inclusive floor of the returned
- * set — the smallest turn_index that appears in `Items`. It is -1 when
- * `Items` is empty. `HasMore` is true when the database has at least one
- * item with `turn_index < OldestTurnIndex` for this thread, which is the
- * signal the frontend uses to render "Load older messages".
+ * by (turn_index, item_index) ASC so callers can append or replace the slice
+ * directly in a timeline. `OldestCursor` / `NewestCursor` are the inclusive
+ * item-coordinate bounds of the logical page. Render-support ancestors can be
+ * returned outside those bounds; they must not become pagination cursors.
+ * Cursor turn/item indexes are -1 when `Items` is empty.
+ *
+ * `OldestTurnIndex` / `NewestTurnIndex` are legacy turn-only aliases derived
+ * from the cursors. Active-pane callers should use the cursor fields so one
+ * dense turn cannot punch through the item window cap.
+ *
+ * HasMoreOlder / HasMoreNewer report whether visible items exist outside
+ * the cursor bounds. HasMore is the legacy older-history alias kept for
+ * frontend and transport compatibility while callers migrate to the explicit
+ * names.
  */
 export class PagedItems {
     "items": Item[];
+    "oldestCursor": TimelineCursor;
+    "newestCursor": TimelineCursor;
     "oldestTurnIndex": number;
+    "newestTurnIndex": number;
     "hasMore": boolean;
+    "hasMoreOlder": boolean;
+    "hasMoreNewer": boolean;
 
     /** Creates a new PagedItems instance. */
     constructor($$source: Partial<PagedItems> = {}) {
         if (!("items" in $$source)) {
             this["items"] = [];
         }
+        if (!("oldestCursor" in $$source)) {
+            this["oldestCursor"] = (new TimelineCursor());
+        }
+        if (!("newestCursor" in $$source)) {
+            this["newestCursor"] = (new TimelineCursor());
+        }
         if (!("oldestTurnIndex" in $$source)) {
             this["oldestTurnIndex"] = 0;
         }
+        if (!("newestTurnIndex" in $$source)) {
+            this["newestTurnIndex"] = 0;
+        }
         if (!("hasMore" in $$source)) {
             this["hasMore"] = false;
+        }
+        if (!("hasMoreOlder" in $$source)) {
+            this["hasMoreOlder"] = false;
+        }
+        if (!("hasMoreNewer" in $$source)) {
+            this["hasMoreNewer"] = false;
         }
 
         Object.assign(this, $$source);
@@ -528,9 +556,17 @@ export class PagedItems {
      */
     static createFrom($$source: any = {}): PagedItems {
         const $$createField0_0 = $$createType4;
+        const $$createField1_0 = $$createType5;
+        const $$createField2_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("items" in $$parsedSource) {
             $$parsedSource["items"] = $$createField0_0($$parsedSource["items"]);
+        }
+        if ("oldestCursor" in $$parsedSource) {
+            $$parsedSource["oldestCursor"] = $$createField1_0($$parsedSource["oldestCursor"]);
+        }
+        if ("newestCursor" in $$parsedSource) {
+            $$parsedSource["newestCursor"] = $$createField2_0($$parsedSource["newestCursor"]);
         }
         return new PagedItems($$parsedSource as Partial<PagedItems>);
     }
@@ -650,7 +686,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType5;
+        const $$createField0_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -809,7 +845,7 @@ export class ProposedPlanSourceRef {
 
 /**
  * Thread represents a conversation thread.
- * 
+ *
  * The shape changed at migration v13: ProjectPath is no longer persisted on
  * threads (ProjectID is the FK to the projects table), InteractionMode is
  * renamed to Mode, and three new per-thread composer controls
@@ -866,9 +902,11 @@ export class Thread {
 
     /**
      * LastReadAt is the Unix-ms timestamp of when the user last viewed
-     * the thread. NULL (nil) means "never tracked" and is treated as
-     * read by the UI so pre-migration rows don't all show as unread on
-     * first launch. Set by MarkThreadRead, stamped to zero by
+     * the thread. New rows are seeded with a creation-time baseline so a
+     * later completion can be detected as unread even if the user switched
+     * away before the first turn settled. NULL (nil) means "never tracked"
+     * and is treated as read by the UI so pre-migration rows don't all show
+     * as unread on first launch. Set by MarkThreadRead, stamped to zero by
      * MarkThreadUnread, and auto-refreshed when the user switches into a
      * thread.
      */
@@ -977,7 +1015,7 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField18_0 = $$createType7;
+        const $$createField18_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("disabledMcpServers" in $$parsedSource) {
             $$parsedSource["disabledMcpServers"] = $$createField18_0($$parsedSource["disabledMcpServers"]);
@@ -1058,9 +1096,43 @@ export class ThreadMessageHit {
 }
 
 /**
+ * TimelineCursor is a stable position in a thread timeline. The item id is
+ * carried for diagnostics/snapshot readability; ordering is by
+ * (turn_index, item_index), which is the store's unique timeline coordinate.
+ */
+export class TimelineCursor {
+    "turnIndex": number;
+    "itemIndex": number;
+    "itemId": string;
+
+    /** Creates a new TimelineCursor instance. */
+    constructor($$source: Partial<TimelineCursor> = {}) {
+        if (!("turnIndex" in $$source)) {
+            this["turnIndex"] = 0;
+        }
+        if (!("itemIndex" in $$source)) {
+            this["itemIndex"] = 0;
+        }
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TimelineCursor instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TimelineCursor {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TimelineCursor($$parsedSource as Partial<TimelineCursor>);
+    }
+}
+
+/**
  * Turn is one row in the turns table — a record of a single user → assistant
  * round-trip on a thread.
- * 
+ *
  * CompletedAt is a pointer because NULL is load-bearing on the latest
  * turn row: it means "in-flight or crashed mid-turn." We never write a
  * synthetic CompletedAt just to dismiss that latest stuck row. Older
@@ -1069,7 +1141,7 @@ export class ThreadMessageHit {
  * CompletedAt on rehydration as "interrupted," separate from the
  * live-push "provider:turn_started" path that drives the working
  * indicator.
- * 
+ *
  * See docs/architecture/turn-lifecycle.md §Turn lifecycle for the full
  * mental model and docs/architecture/invariants.md #22-24 for the rules
  * that depend on this shape.
@@ -1118,6 +1190,7 @@ const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = DiscussionSettings.createFrom;
 const $$createType3 = Item.createFrom;
 const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = Project.createFrom;
-const $$createType6 = $Create.Array($Create.Any);
-const $$createType7 = $Create.Nullable($$createType6);
+const $$createType5 = TimelineCursor.createFrom;
+const $$createType6 = Project.createFrom;
+const $$createType7 = $Create.Array($Create.Any);
+const $$createType8 = $Create.Nullable($$createType7);

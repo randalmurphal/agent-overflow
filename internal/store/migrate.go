@@ -160,6 +160,21 @@ CREATE INDEX idx_thread_drafts_has_content
     PRIMARY KEY (provider, workspace_path)
 );`,
 	},
+	{
+		Version: 7,
+		Name:    "payload_append_chunks",
+		SQL: `CREATE TABLE payload_chunks (
+    payload_id   TEXT    NOT NULL REFERENCES payloads(id) ON DELETE CASCADE,
+    chunk_index  INTEGER NOT NULL,
+    start_offset INTEGER NOT NULL CHECK(start_offset >= 0),
+    data         BLOB    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (payload_id, chunk_index)
+);
+
+CREATE INDEX idx_payload_chunks_payload_start
+  ON payload_chunks(payload_id, start_offset);`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

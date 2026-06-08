@@ -37,7 +37,7 @@ func TestMigrationFreshDB(t *testing.T) {
 	s := newTestStore(t)
 
 	tables := []string{
-		"migration_versions", "threads", "items", "payloads",
+		"migration_versions", "threads", "items", "payloads", "payload_chunks",
 		"channels", "channel_messages", "discussion_definitions",
 		"attachments", "thread_drafts", "thread_checkpoints", "turns",
 		"proposed_plans", "proposed_plan_comments",

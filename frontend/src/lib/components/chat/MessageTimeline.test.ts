@@ -772,16 +772,23 @@ describe('<MessageTimeline>', () => {
     async function buildWindowedPane(opts: {
       items: ReturnType<typeof makeItem>[];
       hasMore?: boolean;
+      hasMoreNewer?: boolean;
       oldestTurnIndex?: number;
+      newestTurnIndex?: number;
     }): Promise<ReturnType<typeof createThreadPane>> {
-      const { items, hasMore = false, oldestTurnIndex } = opts;
+      const { items, hasMore = false, hasMoreNewer = false, oldestTurnIndex, newestTurnIndex } = opts;
       const floor =
         oldestTurnIndex ?? (items.length > 0 ? items[0].turnIndex : -1);
+      const ceiling =
+        newestTurnIndex ?? (items.length > 0 ? items[items.length - 1].turnIndex : -1);
       setBindingMock('SwitchThread', async () => {});
       setBindingMock('ListThreadSliceAround', async () => ({
         items,
         oldestTurnIndex: floor,
+        newestTurnIndex: ceiling,
         hasMore,
+        hasMoreOlder: hasMore,
+        hasMoreNewer,
       }));
       setBindingMock('ListRecentTurns', async () => []);
       const pane = createThreadPane();
@@ -865,11 +872,11 @@ describe('<MessageTimeline>', () => {
         hasMore: true,
         oldestTurnIndex: 10,
       });
-      // Hold ListItemsBeforeTurn open so the store's loadingOlder stays
+      // Hold ListItemsBeforeCursor open so the store's loadingOlder stays
       // true across the render we want to assert on.
       let release: (value: unknown) => void = () => {};
       const pending = new Promise((resolve) => { release = resolve; });
-      setBindingMock('ListItemsBeforeTurn', async () => {
+      setBindingMock('ListItemsBeforeCursor', async () => {
         await pending;
         return { items: [], oldestTurnIndex: 10, hasMore: false };
       });
@@ -888,6 +895,42 @@ describe('<MessageTimeline>', () => {
 
       release({ items: [], oldestTurnIndex: 10, hasMore: false });
       await tick();
+    });
+
+    it('renders newer-history controls when pane.hasMoreNewer is true', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'old-window', turnIndex: 3 })],
+        hasMore: true,
+        hasMoreNewer: true,
+        oldestTurnIndex: 3,
+        newestTurnIndex: 3,
+      });
+
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+
+      expect(getByTestId('load-newer-messages')).toBeInTheDocument();
+      expect(getByTestId('jump-to-latest-messages')).toBeInTheDocument();
+      expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
+    });
+
+    it('clicking Load newer invokes pane.loadNewer', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'old-window', turnIndex: 3 })],
+        hasMoreNewer: true,
+        oldestTurnIndex: 3,
+        newestTurnIndex: 3,
+      });
+      const loadNewerSpy = vi.spyOn(pane, 'loadNewer').mockResolvedValue({
+        status: 'noop',
+        insertedBeforeWindow: false,
+        insertedRows: false,
+      });
+
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+      await fireEvent.click(getByTestId('load-newer-messages'));
+      await tick();
+
+      expect(loadNewerSpy).toHaveBeenCalledTimes(1);
     });
 
     it('scroll intents route through pane.loadUntilItem before touching the DOM', async () => {

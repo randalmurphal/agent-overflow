@@ -230,6 +230,9 @@ export interface ToolInlineDiffFile {
 export interface ToolInlineDiffMeta {
   availability: "summary_only" | "exact_patch";
   files: ToolInlineDiffFile[];
+  totalFiles?: number;
+  omittedFiles?: number;
+  filesTruncated?: boolean;
   insertions?: number;
   deletions?: number;
 }

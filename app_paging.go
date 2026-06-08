@@ -9,12 +9,11 @@ import (
 )
 
 // Windowed history constants. `sliceAroundDefaultItems` and
-// `paginationItems` size the user-facing loads so SubagentGroup
-// collapse (a heavy subagent turn rolls up to one card) doesn't leave
-// the rendered timeline visually truncated. `initialTurnWindow` sizes
-// the legacy `ListRecentThreadItems` transport-gap-recovery probe;
-// `maxWindowItems` bounds that probe AND serves as a shared DoS cap
-// for the two viewport bindings below.
+// `paginationItems` size the active-pane loads so SubagentGroup collapse
+// (a heavy subagent turn rolls up to one card) doesn't leave the rendered
+// timeline visually truncated. `initialTurnWindow` is kept for the legacy
+// ListRecentThreadItems RPC, while `maxWindowItems` is the shared DoS cap
+// for every history binding.
 const (
 	initialTurnWindow = 50
 	maxWindowItems    = 2000
@@ -43,12 +42,9 @@ const (
 	backgroundTaskRetentionMillis = 2000
 )
 
-// ListRecentThreadItems loads the tail of a thread's history into the
-// timeline pane: the last `turnLimit` turns (defaulting to
-// initialTurnWindow when <= 0) plus enough surrounding turns to keep
-// the total item count in [500, maxWindowItems], plus any subagent
-// ancestors those items reference. This is the binding the frontend
-// calls on thread switch.
+// ListRecentThreadItems loads a broad recent tail window. Active chat panes
+// use ListThreadSliceAround for bounded switch/refresh loads; this method is
+// retained for legacy callers and any future full-tail refresh surfaces.
 func (a *App) ListRecentThreadItems(threadID string, turnLimit int) (store.PagedItems, error) {
 	if turnLimit <= 0 {
 		turnLimit = initialTurnWindow
@@ -62,7 +58,16 @@ func (a *App) ListRecentThreadItems(threadID string, turnLimit int) (store.Paged
 	}
 	if floor < 0 {
 		// Empty thread — no items, no turns.
-		return store.PagedItems{Items: []store.Item{}, OldestTurnIndex: -1, HasMore: false}, nil
+		return store.PagedItems{
+			Items:           []store.Item{},
+			OldestCursor:    store.TimelineCursor{TurnIndex: -1, ItemIndex: -1},
+			NewestCursor:    store.TimelineCursor{TurnIndex: -1, ItemIndex: -1},
+			OldestTurnIndex: -1,
+			NewestTurnIndex: -1,
+			HasMore:         false,
+			HasMoreOlder:    false,
+			HasMoreNewer:    false,
+		}, nil
 	}
 	paged, err := a.store.ListRecentItemsWithAncestors(threadID, floor)
 	if err != nil {
@@ -72,24 +77,20 @@ func (a *App) ListRecentThreadItems(threadID string, turnLimit int) (store.Paged
 	return paged, nil
 }
 
-// ListThreadSliceAround loads a small slice of items around an anchor
-// for the phase-1 fast path on thread switch. Roughly `targetItemCount`
-// items are returned (defaulting to sliceAroundDefaultItems when <= 0):
-// half above and half below the anchor's turn position. When
-// `anchorItemID` is "" or no longer exists, the function returns the
-// tail `targetItemCount` items — the bottom-snapshot restore case.
-//
-// Phase 2 of the thread switch always re-runs `ListRecentThreadItems`
-// to fill in the full window; this binding exists to paint the visible
-// viewport quickly while phase 2 runs in parallel.
+// ListThreadSliceAround loads the bounded active-pane window around an anchor.
+// Roughly `targetItemCount` items are returned (defaulting to
+// sliceAroundDefaultItems when <= 0): half at-or-before and half after the
+// anchor's item coordinate. When `anchorItemID` is "" or no longer exists,
+// the function returns the tail `targetItemCount` items — the bottom-snapshot
+// restore case.
 func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int) (store.PagedItems, error) {
 	if targetItemCount <= 0 {
 		targetItemCount = sliceAroundDefaultItems
 	}
 	// Cap at maxWindowItems so a malicious LAN-attached caller can't
 	// request a slice covering the whole thread and OOM the process.
-	// Phase 2 (ListRecentThreadItems) is the right surface for the full
-	// window; this binding is for a viewport-sized fast path.
+	// Active panes should stay on this bounded slice surface and page
+	// older/newer history explicitly.
 	if targetItemCount > maxWindowItems {
 		targetItemCount = maxWindowItems
 	}
@@ -101,14 +102,11 @@ func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCou
 	return paged, nil
 }
 
-// ListItemsBeforeTurn loads older items on demand, strictly below
-// `beforeTurnIndex` (the frontend's current window floor). The third
-// parameter is an **item budget**: the backend walks turns DESC,
-// summing each turn's item count (excluding plan_update notifications),
-// and stops at the first turn that pushes cumulative ≥ itemBudget.
-// Defaults to paginationItems when <= 0, capped at maxWindowItems to
-// defend against a malicious LAN-attached caller asking for the whole
-// thread in one round-trip.
+// ListItemsBeforeTurn is the legacy turn-floor pager. Active panes use
+// ListItemsBeforeCursor so long single turns remain item-bounded. Keep this
+// public compatibility surface item-bounded too: the synthetic cursor points
+// at the start of beforeTurnIndex, so rows strictly below that turn are loaded
+// with a hard primary-row budget.
 func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget int) (store.PagedItems, error) {
 	if itemBudget <= 0 {
 		itemBudget = paginationItems
@@ -116,9 +114,81 @@ func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget i
 	if itemBudget > maxWindowItems {
 		itemBudget = maxWindowItems
 	}
-	paged, err := a.store.ListItemsBeforeTurn(threadID, beforeTurnIndex, itemBudget)
+	paged, err := a.store.ListItemsBeforeCursor(
+		threadID,
+		store.TimelineCursor{TurnIndex: beforeTurnIndex, ItemIndex: 0},
+		itemBudget,
+	)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items before turn: %w", err)
+	}
+	paged.Items = slicesx.OrEmpty(paged.Items)
+	return paged, nil
+}
+
+// ListItemsAfterTurn is the legacy turn-ceiling pager. Active panes use
+// ListItemsAfterCursor so long single turns remain item-bounded. The synthetic
+// cursor points at the end of afterTurnIndex, so rows strictly above that turn
+// are loaded with a hard primary-row budget.
+func (a *App) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget int) (store.PagedItems, error) {
+	if itemBudget <= 0 {
+		itemBudget = paginationItems
+	}
+	if itemBudget > maxWindowItems {
+		itemBudget = maxWindowItems
+	}
+	if afterTurnIndex < 0 {
+		paged, err := a.store.ListItemsAfterTurn(threadID, afterTurnIndex, itemBudget)
+		if err != nil {
+			return store.PagedItems{}, fmt.Errorf("list items after turn: %w", err)
+		}
+		paged.Items = slicesx.OrEmpty(paged.Items)
+		return paged, nil
+	}
+	paged, err := a.store.ListItemsAfterCursor(
+		threadID,
+		store.TimelineCursor{TurnIndex: afterTurnIndex, ItemIndex: int(^uint(0) >> 1)},
+		itemBudget,
+	)
+	if err != nil {
+		return store.PagedItems{}, fmt.Errorf("list items after turn: %w", err)
+	}
+	paged.Items = slicesx.OrEmpty(paged.Items)
+	return paged, nil
+}
+
+// ListItemsBeforeCursor loads older items on demand, strictly before the
+// frontend's current item-coordinate window floor. The item budget is a hard
+// primary-row cap; render-support ancestors can be stitched in above it, but
+// same-turn rows outside the cursor range stay omitted until explicitly paged.
+func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor, itemBudget int) (store.PagedItems, error) {
+	if itemBudget <= 0 {
+		itemBudget = paginationItems
+	}
+	if itemBudget > maxWindowItems {
+		itemBudget = maxWindowItems
+	}
+	paged, err := a.store.ListItemsBeforeCursor(threadID, before, itemBudget)
+	if err != nil {
+		return store.PagedItems{}, fmt.Errorf("list items before cursor: %w", err)
+	}
+	paged.Items = slicesx.OrEmpty(paged.Items)
+	return paged, nil
+}
+
+// ListItemsAfterCursor loads newer items on demand, strictly after the
+// frontend's current item-coordinate window ceiling. It is the forward pager
+// companion to ListItemsBeforeCursor.
+func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, itemBudget int) (store.PagedItems, error) {
+	if itemBudget <= 0 {
+		itemBudget = paginationItems
+	}
+	if itemBudget > maxWindowItems {
+		itemBudget = maxWindowItems
+	}
+	paged, err := a.store.ListItemsAfterCursor(threadID, after, itemBudget)
+	if err != nil {
+		return store.PagedItems{}, fmt.Errorf("list items after cursor: %w", err)
 	}
 	paged.Items = slicesx.OrEmpty(paged.Items)
 	return paged, nil

@@ -34,6 +34,10 @@
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { recordTimelineRenderTrace, startTimelineRowResizeTrace } from './messageTimelineTrace';
   import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
+  import {
+    countMountedTimelineMemoryNodes,
+    installTimelineMemoryDiagnostics,
+  } from '../../utils/timelineMemoryDiagnostics';
   import type { UserMessageActions } from './userMessageActions';
   import {
     captureTimelineAnchor,
@@ -41,6 +45,10 @@
     resolveVisibleTimelineNodeIndex,
   } from './timelineScroll';
   import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
+  import {
+    activeRowUiRetentionSignature,
+    collectTimelineRowUiRetention,
+  } from './timelineRowUiRetention';
 
   // Initial item-size estimate for virtua. Real sizes come from the
   // per-item ResizeObserver virtua wraps each row in; this constant only
@@ -54,6 +62,12 @@
   // DOM/component state for the smoother scroll. Revisit only if it's
   // ever measured to hurt mount-time on first-open.
   const BUFFER_SIZE_PX = 1800;
+  // Expansion handles keep loaded payload bytes and Svelte effect roots so
+  // rows can survive normal virtua remounts. Keep that cache near the
+  // viewport and tail only; old offscreen rows remount collapsed instead of
+  // retaining detached DOM through stale component contexts.
+  const ROW_UI_RETAIN_NODE_BUFFER = 96;
+  const ROW_UI_RETAIN_TAIL_NODE_COUNT = 64;
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
   const BOTTOM_PAD_PX = 16;
@@ -231,6 +245,10 @@
 
     return untrack(() => timelineRowDecorations(revealedNodes, activeTurnIndex));
   });
+
+  let rowUiActiveRetentionSignature = $derived(
+    activeRowUiRetentionSignature(pane.items),
+  );
 
   let activeTurnStructuralSignature = $derived.by(() => {
     const threadId = pane.threadId;
@@ -500,6 +518,22 @@
     recordTimelineRenderTrace(pane, revealedNodes, scrollEl, listRef);
   });
 
+  $effect(() => installTimelineMemoryDiagnostics(pane.paneId, () => ({
+    threadId: pane.threadId || null,
+    itemWindowItems: pane.items.length,
+    revealedNodes: revealedNodes.length,
+    oldestLoadedCursor: pane.oldestLoadedCursor,
+    newestLoadedCursor: pane.newestLoadedCursor,
+    oldestLoadedTurnIndex: pane.oldestLoadedTurnIndex,
+    newestLoadedTurnIndex: pane.newestLoadedTurnIndex,
+    hasMoreHistory: pane.hasMoreHistory,
+    hasMoreNewer: pane.hasMoreNewer,
+    loadingOlder: pane.loadingOlder,
+    loadingNewer: pane.loadingNewer,
+    ...countMountedTimelineMemoryNodes(scrollEl),
+    paneState: pane.debugMemoryStats(),
+  })));
+
   // Trace virtua remount transitions: listRef goes undefined → defined
   // when the {#key pane.threadId} block remounts the Virtualizer. This
   // is the seam where virtua's deferred scroller attach
@@ -543,6 +577,79 @@
     return resolveVisibleTimelineNodeIndex(revealedNodes, pane.items, itemId);
   }
 
+  function clampTimelineIndex(index: number): number {
+    if (revealedNodes.length === 0) return -1;
+    if (!Number.isFinite(index)) return 0;
+    return Math.max(0, Math.min(revealedNodes.length - 1, Math.floor(index)));
+  }
+
+  function currentVisibleTimelineRange(): { first: number; last: number } | null {
+    if (!listRef || !scrollEl || revealedNodes.length === 0) return null;
+    try {
+      const offset = Math.max(0, listRef.getScrollOffset());
+      const first = clampTimelineIndex(listRef.findItemIndex(offset));
+      const last = clampTimelineIndex(listRef.findItemIndex(offset + scrollEl.clientHeight));
+      if (first < 0 || last < 0) return null;
+      return first <= last ? { first, last } : { first: last, last: first };
+    } catch (err) {
+      if (err instanceof TypeError) return null;
+      throw err;
+    }
+  }
+
+  let lastRowUiPruneSignature = '';
+  let rowUiPruneToken = 0;
+
+  function scheduleRowUiStatePrune(): void {
+    if (IS_TEST) return;
+    const token = ++rowUiPruneToken;
+    void tick().then(() => {
+      if (token !== rowUiPruneToken) return;
+      pruneOffscreenRowUiState();
+    });
+  }
+
+  function pruneOffscreenRowUiState(): void {
+    const range = currentVisibleTimelineRange();
+    if (!range) return;
+
+    const retention = collectTimelineRowUiRetention(
+      revealedNodes,
+      pane.items,
+      range,
+      {
+        nodeBuffer: ROW_UI_RETAIN_NODE_BUFFER,
+        tailNodeCount: ROW_UI_RETAIN_TAIL_NODE_COUNT,
+        isGroupExpanded: pane.isSubagentGroupExpanded,
+      },
+    );
+    const signature = [
+      pane.threadId,
+      pane.timelineRevision,
+      pane.revealBoundary?.turnIndex ?? '',
+      pane.revealBoundary?.itemIndex ?? '',
+      retention.signature,
+    ].join('|');
+    if (signature === lastRowUiPruneSignature) return;
+    lastRowUiPruneSignature = signature;
+
+    pane.pruneRowUiState(retention.retention);
+  }
+
+  $effect(() => {
+    pane.threadId;
+    pane.timelineRevision;
+    pane.revealBoundary;
+    rowUiActiveRetentionSignature;
+    scheduleRowUiStatePrune();
+  });
+
+  $effect(() => {
+    listRef;
+    scrollEl;
+    scheduleRowUiStatePrune();
+  });
+
 
   // ============================================================
   // Virtualizer scroll callbacks → snapshot persist
@@ -554,10 +661,12 @@
   function handleVirtuaScroll(offset: number): void {
     saveScrollSnapshot();
     maybeAutoLoadOlder(offset);
+    scheduleRowUiStatePrune();
   }
 
   function handleVirtuaScrollEnd(): void {
     saveScrollSnapshot();
+    scheduleRowUiStatePrune();
   }
 
   // Auto-load-older trigger. Fires `pane.loadOlder()` when the user is
@@ -1028,6 +1137,34 @@
     }
   }
 
+  async function handleLoadNewer(): Promise<void> {
+    if (!listRef) return;
+    const release = stick.pauseAutoScroll();
+    const myToken = ++restoreToken;
+    try {
+      const result = await pane.loadNewer();
+      await tick();
+      if (myToken !== restoreToken || !listRef || result.status !== 'loaded') return;
+      const lastIndex = revealedNodes.length - 1;
+      if (lastIndex < 0) return;
+      stick.runExternalScroll(() => {
+        listRef?.scrollToIndex(lastIndex, { align: 'end' });
+      });
+      saveScrollSnapshot();
+    } finally {
+      release();
+    }
+  }
+
+  async function jumpToLatest(): Promise<void> {
+    const myToken = ++restoreToken;
+    const loaded = pane.hasMoreNewer ? await pane.loadRecentTail() : true;
+    await tick();
+    if (myToken !== restoreToken || !loaded) return;
+    stick.forceStick({ reason: 'user' });
+    saveScrollSnapshot();
+  }
+
   // ============================================================
   // Scroll-to-item (search hits, plan rows, tray rows)
   // ============================================================
@@ -1067,6 +1204,7 @@
 
   onDestroy(() => {
     hostLayoutRetryToken += 1;
+    rowUiPruneToken += 1;
     if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId);
     targetFlash.clear();
     autoLoadOlderGate.reset();
@@ -1283,6 +1421,32 @@
             </div>
           {/snippet}
         </Virtualizer>
+        {#if pane.hasMoreNewer}
+          <div class="mx-auto flex w-full max-w-[62rem] justify-center px-6 pb-6 pt-2">
+            <div class="flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/80 px-2 py-1.5 shadow-sm">
+              <Button
+                variant="secondary"
+                size="xs"
+                onclick={handleLoadNewer}
+                loading={pane.loadingNewer}
+                testId="load-newer-messages"
+              >
+                {#snippet children()}
+                  {pane.loadingNewer ? 'Loading…' : 'Load newer messages'}
+                {/snippet}
+              </Button>
+              <Button
+                variant="ghost"
+                size="xs"
+                onclick={() => { void jumpToLatest(); }}
+                loading={pane.loadingNewer}
+                testId="jump-to-latest-messages"
+              >
+                {#snippet children()}Jump to latest{/snippet}
+              </Button>
+            </div>
+          </div>
+        {/if}
         {/key}
       </div>
     {/if}
@@ -1294,5 +1458,5 @@
        geometrically glued to the bottom. Anchored to the outer wrapper
        (which does not scroll), so the chip stays fixed in the visible
        area regardless of transcript scrollTop. -->
-  <ScrollToBottomButton visible={!stick.isAtBottom} onClick={() => stick.forceStick()} />
+  <ScrollToBottomButton visible={!stick.isAtBottom || pane.hasMoreNewer} onClick={() => { void jumpToLatest(); }} />
 </div>

@@ -138,13 +138,17 @@ describe('setupEventListeners', () => {
     cacheModule.threadItemCache.set('thread-a', {
       items: [makeItem({ id: 'cached-a', threadId: 'thread-a' })],
       oldestLoadedTurnIndex: 0,
+      newestLoadedTurnIndex: 0,
       hasMoreHistory: false,
+      hasMoreNewer: false,
       latestSettledTurn: null,
     });
     cacheModule.threadItemCache.set('thread-other', {
       items: [makeItem({ id: 'cached-other', threadId: 'thread-other' })],
       oldestLoadedTurnIndex: 0,
+      newestLoadedTurnIndex: 0,
       hasMoreHistory: false,
+      hasMoreNewer: false,
       latestSettledTurn: null,
     });
     expect(cacheModule.threadItemCache.size).toBe(2);
@@ -183,7 +187,9 @@ describe('setupEventListeners', () => {
     cacheModule.threadItemCache.set('thread-a', {
       items: [item],
       oldestLoadedTurnIndex: 0,
+      newestLoadedTurnIndex: 0,
       hasMoreHistory: false,
+      hasMoreNewer: false,
       latestSettledTurn: null,
     });
 

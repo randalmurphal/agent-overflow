@@ -31,8 +31,8 @@ import {
   GetThreadItem,
   GetThreadLiveState,
   ListPendingInteractiveRequests,
-  ListItemsBeforeTurn,
-  ListRecentThreadItems,
+  ListItemsBeforeCursor,
+  ListItemsAfterCursor,
   ListRecentTurns,
   ListThreadCheckpoints,
   MoveThreadTerminals,
@@ -68,12 +68,17 @@ import {
 import {
   type ApplyItemUpsertsToWindowResult,
   applyItemUpsertsToWindow,
+  compareCursors,
+  compareItemToCursor,
   compareItemsByTimelinePosition,
+  cursorFromItem,
+  cursorIsValid,
   itemsAreEqual,
   itemsForThread,
   mergeItemsById,
   mergeMissingItemsById,
   reconcileItemWindow,
+  type TimelineCursorLike,
 } from './threadItems';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { ListThreadSliceAround } from './bindings';
@@ -129,7 +134,8 @@ import { SvelteMap } from 'svelte/reactivity';
 import { PerItemSmoother } from '../markdown/smoothing/PerItemSmoother';
 import {
   LOAD_OLDER_ITEM_BUDGET,
-  LOAD_UNTIL_ITEM_HARD_CAP,
+  ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+  ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
   SLICE_AROUND_ITEM_BUDGET,
   SPINNER_THRESHOLD_MS,
   THINKING_TAIL_RUNES,
@@ -183,10 +189,7 @@ export type { LiveTodo } from './liveTodoState.svelte';
 // Diff-sidebar UI types are owned by stores/rhsPanelSlot.svelte.ts.
 // Re-exported here so callers that import from this module
 // continue to find them at the same path.
-export type {
-  DiffSidebarUIState,
-  RhsPanel,
-} from './rhsPanelSlot.svelte';
+export type { DiffSidebarUIState, RhsPanel } from './rhsPanelSlot.svelte';
 
 /**
  * Per-item smoothing handle stored in the pane's `itemSmoothers` map.
@@ -197,6 +200,12 @@ export type {
 interface ItemSmoothing {
   smoother: PerItemSmoother;
   setLatestUpdatedAt(at: number): void;
+}
+
+interface PrunedWindow {
+  items: Item[];
+  oldestCursor: TimelineCursorLike | null;
+  newestCursor: TimelineCursorLike | null;
 }
 
 /**
@@ -233,7 +242,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     const index = itemIndexById.get(itemId);
     return index === undefined ? undefined : items[index];
   }
-  const rowUiState = createThreadRowUiState({ getItemById });
+  function isPayloadReferenced(threadId: string, payloadId: string): boolean {
+    return items.some((item) =>
+      item.threadId === threadId && item.payloadId === payloadId,
+    );
+  }
+  const rowUiState = createThreadRowUiState({
+    getItemById,
+    isPayloadReferenced,
+  });
   // Per-item streaming smoothers keyed by item id. Created lazily on
   // the first streaming delta for a smoothable row (assistant_text /
   // thinking); disposed on row removal, status snap, or pane clear.
@@ -277,7 +294,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // windowMins)` directly. Keeping them out of per-pane state means
   // they survive thread switches, turn completions, and metadata
   // updates with no defensive logic on the pane side.
-  let providerBanner: ProviderStatusEvent | null | undefined = $state(undefined);
+  let providerBanner: ProviderStatusEvent | null | undefined =
+    $state(undefined);
   // generalError is the grab-bag pane-level error slot surfaced by
   // ProviderStatusBanner for non-wire failures: thread load failures,
   // composer send failures, git action failures, reconnect failures.
@@ -424,19 +442,27 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * thread's items (~50 items on initial load); older history loads
    * on demand via `loadOlder()` or `loadUntilItem()`.
    *
-   *  - `oldestLoadedTurnIndex` is the inclusive floor of the window.
-   *    `null` when nothing is loaded (empty thread / fresh pane).
+   *  - `oldestLoadedCursor` / `newestLoadedCursor` are the inclusive
+   *    item-coordinate bounds of the single contiguous logical window.
+   *    The turn-index fields are compatibility projections for tests and
+   *    existing consumers; they are not used as memory boundaries.
    *  - `hasMoreHistory` drives the "Load older" button's visibility.
-   *  - `loadingOlder` disables the button while a fetch is in flight.
+   *  - `hasMoreNewer` drives the bottom "newer messages" gap.
+   *  - loading flags disable the matching controls while a fetch is in flight.
    *
    * Upsert events whose item coordinates fall below the window floor
    * are silently dropped — the canonical copy lives in SQLite and will
    * be pulled in the next time the user loads older history. See
    * `upsertItem` below.
    */
+  let oldestLoadedCursor: TimelineCursorLike | null = $state(null);
+  let newestLoadedCursor: TimelineCursorLike | null = $state(null);
   let oldestLoadedTurnIndex: number | null = $state(null);
+  let newestLoadedTurnIndex: number | null = $state(null);
   let hasMoreHistory: boolean = $state(false);
+  let hasMoreNewer: boolean = $state(false);
   let loadingOlder: boolean = $state(false);
+  let loadingNewer: boolean = $state(false);
 
   /**
    * Separate generation counter for `loadOlder` / `loadUntilItem` so a
@@ -483,12 +509,282 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     }
   }
 
-  function replaceTimelineItems(nextItems: Item[]): boolean {
+  function disposeDroppedItemState(
+    previous: readonly Item[],
+    nextItems: readonly Item[],
+  ): void {
+    if (previous.length === 0) return;
+    const keptIds = new Set(nextItems.map((item) => item.id));
+    const droppedItems: Item[] = [];
+    for (const item of previous) {
+      if (keptIds.has(item.id)) continue;
+      droppedItems.push(item);
+    }
+    if (droppedItems.length === 0) return;
+    for (const item of droppedItems) disposeSmootherFor(item.id);
+    rowUiState.disposeItems(droppedItems);
+  }
+
+  function replaceTimelineItems(
+    nextItems: Item[],
+    options: { disposeDropped?: boolean } = {},
+  ): boolean {
     if (items === nextItems) return false;
+    const previous = options.disposeDropped ? items : [];
     items = nextItems;
     rebuildItemIndexes(items);
+    if (options.disposeDropped) disposeDroppedItemState(previous, items);
     timelineRevision++;
     return true;
+  }
+
+  function cloneCursor(
+    cursor: TimelineCursorLike | null | undefined,
+  ): TimelineCursorLike | null {
+    return cursorIsValid(cursor)
+      ? {
+          turnIndex: cursor.turnIndex,
+          itemIndex: cursor.itemIndex,
+          itemId: cursor.itemId ?? '',
+        }
+      : null;
+  }
+
+  function cursorForBinding(cursor: TimelineCursorLike): {
+    turnIndex: number;
+    itemIndex: number;
+    itemId: string;
+  } {
+    return {
+      turnIndex: cursor.turnIndex,
+      itemIndex: cursor.itemIndex,
+      itemId: cursor.itemId ?? '',
+    };
+  }
+
+  function oldestCursorFromItems(
+    nextItems: readonly Item[],
+  ): TimelineCursorLike | null {
+    return nextItems.length === 0 ? null : cursorFromItem(nextItems[0]);
+  }
+
+  function newestCursorFromItems(
+    nextItems: readonly Item[],
+  ): TimelineCursorLike | null {
+    return nextItems.length === 0
+      ? null
+      : cursorFromItem(nextItems[nextItems.length - 1]);
+  }
+
+  function firstCursorAtTurn(
+    nextItems: readonly Item[],
+    turnIndex: number,
+  ): TimelineCursorLike | null {
+    const item = nextItems.find(
+      (candidate) => candidate.turnIndex === turnIndex,
+    );
+    return item ? cursorFromItem(item) : null;
+  }
+
+  function lastCursorAtTurn(
+    nextItems: readonly Item[],
+    turnIndex: number,
+  ): TimelineCursorLike | null {
+    for (let index = nextItems.length - 1; index >= 0; index -= 1) {
+      const item = nextItems[index];
+      if (item.turnIndex === turnIndex) return cursorFromItem(item);
+    }
+    return null;
+  }
+
+  function pagedOldestCursor(
+    paged: PagedItems,
+    fallbackItems: readonly Item[],
+  ): TimelineCursorLike | null {
+    const explicit = (
+      paged as PagedItems & { oldestCursor?: TimelineCursorLike }
+    ).oldestCursor;
+    const cloned = cloneCursor(explicit);
+    if (cloned) return cloned;
+    const turnIndex = (paged as PagedItems & { oldestTurnIndex?: number })
+      .oldestTurnIndex;
+    if (turnIndex !== undefined && turnIndex >= 0) {
+      return (
+        firstCursorAtTurn(fallbackItems, turnIndex) ?? {
+          turnIndex,
+          itemIndex: 0,
+          itemId: '',
+        }
+      );
+    }
+    return oldestCursorFromItems(fallbackItems);
+  }
+
+  function pagedNewestCursor(
+    paged: PagedItems,
+    fallbackItems: readonly Item[],
+  ): TimelineCursorLike | null {
+    const explicit = (
+      paged as PagedItems & { newestCursor?: TimelineCursorLike }
+    ).newestCursor;
+    const cloned = cloneCursor(explicit);
+    if (cloned) return cloned;
+    const turnIndex = (paged as PagedItems & { newestTurnIndex?: number })
+      .newestTurnIndex;
+    if (turnIndex !== undefined && turnIndex >= 0) {
+      return (
+        lastCursorAtTurn(fallbackItems, turnIndex) ?? {
+          turnIndex,
+          itemIndex: Number.MAX_SAFE_INTEGER,
+          itemId: '',
+        }
+      );
+    }
+    return newestCursorFromItems(fallbackItems);
+  }
+
+  function pagedHasMoreOlder(paged: PagedItems): boolean {
+    return (
+      (paged as PagedItems & { hasMoreOlder?: boolean }).hasMoreOlder ??
+      paged.hasMore ??
+      false
+    );
+  }
+
+  function pagedHasMoreNewer(paged: PagedItems): boolean {
+    return (
+      (paged as PagedItems & { hasMoreNewer?: boolean }).hasMoreNewer ?? false
+    );
+  }
+
+  function setLoadedCursors(
+    oldest: TimelineCursorLike | null,
+    newest: TimelineCursorLike | null,
+  ): void {
+    oldestLoadedCursor = cloneCursor(oldest);
+    newestLoadedCursor = cloneCursor(newest);
+    oldestLoadedTurnIndex = oldestLoadedCursor?.turnIndex ?? null;
+    newestLoadedTurnIndex = newestLoadedCursor?.turnIndex ?? null;
+  }
+
+  function setLoadedCursorsFromItems(nextItems: readonly Item[]): void {
+    setLoadedCursors(
+      oldestCursorFromItems(nextItems),
+      newestCursorFromItems(nextItems),
+    );
+  }
+
+  function applyWindowMetadataFromPaged(
+    paged: PagedItems,
+    nextItems: readonly Item[],
+  ): void {
+    setLoadedCursors(
+      pagedOldestCursor(paged, nextItems),
+      pagedNewestCursor(paged, nextItems),
+    );
+    hasMoreHistory = pagedHasMoreOlder(paged);
+    hasMoreNewer = pagedHasMoreNewer(paged);
+  }
+
+  function includeAncestorClosure(
+    keepIds: Set<string>,
+    sourceItems: readonly Item[],
+  ): void {
+    const byId = new Map(sourceItems.map((item) => [item.id, item]));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const item of sourceItems) {
+        if (!keepIds.has(item.id)) continue;
+        if (!item.parentId || keepIds.has(item.parentId)) continue;
+        if (!byId.has(item.parentId)) continue;
+        keepIds.add(item.parentId);
+        changed = true;
+      }
+    }
+  }
+
+  function keepRecentWindowItems(
+    sourceItems: readonly Item[],
+    targetCount: number,
+  ): PrunedWindow {
+    if (sourceItems.length <= targetCount) {
+      return {
+        items: sourceItems as Item[],
+        oldestCursor: oldestCursorFromItems(sourceItems),
+        newestCursor: newestCursorFromItems(sourceItems),
+      };
+    }
+    const cutoffIndex = Math.max(0, sourceItems.length - targetCount);
+    const cutoffItem = sourceItems[cutoffIndex] ?? sourceItems[0];
+    const cutoffCursor = cursorFromItem(cutoffItem);
+    const keepIds = new Set(
+      sourceItems
+        .filter((item) => compareItemToCursor(item, cutoffCursor) >= 0)
+        .map((item) => item.id),
+    );
+    includeAncestorClosure(keepIds, sourceItems);
+    return {
+      items: sourceItems.filter((item) => keepIds.has(item.id)),
+      oldestCursor: cutoffCursor,
+      newestCursor: newestCursorFromItems(sourceItems),
+    };
+  }
+
+  function keepHeadWindowItems(
+    sourceItems: readonly Item[],
+    targetCount: number,
+  ): PrunedWindow {
+    if (sourceItems.length <= targetCount) {
+      return {
+        items: sourceItems as Item[],
+        oldestCursor: oldestCursorFromItems(sourceItems),
+        newestCursor: newestCursorFromItems(sourceItems),
+      };
+    }
+    const cutoffItem =
+      sourceItems[Math.min(sourceItems.length - 1, targetCount - 1)];
+    const cutoffCursor = cursorFromItem(cutoffItem);
+    const keepIds = new Set(
+      sourceItems
+        .filter((item) => compareItemToCursor(item, cutoffCursor) <= 0)
+        .map((item) => item.id),
+    );
+    includeAncestorClosure(keepIds, sourceItems);
+    return {
+      items: sourceItems.filter((item) => keepIds.has(item.id)),
+      oldestCursor: oldestCursorFromItems(sourceItems),
+      newestCursor: cutoffCursor,
+    };
+  }
+
+  function pruneToRecentWindowIfNeeded(
+    options: { hasMoreNewerAfterPrune?: boolean } = {},
+  ): void {
+    if (items.length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
+    const next = keepRecentWindowItems(
+      items,
+      ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+    );
+    if (next.items.length === items.length) return;
+    replaceTimelineItems(next.items, { disposeDropped: true });
+    setLoadedCursors(next.oldestCursor, next.newestCursor);
+    hasMoreHistory = true;
+    hasMoreNewer = options.hasMoreNewerAfterPrune ?? false;
+    recomputeReveal();
+  }
+
+  function pruneToHeadWindowIfNeeded(): void {
+    if (items.length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
+    const next = keepHeadWindowItems(
+      items,
+      ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+    );
+    if (next.items.length === items.length) return;
+    replaceTimelineItems(next.items, { disposeDropped: true });
+    setLoadedCursors(next.oldestCursor, next.newestCursor);
+    hasMoreNewer = true;
+    recomputeReveal();
   }
   // Reveal-gate invariant: any wholesale `items` replacement that can
   // change which top-level rows exist relative to a live smoother must
@@ -561,7 +857,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (!item || item.parentId) continue;
       if (entry.smoother.isCaughtUp()) continue;
       // Earliest position wins (<= 0 ⇒ item is at or before the frontier).
-      if (frontier === null || compareItemsByTimelinePosition(item, frontier) <= 0) {
+      if (
+        frontier === null ||
+        compareItemsByTimelinePosition(item, frontier) <= 0
+      ) {
         frontier = item;
       }
     }
@@ -704,7 +1003,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     return entry;
   }
 
-  function upsertItemsBatch(incoming: Item[]): ApplyItemUpsertsToWindowResult | null {
+  function upsertItemsBatch(
+    incoming: Item[],
+  ): ApplyItemUpsertsToWindowResult | null {
     if (incoming.length === 0) return null;
 
     const next = applyItemUpsertsToWindow({
@@ -712,9 +1013,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       incoming,
       itemIndexById,
       currentThreadId: thread?.id ?? null,
+      oldestLoadedCursor,
+      newestLoadedCursor,
       oldestLoadedTurnIndex,
+      newestLoadedTurnIndex,
+      hasMoreHistory,
+      hasMoreNewer,
     });
     if (!next) return null;
+    if (next.droppedNewerItems) {
+      hasMoreNewer = true;
+    }
+    if (!next.structureChanged && next.changedItems.length === 0) {
+      return next;
+    }
     if (optimisticItemIds.size > 0) {
       for (const changed of next.changedItems) {
         optimisticItemIds.delete(changed.id);
@@ -726,10 +1038,26 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     } else {
       const firstAppendIndex = items.length - next.appendedItems.length;
       for (let index = 0; index < next.appendedItems.length; index += 1) {
-        itemIndexById.set(next.appendedItems[index].id, firstAppendIndex + index);
+        itemIndexById.set(
+          next.appendedItems[index].id,
+          firstAppendIndex + index,
+        );
       }
     }
     if (next.structureChanged) timelineRevision++;
+    if (next.appendedItems.length > 0) {
+      if (thread && !hasMoreHistory) {
+        oldestLoadedCursor = oldestCursorFromItems(items);
+        oldestLoadedTurnIndex = oldestLoadedCursor?.turnIndex ?? null;
+      }
+      if (thread) {
+        newestLoadedCursor = newestCursorFromItems(items);
+        newestLoadedTurnIndex = newestLoadedCursor?.turnIndex ?? null;
+      }
+      if (!hasMoreNewer) {
+        pruneToRecentWindowIfNeeded();
+      }
+    }
 
     // Reconcile per-item smoothers with the upsert state. A completion /
     // failure upsert replaces items[index] entirely, so a still-running
@@ -752,7 +1080,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         if (!shouldSmoothKind(it.kind)) continue;
         const received = entry.smoother.getReceived();
         if (it.summary === received) continue;
-        if (it.summary.length > received.length && it.summary.startsWith(received)) {
+        if (
+          it.summary.length > received.length &&
+          it.summary.startsWith(received)
+        ) {
           entry.smoother.appendDelta(it.summary.slice(received.length));
         } else {
           entry.smoother.dispose();
@@ -783,7 +1114,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     threadID: string,
     snapshot: PendingInteractiveRequests | null | undefined,
   ): void {
-    const registrySnapshot = pendingInteractiveState.registrySnapshotFor(snapshot);
+    const registrySnapshot =
+      pendingInteractiveState.registrySnapshotFor(snapshot);
     pendingInteractiveState.applySnapshot(snapshot);
     replaceInteractiveRequestsForThread(threadID, registrySnapshot);
   }
@@ -795,7 +1127,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   ): Promise<void> {
     let snapshot: PendingInteractiveRequests;
     try {
-      snapshot = (await ListPendingInteractiveRequests(threadID)) as PendingInteractiveRequests;
+      snapshot = (await ListPendingInteractiveRequests(
+        threadID,
+      )) as PendingInteractiveRequests;
     } catch (err) {
       if (gen === switchGeneration && thread?.id === threadID) {
         console.error('Failed to hydrate pending interactive requests:', err);
@@ -803,7 +1137,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return;
     }
     if (gen !== switchGeneration || thread?.id !== threadID) return;
-    if (hydrationToken !== undefined && !isThreadLiveStateHydrationCurrent(threadID, hydrationToken)) return;
+    if (
+      hydrationToken !== undefined &&
+      !isThreadLiveStateHydrationCurrent(threadID, hydrationToken)
+    )
+      return;
 
     applyPendingInteractiveSnapshot(threadID, snapshot);
   }
@@ -818,7 +1156,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (sameActiveTurn(current, guard.activeTurnAtRequest)) {
       const active = snapshot.activeTurn;
       if (active && active.threadId === threadID && active.turnId) {
-        projectTurnStarted(threadID, active.turnId, active.turnIndex, active.startedAt);
+        projectTurnStarted(
+          threadID,
+          active.turnId,
+          active.turnIndex,
+          active.startedAt,
+        );
       } else if (current) {
         projectTurnCompleted(threadID, current.turnId);
       }
@@ -840,7 +1183,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       replaceFlushedForThread(threadID, flushedItems);
     }
 
-    applyPendingInteractiveSnapshot(threadID, snapshot.interactive as PendingInteractiveRequests);
+    applyPendingInteractiveSnapshot(
+      threadID,
+      snapshot.interactive as PendingInteractiveRequests,
+    );
 
     liveTodoState.hydrateSnapshotIfUnchanged(
       snapshot.todo,
@@ -854,7 +1200,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     gen: number,
     existingHydrationToken?: number,
   ): Promise<void> {
-    const hydrationToken = existingHydrationToken ?? beginThreadLiveStateHydration(threadID);
+    const hydrationToken =
+      existingHydrationToken ?? beginThreadLiveStateHydration(threadID);
     const guard: LiveStateHydrationGuard = {
       activeTurnAtRequest: getActiveTurn(threadID),
       queueRevisionAtRequest: getQueueRevisionForThread(threadID),
@@ -920,14 +1267,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    */
   function applyPagedItems(paged: PagedItems, threadID: string): void {
     const incoming = itemsForThread((paged.items ?? []) as Item[], threadID);
-    replaceTimelineItems(mergeMissingItemsById(incoming, items));
-    const pagedFloor = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
-    oldestLoadedTurnIndex = pagedFloor;
-    hasMoreHistory = paged.hasMore ?? false;
+    const nextItems = mergeMissingItemsById(incoming, items);
+    replaceTimelineItems(nextItems, { disposeDropped: true });
+    applyWindowMetadataFromPaged(paged, items);
   }
 
   async function refreshCheckpointsForThread(threadID: string): Promise<void> {
-    const checkpoints = ((await ListThreadCheckpoints(threadID)) ?? []) as Checkpoint[];
+    const checkpoints = ((await ListThreadCheckpoints(threadID)) ??
+      []) as Checkpoint[];
     if (thread?.id !== threadID) return;
     const sorted = [...checkpoints].sort((a, b) => a.turnIndex - b.turnIndex);
     diffPanel.setCheckpoints(sorted);
@@ -961,8 +1308,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // sizes can make virtua trust geometry the DOM cannot reproduce.
       threadItemCache.set(outgoingThreadId, {
         items,
+        oldestLoadedCursor,
+        newestLoadedCursor,
         oldestLoadedTurnIndex,
+        newestLoadedTurnIndex,
         hasMoreHistory,
+        hasMoreNewer,
         latestSettledTurn,
       });
     }
@@ -1019,7 +1370,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   }
 
   function placeholderHasTerminalState(placeholderId: string): boolean {
-    return showTerminal || (getExistingThreadTerminalState(placeholderId)?.tabs.length ?? 0) > 0;
+    return (
+      showTerminal ||
+      (getExistingThreadTerminalState(placeholderId)?.tabs.length ?? 0) > 0
+    );
   }
 
   function closeDraftPlaceholderTerminals(placeholderId: string): void {
@@ -1040,8 +1394,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (!placeholderHasTerminalState(placeholderId)) return;
     invalidatedDraftTerminalIds.add(placeholderId);
     try {
-      const summaries = await MoveThreadTerminals(placeholderId, materializedThreadId);
-      migrateThreadTerminalState(placeholderId, materializedThreadId, summaries ?? []);
+      const summaries = await MoveThreadTerminals(
+        placeholderId,
+        materializedThreadId,
+      );
+      migrateThreadTerminalState(
+        placeholderId,
+        materializedThreadId,
+        summaries ?? [],
+      );
     } catch (err) {
       console.error('Failed to move placeholder terminals:', err);
       clearThreadTerminalState(placeholderId);
@@ -1057,18 +1418,30 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * initial load can decide to skip the fetch on cache hit) and the
    * anchor item id (empty string means tail-load).
    */
-  function installCacheOrFreshState(
-    newThread: Thread,
-  ): { cached: ThreadItemSnapshot | null; sliceAnchorId: string } {
+  function installCacheOrFreshState(newThread: Thread): {
+    cached: ThreadItemSnapshot | null;
+    sliceAnchorId: string;
+  } {
     const cached = threadItemCache.get(newThread.id);
     const scrollSnapshot = getThreadScrollSnapshot(newThread.id);
-    const sliceAnchorId = scrollSnapshot?.kind === 'anchor' ? scrollSnapshot.itemId : '';
+    const sliceAnchorId =
+      scrollSnapshot?.kind === 'anchor' ? scrollSnapshot.itemId : '';
 
     loading = true;
     if (cached) {
       replaceTimelineItems(cached.items);
-      oldestLoadedTurnIndex = cached.oldestLoadedTurnIndex;
+      setLoadedCursors(
+        cached.oldestLoadedCursor ?? oldestCursorFromItems(cached.items),
+        cached.newestLoadedCursor ?? newestCursorFromItems(cached.items),
+      );
+      if (!oldestLoadedCursor && cached.oldestLoadedTurnIndex != null) {
+        oldestLoadedTurnIndex = cached.oldestLoadedTurnIndex;
+      }
+      if (!newestLoadedCursor && cached.newestLoadedTurnIndex != null) {
+        newestLoadedTurnIndex = cached.newestLoadedTurnIndex;
+      }
       hasMoreHistory = cached.hasMoreHistory;
+      hasMoreNewer = cached.hasMoreNewer;
       latestSettledTurn = cached.latestSettledTurn;
     } else {
       replaceTimelineItems([]);
@@ -1076,8 +1449,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // check until the backend tells us otherwise — between thread
       // clear and the initial-slice response any streamed upserts are
       // already ours to append normally.
+      oldestLoadedCursor = null;
+      newestLoadedCursor = null;
       oldestLoadedTurnIndex = null;
+      newestLoadedTurnIndex = null;
       hasMoreHistory = false;
+      hasMoreNewer = false;
     }
     rowUiState.clear();
     disposeAllSmoothers();
@@ -1090,6 +1467,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // A streaming incoming thread re-stamps on its first reveal/delta.
     lastLiveContentAt = 0;
     loadingOlder = false;
+    loadingNewer = false;
     return { cached, sliceAnchorId };
   }
 
@@ -1123,11 +1501,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     thread = newThread;
     rhsPanelSlot.restoreForThread(newThread.id);
     if (
-      newThread.mode === 'design'
-      && (
-        rhsPanelSlot.activePanel?.kind === 'diff-checkpoint'
-        || rhsPanelSlot.activePanel?.kind === 'diff-payload'
-      )
+      newThread.mode === 'design' &&
+      (rhsPanelSlot.activePanel?.kind === 'diff-checkpoint' ||
+        rhsPanelSlot.activePanel?.kind === 'diff-payload')
     ) {
       rhsPanelSlot.closeForThread(newThread.id);
     }
@@ -1165,7 +1541,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     let liveStateHydrationConsumed = false;
     const switchPromise = (async () => {
       try {
-        const switched = (await SwitchThread(newThread.id)) as Thread | undefined;
+        const switched = (await SwitchThread(newThread.id)) as
+          | Thread
+          | undefined;
         if (gen !== switchGeneration) return;
         if (switched?.id === newThread.id) {
           const currentContextWindow = contextWindow;
@@ -1196,7 +1574,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     const liveStatePromise = (async () => {
       try {
-        await hydrateThreadLiveState(newThread.id, gen, liveStateHydrationToken);
+        await hydrateThreadLiveState(
+          newThread.id,
+          gen,
+          liveStateHydrationToken,
+        );
       } finally {
         // hydrateThreadLiveState always passes the token through to
         // finishThreadLiveStateHydration in its own finally, so by the
@@ -1219,7 +1601,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       : withGenGuard(
           'load items',
           gen,
-          () => ListThreadSliceAround(newThread.id, sliceAnchorId, SLICE_AROUND_ITEM_BUDGET),
+          () =>
+            ListThreadSliceAround(
+              newThread.id,
+              sliceAnchorId,
+              SLICE_AROUND_ITEM_BUDGET,
+            ),
           (paged) => {
             applyPagedItems(paged, newThread.id);
           },
@@ -1228,8 +1615,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
             // raises a hard error. (Cache hits skip the load entirely
             // so they can't reach this branch.)
             replaceTimelineItems([]);
+            oldestLoadedCursor = null;
+            newestLoadedCursor = null;
             oldestLoadedTurnIndex = null;
+            newestLoadedTurnIndex = null;
             hasMoreHistory = false;
+            hasMoreNewer = false;
             generalError = `Failed to load thread items: ${errString(err)}`;
             generalErrorKind = null;
             addToast('error', 'Failed to load thread items');
@@ -1277,19 +1668,37 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
   return {
     // --- Getters (reactive reads) ---
-    get paneId() { return paneId; },
-    get thread() { return thread; },
-    get threadId() { return draftPlaceholder ? null : thread?.id ?? null; },
-    get terminalThreadId() { return thread?.id ?? null; },
-    get draftPlaceholder() { return draftPlaceholder; },
-    get hasDraftPlaceholder() { return draftPlaceholder !== null; },
-    get canCompose() { return Boolean(thread || draftPlaceholder); },
-    get items() { return items; },
+    get paneId() {
+      return paneId;
+    },
+    get thread() {
+      return thread;
+    },
+    get threadId() {
+      return draftPlaceholder ? null : (thread?.id ?? null);
+    },
+    get terminalThreadId() {
+      return thread?.id ?? null;
+    },
+    get draftPlaceholder() {
+      return draftPlaceholder;
+    },
+    get hasDraftPlaceholder() {
+      return draftPlaceholder !== null;
+    },
+    get canCompose() {
+      return Boolean(thread || draftPlaceholder);
+    },
+    get items() {
+      return items;
+    },
     // Imperative read for the scroll controller's content-keyed spring
     // latch. Non-reactive on purpose (see the `lastLiveContentAt`
     // declaration); callers must read it inside an imperative context,
     // not a `$derived`/`$effect`.
-    get lastLiveContentAt() { return lastLiveContentAt; },
+    get lastLiveContentAt() {
+      return lastLiveContentAt;
+    },
     // Stamp a live content advance from a site OUTSIDE the pane's own
     // mutation methods — specifically the live provider-upsert fan-out in
     // events.ts (a new row arriving). The optimistic user-send echo and
@@ -1315,14 +1724,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         ...thread,
         provider,
         model: defaults.model ?? thread.model,
-        reasoningEffort: (
-          defaults.reasoningEffort ?? thread.reasoningEffort
-        ) as Thread['reasoningEffort'],
+        reasoningEffort: (defaults.reasoningEffort ??
+          thread.reasoningEffort) as Thread['reasoningEffort'],
         fastMode: defaults.fastMode ?? thread.fastMode,
         contextWindow: defaults.contextWindow ?? thread.contextWindow,
-        runtimeMode: (
-          defaults.runtimeMode ?? thread.runtimeMode
-        ) as Thread['runtimeMode'],
+        runtimeMode: (defaults.runtimeMode ??
+          thread.runtimeMode) as Thread['runtimeMode'],
         updatedAt: Date.now(),
       };
       contextWindow = seedContextWindow(thread);
@@ -1387,16 +1794,34 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * disable) read this getter rather than re-deriving from
      * `items.length`.
      */
-    get isLocked() { return items.length > 0; },
-    get timelineRevision() { return timelineRevision; },
+    get isLocked() {
+      return items.length > 0;
+    },
+    get timelineRevision() {
+      return timelineRevision;
+    },
     getItemById,
-    get pendingApprovals() { return pendingInteractiveState.approvals; },
-    get pendingUserInputs() { return pendingInteractiveState.userInputs; },
-    get contextWindow() { return contextWindow; },
-    get providerBanner() { return providerBanner; },
-    get generalError() { return generalError; },
-    get generalErrorKind() { return generalErrorKind; },
-    get loading() { return loading; },
+    get pendingApprovals() {
+      return pendingInteractiveState.approvals;
+    },
+    get pendingUserInputs() {
+      return pendingInteractiveState.userInputs;
+    },
+    get contextWindow() {
+      return contextWindow;
+    },
+    get providerBanner() {
+      return providerBanner;
+    },
+    get generalError() {
+      return generalError;
+    },
+    get generalErrorKind() {
+      return generalErrorKind;
+    },
+    get loading() {
+      return loading;
+    },
     /**
      * Spinner-flash gate. The MessageTimeline reads this instead of
      * `loading` so a sub-100ms switch (cache hit, fast LAN, fast SQL)
@@ -1419,16 +1844,30 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * `provider:turn_started` lands; the keybindings dispatcher uses
      * it to enable Esc → thread.interrupt during the same window.
      */
-    get sendInFlight() { return sendInFlight; },
-    get showTerminal() { return showTerminal; },
-    get diffPanel() { return diffPanel; },
-    get gitStatus() { return gitStatus; },
-    canAdoptOpenedTerminal(threadID: string, workspacePath: string | undefined): boolean {
+    get sendInFlight() {
+      return sendInFlight;
+    },
+    get showTerminal() {
+      return showTerminal;
+    },
+    get diffPanel() {
+      return diffPanel;
+    },
+    get gitStatus() {
+      return gitStatus;
+    },
+    canAdoptOpenedTerminal(
+      threadID: string,
+      workspacePath: string | undefined,
+    ): boolean {
       if (!threadID) return false;
       if (invalidatedDraftTerminalIds.has(threadID)) return false;
       if (draftPlaceholder?.id === threadID) {
         if (!showTerminal || !thread) return false;
-        if (workspacePath !== undefined && !sameNormalizedPath(workspacePath, thread.workspacePath)) {
+        if (
+          workspacePath !== undefined &&
+          !sameNormalizedPath(workspacePath, thread.workspacePath)
+        ) {
           return false;
         }
         return true;
@@ -1440,10 +1879,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (!payload || payload.threadId !== thread?.id) return;
       void refreshCheckpointsForThread(payload.threadId);
     },
-    applyCheckpointUnavailable(payload: CheckpointUnavailableEvent | null): void {
+    applyCheckpointUnavailable(
+      payload: CheckpointUnavailableEvent | null,
+    ): void {
       if (!payload || payload.threadId !== thread?.id) return;
       diffPanel.markCheckpointsUnavailable(payload.reason);
-      diffPanel.setError('Workspace is not a git repo. Checkpoint diffs are unavailable.');
+      diffPanel.setError(
+        'Workspace is not a git repo. Checkpoint diffs are unavailable.',
+      );
     },
     applyCheckpointError(payload: CheckpointErrorEvent | null): void {
       if (!payload || payload.threadId !== thread?.id) return;
@@ -1458,21 +1901,57 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * turns yet. Populated from `provider:turn_completed` pushes and
      * from thread-switch rehydration.
      */
-    get latestSettledTurn() { return latestSettledTurn; },
+    get latestSettledTurn() {
+      return latestSettledTurn;
+    },
     /**
      * Bounded recent subagent notifications. No UI consumer today; stored
      * so a future tray / toast surface can subscribe without the pane
      * needing a new channel.
      */
-    get subagentNotifications() { return subagentNotifications; },
+    get subagentNotifications() {
+      return subagentNotifications;
+    },
     /**
      * Inclusive floor of the loaded history window. Consumers use this
      * to render "Load older messages" and, in scroll-to-item flows, to
      * decide whether a target coordinate is already in view.
      */
-    get oldestLoadedTurnIndex() { return oldestLoadedTurnIndex; },
-    get hasMoreHistory() { return hasMoreHistory; },
-    get loadingOlder() { return loadingOlder; },
+    get oldestLoadedCursor() {
+      return oldestLoadedCursor;
+    },
+    get newestLoadedCursor() {
+      return newestLoadedCursor;
+    },
+    get oldestLoadedTurnIndex() {
+      return oldestLoadedTurnIndex;
+    },
+    get newestLoadedTurnIndex() {
+      return newestLoadedTurnIndex;
+    },
+    get hasMoreHistory() {
+      return hasMoreHistory;
+    },
+    get hasMoreNewer() {
+      return hasMoreNewer;
+    },
+    get loadingOlder() {
+      return loadingOlder;
+    },
+    get loadingNewer() {
+      return loadingNewer;
+    },
+    debugMemoryStats() {
+      return {
+        itemIndexEntries: itemIndexById.size,
+        rowUiState: rowUiState.debugStats(),
+        itemSmoothers: itemSmoothers.size,
+        liveThinkingTails: itemLiveThinkingTail.size,
+        optimisticItems: optimisticItemIds.size,
+        oldestLoadedCursor,
+        newestLoadedCursor,
+      };
+    },
     /**
      * Scroll-to-item intent published by pane-level callers (search
      * hits, plan sidebar clicks, tray rows). MessageTimeline reacts to
@@ -1480,25 +1959,49 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * the current value and runs `scrollToItem(itemId)` when it
      * advances. `itemId === ''` means "no request".
      */
-    get scrollToItemRequest() { return scrollToItemRequest; },
-    get channelMessages() { return channelState.messages; },
-    get channelStatus() { return channelState.status; },
-    get pendingClarification() { return designState.pendingClarification; },
-    get activeOptionSet() { return designState.activeOptionSet; },
-    get designViewport() { return designState.designViewport; },
-    get activeRhsPanel() { return rhsPanelSlot.activePanel; },
-    get rhsSidebarWidth() { return rhsPanelSlot.width; },
-    get showPlanSidebar() { return rhsPanelSlot.activePanel?.kind === 'plan'; },
-    get showDesignPreviewPanel() { return rhsPanelSlot.activePanel?.kind === 'design-preview'; },
+    get scrollToItemRequest() {
+      return scrollToItemRequest;
+    },
+    get channelMessages() {
+      return channelState.messages;
+    },
+    get channelStatus() {
+      return channelState.status;
+    },
+    get pendingClarification() {
+      return designState.pendingClarification;
+    },
+    get activeOptionSet() {
+      return designState.activeOptionSet;
+    },
+    get designViewport() {
+      return designState.designViewport;
+    },
+    get activeRhsPanel() {
+      return rhsPanelSlot.activePanel;
+    },
+    get rhsSidebarWidth() {
+      return rhsPanelSlot.width;
+    },
+    get showPlanSidebar() {
+      return rhsPanelSlot.activePanel?.kind === 'plan';
+    },
+    get showDesignPreviewPanel() {
+      return rhsPanelSlot.activePanel?.kind === 'design-preview';
+    },
     get activeDiffPayload() {
       const panel = rhsPanelSlot.activePanel;
       if (panel?.kind !== 'diff-payload') return null;
       if (panel.filePath === undefined) return { payloadId: panel.payloadId };
       return { payloadId: panel.payloadId, filePath: panel.filePath };
     },
-    get diffSidebarRestoreState() { return rhsPanelSlot.diffPayloadRestoreState; },
+    get diffSidebarRestoreState() {
+      return rhsPanelSlot.diffPayloadRestoreState;
+    },
     /** Diagnostic — total snapshots held by the RHS panel slot. */
-    get rhsPanelSnapshotCount() { return rhsPanelSlot.snapshotCount; },
+    get rhsPanelSnapshotCount() {
+      return rhsPanelSlot.snapshotCount;
+    },
     /**
      * Monotonically increasing counter bumped at the top of every
      * `switchThread`, `clear`, `startDraftPlaceholder`, and
@@ -1513,7 +2016,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * alongside `pane.threadId` and run the reset branch when EITHER
      * value changes.
      */
-    get switchGeneration() { return switchGeneration; },
+    get switchGeneration() {
+      return switchGeneration;
+    },
 
     // --- Thread switching ---
 
@@ -1541,7 +2046,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         armSpinnerThreshold();
         liveStateHydrationToken = beginThreadLiveStateHydration(newThread.id);
         commitIncomingThread(newThread);
-        const result = await runParallelLoad(newThread, gen, cached, sliceAnchorId, liveStateHydrationToken);
+        const result = await runParallelLoad(
+          newThread,
+          gen,
+          cached,
+          sliceAnchorId,
+          liveStateHydrationToken,
+        );
         liveStateHydrationConsumed = result.liveStateHydrationConsumed;
         if (gen !== switchGeneration) return;
         loading = false;
@@ -1576,29 +2087,38 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       const currentThread = thread;
       if (!currentThread) return;
       const gen = switchGeneration;
-      let liveStateHydrationToken = beginThreadLiveStateHydration(currentThread.id);
+      let liveStateHydrationToken = beginThreadLiveStateHydration(
+        currentThread.id,
+      );
       try {
         try {
-          const paged = await ListRecentThreadItems(currentThread.id, 0);
+          const anchorItemId = hasMoreNewer ? (items.at(-1)?.id ?? '') : '';
+          const paged = await ListThreadSliceAround(
+            currentThread.id,
+            anchorItemId,
+            ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+          );
           if (gen !== switchGeneration) return;
           const nextItems = reconcileItemWindow(
             itemsForThread((paged.items ?? []) as Item[], currentThread.id),
             items,
           );
-          replaceTimelineItems(nextItems);
-          oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
-          hasMoreHistory = paged.hasMore ?? false;
+          replaceTimelineItems(nextItems, { disposeDropped: true });
+          applyWindowMetadataFromPaged(paged, items);
         } catch (err) {
           if (gen !== switchGeneration) return;
           console.error('Failed to refresh thread items after gap:', err);
           return;
         }
         try {
-          const recent = (await ListRecentTurns(currentThread.id, 2)) as TurnRow[] | null;
+          const recent = (await ListRecentTurns(currentThread.id, 2)) as
+            | TurnRow[]
+            | null;
           if (gen !== switchGeneration) return;
           if (recent && recent.length > 0) {
             const settled = recent.find(
-              (row) => row.completedAt !== null && row.completedAt !== undefined,
+              (row) =>
+                row.completedAt !== null && row.completedAt !== undefined,
             );
             if (settled) {
               latestSettledTurn = turnRowToSettled(settled);
@@ -1609,11 +2129,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           console.error('Failed to refresh recent turns after gap:', err);
         }
         pendingInteractiveState.prepareForLiveStateHydration();
-        await hydrateThreadLiveState(currentThread.id, gen, liveStateHydrationToken);
+        await hydrateThreadLiveState(
+          currentThread.id,
+          gen,
+          liveStateHydrationToken,
+        );
         liveStateHydrationToken = 0;
       } finally {
         if (liveStateHydrationToken !== 0) {
-          finishThreadLiveStateHydration(currentThread.id, liveStateHydrationToken);
+          finishThreadLiveStateHydration(
+            currentThread.id,
+            liveStateHydrationToken,
+          );
         }
       }
     },
@@ -1669,9 +2196,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         spinnerThresholdTimer = null;
       }
       pastSpinnerThreshold = false;
+      oldestLoadedCursor = null;
+      newestLoadedCursor = null;
       oldestLoadedTurnIndex = null;
+      newestLoadedTurnIndex = null;
       hasMoreHistory = false;
+      hasMoreNewer = false;
       loadingOlder = false;
+      loadingNewer = false;
       // See switchThread: both `pagingGeneration` and
       // `scrollToItemRequest.nonce` stay monotonic for the pane's
       // lifetime so no consumer observes a regressed counter.
@@ -1775,7 +2307,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * id flushes through to the real thread row).
      */
     async ensureMaterializedThread(): Promise<string | null> {
-      const existingId = draftPlaceholder ? null : thread?.id ?? null;
+      const existingId = draftPlaceholder ? null : (thread?.id ?? null);
       if (existingId) return existingId;
       const placeholder = draftPlaceholder;
       if (!placeholder) return null;
@@ -1822,44 +2354,59 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       const currentThread = thread;
       if (!currentThread) return loadOlderResult('noop');
       if (!hasMoreHistory || loadingOlder) return loadOlderResult('noop');
-      const floor = oldestLoadedTurnIndex;
-      if (floor === null) return loadOlderResult('noop');
+      const floor = cloneCursor(oldestLoadedCursor);
+      if (!floor) return loadOlderResult('noop');
 
       const gen = switchGeneration;
       const pageGen = ++pagingGeneration;
       loadingOlder = true;
       try {
-        const paged = await ListItemsBeforeTurn(currentThread.id, floor, LOAD_OLDER_ITEM_BUDGET);
-        if (gen !== switchGeneration || pageGen !== pagingGeneration) return loadOlderResult('stale');
-        const prepend = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
+        const previousNewest = cloneCursor(newestLoadedCursor);
+        const paged = await ListItemsBeforeCursor(
+          currentThread.id,
+          cursorForBinding(floor),
+          LOAD_OLDER_ITEM_BUDGET,
+        );
+        if (gen !== switchGeneration || pageGen !== pagingGeneration)
+          return loadOlderResult('stale');
+        const prepend = itemsForThread(
+          (paged.items ?? []) as Item[],
+          currentThread.id,
+        );
         const currentIds = new Set(items.map((item) => item.id));
         const insertedRows = prepend.some((item) => !currentIds.has(item.id));
         const currentFirst = items[0] ?? null;
-        const insertedBeforeWindow = currentFirst === null
-          ? insertedRows
-          : prepend.some((item) => (
-              !currentIds.has(item.id)
-              && compareItemsByTimelinePosition(item, currentFirst) < 0
-            ));
+        const insertedBeforeWindow =
+          currentFirst === null
+            ? insertedRows
+            : prepend.some(
+                (item) =>
+                  !currentIds.has(item.id) &&
+                  compareItemsByTimelinePosition(item, currentFirst) < 0,
+              );
         const next = mergeItemsById(prepend, items);
-        replaceTimelineItems(next);
-        const nextFloor =
-          paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : floor;
-        oldestLoadedTurnIndex = nextFloor;
+        replaceTimelineItems(next, { disposeDropped: true });
+        const nextFloor = pagedOldestCursor(paged, prepend) ?? floor;
+        setLoadedCursors(
+          nextFloor,
+          previousNewest ?? newestCursorFromItems(items),
+        );
         // Progress guard. If the backend returned no items AND the floor
         // didn't decrease, another click would fire the same query for
         // the same range. Force hasMore=false so the UI stops offering a
         // button that can't actually load anything. A later in-flight
         // upsert that lands an older item will re-enable paging through
         // the normal streaming path.
-        if (prepend.length === 0 && nextFloor >= floor) {
+        if (prepend.length === 0 && compareCursors(nextFloor, floor) >= 0) {
           hasMoreHistory = false;
         } else {
-          hasMoreHistory = paged.hasMore ?? false;
+          hasMoreHistory = pagedHasMoreOlder(paged);
         }
+        pruneToHeadWindowIfNeeded();
         return loadOlderResult('loaded', insertedBeforeWindow, insertedRows);
       } catch (err) {
-        if (gen !== switchGeneration || pageGen !== pagingGeneration) return loadOlderResult('stale');
+        if (gen !== switchGeneration || pageGen !== pagingGeneration)
+          return loadOlderResult('stale');
         console.error('loadOlder failed:', err);
         addToast('error', 'Failed to load older messages');
         return loadOlderResult('error');
@@ -1906,7 +2453,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         console.error('loadUntilItem GetThreadItem failed:', err);
         return false;
       }
-      if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
+      if (gen !== switchGeneration || pageGen !== pagingGeneration)
+        return false;
       if (!fetched || !fetched.id) return false;
       // Defense-in-depth: the backend already filters by threadId, but a
       // mislayered binding or a future cache that returns stale rows
@@ -1918,45 +2466,125 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // paging in a whole turn window we don't need.
       if (items.some((it) => it.id === itemID)) return true;
 
-      const currentFloor = oldestLoadedTurnIndex;
-      if (currentFloor !== null && fetched.turnIndex >= currentFloor) {
-        // Nominally in-window per the floor invariant. Double-check the
-        // in-memory state in case an upsert got dropped — never claim
-        // success without a row the DOM can actually scroll to.
-        return items.some((it) => it.id === itemID);
-      }
-
-      // Load items between the target turn and the existing floor.
-      // The third parameter is an item-budget; cap at
-      // LOAD_UNTIL_ITEM_HARD_CAP so a search hit deep in a long
-      // thread is bounded to one round-trip. If the target lives
-      // below the cap, this load returns false and callers show the
-      // existing "couldn't locate that message" toast — the
-      // alternative (unbounded item budget) ran the risk of a single
-      // jump pulling the entire history.
-      const beforeTurn = currentFloor ?? fetched.turnIndex + 1;
-      const itemBudget = LOAD_UNTIL_ITEM_HARD_CAP;
-
       loadingOlder = true;
       try {
-        const paged = await ListItemsBeforeTurn(currentThread.id, beforeTurn, itemBudget);
-        if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
-        const prepend = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
-        const next = mergeItemsById(prepend, items);
-        replaceTimelineItems(next);
-        oldestLoadedTurnIndex =
-          paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : currentFloor;
-        hasMoreHistory = paged.hasMore ?? false;
+        const paged = await ListThreadSliceAround(
+          currentThread.id,
+          itemID,
+          ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+        );
+        if (gen !== switchGeneration || pageGen !== pagingGeneration)
+          return false;
+        const next = reconcileItemWindow(
+          itemsForThread((paged.items ?? []) as Item[], currentThread.id),
+          items,
+        );
+        replaceTimelineItems(next, { disposeDropped: true });
+        applyWindowMetadataFromPaged(paged, items);
       } catch (err) {
-        if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
-        console.error('loadUntilItem ListItemsBeforeTurn failed:', err);
-        addToast('error', 'Failed to load older messages');
+        if (gen !== switchGeneration || pageGen !== pagingGeneration)
+          return false;
+        console.error('loadUntilItem ListThreadSliceAround failed:', err);
+        addToast('error', 'Failed to load message');
         return false;
       } finally {
         // Match loadOlder's unconditional reset — see comment there.
         loadingOlder = false;
       }
       return items.some((it) => it.id === itemID);
+    },
+
+    async loadNewer(): Promise<LoadOlderResult> {
+      const currentThread = thread;
+      if (!currentThread) return loadOlderResult('noop');
+      if (!hasMoreNewer || loadingNewer) return loadOlderResult('noop');
+      const ceiling = cloneCursor(newestLoadedCursor);
+      if (!ceiling) return loadOlderResult('noop');
+
+      const gen = switchGeneration;
+      const pageGen = ++pagingGeneration;
+      loadingNewer = true;
+      try {
+        const previousOldest = cloneCursor(oldestLoadedCursor);
+        const paged = await ListItemsAfterCursor(
+          currentThread.id,
+          cursorForBinding(ceiling),
+          LOAD_OLDER_ITEM_BUDGET,
+        );
+        if (gen !== switchGeneration || pageGen !== pagingGeneration)
+          return loadOlderResult('stale');
+        const append = itemsForThread(
+          (paged.items ?? []) as Item[],
+          currentThread.id,
+        );
+        const currentIds = new Set(items.map((item) => item.id));
+        const insertedRows = append.some((item) => !currentIds.has(item.id));
+        const currentLast = items.at(-1) ?? null;
+        const insertedAfterWindow =
+          currentLast === null
+            ? insertedRows
+            : append.some(
+                (item) =>
+                  !currentIds.has(item.id) &&
+                  compareItemsByTimelinePosition(item, currentLast) > 0,
+              );
+        const next = mergeItemsById(append, items);
+        replaceTimelineItems(next, { disposeDropped: true });
+        const nextCeiling = pagedNewestCursor(paged, append) ?? ceiling;
+        setLoadedCursors(
+          previousOldest ?? oldestCursorFromItems(items),
+          nextCeiling,
+        );
+        const nextHasMoreNewer =
+          append.length === 0 && compareCursors(nextCeiling, ceiling) <= 0
+            ? false
+            : pagedHasMoreNewer(paged);
+        hasMoreNewer = nextHasMoreNewer;
+        pruneToRecentWindowIfNeeded({
+          hasMoreNewerAfterPrune: nextHasMoreNewer,
+        });
+        return loadOlderResult('loaded', insertedAfterWindow, insertedRows);
+      } catch (err) {
+        if (gen !== switchGeneration || pageGen !== pagingGeneration)
+          return loadOlderResult('stale');
+        console.error('loadNewer failed:', err);
+        addToast('error', 'Failed to load newer messages');
+        return loadOlderResult('error');
+      } finally {
+        loadingNewer = false;
+      }
+    },
+
+    async loadRecentTail(): Promise<boolean> {
+      const currentThread = thread;
+      if (!currentThread) return false;
+      const gen = switchGeneration;
+      const pageGen = ++pagingGeneration;
+      loadingNewer = true;
+      try {
+        const paged = await ListThreadSliceAround(
+          currentThread.id,
+          '',
+          ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+        );
+        if (gen !== switchGeneration || pageGen !== pagingGeneration)
+          return false;
+        const next = reconcileItemWindow(
+          itemsForThread((paged.items ?? []) as Item[], currentThread.id),
+          items,
+        );
+        replaceTimelineItems(next, { disposeDropped: true });
+        applyWindowMetadataFromPaged(paged, items);
+        return true;
+      } catch (err) {
+        if (gen !== switchGeneration || pageGen !== pagingGeneration)
+          return false;
+        console.error('loadRecentTail failed:', err);
+        addToast('error', 'Failed to load latest messages');
+        return false;
+      } finally {
+        loadingNewer = false;
+      }
     },
 
     /**
@@ -1967,7 +2595,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * if the target isn't visible yet. The timeline handler is
      * responsible for awaiting `loadUntilItem` before scrolling.
      */
-    requestScrollToItem(itemID: string, options: ScrollToItemOptions = {}): void {
+    requestScrollToItem(
+      itemID: string,
+      options: ScrollToItemOptions = {},
+    ): void {
       if (!itemID) return;
       scrollToItemRequest = {
         itemId: itemID,
@@ -2042,7 +2673,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * boolean, so scroll latches are based on visible-window changes after
      * the pane has filtered below-floor history rows.
      */
-    applyProviderItemUpserts(incoming: Item[]): ApplyItemUpsertsToWindowResult | null {
+    applyProviderItemUpserts(
+      incoming: Item[],
+    ): ApplyItemUpsertsToWindowResult | null {
       return upsertItemsBatch(incoming);
     },
 
@@ -2059,6 +2692,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       const removed = items[idx];
       replaceTimelineItems(items.filter((it) => it.id !== itemId));
       disposeSmootherFor(itemId);
+      rowUiState.disposeItems([removed]);
       recomputeReveal();
       if (thread) {
         threadItemCache.evict(thread.id);
@@ -2091,6 +2725,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (removed.length === 0) return removed;
       replaceTimelineItems(kept);
       for (const r of removed) disposeSmootherFor(r.id);
+      rowUiState.disposeItems(removed);
       recomputeReveal();
       if (thread) {
         threadItemCache.evict(thread.id);
@@ -2239,10 +2874,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         // the patch's summary wins cleanly.
         const received = smoothing.smoother.getReceived();
         const patchSummary = evt.patch.summary;
-        if (
-          patchSummary !== received &&
-          patchSummary.startsWith(received)
-        ) {
+        if (patchSummary !== received && patchSummary.startsWith(received)) {
           if (evt.patch.updatedAt !== undefined) {
             smoothing.setLatestUpdatedAt(evt.patch.updatedAt);
           }
@@ -2320,7 +2952,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
       if (evt.patch.meta !== undefined) next.meta = evt.patch.meta;
       if (evt.patch.decision !== undefined) next.decision = evt.patch.decision;
-      if (evt.patch.updatedAt !== undefined) next.updatedAt = evt.patch.updatedAt;
+      if (evt.patch.updatedAt !== undefined)
+        next.updatedAt = evt.patch.updatedAt;
       if (itemsAreEqual(current, next)) return;
       items[index] = next;
     },
@@ -2331,6 +2964,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
     toggleSubagentGroupExpanded: rowUiState.toggleSubagentGroupExpanded,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
+    pruneRowUiState: rowUiState.pruneRowUiState,
     // Live smoother-revealed text for a streaming thinking row.
     // Returns null when no smoother is active (settled rows, non-thinking
     // rows, pre-stream cache hits) — callers fall back to `item.summary`.
@@ -2516,8 +3150,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     // --- Live todo (activity rail Todos segment) ---
 
-    get liveTodo() { return liveTodoState.liveTodo; },
-    get liveTodoShowAll() { return liveTodoState.liveTodoShowAll; },
+    get liveTodo() {
+      return liveTodoState.liveTodo;
+    },
+    get liveTodoShowAll() {
+      return liveTodoState.liveTodoShowAll;
+    },
 
     /**
      * Replace the live-todo snapshot. Called from the
@@ -2564,8 +3202,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     // --- Activity rail (consolidated working/todos/background) ---
 
-    get activityRailTodosOpen() { return liveTodoState.activityRailTodosOpen; },
-    get activityRailBackgroundOpen() { return liveTodoState.activityRailBackgroundOpen; },
+    get activityRailTodosOpen() {
+      return liveTodoState.activityRailTodosOpen;
+    },
+    get activityRailBackgroundOpen() {
+      return liveTodoState.activityRailBackgroundOpen;
+    },
 
     /** Toggle the Todos accordion body inside the activity rail. */
     toggleActivityRailTodos(): void {
@@ -2586,7 +3228,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     appendSubagentNotification(evt: SubagentNotificationEvent): void {
       const next = subagentNotifications.concat(evt);
       if (next.length > subagentNotificationLimit) {
-        subagentNotifications = next.slice(next.length - subagentNotificationLimit);
+        subagentNotifications = next.slice(
+          next.length - subagentNotificationLimit,
+        );
       } else {
         subagentNotifications = next;
       }
@@ -2658,14 +3302,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     toggleDesignPreviewPanel(): void {
       if (thread?.mode !== 'design') return;
-      if (rhsPanelSlot.activePanel?.kind === 'design-preview') activatePanel(null);
+      if (rhsPanelSlot.activePanel?.kind === 'design-preview')
+        activatePanel(null);
       else activatePanel({ kind: 'design-preview' });
     },
 
     setShowDesignPreviewPanel(value: boolean): void {
       if (thread?.mode !== 'design') return;
       if (value) activatePanel({ kind: 'design-preview' });
-      else if (rhsPanelSlot.activePanel?.kind === 'design-preview') activatePanel(null);
+      else if (rhsPanelSlot.activePanel?.kind === 'design-preview')
+        activatePanel(null);
     },
 
     setDiffPanelOpen(value: boolean): void {
@@ -2683,7 +3329,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     openDiffSidebar(payload: { payloadId: string; filePath?: string }): void {
       if (thread?.mode === 'design') return;
-      activatePanel({ kind: 'diff-payload', payloadId: payload.payloadId, filePath: payload.filePath });
+      activatePanel({
+        kind: 'diff-payload',
+        payloadId: payload.payloadId,
+        filePath: payload.filePath,
+      });
     },
 
     closeRhsPanel(): void {
@@ -2791,7 +3441,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * onto the user every time a transient mid-write fires the
      * watcher.
      */
-    async applyDesignOptionsUpdate(threadId: string, _setId: string): Promise<void> {
+    async applyDesignOptionsUpdate(
+      threadId: string,
+      _setId: string,
+    ): Promise<void> {
       await designState.applyDesignOptionsUpdate(() => thread, threadId);
     },
   };

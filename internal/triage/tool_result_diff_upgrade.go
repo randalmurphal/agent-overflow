@@ -117,6 +117,9 @@ func (r *Router) loadSummaryOnlyToolResultCandidate(item store.Item) (toolResult
 	if len(meta.InlineDiff.Files) == 0 {
 		return toolResultCandidate{}, false
 	}
+	if meta.InlineDiff.FilesTruncated || meta.InlineDiff.OmittedFiles > 0 {
+		return toolResultCandidate{}, false
+	}
 
 	return toolResultCandidate{
 		item:      item,
@@ -131,15 +134,17 @@ func buildExactInlineDiff(diff string) *ToolInlineDiff {
 		return nil
 	}
 
-	files := make([]ToolInlineDiffFile, 0, len(sections))
+	files := make([]ToolInlineDiffFile, 0, min(len(sections), inlineDiffPreviewFileCount))
 	insertions := 0
 	deletions := 0
+	totalFiles := 0
 	for _, section := range sections {
 		meta := ExtractDiffMeta(section)
 		path := strings.TrimSpace(meta.FilePath)
 		if path == "" {
 			continue
 		}
+		totalFiles++
 		file := ToolInlineDiffFile{
 			Path:         path,
 			PreviousPath: diffSectionPreviousPath(section),
@@ -148,18 +153,23 @@ func buildExactInlineDiff(diff string) *ToolInlineDiff {
 			Deletions:    meta.Deletions,
 		}
 		applyInlineDiffPreview(&file, section)
-		files = append(files, file)
+		if len(files) < inlineDiffPreviewFileCount {
+			files = append(files, file)
+		}
 		insertions += meta.Insertions
 		deletions += meta.Deletions
 	}
-	if len(files) == 0 {
+	if totalFiles == 0 {
 		return nil
 	}
 	return &ToolInlineDiff{
-		Availability: "exact_patch",
-		Files:        files,
-		Insertions:   insertions,
-		Deletions:    deletions,
+		Availability:   "exact_patch",
+		Files:          files,
+		TotalFiles:     totalFiles,
+		OmittedFiles:   omittedInlineDiffFiles(totalFiles, len(files)),
+		FilesTruncated: totalFiles > len(files),
+		Insertions:     insertions,
+		Deletions:      deletions,
 	}
 }
 

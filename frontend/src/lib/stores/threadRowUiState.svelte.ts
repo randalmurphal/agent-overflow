@@ -12,6 +12,7 @@ import type {
 
 interface ThreadRowUiStateOptions {
   getItemById(itemId: string): Item | undefined;
+  isPayloadReferenced?(threadId: string, payloadId: string): boolean;
 }
 
 export interface ThreadRowUiState {
@@ -34,7 +35,27 @@ export interface ThreadRowUiState {
   isSubagentGroupExpanded(groupKey: string): boolean;
   toggleSubagentGroupExpanded(groupKey: string): boolean;
   attachmentCacheFor(itemId: string): AttachmentPreviewCache;
+  disposeItems(items: Iterable<Item>): void;
+  pruneRowUiState(retention: RowUiStateRetention): void;
   clear(): void;
+  debugStats(): {
+    expansionStates: number;
+    itemExpansionStates: number;
+    payloadExpansionStates: number;
+    subagentGroups: number;
+    attachmentItems: number;
+  };
+}
+
+export interface PayloadExpansionRetentionKey {
+  threadId: string;
+  payloadId: string;
+}
+
+export interface RowUiStateRetention {
+  itemIds: Iterable<string>;
+  payloads: Iterable<PayloadExpansionRetentionKey>;
+  groupKeys: Iterable<string>;
 }
 
 export interface RowExpansionStateOptions
@@ -111,7 +132,20 @@ function cacheEnabledRegistryKey(cacheEnabled: unknown): string {
 interface ExpansionRegistryEntry {
   handle: PayloadExpansionHandle;
   dispose: () => void;
+  owner: ExpansionRegistryOwner;
 }
+
+type ExpansionRegistryOwner =
+  | {
+      kind: 'item';
+      itemId: string;
+      stateKey: string;
+    }
+  | {
+      kind: 'payload';
+      threadId: string;
+      payloadId: string;
+    };
 
 /**
  * Per-row UI registries live outside row components so virtua remounts
@@ -121,9 +155,10 @@ interface ExpansionRegistryEntry {
 export function createThreadRowUiState(options: ThreadRowUiStateOptions): ThreadRowUiState {
   const expansionStates = new Map<string, ExpansionRegistryEntry>();
   const itemExpansionKeysByState = new Map<string, Map<string, Set<string>>>();
+  const payloadExpansionKeysByPayload = new Map<string, Set<string>>();
   let subagentGroupExpanded: Set<string> = $state(new Set());
   const attachmentBlobs = new Map<string, Map<string, ImagePreviewItem>>();
-  let attachmentCacheEpoch = 0;
+  let attachmentClearGeneration = 0;
 
   function expansionStateFor(
     item: Item,
@@ -149,8 +184,13 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     const getCurrentItem = (): Item | undefined => options.getItemById(itemId);
     const currentPayloadVersion = rowOptions.payloadVersion ?? payloadVersionForItem;
     const currentCacheEnabled = (): boolean => rowCacheEnabled(rowOptions.cacheEnabled, getCurrentItem());
-    cached = createRegistryExpansion(() =>
-      createPayloadExpansion(
+    cached = createRegistryExpansion(
+      {
+        kind: 'item',
+        itemId,
+        stateKey,
+      },
+      () => createPayloadExpansion(
         () => getCurrentItem()?.payloadId,
         () => getCurrentItem()?.threadId,
         {
@@ -165,17 +205,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       ),
     );
     expansionStates.set(key, cached);
-    let stateKeys = itemExpansionKeysByState.get(itemId);
-    if (!stateKeys) {
-      stateKeys = new Map();
-      itemExpansionKeysByState.set(itemId, stateKeys);
-    }
-    let keysForState = stateKeys.get(stateKey);
-    if (!keysForState) {
-      keysForState = new Set();
-      stateKeys.set(stateKey, keysForState);
-    }
-    keysForState.add(key);
+    indexExpansionKey(key, cached.owner);
     return cached.handle;
   }
 
@@ -204,8 +234,13 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       return cached.handle;
     }
 
-    cached = createRegistryExpansion(() =>
-      createPayloadExpansion(
+    cached = createRegistryExpansion(
+      {
+        kind: 'payload',
+        threadId,
+        payloadId,
+      },
+      () => createPayloadExpansion(
         () => payloadId,
         () => threadId,
         {
@@ -220,10 +255,12 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       ),
     );
     expansionStates.set(key, cached);
+    indexExpansionKey(key, cached.owner);
     return cached.handle;
   }
 
   function createRegistryExpansion(
+    owner: ExpansionRegistryOwner,
     create: () => PayloadExpansionHandle,
   ): ExpansionRegistryEntry {
     let handle: PayloadExpansionHandle | undefined;
@@ -234,7 +271,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       dispose();
       throw new Error('Failed to create payload expansion state');
     }
-    return { handle, dispose };
+    return { handle, dispose, owner };
   }
 
   function appendLivePayloadDeltaForItem(
@@ -250,6 +287,146 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       const entry = expansionStates.get(key);
       entry?.handle.appendLiveDelta(delta, payloadVersion, previousLiveTail);
     }
+  }
+
+  function disposeExpansionKey(key: string): void {
+    const entry = expansionStates.get(key);
+    if (!entry) return;
+    disposeExpansionEntry(entry);
+    expansionStates.delete(key);
+    unindexExpansionKey(key, entry.owner);
+  }
+
+  function disposeExpansionEntry(entry: ExpansionRegistryEntry): void {
+    entry.handle.reset();
+    entry.dispose();
+  }
+
+  function indexExpansionKey(key: string, owner: ExpansionRegistryOwner): void {
+    if (owner.kind === 'item') {
+      let stateKeys = itemExpansionKeysByState.get(owner.itemId);
+      if (!stateKeys) {
+        stateKeys = new Map();
+        itemExpansionKeysByState.set(owner.itemId, stateKeys);
+      }
+      let keysForState = stateKeys.get(owner.stateKey);
+      if (!keysForState) {
+        keysForState = new Set();
+        stateKeys.set(owner.stateKey, keysForState);
+      }
+      keysForState.add(key);
+      return;
+    }
+
+    const payloadKey = payloadExpansionRegistryKey(owner.threadId, owner.payloadId);
+    let keys = payloadExpansionKeysByPayload.get(payloadKey);
+    if (!keys) {
+      keys = new Set();
+      payloadExpansionKeysByPayload.set(payloadKey, keys);
+    }
+    keys.add(key);
+  }
+
+  function unindexExpansionKey(key: string, owner: ExpansionRegistryOwner): void {
+    if (owner.kind === 'item') {
+      const stateKeys = itemExpansionKeysByState.get(owner.itemId);
+      const keysForState = stateKeys?.get(owner.stateKey);
+      keysForState?.delete(key);
+      if (keysForState && keysForState.size === 0) stateKeys?.delete(owner.stateKey);
+      if (stateKeys && stateKeys.size === 0) itemExpansionKeysByState.delete(owner.itemId);
+      return;
+    }
+
+    const payloadKey = payloadExpansionRegistryKey(owner.threadId, owner.payloadId);
+    const keys = payloadExpansionKeysByPayload.get(payloadKey);
+    keys?.delete(key);
+    if (keys && keys.size === 0) payloadExpansionKeysByPayload.delete(payloadKey);
+  }
+
+  function payloadExpansionRegistryKey(threadId: string, payloadId: string): string {
+    return expansionRegistryKey([threadId, payloadId]);
+  }
+
+  function disposeItemExpansionStates(itemId: string): void {
+    const states = itemExpansionKeysByState.get(itemId);
+    if (!states) return;
+    for (const keys of states.values()) {
+      for (const key of [...keys]) {
+        disposeExpansionKey(key);
+      }
+    }
+  }
+
+  function disposePayloadExpansionStates(threadId: string, payloadId: string): void {
+    const keys = payloadExpansionKeysByPayload.get(
+      payloadExpansionRegistryKey(threadId, payloadId),
+    );
+    if (!keys) return;
+    for (const key of [...keys]) disposeExpansionKey(key);
+  }
+
+  function disposeAttachmentBlobsForItem(itemId: string): void {
+    const inner = attachmentBlobs.get(itemId);
+    if (!inner) return;
+    for (const preview of inner.values()) {
+      revokePreview(preview);
+    }
+    inner.clear();
+    attachmentBlobs.delete(itemId);
+  }
+
+  function disposeItems(items: Iterable<Item>): void {
+    let nextGroupExpanded: Set<string> | null = null;
+    for (const item of items) {
+      const itemId = item.id;
+      disposeItemExpansionStates(itemId);
+      if (
+        item.payloadId
+        && !options.isPayloadReferenced?.(item.threadId, item.payloadId)
+      ) {
+        disposePayloadExpansionStates(item.threadId, item.payloadId);
+      }
+      disposeAttachmentBlobsForItem(itemId);
+      const groupKeys = [itemId, `wait:${itemId}`, `reads:${itemId}`];
+      for (const groupKey of groupKeys) {
+        if (!subagentGroupExpanded.has(groupKey)) continue;
+        if (!nextGroupExpanded) nextGroupExpanded = new Set(subagentGroupExpanded);
+        nextGroupExpanded.delete(groupKey);
+      }
+    }
+    if (nextGroupExpanded) subagentGroupExpanded = nextGroupExpanded;
+  }
+
+  function pruneRowUiState(retention: RowUiStateRetention): void {
+    const retainedItemIds = new Set(retention.itemIds);
+    const retainedPayloads = new Set<string>();
+    for (const payload of retention.payloads) {
+      retainedPayloads.add(payloadExpansionRegistryKey(payload.threadId, payload.payloadId));
+    }
+    const retainedGroupKeys = new Set(retention.groupKeys);
+
+    for (const [key, entry] of expansionStates) {
+      if (entry.owner.kind === 'item') {
+        if (!retainedItemIds.has(entry.owner.itemId)) disposeExpansionKey(key);
+        continue;
+      }
+
+      const payloadKey = payloadExpansionRegistryKey(entry.owner.threadId, entry.owner.payloadId);
+      if (!retainedPayloads.has(payloadKey)) disposeExpansionKey(key);
+    }
+
+    for (const itemId of attachmentBlobs.keys()) {
+      if (retainedItemIds.has(itemId)) continue;
+      disposeAttachmentBlobsForItem(itemId);
+    }
+
+    let nextGroupExpanded: Set<string> | null = null;
+    for (const groupKey of subagentGroupExpanded) {
+      if (retainedGroupKeys.has(groupKey)) continue;
+      if (!nextGroupExpanded) nextGroupExpanded = new Set(subagentGroupExpanded);
+      nextGroupExpanded.delete(groupKey);
+    }
+    if (nextGroupExpanded) subagentGroupExpanded = nextGroupExpanded;
   }
 
   function isSubagentGroupExpanded(groupKey: string): boolean {
@@ -269,7 +446,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   }
 
   function attachmentCacheFor(itemId: string): AttachmentPreviewCache {
-    const cacheEpoch = attachmentCacheEpoch;
+    const clearGeneration = attachmentClearGeneration;
     let inner = attachmentBlobs.get(itemId);
     if (!inner) {
       inner = new Map<string, ImagePreviewItem>();
@@ -279,11 +456,15 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     const innerRef = inner;
     return {
       get(attachmentId: string): ImagePreviewItem | undefined {
-        if (cacheEpoch !== attachmentCacheEpoch) return undefined;
+        if (clearGeneration !== attachmentClearGeneration) return undefined;
+        if (attachmentBlobs.get(itemId) !== innerRef) return undefined;
         return innerRef.get(attachmentId);
       },
       set(attachmentId: string, preview: ImagePreviewItem): void {
-        if (cacheEpoch !== attachmentCacheEpoch) {
+        if (
+          clearGeneration !== attachmentClearGeneration
+          || attachmentBlobs.get(itemId) !== innerRef
+        ) {
           revokePreview(preview);
           return;
         }
@@ -308,12 +489,13 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
 
   function clear(): void {
     for (const entry of expansionStates.values()) {
-      entry.dispose();
+      disposeExpansionEntry(entry);
     }
     expansionStates.clear();
     itemExpansionKeysByState.clear();
+    payloadExpansionKeysByPayload.clear();
     subagentGroupExpanded = new Set();
-    attachmentCacheEpoch += 1;
+    attachmentClearGeneration += 1;
     disposeAttachmentBlobs();
   }
 
@@ -324,6 +506,21 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     isSubagentGroupExpanded,
     toggleSubagentGroupExpanded,
     attachmentCacheFor,
+    disposeItems,
+    pruneRowUiState,
     clear,
+    debugStats() {
+      let payloadExpansionStates = 0;
+      for (const entry of expansionStates.values()) {
+        if (entry.owner.kind === 'payload') payloadExpansionStates += 1;
+      }
+      return {
+        expansionStates: expansionStates.size,
+        itemExpansionStates: itemExpansionKeysByState.size,
+        payloadExpansionStates,
+        subagentGroups: subagentGroupExpanded.size,
+        attachmentItems: attachmentBlobs.size,
+      };
+    },
   };
 }

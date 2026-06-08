@@ -16,7 +16,10 @@ import {
 } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
 import type { ToolResultMeta } from '../../types/models';
-import { INLINE_DIFF_PAYLOAD_PREVIEW_BYTES } from '../../utils/inlineThreshold';
+import {
+  INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
+  INLINE_DIFF_PREVIEW_FILE_COUNT,
+} from '../../utils/inlineThreshold';
 
 const claudeEditPatch =
   'diff --git a//tmp/diff-test.txt b//tmp/diff-test.txt\n' +
@@ -130,6 +133,62 @@ describe('<DiffFileStack>', () => {
       blocks[1].querySelector('[data-testid="diff-file-counts"]')?.textContent,
     ).toContain('+201');
     expect(previewFetch).not.toHaveBeenCalled();
+  });
+
+  it('caps rendered file rows and shows an overflow side-panel action', async () => {
+    const files = Array.from({ length: INLINE_DIFF_PREVIEW_FILE_COUNT + 2 }, (_, index) => ({
+      path: `src/file-${index}.ts`,
+      kind: 'added' as const,
+      insertions: 1,
+      deletions: 0,
+      previewPatch: [
+        `diff --git a/src/file-${index}.ts b/src/file-${index}.ts`,
+        'new file mode 100644',
+        '--- /dev/null',
+        `+++ b/src/file-${index}.ts`,
+        '@@ -0,0 +1 @@',
+        `+line ${index}`,
+      ].join('\n'),
+    }));
+    const cappedMeta: ToolResultMeta = {
+      itemType: 'file_change',
+      title: 'Edited 27 files (+27 -0)',
+      inlineDiff: {
+        availability: 'exact_patch',
+        totalFiles: files.length,
+        omittedFiles: 2,
+        filesTruncated: true,
+        insertions: files.length,
+        deletions: 0,
+        files,
+      },
+    };
+    const item = makeItem({
+      id: 'tu_many_files',
+      kind: 'tool_completion',
+      status: 'completed',
+      toolName: 'fileChange',
+      payloadId: 'tool-result:tu_many_files',
+      payloadKind: 'tool_result',
+    });
+    const pane = await buildPane(undefined, [item]);
+
+    const { findAllByTestId, findByTestId } = render(DiffFileStack, {
+      props: {
+        pane,
+        item,
+        meta: cappedMeta,
+        payloadId: 'tool-result:tu_many_files',
+      },
+    });
+
+    const blocks = await findAllByTestId('diff-file-block');
+    expect(blocks).toHaveLength(INLINE_DIFF_PREVIEW_FILE_COUNT);
+    expect(blocks.at(-1)).toHaveAttribute('data-file-path', 'src/file-24.ts');
+    const overflow = await findByTestId('diff-file-overflow');
+    expect(overflow.textContent).toContain('2 more files changed');
+    expect(overflow.textContent).toContain('27 total');
+    expect(await findByTestId('diff-file-overflow-open-sidebar')).toBeInTheDocument();
   });
 
   it('lazy-fetches payload data and renders the diff body for each file', async () => {

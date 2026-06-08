@@ -356,14 +356,15 @@ export const BrowseDirectory = dispatch('BrowseDirectory');
 // Turn lifecycle rehydration (thread-switch reads the most recent settled turn)
 export const ListRecentTurns = dispatch('ListRecentTurns');
 
-// Windowed history + thread-wide aggregates. The frontend reads the
-// tail of a thread via ListRecentThreadItems on switch and pages
-// backward via ListItemsBeforeTurn; the three thread-wide bindings
-// back dedicated sidebar / tray surfaces that need the full
-// thread regardless of the timeline window.
+// Windowed history + thread-wide aggregates. Active panes load bounded
+// slices via ListThreadSliceAround and page by item-coordinate cursors;
+// ListRecentThreadItems / turn pagers remain legacy surfaces.
 export const ListRecentThreadItems = dispatch('ListRecentThreadItems');
 export const ListThreadSliceAround = dispatch('ListThreadSliceAround');
+export const ListItemsBeforeCursor = dispatch('ListItemsBeforeCursor');
 export const ListItemsBeforeTurn = dispatch('ListItemsBeforeTurn');
+export const ListItemsAfterCursor = dispatch('ListItemsAfterCursor');
+export const ListItemsAfterTurn = dispatch('ListItemsAfterTurn');
 export const ListThreadProposedPlans = dispatch('ListThreadProposedPlans');
 export const ListProposedPlanComments = dispatch('ListProposedPlanComments');
 export const CreateProposedPlanComment = dispatch('CreateProposedPlanComment');

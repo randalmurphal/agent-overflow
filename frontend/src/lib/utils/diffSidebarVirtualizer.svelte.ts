@@ -1,18 +1,12 @@
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+
 // File-level virtualizer for the diff sidebar.
 //
-// IntersectionObserver-based — tracks each file's intersection with
-// the scroll root expanded by a wide overscroll region (default
-// 600px). Used by the file row to capture the last measured height
-// for the (now-unreached) placeholder fallback.
-//
-// Earlier revisions also gated body rendering and Shiki worker
-// dispatch on `visiblePaths`, but the observer turned out to be
-// unreliable on initial mount and never re-fires for a fully-visible
-// file when the user scrolls within it. Both gates were dropped:
-// rendering happens on expand (see d382d68), tokenization happens
-// on expand. The visible set is still maintained — it's the natural
-// signal for future per-file dispatch priority — but no consumer
-// currently gates correctness on it.
+// IntersectionObserver-based file-level virtualizer for the diff sidebar.
+// It tracks each file's intersection with the scroll root expanded by a wide
+// overscroll region. Registration also runs a synchronous geometry pass so the
+// first viewport is visible before the browser delivers the first observer
+// callback.
 
 export interface FileVirtualizerHandle {
   /** Reactive set of currently-visible (or near-visible) file paths. */
@@ -26,13 +20,11 @@ export interface FileVirtualizerHandle {
 }
 
 export function createFileVirtualizer(): FileVirtualizerHandle {
-  // Svelte 5 tracks Set/Map mutations on $state — no need to clone
-  // and reassign on every IntersectionObserver tick. With 50 files
-  // crossing the threshold during a fast scroll, this saves dozens
-  // of Set/Map allocations per second.
-  const visible: Set<string> = $state(new Set());
-  const heights: Map<string, number> = $state(new Map());
+  const visible = new SvelteSet<string>();
+  const heights = new SvelteMap<string, number>();
   let observer: IntersectionObserver | null = null;
+  let rootEl: HTMLElement | null = null;
+  let rootMarginPx = 600;
   const elementsByPath = new Map<string, Element>();
   const pathByElement = new WeakMap<Element, string>();
 
@@ -50,23 +42,49 @@ export function createFileVirtualizer(): FileVirtualizerHandle {
     }
   }
 
+  function measureVisibility(path: string, el: Element): void {
+    if (!rootEl) return;
+    const rootRect = rootEl.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+    const intersects =
+      rect.bottom >= rootRect.top - rootMarginPx
+      && rect.top <= rootRect.bottom + rootMarginPx;
+    if (intersects) {
+      visible.add(path);
+      if (rect.height > 0) heights.set(path, rect.height);
+    } else {
+      visible.delete(path);
+    }
+  }
+
+  function parseVerticalRootMargin(rootMargin: string): number {
+    const first = rootMargin.trim().split(/\s+/)[0] ?? '';
+    if (!first.endsWith('px')) return 600;
+    const value = Number.parseFloat(first);
+    return Number.isFinite(value) ? value : 600;
+  }
+
   return {
     get visiblePaths(): ReadonlySet<string> {
       return visible;
     },
     init(root: HTMLElement, rootMargin = '600px 0px'): void {
+      rootEl = root;
+      rootMarginPx = parseVerticalRootMargin(rootMargin);
       observer?.disconnect();
       observer = new IntersectionObserver(onIntersect, { root, rootMargin });
       // Re-observe any files that registered before init (component
       // mount order isn't guaranteed; the body sets root after the
       // file children mount via $effect).
-      for (const el of elementsByPath.values()) {
+      for (const [path, el] of elementsByPath) {
+        measureVisibility(path, el);
         observer.observe(el);
       }
     },
     register(path: string, el: Element): void {
       elementsByPath.set(path, el);
       pathByElement.set(el, path);
+      measureVisibility(path, el);
       observer?.observe(el);
     },
     unregister(path: string): void {
@@ -87,7 +105,9 @@ export function createFileVirtualizer(): FileVirtualizerHandle {
     destroy(): void {
       observer?.disconnect();
       observer = null;
+      rootEl = null;
       elementsByPath.clear();
+      visible.clear();
     },
   };
 }

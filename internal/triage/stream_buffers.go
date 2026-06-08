@@ -53,14 +53,16 @@ func (r *Router) emitItemDelta(evt ItemDeltaEvent) {
 	r.emit("provider:item_event", newItemStreamDelta(evt))
 }
 
-func (r *Router) bufferTextPersistence(threadID, itemID, delta string, updatedAt int64) error {
-	return r.bufferStreamPersistence(pendingStreamFlush{
+func (r *Router) stageTextPersistenceForEmit(threadID, itemID, payloadID, delta string, updatedAt int64) bool {
+	return r.stageStreamPersistence(pendingStreamFlush{
 		threadID:     threadID,
 		itemID:       itemID,
 		kind:         itemKindAssistantText,
+		payloadID:    payloadID,
 		summaryDelta: delta,
+		payloadDelta: delta,
 		updatedAt:    updatedAt,
-	})
+	}, false)
 }
 
 func (r *Router) bufferThinkingPersistence(threadID, itemID, payloadID, delta string, updatedAt int64) error {
@@ -252,8 +254,16 @@ func (r *Router) flushAllStreamPersistence() error {
 func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 	switch flush.kind {
 	case itemKindAssistantText:
-		updated, err := r.store.AppendItemSummary(flush.threadID, flush.itemID, flush.summaryDelta, flush.updatedAt)
-		if err := ignoreLateStreamPersistence(err); err != nil {
+		updated, err := r.store.AppendItemSummary(
+			flush.threadID,
+			flush.itemID,
+			flush.summaryDelta,
+			flush.updatedAt,
+		)
+		if isLateStreamPersistence(err) {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
 		// Live path-link validation: re-run the workspace allowlist
@@ -263,8 +273,12 @@ func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 		// AppendItemSummary is the same row enrich needs — pass it
 		// through to skip a redundant SQLite read on the hot path. See
 		// enrichStreamingPathRefsAndEmit.
-		if err == nil {
-			r.enrichStreamingPathRefsAndEmit(updated, flush.updatedAt)
+		r.enrichStreamingPathRefsAndEmit(updated, flush.updatedAt)
+		if flush.payloadID == "" || flush.payloadDelta == "" {
+			return nil
+		}
+		if err := r.store.AppendPayloadData(flush.payloadID, []byte(flush.payloadDelta), updated.PayloadMeta, flush.updatedAt); err != nil {
+			return fmt.Errorf("assistant text stream append payload %s: %w", flush.payloadID, err)
 		}
 		return nil
 	case itemKindThinking:

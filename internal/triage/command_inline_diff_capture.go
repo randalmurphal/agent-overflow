@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const commandInlineDiffDeleteCaptureMaxBytes = 1024 * 1024
+
 type capturedShellMutationOperation struct {
 	Kind            string
 	Path            string
@@ -45,7 +47,12 @@ func captureDeleteOperation(
 	operation supportedShellMutationOperation,
 	workspaceRoot string,
 ) (capturedShellMutationOperation, bool) {
-	absolutePath := filepath.Join(workspaceRoot, filepath.FromSlash(operation.Path))
+	path := normalizeWorkspaceRelativePath(operation.Path, workspaceRoot)
+	if path == "" {
+		return capturedShellMutationOperation{}, false
+	}
+
+	absolutePath := filepath.Join(workspaceRoot, filepath.FromSlash(path))
 	stat, err := os.Lstat(absolutePath)
 	if err == nil && stat.IsDir() {
 		return capturedShellMutationOperation{}, false
@@ -53,10 +60,14 @@ func captureDeleteOperation(
 
 	result := capturedShellMutationOperation{
 		Kind:  "delete",
-		Path:  operation.Path,
+		Path:  path,
 		Exact: true,
 	}
 	if err == nil && stat.Mode().IsRegular() {
+		if stat.Size() > commandInlineDiffDeleteCaptureMaxBytes {
+			result.Exact = false
+			return result, true
+		}
 		content, readErr := os.ReadFile(absolutePath)
 		if readErr == nil {
 			original := string(content)
@@ -72,8 +83,14 @@ func captureRenameOperation(
 	operation supportedShellMutationOperation,
 	workspaceRoot string,
 ) (capturedShellMutationOperation, bool) {
-	oldPath := filepath.Join(workspaceRoot, filepath.FromSlash(operation.OldPath))
-	newPath := filepath.Join(workspaceRoot, filepath.FromSlash(operation.NewPath))
+	normalizedOldPath := normalizeWorkspaceRelativePath(operation.OldPath, workspaceRoot)
+	normalizedNewPath := normalizeWorkspaceRelativePath(operation.NewPath, workspaceRoot)
+	if normalizedOldPath == "" || normalizedNewPath == "" {
+		return capturedShellMutationOperation{}, false
+	}
+
+	oldPath := filepath.Join(workspaceRoot, filepath.FromSlash(normalizedOldPath))
+	newPath := filepath.Join(workspaceRoot, filepath.FromSlash(normalizedNewPath))
 
 	sourceStat, sourceErr := os.Lstat(oldPath)
 	if sourceErr == nil && sourceStat.IsDir() {
@@ -85,8 +102,8 @@ func captureRenameOperation(
 
 	return capturedShellMutationOperation{
 		Kind:    "rename",
-		OldPath: operation.OldPath,
-		NewPath: operation.NewPath,
+		OldPath: normalizedOldPath,
+		NewPath: normalizedNewPath,
 		Exact:   sourceErr == nil && sourceStat.Mode().IsRegular(),
 	}, true
 }
@@ -98,8 +115,8 @@ func buildCommandExecutionInlineDiffArtifact(
 		return nil, ""
 	}
 
-	files := summarizeCapturedCommandFiles(operations)
-	if len(files) == 0 {
+	files, totalFiles := summarizeCapturedCommandFiles(operations)
+	if totalFiles == 0 {
 		return nil, ""
 	}
 
@@ -126,19 +143,25 @@ func buildCommandExecutionInlineDiffArtifact(
 
 	if !exact || len(fragments) != len(operations) {
 		return &ToolInlineDiff{
-			Availability: "summary_only",
-			Files:        files,
+			Availability:   "summary_only",
+			Files:          files,
+			TotalFiles:     totalFiles,
+			OmittedFiles:   omittedInlineDiffFiles(totalFiles, len(files)),
+			FilesTruncated: totalFiles > len(files),
 		}, ""
 	}
 
 	return &ToolInlineDiff{
-		Availability: "exact_patch",
-		Files:        files,
-		Deletions:    deletions,
+		Availability:   "exact_patch",
+		Files:          files,
+		TotalFiles:     totalFiles,
+		OmittedFiles:   omittedInlineDiffFiles(totalFiles, len(files)),
+		FilesTruncated: totalFiles > len(files),
+		Deletions:      deletions,
 	}, strings.Join(fragments, "\n\n")
 }
 
-func summarizeCapturedCommandFiles(operations []capturedShellMutationOperation) []ToolInlineDiffFile {
+func summarizeCapturedCommandFiles(operations []capturedShellMutationOperation) ([]ToolInlineDiffFile, int) {
 	byPath := make(map[string]ToolInlineDiffFile, len(operations))
 	for _, operation := range operations {
 		if operation.Kind == "delete" {
@@ -166,7 +189,11 @@ func summarizeCapturedCommandFiles(operations []capturedShellMutationOperation) 
 	slices.SortFunc(files, func(left, right ToolInlineDiffFile) int {
 		return strings.Compare(left.Path, right.Path)
 	})
-	return files
+	totalFiles := len(files)
+	if len(files) > inlineDiffPreviewFileCount {
+		files = files[:inlineDiffPreviewFileCount]
+	}
+	return files, totalFiles
 }
 
 func buildDeletedFileUnifiedDiff(path, rawContent string) string {

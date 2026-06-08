@@ -148,33 +148,23 @@
 
   // ── Cross-file tokenization coordinator ──
   //
-  // Re-runs whenever the expanded set, theme, or files change. Walks
-  // expanded files — which equals rendered files by the body's render
-  // contract (DiffSidebarFile renders unconditionally on expand since
-  // d382d68) — groups uncached lines by language, and dispatches one
-  // tokenize call per language. Unknown / failed languages skip the
-  // dispatch and render plain text.
-  //
-  // Visibility is deliberately NOT a gate here. The IntersectionObserver
-  // that backs `virtualizer.visiblePaths` doesn't reliably fire on
-  // initial sidebar mount (same hole d382d68 documented for body
-  // rendering), and once a fully-visible file is intersecting it has
-  // no reason to fire again — scrolling within the file doesn't change
-  // its intersection state. Gating dispatch on visibility wedged
-  // tokens for any line past the inline preview cap. Expand-as-trigger
-  // matches "expand = render = needs-tokens" everywhere else.
+  // Re-runs whenever the expanded set, visible set, theme, or files change.
+  // Only expanded files inside the file-level virtualizer's overscan window
+  // dispatch tokens; out-of-window files render a measured placeholder.
   $effect(() => {
     const t = theme;
     const expandedNow = expandedSet;
+    const visibleNow = virtualizer.visiblePaths;
     const fileMap = filesByRowId;
     if (expandedNow.size === 0 || fileMap.size === 0) return;
     untrack(() => {
-      void dispatchExpandedFileTokens(expandedNow, fileMap, t);
+      void dispatchExpandedFileTokens(expandedNow, visibleNow, fileMap, t);
     });
   });
 
   async function dispatchExpandedFileTokens(
     expanded: ReadonlySet<string>,
+    visible: ReadonlySet<string>,
     fileMap: ReadonlyMap<string, PatchFile>,
     targetTheme: DiffTheme,
   ): Promise<void> {
@@ -187,6 +177,7 @@
     const claimed: string[] = [];
 
     for (const rowId of expanded) {
+      if (!visible.has(rowId)) continue;
       const file = fileMap.get(rowId);
       if (!file) continue;
       const lang = languageFromPath(file.path);
