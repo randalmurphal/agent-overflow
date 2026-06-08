@@ -129,6 +129,41 @@ describe('keybindingParser — chordMatches', () => {
       expect(chordMatches(chord, ev('`', { ctrlKey: true, shiftKey: true }), false)).toBe(false);
     });
   });
+
+  // Tab switching uses LITERAL ctrl+tab / ctrl+shift+tab — NOT mod+tab. On macOS
+  // mod is Cmd, and Cmd+Tab is the OS app switcher (unreachable); ctrl+tab is the
+  // cross-platform tab-cycle convention. Pin that the chord parses as literal
+  // ctrl (no mod normalization) so a future "tidy to mod" can't silently break
+  // it on macOS.
+  describe('terminal tab-switch chords (literal ctrl+tab)', () => {
+    it('parses ctrl+tab as literal ctrl, not mod', () => {
+      expect(tryParseChord('ctrl+tab')).toMatchObject({
+        key: 'tab',
+        ctrlKey: true,
+        modKey: false,
+        metaKey: false,
+        shiftKey: false,
+        altKey: false,
+      });
+    });
+
+    it('parses ctrl+shift+tab with shift and literal ctrl', () => {
+      expect(tryParseChord('ctrl+shift+tab')).toMatchObject({
+        key: 'tab',
+        ctrlKey: true,
+        shiftKey: true,
+        modKey: false,
+      });
+    });
+
+    it('matches Ctrl+Tab on both mac and non-mac, but never Cmd+Tab', () => {
+      const chord = parseChord('ctrl+tab');
+      expect(chordMatches(chord, ev('Tab', { ctrlKey: true }), false)).toBe(true);
+      expect(chordMatches(chord, ev('Tab', { ctrlKey: true }), true)).toBe(true);
+      // Cmd+Tab must NOT match a literal-ctrl chord (it's the OS app switcher).
+      expect(chordMatches(chord, ev('Tab', { metaKey: true }), true)).toBe(false);
+    });
+  });
 });
 
 describe('keybindingParser — when expressions', () => {

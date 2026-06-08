@@ -84,6 +84,22 @@ export const RefreshTerminal = dispatch('RefreshTerminal');
 export const ResizeTerminal = dispatch('ResizeTerminal');
 export const RestartTerminal = dispatch('RestartTerminal');
 export const WriteTerminal = dispatch('WriteTerminal');
+// TerminalOpenOptions mirrors the generated class (internal/terminal open args).
+// builtinCommands / TerminalSurface construct `new TerminalOpenOptions({ cwd })`;
+// the OpenTerminal mock ignores the arg, but the class must exist so both the
+// construction and `import { TerminalOpenOptions }` compile against this mock.
+export class TerminalOpenOptions {
+  cwd: string;
+  shell?: string;
+  rows?: number;
+  cols?: number;
+  constructor(s: Partial<TerminalOpenOptions> = {}) {
+    this.cwd = s.cwd ?? '';
+    this.shell = s.shell;
+    this.rows = s.rows;
+    this.cols = s.cols;
+  }
+}
 
 export const StartSession = dispatch('StartSession');
 export const AutoResumeThread = dispatch('AutoResumeThread');

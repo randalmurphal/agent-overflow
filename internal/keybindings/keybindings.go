@@ -101,10 +101,25 @@ var Defaults = []Keybinding{
 	{Key: "mod+shift+n", Command: "thread.newPane", When: "!terminalFocus", DefaultID: "thread.newPane"},
 	// Uses the SHIFTED glyph `~`, not the bare backtick: Ctrl/Cmd+Shift+` yields
 	// event.key="~", and the matcher compares event.key.toLowerCase() without
-	// folding punctuation, so a `mod+shift+\`` binding would never fire. The
-	// !terminalFocus gate keeps it out of a focused xterm; the command itself
-	// carries no `when`, so it stays palette-runnable.
-	{Key: "mod+shift+~", Command: "terminal.newPane", When: "!terminalFocus", DefaultID: "terminal.newPane"},
+	// folding punctuation, so a `mod+shift+\`` binding would never fire. UN-gated
+	// (no !terminalFocus) so it opens a terminal pane from the composer AND from
+	// inside a focused terminal: TerminalBody's xterm key handler lets it bubble
+	// out via TERMINAL_ESCAPE_COMMAND_IDS, exactly like the alt+h/l vim pane-nav
+	// chords. The command carries no `when`, so it also stays palette-runnable.
+	{Key: "mod+shift+~", Command: "terminal.newPane", DefaultID: "terminal.newPane"},
+	// Terminal tab management. All gated `terminalFocus` (they act on the focused
+	// terminal surface) and members of the frontend TERMINAL_ESCAPE_COMMAND_IDS
+	// set, so the chord escapes a focused xterm to run the app command instead of
+	// being encoded to the PTY (same mechanism as terminal.refresh). New-tab/
+	// close-tab use mod+shift (Cmd on macOS); tab-switching uses LITERAL ctrl+tab,
+	// not mod+tab — mod+tab is Cmd+Tab on macOS (the OS app switcher), and ctrl+tab
+	// is the cross-platform tab-cycle convention, distinct from plain Tab (shell
+	// completion). Copy/paste are handled inside TerminalBody, not here (platform
+	// split + native-clipboard access).
+	{Key: "mod+shift+t", Command: "terminal.newTab", When: "terminalFocus", DefaultID: "terminal.newTab"},
+	{Key: "mod+shift+w", Command: "terminal.closeTab", When: "terminalFocus", DefaultID: "terminal.closeTab"},
+	{Key: "ctrl+tab", Command: "terminal.nextTab", When: "terminalFocus", DefaultID: "terminal.nextTab"},
+	{Key: "ctrl+shift+tab", Command: "terminal.prevTab", When: "terminalFocus", DefaultID: "terminal.prevTab"},
 	{Key: "mod+shift+o", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.alternate"},
 	{Key: "mod+shift+d", Command: "thread.new.discussion", When: "!terminalFocus", DefaultID: "thread.new.discussion"},
 	{Key: "mod+w", Command: "pane.close", When: "!terminalFocus", DefaultID: "pane.close"},

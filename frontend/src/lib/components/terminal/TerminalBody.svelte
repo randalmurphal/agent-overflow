@@ -19,6 +19,10 @@
   } from './terminalStore.svelte';
   import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
   import { TERMINAL_ESCAPE_COMMAND_IDS } from '../../stores/paneNavCommands';
+  import { copyToClipboard } from '../../utils/clipboard';
+  import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
+  import { isClipboardChord } from './terminalKeys';
 
   interface Props {
     handle: ThreadTerminalStateHandle;
@@ -63,6 +67,13 @@
     notifyTerminalFocus(paneId, false);
   }
 
+  // Copy/paste are handled in the widget rather than the rebindable command
+  // layer because they need the xterm selection/paste API and their platform
+  // split (the Shift asymmetry) does not express in the single-`mod` keybinding
+  // model. isClipboardChord (terminalKeys) owns the per-platform chord rules.
+  const isMac =
+    typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+
   // Build the xterm instance with its addons attached to the mount node.
   // Extracted from hydrate() so the long renderer-choice rationale doesn't bury
   // the replay/drain ordering that the rest of hydrate() turns on.
@@ -87,14 +98,19 @@
     terminal.loadAddon(new WebLinksAddon());
     terminal.open(mount);
 
-    // Let app chords that stay active inside a focused terminal bubble to
-    // App.svelte's window keydown handler instead of being encoded to the PTY:
-    // pane navigation (alt+h/l, alt+shift+h/l) and terminal.refresh
-    // (alt+shift+r → repaint). Returning false makes xterm skip its own handling
-    // WITHOUT preventDefault/stopPropagation, so the event reaches the app.
-    // Chords still gated on !terminalFocus (alt+arrow word-motion) are not
-    // matched by the predicate and fall through to the shell as before. The
-    // predicate reads live bindings, so a user rebind takes effect immediately.
+    // Runs on every keydown in a focused xterm. It first fully consumes the
+    // in-widget special cases handled below — Shift+Enter (newline) and copy/
+    // paste (Cmd, or Ctrl+Shift+C/V) — so they never reach the shell. Everything
+    // else falls to the escape predicate: app chords that stay active inside a
+    // focused terminal bubble to App.svelte's window keydown handler instead of
+    // being encoded to the PTY — pane navigation (alt+h/l, alt+shift+h/l),
+    // terminal.refresh (alt+shift+r → repaint), terminal tab management
+    // (mod+shift+t/w, ctrl+tab/ctrl+shift+tab), and new pane (mod+shift+~).
+    // Returning false makes xterm skip its own handling WITHOUT preventDefault/
+    // stopPropagation, so the event reaches the app. Chords still gated on
+    // !terminalFocus (alt+arrow word-motion) are not matched by the predicate and
+    // fall through to the shell as before. The predicate reads live bindings, so
+    // a user rebind takes effect immediately.
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
       // Shift+Enter inserts a newline instead of submitting. xterm's default
@@ -119,6 +135,38 @@
         WriteTerminal(terminalID, encodeTerminalInput('\n')).catch((err) => {
           console.error('terminal: WriteTerminal (shift+enter) failed', err);
         });
+        return false;
+      }
+      // Copy: Cmd+C (macOS) / Ctrl+Shift+C. Copy the selection to the clipboard
+      // and fully consume the event so it never reaches the PTY. A copy chord
+      // with no selection is a no-op but still consumed (never meant for the
+      // shell).
+      if (isClipboardChord(event, 'c', isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (terminal.hasSelection()) {
+          void copyToClipboard(terminal.getSelection()).then((ok) => {
+            if (!ok) addToast('error', 'Copy failed: clipboard unavailable');
+          });
+        }
+        return false;
+      }
+      // Paste: Cmd+V (macOS) / Ctrl+Shift+V. Read the clipboard and feed it
+      // through term.paste so xterm honors bracketed-paste mode (multi-line
+      // safety). readText can reject (permission/focus) — surface it, never
+      // swallow.
+      if (isClipboardChord(event, 'v', isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (text && !destroyed) terminal.paste(text);
+          })
+          .catch((err) => {
+            console.error('terminal: clipboard paste failed', err);
+            addToast('error', `Paste failed: ${errString(err)}`);
+          });
         return false;
       }
       return !eventEscapesTerminalToCommand(event, TERMINAL_ESCAPE_COMMAND_IDS);

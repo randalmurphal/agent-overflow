@@ -12,7 +12,7 @@
     TerminalSessionSummary,
   } from '../../types/terminal';
   import { addToast } from '../../stores/toast.svelte';
-  import { errString } from '../../utils/errors';
+  import { userFacingError } from '../../utils/userFacingError';
   import {
     getThreadTerminalState,
     terminalStateKeyForPane,
@@ -34,13 +34,21 @@
   let { surface, manual = false, collapsible = true }: Props = $props();
 
   let bodyEl: { focus: () => void } | undefined = $state(undefined);
-  // Latch a "focus terminal once it exists" intent. The creator of the
-  // surface (the ⌘` chord / header button for the drawer; the new-pane
-  // create helper for a terminal pane) calls pane.requestTerminalFocus()
-  // before the surface mounts; we read-and-clear that intent in onMount
-  // below. On a cold first open, onMount's OpenTerminal (async, ~50–200 ms)
-  // hasn't resolved, so bodyEl is undefined when we consume — the effect
-  // below holds the intent and focuses the moment TerminalBody binds.
+  // Latch a "focus the terminal body once it exists" intent, drained (and
+  // cleared) by the rAF effect below. Every create/switch/close changes
+  // activeTerminalID, and TerminalBody is keyed on it, so each remounts the body
+  // and drops xterm focus — re-latching keeps the cursor on the active tab
+  // instead of stranding the user on the tab strip. Two entry points feed this
+  // one latch, split by whether the caller can reach this component's $state:
+  //   • Out-of-component callers go through pane.requestTerminalFocus(), which
+  //     the consume effect below drains: the surface creator on a cold open
+  //     (⌘` chord / drawer header button / new-pane helper — set before mount,
+  //     before OpenTerminal (async, ~50–200 ms) resolves, so bodyEl is undefined
+  //     when we consume and the latch holds until TerminalBody binds), and the
+  //     keyboard tab commands (terminal.newTab / closeTab / nextTab / prevTab),
+  //     which run in builtinCommands and have no handle to this component.
+  //   • In-component mouse handlers (＋ click, tab click, close-to-sibling) set
+  //     it directly, since they already hold this $state.
   let pendingFocus = $state(false);
 
   $effect(() => {
@@ -92,7 +100,7 @@
     }
   }
 
-  async function openTerminal() {
+  async function openTerminal(opts: { focus?: boolean } = {}) {
     const threadId = surface.threadId;
     if (!threadId) return;
     const workspacePath = surface.workspacePath;
@@ -109,10 +117,14 @@
       }
       if (th?.summary) {
         handle.addTab(th.summary);
+        // The ＋ button passes focus:true so the freshly opened tab grabs the
+        // cursor. The mount auto-open leaves it unset — its focus is driven by
+        // the pane's consume-once intent (see pendingFocus above), not here.
+        if (opts.focus) pendingFocus = true;
       }
     } catch (err) {
       console.error('terminal: OpenTerminal failed', err);
-      addToast('error', `Could not open terminal: ${errString(err)}`);
+      addToast('error', `Could not open terminal: ${userFacingError(err)}`);
     }
   }
 
@@ -126,14 +138,20 @@
     // Closing the last tab leaves nothing to render. In the drawer, collapse
     // it (the user re-opens via the header button or ⌘J). In a full pane,
     // setVisible is a no-op and the "No active terminal" empty state stays put
-    // with ＋ to re-open.
+    // with ＋ to re-open. When a sibling tab remains, removeTab promotes it to
+    // active (a remount); re-latch focus so the cursor follows into it.
     if (handle.tabs.length === 0) {
       collapseDrawer();
+    } else {
+      pendingFocus = true;
     }
   }
 
   function selectTerminal(terminalID: string) {
     handle.setActive(terminalID);
+    // The remount on the active-tab change drops xterm focus; re-latch it so
+    // clicking a tab puts the cursor in that terminal (parity with Ctrl+Tab).
+    pendingFocus = true;
   }
 
   // Repaint the active terminal. RefreshTerminal blips the PTY winsize (rows
@@ -201,7 +219,7 @@
 
 <TerminalTabStrip
   {handle}
-  onOpen={openTerminal}
+  onOpen={() => void openTerminal({ focus: true })}
   onClose={closeTerminal}
   onSelect={selectTerminal}
   onRefresh={refreshActiveTerminal}

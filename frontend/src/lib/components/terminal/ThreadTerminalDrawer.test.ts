@@ -91,8 +91,10 @@ function makeSurface() {
     get workspacePath() { return thread.workspacePath; },
     setVisible: vi.fn(),
     acquireResizeLease: vi.fn(() => null),
-    // No focus intent by default — these tests cover lifecycle/tabs, not the
-    // open-focus handoff. Tests that exercise focus override this.
+    // No focus intent — these tests cover lifecycle/tabs, not the open-focus
+    // handoff (and the real TerminalBody is focus-inert under happy-dom). Focus
+    // outcomes are covered in TerminalSurface.focus.test.ts, which stubs the
+    // body to observe focus() across the keyed remount.
     consumeFocusRequest: vi.fn(() => false),
   };
 }

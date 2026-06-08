@@ -8,6 +8,7 @@
 
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
+import type { TerminalHandle } from '../types/terminal';
 import { registerCommand, type CommandContext, type CommandFlags } from './commandRegistry.svelte';
 import { closeCheatSheet, isCheatSheetOpen, openCheatSheet } from './cheatSheet.svelte';
 import { closeMessageSearch, isMessageSearchOpen, openMessageSearch } from './messageSearch.svelte';
@@ -43,12 +44,15 @@ import {
 import { runTerminalToggle } from '../components/terminal/terminalToggle';
 import {
   ApprovalResponse,
+  CloseTerminal,
   GitPull,
   GitPush,
   InterruptTurn,
+  OpenTerminal,
   RefreshTerminal,
   RespondToApproval,
   RespondToUserInput,
+  TerminalOpenOptions,
   UpdateThreadMode,
   UserInputResponse,
 } from './bindings';
@@ -128,6 +132,28 @@ function commandThreadActionCtx(thread: Thread, pane: ThreadPane): ThreadActionC
     reportError: (msg) => pane.setGeneralError(msg),
     replacePaneThread: (next) => pane.replaceThread(next),
   };
+}
+
+// Cycle the focused pane's active terminal tab forward (+1) or back (-1),
+// wrapping at the ends. Resolves the same per-pane terminal handle the surface
+// mounted (terminalStateKeyForPane), mirroring terminal.refresh. No-op when the
+// pane has fewer than two tabs.
+function switchTerminalTab(ctx: CommandContext, direction: 1 | -1): void {
+  const pane = ctx.pane;
+  if (!pane) return;
+  const state = getExistingThreadTerminalState(
+    terminalStateKeyForPane(pane.threadId, pane.paneId),
+  );
+  if (!state || state.tabs.length < 2) return;
+  const index = state.tabs.findIndex((t) => t.terminalID === state.activeTerminalID);
+  if (index < 0) return;
+  const count = state.tabs.length;
+  const next = state.tabs[(index + direction + count) % count];
+  state.setActive(next.terminalID);
+  // The surface keys TerminalBody on activeTerminalID, so the switch remounts
+  // it and drops xterm focus. Signal the surface to re-focus the body so the
+  // cursor follows the user into the tab (parity with clicking a tab).
+  pane.requestTerminalFocus();
 }
 
 export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
@@ -732,10 +758,14 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Terminal: New in New Pane',
     icon: '▶',
     // No `when` — unlike terminal.toggle this must work with no active thread
-    // (the global +terminal opens a home terminal). The `!terminalFocus` gate
-    // that keeps the `mod+shift+~` chord out of a focused xterm lives on the
-    // keybinding (mirroring thread.newPane), so the command stays palette-
-    // runnable. `editableReachable` lets the chord fire from the composer.
+    // (the global +terminal opens a home terminal). The `mod+shift+~` chord is
+    // un-gated (no `!terminalFocus`) and terminal.newPane is a member of the
+    // frontend TERMINAL_ESCAPE_COMMAND_IDS set, so it fires everywhere — from the
+    // composer AND from inside a focused xterm (the natural place to press it),
+    // mirroring the alt+h/l pane-nav chords. `editableReachable` is the other
+    // half of that: App.svelte only dispatches editable-target chords for
+    // editableReachable commands, so without it the chord would no-op from the
+    // xterm <textarea>.
     editableReachable: true,
     run: (ctx) => {
       const thread = ctx.pane?.thread;
@@ -777,6 +807,94 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         console.error('terminal: RefreshTerminal failed', err);
       });
     },
+  });
+
+  // Terminal tab management. Each is `editableReachable` and a member of the
+  // frontend TERMINAL_ESCAPE_COMMAND_IDS set, so the chord escapes a focused
+  // xterm to run here (like terminal.refresh) instead of being encoded to the
+  // PTY. The `terminalFocus || terminalOpen` gate mirrors terminal.refresh: the
+  // xterm escape predicate evaluates this `when` against a synthetic
+  // terminalFocus-only context, so the command must stay enabled there for the
+  // chord to bubble out; the `terminalOpen` arm keeps it palette-runnable when a
+  // terminal is open but unfocused.
+  registerCommand({
+    id: 'terminal.newTab',
+    label: 'Terminal: New Tab',
+    description: 'Open a new terminal tab in the focused terminal.',
+    icon: '＋',
+    when: 'terminalFocus || terminalOpen',
+    editableReachable: true,
+    run: (ctx) => {
+      const pane = ctx.pane;
+      const threadId = pane?.threadId;
+      if (!pane || !threadId) return;
+      const state = getExistingThreadTerminalState(
+        terminalStateKeyForPane(threadId, pane.paneId),
+      );
+      if (!state) return;
+      OpenTerminal(threadId, new TerminalOpenOptions({ cwd: pane.thread?.workspacePath }))
+        .then((th) => {
+          const handle = th as TerminalHandle;
+          if (handle?.summary) {
+            state.addTab(handle.summary);
+            // addTab makes the new tab active → the surface remounts
+            // TerminalBody; request focus so the cursor lands in the new tab.
+            pane.requestTerminalFocus();
+          }
+        })
+        .catch((err) => {
+          console.error('terminal: OpenTerminal (newTab) failed', err);
+          addToast('error', `Could not open terminal: ${userFacingError(err)}`);
+        });
+    },
+  });
+
+  registerCommand({
+    id: 'terminal.closeTab',
+    label: 'Terminal: Close Tab',
+    description: 'Close the active terminal tab.',
+    icon: '×',
+    when: 'terminalFocus || terminalOpen',
+    editableReachable: true,
+    run: (ctx) => {
+      const pane = ctx.pane;
+      if (!pane) return;
+      const state = getExistingThreadTerminalState(
+        terminalStateKeyForPane(pane.threadId, pane.paneId),
+      );
+      const terminalID = state?.activeTerminalID;
+      if (!state || !terminalID) return;
+      CloseTerminal(terminalID).catch((err) => {
+        console.error('terminal: CloseTerminal (closeTab) failed', err);
+      });
+      // Collapsing the drawer when the last tab closes is owned by the
+      // tabs-length $effect in TerminalSurface, so removeTab is all we do here.
+      state.removeTab(terminalID);
+      // removeTab promotes a sibling to active (a remount). Request focus so
+      // the cursor follows into it; when the last tab closed there is nothing
+      // to focus (the surface collapses instead), so skip it.
+      if (state.activeTerminalID) pane.requestTerminalFocus();
+    },
+  });
+
+  registerCommand({
+    id: 'terminal.nextTab',
+    label: 'Terminal: Next Tab',
+    description: 'Switch to the next terminal tab.',
+    icon: '›',
+    when: 'terminalFocus || terminalOpen',
+    editableReachable: true,
+    run: (ctx) => switchTerminalTab(ctx, 1),
+  });
+
+  registerCommand({
+    id: 'terminal.prevTab',
+    label: 'Terminal: Previous Tab',
+    description: 'Switch to the previous terminal tab.',
+    icon: '‹',
+    when: 'terminalFocus || terminalOpen',
+    editableReachable: true,
+    run: (ctx) => switchTerminalTab(ctx, -1),
   });
 
   registerCommand({

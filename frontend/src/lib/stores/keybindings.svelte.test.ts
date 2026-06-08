@@ -263,6 +263,55 @@ describe('eventEscapesTerminalToCommand (terminal key-escape predicate)', () => 
       ),
     ).toBe(false);
   });
+
+  // Terminal tab/pane management chords must escape a focused terminal too. The
+  // tab chords are terminalFocus-gated (enabled under the synthetic ctx, so they
+  // escape); newPane is un-gated (escapes regardless, like the vim chords). Note
+  // ctrl+tab is LITERAL ctrl, not mod, so it must NOT be normalized to Cmd+Tab.
+  function registerTerminalManagement(): void {
+    for (const id of ['terminal.newTab', 'terminal.closeTab', 'terminal.nextTab', 'terminal.prevTab']) {
+      registerCommand({
+        id,
+        label: id,
+        when: 'terminalFocus || terminalOpen',
+        editableReachable: true,
+        run: vi.fn(),
+      });
+    }
+    registerCommand({ id: 'terminal.newPane', label: 'New Pane', editableReachable: true, run: vi.fn() });
+    setKeybindingsForTest([
+      { key: 'mod+shift+t', command: 'terminal.newTab', when: 'terminalFocus' },
+      { key: 'mod+shift+w', command: 'terminal.closeTab', when: 'terminalFocus' },
+      { key: 'ctrl+tab', command: 'terminal.nextTab', when: 'terminalFocus' },
+      { key: 'ctrl+shift+tab', command: 'terminal.prevTab', when: 'terminalFocus' },
+      { key: 'mod+shift+~', command: 'terminal.newPane' },
+    ]);
+  }
+
+  it('lets the tab/pane management chords escape via the terminal-escape set', () => {
+    registerTerminalManagement();
+    const escapes = (e: KeyboardEvent): boolean =>
+      eventEscapesTerminalToCommand(e, TERMINAL_ESCAPE_COMMAND_IDS, { isMac: false });
+    expect(escapes(ev('t', { ctrlKey: true, shiftKey: true }))).toBe(true); // newTab
+    expect(escapes(ev('w', { ctrlKey: true, shiftKey: true }))).toBe(true); // closeTab
+    expect(escapes(ev('Tab', { ctrlKey: true }))).toBe(true); // nextTab
+    expect(escapes(ev('Tab', { ctrlKey: true, shiftKey: true }))).toBe(true); // prevTab
+    expect(escapes(ev('~', { ctrlKey: true, shiftKey: true }))).toBe(true); // newPane (un-gated)
+    // Plain Tab carries no ctrl, so it matches no escape chord and stays with the
+    // shell for completion — the ctrl+tab binding must not steal bare Tab.
+    expect(escapes(ev('Tab', {}))).toBe(false);
+  });
+
+  it('would NOT escape the tab chords through the pane-nav-only set — escape-set entry is load-bearing', () => {
+    registerTerminalManagement();
+    expect(
+      eventEscapesTerminalToCommand(
+        ev('t', { ctrlKey: true, shiftKey: true }),
+        PANE_NAV_COMMAND_IDS,
+        { isMac: false },
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('keybindings store — loading', () => {

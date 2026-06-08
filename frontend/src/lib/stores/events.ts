@@ -39,7 +39,7 @@ import {
   replaceQueueForThread,
 } from './sendQueue.svelte';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
-import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
+import { closePanesShowingThread, findPaneShowingThread, iterPanes, panesShowingThread, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { setProviderRateLimits } from './rateLimitsInfo.svelte';
@@ -68,6 +68,7 @@ import { wailsEventOn } from './wailsEvents';
 import { threadItemCache } from './threadItemCache';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import {
+  getTerminalFocused,
   getThreadTerminalStateForTerminalEvent,
 } from '../components/terminal/terminalStore.svelte';
 import { DeleteThread, GetThread } from './bindings';
@@ -1149,6 +1150,21 @@ function applyTerminalOutput(payload: TerminalOutputEventPayload): void {
 async function applyTerminalExit(payload: TerminalExitEventPayload): Promise<void> {
   if (!payload?.threadID || !payload.terminalID) return;
   const handle = getThreadTerminalStateForTerminalEvent(payload.threadID, payload.terminalID);
+
+  // Removing the ACTIVE tab promotes a sibling, changing activeTerminalID and
+  // remounting TerminalBody (keyed on that id) — which blurs the dying xterm.
+  // Capture, BEFORE the mutation, which panes had the user actually focused IN
+  // this terminal, so focus can follow into the promoted sibling — parity with
+  // the close paths (the ✕ button latches pendingFocus directly; Ctrl+Shift+W
+  // uses the same pane.requestTerminalFocus channel this handler does). The
+  // focus check is the load-bearing guard: a backgrounded shell (`sleep 5; exit`)
+  // that exits while the user types in the composer leaves getTerminalFocused()
+  // false for that pane, so the cursor is NOT yanked away.
+  const exitingActiveTab = handle.activeTerminalID === payload.terminalID;
+  const panesToRefocus = exitingActiveTab
+    ? panesShowingThread(payload.threadID).filter((pane) => getTerminalFocused(pane.paneId))
+    : [];
+
   handle.removeTab(payload.terminalID);
 
   // A terminal thread exists only while it has a live shell. When its last
@@ -1173,7 +1189,14 @@ async function applyTerminalExit(payload: TerminalExitEventPayload): Promise<voi
   // first would resurrect a shell-less ghost on the next thread-list refresh if
   // the RPC failed; instead we keep the row and surface the failure, since
   // "errors are user-facing state, not log entries."
-  if (handle.tabs.length > 0) return;
+  if (handle.tabs.length > 0) {
+    // A sibling was promoted to active: follow the cursor into it for the panes
+    // where the user was focused in the terminal that just exited.
+    // requestTerminalFocus latches the pane's intent; the surface's consume
+    // effect lands it on the remounted body within this same flush.
+    for (const pane of panesToRefocus) pane.requestTerminalFocus();
+    return;
+  }
   const thread = getThreadById(payload.threadID);
   if (thread?.mode !== 'terminal') return;
   closePanesShowingThread(payload.threadID);

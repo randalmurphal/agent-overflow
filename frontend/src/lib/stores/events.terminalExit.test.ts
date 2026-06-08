@@ -4,8 +4,12 @@ import { prependThread, getThreadById, refreshThreads } from './threads.svelte';
 import { getToasts } from './toast.svelte';
 import {
   getThreadTerminalState,
+  notifyTerminalFocus,
+  resetTerminalFocusForTest,
   resetThreadTerminalStatesForTest,
 } from '../components/terminal/terminalStore.svelte';
+import { createPane, resetPanesForTest } from './panes.svelte';
+import type { ThreadPane } from './thread.svelte';
 import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import type { Thread } from '../types/models';
@@ -54,6 +58,20 @@ function fireExit(threadID: string, terminalID: string): void {
   emitWailsEvent('terminal:exit', { terminalID, threadID, code: 0, reason: '' });
 }
 
+// Register a real pane showing `thread` and (optionally) mark its terminal as
+// holding DOM focus, mirroring TerminalBody's notifyTerminalFocus on xterm focus.
+// Named distinctly from the production `panesShowingThread` query it exercises.
+function mountPaneShowingThread(
+  paneId: string,
+  thread: Thread,
+  opts: { focused?: boolean } = {},
+): ThreadPane {
+  const pane = createPane(paneId);
+  pane.replaceThread(thread);
+  if (opts.focused) notifyTerminalFocus(paneId, true);
+  return pane;
+}
+
 let cleanupEvents: (() => void) | null = null;
 let deleteThread: ReturnType<typeof setBindingMock>;
 // Set only by the failure-path test, which expects a console.error from the
@@ -62,6 +80,8 @@ let errorSpy: ReturnType<typeof vi.spyOn> | null = null;
 
 beforeEach(async () => {
   resetThreadTerminalStatesForTest();
+  resetPanesForTest();
+  resetTerminalFocusForTest();
   resetBindingMocks();
   // Reset the threads store to a known-empty baseline.
   setBindingMock('ListThreads', async () => []);
@@ -158,5 +178,95 @@ describe('applyTerminalExit — terminal-thread lifecycle (#2/#3)', () => {
 
     expect(deleteThread).not.toHaveBeenCalled();
     expect(handle.tabs).toHaveLength(0);
+  });
+});
+
+// These assert the INTENT half: applyTerminalExit latches pane.requestTerminalFocus
+// when (and only when) the user's focused active terminal exits with a sibling.
+// The OUTCOME half — that a latched intent actually lands focus() on the
+// remounted TerminalBody — is covered in TerminalSurface.focus.test.ts.
+describe('applyTerminalExit — focus follows the active tab into a promoted sibling', () => {
+  it('re-latches focus on a pane whose FOCUSED active terminal exits with a sibling', () => {
+    const thread = makeThread({ id: 'term-1', mode: 'terminal' });
+    prependThread(thread);
+    const handle = getThreadTerminalState('term-1');
+    handle.addTab(makeSummary('t1', 'term-1'));
+    handle.addTab(makeSummary('t2', 'term-1'));
+    handle.setActive('t1'); // t1 is the active (focused) tab about to exit
+    const pane = mountPaneShowingThread('p1', thread, { focused: true });
+
+    fireExit('term-1', 't1');
+
+    // t1 removed, t2 promoted to active (a remount); because the user was
+    // focused in the terminal, the cursor follows into the promoted sibling.
+    expect(handle.tabs.map((tab) => tab.terminalID)).toEqual(['t2']);
+    expect(handle.activeTerminalID).toBe('t2');
+    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+  });
+
+  it('does NOT steal focus when a BACKGROUNDED active terminal exits (composer focused)', () => {
+    const thread = makeThread({ id: 'term-1', mode: 'terminal' });
+    prependThread(thread);
+    const handle = getThreadTerminalState('term-1');
+    handle.addTab(makeSummary('t1', 'term-1'));
+    handle.addTab(makeSummary('t2', 'term-1'));
+    handle.setActive('t1');
+    // Pane shows the thread but the terminal does NOT hold focus — the user is in
+    // the composer / another pane when the backgrounded `sleep; exit` shell dies.
+    const pane = mountPaneShowingThread('p1', thread);
+
+    fireExit('term-1', 't1');
+
+    expect(handle.activeTerminalID).toBe('t2'); // sibling still promoted
+    expect(pane.consumeTerminalFocusRequest()).toBe(false); // but no focus steal
+  });
+
+  it('does NOT request focus when a NON-active tab exits (no remount, nothing moved)', () => {
+    const thread = makeThread({ id: 'term-1', mode: 'terminal' });
+    prependThread(thread);
+    const handle = getThreadTerminalState('term-1');
+    handle.addTab(makeSummary('t1', 'term-1'));
+    handle.addTab(makeSummary('t2', 'term-1')); // addTab activates t2
+    const pane = mountPaneShowingThread('p1', thread, { focused: true });
+
+    fireExit('term-1', 't1'); // a background tab exits; active stays t2
+
+    expect(handle.activeTerminalID).toBe('t2');
+    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+  });
+
+  it('does NOT request focus when the LAST tab exits (no sibling to focus)', () => {
+    const thread = makeThread({ id: 'chat-1', mode: 'chat' });
+    prependThread(thread);
+    const handle = getThreadTerminalState('chat-1');
+    handle.addTab(makeSummary('t1', 'chat-1')); // sole drawer terminal, active
+    const pane = mountPaneShowingThread('p1', thread, { focused: true });
+
+    fireExit('chat-1', 't1');
+
+    expect(handle.tabs).toHaveLength(0);
+    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+  });
+
+  it('re-latches ONLY the focused pane when two panes show the same terminal thread', () => {
+    // Split view: one terminal thread (one shared handle) shown in two panes.
+    // The user is focused in pane A's terminal; pane B shows the same tabs but
+    // isn't focused. When the active tab's shell exits, only A follows focus —
+    // the plural panesShowingThread(...).filter(getTerminalFocused) must not
+    // re-latch B and steal the cursor from wherever the user is in that pane.
+    const thread = makeThread({ id: 'term-1', mode: 'terminal' });
+    prependThread(thread);
+    const handle = getThreadTerminalState('term-1');
+    handle.addTab(makeSummary('t1', 'term-1'));
+    handle.addTab(makeSummary('t2', 'term-1'));
+    handle.setActive('t1');
+    const focusedPane = mountPaneShowingThread('paneA', thread, { focused: true });
+    const otherPane = mountPaneShowingThread('paneB', thread);
+
+    fireExit('term-1', 't1');
+
+    expect(handle.activeTerminalID).toBe('t2'); // both panes remount to t2
+    expect(focusedPane.consumeTerminalFocusRequest()).toBe(true);
+    expect(otherPane.consumeTerminalFocusRequest()).toBe(false);
   });
 });

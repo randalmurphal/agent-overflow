@@ -34,6 +34,7 @@ import {
   resetTerminalFocusForTest,
   getThreadTerminalState,
   resetThreadTerminalStatesForTest,
+  terminalStateKeyForPane,
 } from '../components/terminal/terminalStore.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import {
@@ -43,6 +44,7 @@ import {
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
 import type { Project, Thread } from '../types/models';
+import type { TerminalSessionSummary } from '../types/terminal';
 
 // builtinCommands imports openTerminalThread directly (like runTerminalToggle);
 // stub it so terminal.newPane's wiring can be asserted without standing up the
@@ -590,6 +592,175 @@ describe('terminal.newPane command', () => {
       projectId: undefined,
       cwd: undefined,
     });
+  });
+});
+
+describe('terminal tab management commands', () => {
+  function termSummary(terminalID: string): TerminalSessionSummary {
+    return {
+      terminalID,
+      threadID: 'thread-1',
+      shell: '/bin/bash',
+      cwd: '/tmp',
+      rows: 24,
+      cols: 80,
+      pid: 1,
+      startedAt: 0,
+      running: true,
+      exitCode: 0,
+      exitReason: '',
+    };
+  }
+
+  // The commands resolve the focused pane's terminal handle the same way
+  // terminal.refresh does (terminalStateKeyForPane). Returns the live handle so
+  // a test can seed tabs before running a command and assert against it after.
+  function handleForPane(pane: ReturnType<typeof createThreadPane>) {
+    return getThreadTerminalState(terminalStateKeyForPane(pane.threadId, pane.paneId));
+  }
+
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetTerminalFocusForTest();
+    resetThreadTerminalStatesForTest();
+  });
+
+  it('newTab/closeTab/nextTab/prevTab are registered, editableReachable, and enabled under terminalFocus', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const ctx = makeCommandContext(pane, { terminalFocus: true }) as CommandContext;
+    for (const id of ['terminal.newTab', 'terminal.closeTab', 'terminal.nextTab', 'terminal.prevTab']) {
+      expect(getCommand(id)?.editableReachable).toBe(true);
+      expect(isCommandEnabled(id, ctx)).toBe(true);
+    }
+  });
+
+  it('all four are members of TERMINAL_ESCAPE_COMMAND_IDS (so they escape a focused xterm)', () => {
+    for (const id of [
+      'terminal.newTab',
+      'terminal.closeTab',
+      'terminal.nextTab',
+      'terminal.prevTab',
+      'terminal.newPane',
+    ]) {
+      expect(TERMINAL_ESCAPE_COMMAND_IDS.has(id)).toBe(true);
+    }
+  });
+
+  it('terminal.newPane is editableReachable so Ctrl+Shift+~ fires from inside a focused xterm', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    // Escape-set membership (above) lets the chord bubble out of the xterm, but
+    // App.svelte only dispatches editable-target chords for editableReachable
+    // commands — so this flag on the REAL registration is the other half of the
+    // in-terminal new-pane fix. Pinned here (not just in the keybindings fixture)
+    // so a regression in the actual registerCommand call is caught.
+    expect(getCommand('terminal.newPane')?.editableReachable).toBe(true);
+  });
+
+  it('terminal.newTab opens a tab in the focused pane and adds it to the surface', async () => {
+    const pane = readyPane({ workspacePath: '/ws/9' });
+    registerFixtureCommands(pane);
+    const handle = handleForPane(pane);
+    handle.addTab(termSummary('term-existing'));
+    const openMock = setBindingMock('OpenTerminal', async () => ({
+      terminalID: 'term-new',
+      summary: termSummary('term-new'),
+    }));
+
+    const ran = runCommand('terminal.newTab', makeCommandContext(pane, { terminalFocus: true }));
+    expect(ran).toBe(true);
+    expect(openMock).toHaveBeenCalledOnce();
+    // OpenTerminal resolves on a microtask; addTab runs in its .then.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing', 'term-new']);
+    // The new tab is now active → focus is requested so the cursor lands in it.
+    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+  });
+
+  it('terminal.closeTab closes the active tab and removes it from the surface', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const handle = handleForPane(pane);
+    handle.addTab(termSummary('term-a'));
+    handle.addTab(termSummary('term-b')); // addTab activates the newest
+    const closeMock = setBindingMock('CloseTerminal', async () => {});
+
+    runCommand('terminal.closeTab', makeCommandContext(pane, { terminalFocus: true }));
+    expect(closeMock).toHaveBeenCalledWith('term-b');
+    expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-a']);
+    // term-a is promoted to active → focus follows the user into it.
+    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+  });
+
+  it('terminal.closeTab does not request focus when the last tab is closed', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const handle = handleForPane(pane);
+    handle.addTab(termSummary('only'));
+    setBindingMock('CloseTerminal', async () => {});
+
+    runCommand('terminal.closeTab', makeCommandContext(pane, { terminalFocus: true }));
+    expect(handle.tabs).toHaveLength(0);
+    // Nothing remains to focus (the surface collapses instead), so no intent.
+    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+  });
+
+  it('terminal.nextTab / prevTab cycle the active tab with wraparound', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const handle = handleForPane(pane);
+    handle.addTab(termSummary('a'));
+    handle.addTab(termSummary('b'));
+    handle.addTab(termSummary('c')); // active = c (last)
+    const ctx = makeCommandContext(pane, { terminalFocus: true });
+
+    runCommand('terminal.nextTab', ctx); // c → wrap → a
+    expect(handle.activeTerminalID).toBe('a');
+    runCommand('terminal.prevTab', ctx); // a → wrap → c
+    expect(handle.activeTerminalID).toBe('c');
+    runCommand('terminal.prevTab', ctx); // c → b
+    expect(handle.activeTerminalID).toBe('b');
+    // A switch remounts the body, so the cursor must follow into the new tab.
+    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+  });
+
+  it('terminal.nextTab is a no-op with a single tab', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const handle = handleForPane(pane);
+    handle.addTab(termSummary('only'));
+
+    runCommand('terminal.nextTab', makeCommandContext(pane, { terminalFocus: true }));
+    expect(handle.activeTerminalID).toBe('only');
+    // No switch happened (< 2 tabs), so no focus intent is set.
+    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+  });
+
+  it('newTab/closeTab/nextTab are safe no-ops when the pane has no terminal state', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    // No handleForPane(pane) call → getExistingThreadTerminalState returns null,
+    // exercising the `if (!state) return` guards. The commands stay enabled and
+    // run, but must no-op without throwing or hitting a binding.
+    const openMock = setBindingMock('OpenTerminal', async () => ({
+      terminalID: 'unexpected',
+      summary: termSummary('unexpected'),
+    }));
+    const closeMock = setBindingMock('CloseTerminal', async () => {});
+    const ctx = makeCommandContext(pane, { terminalFocus: true });
+
+    expect(() => {
+      expect(runCommand('terminal.nextTab', ctx)).toBe(true);
+      expect(runCommand('terminal.closeTab', ctx)).toBe(true);
+      expect(runCommand('terminal.newTab', ctx)).toBe(true);
+    }).not.toThrow();
+    expect(openMock).not.toHaveBeenCalled();
+    expect(closeMock).not.toHaveBeenCalled();
+    // Every command bailed at its state guard before mutating, so none of them
+    // requested terminal focus.
+    expect(pane.consumeTerminalFocusRequest()).toBe(false);
   });
 });
 

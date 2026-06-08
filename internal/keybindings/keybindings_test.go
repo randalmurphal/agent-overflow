@@ -169,6 +169,62 @@ func TestTerminalRefreshDefaultBinding(t *testing.T) {
 	}
 }
 
+// TestTerminalTabAndPaneDefaultBindings pins the terminal tab/pane management
+// chords. terminal.newPane is UN-gated (no !terminalFocus) so Ctrl+Shift+~ opens
+// a terminal pane from inside a focused terminal too — TerminalBody's key handler
+// lets it escape via TERMINAL_ESCAPE_COMMAND_IDS, like the alt+h/l vim chords; a
+// regression re-adding the gate would re-break it inside the terminal. The tab
+// commands are gated terminalFocus (they act on the focused surface) and use
+// LITERAL ctrl+tab for switching — mod+tab is Cmd+Tab on macOS (the OS app
+// switcher), so it must NOT be written as mod.
+func TestTerminalTabAndPaneDefaultBindings(t *testing.T) {
+	only := func(command string) Keybinding {
+		t.Helper()
+		var matches []Keybinding
+		for _, b := range Defaults {
+			if b.Command == command {
+				matches = append(matches, b)
+			}
+		}
+		if len(matches) != 1 {
+			t.Fatalf("want exactly one %q binding, got %d: %+v", command, len(matches), matches)
+		}
+		return matches[0]
+	}
+
+	// New pane: un-gated so it fires from the composer AND inside a focused xterm.
+	newPane := only("terminal.newPane")
+	if newPane.Key != "mod+shift+~" {
+		t.Errorf("terminal.newPane Key = %q, want %q", newPane.Key, "mod+shift+~")
+	}
+	if newPane.When != "" {
+		t.Errorf("terminal.newPane When = %q, want \"\" (un-gated so Ctrl+Shift+~ opens a pane from inside a focused terminal)", newPane.When)
+	}
+
+	// Tab management: gated terminalFocus, exact chords.
+	cases := []struct {
+		command string
+		key     string
+	}{
+		{"terminal.newTab", "mod+shift+t"},
+		{"terminal.closeTab", "mod+shift+w"},
+		{"terminal.nextTab", "ctrl+tab"},
+		{"terminal.prevTab", "ctrl+shift+tab"},
+	}
+	for _, tc := range cases {
+		b := only(tc.command)
+		if b.Key != tc.key {
+			t.Errorf("%s Key = %q, want %q", tc.command, b.Key, tc.key)
+		}
+		if b.When != "terminalFocus" {
+			t.Errorf("%s When = %q, want %q (acts on the focused terminal surface)", tc.command, b.When, "terminalFocus")
+		}
+		if b.DefaultID != tc.command {
+			t.Errorf("%s DefaultID = %q, want %q", tc.command, b.DefaultID, tc.command)
+		}
+	}
+}
+
 // TestDefaultsHaveUniqueKeyWhenTuples guarantees no two defaults
 // collide on the same (key, when) pair. Multiple chords for one
 // command is fine (e.g. mod+n and mod+shift+o both → thread.new),

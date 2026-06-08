@@ -7,6 +7,8 @@ import { createThreadTerminalState } from './terminalStore.svelte';
 import type { TerminalSessionSummary } from '../../types/terminal';
 import { encodeTerminalInput } from '../../types/terminal';
 import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
+import { copyToClipboard } from '../../utils/clipboard';
+import { addToast } from '../../stores/toast.svelte';
 
 // xterm can't render under happy-dom (no real canvas/WebGL context), and these
 // tests need to observe the exact ORDER of write() calls — so swap in a fake
@@ -28,12 +30,25 @@ const mocks = vi.hoisted(() => {
     options: Record<string, unknown>;
     // Captured so a test can invoke the registered handler directly.
     keyEventHandler: ((event: KeyboardEvent) => boolean) | null = null;
+    // Clipboard surface: a test sets `selection`, and `pastes` records every
+    // term.paste(...) the handler issues.
+    selection = '';
+    pastes: string[] = [];
     constructor(options: Record<string, unknown> = {}) {
       this.options = { ...options };
       lastTerminal = this;
     }
     loadAddon(): void {}
     open(): void {}
+    hasSelection(): boolean {
+      return this.selection.length > 0;
+    }
+    getSelection(): string {
+      return this.selection;
+    }
+    paste(data: string): void {
+      this.pastes.push(data);
+    }
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
       this.keyEventHandler = handler;
     }
@@ -93,6 +108,8 @@ vi.mock('../../stores/bindings', () => ({
   WriteTerminal: mocks.WriteTerminal,
   ResizeTerminal: mocks.ResizeTerminal,
 }));
+vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }));
+vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn() }));
 
 function makeSummary(
   terminalID: string,
@@ -400,5 +417,157 @@ describe('TerminalBody Shift+Enter newline', () => {
     expect(handler!(enterEvent({ shiftKey: true, metaKey: true }))).toBe(true);
 
     expect(mocks.WriteTerminal).not.toHaveBeenCalled();
+  });
+});
+
+// Copy/paste are handled locally in the widget, ahead of the escape predicate,
+// using the platform clipboard chord (Ctrl+Shift+C/V on this non-mac harness;
+// the per-platform chord rules are unit-tested in terminalKeys.test.ts). These
+// assert the handler's wiring: selection → copyToClipboard, clipboard →
+// term.paste, plain Ctrl+C left for the PTY, and a loud toast on read failure.
+describe('TerminalBody copy/paste', () => {
+  let consoleErrorSpy: MockInstance | null = null;
+  const readText = vi.fn(async () => '');
+
+  beforeEach(() => {
+    mocks.GetTerminalReplay.mockReset();
+    vi.mocked(eventEscapesTerminalToCommand).mockReset();
+    vi.mocked(eventEscapesTerminalToCommand).mockReturnValue(false);
+    vi.mocked(copyToClipboard).mockReset();
+    vi.mocked(copyToClipboard).mockResolvedValue(true);
+    vi.mocked(addToast).mockReset();
+    readText.mockReset();
+    readText.mockResolvedValue('');
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      value: { readText },
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  afterEach(() => {
+    consoleErrorSpy?.mockRestore();
+    consoleErrorSpy = null;
+    cleanup();
+  });
+
+  function clip(over: Partial<KeyboardEvent>): KeyboardEvent {
+    return {
+      type: 'keydown',
+      key: 'c',
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+      ...over,
+    } as unknown as KeyboardEvent;
+  }
+
+  async function handlerFor(id: string) {
+    const { resolveReplay } = await mountWithPendingReplay(id);
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await tick();
+    const term = mocks.getLastTerminal()!;
+    const handler = term.keyEventHandler!;
+    return { term, handler };
+  }
+
+  it('copies the selection on Ctrl+Shift+C and fully consumes the event', async () => {
+    const { term, handler } = await handlerFor('t-copy');
+    term.selection = 'hello world';
+    const event = clip({ key: 'c', ctrlKey: true, shiftKey: true });
+    expect(handler(event)).toBe(false);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(event.stopPropagation).toHaveBeenCalledOnce();
+    expect(vi.mocked(copyToClipboard)).toHaveBeenCalledWith('hello world');
+    // Consumed before the escape predicate — never bubbles to the app.
+    expect(vi.mocked(eventEscapesTerminalToCommand)).not.toHaveBeenCalled();
+  });
+
+  it('toasts when the copy fails (clipboard unavailable)', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValue(false);
+    const { term, handler } = await handlerFor('t-copy-fail');
+    term.selection = 'hello world';
+    const event = clip({ key: 'c', ctrlKey: true, shiftKey: true });
+    expect(handler(event)).toBe(false);
+    expect(vi.mocked(copyToClipboard)).toHaveBeenCalledWith('hello world');
+    // copyToClipboard resolves false on a microtask; let the .then flush.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(vi.mocked(addToast)).toHaveBeenCalledWith(
+      'error',
+      expect.stringContaining('Copy failed'),
+    );
+  });
+
+  it('consumes Ctrl+Shift+C with no selection but copies nothing', async () => {
+    const { term, handler } = await handlerFor('t-copy-empty');
+    term.selection = '';
+    const event = clip({ key: 'c', ctrlKey: true, shiftKey: true });
+    expect(handler(event)).toBe(false);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(vi.mocked(copyToClipboard)).not.toHaveBeenCalled();
+  });
+
+  it('leaves plain Ctrl+C for the PTY (SIGINT), not copy', async () => {
+    const { term, handler } = await handlerFor('t-sigint');
+    term.selection = 'sel';
+    const event = clip({ key: 'c', ctrlKey: true, shiftKey: false });
+    // Not a copy chord → reaches the escape predicate (false) → true for the PTY.
+    expect(handler(event)).toBe(true);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(vi.mocked(copyToClipboard)).not.toHaveBeenCalled();
+  });
+
+  it('pastes clipboard text through term.paste on Ctrl+Shift+V', async () => {
+    readText.mockResolvedValue('clip text');
+    const { term, handler } = await handlerFor('t-paste');
+    const event = clip({ key: 'v', ctrlKey: true, shiftKey: true });
+    expect(handler(event)).toBe(false);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(event.stopPropagation).toHaveBeenCalledOnce();
+    // readText resolves on a microtask; let the chain flush.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(term.pastes).toEqual(['clip text']);
+  });
+
+  it('surfaces a paste failure with a toast and pastes nothing', async () => {
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    readText.mockRejectedValue(new Error('clipboard denied'));
+    const { term, handler } = await handlerFor('t-paste-fail');
+    const event = clip({ key: 'v', ctrlKey: true, shiftKey: true });
+    expect(handler(event)).toBe(false);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(term.pastes).toEqual([]);
+    expect(vi.mocked(addToast)).toHaveBeenCalledWith(
+      'error',
+      expect.stringContaining('Paste failed'),
+    );
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
+  it('does not paste after the widget is destroyed (unmount before readText resolves)', async () => {
+    // Hold the clipboard read open so we can unmount between the chord and the
+    // resolve — the handler's `!destroyed` guard must drop the late paste so a
+    // disposed xterm is never written to.
+    let deliver: (text: string) => void = () => {};
+    readText.mockReturnValue(
+      new Promise<string>((resolve) => {
+        deliver = resolve;
+      }),
+    );
+    const { term, handler } = await handlerFor('t-paste-after-destroy');
+    const event = clip({ key: 'v', ctrlKey: true, shiftKey: true });
+    expect(handler(event)).toBe(false);
+    // Unmount (onDestroy flips `destroyed`) BEFORE the read resolves.
+    cleanup();
+    deliver('late paste');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(term.pastes).toEqual([]);
   });
 });
