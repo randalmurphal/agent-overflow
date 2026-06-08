@@ -14,6 +14,7 @@ import {
   isThreadVisible,
   listPanes,
   moveFocusedPane,
+  openEmptyPane,
   openThreadInNewPane,
   openThreadFromNavigation,
   openThreadInPane,
@@ -51,6 +52,20 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     archived: false,
     ...overrides,
   };
+}
+
+function mockThreadSwitch(thread: Thread): void {
+  setBindingMock('SwitchThread', async () => thread);
+  setBindingMock('ListRecentThreadItems', async () => ({
+    items: [], oldestTurnIndex: -1, hasMore: false,
+  }));
+  setBindingMock('ListThreadSliceAround', async () => ({
+    items: [], oldestTurnIndex: -1, hasMore: false,
+  }));
+  setBindingMock('ListRecentTurns', async () => []);
+  setBindingMock('ListThreadCheckpoints', async () => []);
+  setBindingMock('GetThreadLiveState', async () => null);
+  setBindingMock('ListPendingInteractiveRequests', async () => null);
 }
 
 describe('panes store', () => {
@@ -170,17 +185,7 @@ describe('panes store', () => {
     it('opens a thread in the requested pane when it is not already visible', async () => {
       const thread = makeThread({ id: 'target' });
       const pane = createThreadPane({ paneId: 'external' });
-      setBindingMock('SwitchThread', async () => thread);
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
-      setBindingMock('ListRecentTurns', async () => []);
-      setBindingMock('ListThreadCheckpoints', async () => []);
-      setBindingMock('GetThreadLiveState', async () => null);
-      setBindingMock('ListPendingInteractiveRequests', async () => null);
+      mockThreadSwitch(thread);
 
       await openThreadInPane(thread, pane);
 
@@ -197,17 +202,7 @@ describe('panes store', () => {
 
     it('focuses the existing pane instead of duplicating a visible thread', async () => {
       const thread = makeThread({ id: 'visible' });
-      setBindingMock('SwitchThread', async () => thread);
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
-      setBindingMock('ListRecentTurns', async () => []);
-      setBindingMock('ListThreadCheckpoints', async () => []);
-      setBindingMock('GetThreadLiveState', async () => null);
-      setBindingMock('ListPendingInteractiveRequests', async () => null);
+      mockThreadSwitch(thread);
       const left = createPane('left');
       const right = createPane('right');
       await left.switchThread(thread);
@@ -223,17 +218,7 @@ describe('panes store', () => {
 
     it('promotes an existing preview pane when opened through the committed path', async () => {
       const thread = makeThread({ id: 'previewed' });
-      setBindingMock('SwitchThread', async () => thread);
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
-      setBindingMock('ListRecentTurns', async () => []);
-      setBindingMock('ListThreadCheckpoints', async () => []);
-      setBindingMock('GetThreadLiveState', async () => null);
-      setBindingMock('ListPendingInteractiveRequests', async () => null);
+      mockThreadSwitch(thread);
       const left = createPane('left');
       const right = createPane('right');
 
@@ -249,17 +234,7 @@ describe('panes store', () => {
 
     it('opens a thread in a new pane with layout when it is not already visible', async () => {
       const thread = makeThread({ id: 'new-pane-thread' });
-      setBindingMock('SwitchThread', async () => thread);
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
-      setBindingMock('ListRecentTurns', async () => []);
-      setBindingMock('ListThreadCheckpoints', async () => []);
-      setBindingMock('GetThreadLiveState', async () => null);
-      setBindingMock('ListPendingInteractiveRequests', async () => null);
+      mockThreadSwitch(thread);
 
       const pane = await openThreadInNewPane(thread);
 
@@ -268,19 +243,110 @@ describe('panes store', () => {
       expect(getPaneLayoutItems().some((item) => item.paneId === pane.paneId)).toBe(true);
     });
 
+    it('opens a new thread pane immediately to the right of the focused pane', async () => {
+      const thread = makeThread({ id: 'right-of-focused' });
+      mockThreadSwitch(thread);
+      createPane('left');
+      createPane('middle');
+      createPane('right');
+      setPaneLayoutItemsForTest([
+        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
+        { id: 'middle', paneId: 'middle', kind: 'thread', ratio: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+      ]);
+      focusPane('middle');
+
+      const pane = await openThreadInNewPane(thread);
+
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([
+        'left',
+        'middle',
+        pane.paneId,
+        'right',
+      ]);
+      expect(getFocusedPaneId()).toBe(pane.paneId);
+    });
+
+    it('appends a new thread pane when the focused pane is already rightmost', async () => {
+      const thread = makeThread({ id: 'right-edge-new-pane' });
+      mockThreadSwitch(thread);
+      createPane('left');
+      createPane('right');
+      setPaneLayoutItemsForTest([
+        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+      ]);
+      focusPane('right');
+
+      const pane = await openThreadInNewPane(thread);
+
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'right', pane.paneId]);
+    });
+
+    it('appends a new thread pane when there is no valid focused layout pane', async () => {
+      const thread = makeThread({ id: 'missing-focus-new-pane' });
+      mockThreadSwitch(thread);
+      createPane('left');
+      createPane('right');
+      setPaneLayoutItemsForTest([
+        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+      ]);
+
+      const pane = await openThreadInNewPane(thread);
+
+      expect(getFocusedPaneId()).toBe(pane.paneId);
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'right', pane.paneId]);
+    });
+
+    it('uses an explicit new-pane insertion index instead of focused-pane placement', async () => {
+      const thread = makeThread({ id: 'explicit-index-new-pane' });
+      mockThreadSwitch(thread);
+      createPane('left');
+      createPane('middle');
+      createPane('right');
+      setPaneLayoutItemsForTest([
+        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
+        { id: 'middle', paneId: 'middle', kind: 'thread', ratio: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+      ]);
+      focusPane('middle');
+
+      const pane = await openThreadInNewPane(thread, 0);
+
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([
+        pane.paneId,
+        'left',
+        'middle',
+        'right',
+      ]);
+    });
+
+    it('opens an empty pane immediately to the right of the focused pane', () => {
+      createPane('left');
+      createPane('middle');
+      createPane('right');
+      setPaneLayoutItemsForTest([
+        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
+        { id: 'middle', paneId: 'middle', kind: 'thread', ratio: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+      ]);
+      focusPane('middle');
+
+      const pane = openEmptyPane();
+
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([
+        'left',
+        'middle',
+        pane.paneId,
+        'right',
+      ]);
+      expect(getFocusedPaneId()).toBe(pane.paneId);
+    });
+
     it('new-pane routing focuses the existing pane instead of duplicating a visible thread', async () => {
       const thread = makeThread({ id: 'visible-new-pane' });
-      setBindingMock('SwitchThread', async () => thread);
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
-      setBindingMock('ListRecentTurns', async () => []);
-      setBindingMock('ListThreadCheckpoints', async () => []);
-      setBindingMock('GetThreadLiveState', async () => null);
-      setBindingMock('ListPendingInteractiveRequests', async () => null);
+      mockThreadSwitch(thread);
       const left = createPane('left');
       await left.switchThread(thread);
       setPaneLayoutItemsForTest([

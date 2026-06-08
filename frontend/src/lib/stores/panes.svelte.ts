@@ -49,6 +49,15 @@ function addThreadPaneToLayout(paneId: string, insertIndex?: number): void {
   }, insertIndex, { persist: false });
 }
 
+function resolveNewPaneInsertIndex(insertIndex?: number): number {
+  if (insertIndex !== undefined) return insertIndex;
+  const layoutItems = getPaneLayoutItems();
+  const focusedIndex = focusedPaneId
+    ? layoutItems.findIndex((item) => item.paneId === focusedPaneId)
+    : -1;
+  return focusedIndex >= 0 ? focusedIndex + 1 : layoutItems.length;
+}
+
 /**
  * Ensure the pane is mounted in the layout grid. Idempotent: if the
  * pane is already present, no layout mutation happens. Used by the
@@ -370,7 +379,7 @@ export async function openThreadInNewPane(thread: Thread, insertIndex?: number):
   }
   const paneId = nextPaneId();
   const pane = createPane(paneId);
-  addThreadPaneToLayout(paneId, insertIndex);
+  addThreadPaneToLayout(paneId, resolveNewPaneInsertIndex(insertIndex));
   return replaceThreadInPane(thread, pane, 'committed');
 }
 
@@ -383,7 +392,7 @@ export async function openThreadInNewPane(thread: Thread, insertIndex?: number):
 export function openEmptyPane(insertIndex?: number): ThreadPane {
   const paneId = nextPaneId();
   const pane = createPane(paneId);
-  addThreadPaneToLayout(paneId, insertIndex);
+  addThreadPaneToLayout(paneId, resolveNewPaneInsertIndex(insertIndex));
   registerPane(paneId, pane, 'committed');
   focusedPaneId = paneId;
   requestPaneReveal(paneId);
