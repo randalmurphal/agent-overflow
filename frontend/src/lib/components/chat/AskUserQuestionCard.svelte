@@ -48,6 +48,7 @@
   } from './askUserQuestionData';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -68,7 +69,12 @@
           { payloadVersion: () => item.updatedAt },
         ),
   );
-  const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
+  const expansionRef = useLeasedItemExpansion({
+    getPane: () => pane,
+    getItem: () => item,
+    getFallback: () => localFallback,
+  });
+  const expansion = $derived(expansionRef.current!);
 
   async function toggle() {
     await expansion.toggle();

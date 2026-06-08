@@ -33,6 +33,7 @@
   import { createRunningElapsed } from './useRunningElapsed.svelte';
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
   import { getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
 
   // Server-side preview is capped at 240 chars in
   // internal/triage/tool_lifecycle.go#completionPayload; the
@@ -57,7 +58,12 @@
           { payloadVersion: () => item.updatedAt },
         ),
   );
-  const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
+  const expansionRef = useLeasedItemExpansion({
+    getPane: () => pane,
+    getItem: () => item,
+    getFallback: () => localFallback,
+  });
+  const expansion = $derived(expansionRef.current!);
 
   let itemMeta = $derived(parseJsonObject(item.meta));
   let summaryMeta = $derived(parseJsonObject(item.payloadMeta));

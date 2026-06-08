@@ -25,6 +25,7 @@
   import RowError from './RowError.svelte';
   import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
+  import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
   import {
     inlineDiffOmittedFiles,
     inlineDiffPreviewFiles,
@@ -59,7 +60,12 @@
           { payloadVersion: () => item.updatedAt },
         ),
   );
-  const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
+  const expansionRef = useLeasedItemExpansion({
+    getPane: () => pane,
+    getItem: () => item,
+    getFallback: () => localFallback,
+  });
+  const expansion = $derived(expansionRef.current!);
   keepExpandedPayloadFresh(
     () => expansion,
     () => Boolean(payloadId),

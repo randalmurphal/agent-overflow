@@ -10,6 +10,7 @@
   } from '../../utils/payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
+  import { useLeasedPayloadExpansion } from './useLeasedPayloadExpansion.svelte';
 
   interface Props {
     /** Pane for the per-payload expansion registry. When omitted, falls
@@ -51,16 +52,14 @@
           { payloadVersion: () => compactPayloadVersion(preview) },
         ),
   );
-  const expansion = $derived.by(() => {
-    if (pane && payloadId) {
-      return pane.expansionStateForPayload(
-        payloadId,
-        threadId ?? '',
-        compactPayloadVersion(preview),
-      );
-    }
-    return localFallback!;
+  const expansionRef = useLeasedPayloadExpansion({
+    getPane: () => pane,
+    getPayloadId: () => payloadId,
+    getThreadId: () => threadId ?? '',
+    getFallback: () => localFallback,
+    getOptions: () => compactPayloadVersion(preview),
   });
+  const expansion = $derived(expansionRef.current!);
   keepExpandedPayloadFresh(() => expansion, () => Boolean(payloadId));
 
   // Threshold check is on the preview text itself. A caller that already

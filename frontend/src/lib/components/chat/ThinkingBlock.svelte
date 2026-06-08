@@ -16,6 +16,7 @@
     thinkingPayloadVersionForItem,
   } from '../../utils/payloadVersion';
   import { revealedSuffix } from '../../utils/textOverlap';
+  import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -32,16 +33,18 @@
           },
         ),
   );
-  const expansion = $derived(
-    pane
-      ? pane.expansionStateFor(item, {
-          loadMode: 'full',
-          stateKey: THINKING_PAYLOAD_EXPANSION_STATE_KEY,
-          payloadVersion: thinkingPayloadVersionForItem,
-          cacheEnabled: (currentItem) => currentItem?.status !== 'streaming',
-        })
-      : localFallback!,
-  );
+  const expansionRef = useLeasedItemExpansion({
+    getPane: () => pane,
+    getItem: () => item,
+    getFallback: () => localFallback,
+    getOptions: () => ({
+      loadMode: 'full',
+      stateKey: THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      payloadVersion: thinkingPayloadVersionForItem,
+      cacheEnabled: (currentItem) => currentItem?.status !== 'streaming',
+    }),
+  });
+  const expansion = $derived(expansionRef.current!);
   keepExpandedPayloadFresh(
     () => expansion,
     () => Boolean(item.payloadId),

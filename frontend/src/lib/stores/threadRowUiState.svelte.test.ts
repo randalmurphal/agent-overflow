@@ -296,6 +296,34 @@ describe('createThreadRowUiState', () => {
     expect(second).not.toBe(first);
   });
 
+  it('does not reuse item-keyed expansion handles across threads with the same item id', () => {
+    const items = new Map<string, Item>();
+    const rowUiState = createThreadRowUiState({
+      getItemById(itemId: string): Item | undefined {
+        return items.get(itemId);
+      },
+    });
+    const firstThreadItem = makeItem({
+      id: 'tool:same-id',
+      payloadId: 'payload-a',
+      threadId: 'thread-a',
+    });
+    const secondThreadItem = makeItem({
+      id: 'tool:same-id',
+      payloadId: 'payload-b',
+      threadId: 'thread-b',
+    });
+    items.set(firstThreadItem.id, firstThreadItem);
+
+    const first = rowUiState.expansionStateFor(firstThreadItem);
+    items.set(secondThreadItem.id, secondThreadItem);
+    const second = rowUiState.expansionStateFor(secondThreadItem);
+
+    expect(second).not.toBe(first);
+    expect(first.payloadVersion).toBeUndefined();
+    expect(second.payloadVersion).toBe('payload-b');
+  });
+
   it('hydrates payload-keyed expansion handles from the versioned cache on first creation', () => {
     writePayloadCache('thread-a', 'payload-a', 'version-a', {
       chunks: ['cached payload'],
@@ -500,6 +528,110 @@ describe('createThreadRowUiState', () => {
     const replacement = rowUiState.expansionStateFor(item);
     expect(replacement).not.toBe(expansion);
     expect(replacement.displayData).toBeNull();
+  });
+
+  it('keeps pruned leased expansion handles readable until release', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let resolvePreview: ((value: {
+        data: string;
+        nextOffset: number;
+        totalSize: number;
+        isComplete: boolean;
+      }) => void) | undefined;
+      setBindingMock('GetPayloadPreview', () => new Promise((resolve) => {
+        resolvePreview = resolve;
+      }));
+      const item = makeItem({
+        id: 'tool:leased-prune',
+        kind: 'tool_call',
+        payloadId: 'payload-leased-prune',
+        threadId: 'thread-a',
+      });
+      const rowUiState = createThreadRowUiState({
+        getItemById(itemId: string): Item | undefined {
+          return itemId === item.id ? item : undefined;
+        },
+      });
+
+      const lease = rowUiState.retainExpansionStateFor(item);
+      const load = lease.handle.expand();
+      await vi.waitFor(() => expect(resolvePreview).toBeDefined());
+
+      rowUiState.pruneRowUiState({
+        itemIds: [],
+        payloads: [],
+        groupKeys: [],
+      });
+
+      expect(rowUiState.debugStats().expansionStates).toBe(0);
+      expect(rowUiState.expansionStateFor(item)).not.toBe(lease.handle);
+
+      resolvePreview?.({
+        data: 'loaded while leased',
+        nextOffset: 19,
+        totalSize: 19,
+        isComplete: true,
+      });
+      await load;
+
+      expect(lease.handle.displayData).toBe('loaded while leased');
+      const warnedDerivedInert = warn.mock.calls
+        .flat()
+        .some((arg) => String(arg).includes('derived_inert'));
+      expect(warnedDerivedInert).toBe(false);
+
+      lease.release();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('routes live deltas to pruned leased expansion handles until release', async () => {
+    const item = makeItem({
+      id: 'think:leased-prune',
+      kind: 'thinking',
+      payloadId: 'thinking-payload',
+      threadId: 'thread-a',
+      updatedAt: 1,
+    });
+    const rowUiState = createThreadRowUiState({
+      getItemById(itemId: string): Item | undefined {
+        return itemId === item.id ? item : undefined;
+      },
+    });
+    const getPayloadData = setBindingMock('GetPayloadData', async () => ({ data: 'seed' }));
+
+    const lease = rowUiState.retainExpansionStateFor(item, {
+      loadMode: 'full',
+      stateKey: THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      payloadVersion: (currentItem) => currentItem?.updatedAt,
+    });
+    await lease.handle.expand();
+
+    rowUiState.pruneRowUiState({
+      itemIds: [],
+      payloads: [],
+      groupKeys: [],
+    });
+    rowUiState.appendLivePayloadDeltaForItem(
+      item.id,
+      THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      ' live',
+      2,
+    );
+
+    expect(lease.handle.displayData).toBe('seed live');
+    expect(getPayloadData).toHaveBeenCalledTimes(1);
+
+    lease.release();
+    rowUiState.appendLivePayloadDeltaForItem(
+      item.id,
+      THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      ' ignored',
+      3,
+    );
+    expect(lease.handle.displayData).toBe('seed live');
   });
 
   it('prunes old expansion, attachment, and group state outside the retained row window', () => {

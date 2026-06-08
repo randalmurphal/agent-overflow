@@ -20,11 +20,20 @@ export interface ThreadRowUiState {
     item: Item,
     options?: RowExpansionStateOptions,
   ): PayloadExpansionHandle;
+  retainExpansionStateFor(
+    item: Item,
+    options?: RowExpansionStateOptions,
+  ): PayloadExpansionLease;
   expansionStateForPayload(
     payloadId: string,
     threadId: string,
     options?: PayloadExpansionStateOptions | unknown,
   ): PayloadExpansionHandle;
+  retainExpansionStateForPayload(
+    payloadId: string,
+    threadId: string,
+    options?: PayloadExpansionStateOptions | unknown,
+  ): PayloadExpansionLease;
   appendLivePayloadDeltaForItem(
     itemId: string,
     stateKey: string,
@@ -50,6 +59,11 @@ export interface ThreadRowUiState {
 export interface PayloadExpansionRetentionKey {
   threadId: string;
   payloadId: string;
+}
+
+export interface PayloadExpansionLease {
+  handle: PayloadExpansionHandle;
+  release(): void;
 }
 
 export interface RowUiStateRetention {
@@ -133,6 +147,8 @@ interface ExpansionRegistryEntry {
   handle: PayloadExpansionHandle;
   dispose: () => void;
   owner: ExpansionRegistryOwner;
+  leases: number;
+  disposeRequested: boolean;
 }
 
 type ExpansionRegistryOwner =
@@ -154,8 +170,10 @@ type ExpansionRegistryOwner =
  */
 export function createThreadRowUiState(options: ThreadRowUiStateOptions): ThreadRowUiState {
   const expansionStates = new Map<string, ExpansionRegistryEntry>();
+  const leasedPrunedExpansionStates = new Map<string, ExpansionRegistryEntry>();
   const itemExpansionKeysByState = new Map<string, Map<string, Set<string>>>();
   const payloadExpansionKeysByPayload = new Map<string, Set<string>>();
+  let nextLeasedPrunedExpansionKey = 1;
   let subagentGroupExpanded: Set<string> = $state(new Set());
   const attachmentBlobs = new Map<string, Map<string, ImagePreviewItem>>();
   let attachmentClearGeneration = 0;
@@ -164,10 +182,26 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     item: Item,
     rowOptions: RowExpansionStateOptions = {},
   ): PayloadExpansionHandle {
+    return getOrCreateItemExpansion(item, rowOptions).handle;
+  }
+
+  function retainExpansionStateFor(
+    item: Item,
+    rowOptions: RowExpansionStateOptions = {},
+  ): PayloadExpansionLease {
+    const entry = getOrCreateItemExpansion(item, rowOptions);
+    return retainExpansionEntry(entry);
+  }
+
+  function itemExpansionKey(
+    item: Item,
+    rowOptions: RowExpansionStateOptions,
+  ): string {
     const loadMode = rowOptions.loadMode ?? 'preview';
     const stateKey = rowOptions.stateKey ?? 'default';
-    const key = expansionRegistryKey([
+    return expansionRegistryKey([
       'i',
+      item.threadId,
       item.id,
       loadMode,
       rowOptions.loadOnMount ? 'auto' : 'manual',
@@ -177,11 +211,24 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       rowOptions.requestTimeoutMs ?? 'timeout-default',
       cacheEnabledRegistryKey(rowOptions.cacheEnabled),
     ]);
+  }
+
+  function getOrCreateItemExpansion(
+    item: Item,
+    rowOptions: RowExpansionStateOptions,
+  ): ExpansionRegistryEntry {
+    const loadMode = rowOptions.loadMode ?? 'preview';
+    const stateKey = rowOptions.stateKey ?? 'default';
+    const key = itemExpansionKey(item, rowOptions);
     let cached = expansionStates.get(key);
-    if (cached) return cached.handle;
+    if (cached) return cached;
 
     const itemId = item.id;
-    const getCurrentItem = (): Item | undefined => options.getItemById(itemId);
+    const itemThreadId = item.threadId;
+    const getCurrentItem = (): Item | undefined => {
+      const currentItem = options.getItemById(itemId);
+      return currentItem?.threadId === itemThreadId ? currentItem : undefined;
+    };
     const currentPayloadVersion = rowOptions.payloadVersion ?? payloadVersionForItem;
     const currentCacheEnabled = (): boolean => rowCacheEnabled(rowOptions.cacheEnabled, getCurrentItem());
     cached = createRegistryExpansion(
@@ -206,7 +253,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     );
     expansionStates.set(key, cached);
     indexExpansionKey(key, cached.owner);
-    return cached.handle;
+    return cached;
   }
 
   function expansionStateForPayload(
@@ -214,9 +261,25 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     threadId: string,
     optionsOrPayloadVersion?: PayloadExpansionStateOptions | unknown,
   ): PayloadExpansionHandle {
-    const payloadOptions = normalizePayloadExpansionStateOptions(optionsOrPayloadVersion);
+    return getOrCreatePayloadExpansion(payloadId, threadId, optionsOrPayloadVersion).handle;
+  }
+
+  function retainExpansionStateForPayload(
+    payloadId: string,
+    threadId: string,
+    optionsOrPayloadVersion?: PayloadExpansionStateOptions | unknown,
+  ): PayloadExpansionLease {
+    const entry = getOrCreatePayloadExpansion(payloadId, threadId, optionsOrPayloadVersion);
+    return retainExpansionEntry(entry);
+  }
+
+  function payloadExpansionKey(
+    payloadId: string,
+    threadId: string,
+    payloadOptions: PayloadExpansionStateOptions,
+  ): string {
     const loadMode = payloadOptions.loadMode ?? 'preview';
-    const key = expansionRegistryKey([
+    return expansionRegistryKey([
       'p',
       threadId,
       payloadId,
@@ -228,10 +291,20 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       payloadOptions.requestTimeoutMs ?? 'timeout-default',
       cacheEnabledRegistryKey(payloadOptions.cacheEnabled),
     ]);
+  }
+
+  function getOrCreatePayloadExpansion(
+    payloadId: string,
+    threadId: string,
+    optionsOrPayloadVersion?: PayloadExpansionStateOptions | unknown,
+  ): ExpansionRegistryEntry {
+    const payloadOptions = normalizePayloadExpansionStateOptions(optionsOrPayloadVersion);
+    const loadMode = payloadOptions.loadMode ?? 'preview';
+    const key = payloadExpansionKey(payloadId, threadId, payloadOptions);
     let cached = expansionStates.get(key);
     if (cached) {
       cached.handle.setPayloadVersion(payloadOptions.payloadVersion);
-      return cached.handle;
+      return cached;
     }
 
     cached = createRegistryExpansion(
@@ -256,7 +329,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     );
     expansionStates.set(key, cached);
     indexExpansionKey(key, cached.owner);
-    return cached.handle;
+    return cached;
   }
 
   function createRegistryExpansion(
@@ -271,7 +344,31 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       dispose();
       throw new Error('Failed to create payload expansion state');
     }
-    return { handle, dispose, owner };
+    return {
+      handle,
+      dispose,
+      owner,
+      leases: 0,
+      disposeRequested: false,
+    };
+  }
+
+  function retainExpansionEntry(entry: ExpansionRegistryEntry): PayloadExpansionLease {
+    entry.leases += 1;
+    let released = false;
+    return {
+      handle: entry.handle,
+      release() {
+        if (released) return;
+        released = true;
+        entry.leases -= 1;
+        if (entry.leases > 0 || !entry.disposeRequested) return;
+        const leaseKey = keyForExpansionEntry(entry);
+        leasedPrunedExpansionStates.delete(leaseKey);
+        unindexExpansionKey(leaseKey, entry.owner);
+        disposeExpansionEntry(entry);
+      },
+    };
   }
 
   function appendLivePayloadDeltaForItem(
@@ -284,17 +381,39 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     const keys = itemExpansionKeysByState.get(itemId)?.get(stateKey);
     if (!keys || keys.size === 0) return;
     for (const key of keys) {
-      const entry = expansionStates.get(key);
+      const entry = expansionStates.get(key) ?? leasedPrunedExpansionStates.get(key);
       entry?.handle.appendLiveDelta(delta, payloadVersion, previousLiveTail);
     }
   }
 
   function disposeExpansionKey(key: string): void {
-    const entry = expansionStates.get(key);
+    const entry = expansionStates.get(key) ?? leasedPrunedExpansionStates.get(key);
     if (!entry) return;
-    disposeExpansionEntry(entry);
+    if (entry.leases > 0) {
+      if (expansionStates.delete(key)) {
+        unindexExpansionKey(key, entry.owner);
+        const leasedKey = `leased-pruned:${nextLeasedPrunedExpansionKey}`;
+        nextLeasedPrunedExpansionKey += 1;
+        leasedPrunedExpansionStates.set(leasedKey, entry);
+        indexExpansionKey(leasedKey, entry.owner);
+      }
+      entry.disposeRequested = true;
+      return;
+    }
     expansionStates.delete(key);
+    leasedPrunedExpansionStates.delete(key);
     unindexExpansionKey(key, entry.owner);
+    disposeExpansionEntry(entry);
+  }
+
+  function keyForExpansionEntry(entry: ExpansionRegistryEntry): string {
+    for (const [key, candidate] of expansionStates) {
+      if (candidate === entry) return key;
+    }
+    for (const [key, candidate] of leasedPrunedExpansionStates) {
+      if (candidate === entry) return key;
+    }
+    return '';
   }
 
   function disposeExpansionEntry(entry: ExpansionRegistryEntry): void {
@@ -488,10 +607,14 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   }
 
   function clear(): void {
-    for (const entry of expansionStates.values()) {
-      disposeExpansionEntry(entry);
+    for (const key of [...expansionStates.keys()]) {
+      disposeExpansionKey(key);
+    }
+    for (const key of [...leasedPrunedExpansionStates.keys()]) {
+      disposeExpansionKey(key);
     }
     expansionStates.clear();
+    leasedPrunedExpansionStates.clear();
     itemExpansionKeysByState.clear();
     payloadExpansionKeysByPayload.clear();
     subagentGroupExpanded = new Set();
@@ -501,7 +624,9 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
 
   return {
     expansionStateFor,
+    retainExpansionStateFor,
     expansionStateForPayload,
+    retainExpansionStateForPayload,
     appendLivePayloadDeltaForItem,
     isSubagentGroupExpanded,
     toggleSubagentGroupExpanded,
@@ -514,9 +639,13 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       for (const entry of expansionStates.values()) {
         if (entry.owner.kind === 'payload') payloadExpansionStates += 1;
       }
+      let itemExpansionStates = 0;
+      for (const entry of expansionStates.values()) {
+        if (entry.owner.kind === 'item') itemExpansionStates += 1;
+      }
       return {
         expansionStates: expansionStates.size,
-        itemExpansionStates: itemExpansionKeysByState.size,
+        itemExpansionStates,
         payloadExpansionStates,
         subagentGroups: subagentGroupExpanded.size,
         attachmentItems: attachmentBlobs.size,

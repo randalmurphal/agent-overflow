@@ -54,7 +54,10 @@ Every row rendered inside `<Virtualizer>`:
 
 Use these pane registries instead of local row state:
 
-- `pane.expansionStateFor(item)` for payload expansion handles.
+- `useLeasedItemExpansion(...)` / `useLeasedPayloadExpansion(...)` for
+  mounted row payload expansion handles. The bare `pane.expansionStateFor*`
+  APIs are for store code, tests, or non-component callers that will not
+  keep reading a handle after timeline pruning can dispose it.
 - `pane.attachmentCacheFor(itemId)` for image attachment blob URLs.
 - `pane.isSubagentGroupExpanded(groupKey)` /
   `pane.toggleSubagentGroupExpanded(groupKey)` for subagent cards.

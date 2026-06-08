@@ -13,6 +13,7 @@
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanBody from './ProposedPlanBody.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
+  import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
 
   let {
     pane,
@@ -29,17 +30,23 @@
   // the row between preview height and full height. Keep the handle in
   // the pane row registry instead; the DOM can remount without throwing
   // away loaded chunks or auto-load progress.
-  const expansion = $derived(pane.expansionStateFor(item, {
-    loadMode: 'full',
-    loadOnMount: true,
-    stateKey: 'proposed-plan-history',
-    payloadVersion: (currentItem) => {
-      const currentMeta = currentItem?.payloadMeta
-        ? parseProposedPlanPayloadMeta(currentItem)
-        : meta;
-      return proposedPlanPayloadVersion(currentItem ?? item, currentMeta);
-    },
-  }));
+  const expansionRef = useLeasedItemExpansion({
+    getPane: () => pane,
+    getItem: () => item,
+    getFallback: () => null,
+    getOptions: () => ({
+      loadMode: 'full',
+      loadOnMount: true,
+      stateKey: 'proposed-plan-history',
+      payloadVersion: (currentItem) => {
+        const currentMeta = currentItem?.payloadMeta
+          ? parseProposedPlanPayloadMeta(currentItem)
+          : meta;
+        return proposedPlanPayloadVersion(currentItem ?? item, currentMeta);
+      },
+    }),
+  });
+  const expansion = $derived(expansionRef.current!);
 
   const currentPlan = $derived(getThreadCurrentProposedPlan(pane.threadId));
   const canOpenCurrentPlanSidebar = $derived(Boolean(item?.id) && currentPlan?.id === item?.id);

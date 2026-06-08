@@ -30,6 +30,7 @@
   import Icon from '../primitives/Icon.svelte';
   import DiffFileBlock from './DiffFileBlock.svelte';
   import { openDiffSidebar } from './diffSidebarTrigger';
+  import { useLeasedPayloadExpansion } from './useLeasedPayloadExpansion.svelte';
 
   interface Props {
     pane?: ThreadPane;
@@ -52,22 +53,19 @@
     ),
   );
 
-  const expansion = $derived.by(() => {
-    const legacyId = legacyPayloadId();
-    if (pane && legacyId) {
-      return pane.expansionStateForPayload(
-        legacyId,
-        item.threadId,
-        {
-          stateKey: 'diff-stack-legacy',
-          previewBytes: INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
-          payloadVersion: item.updatedAt,
-          loadOnMount: true,
-        },
-      );
-    }
-    return localFallback;
+  const expansionRef = useLeasedPayloadExpansion({
+    getPane: () => pane,
+    getPayloadId: legacyPayloadId,
+    getThreadId: () => item.threadId,
+    getFallback: () => localFallback,
+    getOptions: () => ({
+      stateKey: 'diff-stack-legacy',
+      previewBytes: INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
+      payloadVersion: item.updatedAt,
+      loadOnMount: true,
+    }),
   });
+  const expansion = $derived(expansionRef.current!);
 
   let payloadData: string | null = $derived(expansion.displayData);
   let payloadPreviewIncomplete = $derived(payloadData !== null && !expansion.isComplete);

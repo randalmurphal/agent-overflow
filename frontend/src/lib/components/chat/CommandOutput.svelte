@@ -26,6 +26,7 @@
   import RowError from './RowError.svelte';
   import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
+  import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
 
   let {
     pane,
@@ -69,7 +70,12 @@
           { payloadVersion: () => item.updatedAt },
         ),
   );
-  let expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
+  const expansionRef = useLeasedItemExpansion({
+    getPane: () => pane,
+    getItem: () => item,
+    getFallback: () => localFallback,
+  });
+  let expansion = $derived(expansionRef.current!);
   let hasPayload = $derived(Boolean(payloadId));
   let itemMeta = $derived(parseJsonObject(item.meta));
   let payloadMeta = $derived(parseJsonObject(item.payloadMeta));

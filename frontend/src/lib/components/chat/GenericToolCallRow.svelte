@@ -23,6 +23,7 @@
   import { indicatorStateForItem, rowErrorWithFallback } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
+  import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
 
   let {
     pane,
@@ -54,7 +55,12 @@
           { payloadVersion: () => item.updatedAt },
         ),
   );
-  const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
+  const expansionRef = useLeasedItemExpansion({
+    getPane: () => pane,
+    getItem: () => item,
+    getFallback: () => localFallback,
+  });
+  const expansion = $derived(expansionRef.current!);
 
   let summaryMeta = $derived(parseJsonObject(effectiveDisplayItem.payloadMeta));
   let displayMeta = $derived(parseJsonObject(effectiveDisplayItem.meta));

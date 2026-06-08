@@ -36,6 +36,7 @@
     usesRequestedWaitReceivers as usesRequestedWaitReceiversForTool,
   } from './collabToolRowData';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
+  import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
 
   let {
     pane,
@@ -212,9 +213,13 @@
       item.toolName === 'collab_agent',
   );
   let hasExpandableOutput = $derived(hasOutputShell && Boolean(item.payloadId));
-  const expansion = $derived(
-    hasExpandableOutput ? (pane ? pane.expansionStateFor(item) : localFallback) : null,
-  );
+  const expansionRef = useLeasedItemExpansion({
+    getPane: () => pane,
+    getItem: () => item,
+    getFallback: () => localFallback,
+    enabled: () => hasExpandableOutput,
+  });
+  const expansion = $derived(expansionRef.current);
 
   keepExpandedPayloadFresh(
     () => expansion ?? localFallback,

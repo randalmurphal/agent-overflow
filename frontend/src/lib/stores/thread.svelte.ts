@@ -2960,7 +2960,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     // ---- Per-row UI state (survives virtua remount) ----
     expansionStateFor: rowUiState.expansionStateFor,
+    retainExpansionStateFor: rowUiState.retainExpansionStateFor,
     expansionStateForPayload: rowUiState.expansionStateForPayload,
+    retainExpansionStateForPayload: rowUiState.retainExpansionStateForPayload,
     isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
     toggleSubagentGroupExpanded: rowUiState.toggleSubagentGroupExpanded,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
