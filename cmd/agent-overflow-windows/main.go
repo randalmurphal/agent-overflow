@@ -193,7 +193,7 @@ func main() {
 		initialURL = "/loading"
 	}
 
-	app := buildApp(distros, initialURL, transient)
+	app := buildApp(distros, initialURL)
 	logBootPhase("launcher.before_run", bootStarted)
 
 	if chosen != "" {
@@ -750,14 +750,17 @@ func (a *launcherApp) persistSuccessfulLaunch(distro string) error {
 // "/picker" shows the distro picker; "/loading" shows a spinner
 // while we wait for SetURL to flip us over to the WSL backend.
 //
-// devMode adds the remote-debugging port (so a developer can attach
-// Chrome DevTools / talk CDP from inside WSL) plus the staged
+// make dev-wsl adds the remote-debugging port (so a developer can
+// attach Chrome DevTools / talk CDP from inside WSL) plus the staged
 // memory-reduction experiments described in browserArgs.
-func buildApp(distros []wsllauncher.Distro, initialURL string, devMode bool) *launcherApp {
+func buildApp(distros []wsllauncher.Distro, initialURL string) *launcherApp {
 	a := &launcherApp{distros: distros}
+	mode := wslSingleInstanceMode()
+	title := appidentity.AppTitle(mode)
+	enableDevBrowserArgs := mode == "dev"
 
 	app := application.New(application.Options{
-		Name:           "Agent Overflow",
+		Name:           title,
 		SingleInstance: wslSingleInstanceOptions(func() *application.WebviewWindow { return a.window }),
 		Services: []application.Service{
 			application.NewService(a),
@@ -766,7 +769,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL string, devMode bool) *la
 			Handler: pickerAssetHandler(distros),
 		},
 		Windows: application.WindowsOptions{
-			AdditionalBrowserArgs: browserArgs(devMode),
+			AdditionalBrowserArgs: browserArgs(enableDevBrowserArgs),
 		},
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
@@ -789,7 +792,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL string, devMode bool) *la
 	a.wails = app
 
 	a.window = app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:            "Agent Overflow",
+		Title:            title,
 		Width:            1280,
 		Height:           800,
 		MinWidth:         800,
@@ -859,8 +862,8 @@ func wslSingleInstanceMode() string {
 // stack. Revisit only if a real memory measurement justifies switching
 // the terminal to the (CPU) canvas renderer instead.
 //
-// devMode adds the loopback CDP attach point so a developer can talk
-// Chrome DevTools / wsjson to the WebView2 from inside WSL. The
+// enableDevArgs adds the loopback CDP attach point so a developer can
+// talk Chrome DevTools / wsjson to the WebView2 from inside WSL. The
 // protocol is unauthenticated, so it never ships.
 //
 // Memory experiments tried and pulled back: --single-process (~290 MB
@@ -872,7 +875,7 @@ func wslSingleInstanceMode() string {
 // single-process turns any future big-memory feature — large diffs,
 // terminal log dumps — into a whole-window crash). Revisit if memory
 // becomes a real constraint.
-func browserArgs(devMode bool) []string {
+func browserArgs(enableDevArgs bool) []string {
 	args := []string{
 		"--disable-features=Translate,AutofillServerCommunication,MediaRouter,DialMediaRouteProvider,OptimizationHints,IsolateOrigins,site-per-process,BackForwardCache,Prerender2",
 		"--disable-background-networking",
@@ -885,7 +888,7 @@ func browserArgs(devMode bool) []string {
 		"--no-experiments",
 		"--no-default-browser-check",
 	}
-	if devMode {
+	if enableDevArgs {
 		args = append(args,
 			"--remote-debugging-port=9223",
 			"--remote-debugging-address=127.0.0.1",

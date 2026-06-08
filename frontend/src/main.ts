@@ -1,5 +1,6 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
+import { appTitleForEnv } from './appTitle';
 
 // Self-hosted fonts. Four weights of each family covers every surface
 // the app uses today (body/medium/semibold/bold). Loaded before the
@@ -14,5 +15,7 @@ import '@fontsource/geist-mono/500.css';
 import '@fontsource/geist-mono/600.css';
 
 import './app.css';
+
+document.title = appTitleForEnv(import.meta.env);
 
 mount(App, { target: document.getElementById('app')! });

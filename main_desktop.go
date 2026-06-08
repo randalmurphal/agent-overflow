@@ -53,8 +53,9 @@ func runClient(rawURL string) {
 	}
 	log.Printf("clientmode: stub serving on %s, attaching to %s", stub.Addr(), cfg.WSURL)
 
+	title := appidentity.AppTitle(nativeSingleInstanceMode())
 	app := application.New(application.Options{
-		Name: "Agent Overflow",
+		Name: title,
 		// No services registered: the App receiver in the local binary
 		// would only confuse a webview that's about to RPC against a
 		// remote backend instead. Wails expects services to be set
@@ -63,7 +64,7 @@ func runClient(rawURL string) {
 	})
 
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:            "Agent Overflow",
+		Title:            title,
 		Width:            1280,
 		Height:           800,
 		MinWidth:         800,
@@ -91,8 +92,9 @@ func runClient(rawURL string) {
 func runDesktop(listenAddr string) {
 	appService := NewApp()
 	var window *application.WebviewWindow
+	title := appidentity.AppTitle(nativeSingleInstanceMode())
 	app := application.New(application.Options{
-		Name:           "Agent Overflow",
+		Name:           title,
 		SingleInstance: desktopSingleInstanceOptions(func() *application.WebviewWindow { return window }),
 		Services: []application.Service{
 			application.NewService(appService),
@@ -114,7 +116,7 @@ func runDesktop(listenAddr string) {
 	}
 
 	window = app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:            "Agent Overflow",
+		Title:            title,
 		Width:            1280,
 		Height:           800,
 		MinWidth:         800,

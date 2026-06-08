@@ -38,7 +38,7 @@ one closest to what you're touching.
 | `composerdraft/` | Pure `store.Item` → `store.ThreadDraft` projectors (`FromUserItem`, `FromParts`) backing the revert-to-message and fork-and-revert composer rehydration paths. App-bound cross-thread attachment cloning stays in `app_draft.go`. |
 | `transport/` | HTTP+WebSocket wire protocol (RPC dispatch + event push) used by the embedded webview and any remote client. |
 | `clientmode/` | `--connect <url>` remote-client stub: tiny loopback HTTP server that injects `window.__AO_BOOTSTRAP__` into the embedded SPA so the desktop binary attaches to a remote backend instead of booting a local transport. |
-| `appidentity/` | Pure process identity helpers shared by native desktop and WSL launcher entry points, currently the dev/prod Wails single-instance ID formatter. |
+| `appidentity/` | Pure process identity and display-name helpers shared by native desktop and WSL launcher entry points. |
 | `editor/` | Open-in-editor detection (catalog + WSL bridge) and detached-spawn helper. Backs the `OpenInEditor` and `ListAvailableEditors` bindings. |
 | `externalurl/` | Validates HTTP(S) URLs and launches them through the host OS browser opener, including the WSL-to-Windows browser bridge. |
 | `wsllauncher/` | Detects WSL distros and spawns the Linux backend pinned to a Win32 Job Object. The Windows launcher uses the full surface; the WSL backend uses `ListDistros` for the Settings UI distro picker. |
