@@ -1901,6 +1901,20 @@ export function SavePayloadToFile(threadID: string, payloadID: string): $Cancell
 }
 
 /**
+ * SearchThreadItems runs a substring search over the message text of a single
+ * thread — the in-thread "find" surface — returning hits in document order so
+ * the UI can step through them top-to-bottom. Kept thin: the store owns the
+ * query shape. A blank query short-circuits to an empty slice in the store;
+ * this binding returns the same without an error so the frontend can call it
+ * on every keystroke cheaply. limit caps the result set.
+ */
+export function SearchThreadItems(threadID: string, query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
+    return $Call.ByID(1414650511, threadID, query, limit).then(($result: any) => {
+        return $$createType78($result);
+    });
+}
+
+/**
  * SearchThreadMessages runs a global substring search across thread titles
  * and item summaries. Intended to back the message-search overlay in the
  * frontend — kept thin so the store owns the query shape.

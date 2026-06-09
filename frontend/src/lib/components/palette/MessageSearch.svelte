@@ -1,7 +1,8 @@
 <script lang="ts">
   import Modal from '../primitives/Modal.svelte';
-  import { SearchThreadMessages, type ThreadMessageHit } from '../../stores/bindings';
+  import { SearchThreadMessages, SearchThreadItems, type ThreadMessageHit } from '../../stores/bindings';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { MessageSearchMode } from '../../stores/messageSearch.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
   import { openThreadFromNavigation } from '../../stores/panes.svelte';
   import { getProviderDefinition } from '../../providers/catalog';
@@ -12,10 +13,23 @@
   interface Props {
     open: boolean;
     pane: ThreadPane | null;
+    mode: MessageSearchMode;
     onClose: () => void;
   }
 
-  let { open, pane, onClose }: Props = $props();
+  let { open, pane, mode, onClose }: Props = $props();
+
+  // 'thread' searches only the target pane's thread (mod+f, in-thread find);
+  // 'global' searches every thread's titles + messages (mod+shift+f).
+  const dialogTitle = $derived(mode === 'thread' ? 'Find in thread' : 'Search messages');
+  const inputPlaceholder = $derived(
+    mode === 'thread' ? 'Find in this thread…' : 'Search titles and message text…',
+  );
+  const idleHint = $derived(
+    mode === 'thread'
+      ? 'Type to find messages in this thread.'
+      : 'Type to search across thread titles and message text.',
+  );
 
   let query = $state('');
   let searchEl: HTMLInputElement | undefined = $state(undefined);
@@ -29,9 +43,13 @@
   // with >50 matches should narrow their query.
   const LIMIT = 50;
 
-  // Re-query on every change to `query` while the dialog is open. SQLite LIKE
-  // is fast enough here (thousands of items) that per-keystroke search feels
-  // instant; a future FTS5 migration would preserve this contract.
+  // Debounce window for re-querying as the user types. The global search is a
+  // full table scan; firing one per keystroke piled scans onto the store's
+  // single write connection during a live stream. One scan per typing pause is
+  // plenty for an interactive dialog. (In-thread find is cheap by comparison,
+  // but shares the path for consistency.)
+  const SEARCH_DEBOUNCE_MS = 150;
+
   let searchSeq = 0;
   async function runSearch(q: string): Promise<void> {
     const seq = ++searchSeq;
@@ -46,7 +64,16 @@
     loading = true;
     error = null;
     try {
-      const result = await SearchThreadMessages(trimmed, LIMIT);
+      let result: ThreadMessageHit[];
+      if (mode === 'thread') {
+        // In-thread find is scoped to the open thread; with no thread loaded
+        // (a draft pane) there is nothing to search.
+        result = pane?.threadId
+          ? await SearchThreadItems(pane.threadId, trimmed, LIMIT)
+          : [];
+      } else {
+        result = await SearchThreadMessages(trimmed, LIMIT);
+      }
       // Ignore stale responses — user may have typed more since.
       if (seq !== searchSeq) return;
       hits = result ?? [];
@@ -60,9 +87,21 @@
     }
   }
 
-  // Re-run when the query changes OR when the dialog opens.
+  // Re-run (debounced) when the query changes OR when the dialog opens. The
+  // searchSeq guard inside runSearch still discards any stale response that
+  // lands out of order; debounce additionally avoids issuing the scans at all.
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
-    if (open) void runSearch(query);
+    if (!open) return;
+    const q = query;
+    clearTimeout(debounceTimer);
+    // An empty query is a local clear — nothing to debounce.
+    if (q.trim().length === 0) {
+      void runSearch(q);
+      return;
+    }
+    debounceTimer = setTimeout(() => void runSearch(q), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(debounceTimer);
   });
 
   $effect(() => {
@@ -158,9 +197,15 @@
   }
 </script>
 
+{#snippet highlighted(text: string)}
+  {#each computeHighlightSegments(text, query) as seg}
+    {#if seg.type === 'match'}<mark class="bg-accent/30 text-fg rounded-sm px-0.5">{seg.value}</mark>{:else}{seg.value}{/if}
+  {/each}
+{/snippet}
+
 <Modal
   {open}
-  title="Search messages"
+  title={dialogTitle}
   onClose={onClose}
   width="lg"
   padding="tight"
@@ -180,8 +225,8 @@
         bind:this={searchEl}
         bind:value={query}
         type="text"
-        placeholder="Search titles and message text…"
-        aria-label="Search messages"
+        placeholder={inputPlaceholder}
+        aria-label={dialogTitle}
         data-testid="message-search-input"
         class="w-full text-[0.8125rem] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors mb-3"
       />
@@ -192,7 +237,7 @@
         <div class="px-2 py-3 text-[0.75rem] text-error" data-testid="message-search-error">{error}</div>
       {:else if query.trim().length === 0}
         <div class="px-2 py-3 text-[0.75rem] text-fg-muted" data-testid="message-search-idle">
-          Type to search across thread titles and message text.
+          {idleHint}
         </div>
       {:else if hits.length === 0}
         <div class="px-2 py-3 text-[0.75rem] text-fg-muted" data-testid="message-search-empty">
@@ -213,34 +258,30 @@
                   activeIndex === i ? 'bg-accent/10 text-fg' : 'hover:bg-surface-2/30 text-fg-muted',
                 ].join(' ')}
               >
-                <div class="flex items-center gap-2">
-                  <span class="text-[0.5625rem] font-semibold px-1 py-0.5 rounded-[4px] shrink-0 tracking-wide
-                    {providerDefinition?.badgeClass ?? 'bg-surface-2 text-fg-muted'}" aria-hidden="true">
-                    {providerDefinition?.shortLabel ?? '?'}
-                  </span>
-                  <span class="text-[0.8125rem] truncate text-fg">
-                    {#each computeHighlightSegments(hit.threadTitle || 'Untitled', query) as seg}
-                      {#if seg.type === 'match'}
-                        <mark class="bg-accent/30 text-fg rounded-sm px-0.5">{seg.value}</mark>
-                      {:else}
-                        {seg.value}
-                      {/if}
-                    {/each}
-                  </span>
-                  <span class="text-[0.5625rem] ml-auto px-1 py-0.5 rounded-[4px] bg-surface-0 border border-border-subtle text-fg-hint shrink-0 tabular-nums">
-                    {hit.matchType === 'title' ? 'title' : `turn ${hit.turnIndex}`}
-                  </span>
-                </div>
-                {#if hit.matchType === 'item' && hit.summary}
-                  <p class="text-[0.75rem] text-fg-muted truncate">
-                    {#each computeHighlightSegments(hit.summary, query) as seg}
-                      {#if seg.type === 'match'}
-                        <mark class="bg-accent/30 text-fg rounded-sm px-0.5">{seg.value}</mark>
-                      {:else}
-                        {seg.value}
-                      {/if}
-                    {/each}
-                  </p>
+                {#if mode === 'thread'}
+                  <!-- In-thread find: every hit is a message in the current
+                       thread, so drop the redundant provider + title and show
+                       the matching text with just a turn marker. -->
+                  <div class="flex items-baseline gap-2">
+                    <span class="text-[0.5625rem] px-1 py-0.5 rounded-[4px] bg-surface-0 border border-border-subtle text-fg-hint shrink-0 tabular-nums">
+                      turn {hit.turnIndex}
+                    </span>
+                    <span class="text-[0.8125rem] truncate text-fg-muted">{@render highlighted(hit.summary)}</span>
+                  </div>
+                {:else}
+                  <div class="flex items-center gap-2">
+                    <span class="text-[0.5625rem] font-semibold px-1 py-0.5 rounded-[4px] shrink-0 tracking-wide
+                      {providerDefinition?.badgeClass ?? 'bg-surface-2 text-fg-muted'}" aria-hidden="true">
+                      {providerDefinition?.shortLabel ?? '?'}
+                    </span>
+                    <span class="text-[0.8125rem] truncate text-fg">{@render highlighted(hit.threadTitle || 'Untitled')}</span>
+                    <span class="text-[0.5625rem] ml-auto px-1 py-0.5 rounded-[4px] bg-surface-0 border border-border-subtle text-fg-hint shrink-0 tabular-nums">
+                      {hit.matchType === 'title' ? 'title' : `turn ${hit.turnIndex}`}
+                    </span>
+                  </div>
+                  {#if hit.matchType === 'item' && hit.summary}
+                    <p class="text-[0.75rem] text-fg-muted truncate">{@render highlighted(hit.summary)}</p>
+                  {/if}
                 {/if}
               </button>
             </li>

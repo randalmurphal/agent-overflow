@@ -179,6 +179,7 @@ export {
 
   // Message search
   SearchThreadMessages,
+  SearchThreadItems,
 
   // Keybindings
   GetKeybindings,

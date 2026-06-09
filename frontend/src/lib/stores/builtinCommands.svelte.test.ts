@@ -21,9 +21,12 @@ import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavComm
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import {
   closeMessageSearch,
+  getMessageSearchMode,
+  getMessageSearchTargetPaneId,
   isMessageSearchOpen,
   openMessageSearch,
 } from './messageSearch.svelte';
+import { getToasts } from './toast.svelte';
 import {
   closeThreadPicker,
   isThreadPickerOpen,
@@ -802,6 +805,61 @@ describe('search.messages command', () => {
     expect(isCommandEnabled('search.messages.close', ctx)).toBe(true);
     runCommand('search.messages.close', ctx);
     expect(isMessageSearchOpen()).toBe(false);
+  });
+});
+
+// --- search.in-thread wiring ---
+//
+// mod+f opens the SAME MessageSearch overlay as search.messages, but in
+// thread-scoped mode (Find in thread). It reuses the toggle-on-rechord shape
+// and additionally refuses to open without an active thread — there is
+// nothing to scope to — surfacing a warning toast instead.
+
+describe('search.in-thread command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    closeMessageSearch();
+  });
+
+  it('registers the command', () => {
+    registerFixtureCommands(readyPane());
+    expect(getCommand('search.in-thread')).toBeDefined();
+  });
+
+  it('opens MessageSearch in thread mode scoped to the active pane', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(isMessageSearchOpen()).toBe(false);
+    const ran = runCommand('search.in-thread', ctx);
+    expect(ran).toBe(true);
+    expect(isMessageSearchOpen()).toBe(true);
+    // The distinguishing behavior vs search.messages: thread mode + a pane id
+    // so the overlay knows which thread to scope SearchThreadItems to.
+    expect(getMessageSearchMode()).toBe('thread');
+    expect(getMessageSearchTargetPaneId()).toBe(pane.paneId);
+  });
+
+  it('toggles closed when the same chord runs while open', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    runCommand('search.in-thread', ctx);
+    expect(isMessageSearchOpen()).toBe(true);
+    runCommand('search.in-thread', ctx);
+    expect(isMessageSearchOpen()).toBe(false);
+  });
+
+  it('refuses to open without an active thread and warns instead', () => {
+    registerFixtureCommands(readyPane());
+    const before = getToasts().length;
+    // A null pane yields hasActiveThread:false / paneId:null — opening an
+    // unscoped in-thread find would search nothing, so the run bails.
+    const ctx = makeCommandContext(null, {}) as CommandContext;
+    runCommand('search.in-thread', ctx);
+    expect(isMessageSearchOpen()).toBe(false);
+    const added = getToasts().slice(before);
+    expect(added.some((t) => t.type === 'warning')).toBe(true);
   });
 });
 

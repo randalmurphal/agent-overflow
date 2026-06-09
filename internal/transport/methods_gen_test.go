@@ -72,6 +72,7 @@ var wireSafeMethods = map[string]bool{
 	"ListRecentTurns":       true,
 	"ListThreadSliceAround": true,
 	"SearchThreadMessages":  true,
+	"SearchThreadItems":     true,
 
 	// Payload reads. Authorization via getThreadPayloadMeta's
 	// (threadID, payloadID) linkage check. Moved from LocalOnly

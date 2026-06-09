@@ -649,9 +649,34 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Search: Messages',
     description: 'Full-text search across every thread title and message. Pressing the same chord while open closes it.',
     icon: '⌕',
+    // Reachable from the composer: you fire this while typing a message, so the
+    // chord must survive textarea focus (the sibling sidebar.focus-search above
+    // opts in the same way). Without it, App.svelte's editable-target gate
+    // swallows the chord.
+    editableReachable: true,
     run: (ctx) => {
       if (isMessageSearchOpen()) closeMessageSearch();
       else openMessageSearch(ctx.paneId);
+    },
+  });
+
+  registerCommand({
+    id: 'search.in-thread',
+    label: 'Find in Thread',
+    description: 'Search the messages in the current thread. Pressing the same chord while open closes it.',
+    icon: '⌕',
+    // Reachable while the composer textarea is focused, like search.messages.
+    editableReachable: true,
+    run: (ctx) => {
+      if (isMessageSearchOpen()) {
+        closeMessageSearch();
+        return;
+      }
+      if (!ctx.hasActiveThread) {
+        addToast('warning', 'Open a thread to search within it.');
+        return;
+      }
+      openMessageSearch(ctx.paneId, 'thread');
     },
   });
 

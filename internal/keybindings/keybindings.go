@@ -132,7 +132,12 @@ var Defaults = []Keybinding{
 	{Key: "alt+shift+arrowright", Command: "pane.moveRight", When: "!terminalFocus", DefaultID: "pane.moveRight.arrow"},
 	{Key: "alt+shift+l", Command: "pane.moveRight", DefaultID: "pane.moveRight.vim"},
 	{Key: "mod+shift+g", Command: "diff.panel.toggle", When: "hasActiveThread && !terminalFocus", DefaultID: "diff.panel.toggle"},
-	{Key: "mod+f", Command: "search.threads", When: "!terminalFocus", DefaultID: "search.threads"},
+	// mod+f is in-thread "find" (search the current thread's messages), matching
+	// the editor convention where Ctrl+F finds in the current document and
+	// Ctrl+Shift+F (search.messages) finds across everything. The sidebar
+	// thread-search it replaced stays on mod+/ (sidebar.focus-search) and the
+	// command palette.
+	{Key: "mod+f", Command: "search.in-thread", When: "hasActiveThread && !terminalFocus", DefaultID: "search.in-thread"},
 	{Key: "mod+,", Command: "settings.open", DefaultID: "settings.open"},
 	{Key: "esc", Command: "rhs.close", When: "activeRhsPanel && !anyModalOpen && !terminalFocus", DefaultID: "rhs.close"},
 	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen", DefaultID: "thread.interrupt"},

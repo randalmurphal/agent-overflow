@@ -136,6 +136,7 @@ export const UpdateThreadWorkspace = dispatch('UpdateThreadWorkspace');
 export const UpdateNewThreadDefaults = dispatch('UpdateNewThreadDefaults');
 export const WriteThreadWorkspaceFile = dispatch('WriteThreadWorkspaceFile');
 export const SearchThreadMessages = dispatch('SearchThreadMessages');
+export const SearchThreadItems = dispatch('SearchThreadItems');
 export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
 
 export const GetPayloadPreview = dispatch('GetPayloadPreview');

@@ -275,6 +275,272 @@ func TestSearchThreadMessages_AcrossMultipleThreadsAndTypes(t *testing.T) {
 	}
 }
 
+// TestSearchThreadMessages_TitleFloodDoesNotHideItemHits is the regression
+// guard for the "one busy titled thread hides every message match" bug. A
+// thread whose TITLE matches and which has more items than the limit used to
+// fan out (LEFT JOIN) into limit-many 'title' rows that filled the whole
+// window before the Go-side dedup ran — so item-summary matches in OTHER
+// threads never surfaced. The fix limits title hits and item hits separately,
+// so an item match cannot be starved by a title flood.
+func TestSearchThreadMessages_TitleFloodDoesNotHideItemHits(t *testing.T) {
+	s := newTestStore(t)
+	// Title-matching thread with MORE items than the search limit. None of its
+	// items contain the term in their summary — only the title matches.
+	mustCreateThreadForSearch(t, s, "flooder", "All about seconds and timing")
+	for i := 0; i < 60; i++ {
+		mustInsertItemForSearch(t, s, "flooder", fmt.Sprintf("f%d", i), i, fmt.Sprintf("ordinary line %d", i), int64(i))
+	}
+	// A different thread whose ITEM summary matches the term.
+	mustCreateThreadForSearch(t, s, "other", "Unrelated title")
+	mustInsertItemForSearch(t, s, "other", "hit", 0, "it took thirty seconds to finish", 1000)
+
+	got, err := s.SearchThreadMessages("seconds", 50)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	var sawItemHit bool
+	for _, h := range got {
+		if h.MatchType == "item" && h.ThreadID == "other" && h.ItemID == "hit" {
+			sawItemHit = true
+		}
+	}
+	if !sawItemHit {
+		t.Errorf("item-summary match in 'other' was hidden by the title flood; got %d hits: %+v", len(got), got)
+	}
+}
+
+// TestSearchThreadMessages_TitleFloodAcrossThreadsStillShowsItemHit guards the
+// cousin of the flood bug, one level up: a query that matches MANY distinct
+// thread TITLES must still surface a message-body match instead of filling the
+// whole window with titles. Pre-fix the merge truncated title-first to the
+// limit, so 50+ title matches dropped every item hit — re-creating exactly the
+// "bodies never surface" complaint the fix set out to cure.
+func TestSearchThreadMessages_TitleFloodAcrossThreadsStillShowsItemHit(t *testing.T) {
+	s := newTestStore(t)
+	// 60 distinct threads whose TITLE contains the term — more than the limit.
+	for i := 0; i < 60; i++ {
+		mustCreateThreadForSearch(t, s, fmt.Sprintf("title%d", i), fmt.Sprintf("seconds matter %d", i))
+	}
+	// One thread whose only match is in an item summary.
+	mustCreateThreadForSearch(t, s, "body", "Unrelated")
+	mustInsertItemForSearch(t, s, "body", "hit", 0, "it took thirty seconds", 1000)
+
+	got, err := s.SearchThreadMessages("seconds", 50)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(got) != 50 {
+		t.Fatalf("expected the result capped at 50, got %d", len(got))
+	}
+	var sawItemHit bool
+	for _, h := range got {
+		if h.MatchType == "item" && h.ItemID == "hit" {
+			sawItemHit = true
+		}
+	}
+	if !sawItemHit {
+		t.Errorf("body match starved by 60 title matches; got %d hits", len(got))
+	}
+}
+
+// ---- Merge policy (mergeTitleFirst) ----
+
+// TestMergeTitleFirst pins the title/item reservation math directly, without a
+// DB: titles lead, but item hits get up to half the window so a title flood
+// can't hide them, and whichever kind is sparse cedes its slack to the other.
+func TestMergeTitleFirst(t *testing.T) {
+	mk := func(kind string, n int) []ThreadMessageHit {
+		out := make([]ThreadMessageHit, n)
+		for i := range out {
+			out[i] = ThreadMessageHit{ThreadID: fmt.Sprintf("%s%d", kind, i), MatchType: kind}
+		}
+		return out
+	}
+	countKind := func(hits []ThreadMessageHit, kind string) int {
+		n := 0
+		for _, h := range hits {
+			if h.MatchType == kind {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("both fit under the limit: all returned, titles first", func(t *testing.T) {
+		got := mergeTitleFirst(mk("title", 2), mk("item", 3), 50)
+		if len(got) != 5 {
+			t.Fatalf("want 5, got %d", len(got))
+		}
+		// Two titles lead, then the three items.
+		if got[0].MatchType != "title" || got[1].MatchType != "title" || got[2].MatchType != "item" {
+			t.Errorf("titles should lead, then items: %+v", got)
+		}
+	})
+
+	t.Run("title flood: half the window is reserved for items", func(t *testing.T) {
+		got := mergeTitleFirst(mk("title", 60), mk("item", 30), 50)
+		if len(got) != 50 {
+			t.Fatalf("want 50, got %d", len(got))
+		}
+		if titles, items := countKind(got, "title"), countKind(got, "item"); titles != 25 || items != 25 {
+			t.Errorf("want 25 titles + 25 items, got %d + %d", titles, items)
+		}
+	})
+
+	t.Run("sparse items: titles reclaim the unused reserve", func(t *testing.T) {
+		got := mergeTitleFirst(mk("title", 60), mk("item", 5), 50)
+		if titles, items := countKind(got, "title"), countKind(got, "item"); titles != 45 || items != 5 {
+			t.Errorf("want 45 titles + 5 items, got %d + %d", titles, items)
+		}
+	})
+
+	t.Run("sparse titles: items fill the remainder", func(t *testing.T) {
+		got := mergeTitleFirst(mk("title", 3), mk("item", 100), 50)
+		if titles, items := countKind(got, "title"), countKind(got, "item"); titles != 3 || items != 47 {
+			t.Errorf("want 3 titles + 47 items, got %d + %d", titles, items)
+		}
+	})
+
+	t.Run("non-positive limit returns everything", func(t *testing.T) {
+		got := mergeTitleFirst(mk("title", 60), mk("item", 60), 0)
+		if len(got) != 120 {
+			t.Errorf("want 120 (unbounded), got %d", len(got))
+		}
+	})
+}
+
+// ---- In-thread find (SearchThreadItems) ----
+
+func TestSearchThreadItems_EmptyQueryReturnsNil(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "alpha")
+	mustInsertItemForSearch(t, s, "t1", "i1", 0, "hello seconds", 100)
+
+	got, err := s.SearchThreadItems("t1", "   ", 10)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for whitespace query, got %+v", got)
+	}
+}
+
+func TestSearchThreadItems_ScopedToOneThread(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "thread one")
+	mustInsertItemForSearch(t, s, "t1", "a1", 0, "it took thirty seconds", 100)
+	mustCreateThreadForSearch(t, s, "t2", "thread two")
+	mustInsertItemForSearch(t, s, "t2", "b1", 0, "also thirty seconds here", 100)
+
+	got, err := s.SearchThreadItems("t1", "seconds", 10)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(got) != 1 || got[0].ThreadID != "t1" || got[0].ItemID != "a1" {
+		t.Fatalf("expected only t1/a1, got %+v", got)
+	}
+	if got[0].MatchType != "item" {
+		t.Errorf("expected matchType=item, got %q", got[0].MatchType)
+	}
+}
+
+// In-thread find ignores the thread's own title — it searches message text
+// only, so a term that appears solely in the title yields nothing.
+func TestSearchThreadItems_DoesNotMatchTitle(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "All about seconds")
+	mustInsertItemForSearch(t, s, "t1", "i1", 0, "no temporal words here", 100)
+
+	got, _ := s.SearchThreadItems("t1", "seconds", 10)
+	if len(got) != 0 {
+		t.Errorf("expected no item hits (term only in title), got %+v", got)
+	}
+}
+
+// Results step top-to-bottom in document order (turn_index, then item_index),
+// not by recency — so "next match" walks down the transcript.
+func TestSearchThreadItems_DocumentOrder(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	// Insert out of document order, with created_at intentionally inverted
+	// relative to turn order to prove ordering keys off turn/item index.
+	mustInsertItemForSearch(t, s, "t1", "third", 2, "find me C", 100)
+	mustInsertItemForSearch(t, s, "t1", "first", 0, "find me A", 300)
+	mustInsertItemForSearch(t, s, "t1", "second", 1, "find me B", 200)
+
+	got, _ := s.SearchThreadItems("t1", "find me", 10)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 hits, got %d", len(got))
+	}
+	if got[0].ItemID != "first" || got[1].ItemID != "second" || got[2].ItemID != "third" {
+		t.Errorf("expected document order first,second,third; got %v %v %v",
+			got[0].ItemID, got[1].ItemID, got[2].ItemID)
+	}
+}
+
+func TestSearchThreadItems_LimitCapsAndZeroReturnsAll(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	for i := 0; i < 9; i++ {
+		mustInsertItemForSearch(t, s, "t1", fmt.Sprintf("i%d", i), i, "same match body", int64(100+i))
+	}
+
+	capped, _ := s.SearchThreadItems("t1", "match", 4)
+	if len(capped) != 4 {
+		t.Errorf("expected 4 hits (limit), got %d", len(capped))
+	}
+	all, _ := s.SearchThreadItems("t1", "match", 0)
+	if len(all) != 9 {
+		t.Errorf("expected 9 hits (zero-limit), got %d", len(all))
+	}
+}
+
+// The secondary ORDER BY key (item_index) breaks ties within a turn, so two
+// items in the same turn step in item_index order — not insertion or recency
+// order. mustInsertItemForSearch hardcodes item_index 0, so insert directly.
+func TestSearchThreadItems_ItemIndexBreaksTurnTies(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	// Same turn, inserted out of item_index order with inverted created_at to
+	// prove neither insertion nor recency decides the tie.
+	if err := s.InsertItem(Item{
+		ID: "second", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1,
+		Kind: "assistant_text", Role: "assistant", Summary: "find me second", CreatedAt: 100,
+	}); err != nil {
+		t.Fatalf("insert second: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "first", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Summary: "find me first", CreatedAt: 200,
+	}); err != nil {
+		t.Fatalf("insert first: %v", err)
+	}
+
+	got, _ := s.SearchThreadItems("t1", "find me", 10)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 hits, got %d", len(got))
+	}
+	if got[0].ItemID != "first" || got[1].ItemID != "second" {
+		t.Errorf("expected item_index order first,second; got %v,%v", got[0].ItemID, got[1].ItemID)
+	}
+}
+
+// SearchThreadItems shares likePattern/escapeLike with the global search, but
+// its i.summary path had no direct literal-wildcard test. A literal % in the
+// query must match a literal % in a summary, not act as a wildcard.
+func TestSearchThreadItems_LiteralPercentInSummary(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	mustInsertItemForSearch(t, s, "t1", "pct", 0, "build is 100% done", 100)
+	mustInsertItemForSearch(t, s, "t1", "nopct", 1, "build is 100 done", 200)
+
+	got, _ := s.SearchThreadItems("t1", "100%", 10)
+	if len(got) != 1 || got[0].ItemID != "pct" {
+		t.Errorf("expected only the literal-%% item, got %+v", got)
+	}
+}
+
 // ---- Adversarial ----
 
 func TestSearchThreadMessages_UnicodeQuery(t *testing.T) {

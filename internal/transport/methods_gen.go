@@ -181,6 +181,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RevertToMessageCheckpointWithOptions", ID: 4144907731}, // main.App.RevertToMessageCheckpointWithOptions
 	{Name: "SaveDraft", ID: 3025273299},                            // main.App.SaveDraft
 	{Name: "SavePayloadToFile", ID: 3576148797},                    // main.App.SavePayloadToFile
+	{Name: "SearchThreadItems", ID: 1414650511},                    // main.App.SearchThreadItems
 	{Name: "SearchThreadMessages", ID: 3644945077},                 // main.App.SearchThreadMessages
 	{Name: "SearchWorkspaceFiles", ID: 3852272821},                 // main.App.SearchWorkspaceFiles
 	{Name: "SendDiffReviewComments", ID: 2317109106},               // main.App.SendDiffReviewComments

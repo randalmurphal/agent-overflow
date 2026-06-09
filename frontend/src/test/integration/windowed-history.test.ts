@@ -263,6 +263,76 @@ describe('App integration — windowed thread history', () => {
     expect(pane.items.some((it) => it.id === 'old-hit')).toBe(true);
   });
 
+  it('in-thread find (mode=thread) scopes SearchThreadItems to the active thread and scrolls to the clicked hit', async () => {
+    // The mod+f path: search is scoped to the already-open thread, and a
+    // click scrolls the live timeline to that message WITHOUT a thread
+    // switch (hit.threadId === pane.threadId). This is the feature's core
+    // job — pin it end-to-end through the real App mount + live pane, since
+    // the component tests stub the pane and never exercise openHit.
+    let scopedSearch!: ReturnType<typeof setBindingMock>;
+    const { findByTestId } = await mountAndActivateThread(
+      makeThread({ title: 'Windowed Thread' }),
+      () => {
+        // Seed one in-window item so the click's requestScrollToItem resolves
+        // without the out-of-window loadUntilItem paging the global test
+        // above already covers.
+        setBindingMock('ListThreadSliceAround', async () => ({
+          items: [
+            makeItem({
+              id: 'thr-msg',
+              threadId: 'thread-1',
+              turnIndex: 5,
+              itemIndex: 0,
+              summary: 'preserve seconds after one hour',
+            }),
+          ],
+          oldestTurnIndex: 5,
+          newestTurnIndex: 5,
+          hasMore: false,
+        }));
+        scopedSearch = setBindingMock('SearchThreadItems', async () => [
+          {
+            threadId: 'thread-1',
+            threadTitle: 'Windowed Thread',
+            provider: 'claude',
+            itemId: 'thr-msg',
+            turnIndex: 5,
+            itemKind: 'text',
+            itemRole: 'assistant',
+            summary: 'preserve seconds after one hour',
+            matchType: 'item' as const,
+          },
+        ]);
+        // A SearchThreadMessages mock would only be hit if the overlay
+        // wrongly fell back to global; leaving it unset means such a
+        // regression throws "called without a mock" instead of passing.
+      },
+    );
+
+    const paneMod = await import('../../lib/stores/panes.svelte');
+    const pane = paneMod.getMainPane();
+    const scrollSpy = vi.spyOn(pane, 'requestScrollToItem');
+
+    // Open scoped to THIS pane's thread — exactly what the mod+f command does.
+    const searchMod = await import('../../lib/stores/messageSearch.svelte');
+    searchMod.openMessageSearch(pane.paneId, 'thread');
+    await flush();
+
+    const input = (await findByTestId('message-search-input')) as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'seconds' } });
+
+    const hitBtn = await findByTestId('message-search-hit-thread-1-thr-msg');
+    // The scoped binding ran with the active thread id + the typed query.
+    await waitFor(() => expect(scopedSearch).toHaveBeenCalled());
+    expect(scopedSearch.mock.calls[0]).toEqual(['thread-1', 'seconds', 50]);
+
+    await fireEvent.click(hitBtn);
+    await flush(10);
+
+    // Clicking an in-thread hit scrolls the live timeline to that message.
+    expect(scrollSpy).toHaveBeenCalledWith('thr-msg');
+  });
+
   it('PlanSidebar renders the current plan from the dedicated plan list outside the timeline window', async () => {
     // The sidebar owns the plan list through a dedicated binding — it
     // does NOT read from pane.items. This pins the out-of-window case:
