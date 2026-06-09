@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -101,7 +102,7 @@ func (r *Router) handleUserInputResolved(evt provider.ProviderEvent) error {
 	}
 	request, ok := r.takePendingUserInput(evt.ThreadID, requestID)
 	if ok {
-		if err := r.completeCodexUserInputToolCall(evt, request, decision, answers); err != nil {
+		if err := r.persistResolvedUserInput(evt, request, decision, answers); err != nil {
 			return err
 		}
 	}
@@ -114,18 +115,86 @@ func (r *Router) handleUserInputResolved(evt provider.ProviderEvent) error {
 	return nil
 }
 
-func (r *Router) completeCodexUserInputToolCall(evt provider.ProviderEvent, request provider.UserInputRequest, decision string, answers map[string]provider.UserInputAnswer) error {
-	if r.store == nil || request.ToolUseID == "" {
-		return nil
-	}
-	if strings.TrimSpace(request.ToolName) != "user_input" {
+// persistResolvedUserInput writes the user's submitted answers onto the
+// persisted tool-call row. The two providers reach this point with different
+// row lifecycles, so the write-back differs by provider — dispatched on
+// isCodexThread, the same provider seam the tool-completion path uses:
+//
+//   - Codex `request_user_input` is a synthetic tool call AO fabricates to
+//     represent the prompt. This resolve IS its only completion, so the row is
+//     flipped to completed (completeCodexUserInputToolCall).
+//   - Claude `AskUserQuestion` is a real CLI tool that emits its own
+//     `tool_result` completion later. Here we merge the answers (and the
+//     normalized question list) onto the still-running launch row and leave its
+//     status untouched — see mergeUserInputAnswersIntoLaunch.
+func (r *Router) persistResolvedUserInput(evt provider.ProviderEvent, request provider.UserInputRequest, decision string, answers map[string]provider.UserInputAnswer) error {
+	if r.store == nil {
 		return nil
 	}
 	codexThread, err := r.isCodexThread(evt.ThreadID)
 	if err != nil {
 		return err
 	}
-	if !codexThread {
+	if codexThread {
+		return r.completeCodexUserInputToolCall(evt, request, decision, answers)
+	}
+	return r.mergeUserInputAnswersIntoLaunch(evt, request, answers)
+}
+
+// mergeUserInputAnswersIntoLaunch additively merges the user's AskUserQuestion
+// answers into the existing launch row's meta, where the frontend card reads
+// them (item.meta.answers, keyed by normalized question id).
+//
+// It also refreshes item.meta.input.questions with the normalized question list.
+// The launch row was created from the raw tool_use input, which carries no
+// per-question id, so two questions sharing a header would both resolve to the
+// first answer (the card falls back to header matching). The request we hold
+// here already carries NormalizeUserInputQuestions' deduped ids (Scope/Scope-2,
+// set in parse_control.go), and the card prefers q.id over q.header
+// (askUserQuestionData.ts answersForQuestion), so persisting the normalized list
+// disambiguates duplicate headers. It is identical to the raw list for the
+// common distinct-header case (id == header), where it only adds the id field.
+//
+// It deliberately does NOT touch status: Claude sends its own tool_result
+// completion for the same tool_use id, and persistToolCallCompletion's
+// terminal-status guard would drop that real completion if this resolve had
+// already flipped the row terminal. This is the same "refresh meta on the
+// running launch row, let the later wire completion settle status" shape
+// persistToolCallCompletion uses for backgrounded placeholders
+// (tool_lifecycle.go). The deep meta merge guarantees `answers`, the refreshed
+// `input`, and the later `tool_result` coexist on the row regardless of arrival
+// order.
+func (r *Router) mergeUserInputAnswersIntoLaunch(evt provider.ProviderEvent, request provider.UserInputRequest, answers map[string]provider.UserInputAnswer) error {
+	if r.store == nil || request.ToolUseID == "" || len(answers) == 0 {
+		return nil
+	}
+	launch, found, err := r.store.GetThreadItem(evt.ThreadID, request.ToolUseID)
+	if err != nil {
+		return fmt.Errorf("user input answer lookup %s: %w", request.ToolUseID, err)
+	}
+	if !found || launch.Kind != itemKindToolCall {
+		return nil
+	}
+	merge := map[string]any{"answers": answers}
+	// Guard non-empty so a malformed request can never blank out the questions
+	// the card renders; in practice a registered request always has questions.
+	if len(request.Questions) > 0 {
+		merge["input"] = map[string]any{"questions": request.Questions}
+	}
+	meta, err := json.Marshal(merge)
+	if err != nil {
+		return fmt.Errorf("user input answer marshal %s: %w", request.ToolUseID, err)
+	}
+	launch.Meta = mergeItemMetaJSON(launch.Meta, json.RawMessage(meta))
+	launch.UpdatedAt = eventTimestampMillis(evt)
+	return r.persistItem(launch, nil)
+}
+
+func (r *Router) completeCodexUserInputToolCall(evt provider.ProviderEvent, request provider.UserInputRequest, decision string, answers map[string]provider.UserInputAnswer) error {
+	if r.store == nil || request.ToolUseID == "" {
+		return nil
+	}
+	if strings.TrimSpace(request.ToolName) != "user_input" {
 		return nil
 	}
 	if answers == nil {

@@ -92,17 +92,20 @@
     return extractQuestions(itemMeta);
   });
 
-  // Answers are persisted directly on Codex request_user_input rows and
-  // echoed inside Claude's `tool_result.content` after the user submits.
-  // Parse defensively — if the shape is unexpected we just render no
-  // answers (the row still shows the questions that were asked).
+  // Answers are persisted directly on `item.meta.answers` for both providers:
+  // Codex on its request_user_input row, Claude when triage merges the resolved
+  // answers onto the AskUserQuestion launch row. Claude's `tool_result.content`
+  // echo is a secondary, best-effort source. Parse defensively — if a shape is
+  // unexpected we just render no answers (the row still shows the questions).
+  // `directAnswers` win: they are exactly what was sent to the agent, whereas
+  // the echo is free-form text that may not parse.
   const answersByQuestion = $derived.by<Record<string, string | string[]>>(() => {
     if (!itemMeta) return {};
     const directAnswers = extractAnswers((itemMeta as Record<string, unknown>).answers);
     const toolResult = itemMeta.tool_result;
     if (!toolResult || typeof toolResult !== 'object') return directAnswers;
     const toolResultAnswers = extractAnswers((toolResult as Record<string, unknown>).content);
-    return { ...directAnswers, ...toolResultAnswers };
+    return { ...toolResultAnswers, ...directAnswers };
   });
 
   const headerLabel = $derived.by<string>(() => {

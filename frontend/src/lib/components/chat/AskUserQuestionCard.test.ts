@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, within } from '@testing-library/svelte';
 import AskUserQuestionCard from './AskUserQuestionCard.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 
@@ -371,6 +371,164 @@ describe('<AskUserQuestionCard>', () => {
     const options = getAllByTestId('ask-user-question-option');
     expect(options[0].getAttribute('data-selected')).toBe('false');
     expect(options[1].getAttribute('data-selected')).toBe('true');
+  });
+
+  it('renders the selected option from persisted meta.answers keyed by header (Claude)', async () => {
+    // The fix: triage merges the resolved answers onto the AskUserQuestion
+    // launch row as meta.answers. Claude questions carry no id, so the answer
+    // is keyed by the question header. Without the fix the card shows
+    // "No answer recorded." even though the agent received the choice.
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'AskUserQuestion',
+      meta: buildMeta({
+        questions: [
+          {
+            header: 'Retention fix',
+            question: 'Which approach?',
+            options: [
+              { label: 'SECURITY DEFINER fn', description: 'recommended' },
+              { label: 'Minimal degrade-only', description: 'defer' },
+            ],
+          },
+        ],
+        directAnswers: { 'Retention fix': 'SECURITY DEFINER fn' },
+      }),
+    });
+
+    const { getByTestId, getAllByTestId, queryByText } = render(AskUserQuestionCard, {
+      props: { item },
+    });
+
+    await fireEvent.click(getByTestId('ask-user-question-toggle'));
+
+    expect(queryByText('No answer recorded.')).toBeNull();
+    const options = getAllByTestId('ask-user-question-option');
+    expect(options[0].getAttribute('data-selected')).toBe('true'); // SECURITY DEFINER fn
+    expect(options[1].getAttribute('data-selected')).toBe('false');
+  });
+
+  it('renders multiple selected options from persisted meta.answers (Claude multi-select)', async () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'AskUserQuestion',
+      meta: buildMeta({
+        questions: [
+          {
+            header: 'Features',
+            question: 'Which features?',
+            multiSelect: true,
+            options: [
+              { label: 'Markdown', description: '' },
+              { label: 'Code highlighting', description: '' },
+              { label: 'Attachments', description: '' },
+            ],
+          },
+        ],
+        directAnswers: { Features: ['Markdown', 'Attachments'] },
+      }),
+    });
+
+    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, {
+      props: { item },
+    });
+
+    await fireEvent.click(getByTestId('ask-user-question-toggle'));
+
+    const options = getAllByTestId('ask-user-question-option');
+    expect(options[0].getAttribute('data-selected')).toBe('true'); // Markdown
+    expect(options[1].getAttribute('data-selected')).toBe('false'); // Code highlighting
+    expect(options[2].getAttribute('data-selected')).toBe('true'); // Attachments
+  });
+
+  it('prefers persisted meta.answers over a conflicting tool_result echo', async () => {
+    // meta.answers is exactly what was sent to the agent; the tool_result
+    // echo is free-form text that may parse to something stale or wrong.
+    // The card must let the authoritative meta.answers win.
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'AskUserQuestion',
+      meta: buildMeta({
+        questions: [
+          {
+            header: 'Retention fix',
+            question: 'Which approach?',
+            options: [
+              { label: 'SECURITY DEFINER fn', description: 'recommended' },
+              { label: 'Minimal degrade-only', description: 'defer' },
+            ],
+          },
+        ],
+        directAnswers: { 'Retention fix': 'SECURITY DEFINER fn' },
+        toolResultContent: JSON.stringify({
+          answers: { 'Retention fix': 'Minimal degrade-only' },
+        }),
+      }),
+    });
+
+    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, {
+      props: { item },
+    });
+
+    await fireEvent.click(getByTestId('ask-user-question-toggle'));
+
+    const options = getAllByTestId('ask-user-question-option');
+    expect(options[0].getAttribute('data-selected')).toBe('true'); // meta.answers wins
+    expect(options[1].getAttribute('data-selected')).toBe('false'); // not the echo's choice
+  });
+
+  it('disambiguates duplicate headers by question id (Claude normalized ids)', async () => {
+    // Two questions share the header "Scope". Triage persists the normalized
+    // question list with deduped ids (Scope / Scope-2) and keys the answers by
+    // those ids, so each question must resolve to its OWN answer. Without the
+    // ids the card would fall back to header matching and render the first
+    // answer ("turn") for both questions.
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'AskUserQuestion',
+      meta: buildMeta({
+        questions: [
+          {
+            id: 'Scope',
+            header: 'Scope',
+            question: 'Scope for fix A?',
+            options: [
+              { label: 'turn', description: '' },
+              { label: 'session', description: '' },
+            ],
+          },
+          {
+            id: 'Scope-2',
+            header: 'Scope',
+            question: 'Scope for fix B?',
+            options: [
+              { label: 'turn', description: '' },
+              { label: 'session', description: '' },
+            ],
+          },
+        ],
+        directAnswers: { Scope: 'turn', 'Scope-2': 'session' },
+      }),
+    });
+
+    const { getByTestId } = render(AskUserQuestionCard, { props: { item } });
+
+    await fireEvent.click(getByTestId('ask-user-question-toggle'));
+
+    const first = within(getByTestId('ask-user-question-question-0')).getAllByTestId(
+      'ask-user-question-option',
+    );
+    const second = within(getByTestId('ask-user-question-question-1')).getAllByTestId(
+      'ask-user-question-option',
+    );
+    expect(first[0].getAttribute('data-selected')).toBe('true'); // Scope -> turn
+    expect(first[1].getAttribute('data-selected')).toBe('false');
+    expect(second[0].getAttribute('data-selected')).toBe('false'); // Scope-2 -> session, not turn
+    expect(second[1].getAttribute('data-selected')).toBe('true');
   });
 
   it('renders one block per question for multi-question prompts', async () => {
