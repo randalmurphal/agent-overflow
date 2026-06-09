@@ -791,6 +791,27 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 	return s.proc.WriteLine(data)
 }
 
+// claudeAskUserQuestionAnswers projects the user's selections into the shape
+// Claude Code's AskUserQuestion tool consumes: question key -> answer string,
+// with multi-select answers comma-joined.
+//
+// The comma-join is Claude Code's contract, not a lossy shortcut we picked
+// (verified against the installed CLI's embedded schema, 2.1.168): the tool's
+// result schema is `answers: record(string, string)` and documents
+// "multi-select answers are comma-separated", so the model only ever sees a
+// joined string. The injection point we actually write to (the permission
+// component's updatedInput.answers) accepts an array too, but preprocesses it
+// by joining with the identical ", " before validating as a string -- so
+// sending map[string][]string here is accepted-but-equivalent, a no-op rather
+// than a fix. There is no lossless multi-select form at the model layer; do
+// not "fix" this into an array.
+//
+// Structured fidelity for display/history is preserved on a separate path that
+// never reaches the model: triage's mergeUserInputAnswersIntoLaunch persists
+// the raw per-question arrays onto item.meta.answers, which the AskUserQuestion
+// history card prefers over this joined echo. That path keeps comma-containing
+// labels and custom free-text intact for the UI. This function feeds the model
+// only.
 func claudeAskUserQuestionAnswers(questions []provider.UserInputQuestion, answers map[string]provider.UserInputAnswer) map[string]string {
 	out := make(map[string]string, len(answers))
 	used := make(map[string]struct{}, len(answers))

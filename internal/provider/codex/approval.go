@@ -90,6 +90,11 @@ func parseApprovalRequestID(requestID string) (int64, error) {
 	return rpcID, nil
 }
 
+// buildCodexUserInputAnswers shapes answers for Codex's requestUserInput
+// response. Unlike Claude (which mandates a comma-joined string -- see
+// claudeAskUserQuestionAnswers in the claude package), Codex's wire shape is
+// {answers: []string} per question, so multi-select selections stay a
+// structured slice with no join and no fidelity loss.
 func buildCodexUserInputAnswers(answers map[string]provider.UserInputAnswer) map[string]codexUserInputAnswer {
 	result := make(map[string]codexUserInputAnswer, len(answers))
 	for questionID, answer := range answers {

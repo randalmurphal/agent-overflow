@@ -35,6 +35,9 @@
     /** Absolute base directory for resolving relative file paths the
      *  linkifier finds in option previews. */
     workspacePath?: string;
+    /** When true the popup body is hidden (minimized via the activity-rail
+     *  chip). The component stays mounted so entered answers are preserved. */
+    collapsed?: boolean;
   }
 
   let {
@@ -46,6 +49,7 @@
     onResolved,
     onError,
     workspacePath = '',
+    collapsed = false,
   }: Props = $props();
 
   let index = $state(0);
@@ -58,11 +62,11 @@
   let autoAdvanceTimer: ReturnType<typeof setTimeout> | undefined;
 
   const question = $derived(request.questions[index]);
+  const isMulti = $derived(request.questions.length > 1);
   const progressLabel = $derived(`${Math.min(index + 1, request.questions.length)}/${request.questions.length}`);
   const complete = $derived(isRequestComplete(request, answers));
   const canGoPrevious = $derived(index > 0 && !responding);
   const canShowNext = $derived(index < request.questions.length - 1 && !responding);
-  const canGoNext = $derived(Boolean(question) && index < request.questions.length - 1 && hasAnswer(answers, question) && !responding);
   const canSubmit = $derived(complete && !responding);
 
   // Side-by-side preview pane is single-select only per the upstream tool
@@ -218,8 +222,13 @@
     originHint: 'mouse' | 'keyboard',
   ): void {
     clearAutoAdvanceTimer();
-    customAnswers = Object.assign(Object.create(null), customAnswers, { [activeQuestion.id]: '' });
-    setCustomAnswerText('');
+    // Single-select is mutually exclusive with a typed answer, so picking an
+    // option clears the custom box. Multi-select lets options and a typed
+    // entry coexist — leave whatever the user has typed in place.
+    if (!activeQuestion.multiSelect) {
+      customAnswers = Object.assign(Object.create(null), customAnswers, { [activeQuestion.id]: '' });
+      setCustomAnswerText('');
+    }
     const nextAnswers = toggleOptionAnswer(answers, activeQuestion, label);
     answers = nextAnswers;
     const optionIndex = activeQuestion.options?.findIndex((option) => option.label === label) ?? -1;
@@ -248,7 +257,7 @@
       await onResolve(new UserInputResponse({
         requestId: request.requestId,
         decision: 'accept',
-        answers: toResponseAnswers(answersToSubmit),
+        answers: toResponseAnswers(request, answersToSubmit),
       }));
       setCustomAnswerText('');
       onResolved();
@@ -261,7 +270,10 @@
 
   async function advanceOrSubmit(): Promise<void> {
     if (!question || responding || !hasAnswer(answers, question)) return;
-    if (index < request.questions.length - 1) {
+    // While collapsed the body is hidden, so never advance to a question the
+    // user can't see — only submit (a no-op unless every answer is complete).
+    // Keeps the two keyboard paths (this and handleWindowKeydown) consistent.
+    if (!collapsed && index < request.questions.length - 1) {
       showQuestion(index + 1);
       void focusOption(0);
       return;
@@ -270,7 +282,9 @@
   }
 
   function handleWindowKeydown(event: KeyboardEvent): void {
-    if (!question || responding) return;
+    // Collapse is a visual minimize: ignore option number/arrow keys that would
+    // act on the hidden body. The composer-Enter submit path stays live.
+    if (collapsed || !question || responding) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     // event.target is `EventTarget`, not always `Element` (window-level
     // dispatch in test environments leaves it as the Window object).
@@ -323,8 +337,10 @@
   });
 </script>
 
+{#if !collapsed}
 <section
   bind:this={panelRoot}
+  id="composer-pending-user-input"
   class="border-b-2 border-accent/60 px-4 py-4 shadow-[inset_0_2px_0_oklch(from_var(--accent)_l_c_h/0.18)]"
   data-testid="composer-pending-user-input"
   aria-live="assertive"
@@ -334,22 +350,24 @@
     class="flex items-start justify-between gap-3"
   >
     <div class="min-w-0">
-      <div class="flex items-center gap-2">
-        <p class="text-[0.6875rem] font-bold uppercase tracking-[0.08em] text-accent">
-          Input requested
-        </p>
-        {#if request.questions.length > 1}
-          <span class="rounded-full border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[0.625rem] font-semibold text-accent">
-            {progressLabel}
-          </span>
-        {/if}
-      </div>
       {#if question}
-        <p class="mt-1 text-sm font-semibold text-fg">{question.header || request.title}</p>
+        <div class="flex items-center gap-2">
+          <p class="text-sm font-semibold text-fg">{question.header || request.title}</p>
+          {#if isMulti}
+            <span class="rounded-full border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[0.625rem] font-semibold text-accent">
+              {progressLabel}
+            </span>
+          {/if}
+        </div>
         <p class="mt-0.5 text-xs text-fg-muted">{question.question}</p>
       {/if}
     </div>
-    {#if request.questions.length > 1}
+    {#snippet submitButton()}
+      <Button variant="primary" size="sm" onclick={() => submit()} testId="user-input-submit" disabled={!canSubmit} loading={responding}>
+        {#snippet children()}{isMulti ? 'Submit answers' : 'Submit answer'}{/snippet}
+      </Button>
+    {/snippet}
+    {#if isMulti}
       <div
         class="flex shrink-0 flex-wrap justify-end gap-1.5"
         role="toolbar"
@@ -361,9 +379,17 @@
         <Button variant="secondary" size="sm" onclick={() => showQuestion(index - 1)} testId="user-input-header-previous" disabled={!canGoPrevious}>
           {#snippet children()}Previous{/snippet}
         </Button>
-        <Button variant="primary" size="sm" onclick={() => showQuestion(index + 1)} testId="user-input-header-next" disabled={!canShowNext}>
-          {#snippet children()}Next{/snippet}
-        </Button>
+        {#if index < request.questions.length - 1}
+          <Button variant="primary" size="sm" onclick={() => showQuestion(index + 1)} testId="user-input-header-next" disabled={!canShowNext}>
+            {#snippet children()}Next{/snippet}
+          </Button>
+        {:else}
+          {@render submitButton()}
+        {/if}
+      </div>
+    {:else}
+      <div class="flex shrink-0 flex-wrap justify-end gap-1.5" data-testid="user-input-question-header">
+        {@render submitButton()}
       </div>
     {/if}
   </div>
@@ -427,18 +453,5 @@
     {/if}
   {/if}
 
-  <div class="mt-3 flex flex-wrap justify-end gap-2">
-    <Button variant="secondary" size="sm" onclick={() => showQuestion(index - 1)} testId="user-input-previous" disabled={!canGoPrevious}>
-      {#snippet children()}Previous{/snippet}
-    </Button>
-    {#if index < request.questions.length - 1}
-      <Button variant="primary" size="sm" onclick={advanceOrSubmit} testId="user-input-next" disabled={!canGoNext}>
-        {#snippet children()}Next question{/snippet}
-      </Button>
-    {:else}
-      <Button variant="primary" size="sm" onclick={() => submit()} testId="user-input-submit" disabled={!canSubmit} loading={responding}>
-        {#snippet children()}Submit answer(s){/snippet}
-      </Button>
-    {/if}
-  </div>
 </section>
+{/if}

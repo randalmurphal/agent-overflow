@@ -443,6 +443,49 @@ describe('<AskUserQuestionCard>', () => {
     expect(options[2].getAttribute('data-selected')).toBe('true'); // Attachments
   });
 
+  it('renders matched options AND a custom value from one coexistence array (multi-select)', async () => {
+    // Multi-select coexistence: the user picks options AND types a custom
+    // answer, so the composer sends one combined array [opt, opt, custom].
+    // mergeUserInputAnswersIntoLaunch persists it verbatim onto meta.answers,
+    // and the card must split it back into checked options PLUS a Custom row —
+    // not drop the custom value and not render it as a phantom option.
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'AskUserQuestion',
+      meta: buildMeta({
+        questions: [
+          {
+            header: 'Features',
+            question: 'Which features?',
+            multiSelect: true,
+            options: [
+              { label: 'Markdown', description: '' },
+              { label: 'Code highlighting', description: '' },
+              { label: 'Attachments', description: '' },
+            ],
+          },
+        ],
+        directAnswers: { Features: ['Markdown', 'Attachments', 'Voice notes'] },
+      }),
+    });
+
+    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, {
+      props: { item },
+    });
+
+    await fireEvent.click(getByTestId('ask-user-question-toggle'));
+
+    const options = getAllByTestId('ask-user-question-option');
+    expect(options[0].getAttribute('data-selected')).toBe('true'); // Markdown
+    expect(options[1].getAttribute('data-selected')).toBe('false'); // Code highlighting
+    expect(options[2].getAttribute('data-selected')).toBe('true'); // Attachments
+
+    const custom = getByTestId('ask-user-question-custom');
+    expect(custom.textContent).toContain('Custom:');
+    expect(custom.textContent).toContain('Voice notes');
+  });
+
   it('prefers persisted meta.answers over a conflicting tool_result echo', async () => {
     // meta.answers is exactly what was sent to the agent; the tool_result
     // echo is free-form text that may parse to something stale or wrong.

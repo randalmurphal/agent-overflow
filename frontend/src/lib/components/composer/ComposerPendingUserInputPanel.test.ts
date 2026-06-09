@@ -366,4 +366,243 @@ describe('<ComposerPendingUserInputPanel>', () => {
     await fireEvent.keyDown(header, { key: 'ArrowLeft' });
     expect(getByText('Pick one')).toBeTruthy();
   });
+
+  it('preserves the entered answer across collapse and expand', async () => {
+    // Collapse is a visual minimize, not a cancel: the component stays
+    // mounted while the body is hidden so a selection survives a
+    // collapse/expand round-trip and can still be submitted.
+    const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
+    const props = {
+      request: request(),
+      customAnswer: '',
+      submitSignal: 0,
+      setCustomAnswerText: vi.fn(),
+      onResolve,
+      onResolved: vi.fn(),
+      onError: vi.fn(),
+      collapsed: false,
+    };
+    const { getByTestId, queryByTestId, rerender } = render(ComposerPendingUserInputPanel, { props });
+
+    await fireEvent.click(getByTestId('user-input-option-2'));
+
+    await rerender({ ...props, collapsed: true });
+    expect(queryByTestId('composer-pending-user-input')).toBeNull();
+
+    await rerender({ ...props, collapsed: false });
+    await fireEvent.click(getByTestId('user-input-submit'));
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0].answers).toEqual({ framework: 'Svelte' });
+  });
+
+  it('submits selected options together with a typed answer for multi-select', async () => {
+    // Multi-select coexistence: chosen options AND a typed entry submit
+    // together as a single de-duplicated array.
+    const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
+    const props = {
+      request: request({
+        questions: [
+          {
+            id: 'features',
+            header: 'Features',
+            question: 'Pick any',
+            multiSelect: true,
+            options: [
+              { label: 'A', description: '' },
+              { label: 'B', description: '' },
+              { label: 'C', description: '' },
+            ],
+          },
+        ],
+      }),
+      customAnswer: '',
+      submitSignal: 0,
+      setCustomAnswerText: vi.fn(),
+      onResolve,
+      onResolved: vi.fn(),
+      onError: vi.fn(),
+    };
+    const { getByTestId, rerender } = render(ComposerPendingUserInputPanel, { props });
+
+    await fireEvent.click(getByTestId('user-input-option-1'));
+    await fireEvent.click(getByTestId('user-input-option-2'));
+    await rerender({ ...props, customAnswer: 'extra' });
+
+    await fireEvent.click(getByTestId('user-input-submit'));
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0].answers).toEqual({ features: ['A', 'B', 'extra'] });
+  });
+
+  it('shows Next on a non-final question and Submit only on the last', async () => {
+    // Navigation lives solely in the top-right toolbar: free-nav Next until
+    // the final question, where it becomes the submit. The bottom button row
+    // is gone.
+    const { getByTestId, queryByTestId } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request({
+          questions: [
+            { id: 'a', header: 'A', question: 'Q1', options: [{ label: 'x', description: '' }] },
+            { id: 'b', header: 'B', question: 'Q2', options: [{ label: 'y', description: '' }] },
+          ],
+        }),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve: vi.fn(),
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('user-input-header-next')).toBeTruthy();
+    expect(queryByTestId('user-input-submit')).toBeNull();
+
+    // Free navigation to the final question — no answer required.
+    await fireEvent.click(getByTestId('user-input-header-next'));
+
+    expect(queryByTestId('user-input-header-next')).toBeNull();
+    expect(getByTestId('user-input-submit')).toBeTruthy();
+  });
+
+  it('shows a single Submit answer button for a one-question request', async () => {
+    const { getByTestId, queryByTestId } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request(),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve: vi.fn(),
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    expect(queryByTestId('user-input-header-previous')).toBeNull();
+    expect(queryByTestId('user-input-header-next')).toBeNull();
+    expect(getByTestId('user-input-submit').textContent).toContain('Submit answer');
+  });
+
+  it('preserves the navigated question index across collapse and expand', async () => {
+    // The component stays mounted while collapsed (onMount does not re-run), so
+    // the user-navigated index — not just the answers — survives the round-trip.
+    const props = {
+      request: request({
+        questions: [
+          { id: 'a', header: 'A', question: 'First question', options: [{ label: 'x', description: '' }] },
+          { id: 'b', header: 'B', question: 'Second question', options: [{ label: 'y', description: '' }] },
+        ],
+      }),
+      customAnswer: '',
+      submitSignal: 0,
+      setCustomAnswerText: vi.fn(),
+      onResolve: vi.fn(),
+      onResolved: vi.fn(),
+      onError: vi.fn(),
+      collapsed: false,
+    };
+    const { getByTestId, getByText, queryByTestId, rerender } = render(ComposerPendingUserInputPanel, { props });
+
+    await fireEvent.click(getByTestId('user-input-header-next'));
+    expect(getByText('Second question')).toBeTruthy();
+    await fireEvent.click(getByTestId('user-input-option-1'));
+
+    await rerender({ ...props, collapsed: true });
+    expect(queryByTestId('composer-pending-user-input')).toBeNull();
+
+    await rerender({ ...props, collapsed: false });
+    expect(getByText('Second question')).toBeTruthy();
+  });
+
+  it('keeps the typed answer when a multi-select option is toggled off', async () => {
+    // Exercises selectOption's multi-select branch (does not clear the custom
+    // box) plus toggleOptionAnswer preserving the typed entry on toggle-off.
+    const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
+    const props = {
+      request: request({
+        questions: [
+          {
+            id: 'features',
+            header: 'Features',
+            question: 'Pick any',
+            multiSelect: true,
+            options: [
+              { label: 'A', description: '' },
+              { label: 'B', description: '' },
+            ],
+          },
+        ],
+      }),
+      customAnswer: '',
+      submitSignal: 0,
+      setCustomAnswerText: vi.fn(),
+      onResolve,
+      onResolved: vi.fn(),
+      onError: vi.fn(),
+    };
+    const { getByTestId, rerender } = render(ComposerPendingUserInputPanel, { props });
+
+    await fireEvent.click(getByTestId('user-input-option-1')); // select A
+    await rerender({ ...props, customAnswer: 'typed' }); // type a custom entry
+    await fireEvent.click(getByTestId('user-input-option-1')); // toggle A back off
+
+    await fireEvent.click(getByTestId('user-input-submit'));
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0].answers).toEqual({ features: ['typed'] });
+  });
+
+  it('does not advance or submit a hidden multi-question request on collapsed Enter', async () => {
+    // While collapsed, the composer-Enter path must not advance to a question
+    // the user cannot see, and must not submit an incomplete request.
+    const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
+    const props = {
+      request: request({
+        questions: [
+          { id: 'a', header: 'A', question: 'Q1', options: [{ label: 'x', description: '' }] },
+          { id: 'b', header: 'B', question: 'Q2', options: [{ label: 'y', description: '' }] },
+        ],
+      }),
+      customAnswer: '',
+      submitSignal: 0,
+      setCustomAnswerText: vi.fn(),
+      onResolve,
+      onResolved: vi.fn(),
+      onError: vi.fn(),
+      collapsed: false,
+    };
+    const { getByTestId, getByText, rerender } = render(ComposerPendingUserInputPanel, { props });
+
+    await fireEvent.click(getByTestId('user-input-option-1')); // answer Q1 only
+    await rerender({ ...props, collapsed: true });
+    await rerender({ ...props, collapsed: true, submitSignal: 1 });
+
+    expect(onResolve).not.toHaveBeenCalled();
+
+    await rerender({ ...props, collapsed: false, submitSignal: 1 });
+    expect(getByText('Q1')).toBeTruthy(); // still on Q1 — no hidden advance
+  });
+
+  it('submits via composer Enter while collapsed once answers are complete', async () => {
+    const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
+    const props = {
+      request: request(),
+      customAnswer: '',
+      submitSignal: 0,
+      setCustomAnswerText: vi.fn(),
+      onResolve,
+      onResolved: vi.fn(),
+      onError: vi.fn(),
+      collapsed: false,
+    };
+    const { getByTestId, rerender } = render(ComposerPendingUserInputPanel, { props });
+
+    await fireEvent.click(getByTestId('user-input-option-2')); // complete (single question)
+    await rerender({ ...props, collapsed: true });
+    await rerender({ ...props, collapsed: true, submitSignal: 1 });
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0].answers).toEqual({ framework: 'Svelte' });
+  });
 });

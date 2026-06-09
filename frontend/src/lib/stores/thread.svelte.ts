@@ -3210,6 +3210,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get activityRailBackgroundOpen() {
       return liveTodoState.activityRailBackgroundOpen;
     },
+    get activityRailInputCollapsed() {
+      return liveTodoState.activityRailInputCollapsed;
+    },
 
     /** Toggle the Todos accordion body inside the activity rail. */
     toggleActivityRailTodos(): void {
@@ -3219,6 +3222,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     /** Toggle the Background accordion body inside the activity rail. */
     toggleActivityRailBackground(): void {
       liveTodoState.toggleActivityRailBackground(thread?.id ?? null);
+    },
+
+    /**
+     * Collapse/expand the pending-user-input popup from the activity-rail
+     * chip. Per-thread sticky like the todos/background toggles: the state
+     * survives thread switches and is inherited by the next input request
+     * in the same thread (the chip stays visible while collapsed, so an
+     * inherited-collapsed request is always one click from expanded).
+     */
+    toggleActivityRailInputCollapsed(): void {
+      liveTodoState.toggleActivityRailInputCollapsed(thread?.id ?? null);
     },
 
     /**

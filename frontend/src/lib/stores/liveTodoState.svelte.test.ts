@@ -72,16 +72,41 @@ describe('liveTodoState', () => {
     state.toggleLiveTodoShowAll('thread-a');
     state.toggleActivityRailTodos('thread-a');
     state.toggleActivityRailBackground('thread-a');
+    state.toggleActivityRailInputCollapsed('thread-a');
 
     state.resetForThread('thread-b');
     expect(state.liveTodoShowAll).toBe(false);
     expect(state.activityRailTodosOpen).toBe(false);
     expect(state.activityRailBackgroundOpen).toBe(false);
+    expect(state.activityRailInputCollapsed).toBe(false);
 
     state.resetForThread('thread-a');
     expect(state.liveTodoShowAll).toBe(true);
     expect(state.activityRailTodosOpen).toBe(true);
     expect(state.activityRailBackgroundOpen).toBe(true);
+    expect(state.activityRailInputCollapsed).toBe(true);
+  });
+
+  it('input-collapse defaults to expanded and clears on empty pane', () => {
+    const state = createLiveTodoState();
+
+    // Default for a fresh thread is expanded (not collapsed).
+    state.resetForThread('thread-a');
+    expect(state.activityRailInputCollapsed).toBe(false);
+
+    // Collapse is its own independent toggle — it doesn't touch todos/background.
+    state.toggleActivityRailInputCollapsed('thread-a');
+    expect(state.activityRailInputCollapsed).toBe(true);
+    expect(state.activityRailTodosOpen).toBe(false);
+    expect(state.activityRailBackgroundOpen).toBe(false);
+
+    // A pane with no thread always resets to expanded.
+    state.resetForEmptyPane();
+    expect(state.activityRailInputCollapsed).toBe(false);
+
+    // Re-entering the collapsed thread restores its collapsed state.
+    state.resetForThread('thread-a');
+    expect(state.activityRailInputCollapsed).toBe(true);
   });
 
   it('hydrates fresh snapshots but ignores stale all-completed snapshots', () => {

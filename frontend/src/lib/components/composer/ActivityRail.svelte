@@ -1,10 +1,15 @@
 <script lang="ts">
   // Consolidated activity rail at the top of the composer card. Owns
-  // the three "what's the agent doing right now" sub-states:
+  // the "what's the agent doing right now" sub-states:
   //
+  //  - Input requested chip: visible when `inputRequest` is set (a pending
+  //    request_user_input the composer is showing). Clicking it toggles the
+  //    popup body via `onToggleInput`; the chip is the minimize affordance.
+  //    While present it suppresses the working segment (the agent is blocked
+  //    on the user, so a running timer would be misleading).
   //  - Working timer: visible when a wire round is active or a queued
-  //    user message is bridging the gap between rounds. Information-
-  //    only (the composer's Send button doubles as Stop).
+  //    user message is bridging the gap between rounds, and no input is
+  //    pending. Information-only (the composer's Send button doubles as Stop).
   //  - Todos segment: visible when `pane.liveTodo` carries a snapshot.
   //    Toggle expands an inline body listing the steps. State of the
   //    toggle is `pane.activityRailTodosOpen` so it survives thread
@@ -14,10 +19,11 @@
   //    rows with provider-aware stop affordances.
   //
   // The whole rail collapses out completely when none of those are
-  // active (idle thread, no todos, no background tasks).
+  // active (idle thread, no pending input, no todos, no background tasks).
 
   import { onDestroy, onMount } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { UserInputRequest } from '../../types/events';
   import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { createBackgroundController } from './activityRailBackground.svelte';
@@ -29,9 +35,21 @@
 
   interface Props {
     pane: ThreadPane;
+    /** Active pending user-input request, or null when none is pending or an
+     *  approval is blocking. Drives the accent "Input requested" chip and,
+     *  while present, suppresses the working timer (the agent is blocked on
+     *  the user, so a running timer would be misleading). */
+    inputRequest?: UserInputRequest | null;
+    inputCollapsed?: boolean;
+    onToggleInput?: () => void;
   }
 
-  let { pane }: Props = $props();
+  let {
+    pane,
+    inputRequest = null,
+    inputCollapsed = false,
+    onToggleInput = () => {},
+  }: Props = $props();
 
   const PREVIEW_MAX_CHARS = 60;
 
@@ -76,15 +94,22 @@
   onMount(() => { bgDispose = bg.mount(); });
   onDestroy(() => { bgDispose?.(); });
 
-  // Rail visible when ANY of the three sub-states is non-empty. Each
-  // segment within the row has its own predicate so e.g. a
+  // While an input request is pending the agent is blocked on the user, so the
+  // working timer/dots/shimmer are suppressed and only the "Input requested"
+  // chip shows. `showWorking` gates every working-segment render below.
+  let showWorking = $derived(isWorking && inputRequest === null);
+
+  // Rail visible when ANY sub-state is non-empty (a pending input always shows
+  // its chip). Each segment within the row has its own predicate so e.g. a
   // background-only render doesn't include working chrome.
-  let railVisible = $derived(isWorking || liveTodo !== null || bg.count > 0);
+  let railVisible = $derived(
+    inputRequest !== null || showWorking || liveTodo !== null || bg.count > 0,
+  );
 
   // 1Hz clock for the working elapsed label and the background body's
   // elapsed labels + retention prune. Idle when nothing wants it.
   $effect(() => {
-    const wantsClockForWorking = activeTurn !== null;
+    const wantsClockForWorking = activeTurn !== null && inputRequest === null;
     const wantsClockForBackground = backgroundOpen || bg.hasPendingCompletion;
     if (!wantsClockForWorking && !wantsClockForBackground) return;
     now = Date.now();
@@ -103,7 +128,7 @@
     aria-label="Activity"
     data-testid="activity-rail"
   >
-    {#if isWorking}
+    {#if showWorking}
       <span
         class="activity-shimmer pointer-events-none absolute inset-x-0 top-0 z-10 block h-px overflow-hidden"
         aria-hidden="true"
@@ -111,7 +136,26 @@
       ></span>
     {/if}
     <div class="flex flex-wrap items-center gap-1.5 px-3 py-2 text-[0.6875rem] leading-tight">
-      {#if isWorking}
+      {#if inputRequest}
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-bold uppercase tracking-[0.08em] text-accent transition-colors hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
+          onclick={onToggleInput}
+          aria-controls="composer-pending-user-input"
+          aria-expanded={!inputCollapsed}
+          data-testid="activity-rail-input-toggle"
+        >
+          <Icon
+            icon={inputCollapsed ? ChevronRight : ChevronDown}
+            size={11}
+            strokeWidth={2.25}
+            class="shrink-0"
+          />
+          <span>Input requested</span>
+        </button>
+      {/if}
+
+      {#if showWorking}
         <span
           class="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5"
           role="status"
@@ -137,7 +181,7 @@
       {/if}
 
       {#if liveTodo}
-        {#if isWorking}
+        {#if inputRequest || showWorking}
           <span class="select-none text-fg-hint/60" aria-hidden="true">·</span>
         {/if}
         <button
@@ -169,7 +213,7 @@
       {/if}
 
       {#if bg.count > 0}
-        {#if isWorking || liveTodo}
+        {#if inputRequest || showWorking || liveTodo}
           <span class="select-none text-fg-hint/60" aria-hidden="true">·</span>
         {/if}
         <button

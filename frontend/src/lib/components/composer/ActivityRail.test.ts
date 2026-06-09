@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ActivityRail from './ActivityRail.svelte';
+import type { UserInputRequest } from '../../types/events';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
@@ -538,5 +539,46 @@ describe('<ActivityRail>', () => {
     await Promise.resolve();
     await tick();
     expect(fetches).toBe(baseline);
+  });
+
+  function userInputRequest(): UserInputRequest {
+    return {
+      requestId: 'req-input-1',
+      threadId: 'thread-1',
+      toolName: 'request_user_input',
+      title: 'Input',
+      questions: [{ id: 'q', header: 'Q', question: 'Pick', options: [{ label: 'A', description: '' }] }],
+    };
+  }
+
+  it('renders the input-requested chip and toggles via onToggleInput', async () => {
+    const pane = await buildPane();
+    const onToggleInput = vi.fn();
+    const { getByTestId, rerender } = render(ActivityRail, {
+      props: { pane, inputRequest: userInputRequest(), inputCollapsed: false, onToggleInput },
+    });
+    await tick();
+
+    const chip = getByTestId('activity-rail-input-toggle');
+    expect(chip.getAttribute('aria-expanded')).toBe('true');
+
+    await fireEvent.click(chip);
+    expect(onToggleInput).toHaveBeenCalledTimes(1);
+
+    await rerender({ pane, inputRequest: userInputRequest(), inputCollapsed: true, onToggleInput });
+    expect(getByTestId('activity-rail-input-toggle').getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('hides the working segment while an input request is pending', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+    const { getByTestId, queryByTestId } = render(ActivityRail, {
+      props: { pane, inputRequest: userInputRequest() },
+    });
+    await tick();
+
+    expect(getByTestId('activity-rail-input-toggle')).toBeTruthy();
+    expect(queryByTestId('activity-rail-working')).toBeNull();
+    expect(queryByTestId('activity-rail-shimmer')).toBeNull();
   });
 });

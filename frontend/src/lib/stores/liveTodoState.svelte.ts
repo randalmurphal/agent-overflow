@@ -67,22 +67,30 @@ export function __resetLiveTodoUiPrefsForTest(): void {
 }
 
 /**
- * Per-thread Activity Rail expansion state. The rail itself appears
- * only when there's active work (turn / todos / background tasks);
- * these flags govern whether the Todos and Background section bodies
- * below the rail are open. Independent toggles — both can be open at
- * once. Same shape and lifecycle rules as `liveTodoUiPrefs`: lives in
- * process memory, survives thread switches, dies on app restart.
+ * Per-thread Activity Rail expansion state. The rail itself appears only
+ * when there's active work (turn / todos / background tasks / a pending
+ * user-input request); these flags govern the section bodies below the rail.
+ * `todosOpen`/`backgroundOpen` are opt-in-open (default closed);
+ * `inputCollapsed` is the inverse — the pending-input popup defaults to
+ * expanded and this records that the user minimized it. Independent toggles.
+ * Same shape and lifecycle rules as `liveTodoUiPrefs`: lives in process
+ * memory, survives thread switches, dies on app restart.
  */
 interface ActivityRailUiPrefs {
   todosOpen: boolean;
   backgroundOpen: boolean;
+  inputCollapsed: boolean;
 }
+
+function defaultActivityRailUiPrefs(): ActivityRailUiPrefs {
+  return { todosOpen: false, backgroundOpen: false, inputCollapsed: false };
+}
+
 const activityRailUiPrefs = new Map<string, ActivityRailUiPrefs>();
 
 function readActivityRailUiPrefs(threadID: string | null): ActivityRailUiPrefs {
-  if (!threadID) return { todosOpen: false, backgroundOpen: false };
-  return activityRailUiPrefs.get(threadID) ?? { todosOpen: false, backgroundOpen: false };
+  if (!threadID) return defaultActivityRailUiPrefs();
+  return activityRailUiPrefs.get(threadID) ?? defaultActivityRailUiPrefs();
 }
 
 function writeActivityRailUiPrefs(threadID: string | null, prefs: ActivityRailUiPrefs): void {
@@ -106,6 +114,7 @@ export interface LiveTodoState {
   readonly liveTodoShowAll: boolean;
   readonly activityRailTodosOpen: boolean;
   readonly activityRailBackgroundOpen: boolean;
+  readonly activityRailInputCollapsed: boolean;
   readonly revision: number;
 
   setLiveTodo(steps: TodoStep[]): void;
@@ -120,6 +129,7 @@ export interface LiveTodoState {
   toggleLiveTodoShowAll(threadID: string | null): void;
   toggleActivityRailTodos(threadID: string | null): void;
   toggleActivityRailBackground(threadID: string | null): void;
+  toggleActivityRailInputCollapsed(threadID: string | null): void;
 }
 
 function shouldHydrateLiveTodoSnapshot(snapshot: LiveTodoSnapshot): boolean {
@@ -137,6 +147,15 @@ export function createLiveTodoState(): LiveTodoState {
   let liveTodoShowAll = $state(false);
   let activityRailTodosOpen = $state(false);
   let activityRailBackgroundOpen = $state(false);
+  let activityRailInputCollapsed = $state(false);
+
+  function persistActivityRailUiPrefs(threadID: string | null): void {
+    writeActivityRailUiPrefs(threadID, {
+      todosOpen: activityRailTodosOpen,
+      backgroundOpen: activityRailBackgroundOpen,
+      inputCollapsed: activityRailInputCollapsed,
+    });
+  }
 
   let autoHideTimer: ReturnType<typeof setTimeout> | null = null;
   let clearedSteps = new Set<string>();
@@ -201,6 +220,7 @@ export function createLiveTodoState(): LiveTodoState {
     const railPrefs = readActivityRailUiPrefs(threadID);
     activityRailTodosOpen = railPrefs.todosOpen;
     activityRailBackgroundOpen = railPrefs.backgroundOpen;
+    activityRailInputCollapsed = railPrefs.inputCollapsed;
   }
 
   function resetForEmptyPane(): void {
@@ -210,6 +230,7 @@ export function createLiveTodoState(): LiveTodoState {
     liveTodoShowAll = false;
     activityRailTodosOpen = false;
     activityRailBackgroundOpen = false;
+    activityRailInputCollapsed = false;
   }
 
   return {
@@ -217,6 +238,7 @@ export function createLiveTodoState(): LiveTodoState {
     get liveTodoShowAll() { return liveTodoShowAll; },
     get activityRailTodosOpen() { return activityRailTodosOpen; },
     get activityRailBackgroundOpen() { return activityRailBackgroundOpen; },
+    get activityRailInputCollapsed() { return activityRailInputCollapsed; },
     get revision() { return revision; },
 
     setLiveTodo(steps: TodoStep[]): void {
@@ -252,18 +274,17 @@ export function createLiveTodoState(): LiveTodoState {
 
     toggleActivityRailTodos(threadID: string | null): void {
       activityRailTodosOpen = !activityRailTodosOpen;
-      writeActivityRailUiPrefs(threadID, {
-        todosOpen: activityRailTodosOpen,
-        backgroundOpen: activityRailBackgroundOpen,
-      });
+      persistActivityRailUiPrefs(threadID);
     },
 
     toggleActivityRailBackground(threadID: string | null): void {
       activityRailBackgroundOpen = !activityRailBackgroundOpen;
-      writeActivityRailUiPrefs(threadID, {
-        todosOpen: activityRailTodosOpen,
-        backgroundOpen: activityRailBackgroundOpen,
-      });
+      persistActivityRailUiPrefs(threadID);
+    },
+
+    toggleActivityRailInputCollapsed(threadID: string | null): void {
+      activityRailInputCollapsed = !activityRailInputCollapsed;
+      persistActivityRailUiPrefs(threadID);
     },
   };
 }

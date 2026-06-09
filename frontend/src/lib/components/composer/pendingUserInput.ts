@@ -32,11 +32,15 @@ export function resolvedAnswer(
   if (!question) return null;
   const draft = answers[question.id];
   const customAnswer = normalizeCustomAnswer(draft?.customAnswer);
-  if (customAnswer) return customAnswer;
   const selected = normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
   if (question.multiSelect) {
-    return selected.length > 0 ? selected : null;
+    // Multi-select submits the chosen options AND a typed entry together.
+    const combined = customAnswer ? [...selected, customAnswer] : selected;
+    const deduped = Array.from(new Set(combined));
+    return deduped.length > 0 ? deduped : null;
   }
+  // Single-select is mutually exclusive: a typed answer overrides the option.
+  if (customAnswer) return customAnswer;
   return selected[0] ?? null;
 }
 
@@ -68,16 +72,19 @@ export function toggleOptionAnswer(
 ): UserInputAnswers {
   const nextAnswers = copyUserInputAnswers(currentAnswers);
   if (!question.multiSelect) {
+    // Single-select replaces the choice and clears any typed answer.
     nextAnswers[question.id] = { customAnswer: '', selectedOptionLabels: [label] };
     return nextAnswers;
   }
 
+  // Multi-select toggles the option while keeping any typed answer intact.
   const current = selectedAnswers(currentAnswers, question);
   const next = current.includes(label)
     ? current.filter((answer) => answer !== label)
     : [...current, label];
+  const customAnswer = currentAnswers[question.id]?.customAnswer ?? '';
   nextAnswers[question.id] = {
-    customAnswer: '',
+    customAnswer,
     ...(next.length > 0 ? { selectedOptionLabels: next } : {}),
   };
   return nextAnswers;
@@ -88,9 +95,13 @@ export function setCustomAnswer(
   question: UserInputQuestion,
   value: string,
 ): UserInputAnswers {
-  const selectedOptionLabels = value.trim()
-    ? []
-    : normalizeSelectedOptionLabels(currentAnswers[question.id]?.selectedOptionLabels);
+  const existingSelected = normalizeSelectedOptionLabels(
+    currentAnswers[question.id]?.selectedOptionLabels,
+  );
+  // Multi-select keeps selections alongside the typed answer; single-select
+  // clears them as soon as the user types a non-blank value (mutually exclusive).
+  const clearsSelections = !question.multiSelect && value.trim().length > 0;
+  const selectedOptionLabels = clearsSelections ? [] : existingSelected;
   const nextAnswers = copyUserInputAnswers(currentAnswers);
   nextAnswers[question.id] = {
     customAnswer: value,
@@ -99,17 +110,15 @@ export function setCustomAnswer(
   return nextAnswers;
 }
 
-export function toResponseAnswers(answers: UserInputAnswers): Record<string, string | string[]> {
+export function toResponseAnswers(
+  request: UserInputRequest,
+  answers: UserInputAnswers,
+): Record<string, string | string[]> {
   const response: Record<string, string | string[]> = {};
-  for (const [questionID, draft] of Object.entries(answers)) {
-    const customAnswer = normalizeCustomAnswer(draft.customAnswer);
-    if (customAnswer) {
-      response[questionID] = customAnswer;
-      continue;
-    }
-    const selected = normalizeSelectedOptionLabels(draft.selectedOptionLabels);
-    if (selected.length === 0) continue;
-    response[questionID] = selected.length === 1 ? selected[0] : selected;
+  for (const question of request.questions) {
+    const value = resolvedAnswer(answers, question);
+    if (value === null) continue;
+    response[question.id] = value;
   }
   return response;
 }

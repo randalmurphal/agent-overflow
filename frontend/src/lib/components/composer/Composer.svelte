@@ -130,16 +130,24 @@
   // the timeline's padding-bottom it drives via --composer-height — stays
   // constant across turn start/complete and the last message doesn't jump.
   // Derives from the same shared state ActivityRail reads to decide its own
-  // visibility (`isThreadWorking` + `pane.liveTodo`), so the spacer and the
-  // rail swap within a single reactive flush — net composer height unchanged,
-  // no 1-frame blip. Background tasks are intentionally excluded: their
-  // liveness lives in a per-mount controller, not shared pane state, so a bg
-  // task that outlives its turn (no active turn, no todos) leaves one extra
-  // row of padding until it ends — rare, and never a jump on the common
-  // turn boundary.
-  let reserveActivityRow = $derived(!isThreadWorking(pane.threadId) && !pane.liveTodo);
+  // visibility (`isThreadWorking`, `pane.liveTodo`, and a pending user input),
+  // so the spacer and the rail swap within a single reactive flush — net
+  // composer height unchanged, no 1-frame blip. Background tasks are
+  // intentionally excluded: their liveness lives in a per-mount controller,
+  // not shared pane state, so a bg task that outlives its turn (no active
+  // turn, no todos) leaves one extra row of padding until it ends — rare, and
+  // never a jump on the common turn boundary.
+  let reserveActivityRow = $derived(
+    !isThreadWorking(pane.threadId) && !pane.liveTodo && !hasUserInputPrompt,
+  );
   let userInputSubmitSignal = $state(0);
   let userInputCustomAnswer = $state('');
+  // Collapse state for the pending-user-input popup lives on the pane (via
+  // liveTodoState), per-thread sticky exactly like the todos/background
+  // toggles: it survives thread switches and is inherited by the next input
+  // request in the same thread. Collapse is visual only — the popup stays
+  // mounted so entered answers survive collapse/expand.
+  let userInputCollapsed = $derived(pane.activityRailInputCollapsed);
   let sending = $state(false);
   let preparingWorktree = $state(false);
   let releasePlanEvents: (() => void) | null = null;
@@ -775,7 +783,12 @@
     ondragleave={uploads.handleDragLeave}
     ondrop={handleDrop}
   >
-    <ActivityRail {pane} />
+    <ActivityRail
+      {pane}
+      inputRequest={hasUserInputPrompt ? activeUserInput : null}
+      inputCollapsed={userInputCollapsed}
+      onToggleInput={() => pane.toggleActivityRailInputCollapsed()}
+    />
 
     {#if activeApproval}
       {#key activeApproval.requestId}
@@ -792,6 +805,7 @@
           request={activeUserInput}
           customAnswer={userInputCustomAnswer}
           submitSignal={userInputSubmitSignal}
+          collapsed={userInputCollapsed}
           setCustomAnswerText={(value) => {
             userInputCustomAnswer = value;
             queueMicrotask(autosizeTextarea);
