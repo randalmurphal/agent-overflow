@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,34 @@ import (
 // run on macOS via the public surface plus targeted helpers — what we
 // verify here is parsing, error shape, and the cross-platform
 // interface contracts.
+
+func TestBuildLaunchArgs(t *testing.T) {
+	got := buildLaunchArgs("Ubuntu-24.04", "/home/u/.local/bin/agent-overflow", nil)
+	want := []string{
+		"--cd", "~",
+		"-d", "Ubuntu-24.04",
+		"--",
+		"/home/u/.local/bin/agent-overflow", "--listen", "127.0.0.1:0", "--print-url-fd", "0",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("buildLaunchArgs() = %v, want %v", got, want)
+	}
+
+	// --cd must precede the `--` separator; after `--`, wsl.exe treats
+	// every token as part of the Linux command line, so a misplaced --cd
+	// would be passed to the backend binary instead of WSL.
+	cd := slices.Index(got, "--cd")
+	sep := slices.Index(got, "--")
+	if cd < 0 || sep < 0 || cd > sep {
+		t.Fatalf("--cd (index %d) must come before -- (index %d): %v", cd, sep, got)
+	}
+
+	// ExtraArgs (test fixtures) append after the fixed flag set.
+	withExtra := buildLaunchArgs("D", "/bin/x", []string{"--fixture", "arg"})
+	if n := len(withExtra); n < 2 || withExtra[n-2] != "--fixture" || withExtra[n-1] != "arg" {
+		t.Fatalf("extraArgs not appended last: %v", withExtra)
+	}
+}
 
 func TestLaunch_ErrorsOnNonWindows(t *testing.T) {
 	if runtime.GOOS == "windows" {

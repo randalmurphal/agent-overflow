@@ -65,8 +65,7 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 		prefix = DefaultBootstrapPrefix
 	}
 
-	args := []string{"-d", opts.Distro, "--", opts.BinaryPath, "--listen", "127.0.0.1:0", "--print-url-fd", "0"}
-	args = append(args, opts.ExtraArgs...)
+	args := buildLaunchArgs(opts.Distro, opts.BinaryPath, opts.ExtraArgs)
 
 	runner := resolveCommand(opts)
 	cmd := runner(ctx, "wsl.exe", args...)

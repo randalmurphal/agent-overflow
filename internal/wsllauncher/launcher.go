@@ -166,6 +166,35 @@ func resolveCommand(opts LaunchOptions) CommandRunner {
 	return exec.CommandContext
 }
 
+// buildLaunchArgs assembles the wsl.exe argument vector for spawning the
+// WSL-side backend.
+//
+// `--cd "~"` pins the backend's working directory to the distro user's
+// home. Without it, wsl.exe defaults the Linux cwd to the *translated*
+// Windows cwd — for the production launcher that's this .exe's install dir
+// under /mnt/c, a slow 9p mount. A backend rooted there runs git probes on
+// a Windows drive and trips WSL's git-performance notification. The backend
+// also self-corrects on startup (relocateOffWindowsDriveMount in the root
+// main package), but pinning here keeps it off the mount from the first
+// instruction and covers the shell-env probe that runs before that
+// correction.
+//
+// Order matters: wsl.exe options (--cd, -d) must precede the `--`
+// separator, after which everything is the Linux command line. After it,
+// `--listen 127.0.0.1:0 --print-url-fd 0` puts the backend in headless mode
+// and tells it to hand its {port, token} back over the stdout bootstrap
+// sentinel (fd 0 here selects that stdout channel — see writeBootstrap and
+// readBootstrapLine — rather than the unreliable fd-3 path through wsl.exe).
+func buildLaunchArgs(distro, binaryPath string, extraArgs []string) []string {
+	args := []string{
+		"--cd", "~",
+		"-d", distro,
+		"--",
+		binaryPath, "--listen", "127.0.0.1:0", "--print-url-fd", "0",
+	}
+	return append(args, extraArgs...)
+}
+
 // readBootstrapLine drains the child's stdout until either the
 // bootstrap-prefixed line shows up (success) or ctx fires (timeout /
 // child died). The non-bootstrap lines are forwarded to the dropFn

@@ -22,6 +22,9 @@ Two callers:
   `LaunchOptions`, plus the `readBootstrapLine` helper. Cross-platform
   in shape; Linux/macOS callers get errors from `Launch` /
   `InstallPayload` so the package compiles for unit tests on those hosts.
+  Also owns `buildLaunchArgs` (the wsl.exe argv builder) so the argument
+  order — including the `--cd "~"` working-directory pin — is unit-tested
+  off-Windows.
 - `launcher_windows.go` — real implementation: `wsl.exe -l -v` exec,
   spawn with `CREATE_SUSPENDED` + Job Object adoption, payload install
   via `cp /mnt/c/<host-temp> ~/.local/bin/agent-overflow`.

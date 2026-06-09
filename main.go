@@ -75,6 +75,12 @@ func main() {
 		fatalf("%v", err)
 	}
 
+	// Move off any Windows drive mount the launcher left us on (the
+	// translated /mnt/c install dir) before any subsystem spawns a child
+	// that would inherit the slow 9p cwd — the shell-env probe just below,
+	// provider MCP-status probes later. See relocateOffWindowsDriveMount.
+	relocateOffWindowsDriveMount()
+
 	if shouldSyncShellEnv(flags) {
 		syncShellEnvForBoot()
 	}
