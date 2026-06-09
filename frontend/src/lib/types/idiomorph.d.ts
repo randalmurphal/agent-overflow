@@ -26,13 +26,19 @@ declare module 'idiomorph' {
   }
 
   /**
-   * Morph an existing DOM tree (or HTML string) toward a new one,
-   * applying minimal patches. See https://github.com/bigskysoftware/idiomorph.
+   * Morph an existing DOM tree toward new content, applying minimal
+   * patches. See https://github.com/bigskysoftware/idiomorph.
+   *
+   * `newContent` mirrors the union idiomorph's own `normalizeParent`
+   * accepts at runtime: an HTML string, a single `Node`, or an array
+   * of `Node`s (e.g. a detached element's `childNodes`). AnsiText hands
+   * over child nodes rather than a wrapper element so the morph diffs
+   * them straight into root's children instead of nesting the wrapper.
    */
   export const Idiomorph: {
     morph(
       oldNode: Element,
-      newNode: Element | string,
+      newContent: string | Node | Node[],
       options?: IdiomorphOptions,
     ): void;
   };

@@ -25,7 +25,17 @@
   let root: HTMLPreElement | undefined = $state();
 
   function renderAnsi(input: string): string {
-    const stripped = input.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '').replace(/\x1b_[\s\S]*?\x1b\\/g, '');
+    // Strip OSC (`ESC ]` … BEL or ST) and APC (`ESC _` … ST) sequences. The
+    // body uses a negated class that excludes the terminator's lead bytes
+    // (ESC / BEL) rather than a lazy `[\s\S]*?`: a lazy match against an
+    // alternation terminator backtracks toward O(n²) on pathological input —
+    // e.g. thousands of unterminated `ESC ]` starts each rescan to EOF — while
+    // the negated class can't backtrack, so each start scans forward once.
+    // Real OSC payloads (window titles, OSC-8 hyperlinks) never embed a bare
+    // ESC, so stopping at the first ESC/BEL matches terminal behaviour.
+    const stripped = input
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b_[^\x1b]*\x1b\\/g, '');
     const parts: string[] = [];
     let open = false;
     let cursor = 0;
@@ -73,12 +83,19 @@
   $effect(() => {
     const html = renderAnsi(source);
     if (!root) return;
-    // Build the next tree in a detached host with the same tag so
-    // Idiomorph can morph attributes safely (it normally morphs the
-    // root too; we only want innerHTML morphing here).
+    // Parse the new HTML inside a detached <pre> so the browser tokenizes
+    // it in the same context our root <pre> uses, then hand Idiomorph the
+    // parsed CHILD NODES — not the <pre> host itself. Passing a parentless
+    // element makes Idiomorph wrap it in a dummy <div> and nest it as a
+    // child, yielding `<pre class="…wrap…"><pre>TEXT</pre></pre>`; that inner
+    // class-less <pre> computes the UA default `white-space: pre` and never
+    // wraps (the wrap classes only live on the outer <pre>). Morphing the
+    // child nodes diffs them straight into root's children, so the single
+    // classed root <pre> is the only <pre> and the wrap classes apply to the
+    // text.
     const next = document.createElement('pre');
     next.innerHTML = html;
-    Idiomorph.morph(root, next, { morphStyle: 'innerHTML' });
+    Idiomorph.morph(root, Array.from(next.childNodes), { morphStyle: 'innerHTML' });
   });
 </script>
 
