@@ -107,7 +107,7 @@
 
 <div
   id="activity-rail-background-body"
-  class="border-t border-border-subtle px-2 py-2 sm:px-3"
+  class="border-t border-border-subtle px-3 py-2"
   data-testid="activity-rail-background-body"
 >
   <div class="mb-1.5 flex items-center gap-2 font-mono text-[0.65625rem] text-fg-hint/70">

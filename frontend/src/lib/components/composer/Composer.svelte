@@ -13,6 +13,7 @@
   import ComposerTerminalChip from './ComposerTerminalChip.svelte';
   import ComposerToolbar from './toolbar/ComposerToolbar.svelte';
   import ActivityRail from './ActivityRail.svelte';
+  import { activityRailChipClasses, activityRailRowClasses } from './activityRailClasses';
   import ComposerWorkspaceStrip from './ComposerWorkspaceStrip.svelte';
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
   import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
@@ -760,14 +761,14 @@
       Reserve the ActivityRail's single-row height here, ABOVE the card and
       transparent, rather than inside it — the card must look identical to
       when a turn is running. Height-twin of ActivityRail.svelte's working
-      row: same row + chip classes, a transparent border standing in for the
-      rail's 1px separator, and a zero-width space giving the chip its line
-      box, so the reserved height matches by construction. Keep these classes
-      in sync with that row if its metrics ever change.
+      row: the row + chip classes shared via activityRailClasses.ts, a
+      transparent border standing in for the rail's 1px separator, and a
+      zero-width space giving the chip its line box, so the reserved height
+      matches by construction.
     -->
     <div aria-hidden="true" data-testid="composer-activity-reserve" class="border-b border-transparent">
-      <div class="flex flex-wrap items-center gap-1.5 px-3 py-2 text-[0.6875rem] leading-tight">
-        <span class="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5">{'\u200B'}</span>
+      <div class={activityRailRowClasses}>
+        <span class="{activityRailChipClasses} shrink-0">{'\u200B'}</span>
       </div>
     </div>
   {/if}

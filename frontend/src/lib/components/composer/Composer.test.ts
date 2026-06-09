@@ -1902,11 +1902,24 @@ describe('<Composer>', () => {
     expect(card.contains(reserve)).toBe(false);
     expect(reserve.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
+    // Capture the spacer's row + chip classes before it unmounts; the
+    // live rail must carry the identical strings (height-twin by
+    // construction — both sides render activityRailClasses.ts).
+    const reserveRow = reserve.querySelector(':scope > div');
+    const reserveChip = reserveRow?.querySelector(':scope > span');
+    expect(reserveRow).not.toBeNull();
+    expect(reserveChip).not.toBeNull();
+    const reserveRowClass = reserveRow!.className;
+    const reserveChipClass = reserveChip!.className;
+
     // Turn starts: the rail takes the row inside the card, reservation collapses.
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
     await tick();
     expect(getByTestId('activity-rail')).toBeInTheDocument();
     expect(queryByTestId('composer-activity-reserve')).toBeNull();
+    const railRow = getByTestId('activity-rail').querySelector(':scope > div');
+    expect(railRow?.className).toBe(reserveRowClass);
+    expect(getByTestId('activity-rail-working').className).toBe(reserveChipClass);
 
     // Turn ends: rail collapses, reservation returns.
     pane.clearActiveTurn();

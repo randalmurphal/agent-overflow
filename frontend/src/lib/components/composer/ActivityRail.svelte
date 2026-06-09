@@ -20,12 +20,19 @@
   //
   // The whole rail collapses out completely when none of those are
   // active (idle thread, no pending input, no todos, no background tasks).
+  //
+  // The row is single-line by contract: Composer.svelte reserves exactly
+  // one row of height (`composer-activity-reserve`) while the rail is
+  // hidden, so segments must never wrap. Every segment is shrink-0 except
+  // the todos toggle, which shrinks so its preview can ellipsize when the
+  // pane is too narrow to fit everything (see activityRailClasses.ts).
 
   import { onDestroy, onMount } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { UserInputRequest } from '../../types/events';
   import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
+  import { activityRailChipClasses, activityRailRowClasses } from './activityRailClasses';
   import { createBackgroundController } from './activityRailBackground.svelte';
   import ActivityRailTodosBody from './ActivityRailTodosBody.svelte';
   import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
@@ -75,7 +82,9 @@
     return n;
   });
 
-  // First in-progress step, truncated, for the collapsed segment preview.
+  // First in-progress step for the collapsed segment preview. The char cap
+  // bounds what a wide pane shows; narrow panes truncate further via CSS
+  // (`truncate` on the preview span), keeping the rail to its single row.
   let inProgressPreview = $derived.by<string | null>(() => {
     if (!liveTodo) return null;
     for (const step of liveTodo.steps) {
@@ -135,11 +144,11 @@
         data-testid="activity-rail-shimmer"
       ></span>
     {/if}
-    <div class="flex flex-wrap items-center gap-1.5 px-3 py-2 text-[0.6875rem] leading-tight">
+    <div class={activityRailRowClasses}>
       {#if inputRequest}
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-bold uppercase tracking-[0.08em] text-accent transition-colors hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
+          class="{activityRailChipClasses} shrink-0 font-bold uppercase tracking-[0.08em] text-accent transition-colors hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
           onclick={onToggleInput}
           aria-controls="composer-pending-user-input"
           aria-expanded={!inputCollapsed}
@@ -157,7 +166,7 @@
 
       {#if showWorking}
         <span
-          class="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5"
+          class="{activityRailChipClasses} shrink-0"
           role="status"
           aria-live="polite"
           data-testid="activity-rail-working"
@@ -182,11 +191,15 @@
 
       {#if liveTodo}
         {#if inputRequest || showWorking}
-          <span class="select-none text-fg-hint/60" aria-hidden="true">·</span>
+          <span class="shrink-0 select-none text-fg-hint/60" aria-hidden="true">·</span>
         {/if}
+        <!-- The one shrinkable segment (min-w-0): the truncate preview gives
+             up width first; overflow-hidden additionally clips at the
+             button's own edge in the degenerate case where even the fixed
+             label/badge can't fit, instead of bleeding over the next chip. -->
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {todosOpen ? 'bg-accent/10 text-accent' : ''}"
+          class="{activityRailChipClasses} min-w-0 overflow-hidden text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {todosOpen ? 'bg-accent/10 text-accent' : ''}"
           onclick={() => pane.toggleActivityRailTodos()}
           aria-controls="activity-rail-todos-body"
           aria-expanded={todosOpen}
@@ -198,14 +211,14 @@
             strokeWidth={2.25}
             class="shrink-0 text-fg-hint/70"
           />
-          <span>Todos</span>
+          <span class="shrink-0">Todos</span>
           <span
-            class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
+            class="shrink-0 rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
             data-testid="activity-rail-todos-count"
           >{completedCount}/{liveTodo.steps.length}</span>
           {#if inProgressPreview}
             <span
-              class="hidden text-fg-hint/70 sm:inline"
+              class="min-w-0 truncate text-fg-hint/70"
               data-testid="activity-rail-todos-preview"
             >{inProgressPreview}</span>
           {/if}
@@ -214,11 +227,11 @@
 
       {#if bg.count > 0}
         {#if inputRequest || showWorking || liveTodo}
-          <span class="select-none text-fg-hint/60" aria-hidden="true">·</span>
+          <span class="shrink-0 select-none text-fg-hint/60" aria-hidden="true">·</span>
         {/if}
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {backgroundOpen ? 'bg-accent/10 text-accent' : ''}"
+          class="{activityRailChipClasses} shrink-0 text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {backgroundOpen ? 'bg-accent/10 text-accent' : ''}"
           onclick={() => pane.toggleActivityRailBackground()}
           aria-controls="activity-rail-background-body"
           aria-expanded={backgroundOpen}

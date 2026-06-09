@@ -348,6 +348,60 @@ describe('<ActivityRail>', () => {
     expect(preview.textContent?.trim()).toBe('rebalance loader windows');
   });
 
+  it('keeps the row single-line: fixed segments are shrink-0 and the preview ellipsizes via CSS', async () => {
+    // jsdom has no layout engine, so assert the CSS contract directly.
+    // The composer reserves exactly one row of height for this rail
+    // (composer-activity-reserve in Composer.svelte), so the row must
+    // never wrap; narrow panes squeeze the todos preview instead. The
+    // preview must also not hide behind a viewport breakpoint (sm:) —
+    // pane width and viewport width are independent in split layouts.
+    const launch = backgroundLaunch();
+    setBindingMock('ListLiveBackgroundTasks', async () => [launch]);
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+    pane.setLiveTodo([
+      { step: 'a very long in-progress step that would otherwise wrap the rail', status: 'inProgress' },
+    ]);
+    pane.upsertItem(launch);
+
+    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    await tick();
+    await tick();
+
+    const row = (await findByTestId('activity-rail')).querySelector(':scope > div');
+    expect(row).not.toBeNull();
+    expect(row!.classList.contains('flex')).toBe(true);
+    expect(row!.classList.contains('flex-wrap')).toBe(false);
+
+    expect((await findByTestId('activity-rail-working')).classList.contains('shrink-0')).toBe(true);
+    expect((await findByTestId('activity-rail-background-toggle')).classList.contains('shrink-0')).toBe(true);
+
+    // The todos toggle is the one segment allowed to shrink; its preview
+    // gives up width first via text-overflow ellipsis.
+    const todosToggle = await findByTestId('activity-rail-todos-toggle');
+    expect(todosToggle.classList.contains('shrink-0')).toBe(false);
+    expect(todosToggle.classList.contains('min-w-0')).toBe(true);
+    expect(todosToggle.classList.contains('overflow-hidden')).toBe(true);
+    const preview = await findByTestId('activity-rail-todos-preview');
+    expect(preview.classList.contains('truncate')).toBe(true);
+    expect(preview.classList.contains('hidden')).toBe(false);
+  });
+
+  it('input-requested chip stays shrink-0 alongside todos', async () => {
+    // Working and input-requested are mutually exclusive, so the narrow-pane
+    // squeeze with a pending input is chip + todos: the chip must hold its
+    // width while the todos toggle absorbs the deficit.
+    const pane = await buildPane();
+    pane.setLiveTodo([{ step: 'in flight', status: 'inProgress' }]);
+    const { findByTestId } = render(ActivityRail, {
+      props: { pane, inputRequest: userInputRequest() },
+    });
+    await tick();
+    const chip = await findByTestId('activity-rail-input-toggle');
+    expect(chip.classList.contains('shrink-0')).toBe(true);
+    expect((await findByTestId('activity-rail-todos-toggle')).classList.contains('shrink-0')).toBe(false);
+  });
+
   it('auto-hides the Todos segment after every step completes', async () => {
     vi.useFakeTimers();
     const pane = await buildPane();
