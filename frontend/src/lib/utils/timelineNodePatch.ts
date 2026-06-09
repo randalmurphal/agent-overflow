@@ -71,12 +71,21 @@ function patchWaitGroup(
 ): WaitGroupNode {
   const freshParent = getItem(node.parent.id);
   const parentChanged = freshParent !== undefined && freshParent !== node.parent;
+  // Re-resolve the folded completion (the header item) so its status / per-agent
+  // statuses refresh on streaming deltas. Only look it up when present — and note
+  // the rebuilt node MUST carry `completion` through, or it would be dropped on
+  // every patch.
+  // freshCompletion is only resolved when node.completion exists, so a defined
+  // freshCompletion already implies a present completion to compare against.
+  const freshCompletion = node.completion ? getItem(node.completion.id) : undefined;
+  const completionChanged = freshCompletion !== undefined && freshCompletion !== node.completion;
   const { next: nextChildren, changed: childrenChanged } = patchLeafChildren(node.children, getItem);
-  if (!parentChanged && !childrenChanged) return node;
+  if (!parentChanged && !completionChanged && !childrenChanged) return node;
   return {
     kind: 'wait_group',
     parent: parentChanged ? freshParent : node.parent,
     groupKey: node.groupKey,
+    completion: completionChanged ? freshCompletion : node.completion,
     children: nextChildren,
     descendantCount: node.descendantCount,
   };

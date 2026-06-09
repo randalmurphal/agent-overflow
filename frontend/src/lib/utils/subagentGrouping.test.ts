@@ -485,9 +485,92 @@ describe('groupItemsBySubagent', () => {
       'complete-spawn-1',
     ]);
     expect(group.descendantCount).toBe(1);
-    expect(nodeContainsItem(group, 'complete-wait-1')).toBe(false);
+    // The standalone wait_agent completion folds in as the header, and counts
+    // as contained so a search hit on its id resolves to this wait_group row
+    // (findTimelineNodeIndex → its index) instead of a silent scroll no-op.
+    expect(group.completion?.id).toBe('complete-wait-1');
+    expect(nodeContainsItem(group, 'complete-wait-1')).toBe(true);
+    expect(findTimelineNodeIndex(nodes, 'complete-wait-1')).toBe(0);
     expect(nodeContainsItem(group, 'complete-spawn-1')).toBe(true);
   });
+
+  it(
+    'folds the wait_agent completion into the carrier so there is no standalone "Finished waiting" leaf or top-level key churn',
+    () => {
+      // Regression guard for the "Finished waiting" flash → snap the user reported.
+      //
+      // On a Codex wait completion, Go emits THREE separate provider:item_event
+      // upserts, in order (internal/triage codex_background.go resolveSubagentsForWait,
+      // tool_lifecycle.go persistSplitToolCompletion):
+      //   (a) the wait_agent tool_call CARRIER, now status=completed
+      //   (b) a standalone wait_agent tool_completion (id complete:<waitId>,
+      //       completionOf=<waitId>) — NO wait_carrier_id
+      //   (c) one collab_agent tool_completion per spawned agent, linked to the
+      //       carrier (a) by shared wait payload or wait_carrier_id
+      // (b) is written/emitted BEFORE (c). Today there is a real frame where the
+      // store holds only [a, b]: (b) has no linked children, so the drop rule
+      // (groupItemsBySubagent: drop a wait_agent completion only once its carrier
+      // HAS children) does not fire, and (b) renders as a TOP-LEVEL leaf —
+      // the briefly-visible "Finished waiting" row. When (c) lands, (b) is
+      // dropped and (c) nests, so the top-level node set loses (b)'s key. Virtua
+      // keys top-level rows by timelineNodeKey (MessageTimeline getKey), so that
+      // identity delta drops a row — the visible snap.
+      //
+      // Note (b) can also be the ONLY completion evidence: a re-wait on
+      // already-resolved agents, a partial wait, or an untracked launch yields
+      // (b) with terminal agentsStates but ZERO (c). So the fix is to FOLD (b)
+      // into the wait_group as its completion (and render its status), not to
+      // drop it — gated on the carrier (a) being present so a page boundary that
+      // loads (b) without (a) still renders something.
+      //
+      // Invariant: in the [a, b] frame (b) is folded into the wait_group as its
+      // `completion` (NOT a top-level leaf), and the top-level key SET is
+      // identical to the settled [a, b, c] frame — no row appears-then-vanishes,
+      // so virtua never drops/remounts a top-level row and there is no flash.
+      const carrier = mkItem({
+        id: 'wait-1', itemIndex: 0, kind: 'tool_call',
+        toolName: 'wait_agent', status: 'completed', meta: codexWaitAgentMeta(),
+      });
+      const waitCompletion = mkItem({
+        id: 'complete-wait-1', itemIndex: 1, kind: 'tool_completion',
+        toolName: 'wait_agent', completionOf: 'wait-1', summary: 'wait_agent -> done',
+        payloadId: 'payload-final', payloadKind: 'tool_call_result',
+      });
+      const childCompletion = mkItem({
+        id: 'complete-spawn-1', itemIndex: 2, kind: 'tool_completion',
+        toolName: 'collab_agent', completionOf: 'spawn-1',
+        payloadId: 'payload-final', payloadKind: 'tool_call_result',
+      });
+
+      // Transient frame: only carrier (a) + standalone completion (b) loaded.
+      const transient = groupItemsBySubagent([carrier, waitCompletion]);
+      // Exactly one top-level node: the wait carrier, which OWNS (b).
+      expect(transient).toHaveLength(1);
+      const transientGroup = expectWaitGroup(transient[0]);
+      expect(transientGroup.parent.id).toBe('wait-1');
+      // (b) is folded in, never a free-standing top-level leaf…
+      expect(transient.some((n) => n.kind === 'leaf' && n.item.id === 'complete-wait-1'))
+        .toBe(false);
+      // …it is the group's completion (the rendered "Finished waiting" header).
+      expect(transientGroup.completion?.id).toBe('complete-wait-1');
+
+      // Settled frame: child completion (c) arrives and links to the carrier.
+      const settled = groupItemsBySubagent([carrier, waitCompletion, childCompletion]);
+      expect(settled).toHaveLength(1);
+      const settledGroup = expectWaitGroup(settled[0]);
+      expect(settledGroup.children.map((n) => expectLeaf(n).item.id))
+        .toEqual(['complete-spawn-1']);
+      // (b) stays folded as the header even after (c) nests as a child.
+      expect(settledGroup.completion?.id).toBe('complete-wait-1');
+
+      // The anti-flash invariant: the top-level key SET is unchanged between the
+      // [a, b] and [a, b, c] frames — no key is inserted then removed, so virtua
+      // never drops/remounts a top-level row.
+      const transientKeys = new Set(transient.map(timelineNodeKey));
+      const settledKeys = new Set(settled.map(timelineNodeKey));
+      expect(settledKeys).toEqual(transientKeys);
+    },
+  );
 
   it('keeps terminal command completions as siblings after the terminal wait carrier', () => {
     const nodes = groupItemsBySubagent([
@@ -664,7 +747,10 @@ describe('groupItemsBySubagent', () => {
     expect(waitGroup.children.map((node) => expectLeaf(node).item.id)).toEqual([
       'complete-spawn-review',
     ]);
-    expect(nodeContainsItem(waitGroup, 'complete-wait-review')).toBe(false);
+    // Folded completion resolves to this wait_group row (index 1) for
+    // search-scroll, not -1.
+    expect(nodeContainsItem(waitGroup, 'complete-wait-review')).toBe(true);
+    expect(findTimelineNodeIndex(nodes, 'complete-wait-review')).toBe(1);
     expect(expectLeaf(nodes[2]).item.id).toBe('assistant-after-review');
     expect(nodes.some((node) => nodeContainsItem(node, 'child-prompt'))).toBe(false);
     expect(nodes.some((node) => nodeContainsItem(node, 'child-progress'))).toBe(false);
@@ -695,7 +781,12 @@ describe('groupItemsBySubagent', () => {
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
   });
 
-  it('keeps a timeout wait completion visible after the neutral wait carrier', () => {
+  it('folds a childless timeout wait completion into the wait group as the header', () => {
+    // The no-children case (timeout / re-wait / partial / untracked launch):
+    // carrier (a) + completion (b), no collab_agent children. (b) is the ONLY
+    // status record, so it must surface — but as the group's folded header (the
+    // rendered "Finished waiting"), NOT as a separate top-level leaf trailing a
+    // still-"Waiting" carrier (the two-row stale display this change removes).
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'wait-child',
@@ -714,13 +805,80 @@ describe('groupItemsBySubagent', () => {
       }),
     ]);
 
-    expect(nodes).toHaveLength(2);
+    expect(nodes).toHaveLength(1);
     const group = expectWaitGroup(nodes[0]);
     expect(group.parent.id).toBe('wait-child');
     expect(group.children).toEqual([]);
     expect(group.descendantCount).toBe(0);
-    expect(nodeContainsItem(group, 'complete-wait-child')).toBe(false);
-    expect(expectLeaf(nodes[1]).item.id).toBe('complete-wait-child');
+    // (b) is folded as the header completion, carrying the "stays visible" intent.
+    expect(group.completion?.id).toBe('complete-wait-child');
+    // It is not a child (descendantCount stays 0). The anchor id stays the
+    // carrier, but the folded completion still counts as contained so a search
+    // hit on its id resolves to this row instead of a silent scroll no-op —
+    // important here because (b) is the wait's only status record.
+    expect(nodeContainsItem(group, 'complete-wait-child')).toBe(true);
+    expect(findTimelineNodeIndex(nodes, 'complete-wait-child')).toBe(0);
+  });
+
+  it('folds each wait completion into its own wait group when several waits coexist', () => {
+    // Two independent Codex waits in one window. The per-carrier maps must keep
+    // them isolated: each wait_group folds only its own (b) and nests only its
+    // own (c), linked by the shared wait payload — no cross-linking by carrier.
+    const nodes = groupItemsBySubagent([
+      mkItem({ id: 'wait-a', itemIndex: 0, kind: 'tool_call', toolName: 'wait_agent', meta: codexWaitAgentMeta() }),
+      mkItem({
+        id: 'complete-wait-a',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'wait_agent',
+        completionOf: 'wait-a',
+        payloadId: 'payload-a',
+        payloadKind: 'tool_call_result',
+      }),
+      mkItem({
+        id: 'complete-spawn-a',
+        itemIndex: 2,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        completionOf: 'spawn-a',
+        payloadId: 'payload-a',
+        payloadKind: 'tool_call_result',
+      }),
+      mkItem({ id: 'wait-b', itemIndex: 3, kind: 'tool_call', toolName: 'wait_agent', meta: codexWaitAgentMeta() }),
+      mkItem({
+        id: 'complete-wait-b',
+        itemIndex: 4,
+        kind: 'tool_completion',
+        toolName: 'wait_agent',
+        completionOf: 'wait-b',
+        payloadId: 'payload-b',
+        payloadKind: 'tool_call_result',
+      }),
+      mkItem({
+        id: 'complete-spawn-b',
+        itemIndex: 5,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        completionOf: 'spawn-b',
+        payloadId: 'payload-b',
+        payloadKind: 'tool_call_result',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(2);
+    const groupA = expectWaitGroup(nodes[0]);
+    const groupB = expectWaitGroup(nodes[1]);
+    expect(groupA.parent.id).toBe('wait-a');
+    expect(groupA.completion?.id).toBe('complete-wait-a');
+    expect(groupA.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-a']);
+    expect(groupB.parent.id).toBe('wait-b');
+    expect(groupB.completion?.id).toBe('complete-wait-b');
+    expect(groupB.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-b']);
+    // No cross-linking: each completion resolves only to its own group.
+    expect(findTimelineNodeIndex(nodes, 'complete-wait-a')).toBe(0);
+    expect(findTimelineNodeIndex(nodes, 'complete-wait-b')).toBe(1);
+    expect(nodeContainsItem(groupA, 'complete-wait-b')).toBe(false);
+    expect(nodeContainsItem(groupB, 'complete-wait-a')).toBe(false);
   });
 
   it('keeps a non-Codex wait_agent-named tool flat', () => {
@@ -743,6 +901,25 @@ describe('groupItemsBySubagent', () => {
 
     expect(nodes).toHaveLength(2);
     expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['foreign-wait', 'foreign-completion']);
+  });
+
+  it('keeps a wait_agent completion as a top-level leaf when its carrier is not loaded', () => {
+    // Page-boundary safety branch: the drop/fold is gated on the carrier being
+    // loaded. If only the completion is in the window (the carrier paged out
+    // above), it must stay a top-level leaf so the finished wait still renders
+    // something rather than vanishing — the fold has nowhere to land.
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'complete-wait-orphan',
+        itemIndex: 5,
+        kind: 'tool_completion',
+        toolName: 'wait_agent',
+        completionOf: 'wait-paged-out',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    expect(expectLeaf(nodes[0]).item.id).toBe('complete-wait-orphan');
   });
 
   it('does not treat non-empty terminal interactions as wait carriers', () => {

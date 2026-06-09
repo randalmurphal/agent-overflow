@@ -30,7 +30,12 @@
 </script>
 
 <div data-testid="wait-group">
-  <TimelineLeaf {pane} item={group.parent} {onImageExpand} {userMessageActions} {codexSubagentReceiverLabels} />
+  <!-- Header renders the folded `wait_agent` completion when it has loaded, so a
+       finished wait reads "Finished waiting" + per-agent statuses; until then
+       (and at a page boundary where the completion isn't loaded) it falls back to
+       the carrier tool_call's "Waiting for N agents". Same TimelineLeaf instance
+       across the swap — an in-place prop update, not a remount. -->
+  <TimelineLeaf {pane} item={group.completion ?? group.parent} {onImageExpand} {userMessageActions} {codexSubagentReceiverLabels} />
   {#if group.children.length > 0}
     <!--
       `ml-[6.375rem]` lines the completion rail up with the parent

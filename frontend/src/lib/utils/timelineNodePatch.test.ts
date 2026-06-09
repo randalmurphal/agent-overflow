@@ -172,6 +172,8 @@ describe('patchTimelineNodeItemRefs', () => {
     expect(patched).not.toBe(group);
     expect(patched.parent).toBe(parent);
     expect(patched.children[0].item).toBe(childUpdated);
+    // The group has no folded completion; patching must not fabricate one.
+    expect(patched.completion).toBeUndefined();
   });
 
   it('returns same WaitGroupNode when nothing changed', () => {
@@ -188,6 +190,59 @@ describe('patchTimelineNodeItemRefs', () => {
     const lookup = (id: string) => {
       if (id === 'p') return parent;
       if (id === 'c') return child;
+      return undefined;
+    };
+    const result = patchTimelineNodeItemRefs(nodes, lookup);
+    expect(result).toBe(nodes);
+    expect(result[0]).toBe(group);
+  });
+
+  it('patches the WaitGroupNode completion (folded header) when it changes', () => {
+    const parent = mkItem({ id: 'p', summary: 'wait' });
+    const child = mkItem({ id: 'c', summary: 'child' });
+    const completion = mkItem({ id: 'cw', summary: 'wait running' });
+    const group: WaitGroupNode = {
+      kind: 'wait_group',
+      parent,
+      groupKey: 'wg1',
+      completion,
+      children: [leaf(child)],
+      descendantCount: 1,
+    };
+    const nodes: TimelineNode[] = [group];
+
+    const completionUpdated = mkItem({ id: 'cw', summary: 'wait finished' });
+    const lookup = (id: string) => {
+      if (id === 'p') return parent;
+      if (id === 'c') return child;
+      if (id === 'cw') return completionUpdated;
+      return undefined;
+    };
+    const result = patchTimelineNodeItemRefs(nodes, lookup);
+
+    const patched = result[0] as WaitGroupNode;
+    expect(patched).not.toBe(group);
+    expect(patched.parent).toBe(parent);
+    expect(patched.children[0].item).toBe(child);
+    // The folded completion ref is swapped so the header's status refreshes.
+    expect(patched.completion).toBe(completionUpdated);
+  });
+
+  it('returns the same WaitGroupNode when the completion is unchanged', () => {
+    const parent = mkItem({ id: 'p', summary: 'wait' });
+    const completion = mkItem({ id: 'cw', summary: 'wait finished' });
+    const group: WaitGroupNode = {
+      kind: 'wait_group',
+      parent,
+      groupKey: 'wg1',
+      completion,
+      children: [],
+      descendantCount: 0,
+    };
+    const nodes: TimelineNode[] = [group];
+    const lookup = (id: string) => {
+      if (id === 'p') return parent;
+      if (id === 'cw') return completion;
       return undefined;
     };
     const result = patchTimelineNodeItemRefs(nodes, lookup);

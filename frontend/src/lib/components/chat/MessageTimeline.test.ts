@@ -218,7 +218,7 @@ describe('<MessageTimeline>', () => {
     expect(getByTestId('command-output-toggle')).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('hides redundant Codex wait_agent completion signals when child completions are grouped', async () => {
+  it('folds the redundant Codex wait_agent completion into the wait header instead of a separate row', async () => {
     const wait = makeItem({
       id: 'wait-agents',
       kind: 'tool_call',
@@ -265,10 +265,15 @@ describe('<MessageTimeline>', () => {
     });
     const pane = await buildPane(makeThread({ provider: 'codex' }), [wait, waitCompletion, agentCompletion]);
 
-    const { getByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
+    const { getByTestId, queryAllByText } = render(MessageTimeline, { props: { pane } });
 
-    expect(getByTestId('wait-group').textContent).toContain('Waiting for Agent');
-    expect(queryByText('Finished waiting')).toBeNull();
+    // (b) the standalone wait_agent completion is folded into the wait group as
+    // its header (rendered "Finished waiting"), replacing the carrier's "Waiting
+    // for N agents" — NOT shown as a separate redundant row. (c) nests below.
+    const waitGroup = getByTestId('wait-group');
+    expect(waitGroup.textContent).toContain('Finished waiting');
+    expect(waitGroup.textContent).not.toContain('Waiting for Agent');
+    expect(queryAllByText('Finished waiting')).toHaveLength(1);
     expect(getByTestId('wait-group-children').textContent).toContain('Agent finished cleanly');
   });
 
@@ -387,7 +392,10 @@ describe('<MessageTimeline>', () => {
     await tick();
 
     expect(getByTestId('wait-group-children').textContent).toContain('Review finished');
-    expect(queryByText('Finished waiting')).toBeNull();
+    // (b) folds into the wait header — the group flips from "Waiting" to
+    // "Finished waiting" in place (no separate row, no flash).
+    expect(getByTestId('wait-group').textContent).toContain('Finished waiting');
+    expect(getByTestId('wait-group').textContent).not.toContain('Waiting for');
     expect(queryByText('The review caught one edge I agree with.')).toBeInTheDocument();
   });
 

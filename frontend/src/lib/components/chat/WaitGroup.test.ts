@@ -5,7 +5,7 @@ import { buildPane, makeItem, makeThread } from "../../../test/helpers/chat";
 import type { WaitGroupNode } from "../../utils/subagentGrouping";
 
 describe("<WaitGroup>", () => {
-  it("renders the wait carrier and nested target completion rows", async () => {
+  it("renders the folded completion as a finished header above the nested target completion rows", async () => {
     const pane = await buildPane(makeThread({ provider: "codex" }));
     const group: WaitGroupNode = {
       kind: "wait_group",
@@ -17,6 +17,23 @@ describe("<WaitGroup>", () => {
         status: "completed",
         summary: "wait_agent",
         meta: JSON.stringify({ input: { tool: "wait_agent" } }),
+      }),
+      // The folded standalone wait_agent completion (b) is rendered AS the header
+      // in place of the carrier, so the group reads "Finished waiting" + per-agent
+      // statuses instead of the carrier tool_call's "Waiting for N agents".
+      completion: makeItem({
+        id: "complete-wait-1",
+        kind: "tool_completion",
+        toolName: "wait_agent",
+        completionOf: "wait-1",
+        status: "completed",
+        meta: JSON.stringify({
+          input: {
+            tool: "wait_agent",
+            requestedReceiverThreadIds: ["child-1"],
+            agentsStates: { "child-1": { status: "completed", message: "done" } },
+          },
+        }),
       }),
       children: [
         {
@@ -33,7 +50,7 @@ describe("<WaitGroup>", () => {
       descendantCount: 1,
     };
 
-    const { getByTestId, getByText } = render(WaitGroup, {
+    const { getByTestId, getByText, queryByText } = render(WaitGroup, {
       props: { pane, group },
     });
 
@@ -41,8 +58,37 @@ describe("<WaitGroup>", () => {
     expect(getByTestId("wait-group-children").className).toContain("max-h-[20rem]");
     expect(getByTestId("wait-group-children").className).toContain("overflow-y-auto");
     expect(getByTestId("wait-group-children").className).not.toContain("border-l");
-    expect(getByText(/Waiting for agents/)).toBeInTheDocument();
+    // Header flipped to the finished state (folded completion), not "Waiting".
+    expect(getByText(/Finished waiting/)).toBeInTheDocument();
+    expect(queryByText(/Waiting for agents/)).not.toBeInTheDocument();
+    expect(getByText(/Agent: completed - done/)).toBeInTheDocument();
+    // Child rail still renders the nested target completion.
     expect(getByText(/Spawned Galileo -> done/)).toBeInTheDocument();
+  });
+
+  it("falls back to the carrier's waiting header before the completion loads", async () => {
+    // Pre-completion / page-boundary frame: no folded completion, so the header
+    // renders the carrier tool_call ("Waiting for N agents") via the
+    // `group.completion ?? group.parent` fallback.
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const group: WaitGroupNode = {
+      kind: "wait_group",
+      groupKey: "wait:wait-1",
+      parent: makeItem({
+        id: "wait-1",
+        kind: "tool_call",
+        toolName: "wait_agent",
+        status: "running",
+        summary: "wait_agent",
+        meta: JSON.stringify({ input: { tool: "wait_agent" } }),
+      }),
+      children: [],
+      descendantCount: 0,
+    };
+
+    const { getByText, queryByText } = render(WaitGroup, { props: { pane, group } });
+    expect(getByText(/Waiting for agents/)).toBeInTheDocument();
+    expect(queryByText(/Finished waiting/)).not.toBeInTheDocument();
   });
 
   it("indents the child rail to line up with the parent row's body column", async () => {

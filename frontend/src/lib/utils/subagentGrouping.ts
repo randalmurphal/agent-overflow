@@ -133,6 +133,17 @@ export interface WaitGroupNode {
   /** Stable structural key for virtualization. */
   groupKey: string;
   /**
+   * The standalone `wait_agent` tool_completion (id like `complete:<carrierId>`,
+   * `completionOf === parent.id`) once it has loaded. Rendered AS the group
+   * header by `WaitGroup.svelte` in place of the carrier, so a finished wait
+   * reads "Finished waiting" + per-agent statuses instead of the carrier
+   * tool_call's permanent "Waiting for N agents". Undefined while the wait is
+   * still running, when the carrier is a terminal wait carrier (those have no
+   * split completion item), or before the completion itself has loaded (it can
+   * arrive after the carrier, or sit outside the loaded window).
+   */
+  completion?: Item;
+  /**
    * Codex subagent target completion rows observed by this wait. Terminal
    * command completions intentionally render as sibling rows.
    */
@@ -456,7 +467,14 @@ export function finalAssistantTextIdsByTurn(
 export function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
   if (node.kind === 'leaf') return node.item.id === itemId;
   if (node.kind === 'group' || node.kind === 'wait_group') {
+    // A wait_group also carries its folded `completion` — the standalone
+    // wait_agent tool_completion rendered AS the header. Counting it as
+    // contained lets a search hit on that completion's own id (Go indexes its
+    // summary) resolve to this row instead of silently failing to scroll. The
+    // anchor id (timelineNodeItemId) stays the carrier; containment is the
+    // separate "does this row carry that item?" question, answered yes here.
     return node.parent.id === itemId
+      || (node.kind === 'wait_group' && node.completion?.id === itemId)
       || node.children.some((child) => nodeContainsItem(child, itemId));
   }
   if (node.kind === 'read_group') return node.members.some((m) => m.id === itemId);
@@ -541,6 +559,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
   const waitCompletionPayloadCarrierByPayloadID = new Map<string, string>();
   const waitChildrenByCarrierID = new Map<string, Item[]>();
   const waitChildIDs = new Set<string>();
+  const waitCompletionByCarrierID = new Map<string, Item>();
 
   function addWaitChild(carrierID: string, child: Item): void {
     const carrier = itemByID.get(carrierID);
@@ -554,6 +573,19 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       waitChildrenByCarrierID.set(carrierID, [child]);
     }
     waitChildIDs.add(child.id);
+  }
+
+  // A wait_agent tool_completion folds into its wait_group (rendered AS the
+  // header) exactly when its carrier is a loaded Codex wait_agent carrier. The
+  // capture into waitCompletionByCarrierID and the drop from the top-level leaf
+  // list MUST agree on this predicate: folding without dropping double-renders
+  // the completion, dropping without folding makes it vanish. One named check
+  // keeps the two sites in lockstep. Terminal wait carriers and foreign
+  // wait_agent-named tools fail the gate and are left untouched. itemByID is
+  // fully populated by the pass below before either caller runs.
+  function carrierIsLoadedCodexWait(completionOf: string): boolean {
+    const carrier = itemByID.get(completionOf);
+    return carrier !== undefined && isCodexWaitAgentCarrier(carrier);
   }
 
   for (const item of sortedWithCarriers) {
@@ -577,6 +609,11 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
       if (item.payloadId) {
         waitCompletionPayloadCarrierByPayloadID.set(item.payloadId, item.completionOf);
       }
+      // Fold this standalone completion into its wait_group as the header
+      // (see buildNode and carrierIsLoadedCodexWait).
+      if (carrierIsLoadedCodexWait(item.completionOf)) {
+        waitCompletionByCarrierID.set(item.completionOf, item);
+      }
       continue;
     }
     if (item.kind !== 'tool_completion' || !item.completionOf || item.toolName === 'wait_agent') {
@@ -599,8 +636,13 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
     }
     if (waitChildIDs.has(item.id)) return false;
     if (item.kind === 'tool_completion' && item.toolName === 'wait_agent' && item.completionOf) {
-      const groupedChildren = waitChildrenByCarrierID.get(item.completionOf);
-      if (groupedChildren && groupedChildren.length > 0) return false;
+      // Drop the standalone wait_agent completion when its Codex carrier is
+      // loaded — the wait_group folds it in as the header (it used to render as
+      // a top-level "Finished waiting" leaf that flashed before children linked,
+      // then vanished when they did). At a page boundary where the carrier is
+      // outside the loaded window, keep it as a leaf so a finished wait still
+      // renders something rather than disappearing.
+      if (carrierIsLoadedCodexWait(item.completionOf)) return false;
     }
     return true;
   });
@@ -646,6 +688,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
         kind: 'wait_group',
         parent: item,
         groupKey: `wait:${item.id}`,
+        completion: waitCompletionByCarrierID.get(item.id),
         children,
         descendantCount: children.length,
       };
