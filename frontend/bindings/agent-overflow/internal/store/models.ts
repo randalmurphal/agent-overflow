@@ -55,7 +55,7 @@ export class Attachment {
 
 /**
  * ChannelMessage is one ordered message within a channel.
- *
+ * 
  * Meta is JSON-shaped optional sidecar data persisted alongside the
  * raw message content. Today it carries the pathlinks allowlist
  * (`pathRefs`) stamped at PostMessage time so the frontend's markdown
@@ -501,11 +501,11 @@ export class Item {
  * item-coordinate bounds of the logical page. Render-support ancestors can be
  * returned outside those bounds; they must not become pagination cursors.
  * Cursor turn/item indexes are -1 when `Items` is empty.
- *
+ * 
  * `OldestTurnIndex` / `NewestTurnIndex` are legacy turn-only aliases derived
  * from the cursors. Active-pane callers should use the cursor fields so one
  * dense turn cannot punch through the item window cap.
- *
+ * 
  * HasMoreOlder / HasMoreNewer report whether visible items exist outside
  * the cursor bounds. HasMore is the legacy older-history alias kept for
  * frontend and transport compatibility while callers migrate to the explicit
@@ -845,7 +845,7 @@ export class ProposedPlanSourceRef {
 
 /**
  * Thread represents a conversation thread.
- *
+ * 
  * The shape changed at migration v13: ProjectPath is no longer persisted on
  * threads (ProjectID is the FK to the projects table), InteractionMode is
  * renamed to Mode, and three new per-thread composer controls
@@ -1025,7 +1025,7 @@ export class Thread {
 }
 
 /**
- * ThreadMessageHit is one hit from a global message search. The result set is
+ * ThreadMessageHit is one hit from a message search. The result set is
  * designed for an interactive UI: it pairs the thread's display title with the
  * specific item's kind + summary so users can jump directly to the matching
  * turn.
@@ -1040,8 +1040,8 @@ export class ThreadMessageHit {
     "itemRole": string;
 
     /**
-     * Summary is the item's stored summary field, truncated to the preview
-     * budget. The frontend can highlight the query within it.
+     * Summary is the item's stored summary field. The frontend can highlight
+     * the query within it.
      */
     "summary": string;
 
@@ -1132,7 +1132,7 @@ export class TimelineCursor {
 /**
  * Turn is one row in the turns table — a record of a single user → assistant
  * round-trip on a thread.
- *
+ * 
  * CompletedAt is a pointer because NULL is load-bearing on the latest
  * turn row: it means "in-flight or crashed mid-turn." We never write a
  * synthetic CompletedAt just to dismiss that latest stuck row. Older
@@ -1141,7 +1141,7 @@ export class TimelineCursor {
  * CompletedAt on rehydration as "interrupted," separate from the
  * live-push "provider:turn_started" path that drives the working
  * indicator.
- *
+ * 
  * See docs/architecture/turn-lifecycle.md §Turn lifecycle for the full
  * mental model and docs/architecture/invariants.md #22-24 for the rules
  * that depend on this shape.
