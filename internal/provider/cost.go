@@ -13,6 +13,12 @@ type ModelPricing struct {
 // KnownPricing maps model slug prefixes to pricing.
 // Uses family-level matching: "claude-opus" matches any claude-opus-* slug.
 var KnownPricing = map[string]ModelPricing{
+	"claude-fable": {
+		InputPerMToken:         10.00,
+		OutputPerMToken:        50.00,
+		CacheCreationPerMToken: 12.50,
+		CacheReadPerMToken:     1.00,
+	},
 	"claude-opus": {
 		InputPerMToken:         5.00,
 		OutputPerMToken:        25.00,

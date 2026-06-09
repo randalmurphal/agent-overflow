@@ -24,6 +24,25 @@ func TestCalculateCost_ClaudeSonnet(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_ClaudeFable(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:              1_000_000,
+		OutputTokens:             500_000,
+		CacheCreationInputTokens: 1_000_000,
+		CacheReadInputTokens:     1_000_000,
+	}
+	// The runtime slug "claude-fable-5" must resolve to the
+	// "claude-fable" family via matchPricing's suffix trim, and all
+	// four price components must be wired (a missing entry silently
+	// returns $0): $10/M in + $50/M out + $12.50/M cache write +
+	// $1.00/M cache read = 10 + 25 + 12.50 + 1.00 = 48.50.
+	want := 48.50
+	got := CalculateCost("claude-fable-5", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(claude-fable-5) = %f, want %f", got, want)
+	}
+}
+
 func TestCalculateCost_GPT54(t *testing.T) {
 	usage := TokenUsage{
 		InputTokens:  2_000_000,

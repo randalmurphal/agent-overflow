@@ -46,6 +46,18 @@ type ModelInfo struct {
 // ClaudeModels lists models available through the Claude provider.
 var ClaudeModels = []ModelInfo{
 	{
+		// Fable 5 is the top tier above Opus. Same launch surface as
+		// Opus 4.8 (1M context, low→max effort, xhigh default). Fast
+		// mode is an Opus-only feature, so it is intentionally absent
+		// here. Listed first, so it is the FallbackModelForProvider
+		// default for new threads.
+		Slug:             "claude-fable-5",
+		Name:             "Claude Fable 5",
+		Provider:         "claude",
+		ContextWindows:   claudeExtendedContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
+	},
+	{
 		Slug:             "claude-opus-4-8",
 		Name:             "Claude Opus 4.8",
 		Provider:         "claude",
@@ -184,6 +196,8 @@ func NormalizeModelSlug(providerName, model string) string {
 		}
 	case string(Claude):
 		switch model {
+		case "fable", "fable-5":
+			return "claude-fable-5"
 		case "opus", "opus-4.8", "claude-opus-4.8":
 			return "claude-opus-4-8"
 		case "opus-4.7", "claude-opus-4.7":

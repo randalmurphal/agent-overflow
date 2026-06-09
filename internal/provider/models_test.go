@@ -66,6 +66,7 @@ func TestClaudeFastModeAndContextCapabilities(t *testing.T) {
 		fastMode bool
 		windows  int
 	}{
+		{"claude-fable-5", false, 2},
 		{"claude-opus-4-8", true, 2},
 		{"claude-opus-4-7", true, 2},
 		{"claude-opus-4-6", true, 2},
@@ -150,6 +151,9 @@ func TestCodexFallbackReasoningLabelsAreTierNames(t *testing.T) {
 
 func TestNormalizeModelSlugClaudeAliases(t *testing.T) {
 	tests := map[string]string{
+		"fable":                      "claude-fable-5",
+		"fable-5":                    "claude-fable-5",
+		"claude-fable-5":             "claude-fable-5",
 		"opus":                       "claude-opus-4-8",
 		"claude-opus-4.8":            "claude-opus-4-8",
 		"opus-4.7":                   "claude-opus-4-7",
