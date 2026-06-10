@@ -247,6 +247,26 @@ func (s *Store) DeleteCheckpointsForThread(threadID string) error {
 	return nil
 }
 
+func (s *Store) DeleteCheckpointsForThreadReturningRefs(threadID string) ([]CheckpointRef, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("store: begin delete checkpoints for %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+
+	refs, err := checkpointRefsForThread(tx, threadID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`DELETE FROM thread_checkpoints WHERE thread_id = ?`, threadID); err != nil {
+		return nil, fmt.Errorf("store: delete checkpoints for %s: %w", threadID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit delete checkpoints for %s: %w", threadID, err)
+	}
+	return refs, nil
+}
+
 // DeleteCheckpointsFromTurn removes every message checkpoint whose user
 // message is deleted by a rewind starting at fromTurnIndex.
 func (s *Store) DeleteCheckpointsFromTurn(threadID string, fromTurnIndex int) ([]CheckpointRef, error) {
@@ -279,6 +299,32 @@ func (s *Store) DeleteCheckpointsFromTurn(threadID string, fromTurnIndex int) ([
 		threadID, fromTurnIndex,
 	); err != nil {
 		return nil, fmt.Errorf("store: delete checkpoints from turn for thread %s: %w", threadID, err)
+	}
+	return refs, nil
+}
+
+func checkpointRefsForThread(tx *sql.Tx, threadID string) ([]CheckpointRef, error) {
+	rows, err := tx.Query(
+		`SELECT ref_name, workspace_path FROM thread_checkpoints
+		 WHERE thread_id = ?
+		 ORDER BY turn_index, captured_at`,
+		threadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list checkpoint refs for thread %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	var refs []CheckpointRef
+	for rows.Next() {
+		var ref CheckpointRef
+		if err := rows.Scan(&ref.RefName, &ref.WorkspacePath); err != nil {
+			return nil, fmt.Errorf("store: scan checkpoint ref for thread %s: %w", threadID, err)
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate checkpoint refs for thread %s: %w", threadID, err)
 	}
 	return refs, nil
 }

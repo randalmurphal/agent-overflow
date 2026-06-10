@@ -750,6 +750,25 @@ func (s *Store) DeleteRef(ctx context.Context, workspace, ref string) error {
 	return nil
 }
 
+func (s *Store) DeleteRefs(ctx context.Context, workspace string, refs []string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	var stdin strings.Builder
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == "" {
+			return fmt.Errorf("checkpoint: delete refs: empty ref")
+		}
+		stdin.WriteString("delete ")
+		stdin.WriteString(ref)
+		stdin.WriteByte('\n')
+	}
+	if _, _, _, err := runGitWithStdin(ctx, workspace, nil, []byte(stdin.String()), false, "update-ref", "--stdin"); err != nil {
+		return fmt.Errorf("checkpoint: delete %d refs: %w", len(refs), err)
+	}
+	return nil
+}
+
 // ListThreadRefs returns every checkpoint ref owned by threadID.
 func (s *Store) ListThreadRefs(ctx context.Context, workspace, threadID string) ([]string, error) {
 	stdout, _, _, err := runGit(ctx, workspace, nil, false,

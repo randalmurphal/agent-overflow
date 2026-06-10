@@ -15,20 +15,15 @@ import (
 
 // TestForkThreadFromMessageRemapsClaudeUUIDs is the structural
 // regression guard for the fork-time UUID remap. Without it, the
-// fork's cloned `items.meta.provider_item_id` and
-// `thread_checkpoints.provider_user_message_id` columns would
-// continue to reference UUIDs from the SOURCE session — UUIDs that
-// don't exist in the fork's JSONL. A subsequent UUID-keyed revert
-// inside the fork would then hit `ErrMessageNotFound` and fall back
-// to the ordinal walk, defeating the structural fix for any
-// fork-of-fork scenario.
+// fork's cloned `items.meta.provider_item_id` columns would continue to
+// reference UUIDs from the SOURCE session — UUIDs that don't exist in the
+// fork's JSONL.
 //
-// The remap is wired into the fork pipeline after `CloneThreadItems`
-// + `copyForkCheckpoints` so cloned rows pick up the fork's NEW
-// UUIDs from the same `BuildForkLinesWithUUIDMap` rewrite that produced the
-// JSONL. This test verifies the resulting stored UUIDs match what
-// the JSONL actually contains by looking up each entry via its
-// `forkedFrom.messageUuid` backpointer.
+// The remap is wired into the fork pipeline after `CloneThreadItems` so cloned
+// rows pick up the fork's NEW UUIDs from the same
+// `BuildForkLinesWithUUIDMap` rewrite that produced the JSONL. This test
+// verifies the resulting stored UUIDs match what the JSONL actually contains
+// by looking up each entry via its `forkedFrom.messageUuid` backpointer.
 func TestForkThreadFromMessageRemapsClaudeUUIDs(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
@@ -97,25 +92,8 @@ func TestForkThreadFromMessageRemapsClaudeUUIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list fork checkpoints: %v", err)
 	}
-	if len(cps) != 1 {
-		t.Fatalf("fork checkpoints = %d, want 1 (only the user:1 checkpoint, since user:2 was dropped)", len(cps))
-	}
-	chk := cps[0]
-	// `copyForkCheckpoints` remaps UserItemID to the cloned id — the
-	// checkpoint is no longer keyed by "user:1". Identify it via the
-	// linked user_text row instead.
-	clonedUser1ID := bySummary["second"].ID
-	if clonedUser1ID == "" {
-		t.Fatalf("fork has no cloned user_text row for source user:1; cannot map checkpoint")
-	}
-	if chk.UserItemID != clonedUser1ID {
-		t.Errorf("checkpoint UserItemID = %q, want fork-cloned id %q for source user:1", chk.UserItemID, clonedUser1ID)
-	}
-	if chk.ProviderUserMessageID != oldToNew["u1"] {
-		t.Errorf("checkpoint ProviderUserMessageID = %q, want fork-remapped %q", chk.ProviderUserMessageID, oldToNew["u1"])
-	}
-	if chk.ProviderParentUUID != oldToNew["a0"] {
-		t.Errorf("checkpoint ProviderParentUUID = %q, want fork-remapped %q", chk.ProviderParentUUID, oldToNew["a0"])
+	if len(cps) != 0 {
+		t.Fatalf("fork checkpoints = %d, want 0", len(cps))
 	}
 }
 
@@ -219,38 +197,16 @@ func TestForkOfForkRemapStaysCorrect(t *testing.T) {
 	}
 	fork1Map := readForkUUIDMap(t, workspace, fork1.SessionRef)
 
-	// Sanity: fork1.checkpoint should already reference fork1 UUIDs
-	// (proven by the standalone remap test above; we re-assert here
-	// to scope failures cleanly).
 	fork1Cps, err := app.store.ListCheckpoints(fork1.ID)
 	if err != nil {
 		t.Fatalf("list fork1 checkpoints: %v", err)
 	}
-	if len(fork1Cps) != 1 {
-		t.Fatalf("fork1 checkpoints = %d, want 1", len(fork1Cps))
-	}
-	if fork1Cps[0].ProviderUserMessageID != fork1Map["u1"] {
-		t.Fatalf("fork1 checkpoint ProviderUserMessageID = %q, want fork1-remapped %q", fork1Cps[0].ProviderUserMessageID, fork1Map["u1"])
+	if len(fork1Cps) != 0 {
+		t.Fatalf("fork1 checkpoints = %d, want 0", len(fork1Cps))
 	}
 
-	// Now fork from fork1 at fork1's "second" message — that's the
-	// clone of source user:1. CloneThreadItems mints fresh IDs, so
-	// look up fork1's user_text id for the "second" summary first.
-	fork1Items, err := app.store.ListItems(fork1.ID)
-	if err != nil {
-		t.Fatalf("list fork1 items: %v", err)
-	}
-	var fork1SecondID string
-	for _, it := range fork1Items {
-		if it.Kind == "user_text" && it.Summary == "second" {
-			fork1SecondID = it.ID
-			break
-		}
-	}
-	if fork1SecondID == "" {
-		t.Fatalf("fork1 missing \"second\" user_text row")
-	}
-	fork2, err := app.ForkThreadFromMessage(fork1.ID, fork1SecondID)
+	atTurn := 0
+	fork2, err := app.ForkThread(fork1.ID, &atTurn)
 	if err != nil {
 		t.Fatalf("fork2: %v", err)
 	}
@@ -293,11 +249,7 @@ func TestForkOfForkRemapStaysCorrect(t *testing.T) {
 
 // saveSourceCheckpoint is a thin test helper for the fork tests: a
 // checkpoint with the full provider-id surface (user UUID + parent
-// UUID) that the remap needs to see. Captures the git ref first so
-// the subsequent `copyForkCheckpoints` step (which CopyRef's the
-// source ref onto a fork-scoped name) can resolve the source commit
-// — without that, fork creation fails with
-// `checkpoint: source ref "%s" is unavailable`.
+// UUID) that message-keyed forks use to find their Claude slice point.
 func saveSourceCheckpoint(t *testing.T, app *App, threadID, workspace, chkID, userItemID string, turnIndex int, providerUserUUID, providerParentUUID string) {
 	t.Helper()
 	ref := checkpoint.ThreadRefPrefix(threadID) + "message/" + chkID

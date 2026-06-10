@@ -597,6 +597,50 @@ func (a *App) deleteCheckpointRefs(ctx context.Context, threadID, action string,
 	return nil
 }
 
+func (a *App) deleteCheckpointRefsBestEffort(threadID, action, fallbackWorkspace string, refs []store.CheckpointRef) {
+	ctx := context.Background()
+	byWorkspace := make(map[string][]string)
+	for _, ref := range refs {
+		if err := checkpoint.ValidateRef(action, threadID, ref.RefName, ref.WorkspacePath); err != nil {
+			log.Printf("%s: skip invalid checkpoint ref thread=%s ref=%q workspace=%q: %v", action, threadID, ref.RefName, ref.WorkspacePath, err)
+			continue
+		}
+		byWorkspace[ref.WorkspacePath] = append(byWorkspace[ref.WorkspacePath], ref.RefName)
+	}
+
+	for workspace, workspaceRefs := range byWorkspace {
+		if err := a.checkpointStore().DeleteRefs(ctx, workspace, workspaceRefs); err != nil {
+			if fallbackWorkspace == "" || fallbackWorkspace == workspace {
+				log.Printf("%s: delete %d checkpoint refs failed thread=%s workspace=%q: %v", action, len(workspaceRefs), threadID, workspace, err)
+				continue
+			}
+			fallbackRefs := make([]string, 0, len(workspaceRefs))
+			for _, ref := range workspaceRefs {
+				if fallbackErr := checkpoint.ValidateRef(action, threadID, ref, fallbackWorkspace); fallbackErr != nil {
+					log.Printf("%s: skip fallback checkpoint ref delete thread=%s ref=%q workspace=%q: primary=%v fallback=%v", action, threadID, ref, fallbackWorkspace, err, fallbackErr)
+					continue
+				}
+				fallbackRefs = append(fallbackRefs, ref)
+			}
+			if len(fallbackRefs) == 0 {
+				continue
+			}
+			if fallbackErr := a.checkpointStore().DeleteRefs(ctx, fallbackWorkspace, fallbackRefs); fallbackErr != nil {
+				log.Printf("%s: delete %d checkpoint refs failed thread=%s workspace=%q fallback=%q: primary=%v fallback=%v", action, len(fallbackRefs), threadID, workspace, fallbackWorkspace, err, fallbackErr)
+			}
+		}
+	}
+}
+
+func (a *App) updateThreadAndInvalidateCheckpointsForWorkspaceChange(thread store.Thread, action, fallbackWorkspace string) error {
+	refs, err := a.store.UpdateThreadAndDeleteCheckpoints(thread)
+	if err != nil {
+		return fmt.Errorf("%s: update thread and drop checkpoint rows: %w", action, err)
+	}
+	a.deleteCheckpointRefsBestEffort(thread.ID, action, fallbackWorkspace, refs)
+	return nil
+}
+
 func (a *App) revertCodexConversationToMessage(thread store.Thread, checkpoint store.Checkpoint, targetTurnIndex int, waitForIdle bool) (*codex.ThreadRollbackResult, error) {
 	lastTurn, err := a.store.LastTurnIndex(thread.ID)
 	if err != nil {

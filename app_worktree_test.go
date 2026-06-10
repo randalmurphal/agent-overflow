@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/checkpoint"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -32,6 +33,7 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
+	rootCheckpointRef := saveWorktreeTestCheckpoint(t, app, thread.ID, repo, "root-before-worktree", "user:0", 0)
 
 	worktreePath, err := app.GitCreateWorktree(thread.ID, "feature/worktree")
 	if err != nil {
@@ -65,6 +67,18 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	if stored.Branch != "feature/worktree" {
 		t.Fatalf("stored Branch = %q, want feature/worktree", stored.Branch)
 	}
+	checkpoints, err := app.store.ListCheckpoints(thread.ID)
+	if err != nil {
+		t.Fatalf("ListCheckpoints after create worktree: %v", err)
+	}
+	if len(checkpoints) != 0 {
+		t.Fatalf("checkpoints after create worktree = %d, want 0", len(checkpoints))
+	}
+	if err := testutil.RunGitAllowError(repo, "rev-parse", "--verify", rootCheckpointRef); err == nil {
+		t.Fatalf("root checkpoint ref %s still exists after worktree switch", rootCheckpointRef)
+	}
+
+	worktreeCheckpointRef := saveWorktreeTestCheckpoint(t, app, thread.ID, worktreePath, "worktree-before-removal", "user:1", 1)
 
 	if err := app.GitRemoveWorktree(thread.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() error = %v", err)
@@ -86,6 +100,79 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	if stored.Branch != "main" {
 		t.Fatalf("stored Branch after removal = %q, want main", stored.Branch)
 	}
+	checkpoints, err = app.store.ListCheckpoints(thread.ID)
+	if err != nil {
+		t.Fatalf("ListCheckpoints after remove worktree: %v", err)
+	}
+	if len(checkpoints) != 0 {
+		t.Fatalf("checkpoints after remove worktree = %d, want 0", len(checkpoints))
+	}
+	if err := testutil.RunGitAllowError(repo, "rev-parse", "--verify", worktreeCheckpointRef); err == nil {
+		t.Fatalf("worktree checkpoint ref %s still exists after worktree removal", worktreeCheckpointRef)
+	}
+}
+
+func TestAttachThreadWorktreeInvalidatesCheckpoints(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature/attach")
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-attach-worktree-checkpoints")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	checkpointRef := saveWorktreeTestCheckpoint(t, app, thread.ID, repo, "root-before-attach", "user:0", 0)
+
+	updated, err := app.AttachThreadWorktree(thread.ID, "feature/attach")
+	if err != nil {
+		t.Fatalf("AttachThreadWorktree() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, updated.WorktreePath, true)
+	})
+	if !samePath(updated.WorkspacePath, updated.WorktreePath) || updated.WorktreePath == "" {
+		t.Fatalf("updated workspace/worktree = %q/%q, want attached worktree", updated.WorkspacePath, updated.WorktreePath)
+	}
+	assertThreadCheckpointsInvalidated(t, app, thread.ID, repo, checkpointRef)
+}
+
+func TestSwitchThreadWorkspaceInvalidatesCheckpoints(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-switch-workspace-checkpoints")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	worktreePath, err := app.GitCreateWorktree(thread.ID, "feature/switch-workspace")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true)
+	})
+	checkpointRef := saveWorktreeTestCheckpoint(t, app, thread.ID, worktreePath, "worktree-before-switch", "user:0", 0)
+
+	updated, err := app.switchThreadWorkspace(thread.ID, repo)
+	if err != nil {
+		t.Fatalf("switchThreadWorkspace() error = %v", err)
+	}
+	if !samePath(updated.WorkspacePath, repo) || updated.WorktreePath != "" {
+		t.Fatalf("updated workspace/worktree = %q/%q, want project root", updated.WorkspacePath, updated.WorktreePath)
+	}
+	assertThreadCheckpointsInvalidated(t, app, thread.ID, repo, checkpointRef)
 }
 
 func TestGetWorkspaceCurrentDiffUsesLinkedWorktree(t *testing.T) {
@@ -1190,6 +1277,52 @@ func containsWorktree(worktrees []gitops.Worktree, want string) bool {
 		}
 	}
 	return false
+}
+
+func saveWorktreeTestCheckpoint(t *testing.T, app *App, threadID, workspace, checkpointID, userItemID string, turnIndex int) string {
+	t.Helper()
+	if err := app.store.InsertItem(store.Item{
+		ID:        userItemID,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   checkpointID,
+		CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertItem(%s): %v", userItemID, err)
+	}
+	ref := checkpoint.ThreadRefPrefix(threadID) + "message/" + checkpointID
+	if err := app.checkpointStore().CaptureRef(t.Context(), workspace, ref); err != nil {
+		t.Fatalf("CaptureRef(%s): %v", ref, err)
+	}
+	if err := app.store.SaveCheckpoint(store.Checkpoint{
+		ID:            checkpointID,
+		ThreadID:      threadID,
+		UserItemID:    userItemID,
+		TurnIndex:     turnIndex,
+		RefName:       ref,
+		CapturedAt:    time.Now().UnixMilli(),
+		WorkspacePath: workspace,
+	}); err != nil {
+		t.Fatalf("SaveCheckpoint(%s): %v", checkpointID, err)
+	}
+	return ref
+}
+
+func assertThreadCheckpointsInvalidated(t *testing.T, app *App, threadID, repo, ref string) {
+	t.Helper()
+	checkpoints, err := app.store.ListCheckpoints(threadID)
+	if err != nil {
+		t.Fatalf("ListCheckpoints(%s): %v", threadID, err)
+	}
+	if len(checkpoints) != 0 {
+		t.Fatalf("checkpoints for %s = %d, want 0", threadID, len(checkpoints))
+	}
+	if err := testutil.RunGitAllowError(repo, "rev-parse", "--verify", ref); err == nil {
+		t.Fatalf("checkpoint ref %s still exists after workspace switch", ref)
+	}
 }
 
 func samePath(left, right string) bool {

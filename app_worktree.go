@@ -141,10 +141,16 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 
 	// ProjectID is already set on the thread; the project's Path is the
 	// git repo root. WorktreePath + WorkspacePath diverge at this point.
+	previousWorkspace := thread.WorkspacePath
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = resolvedBranch
-	if err := a.store.UpdateThread(thread); err != nil {
+	if !gitops.SameFilesystemPath(previousWorkspace, thread.WorkspacePath) {
+		if err := a.updateThreadAndInvalidateCheckpointsForWorkspaceChange(thread, "create worktree", project); err != nil {
+			_ = core.RemoveWorktreeForce(project, worktreePath, true)
+			return store.Thread{}, err
+		}
+	} else if err := a.store.UpdateThread(thread); err != nil {
 		// Worktree was created on disk but the store update failed. Clean up
 		// so we don't leak a worktree directory.
 		_ = core.RemoveWorktreeForce(project, worktreePath, true)
@@ -195,10 +201,16 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 		return store.Thread{}, err
 	}
 
+	previousWorkspace := thread.WorkspacePath
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = branch
-	if err := a.store.UpdateThread(thread); err != nil {
+	if !gitops.SameFilesystemPath(previousWorkspace, thread.WorkspacePath) {
+		if err := a.updateThreadAndInvalidateCheckpointsForWorkspaceChange(thread, "attach worktree", project); err != nil {
+			_ = core.RemoveWorktreeForce(project, worktreePath, true)
+			return store.Thread{}, err
+		}
+	} else if err := a.store.UpdateThread(thread); err != nil {
 		_ = core.RemoveWorktreeForce(project, worktreePath, true)
 		return store.Thread{}, err
 	}
@@ -345,6 +357,7 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s not refreshed: %w", id, err))
 			continue
 		}
+		previousWorkspace := t.WorkspacePath
 		mutated := false
 		if gitops.SameFilesystemPath(t.WorktreePath, worktreePath) {
 			t.WorktreePath = ""
@@ -361,6 +374,14 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 		if err := a.store.UpdateThread(t); err != nil {
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s update failed: %w", id, err))
 			continue
+		}
+		if !gitops.SameFilesystemPath(previousWorkspace, t.WorkspacePath) {
+			refs, err := a.store.DeleteCheckpointsForThreadReturningRefs(id)
+			if err != nil {
+				sweepErrs = append(sweepErrs, fmt.Errorf("thread %s checkpoint cleanup failed: %w", id, err))
+			} else {
+				a.deleteCheckpointRefsBestEffort(id, "remove worktree", project, refs)
+			}
 		}
 		// Other panes only know to re-render when the thread:updated event
 		// fires — without it the sibling pane keeps showing the deleted
@@ -562,6 +583,7 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 	}
 
 	core := a.gitCore()
+	previousWorkspace := thread.WorkspacePath
 	switch {
 	case gitops.SameFilesystemPath(target, project):
 		thread.WorkspacePath = project
@@ -582,7 +604,11 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 			thread.Branch = core.CurrentBranch(worktree.Path)
 		}
 	}
-	if err := a.store.UpdateThread(thread); err != nil {
+	if !gitops.SameFilesystemPath(previousWorkspace, thread.WorkspacePath) {
+		if err := a.updateThreadAndInvalidateCheckpointsForWorkspaceChange(thread, "switch workspace", project); err != nil {
+			return store.Thread{}, err
+		}
+	} else if err := a.store.UpdateThread(thread); err != nil {
 		return store.Thread{}, err
 	}
 	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")

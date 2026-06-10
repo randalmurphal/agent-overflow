@@ -433,6 +433,50 @@ func TestForkThreadFromMessageRejectsMissingCheckpoint(t *testing.T) {
 	}
 }
 
+func TestForkThreadFromMessageDoesNotCopyCheckpointRefs(t *testing.T) {
+	app := newTestAppWithStore(t)
+	source := testThread("thread-message-fork-stale-checkpoint-ref")
+	source.Provider = string(provider.Claude)
+	if err := app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := app.store.InsertItem(store.Item{
+		ID:        "user-stale-checkpoint",
+		ThreadID:  source.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "first",
+		CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+	if err := app.store.SaveCheckpoint(store.Checkpoint{
+		ID:            "checkpoint-stale-ref",
+		ThreadID:      source.ID,
+		UserItemID:    "user-stale-checkpoint",
+		TurnIndex:     0,
+		RefName:       checkpoint.ThreadRefPrefix(source.ID) + "message/missing-ref",
+		CapturedAt:    time.Now().UnixMilli(),
+		WorkspacePath: source.WorkspacePath,
+	}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+
+	forked, err := app.ForkThreadFromMessage(source.ID, "user-stale-checkpoint")
+	if err != nil {
+		t.Fatalf("ForkThreadFromMessage: %v", err)
+	}
+	checkpoints, err := app.store.ListCheckpoints(forked.ID)
+	if err != nil {
+		t.Fatalf("ListCheckpoints(fork): %v", err)
+	}
+	if len(checkpoints) != 0 {
+		t.Fatalf("fork checkpoints = %d, want 0", len(checkpoints))
+	}
+}
+
 func TestForkThreadFromMessageRejectsMissingClaudeSessionForLaterTurn(t *testing.T) {
 	app := newTestAppWithStore(t)
 	source := testThread("thread-message-fork-missing-session")

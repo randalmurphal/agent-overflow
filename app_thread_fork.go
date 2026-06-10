@@ -16,8 +16,6 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
-
-	"github.com/google/uuid"
 )
 
 // ForkThread copies a source thread's timeline into a new fork and wires
@@ -27,10 +25,10 @@ import (
 //
 // When atTurnIndex is non-nil, the fork is sliced at that turn (0-indexed):
 // items with turn_index > *atTurnIndex are dropped, the provider session
-// is forked + truncated to match. Checkpoints whose user messages are cloned
-// are copied into the fork's ref namespace so historical messages remain
-// revertable. atTurnIndex == nil preserves the existing fork-at-tail behavior
-// (clone everything, fork provider state at the latest message).
+// is forked + truncated to match. Checkpoint/revert history intentionally stays
+// behind with the source thread; the fork starts with no checkpoint rows or
+// copied Git refs. atTurnIndex == nil preserves the existing fork-at-tail
+// behavior (clone everything, fork provider state at the latest message).
 //
 // The "atomic unit" is emulated in the app layer rather than a single
 // SQLite transaction because the fork flow crosses a boundary — it has
@@ -79,8 +77,7 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	}
 	cleanups.Add(func() error { return a.cleanupForkThread(fork.ID) })
 
-	clonedItemIDs, err := a.store.CloneThreadItems(source.ID, fork.ID, atTurnIndex)
-	if err != nil {
+	if _, err := a.store.CloneThreadItems(source.ID, fork.ID, atTurnIndex); err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread: clone timeline: %w", err),
 			cleanups.Run(),
@@ -97,15 +94,6 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	fork.SessionRef = sessionRef
 	fork.PendingForkRef = pendingForkRef
 	fork.UpdatedAt = time.Now().UnixMilli()
-	copiedCheckpointRefs, err := a.copyForkCheckpoints(source, fork, clonedItemIDs, atTurnIndex)
-	if err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.Run())
-	}
-	if len(copiedCheckpointRefs) > 0 {
-		cleanups.Add(func() error {
-			return a.deleteCheckpointRefs(context.Background(), fork.ID, "fork thread cleanup", copiedCheckpointRefs)
-		})
-	}
 	if err := a.remapForkedClaudeUUIDs(fork.ID, uuidMap); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
@@ -173,13 +161,11 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 		)
 	}
 
-	clonedItemIDs := map[string]string{}
 	var lastKeptTurnPtr *int
 	if item.TurnIndex > 0 {
 		lastKeptTurn := item.TurnIndex - 1
 		lastKeptTurnPtr = &lastKeptTurn
-		clonedItemIDs, err = a.store.CloneThreadItems(source.ID, fork.ID, lastKeptTurnPtr)
-		if err != nil {
+		if _, err := a.store.CloneThreadItems(source.ID, fork.ID, lastKeptTurnPtr); err != nil {
 			return store.Thread{}, errors.Join(
 				fmt.Errorf("fork thread from message: clone timeline: %w", err),
 				cleanups.Run(),
@@ -197,15 +183,6 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	fork.SessionRef = sessionRef
 	fork.PendingForkRef = pendingForkRef
 	fork.UpdatedAt = time.Now().UnixMilli()
-	copiedCheckpointRefs, err := a.copyForkCheckpoints(source, fork, clonedItemIDs, lastKeptTurnPtr)
-	if err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.Run())
-	}
-	if len(copiedCheckpointRefs) > 0 {
-		cleanups.Add(func() error {
-			return a.deleteCheckpointRefs(context.Background(), fork.ID, "fork thread from message cleanup", copiedCheckpointRefs)
-		})
-	}
 	if err := a.remapForkedClaudeUUIDs(fork.ID, uuidMap); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
@@ -252,49 +229,6 @@ func (a *App) cleanupForkThread(threadID string) error {
 	return errors.Join(errs...)
 }
 
-func (a *App) copyForkCheckpoints(source, fork store.Thread, clonedItemIDs map[string]string, atTurnIndex *int) ([]store.CheckpointRef, error) {
-	if len(clonedItemIDs) == 0 {
-		return nil, nil
-	}
-	sourceCheckpoints, err := a.store.ListCheckpoints(source.ID)
-	if err != nil {
-		return nil, fmt.Errorf("fork thread: list source checkpoints: %w", err)
-	}
-	var copied []store.CheckpointRef
-	cleanupCopied := func() {
-		_ = a.deleteCheckpointRefs(context.Background(), fork.ID, "fork thread copy cleanup", copied)
-	}
-	for _, sourceCheckpoint := range sourceCheckpoints {
-		if atTurnIndex != nil && sourceCheckpoint.TurnIndex > *atTurnIndex {
-			continue
-		}
-		clonedUserItemID, ok := clonedItemIDs[sourceCheckpoint.UserItemID]
-		if !ok {
-			continue
-		}
-		if err := checkpoint.ValidateRef("fork thread", source.ID, sourceCheckpoint.RefName, sourceCheckpoint.WorkspacePath); err != nil {
-			cleanupCopied()
-			return nil, err
-		}
-		destRef := checkpoint.ThreadRefPrefix(fork.ID) + "message/" + uuid.NewString()
-		if err := a.checkpointStore().CopyRef(context.Background(), sourceCheckpoint.WorkspacePath, sourceCheckpoint.RefName, destRef); err != nil {
-			cleanupCopied()
-			return nil, fmt.Errorf("fork thread: copy checkpoint ref: %w", err)
-		}
-		copied = append(copied, store.CheckpointRef{RefName: destRef, WorkspacePath: sourceCheckpoint.WorkspacePath})
-		record := sourceCheckpoint
-		record.ID = uuid.NewString()
-		record.ThreadID = fork.ID
-		record.UserItemID = clonedUserItemID
-		record.RefName = destRef
-		if err := a.store.SaveCheckpoint(record); err != nil {
-			cleanupCopied()
-			return nil, fmt.Errorf("fork thread: save checkpoint: %w", err)
-		}
-	}
-	return copied, nil
-}
-
 // ensureThreadCanFork rejects forks against threads that have no
 // messages or where atTurnIndex points outside the existing turn range.
 func (a *App) ensureThreadCanFork(source store.Thread, atTurnIndex *int) error {
@@ -332,9 +266,9 @@ func (a *App) ensureThreadCanFork(source store.Thread, atTurnIndex *int) error {
 // where the actual fork happens at `--fork-session` start time and we
 // have no slice yet). When non-nil, the caller must call
 // `remapForkedClaudeUUIDs(fork.ID, uuidMap)` so cloned items'
-// `meta.provider_item_id` and checkpoint provider-id columns point at
-// the fork's NEW UUIDs — keeping the "stored UUID matches active
-// session JSONL" invariant intact for forks-of-forks.
+// `meta.provider_item_id` points at the fork's NEW UUIDs — keeping the
+// "stored UUID matches active session JSONL" invariant intact for
+// forks-of-forks.
 func (a *App) resolveForkResumeState(source store.Thread, atTurnIndex *int) (
 	sessionRef string,
 	pendingForkRef string,
@@ -602,19 +536,16 @@ func (a *App) lookupTurnAnchorClaudeUUID(threadID string, turnIndex int) string 
 	return ""
 }
 
-// remapForkedClaudeUUIDs rewrites cloned items' `meta.provider_item_id`
-// and the fork's checkpoint provider-id columns from their source-session
-// UUIDs to the fork's NEW UUIDs. Maintains the invariant "stored UUID
-// always matches the active session's JSONL" so a subsequent revert
-// inside the fork (including fork-of-fork chains) hits a single linear
-// JSONL scan rather than chasing `forkedFrom` backpointers across
-// session files.
+// remapForkedClaudeUUIDs rewrites cloned items' `meta.provider_item_id` from
+// their source-session UUIDs to the fork's NEW UUIDs. Maintains the invariant
+// "stored UUID always matches the active session's JSONL" so future forks keep
+// slicing from the fork's own transcript rather than chasing `forkedFrom`
+// backpointers across session files.
 //
 // uuidMap may have entries beyond just user-message UUIDs (assistant /
-// system entries also remap). Items only carry the user-message UUID,
-// and checkpoints carry both user + parent UUIDs — both are remapped
-// when an entry exists in uuidMap, leaving anything unmapped (legacy
-// rows, mismatched ids) alone rather than blanking the column.
+// system entries also remap). Items only carry the user-message UUID; anything
+// unmapped (legacy rows, mismatched ids) is left alone rather than blanking the
+// column.
 //
 // Returns nil when the fork has no Claude-stamped items (Codex fork,
 // lazy fork-at-tail, fork of a pre-stamp thread).
@@ -661,28 +592,6 @@ func (a *App) remapForkedClaudeUUIDs(forkThreadID string, uuidMap map[string]str
 		}
 	}
 
-	// 2. Cloned checkpoints — both provider_user_message_id and
-	// provider_parent_uuid get remapped, each looked up independently.
-	checkpoints, err := a.store.ListCheckpoints(forkThreadID)
-	if err != nil {
-		return fmt.Errorf("remap forked claude uuids: list fork checkpoints: %w", err)
-	}
-	for _, cp := range checkpoints {
-		newUserUUID := cp.ProviderUserMessageID
-		if remapped, ok := uuidMap[cp.ProviderUserMessageID]; ok {
-			newUserUUID = remapped
-		}
-		newParentUUID := cp.ProviderParentUUID
-		if remapped, ok := uuidMap[cp.ProviderParentUUID]; ok {
-			newParentUUID = remapped
-		}
-		if newUserUUID == cp.ProviderUserMessageID && newParentUUID == cp.ProviderParentUUID {
-			continue
-		}
-		if err := a.store.UpdateCheckpointProviderIDs(forkThreadID, cp.UserItemID, newUserUUID, newParentUUID); err != nil {
-			return fmt.Errorf("remap forked claude uuids: update checkpoint %s/%s: %w", forkThreadID, cp.UserItemID, err)
-		}
-	}
 	return nil
 }
 

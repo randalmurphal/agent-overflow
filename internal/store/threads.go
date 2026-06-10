@@ -456,6 +456,39 @@ func (s *Store) UpdateThread(t Thread) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update thread %s", t.ID))
 }
 
+func (s *Store) UpdateThreadAndDeleteCheckpoints(t Thread) ([]CheckpointRef, error) {
+	t, err := normalizeThreadForUpdate(t)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("store: begin update thread %s and delete checkpoints: %w", t.ID, err)
+	}
+	defer tx.Rollback()
+
+	refs, err := checkpointRefsForThread(tx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	args := append(updateThreadArgs(t), t.ID)
+	result, err := tx.Exec(updateThreadSetSQL+` WHERE id=?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: update thread %s: %w", t.ID, err)
+	}
+	if err := requireRowsAffected(result, fmt.Sprintf("store: update thread %s", t.ID)); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`DELETE FROM thread_checkpoints WHERE thread_id = ?`, t.ID); err != nil {
+		return nil, fmt.Errorf("store: delete checkpoints for %s: %w", t.ID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit update thread %s and delete checkpoints: %w", t.ID, err)
+	}
+	return refs, nil
+}
+
 func (s *Store) UpdateThreadIfProviderSwitchAllowed(t Thread, previousProvider string) error {
 	t, err := normalizeThreadForUpdate(t)
 	if err != nil {

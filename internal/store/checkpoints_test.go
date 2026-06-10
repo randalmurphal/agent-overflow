@@ -111,6 +111,83 @@ func TestDeleteCheckpointsFromTurnScopesAndReturnsRefs(t *testing.T) {
 	}
 }
 
+func TestDeleteCheckpointsForThreadReturningRefs(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForCheckpoint(t, s, "t1")
+	mustCreateThreadForCheckpoint(t, s, "t2")
+	for _, row := range []Checkpoint{
+		{ID: "t1-0", ThreadID: "t1", UserItemID: "t1-user:0", TurnIndex: 0, RefName: "refs/t1/0", WorkspacePath: "/w1", CapturedAt: 0},
+		{ID: "t1-1", ThreadID: "t1", UserItemID: "t1-user:1", TurnIndex: 1, RefName: "refs/t1/1", WorkspacePath: "/w1", CapturedAt: 1},
+		{ID: "t2-0", ThreadID: "t2", UserItemID: "t2-user:0", TurnIndex: 0, RefName: "refs/t2/0", WorkspacePath: "/w2", CapturedAt: 2},
+	} {
+		if err := s.SaveCheckpoint(row); err != nil {
+			t.Fatalf("save %s: %v", row.ID, err)
+		}
+	}
+
+	refs, err := s.DeleteCheckpointsForThreadReturningRefs("t1")
+	if err != nil {
+		t.Fatalf("DeleteCheckpointsForThreadReturningRefs: %v", err)
+	}
+	if len(refs) != 2 || refs[0].RefName != "refs/t1/0" || refs[1].RefName != "refs/t1/1" {
+		t.Fatalf("refs = %+v, want t1 refs in turn order", refs)
+	}
+	list, err := s.ListCheckpoints("t1")
+	if err != nil {
+		t.Fatalf("list t1: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("remaining t1 checkpoints = %+v, want none", list)
+	}
+	other, err := s.ListCheckpoints("t2")
+	if err != nil {
+		t.Fatalf("list t2: %v", err)
+	}
+	if len(other) != 1 {
+		t.Fatalf("other thread checkpoint was deleted: %+v", other)
+	}
+}
+
+func TestUpdateThreadAndDeleteCheckpoints(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForCheckpoint(t, s, "t1")
+	if err := s.SaveCheckpoint(Checkpoint{
+		ID: "t1-0", ThreadID: "t1", UserItemID: "t1-user:0", TurnIndex: 0,
+		RefName: "refs/t1/0", WorkspacePath: "/old", CapturedAt: 0,
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	thread, err := s.GetThread("t1")
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	thread.WorkspacePath = "/new"
+	thread.WorktreePath = "/new"
+	thread.Branch = "feature/new"
+	refs, err := s.UpdateThreadAndDeleteCheckpoints(thread)
+	if err != nil {
+		t.Fatalf("UpdateThreadAndDeleteCheckpoints: %v", err)
+	}
+	if len(refs) != 1 || refs[0].RefName != "refs/t1/0" || refs[0].WorkspacePath != "/old" {
+		t.Fatalf("refs = %+v, want old checkpoint ref", refs)
+	}
+	updated, err := s.GetThread("t1")
+	if err != nil {
+		t.Fatalf("GetThread updated: %v", err)
+	}
+	if updated.WorkspacePath != "/new" || updated.WorktreePath != "/new" || updated.Branch != "feature/new" {
+		t.Fatalf("updated thread workspace = %q/%q/%q", updated.WorkspacePath, updated.WorktreePath, updated.Branch)
+	}
+	list, err := s.ListCheckpoints("t1")
+	if err != nil {
+		t.Fatalf("list checkpoints: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("remaining checkpoints = %+v, want none", list)
+	}
+}
+
 func TestTrackedFilesRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForCheckpoint(t, s, "t1")

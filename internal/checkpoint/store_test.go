@@ -988,6 +988,33 @@ func TestDeleteRefMissingIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestDeleteRefsRemovesExistingAndIgnoresMissing(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+	refA := RefForThreadTurn("batch", 0)
+	refB := RefForThreadTurn("batch", 1)
+	missing := RefForThreadTurn("batch", 99)
+	if _, err := s.CaptureBaseline(ctx, dir, "batch", 0); err != nil {
+		t.Fatalf("capture ref A: %v", err)
+	}
+	if _, err := s.CaptureBaseline(ctx, dir, "batch", 1); err != nil {
+		t.Fatalf("capture ref B: %v", err)
+	}
+
+	if err := s.DeleteRefs(ctx, dir, []string{refA, missing, refB}); err != nil {
+		t.Fatalf("DeleteRefs: %v", err)
+	}
+	refs, err := s.ListThreadRefs(ctx, dir, "batch")
+	if err != nil {
+		t.Fatalf("ListThreadRefs: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("refs after DeleteRefs = %v, want none", refs)
+	}
+}
+
 func TestConcurrentCapturesDoNotCollide(t *testing.T) {
 	// Two threads capturing into the same workspace in parallel must both
 	// succeed. The temp GIT_INDEX_FILE path is unique per-capture
