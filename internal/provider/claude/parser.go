@@ -98,6 +98,43 @@ type Parser struct {
 	// See docs/references/claude-wire.md §result and
 	// docs/architecture/turn-lifecycle.md §Turn lifecycle.
 	lastAssistantMessageID string
+	// interruptAcked records that the CLI acked one of OUR interrupt
+	// control_requests since the last `result` envelope. parseResult uses
+	// it to classify the next error_during_execution result as an
+	// interrupt even when the `errors[]` wording carries no
+	// "aborted"/"interrupted" marker (claude 2.1.170 emits
+	// "[ede_diagnostic] result_type=user ..." there; see
+	// claude-wire.md §result). Read-loop goroutine only — set by
+	// handleControlResponseLine and consumed by ParseLine, both of which
+	// run on the session read loop, so no lock is needed. The CLI writes
+	// the interrupt ack before the result line (verified 6/6 runs,
+	// 2.1.170, both mid-stream and pre-output interrupts).
+	interruptAcked bool
+}
+
+// MarkInterruptAcked flags that the CLI just acked an interrupt
+// control_request. MUST be called from the session read-loop goroutine
+// (handleControlResponseLine) — interruptAcked is unsynchronized
+// ParseLine-goroutine state.
+func (p *Parser) MarkInterruptAcked() {
+	if p == nil {
+		return
+	}
+	p.interruptAcked = true
+}
+
+// takeInterruptAcked reads and clears interruptAcked. Single lifecycle
+// owner: parseResult — the first result envelope after the ack is the
+// turn the interrupt terminated, and consuming on EVERY result (success
+// included) keeps a raced ack from leaking into the next turn's
+// classification. Also cleared by Close.
+func (p *Parser) takeInterruptAcked() bool {
+	if p == nil {
+		return false
+	}
+	acked := p.interruptAcked
+	p.interruptAcked = false
+	return acked
 }
 
 // SetModel primes the parser with the model id the session was started
@@ -145,6 +182,7 @@ func (p *Parser) Close() {
 	p.subagentModelStamped = nil
 	p.streamBlockTypes = nil
 	p.lastAssistantMessageID = ""
+	p.interruptAcked = false
 }
 
 // markSubagentModelStamped records that we've already emitted a

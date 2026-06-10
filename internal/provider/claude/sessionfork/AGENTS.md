@@ -13,7 +13,12 @@ SDK `fork_session(session_id, up_to_message_id)`:
 
 - `forksession.go` — pure transform (`BuildForkLines`) plus atomic-write
   composer (`WriteForkFile`). Streaming `bufio.Scanner` with a 16 MB
-  ceiling for multi-MB sessions.
+  ceiling for multi-MB sessions. Exports `TranscriptTypes`, the row
+  admission set shared with the claude package's branch validator
+  (`sessionleaf_branch.go`) so the fork transform and the resume-at
+  branch walk can never drift apart (invariant 28).
+- `rechain.go` — `isDeferredAPIErrorRow`, the predicate behind the
+  fork transform's re-chain rule (below).
 - `findmessage.go` — `FindUUIDBeforeUserTurn` and `SliceUUIDForLastKeptTurn`:
   stream the JSONL and return the parentUuid of the Nth (0-indexed)
   **real** user prompt — i.e. the slice point that keeps everything
@@ -25,6 +30,30 @@ SDK `fork_session(session_id, up_to_message_id)`:
   workspace's CANONICAL absolute path (symlinks resolved) with separators
   replaced by `-`. Falls back to scanning every project dir if the
   primary lookup misses.
+
+## Re-chain rule (invariant 28)
+
+The CLI appends deferred `system/api_error` rows at the NEXT user send
+with a **stale `parentUuid`** (upstream bug, 2.1.167–170 — see
+claude-wire.md §"deferred system/api_error rows"). Copied positionally,
+those rows leave the fork's writable tail off the active branch and
+every resume of the fork hard-fails. `buildLines` therefore forces each
+deferred api_error row's parent to its file predecessor (no-op when
+already chained). Scope is strict:
+
+- ONLY `type=="system" && subtype=="api_error"` rows are re-chained.
+  Compact-boundary system rows are legitimate `parentUuid:null` chain
+  ROOTS — a generic "system row off the chain" rule would corrupt them.
+- User/assistant rows are NEVER re-chained — claude's own branch walk
+  correctly ignores abandoned content branches.
+- Known limitation: an abandoned-branch row immediately preceding an
+  api_error becomes the forced parent — still strictly better than the
+  hard failure (documented in rechain.go).
+
+Fixture:
+`docs/references/fixtures/claude/session_api_error_offbranch.jsonl`
+(sanitized incident replica; rechain_test.go drives it through the
+transform).
 
 ## Why JSONL manipulation, not CLI commands
 

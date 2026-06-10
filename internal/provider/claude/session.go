@@ -124,10 +124,13 @@ type Session struct {
 	// controlRequestMu guards pendingControlRequests and controlRequestSeq.
 	controlRequestMu sync.Mutex
 	// pendingControlRequests maps an outbound control_request id to the
-	// channel the read loop delivers the matching control_response on.
+	// channel the read loop delivers the matching control_response on,
+	// plus whether the request was an `interrupt` (the read loop flags
+	// the parser on a successful interrupt ack so the following result
+	// envelope classifies as user-aborted; see Parser.MarkInterruptAcked).
 	// Entry is created before the write, then drained by readLoop or by the
 	// caller on timeout / cancellation.
-	pendingControlRequests map[string]chan *controlResponseResult
+	pendingControlRequests map[string]pendingControlRequest
 	// controlRequestSeq is a per-session counter so concurrent outbound
 	// control_requests never collide on request_id. The session pointer is mixed
 	// in (by map lifetime — a second session allocates a fresh map)
@@ -147,6 +150,16 @@ type controlResponseResult struct {
 	ok      bool
 	errMsg  string
 	payload json.RawMessage
+}
+
+// pendingControlRequest is the pendingControlRequests map value: the
+// waiter's channel plus whether this round-trip is an `interrupt`
+// (derived from the request's wire subtype in sendControlRequest — only
+// Session.Interrupt sends it). The read loop uses the flag to call
+// Parser.MarkInterruptAcked on a successful ack.
+type pendingControlRequest struct {
+	ch          chan *controlResponseResult
+	isInterrupt bool
 }
 
 // pendingApproval tracks a single in-flight interactive request so user
@@ -588,7 +601,8 @@ func (s *Session) StopTask(ctx context.Context, taskID string) error {
 func (s *Session) sendControlRequest(ctx context.Context, opName string, request map[string]any) (*controlResponseResult, error) {
 	requestID := s.allocateControlRequestID()
 	ch := make(chan *controlResponseResult, 1)
-	if !s.registerControlRequest(requestID, ch) {
+	isInterrupt := request["subtype"] == "interrupt"
+	if !s.registerControlRequest(requestID, pendingControlRequest{ch: ch, isInterrupt: isInterrupt}) {
 		return nil, fmt.Errorf("claude: %s: session closing", opName)
 	}
 
@@ -667,16 +681,16 @@ func (s *Session) allocateControlRequestID() string {
 // it first, the entry is visible to the subsequent clearPendingControlRequests
 // drain. Without this ordering, a late registration could leak a
 // pending entry past Close.
-func (s *Session) registerControlRequest(requestID string, ch chan *controlResponseResult) bool {
+func (s *Session) registerControlRequest(requestID string, pending pendingControlRequest) bool {
 	s.controlRequestMu.Lock()
 	defer s.controlRequestMu.Unlock()
 	if s.closing.Load() {
 		return false
 	}
 	if s.pendingControlRequests == nil {
-		s.pendingControlRequests = make(map[string]chan *controlResponseResult)
+		s.pendingControlRequests = make(map[string]pendingControlRequest)
 	}
-	s.pendingControlRequests[requestID] = ch
+	s.pendingControlRequests[requestID] = pending
 	return true
 }
 
@@ -686,7 +700,7 @@ func (s *Session) registerControlRequest(requestID string, ch chan *controlRespo
 // the single-slot channel never blocks a reader that already gave up.
 func (s *Session) releaseControlRequest(requestID string) {
 	s.controlRequestMu.Lock()
-	ch, ok := s.pendingControlRequests[requestID]
+	pending, ok := s.pendingControlRequests[requestID]
 	if ok {
 		delete(s.pendingControlRequests, requestID)
 	}
@@ -695,31 +709,33 @@ func (s *Session) releaseControlRequest(requestID string) {
 		return
 	}
 	select {
-	case <-ch:
+	case <-pending.ch:
 	default:
 	}
 }
 
 // deliverControlResponse is the read-loop-side half: it matches an
 // inbound control_response to a pending outbound control_request and delivers the
-// result. Unknown request_ids are returned as (false) so the caller
-// can log once and drop.
-func (s *Session) deliverControlResponse(requestID string, res *controlResponseResult) bool {
+// result. Unknown request_ids are returned as delivered=false so the
+// caller can log once and drop. wasInterrupt reports whether the
+// matched request was Session.Interrupt's — the read loop uses it to
+// flag the parser before the CLI's result line is parsed.
+func (s *Session) deliverControlResponse(requestID string, res *controlResponseResult) (wasInterrupt, delivered bool) {
 	s.controlRequestMu.Lock()
-	ch, ok := s.pendingControlRequests[requestID]
+	pending, ok := s.pendingControlRequests[requestID]
 	if ok {
 		delete(s.pendingControlRequests, requestID)
 	}
 	s.controlRequestMu.Unlock()
 	if !ok {
-		return false
+		return false, false
 	}
 	select {
-	case ch <- res:
+	case pending.ch <- res:
 	default:
 		// Channel already drained by timeout — nothing to do.
 	}
-	return true
+	return pending.isInterrupt, true
 }
 
 // clearPendingControlRequests closes every outstanding control-request waiter so
@@ -729,12 +745,12 @@ func (s *Session) clearPendingControlRequests() {
 	pending := s.pendingControlRequests
 	s.pendingControlRequests = nil
 	s.controlRequestMu.Unlock()
-	for _, ch := range pending {
+	for _, p := range pending {
 		// A nil send signals "session closing" — the caller returns a
 		// clean error rather than hanging forever waiting on a
 		// control_response the dead subprocess will never emit.
 		select {
-		case ch <- nil:
+		case p.ch <- nil:
 		default:
 		}
 	}
@@ -1426,8 +1442,22 @@ func (s *Session) handleControlResponseLine(line []byte) {
 		res.errMsg = fmt.Sprintf("unexpected control_response subtype %q", raw.Response.Subtype)
 	}
 
-	if !s.deliverControlResponse(requestID, res) {
+	wasInterrupt, delivered := s.deliverControlResponse(requestID, res)
+	if !delivered {
 		log.Printf("claude: control_response with no pending request_id %q (subtype=%s)", requestID, raw.Response.Subtype)
+		return
+	}
+	// A successful interrupt ack flags the parser so the upcoming result
+	// envelope classifies as user-aborted even when its `errors[]`
+	// wording has no "aborted"/"interrupted" marker (claude 2.1.170).
+	// Safe to set here without locking: this function runs on the read
+	// loop, the same goroutine as ParseLine, and the CLI writes the ack
+	// before the result line (verified 6/6 on 2.1.170 — see
+	// claude-wire.md §result). A timed-out interrupt whose ack arrives
+	// after releaseControlRequest is NOT delivered and never marks — the
+	// classification then falls back to the errors[] heuristic.
+	if wasInterrupt && res.ok {
+		s.parser.MarkInterruptAcked()
 	}
 }
 

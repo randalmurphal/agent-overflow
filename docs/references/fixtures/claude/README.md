@@ -39,6 +39,16 @@ behavior. These back parser replay tests and the reference docs in
   [`opus47_thinking_summary.json`](opus47_thinking_summary.json) for
   the per-fixture stats and `claude-wire.md` §thinking-display for the
   wire-level explanation.
+- `session_api_error_offbranch.jsonl` — session **JSONL** (not wire
+  NDJSON): sanitized replica of the 2026-06-10 incident topology.
+  Deferred `system/api_error` rows written at the next user send with
+  a stale `parentUuid` that bypasses the prior turn's tail
+  (`a2`/`a3-final`), then a user row chained onto them. Backs
+  invariant 28, `sessionfork/rechain_test.go`, the
+  `sessionleaf_branch.go` tests, and the draft upstream report
+  ([`claude-api-error-upstream-report.md`](../../claude-api-error-upstream-report.md)).
+  Dropped into `~/.claude/projects/<slug>/<id>.jsonl`, resume-at
+  `a3-final` reproduces the pre-init hard failure on 2.1.170.
 - `*_summary.json` — notes captured during the spike runs
 
 ## Refresh

@@ -129,10 +129,50 @@ documented error subtypes are:
 
 Mirrors the Anthropic API. Observed: `"end_turn"`, `"max_tokens"`,
 `"tool_use"`, `"stop_sequence"`, `"refusal"`, `"pause_turn"`.
-**`"interrupted"` is NOT a value** — interruption surfaces as
-`subtype: "error_during_execution"` + `is_error: false` +
-`errors[]` containing `"aborted"` / `"interrupted"`
-(forge `sdkMessageParsing.ts:112-125`).
+**`"interrupted"` is NOT a value** — interruption surfaces through the
+`error_during_execution` envelope below.
+
+### Interrupted-turn `result` envelope (verified 2.1.170)
+
+Captured 2026-06-10, 6/6 runs identical (3× interrupt mid-stream, 3×
+interrupt before first output; spike per spike-policy):
+
+```json
+{
+  "type": "result",
+  "subtype": "error_during_execution",
+  "duration_ms": 1183, "duration_api_ms": 0,
+  "is_error": true,
+  "num_turns": 2,
+  "stop_reason": null,
+  "total_cost_usd": 0,
+  "usage": {"input_tokens": 0, "output_tokens": 0, "...": "..."},
+  "modelUsage": {},
+  "permission_denials": [],
+  "terminal_reason": "aborted_streaming",
+  "fast_mode_state": "off",
+  "uuid": "9bab7771-...",
+  "errors": ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"]
+}
+```
+
+Three observations that drive parser behavior:
+
+- `errors[]` no longer contains "aborted"/"interrupted" — only the
+  `[ede_diagnostic] ...` marker. The legacy substring heuristic (forge
+  `sdkMessageParsing.ts:112-125`, upstream Python SDK) misreads this
+  envelope as a hard error. `is_error` is `true` (older docs claimed
+  `false` for interrupts).
+- `terminal_reason` is `"aborted_streaming"`, but it is a 12-value
+  telemetry enum (see §terminal_reason) we deliberately keep out of the
+  normalized payload — not a classification key.
+- **The interrupt `control_response` ack is always written before the
+  `result` line** (6/6, both timings). AO therefore classifies by ack
+  correlation: the read loop flags the parser on a successful interrupt
+  ack, and the next `error_during_execution` result is the interrupt's
+  termination (`session.go handleControlResponseLine` →
+  `Parser.MarkInterruptAcked` → `parse_result.go`). The substring
+  heuristic stays as fallback for interrupts AO didn't originate.
 
 ### Fields the SDK exposes that we should capture
 - `total_cost_usd` (NOT `cost_usd`)
@@ -777,6 +817,12 @@ fields under `data`. Agent Overflow normalizes both shapes into
 `EventAPIRetry` metadata so the timeline row can render the latest
 retry attempt and status.
 
+⚠ Retries that recover leave NO wire trace beyond these envelopes —
+but they DO leave deferred `system/api_error` rows in the session
+JSONL, written **at the next user send** with a **stale parentUuid**.
+That file-side artifact (not a wire shape) breaks resume topology; see
+[§Session JSONL: deferred `system/api_error` rows](#session-jsonl-deferred-systemapi_error-rows-stale-parents).
+
 ### `assistant.error` — closed-set enum on the assistant envelope
 
 When the API rejects a prompt mid-turn, the SDK populates the
@@ -1274,6 +1320,102 @@ could clobber a previously-known good reading.
 
 ---
 
+## Session JSONL: active-branch semantics (`--resume` / `--resume-session-at`)
+
+Not a wire shape — the on-disk contract for
+`~/.claude/projects/<slug>/<sessionID>.jsonl` that resume flags are
+validated against. Verified by spike on 2.1.170 (2026-06-10) plus the
+2026-06-10 incident empirics (2.1.167/168/170).
+
+**The active branch** is the chain Claude reconstructs by walking
+`parentUuid` back from the file's **last uuid-bearing transcript row**.
+Resumed context = that chain only; rows off the chain stay in the file
+but contribute nothing.
+
+**`--resume-session-at <uuid>` is validated against the active branch
+only**, eagerly at startup (pre-init, pre-API — a rejected cursor costs
+no tokens). An off-branch uuid hard-fails:
+`result{subtype:"error_during_execution", is_error:true, num_turns:0,
+errors:["No message found with message.uuid of: <uuid>"]}` — and the
+process then **lingers** instead of exiting (AO reaps it; see
+`teardownDeadPreInitSession`).
+
+Row types that define the walk (spike-verified per type):
+
+| Row type | Considered by claude's walk? | Evidence |
+|---|---|---|
+| `user`, `assistant` | yes | incident + spike A1 |
+| `attachment` | **yes** | spike A2 — an attachment tail chained mid-branch made the file-order content leaf off-branch (rejected) |
+| `system` (incl. `api_error`) | **yes** | incident — the deferred api_error rows WERE the branch tip |
+| `custom-title` (uuid-bearing) | no | spike A3 — trailing uuid-bearing title row did not move the tip |
+| `mode`, `last-prompt`, `queue-operation` | no (uuid-less) | inventory of production files |
+| sidechain rows (`isSidechain:true`) | no | separate graphs |
+
+More spike-verified behavior (A1, B):
+
+- **Interior on-branch cursor**: accepted. The turn runs with context
+  ending at the cursor; rows past it remain in the file (abandoned
+  branch) and the new user row's `parentUuid` is the cursor — in-file
+  branching, no truncation.
+- **System rows as explicit cursors**: accepted by the CLI (spike B).
+  AO still only ever passes user/assistant rows
+  (`ResumeAtOnActiveBranch` rejects system rows by design — resuming at
+  an error row would end context on furniture).
+- Plain `--resume` with no cursor uses the CLI's own default leaf —
+  omitting `--resume-session-at` is always safe, never wrong-branch.
+
+AO enforcement: invariant 28 — `sessionfork` re-chains deferred
+api_error tails so fork output keeps its writable tail on-branch;
+`ScanSessionLeaf` validates its file-order pick against a branch index
+and repairs off-branch picks; `resolveClaudeResumeAt` validates
+explicit cursors at spawn. `internal/provider/claude/sessionleaf_branch.go`
+mirrors the row table above (`branchTranscriptTypes`).
+
+## Session JSONL: deferred `system/api_error` rows (stale parents)
+
+**Upstream bug** (2.1.167–2.1.170, report draft:
+[`claude-api-error-upstream-report.md`](claude-api-error-upstream-report.md)).
+When an API request inside a turn fails and is retried (the wire shows
+`system/api_retry`, the turn completes normally), the CLI buffers the
+error rows and writes them to the session JSONL **at the next user
+send** — with `parentUuid` pointing at the **mid-turn leaf from
+retry time**, bypassing the rest of the turn in the parent graph:
+
+```json
+{"type":"system","subtype":"api_error","level":"error","uuid":"<err1>",
+ "parentUuid":"<MID-TURN row, not the turn's final assistant>",
+ "retryAttempt":1,"retryInMs":1000,"maxRetries":10,
+ "error":{"message":"Connection error.","connection":{"code":"ECONNRESET"}},
+ "content":"API error"}
+```
+
+Consequences (because system rows define the active branch — see
+section above): every cold `--resume` silently drops the prior turn's
+tail from context, and `--resume-session-at` any tail row hard-fails.
+The next user row chains onto the api_error rows, entrenching the
+bypass. Fixture:
+[`fixtures/claude/session_api_error_offbranch.jsonl`](fixtures/claude/session_api_error_offbranch.jsonl)
+(sanitized incident replica).
+
+AO countermeasures: `sessionfork/rechain.go` forces each deferred
+api_error row's fork parent to its file predecessor (subtype-scoped —
+compact-boundary system rows are legitimate `parentUuid:null` roots and
+are never touched); the branch-aware leaf scan + spawn validation cover
+unforked files.
+
+## Session JSONL: compact_boundary ordering
+
+`system/compact_boundary` rows are `parentUuid:null` chain **roots**
+carrying `logicalParentUuid` (the pre-compact leaf). In both production
+samples (auto-compact, 2.1.x) the boundary row is immediately followed
+by the `isCompactSummary:true` user row whose `parentUuid` is the
+boundary's uuid — the pair lands together, so the active-branch tip
+after a compact is the summary row (or later), never the bare boundary.
+A file-trailing boundary has not been observed (an idle-`/compact`
+synthesis attempt on a tiny session didn't trigger compaction at all);
+if one ever occurs, AO's branch walk finds no content row and resumes
+with no cursor — the safe degenerate.
+
 ## Captured samples
 
 All three captures are real wire output from claude-code CLI version
@@ -1389,9 +1531,14 @@ without a fresh spike.**
    reliably on TaskOutput. Reading it from both is harmless.
 4. `exitCode` vs `exit_code` inconsistency — TaskOutput uses
    camelCase on `task`, Bash uses snake_case on `tool_use_result`.
-5. `interrupted` is not a `stop_reason` — detect via
-   `subtype == "error_during_execution"` + `is_error == false` +
-   `errors[]` containing aborted/interrupted.
+5. `interrupted` is not a `stop_reason`. RESOLVED 2026-06-10 (2.1.170
+   spike, 6/6 runs): the interrupt result is
+   `subtype == "error_during_execution"` + `is_error == true` +
+   `errors[] == ["[ede_diagnostic] ..."]` — the old aborted/interrupted
+   substrings are GONE, and `is_error` flipped from the previously
+   documented `false`. Classification keys on interrupt-ack correlation
+   (the ack always precedes the result line); the substring check is
+   fallback only. See §"Interrupted-turn result envelope".
 6. `assistant_message_id` must be tracked from the last `assistant`
    envelope's `message.id`. Not carried on `result`.
 

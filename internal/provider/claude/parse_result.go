@@ -45,16 +45,25 @@ import (
 // replay/debug.
 //
 // Interrupted detection: Claude does not expose a `"interrupted"`
-// stop_reason. Interruption surfaces as `subtype=error_during_execution`
-// + `errors[]` containing "aborted" or "interrupted" (see the Python
-// SDK's SDKResultError shape, which uses `errors: string[]` — there is
-// no `error` (singular) field on the wire). Interrupt wins over error: a user
-// abort that surfaces through the same envelope still maps to
-// `stop_reason="interrupted"` (no `meta.error`), so the working
-// indicator clears as cancelled rather than as a hard failure.
+// stop_reason. The PRIMARY signal is ack correlation: the read loop
+// flags the parser when the CLI acks OUR interrupt control_request
+// (always before the result line — verified 6/6 on 2.1.170), and the
+// next `error_during_execution` result is then the interrupt's
+// termination. The `errors[]` string heuristic ("aborted"/
+// "interrupted" substrings, the upstream Python SDK's approach) is
+// kept as a fallback for CLI versions whose interrupt results still
+// carry those marker strings — including interrupts we didn't
+// originate. It does NOT rescue a lost/timed-out ack on 2.1.170:
+// there the strings say "[ede_diagnostic] result_type=user ...", so
+// an unacked interrupt degrades to the hard-error path (visible, not
+// wedged). Interrupt wins over error: a user abort that surfaces
+// through the same envelope still maps to `stop_reason="interrupted"`
+// (no `meta.error`), so the working indicator clears as cancelled
+// rather than as a hard failure.
 //
-// After emitting, the parser's lastAssistantMessageID is cleared so it
-// cannot leak into the next turn's result.
+// After emitting, the parser's lastAssistantMessageID and
+// interruptAcked are cleared so neither leaks into the next turn's
+// result.
 func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
 	model := p.currentModel()
 
@@ -71,7 +80,12 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	subtype := readRawString(raw["subtype"])
 	stopReason := readRawString(raw["stop_reason"])
 	isError := readBoolValue(raw, "is_error", "isError")
-	aborted := detectInterrupted(subtype, raw["errors"])
+	// Consume the ack on every result — a raced ack must not classify a
+	// LATER turn. An acked interrupt that still produced a success
+	// result (interrupt landed after the model finished) stays a
+	// success.
+	acked := p.takeInterruptAcked()
+	aborted := detectInterrupted(subtype, raw["errors"]) || (acked && subtype == "error_during_execution")
 
 	// Resolve error message: any error_* subtype, or a `success` envelope
 	// flagged `is_error:true`. Interrupt always wins (the user explicitly

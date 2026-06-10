@@ -29,7 +29,11 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
 
 - `parser.go` — `Parser` struct, `ParseLine` dispatch, per-parser
   correlation state (background flag, task_id ↔ tool_use_id map,
-  dedupe sets).
+  dedupe sets, `interruptAcked` — set by the read loop when the CLI
+  acks OUR interrupt control_request, consumed by the next
+  `parseResult` so 2.1.170's marker-less interrupt results classify
+  as user aborts; same-goroutine state, no lock; see
+  claude-wire.md §"Interrupted-turn result envelope").
 - `parse_system.go` — `system` envelopes (init metadata, compact_boundary,
   task_started / task_updated / task_notification).
 - `parse_assistant.go` — `assistant` envelopes (text deltas, tool_use
@@ -47,6 +51,22 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   normalisation shared across envelopes.
 - `approvals.go` — approval-response encoding for the SDK.
 - `session.go` — process lifecycle + read loop that feeds ParseLine.
+  The read loop's control_response pre-handler also flags the parser's
+  interrupt-ack state (`pendingControlRequests` entries carry
+  `isInterrupt`; a successful ack calls `Parser.MarkInterruptAcked`
+  before any later `ParseLine` — the CLI writes ack before result,
+  verified 6/6 on 2.1.170).
+- `sessionleaf.go` / `sessionleaf_branch.go` — cold-resume leaf
+  reconstruction for `--resume-session-at`. `claudeLeafTracker` (shared
+  with the live wire path) picks the leaf in FILE order;
+  `claudeBranchIndex` validates that pick against the ACTIVE BRANCH
+  (parentUuid walk from the file's last transcript row — the chain the
+  CLI itself validates resume-at against) and repairs off-branch picks.
+  `ResumeAtOnActiveBranch` is the exported spawn-time validator.
+  Row admission for the branch walk IS `sessionfork.TranscriptTypes`
+  (one exported set shared with the fork transform — no copy to
+  drift). See invariant 28 and claude-wire.md
+  §"active-branch semantics".
 - `json_helpers.go` — tiny JSON-inspection utilities.
 - `options.go` / `probe.go` — non-parser subsystems (session options,
   binary probe).

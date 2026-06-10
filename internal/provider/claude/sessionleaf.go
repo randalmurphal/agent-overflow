@@ -49,33 +49,45 @@ func newClaudeLeafTracker(seedCanonicalLeaf string) *claudeLeafTracker {
 	}
 }
 
+// claudeSessionRow is the decoded superset envelope shared by the leaf
+// tracker and the branch index: one json.Unmarshal per line serves both
+// consumers on the cold-scan path (scanSessionLeafReader).
+type claudeSessionRow struct {
+	Type            string          `json:"type"`
+	UUID            string          `json:"uuid"`
+	ParentUUID      string          `json:"parentUuid"`
+	ParentToolUseID string          `json:"parent_tool_use_id"`
+	IsSidechain     bool            `json:"isSidechain"`
+	Message         json.RawMessage `json:"message"`
+}
+
 func (t *claudeLeafTracker) ingestLine(line []byte) {
 	if t == nil {
 		return
 	}
-	var env struct {
-		Type            string          `json:"type"`
-		UUID            string          `json:"uuid"`
-		ParentUUID      string          `json:"parentUuid"`
-		ParentToolUseID string          `json:"parent_tool_use_id"`
-		IsSidechain     bool            `json:"isSidechain"`
-		Message         json.RawMessage `json:"message"`
-	}
-	if err := json.Unmarshal(line, &env); err != nil {
+	var row claudeSessionRow
+	if err := json.Unmarshal(line, &row); err != nil {
 		return
 	}
-	if env.IsSidechain {
+	t.ingestRow(row)
+}
+
+func (t *claudeLeafTracker) ingestRow(row claudeSessionRow) {
+	if t == nil {
+		return
+	}
+	if row.IsSidechain {
 		return
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	switch env.Type {
+	switch row.Type {
 	case "assistant":
-		t.ingestAssistantLocked(env.UUID, env.ParentUUID, env.ParentToolUseID, env.Message)
+		t.ingestAssistantLocked(row.UUID, row.ParentUUID, row.ParentToolUseID, row.Message)
 	case "user":
-		t.ingestUserLocked(env.UUID)
+		t.ingestUserLocked(row.UUID)
 	case "result":
 		t.markTurnCompleteLocked()
 	}
@@ -270,6 +282,7 @@ func scanSessionLeafFile(path string) (SessionLeafState, error) {
 
 func scanSessionLeafReader(r io.Reader) (SessionLeafState, error) {
 	tracker := newClaudeLeafTracker("")
+	branch := newClaudeBranchIndex()
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1024*1024), maxClaudeSessionLeafLineBytes)
 	rows := 0
@@ -282,12 +295,24 @@ func scanSessionLeafReader(r io.Reader) (SessionLeafState, error) {
 		if len(line) == 0 {
 			continue
 		}
-		tracker.ingestLine(line)
+		// One decode serves both consumers — the superset envelope
+		// carries every field either ingest path reads.
+		var row claudeSessionRow
+		if err := json.Unmarshal(line, &row); err != nil {
+			continue
+		}
+		tracker.ingestRow(row)
+		branch.ingestRow(row)
 	}
 	if err := scanner.Err(); err != nil {
 		return SessionLeafState{}, fmt.Errorf("claude: scan session leaf: %w", err)
 	}
-	return tracker.stateForColdResume(), nil
+	// The tracker's leaf is file-order based; claude validates resume-at
+	// against the parentUuid branch from the file's last transcript row.
+	// The two disagree on files with late-written stale-parent rows
+	// (deferred api_error tails) — repair to the branch's deepest
+	// content row so cold resume never targets an off-branch uuid.
+	return repairLeafForActiveBranch(tracker.stateForColdResume(), branch), nil
 }
 
 func findReplayUserParent(sessionID, workspacePath, replayUUID string) (string, bool, error) {

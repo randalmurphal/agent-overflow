@@ -1134,6 +1134,80 @@ func TestSession_Interrupt_CtxCancelSurfaces(t *testing.T) {
 	}
 }
 
+// TestInterruptAckFlowsIntoResultClassification drives the ack
+// correlation end to end on a live read loop: Interrupt round-trips
+// against a fake CLI that acks and then emits the verbatim 2.1.170
+// ede_diagnostic result line (the wire ordering the real CLI uses —
+// ack before result, verified 6/6 in the 2026-06-10 spike). The
+// resulting EventTurnComplete must classify as a user abort, not a
+// hard error — pinning the read-loop handoff
+// (handleControlResponseLine → MarkInterruptAcked → parseResult),
+// which the parser-only tests can't cover.
+func TestInterruptAckFlowsIntoResultClassification(t *testing.T) {
+	events := make(chan provider.ProviderEvent, 16)
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args: []string{"-c", `
+			IFS= read -r line || exit 1
+			reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+			printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
+			printf '%s\n' "$RESULT_LINE"
+			sleep 2
+		`},
+		Env: map[string]string{"RESULT_LINE": ede2_1_170InterruptResultLine},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	s := &Session{
+		proc:     proc,
+		threadID: testThread,
+		parser:   NewParser(),
+		onEvent: func(evt provider.ProviderEvent) {
+			select {
+			case events <- evt:
+			default:
+			}
+		},
+		cancel:                cancel,
+		readDone:              make(chan struct{}),
+		controlRequestTimeout: 2 * time.Second,
+	}
+	go s.readLoop()
+	t.Cleanup(func() { _ = s.Close() })
+
+	if err := s.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case evt := <-events:
+			if evt.Kind != provider.EventTurnComplete {
+				continue
+			}
+			meta, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta)
+			if !ok || meta == nil {
+				t.Fatalf("TurnComplete payload = %T, want *WireTurnCompleteMeta", evt.TurnComplete)
+			}
+			if !meta.Aborted {
+				t.Fatalf("Aborted = false — interrupt ack did not flow into result classification (StopReason=%q ErrorMessage=%q)", meta.StopReason, meta.ErrorMessage)
+			}
+			if meta.StopReason != "interrupted" {
+				t.Fatalf("StopReason = %q, want interrupted", meta.StopReason)
+			}
+			if meta.ErrorMessage != "" {
+				t.Fatalf("ErrorMessage = %q, want empty", meta.ErrorMessage)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no EventTurnComplete within 3s")
+		}
+	}
+}
+
 // -- Session lifecycle tests using cat subprocess --
 
 // newTestClaudeSession creates a Session backed by `cat`, which echoes

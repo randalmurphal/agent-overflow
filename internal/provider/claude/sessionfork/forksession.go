@@ -13,11 +13,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// transcriptTypes mirrors _TRANSCRIPT_TYPES in the Python SDK. Entries
+// TranscriptTypes mirrors _TRANSCRIPT_TYPES in the Python SDK. Entries
 // of any other type are non-transcript records (custom-title, ai-title,
 // content-replacement, etc.) — they are not copied wholesale into the
 // fork; the relevant ones are re-emitted with the new sessionId.
-var transcriptTypes = map[string]struct{}{
+//
+// Exported because the claude package's branch validator
+// (sessionleaf_branch.go) must admit exactly the rows claude's own
+// parentUuid walk sees — the fork transform and the validator sharing
+// one set is what keeps them in lockstep (invariant 28).
+var TranscriptTypes = map[string]struct{}{
 	"user":       {},
 	"assistant":  {},
 	"attachment": {},
@@ -61,7 +66,7 @@ var ErrMessageNotFound = errors.New("sessionfork: upToMessageUUID not found in s
 // upToMessageUUID == "" means clone the full transcript (no slice).
 //
 // The uuidMap powers the fork-time remap in
-// `app_thread_fork.go::remapForkedClaudeUUIDs`, which refreshes AO
+// `app_thread_fork.go::remapClaudeProviderIDs`, which refreshes AO
 // `items.meta` and `thread_checkpoints` rows so a subsequent revert
 // lookup in the forked session JSONL finds the cloned user message
 // by its current UUID — preserving the invariant "stored
@@ -94,7 +99,7 @@ func BuildForkLinesWithUUIDMap(
 // `isMeta`, etc. — see `findmessage.go::isRealUserPrompt` for the
 // filter the walk applies). Returns the old→new uuid remap so
 // callers can refresh AO-stored wire ids
-// (`app_thread_fork.go::remapForkedClaudeUUIDs`).
+// (`app_thread_fork.go::remapClaudeProviderIDs`).
 //
 // lastKeptTurn < 0 means clear the session entirely — the function
 // returns ErrSessionEmpty so the caller can wire the
@@ -145,7 +150,7 @@ func WriteForkFileFullTranscript(
 //
 // Returns the old→new uuid remap so the calling fork pipeline can
 // refresh AO-stored wire ids on cloned items / checkpoints
-// (`app_thread_fork.go::remapForkedClaudeUUIDs`); revert callers
+// (`app_thread_fork.go::remapClaudeProviderIDs`); revert callers
 // that aren't forking can discard it.
 //
 // Returns `ErrMessageNotFound` when upToUserMessageUUID does not
@@ -362,7 +367,7 @@ func parseTranscript(r io.Reader, srcSessionID string) (
 			continue
 		}
 		t, _ := entry["type"].(string)
-		if _, ok := transcriptTypes[t]; ok {
+		if _, ok := TranscriptTypes[t]; ok {
 			// Reject empty-string uuids: they'd collide in uuidMap
 			// (every empty-uuid entry would map to the same fresh UUID)
 			// and break the parentUuid chain walk.
@@ -455,11 +460,21 @@ func buildLines(
 	now := nowISO()
 	lines := make([]string, 0, len(writable)+2)
 
+	var prevWritableNewUUID string
 	for i, original := range writable {
 		oldUUID, _ := original["uuid"].(string)
 		newUUID := uuidMap[oldUUID]
 
 		newParent := resolveParent(original, byUUID, uuidMap)
+		if i > 0 && isDeferredAPIErrorRow(original) {
+			// Deferred api_error rows carry a known-stale parentUuid
+			// (written at next-send with the retry-time leaf, bypassing
+			// the rest of the turn). Force-chain them at their file
+			// position so the fork's tail stays on the active branch —
+			// a no-op when the source row was already chained to its
+			// predecessor. See rechain.go for the full contract.
+			newParent = prevWritableNewUUID
+		}
 		newLogicalParent, hadLogicalParent := resolveLogicalParent(original, uuidMap)
 
 		// Update timestamp only on the LAST writable entry — readers use
@@ -497,6 +512,7 @@ func buildLines(
 			return "", nil, nil, fmt.Errorf("marshal forked entry: %w", err)
 		}
 		lines = append(lines, string(b))
+		prevWritableNewUUID = newUUID
 	}
 
 	if len(contentReplacements) > 0 {
