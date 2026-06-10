@@ -60,6 +60,13 @@ import {
 } from './rhsPanelSlot.svelte';
 import { errString } from '../utils/errors';
 import type { RevealBoundary } from '../utils/subagentGrouping';
+import {
+  isItemActive,
+  normalizePreviewText,
+  subagentLaunchKind,
+} from '../utils/subagentGrouping';
+import type { SubagentFoldAggregate } from '../utils/subagentFold';
+import { createSubagentFoldRegistry } from '../utils/subagentFold';
 import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
 import {
   MAX_CACHED_SNAPSHOT_ITEMS,
@@ -135,6 +142,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import { PerItemSmoother } from '../markdown/smoothing/PerItemSmoother';
 import {
   LOAD_OLDER_ITEM_BUDGET,
+  ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
   ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
   ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
   SLICE_AROUND_ITEM_BUDGET,
@@ -485,6 +493,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const subagentHydrationExhausted = new Set<string>();
 
   /**
+   * Live-eviction fold for subagent children (see utils/subagentFold.ts).
+   * Terminal child rows leave pane memory once nothing can render them —
+   * collapsed inline cards, backgrounded launches, Codex spawns — and
+   * their count/preview fold in here so the collapsed card stays honest.
+   * SQLite keeps the rows (triage persists before emitting); expansion
+   * re-hydrates and `reclaim`s the ids. Every fold mutation rides a
+   * `replaceTimelineItems` revision bump, which is what re-runs the
+   * grouping derivation that reads these aggregates.
+   */
+  const subagentFolds = createSubagentFoldRegistry();
+
+  /**
    * Nonce bumped when the pane wants the active MessageTimeline to scroll
    * to a specific item. Scroll side effects are DOM operations that
    * shouldn't live on the store, so the store publishes an intent and
@@ -524,6 +544,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   function disposeDroppedItemState(
     previous: readonly Item[],
     nextItems: readonly Item[],
+    exhaustedScope?: ReadonlySet<string>,
   ): void {
     if (previous.length === 0) return;
     const keptIds = new Set(nextItems.map((item) => item.id));
@@ -536,24 +557,50 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // Dropped rows can include hydrated subagent children. Their
     // anchors must become hydratable again — a stale exhausted marker
     // would otherwise suppress the next expansion fetch and wedge the
-    // card on its loading placeholder. Cleared wholesale rather than
-    // per-anchor: mapping a dropped grandchild back to its launch root
-    // would need an ancestor walk over rows we just dropped, and the
-    // cost of breadth is one no-op refetch per re-expanded anchor.
-    subagentHydrationExhausted.clear();
+    // card on its loading placeholder. Live-eviction callers know
+    // exactly which anchors lost rows and pass them as
+    // `exhaustedScope`; unrelated markers survive, because clearing
+    // wholesale at eviction cadence re-arms any expanded card whose
+    // loaded count persistently trails its total into a refetch per
+    // eviction. Bulk window replacements (prune, reconcile, revert)
+    // clear wholesale: mapping a dropped grandchild back to its launch
+    // root would need an ancestor walk over rows we just dropped, and
+    // the cost of breadth is one no-op refetch per re-expanded anchor.
+    if (exhaustedScope) {
+      for (const anchorId of exhaustedScope) {
+        subagentHydrationExhausted.delete(anchorId);
+      }
+    } else {
+      subagentHydrationExhausted.clear();
+    }
     for (const item of droppedItems) disposeSmootherFor(item.id);
     rowUiState.disposeItems(droppedItems);
   }
 
   function replaceTimelineItems(
     nextItems: Item[],
-    options: { disposeDropped?: boolean } = {},
+    options: {
+      disposeDropped?: boolean;
+      exhaustedScope?: ReadonlySet<string>;
+    } = {},
   ): boolean {
     if (items === nextItems) return false;
     const previous = options.disposeDropped ? items : [];
     items = nextItems;
     rebuildItemIndexes(items);
-    if (options.disposeDropped) disposeDroppedItemState(previous, items);
+    // Fold↔items chokepoint: folds are only meaningful while their
+    // anchor row is loaded — once an anchor leaves the window, the
+    // next load of its region decorates from SQLite. Every wholesale
+    // window replacement (prune, reconcile, revert, cache install,
+    // eviction) flows through here, so one sweep after the index
+    // rebuild keeps the registry consistent everywhere. The upsert
+    // fast path bypasses this function but never drops existing rows.
+    // Eviction callers record their folds BEFORE replacing, with the
+    // anchors still loaded, so those folds are retained.
+    subagentFolds.retainAnchors((anchorId) => itemIndexById.has(anchorId));
+    if (options.disposeDropped) {
+      disposeDroppedItemState(previous, items, options.exhaustedScope);
+    }
     timelineRevision++;
     return true;
   }
@@ -782,6 +829,19 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     options: { hasMoreNewerAfterPrune?: boolean } = {},
   ): void {
     if (items.length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
+    // A head-drop on a visible, bottom-pinned timeline repaints the whole
+    // viewport: the content height collapses by the dropped rows, the
+    // browser clamps scrollTop, and virtua re-measures — seen as a blank
+    // flash mid-stream (incident 2026-06-10). Defer the prune to turn
+    // settle (settleTurn calls back in here), holding the hard ceiling
+    // as the memory backstop against a runaway turn.
+    if (
+      items.length <= ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS
+      && thread !== null
+      && getActiveTurn(thread.id)
+    ) {
+      return;
+    }
     const next = keepRecentWindowItems(
       items,
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
@@ -805,6 +865,127 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     setLoadedCursors(next.oldestCursor, next.newestCursor);
     hasMoreNewer = true;
     recomputeReveal();
+  }
+
+  /**
+   * Eviction policy for one upserted or patched row. Returns the launch
+   * anchor to fold the row under, or null when the row must stay in
+   * pane memory: still active (the delta pipeline requires streaming
+   * rows to exist), itself a launch anchor (anchors are the fold keys
+   * and the cards), a flat non-subagent row, an orphan, or a child of
+   * an inline card that is currently expanded. Retention is keyed on
+   * the direct parent's expansion only; settled rows under collapsed
+   * ancestors are swept by evictCollapsedSubagentSubtree when their own
+   * card collapses.
+   */
+  function evictableAnchorIdFor(item: Item): string | null {
+    if (isItemActive(item)) return null;
+    const parentId = item.parentId ?? '';
+    if (!parentId) return null;
+    if (subagentLaunchKind(item) !== null) return null;
+    const parentIndex = itemIndexById.get(parentId);
+    if (parentIndex === undefined) return null;
+    const parent = items[parentIndex];
+    const launchKind = subagentLaunchKind(parent);
+    if (launchKind === null) return null;
+    if (launchKind === 'inline' && rowUiState.isSubagentGroupExpanded(parent.id)) {
+      return null;
+    }
+    return parent.id;
+  }
+
+  /** One row leaving pane memory for the fold, keyed by its launch anchor. */
+  interface SubagentEviction {
+    item: Item;
+    anchorId: string;
+  }
+
+  /**
+   * Collect every settled non-launch descendant under `anchorId` into
+   * `out`. Nested launches stay loaded (they are fold keys and render
+   * as nested cards); their settled children fold under their own
+   * anchor so nested entry counters stay honest. One forward pass
+   * suffices because items are in (turnIndex, itemIndex) order — a
+   * launch precedes its rows.
+   */
+  function collectSettledSubtree(anchorId: string, out: SubagentEviction[]): void {
+    const launchIds = new Set([anchorId]);
+    for (const item of items) {
+      const parentId = item.parentId ?? '';
+      if (!parentId || !launchIds.has(parentId)) continue;
+      if (subagentLaunchKind(item) !== null) {
+        launchIds.add(item.id);
+        continue;
+      }
+      if (isItemActive(item)) continue;
+      out.push({ item, anchorId: parentId });
+    }
+  }
+
+  /**
+   * Commit evictions: record each row in the fold registry, then drop
+   * the rows through replaceTimelineItems with disposal so smoothers
+   * and row UI state are cleaned like any other dropped row, and
+   * recompute the reveal gate. Exhausted-hydration markers clear only
+   * for the anchors whose transcripts changed — see
+   * disposeDroppedItemState. Duplicate entries are harmless: the
+   * registry and the drop set both dedupe by id.
+   */
+  function commitSubagentEvictions(evictions: readonly SubagentEviction[]): void {
+    if (evictions.length === 0) return;
+    const evictedIds = new Set<string>();
+    const anchorIds = new Set<string>();
+    for (const { item, anchorId } of evictions) {
+      subagentFolds.recordEvicted(
+        anchorId,
+        item,
+        normalizePreviewText(item.summary ?? ''),
+      );
+      evictedIds.add(item.id);
+      anchorIds.add(anchorId);
+    }
+    replaceTimelineItems(
+      items.filter((it) => !evictedIds.has(it.id)),
+      { disposeDropped: true, exhaustedScope: anchorIds },
+    );
+    recomputeReveal();
+  }
+
+  /**
+   * Fold-and-drop settled subagent children that nothing can render.
+   * `candidates` is the changed-row set of the upsert batch or status
+   * patch that just applied: children that arrived terminal, children
+   * whose stored row just flipped terminal, and — when a launch anchor
+   * itself changed — a sweep of its settled subtree (covers a
+   * foreground launch being backgrounded mid-run, which flips its
+   * whole transcript from expandable to suppressed).
+   */
+  function evictSettledSubagentChildren(candidates: readonly Item[]): void {
+    let evictions: SubagentEviction[] | null = null;
+    for (const candidate of candidates) {
+      if (subagentLaunchKind(candidate) === 'suppressed') {
+        collectSettledSubtree(candidate.id, (evictions ??= []));
+        continue;
+      }
+      const anchorId = evictableAnchorIdFor(candidate);
+      if (anchorId === null) continue;
+      (evictions ??= []).push({ item: candidate, anchorId });
+    }
+    if (evictions) commitSubagentEvictions(evictions);
+  }
+
+  /**
+   * Collapse-time eviction: fold every settled descendant under
+   * `anchorId` out of pane memory (counts and preview survive in the
+   * fold registry; rows re-hydrate from SQLite on the next expand).
+   */
+  function evictCollapsedSubagentSubtree(anchorId: string): void {
+    const anchorIndex = itemIndexById.get(anchorId);
+    if (anchorIndex === undefined) return;
+    if (subagentLaunchKind(items[anchorIndex]) === null) return;
+    const evictions: SubagentEviction[] = [];
+    collectSettledSubtree(anchorId, evictions);
+    commitSubagentEvictions(evictions);
   }
   // Reveal-gate invariant: any wholesale `items` replacement that can
   // change which top-level rows exist relative to a live smoother must
@@ -1028,6 +1209,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   ): ApplyItemUpsertsToWindowResult | null {
     if (incoming.length === 0) return null;
 
+    // Re-delivered upserts for folded children (transport replay after a
+    // reconnect) must not re-insert rows the fold already counted. The
+    // canonical row lives in SQLite — persisted before the event was
+    // emitted — so the count survives the swallow; an enriched echo's
+    // new content (e.g. a completion re-persisted with an inline diff
+    // upgrade) surfaces when expansion rehydrates the transcript.
+    if (incoming.some((it) => subagentFolds.isEvicted(it.id))) {
+      incoming = incoming.filter((it) => !subagentFolds.isEvicted(it.id));
+      if (incoming.length === 0) return null;
+    }
+
     const next = applyItemUpsertsToWindow({
       current: items,
       incoming,
@@ -1074,9 +1266,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         newestLoadedCursor = newestCursorFromItems(items);
         newestLoadedTurnIndex = newestLoadedCursor?.turnIndex ?? null;
       }
-      if (!hasMoreNewer) {
-        pruneToRecentWindowIfNeeded();
-      }
+    }
+    // Live eviction runs before the window-cap check so settled subagent
+    // children never count toward the prune trigger — the cap effectively
+    // bounds renderable rows, matching the backend pagers' top-level-only
+    // budget since 6187d039.
+    evictSettledSubagentChildren(next.changedItems);
+    if (next.appendedItems.length > 0 && !hasMoreNewer) {
+      pruneToRecentWindowIfNeeded();
     }
 
     // Reconcile per-item smoothers with the upsert state. A completion /
@@ -1326,6 +1523,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       )) as Item[];
       if (gen !== switchGeneration) return false;
       const incoming = itemsForThread(children ?? [], currentThread.id);
+      // Rows coming back into memory leave the live-eviction fold first —
+      // the invariant is an id is folded XOR loaded, so the card's count
+      // (loaded + folded) stays exact through the hydration round-trip.
+      subagentFolds.reclaim(incoming.map((child) => child.id));
       const next = mergeMissingItemsById(incoming, items);
       if (next === items) {
         subagentHydrationExhausted.add(rootItemID);
@@ -1386,6 +1587,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         hasMoreHistory,
         hasMoreNewer,
         latestSettledTurn,
+        // Folded subagent children travel with the snapshot: the cached
+        // items deliberately exclude evicted rows, so without the fold a
+        // warm re-entry would render collapsed cards with zeroed counts
+        // until the next live event or hydration.
+        subagentFolds: subagentFolds.snapshot(),
       });
     }
     if (sameThreadReswitch) {
@@ -1501,6 +1707,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     loading = true;
     if (cached) {
       replaceTimelineItems(cached.items);
+      subagentFolds.restore(cached.subagentFolds);
       setLoadedCursors(
         cached.oldestLoadedCursor ?? oldestCursorFromItems(cached.items),
         cached.newestLoadedCursor ?? newestCursorFromItems(cached.items),
@@ -1516,6 +1723,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       latestSettledTurn = cached.latestSettledTurn;
     } else {
       replaceTimelineItems([]);
+      subagentFolds.clear();
       // Windowed-history reset. A null floor disables the upsert floor
       // check until the backend tells us otherwise — between thread
       // clear and the initial-slice response any streamed upserts are
@@ -2232,6 +2440,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       thread = null;
       draftPlaceholder = null;
       replaceTimelineItems([]);
+      subagentFolds.clear();
       rowUiState.clear();
       disposeAllSmoothers();
       // Clearing to empty: drop the live-content stamp too (see
@@ -3084,6 +3293,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         next.updatedAt = evt.patch.updatedAt;
       if (itemsAreEqual(current, next)) return;
       items[index] = next;
+      // Streaming children settle through THIS path, not upserts —
+      // triage's doSettleStreamingText/Thinking emit field patches.
+      // Without this hook, settled text rows under collapsed cards
+      // would stay in pane memory for the rest of the turn.
+      evictSettledSubagentChildren([next]);
     },
 
     // ---- Per-row UI state (survives virtua remount) ----
@@ -3092,7 +3306,24 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     expansionStateForPayload: rowUiState.expansionStateForPayload,
     retainExpansionStateForPayload: rowUiState.retainExpansionStateForPayload,
     isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
-    toggleSubagentGroupExpanded: rowUiState.toggleSubagentGroupExpanded,
+    /**
+     * Expansion toggle with live eviction on collapse: the settled rows
+     * of a card the user just closed fold out of pane memory (counts and
+     * preview survive via the fold registry; the rows re-hydrate from
+     * SQLite on the next expand). Active rows stay — the delta pipeline
+     * requires streaming rows to exist in the window.
+     */
+    toggleSubagentGroupExpanded(groupKey: string): boolean {
+      const willExpand = rowUiState.toggleSubagentGroupExpanded(groupKey);
+      if (!willExpand) evictCollapsedSubagentSubtree(groupKey);
+      return willExpand;
+    },
+    /** Live fold aggregate for a launch anchor — MessageTimeline threads
+     *  this into the grouping pipeline. Reads are revision-driven: every
+     *  fold mutation rides a timelineRevision bump. */
+    subagentLiveAggregate(anchorId: string): SubagentFoldAggregate | undefined {
+      return subagentFolds.aggregate(anchorId);
+    },
     attachmentCacheFor: rowUiState.attachmentCacheFor,
     pruneRowUiState: rowUiState.pruneRowUiState,
     // Live smoother-revealed text for a streaming thinking row.
@@ -3239,6 +3470,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         });
       }
       latestSettledTurn = settled;
+      // Run the deferred window prune now that the turn is quiet — the
+      // streaming-append path skips it while a turn is active so the
+      // head-drop repaint never lands mid-stream.
+      if (!hasMoreNewer) {
+        pruneToRecentWindowIfNeeded();
+      }
     },
 
     /**

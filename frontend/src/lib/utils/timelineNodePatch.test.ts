@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { patchTimelineNodeItemRefs } from './timelineNodePatch';
 import type { Item } from '../types/models';
+import type { SubagentFoldAggregate } from './subagentFold';
 import type {
   TimelineNode,
   TimelineLeaf,
@@ -99,6 +100,43 @@ describe('patchTimelineNodeItemRefs', () => {
     expect(patchedGroup.groupKey).toBe('g1');
     expect(patchedGroup.descendantCount).toBe(1);
     expect(patchedGroup.latestChildSummary).toBe('child updated');
+  });
+
+  it('competes the live fold preview when recomputing a patched group summary', () => {
+    const parent = mkItem({ id: 'p', kind: 'tool_call', summary: 'launch' });
+    const child = mkItem({ id: 'c', itemIndex: 2, summary: 'loaded terminal' });
+    const group: SubagentGroupNode = {
+      kind: 'group',
+      parent,
+      groupKey: 'p',
+      children: [leaf(child)],
+      descendantCount: 3,
+      loadedDescendantCount: 1,
+      latestChildSummary: 'loaded terminal',
+    };
+    const fold: SubagentFoldAggregate = {
+      evictedCount: 2,
+      terminalPreview: 'evicted later',
+      terminalTurnIndex: 0,
+      terminalItemIndex: 9,
+    };
+    const aggregates = (anchorId: string) =>
+      anchorId === 'p' ? fold : undefined;
+
+    const childUpdated = mkItem({
+      id: 'c',
+      itemIndex: 2,
+      summary: 'loaded terminal v2',
+      updatedAt: 2,
+    });
+    const lookup = (id: string) => (id === 'c' ? childUpdated : parent);
+    const result = patchTimelineNodeItemRefs([group], lookup, aggregates);
+
+    const patchedGroup = result[0] as SubagentGroupNode;
+    // The fold's evicted terminal at (0,9) outranks the loaded terminal
+    // at (0,2) — the recomputed preview must keep competing the fold,
+    // not regress to loaded children only.
+    expect(patchedGroup.latestChildSummary).toBe('evicted later');
   });
 
   it('patches SubagentGroupNode with changed parent', () => {

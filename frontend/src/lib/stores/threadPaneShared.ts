@@ -42,11 +42,22 @@ export const LOAD_OLDER_ITEM_BUDGET = 200;
 export const ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS = 500;
 
 /**
- * Hard loaded item count that triggers pruning/recentering. The pane keeps
- * a single contiguous window; exceeding this cap drops the far side and
- * exposes an older/newer gap control.
+ * Loaded item count that arms pruning/recentering. The pane keeps a
+ * single contiguous window; exceeding this cap drops the far side and
+ * exposes an older/newer gap control. The recent-window path defers
+ * its prune to turn settle while a turn is streaming — see
+ * ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS below.
  */
 export const ACTIVE_TIMELINE_WINDOW_MAX_ITEMS = 800;
+
+/**
+ * Memory backstop for the prune deferral. While a turn is streaming, the
+ * recent-window prune waits for turn settle (a mid-stream head-drop
+ * repaints the visible timeline — incident 2026-06-10); a single turn
+ * that streams past this ceiling gets pruned anyway, accepting the
+ * repaint over unbounded growth.
+ */
+export const ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS = 1600;
 
 /**
  * Initial-load slice size on `switchThread`. Sized to cover several

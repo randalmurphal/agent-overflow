@@ -49,7 +49,10 @@ palette is open.
 The visible-thread memory budget is load-bearing. Heavy payloads (diffs,
 command output, thinking, attachments) load on demand through bindings.
 Thread switch is a bounded-window load or cache restore, not a full-history
-hydrate.
+hydrate. Settled subagent children are evicted from pane memory into a
+per-anchor fold (`utils/subagentFold.ts`) and re-hydrate on card
+expansion; see "Live Window Bounds" in
+[`docs/architecture/frontend-scroll.md`](../docs/architecture/frontend-scroll.md).
 
 ## Thread Switch And Scroll
 

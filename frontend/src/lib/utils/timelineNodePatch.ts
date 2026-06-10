@@ -3,10 +3,14 @@ import type {
   TimelineNode,
   TimelineLeaf,
   SubagentGroupNode,
+  SubagentLiveAggregates,
   WaitGroupNode,
   ReadGroupNode,
 } from './subagentGrouping';
-import { decoratedSubagentAggregates, pickLatestChildSummary } from './subagentGrouping';
+import {
+  decoratedSubagentAggregates,
+  pickLatestChildSummary,
+} from './subagentGrouping';
 
 function patchLeaf(
   node: TimelineLeaf,
@@ -20,11 +24,12 @@ function patchLeaf(
 function patchChildren(
   children: TimelineNode[],
   getItem: (id: string) => Item | undefined,
+  aggregates: SubagentLiveAggregates | undefined,
 ): { next: TimelineNode[]; changed: boolean } {
   let changed = false;
   const next: TimelineNode[] = new Array(children.length);
   for (let i = 0; i < children.length; i++) {
-    const patched = patchNode(children[i], getItem);
+    const patched = patchNode(children[i], getItem, aggregates);
     if (patched !== children[i]) changed = true;
     next[i] = patched;
   }
@@ -48,10 +53,15 @@ function patchLeafChildren(
 function patchSubagentGroup(
   node: SubagentGroupNode,
   getItem: (id: string) => Item | undefined,
+  aggregates: SubagentLiveAggregates | undefined,
 ): SubagentGroupNode {
   const freshParent = getItem(node.parent.id);
   const parentChanged = freshParent !== undefined && freshParent !== node.parent;
-  const { next: nextChildren, changed: childrenChanged } = patchChildren(node.children, getItem);
+  const { next: nextChildren, changed: childrenChanged } = patchChildren(
+    node.children,
+    getItem,
+    aggregates,
+  );
   if (!parentChanged && !childrenChanged) return node;
   const parent = parentChanged ? freshParent : node.parent;
   // Only a replaced parent ref can carry different decorated aggregates,
@@ -76,7 +86,9 @@ function patchSubagentGroup(
     descendantCount,
     loadedDescendantCount: node.loadedDescendantCount,
     latestChildSummary: childrenChanged
-      ? (pickLatestChildSummary(nextChildren) || decoratedSummary || node.latestChildSummary)
+      ? (pickLatestChildSummary(nextChildren, aggregates?.(parent.id))
+        || decoratedSummary
+        || node.latestChildSummary)
       : (node.latestChildSummary || decoratedSummary),
   };
 }
@@ -134,10 +146,11 @@ function patchReadGroup(
 function patchNode(
   node: TimelineNode,
   getItem: (id: string) => Item | undefined,
+  aggregates: SubagentLiveAggregates | undefined,
 ): TimelineNode {
   switch (node.kind) {
     case 'leaf': return patchLeaf(node, getItem);
-    case 'group': return patchSubagentGroup(node, getItem);
+    case 'group': return patchSubagentGroup(node, getItem, aggregates);
     case 'wait_group': return patchWaitGroup(node, getItem);
     case 'read_group': return patchReadGroup(node, getItem);
   }
@@ -146,11 +159,12 @@ function patchNode(
 export function patchTimelineNodeItemRefs(
   skeleton: readonly TimelineNode[],
   getItem: (id: string) => Item | undefined,
+  aggregates?: SubagentLiveAggregates,
 ): TimelineNode[] {
   let changed = false;
   const result: TimelineNode[] = new Array(skeleton.length);
   for (let i = 0; i < skeleton.length; i++) {
-    const patched = patchNode(skeleton[i], getItem);
+    const patched = patchNode(skeleton[i], getItem, aggregates);
     if (patched !== skeleton[i]) changed = true;
     result[i] = patched;
   }

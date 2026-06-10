@@ -202,14 +202,20 @@
   // bump). groupedNodes is a cheap O(M) patch pass that swaps in fresh
   // item refs on every streaming delta, with structural sharing so
   // unchanged nodes keep the same object reference and skip re-render.
+  // Stable identity on purpose: both derivations below receive this and
+  // re-read fold state via the pane on each run (fold mutations always
+  // ride a timelineRevision bump, so no extra reactivity is needed).
+  const subagentAggregates = (anchorId: string) => pane.subagentLiveAggregate(anchorId);
   let structuralNodes = $derived.by(() => {
     pane.timelineRevision;
     return untrack(() =>
-      groupConsecutiveReads(groupItemsBySubagent(filterRedundantNotifications(pane.items))),
+      groupConsecutiveReads(
+        groupItemsBySubagent(filterRedundantNotifications(pane.items), subagentAggregates),
+      ),
     );
   });
   let groupedNodes = $derived.by(() =>
-    patchTimelineNodeItemRefs(structuralNodes, (id) => pane.getItemById(id)),
+    patchTimelineNodeItemRefs(structuralNodes, (id) => pane.getItemById(id), subagentAggregates),
   );
   // Reveal gate: while a turn streams, the pane's sequencer holds the next
   // top-level row back until the current item's smoother drains

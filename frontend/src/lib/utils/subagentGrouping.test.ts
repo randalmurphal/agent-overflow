@@ -11,10 +11,12 @@ import {
   timelineNodeKey,
   visibleTimelineItemIdForItem,
   type SubagentGroupNode,
+  type SubagentLiveAggregates,
   type TimelineLeaf,
   type WaitGroupNode,
   type TimelineNode,
 } from './subagentGrouping';
+import type { SubagentFoldAggregate } from './subagentFold';
 import type { Item } from '../types/models';
 
 function mkItem(overrides: Partial<Item> & { id: string }): Item {
@@ -1169,6 +1171,196 @@ describe('sliceRevealedNodes', () => {
     const nodes = buildTimeline();
     expect(timelineNodeItemIndex(nodes[0])).toBe(0); // think leaf
     expect(timelineNodeItemIndex(nodes[1])).toBe(1); // Agent group → parent
+  });
+});
+
+describe('live fold aggregates (evicted subagent children)', () => {
+  // The pane evicts settled subagent child rows from memory and tracks
+  // them per launch anchor in a fold registry (utils/subagentFold.ts).
+  // The grouping pipeline receives the registry as a lookup so collapsed
+  // cards keep honest counts and previews for rows that are not loaded.
+  function foldLookup(
+    byAnchor: Record<string, SubagentFoldAggregate>,
+  ): SubagentLiveAggregates {
+    return (anchorId) => byAnchor[anchorId];
+  }
+
+  it('adds evicted rows to the count and uses the fold preview when nothing is loaded', () => {
+    const nodes = groupItemsBySubagent(
+      [agentLaunch('agent-1', 0)],
+      foldLookup({
+        'agent-1': {
+          evictedCount: 3,
+          terminalPreview: 'evicted preview',
+          terminalTurnIndex: 0,
+          terminalItemIndex: 4,
+        },
+      }),
+    );
+
+    const group = expectGroup(nodes[0]);
+    expect(group.descendantCount).toBe(3);
+    expect(group.loadedDescendantCount).toBe(0);
+    expect(group.latestChildSummary).toBe('evicted preview');
+  });
+
+  it('composes loaded children with the fold and resolves the preview by position', () => {
+    const fold = foldLookup({
+      'agent-1': {
+        evictedCount: 2,
+        terminalPreview: 'evicted at 5',
+        terminalTurnIndex: 0,
+        terminalItemIndex: 5,
+      },
+    });
+
+    // Loaded terminal earlier than the fold → fold preview wins.
+    const foldWins = expectGroup(groupItemsBySubagent([
+      agentLaunch('agent-1', 0),
+      mkItem({ id: 'c1', itemIndex: 2, parentId: 'agent-1', summary: 'loaded at 2' }),
+    ], fold)[0]);
+    expect(foldWins.descendantCount).toBe(3);
+    expect(foldWins.loadedDescendantCount).toBe(1);
+    expect(foldWins.latestChildSummary).toBe('evicted at 5');
+
+    // Loaded terminal later than the fold → loaded preview wins.
+    const loadedWins = expectGroup(groupItemsBySubagent([
+      agentLaunch('agent-1', 0),
+      mkItem({ id: 'c2', itemIndex: 9, parentId: 'agent-1', summary: 'loaded at 9' }),
+    ], fold)[0]);
+    expect(loadedWins.latestChildSummary).toBe('loaded at 9');
+  });
+
+  it('always prefers an active loaded child over the fold preview', () => {
+    const nodes = groupItemsBySubagent(
+      [
+        agentLaunch('agent-1', 0),
+        mkItem({
+          id: 'c1',
+          itemIndex: 1,
+          parentId: 'agent-1',
+          status: 'streaming',
+          summary: 'streaming now',
+        }),
+      ],
+      foldLookup({
+        'agent-1': {
+          // Evicted rows are terminal by definition — even a later
+          // position must not outrank live work.
+          evictedCount: 1,
+          terminalPreview: 'evicted later',
+          terminalTurnIndex: 5,
+          terminalItemIndex: 0,
+        },
+      }),
+    );
+
+    expect(expectGroup(nodes[0]).latestChildSummary).toBe('streaming now');
+  });
+
+  it('keeps the decorated count as the ratchet floor over the live total', () => {
+    const nodes = groupItemsBySubagent(
+      [
+        mkItem({
+          id: 'agent-1',
+          itemIndex: 0,
+          kind: 'tool_call',
+          toolName: 'Agent',
+          meta: toolMeta({ subagentDescendantCount: 10 }),
+        }),
+        mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', summary: 'loaded' }),
+      ],
+      foldLookup({
+        'agent-1': {
+          evictedCount: 2,
+          terminalPreview: '',
+          terminalTurnIndex: 0,
+          terminalItemIndex: 2,
+        },
+      }),
+    );
+
+    const group = expectGroup(nodes[0]);
+    expect(group.descendantCount).toBe(10);
+    expect(group.loadedDescendantCount).toBe(1);
+  });
+
+  it('composes a nested launch fold into the outer count via the nested descendantCount', () => {
+    const nodes = groupItemsBySubagent(
+      [
+        agentLaunch('root', 0),
+        mkItem({
+          id: 'nested',
+          itemIndex: 1,
+          parentId: 'root',
+          kind: 'tool_call',
+          toolName: 'Task',
+          summary: 'Task: inner',
+        }),
+        mkItem({ id: 'c1', itemIndex: 2, parentId: 'nested', summary: 'inner work' }),
+      ],
+      foldLookup({
+        nested: {
+          evictedCount: 3,
+          terminalPreview: 'evicted last',
+          terminalTurnIndex: 0,
+          terminalItemIndex: 5,
+        },
+      }),
+    );
+
+    const root = expectGroup(nodes[0]);
+    const nested = expectGroup(root.children[0]);
+    expect(nested.descendantCount).toBe(4);
+    expect(nested.loadedDescendantCount).toBe(1);
+    expect(nested.latestChildSummary).toBe('evicted last');
+    // Outer total = nested anchor itself + nested's composed total.
+    expect(root.descendantCount).toBe(5);
+  });
+
+  it('counts folds of depth-cap flattened launches without inflating loaded rows', () => {
+    function nestedLaunch(id: string, itemIndex: number, parentId: string): Item {
+      return mkItem({
+        id,
+        itemIndex,
+        parentId,
+        kind: 'tool_call',
+        toolName: 'Task',
+        summary: `Task: ${id}`,
+      });
+    }
+    const nodes = groupItemsBySubagent(
+      [
+        agentLaunch('root', 0),
+        nestedLaunch('a', 1, 'root'),
+        nestedLaunch('b', 2, 'a'),
+        nestedLaunch('c', 3, 'b'),
+        mkItem({ id: 'd', itemIndex: 4, parentId: 'c', summary: 'flattened row' }),
+        nestedLaunch('f', 5, 'c'),
+      ],
+      foldLookup({
+        f: {
+          evictedCount: 2,
+          terminalPreview: 'f evicted',
+          terminalTurnIndex: 0,
+          terminalItemIndex: 7,
+        },
+      }),
+    );
+
+    const root = expectGroup(nodes[0]);
+    const a = expectGroup(root.children[0]);
+    const b = expectGroup(a.children[0]);
+    // `c` sits at MAX_DEPTH: its subtree renders as flat leaves, so the
+    // launch `f` inside it is a leaf, not a fold-aware group node. Its
+    // evicted rows still count toward `c`'s total — but NOT toward
+    // loadedDescendantCount, or the card would never hydrate on expand.
+    const c = expectGroup(b.children[0]);
+    expect(c.children.every((child) => child.kind === 'leaf')).toBe(true);
+    expect(c.loadedDescendantCount).toBe(2);
+    expect(c.descendantCount).toBe(4);
+    expect(b.descendantCount).toBe(5);
+    expect(root.descendantCount).toBe(7);
   });
 });
 

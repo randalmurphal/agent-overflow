@@ -42,6 +42,31 @@ paging. Existing in-memory rows keep their references; missing rows are
 added and the result is sorted. This preserves virtua row identity while
 remaining correct under persist-then-emit ordering.
 
+## Live Window Bounds
+
+The streaming append path caps the loaded window
+(`ACTIVE_TIMELINE_WINDOW_MAX_ITEMS`, pruning back to
+`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`), but the prune **defers to turn
+settle** while a turn is active. A mid-stream head-drop collapses content
+height under a bottom-pinned viewport, the browser clamps `scrollTop`,
+and virtua re-measures — a visible blank flash (incident 2026-06-10).
+`ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS` is the memory backstop: a
+single turn streaming past it gets pruned mid-turn anyway.
+
+Subagent child rows get a tighter bound than the window cap. Streaming
+children must live in `pane.items` (the delta pipeline applies only to
+loaded rows), but once a child settles and nothing can render it —
+collapsed inline card, backgrounded launch, Codex spawn — the pane evicts
+the row and folds its count/preview into a per-anchor registry
+(`utils/subagentFold.ts`). Collapsing an expanded card evicts its settled
+subtree the same way. Card expansion re-hydrates from SQLite via
+`ListSubagentDescendants` and reclaims the folded ids — an id is folded
+XOR loaded, never both. Folds ride the thread-switch snapshot cache with
+the window they describe, and a folded id arriving again over the wire
+(reconnect replay) is dropped, not re-inserted. Net effect: per-pane
+subagent memory is O(active children), not O(transcript), and the window
+cap counts only renderable rows.
+
 ## Warm-Up And Restore
 
 Fresh virtua mounts first estimate row heights and then correct them as
