@@ -94,7 +94,7 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	fork.SessionRef = sessionRef
 	fork.PendingForkRef = pendingForkRef
 	fork.UpdatedAt = time.Now().UnixMilli()
-	if err := a.remapForkedClaudeUUIDs(fork.ID, uuidMap); err != nil {
+	if err := a.remapClaudeProviderIDs(fork.ID, uuidMap); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
@@ -183,7 +183,7 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	fork.SessionRef = sessionRef
 	fork.PendingForkRef = pendingForkRef
 	fork.UpdatedAt = time.Now().UnixMilli()
-	if err := a.remapForkedClaudeUUIDs(fork.ID, uuidMap); err != nil {
+	if err := a.remapClaudeProviderIDs(fork.ID, uuidMap); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
@@ -265,7 +265,7 @@ func (a *App) ensureThreadCanFork(source store.Thread, atTurnIndex *int) error {
 // inline Claude JSONL slice (nil for Codex, nil for lazy fork-at-tail
 // where the actual fork happens at `--fork-session` start time and we
 // have no slice yet). When non-nil, the caller must call
-// `remapForkedClaudeUUIDs(fork.ID, uuidMap)` so cloned items'
+// `remapClaudeProviderIDs(fork.ID, uuidMap)` so cloned items'
 // `meta.provider_item_id` points at the fork's NEW UUIDs — keeping the
 // "stored UUID matches active session JSONL" invariant intact for
 // forks-of-forks.
@@ -536,37 +536,47 @@ func (a *App) lookupTurnAnchorClaudeUUID(threadID string, turnIndex int) string 
 	return ""
 }
 
-// remapForkedClaudeUUIDs rewrites cloned items' `meta.provider_item_id` from
-// their source-session UUIDs to the fork's NEW UUIDs. Maintains the invariant
-// "stored UUID always matches the active session's JSONL" so future forks keep
-// slicing from the fork's own transcript rather than chasing `forkedFrom`
-// backpointers across session files.
+// remapClaudeProviderIDs rewrites every stored provider id that points
+// into the OLD session file to the NEW session's reminted UUIDs:
+// items' `meta.provider_item_id` and checkpoints'
+// `provider_user_message_id` / `provider_parent_uuid`. Every fork-slice
+// remints every uuid (sessionfork.buildLines), so any id left pointing
+// at the source session silently degrades the next revert/fork to the
+// ordinal-walk fallback. Maintains the invariant "stored UUID always
+// matches the active session's JSONL".
+//
+// Callers: the fork pipeline (cloned items; forks carry no checkpoints
+// — that loop is a no-op there) and revertClaudeThreadToMessage
+// (surviving items + checkpoints of the SAME thread after its
+// SessionRef moves to the slice).
 //
 // uuidMap may have entries beyond just user-message UUIDs (assistant /
-// system entries also remap). Items only carry the user-message UUID; anything
-// unmapped (legacy rows, mismatched ids) is left alone rather than blanking the
-// column.
+// system entries also remap). Anything unmapped (legacy rows,
+// mismatched ids) is left alone rather than blanking the column —
+// UpdateCheckpointProviderIDs's empty-string-preserves contract gives
+// the same semantics on the checkpoint side.
 //
-// Returns nil when the fork has no Claude-stamped items (Codex fork,
+// Returns nil when the thread has no Claude-stamped rows (Codex fork,
 // lazy fork-at-tail, fork of a pre-stamp thread).
 //
 // Atomicity note: per-row UPDATEs run outside a single SQL transaction.
-// This is safe in the fork pipeline because every caller wraps the
+// In the fork pipeline that is safe because every caller wraps the
 // remap in a `closer.Stack` whose rollback deletes the fork thread
-// (and cascades to its items + checkpoints) on any error — so a
-// mid-remap failure never leaves a partially-remapped fork visible to
-// readers. The only window during which inconsistent rows exist is
-// before the rollback runs, and no concurrent reader has a handle to
-// a fork that hasn't returned from ForkThread* yet.
-func (a *App) remapForkedClaudeUUIDs(forkThreadID string, uuidMap map[string]string) error {
+// (and cascades to its items + checkpoints) on any error — a mid-remap
+// failure never leaves a partially-remapped fork visible to readers.
+// The revert caller instead logs-and-continues on error: its SessionRef
+// has already moved, and a partially-remapped row only means that row's
+// next revert takes the loud ordinal-fallback path instead of the
+// uuid-keyed one.
+func (a *App) remapClaudeProviderIDs(threadID string, uuidMap map[string]string) error {
 	if len(uuidMap) == 0 {
 		return nil
 	}
 
-	// 1. Cloned user_text items. Read all items, filter, remap meta.
-	items, err := a.store.ListItems(forkThreadID)
+	// 1. user_text items. Read all items, filter, remap meta.
+	items, err := a.store.ListItems(threadID)
 	if err != nil {
-		return fmt.Errorf("remap forked claude uuids: list fork items: %w", err)
+		return fmt.Errorf("remap claude provider ids: list items: %w", err)
 	}
 	for _, it := range items {
 		if it.Kind != "user_text" || it.Role != "user" {
@@ -582,13 +592,32 @@ func (a *App) remapForkedClaudeUUIDs(forkThreadID string, uuidMap map[string]str
 		}
 		newMeta, err := usermessage.MergeProviderItemID(it.Meta, newUUID)
 		if err != nil {
-			return fmt.Errorf("remap forked claude uuids: merge item %s/%s meta: %w", forkThreadID, it.ID, err)
+			return fmt.Errorf("remap claude provider ids: merge item %s/%s meta: %w", threadID, it.ID, err)
 		}
 		if newMeta == it.Meta {
 			continue
 		}
-		if err := a.store.UpdateItemMeta(forkThreadID, it.ID, newMeta); err != nil {
-			return fmt.Errorf("remap forked claude uuids: update item %s/%s meta: %w", forkThreadID, it.ID, err)
+		if err := a.store.UpdateItemMeta(threadID, it.ID, newMeta); err != nil {
+			return fmt.Errorf("remap claude provider ids: update item %s/%s meta: %w", threadID, it.ID, err)
+		}
+	}
+
+	// 2. Checkpoint provider ids — the revert slice anchor
+	// (provider_user_message_id) and the fork parent cursor
+	// (provider_parent_uuid). uuidMap[""] is "" and unmapped lookups
+	// yield "", both of which UpdateCheckpointProviderIDs preserves.
+	checkpoints, err := a.store.ListCheckpoints(threadID)
+	if err != nil {
+		return fmt.Errorf("remap claude provider ids: list checkpoints: %w", err)
+	}
+	for _, cp := range checkpoints {
+		newMsgID := uuidMap[cp.ProviderUserMessageID]
+		newParent := uuidMap[cp.ProviderParentUUID]
+		if newMsgID == "" && newParent == "" {
+			continue
+		}
+		if err := a.store.UpdateCheckpointProviderIDs(threadID, cp.UserItemID, newMsgID, newParent); err != nil {
+			return fmt.Errorf("remap claude provider ids: update checkpoint %s/%s: %w", threadID, cp.UserItemID, err)
 		}
 	}
 

@@ -476,7 +476,7 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 
 // UpdateItemMeta rewrites only the `meta` column on a single item
 // row, scoped to the owning thread. Used by the fork-time UUID remap
-// in `app_thread_fork.go::remapForkedClaudeUUIDs` to refresh a
+// in `app_thread_fork.go::remapClaudeProviderIDs` to refresh a
 // cloned `user_text` row's `provider_item_id` after the source
 // session JSONL is forked with fresh uuids. Distinct from
 // `UpsertItem` because the remap is a back-fill on cloned data, not

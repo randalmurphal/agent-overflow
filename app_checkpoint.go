@@ -512,7 +512,7 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 	// synthetic entries (boolean flags, content sentinels, injected XML)
 	// so the fallback is correct as long as the wire shape stays in its
 	// documented set.
-	newID, newPath, err := a.writeRevertedClaudeSession(srcPath, checkpoint)
+	newID, newPath, uuidMap, err := a.writeRevertedClaudeSession(srcPath, checkpoint)
 	if err != nil {
 		return fmt.Errorf("write reverted session: %w", err)
 	}
@@ -522,20 +522,31 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 		_ = os.Remove(newPath)
 		return fmt.Errorf("persist reverted claude state: %w", err)
 	}
+	// The slice reminted every uuid, so surviving items' provider_item_id
+	// and surviving checkpoints' provider ids all point at the OLD
+	// session file. Remap them to the new ids or the NEXT revert/fork on
+	// this thread degrades to the loud ordinal-fallback path. Rows at or
+	// past the revert anchor are about to be truncated by the caller and
+	// are absent from the map — unmapped ids are left untouched.
+	//
+	// Log-and-continue on failure (deviation from fail-loudly, justified):
+	// SessionRef already moved to the slice, so erroring out here would
+	// strand the thread half-reverted; stale ids only cost the fallback's
+	// known synthetic-entry sensitivity, not correctness.
+	if err := a.remapClaudeProviderIDs(thread.ID, uuidMap); err != nil {
+		log.Printf("claude rollback: remap provider ids for thread %s after revert: %v — subsequent reverts fall back to ordinal slicing", thread.ID, err)
+	}
 	return nil
 }
 
 // writeRevertedClaudeSession is the revert-path call into
-// writeClaudeSessionSlice. The revert path discards the uuidMap
-// because nothing downstream remaps stored ids — the active thread's
-// `items.meta.provider_item_id` still points at the source session's
-// UUIDs, which is correct because the source-message AO row remains
-// the slice anchor for any subsequent revert.
-func (a *App) writeRevertedClaudeSession(srcPath string, checkpoint store.Checkpoint) (string, string, error) {
-	newID, newPath, _, err := writeClaudeSessionSlice(
+// writeClaudeSessionSlice. Returns the slice's uuidMap (old → new for
+// every kept row) so the caller can refresh stored provider ids — the
+// slice remints every uuid, exactly like a fork.
+func (a *App) writeRevertedClaudeSession(srcPath string, checkpoint store.Checkpoint) (string, string, map[string]string, error) {
+	return writeClaudeSessionSlice(
 		srcPath, checkpoint.ProviderUserMessageID, checkpoint.TurnIndex-1, "claude rollback",
 	)
-	return newID, newPath, err
 }
 
 // writeClaudeSessionSlice tries the UUID-keyed fork-slice when
@@ -549,9 +560,9 @@ func (a *App) writeRevertedClaudeSession(srcPath string, checkpoint store.Checkp
 // deliberate because a wrong-source slice is worse than the
 // ordinal walk's known synthetic-entry sensitivity.
 //
-// Returns (newSessionID, newPath, uuidMap, err). The fork callers
-// thread the uuidMap into `remapForkedClaudeUUIDs`; the revert
-// caller discards it.
+// Returns (newSessionID, newPath, uuidMap, err). Fork and revert
+// callers both thread the uuidMap into `remapClaudeProviderIDs` so
+// stored ids track the reminted session.
 func writeClaudeSessionSlice(
 	srcPath, anchorUUID string,
 	fallbackLastKeptTurn int,
