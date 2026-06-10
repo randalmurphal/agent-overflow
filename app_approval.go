@@ -115,6 +115,11 @@ func (a *App) emitApprovalResolution(threadID, requestID, decision string, updat
 		Meta:      meta,
 		Timestamp: time.Now(),
 	}
+	// Handle (not HandleSynthetic) is deliberate here and in
+	// emitUserInputResolution: both are reachable only with a live
+	// registered session (the bindings error out at sessionManager().get
+	// first), and a live session implies the stopped marker was cleared
+	// at start.
 	if a.triage != nil {
 		if err := a.triage.Handle(evt); err != nil {
 			log.Printf("respond to approval triage update failed: %v", err)

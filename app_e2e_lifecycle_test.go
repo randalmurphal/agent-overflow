@@ -837,6 +837,22 @@ func TestE2E_ClaudeQueuedFlushRepairsRiskyAdvisorContextBeforeSend(t *testing.T)
 		t.Fatalf("CreateThread: %v", err)
 	}
 
+	// The repair restart passes an explicit --resume-session-at cursor
+	// (a-final, tracked from the wire by the live leaf tracker), and the
+	// spawn path validates explicit cursors against the session JSONL's
+	// active parentUuid branch before honoring them (invariant 28). A
+	// real CLI maintains that file as it streams; the mock script can't,
+	// so stage the transcript rows matching what the script streams
+	// below, with a-final as the file's last transcript row — i.e. the
+	// branch tip — so the wire-derived cursor survives validation
+	// exactly as it would in production.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeClaudeProjectSession(t, home, workspace, "risky-sess", `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"risky-sess","message":{"role":"user","content":"trigger risky advisor"}}
+{"type":"assistant","uuid":"a-advisor","parentUuid":"u1","sessionId":"risky-sess","message":{"id":"msg-advisor","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}
+{"type":"assistant","uuid":"a-final","parentUuid":"u1","sessionId":"risky-sess","message":{"id":"msg-final","role":"assistant","content":[{"type":"text","text":"done"}]}}
+`)
+
 	scriptDir := t.TempDir()
 	argsLog := filepath.Join(scriptDir, "args.log")
 	countFile := filepath.Join(scriptDir, "count")
@@ -1589,4 +1605,149 @@ func waitForFileText(t *testing.T, path string, predicate func(string) bool) str
 		return predicate(last)
 	})
 	return last
+}
+
+// TestE2E_ClaudeStoppedThreadPreInitErrorResultSurfaces reproduces the
+// 2026-06-10 wedged-thread incident end-to-end: a thread whose session
+// was stopped (StopSession → CleanupThread sets the stopped-thread
+// marker, exactly what revert-on-interrupt does) is restarted by a
+// send, and the replacement Claude process dies during startup —
+// emitting a single result{error_during_execution} BEFORE system/init,
+// then lingering alive (the real CLI does not exit after a failed
+// --resume-session-at validation).
+//
+// Pre-fix, every link failed silently: the stopped marker dropped the
+// error result (only EventInit cleared it, and init never came), no
+// error item was persisted, the lingering process stayed registered,
+// and the frontend showed "Working" forever. Post-fix:
+//
+//  1. startSessionNow re-admits the thread (MarkThreadActive) before
+//     spawning, so the pre-init error result routes.
+//  2. handleTurnComplete's orphan branch persists an error item on the
+//     send's turn (the provider:item_event upsert is what clears the
+//     frontend's optimistic pending-send state).
+//  3. sessionEventHandler reaps the dead-on-arrival session, so the
+//     lingering subprocess is closed and the next send starts fresh.
+//  4. No session_died banner row — the error item is the single surface.
+func TestE2E_ClaudeStoppedThreadPreInitErrorResultSurfaces(t *testing.T) {
+	app, bus := setupE2EApp(t)
+
+	workspace := t.TempDir()
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Turn 1: a healthy session completes a normal turn.
+	happy := [][]string{
+		{
+			`{"type":"system","subtype":"init","session_id":"sess-incident","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"2.1"}`,
+			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"all good"}}}`,
+			`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
+			`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"all good"}]}}`,
+			`{"type":"result","subtype":"success","is_error":false}`,
+		},
+	}
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), happy)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+	if err := app.SendMessage(thread.ID, "hi", nil); err != nil {
+		t.Fatalf("SendMessage 1: %v", err)
+	}
+	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
+
+	// Stop the session — the incident's revert path reduces to this
+	// (teardownAndCloseSession → CleanupThread → stopped marker set).
+	if err := app.StopSession(thread.ID); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+
+	// Replacement binary: dies during startup. Its only output is the
+	// incident-shaped error result (emitted pre-init), then it lingers
+	// reading stdin like the real CLI.
+	doa := [][]string{
+		{
+			`{"type":"result","subtype":"error_during_execution","duration_ms":1313,"is_error":true,"num_turns":0,"errors":["No message found with message.uuid of: ea6789cd-390e-4ab9-aff7-902c09f1ed98"]}`,
+		},
+	}
+	doaBinary := testutil.WriteMockClaudeScript(t, t.TempDir(), doa)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": doaBinary}); err != nil {
+		t.Fatalf("swap binary: %v", err)
+	}
+
+	// The retry send lazy-starts the replacement session.
+	if err := app.SendMessage(thread.ID, "are you there?", nil); err != nil {
+		t.Fatalf("SendMessage 2: %v", err)
+	}
+
+	// The pre-init error result must route (not be dropped by the
+	// stopped marker)...
+	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
+
+	// ...and persist an error item carrying the wire message on the
+	// retry's turn.
+	deadline := time.Now().Add(5 * time.Second)
+	var errorItem *store.Item
+	for errorItem == nil {
+		items, listErr := app.store.ListItems(thread.ID)
+		if listErr != nil {
+			t.Fatalf("ListItems: %v", listErr)
+		}
+		for i := range items {
+			if items[i].Kind == "error" && strings.Contains(items[i].Summary, "No message found") {
+				errorItem = &items[i]
+				break
+			}
+		}
+		if errorItem == nil {
+			if time.Now().After(deadline) {
+				items, _ := app.store.ListItems(thread.ID)
+				t.Fatalf("no error item persisted for the pre-init failure; items = %+v", items)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	// The retry's user message itself persisted normally.
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var sawRetryUserRow bool
+	for _, it := range items {
+		if it.Kind == "user_text" && strings.Contains(it.Summary, "are you there?") {
+			sawRetryUserRow = true
+		}
+		if strings.HasPrefix(it.ID, "session_died:") {
+			t.Fatalf("session_died banner row persisted — the error item must be the single surface: %+v", it)
+		}
+	}
+	if !sawRetryUserRow {
+		t.Fatalf("retry user row missing; items = %+v", items)
+	}
+	// Exact attribution: the thread's first send lands on turn 0
+	// (nextSendTurnIndex returns LastTurnIndex unchanged for an empty
+	// thread), so the retry's dispatcher-stamped pending send — the
+	// orphan branch's attribution source — is turn 1.
+	if errorItem.TurnIndex != 1 {
+		t.Fatalf("error item turn = %d, want the retry send's turn 1", errorItem.TurnIndex)
+	}
+
+	// The dead-on-arrival session must be reaped (async goroutine —
+	// poll). Pre-fix the lingering process stayed registered forever.
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		app.mu.Lock()
+		_, stillRegistered := app.sessions[thread.ID]
+		app.mu.Unlock()
+		if !stillRegistered {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dead pre-init session still registered after 5s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

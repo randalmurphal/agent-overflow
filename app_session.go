@@ -97,18 +97,31 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	} else if dir != "" {
 		opts.WorkDir = dir
 	}
-	if t.Provider == string(provider.Claude) && opts.Resume != "" && !opts.ForkSession && claudeResumeAt != "" {
-		opts.ResumeAt = claudeResumeAt
-	} else if t.Provider == string(provider.Claude) && opts.Resume != "" && !opts.ForkSession {
-		if state, scanErr := claude.ScanSessionLeaf(opts.Resume, opts.WorkDir); scanErr != nil {
-			log.Printf("start session: scan Claude session leaf %s: %v", opts.Resume, scanErr)
-		} else if state.CanonicalLeafUUID != "" {
-			opts.ResumeAt = state.CanonicalLeafUUID
-		}
-	}
-
 	if err := a.stopExistingSessionLocked(threadID); err != nil {
 		return fmt.Errorf("start session: %w", err)
+	}
+
+	// Resolve the resume cursor only after the prior session is fully
+	// stopped: Close blocks on the read loop, and the CLI can append
+	// final transcript rows right up to exit. Scanning before the stop
+	// could validate against (or pick a leaf from) a file the dying
+	// process is still extending.
+	if t.Provider == string(provider.Claude) && opts.Resume != "" && !opts.ForkSession {
+		opts.ResumeAt = resolveClaudeResumeAt(opts.Resume, opts.WorkDir, claudeResumeAt)
+	}
+
+	// Re-admit the thread's events in triage BEFORE spawning. A prior
+	// StopSession left the stopped-thread marker set, and the
+	// replacement session can emit before any wire proof-of-life lands:
+	// Codex emits EventInit synchronously inside NewSession, and a
+	// Claude process that dies during startup (unusable
+	// --resume-session-at cursor) emits its only diagnostics pre-init.
+	// Clearing here is safe — stopExistingSessionLocked has fully
+	// drained the prior session's read loop (Close blocks on it), so no
+	// stale frame can slip through. This is the ONLY place the marker
+	// is cleared; see triage.MarkThreadActive.
+	if a.triage != nil {
+		a.triage.MarkThreadActive(threadID)
 	}
 
 	// Activate watcher + MCP AFTER stopExistingSessionLocked so the
@@ -184,6 +197,38 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	}
 
 	return nil
+}
+
+// resolveClaudeResumeAt picks the --resume-session-at cursor for a
+// Claude session resume. An explicit cursor (today only the live-tracker
+// leaf passed by the context-repair restart, app_claude_context.go) is
+// validated against the session file's active parentUuid branch first:
+// the tracker is wire-derived and can disagree with the file — the CLI
+// appends deferred system/api_error rows with stale parents at the NEXT
+// user send, moving the active branch out from under any cursor chosen
+// earlier (invariant 28). Claude hard-fails resume on an off-branch
+// uuid pre-init, so an unvalidated cursor would brick the restart.
+// Off-branch or unverifiable cursors are rejected loudly and the
+// branch-aware file scan decides instead; scan failure resumes with no
+// cursor at all (claude's own default-leaf semantics).
+func resolveClaudeResumeAt(sessionRef, workDir, explicit string) string {
+	if explicit != "" {
+		onBranch, err := claude.ResumeAtOnActiveBranch(sessionRef, workDir, explicit)
+		switch {
+		case err != nil:
+			log.Printf("start session: validate Claude resume-at %s against session %s: %v — falling back to file scan", explicit, sessionRef, err)
+		case onBranch:
+			return explicit
+		default:
+			log.Printf("start session: Claude resume-at %s is off the active branch of session %s — rejecting, falling back to file scan", explicit, sessionRef)
+		}
+	}
+	state, err := claude.ScanSessionLeaf(sessionRef, workDir)
+	if err != nil {
+		log.Printf("start session: scan Claude session leaf %s: %v", sessionRef, err)
+		return ""
+	}
+	return state.CanonicalLeafUUID
 }
 
 // reconcileCodexAfterStart runs the on-reopen reconcile once the Codex
@@ -487,11 +532,73 @@ func (a *App) StopSession(threadID string) error {
 	return a.teardownAndCloseSession(threadID, sess)
 }
 
+// teardownDeadPreInitSession reaps a session that reported a hard error
+// result before ever reaching init: it cannot serve sends (the resume
+// cursor it was launched with is unusable) and would otherwise linger
+// alive forever — Claude does not exit after a failed
+// --resume-session-at validation. The orphan error item persisted by
+// triage is the user-facing surface; this teardown stops the useless
+// process, hands any queued sends back to the composer draft, and
+// sweeps the failed send's pending state so the next send lazy-starts
+// fresh.
+//
+// Runs on its own goroutine (see sessionEventHandler) because the
+// caller is the provider read loop and Close blocks on read-loop exit.
+// Two guards keep it from harming a user retry that races in:
+//
+//   - The token-guarded unregister means a retry that already replaced
+//     this session in the registry makes the teardown a no-op.
+//   - The triage epoch, captured BEFORE the unregister, covers the
+//     longer window after a successful unregister: a retry's start path
+//     calls MarkThreadActive (bumping the epoch) and then spawns for
+//     potentially seconds before re-registering, during which a
+//     registry check proves nothing. The queue restore and the triage
+//     cleanup both run only while the epoch is unchanged, so a live
+//     replacement is never re-stopped and never has its queue drained.
+//     (The epoch probe before the restore and the restore itself are
+//     adjacent calls, not one atomic section — but a reactivation
+//     squeezing between them would have to finish MarkThreadActive
+//     within microseconds of passing the probe AND have new queue
+//     state to lose, which requires a full spawn that takes orders of
+//     magnitude longer. CleanupThreadIfEpoch's sweep re-checks under
+//     the router lock, so the destructive path is strictly guarded.)
+//
+// Not routed through teardownAndCloseSession: that helper's
+// unconditional CleanupThread is exactly what must not run here once a
+// replacement has claimed the thread.
+func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
+	var epoch uint64
+	if a.triage != nil {
+		epoch = a.triage.ThreadEpoch(threadID)
+	}
+	sess, ok := a.sessionManager().unregister(threadID, sessionToken)
+	if !ok {
+		return
+	}
+	a.teardownDesignThread(threadID)
+	if a.triage != nil {
+		// Restore before cleanup: the sweep's clearFlushQueueLocked
+		// discards queued items, and they only exist in router memory —
+		// without the restore the user's queued text would vanish.
+		if a.triage.ThreadEpoch(threadID) == epoch {
+			a.restoreUnconfirmedQueueOnSessionDeath(threadID)
+		}
+		if !a.triage.CleanupThreadIfEpoch(threadID, epoch) {
+			log.Printf("app: skipped triage cleanup for thread %s — a replacement session reactivated it mid-teardown", threadID)
+		}
+	}
+	if err := a.closeProviderSession(threadID, sess); err != nil {
+		log.Printf("app: teardown dead pre-init session for thread %s: %v", threadID, err)
+	}
+}
+
 // teardownAndCloseSession runs the per-thread design + triage cleanup
 // and closes the provider subprocess. Shared by StopSession (user
-// action) and idleCloseSession (reaper) so the close sequence stays
-// in one place — future per-thread cleanup steps land once and both
-// paths inherit it.
+// action) and idleCloseSession (reaper) so the close sequence stays in
+// one place — future per-thread cleanup steps land once and all paths
+// inherit it. teardownDeadPreInitSession mirrors the sequence but owns
+// its own copy: its CleanupThread must be epoch-guarded against a
+// racing replacement start, and it restores the flush queue first.
 //
 // Callers must remove the session from a.sessions BEFORE invoking so
 // two concurrent closers can't both call Close on the same provider

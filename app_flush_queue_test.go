@@ -1980,6 +1980,45 @@ func TestSessionDeathRestoresQueuedFlushItemsToDraft(t *testing.T) {
 	}
 }
 
+// TestPreInitTeardownRestoresQueuedSendsToDraft: the dead-on-arrival
+// teardown must hand queued sends back to the composer draft BEFORE its
+// triage cleanup sweeps the queue — the queue lives only in router
+// memory, so skipping the restore (as routing through the generic
+// teardownAndCloseSession would) silently discards the user's text.
+func TestPreInitTeardownRestoresQueuedSendsToDraft(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+
+	thread := testThread("doa-restore")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
+		ID:         "queue:doa",
+		Message:    "queued while the dead session was starting",
+		Payload:    json.RawMessage(`{}`),
+		EnqueuedAt: 10,
+	})
+	app.sessionManager().put(thread.ID, session{provider: string(provider.Claude), token: "doa-token"})
+
+	app.teardownDeadPreInitSession(thread.ID, "doa-token")
+
+	if _, ok := app.sessionManager().get(thread.ID); ok {
+		t.Fatal("dead pre-init session still registered after teardown")
+	}
+	if app.triage.HasQueuedFlushItems(thread.ID) {
+		t.Fatal("queued flush items still live after DOA teardown")
+	}
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft: %v", err)
+	}
+	if draft.Content != "queued while the dead session was starting" {
+		t.Fatalf("draft content = %q, want the restored queued message", draft.Content)
+	}
+}
+
 func TestSessionStatusErrorRestoresQueuedFlushItemsToDraft(t *testing.T) {
 	for _, providerType := range []provider.ProviderKind{provider.Claude, provider.Codex} {
 		t.Run(string(providerType), func(t *testing.T) {

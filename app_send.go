@@ -364,7 +364,11 @@ func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, s
 	if persistErr := a.triage.PersistItem(errorItem, nil); persistErr != nil {
 		log.Printf("send message: persist send-failure error: %v", persistErr)
 	}
-	if completeErr := a.triage.Handle(provider.ProviderEvent{
+	// HandleSynthetic, not Handle: a send can fail precisely because the
+	// thread's session was stopped (the start attempt errored), and the
+	// stopped-thread gate would silently drop this settle — leaving the
+	// turn open from triage's perspective.
+	if completeErr := a.triage.HandleSynthetic(provider.ProviderEvent{
 		Kind:         provider.EventTurnComplete,
 		ThreadID:     threadID,
 		TurnComplete: &provider.TruncatedTurnCompleteMeta{},

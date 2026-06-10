@@ -911,6 +911,125 @@ column on the persisted row converges on the FINAL round's id via
 
 ---
 
+## 28. Claude resume-at must target the active parentUuid branch
+
+**Rule.** Any uuid Agent Overflow passes as `--resume-session-at` must
+be a `user`/`assistant` row reachable by walking `parentUuid` back from
+the session file's last uuid-bearing transcript row (the **active
+branch** — the chain claude itself reconstructs on resume). And any
+session file AO writes (fork, revert slice) must keep its writable tail
+on that branch.
+
+**Rationale.** `--resume-session-at` is validated against the active
+branch only; an off-branch uuid hard-fails pre-init
+(`result{error_during_execution, errors:["No message found with
+message.uuid of: ..."]}`) and the process lingers. The CLI itself
+breaks this topology: deferred `system/api_error` rows are appended at
+the NEXT user send with a stale `parentUuid` that bypasses the prior
+turn's tail (upstream bug, 2.1.167–170). In the 2026-06-10 incident
+that combination bricked every resume of the thread — each retry
+re-forked the same poison.
+
+**Enforcement, all three layers:**
+
+- `sessionfork/rechain.go` — fork/slice output force-chains each
+  deferred api_error row to its file predecessor (subtype-scoped;
+  compact-boundary system rows are legitimate `parentUuid:null` roots
+  and are never re-chained). User/assistant rows are never re-chained —
+  claude's own walk correctly ignores abandoned content branches.
+- `sessionleaf_branch.go` — the cold scan validates the file-order leaf
+  against a branch index built in the same pass and repairs off-branch
+  picks to the deepest on-branch content row; no usable row → empty
+  leaf → the spawn omits `--resume-session-at` entirely (claude's own
+  default-leaf semantics, always safe).
+- `resolveClaudeResumeAt` (app_session.go) — explicit cursors (the
+  live-tracker leaf from the context-repair restart) are validated via
+  `claude.ResumeAtOnActiveBranch` before spawn; rejected cursors fall
+  back to the file scan, loudly.
+
+The row-admission set for the branch walk
+(`sessionfork.TranscriptTypes`: user/assistant/attachment/system/
+progress, sidechains excluded) is spike-verified per type against
+2.1.170 and is shared by the fork transform and the branch validator —
+one exported set, no copies to drift — see
+[`claude-wire.md §active-branch semantics`](../references/claude-wire.md#session-jsonl-active-branch-semantics---resume----resume-session-at).
+Fixture:
+[`session_api_error_offbranch.jsonl`](../references/fixtures/claude/session_api_error_offbranch.jsonl).
+
+**Test.** `sessionfork/rechain_test.go` (re-chain topology, compact
+boundaries, idempotence on fork-of-fork);
+`sessionleaf_branch_test.go` (off-branch repair, sidechains, broken
+chains, `TestResumeAtOnActiveBranch`); `app_session_resumeat_test.go`
+(spawn-time rejection + scan fallback);
+`TestE2E_ClaudeQueuedFlushRepairsRiskyAdvisorContextBeforeSend`
+(explicit cursor surviving validation end-to-end).
+
+---
+
+## 29. Stopped-thread event routing is host-controlled
+
+**Rule.** The triage stopped-thread marker is set by
+`CleanupThread` (StopSession / revert / thread delete) and cleared
+**only** by the host's session-start funnel
+(`startSessionNowWithClaudeResumeAt` → `triage.MarkThreadActive`,
+pre-spawn). No wire event clears it — not even `EventInit`.
+Host-synthesized events (send-failure synthetic turn-completes,
+`emitErrorToThread`) route through `triage.HandleSynthetic`, which
+bypasses the gate; wire events from a stopped thread's prior session
+stay dropped (Bug B5 semantics) — including errors a wire event
+*triggers* on the read loop, which use `emitWireErrorToThread`.
+
+**Rationale.** The original design cleared the marker on wire
+`EventInit` — proof-of-life from the replacement session. But a
+replacement session that dies during startup (e.g. an unusable
+`--resume-session-at` cursor, invariant 28) emits its only diagnostics
+— the pre-init error `result` — and never inits. With the
+wire-controlled clear, that error was dropped by the very gate meant
+to silence the PREVIOUS session, the turn never settled, and the
+thread hung on "Working" forever (2026-06-10 incident, link 4 of 5).
+
+Clearing pre-spawn is safe against the stale-frame interleaving B5
+guards: both providers' `Close()` blocks on read-loop drain
+(`<-readDone`), so no old-session frame can arrive after
+`stopExistingSessionLocked` returns. It must be pre-spawn because
+Codex emits `EventInit` synchronously inside `NewSession` and a DOA
+Claude process emits its tail before the session registry sees it.
+`MarkThreadActive` also resets the thread's settled-turns ledger (the
+repair-restart path skips `CleanupThread`, and a stale settlement
+marker would misroute a replacement session's orphan error into the
+late-fold path) and bumps the thread's reactivation **epoch**:
+asynchronous teardowns (`teardownDeadPreInitSession`) capture the
+epoch before unregistering and run their cleanup via
+`CleanupThreadIfEpoch`, so a teardown that loses the race against a
+user retry's session start cannot re-stop the live thread or sweep
+its state — the registry token guard alone can't cover that window
+because the retry's spawn runs for seconds between `MarkThreadActive`
+and re-registration.
+
+Corollary: a wire error `result` with no open round and no open turn
+persists an orphan error item (attributed to the pending-send head
+when one exists) and suppresses the queued-send flush; a pre-init
+error result additionally reaps the dead session
+(`teardownDeadPreInitSession` — Claude-only, queued sends restored to
+the composer draft before the sweep). There is deliberately NO init
+watchdog/timer — pre-init process exit already surfaces via the read
+loop, and liveness probing is an explicit non-goal
+([`turn-lifecycle.md`](turn-lifecycle.md)).
+
+**Test.** `router_test.go`
+(`TestEventInitDoesNotClearStoppedThread`,
+`TestMarkThreadActiveReadmitsPreInitEvents`,
+`TestHandleSyntheticBypassesStoppedGate`,
+`TestCleanupThreadIfEpochSkipsAfterReactivation`);
+`turn_lifecycle_test.go` (orphan error attribution,
+`TestMarkThreadActiveResetsSettlementLedger`);
+`app_errors_test.go` (`TestEmitWireErrorToThreadRespectsStoppedGate`);
+`app_flush_queue_test.go`
+(`TestPreInitTeardownRestoresQueuedSendsToDraft`); capstone
+`TestE2E_ClaudeStoppedThreadPreInitErrorResultSurfaces`.
+
+---
+
 ## See Also
 
 - [`chat-rewrite.md`](chat-rewrite.md) — the spec these rules were

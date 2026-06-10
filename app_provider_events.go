@@ -21,6 +21,13 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 	// — the returned handler is invoked synchronously by a single read-loop
 	// goroutine, so no atomic is needed.
 	var deathReported bool
+	// sawInit flips true on the session's first EventInit. An error
+	// turn-complete BEFORE init is the dead-on-arrival signature: the
+	// process failed during startup (Claude rejecting its
+	// --resume-session-at cursor emits result{error_during_execution}
+	// pre-init, then lingers alive) and can never serve a send. Same
+	// single-goroutine justification as deathReported.
+	var sawInit bool
 	return func(evt provider.ProviderEvent) {
 		// Design-mode tools used to be wired through Claude event
 		// interception (handleClaudeDesignTool); after the v42 rewrite
@@ -36,9 +43,12 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// (with the provider's own credentials) without a separate
 		// fetch. Codex equivalents are wired in app_session.go via
 		// the dedicated startup-update handler.
-		if evt.Kind == provider.EventInit && providerType == string(provider.Claude) {
-			a.ingestClaudeInitMCPStatus(evt.Meta)
-			go a.reconcileClaudeMCPOnInit(threadID)
+		if evt.Kind == provider.EventInit {
+			sawInit = true
+			if providerType == string(provider.Claude) {
+				a.ingestClaudeInitMCPStatus(evt.Meta)
+				go a.reconcileClaudeMCPOnInit(threadID)
+			}
 		}
 
 		// A successful turn start is the wire-level proof that the new
@@ -55,13 +65,34 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 				log.Printf("triage: %v", err)
 			}
 		}
+
+		// Dead-on-arrival reap: a wire error result before this session
+		// ever reached init means startup failed and the process is
+		// useless yet still alive — Claude does not exit after failing
+		// its --resume-session-at validation. Runs AFTER triage.Handle
+		// so the orphan error item is already persisted and visible.
+		// Goroutine because Close blocks on this very read loop.
+		// Claude-only: the lingering-process failure mode is specific to
+		// the Claude CLI, Codex startup failures surface through its
+		// session-status/error paths, and Codex's readLoop starts before
+		// its synchronous EventInit emission — sawInit could in
+		// principle still be false when an early Codex wire frame lands,
+		// so gating on it alone would not be sound there.
+		if !sawInit && providerType == string(provider.Claude) && evt.Kind == provider.EventTurnComplete {
+			if wire, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta); ok && wire != nil && wire.ErrorMessage != "" {
+				go a.teardownDeadPreInitSession(threadID, sessionToken)
+			}
+		}
+
 		if evt.Kind == provider.EventTurnComplete {
 			if err := a.syncDiscussionTurn(threadID); err != nil {
 				log.Printf("discussion runtime: %v", err)
 				// Emit an error event so the UI knows the discussion sync
 				// failed. The turn-complete event still propagates (we can't
-				// block it), but the error should be visible.
-				a.emitErrorToThread(threadID, fmt.Sprintf("discussion sync failed: %v", err))
+				// block it), but the error should be visible. Wire variant:
+				// this fires on the read loop in response to a wire frame,
+				// so it must drop with the rest of a stopped thread's tail.
+				a.emitWireErrorToThread(threadID, fmt.Sprintf("discussion sync failed: %v", err))
 			}
 			// Rate-limit refresh on turn completion: piggy-back on the
 			// event the user already triggered so the rings reflect the

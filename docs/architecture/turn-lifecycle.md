@@ -629,7 +629,7 @@ should call `resetSendQueueForTest()` in `beforeEach`.
 
 ## Error routing
 
-Every terminal failure mode lands on one of four paths so the
+Every terminal failure mode lands on one of five paths so the
 working indicator clears and the user gets actionable copy:
 
 1. **API error mid-turn (session alive)** — Claude `assistant.error`
@@ -659,6 +659,31 @@ working indicator clears and the user gets actionable copy:
    triage `handleError` fatal branch closes the turn. No
    `expect_turn_complete` opt-in (Codex doesn't follow up with a
    `result` envelope), so the synthetic truncated turn-complete fires.
+5. **Error `result` with no open round and no open turn** (pre-init
+   startup failure — e.g. an unusable `--resume-session-at` cursor,
+   invariant 28; the process emits only the error result and lingers) —
+   `handleTurnComplete`'s orphan branch persists an error item
+   attributed to the pending-send head when one exists (the send that
+   triggered the doomed lazy start), else the last turn index, and
+   suppresses the queued-send flush so deferred sends aren't
+   dispatched into a dead session. Settled turns are excluded — a late
+   wire `result` folding into a soft-closed round still routes to
+   `persistLateTurnPayload`, never here. The app layer additionally
+   reaps the never-inited session (`teardownDeadPreInitSession` —
+   Claude-only, since the lingering-process failure mode is the Claude
+   CLI's; token- and epoch-guarded so a racing user retry's
+   replacement session is never torn down) after restoring any queued
+   sends to the composer draft, so the next send lazy-starts fresh;
+   recovery is a manual retry — the failure mode is deterministic, so
+   auto-retry would loop silently. The error-item upsert is the single
+   frontend surface (it clears the optimistic pending-send indicator);
+   no `session_died` banner fires for a session that never lived. See
+   invariant 29.
+
+   There is deliberately **no init watchdog**: a timer that declares a
+   slow-starting session dead is liveness probing (see §Non-goals).
+   Pre-init process *exit* already surfaces through the read-loop tail;
+   pre-init error *results* surface through this path.
 
 ### Retry envelopes
 
