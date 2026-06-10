@@ -33,6 +33,19 @@ root `CLAUDE.md` principle 3.
 - `search.go` — case-insensitive substring search across thread titles
   and item summaries via `LOWER + LIKE`. A future migration can swap
   to an FTS5 virtual table without changing the return shape.
+- `paging.go` / `turns.go` — windowed history loads, item-budget
+  pagers, and has-more probes. Every window, budget, and probe counts
+  visible **top-level** rows only (`parent_id = ''`); subagent children
+  are excluded so one subagent-heavy turn can't eat the window budget
+  or flash a "Load older" button that loads nothing.
+- `subagent_items.go` — the two read surfaces that replace in-window
+  subagent children: `decorateSubagentAnchors` stamps each windowed
+  launch anchor with its descendant count + latest-child summary
+  (collapsed-card aggregates), and `ListSubagentDescendants` loads the
+  full child subtree on demand when a group card expands.
+- `migrate_fixups.go` — Go-side data fixups referenced by `Fix`
+  migrations in `migrate.go` (e.g. v8 trims persisted tool_result
+  echo out of `items.meta`).
 - `sqlutil.go` — shared SQL helpers.
 
 ## Responsibility boundary

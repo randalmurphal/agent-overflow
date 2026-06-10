@@ -62,17 +62,18 @@ var wireSafeMethods = map[string]bool{
 	"GetThreadRuntimeMode": true,
 
 	// Timeline reads (item slice / turn / search).
-	"GetThreadItem":         true,
-	"ListItems":             true,
-	"ListItemsAfterCursor":  true,
-	"ListItemsAfterTurn":    true,
-	"ListItemsBeforeCursor": true,
-	"ListItemsBeforeTurn":   true,
-	"ListRecentThreadItems": true,
-	"ListRecentTurns":       true,
-	"ListThreadSliceAround": true,
-	"SearchThreadMessages":  true,
-	"SearchThreadItems":     true,
+	"GetThreadItem":           true,
+	"ListItems":               true,
+	"ListItemsAfterCursor":    true,
+	"ListItemsAfterTurn":      true,
+	"ListItemsBeforeCursor":   true,
+	"ListItemsBeforeTurn":     true,
+	"ListRecentThreadItems":   true,
+	"ListRecentTurns":         true,
+	"ListSubagentDescendants": true,
+	"ListThreadSliceAround":   true,
+	"SearchThreadMessages":    true,
+	"SearchThreadItems":       true,
 
 	// Payload reads. Authorization via getThreadPayloadMeta's
 	// (threadID, payloadID) linkage check. Moved from LocalOnly

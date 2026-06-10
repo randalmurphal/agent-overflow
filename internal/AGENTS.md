@@ -11,6 +11,7 @@ one closest to what you're touching.
 | `provider/` | Provider process lifecycle and stdio protocols. Has its own subarea guide. |
 | `triage/` | Event classification. Decides what goes to the frontend vs SQLite. |
 | `store/` | SQLite access, migrations, schema. |
+| `itemmeta/` | Shaping helpers for the persisted `items.meta` JSON column, shared by the triage write path and the store migration chain (which cannot import each other). Stdlib-only. |
 | `checkpoint/` | Message-keyed git-ref snapshots, diffs, and restore helpers. |
 | `git/` | Git and `gh` operations (branches, worktrees, commit, push, PR). |
 | `project/` | Project-row lifecycle helpers that bridge git repository roots and `store.Project`. |

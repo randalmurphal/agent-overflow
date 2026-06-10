@@ -1171,3 +1171,113 @@ describe('sliceRevealedNodes', () => {
     expect(timelineNodeItemIndex(nodes[1])).toBe(1); // Agent group → parent
   });
 });
+
+describe('subagent anchor decoration fallback', () => {
+  // History windows load launch anchors without their child rows; the
+  // store stamps `subagentDescendantCount` / `subagentLatestChildSummary`
+  // on the anchor's meta (internal/store/subagent_items.go) so the
+  // collapsed card renders identically before the transcript hydrates.
+  function decoratedLaunch(
+    id: string,
+    itemIndex: number,
+    decoration: Record<string, unknown>,
+  ): Item {
+    return mkItem({
+      id,
+      itemIndex,
+      kind: 'tool_call',
+      toolName: 'Agent',
+      summary: 'Agent: investigate',
+      meta: toolMeta({
+        toolName: 'Agent',
+        input: { description: 'investigate' },
+        ...decoration,
+      }),
+    });
+  }
+
+  it('renders collapsed aggregates from anchor meta when no child rows are loaded', () => {
+    const nodes = groupItemsBySubagent([
+      decoratedLaunch('agent-1', 0, {
+        subagentDescendantCount: 7,
+        subagentLatestChildSummary: '  running\n   go test ./...  ',
+      }),
+    ]);
+
+    const group = expectGroup(nodes[0]);
+    expect(group.children).toHaveLength(0);
+    expect(group.descendantCount).toBe(7);
+    expect(group.loadedDescendantCount).toBe(0);
+    // Decorated summaries normalize exactly like loaded-child previews.
+    expect(group.latestChildSummary).toBe('running go test ./...');
+  });
+
+  it('prefers loaded children for the preview and keeps the count monotonic', () => {
+    const nodes = groupItemsBySubagent([
+      decoratedLaunch('agent-1', 0, {
+        subagentDescendantCount: 2,
+        subagentLatestChildSummary: 'stale decorated preview',
+      }),
+      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', summary: 'first step' }),
+      mkItem({ id: 'c2', itemIndex: 2, parentId: 'agent-1', summary: 'second step' }),
+      mkItem({ id: 'c3', itemIndex: 3, parentId: 'agent-1', summary: 'third step' }),
+    ]);
+
+    const group = expectGroup(nodes[0]);
+    expect(group.descendantCount).toBe(3);
+    expect(group.loadedDescendantCount).toBe(3);
+    expect(group.latestChildSummary).toBe('third step');
+  });
+
+  it('keeps the decorated count when loaded children trail it', () => {
+    const nodes = groupItemsBySubagent([
+      decoratedLaunch('agent-1', 0, { subagentDescendantCount: 5 }),
+      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', summary: 'only loaded row' }),
+    ]);
+
+    const group = expectGroup(nodes[0]);
+    expect(group.descendantCount).toBe(5);
+    expect(group.loadedDescendantCount).toBe(1);
+    expect(group.latestChildSummary).toBe('only loaded row');
+  });
+
+  it('falls back to the decorated preview when loaded children carry no text', () => {
+    const nodes = groupItemsBySubagent([
+      decoratedLaunch('agent-1', 0, {
+        subagentDescendantCount: 1,
+        subagentLatestChildSummary: 'decorated preview',
+      }),
+      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', summary: '' }),
+    ]);
+
+    const group = expectGroup(nodes[0]);
+    expect(group.latestChildSummary).toBe('decorated preview');
+  });
+
+  it('truncates an oversized decorated preview like child previews', () => {
+    const nodes = groupItemsBySubagent([
+      decoratedLaunch('agent-1', 0, {
+        subagentDescendantCount: 1,
+        subagentLatestChildSummary: 'x'.repeat(400),
+      }),
+    ]);
+
+    const group = expectGroup(nodes[0]);
+    expect(group.latestChildSummary.endsWith('...')).toBe(true);
+    expect(group.latestChildSummary.length).toBeLessThanOrEqual(163);
+  });
+
+  it('ignores malformed decorated counts', () => {
+    const nodes = groupItemsBySubagent([
+      decoratedLaunch('agent-1', 0, {
+        subagentDescendantCount: -3,
+        subagentLatestChildSummary: 42,
+      }),
+    ]);
+
+    const group = expectGroup(nodes[0]);
+    expect(group.descendantCount).toBe(0);
+    expect(group.loadedDescendantCount).toBe(0);
+    expect(group.latestChildSummary).toBe('');
+  });
+});

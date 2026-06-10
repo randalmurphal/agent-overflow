@@ -7,10 +7,12 @@
 <script lang="ts">
   import SubagentGroup from './SubagentGroup.svelte';
   import type { SubagentGroupNode, TimelineNode } from '../../utils/subagentGrouping';
+  import type { ThreadPane } from '../../stores/thread.svelte';
 
   let {
     group,
     startDepth = 0,
+    pane,
   }: {
     group: SubagentGroupNode;
     /**
@@ -20,6 +22,11 @@
      * plateau rendering on the outer card directly.
      */
     startDepth?: number;
+    /**
+     * Optional pane stub for tests exercising the pane-backed
+     * expansion registry and the expand-triggered child hydration.
+     */
+    pane?: ThreadPane;
   } = $props();
 </script>
 
@@ -37,4 +44,4 @@
   {/if}
 {/snippet}
 
-<SubagentGroup group={group} depth={startDepth} renderNode={renderNode} />
+<SubagentGroup group={group} depth={startDepth} renderNode={renderNode} pane={pane} />

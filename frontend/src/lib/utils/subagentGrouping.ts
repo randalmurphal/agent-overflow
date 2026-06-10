@@ -109,8 +109,21 @@ export interface SubagentGroupNode {
   groupKey: string;
   /** Recursively grouped children, preserving chronological order. */
   children: TimelineNode[];
-  /** Total child count (counts *all* descendants, not just immediate children). */
+  /**
+   * Total child count (counts *all* descendants, not just immediate
+   * children). History windows load anchors without their child rows,
+   * so when nothing is loaded this falls back to the backend-decorated
+   * aggregate on the anchor's meta; with children in memory it is
+   * max(loaded, decorated) so a live group that outgrew its decoration
+   * stays honest.
+   */
   descendantCount: number;
+  /**
+   * Descendants actually present in memory under this group. When this
+   * trails `descendantCount` the child transcript is paged out and
+   * loads on demand via ListSubagentDescendants when the card expands.
+   */
+  loadedDescendantCount: number;
   /**
    * Most recent descendant summary — drives the collapsed-header
    * preview on `SubagentGroup`. Selection rule:
@@ -119,9 +132,10 @@ export interface SubagentGroupNode {
    *      whatever the subagent is actively working on.
    *   2. Highest-(turnIndex, itemIndex) terminal descendant (any
    *      status) when nothing is currently running.
-   *   3. Empty string when no descendant carries any summary.
-   *
-   * Empty when the group has no children with usable summaries yet.
+   *   3. The backend-decorated summary from the anchor's meta when no
+   *      loaded descendant carries text (history loads keep child rows
+   *      paged out).
+   *   4. Empty string otherwise.
    */
   latestChildSummary: string;
 }
@@ -184,12 +198,12 @@ function compareItems(a: Item, b: Item): number {
 }
 
 /**
- * Extract a short preview string from an item that contributes user-visible
- * text (assistant messages, thinking, tool summaries). Empty for items whose
- * summary is non-text noise.
+ * Normalize raw summary text into the collapsed-header preview shape:
+ * whitespace collapsed, capped at PREVIEW_MAX_CHARS with an ellipsis.
+ * Shared by loaded-children previews and the backend-decorated summary
+ * fallback so both render identically.
  */
-function itemPreviewText(item: Item): string {
-  const summary = item.summary ?? '';
+function normalizePreviewText(summary: string): string {
   if (summary.length === 0) return '';
   const source = summary.length > PREVIEW_SCAN_CHARS
     ? summary.slice(0, PREVIEW_SCAN_CHARS)
@@ -197,6 +211,34 @@ function itemPreviewText(item: Item): string {
   const normalized = source.replace(/\s+/g, ' ').trim();
   if (normalized.length <= PREVIEW_MAX_CHARS) return normalized;
   return `${normalized.slice(0, PREVIEW_MAX_CHARS).trimEnd()}...`;
+}
+
+/**
+ * Extract a short preview string from an item that contributes user-visible
+ * text (assistant messages, thinking, tool summaries). Empty for items whose
+ * summary is non-text noise.
+ */
+function itemPreviewText(item: Item): string {
+  return normalizePreviewText(item.summary ?? '');
+}
+
+/**
+ * Read the backend's subagent aggregates off a launch anchor's meta.
+ * History windows load only top-level rows; the store decorates each
+ * launch anchor with its transitive descendant count and the same
+ * latest-child summary pickLatestChildSummary would compute (see
+ * internal/store/subagent_items.go). Live anchors created by streaming
+ * events carry no decoration — their children are already in memory.
+ */
+export function decoratedSubagentAggregates(item: Item): { count: number; summary: string } {
+  const meta = parseJsonObject(item.meta);
+  const rawCount = meta?.subagentDescendantCount;
+  const count = typeof rawCount === 'number' && Number.isFinite(rawCount) && rawCount > 0
+    ? Math.floor(rawCount)
+    : 0;
+  const rawSummary = meta?.subagentLatestChildSummary;
+  const summary = typeof rawSummary === 'string' ? normalizePreviewText(rawSummary) : '';
+  return { count, summary };
 }
 
 /**
@@ -316,6 +358,29 @@ function countDescendants(children: TimelineNode[]): number {
     if (child.kind === 'read_group') n += child.members.length - 1;
   }
   return n;
+}
+
+/**
+ * Assemble a SubagentGroupNode, reconciling what is loaded in memory
+ * with the backend-decorated aggregates on the anchor. Loaded children
+ * win the preview (they track live status); the decoration fills in
+ * when history loads delivered the anchor without its child rows.
+ */
+function subagentGroupNode(
+  parent: Item,
+  children: TimelineNode[],
+  loadedDescendantCount: number,
+): SubagentGroupNode {
+  const decorated = decoratedSubagentAggregates(parent);
+  return {
+    kind: 'group',
+    parent,
+    groupKey: parent.id,
+    children,
+    descendantCount: Math.max(loadedDescendantCount, decorated.count),
+    loadedDescendantCount,
+    latestChildSummary: pickLatestChildSummary(children) || decorated.summary,
+  };
 }
 
 /**
@@ -711,25 +776,11 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
         const grand = childrenByParent.get(next.id);
         if (grand) stack.push(...grand);
       }
-      return {
-        kind: 'group',
-        parent: item,
-        groupKey: item.id,
-        children: flatChildren,
-        descendantCount: flatChildren.length,
-        latestChildSummary: pickLatestChildSummary(flatChildren),
-      };
+      return subagentGroupNode(item, flatChildren, flatChildren.length);
     }
 
     const children = (childItems ?? []).map((child) => buildNode(child, depth + 1));
-    return {
-      kind: 'group',
-      parent: item,
-      groupKey: item.id,
-      children,
-      descendantCount: countDescendants(children),
-      latestChildSummary: pickLatestChildSummary(children),
-    };
+    return subagentGroupNode(item, children, countDescendants(children));
   }
 
   const roots: TimelineNode[] = [];

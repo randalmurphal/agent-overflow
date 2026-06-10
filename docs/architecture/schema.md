@@ -48,7 +48,7 @@ implementation markers and revision parent links.
 - `idx_threads_updated` — sidebar sort.
 - `idx_threads_project` — per-project thread list.
 - `idx_items_thread` — load thread timeline.
-- `idx_items_parent` — group subagent / nested-tool items under a parent (partial index on non-empty `parent_id`).
+- `idx_items_parent` — group subagent / nested-tool items under a parent (partial index on non-empty `parent_id`). The subagent descendant CTE writes an explicit `parent_id <> ''` term so the planner can prove the index predicate — see `descendantsCTEFromRoots`.
 - `idx_items_completion_of` — pair a `tool_completion` row with its launch (partial index on non-empty `completion_of`).
 - `idx_payload_chunks_payload_start` — seek chunk-backed payload reads by payload id and byte offset.
 - `idx_threads_forked_from` — fork lineage walks.

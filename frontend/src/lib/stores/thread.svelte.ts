@@ -34,6 +34,7 @@ import {
   ListItemsBeforeCursor,
   ListItemsAfterCursor,
   ListRecentTurns,
+  ListSubagentDescendants,
   ListThreadCheckpoints,
   MoveThreadTerminals,
   SwitchThread,
@@ -473,6 +474,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   let pagingGeneration = 0;
 
   /**
+   * Subagent-children hydration dedupe, keyed by launch anchor item id.
+   * `inFlight` stops a re-running expansion effect from double-fetching;
+   * `exhausted` marks anchors whose last fetch added nothing new, so a
+   * stale decorated descendant count on the anchor's meta can't loop
+   * the expansion effect against a backend with nothing more to give.
+   * Both reset on thread switch / clear.
+   */
+  const subagentHydrationInFlight = new Set<string>();
+  const subagentHydrationExhausted = new Set<string>();
+
+  /**
    * Nonce bumped when the pane wants the active MessageTimeline to scroll
    * to a specific item. Scroll side effects are DOM operations that
    * shouldn't live on the store, so the store publishes an intent and
@@ -521,6 +533,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       droppedItems.push(item);
     }
     if (droppedItems.length === 0) return;
+    // Dropped rows can include hydrated subagent children. Their
+    // anchors must become hydratable again — a stale exhausted marker
+    // would otherwise suppress the next expansion fetch and wedge the
+    // card on its loading placeholder. Cleared wholesale rather than
+    // per-anchor: mapping a dropped grandchild back to its launch root
+    // would need an ancestor walk over rows we just dropped, and the
+    // cost of breadth is one no-op refetch per re-expanded anchor.
+    subagentHydrationExhausted.clear();
     for (const item of droppedItems) disposeSmootherFor(item.id);
     rowUiState.disposeItems(droppedItems);
   }
@@ -1272,6 +1292,57 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     applyWindowMetadataFromPaged(paged, items);
   }
 
+  /**
+   * Hydrate the child transcript under a subagent launch anchor.
+   * History windows deliver only top-level rows — the collapsed
+   * SubagentGroup card renders from backend-decorated aggregates, and
+   * this loads the actual rows when the card expands (or when a
+   * scroll-to-item target lives inside the subtree).
+   *
+   * Additive merge only: rows already in memory (live-streamed
+   * children) keep their references, missing rows are inserted at
+   * their (turnIndex, itemIndex) position. Child rows are never
+   * top-level, so the reveal boundary is unaffected — same exception
+   * as `loadOlder` (see the reveal-gate invariant note above).
+   *
+   * Returns true when new rows were merged in.
+   */
+  async function hydrateSubagentChildren(rootItemID: string): Promise<boolean> {
+    const currentThread = thread;
+    if (!currentThread || !rootItemID) return false;
+    if (
+      subagentHydrationInFlight.has(rootItemID) ||
+      subagentHydrationExhausted.has(rootItemID)
+    ) {
+      return false;
+    }
+
+    const gen = switchGeneration;
+    subagentHydrationInFlight.add(rootItemID);
+    try {
+      const children = (await ListSubagentDescendants(
+        currentThread.id,
+        rootItemID,
+      )) as Item[];
+      if (gen !== switchGeneration) return false;
+      const incoming = itemsForThread(children ?? [], currentThread.id);
+      const next = mergeMissingItemsById(incoming, items);
+      if (next === items) {
+        subagentHydrationExhausted.add(rootItemID);
+        return false;
+      }
+      replaceTimelineItems(next);
+      return true;
+    } catch (err) {
+      if (gen !== switchGeneration) return false;
+      console.error('hydrateSubagentChildren failed:', err);
+      addToast('error', 'Failed to load subagent activity');
+      return false;
+    } finally {
+      subagentHydrationInFlight.delete(rootItemID);
+    }
+  }
+
   async function refreshCheckpointsForThread(threadID: string): Promise<void> {
     const checkpoints = ((await ListThreadCheckpoints(threadID)) ??
       []) as Checkpoint[];
@@ -1468,6 +1539,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     lastLiveContentAt = 0;
     loadingOlder = false;
     loadingNewer = false;
+    subagentHydrationInFlight.clear();
+    subagentHydrationExhausted.clear();
     return { cached, sliceAnchorId };
   }
 
@@ -2204,6 +2277,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       hasMoreNewer = false;
       loadingOlder = false;
       loadingNewer = false;
+      subagentHydrationInFlight.clear();
+      subagentHydrationExhausted.clear();
       // See switchThread: both `pagingGeneration` and
       // `scrollToItemRequest.nonce` stay monotonic for the pane's
       // lifetime so no consumer observes a regressed counter.
@@ -2466,11 +2541,49 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // paging in a whole turn window we don't need.
       if (items.some((it) => it.id === itemID)) return true;
 
+      // Subagent children never appear in history windows. Walk the
+      // parent chain to the top-level launch root so the slice anchors
+      // on a row the window will actually contain, then hydrate the
+      // root's subtree so the scroll can resolve to the containing
+      // group card. The visited set bounds corrupt parent cycles; a
+      // broken chain falls back to anchoring on the child's own
+      // coordinates (the slice still positions correctly — only the
+      // subtree hydration is skipped, and the trailing containment
+      // check reports the miss).
+      let sliceAnchorID = itemID;
+      let subagentRootID = '';
+      if ((fetched.parentId ?? '') !== '') {
+        let walker = fetched;
+        const visited = new Set<string>([walker.id]);
+        while ((walker.parentId ?? '') !== '' && !visited.has(walker.parentId ?? '')) {
+          let parentItem: Item;
+          try {
+            parentItem = (await GetThreadItem(
+              currentThread.id,
+              walker.parentId ?? '',
+            )) as Item;
+          } catch (err) {
+            console.error('loadUntilItem parent walk failed:', err);
+            break;
+          }
+          if (gen !== switchGeneration || pageGen !== pagingGeneration)
+            return false;
+          if (!parentItem?.id || parentItem.threadId !== currentThread.id)
+            break;
+          visited.add(parentItem.id);
+          walker = parentItem;
+        }
+        if ((walker.parentId ?? '') === '') {
+          sliceAnchorID = walker.id;
+          subagentRootID = walker.id;
+        }
+      }
+
       loadingOlder = true;
       try {
         const paged = await ListThreadSliceAround(
           currentThread.id,
-          itemID,
+          sliceAnchorID,
           ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
         );
         if (gen !== switchGeneration || pageGen !== pagingGeneration)
@@ -2481,6 +2594,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         );
         replaceTimelineItems(next, { disposeDropped: true });
         applyWindowMetadataFromPaged(paged, items);
+        if (subagentRootID) {
+          await hydrateSubagentChildren(subagentRootID);
+          if (gen !== switchGeneration || pageGen !== pagingGeneration)
+            return false;
+        }
       } catch (err) {
         if (gen !== switchGeneration || pageGen !== pagingGeneration)
           return false;
@@ -2492,6 +2610,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         loadingOlder = false;
       }
       return items.some((it) => it.id === itemID);
+    },
+
+    /**
+     * Hydrate the child transcript under a subagent launch anchor —
+     * called by SubagentGroup when an expanded card's loaded children
+     * trail its decorated descendant count. Deduped per anchor id;
+     * see `hydrateSubagentChildren`.
+     */
+    ensureSubagentChildren(rootItemID: string): Promise<boolean> {
+      return hydrateSubagentChildren(rootItemID);
     },
 
     async loadNewer(): Promise<LoadOlderResult> {

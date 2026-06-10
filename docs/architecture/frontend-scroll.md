@@ -191,6 +191,12 @@ loads older rows until the item is present, then scrolls through
 `stick.runExternalScroll(() => listRef.scrollToIndex(index, { align:
 'center' }))`.
 
+A hit inside a subagent transcript never appears in a history window
+(windows hold top-level rows only). `loadUntilItem` walks the parent
+chain to the launch root, slices the window around that root, hydrates
+the subtree via `ListSubagentDescendants`, and the scroll resolves to
+the containing `SubagentGroup` card.
+
 ## Discussion Mode
 
 `ChannelView.svelte` shares `useStickToBottom` without a virtualizer. Its

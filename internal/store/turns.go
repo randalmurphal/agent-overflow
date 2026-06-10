@@ -276,6 +276,10 @@ func (s *Store) ListRecentTurns(threadID string, limit int) ([]Turn, error) {
 // Strategy:
 //  1. Read per-turn item counts from newest to oldest (bounded scan so
 //     the query doesn't walk the whole thread on enormous histories).
+//     Counts cover visible top-level rows only — plan_update
+//     notifications and subagent children never render as timeline
+//     rows, so they must not consume window budget (matches
+//     paging.go's loaders).
 //  2. Accumulate counts. Stop growing the window as soon as items have
 //     reached `minItems` and we've seen at least `turnLimit` turns.
 //  3. If a single turn's item count would push the cumulative past
@@ -328,6 +332,8 @@ func (s *Store) PickInitialFloorTurn(
 		`SELECT turn_index, COUNT(*) AS item_count
 		   FROM items
 		  WHERE thread_id = ?
+		    AND `+visibleItemsFilter+`
+		    AND `+topLevelItemsFilter+`
 		  GROUP BY turn_index
 		  ORDER BY turn_index DESC
 		  LIMIT ?`,

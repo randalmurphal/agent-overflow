@@ -107,6 +107,7 @@ describe('groupConsecutiveReads', () => {
       groupKey: 'g:p1',
       children: [],
       descendantCount: 0,
+      loadedDescendantCount: 0,
       latestChildSummary: '',
     };
     const nodes: TimelineNode[] = [

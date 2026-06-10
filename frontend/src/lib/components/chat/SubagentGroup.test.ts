@@ -109,6 +109,7 @@ function mkGroup(
     groupKey: parentId,
     children: [],
     descendantCount: 0,
+    loadedDescendantCount: 0,
     latestChildSummary: '',
     ...rest,
   };
@@ -443,6 +444,65 @@ describe('<SubagentGroup>', () => {
     const { getByRole, getByText } = render(SubagentGroupTestHarness, { props: { group } });
     await fireEvent.click(getByRole('button'));
     expect(getByText(/No child entries captured/i)).toBeInTheDocument();
+  });
+
+  it('shows a loading placeholder when expanded with unloaded descendants', async () => {
+    // History loads deliver the anchor + decorated count without child
+    // rows; the expanded body must say "loading", not lie with the
+    // defensive no-entries copy, while hydration is in flight.
+    const group = mkGroup({
+      parentId: 'lazy',
+      children: [],
+      descendantCount: 4,
+      loadedDescendantCount: 0,
+    });
+    const { getByRole, getByTestId, queryByText } = render(SubagentGroupTestHarness, {
+      props: { group },
+    });
+    await fireEvent.click(getByRole('button'));
+    expect(getByTestId('subagent-group-loading').textContent).toContain('Loading 4 entries');
+    expect(queryByText(/No child entries captured/i)).not.toBeInTheDocument();
+  });
+
+  function paneStub(): { pane: import('../../stores/thread.svelte').ThreadPane; ensured: string[] } {
+    const ensured: string[] = [];
+    const pane = {
+      isSubagentGroupExpanded: () => true,
+      toggleSubagentGroupExpanded: () => {},
+      ensureSubagentChildren: (rootItemId: string) => {
+        ensured.push(rootItemId);
+        return Promise.resolve(true);
+      },
+      scrollController: null,
+    } as unknown as import('../../stores/thread.svelte').ThreadPane;
+    return { pane, ensured };
+  }
+
+  it('requests child hydration when expanded children trail the descendant count', async () => {
+    const { pane, ensured } = paneStub();
+    const group = mkGroup({
+      parentId: 'lazy',
+      children: [],
+      descendantCount: 3,
+      loadedDescendantCount: 0,
+    });
+    render(SubagentGroupTestHarness, { props: { group, pane } });
+    await waitFor(() => expect(ensured).toEqual(['lazy']));
+  });
+
+  it('does not request hydration when every descendant is loaded', async () => {
+    const { pane, ensured } = paneStub();
+    const group = mkGroup({
+      parentId: 'all-loaded',
+      children: [mkLeaf('c1'), mkLeaf('c2')],
+      descendantCount: 2,
+      loadedDescendantCount: 2,
+    });
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    // The pane stub reports the card expanded; wait for the body to
+    // mount so the hydration effect has definitely had its chance.
+    await waitFor(() => expect(getByTestId('subagent-group-body')).toBeInTheDocument());
+    expect(ensured).toEqual([]);
   });
 
   it('singular / plural entry count agreement', () => {

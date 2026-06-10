@@ -6,7 +6,7 @@ import type {
   WaitGroupNode,
   ReadGroupNode,
 } from './subagentGrouping';
-import { pickLatestChildSummary } from './subagentGrouping';
+import { decoratedSubagentAggregates, pickLatestChildSummary } from './subagentGrouping';
 
 function patchLeaf(
   node: TimelineLeaf,
@@ -53,15 +53,31 @@ function patchSubagentGroup(
   const parentChanged = freshParent !== undefined && freshParent !== node.parent;
   const { next: nextChildren, changed: childrenChanged } = patchChildren(node.children, getItem);
   if (!parentChanged && !childrenChanged) return node;
+  const parent = parentChanged ? freshParent : node.parent;
+  // Only a replaced parent ref can carry different decorated aggregates,
+  // so the meta re-parse is skipped otherwise. A live upsert can also
+  // overwrite the decorated meta entirely (count and summary vanish),
+  // which is why display values ratchet: the count takes max() against
+  // the node's previous value, and the preview falls back to the node's
+  // previous text rather than going blank. Both self-heal to fresh
+  // values on the next structural rebuild.
+  let descendantCount = node.descendantCount;
+  let decoratedSummary = '';
+  if (parentChanged) {
+    const decorated = decoratedSubagentAggregates(parent);
+    descendantCount = Math.max(node.descendantCount, decorated.count);
+    decoratedSummary = decorated.summary;
+  }
   return {
     kind: 'group',
-    parent: parentChanged ? freshParent : node.parent,
+    parent,
     groupKey: node.groupKey,
     children: nextChildren,
-    descendantCount: node.descendantCount,
+    descendantCount,
+    loadedDescendantCount: node.loadedDescendantCount,
     latestChildSummary: childrenChanged
-      ? pickLatestChildSummary(nextChildren)
-      : node.latestChildSummary,
+      ? (pickLatestChildSummary(nextChildren) || decoratedSummary || node.latestChildSummary)
+      : (node.latestChildSummary || decoratedSummary),
   };
 }
 

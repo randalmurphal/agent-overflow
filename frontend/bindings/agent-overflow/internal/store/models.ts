@@ -498,18 +498,17 @@ export class Item {
  * PagedItems is the return shape for windowed item loads. `Items` is sorted
  * by (turn_index, item_index) ASC so callers can append or replace the slice
  * directly in a timeline. `OldestCursor` / `NewestCursor` are the inclusive
- * item-coordinate bounds of the logical page. Render-support ancestors can be
- * returned outside those bounds; they must not become pagination cursors.
- * Cursor turn/item indexes are -1 when `Items` is empty.
+ * item-coordinate bounds of the page. Cursor turn/item indexes are -1 when
+ * `Items` is empty.
  * 
  * `OldestTurnIndex` / `NewestTurnIndex` are legacy turn-only aliases derived
  * from the cursors. Active-pane callers should use the cursor fields so one
  * dense turn cannot punch through the item window cap.
  * 
- * HasMoreOlder / HasMoreNewer report whether visible items exist outside
- * the cursor bounds. HasMore is the legacy older-history alias kept for
- * frontend and transport compatibility while callers migrate to the explicit
- * names.
+ * HasMoreOlder / HasMoreNewer report whether visible top-level items exist
+ * outside the cursor bounds. HasMore is the legacy older-history alias kept
+ * for frontend and transport compatibility while callers migrate to the
+ * explicit names.
  */
 export class PagedItems {
     "items": Item[];

@@ -131,6 +131,7 @@ function subagentGroup(parent: ReturnType<typeof makeItem>, children: TimelineNo
     groupKey: `group:${parent.id}`,
     children,
     descendantCount: children.length,
+    loadedDescendantCount: children.length,
     latestChildSummary: '',
   };
 }

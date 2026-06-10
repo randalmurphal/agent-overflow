@@ -218,6 +218,7 @@ export {
   ListItemsBeforeTurn,
   ListItemsAfterCursor,
   ListItemsAfterTurn,
+  ListSubagentDescendants,
   ListThreadProposedPlans,
   ListProposedPlanComments,
   CountRunningBackgroundTasks,

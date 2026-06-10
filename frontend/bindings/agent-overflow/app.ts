@@ -1441,6 +1441,21 @@ export function ListRemoteEndpoints(): $CancellablePromise<$models.RemoteEndpoin
 }
 
 /**
+ * ListSubagentDescendants loads the full child transcript under a
+ * subagent launch row, on demand when its SubagentGroup card expands.
+ * History windows deliberately exclude rows with a parent_id (see
+ * internal/store/paging.go topLevelItemsFilter); this is the expansion
+ * path that hydrates them. The result is every visible transitive
+ * descendant in timeline order — bounded by what the subagent actually
+ * did, which the user explicitly asked to see.
+ */
+export function ListSubagentDescendants(threadID: string, rootItemID: string): $CancellablePromise<store$0.Item[]> {
+    return $Call.ByID(1299118478, threadID, rootItemID).then(($result: any) => {
+        return $$createType56($result);
+    });
+}
+
+/**
  * ListTerminals returns a summary per active terminal for the given thread.
  */
 export function ListTerminals(threadID: string): $CancellablePromise<terminal$0.SessionSummary[]> {

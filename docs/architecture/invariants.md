@@ -168,7 +168,9 @@ which is nonsense.
 **Enforcement.** `Router.persistItem` in `internal/triage/router.go`
 calls `shouldDropParentID` before the insert; dangling or
 cycle-producing parent_ids are silently dropped (logged). The partial
-index `idx_items_parent` is filtered on non-empty parent_id.
+index `idx_items_parent` is filtered on non-empty parent_id; queries
+that want it must state `parent_id <> ''` explicitly so the planner
+can prove the predicate (see `descendantsCTEFromRoots`).
 
 **Test.** `internal/store/items_parent_test.go` (column round-trip,
 listItems projection) plus the parent-drop coverage invoked through

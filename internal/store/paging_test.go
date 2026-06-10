@@ -8,8 +8,9 @@ import (
 )
 
 // Paging tests cover:
-//   - ListRecentItemsWithAncestors pulls subagent parents that live below
-//     the floor so groupItemsBySubagent can render them correctly.
+//   - History windows, budgets, and probes count top-level rows only —
+//     subagent children load on demand via ListSubagentDescendants and
+//     are summarised on their anchor by decorateSubagentAnchors.
 //   - ListItemsBeforeTurn respects the exclusive upper bound and reports
 //     HasMore + OldestTurnIndex consistently.
 //   - PickInitialFloorTurn produces windows that honour minItems /
@@ -32,6 +33,25 @@ func seedItem(t *testing.T, s *Store, threadID, id string, turnIndex, itemIndex 
 		CreatedAt: int64(turnIndex*10 + itemIndex),
 	}); err != nil {
 		t.Fatalf("seed item %s: %v", id, err)
+	}
+}
+
+// seedAnchorItem persists a completed tool_call row — the shape that can
+// anchor subagent children and receive decorateSubagentAnchors meta.
+func seedAnchorItem(t *testing.T, s *Store, threadID, id string, turnIndex, itemIndex int) {
+	t.Helper()
+	if err := s.InsertItem(Item{
+		ID:        id,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		ItemIndex: itemIndex,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		ToolName:  "Task",
+		Summary:   id,
+		CreatedAt: int64(turnIndex*10 + itemIndex),
+	}); err != nil {
+		t.Fatalf("seed anchor item %s: %v", id, err)
 	}
 }
 
@@ -101,7 +121,7 @@ func seedPayloadItem(
 	}
 }
 
-func TestListRecentItemsWithAncestors_NoAncestors(t *testing.T) {
+func TestListRecentItems_NoChildren(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -113,7 +133,7 @@ func TestListRecentItemsWithAncestors_NoAncestors(t *testing.T) {
 	seedItem(t, s, "t", "c", 1, 0, "")
 	seedItem(t, s, "t", "d", 1, 1, "")
 
-	paged, err := s.ListRecentItemsWithAncestors("t", 1)
+	paged, err := s.ListRecentItems("t", 1)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -169,7 +189,7 @@ func TestListRecentItemsFiltersPlanUpdateNotifications(t *testing.T) {
 	mustInsert("deprec-1", "notification", "system", "deprecation_notice", 0, 6)
 	mustInsert("text-2", "assistant_text", "assistant", "", 0, 7)
 
-	paged, err := s.ListRecentItemsWithAncestors("t", 0)
+	paged, err := s.ListRecentItems("t", 0)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -205,7 +225,7 @@ func TestListRecentItemsDecoratesProposedPlans(t *testing.T) {
 		t.Fatalf("create comment: %v", err)
 	}
 
-	page, err := s.ListRecentItemsWithAncestors("t", 0)
+	page, err := s.ListRecentItems("t", 0)
 	if err != nil {
 		t.Fatalf("list recent items: %v", err)
 	}
@@ -221,75 +241,65 @@ func TestListRecentItemsDecoratesProposedPlans(t *testing.T) {
 	}
 }
 
-func TestListRecentItemsWithAncestors_OneLevel(t *testing.T) {
+func TestListRecentItems_ExcludesSubagentChildren(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	// Parent in turn 0 (outside window), subagent child in turn 2.
-	seedItem(t, s, "t", "parent", 0, 0, "")
+	seedAnchorItem(t, s, "t", "parent", 0, 0)
 	seedItem(t, s, "t", "filler1", 1, 0, "")
 	seedItem(t, s, "t", "child", 2, 0, "parent")
 
-	paged, err := s.ListRecentItemsWithAncestors("t", 2)
+	paged, err := s.ListRecentItems("t", 1)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 
 	gotIDs := collectIDs(paged.Items)
-	// Parent MUST be present even though its turn_index (0) is below the
-	// floor (2) — the recursive CTE is what keeps SubagentGroup intact
-	// across paging boundaries.
-	wantIDs := []string{"parent", "child"}
+	// child (turn 2) is inside the requested range but carries a
+	// parent_id: it renders inside its anchor's SubagentGroup card and
+	// loads via ListSubagentDescendants, never as a timeline row.
+	wantIDs := []string{"filler1"}
 	if !equalStringSlice(gotIDs, wantIDs) {
 		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
 	}
-	// Ancestors are render-support rows; the cursor floor stays at the
-	// requested logical window so unrelated omitted turns remain reachable.
-	if paged.OldestTurnIndex != 2 {
-		t.Errorf("oldest: got %d, want 2", paged.OldestTurnIndex)
+	if paged.OldestTurnIndex != 1 {
+		t.Errorf("oldest: got %d, want 1", paged.OldestTurnIndex)
 	}
 	if !paged.HasMoreOlder {
-		t.Error("expected HasMoreOlder=true because turn 1 is below the logical floor")
+		t.Error("expected HasMoreOlder=true because top-level parent sits at turn 0")
+	}
+	// The child-only turn above the window must not advertise a newer
+	// history gap — there is nothing the frontend could load there.
+	if paged.HasMoreNewer {
+		t.Error("expected HasMoreNewer=false: only subagent children exist above the window")
 	}
 }
 
-func TestListRecentItemsWithAncestors_MultiLevel(t *testing.T) {
+func TestListRecentItems_ChildOnlyOlderTurnsDontFlagHasMore(t *testing.T) {
+	// Regression guard for the original bug: "Load older messages"
+	// appeared when the only rows below the floor were subagent
+	// children — which never render as timeline rows, so clicking the
+	// button loaded nothing.
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	// Grandparent in turn 0, parent in turn 1, child in turn 5. Both
-	// ancestors live below the requested floor of 4.
-	seedItem(t, s, "t", "grand", 0, 0, "")
-	seedItem(t, s, "t", "parent", 1, 0, "grand")
-	seedItem(t, s, "t", "noise", 2, 0, "")
-	seedItem(t, s, "t", "noise2", 3, 0, "")
-	seedItem(t, s, "t", "child", 5, 0, "parent")
+	seedAnchorItem(t, s, "t", "anchor", 2, 0)
+	seedItem(t, s, "t", "c-0", 0, 0, "anchor")
+	seedItem(t, s, "t", "c-1", 1, 0, "anchor")
 
-	paged, err := s.ListRecentItemsWithAncestors("t", 4)
+	paged, err := s.ListRecentItems("t", 2)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-
-	gotIDs := collectIDs(paged.Items)
-	// Recursive CTE must pull both grand and parent. "noise" / "noise2"
-	// live below the floor and have no ancestor relation, so they stay
-	// excluded.
-	wantIDs := []string{"grand", "parent", "child"}
-	if !equalStringSlice(gotIDs, wantIDs) {
-		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	if !equalStringSlice(collectIDs(paged.Items), []string{"anchor"}) {
+		t.Errorf("items: got %v, want [anchor]", collectIDs(paged.Items))
 	}
-	if paged.OldestTurnIndex != 5 {
-		t.Errorf("oldest: got %d, want logical child turn 5", paged.OldestTurnIndex)
-	}
-	if paged.OldestCursor.ItemID != "child" || paged.NewestCursor.ItemID != "child" {
-		t.Errorf("cursor items = (%q, %q), want child/child", paged.OldestCursor.ItemID, paged.NewestCursor.ItemID)
-	}
-	if !paged.HasMoreOlder {
-		t.Error("expected HasMoreOlder=true because noise turns below the logical floor are omitted")
+	if paged.HasMore || paged.HasMoreOlder {
+		t.Error("HasMoreOlder must be false: turns 0-1 hold only subagent children")
 	}
 }
 
@@ -359,17 +369,16 @@ func TestListItemsBeforeTurn_EmptyTail(t *testing.T) {
 	}
 }
 
-func TestListItemsBeforeTurn_IncludesAncestorsBelowNewFloor(t *testing.T) {
+func TestListItemsBeforeTurn_ChildRowsDontCountOrReturn(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	// Thread has turns 0..4. The caller previously loaded turns 3-4
-	// with a child whose parent is in turn 0. Asking for the next
-	// batch "before turn 3 turnLimit=2" should return turns 1 and 2;
-	// a new child in turn 2 pointing at the parent in turn 0 must
-	// also pull the parent.
+	// Thread has turns 0..4 with a subagent child in turn 2. Paging
+	// back "before turn 3, budget 2" must treat turn 2 as empty: the
+	// child neither consumes budget nor appears in the page, so the
+	// walk reaches turn 0 in a single call.
 	for i := 0; i < 5; i++ {
 		if err := s.InsertTurn(Turn{
 			TurnID: idForTurn(i), ThreadID: "t", TurnIndex: i, StartedAt: int64(i) * 1000,
@@ -377,7 +386,7 @@ func TestListItemsBeforeTurn_IncludesAncestorsBelowNewFloor(t *testing.T) {
 			t.Fatalf("insert turn %d: %v", i, err)
 		}
 	}
-	seedItem(t, s, "t", "old-parent", 0, 0, "")
+	seedAnchorItem(t, s, "t", "old-parent", 0, 0)
 	seedItem(t, s, "t", "filler1", 1, 0, "")
 	seedItem(t, s, "t", "child-in-batch", 2, 0, "old-parent")
 	seedItem(t, s, "t", "filler3", 3, 0, "")
@@ -389,19 +398,15 @@ func TestListItemsBeforeTurn_IncludesAncestorsBelowNewFloor(t *testing.T) {
 	}
 
 	gotIDs := collectIDs(paged.Items)
-	// Must include old-parent (ancestor below new floor of 1), filler1,
-	// child-in-batch — all ordered by (turn, item).
-	wantIDs := []string{"old-parent", "filler1", "child-in-batch"}
+	wantIDs := []string{"old-parent", "filler1"}
 	if !equalStringSlice(gotIDs, wantIDs) {
 		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
 	}
-	if paged.OldestTurnIndex != 1 {
-		t.Errorf("oldest: got %d, want 1", paged.OldestTurnIndex)
+	if paged.OldestTurnIndex != 0 {
+		t.Errorf("oldest: got %d, want 0 (child-only turn 2 contributes no budget)", paged.OldestTurnIndex)
 	}
-	// The pager's oldest is the new floor (1), but HasMore probes for
-	// items below that floor. Turn 0's parent is below, so HasMore=true.
-	if !paged.HasMore {
-		t.Error("HasMore should be true with old-parent turn 0 below new floor 1")
+	if paged.HasMore {
+		t.Error("HasMore should be false: the walk reached turn 0")
 	}
 }
 
@@ -542,6 +547,41 @@ func TestPickInitialFloorTurn_AgentHeavyTurn(t *testing.T) {
 	}
 }
 
+func TestPickInitialFloorTurn_SubagentChildrenDontCount(t *testing.T) {
+	// Regression guard for the original heap bug: a subagent-heavy turn
+	// used to weigh hundreds of child rows against the window budget,
+	// pinning the initial floor right above real history and flashing
+	// "Load older messages" for rows that never render as timeline rows.
+	// Top-level counting weighs the launch turn as one row (its anchor).
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		seedItem(t, s, "t", idForTurnItem(0, i), 0, i, "")
+	}
+	seedAnchorItem(t, s, "t", "anchor", 1, 0)
+	for i := 1; i <= 300; i++ {
+		seedItem(t, s, "t", fmt.Sprintf("agent-child-%d", i), 1, i, "anchor")
+	}
+	for i := 0; i < 5; i++ {
+		seedItem(t, s, "t", idForTurnItem(2, i), 2, i, "")
+	}
+
+	floor, hasMore, err := s.PickInitialFloorTurn("t", 10, 0, 100)
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	// Top-level rows: turn 2 = 5, turn 1 = 1 (anchor only), turn 0 = 10;
+	// 16 total fits the 100-item cap, so the whole thread loads.
+	if floor != 0 {
+		t.Errorf("floor: got %d, want 0 (300 children must not count against maxItems)", floor)
+	}
+	if hasMore {
+		t.Error("hasMore: got true, want false (every top-level row is inside the window)")
+	}
+}
+
 func TestPickInitialFloorTurn_SingleHugeTurnLoadsAnyway(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
@@ -580,91 +620,6 @@ func collectIDs(items []Item) []string {
 		out = append(out, it.ID)
 	}
 	return out
-}
-
-func TestListRecentItemsWithAncestors_CrossThreadIsolation(t *testing.T) {
-	// The items PK is `(thread_id, id)` not `id` alone, so the same
-	// item id can exist on two threads. The recursive CTE in
-	// `ancestorCTE` re-filters by thread_id at every step so an
-	// ancestor walk on thread A never pulls rows from thread B even
-	// when ids collide. Regression guard for that invariant.
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("ta", "claude")); err != nil {
-		t.Fatalf("create ta: %v", err)
-	}
-	if err := s.CreateThread(makeThread("tb", "claude")); err != nil {
-		t.Fatalf("create tb: %v", err)
-	}
-	// Thread A: parent in turn 0, child in turn 5 pointing at parent.
-	seedItem(t, s, "ta", "parent", 0, 0, "")
-	seedItem(t, s, "ta", "child", 5, 0, "parent")
-	// Thread B has an item with the SAME id as A's parent (id collision).
-	// If the CTE's recursive step didn't filter by thread_id, the
-	// ancestor walk for thread A would pick up B's "parent" row too and
-	// render it as an orphan under A's timeline.
-	seedItem(t, s, "tb", "parent", 10, 0, "")
-	// Thread B also has a child pointing at a parent-id that only exists
-	// on thread A — another cross-thread trap. The ancestor walk on B
-	// should find NOTHING.
-	seedItem(t, s, "tb", "b-child", 10, 1, "parent")
-
-	pagedA, err := s.ListRecentItemsWithAncestors("ta", 5)
-	if err != nil {
-		t.Fatalf("list ta: %v", err)
-	}
-	if !equalStringSlice(collectIDs(pagedA.Items), []string{"parent", "child"}) {
-		t.Errorf("ta: got %v, want [parent child]", collectIDs(pagedA.Items))
-	}
-	// Both returned rows must be from thread A — check thread_id
-	// explicitly since the ids alone can't distinguish.
-	for _, it := range pagedA.Items {
-		if it.ThreadID != "ta" {
-			t.Errorf("cross-thread leak: item %s came from %s, want ta", it.ID, it.ThreadID)
-		}
-	}
-
-	// Thread B's ancestor walk hits a parent id that only exists on A.
-	// Filtering must keep A's row out of B's result entirely.
-	pagedB, err := s.ListRecentItemsWithAncestors("tb", 0)
-	if err != nil {
-		t.Fatalf("list tb: %v", err)
-	}
-	if !equalStringSlice(collectIDs(pagedB.Items), []string{"parent", "b-child"}) {
-		t.Errorf("tb: got %v, want [parent b-child]", collectIDs(pagedB.Items))
-	}
-	for _, it := range pagedB.Items {
-		if it.ThreadID != "tb" {
-			t.Errorf("cross-thread leak: item %s came from %s, want tb", it.ID, it.ThreadID)
-		}
-	}
-}
-
-func TestListRecentItemsWithAncestors_TerminatesOnParentCycle(t *testing.T) {
-	// A malformed thread where parent_id forms a cycle (item A ->
-	// parent B; item B -> parent A). The recursive CTE uses UNION (not
-	// UNION ALL) so duplicate ancestor ids are dedup'd per-iteration
-	// and the recursion converges instead of spinning. Guard: if a
-	// future refactor changes UNION → UNION ALL this test deadlocks,
-	// surfacing the regression immediately.
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	seedItem(t, s, "t", "a", 0, 0, "b")
-	seedItem(t, s, "t", "b", 1, 0, "a")
-	seedItem(t, s, "t", "child", 5, 0, "a")
-
-	paged, err := s.ListRecentItemsWithAncestors("t", 5)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	got := collectIDs(paged.Items)
-	// Both a and b are ancestors (reachable via the cycle) so both load.
-	// Order: grand/parent by turn_index then child.
-	want := []string{"a", "b", "child"}
-	if !equalStringSlice(got, want) {
-		t.Errorf("items: got %v, want %v", got, want)
-	}
 }
 
 func TestPickInitialFloorTurn_IgnoresObsoleteInflightBelowPicked(t *testing.T) {
@@ -943,7 +898,12 @@ func TestPickInitialFloorTurn_CoercesMaxBelowMin(t *testing.T) {
 // predicate would let the collider through. The cross-thread
 // ancestor test already covers the ancestor branch; this test
 // covers the non-ancestor branch.
-func TestListRecentItemsWithAncestors_OuterThreadFilterRequired(t *testing.T) {
+func TestListItemsBeforeCursor_OuterThreadFilterRequired(t *testing.T) {
+	// The items PK is `(thread_id, id)`, so the same item id can exist
+	// on two threads. querySelectedPagedItems hydrates the page through
+	// `JOIN selected ON selected.id = items.id` — without the outer
+	// `items.thread_id = ?` filter, a colliding id on another thread
+	// would join in alongside the legitimate row.
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("a", "claude")); err != nil {
 		t.Fatalf("create thread a: %v", err)
@@ -951,57 +911,34 @@ func TestListRecentItemsWithAncestors_OuterThreadFilterRequired(t *testing.T) {
 	if err := s.CreateThread(makeThread("b", "claude")); err != nil {
 		t.Fatalf("create thread b: %v", err)
 	}
-
-	// Thread A: one turn, one item whose id is "X". NO ancestors.
-	if err := s.InsertTurn(Turn{TurnID: "ta0", ThreadID: "a", TurnIndex: 0, StartedAt: 0}); err != nil {
-		t.Fatalf("insert turn a0: %v", err)
-	}
 	seedItem(t, s, "a", "X", 0, 0, "")
+	seedItem(t, s, "a", "Y", 1, 0, "")
+	seedItem(t, s, "a", "Z", 2, 0, "")
+	// Thread B: same id "X" at a different coordinate.
+	seedItem(t, s, "b", "X", 5, 0, "")
 
-	// Thread B: same id "X" but NOT an ancestor of anything on A.
-	// If the outer SELECT dropped `items.thread_id = ?`, this row
-	// could leak in via the `items.id IN (SELECT id FROM ancestors)`
-	// branch — except the ancestors CTE itself is empty here, so the
-	// real guarantee is the outer thread_id filter. We verify it
-	// explicitly by seeding a colliding id on thread B that the
-	// query must NOT return.
-	if err := s.InsertTurn(Turn{TurnID: "tb0", ThreadID: "b", TurnIndex: 0, StartedAt: 0}); err != nil {
-		t.Fatalf("insert turn b0: %v", err)
-	}
-	seedItem(t, s, "b", "X", 0, 0, "")
-
-	paged, err := s.ListRecentItemsWithAncestors("a", 0)
+	paged, err := s.ListItemsBeforeCursor("a", TimelineCursor{TurnIndex: 2, ItemIndex: 0, ItemID: "Z"}, 10)
 	if err != nil {
-		t.Fatalf("list: %v", err)
+		t.Fatalf("list before cursor: %v", err)
+	}
+	gotIDs := collectIDs(paged.Items)
+	wantIDs := []string{"X", "Y"}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
 	}
 	for _, it := range paged.Items {
 		if it.ThreadID != "a" {
-			t.Errorf("returned item from wrong thread: id=%s threadID=%s", it.ID, it.ThreadID)
+			t.Errorf("cross-thread leak: item %s came from %s, want a", it.ID, it.ThreadID)
 		}
-	}
-	if len(paged.Items) != 1 {
-		t.Errorf("item count: got %d, want 1 (only thread A's X)", len(paged.Items))
 	}
 }
 
-// Regression pin for `ListItemsBeforeTurn` + ancestor dedup behavior.
-// When the recursive CTE pulls an ancestor in via a later loadOlder
-// call, the frontend must not duplicate the row in its `items`
-// array. The backend contract lives here: we assert that the same
-// ancestor-below-floor item is returned on successive paging calls
-// with different floors. The frontend deduplication layer in
-// `prependDedupById` is what actually prevents the timeline
-// duplication; this test locks in the backend half of the contract
-// so a future SQL change that silently stopped returning the
-// ancestor on the second call would be caught.
-//
-// Under item-budget semantics, the walker walks past empty turns
-// rather than stopping on them: the second call from floor=2
-// budget=1 walks past empty turn 1 to find ancestor-0 in turn 0,
-// returning it directly. This is the new useful shape — the user
-// pages back and content appears, instead of getting an empty page
-// because the turn-budget-of-1 only reached the next turn down.
-func TestListItemsBeforeTurn_ReturnsAncestorOnEachEligiblePage(t *testing.T) {
+// Paging back over child-only turns must skip straight to real
+// content: the budget walker sees turns 2-3 (subagent children only)
+// as empty, so a single budget-1 page from turn 4 lands on the anchor
+// turn directly. Under the old child-counting behavior the first page
+// stopped on turn 3 and returned rows the timeline never renders.
+func TestListItemsBeforeTurn_SkipsChildOnlyTurns(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -1011,42 +948,25 @@ func TestListItemsBeforeTurn_ReturnsAncestorOnEachEligiblePage(t *testing.T) {
 			t.Fatalf("insert turn %d: %v", i, err)
 		}
 	}
-	seedItem(t, s, "t", "ancestor-0", 0, 0, "")
-	seedItem(t, s, "t", "child-2", 2, 0, "ancestor-0")
-	seedItem(t, s, "t", "child-3", 3, 0, "ancestor-0")
+	seedAnchorItem(t, s, "t", "anchor-0", 0, 0)
+	seedItem(t, s, "t", "child-2", 2, 0, "anchor-0")
+	seedItem(t, s, "t", "child-3", 3, 0, "anchor-0")
 	seedItem(t, s, "t", "filler-4", 4, 0, "")
 
-	// First page: before turn 3, itemBudget=1. Walk turn 2 (has
-	// child-2, cumulative=1 ≥ 1, stop). newFloor=2. Returns child-2
-	// + the CTE-pulled ancestor (ancestor-0).
-	first, err := s.ListItemsBeforeTurn("t", 3, 1)
+	paged, err := s.ListItemsBeforeTurn("t", 4, 1)
 	if err != nil {
-		t.Fatalf("first: %v", err)
+		t.Fatalf("list before: %v", err)
 	}
-	gotFirst := collectIDs(first.Items)
-	wantFirst := []string{"ancestor-0", "child-2"}
-	if !equalStringSlice(gotFirst, wantFirst) {
-		t.Errorf("first page: got %v, want %v", gotFirst, wantFirst)
+	gotIDs := collectIDs(paged.Items)
+	wantIDs := []string{"anchor-0"}
+	if !equalStringSlice(gotIDs, wantIDs) {
+		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
 	}
-
-	// Second page: before turn 2, itemBudget=1. Walk turn 1 (empty,
-	// cumulative=0). Walk turn 0 (ancestor-0, cumulative=1 ≥ 1, stop).
-	// newFloor=0. Returns ancestor-0 again. The frontend's
-	// `prependDedupById` skips the duplicate in the in-memory array.
-	second, err := s.ListItemsBeforeTurn("t", 2, 1)
-	if err != nil {
-		t.Fatalf("second: %v", err)
+	if paged.OldestTurnIndex != 0 {
+		t.Errorf("floor: got %d, want 0", paged.OldestTurnIndex)
 	}
-	gotSecond := collectIDs(second.Items)
-	wantSecond := []string{"ancestor-0"}
-	if !equalStringSlice(gotSecond, wantSecond) {
-		t.Errorf("second page: got %v, want %v", gotSecond, wantSecond)
-	}
-	if second.OldestTurnIndex != 0 {
-		t.Errorf("second page floor: got %d, want 0", second.OldestTurnIndex)
-	}
-	if second.HasMore {
-		t.Error("second page HasMore: got true, want false (floor at turn 0)")
+	if paged.HasMore {
+		t.Error("HasMore: got true, want false (floor at turn 0)")
 	}
 }
 
@@ -1188,12 +1108,16 @@ func TestListItemsAfterTurn_ItemBudgetSemantics(t *testing.T) {
 	}
 }
 
-func TestListItemsAfterTurn_AncestorBelowPageDoesNotBecomeCursor(t *testing.T) {
+func TestListItemsAfterTurn_ChildOnlyTurnsAboveYieldEmptyPage(t *testing.T) {
+	// The only rows above turn 5 are subagent children — they render
+	// inside their anchor's group card, not as timeline rows, so the
+	// forward pager reports a clean empty page instead of fabricating a
+	// cursor from rows the frontend would drop.
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	seedItem(t, s, "t", "parent", 0, 0, "")
+	seedAnchorItem(t, s, "t", "parent", 0, 0)
 	seedItem(t, s, "t", "omitted", 4, 0, "")
 	seedItem(t, s, "t", "child", 10, 0, "parent")
 
@@ -1202,19 +1126,14 @@ func TestListItemsAfterTurn_AncestorBelowPageDoesNotBecomeCursor(t *testing.T) {
 		t.Fatalf("list after: %v", err)
 	}
 
-	gotIDs := collectIDs(paged.Items)
-	wantIDs := []string{"parent", "child"}
-	if !equalStringSlice(gotIDs, wantIDs) {
-		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
+	if len(paged.Items) != 0 {
+		t.Errorf("items: got %v, want empty page", collectIDs(paged.Items))
 	}
-	if paged.OldestTurnIndex != 10 || paged.NewestTurnIndex != 10 {
-		t.Errorf("turn aliases = (%d, %d), want logical child turn 10", paged.OldestTurnIndex, paged.NewestTurnIndex)
+	if paged.OldestTurnIndex != -1 || paged.NewestTurnIndex != -1 {
+		t.Errorf("turn aliases = (%d, %d), want (-1, -1)", paged.OldestTurnIndex, paged.NewestTurnIndex)
 	}
-	if paged.OldestCursor.ItemID != "child" || paged.NewestCursor.ItemID != "child" {
-		t.Errorf("cursor items = (%q, %q), want child/child", paged.OldestCursor.ItemID, paged.NewestCursor.ItemID)
-	}
-	if !paged.HasMoreOlder {
-		t.Error("expected HasMoreOlder=true because turn 4 is still omitted below the logical page")
+	if paged.HasMoreNewer {
+		t.Error("HasMoreNewer: got true, want false (no top-level rows above)")
 	}
 }
 
@@ -1335,13 +1254,16 @@ func TestListThreadSliceAround_MissingAnchorFallsBackToTail(t *testing.T) {
 	}
 }
 
-func TestListThreadSliceAround_PullsAncestorBelowFloor(t *testing.T) {
+func TestListThreadSliceAround_ChildAnchorPositionsWindow(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	// Subagent parent in turn 0; anchor child in turn 6.
-	seedItem(t, s, "t", "parent", 0, 0, "")
+	// Subagent parent in turn 0; anchor child in turn 6. The child's
+	// coordinate positions the slice (scroll-to-item lands on its
+	// group), but the rows loaded are the top-level neighborhood — the
+	// child itself hydrates through ListSubagentDescendants.
+	seedAnchorItem(t, s, "t", "parent", 0, 0)
 	for i := 1; i <= 5; i++ {
 		seedItem(t, s, "t", idForTurn(i), i, 0, "")
 	}
@@ -1353,32 +1275,34 @@ func TestListThreadSliceAround_PullsAncestorBelowFloor(t *testing.T) {
 	}
 
 	gotIDs := collectIDs(paged.Items)
-	// Half=2. Floor walk at-or-below 6 picks up turns 6,5 (cum=2, stop;
-	// floor=5). Upper walk strictly above 6 finds none, so upper stays
-	// at 6. Window [5,6] = items "t5-i0", "child". Plus the ancestor
-	// CTE pulls "parent" (turn 0) since "child".parent_id="parent".
-	wantIDs := []string{"parent", idForTurn(5), "child"}
+	// Half=2 at-or-before (6,0): top-level DESC → turn-5, turn-4.
+	// Half=2 after (6,0): no top-level rows above. The parent (turn 0)
+	// is NOT stitched in — it loads when the user pages back to it.
+	wantIDs := []string{idForTurn(4), idForTurn(5)}
 	if !equalStringSlice(gotIDs, wantIDs) {
 		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
 	}
-	if paged.OldestTurnIndex != 5 {
-		t.Errorf("oldest cursor: got %d, want logical floor 5", paged.OldestTurnIndex)
+	if paged.OldestTurnIndex != 4 {
+		t.Errorf("oldest cursor: got %d, want 4", paged.OldestTurnIndex)
 	}
 	if !paged.HasMoreOlder {
-		t.Error("expected HasMoreOlder=true because turns 1-4 remain omitted below the slice")
+		t.Error("expected HasMoreOlder=true because turns 0-3 remain omitted below the slice")
+	}
+	if paged.HasMoreNewer {
+		t.Error("expected HasMoreNewer=false: only the subagent child sits above the slice")
 	}
 }
 
-func TestListThreadSliceAround_AnchorChildKeepsSiblingWindowBounded(t *testing.T) {
+func TestListThreadSliceAround_ChildAnchorLoadsNoSiblings(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 	// Subagent group: parent in turn 1, six children spanning turns 1-6.
-	// Anchor on the child in turn 4 with a tiny item budget. The active
-	// window must keep the parent shell but must not pull every sibling,
-	// otherwise one several-hour subagent group bypasses memory caps.
-	seedItem(t, s, "t", "parent", 1, 0, "")
+	// Anchoring on a child must load only top-level rows: the parent
+	// anchor (decorated with the group aggregates) and the surrounding
+	// noise. Siblings hydrate on demand when the group card expands.
+	seedAnchorItem(t, s, "t", "parent", 1, 0)
 	seedItem(t, s, "t", "c-1", 1, 1, "parent")
 	seedItem(t, s, "t", "c-2", 2, 0, "parent")
 	seedItem(t, s, "t", "c-3", 3, 0, "parent")
@@ -1396,14 +1320,23 @@ func TestListThreadSliceAround_AnchorChildKeepsSiblingWindowBounded(t *testing.T
 	}
 
 	gotIDs := collectIDs(paged.Items)
-	// Half=1 each side: selected primary rows are c-4 and c-5. Ancestor
-	// stitching adds only the parent shell; c-1/c-2/c-3/c-6 remain paged out.
-	wantIDs := []string{"parent", "c-4", "c-5"}
+	// Half=1 each side of c-4's coordinate (4,0): at-or-before DESC →
+	// parent (1,0); after ASC → noise-7 (7,0). No sibling child loads.
+	wantIDs := []string{"parent", "noise-7"}
 	if !equalStringSlice(gotIDs, wantIDs) {
 		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
 	}
-	if paged.OldestCursor.ItemID != "c-4" {
-		t.Errorf("oldest cursor = %q, want c-4", paged.OldestCursor.ItemID)
+	if paged.OldestCursor.ItemID != "parent" {
+		t.Errorf("oldest cursor = %q, want parent", paged.OldestCursor.ItemID)
+	}
+	// The collapsed card still knows its size and latest activity via
+	// the decorated aggregates.
+	meta := paged.Items[0].Meta
+	if !strings.Contains(meta, `"subagentDescendantCount":6`) {
+		t.Errorf("parent meta = %s, want subagentDescendantCount 6", meta)
+	}
+	if !strings.Contains(meta, `"subagentLatestChildSummary":"c-6"`) {
+		t.Errorf("parent meta = %s, want latest child summary c-6", meta)
 	}
 }
 

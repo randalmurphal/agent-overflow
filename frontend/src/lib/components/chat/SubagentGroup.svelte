@@ -105,6 +105,17 @@
     }
   }
 
+  // History windows deliver launch anchors without their child rows —
+  // the collapsed card renders from backend-decorated aggregates, and
+  // the transcript hydrates on demand when the card expands. The pane
+  // dedupes in-flight and completed loads per anchor id, so this effect
+  // re-running on unrelated state is harmless.
+  $effect(() => {
+    if (!expanded || !pane) return;
+    if (group.loadedDescendantCount >= group.descendantCount) return;
+    void pane.ensureSubagentChildren(group.parent.id);
+  });
+
   // ---- Header content derivations ---------------------------------
 
   let parent = $derived(group.parent);
@@ -268,7 +279,13 @@
         data-testid="subagent-group-body"
       >
         {#if group.children.length === 0}
-          <p class="text-xs text-text-secondary italic">No child entries captured.</p>
+          {#if group.descendantCount > 0}
+            <p class="text-xs text-text-secondary italic" data-testid="subagent-group-loading">
+              Loading {entryCountLabel}…
+            </p>
+          {:else}
+            <p class="text-xs text-text-secondary italic">No child entries captured.</p>
+          {/if}
         {:else}
           {#each group.children as child (nodeKey(child))}
             {@render renderNode(child, depth + 1)}

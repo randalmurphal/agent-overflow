@@ -20,6 +20,13 @@ type Migration struct {
 	Version int
 	Name    string
 	SQL     string
+	// Fix is an optional Go-side data fixup that runs inside the same
+	// transaction as SQL (after it, when both are set) and the version
+	// bump. Use it when the row transformation needs logic SQL can't
+	// express (JSON reshaping, per-row Go helpers). A migration must set
+	// SQL, Fix, or both. Not supported on Rebuild migrations — those are
+	// table-shape changes by definition.
+	Fix func(tx *sql.Tx) error
 	// Rebuild marks a migration whose SQL performs a full table rebuild
 	// (CREATE new / copy / DROP old / RENAME) to change a CHECK or drop a
 	// NOT NULL that SQLite can't alter in place. Such a migration MUST run
@@ -175,6 +182,11 @@ CREATE INDEX idx_thread_drafts_has_content
 CREATE INDEX idx_payload_chunks_payload_start
   ON payload_chunks(payload_id, start_offset);`,
 	},
+	{
+		Version: 8,
+		Name:    "trim_tool_result_echo_meta",
+		Fix:     trimToolResultEchoMetaFixup,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
@@ -312,14 +324,25 @@ func applyPendingMigrations(db *sql.DB, applied int) error {
 
 func applyMigration(db *sql.DB, m Migration) error {
 	log.Printf("store: applying migration v%d: %s", m.Version, m.Name)
+	if strings.TrimSpace(m.SQL) == "" && m.Fix == nil {
+		return fmt.Errorf("migration v%d (%s) has neither SQL nor Fix", m.Version, m.Name)
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin migration v%d: %w", m.Version, err)
 	}
 
-	if _, err := tx.Exec(m.SQL); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("migration v%d (%s) failed: %w", m.Version, m.Name, err)
+	if strings.TrimSpace(m.SQL) != "" {
+		if _, err := tx.Exec(m.SQL); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration v%d (%s) failed: %w", m.Version, m.Name, err)
+		}
+	}
+	if m.Fix != nil {
+		if err := m.Fix(tx); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration v%d (%s) fixup failed: %w", m.Version, m.Name, err)
+		}
 	}
 	if _, err := tx.Exec(
 		"INSERT INTO migration_versions (version, name) VALUES (?, ?)",

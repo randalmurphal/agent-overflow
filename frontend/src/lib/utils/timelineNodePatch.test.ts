@@ -78,6 +78,7 @@ describe('patchTimelineNodeItemRefs', () => {
       groupKey: 'g1',
       children: [leaf(child)],
       descendantCount: 1,
+      loadedDescendantCount: 1,
       latestChildSummary: 'child',
     };
     const nodes: TimelineNode[] = [group];
@@ -109,6 +110,7 @@ describe('patchTimelineNodeItemRefs', () => {
       groupKey: 'g1',
       children: [leaf(child)],
       descendantCount: 1,
+      loadedDescendantCount: 1,
       latestChildSummary: 'child',
     };
     const nodes: TimelineNode[] = [group];
@@ -135,6 +137,7 @@ describe('patchTimelineNodeItemRefs', () => {
       groupKey: 'g1',
       children: [leaf(child)],
       descendantCount: 1,
+      loadedDescendantCount: 1,
       latestChildSummary: 'child',
     };
     const nodes: TimelineNode[] = [group];
@@ -146,6 +149,89 @@ describe('patchTimelineNodeItemRefs', () => {
     const result = patchTimelineNodeItemRefs(nodes, lookup);
     expect(result).toBe(nodes);
     expect(result[0]).toBe(group);
+  });
+
+  it('refreshes decorated aggregates from a patched parent and preserves loadedDescendantCount', () => {
+    // A window reload can upsert a fresher anchor row carrying the
+    // backend-decorated subagent aggregates. The patch path must pick
+    // those up: the display count stays monotonic and the preview falls
+    // back to the decorated summary when no loaded child carries text.
+    const parent = mkItem({ id: 'p', summary: 'parent' });
+    const child = mkItem({ id: 'c', summary: '', updatedAt: 1 });
+    const group: SubagentGroupNode = {
+      kind: 'group',
+      parent,
+      groupKey: 'g1',
+      children: [leaf(child)],
+      descendantCount: 1,
+      loadedDescendantCount: 1,
+      latestChildSummary: '',
+    };
+    const nodes: TimelineNode[] = [group];
+
+    const parentUpdated = mkItem({
+      id: 'p',
+      summary: 'parent',
+      meta: JSON.stringify({
+        subagentDescendantCount: 6,
+        subagentLatestChildSummary: 'from decoration',
+      }),
+    });
+    const childUpdated = mkItem({ id: 'c', summary: '', updatedAt: 2 });
+    const lookup = (id: string) => {
+      if (id === 'p') return parentUpdated;
+      if (id === 'c') return childUpdated;
+      return undefined;
+    };
+    const result = patchTimelineNodeItemRefs(nodes, lookup);
+
+    const patchedGroup = result[0] as SubagentGroupNode;
+    expect(patchedGroup.parent).toBe(parentUpdated);
+    expect(patchedGroup.descendantCount).toBe(6);
+    expect(patchedGroup.loadedDescendantCount).toBe(1);
+    expect(patchedGroup.latestChildSummary).toBe('from decoration');
+  });
+
+  it('keeps display aggregates when a live parent upsert lost the decoration', () => {
+    // Mid-turn, a live anchor upsert (e.g. a status flip) overwrites the
+    // decorated meta entirely. The patch path must not let the card
+    // regress: the count ratchets against its previous value and the
+    // preview keeps its last text when neither the loaded children nor
+    // fresh decoration supply one. Fresh values return on the next
+    // structural rebuild.
+    const parent = mkItem({
+      id: 'p',
+      summary: 'parent',
+      meta: JSON.stringify({
+        subagentDescendantCount: 6,
+        subagentLatestChildSummary: 'from decoration',
+      }),
+    });
+    const child = mkItem({ id: 'c', summary: '', updatedAt: 1 });
+    const group: SubagentGroupNode = {
+      kind: 'group',
+      parent,
+      groupKey: 'g1',
+      children: [leaf(child)],
+      descendantCount: 6,
+      loadedDescendantCount: 1,
+      latestChildSummary: 'from decoration',
+    };
+    const nodes: TimelineNode[] = [group];
+
+    const parentNoDecoration = mkItem({ id: 'p', summary: 'parent', status: 'running' });
+    const childUpdated = mkItem({ id: 'c', summary: '', updatedAt: 2 });
+    const lookup = (id: string) => {
+      if (id === 'p') return parentNoDecoration;
+      if (id === 'c') return childUpdated;
+      return undefined;
+    };
+    const result = patchTimelineNodeItemRefs(nodes, lookup);
+
+    const patchedGroup = result[0] as SubagentGroupNode;
+    expect(patchedGroup.parent).toBe(parentNoDecoration);
+    expect(patchedGroup.descendantCount).toBe(6);
+    expect(patchedGroup.latestChildSummary).toBe('from decoration');
   });
 
   it('patches WaitGroupNode with changed child', () => {

@@ -382,6 +382,7 @@ export const ListItemsBeforeCursor = dispatch('ListItemsBeforeCursor');
 export const ListItemsBeforeTurn = dispatch('ListItemsBeforeTurn');
 export const ListItemsAfterCursor = dispatch('ListItemsAfterCursor');
 export const ListItemsAfterTurn = dispatch('ListItemsAfterTurn');
+export const ListSubagentDescendants = dispatch('ListSubagentDescendants');
 export const ListThreadProposedPlans = dispatch('ListThreadProposedPlans');
 export const ListProposedPlanComments = dispatch('ListProposedPlanComments');
 export const CreateProposedPlanComment = dispatch('CreateProposedPlanComment');

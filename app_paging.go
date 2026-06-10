@@ -69,7 +69,7 @@ func (a *App) ListRecentThreadItems(threadID string, turnLimit int) (store.Paged
 			HasMoreNewer:    false,
 		}, nil
 	}
-	paged, err := a.store.ListRecentItemsWithAncestors(threadID, floor)
+	paged, err := a.store.ListRecentItems(threadID, floor)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list recent thread items: %w", err)
 	}
@@ -192,6 +192,22 @@ func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, 
 	}
 	paged.Items = slicesx.OrEmpty(paged.Items)
 	return paged, nil
+}
+
+// ListSubagentDescendants loads the full child transcript under a
+// subagent launch row, on demand when its SubagentGroup card expands.
+// History windows deliberately exclude rows with a parent_id (see
+// internal/store/paging.go topLevelItemsFilter); this is the expansion
+// path that hydrates them. The result is every visible transitive
+// descendant in timeline order, capped store-side at the same scale as
+// maxWindowItems (newest rows win) so a malicious LAN-attached caller
+// can't stream an unbounded subtree per call.
+func (a *App) ListSubagentDescendants(threadID, rootItemID string) ([]store.Item, error) {
+	items, err := a.store.ListSubagentDescendants(threadID, rootItemID)
+	if err != nil {
+		return nil, fmt.Errorf("list subagent descendants: %w", err)
+	}
+	return slicesx.OrEmpty(items), nil
 }
 
 // ListThreadProposedPlans returns the current proposed-plan item for a thread,

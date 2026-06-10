@@ -144,6 +144,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListRecentThreadItems", ID: 2604956482},                // main.App.ListRecentThreadItems
 	{Name: "ListRecentTurns", ID: 1083162294},                      // main.App.ListRecentTurns
 	{Name: "ListRemoteEndpoints", ID: 3443007043},                  // main.App.ListRemoteEndpoints
+	{Name: "ListSubagentDescendants", ID: 1299118478},              // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506},                        // main.App.ListTerminals
 	{Name: "ListThreadCheckpoints", ID: 1853132444},                // main.App.ListThreadCheckpoints
 	{Name: "ListThreadProposedPlans", ID: 2485050629},              // main.App.ListThreadProposedPlans

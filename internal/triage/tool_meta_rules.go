@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 
+	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/store"
 
 	"github.com/google/uuid"
@@ -244,9 +245,11 @@ func stringSet(values []string) map[string]struct{} {
 	return out
 }
 
-// shapeToolItemMeta runs the per-tool meta rule against item.Meta in
-// place and returns the optional tool_call_input payload to persist
-// alongside the item.
+// shapeToolItemMeta bounds item.Meta in place and returns the optional
+// tool_call_input payload to persist alongside the item. Two passes
+// apply: trimPersistedToolResultMeta caps the completion-echo fields
+// for every tool, then applyToolMetaRule shapes meta.input per the
+// registry.
 //
 // The function is idempotent and lifecycle-aware:
 //
@@ -276,6 +279,13 @@ func (r *Router) shapeToolItemMeta(item *store.Item, now int64) *store.Payload {
 	raw := json.RawMessage(item.Meta)
 	if len(raw) == 0 {
 		return nil
+	}
+	// Bound the completion-echo fields (tool_result / tool_use_result)
+	// before the per-tool input shaping: the echo applies to every tool,
+	// registry entry or not. See internal/itemmeta.
+	if trimmedResult, changed := itemmeta.TrimToolResultEcho(toolName, raw); changed {
+		raw = trimmedResult
+		item.Meta = string(trimmedResult)
 	}
 	trimmed, payload, err := applyToolMetaRule(toolName, raw, now)
 	if err != nil {
