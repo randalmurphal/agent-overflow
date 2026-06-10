@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -3556,34 +3557,21 @@ func TestCleanupThreadDropsRapidInFlight(t *testing.T) {
 	}
 }
 
-// TestCleanupThreadCanBeUndoneByNewEvents verifies CleanupThread is NOT
-// sticky: after cleanup, if the thread is restarted (a new StartSession
-// reintroduces events), those new events should persist. The bug-fix
-// flag must reset implicitly when the thread sees activity again OR
-// a restart routine. We model the "restart" as a re-emission with a
-// fresh init-like event; the router clears the stopped marker on
-// EventInit for the same thread.
+// TestCleanupThreadDoesNotPoisonFutureSessions verifies CleanupThread
+// is NOT sticky: when the host commits to a replacement session it
+// calls MarkThreadActive (startSessionNowWithClaudeResumeAt does this
+// pre-spawn), and events from the new session must persist again.
 func TestCleanupThreadDoesNotPoisonFutureSessions(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "restart")
 
 	router.CleanupThread("restart")
 
-	// Simulate a restart: EventInit arrives for this thread (StartSession
-	// fires one as part of the claude handshake).
-	info := provider.SessionInfo{SessionID: "new-sid", Model: "opus"}
-	meta, _ := json.Marshal(info)
-	initEvt := provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  "restart",
-		Meta:      meta,
-		Timestamp: time.Now(),
-	}
-	if err := router.Handle(initEvt); err != nil {
-		t.Fatalf("handle init: %v", err)
-	}
+	// Simulate a restart: the host start path re-admits the thread
+	// before spawning the replacement subprocess.
+	router.MarkThreadActive("restart")
 
-	// A subsequent diff must persist — the stopped marker from the
+	// A subsequent event must persist — the stopped marker from the
 	// earlier CleanupThread cannot continue to suppress the restart.
 	after := provider.ProviderEvent{
 		Kind:      provider.EventProposedPlan,
@@ -3601,6 +3589,219 @@ func TestCleanupThreadDoesNotPoisonFutureSessions(t *testing.T) {
 	}
 	if len(items) != 1 {
 		t.Fatalf("items = %d, want 1 (stopped marker leaked into new session)", len(items))
+	}
+}
+
+// TestEventInitDoesNotClearStoppedThread pins the stale-init hole
+// closed: a late wire EventInit from a torn-down subprocess must NOT
+// re-admit events for a stopped thread. Only the host's session-start
+// path (MarkThreadActive) may clear the marker — a session that died
+// during a prior teardown can still have an init line draining through
+// its read loop, and letting it clear the flag would re-open Bug B5
+// for every frame behind it.
+func TestEventInitDoesNotClearStoppedThread(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "stale")
+
+	router.CleanupThread("stale")
+
+	info := provider.SessionInfo{SessionID: "stale-sid", Model: "opus"}
+	meta, _ := json.Marshal(info)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  "stale",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle init: %v", err)
+	}
+
+	after := provider.ProviderEvent{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  "stale",
+		ItemID:    "plan-after-stale-init",
+		Content:   "# Stale\n\n- late",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(after); err != nil {
+		t.Fatalf("handle after stale init: %v", err)
+	}
+	items, err := st.ListItems("stale")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items = %d, want 0 (stale wire init cleared the stopped marker)", len(items))
+	}
+}
+
+// TestMarkThreadActiveReadmitsPreInitEvents covers the incident shape
+// at the routing layer: a thread stopped via CleanupThread, then
+// restarted by the host, whose replacement session dies BEFORE
+// emitting init. Its pre-init error result must route (and, via the
+// orphan branch in handleTurnComplete, persist an error item) instead
+// of being dropped by the stopped marker.
+func TestMarkThreadActiveReadmitsPreInitEvents(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "doa")
+
+	router.CleanupThread("doa")
+	router.MarkThreadActive("doa")
+	router.RegisterPendingSend("doa", "user:3", 3)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:     provider.EventTurnComplete,
+		ThreadID: "doa",
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:   "error",
+			ErrorMessage: "No message found with message.uuid of: dead-beef",
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle pre-init error result: %v", err)
+	}
+
+	items, err := st.ListItems("doa")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1 error item", len(items))
+	}
+	if items[0].Kind != "error" || items[0].TurnIndex != 3 {
+		t.Fatalf("item = kind %q turn %d, want error item on turn 3", items[0].Kind, items[0].TurnIndex)
+	}
+	if !strings.Contains(items[0].Summary, "No message found") {
+		t.Fatalf("summary = %q, want the provider error message", items[0].Summary)
+	}
+}
+
+// TestHandleSyntheticBypassesStoppedGate pins the host-event carve-out:
+// app-synthesized events (send-failure settles, reconnect-failure
+// errors) are not stale wire frames and several fire exactly while the
+// thread is stopped, so HandleSynthetic must route them. The same
+// event through Handle stays dropped.
+func TestHandleSyntheticBypassesStoppedGate(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "synth")
+
+	router.CleanupThread("synth")
+
+	errEvt := provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  "synth",
+		Content:   "reconnect failed: binary not found",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(errEvt); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	items, err := st.ListItems("synth")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items after Handle = %d, want 0 (wire events stay gated)", len(items))
+	}
+
+	if err := router.HandleSynthetic(errEvt); err != nil {
+		t.Fatalf("handle synthetic: %v", err)
+	}
+	items, err = st.ListItems("synth")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 || items[0].Kind != "error" {
+		t.Fatalf("items after HandleSynthetic = %+v, want one error item", items)
+	}
+}
+
+// TestCleanupThreadIfEpochSkipsAfterReactivation pins the teardown-vs-
+// retry race guard: an asynchronous teardown that captured its epoch
+// before a replacement session's MarkThreadActive must become a no-op —
+// it must neither stop the live thread nor sweep its state. The
+// registry token guard can't cover this window because the retry's
+// spawn runs for seconds between MarkThreadActive and re-registration.
+func TestCleanupThreadIfEpochSkipsAfterReactivation(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "race")
+
+	epoch := router.ThreadEpoch("race")
+
+	// Replacement session start claims the thread while the teardown
+	// goroutine is still in flight.
+	router.MarkThreadActive("race")
+	router.RegisterPendingSend("race", "user:1", 1)
+
+	if router.CleanupThreadIfEpoch("race", epoch) {
+		t.Fatalf("stale-epoch cleanup reported it ran")
+	}
+	if router.isThreadStopped("race") {
+		t.Fatalf("stale-epoch cleanup stopped the live replacement thread")
+	}
+	if !router.HasPendingSendForThread("race") {
+		t.Fatalf("stale-epoch cleanup swept the live thread's pending send")
+	}
+}
+
+// TestCleanupThreadIfEpochRunsWhenUnchanged: with no reactivation in
+// between, the epoch-guarded variant behaves exactly like CleanupThread.
+func TestCleanupThreadIfEpochRunsWhenUnchanged(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "doa-clean")
+
+	router.RegisterPendingSend("doa-clean", "user:1", 1)
+
+	if !router.CleanupThreadIfEpoch("doa-clean", router.ThreadEpoch("doa-clean")) {
+		t.Fatalf("matching-epoch cleanup did not run")
+	}
+	if !router.isThreadStopped("doa-clean") {
+		t.Fatalf("cleanup did not mark the thread stopped")
+	}
+	if router.HasPendingSendForThread("doa-clean") {
+		t.Fatalf("cleanup left the failed send's pending marker behind")
+	}
+}
+
+// TestPersistedErrorSummaryIsClamped: provider error strings are
+// unbounded boundary input; the persisted items.summary must be capped
+// at a rune boundary so a pathological payload doesn't ride along on
+// every thread emit (and a multi-byte character is never split).
+func TestPersistedErrorSummaryIsClamped(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	huge := strings.Repeat("é", maxErrorSummaryRunes+500)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  "t1",
+		Content:   huge,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle error: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	var errorItem *store.Item
+	for i := range items {
+		if items[i].Kind == "error" {
+			errorItem = &items[i]
+		}
+	}
+	if errorItem == nil {
+		t.Fatalf("no error item persisted")
+	}
+	if got := utf8.RuneCountInString(errorItem.Summary); got != maxErrorSummaryRunes {
+		t.Fatalf("summary runes = %d, want clamp at %d", got, maxErrorSummaryRunes)
+	}
+	if !utf8.ValidString(errorItem.Summary) {
+		t.Fatalf("clamp split a multi-byte rune")
+	}
+	if !strings.HasSuffix(errorItem.Summary, "…") {
+		t.Fatalf("clamped summary lost its ellipsis marker: %q…", errorItem.Summary[:40])
 	}
 }
 

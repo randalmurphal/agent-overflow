@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 func TestActiveTurnSnapshotTracksAndClearsLiveRound(t *testing.T) {
@@ -916,5 +917,310 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 	}
 	if completedPayload.AssistantMessageID != "msg_complete_1" {
 		t.Errorf("provider:turn_completed AssistantMessageID = %q, want msg_complete_1", completedPayload.AssistantMessageID)
+	}
+}
+
+// --- Orphan error-result surfacing (pre-init / no-round failures) ---
+//
+// The incident shape these pin: a Claude session restarted onto an
+// unusable --resume-session-at cursor emits a single
+// result{error_during_execution} BEFORE system/init and nothing else.
+// No round opened, no turns row exists, yet the failure must reach the
+// user as a persisted error item (whose provider:item_event upsert is
+// what clears the frontend's optimistic pending-send "Working" state).
+
+// TestTurnCompleteErrorNoRoundPersistsErrorItem covers the head
+// attribution path: the failing start was provoked by a send whose
+// pending marker carries the dispatcher-stamped turn index.
+func TestTurnCompleteErrorNoRoundPersistsErrorItem(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	router.RegisterPendingSend("t1", "user:5", 5)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:     provider.EventTurnComplete,
+		ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:   "error",
+			ErrorMessage: "No message found with message.uuid of: ea6789cd",
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle orphan error result: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want exactly the orphan error item", len(items))
+	}
+	if items[0].Kind != "error" || items[0].TurnIndex != 5 {
+		t.Fatalf("item kind=%q turn=%d, want error item attributed to pending-send turn 5", items[0].Kind, items[0].TurnIndex)
+	}
+	if !strings.Contains(items[0].Summary, "No message found") {
+		t.Fatalf("summary = %q, want the wire error message", items[0].Summary)
+	}
+
+	// The item upsert is the chosen frontend surface; no round existed,
+	// so no provider:turn_completed may fire.
+	if completes := filterEmissions(*emissions, "provider:turn_completed"); len(completes) != 0 {
+		t.Fatalf("provider:turn_completed fired %d times for a roundless error result", len(completes))
+	}
+	upserts := filterEmissions(*emissions, "provider:item_event")
+	if len(upserts) == 0 {
+		t.Fatalf("no provider:item_event emitted for the orphan error item")
+	}
+
+	// The pending head is not consumed — CleanupThread or the wire user
+	// echo owns the pop.
+	if !router.HasPendingSendForThread("t1") {
+		t.Fatalf("pending send was consumed by the orphan error branch")
+	}
+}
+
+// TestTurnCompleteErrorNoRoundFallsBackToLastTurnIndex covers the
+// attribution fallback when no pending send exists (e.g. the failing
+// start was a manual Reconnect, not a send).
+func TestTurnCompleteErrorNoRoundFallsBackToLastTurnIndex(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	seedUserTextRow(t, st, "t1", 2, "hi", "")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:     provider.EventTurnComplete,
+		ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:   "error",
+			ErrorMessage: "spawn failed hard",
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle orphan error result: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	var errorItem *store.Item
+	for i := range items {
+		if items[i].Kind == "error" {
+			errorItem = &items[i]
+		}
+	}
+	if errorItem == nil {
+		t.Fatalf("no error item persisted; items = %+v", items)
+	}
+	if errorItem.TurnIndex != 2 {
+		t.Fatalf("error item turn = %d, want LastTurnIndex fallback 2", errorItem.TurnIndex)
+	}
+}
+
+// TestTurnCompleteErrorNoRoundSkipsQueueFlush: a session that just
+// reported a hard failure cannot serve queued sends — the boundary
+// flush must not dispatch into it.
+func TestTurnCompleteErrorNoRoundSkipsQueueFlush(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	rec := &recordingDispatcher{}
+	router.SetFlushDispatcher(rec.dispatch)
+
+	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "queued message"))
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:     provider.EventTurnComplete,
+		ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:   "error",
+			ErrorMessage: "No message found with message.uuid of: ea6789cd",
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle orphan error result: %v", err)
+	}
+
+	if calls := rec.snapshot(); len(calls) != 0 {
+		t.Fatalf("flush dispatcher fired %d times at a dead-session boundary", len(calls))
+	}
+	if !router.HasQueuedFlushItems("t1") {
+		t.Fatalf("queued item vanished; it must stay for the next session")
+	}
+}
+
+// TestLateErrorResultOnSettledTurnFoldsWithoutErrorItem pins the
+// discriminator between the orphan branch and the legitimate late-fold
+// path: a trailing result{is_error} arriving AFTER a soft close
+// settled the turn must fold its error onto the turns row via
+// persistLateTurnPayload — not mint an orphan error item.
+func TestLateErrorResultOnSettledTurnFoldsWithoutErrorItem(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	// Soft close settles the logical turn (claims settlement, clears
+	// the open turn and round).
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"},
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("soft close: %v", err)
+	}
+
+	// Trailing wire result carrying the error.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:   "error",
+			ErrorMessage: "request failed after retries",
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("trailing error result: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	for _, it := range items {
+		if it.Kind == "error" {
+			t.Fatalf("late error result on a settled turn minted an error item: %+v", it)
+		}
+	}
+	turn, found, err := st.GetTurnByThreadIndex("t1", 1)
+	if err != nil || !found {
+		t.Fatalf("turns row lookup: found=%v err=%v", found, err)
+	}
+	if turn.StopReason != "error" || !strings.Contains(turn.ErrorMessage, "request failed") {
+		t.Fatalf("turns row stop=%q error=%q, want late error fold", turn.StopReason, turn.ErrorMessage)
+	}
+}
+
+// TestMarkThreadActiveResetsSettlementLedger pins the repair-restart
+// staleness hole: the context-repair restart skips CleanupThread, so
+// without MarkThreadActive clearing settledTurns, a replacement session
+// dying pre-init would have its orphan error result misrouted into
+// persistLateTurnPayload by the PRIOR session's settlement marker —
+// folding the error onto a finished turn's row instead of persisting
+// the error item the user needs to see.
+func TestMarkThreadActiveResetsSettlementLedger(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Prior session: turn 2 runs and settles normally.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 2,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("settle turn 2: %v", err)
+	}
+
+	// Repair restart: the host re-activates the thread (no CleanupThread
+	// on this path) and dispatches the next send, which registers its
+	// deferred pending marker for turn 3.
+	router.MarkThreadActive("t1")
+	router.RegisterPendingSend("t1", "user:3", 3)
+
+	// The replacement session dies pre-init with only an error result.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:     provider.EventTurnComplete,
+		ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:   "error",
+			ErrorMessage: "No message found with message.uuid of: ea6789cd",
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle orphan error result: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	var errorItem *store.Item
+	for i := range items {
+		if items[i].Kind == "error" {
+			errorItem = &items[i]
+		}
+	}
+	if errorItem == nil {
+		t.Fatalf("orphan error result persisted no error item; the stale settlement ledger swallowed it")
+	}
+	if errorItem.TurnIndex != 3 {
+		t.Fatalf("error item turn = %d, want pending-send attribution 3", errorItem.TurnIndex)
+	}
+
+	// The settled prior turn must be untouched — no late-fold mutation.
+	turn, found, err := st.GetTurnByThreadIndex("t1", 2)
+	if err != nil || !found {
+		t.Fatalf("turns row lookup: found=%v err=%v", found, err)
+	}
+	if turn.StopReason != "end_turn" || turn.ErrorMessage != "" {
+		t.Fatalf("turn 2 row stop=%q error=%q, want the original settle untouched", turn.StopReason, turn.ErrorMessage)
+	}
+}
+
+// TestTurnCompleteErrorWithOpenRoundUnchanged: when a round IS open,
+// the error result takes exactly the pre-existing path — round emit
+// with the error payload, turns-row settle — and the orphan branch
+// stays out of the way (no extra error item).
+func TestTurnCompleteErrorWithOpenRoundUnchanged(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason:   "error",
+			ErrorMessage: "mid-turn API failure",
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("error turn complete: %v", err)
+	}
+
+	completes := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completes) != 1 {
+		t.Fatalf("provider:turn_completed = %d emissions, want 1", len(completes))
+	}
+	payload, ok := completes[0].data.(TurnCompletedEvent)
+	if !ok {
+		t.Fatalf("payload type %T", completes[0].data)
+	}
+	if payload.ErrorMessage == "" {
+		t.Fatalf("round-completed payload lost the error message")
+	}
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	for _, it := range items {
+		if it.Kind == "error" {
+			t.Fatalf("open-round error result minted an orphan error item: %+v", it)
+		}
 	}
 }

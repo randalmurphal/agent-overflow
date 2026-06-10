@@ -12,9 +12,13 @@ routing pipeline. New routing logic belongs in whichever file most
 closely matches its concern; create a new file (and list it here) if
 none fits.
 
-- `router.go` — entry point. `Router` struct, `Handle` dispatch switch,
-  `persistItem` / `emitThreadUpdated` shared helpers, and the top-level
-  error / session-status / token-usage / rate-limit routers.
+- `router.go` — entry point. `Router` struct, the `Handle` /
+  `HandleSynthetic` pair (`Handle` drops every event for a stopped
+  thread; `HandleSynthetic` is the host-event carve-out that bypasses
+  that gate — see "Stopped-thread routing" below), the private
+  `dispatch` switch, `persistItem` / `emitThreadUpdated` shared
+  helpers, and the top-level error / session-status / token-usage /
+  rate-limit routers.
 - `session_status.go` — `EventSessionStatus` classifier:
   `classifySessionStatus` maps content + meta → `ProviderStatusEventKind`
   (rate-limit / unauthenticated / transient retry / ok), plus the
@@ -95,8 +99,37 @@ none fits.
 | Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; typed command completions clear live state and persist normal command rows using the original item id only while a Codex wire round is active. Spawn-agent starts are pending-only; terminal spawn completions persist the visible row and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
 | Codex terminal interaction | Empty stdin persists/reuses one visible `terminal_interaction` wait carrier on the current open turn while the PTY tracker is live. Non-empty stdin first flushes any active wait for that process, then persists an interaction marker without storing stdin bytes. See `terminal_interaction.go`. |
 | Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. |
+| Error `result`, no open round/turn | Orphan error item attributed to the pending-send head (else last turn index); queued-send flush suppressed. Settled turns route to `persistLateTurnPayload` instead. See `turn-lifecycle.md §Error routing` path 5. |
 | Error | Distinct event kind; frontend renders as status/alert. |
 | Unknown | Log with full context, do not drop silently. |
+
+## Stopped-thread routing (invariant 29)
+
+`CleanupThread` marks the thread stopped; `Handle` then drops EVERY
+wire event for it — `EventInit` included. The marker is cleared only by
+the host's session-start funnel calling `MarkThreadActive` pre-spawn
+(`app_session.go`); no wire event may clear it, because a replacement
+session that dies during startup emits its only diagnostics pre-init
+(2026-06-10 incident). Host-synthesized events (send-failure synthetic
+turn-completes, `emitErrorToThread`) are not stale wire frames — they
+route through `HandleSynthetic`. Errors that a wire event *triggers*
+on the read loop (discussion-sync failures) use the app's
+`emitWireErrorToThread`, which routes through `Handle` and stays
+gated. Approval/user-input resolutions stay on `Handle`: they're only
+reachable with a live session.
+
+`MarkThreadActive` also clears the thread's `settledTurns` prefix (the
+repair-restart path skips `CleanupThread`; a stale settlement marker
+would misroute a replacement session's orphan error result into
+`persistLateTurnPayload`) and bumps the thread's reactivation epoch.
+Asynchronous teardowns capture `ThreadEpoch` BEFORE unregistering
+their session and clean up via `CleanupThreadIfEpoch`, which no-ops
+once a replacement start has bumped the epoch — the registry token
+guard can't cover that window because the replacement's spawn runs for
+seconds between `MarkThreadActive` and re-registration. Epoch entries
+are never deleted (a reset-to-zero would let a stale captured 0
+match). See
+[`invariant 29`](../../docs/architecture/invariants.md#29-stopped-thread-event-routing-is-host-controlled).
 
 ## Lifecycles we route
 

@@ -126,9 +126,25 @@ type Router struct {
 	// explicitly stopped. While the flag is set, Handle drops events
 	// that would persist to the store so late-arriving readLoop lines
 	// from the torn-down subprocess do not leave orphan rows on the
-	// stopped thread (Bug B5). The flag is cleared when a fresh session
-	// re-enters the thread via EventInit.
+	// stopped thread (Bug B5). Cleared ONLY by the host's session-start
+	// path via MarkThreadActive — never by a wire event. A session that
+	// dies before emitting anything recognizable (e.g. Claude failing
+	// its --resume-session-at validation pre-init) must still have its
+	// error results routed, so the host declares the thread active when
+	// it commits to a replacement session rather than waiting for proof
+	// of life from the wire. Host-synthesized events bypass the flag via
+	// HandleSynthetic.
 	stoppedThreads map[string]struct{}
+	// threadEpochs counts MarkThreadActive calls per thread. An
+	// asynchronous teardown captures the epoch before unregistering a
+	// dead session and hands it to CleanupThreadIfEpoch, which no-ops
+	// when the epoch has moved — i.e. the host committed to a
+	// replacement session while the teardown goroutine was still in
+	// flight. Entries are never deleted (a delete would reset the
+	// counter to 0 and let a stale captured 0 match); growth is bounded
+	// by the number of distinct threads that start a session in this
+	// process's lifetime.
+	threadEpochs map[string]uint64
 	// unknownSessionStatusLogged throttles the "unknown session-status
 	// content" log to one line per distinct value. EventSessionStatus
 	// carries provider-specific Content strings ("disconnected",
@@ -306,6 +322,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		tasksByThread:              make(map[string]*threadTasks),
 		turnSpans:                  make(map[string]trace.Span),
 		stoppedThreads:             make(map[string]struct{}),
+		threadEpochs:               make(map[string]uint64),
 		unknownSessionStatusLogged: make(map[string]struct{}),
 		codexBackground:            make(map[string]*codexBackgroundState),
 		terminalInteractionSeq:     make(map[string]int),
@@ -365,18 +382,34 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 	defer r.inflight.Done()
 	defer r.fireEventHook(evt)
 
-	// EventInit means a fresh session is (re)starting for this thread;
-	// clear any lingering stopped marker so subsequent events persist
-	// under the new session.
-	if evt.Kind == provider.EventInit {
-		r.markThreadActive(evt.ThreadID)
-	} else if r.isThreadStopped(evt.ThreadID) {
-		// Drop silently. The readLoop could still be draining in-flight
-		// lines after StopSession returned; persisting them under the
-		// stopped thread would pollute the timeline.
+	if r.isThreadStopped(evt.ThreadID) {
+		// Drop silently — including EventInit. The readLoop could still
+		// be draining in-flight lines after StopSession returned;
+		// persisting them under the stopped thread would pollute the
+		// timeline (Bug B5). The flag is cleared exclusively by the
+		// host's session-start path (MarkThreadActive), so a stale init
+		// from a torn-down subprocess cannot re-admit its trailing
+		// frames.
 		log.Printf("triage: dropping %s event for stopped thread %s", evt.Kind, evt.ThreadID)
 		return nil
 	}
+	return r.dispatch(evt)
+}
+
+// HandleSynthetic routes a host-synthesized event exactly like Handle
+// but bypasses the stopped-thread gate. Host events are not stale wire
+// frames from a torn-down subprocess (the gate's target), and several
+// fire precisely while the thread is stopped — the send-failure settle
+// in app_send.go and reconnect-failure errors via emitErrorToThread.
+// Wire events from provider read loops must keep going through Handle.
+func (r *Router) HandleSynthetic(evt provider.ProviderEvent) error {
+	r.inflight.Add(1)
+	defer r.inflight.Done()
+	defer r.fireEventHook(evt)
+	return r.dispatch(evt)
+}
+
+func (r *Router) dispatch(evt provider.ProviderEvent) error {
 	// Forward-progress for the api_retry row: any wire event that
 	// proves the provider went through with the next API call flips an
 	// open retry row from running to completed. The list excludes
@@ -871,41 +904,8 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 	}
 
 	scope := strings.TrimSpace(evt.ParentToolUseID)
-	// `assistant.error` from Claude carries the SDK enum on `meta.error`
-	// (rate_limit, authentication_failed, ...). Persist as `api_error`
-	// kind so the frontend can render the actionable copy / link
-	// branch by enum (Add credits, Run /login, ...). Generic provider
-	// errors stay as the existing `error` kind.
-	itemKind := "error"
-	itemMeta := ""
-	if enum := apiErrorEnum(evt.Meta); enum != "" {
-		itemKind = itemKindAPIError
-		itemMeta = string(evt.Meta)
-	}
 	summary := stringsx.FirstNonEmptyTrimmed(evt.Content, "Provider error")
-	parentID := eventParentID(evt)
-	if r.hasMatchingErrorItem(evt.ThreadID, turnIndex, itemKind, summary, parentID) {
-		if fatal {
-			if err := r.finishFatalProviderError(evt.ThreadID, now, summary, evt.Meta); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	errorItem := store.Item{
-		ID:        nextErrorID(turnIndex, scope, r.nextErrorSequence(evt.ThreadID, turnIndex, scope)),
-		ThreadID:  evt.ThreadID,
-		TurnIndex: turnIndex,
-		Kind:      itemKind,
-		Role:      "system",
-		Status:    statusCompleted,
-		Summary:   summary,
-		Meta:      itemMeta,
-		ParentID:  parentID,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := r.persistItem(errorItem, nil); err != nil {
+	if err := r.persistProviderErrorItem(evt.ThreadID, turnIndex, summary, evt.Meta, scope, eventParentID(evt), now); err != nil {
 		return err
 	}
 
@@ -916,6 +916,70 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 	}
 
 	return nil
+}
+
+// persistProviderErrorItem builds and persists a system error item
+// through the shared per-turn error-id counter and the same
+// already-persisted dedup handleError applies, so error rows from any
+// source — wire EventError, orphan error results in handleTurnComplete
+// — slot together without id collisions or duplicate rows.
+//
+// `assistant.error` from Claude carries the SDK enum on `meta.error`
+// (rate_limit, authentication_failed, ...). Those persist as
+// `api_error` kind so the frontend can render the actionable copy /
+// link branch by enum (Add credits, Run /login, ...). Generic provider
+// errors stay as the `error` kind. scope/parentID attribute subagent
+// errors; pass "" for thread-level ones.
+func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summary string, meta json.RawMessage, scope, parentID string, now int64) error {
+	// Provider error strings are unbounded boundary input (wire
+	// ErrorMessage / EventError content can carry whole stack traces);
+	// items.summary is a preview surface shipped with every thread
+	// emit. Clamp before the dedup probe so a re-fired long error
+	// compares equal to its already-clamped row.
+	summary = clampErrorSummary(summary)
+	itemKind := "error"
+	itemMeta := ""
+	if enum := apiErrorEnum(meta); enum != "" {
+		itemKind = itemKindAPIError
+		itemMeta = string(meta)
+	}
+	if r.hasMatchingErrorItem(threadID, turnIndex, itemKind, summary, parentID) {
+		return nil
+	}
+	errorItem := store.Item{
+		ID:        nextErrorID(turnIndex, scope, r.nextErrorSequence(threadID, turnIndex, scope)),
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		Kind:      itemKind,
+		Role:      "system",
+		Status:    statusCompleted,
+		Summary:   summary,
+		Meta:      itemMeta,
+		ParentID:  parentID,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	return r.persistItem(errorItem, nil)
+}
+
+// maxErrorSummaryRunes bounds persisted error summaries. 1000 runes
+// keeps any realistic CLI diagnostic intact while capping pathological
+// payloads (full stack traces, embedded request bodies) that would
+// otherwise ride along on every thread-list emit.
+const maxErrorSummaryRunes = 1000
+
+// clampErrorSummary truncates at a rune boundary with an ellipsis so a
+// multi-byte character is never split mid-sequence. Byte length bounds
+// rune count, so the common short summary returns without allocating.
+func clampErrorSummary(summary string) string {
+	if len(summary) <= maxErrorSummaryRunes {
+		return summary
+	}
+	runes := []rune(summary)
+	if len(runes) <= maxErrorSummaryRunes {
+		return summary
+	}
+	return string(runes[:maxErrorSummaryRunes-1]) + "…"
 }
 
 func (r *Router) finishFatalProviderError(threadID string, now int64, summary string, meta json.RawMessage) error {

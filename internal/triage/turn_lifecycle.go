@@ -249,6 +249,39 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		r.emit("provider:turn_completed", r.buildRoundCompletedEvent(evt, round.TurnID, turnIndex, now, meta))
 	}
 
+	// Orphan error result: an error turn-complete with no open round, no
+	// open turn, and no prior settlement means the provider failed before
+	// the turn machinery ever engaged — e.g. Claude dying pre-init when
+	// its --resume-session-at cursor is unusable (the resulting
+	// result{error_during_execution} is the only wire output such a
+	// session ever produces). There is no round to emit and no turns row
+	// to settle, so without this branch the error reaches nothing the
+	// user can see: persist a system error item instead. The
+	// provider:item_event upsert it emits is the surface the frontend
+	// already clears its optimistic pending-send "Working" state on.
+	//
+	// The isTurnSettled guard — checked against the event's NATURAL turn
+	// (currentTurnIndex fallback) — keeps the legitimate late-fold case
+	// flowing past this branch: a trailing result{is_error} after a soft
+	// close settled the turn must reach persistLateTurnPayload below, not
+	// mint an error item. The attributed turn prefers the pending-send
+	// head when one exists (the dispatcher-stamped index for the send
+	// that provoked the failing start; deferred flush items are not in
+	// SQLite yet, so LastTurnIndex would point one turn early). The head
+	// is NOT consumed — CleanupThread or the wire user echo owns the pop.
+	if err == nil && meta.Error != "" && !hasRound && !r.isTurnSettled(evt.ThreadID, turnIndex) {
+		if _, open := r.openTurnIndex(evt.ThreadID); !open {
+			attributedTurn := turnIndex
+			if head, ok := r.peekPendingSendHead(evt.ThreadID); ok {
+				attributedTurn = head.TurnIndex
+			}
+			// A session that just reported a hard failure cannot serve
+			// queued sends — leave the flush queue for the next session.
+			flushQueueAtBoundary = false
+			return r.persistProviderErrorItem(evt.ThreadID, attributedTurn, meta.Error, nil, "", "", now)
+		}
+	}
+
 	if err == nil && !countsAsActivity {
 		return nil
 	}
@@ -735,6 +768,17 @@ func (r *Router) claimTurnSettlement(threadID string, turnIndex int) bool {
 	return true
 }
 
+// isTurnSettled reports whether logical-turn settlement has already run
+// for (threadID, turnIndex). Read-only companion to claimTurnSettlement
+// for callers that need to discriminate "late result for a settled
+// turn" from "result for a turn that never started" without claiming
+// the settlement slot themselves.
+func (r *Router) isTurnSettled(threadID string, turnIndex int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.settledTurns[settledTurnKey(threadID, turnIndex)]
+}
+
 func settledTurnKey(threadID string, turnIndex int) string {
 	return fmt.Sprintf("%s|%d", threadID, turnIndex)
 }
@@ -1065,6 +1109,8 @@ func (r *Router) WaitForPendingSettles() {
 // thread as "stopped" so any event that arrives afterward — typically a
 // readLoop line that was already in-flight when StopSession returned — is
 // dropped instead of persisting under the torn-down session (Bug B5).
+// The flag stays set until the host commits to a replacement session
+// and calls MarkThreadActive; wire events never clear it.
 //
 // As a safety net, any open turn at cleanup time gets a synthesized
 // truncated EventTurnComplete so the frontend working indicator clears
@@ -1075,6 +1121,40 @@ func (r *Router) WaitForPendingSettles() {
 // or after StopSession unwinds — and is idempotent in either order
 // thanks to claimTurnSettlement.
 func (r *Router) CleanupThread(threadID string) {
+	r.cleanupThread(threadID, nil)
+}
+
+// CleanupThreadIfEpoch is CleanupThread for asynchronous teardowns that
+// can lose a race against a replacement session start. The caller
+// captures ThreadEpoch BEFORE unregistering the dead session; if
+// MarkThreadActive has bumped the epoch since — the host committed to a
+// replacement, whose spawn can take seconds while this teardown runs on
+// its own goroutine — the cleanup aborts and returns false instead of
+// stopping the live thread and sweeping its state.
+//
+// The epoch is checked twice: once on entry (before the flush/synthesize
+// preamble) and again inside the locked sweep, atomically with setting
+// the stopped marker. A reactivation landing between the two checks is
+// therefore still caught before anything destructive happens — in that
+// window the preamble can only have touched residual state of the dead
+// session, because the replacement subprocess (spawned only after
+// MarkThreadActive) cannot have produced turns or streams within the
+// microseconds the preamble takes.
+func (r *Router) CleanupThreadIfEpoch(threadID string, epoch uint64) bool {
+	r.mu.Lock()
+	current := r.threadEpochs[threadID]
+	r.mu.Unlock()
+	if current != epoch {
+		return false
+	}
+	return r.cleanupThread(threadID, &epoch)
+}
+
+// cleanupThread is the shared body behind CleanupThread (requireEpoch
+// nil: unconditional) and CleanupThreadIfEpoch (requireEpoch set: the
+// locked sweep aborts when the thread's epoch no longer matches).
+// Returns false only on an epoch-abort.
+func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	cleanupAt := time.Now().UnixMilli()
 	if r.hasInFlightTurnOrRound(threadID) {
 		if err := r.synthesizeTruncatedTurnComplete(threadID, cleanupAt); err != nil {
@@ -1086,6 +1166,10 @@ func (r *Router) CleanupThread(threadID string) {
 	}
 
 	r.mu.Lock()
+	if requireEpoch != nil && r.threadEpochs[threadID] != *requireEpoch {
+		r.mu.Unlock()
+		return false
+	}
 	// Set the stopped flag BEFORE dropping other state so Handle observes
 	// a consistent snapshot: any concurrent Handle call either sees a live
 	// thread with full state, or a stopped thread with no state.
@@ -1186,6 +1270,7 @@ func (r *Router) CleanupThread(threadID string) {
 			r.emitCodexBackgroundTasksChanged(threadID)
 		}
 	}
+	return true
 }
 
 // ResetThreadForRollback clears session-local routing state after the provider
@@ -1262,7 +1347,8 @@ func (r *Router) ResetThreadForRollback(threadID string) {
 }
 
 // isThreadStopped returns true when CleanupThread has been called for
-// threadID and no subsequent EventInit has re-activated it.
+// threadID and the host has not since re-activated it via
+// MarkThreadActive.
 func (r *Router) isThreadStopped(threadID string) bool {
 	r.mu.Lock()
 	_, stopped := r.stoppedThreads[threadID]
@@ -1270,11 +1356,49 @@ func (r *Router) isThreadStopped(threadID string) bool {
 	return stopped
 }
 
-// markThreadActive clears the stopped flag, called on EventInit so a
-// restarted session can persist again. No-op when the flag was already
-// clear.
-func (r *Router) markThreadActive(threadID string) {
+// MarkThreadActive clears the stopped flag so a replacement session's
+// events persist again. The host calls this from the session-start
+// path BEFORE spawning the new subprocess — it must not wait for a
+// wire signal, because a session that dies during startup (e.g. Claude
+// rejecting --resume-session-at pre-init) emits its only diagnostics
+// before anything init-like, and those must route. Clearing pre-spawn
+// is safe: the prior subprocess's read loop is fully drained before a
+// start proceeds (provider Close blocks on read-loop exit), so no
+// stale frame can slip through the freshly-cleared gate. No wire event
+// may clear this flag — see the stoppedThreads field comment.
+//
+// Reactivation also resets the thread's logical-turn settlement ledger.
+// The context-repair restart deliberately skips CleanupThread, so
+// settledTurns can still hold entries from the prior subprocess; a
+// replacement session reuses turn indexes, and a stale "settled" marker
+// would misroute its first error result into persistLateTurnPayload
+// (folding into a finished turn's row) instead of the orphan error-item
+// branch the user actually needs to see. Clearing here is safe for the
+// soft-close late-fold path — the fold's trailing result rides the SAME
+// session's read loop, which is fully drained before any restart
+// reaches this call.
+//
+// Each call bumps the thread's reactivation epoch (see ThreadEpoch),
+// which lets asynchronous teardowns detect that a replacement session
+// claimed the thread mid-teardown and abort their cleanup.
+func (r *Router) MarkThreadActive(threadID string) {
 	r.mu.Lock()
 	delete(r.stoppedThreads, threadID)
+	deleteByPrefix(r.settledTurns, threadID+"|")
+	r.threadEpochs[threadID]++
 	r.mu.Unlock()
+}
+
+// ThreadEpoch returns the thread's reactivation epoch: a counter bumped
+// by every MarkThreadActive. Asynchronous teardowns capture it before
+// unregistering a dead session and pass it to CleanupThreadIfEpoch so a
+// cleanup that lost the race against a replacement session start
+// no-ops instead of stopping the live thread. Epoch entries are never
+// deleted — a removed entry would read as 0 again and let a stale
+// teardown's captured 0 match.
+func (r *Router) ThreadEpoch(threadID string) uint64 {
+	r.mu.Lock()
+	epoch := r.threadEpochs[threadID]
+	r.mu.Unlock()
+	return epoch
 }
