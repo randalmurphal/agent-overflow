@@ -31,7 +31,7 @@
 
 <div data-testid="wait-group">
   <!-- Header renders the folded `wait_agent` completion when it has loaded, so a
-       finished wait reads "Finished waiting" + per-agent statuses; until then
+       finished wait reads "Finished waiting" + the waited agent list; until then
        (and at a page boundary where the completion isn't loaded) it falls back to
        the carrier tool_call's "Waiting for N agents". Same TimelineLeaf instance
        across the swap — an in-place prop update, not a remount. -->

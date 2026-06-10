@@ -247,9 +247,9 @@ func stringSet(values []string) map[string]struct{} {
 
 // shapeToolItemMeta bounds item.Meta in place and returns the optional
 // tool_call_input payload to persist alongside the item. Two passes
-// apply: trimPersistedToolResultMeta caps the completion-echo fields
-// for every tool, then applyToolMetaRule shapes meta.input per the
-// registry.
+// apply: the itemmeta trims cap the completion-echo fields and the
+// Codex collab agentsStates messages for every tool, then
+// applyToolMetaRule shapes meta.input per the registry.
 //
 // The function is idempotent and lifecycle-aware:
 //
@@ -281,11 +281,19 @@ func (r *Router) shapeToolItemMeta(item *store.Item, now int64) *store.Payload {
 		return nil
 	}
 	// Bound the completion-echo fields (tool_result / tool_use_result)
-	// before the per-tool input shaping: the echo applies to every tool,
-	// registry entry or not. See internal/itemmeta.
+	// and the Codex collab agentsStates messages before the per-tool
+	// input shaping: both apply to every tool, registry entry or not.
+	// The agentsStates trim mutates only this item's Meta copy —
+	// triage's terminal-evidence readers (resolveSubagentsForWait,
+	// hasRunningChild) decode evt.Meta, which persist shaping never
+	// touches. See internal/itemmeta.
 	if trimmedResult, changed := itemmeta.TrimToolResultEcho(toolName, raw); changed {
 		raw = trimmedResult
 		item.Meta = string(trimmedResult)
+	}
+	if trimmedStates, changed := itemmeta.TrimCollabAgentStateMessages(raw); changed {
+		raw = trimmedStates
+		item.Meta = string(trimmedStates)
 	}
 	trimmed, payload, err := applyToolMetaRule(toolName, raw, now)
 	if err != nil {

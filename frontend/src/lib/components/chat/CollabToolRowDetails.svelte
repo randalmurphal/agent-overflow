@@ -14,9 +14,7 @@
     expanded,
     tool,
     isCompletion,
-    receivers,
     receiverDisplayLabels,
-    statusLine,
     expansion,
   }: {
     pane?: ThreadPane;
@@ -27,9 +25,7 @@
     expanded: boolean;
     tool: string;
     isCompletion: boolean;
-    receivers: string[];
     receiverDisplayLabels: string[];
-    statusLine: (id: string) => string;
     expansion: PayloadExpansionHandle | null;
   } = $props();
 </script>
@@ -47,7 +43,7 @@
     └ {completionPreview}
   </div>
 {/if}
-{#if tool === 'wait_agent' && receivers.length > 0 && (isCompletion || receiverDisplayLabels.length > 1)}
+{#if tool === 'wait_agent' && receiverDisplayLabels.length > 0 && (isCompletion || receiverDisplayLabels.length > 1)}
   <!--
     `ml-[6.125rem]` lines the receiver list up with the parent row's
     body column (where "Waiting for N agents" starts), so the
@@ -63,12 +59,16 @@
     is the visual cue that these belong to the wait header above,
     and a comma-separated list keeps long rosters readable without
     one row per agent.
+    Labels only, on the carrier and the finished header alike: each
+    agent's output already lives on its spawn completion row beneath
+    the wait group, so repeating per-agent statuses or final messages
+    here would duplicate it into an unbounded header line.
   -->
   <div
     class="ml-[6.125rem] mt-0.5 text-[0.6875rem] text-fg-subtle"
     data-testid="collab-tool-row-receivers"
   >
-    {receivers.map((id, index) => isCompletion ? statusLine(id) : receiverDisplayLabels[index]).join(', ')}
+    {receiverDisplayLabels.join(', ')}
   </div>
 {/if}
 {#if expansion && expanded}

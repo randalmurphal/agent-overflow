@@ -14,6 +14,15 @@ logic lives here. Stdlib-only.
   point — safe to re-run on its own output. Callers: triage
   `shapeToolItemMeta` (every tool persist path) and the store v8
   data-fixup migration.
+- `collab_states.go` — `TrimCollabAgentStateMessages(raw)` drops the
+  per-agent `message` (the child's full final output, duplicated in
+  the lazy tool_call_result payload) from `meta.input.agentsStates` on
+  persisted Codex collab tool metas, keeping statuses and every other
+  key. Event meta stays untouched — persist shaping rewrites only the
+  store.Item's Meta copy, so triage's terminal-evidence readers
+  (resolveSubagentsForWait, hasRunningChild), which decode evt.Meta,
+  always see full messages. Fixed point. Callers: triage
+  `shapeToolItemMeta` and the store v9 data-fixup migration.
 
 ## Responsibility boundary
 
@@ -29,4 +38,6 @@ logic lives here. Stdlib-only.
   no-cycle guarantee depends on this.
 - Do NOT change trim semantics without checking the frontend consumers
   pinned in the tests (`commandDisplay.ts` error fallbacks,
-  `AskUserQuestionCard` answers echo).
+  `AskUserQuestionCard` answers echo; for the collab-state trim, the
+  labels-only receivers line and payload-only completionPreview pinned
+  in `ToolCallCard.test.ts` / `WaitGroup.test.ts`).

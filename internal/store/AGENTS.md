@@ -44,8 +44,9 @@ root `CLAUDE.md` principle 3.
   (collapsed-card aggregates), and `ListSubagentDescendants` loads the
   full child subtree on demand when a group card expands.
 - `migrate_fixups.go` — Go-side data fixups referenced by `Fix`
-  migrations in `migrate.go` (e.g. v8 trims persisted tool_result
-  echo out of `items.meta`).
+  migrations in `migrate.go`, built on the shared `rewriteItemMetas`
+  scan/rewrite helper (v8 trims persisted tool_result echo, v9 trims
+  collab agentsStates messages out of `items.meta`).
 - `sqlutil.go` — shared SQL helpers.
 
 ## Responsibility boundary

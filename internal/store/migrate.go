@@ -187,6 +187,11 @@ CREATE INDEX idx_payload_chunks_payload_start
 		Name:    "trim_tool_result_echo_meta",
 		Fix:     trimToolResultEchoMetaFixup,
 	},
+	{
+		Version: 9,
+		Name:    "trim_collab_agent_state_messages_meta",
+		Fix:     trimCollabAgentStateMessagesMetaFixup,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

@@ -99,59 +99,17 @@
   });
   let modelAffix = $derived(spawnInfo?.modelAffix ?? [model, effort].filter(Boolean).join(' '));
 
-  let agentsStates = $derived.by<Record<string, unknown>>(() => {
-    const raw = input.agentsStates;
-    return raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? raw as Record<string, unknown>
-      : {};
-  });
-
-  function statusLine(id: string): string {
-    const label = receiverLabel(id);
-    const raw = agentsStates[id];
-    if (typeof raw === 'string') return `${label}: ${raw}`;
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return label;
-    const record = raw as Record<string, unknown>;
-    const status = typeof record.status === 'string' ? record.status : '';
-    const message = typeof record.message === 'string' ? record.message.trim() : '';
-    return `${label}: ${[status, message].filter(Boolean).join(' - ') || 'unknown'}`;
-  }
-
-  function waitCarrierIDForCompletion(): string {
-    const carrierID = meta?.wait_carrier_id ?? meta?.waitCarrierID;
-    return typeof carrierID === 'string' ? carrierID.trim() : '';
-  }
-
   let completionPreview = $derived.by(() => {
     if (item.kind !== 'tool_completion' || item.toolName !== 'collab_agent') return '';
-
+    // Payload meta is the only preview source. The old fallback that
+    // read the wait carrier's meta.input.agentsStates messages is gone:
+    // persisted agentsStates entries are status-only
+    // (itemmeta.TrimCollabAgentStateMessages + the v9 store migration),
+    // so there is no message left there to read.
     const payloadPreview = typeof payloadMeta?.preview === 'string'
       ? payloadMeta.preview.trim()
       : '';
-    if (payloadPreview) return previewText(payloadPreview);
-
-    const waitCarrierID = waitCarrierIDForCompletion();
-    const receiverThreadIds = completionLaunchInfo?.receiverThreadIds ?? [];
-    if (!pane || !waitCarrierID || receiverThreadIds.length === 0) return '';
-
-    const waitCarrier = pane.items.find((candidate) => candidate.id === waitCarrierID);
-    const waitMeta = parseJsonObject(waitCarrier?.meta);
-    const waitInput = waitMeta?.input;
-    if (!waitInput || typeof waitInput !== 'object' || Array.isArray(waitInput)) return '';
-
-    const waitStates = (waitInput as Record<string, unknown>).agentsStates;
-    if (!waitStates || typeof waitStates !== 'object' || Array.isArray(waitStates)) return '';
-
-    const parts = receiverThreadIds
-      .map((id) => {
-        const raw = (waitStates as Record<string, unknown>)[id];
-        if (typeof raw === 'string') return raw.trim();
-        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return '';
-        const message = (raw as Record<string, unknown>).message;
-        return typeof message === 'string' ? message.trim() : '';
-      })
-      .filter(Boolean);
-    return parts.length > 0 ? previewText(parts.join(' | ')) : '';
+    return payloadPreview ? previewText(payloadPreview) : '';
   });
 
   let title = $derived.by(() => {
@@ -293,9 +251,7 @@
     expanded={expansion?.expanded ?? false}
     {tool}
     isCompletion={item.kind === 'tool_completion'}
-    {receivers}
     {receiverDisplayLabels}
-    {statusLine}
     expansion={hasExpandableOutput ? expansion : null}
   />
 </div>

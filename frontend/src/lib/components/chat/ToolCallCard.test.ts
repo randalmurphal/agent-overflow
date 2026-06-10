@@ -539,7 +539,12 @@ describe("<ToolCallCard> header dispatcher", () => {
     });
   });
 
-  it("falls back to the wait carrier message for historical Codex subagent completions", async () => {
+  it("renders no preview from wait-carrier agentsStates when the completion has no payload preview", async () => {
+    // Persisted agentsStates entries are status-only (the Go persist
+    // shaping + v9 store migration delete `message`), so the old
+    // wait-carrier preview fallback was removed. A carrier row that
+    // still carries a message (this fixture mimics one) must NOT leak
+    // into the collapsed preview — payload meta is the only source.
     const thread = makeThread({ provider: "codex" });
     const launch = makeItem({
       id: "spawn-history",
@@ -567,7 +572,7 @@ describe("<ToolCallCard> header dispatcher", () => {
           agentsStates: {
             "child-history": {
               status: "completed",
-              message: "Recommended | frontend/src/lib/stores/thread.svelte.ts:1 | use a shared reset helper",
+              message: "this text must not surface as a preview",
             },
           },
         },
@@ -583,13 +588,11 @@ describe("<ToolCallCard> header dispatcher", () => {
     });
     const pane = await buildPane(thread, [launch, wait, completion]);
 
-    const { getByTestId } = render(ToolCallCard, {
+    const { queryByTestId } = render(ToolCallCard, {
       props: { pane, item: completion },
     });
 
-    expect(getByTestId("collab-tool-row-preview").textContent).toContain(
-      "use a shared reset helper",
-    );
+    expect(queryByTestId("collab-tool-row-preview")).toBeNull();
   });
 
   it("labels Codex subagent completion rows from the spawned agent metadata", async () => {
@@ -798,7 +801,12 @@ describe("<ToolCallCard> header dispatcher", () => {
     }
   });
 
-  it("renders wait_agent completion rows with per-agent statuses", async () => {
+  it("renders wait_agent completion rows with the waited agent list only", async () => {
+    // The receivers line under "Finished waiting" shows just the agent
+    // labels. agentsStates carries each agent's status AND full final
+    // message on the wire; surfacing either here would duplicate the
+    // spawn completion rows that render beneath the wait group (and the
+    // message is unbounded — a review agent's entire findings text).
     const pane = await buildPane(makeThread({ provider: "codex" }));
     const item = makeItem({
       id: "complete-wait-1",
@@ -808,6 +816,10 @@ describe("<ToolCallCard> header dispatcher", () => {
       meta: JSON.stringify({
         input: {
           receiverThreadIds: ["child-1", "child-2"],
+          receiverAgents: [
+            { threadId: "child-1", agentNickname: "Hypatia", agentRole: "default" },
+            { threadId: "child-2", agentNickname: "Parfit", agentRole: "default" },
+          ],
           agentsStates: {
             "child-1": { status: "completed", message: "done" },
             "child-2": { status: "failed", message: "boom" },
@@ -821,8 +833,11 @@ describe("<ToolCallCard> header dispatcher", () => {
 
     expect(text).toContain("Finished waiting");
     expect(text).not.toContain("Waited for 2 agents");
-    expect(text).toContain("Agent: completed - done");
-    expect(text).toContain("Agent: failed - boom");
+    expect(getByTestId("collab-tool-row-receivers").textContent).toBe(
+      "Hypatia [default], Parfit [default]",
+    );
+    expect(text).not.toContain("completed - done");
+    expect(text).not.toContain("failed - boom");
     expect(text).not.toContain("child-1");
     expect(text).not.toContain("child-2");
   });

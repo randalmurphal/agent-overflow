@@ -19,8 +19,10 @@ describe("<WaitGroup>", () => {
         meta: JSON.stringify({ input: { tool: "wait_agent" } }),
       }),
       // The folded standalone wait_agent completion (b) is rendered AS the header
-      // in place of the carrier, so the group reads "Finished waiting" + per-agent
-      // statuses instead of the carrier tool_call's "Waiting for N agents".
+      // in place of the carrier, so the group reads "Finished waiting" + the
+      // waited agent list instead of the carrier tool_call's "Waiting for N
+      // agents". Labels only — each agent's status and final message belong to
+      // its spawn completion row on the child rail, not the header line.
       completion: makeItem({
         id: "complete-wait-1",
         kind: "tool_completion",
@@ -31,6 +33,9 @@ describe("<WaitGroup>", () => {
           input: {
             tool: "wait_agent",
             requestedReceiverThreadIds: ["child-1"],
+            requestedReceiverAgents: [
+              { threadId: "child-1", agentNickname: "Galileo", agentRole: "explorer" },
+            ],
             agentsStates: { "child-1": { status: "completed", message: "done" } },
           },
         }),
@@ -61,7 +66,9 @@ describe("<WaitGroup>", () => {
     // Header flipped to the finished state (folded completion), not "Waiting".
     expect(getByText(/Finished waiting/)).toBeInTheDocument();
     expect(queryByText(/Waiting for agents/)).not.toBeInTheDocument();
-    expect(getByText(/Agent: completed - done/)).toBeInTheDocument();
+    // Receivers line carries labels only — no status, no final message.
+    expect(getByText("Galileo [explorer]")).toBeInTheDocument();
+    expect(queryByText(/completed - done/)).not.toBeInTheDocument();
     // Child rail still renders the nested target completion.
     expect(getByText(/Spawned Galileo -> done/)).toBeInTheDocument();
   });

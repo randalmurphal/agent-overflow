@@ -150,7 +150,7 @@ export interface WaitGroupNode {
    * The standalone `wait_agent` tool_completion (id like `complete:<carrierId>`,
    * `completionOf === parent.id`) once it has loaded. Rendered AS the group
    * header by `WaitGroup.svelte` in place of the carrier, so a finished wait
-   * reads "Finished waiting" + per-agent statuses instead of the carrier
+   * reads "Finished waiting" + the waited agent list instead of the carrier
    * tool_call's permanent "Waiting for N agents". Undefined while the wait is
    * still running, when the carrier is a terminal wait carrier (those have no
    * split completion item), or before the completion itself has loaded (it can

@@ -2003,6 +2003,51 @@ func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 	if string(data) != "Final child output" {
 		t.Fatalf("payload = %q, want final child output", string(data))
 	}
+
+	// The persisted wait rows must NOT keep the agent's final message in
+	// meta.input.agentsStates — the shared payload asserted above owns
+	// it. Status survives; the heavy message is removed by persist
+	// shaping (itemmeta.TrimCollabAgentStateMessages), which rewrites
+	// only the store rows — the sibling synthesis reads evt.Meta and
+	// still sees the full message.
+	carrierRow, found, err := st.GetThreadItem("t1", "wait-child")
+	if err != nil || !found {
+		t.Fatalf("wait carrier missing: found=%v err=%v", found, err)
+	}
+	for label, metaJSON := range map[string]string{"carrier": carrierRow.Meta, "completion": waitRow.Meta} {
+		status, hasMessage := persistedAgentState(t, metaJSON, "child-wait")
+		if hasMessage {
+			t.Errorf("%s row kept the agentsStates message key; payload owns the content", label)
+		}
+		if status != "completed" {
+			t.Errorf("%s row agentsStates status = %q, want completed", label, status)
+		}
+	}
+}
+
+// persistedAgentState decodes a persisted item meta and returns the
+// agentsStates entry for childID: its status plus whether a message
+// key survived. Key presence is the assertion target — the trim must
+// DELETE the key, not null it.
+func persistedAgentState(t *testing.T, metaJSON, childID string) (status string, hasMessage bool) {
+	t.Helper()
+	var decoded struct {
+		Input struct {
+			AgentsStates map[string]map[string]json.RawMessage `json:"agentsStates"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(metaJSON), &decoded); err != nil {
+		t.Fatalf("decode persisted meta: %v", err)
+	}
+	entry, ok := decoded.Input.AgentsStates[childID]
+	if !ok {
+		t.Fatalf("agentsStates entry %s missing from persisted meta: %s", childID, metaJSON)
+	}
+	if err := json.Unmarshal(entry["status"], &status); err != nil {
+		t.Fatalf("decode status for %s: %v", childID, err)
+	}
+	_, hasMessage = entry["message"]
+	return status, hasMessage
 }
 
 func TestCodexSubagentDuplicateBlankCompletionPreservesPayload(t *testing.T) {
