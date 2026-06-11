@@ -1,34 +1,42 @@
 <script lang="ts">
   /*
    * Inline per-file diff block. Visually structured to match
- * GenericToolCallRow — chevron + ToolKindIcon + lowercase label +
+   * GenericToolCallRow — chevron + ToolKindIcon + lowercase label +
    * path preview, body indented `ml-5 border-l border-border-subtle
    * bg-surface-0/35`, no kind-chip pill, no outer card chrome. One
    * Claude tool call = one file = one row; Codex apply_patch with N
    * files renders N stacked rows.
    *
-   * Body is always rendered when `file.lines` carries displayable
-   * rows. Files over the inline preview cap render only the capped
-   * rows with a fade-out gradient + a "Show full diff in side panel"
-   * CTA.
+   * The header is a real disclosure: default expansion follows
+   * settings.collapseDiffPreviews (off → expanded), and a per-card
+   * toggle overrides it, persisted on the pane keyed by
+   * (itemId, file.path) so it survives virtua remounts. Toggling a
+   * card back to the current default clears its override, so it keeps
+   * following future setting flips. Files over the inline preview cap
+   * render only the capped rows with a fade-out gradient + a "Show
+   * full diff in side panel" CTA.
    * Empty `file.lines` (loading or pre-upgrade summary-only) keeps
-   * the row's outer shell stable — only the indented body region
-   * goes absent.
+   * the row's outer shell stable — the body region goes absent and
+   * the chevron renders inert.
    *
    * Tokenization: dispatches a single Shiki batch per (file × lang ×
-   * theme) at mount via dispatchInlineFileTokens; module-level
-   * inFlightKeys dedupes across blocks. Out-of-cache lines render
+   * theme) per expanded block via dispatchInlineFileTokens;
+   * module-level inFlightKeys dedupes across blocks. Collapsed
+   * blocks skip the dispatch entirely. Out-of-cache lines render
    * with the line-tint background until tokens land.
    */
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import { untrack } from 'svelte';
   import EditorLink from '../common/EditorLink.svelte';
   import Icon from '../primitives/Icon.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
+  import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import DiffLineContent from './DiffLineContent.svelte';
+  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import { dispatchInlineFileTokens } from './diffInlineTokenize';
+  import { buildInlineDiffRows } from './inlineDiffRows';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { getSettings } from '../../stores/settings.svelte';
   import { getDiffTheme } from '../../stores/diffTheme.svelte';
   import type { DiffTheme } from '../../utils/diffHighlighterPool';
   import type { PatchFile, PatchLine } from '../../utils/patchFiles';
@@ -37,19 +45,27 @@
   import type { LineToken } from '../../utils/tokenCache';
   import { getCachedTokensForLine } from '../../utils/tokenCacheReactive.svelte';
   import { openDiffSidebar, isPromoteModifier } from './diffSidebarTrigger';
-  import { INLINE_DIFF_PREVIEW_LINE_COUNT } from '../../utils/inlineThreshold';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { classifyToolName } from './toolCardHeader';
+  import { formatTimeOfDay } from '../../utils/format';
 
   interface Props {
     pane?: ThreadPane;
     file: PatchFile;
     payloadId?: string;
     threadId: string;
+    /** Owning timeline item id. Keys the per-pane expand/collapse
+     *  override together with `file.path`; without it the toggle
+     *  falls back to block-local state. */
+    itemId?: string;
     workspacePath?: string;
     /** Tool name the file edit originated from (Edit / Write /
-   *  MultiEdit / NotebookEdit / fileChange). Drives the icon +
-   *  category label. Falls back to a generic "diff" label. */
+     *  MultiEdit / NotebookEdit / fileChange). Drives the icon +
+     *  category label. Falls back to a generic "diff" label. */
     toolName?: string;
+    /** Owning item's creation time (ms epoch). Renders the right-edge
+     *  clock time every other tool row shows; omitted → no timestamp. */
+    createdAt?: number;
     hasMoreDiffContent?: boolean;
   }
 
@@ -58,73 +74,14 @@
     file,
     payloadId,
     threadId,
+    itemId,
     workspacePath,
     toolName,
+    createdAt,
     hasMoreDiffContent = false,
   }: Props = $props();
 
-  type RenderRow =
-    | { kind: 'separator' }
-    | { kind: 'line'; line: PatchLine; lineNo: number };
-
-  interface InlineRows {
-    rows: RenderRow[];
-    hasOverflow: boolean;
-    maxLineNo: number;
-  }
-
-  let inlineRows = $derived.by((): InlineRows => {
-    const rows: RenderRow[] = [];
-    let oldNo = 0;
-    let newNo = 0;
-    let seenFirstHunk = false;
-    let hasOverflow = false;
-    let maxLineNo = 0;
-
-    function appendRow(row: RenderRow): boolean {
-      if (rows.length >= INLINE_DIFF_PREVIEW_LINE_COUNT) {
-        hasOverflow = true;
-        return false;
-      }
-      rows.push(row);
-      if (row.kind === 'line' && row.lineNo > maxLineNo) {
-        maxLineNo = row.lineNo;
-      }
-      return true;
-    }
-
-    for (const line of file.lines) {
-      if (line.type === 'meta') {
-        if (line.content.startsWith('@@')) {
-          const parsed = parseHunkHeader(line.content);
-          if (parsed) {
-            oldNo = parsed.oldStart;
-            newNo = parsed.newStart;
-          }
-          if (seenFirstHunk) {
-            if (!appendRow({ kind: 'separator' })) break;
-          }
-          seenFirstHunk = true;
-        }
-        continue;
-      }
-      let lineNo = 0;
-      if (line.type === 'add') {
-        lineNo = newNo;
-        newNo += 1;
-      } else if (line.type === 'del') {
-        lineNo = oldNo;
-        oldNo += 1;
-      } else {
-        lineNo = newNo;
-        oldNo += 1;
-        newNo += 1;
-      }
-      if (!appendRow({ kind: 'line', line, lineNo })) break;
-    }
-    return { rows, hasOverflow, maxLineNo };
-  });
-
+  let inlineRows = $derived(buildInlineDiffRows(file.lines));
   let visibleRows = $derived(inlineRows.rows);
   let hasBody = $derived(visibleRows.length > 0);
   let isLong = $derived(inlineRows.hasOverflow);
@@ -132,6 +89,28 @@
   let shouldShowFullCTA = $derived(canPromoteToSidebar && (isLong || hasMoreDiffContent));
   let maxLineNo = $derived(inlineRows.maxLineNo);
   let gutterChars = $derived(Math.max(2, String(maxLineNo).length));
+
+  // Default expansion follows the global setting; a per-card user
+  // toggle overrides it. Overrides live on the pane so they survive
+  // virtua remounts; the local fallback covers pane-less renders.
+  let collapsePref = $derived(getSettings().collapseDiffPreviews);
+  let localOverride = $state<boolean | undefined>(undefined);
+  let userOverride = $derived(
+    pane && itemId ? pane.diffCardExpandedOverride(itemId, file.path) : localOverride,
+  );
+  let effectiveExpanded = $derived(userOverride ?? !collapsePref);
+  let canToggle = $derived(hasBody || shouldShowFullCTA);
+  // Components are encoded separately so the literal `:` joiner stays
+  // unambiguous even when item ids or paths contain `:` themselves.
+  let regionDomId = $derived(
+    `diff-file-region-${encodeURIComponent(itemId ?? payloadId ?? 'local')}:${encodeURIComponent(file.path)}`,
+  );
+
+  let timestampSlot = $derived(
+    createdAt === undefined
+      ? undefined
+      : { testId: 'diff-file-time', value: createdAt, label: formatTimeOfDay(createdAt) },
+  );
 
   let classification = $derived(classifyToolName(toolName ?? null));
   let labelText = $derived.by(() => {
@@ -165,6 +144,7 @@
   });
 
   $effect(() => {
+    if (!effectiveExpanded) return;
     const t = theme;
     const linesNow = dispatchableLines;
     const langNow = lang;
@@ -176,12 +156,6 @@
 
   function getTokens(line: PatchLine): LineToken[] | null {
     return getCachedTokensForLine(line, threadId, theme, lang);
-  }
-
-  function parseHunkHeader(content: string): { oldStart: number; newStart: number } | null {
-    const m = content.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-    if (!m || m[1] === undefined || m[2] === undefined) return null;
-    return { oldStart: Number(m[1]), newStart: Number(m[2]) };
   }
 
   function openSidebar(event: MouseEvent | KeyboardEvent): void {
@@ -196,136 +170,151 @@
     event.preventDefault();
     openDiffSidebar(pane, { payloadId, filePath: file.path });
   }
+
+  function onToggle(event: MouseEvent): void {
+    // Modifier-click promotes to the sidebar instead of toggling —
+    // bail so the click bubbles to the header wrapper's handler.
+    if (isPromoteModifier(event)) return;
+    const next = !effectiveExpanded;
+    // Returning the card to the current default clears the override
+    // so the card keeps following future setting flips.
+    const override = next === !collapsePref ? undefined : next;
+    void preservePaneScrollAnchor(pane, event, () => {
+      if (pane && itemId) {
+        pane.setDiffCardExpanded(itemId, file.path, override);
+      } else {
+        localOverride = override;
+      }
+    });
+  }
 </script>
 
-<!--
-  Outer shell mirrors GenericToolCallRow: no border, no card
-  background, just a hover group with vertical spacing. Header is a
-  single row (chevron + icon + label + path + actions). Body is
-  indented `ml-5 border-l` like other expandable tool rows. Defaults
-  to "always shown" — the chevron is decorative-only, no
-  expand/collapse for diffs.
--->
+{#snippet fullDiffCTA()}
+  <div class="ml-5 border-l border-border-subtle px-3 py-2 bg-surface-0/35">
+    <button
+      type="button"
+      onclick={openSidebar}
+      data-testid="diff-file-show-full"
+      class="text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+    >
+      Show full diff in side panel →
+    </button>
+  </div>
+{/snippet}
+
 <div
   class="group/tool overflow-hidden"
   data-testid="diff-file-block"
   data-file-path={file.path}
 >
-  <div
-    onclick={onHeaderClick}
-    role="presentation"
-    data-testid="diff-file-header"
-    class="flex w-full items-center gap-2 rounded-[var(--radius-control)] px-1 py-1 text-[0.8125rem] cursor-default"
-  >
-    <!-- Decorative chevron, rotated to "open" since the body is
-         always shown when present. Mirrors the look of an expanded
-         GenericToolCallRow without the click-to-toggle. -->
-    <span
-      class="flex size-3 shrink-0 items-center justify-center text-fg-subtle/40 select-none"
-      aria-hidden="true"
+  <!--
+    Wrapper keeps the full-row modifier-click promote hotzone; the
+    disclosure button inside owns plain-click toggling (its modifier
+    clicks bubble up here untoggled).
+  -->
+  <div onclick={onHeaderClick} role="presentation" data-testid="diff-file-header">
+    <TranscriptDisclosureHeader
+      expanded={effectiveExpanded}
+      expandable={canToggle}
+      controls={canToggle ? regionDomId : undefined}
+      testId="diff-file-toggle"
+      interactiveBody
+      class="rounded-[var(--radius-control)] px-1 py-1 text-[0.8125rem] {canToggle ? 'hover:bg-surface-2/20' : ''}"
+      {onToggle}
     >
-      <Icon icon={ChevronRight} size={12} strokeWidth={2} class="rotate-90 opacity-70" />
-    </span>
-    <ToolKindIcon kind={classification.icon} ariaLabel={labelText} />
-    <span class="w-12 shrink-0 text-[0.6875rem] text-fg-hint" data-testid="diff-file-label">{labelText}</span>
-    <span
-      class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted/75 font-mono"
-      data-testid="diff-file-path"
-    >
-      <EditorLink
-        path={file.path}
-        workspacePath={workspacePath ?? ''}
-        label={displayPath}
-        openLabel={displayPath}
-        stopPropagation
-        tone="inherit"
-        class="max-w-full truncate align-baseline hover:text-accent focus-visible:text-accent"
-      />
-    </span>
-    <span
-      class="ml-auto flex gap-2 text-[0.6875rem] shrink-0 tabular-nums"
-      data-testid="diff-file-counts"
-    >
-      {#if file.additions > 0}<span class="text-success">+{file.additions}</span>{/if}
-      {#if file.deletions > 0}<span class="text-error">-{file.deletions}</span>{/if}
-    </span>
-    {#if canPromoteToSidebar}
-      <button
-        type="button"
-        onclick={openSidebar}
-        title="Open in side panel"
-        aria-label="Open Diff in Side Panel: {file.path}"
-        data-testid="diff-file-open-sidebar"
-        class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      >
-        <Icon icon={PanelRightOpen} size={12} />
-      </button>
-    {/if}
+      {#snippet icon()}<ToolKindIcon kind={classification.icon} ariaLabel={labelText} />{/snippet}
+      {#snippet label()}<span data-testid="diff-file-label">{labelText}</span>{/snippet}
+      {#snippet body()}
+        <span
+          class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted/75 font-mono"
+          data-testid="diff-file-path"
+        >
+          <EditorLink
+            path={file.path}
+            workspacePath={workspacePath ?? ''}
+            label={displayPath}
+            openLabel={displayPath}
+            stopPropagation
+            tone="inherit"
+            class="max-w-full truncate align-baseline hover:text-accent focus-visible:text-accent"
+          />
+        </span>
+      {/snippet}
+      {#snippet actions()}
+        <span
+          class="flex gap-2 text-[0.6875rem] shrink-0 tabular-nums"
+          data-testid="diff-file-counts"
+        >
+          {#if file.additions > 0}<span class="text-success">+{file.additions}</span>{/if}
+          {#if file.deletions > 0}<span class="text-error">-{file.deletions}</span>{/if}
+        </span>
+        {#if canPromoteToSidebar}
+          <button
+            type="button"
+            onclick={openSidebar}
+            title="Open in side panel"
+            aria-label="Open Diff in Side Panel: {file.path}"
+            data-testid="diff-file-open-sidebar"
+            class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            <Icon icon={PanelRightOpen} size={12} />
+          </button>
+        {/if}
+        {#if timestampSlot}
+          <!-- Last in the actions row so the clock time column-aligns
+               with every other tool row's right-edge timestamp. -->
+          <ToolHeaderMeta statusSlotTestId="diff-file-status-slot" timestamp={timestampSlot} />
+        {/if}
+      {/snippet}
+    </TranscriptDisclosureHeader>
   </div>
 
-  {#if hasBody}
-    <div class="ml-5 border-l border-border-subtle bg-surface-0/35 relative">
-      <div
-        class="font-mono text-xs leading-tight py-1"
-        data-testid="diff-file-body"
-        style="--gutter-w: {gutterChars + 1}ch"
-      >
-        {#each visibleRows as row, i (i)}
-          {#if row.kind === 'separator'}
+  {#if effectiveExpanded && canToggle}
+    <div id={regionDomId}>
+      {#if hasBody}
+        <div class="ml-5 border-l border-border-subtle bg-surface-0/35 relative">
+          <div
+            class="font-mono text-xs leading-tight py-1"
+            data-testid="diff-file-body"
+            style="--gutter-w: {gutterChars + 1}ch"
+          >
+            {#each visibleRows as row, i (i)}
+              {#if row.kind === 'separator'}
+                <div
+                  class="my-1 flex items-center gap-2 px-3 select-none"
+                  aria-hidden="true"
+                  data-testid="diff-file-hunk-separator"
+                >
+                  <span class="flex-1 border-t border-border-subtle"></span>
+                  <span class="text-[0.625rem] text-fg-subtle">⋮</span>
+                  <span class="flex-1 border-t border-border-subtle"></span>
+                </div>
+              {:else}
+                <div class="flex whitespace-pre {lineTintClass(row.line.type)}">
+                  <span
+                    class="select-none tabular-nums text-fg-subtle px-3 text-right shrink-0"
+                    style="width: var(--gutter-w)"
+                    aria-hidden="true"
+                  >{row.lineNo > 0 ? row.lineNo : ''}</span><span class="pl-1 pr-3 flex-1 min-w-0"
+                    ><DiffLineContent line={row.line} tokens={getTokens(row.line)} /></span>
+                </div>
+              {/if}
+            {/each}
+          </div>
+
+          {#if isLong || hasMoreDiffContent}
             <div
-              class="my-1 flex items-center gap-2 px-3 select-none"
+              class="absolute inset-x-0 bottom-0 h-16 pointer-events-none"
+              style="background: linear-gradient(to bottom, transparent, var(--color-surface-0))"
               aria-hidden="true"
-              data-testid="diff-file-hunk-separator"
-            >
-              <span class="flex-1 border-t border-border-subtle"></span>
-              <span class="text-[0.625rem] text-fg-subtle">⋮</span>
-              <span class="flex-1 border-t border-border-subtle"></span>
-            </div>
-          {:else}
-            <div class="flex whitespace-pre {lineTintClass(row.line.type)}">
-              <span
-                class="select-none tabular-nums text-fg-subtle px-3 text-right shrink-0"
-                style="width: var(--gutter-w)"
-                aria-hidden="true"
-              >{row.lineNo > 0 ? row.lineNo : ''}</span><span class="pl-1 pr-3 flex-1 min-w-0"
-                ><DiffLineContent line={row.line} tokens={getTokens(row.line)} /></span>
-            </div>
+              data-testid="diff-file-fade"
+            ></div>
           {/if}
-        {/each}
-      </div>
-
-      {#if isLong || hasMoreDiffContent}
-        <div
-          class="absolute inset-x-0 bottom-0 h-16 pointer-events-none"
-          style="background: linear-gradient(to bottom, transparent, var(--color-surface-0))"
-          aria-hidden="true"
-          data-testid="diff-file-fade"
-        ></div>
+        </div>
       {/if}
-    </div>
-
-    {#if shouldShowFullCTA}
-      <div class="ml-5 border-l border-border-subtle px-3 py-2 bg-surface-0/35">
-        <button
-          type="button"
-          onclick={openSidebar}
-          data-testid="diff-file-show-full"
-          class="text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-        >
-          Show full diff in side panel →
-        </button>
-      </div>
-    {/if}
-  {:else if shouldShowFullCTA}
-    <div class="ml-5 border-l border-border-subtle px-3 py-2 bg-surface-0/35">
-      <button
-        type="button"
-        onclick={openSidebar}
-        data-testid="diff-file-show-full"
-        class="text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-      >
-        Show full diff in side panel →
-      </button>
+      {#if shouldShowFullCTA}
+        {@render fullDiffCTA()}
+      {/if}
     </div>
   {/if}
 </div>

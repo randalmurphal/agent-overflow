@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS: Settings = {
   fontSize: 13,
   recentWorkspaces: [],
   diffWordWrap: false,
+  collapseDiffPreviews: false,
   streamingEnabled: true,
   confirmArchive: true,
   confirmDelete: true,

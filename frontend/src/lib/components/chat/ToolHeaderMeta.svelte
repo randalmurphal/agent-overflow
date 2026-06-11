@@ -30,7 +30,14 @@
     trailingActions,
   }: Props = $props();
 
-  let timestampDate = $derived(timestamp === undefined ? null : new Date(timestamp.value));
+  // Non-finite values produce an Invalid Date, which is truthy but whose
+  // toISOString() throws mid-render — drop the <time> element instead of
+  // crashing the row over one corrupt timestamp.
+  let timestampDate = $derived(
+    timestamp === undefined || !Number.isFinite(timestamp.value)
+      ? null
+      : new Date(timestamp.value),
+  );
 </script>
 
 <span class="flex shrink-0 items-center gap-2 {className}">

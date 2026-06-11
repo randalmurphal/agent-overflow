@@ -30,6 +30,7 @@
   import type { Item } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
+  import { formatTimeOfDay } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
@@ -123,12 +124,7 @@
     };
   });
 
-  let time = $derived(
-    new Date(item.createdAt).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    }),
-  );
+  let time = $derived(formatTimeOfDay(item.createdAt));
 
   function answersForQuestion(q: AskQuestion): string[] {
     return answersForQuestionFromMap(q, answersByQuestion);

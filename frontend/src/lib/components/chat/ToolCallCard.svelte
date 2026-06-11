@@ -59,8 +59,10 @@
     file={presentation.file}
     payloadId={presentation.payloadId}
     threadId={item.threadId}
+    itemId={item.id}
     workspacePath={paneWorkspacePath(pane)}
     toolName={item.toolName}
+    createdAt={item.createdAt}
   />
 {:else if presentation.kind === 'diff-stack'}
   <!-- Multi-file diff (Claude Edit/Write/MultiEdit/NotebookEdit;

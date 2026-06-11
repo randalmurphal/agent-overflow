@@ -52,6 +52,31 @@ describe('<GeneralSettings> — Thread defaults section', () => {
   });
 });
 
+describe('<GeneralSettings> — Behavior toggles', () => {
+  beforeEach(async () => {
+    await seed();
+  });
+
+  it('dispatches collapseDiffPreviews patch when the toggle is clicked', async () => {
+    const { getByRole } = render(GeneralSettings);
+    const toggle = getByRole('switch', { name: 'Toggle Collapse Diff Previews' });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+
+    await fireEvent.click(toggle);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ collapseDiffPreviews: true });
+  });
+
+  it('renders the collapse toggle checked when the setting is on', async () => {
+    await seed({ collapseDiffPreviews: true });
+    const { getByRole } = render(GeneralSettings);
+    const toggle = getByRole('switch', { name: 'Toggle Collapse Diff Previews' });
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+  });
+});
+
 describe('<GeneralSettings> — Pane density', () => {
   beforeEach(async () => {
     await seed();

@@ -61,6 +61,11 @@ Use these pane registries instead of local row state:
 - `pane.attachmentCacheFor(itemId)` for image attachment blob URLs.
 - `pane.isSubagentGroupExpanded(groupKey)` /
   `pane.toggleSubagentGroupExpanded(groupKey)` for subagent cards.
+- `pane.diffCardExpandedOverride(itemId, filePath)` /
+  `pane.setDiffCardExpanded(itemId, filePath, expanded)` for inline
+  diff-card expand/collapse overrides. Tri-state: an absent entry
+  follows the `collapseDiffPreviews` setting default; pass `undefined`
+  to clear the override.
 
 Payload bytes go through `utils/payloadDataCache.ts`, keyed by
 `(threadId, payloadId, version)` and byte-bounded by its LRU. Per-pane

@@ -173,8 +173,10 @@
     {file}
     {payloadId}
     threadId={item.threadId}
+    itemId={item.id}
     workspacePath={paneWorkspacePath(pane)}
     toolName={item.toolName}
+    createdAt={item.createdAt}
     {hasMoreDiffContent}
   />
 {/each}

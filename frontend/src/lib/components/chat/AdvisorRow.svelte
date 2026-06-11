@@ -22,7 +22,7 @@
   } from '../../utils/payloadExpansion.svelte';
   import ChatMarkdown from './ChatMarkdown.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
-  import { formatDurationMs } from '../../utils/format';
+  import { formatDurationMs, formatTimeOfDay } from '../../utils/format';
   import { displayModelLabel } from '../../utils/modelLabels';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
@@ -88,12 +88,7 @@
     return `${trimmed.slice(0, PREVIEW_MAX_CHARS)}…`;
   });
 
-  let time = $derived(
-    new Date(item.createdAt).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    }),
-  );
+  let time = $derived(formatTimeOfDay(item.createdAt));
 
   const ticker = createRunningElapsed(
     () => item.status === 'running' || item.status === 'streaming',

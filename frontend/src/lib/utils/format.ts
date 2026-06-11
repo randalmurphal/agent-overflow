@@ -41,6 +41,25 @@ export function relativeTime(
   return `${months}mo ago`;
 }
 
+// Hoisted: toLocaleTimeString with an options bag constructs a fresh
+// Intl.DateTimeFormat per call — the dominant cost of this helper, paid
+// once per row mount across the whole transcript during scroll bursts.
+const TIME_OF_DAY_FORMAT = new Intl.DateTimeFormat(undefined, {
+  hour: 'numeric',
+  minute: '2-digit',
+});
+
+/**
+ * Format a Unix timestamp (milliseconds) as the locale clock time shown
+ * on transcript row headers (e.g. "8:05 PM") — hour + minute, no seconds.
+ * Callers pass required DB-sourced epoch values; non-finite input renders
+ * "Invalid Date" (matching toLocaleTimeString) instead of throwing.
+ */
+export function formatTimeOfDay(timestampMs: number): string {
+  if (!Number.isFinite(timestampMs)) return 'Invalid Date';
+  return TIME_OF_DAY_FORMAT.format(timestampMs);
+}
+
 /**
  * Format a token count for display (e.g., 1500 -> "1.5k", 2000000 -> "2.0M").
  */

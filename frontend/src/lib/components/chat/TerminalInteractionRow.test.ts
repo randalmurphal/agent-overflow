@@ -51,6 +51,16 @@ describe('<TerminalInteractionRow>', () => {
     expect(row.textContent).not.toContain('running');
   });
 
+  it('renders the right-edge clock time from item.createdAt', () => {
+    const createdAt = new Date(2026, 5, 10, 20, 5, 0).getTime();
+    const { getByTestId } = render(TerminalInteractionRow, {
+      props: { item: makeItem({ createdAt }) },
+    });
+    expect(getByTestId('terminal-interaction-time').getAttribute('datetime')).toBe(
+      new Date(createdAt).toISOString(),
+    );
+  });
+
   it('uses the same compact wait-row treatment as wait_agent carriers', () => {
     const { getByTestId } = render(TerminalInteractionRow, { props: { item: makeItem() } });
     const row = getByTestId('terminal-interaction-row');

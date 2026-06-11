@@ -7,6 +7,7 @@
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
   import { lineTintClass } from '../../utils/diffLineTint';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
+  import { formatTimeOfDay } from '../../utils/format';
   import CopyFooter from './CopyFooter.svelte';
   import Icon from '../primitives/Icon.svelte';
   import LazyContentBlock from './LazyContentBlock.svelte';
@@ -44,6 +45,8 @@
   }
 
   let canOpenSidebar = $derived(pane !== undefined && payloadId !== undefined);
+
+  let time = $derived(formatTimeOfDay(item.createdAt));
 
   // detail/preview are unbounded provider text; LazyContentBlock caps
   // display length. The stored payload is the diff (Exact patch toggle),
@@ -139,7 +142,11 @@
     {/snippet}
     {#snippet actions()}
       <ToolDecisionChip decision={item.decision} />
-      <ToolHeaderMeta statusSlotTestId="tool-result-status-slot" class="ml-auto">
+      <ToolHeaderMeta
+        statusSlotTestId="tool-result-status-slot"
+        class="ml-auto"
+        timestamp={{ testId: 'tool-result-time', value: item.createdAt, label: time }}
+      >
         {#snippet status()}<Indicator state={completionStatus === 'failure' ? indicatorState : null} />{/snippet}
       </ToolHeaderMeta>
     {/snippet}

@@ -3,8 +3,28 @@ import {
   formatElapsedSeconds,
   formatGiB,
   formatResetCountdown,
+  formatTimeOfDay,
   formatTurnTokens,
 } from './format';
+
+describe('formatTimeOfDay', () => {
+  it('matches toLocaleTimeString with the shared hour+minute options', () => {
+    const ts = new Date(2026, 5, 10, 20, 5, 42).getTime();
+    // Cross-API equivalence: the helper formats through a hoisted
+    // Intl.DateTimeFormat; this pins both the exact locale options every
+    // transcript row header shares and that hoisting changed no output.
+    // Locale-neutral on purpose — digit-literal assertions break on
+    // non-Latin-numeral locales.
+    expect(formatTimeOfDay(ts)).toBe(
+      new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+    );
+  });
+
+  it('renders "Invalid Date" for non-finite input rather than throwing', () => {
+    expect(formatTimeOfDay(Number.NaN)).toBe('Invalid Date');
+    expect(formatTimeOfDay(Number.POSITIVE_INFINITY)).toBe('Invalid Date');
+  });
+});
 
 describe('formatElapsedSeconds', () => {
   it('formats sub-60s values as "Xs"', () => {

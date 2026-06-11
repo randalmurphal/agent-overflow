@@ -43,6 +43,10 @@ export interface ThreadRowUiState {
   ): void;
   isSubagentGroupExpanded(groupKey: string): boolean;
   toggleSubagentGroupExpanded(groupKey: string): boolean;
+  diffCardExpandedOverride(itemId: string, filePath: string): boolean | undefined;
+  /** Pass `undefined` to clear the override so the card re-follows
+   *  the collapseDiffPreviews setting default. */
+  setDiffCardExpanded(itemId: string, filePath: string, expanded: boolean | undefined): void;
   attachmentCacheFor(itemId: string): AttachmentPreviewCache;
   disposeItems(items: Iterable<Item>): void;
   pruneRowUiState(retention: RowUiStateRetention): void;
@@ -52,6 +56,7 @@ export interface ThreadRowUiState {
     itemExpansionStates: number;
     payloadExpansionStates: number;
     subagentGroups: number;
+    diffCardOverrideItems: number;
     attachmentItems: number;
   };
 }
@@ -175,6 +180,14 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   const payloadExpansionKeysByPayload = new Map<string, Set<string>>();
   let nextLeasedPrunedExpansionKey = 1;
   let subagentGroupExpanded: Set<string> = $state(new Set());
+  // Per-card expand/collapse overrides for inline diff file blocks,
+  // keyed itemId → filePath. An absent entry means "follow the
+  // collapseDiffPreviews setting default"; an explicit boolean is a
+  // user toggle (cleared when the user returns a card to the current
+  // default). Reassigned copy-on-write like subagentGroupExpanded.
+  let diffCardExpandedOverrides: ReadonlyMap<string, ReadonlyMap<string, boolean>> = $state(
+    new Map(),
+  );
   const attachmentBlobs = new Map<string, Map<string, ImagePreviewItem>>();
   let attachmentClearGeneration = 0;
 
@@ -496,6 +509,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
 
   function disposeItems(items: Iterable<Item>): void {
     let nextGroupExpanded: Set<string> | null = null;
+    let nextDiffOverrides: Map<string, ReadonlyMap<string, boolean>> | null = null;
     for (const item of items) {
       const itemId = item.id;
       disposeItemExpansionStates(itemId);
@@ -512,8 +526,13 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         if (!nextGroupExpanded) nextGroupExpanded = new Set(subagentGroupExpanded);
         nextGroupExpanded.delete(groupKey);
       }
+      if (diffCardExpandedOverrides.has(itemId)) {
+        if (!nextDiffOverrides) nextDiffOverrides = new Map(diffCardExpandedOverrides);
+        nextDiffOverrides.delete(itemId);
+      }
     }
     if (nextGroupExpanded) subagentGroupExpanded = nextGroupExpanded;
+    if (nextDiffOverrides) diffCardExpandedOverrides = nextDiffOverrides;
   }
 
   function pruneRowUiState(retention: RowUiStateRetention): void {
@@ -546,6 +565,14 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       nextGroupExpanded.delete(groupKey);
     }
     if (nextGroupExpanded) subagentGroupExpanded = nextGroupExpanded;
+
+    let nextDiffOverrides: Map<string, ReadonlyMap<string, boolean>> | null = null;
+    for (const itemId of diffCardExpandedOverrides.keys()) {
+      if (retainedItemIds.has(itemId)) continue;
+      if (!nextDiffOverrides) nextDiffOverrides = new Map(diffCardExpandedOverrides);
+      nextDiffOverrides.delete(itemId);
+    }
+    if (nextDiffOverrides) diffCardExpandedOverrides = nextDiffOverrides;
   }
 
   function isSubagentGroupExpanded(groupKey: string): boolean {
@@ -562,6 +589,30 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     }
     subagentGroupExpanded = next;
     return willExpand;
+  }
+
+  function diffCardExpandedOverride(itemId: string, filePath: string): boolean | undefined {
+    return diffCardExpandedOverrides.get(itemId)?.get(filePath);
+  }
+
+  function setDiffCardExpanded(
+    itemId: string,
+    filePath: string,
+    expanded: boolean | undefined,
+  ): void {
+    const inner = new Map(diffCardExpandedOverrides.get(itemId) ?? []);
+    if (expanded === undefined) {
+      inner.delete(filePath);
+    } else {
+      inner.set(filePath, expanded);
+    }
+    const next = new Map(diffCardExpandedOverrides);
+    if (inner.size === 0) {
+      next.delete(itemId);
+    } else {
+      next.set(itemId, inner);
+    }
+    diffCardExpandedOverrides = next;
   }
 
   function attachmentCacheFor(itemId: string): AttachmentPreviewCache {
@@ -618,6 +669,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     itemExpansionKeysByState.clear();
     payloadExpansionKeysByPayload.clear();
     subagentGroupExpanded = new Set();
+    diffCardExpandedOverrides = new Map();
     attachmentClearGeneration += 1;
     disposeAttachmentBlobs();
   }
@@ -630,6 +682,8 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     appendLivePayloadDeltaForItem,
     isSubagentGroupExpanded,
     toggleSubagentGroupExpanded,
+    diffCardExpandedOverride,
+    setDiffCardExpanded,
     attachmentCacheFor,
     disposeItems,
     pruneRowUiState,
@@ -648,6 +702,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         itemExpansionStates,
         payloadExpansionStates,
         subagentGroups: subagentGroupExpanded.size,
+        diffCardOverrideItems: diffCardExpandedOverrides.size,
         attachmentItems: attachmentBlobs.size,
       };
     },

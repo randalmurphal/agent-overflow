@@ -67,6 +67,12 @@ export interface Settings {
   fontSize: number;
   recentWorkspaces: string[];
   diffWordWrap: boolean;
+  /**
+   * Start chat-timeline file-edit diff cards collapsed (header row
+   * only). Controls the default state, not capability — cards stay
+   * individually expandable either way.
+   */
+  collapseDiffPreviews: boolean;
   streamingEnabled: boolean;
   confirmArchive: boolean;
   confirmDelete: boolean;

@@ -19,6 +19,7 @@
     parseUserMessageAttachments,
     parseUserMessageMeta,
   } from '../../utils/userMessageMeta';
+  import { formatTimeOfDay } from '../../utils/format';
   import type { RevertMode } from '../../types/checkpoint';
   import type { UserMessageActions } from './userMessageActions';
 
@@ -114,12 +115,7 @@
 
   // Display-only short time. Purely cosmetic — the authoritative
   // timestamps for turn accounting live on the pane, not on user text.
-  const time = $derived(
-    new Date(item.createdAt).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    }),
-  );
+  const time = $derived(formatTimeOfDay(item.createdAt));
   const isoTime = $derived(new Date(item.createdAt).toISOString());
 
   async function requestRevert(): Promise<void> {

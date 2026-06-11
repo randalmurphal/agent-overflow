@@ -2,42 +2,16 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { getSettings, loadSettings, resetSettingsForTest, updateSetting } from './settings.svelte';
 import type { Settings } from '../types/settings';
 import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
+import { makeSettings } from '../../test/helpers/settings';
 
-const FULL_SETTINGS: Settings = {
+const FULL_SETTINGS: Settings = makeSettings({
   theme: 'light',
-  timestampFormat: 'locale',
-  sansFont: 'geist',
-  monoFont: 'geist',
-  fontSize: 13,
   recentWorkspaces: ['/tmp/a'],
   diffWordWrap: true,
-  streamingEnabled: true,
-  confirmArchive: true,
-  confirmDelete: true,
   claudeBinaryPath: '/usr/local/bin/claude',
   codexBinaryPath: '/usr/local/bin/codex',
-  claudeEnabled: true,
   codexEnabled: false,
-  defaultThreadEnvMode: 'local',
-  worktreeBranchPrefix: 'ao-',
-  paneDensity: 'compact',
-  textGenerationProvider: 'codex',
-  textGenerationModel: '',
-  textGenerationReasoningEffort: 'low',
-  claudeAutoCompactStandardPercent: 90,
-  claudeAutoCompactExtendedPercent: 90,
-  codexAutoCompactStandardPercent: 90,
-  codexAutoCompactExtendedPercent: 90,
-  observabilityTracingEnabled: false,
-  observabilityOtlpEndpoint: '',
-  observabilityEventLogEnabled: false,
-  network: { bindAll: false },
-  retention: { days: 30 },
-  gitlabSelfHostedHosts: [],
-  projectSortMode: 'lastActivity',
-  collapsedProjects: [],
-  paneLayout: { version: 1, panes: [], focusedPaneId: null },
-};
+});
 
 describe('settings store', () => {
   beforeEach(async () => {

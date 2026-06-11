@@ -3324,6 +3324,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     subagentLiveAggregate(anchorId: string): SubagentFoldAggregate | undefined {
       return subagentFolds.aggregate(anchorId);
     },
+    diffCardExpandedOverride: rowUiState.diffCardExpandedOverride,
+    setDiffCardExpanded: rowUiState.setDiffCardExpanded,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
     pruneRowUiState: rowUiState.pruneRowUiState,
     // Live smoother-revealed text for a streaming thinking row.

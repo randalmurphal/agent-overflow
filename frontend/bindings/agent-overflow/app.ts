@@ -390,10 +390,10 @@ export function EnsureDesignWorkdir(threadID: string): $CancellablePromise<void>
  * 
  * When atTurnIndex is non-nil, the fork is sliced at that turn (0-indexed):
  * items with turn_index > *atTurnIndex are dropped, the provider session
- * is forked + truncated to match. Checkpoints whose user messages are cloned
- * are copied into the fork's ref namespace so historical messages remain
- * revertable. atTurnIndex == nil preserves the existing fork-at-tail behavior
- * (clone everything, fork provider state at the latest message).
+ * is forked + truncated to match. Checkpoint/revert history intentionally stays
+ * behind with the source thread; the fork starts with no checkpoint rows or
+ * copied Git refs. atTurnIndex == nil preserves the existing fork-at-tail
+ * behavior (clone everything, fork provider state at the latest message).
  * 
  * The "atomic unit" is emulated in the app layer rather than a single
  * SQLite transaction because the fork flow crosses a boundary — it has
@@ -1446,8 +1446,9 @@ export function ListRemoteEndpoints(): $CancellablePromise<$models.RemoteEndpoin
  * History windows deliberately exclude rows with a parent_id (see
  * internal/store/paging.go topLevelItemsFilter); this is the expansion
  * path that hydrates them. The result is every visible transitive
- * descendant in timeline order — bounded by what the subagent actually
- * did, which the user explicitly asked to see.
+ * descendant in timeline order, capped store-side at the same scale as
+ * maxWindowItems (newest rows win) so a malicious LAN-attached caller
+ * can't stream an unbounded subtree per call.
  */
 export function ListSubagentDescendants(threadID: string, rootItemID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(1299118478, threadID, rootItemID).then(($result: any) => {

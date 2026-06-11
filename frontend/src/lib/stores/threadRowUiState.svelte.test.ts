@@ -374,6 +374,32 @@ describe('createThreadRowUiState', () => {
     expect(rowUiState.isSubagentGroupExpanded('group-a')).toBe(false);
   });
 
+  it('tracks diff card expanded overrides by item id and file path', () => {
+    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+
+    // Absent = follow the collapseDiffPreviews setting default.
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBeUndefined();
+
+    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', false);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(false);
+    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', true);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(true);
+
+    // Files under the same item stay independent, as do other items.
+    rowUiState.setDiffCardExpanded('item-a', 'src/bar.ts', false);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/bar.ts')).toBe(false);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(true);
+    expect(rowUiState.diffCardExpandedOverride('item-b', 'src/foo.ts')).toBeUndefined();
+
+    // Clearing (undefined) removes the override so the card re-follows
+    // the setting default; clearing the last path drops the item entry.
+    rowUiState.setDiffCardExpanded('item-a', 'src/bar.ts', undefined);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/bar.ts')).toBeUndefined();
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(true);
+    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', undefined);
+    expect(rowUiState.debugStats().diffCardOverrideItems).toBe(0);
+  });
+
   it('keeps attachment cache entries isolated by item and clears them with blob revocation', () => {
     const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
     const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
@@ -463,6 +489,9 @@ describe('createThreadRowUiState', () => {
       url: 'blob:before-dispose',
     });
 
+    rowUiState.setDiffCardExpanded(item.id, 'src/foo.ts', true);
+    rowUiState.setDiffCardExpanded('item-other', 'src/keep.ts', false);
+
     expect(rowUiState.debugStats().itemExpansionStates).toBe(1);
     expect(rowUiState.debugStats().payloadExpansionStates).toBe(1);
     rowUiState.disposeItems([item]);
@@ -472,6 +501,9 @@ describe('createThreadRowUiState', () => {
     expect(rowUiState.debugStats().attachmentItems).toBe(0);
     expect(rowUiState.isSubagentGroupExpanded(item.id)).toBe(false);
     expect(rowUiState.isSubagentGroupExpanded(`wait:${item.id}`)).toBe(false);
+    // Diff card overrides for the disposed item drop; others survive.
+    expect(rowUiState.diffCardExpandedOverride(item.id, 'src/foo.ts')).toBeUndefined();
+    expect(rowUiState.diffCardExpandedOverride('item-other', 'src/keep.ts')).toBe(false);
     expect(revoke).toHaveBeenCalledWith('blob:before-dispose');
 
     staleCache.set('after-dispose', {
@@ -669,6 +701,8 @@ describe('createThreadRowUiState', () => {
     );
     rowUiState.toggleSubagentGroupExpanded('group-old');
     rowUiState.toggleSubagentGroupExpanded('group-retained');
+    rowUiState.setDiffCardExpanded(oldItem.id, 'src/old.ts', true);
+    rowUiState.setDiffCardExpanded(retainedItem.id, 'src/retained.ts', false);
     const oldAttachmentCache = rowUiState.attachmentCacheFor(oldItem.id);
     const retainedAttachmentCache = rowUiState.attachmentCacheFor(retainedItem.id);
     oldAttachmentCache.set('old-attachment', {
@@ -691,6 +725,7 @@ describe('createThreadRowUiState', () => {
       itemExpansionStates: 2,
       payloadExpansionStates: 2,
       subagentGroups: 2,
+      diffCardOverrideItems: 2,
       attachmentItems: 2,
     });
 
@@ -705,11 +740,14 @@ describe('createThreadRowUiState', () => {
       itemExpansionStates: 1,
       payloadExpansionStates: 1,
       subagentGroups: 1,
+      diffCardOverrideItems: 1,
       attachmentItems: 1,
     });
     expect(revoke).toHaveBeenCalledWith('blob:old-attachment');
     expect(rowUiState.isSubagentGroupExpanded('group-old')).toBe(false);
     expect(rowUiState.isSubagentGroupExpanded('group-retained')).toBe(true);
+    expect(rowUiState.diffCardExpandedOverride(oldItem.id, 'src/old.ts')).toBeUndefined();
+    expect(rowUiState.diffCardExpandedOverride(retainedItem.id, 'src/retained.ts')).toBe(false);
     expect(retainedAttachmentCache.get('retained-attachment')).toBeTruthy();
     expect(oldAttachmentCache.get('old-attachment')).toBeUndefined();
 
@@ -753,10 +791,12 @@ describe('createThreadRowUiState', () => {
 
     const beforeClear = rowUiState.expansionStateFor(item);
     rowUiState.toggleSubagentGroupExpanded('group-a');
+    rowUiState.setDiffCardExpanded(item.id, 'src/foo.ts', false);
     rowUiState.clear();
 
     const afterClear = rowUiState.expansionStateFor(item);
     expect(Object.is(afterClear, beforeClear)).toBe(false);
     expect(rowUiState.isSubagentGroupExpanded('group-a')).toBe(false);
+    expect(rowUiState.diffCardExpandedOverride(item.id, 'src/foo.ts')).toBeUndefined();
   });
 });

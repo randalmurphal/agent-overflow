@@ -160,6 +160,17 @@
       </SettingsField>
 
       <SettingsField
+        label="Collapse diff previews"
+        hint="Show file edits collapsed by default; expand a row to reveal the diff preview."
+      >
+        <ToggleSwitch
+          checked={settings.collapseDiffPreviews}
+          ariaLabel="Toggle Collapse Diff Previews"
+          onToggle={(value) => updateSetting('collapseDiffPreviews', value)}
+        />
+      </SettingsField>
+
+      <SettingsField
         label="Streaming enabled"
         hint="Show text as it arrives from the provider."
       >

@@ -1372,6 +1372,7 @@ describe("<ToolCallCard> header dispatcher", () => {
 
   it("delegates to DiffPreview when payloadKind=diff", async () => {
     const pane = await buildPane();
+    const createdAt = new Date(2026, 5, 10, 20, 5, 0).getTime();
     const item = makeItem({
       id: "diff",
       kind: "tool_call",
@@ -1379,6 +1380,7 @@ describe("<ToolCallCard> header dispatcher", () => {
       toolName: "Edit",
       payloadId: "payload-diff",
       payloadKind: "diff",
+      createdAt,
       payloadMeta: JSON.stringify({
         filePath: "foo.ts",
         changeKind: "modified",
@@ -1394,10 +1396,18 @@ describe("<ToolCallCard> header dispatcher", () => {
 
     expect(queryByTestId("tool-call-card")).toBeNull();
     expect(container.textContent).toContain("foo.ts");
+    // Pins the single-file-diff branch's own createdAt wire — the
+    // diff-stack test exercises DiffFileStack's, not this one.
+    expect(
+      container
+        .querySelector('[data-testid="diff-file-time"]')
+        ?.getAttribute("datetime"),
+    ).toBe(new Date(createdAt).toISOString());
   });
 
   it("delegates to ToolResultCard when payloadKind=tool_result", async () => {
     const pane = await buildPane();
+    const createdAt = new Date(2026, 5, 10, 20, 5, 0).getTime();
     const item = makeItem({
       id: "tr",
       kind: "tool_completion",
@@ -1405,6 +1415,7 @@ describe("<ToolCallCard> header dispatcher", () => {
       toolName: "Edit",
       payloadId: "payload-tr",
       payloadKind: "tool_result",
+      createdAt,
       payloadMeta: JSON.stringify({
         itemType: "file_change",
         title: "Edit applied",
@@ -1417,16 +1428,25 @@ describe("<ToolCallCard> header dispatcher", () => {
 
     expect(queryByTestId("tool-call-card")).toBeNull();
     expect(container.textContent).toContain("Edit applied");
+    // The tool_result fallthrough row carries the clock like every
+    // other tool row.
+    expect(
+      container
+        .querySelector('[data-testid="tool-result-time"]')
+        ?.getAttribute("datetime"),
+    ).toBe(new Date(createdAt).toISOString());
   });
 
   it("delegates exact-patch tool_result rows to a DiffFileBlock per file", async () => {
     const pane = await buildPane();
+    const createdAt = new Date(2026, 5, 10, 20, 5, 0).getTime();
     const item = makeItem({
       id: "tool-result-pending-payload",
       kind: "tool_completion",
       status: "completed",
       toolName: "Edit",
       payloadKind: "tool_result",
+      createdAt,
       payloadMeta: JSON.stringify({
         itemType: "file_change",
         title: "Edit applied",
@@ -1456,6 +1476,12 @@ describe("<ToolCallCard> header dispatcher", () => {
     const blocks = getAllByTestId("diff-file-block");
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toHaveAttribute("data-file-path", "src/file.ts");
+    // The item's clock time threads through to the diff row header.
+    expect(
+      blocks[0]
+        .querySelector('[data-testid="diff-file-time"]')
+        ?.getAttribute("datetime"),
+    ).toBe(new Date(createdAt).toISOString());
   });
 
   it("keeps rich tool_result rendering for command-named tool rows", async () => {

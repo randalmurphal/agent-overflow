@@ -15,7 +15,7 @@
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
   import EditorLink from '../common/EditorLink.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
-  import { formatDurationMs } from '../../utils/format';
+  import { formatDurationMs, formatTimeOfDay } from '../../utils/format';
   import { isCodexSubagentLaunchItem } from '../../utils/subagentLaunch';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
@@ -67,12 +67,7 @@
   let itemMeta = $derived(parseJsonObject(item.meta));
   let statusMeta = $derived(parseJsonObject(effectiveStatusItem.payloadMeta));
 
-  let time = $derived(
-    new Date(effectiveStatusItem.createdAt).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    }),
-  );
+  let time = $derived(formatTimeOfDay(effectiveStatusItem.createdAt));
 
   let preview = $derived(
     presentToolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta, paneWorkspacePath(pane)),

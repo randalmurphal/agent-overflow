@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { CommandOutputMeta, Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { formatTimeOfDay } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { terminalInteractionLabelFromSummary } from './commandDisplay';
   import CommandOutput from './CommandOutput.svelte';
@@ -18,6 +19,7 @@
   );
   let shouldRenderCommandShell = $derived(item.payloadKind === 'command_output');
   let isRunning = $derived(item.status === 'running' || item.status === 'streaming');
+  let time = $derived(formatTimeOfDay(item.createdAt));
   let rowLabel = $derived.by(() => {
     if (isRunning) return 'Waiting for background terminal';
     return terminalInteractionLabelFromSummary(item.summary) || 'Waited for background terminal';
@@ -43,7 +45,10 @@
     {#snippet label()}<span data-testid="terminal-interaction-label">wait</span>{/snippet}
     {#snippet body()}<span class="min-w-0 truncate">{rowLabel}</span>{/snippet}
     {#snippet actions()}
-      <ToolHeaderMeta statusSlotTestId="terminal-interaction-status-slot">
+      <ToolHeaderMeta
+        statusSlotTestId="terminal-interaction-status-slot"
+        timestamp={{ testId: 'terminal-interaction-time', value: item.createdAt, label: time }}
+      >
         {#snippet status()}<Indicator state={isRunning ? 'running' : null} />{/snippet}
       </ToolHeaderMeta>
     {/snippet}

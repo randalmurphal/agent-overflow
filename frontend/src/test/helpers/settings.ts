@@ -9,6 +9,7 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     fontSize: 13,
     recentWorkspaces: [],
     diffWordWrap: false,
+    collapseDiffPreviews: false,
     streamingEnabled: true,
     confirmArchive: true,
     confirmDelete: true,

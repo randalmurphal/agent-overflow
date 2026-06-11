@@ -7,42 +7,13 @@ import {
   getBindingMock,
 } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
+import { makeSettings } from '../../../test/helpers/settings';
 
-const BASE_SETTINGS: Settings = {
-  theme: 'system',
-  timestampFormat: 'locale',
-  sansFont: 'geist',
-  monoFont: 'geist',
-  fontSize: 13,
-  recentWorkspaces: [],
-  diffWordWrap: false,
-  streamingEnabled: true,
-  confirmArchive: true,
-  confirmDelete: true,
-  claudeBinaryPath: 'claude',
-  codexBinaryPath: 'codex',
-  claudeEnabled: true,
-  codexEnabled: true,
-  defaultThreadEnvMode: 'local',
-  worktreeBranchPrefix: 'ao-',
-  paneDensity: 'compact',
-  textGenerationProvider: 'codex',
-  textGenerationModel: '',
-  textGenerationReasoningEffort: 'low',
-  claudeAutoCompactStandardPercent: 90,
+const BASE_SETTINGS: Settings = makeSettings({
   claudeAutoCompactExtendedPercent: 85,
   codexAutoCompactStandardPercent: 80,
   codexAutoCompactExtendedPercent: 75,
-  observabilityTracingEnabled: false,
-  observabilityOtlpEndpoint: '',
-  observabilityEventLogEnabled: false,
-  network: { bindAll: false },
-  retention: { days: 30 },
-  gitlabSelfHostedHosts: [],
-  projectSortMode: 'lastActivity',
-  collapsedProjects: [],
-  paneLayout: { version: 1, panes: [], focusedPaneId: null },
-};
+});
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   const merged = { ...BASE_SETTINGS, ...overrides };

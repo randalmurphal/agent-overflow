@@ -97,13 +97,17 @@ type Settings struct {
 	FontSize         int      `json:"fontSize"`
 	RecentWorkspaces []string `json:"recentWorkspaces"`
 	DiffWordWrap     bool     `json:"diffWordWrap"`
-	StreamingEnabled bool     `json:"streamingEnabled"`
-	ConfirmArchive   bool     `json:"confirmArchive"`
-	ConfirmDelete    bool     `json:"confirmDelete"`
-	ClaudeBinaryPath string   `json:"claudeBinaryPath"`
-	CodexBinaryPath  string   `json:"codexBinaryPath"`
-	ClaudeEnabled    bool     `json:"claudeEnabled"`
-	CodexEnabled     bool     `json:"codexEnabled"`
+	// CollapseDiffPreviews starts chat-timeline file-edit diff cards
+	// collapsed (header row only). It controls the default state, not
+	// capability: cards stay individually expandable either way.
+	CollapseDiffPreviews bool   `json:"collapseDiffPreviews"`
+	StreamingEnabled     bool   `json:"streamingEnabled"`
+	ConfirmArchive       bool   `json:"confirmArchive"`
+	ConfirmDelete        bool   `json:"confirmDelete"`
+	ClaudeBinaryPath     string `json:"claudeBinaryPath"`
+	CodexBinaryPath      string `json:"codexBinaryPath"`
+	ClaudeEnabled        bool   `json:"claudeEnabled"`
+	CodexEnabled         bool   `json:"codexEnabled"`
 
 	// DefaultThreadEnvMode seeds the workspace mode for new draft threads.
 	// Accepts "local" or "worktree"; unknown values fall back to "local"
@@ -240,6 +244,7 @@ var DefaultSettings = Settings{
 	MonoFont:             "geist",
 	FontSize:             13,
 	DiffWordWrap:         false,
+	CollapseDiffPreviews: false,
 	StreamingEnabled:     true,
 	ConfirmArchive:       true,
 	ConfirmDelete:        true,

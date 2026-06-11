@@ -11,6 +11,7 @@
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { formatTimeOfDay } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import {
     codexSubagentLaunchInfo,
@@ -189,12 +190,7 @@
     await expansion.toggle();
   }
 
-  let time = $derived(
-    new Date(effectiveStatusItem.createdAt).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    }),
-  );
+  let time = $derived(formatTimeOfDay(effectiveStatusItem.createdAt));
 </script>
 
 {#snippet rowIcon()}

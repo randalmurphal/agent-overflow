@@ -5,15 +5,11 @@
   import CopyButton from '../primitives/CopyButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { formatTimeOfDay } from '../../utils/format';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
-  const time = $derived(
-    new Date(item.createdAt).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    }),
-  );
+  const time = $derived(formatTimeOfDay(item.createdAt));
   const isoTime = $derived(new Date(item.createdAt).toISOString());
 
   // /\S/.test short-circuits at the first non-whitespace character — for

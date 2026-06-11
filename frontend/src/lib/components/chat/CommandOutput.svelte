@@ -17,7 +17,7 @@
     displayCommandForItem,
   } from './commandDisplay';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
-  import { formatDurationMs } from '../../utils/format';
+  import { formatDurationMs, formatTimeOfDay } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
@@ -120,12 +120,7 @@
     return elapsed;
   });
 
-  let time = $derived(
-    new Date(effectiveStatusItem.createdAt).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    }),
-  );
+  let time = $derived(formatTimeOfDay(effectiveStatusItem.createdAt));
 
   // payloadMeta is the canonical status source. Callers may pass a
   // normalized CommandOutputMeta that intentionally contains only the

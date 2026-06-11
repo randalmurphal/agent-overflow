@@ -210,6 +210,49 @@ func TestNetworkSettingsBindAllRoundTripAndSparseDefault(t *testing.T) {
 	}
 }
 
+// TestCollapseDiffPreviewsRoundTripAndSparseDefault confirms the
+// chat-timeline diff-collapse toggle persists like every other
+// setting: Update writes the patch, a fresh service reload yields the
+// same value, and the file omits the key once it equals the default
+// again.
+func TestCollapseDiffPreviewsRoundTripAndSparseDefault(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{"collapseDiffPreviews": true})
+	if err != nil {
+		t.Fatalf("Update(collapseDiffPreviews=true) error = %v", err)
+	}
+	if !updated.CollapseDiffPreviews {
+		t.Fatal("CollapseDiffPreviews = false, want true")
+	}
+
+	reloaded := NewService(dir).Get()
+	if !reloaded.CollapseDiffPreviews {
+		t.Fatal("reloaded CollapseDiffPreviews = false, want true")
+	}
+
+	updated, err = svc.Update(map[string]any{"collapseDiffPreviews": false})
+	if err != nil {
+		t.Fatalf("Update(collapseDiffPreviews=false) error = %v", err)
+	}
+	if updated.CollapseDiffPreviews {
+		t.Fatal("CollapseDiffPreviews = true, want false")
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal settings file: %v", err)
+	}
+	if _, ok := fileMap["collapseDiffPreviews"]; ok {
+		t.Fatalf("settings file = %s, want collapseDiffPreviews omitted when default", string(data))
+	}
+}
+
 func TestUpdateMergesOverDefaults(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)

@@ -1,15 +1,28 @@
 // DiffFileBlock is the unified per-file inline diff renderer used by
 // both Claude (single-file tool calls) and Codex (multi-file
-// apply_patch). Tests cover the header contract, the always-inline
-// body render, the capped-file preview fallback, and the sidebar promote
+// apply_patch). Tests cover the header contract, the default-expanded
+// body render, the collapseDiffPreviews default + per-card disclosure
+// toggle, the capped-file preview fallback, and the sidebar promote
 // affordances.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { tick } from 'svelte';
+import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import DiffFileBlock from './DiffFileBlock.svelte';
+import { dispatchInlineFileTokens } from './diffInlineTokenize';
 import type { PatchFile, PatchLine } from '../../utils/patchFiles';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { loadSettings, resetSettingsForTest } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
+import { buildPane, makeItem } from '../../../test/helpers/chat';
+import { formatTimeOfDay } from '../../utils/format';
+
+// Mocked so the collapse tests can assert that collapsed cards skip
+// the Shiki batch dispatch; line-tint rendering does not depend on it.
+vi.mock('./diffInlineTokenize', () => ({
+  dispatchInlineFileTokens: vi.fn(async () => {}),
+}));
 
 function ctx(content: string): PatchLine {
   return { type: 'context', content: ' ' + content };
@@ -106,6 +119,10 @@ function fakePane(openDiffSidebar = vi.fn()): Partial<ThreadPane> {
     openDiffSidebar,
     thread: { id: 'thread-1', workspacePath: '/tmp/workspace' } as ThreadPane['thread'],
   } as Partial<ThreadPane>;
+}
+
+function expectBefore(left: Element, right: Element) {
+  expect(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 }
 
 describe('<DiffFileBlock>', () => {
@@ -370,5 +387,267 @@ describe('<DiffFileBlock>', () => {
     expect(getByTestId('diff-file-path').textContent).toBe('src/loading.ts');
     // Body region absent until lines arrive.
     expect(queryByTestId('diff-file-body')).toBeNull();
+  });
+
+  it('renders the clock time last in the header actions when createdAt is provided', () => {
+    const createdAt = new Date(2026, 5, 10, 20, 5, 0).getTime();
+    const pane = fakePane() as ThreadPane;
+    const { getByTestId } = render(DiffFileBlock, {
+      props: {
+        pane,
+        file: makePatchFile(),
+        payloadId: 'p-time',
+        threadId: 'thread-1',
+        toolName: 'Edit',
+        createdAt,
+      },
+    });
+
+    const time = getByTestId('diff-file-time');
+    expect(time.getAttribute('datetime')).toBe(new Date(createdAt).toISOString());
+    expect(time.textContent?.trim()).toBe(formatTimeOfDay(createdAt));
+    // Clock sits after counts and the sidebar button so it column-aligns
+    // with the right-edge timestamps of every other tool row.
+    expectBefore(getByTestId('diff-file-counts'), time);
+    expectBefore(getByTestId('diff-file-open-sidebar'), time);
+  });
+
+  it('omits the timestamp and its meta strip when createdAt is not provided', () => {
+    const { queryByTestId } = render(DiffFileBlock, {
+      props: { file: makePatchFile(), threadId: 'thread-1', toolName: 'Edit' },
+    });
+    expect(queryByTestId('diff-file-time')).toBeNull();
+    expect(queryByTestId('diff-file-status-slot')).toBeNull();
+  });
+
+  it('drops the time element instead of crashing when createdAt is corrupt (NaN)', () => {
+    const { getByTestId, queryByTestId } = render(DiffFileBlock, {
+      props: { file: makePatchFile(), threadId: 'thread-1', toolName: 'Edit', createdAt: Number.NaN },
+    });
+    // Row still renders; ToolHeaderMeta suppresses the <time> rather than
+    // throwing on Invalid Date toISOString().
+    expect(getByTestId('diff-file-label').textContent).toBe('edit');
+    expect(queryByTestId('diff-file-time')).toBeNull();
+  });
+
+  describe('collapse setting + per-card toggle', () => {
+    afterEach(() => {
+      resetSettingsForTest();
+    });
+
+    async function enableCollapseSetting(): Promise<void> {
+      setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: true }));
+      await loadSettings();
+    }
+
+    it('starts collapsed when collapseDiffPreviews is on (header only)', async () => {
+      await enableCollapseSetting();
+      const pane = fakePane() as ThreadPane;
+      const file = { ...makeLongPatchFile(16), additions: 5, deletions: 2 };
+      const { getByTestId, queryByTestId } = render(DiffFileBlock, {
+        props: { pane, file, payloadId: 'p-collapsed', threadId: 'thread-1', toolName: 'Edit' },
+      });
+
+      // Header survives intact: label, path, and counts stay visible.
+      expect(getByTestId('diff-file-label').textContent).toBe('edit');
+      expect(getByTestId('diff-file-path').textContent).toBe('src/big.ts');
+      const counts = getByTestId('diff-file-counts').textContent ?? '';
+      expect(counts).toContain('+5');
+      expect(counts).toContain('-2');
+      // Preview body, fade, and CTA are all withheld until expand.
+      expect(queryByTestId('diff-file-body')).toBeNull();
+      expect(queryByTestId('diff-file-fade')).toBeNull();
+      expect(queryByTestId('diff-file-show-full')).toBeNull();
+      expect(getByTestId('diff-file-toggle').getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('keeps the timestamp visible on a collapsed header', async () => {
+      await enableCollapseSetting();
+      const createdAt = new Date(2026, 5, 10, 20, 5, 0).getTime();
+      const { getByTestId, queryByTestId } = render(DiffFileBlock, {
+        props: { file: makePatchFile(), threadId: 'thread-1', toolName: 'Edit', createdAt },
+      });
+
+      expect(queryByTestId('diff-file-body')).toBeNull();
+      expect(getByTestId('diff-file-time').getAttribute('datetime')).toBe(
+        new Date(createdAt).toISOString(),
+      );
+    });
+
+    it('clicking the toggle expands a default-collapsed card to the full preview', async () => {
+      await enableCollapseSetting();
+      const pane = fakePane() as ThreadPane;
+      const file = makeLongPatchFile(16);
+      const { getByTestId, queryByTestId } = render(DiffFileBlock, {
+        props: { pane, file, payloadId: 'p-expand', threadId: 'thread-1' },
+      });
+      expect(queryByTestId('diff-file-body')).toBeNull();
+
+      const toggle = getByTestId('diff-file-toggle');
+      await fireEvent.click(toggle);
+
+      // Expanded view matches the always-inline render: body, fade,
+      // and sidebar CTA all present, aria wired to the region.
+      expect(getByTestId('diff-file-body').textContent).toContain('line 15;');
+      expect(getByTestId('diff-file-fade')).toBeInTheDocument();
+      expect(getByTestId('diff-file-show-full')).toBeInTheDocument();
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      const controls = toggle.getAttribute('aria-controls');
+      expect(controls).toBeTruthy();
+      expect(document.getElementById(controls!)).not.toBeNull();
+    });
+
+    it('toggle collapses and re-expands with the setting off (default expanded)', async () => {
+      const file = makePatchFile();
+      const { getByTestId, queryByTestId } = render(DiffFileBlock, {
+        props: { file, threadId: 'thread-1' },
+      });
+      const toggle = getByTestId('diff-file-toggle');
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      expect(getByTestId('diff-file-body')).toBeInTheDocument();
+
+      await fireEvent.click(toggle);
+      expect(queryByTestId('diff-file-body')).toBeNull();
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+      await fireEvent.click(toggle);
+      expect(getByTestId('diff-file-body')).toBeInTheDocument();
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('mod-click on the toggle promotes to sidebar exactly once and does not collapse', async () => {
+      const open = vi.fn();
+      const pane = fakePane(open) as ThreadPane;
+      const file = makePatchFile();
+      const { getByTestId } = render(DiffFileBlock, {
+        props: { pane, file, payloadId: 'p-mod-toggle', threadId: 'thread-1' },
+      });
+
+      await fireEvent.click(getByTestId('diff-file-toggle'), { metaKey: true });
+
+      // One promote (the toggle bails and lets the wrapper handle it),
+      // and the card stays expanded.
+      expect(open).toHaveBeenCalledExactlyOnceWith({
+        payloadId: 'p-mod-toggle',
+        filePath: 'src/foo.ts',
+      });
+      expect(getByTestId('diff-file-body')).toBeInTheDocument();
+    });
+
+    it('pane-backed override survives unmount and re-render', async () => {
+      const item = makeItem({
+        id: 'item-diff-override',
+        kind: 'tool_completion',
+        toolName: 'Edit',
+      });
+      const pane = await buildPane(undefined, [item]);
+      const file = makePatchFile();
+      const props = { pane, file, threadId: 'thread-1', itemId: item.id, toolName: 'Edit' };
+
+      const first = render(DiffFileBlock, { props });
+      expect(first.getByTestId('diff-file-body')).toBeInTheDocument();
+      await fireEvent.click(first.getByTestId('diff-file-toggle'));
+      expect(first.queryByTestId('diff-file-body')).toBeNull();
+      first.unmount();
+
+      // Re-render with the same pane + itemId — the collapse choice is
+      // remembered in the per-pane registry, not row-local state.
+      const second = render(DiffFileBlock, { props });
+      expect(second.queryByTestId('diff-file-body')).toBeNull();
+      expect(second.getByTestId('diff-file-toggle').getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('skips the Shiki dispatch while collapsed and dispatches on expand', async () => {
+      await enableCollapseSetting();
+      const dispatch = vi.mocked(dispatchInlineFileTokens);
+      dispatch.mockClear();
+      const file = makePatchFile();
+      const { getByTestId } = render(DiffFileBlock, {
+        props: { file, threadId: 'thread-1' },
+      });
+
+      await tick();
+      expect(dispatch).not.toHaveBeenCalled();
+
+      await fireEvent.click(getByTestId('diff-file-toggle'));
+      await waitFor(() => expect(dispatch).toHaveBeenCalled());
+    });
+
+    it('follows live setting flips for untouched cards while user-expanded cards stay pinned', async () => {
+      await enableCollapseSetting();
+      const item = makeItem({ id: 'item-flip', kind: 'tool_completion', toolName: 'Edit' });
+      const pane = await buildPane(undefined, [item]);
+      // Two renders share one document — scope queries per container.
+      const untouched = within(
+        render(DiffFileBlock, {
+          props: { pane, file: makePatchFile(), threadId: 'thread-1', itemId: item.id },
+        }).container,
+      );
+      const pinned = within(
+        render(DiffFileBlock, {
+          props: {
+            pane,
+            file: makePatchFile({ path: 'src/other.ts' }),
+            threadId: 'thread-1',
+            itemId: item.id,
+          },
+        }).container,
+      );
+
+      // Both start collapsed; expand one explicitly (override stored).
+      expect(untouched.queryByTestId('diff-file-body')).toBeNull();
+      await fireEvent.click(pinned.getByTestId('diff-file-toggle'));
+      expect(pinned.getByTestId('diff-file-body')).toBeInTheDocument();
+
+      // Flip the setting off: the untouched card follows the new
+      // default live; the explicitly-expanded card keeps its override.
+      setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: false }));
+      await loadSettings();
+      await waitFor(() => expect(untouched.getByTestId('diff-file-body')).toBeInTheDocument());
+      expect(pinned.getByTestId('diff-file-body')).toBeInTheDocument();
+
+      // Flip back on: untouched follows again, pinned stays expanded.
+      setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: true }));
+      await loadSettings();
+      await waitFor(() => expect(untouched.queryByTestId('diff-file-body')).toBeNull());
+      expect(pinned.getByTestId('diff-file-body')).toBeInTheDocument();
+    });
+
+    it('re-follows the setting after a card is toggled back to the default', async () => {
+      const item = makeItem({ id: 'item-refollow', kind: 'tool_completion', toolName: 'Edit' });
+      const pane = await buildPane(undefined, [item]);
+      const { getByTestId, queryByTestId } = render(DiffFileBlock, {
+        props: { pane, file: makePatchFile(), threadId: 'thread-1', itemId: item.id },
+      });
+
+      // Collapse, then expand back to the (setting-off) default — the
+      // override clears instead of pinning "expanded".
+      await fireEvent.click(getByTestId('diff-file-toggle'));
+      expect(queryByTestId('diff-file-body')).toBeNull();
+      await fireEvent.click(getByTestId('diff-file-toggle'));
+      expect(getByTestId('diff-file-body')).toBeInTheDocument();
+      expect(pane.diffCardExpandedOverride(item.id, 'src/foo.ts')).toBeUndefined();
+
+      // A later setting flip therefore applies to this card too.
+      setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: true }));
+      await loadSettings();
+      await waitFor(() => expect(queryByTestId('diff-file-body')).toBeNull());
+    });
+
+    it('renders an inert chevron when there is nothing to toggle (header-only row)', () => {
+      const file: PatchFile = {
+        path: 'src/loading.ts',
+        kind: 'modified',
+        additions: 0,
+        deletions: 0,
+        lines: [],
+      };
+      const { getByTestId } = render(DiffFileBlock, {
+        props: { file, threadId: 'thread-1', toolName: 'Edit' },
+      });
+      const toggle = getByTestId('diff-file-toggle');
+      expect(toggle.getAttribute('aria-disabled')).toBe('true');
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    });
   });
 });

@@ -15,6 +15,7 @@
     THINKING_PAYLOAD_EXPANSION_STATE_KEY,
     thinkingPayloadVersionForItem,
   } from '../../utils/payloadVersion';
+  import { formatTimeOfDay } from '../../utils/format';
   import { revealedSuffix } from '../../utils/textOverlap';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
 
@@ -104,12 +105,7 @@
     }
   }
 
-  const timestamp = $derived(
-    new Date(item.createdAt).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    }),
-  );
+  const time = $derived(formatTimeOfDay(item.createdAt));
   const isoTime = $derived(new Date(item.createdAt).toISOString());
 
   // CopyButton getter — eagerly fetch the full payload before copying
@@ -168,7 +164,7 @@
             </span>
           {/if}
         </span>
-        <time class="tabular-nums" datetime={isoTime}>{timestamp}</time>
+        <time class="tabular-nums" datetime={isoTime}>{time}</time>
       </div>
     {/snippet}
   </TranscriptDisclosureHeader>

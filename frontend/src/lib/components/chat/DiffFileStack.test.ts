@@ -5,9 +5,9 @@
 // parsePatchFiles, then render one DiffFileBlock per file in
 // meta.inlineDiff.files.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { tick } from 'svelte';
-import { render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import DiffFileStack from './DiffFileStack.svelte';
 import {
   getBindingMock,
@@ -15,6 +15,8 @@ import {
   setBindingMock,
 } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
+import { loadSettings, resetSettingsForTest } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 import type { ToolResultMeta } from '../../types/models';
 import {
   INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
@@ -94,6 +96,10 @@ describe('<DiffFileStack>', () => {
     resetBindingMocks();
   });
 
+  afterEach(() => {
+    resetSettingsForTest();
+  });
+
   it('renders separate file rows from per-file preview metadata without fetching a byte prefix', async () => {
     const previewFetch = setBindingMock('GetPayloadPreview', async () => {
       throw new Error(
@@ -101,6 +107,7 @@ describe('<DiffFileStack>', () => {
       );
     });
 
+    const createdAt = new Date(2026, 5, 10, 20, 5, 0).getTime();
     const item = makeItem({
       id: 'tu_multifile_preview',
       kind: 'tool_completion',
@@ -108,6 +115,7 @@ describe('<DiffFileStack>', () => {
       toolName: 'fileChange',
       payloadId: 'tool-result:tu_multifile_preview',
       payloadKind: 'tool_result',
+      createdAt,
     });
     const pane = await buildPane(undefined, [item]);
 
@@ -132,6 +140,15 @@ describe('<DiffFileStack>', () => {
     expect(
       blocks[1].querySelector('[data-testid="diff-file-counts"]')?.textContent,
     ).toContain('+201');
+    // Every stacked file row carries the owning item's clock time, same
+    // as single-file diff rows and every other tool row.
+    for (const block of blocks) {
+      expect(
+        block
+          .querySelector('[data-testid="diff-file-time"]')
+          ?.getAttribute('datetime'),
+      ).toBe(new Date(createdAt).toISOString());
+    }
     expect(previewFetch).not.toHaveBeenCalled();
   });
 
@@ -312,6 +329,43 @@ describe('<DiffFileStack>', () => {
     expect(bodies[0].textContent).toContain('first new');
     expect(bodies[1].textContent).toContain('second new');
     expect(chunkFetch).toHaveBeenCalled();
+  });
+
+  it('renders all blocks collapsed when collapseDiffPreviews is on; expanding one reveals only that body', async () => {
+    setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: true }));
+    await loadSettings();
+    const item = makeItem({
+      id: 'tu_collapsed_stack',
+      kind: 'tool_completion',
+      status: 'completed',
+      toolName: 'fileChange',
+      payloadId: 'tool-result:tu_collapsed_stack',
+      payloadKind: 'tool_result',
+    });
+    const pane = await buildPane(undefined, [item]);
+
+    const { findAllByTestId, getAllByTestId, queryAllByTestId } = render(DiffFileStack, {
+      props: {
+        pane,
+        item,
+        meta: twoFilePreviewMeta,
+        payloadId: 'tool-result:tu_collapsed_stack',
+      },
+    });
+
+    const blocks = await findAllByTestId('diff-file-block');
+    expect(blocks).toHaveLength(2);
+    expect(queryAllByTestId('diff-file-body')).toHaveLength(0);
+
+    // Expanding the first file must not expand its sibling — the
+    // override is keyed per (itemId, file.path) even though both
+    // blocks share the same owning item.
+    const toggles = getAllByTestId('diff-file-toggle');
+    await fireEvent.click(toggles[0]);
+
+    const bodies = getAllByTestId('diff-file-body');
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].textContent).toContain('first file line');
   });
 
   it('renders a header-only placeholder when the payload data has not landed yet', async () => {

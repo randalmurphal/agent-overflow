@@ -4,42 +4,9 @@ import ObservabilitySettings from './ObservabilitySettings.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
+import { makeSettings } from '../../../test/helpers/settings';
 
-const BASE_SETTINGS: Settings = {
-  theme: 'system',
-  timestampFormat: 'locale',
-  sansFont: 'geist',
-  monoFont: 'geist',
-  fontSize: 13,
-  recentWorkspaces: [],
-  diffWordWrap: false,
-  streamingEnabled: true,
-  confirmArchive: true,
-  confirmDelete: true,
-  claudeBinaryPath: 'claude',
-  codexBinaryPath: 'codex',
-  claudeEnabled: true,
-  codexEnabled: true,
-  defaultThreadEnvMode: 'local',
-  worktreeBranchPrefix: 'ao-',
-  paneDensity: 'compact',
-  textGenerationProvider: 'codex',
-  textGenerationModel: '',
-  textGenerationReasoningEffort: 'low',
-  claudeAutoCompactStandardPercent: 90,
-  claudeAutoCompactExtendedPercent: 90,
-  codexAutoCompactStandardPercent: 90,
-  codexAutoCompactExtendedPercent: 90,
-  observabilityTracingEnabled: false,
-  observabilityOtlpEndpoint: '',
-  observabilityEventLogEnabled: false,
-  network: { bindAll: false },
-  retention: { days: 30 },
-  gitlabSelfHostedHosts: [],
-  projectSortMode: 'lastActivity',
-  collapsedProjects: [],
-  paneLayout: { version: 1, panes: [], focusedPaneId: null },
-};
+const BASE_SETTINGS: Settings = makeSettings();
 
 async function seed(overrides: Partial<Settings> = {}): Promise<void> {
   const merged = { ...BASE_SETTINGS, ...overrides };

@@ -16,7 +16,7 @@
   import ClaudeSubagentTranscript from './ClaudeSubagentTranscript.svelte';
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
-  import { formatDurationMs } from '../../utils/format';
+  import { formatDurationMs, formatTimeOfDay } from '../../utils/format';
   import { parseClaudeSubagentTranscript } from '../../utils/claudeSubagentTranscript';
   import {
     deriveClaudeSubagentDescription,
@@ -81,12 +81,7 @@
     description ||
       presentToolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta, paneWorkspacePath(pane)).text,
   );
-  let time = $derived(
-    new Date(effectiveStatusItem.createdAt).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    }),
-  );
+  let time = $derived(formatTimeOfDay(effectiveStatusItem.createdAt));
 
   let isBackgroundedLaunch = $derived(effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true);
   let isRunning = $derived(effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming');
