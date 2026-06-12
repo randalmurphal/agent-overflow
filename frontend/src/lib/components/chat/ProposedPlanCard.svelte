@@ -4,8 +4,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import type { Item, ProposedPlanMeta } from '../../types/models';
   import {
-    parseProposedPlanPayloadMeta,
-    proposedPlanPayloadVersion,
+    proposedPlanVersionForItem,
     shouldCapProposedPlanBody,
   } from '../../utils/proposedPlan';
   import { createPlanSaveDialog } from '../../utils/planSaveDialog.svelte';
@@ -38,12 +37,11 @@
       loadMode: 'full',
       loadOnMount: true,
       stateKey: 'proposed-plan-history',
-      payloadVersion: (currentItem) => {
-        const currentMeta = currentItem?.payloadMeta
-          ? parseProposedPlanPayloadMeta(currentItem)
-          : meta;
-        return proposedPlanPayloadVersion(currentItem ?? item, currentMeta);
-      },
+      // Module-scope helper only: the pane registry retains this callback
+      // for the entry's lifetime (see RowExpansionStateOptions). It derives
+      // the version from the current item rather than this card's
+      // `item`/`meta` props so the entry cannot pin the card instance.
+      payloadVersion: proposedPlanVersionForItem,
     }),
   });
   const expansion = $derived(expansionRef.current!);

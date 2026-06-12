@@ -91,6 +91,15 @@ export function proposedPlanPayloadVersion(
   return meta.signature || item?.payloadMeta || item?.payloadId || item?.updatedAt;
 }
 
+// Registry-bound payloadVersion for proposed-plan rows. threadRowUiState
+// retains this callback for the entry's whole lifetime, so it must stay
+// module scope and derive everything from the current item — capturing a
+// card instance's `item`/`meta` props would pin that instance (and its
+// detached DOM) until the item is pruned.
+export function proposedPlanVersionForItem(item: Item | undefined): unknown {
+  return proposedPlanPayloadVersion(item, parseProposedPlanPayloadMeta(item));
+}
+
 export function sourceFromProposedPlanItem(threadId: string | null | undefined, item: Item | null | undefined): SourceProposedPlan | null {
   if (!threadId || !item || item.payloadKind !== 'proposed_plan') return null;
   const itemMeta = parseProposedPlanItemMeta(item);

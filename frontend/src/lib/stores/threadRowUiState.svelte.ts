@@ -77,6 +77,14 @@ export interface RowUiStateRetention {
   groupKeys: Iterable<string>;
 }
 
+/**
+ * Registry entries outlive the row component that creates them and retain
+ * these options for the entry's whole lifetime. Function-valued options
+ * (`payloadVersion`, `cacheEnabled`) must be module-scope helpers that
+ * derive everything from the `item` argument — a closure capturing a
+ * component's props or scope pins that component instance (and its
+ * detached DOM) until the item leaves retention.
+ */
 export interface RowExpansionStateOptions
   extends Pick<
     PayloadExpansionOptions,
@@ -152,6 +160,12 @@ interface ExpansionRegistryEntry {
   handle: PayloadExpansionHandle;
   dispose: () => void;
   owner: ExpansionRegistryOwner;
+  /**
+   * Current registry key. Starts as the `expansionStates` key and is
+   * reassigned when a still-leased entry is parked under a
+   * `leased-pruned:` key, so release() can unindex without scanning.
+   */
+  key: string;
   leases: number;
   disposeRequested: boolean;
 }
@@ -245,6 +259,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     const currentPayloadVersion = rowOptions.payloadVersion ?? payloadVersionForItem;
     const currentCacheEnabled = (): boolean => rowCacheEnabled(rowOptions.cacheEnabled, getCurrentItem());
     cached = createRegistryExpansion(
+      key,
       {
         kind: 'item',
         itemId,
@@ -321,6 +336,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     }
 
     cached = createRegistryExpansion(
+      key,
       {
         kind: 'payload',
         threadId,
@@ -346,10 +362,17 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   }
 
   function createRegistryExpansion(
+    key: string,
     owner: ExpansionRegistryOwner,
     create: () => PayloadExpansionHandle,
   ): ExpansionRegistryEntry {
     let handle: PayloadExpansionHandle | undefined;
+    // Entries are created lazily from whichever row component first asks,
+    // but live until the item leaves retention. The svelte patch's
+    // "ownerless-roots" hunk (patches/svelte@5.56.3.patch) keeps this
+    // root from inheriting the creating row's component context — without
+    // it, every entry pins that row instance's props, scopes, and
+    // detached DOM for the entry's whole lifetime.
     const dispose = $effect.root(() => {
       handle = create();
     });
@@ -361,6 +384,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       handle,
       dispose,
       owner,
+      key,
       leases: 0,
       disposeRequested: false,
     };
@@ -376,9 +400,8 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         released = true;
         entry.leases -= 1;
         if (entry.leases > 0 || !entry.disposeRequested) return;
-        const leaseKey = keyForExpansionEntry(entry);
-        leasedPrunedExpansionStates.delete(leaseKey);
-        unindexExpansionKey(leaseKey, entry.owner);
+        leasedPrunedExpansionStates.delete(entry.key);
+        unindexExpansionKey(entry.key, entry.owner);
         disposeExpansionEntry(entry);
       },
     };
@@ -409,6 +432,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         nextLeasedPrunedExpansionKey += 1;
         leasedPrunedExpansionStates.set(leasedKey, entry);
         indexExpansionKey(leasedKey, entry.owner);
+        entry.key = leasedKey;
       }
       entry.disposeRequested = true;
       return;
@@ -417,16 +441,6 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     leasedPrunedExpansionStates.delete(key);
     unindexExpansionKey(key, entry.owner);
     disposeExpansionEntry(entry);
-  }
-
-  function keyForExpansionEntry(entry: ExpansionRegistryEntry): string {
-    for (const [key, candidate] of expansionStates) {
-      if (candidate === entry) return key;
-    }
-    for (const [key, candidate] of leasedPrunedExpansionStates) {
-      if (candidate === entry) return key;
-    }
-    return '';
   }
 
   function disposeExpansionEntry(entry: ExpansionRegistryEntry): void {

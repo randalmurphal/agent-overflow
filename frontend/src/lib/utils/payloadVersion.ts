@@ -52,6 +52,15 @@ export function payloadVersionForItem(item: Item | undefined): unknown {
   );
 }
 
+// threadRowUiState registry entries outlive the row component that creates
+// them and retain option callbacks for the entry's whole lifetime — helpers
+// passed as `cacheEnabled`/`payloadVersion` must live at module scope and
+// capture nothing from a component instance, or the entry pins that
+// instance's context (and its detached DOM) until the item is pruned.
+export function thinkingPayloadCacheEnabled(item: Item | undefined): boolean {
+  return item?.status !== 'streaming';
+}
+
 export function thinkingPayloadVersionForItem(item: Item | undefined): unknown {
   if (!item) return undefined;
   if (item.status === 'streaming') {

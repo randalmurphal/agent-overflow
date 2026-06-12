@@ -13,6 +13,7 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import {
     THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+    thinkingPayloadCacheEnabled,
     thinkingPayloadVersionForItem,
   } from '../../utils/payloadVersion';
   import { formatTimeOfDay } from '../../utils/format';
@@ -41,8 +42,10 @@
     getOptions: () => ({
       loadMode: 'full',
       stateKey: THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+      // Module-scope helpers only: the pane registry retains these
+      // callbacks for the entry's lifetime (see RowExpansionStateOptions).
       payloadVersion: thinkingPayloadVersionForItem,
-      cacheEnabled: (currentItem) => currentItem?.status !== 'streaming',
+      cacheEnabled: thinkingPayloadCacheEnabled,
     }),
   });
   const expansion = $derived(expansionRef.current!);

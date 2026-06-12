@@ -41,9 +41,14 @@
 
   let { pane, item, meta, payloadId }: Props = $props();
 
+  // Always created: useLeasedPayloadExpansion returns this fallback both
+  // for pane-less mounts AND for paned rows whose files all carry preview
+  // patches (legacyPayloadId() === undefined — the modern path). In the
+  // paned case the pane-guard in the payloadId getter keeps it inert: it
+  // never fetches, it just satisfies the hook's non-null handle contract.
   const localFallback = untrack(() =>
     createPayloadExpansion(
-      () => pane ? undefined : legacyPayloadId(),
+      () => (pane ? undefined : legacyPayloadId()),
       () => item.threadId,
       {
         previewBytes: INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
