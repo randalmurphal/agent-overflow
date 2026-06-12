@@ -8,6 +8,9 @@ patchedDependencies:
   svelte-streamdown@3.0.1:
     hash: 2d90bcd6ef508130c8a9aa0c48b00369afda08e30f8dca91c93418dedf7d60ed
     path: patches/svelte-streamdown@3.0.1.patch
+  svelte@5.56.3:
+    hash: a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e
+    path: patches/svelte@5.56.3.patch
 
 importers:
 
@@ -51,7 +54,7 @@ importers:
         version: 0.16.45
       lucide-svelte:
         specifier: 1.0.1
-        version: 1.0.1(svelte@5.56.3)
+        version: 1.0.1(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))
       marked:
         specifier: 16.4.2
         version: 16.4.2
@@ -66,17 +69,17 @@ importers:
         version: 4.0.2
       svelte:
         specifier: 5.56.3
-        version: 5.56.3
+        version: 5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)
       svelte-streamdown:
         specifier: 3.0.1
-        version: 3.0.1(patch_hash=2d90bcd6ef508130c8a9aa0c48b00369afda08e30f8dca91c93418dedf7d60ed)(svelte@5.56.3)
+        version: 3.0.1(patch_hash=2d90bcd6ef508130c8a9aa0c48b00369afda08e30f8dca91c93418dedf7d60ed)(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))
       virtua:
         specifier: 0.49.1
-        version: 0.49.1(svelte@5.56.3)
+        version: 0.49.1(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
         specifier: 7.0.0
-        version: 7.0.0(svelte@5.56.3)(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1))
+        version: 7.0.0(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1))
       '@tailwindcss/vite':
         specifier: 4.2.2
         version: 4.2.2(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1))
@@ -85,7 +88,7 @@ importers:
         version: 6.9.1
       '@testing-library/svelte':
         specifier: 5.3.1
-        version: 5.3.1(svelte@5.56.3)(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1))(vitest@4.1.4)
+        version: 5.3.1(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1))(vitest@4.1.4)
       '@tsconfig/svelte':
         specifier: 5.0.8
         version: 5.0.8
@@ -100,7 +103,7 @@ importers:
         version: 20.9.0
       svelte-check:
         specifier: 4.4.6
-        version: 4.4.6(picomatch@4.0.4)(svelte@5.56.3)(typescript@6.0.2)
+        version: 4.4.6(picomatch@4.0.4)(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))(typescript@6.0.2)
       tailwindcss:
         specifier: 4.2.2
         version: 4.2.2
@@ -1836,12 +1839,12 @@ snapshots:
     dependencies:
       acorn: 8.16.0
 
-  '@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.56.3)(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1))':
+  '@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1))':
     dependencies:
       deepmerge: 4.3.1
       magic-string: 0.30.21
       obug: 2.1.1
-      svelte: 5.56.3
+      svelte: 5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)
       vite: 8.0.8(@types/node@25.6.0)(jiti@2.6.1)
       vitefu: 1.1.3(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1))
 
@@ -1933,15 +1936,15 @@ snapshots:
       picocolors: 1.1.1
       redent: 3.0.0
 
-  '@testing-library/svelte-core@1.0.0(svelte@5.56.3)':
+  '@testing-library/svelte-core@1.0.0(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))':
     dependencies:
-      svelte: 5.56.3
+      svelte: 5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)
 
-  '@testing-library/svelte@5.3.1(svelte@5.56.3)(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1))(vitest@4.1.4)':
+  '@testing-library/svelte@5.3.1(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1))(vitest@4.1.4)':
     dependencies:
       '@testing-library/dom': 10.4.1
-      '@testing-library/svelte-core': 1.0.0(svelte@5.56.3)
-      svelte: 5.56.3
+      '@testing-library/svelte-core': 1.0.0(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))
+      svelte: 5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)
     optionalDependencies:
       vite: 8.0.8(@types/node@25.6.0)(jiti@2.6.1)
       vitest: 4.1.4(@types/node@25.6.0)(@vitest/ui@4.1.4)(happy-dom@20.9.0)(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1))
@@ -2611,9 +2614,9 @@ snapshots:
 
   lodash-es@4.18.1: {}
 
-  lucide-svelte@1.0.1(svelte@5.56.3):
+  lucide-svelte@1.0.1(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)):
     dependencies:
-      svelte: 5.56.3
+      svelte: 5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)
 
   lz-string@1.5.0: {}
 
@@ -2846,19 +2849,19 @@ snapshots:
 
   stylis@4.4.0: {}
 
-  svelte-check@4.4.6(picomatch@4.0.4)(svelte@5.56.3)(typescript@6.0.2):
+  svelte-check@4.4.6(picomatch@4.0.4)(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))(typescript@6.0.2):
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       chokidar: 4.0.3
       fdir: 6.5.0(picomatch@4.0.4)
       picocolors: 1.1.1
       sade: 1.8.1
-      svelte: 5.56.3
+      svelte: 5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)
       typescript: 6.0.2
     transitivePeerDependencies:
       - picomatch
 
-  svelte-streamdown@3.0.1(patch_hash=2d90bcd6ef508130c8a9aa0c48b00369afda08e30f8dca91c93418dedf7d60ed)(svelte@5.56.3):
+  svelte-streamdown@3.0.1(patch_hash=2d90bcd6ef508130c8a9aa0c48b00369afda08e30f8dca91c93418dedf7d60ed)(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)):
     dependencies:
       '@floating-ui/dom': 1.7.6
       '@shikijs/langs': 3.23.0
@@ -2868,10 +2871,10 @@ snapshots:
       marked: 16.4.2
       mermaid: 11.14.0
       shiki: 3.23.0
-      svelte: 5.56.3
+      svelte: 5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)
       tailwind-merge: 3.5.0
 
-  svelte@5.56.3:
+  svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e):
     dependencies:
       '@jridgewell/remapping': 2.3.5
       '@jridgewell/sourcemap-codec': 1.5.5
@@ -2959,9 +2962,9 @@ snapshots:
       '@types/unist': 3.0.3
       vfile-message: 4.0.3
 
-  virtua@0.49.1(svelte@5.56.3):
+  virtua@0.49.1(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)):
     optionalDependencies:
-      svelte: 5.56.3
+      svelte: 5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)
 
   vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1):
     dependencies:

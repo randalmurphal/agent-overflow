@@ -121,6 +121,34 @@ interaction. Scroll behavior has dedicated coverage in
 `pnpm run check` and `pnpm run build` are blockers. `pnpm test` is the
 frontend unit-test gate.
 
+## Vendor Patches
+
+`patches/` holds pnpm patches, keyed to exact versions in
+`pnpm-workspace.yaml` (`patchedDependencies`) — a version bump without
+re-rolling the patch fails `pnpm install`. Never edit `node_modules`
+directly; packages are hardlinked from the pnpm store, so direct edits
+corrupt every project on the machine. Use
+`pnpm patch <pkg>@<version> --edit-dir <dir>` + `pnpm patch-commit`.
+
+- `svelte@5.56.3.patch` — three hunks with different drop rules:
+  1. **zombie-mint fix** — reactivity leak where deriveds read during
+     component init are force-connected and never released (upstream
+     [sveltejs/svelte#18420](https://github.com/sveltejs/svelte/issues/18420)).
+     Drop when `src/test/integration/svelte-patch-zombie-leak.test.ts`
+     passes on an unpatched release.
+  2. **ownerless-roots** — `$effect.root` no longer inherits the
+     creating component's context/parent, so store-level roots
+     (threadRowUiState's expansion registry) don't pin dead row
+     instances. Deliberate divergence, no upstream issue — carry it
+     forward and re-evaluate on every version bump. Regression suite:
+     `svelte-patch-ownerless-roots.test.ts`.
+  3. **zombie-mint probe** — diagnostic tripwire (receiver:
+     `src/lib/utils/zombieMintProbe.ts`) that fires if a future svelte
+     re-introduces the hunk-1 shape. Keep while hunk 1 exists; drop
+     alongside it.
+- `svelte-streamdown@3.0.1.patch` — rendering fixes for the markdown
+  pipeline.
+
 ## References
 
 - [`docs/architecture/frontend-scroll.md`](../docs/architecture/frontend-scroll.md) —

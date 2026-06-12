@@ -1,0 +1,138 @@
+diff --git a/src/internal/client/reactivity/effects.js b/src/internal/client/reactivity/effects.js
+index c5d195dfaeb41422bbdd2923f239b248be0240c9..b65ee61b329bdc4d6ea11f572aab8d95905b8836 100644
+--- a/src/internal/client/reactivity/effects.js
++++ b/src/internal/client/reactivity/effects.js
+@@ -40,7 +40,12 @@ import * as e from '../errors.js';
+ import { DEV } from 'esm-env';
+ import { define_property } from '../../shared/utils.js';
+ import { get_next_sibling } from '../dom/operations.js';
+-import { component_context, dev_current_component_function, dev_stack } from '../context.js';
++import {
++	component_context,
++	set_component_context,
++	dev_current_component_function,
++	dev_stack
++} from '../context.js';
+ import { Batch, collected_effects, current_batch } from './batch.js';
+ import { flatten } from './async.js';
+ import { without_reactive_context } from '../dom/elements/bindings/shared.js';
+@@ -262,11 +267,44 @@ export function eager_effect(fn) {
+  */
+ export function effect_root(fn) {
+ 	Batch.ensure();
+-	const effect = create_effect(ROOT_EFFECT | EFFECT_PRESERVED, fn);
+-
+-	return () => {
+-		destroy_effect(effect);
+-	};
++	// PATCH(agent-overflow ownerless-roots): create_effect stamps every
++	// effect with whatever is live at creation time (`ctx`, `parent`,
++	// `b`). A long-lived store-level $effect.root created during
++	// component render then pins that component instance — props
++	// accessors, closure scopes, detached DOM — for the root's whole
++	// lifetime, even though a root's lifetime is managed solely by the
++	// returned dispose function (pristine destroy_effect_children already
++	// detaches roots from a destroyed parent instead of destroying them).
++	// Create roots ownerless from birth instead, like mount()-level
++	// roots. Inner effects see the null ctx on every run because
++	// update_reaction restores component_context from each effect's own
++	// `ctx`. Dropped birth-stamps, all deliberate:
++	//  - ctx: getContext() is unavailable inside root bodies. Nothing in
++	//    this app or its deps calls it there; svelte's own effect_root
++	//    callers (toStore, custom-element $$me) don't either.
++	//  - parent: no INERT inheritance at creation, and toStore's
++	//    re-application of a captured active_effect around effect_root
++	//    no longer parents the root. Lifetime is unchanged either way —
++	//    parented roots were detached, never destroyed, by the parent.
++	//  - b: errors thrown in root bodies no longer route to the creating
++	//    component's <svelte:boundary>; this app uses no boundaries.
++	// Deliberate divergence from upstream (no issue filed) — re-evaluate
++	// on every svelte version bump.
++	// Regression test: src/test/integration/svelte-patch-ownerless-roots.test.ts
++	var previous_context = component_context;
++	var previous_effect = active_effect;
++	set_component_context(null);
++	set_active_effect(null);
++	try {
++		const effect = create_effect(ROOT_EFFECT | EFFECT_PRESERVED, fn);
++
++		return () => {
++			destroy_effect(effect);
++		};
++	} finally {
++		set_component_context(previous_context);
++		set_active_effect(previous_effect);
++	}
+ }
+ 
+ /**
+diff --git a/src/internal/client/runtime.js b/src/internal/client/runtime.js
+index 227203523e4645776efc6b8569aad16be50bf761..db3adc7f6fb63d2f6d16b34e1388febe8ff2e58a 100644
+--- a/src/internal/client/runtime.js
++++ b/src/internal/client/runtime.js
+@@ -661,14 +661,64 @@ export function get(signal) {
+ 
+ 		// connect disconnected deriveds if we are reading them inside an effect,
+ 		// or inside another derived that is already connected
++		//
++		// PATCH(agent-overflow zombie-mint fix): when the reader is a derived,
++		// require the reader itself to be CONNECTED. `is_updating_effect` is
++		// also true while an UNCONNECTED derived evaluates lazily during an
++		// effect update (e.g. prop()'s init-time read of a parent prop
++		// expression during component init). Connecting here pushes `derived`
++		// into its deps' reactions, but an unconnected reader never registers
++		// into `derived.reactions` (see update_reaction), so nothing can ever
++		// disconnect it again — a permanent leak. An unconnected derived
++		// reader still records `derived` in its deps, and reconnect() connects
++		// the whole chain if the reader ever becomes connected.
++		// Upstream: https://github.com/sveltejs/svelte/issues/18420
++		// Regression test: src/test/integration/svelte-patch-zombie-leak.test.ts
++		// (fails on pristine 5.56.3). Drop this hunk when that suite passes
++		// on an unpatched svelte release.
+ 		var should_connect =
+ 			(derived.f & CONNECTED) === 0 &&
+ 			!untracking &&
+ 			active_reaction !== null &&
+-			(is_updating_effect || (active_reaction.f & CONNECTED) !== 0);
++			((active_reaction.f & DERIVED) !== 0
++				? (active_reaction.f & CONNECTED) !== 0
++				: is_updating_effect || (active_reaction.f & CONNECTED) !== 0);
+ 
+ 		var is_new = (derived.f & REACTION_RAN) === 0;
+ 
++		// PATCH(agent-overflow zombie-mint probe): a derived (re)connected
++		// here gets pushed into its deps' reactions, but the reader only
++		// registers into THIS derived's reactions if the reader is itself
++		// CONNECTED (see update_reaction). When the reader cannot register,
++		// the derived is orphaned-but-subscribed forever. Report the site.
++		// With the fix hunk above, this condition is unreachable in 5.56.3
++		// (derived readers must be CONNECTED; effects are created CONNECTED
++		// and never lose it) — kept as a tripwire for future patch re-rolls.
++		// `kind` uses raw flags (is_dirty() would mutate state) and so is
++		// approximate; `isDestroyingEffect` is constant false at this site
++		// (deriveds return earlier during teardown) — both are invariant
++		// tripwires, not data.
++		if (
++			should_connect &&
++			globalThis.__svelteZombieMint !== undefined &&
++			(active_reaction.f & CONNECTED) === 0
++		) {
++			try {
++				globalThis.__svelteZombieMint({
++					kind: (derived.f & (DIRTY | MAYBE_DIRTY)) !== 0 ? 'connect-dirty' : 'reconnect',
++					readerIsDerived: (active_reaction.f & DERIVED) !== 0,
++					isUpdatingEffect: is_updating_effect,
++					isDestroyingEffect: is_destroying_effect,
++					derivedFn: derived.fn ? String(derived.fn).slice(0, 200) : '',
++					readerFn: active_reaction.fn ? String(active_reaction.fn).slice(0, 200) : '',
++					stack: new Error('zombie-mint').stack ?? '',
++				});
++			} catch {
++				// The probe must never break reactivity; the receiver logs
++				// its own failures.
++			}
++		}
++
+ 		if (is_dirty(derived)) {
+ 			if (should_connect) {
+ 				// set the flag before `update_derived`, so that the derived
