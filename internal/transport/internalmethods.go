@@ -313,6 +313,11 @@ var LocalOnlyMethods = map[string]bool{
 	// 5. Local-FS bookkeeping.
 	"AppendUIRenderTraceBatch": true,
 	"BookmarkUIRenderTrace":    true,
+	// ReportFrontendErrorBatch writes JSONL into the user's config
+	// directory like the render-trace writer above. The embedded webview
+	// is the diagnostic surface that matters; a LAN peer should not be
+	// able to write the host's disk, even rotation-capped.
+	"ReportFrontendErrorBatch": true,
 	// GetUIRenderTracePath returns the absolute path to the trace JSONL
 	// under the user config dir — same path-disclosure shape as
 	// GetDesignWorkdirInfo in category 4. The trace is a dev-only debug

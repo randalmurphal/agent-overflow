@@ -1,33 +1,44 @@
 # internal/uitrace/
 
-Dev-only JSONL render-trace appender used by the frontend's debug
-console to capture UI state for after-the-fact inspection of visual
-glitches.
+JSONL diagnostic appenders for the frontend. Two channels share the
+validation, caps, and rotation machinery:
+
+- the dev-only render trace (`ui-render.jsonl`) behind the frontend's
+  debug console, for after-the-fact inspection of visual glitches;
+- the always-on frontend runtime-error log (`frontend-errors.jsonl`)
+  fed by the global `error` / `unhandledrejection` handlers, so render
+  exceptions are diagnosable without devtools open (a silent render
+  throw also permanently leaks Svelte deriveds — see
+  `ReportFrontendErrorBatch` in `app_ui_trace.go`).
 
 ## Layout
 
-- `uitrace.go` — `Tracer` with `New(configDir)`, `Path()`, and
-  `Append(lines)`. `Append` validates each line (per-line cap, JSON
-  shape) and the batch (line count + byte cap), then writes under a
-  process-local mutex. The file is rotated to `<path>.1` when the next
-  append would push it past `MaxFileBytes`.
+- `uitrace.go` — `Tracer` with `New(configDir)` (render trace),
+  `NewErrors(configDir)` (error log), `Path()`, and `Append(lines)`.
+  `Append` validates each line (per-line cap, JSON shape) and the
+  batch (line count + byte cap), then writes under a process-local
+  mutex. The file is rotated to `<path>.1` when the next append would
+  push it past `MaxFileBytes`.
 
 ## Responsibility boundary
 
 - What BELONGS here: validation, batching limits, rotation, and the
-  atomic append. The on-disk shape (`<configDir>/ui-trace/ui-render.jsonl`)
-  and the JSONL format are deliberately exported as constants so any
-  tool that tails the file can resolve the path.
+  atomic append. The on-disk shapes
+  (`<configDir>/ui-trace/ui-render.jsonl`,
+  `<configDir>/ui-trace/frontend-errors.jsonl`) and the JSONL format
+  are deliberately exported as constants so any tool that tails the
+  files can resolve the paths.
 - What does NOT belong here: Wails binding wiring (`app_ui_trace.go`
-  delegates), frontend serialisation, or any production-path tracing —
-  this surface is dev-only by design and the bindings are exposed
-  unconditionally because the caps make the cost negligible if the
-  frontend ever stops batching.
+  delegates) and frontend serialisation. The render trace stays
+  dev-only by design; the error log is the one always-on channel, and
+  both bindings are exposed unconditionally because the caps make the
+  cost negligible if the frontend ever stops batching.
 
 ## Anti-patterns
 
-- Do NOT break the file layout (`DirName` / `FileName`) or the JSONL
-  format — tools that tail the file depend on both.
+- Do NOT break the file layout (`DirName` / `FileName` /
+  `ErrorFileName`) or the JSONL format — tools that tail the files
+  depend on both.
 - Do NOT silently truncate or drop oversized lines/batches. Returning
   an error keeps the misbehaviour visible to the caller instead of
   burying it in a partial write.

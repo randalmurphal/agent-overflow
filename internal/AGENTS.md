@@ -46,7 +46,7 @@ one closest to what you're touching.
 | `wsldistro/` | Cross-process schema for `%APPDATA%\agent-overflow\wsl.json` — atomic Load/Save and the WSL-side path resolver fed by the launcher's WSLENV-injected env var. Shared between `cmd/agent-overflow-windows` and the WSL backend. |
 | `shellenv/` | Probes the user's login shell for PATH at startup and merges it into `os.Environ()`. Lets `exec.LookPath("claude")` etc. find binaries installed via nvm/asdf/`~/.local/bin` when launched outside a terminal (WSL backend, Finder-launched `.app`). |
 | `uikeys/` | Browser-style WebviewWindow keybindings (Ctrl+/-/=/R/F11) shared by every window the app opens — desktop binary, `--connect` remote client, and the Windows WSL launcher. |
-| `uitrace/` | Dev-only JSONL render-trace appender backing the frontend debug console's `AppendUIRenderTraceBatch` binding. Validates each line, caps the batch, and rotates at `MaxFileBytes`. |
+| `uitrace/` | JSONL diagnostic appenders for the frontend: the dev-only render trace (`AppendUIRenderTraceBatch`) and the always-on runtime-error log (`ReportFrontendErrorBatch`). Validates each line, caps the batch, and rotates at `MaxFileBytes`. |
 | `dirbrowse/` | Project-picker directory listing. Backs the `BrowseDirectory` binding with path normalisation, `.git`-marker detection, EntryLimit truncation, and missing-path fallback. |
 | `keybindings/` | Persisted keybindings config + merge. Owns `Defaults`, atomic Get/Update/Reset Service, and the user-override `Merge` that backs the three Keybindings bindings. |
 | `network/` | LAN-bind toggle helpers: `Settings` wire shape, bind host / origin allow-list / share-URL formatters, and deterministic local-IP discovery. App orchestrates settings + transport rebind around it. |

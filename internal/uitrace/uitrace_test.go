@@ -39,6 +39,49 @@ func TestAppendWritesJSONLines(t *testing.T) {
 	}
 }
 
+func TestNewErrorsWritesSeparateFile(t *testing.T) {
+	configDir := t.TempDir()
+	tr, err := NewErrors(configDir)
+	if err != nil {
+		t.Fatalf("NewErrors returned error: %v", err)
+	}
+
+	want := filepath.Join(configDir, DirName, ErrorFileName)
+	if tr.Path() != want {
+		t.Fatalf("Path() = %q, want %q", tr.Path(), want)
+	}
+	if _, err := tr.Append([]string{`{"kind":"error"}`}); err != nil {
+		t.Fatalf("Append returned error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, DirName, FileName)); !os.IsNotExist(err) {
+		t.Fatalf("render trace file unexpectedly present (err=%v)", err)
+	}
+}
+
+func TestNewErrorsRequiresConfigDir(t *testing.T) {
+	if _, err := NewErrors(""); err == nil {
+		t.Fatal("NewErrors(\"\") returned nil error")
+	}
+}
+
+func TestAppendRejectsEmbeddedNewlines(t *testing.T) {
+	tr, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	// json.Valid accepts newlines as inter-token whitespace, so without
+	// the explicit check this single "line" would write three physical
+	// lines — a forged standalone record plus dangling fragments.
+	smuggled := "{\"a\":\n{\"injected\":\"fake record\"}\n}"
+	if _, err := tr.Append([]string{smuggled}); err == nil {
+		t.Fatal("Append accepted a line with embedded newlines")
+	}
+	if _, err := os.Stat(tr.Path()); !os.IsNotExist(err) {
+		t.Fatalf("rejected batch still created the file (err=%v)", err)
+	}
+}
+
 func TestAppendUsesPrivatePermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix permission bits are not stable on Windows")

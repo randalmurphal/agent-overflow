@@ -1859,6 +1859,21 @@ export function RenameThread(id: string, title: string): $CancellablePromise<voi
 }
 
 /**
+ * ReportFrontendErrorBatch appends frontend runtime-error records (window
+ * `error` / `unhandledrejection` events captured by the global handlers in
+ * frontend/src/lib/utils/frontendErrorCapture.ts) to
+ * <configDir>/ui-trace/frontend-errors.jsonl. Unlike the render trace this
+ * channel is always on: a render-path exception is user-facing state we
+ * must be able to diagnose after the fact, and silent frontend errors have
+ * already cost us a multi-day memory-leak hunt (every throw mid-update
+ * permanently leaks the deriveds that update had just connected). Returns
+ * the log file path so the frontend can surface it.
+ */
+export function ReportFrontendErrorBatch(lines: string[]): $CancellablePromise<string> {
+    return $Call.ByID(2174329377, lines);
+}
+
+/**
  * ResetKeybindings deletes the user file so GetKeybindings returns
  * defaults.
  */

@@ -173,6 +173,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RemoveOtherWorktreeForProject", ID: 574548500},         // main.App.RemoveOtherWorktreeForProject
 	{Name: "RenameProject", ID: 3728890856},                        // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435},                          // main.App.RenameThread
+	{Name: "ReportFrontendErrorBatch", ID: 2174329377},             // main.App.ReportFrontendErrorBatch
 	{Name: "ResetKeybindings", ID: 2775767393},                     // main.App.ResetKeybindings
 	{Name: "ResizeTerminal", ID: 1887984285},                       // main.App.ResizeTerminal
 	{Name: "RespondToApproval", ID: 1919237704},                    // main.App.RespondToApproval

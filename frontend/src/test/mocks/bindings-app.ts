@@ -356,6 +356,9 @@ export const AppendUIRenderTraceBatch = dispatch('AppendUIRenderTraceBatch');
 export const BookmarkUIRenderTrace = dispatch('BookmarkUIRenderTrace');
 export const GetUIRenderTracePath = dispatch('GetUIRenderTracePath');
 
+// Always-on frontend runtime-error log
+export const ReportFrontendErrorBatch = dispatch('ReportFrontendErrorBatch');
+
 // PR-based thread creation
 export const CreateThreadFromPR = dispatch('CreateThreadFromPR');
 

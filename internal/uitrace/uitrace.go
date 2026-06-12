@@ -19,18 +19,23 @@ const (
 	DirName        = "ui-trace"
 	BookmarkSubdir = "bookmarks"
 	FileName       = "ui-render.jsonl"
-	MaxBatchLines  = 1000
-	MaxBatchBytes  = 2 * 1024 * 1024
-	MaxLineBytes   = 64 * 1024
-	MaxFileBytes   = 10 * 1024 * 1024
+	// ErrorFileName is the always-on frontend runtime-error log (window
+	// `error` / `unhandledrejection` records). It shares the render
+	// trace's directory, JSONL format, validation caps, and rotation.
+	ErrorFileName = "frontend-errors.jsonl"
+	MaxBatchLines = 1000
+	MaxBatchBytes = 2 * 1024 * 1024
+	MaxLineBytes  = 64 * 1024
+	MaxFileBytes  = 10 * 1024 * 1024
 
 	privateDirPerm    os.FileMode = 0o700
 	sensitiveFilePerm os.FileMode = 0o600
 )
 
-// Tracer appends compact dev-only UI render trace records to a JSONL
-// file. The Append path is safe for concurrent use; rotation runs
-// inline when the on-disk size would exceed MaxFileBytes.
+// Tracer appends compact frontend diagnostic records (render traces or
+// runtime errors) to a JSONL file. The Append path is safe for
+// concurrent use; rotation runs inline when the on-disk size would
+// exceed MaxFileBytes.
 type Tracer struct {
 	mu   sync.Mutex
 	path string
@@ -40,11 +45,22 @@ type Tracer struct {
 // Returns an error if configDir is empty so callers fail loudly before
 // the app's data directory is initialized.
 func New(configDir string) (*Tracer, error) {
+	return newTracer(configDir, FileName)
+}
+
+// NewErrors returns a Tracer that writes frontend runtime-error records
+// to <configDir>/<DirName>/<ErrorFileName>. Unlike the render trace this
+// channel is always on — the caps and rotation bound its disk cost.
+func NewErrors(configDir string) (*Tracer, error) {
+	return newTracer(configDir, ErrorFileName)
+}
+
+func newTracer(configDir, fileName string) (*Tracer, error) {
 	if configDir == "" {
 		return nil, errors.New("ui trace path unavailable before app data directory is initialized")
 	}
 	return &Tracer{
-		path: filepath.Join(configDir, DirName, FileName),
+		path: filepath.Join(configDir, DirName, fileName),
 	}, nil
 }
 
@@ -235,6 +251,13 @@ func validateLines(lines []string) ([]string, int, error) {
 		}
 		if len(line) > MaxLineBytes {
 			return nil, 0, fmt.Errorf("ui trace line %d is %d bytes, max %d", i, len(line), MaxLineBytes)
+		}
+		// json.Valid tolerates newlines as inter-token whitespace, so a
+		// crafted "line" could smuggle extra physical JSONL lines (or
+		// dangling fragments) past validation. JSON.stringify on the
+		// frontend never emits raw newlines; reject anything that does.
+		if strings.ContainsAny(line, "\r\n") {
+			return nil, 0, fmt.Errorf("ui trace line %d contains embedded newlines", i)
 		}
 		if !json.Valid([]byte(line)) {
 			return nil, 0, fmt.Errorf("ui trace line %d is not valid JSON", i)

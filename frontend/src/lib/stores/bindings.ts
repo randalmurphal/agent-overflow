@@ -203,6 +203,9 @@ export {
   BookmarkUIRenderTrace,
   GetUIRenderTracePath,
 
+  // Always-on frontend runtime-error log
+  ReportFrontendErrorBatch,
+
   // PR-based thread creation
   CreateThreadFromPR,
 

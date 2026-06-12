@@ -41,6 +41,31 @@ func (a *App) AppendUIRenderTraceBatch(lines []string) (string, error) {
 	return t.Append(lines)
 }
 
+// frontendErrorLog returns the lazy-initialized always-on frontend error
+// appender, mirroring uiTrace's construction contract.
+func (a *App) frontendErrorLog() (*uitrace.Tracer, error) {
+	a.frontendErrorsOnce.Do(func() {
+		a.frontendErrors, a.frontendErrorsErr = uitrace.NewErrors(a.configDir)
+	})
+	return a.frontendErrors, a.frontendErrorsErr
+}
+
+// ReportFrontendErrorBatch appends frontend runtime-error records (window
+// `error` / `unhandledrejection` events captured by the global handlers in
+// frontend/src/lib/utils/frontendErrorCapture.ts) to
+// <configDir>/ui-trace/frontend-errors.jsonl. Unlike the render trace this
+// channel is always on: a render-path exception is user-facing state we
+// must be able to diagnose after the fact, and silent frontend errors have
+// already cost us a multi-day memory-leak hunt (every throw mid-update
+// permanently leaks the deriveds that update had just connected).
+func (a *App) ReportFrontendErrorBatch(lines []string) (string, error) {
+	t, err := a.frontendErrorLog()
+	if err != nil {
+		return "", err
+	}
+	return t.Append(lines)
+}
+
 // BookmarkUIRenderTrace freezes the current trace contents (and any
 // rotated `.1` predecessor) into a non-rotating bookmark file under
 // `<configDir>/ui-trace/bookmarks/`. The frontend invokes this from

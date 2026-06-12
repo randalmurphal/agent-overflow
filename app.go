@@ -115,6 +115,12 @@ type App struct {
 	uiTraceOnce sync.Once
 	uiTracer    *uitrace.Tracer
 	uiTraceErr  error
+	// frontendErrors is the always-on JSONL appender for window-level
+	// frontend runtime errors (onerror / unhandledrejection). Same lazy
+	// construction contract as uiTracer.
+	frontendErrorsOnce sync.Once
+	frontendErrors     *uitrace.Tracer
+	frontendErrorsErr  error
 	// keybindings is the lazy-init persisted-config service backing the
 	// three Keybindings bindings. Constructed from configDir on first
 	// use; falls back to ~/.agent-overflow when configDir is empty so

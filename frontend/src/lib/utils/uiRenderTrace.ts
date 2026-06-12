@@ -1,6 +1,7 @@
 import { AppendUIRenderTraceBatch, BookmarkUIRenderTrace } from '../stores/bindings';
 import { getActiveTurn } from '../stores/threadStatuses.svelte';
 import type { ThreadPane } from '../stores/thread.svelte';
+import { UI_TRACE_MAX_LINE_BYTES } from './uiTraceLimits';
 
 // The trace surface is opt-in at build time via VITE_AGENT_OVERFLOW_UI_TRACE
 // (set by `make dev DEBUG=1` / `make dev-wsl DEBUG=1`). Vite inlines the
@@ -19,11 +20,10 @@ const UI_TRACE_BUILD_GATE: boolean =
 
 const MAX_RECORDS = 500;
 const MAX_PENDING_FILE_LINES = 200;
-// Mirror app_ui_trace.go's `uiTraceMaxLineBytes`. The Go side rejects
-// the WHOLE batch on a single oversized line, so we filter client-side
-// to keep small per-event diagnostic traces from being collateral
-// damage when a snapshot trace (chat.dom / chat.state) blows the cap.
-const MAX_LINE_BYTES = 64 * 1024;
+// See uiTraceLimits.ts: keeps small per-event diagnostic traces from
+// being collateral damage when a snapshot trace (chat.dom / chat.state)
+// blows the per-line cap and Go rejects the whole batch.
+const MAX_LINE_BYTES = UI_TRACE_MAX_LINE_BYTES;
 const MAX_DOM_ROWS = 160;
 const PREVIEW_CHARS = 120;
 const FILE_FLUSH_DELAY_MS = 500;

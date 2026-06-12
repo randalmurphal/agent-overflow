@@ -745,6 +745,7 @@ func (p *privilegedApp) GetDesignWorkdirInfo() string   { return "ok" }
 func (p *privilegedApp) AppendUIRenderTraceBatch() string { return "ok" }
 func (p *privilegedApp) BookmarkUIRenderTrace() string    { return "ok" }
 func (p *privilegedApp) GetUIRenderTracePath() string     { return "ok" }
+func (p *privilegedApp) ReportFrontendErrorBatch() string { return "ok" }
 
 // 6. Credential retrieval / endpoint enumeration.
 func (p *privilegedApp) GetRemoteEndpointToken() string { return "ok" }
