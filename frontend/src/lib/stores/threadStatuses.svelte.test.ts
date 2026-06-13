@@ -1,4 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
+import { flushSync } from 'svelte';
+import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
   clearPendingSend,
   clearThreadStatus,
@@ -640,6 +642,78 @@ describe('threadStatuses store', () => {
       expect(getQueueForThread('thread-1')).toEqual([]);
       // thread-2's queue is untouched — the sweep is per-thread.
       expect(getQueueForThread('thread-2').map((item) => item.message)).toEqual(['queued for 2']);
+    });
+  });
+
+  describe('reactive granularity (per-thread turn boxes)', () => {
+    // The active-turn registry churns once per wire round (set on
+    // turn_started, clear on turn_completed). A reader for an IDLE
+    // thread must not be invalidated by that churn on OTHER threads —
+    // with a shared reactive map, every sidebar row and every idle
+    // pane's working indicator re-evaluated on each round of any
+    // streaming pane.
+    it("another thread's turn rounds do not re-evaluate an idle thread's readers", () => {
+      // A thread's FIRST-ever turn creates its box, which re-runs
+      // missing-box readers once (the creation-version dependency).
+      // Pay that one-time cost before probing so the assertions below
+      // isolate the per-round behavior.
+      projectTurnStarted('thread-busy', 'turn-0', 0, 500);
+      projectTurnCompleted('thread-busy', 'turn-0');
+
+      const working = probeReactivity(() => isThreadWorking('thread-idle'));
+      const turn = probeReactivity(() => getActiveTurn('thread-idle'));
+      try {
+        expect(working.evaluations).toBe(1);
+        expect(working.latest).toBe(false);
+        expect(turn.evaluations).toBe(1);
+        expect(turn.latest).toBeNull();
+
+        // Wire rounds on the other thread reuse its box — no
+        // cross-thread invalidation per round. (The old shared-map
+        // version dependency re-ran every idle reader twice per round.)
+        projectTurnStarted('thread-busy', 'turn-1', 1, 1000);
+        flushSync();
+        projectTurnCompleted('thread-busy', 'turn-1');
+        flushSync();
+        expect(working.evaluations).toBe(1);
+        expect(turn.evaluations).toBe(1);
+
+        // The same readers still fire for their OWN thread: its first
+        // turn creates the box (one creation re-run), after which the
+        // readers track the box value itself.
+        projectTurnStarted('thread-idle', 'turn-2', 0, 2000);
+        flushSync();
+        expect(working.latest).toBe(true);
+        expect(turn.latest?.turnId).toBe('turn-2');
+
+        projectTurnCompleted('thread-idle', 'turn-2');
+        flushSync();
+        expect(working.latest).toBe(false);
+        expect(turn.latest).toBeNull();
+      } finally {
+        working.dispose();
+        turn.dispose();
+      }
+    });
+
+    it('clearThreadStatus re-fires readers of the cleared thread once, then they track a fresh box', () => {
+      projectTurnStarted('thread-1', 'turn-1', 0, 1000);
+      const turn = probeReactivity(() => getActiveTurn('thread-1'));
+      try {
+        expect(turn.latest?.turnId).toBe('turn-1');
+
+        clearThreadStatus('thread-1');
+        flushSync();
+        expect(turn.latest).toBeNull();
+
+        // The reader re-subscribed through the replacement box, so a
+        // post-clear turn start still reaches it.
+        projectTurnStarted('thread-1', 'turn-2', 0, 2000);
+        flushSync();
+        expect(turn.latest?.turnId).toBe('turn-2');
+      } finally {
+        turn.dispose();
+      }
     });
   });
 });

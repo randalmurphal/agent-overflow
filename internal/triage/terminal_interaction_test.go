@@ -251,7 +251,8 @@ func TestTerminalInteraction_CommandCompletionSettlesVisibleWaitCarrier(t *testi
 	}
 
 	seenWaitUpdateBeforeCompletion := false
-	for i, emission := range *emissions {
+	emissionSnap := emissions.snapshot()
+	for i, emission := range emissionSnap {
 		if emission.eventName != "provider:item_event" {
 			continue
 		}
@@ -260,7 +261,7 @@ func TestTerminalInteraction_CommandCompletionSettlesVisibleWaitCarrier(t *testi
 			continue
 		}
 		if stream.Item.ID == waitID && stream.Item.Status == statusCompleted {
-			for _, later := range (*emissions)[i+1:] {
+			for _, later := range emissionSnap[i+1:] {
 				laterStream, ok := later.data.(ItemStreamEvent)
 				if later.eventName == "provider:item_event" && ok && laterStream.Action == "upsert" && laterStream.Item != nil && laterStream.Item.ID == completion.ID {
 					seenWaitUpdateBeforeCompletion = true
@@ -270,7 +271,7 @@ func TestTerminalInteraction_CommandCompletionSettlesVisibleWaitCarrier(t *testi
 		}
 	}
 	if !seenWaitUpdateBeforeCompletion {
-		t.Fatalf("expected completed wait upsert followed by command completion upsert; emissions=%+v", *emissions)
+		t.Fatalf("expected completed wait upsert followed by command completion upsert; emissions=%+v", emissions.snapshot())
 	}
 }
 
@@ -775,7 +776,8 @@ func TestTerminalInteraction_ReasoningDoesNotFlushActiveWait(t *testing.T) {
 	}
 
 	seenWaitUpdateBeforeCompletion := false
-	for i, emission := range *emissions {
+	emissionSnap := emissions.snapshot()
+	for i, emission := range emissionSnap {
 		if emission.eventName != "provider:item_event" {
 			continue
 		}
@@ -783,7 +785,7 @@ func TestTerminalInteraction_ReasoningDoesNotFlushActiveWait(t *testing.T) {
 		if !ok || stream.Action != "upsert" || stream.Item == nil || stream.Item.ID != wait.ID || stream.Item.Status != statusCompleted {
 			continue
 		}
-		for _, later := range (*emissions)[i+1:] {
+		for _, later := range emissionSnap[i+1:] {
 			laterStream, ok := later.data.(ItemStreamEvent)
 			if later.eventName == "provider:item_event" && ok && laterStream.Action == "upsert" && laterStream.Item != nil && laterStream.Item.ID == completion.ID {
 				seenWaitUpdateBeforeCompletion = true
@@ -792,7 +794,7 @@ func TestTerminalInteraction_ReasoningDoesNotFlushActiveWait(t *testing.T) {
 		}
 	}
 	if !seenWaitUpdateBeforeCompletion {
-		t.Fatalf("expected wait completion upsert before command completion upsert; emissions=%+v", *emissions)
+		t.Fatalf("expected wait completion upsert before command completion upsert; emissions=%+v", emissions.snapshot())
 	}
 }
 

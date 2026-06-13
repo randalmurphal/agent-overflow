@@ -70,7 +70,9 @@ none fits.
   command-execution inline-diff pipeline, split by phase
   (capture → parse → runtime match → persist).
 - `payload_items.go` — diff / command output / thinking / plan payload
-  writers.
+  writers. Codex command-output deltas route through the stream-persist
+  buffer (one payload append + one wire upsert per flush window instead
+  of per chunk); the Replace snapshot discards the pending buffer.
 - `stream_items.go` / `stream_state.go` / `block_events.go` —
   streaming text / thinking block lifecycle and the content-block
   index bookkeeping they depend on.
@@ -91,7 +93,7 @@ none fits.
 | Tool-use start/complete | Frontend event + item in SQLite on completion. |
 | Approval request | Frontend event with `request_id` preserved. |
 | Diff | SQLite payload + meta to frontend. Full diff is on-demand. |
-| Command output | SQLite payload + meta to frontend. |
+| Command output | SQLite payload + meta to frontend, buffered per flush window (100ms / 64KB / lifecycle boundary). |
 | Thinking block | SQLite payload + preview to frontend. |
 | Turn metadata (cost/tokens) | Persist on turn completion. |
 | Context-window usage | Frontend context meter + `threads.last_token_usage`. |
@@ -224,9 +226,13 @@ Streaming text/thinking rows create a row on first content, then emit all
 timeline row mutations on the ordered `provider:item_event` channel:
 `action=upsert` for row creation/lifecycle snapshots and `action=delta`
 for follow-up raw text. SQLite receives the same raw text through the
-stream persistence buffer. Do not split streaming text across separate UI
-event channels, and do not add another rendered cache column or a
-server-side kind-to-renderer dispatch table.
+stream persistence buffer. Streaming command output has no wire delta
+channel: chunks accumulate in the same buffer and each flush window
+lands as one payload append plus one row upsert (the upsert's
+`updatedAt` bump is what refreshes an expanded output view). Do not
+split streaming text across separate UI event channels, and do not add
+another rendered cache column or a server-side kind-to-renderer
+dispatch table.
 
 ## Extension points
 

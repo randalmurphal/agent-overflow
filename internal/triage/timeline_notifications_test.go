@@ -73,7 +73,7 @@ func TestTodoUpdateEmitsWithoutPersistence(t *testing.T) {
 	}
 
 	var todoEmits int
-	for _, e := range *emissions {
+	for _, e := range emissions.snapshot() {
 		if e.eventName != "provider:todo_update" {
 			continue
 		}
@@ -143,7 +143,7 @@ func TestTodoUpdateEmptyDropsSilently(t *testing.T) {
 		}
 	}
 
-	for _, e := range *emissions {
+	for _, e := range emissions.snapshot() {
 		if e.eventName == "provider:todo_update" {
 			t.Fatalf("empty todos must not emit; got %+v", e)
 		}

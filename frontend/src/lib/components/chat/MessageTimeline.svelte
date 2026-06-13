@@ -46,8 +46,8 @@
   } from './timelineScroll';
   import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
   import {
-    activeRowUiRetentionSignature,
     collectTimelineRowUiRetention,
+    timelineRowUiPruneSignature,
   } from './timelineRowUiRetention';
 
   // Initial item-size estimate for virtua. Real sizes come from the
@@ -251,10 +251,6 @@
 
     return untrack(() => timelineRowDecorations(revealedNodes, activeTurnIndex));
   });
-
-  let rowUiActiveRetentionSignature = $derived(
-    activeRowUiRetentionSignature(pane.items),
-  );
 
   let activeTurnStructuralSignature = $derived.by(() => {
     const threadId = pane.threadId;
@@ -592,11 +588,19 @@
   }
 
   function currentVisibleTimelineRange(): { first: number; last: number } | null {
-    if (!listRef || !scrollEl || revealedNodes.length === 0) return null;
+    if (!listRef || revealedNodes.length === 0) return null;
     try {
+      // Virtua's cached geometry only — a clientHeight read here would
+      // force layout, and the prune used to run behind scroll frames
+      // interleaved with streaming DOM writes. A zero viewport means
+      // virtua hasn't measured yet; pruning against it would treat
+      // every row as offscreen and drop leased expansion state that's
+      // about to be visible.
+      const viewport = listRef.getViewportSize();
+      if (viewport <= 0) return null;
       const offset = Math.max(0, listRef.getScrollOffset());
       const first = clampTimelineIndex(listRef.findItemIndex(offset));
-      const last = clampTimelineIndex(listRef.findItemIndex(offset + scrollEl.clientHeight));
+      const last = clampTimelineIndex(listRef.findItemIndex(offset + viewport));
       if (first < 0 || last < 0) return null;
       return first <= last ? { first, last } : { first: last, last: first };
     } catch (err) {
@@ -621,6 +625,21 @@
     const range = currentVisibleTimelineRange();
     if (!range) return;
 
+    // Every signature input is available without walking the node tree,
+    // so a no-op prune (same window, same structure, same active rows)
+    // bails before the retention collection allocates anything.
+    const signature = timelineRowUiPruneSignature({
+      threadId: pane.threadId,
+      timelineRevision: pane.timelineRevision,
+      revealTurnIndex: pane.revealBoundary?.turnIndex ?? '',
+      revealItemIndex: pane.revealBoundary?.itemIndex ?? '',
+      nodesLength: revealedNodes.length,
+      range,
+      items: pane.items,
+    });
+    if (signature === lastRowUiPruneSignature) return;
+    lastRowUiPruneSignature = signature;
+
     const retention = collectTimelineRowUiRetention(
       revealedNodes,
       pane.items,
@@ -631,24 +650,19 @@
         isGroupExpanded: pane.isSubagentGroupExpanded,
       },
     );
-    const signature = [
-      pane.threadId,
-      pane.timelineRevision,
-      pane.revealBoundary?.turnIndex ?? '',
-      pane.revealBoundary?.itemIndex ?? '',
-      retention.signature,
-    ].join('|');
-    if (signature === lastRowUiPruneSignature) return;
-    lastRowUiPruneSignature = signature;
-
-    pane.pruneRowUiState(retention.retention);
+    pane.pruneRowUiState(retention);
   }
 
+  // Prune cadence: structural timeline changes (revision / reveal /
+  // thread switch) plus scroll END — never per scroll frame. Retention
+  // is recomputed fresh on every run, so active-row transitions that
+  // ride no structural bump (a lone settle flip) are picked up by the
+  // next trigger; until then the stale entry is only over-retained,
+  // never prematurely pruned.
   $effect(() => {
     pane.threadId;
     pane.timelineRevision;
     pane.revealBoundary;
-    rowUiActiveRetentionSignature;
     scheduleRowUiStatePrune();
   });
 
@@ -669,7 +683,9 @@
   function handleVirtuaScroll(offset: number): void {
     saveScrollSnapshot();
     maybeAutoLoadOlder(offset);
-    scheduleRowUiStatePrune();
+    // No prune here: this fires every scroll frame (60Hz under the
+    // spring), and pruning is a memory bound, not a render input.
+    // Scroll-end + structural effects cover it.
   }
 
   function handleVirtuaScrollEnd(): void {

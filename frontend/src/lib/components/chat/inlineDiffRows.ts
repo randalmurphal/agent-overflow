@@ -16,6 +16,25 @@ export interface InlineDiffRows {
   maxLineNo: number;
 }
 
+// Identity-keyed memo for the default-cap build. `file.lines` identity
+// is stable across virtua remounts when the patch was parsed through
+// parsePatchFilesCached, so remounting a diff row (or re-deriving its
+// presentation on item churn) reuses the built rows instead of
+// re-walking the patch. WeakMap keying keeps eviction tied to the
+// parsed patch's own lifetime — so, unlike parsePatchFilesCached's
+// string-keyed LRU, this needs no size budget or test-reset hook (a
+// dropped `lines` array takes its entry with it). Callers MUST treat
+// the result as immutable — it is shared across rows and remounts.
+const defaultCapRowsCache = new WeakMap<readonly PatchLine[], InlineDiffRows>();
+
+export function buildInlineDiffRowsCached(lines: readonly PatchLine[]): InlineDiffRows {
+  const hit = defaultCapRowsCache.get(lines);
+  if (hit) return hit;
+  const built = buildInlineDiffRows(lines);
+  defaultCapRowsCache.set(lines, built);
+  return built;
+}
+
 export function buildInlineDiffRows(
   lines: readonly PatchLine[],
   cap: number = INLINE_DIFF_PREVIEW_LINE_COUNT,

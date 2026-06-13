@@ -52,7 +52,7 @@ the `methods_gen_test.go` integrity test catches drift).
   - `{type:"rpc", id, result|error}` — response
   - `{type:"event", channel, seq, data, gap?}` — push
   - `{type:"batch", events:[{channel, seq, data, gap?}, ...]}` —
-    coalesced events (non-loopback connections only)
+    coalesced events (any connection; multi-event windows only)
 
 `gap:true` is the "your replay seq fell outside the in-memory ring,
 re-fetch via list endpoints" signal. The server cannot reconstruct
@@ -74,12 +74,16 @@ exported `App` method without regenerating fails the test.
 
 `connProfile` (conn.go) captures transport policy at upgrade time:
 
-- **Loopback**: no compression, no event coalescing. Events dispatch
-  immediately per subscriber.
-- **Non-loopback**: `permessage-deflate` with context takeover
-  (~1.5 MB per connection), events coalesced in a per-connection
-  buffer (16 ms window / 50 event threshold). Single-event batches
-  fall through to regular `type:"event"` frames for compatibility.
+- **All connections**: events coalesce in a per-connection buffer
+  (16 ms window / 50 event threshold) and ship as one
+  `type:"batch"` frame. Single-event windows fall through to regular
+  `type:"event"` frames. Coalescing applies to loopback too — the
+  receiving webview pays per-message (macrotask + JSON.parse +
+  effect flush), so batching protects the render loop during
+  streaming bursts; latency is bounded at one window.
+- **Non-loopback only**: `permessage-deflate` with context takeover
+  (~1.5 MB per connection). Loopback skips compression — bytes are
+  free on a local pipe, CPU isn't.
 
 The profile is immutable for the connection's lifetime. Replay events
 (`handleReplay`) always use immediate dispatch regardless of profile.

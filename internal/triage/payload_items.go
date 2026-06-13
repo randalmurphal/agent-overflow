@@ -86,24 +86,10 @@ func (r *Router) handleCommandOutput(evt provider.ProviderEvent) error {
 	}
 	itemID := eventItemID(evt)
 	if itemID != "" {
-		item, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
-		if err != nil {
-			return fmt.Errorf("command output get item %s: %w", itemID, err)
+		if evt.Replace {
+			return r.replaceCommandOutput(evt, itemID)
 		}
-		if !found {
-			item, err = r.newToolCallItem(
-				evt.ThreadID,
-				itemID,
-				"command_execution",
-				buildSummary("command_output", buildPayloadMeta("command_output", evt)),
-				statusRunning,
-				eventTimestampMillis(evt),
-			)
-			if err != nil {
-				return fmt.Errorf("command output create tool_call %s: %w", itemID, err)
-			}
-		}
-		return r.attachPayloadToItem(item, evt, "command_output", item.Summary, evt.Replace)
+		return r.bufferCommandOutputDelta(evt, itemID)
 	}
 
 	item, found, err := r.findLatestToolCall(evt.ThreadID, "command_execution", "bash")
@@ -115,19 +101,117 @@ func (r *Router) handleCommandOutput(evt provider.ProviderEvent) error {
 		if terr != nil {
 			return fmt.Errorf("command output turn index: %w", terr)
 		}
-		item, err = r.newToolCallItem(
+		item, err = r.newCommandOutputToolCall(
 			evt.ThreadID,
 			fmt.Sprintf("command-output:%d", turnIndex),
-			"command_execution",
-			buildSummary("command_output", buildPayloadMeta("command_output", evt)),
-			statusRunning,
-			eventTimestampMillis(evt),
+			evt,
 		)
 		if err != nil {
 			return fmt.Errorf("command output fallback tool_call: %w", err)
 		}
 	}
-	return r.attachPayloadToItem(item, evt, "command_output", item.Summary, evt.Replace)
+	return r.attachPayloadToItem(item, evt, payloadKindCommandOutput, item.Summary, evt.Replace)
+}
+
+// newCommandOutputToolCall builds the command_execution row that backs a
+// command-output payload when no prior row exists for it. Centralizes the
+// summary/meta construction (payloadKindCommandOutput) the three not-found
+// fallbacks share; each caller keeps its own policy around it — the legacy
+// bash fallback's computed id, attach-and-return on a buffered first delta,
+// or create-then-replace on the authoritative snapshot.
+func (r *Router) newCommandOutputToolCall(
+	threadID, itemID string,
+	evt provider.ProviderEvent,
+) (store.Item, error) {
+	return r.newToolCallItem(
+		threadID,
+		itemID,
+		"command_execution",
+		buildSummary(payloadKindCommandOutput, buildPayloadMeta(payloadKindCommandOutput, evt)),
+		statusRunning,
+		eventTimestampMillis(evt),
+	)
+}
+
+// bufferCommandOutputDelta routes a streaming Codex output chunk through
+// the stream-persist buffer instead of writing it straight through. The
+// old per-chunk path cost one item read, a payload append, a full item
+// upsert, and a wire upsert PER CHUNK — a chatty command (build logs,
+// file dumps) turned into hundreds of SQLite transactions and frontend
+// upserts per second. Buffered, each flush window (100ms / 64KB) pays
+// that cost once.
+func (r *Router) bufferCommandOutputDelta(evt provider.ProviderEvent, itemID string) error {
+	if !r.hasCommandOutputBuffer(evt.ThreadID, itemID) {
+		// Window start: verify the row once per flush window. The row
+		// normally pre-exists (item/started created it before any
+		// outputDelta); the create fallback persists + emits this chunk
+		// immediately so the row is visible without waiting on a flush.
+		_, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
+		if err != nil {
+			return fmt.Errorf("command output get item %s: %w", itemID, err)
+		}
+		if !found {
+			item, err := r.newCommandOutputToolCall(evt.ThreadID, itemID, evt)
+			if err != nil {
+				return fmt.Errorf("command output create tool_call %s: %w", itemID, err)
+			}
+			return r.attachPayloadToItem(item, evt, payloadKindCommandOutput, item.Summary, false)
+		}
+	}
+	return r.bufferCommandOutputPersistence(evt.ThreadID, itemID, evt.Content, evt.Meta, eventTimestampMillis(evt))
+}
+
+// replaceCommandOutput rewrites the item's payload with an authoritative
+// full-output snapshot (Codex aggregatedOutput, shipped at item/completed
+// right before EventToolComplete). Holds streamFlushMu across discard +
+// rewrite: an in-flight timer flush must commit before the rewrite, and
+// once the buffer is discarded no later flush can append a stale tail
+// after the authoritative content.
+func (r *Router) replaceCommandOutput(evt provider.ProviderEvent, itemID string) error {
+	r.streamFlushMu.Lock()
+	defer r.streamFlushMu.Unlock()
+	r.mu.Lock()
+	r.discardCommandOutputBufferLocked(evt.ThreadID, itemID)
+	r.mu.Unlock()
+
+	item, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
+	if err != nil {
+		return fmt.Errorf("command output get item %s: %w", itemID, err)
+	}
+	if !found {
+		item, err = r.newCommandOutputToolCall(evt.ThreadID, itemID, evt)
+		if err != nil {
+			return fmt.Errorf("command output create tool_call %s: %w", itemID, err)
+		}
+	}
+	return r.attachPayloadToItem(item, evt, payloadKindCommandOutput, item.Summary, true)
+}
+
+// flushCommandOutputPersistence delivers an accumulated window of command
+// output as one synthetic delta through the existing attach path: one
+// payload append (or create+link on the item's first flush), one item
+// upsert, one wire emission per window instead of per chunk. Runs under
+// streamFlushMu via the stream-flush funnel.
+func (r *Router) flushCommandOutputPersistence(flush pendingStreamFlush) error {
+	item, found, err := r.store.GetThreadItem(flush.threadID, flush.itemID)
+	if err != nil {
+		return fmt.Errorf("command output flush get item %s: %w", flush.itemID, err)
+	}
+	if !found {
+		// Row vanished between stage and flush (thread cleanup raced the
+		// timer). The window has nothing to attach to; drop it loudly.
+		log.Printf("triage: command output flush dropped %s/%s: item gone", flush.threadID, flush.itemID)
+		return nil
+	}
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventCommandOutput,
+		ThreadID:  flush.threadID,
+		ItemID:    flush.itemID,
+		Content:   flush.payloadDelta,
+		Meta:      flush.meta,
+		Timestamp: time.UnixMilli(flush.updatedAt),
+	}
+	return r.attachPayloadToItem(item, evt, payloadKindCommandOutput, item.Summary, false)
 }
 
 func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {

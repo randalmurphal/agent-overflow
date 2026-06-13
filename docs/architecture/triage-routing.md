@@ -26,7 +26,7 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | `model_rerouted` | `handleThreadModelUpdate` — persist new model, emit `thread:updated`. |
 | `thread_renamed` | `handleThreadRename` — persist new title, emit `thread:updated`. |
 | `diff` | `handleDiff` — persist payload + meta, upgrade summary-only tool results, emit `provider:item_event` upsert. |
-| `command_output` | `handleCommandOutput` — persist command_output payload, emit `provider:item_event` upsert. |
+| `command_output` | `handleCommandOutput` — streaming deltas accumulate in the stream-persist buffer and land as one payload append + one `provider:item_event` upsert per flush window (100ms / 64KB / lifecycle boundary); a `Replace` snapshot (Codex aggregatedOutput) discards the pending buffer and rewrites the payload. |
 | `thinking` | `handleThinking` — create the thinking row/payload on first content, emit ordered `provider:item_event` deltas for follow-up reasoning, flush summary preview + payload data from the stream buffer. |
 | `proposed_plan` | `handleProposedPlan` — persist plan payload, emit `provider:item_event` upsert. |
 

@@ -2365,4 +2365,106 @@ describe('setupEventListeners', () => {
     });
     expect(pane.items).toHaveLength(1);
   });
+  // ===== flushItemEventQueue per-item batching =====
+  // A tool burst arrives on the wire as upserts, patches, and deltas of
+  // many DIFFERENT rows interleaved. The flush must not fragment on
+  // action-type transitions — only a genuine per-item conflict (the
+  // same row pending in another buffer) forces an early apply. Each
+  // fragment used to pay an O(window) items-array copy plus a full
+  // structural timeline regroup, which is what made simultaneous bash
+  // rows stutter (2026-06-12 streaming-jank investigation).
+  it('applies an interleaved cross-item tool burst as a single upsert batch', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    // Seed two rows so the patch and delta below target existing items.
+    const seededTool = makeItem({
+      id: 'tool-existing', kind: 'tool_call', status: 'running', summary: 'running', itemIndex: 0,
+    });
+    const seededOut = makeItem({
+      id: 'out-existing', kind: 'tool_call', status: 'streaming', summary: 'partial', itemIndex: 1,
+    });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: seededTool.threadId, item: seededTool });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: seededOut.threadId, item: seededOut });
+    await nextFrame();
+    expect(pane.items).toHaveLength(2);
+
+    const applySpy = vi.spyOn(pane, 'applyProviderItemUpserts');
+
+    const tool1 = makeItem({ id: 'tool-1', kind: 'tool_call', status: 'running', turnIndex: 1, itemIndex: 0 });
+    const tool2 = makeItem({ id: 'tool-2', kind: 'tool_call', status: 'running', turnIndex: 1, itemIndex: 1 });
+    const tool3 = makeItem({ id: 'tool-3', kind: 'tool_call', status: 'running', turnIndex: 1, itemIndex: 2 });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: tool1.threadId, item: tool1 });
+    emitWailsEvent('provider:item_event', {
+      action: 'patch', threadId: seededTool.threadId, itemId: 'tool-existing', patch: { status: 'completed' },
+    });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: tool2.threadId, item: tool2 });
+    emitWailsEvent('provider:item_event', {
+      action: 'delta', threadId: seededOut.threadId, itemId: 'out-existing', kind: 'tool_call', delta: ' more', updatedAt: 2,
+    });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: tool3.threadId, item: tool3 });
+    await nextFrame();
+
+    expect(applySpy).toHaveBeenCalledTimes(1);
+    expect(applySpy.mock.calls[0][0].map((item: Item) => item.id)).toEqual(['tool-1', 'tool-2', 'tool-3']);
+    expect(pane.getItemById('tool-existing')?.status).toBe('completed');
+    expect(pane.getItemById('out-existing')?.summary).toBe('partial more');
+  });
+
+  it('batches successive same-item upserts without fragmentation (last wins)', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+    const applySpy = vi.spyOn(pane, 'applyProviderItemUpserts');
+
+    // Codex foreground exec emits a full-item upsert per output chunk;
+    // a chain for the same row must still land as one batch with
+    // sequential (last-wins) semantics.
+    for (const summary of ['line1', 'line1+2', 'line1+2+3']) {
+      const item = makeItem({ id: 'exec-1', kind: 'tool_call', status: 'running', summary });
+      emitWailsEvent('provider:item_event', { action: 'upsert', threadId: item.threadId, item });
+    }
+    await nextFrame();
+
+    expect(applySpy).toHaveBeenCalledTimes(1);
+    expect(pane.getItemById('exec-1')?.summary).toBe('line1+2+3');
+  });
+
+  it('preserves per-item apply order when upserts and deltas interleave on one row', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    const u1 = makeItem({ id: 'out-1', kind: 'tool_call', status: 'streaming', summary: 'A' });
+    const u2 = makeItem({ id: 'out-1', kind: 'tool_call', status: 'streaming', summary: 'B' });
+    const threadId = u1.threadId;
+
+    // u1, +1, u2, +2 — u2 carries the full backend summary and
+    // supersedes u1 and the first delta; the trailing delta extends u2.
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId, item: u1 });
+    emitWailsEvent('provider:item_event', {
+      action: 'delta', threadId, itemId: 'out-1', kind: 'tool_call', delta: '+1', updatedAt: 2,
+    });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId, item: u2 });
+    emitWailsEvent('provider:item_event', {
+      action: 'delta', threadId, itemId: 'out-1', kind: 'tool_call', delta: '+2', updatedAt: 3,
+    });
+    await nextFrame();
+
+    expect(pane.getItemById('out-1')?.summary).toBe('B+2');
+  });
+
+  it('defers thread-status projection to the frame batch', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    const item = makeItem({ id: 'err-1', kind: 'error', role: 'system', summary: 'boom' });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: item.threadId, item });
+
+    // Projection used to run synchronously in the WS handler, giving
+    // every upsert message its own global-store write + effect flush.
+    // It now rides the rAF batch with the pane apply.
+    expect(getThreadStatus('thread-1')).toBe('idle');
+    await nextFrame();
+    expect(getThreadStatus('thread-1')).toBe('error');
+  });
+
 });

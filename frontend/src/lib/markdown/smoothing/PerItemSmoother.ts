@@ -44,10 +44,28 @@ export const ADAPTIVE_CATCHUP_MS = 500;
 // predecessor finishes animating quickly instead of stalling the queue for
 // seconds. Bounded so a long collapsed thinking block can't delay a live
 // tool call by more than a moment, while still reading as motion rather than
-// an instant snap. Fast-drain bypasses MAX_ADVANCE_PER_TICK_CHARS — that cap
-// exists to keep steady-state streaming from bursting; a deliberate
-// finish-the-predecessor drain is exactly the case where bursting is wanted.
+// an instant snap. Fast-drain raises the per-tick cap to
+// FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS instead of lifting it: an unbounded
+// drain used to reveal the whole lag in one rAF tick, and that single giant
+// markdown re-parse + DOM mutation was visible as a hitch exactly at row
+// boundaries (the moment a tool row lands behind a streaming text frontier).
 export const FAST_DRAIN_MS = 200;
+// Per-tick reveal cap while fast-draining. 4× the steady-state cap:
+// ~3360 cps at 60Hz — clearly "rushing to finish" motion, while keeping
+// each frame's markdown re-parse bounded. A lag of ~1200 chars drains in
+// ~21 ticks (≈350ms); callers that consider a lag too large to animate
+// at all snap instead (see FAST_DRAIN_SNAP_LAG_CHARS).
+export const FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS = 56;
+// Caller policy, not mechanism: above this lag a "finish the predecessor"
+// fast-drain would still take >~350ms of sustained per-frame re-parse
+// work, so callers snap outright — one deliberate burst, same cost the
+// unbounded drain used to pay, reserved for the outlier case.
+export const FAST_DRAIN_SNAP_LAG_CHARS = 1200;
+// Caller policy for turn completion: remaining smoothers drain their
+// backlog within ~this window instead of trickling at the adaptive
+// catch-up ceiling (~840 cps), which left multi-KB reasoning backlogs
+// animating for many seconds after the turn had already settled.
+export const END_OF_TURN_DRAIN_MS = 800;
 // Hard cap on how many characters the smoother may reveal in a single
 // rAF tick, regardless of how much budget the adaptive catch-up math
 // has produced. Without this cap, sustained high-rate wire bursts
@@ -59,8 +77,8 @@ export const FAST_DRAIN_MS = 200;
 // is comfortably above readable streaming pace but well below a "burst
 // looks like a chunk" threshold. Excess budget is silently discarded
 // (not rolled over) so a sustained over-rate wire grows lag instead of
-// building per-tick chunks; the catchup happens at completion when the
-// patch/extension drains the smoother at the same capped per-tick rate.
+// building per-tick chunks; the backlog drains at the elevated
+// fast-drain cap when a successor row is waiting or the turn settles.
 export const MAX_ADVANCE_PER_TICK_CHARS = 14;
 
 export interface PerItemSmootherOptions {
@@ -233,22 +251,20 @@ export class PerItemSmoother {
     this.revealBudget += (charsPerSec * dt) / 1000;
 
     // Per-tick advance cap: even when adaptive math wants to drain a
-    // large lag in one frame, never reveal more than
-    // `MAX_ADVANCE_PER_TICK_CHARS` chars in normal word streaming.
-    // The exception is a single word unit bigger than the cap (URL,
-    // long identifier) — we let the cap expand to that one word's
-    // size so the smoother doesn't stall forever on it. Fast-drain
-    // lifts the cap entirely: finishing a predecessor before the next
-    // row reveals is exactly when a burst is the intended behavior.
+    // large lag in one frame, never reveal more than the cap in normal
+    // word streaming. Fast-drain raises the cap (rush-to-finish motion)
+    // but stays finite so a fat backlog never lands as one giant
+    // re-parse in a single frame. The exception in both modes is a
+    // single word unit bigger than the cap (URL, long identifier) —
+    // the cap expands to that one word's size so the smoother doesn't
+    // stall forever on it.
     const previousLength = this.revealed.length;
     const nextUnitLen =
       nextWordUnitEnd(this.received, previousLength) - previousLength;
-    const isOversizedNext = nextUnitLen > MAX_ADVANCE_PER_TICK_CHARS;
-    const perTickCap = draining
-      ? Number.POSITIVE_INFINITY
-      : isOversizedNext
-        ? nextUnitLen
-        : MAX_ADVANCE_PER_TICK_CHARS;
+    const basePerTickCap = draining
+      ? FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS
+      : MAX_ADVANCE_PER_TICK_CHARS;
+    const perTickCap = nextUnitLen > basePerTickCap ? nextUnitLen : basePerTickCap;
     const rawCap = Math.floor(this.revealBudget);
     const advanceCap = rawCap > perTickCap ? perTickCap : rawCap;
     const nextEnd =
@@ -266,20 +282,19 @@ export class PerItemSmoother {
     // appended text (defensive — a frontier's wire is already complete).
     if (this.isCaughtUp()) this.fastDrainEndsAt = null;
     // Clamp residual budget so accumulated catch-up budget can't burst
-    // into a multi-tick chunk on the next frame. The clamp is skipped
-    // when the now-next word is still oversized — that case genuinely
-    // needs more budget than the cap to make any progress at all — and
-    // while fast-draining, where the large budget is the whole point.
+    // into a multi-tick chunk on the next frame. Reads fastDrainEndsAt
+    // (not the tick-start `draining`) so a drain that just finished
+    // clamps back to the steady-state cap immediately. The clamp is
+    // skipped when the now-next word is still oversized — that case
+    // genuinely needs more budget than the cap to make any progress.
+    const clampCap = this.fastDrainEndsAt !== null
+      ? FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS
+      : MAX_ADVANCE_PER_TICK_CHARS;
     const newNextLen =
       nextWordUnitEnd(this.received, this.revealed.length)
       - this.revealed.length;
-    const stillOversizedNext = newNextLen > MAX_ADVANCE_PER_TICK_CHARS;
-    if (
-      !draining
-      && !stillOversizedNext
-      && this.revealBudget > MAX_ADVANCE_PER_TICK_CHARS
-    ) {
-      this.revealBudget = MAX_ADVANCE_PER_TICK_CHARS;
+    if (newNextLen <= clampCap && this.revealBudget > clampCap) {
+      this.revealBudget = clampCap;
     }
     this.scheduleTick();
   }

@@ -72,7 +72,7 @@ func TestStreamingTextEmitsPathRefsMidStream(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("delta 1: %v", err)
 	}
-	if got := filterItemEventMetas(*emissions); len(got) != 0 {
+	if got := filterItemEventMetas(emissions.snapshot()); len(got) != 0 {
 		t.Fatalf("expected 0 meta events after delta 1 (firstBlock bypasses buffer), got %d: %+v", len(got), got)
 	}
 
@@ -91,7 +91,7 @@ func TestStreamingTextEmitsPathRefsMidStream(t *testing.T) {
 		t.Fatalf("delta 2: %v", err)
 	}
 
-	metas := filterItemEventMetas(*emissions)
+	metas := filterItemEventMetas(emissions.snapshot())
 	if len(metas) != 1 {
 		t.Fatalf("expected exactly 1 mid-stream meta event after delta 2 byte-threshold flush, got %d: %+v", len(metas), metas)
 	}
@@ -150,7 +150,7 @@ func TestStreamingTextEmitsPathRefsMidStream(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("delta 3: %v", err)
 	}
-	if got := filterItemEventMetas(*emissions); len(got) != 1 {
+	if got := filterItemEventMetas(emissions.snapshot()); len(got) != 1 {
 		t.Fatalf("expected per-row dedupe to hold meta count at 1 across no-new-path flush; got %d: %+v", len(got), got)
 	}
 }
@@ -216,7 +216,7 @@ func TestStreamingTextDedupeSurvivesSettle(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("delta 2: %v", err)
 	}
-	if got := filterItemEventMetas(*emissions); len(got) != 1 {
+	if got := filterItemEventMetas(emissions.snapshot()); len(got) != 1 {
 		t.Fatalf("expected 1 mid-stream meta after delta 2, got %d: %+v", len(got), got)
 	}
 
@@ -254,7 +254,7 @@ func TestStreamingTextDedupeSurvivesSettle(t *testing.T) {
 	}
 	router.WaitForPendingSettles()
 
-	if got := filterItemEventMetas(*emissions); len(got) != 1 {
+	if got := filterItemEventMetas(emissions.snapshot()); len(got) != 1 {
 		t.Fatalf("expected dedupe to hold meta count at 1 across settle's drain of delta 3; got %d: %+v", len(got), got)
 	}
 
@@ -331,7 +331,7 @@ func TestStreamingTextSettleFlushEmitsForNewPath(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("delta 2: %v", err)
 	}
-	if got := filterItemEventMetas(*emissions); len(got) != 1 {
+	if got := filterItemEventMetas(emissions.snapshot()); len(got) != 1 {
 		t.Fatalf("expected 1 mid-stream meta after delta 2, got %d", len(got))
 	}
 
@@ -360,7 +360,7 @@ func TestStreamingTextSettleFlushEmitsForNewPath(t *testing.T) {
 	}
 	router.WaitForPendingSettles()
 
-	metas := filterItemEventMetas(*emissions)
+	metas := filterItemEventMetas(emissions.snapshot())
 	if len(metas) != 2 {
 		t.Fatalf("expected settle-flush emit for new path (count 2); got %d: %+v", len(metas), metas)
 	}
@@ -541,7 +541,7 @@ func TestStreamingTextSkipsMidStreamEmitWithoutWorkspace(t *testing.T) {
 		t.Fatalf("delta 2: %v", err)
 	}
 
-	if got := filterItemEventMetas(*emissions); len(got) != 0 {
+	if got := filterItemEventMetas(emissions.snapshot()); len(got) != 0 {
 		t.Fatalf("expected 0 mid-stream meta events without a workspace; got %d: %+v", len(got), got)
 	}
 }

@@ -19,7 +19,7 @@
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
-  import { parsePatchFiles, type PatchFile, type PatchLine } from '../../utils/patchFiles';
+  import { parsePatchFilesCached, type PatchFile, type PatchLine } from '../../utils/patchFiles';
   import {
     INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
     inlineDiffOmittedFiles,
@@ -77,7 +77,7 @@
 
   let parsedFiles = $derived.by(() => {
     if (!payloadData) return [] as PatchFile[];
-    return parsePatchFiles(payloadData);
+    return parsePatchFilesCached(payloadData);
   });
 
   let parsedByPath = $derived.by(() => {
@@ -130,7 +130,7 @@
 
   function previewFileFromMeta(metaFile: ToolInlineDiffFile): PatchFile | undefined {
     if (!metaFile.previewPatch) return undefined;
-    return parsePatchFiles(metaFile.previewPatch)[0];
+    return parsePatchFilesCached(metaFile.previewPatch)[0];
   }
 
   function legacyPayloadId(): string | undefined {

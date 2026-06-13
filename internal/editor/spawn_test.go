@@ -266,8 +266,13 @@ func TestDefaultObserveFastExit_StillRunningAtWindow(t *testing.T) {
 		t.Fatalf("Start sleep: %v", err)
 	}
 	t.Cleanup(func() {
+		// Kill only — no cmd.Wait(). The watcher's abandoned goroutine is
+		// still blocked in its own cmd.Wait() (that is the production
+		// contract: it reaps the long-lived child), and exec.Cmd.Wait must
+		// not be called twice concurrently — the race detector flags the
+		// internal ProcessState writes. Kill is documented safe alongside
+		// a concurrent Wait; the goroutine reaps the killed child.
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
 	})
 	start := time.Now()
 	err := defaultObserveFastExit(cmd, "VS Code")

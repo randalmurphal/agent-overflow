@@ -32,7 +32,7 @@ func TestHandleInit_PendingSendPresent_FiresHandleTurnStart(t *testing.T) {
 		t.Fatalf("handle init with pending send: %v", err)
 	}
 
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 1 {
 		t.Fatalf("expected 1 provider:turn_started emission, got %d (handleInit pending-send branch must run handleTurnStart)", len(starts))
 	}
@@ -100,7 +100,7 @@ func TestHandleInit_NoPendingSend_NoSettledTurn_NoEmission(t *testing.T) {
 		t.Fatalf("handle init on idle thread: %v", err)
 	}
 
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 0 {
 		t.Errorf("expected 0 provider:turn_started for idle attach (no pending-send, no settled turn), got %d: %+v", len(starts), starts)
 	}
@@ -136,7 +136,7 @@ func TestHandleInit_NoPendingSend_PriorTurnSettled_FiresReRound(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
-	*emissions = nil // discard round-1 turn_started/turn_completed
+	emissions.reset() // discard round-1 turn_started/turn_completed
 
 	// No pending-send: handleInit must fall through to
 	// maybeEmitReRoundOnInit and emit a fresh round.
@@ -148,7 +148,7 @@ func TestHandleInit_NoPendingSend_PriorTurnSettled_FiresReRound(t *testing.T) {
 		t.Fatalf("handle re-init: %v", err)
 	}
 
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 1 {
 		t.Fatalf("expected 1 provider:turn_started emission via re-round path, got %d", len(starts))
 	}
@@ -199,7 +199,7 @@ func TestHandleInit_PendingSendPlusSettledTurn_PrefersTurnStartPath(t *testing.T
 	}); err != nil {
 		t.Fatalf("turn complete (turn 0): %v", err)
 	}
-	*emissions = nil
+	emissions.reset()
 
 	// Mirror the production sequence in app_send.go: the AO user item is
 	// persisted under the new turnIndex BEFORE the wire init arrives.
@@ -250,7 +250,7 @@ func TestHandleInit_PendingSendPlusSettledTurn_PrefersTurnStartPath(t *testing.T
 	}
 
 	// Frontend emission shape: a per-round uuid for the new logical turn.
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 1 {
 		t.Fatalf("expected 1 provider:turn_started, got %d", len(starts))
 	}

@@ -39,11 +39,6 @@ type connProfile struct {
 	// isLoopback records whether the peer is on a loopback interface.
 	// Threaded into dispatcher origin checks and event visibility.
 	isLoopback bool
-
-	// coalesceEvents enables server-side event coalescing for this
-	// connection. True for non-loopback peers; false for loopback
-	// (where the overhead exceeds the benefit on a shared-memory pipe).
-	coalesceEvents bool
 }
 
 // connHandler owns one upgraded WebSocket. It pumps client frames into
@@ -76,9 +71,9 @@ type connHandler struct {
 // disconnects or ctx is cancelled. Blocks until done.
 //
 // profile is captured at upgrade time and carries per-connection
-// transport policy (loopback status, event coalescing).
-// profile.isLoopback is forwarded to every dispatcher resolution so
-// LocalOnlyMethods gets enforced for non-loopback peers.
+// transport policy. profile.isLoopback is forwarded to every
+// dispatcher resolution so LocalOnlyMethods gets enforced for
+// non-loopback peers.
 func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus *EventBus, readLimit int64, maxConcurrent int, profile connProfile) {
 	if readLimit <= 0 {
 		readLimit = DefaultReadLimit
@@ -245,35 +240,17 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 // Returns when ctx is cancelled or the subscriber's Done channel
 // closes (bus shutdown / Subscriber.Close).
 //
-// Loopback connections dispatch each event immediately (no overhead
-// on a shared-memory pipe). Remote connections accumulate events in
-// a coalescing buffer and flush as a single batch frame on a timer
-// or count threshold, reducing TCP framing and write-syscall cost.
+// Every connection accumulates events in a coalescing buffer and
+// flushes as a single batch frame on a timer or count threshold.
+// For remote peers that reduces TCP framing and write-syscall cost;
+// for the loopback webview the win is on the receiving side — one
+// frame per 16ms window means one macrotask, one JSON.parse, and one
+// reactive effect flush for a burst that previously arrived as dozens
+// of individual messages competing with the render loop (the
+// streaming-jank investigation, 2026-06-12). Sparse traffic is
+// unaffected: a single-event window falls through to a regular
+// `type:"event"` frame with at most one window of added latency.
 func (h *connHandler) pumpEvents(ctx context.Context) {
-	if !h.profile.coalesceEvents {
-		h.pumpEventsImmediate(ctx)
-		return
-	}
-	h.pumpEventsCoalesced(ctx)
-}
-
-func (h *connHandler) pumpEventsImmediate(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-h.sub.Done():
-			return
-		case e := <-h.sub.Events():
-			if !eventVisibleToOrigin(e.Channel, h.profile.isLoopback) {
-				continue
-			}
-			h.writeEventFrame(ctx, e)
-		}
-	}
-}
-
-func (h *connHandler) pumpEventsCoalesced(ctx context.Context) {
 	buf := newCoalesceBuffer(DefaultCoalesceMaxEvents, DefaultCoalesceWindow, func(batch []Event) {
 		h.writeBatchFrame(ctx, batch)
 	})

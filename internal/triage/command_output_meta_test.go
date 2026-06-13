@@ -40,7 +40,7 @@ func TestCommandOutputMetaStabilisesOnComplete(t *testing.T) {
 		"line3\nline4\n",
 		"line5\nline6\n",
 	}
-	for _, delta := range deltas {
+	for i, delta := range deltas {
 		if err := router.Handle(provider.ProviderEvent{
 			Kind:      provider.EventCommandOutput,
 			ThreadID:  "t1",
@@ -51,12 +51,20 @@ func TestCommandOutputMetaStabilisesOnComplete(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("output delta %q: %v", delta, err)
 		}
+		// Streaming deltas accumulate in the persistence buffer. Flush
+		// the first two so each lands as its own window; leave the third
+		// buffered so completion exercises the flush-before-rebuild path.
+		if i < 2 {
+			if err := router.FlushThread("t1"); err != nil {
+				t.Fatalf("flush window %d: %v", i, err)
+			}
+		}
 	}
 
-	// Mid-stream meta reflects the last delta only (per-delta jitter).
-	// That's intentional — the streaming hot path doesn't rebuild over
-	// the full blob per delta. Confirm the scaffolding is what we
-	// think before asserting the fix.
+	// Mid-stream meta reflects the last flushed window only (per-window
+	// jitter). That's intentional — the streaming hot path doesn't
+	// rebuild over the full blob per flush. Confirm the scaffolding is
+	// what we think before asserting the fix.
 	item, _, _ := st.GetThreadItem("t1", "cmd-xx")
 	if item.PayloadID == "" {
 		t.Fatalf("expected payload attached after streaming deltas")
@@ -66,9 +74,9 @@ func TestCommandOutputMetaStabilisesOnComplete(t *testing.T) {
 		t.Fatalf("unmarshal mid meta: %v", err)
 	}
 	if midMeta.LineCount != 3 {
-		// ExtractCommandOutputMeta counts "line5\nline6\n" as 3 lines
+		// ExtractCommandOutputMeta counts "line3\nline4\n" as 3 lines
 		// because of the trailing empty split token.
-		t.Fatalf("pre-completion lineCount = %d, want 3 (per-delta jitter contract)", midMeta.LineCount)
+		t.Fatalf("pre-completion lineCount = %d, want 3 (per-window jitter contract)", midMeta.LineCount)
 	}
 
 	// Completion rebuilds meta from the cumulative blob.

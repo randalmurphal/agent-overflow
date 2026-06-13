@@ -139,7 +139,11 @@ import { createThreadDesignState } from './threadDesignState.svelte';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import { SvelteMap } from 'svelte/reactivity';
-import { PerItemSmoother } from '../markdown/smoothing/PerItemSmoother';
+import {
+  END_OF_TURN_DRAIN_MS,
+  FAST_DRAIN_SNAP_LAG_CHARS,
+  PerItemSmoother,
+} from '../markdown/smoothing/PerItemSmoother';
 import {
   LOAD_OLDER_ITEM_BUDGET,
   ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
@@ -1050,8 +1054,33 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * gate is kept in sync by explicit calls from `applyItemDelta`,
    * `applyItemPatch`, `upsertItemsBatch`, `onReveal` (on catch-up), and the
    * item-removal paths; `disposeAllSmoothers` clears the boundary directly.
+   *
+   * Reentrancy: the oversized-backlog snap below fires `onReveal`
+   * synchronously, whose catch-up branch calls back into this function.
+   * The guard collapses the nested call into a re-run after the current
+   * pass — without it, the outer pass would overwrite the boundary and
+   * pause/resume decisions the nested pass just computed from fresher
+   * state.
    */
+  let recomputingReveal = false;
+  let recomputeRevealAgain = false;
   function recomputeReveal(): void {
+    if (recomputingReveal) {
+      recomputeRevealAgain = true;
+      return;
+    }
+    recomputingReveal = true;
+    try {
+      do {
+        recomputeRevealAgain = false;
+        recomputeRevealPass();
+      } while (recomputeRevealAgain);
+    } finally {
+      recomputingReveal = false;
+    }
+  }
+
+  function recomputeRevealPass(): void {
     let frontier: Item | null = null;
     for (const [id, entry] of itemSmoothers) {
       const item = getItemById(id);
@@ -1089,7 +1118,19 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         if (compareItemsByTimelinePosition(item, f) > 0) entry.smoother.pause();
         else entry.smoother.resume();
       }
-      if (hasSuccessor) itemSmoothers.get(f.id)?.smoother.requestFastDrain();
+      if (hasSuccessor) {
+        const frontierSmoother = itemSmoothers.get(f.id)?.smoother;
+        // A backlog too large to rush through at the drain cap would
+        // hold the waiting successor for whole seconds — snap it in one
+        // deliberate burst instead. Below the threshold, drain at the
+        // elevated (finite) per-tick cap so the finish reads as motion
+        // without a single-frame mega re-parse.
+        if (frontierSmoother && frontierSmoother.getLag() > FAST_DRAIN_SNAP_LAG_CHARS) {
+          frontierSmoother.snap();
+        } else {
+          frontierSmoother?.requestFastDrain();
+        }
+      }
     } else {
       // Nothing is gating — make sure no smoother is left paused (the
       // frontier may have drained between recomputes).
@@ -3472,6 +3513,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         });
       }
       latestSettledTurn = settled;
+      // The wire is done; any smoother still behind is pure backlog. At
+      // the adaptive ceiling (~840 cps) a multi-KB reasoning backlog
+      // keeps animating for many seconds after the turn settled — drain
+      // it within ~END_OF_TURN_DRAIN_MS instead. First-drain-wins
+      // semantics keep an earlier sequencer drain's tighter deadline.
+      for (const entry of itemSmoothers.values()) {
+        entry.smoother.requestFastDrain(END_OF_TURN_DRAIN_MS);
+      }
       // Run the deferred window prune now that the turn is quiet — the
       // streaming-append path skips it while a turn is active so the
       // head-drop repaint never lands mid-stream.

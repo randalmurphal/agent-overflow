@@ -70,8 +70,18 @@ type Router struct {
 	// streamPersistBuffers decouple the live UI stream from durable
 	// history writes. Text/thinking deltas emit immediately on ordered
 	// provider:item_event deltas, then flush to SQLite by interval, byte
-	// threshold, or lifecycle boundary.
+	// threshold, or lifecycle boundary. Codex command-output deltas
+	// buffer BOTH the SQLite append and the wire-visible item upsert
+	// (no per-chunk delta channel exists for command rows).
 	streamPersistBuffers map[string]*streamPersistBuffer
+	// streamFlushMu serializes stream-persist flush critical sections
+	// (extract buffer + SQLite write) against each other and against the
+	// command-output Replace rewrite. Timer flushes run off the provider
+	// read loop; without this lock a flush extracted-but-uncommitted when
+	// the authoritative Replace snapshot lands would append a duplicate
+	// output tail after the rewrite. Lock order: streamFlushMu first,
+	// r.mu nested inside. Never acquire streamFlushMu while holding r.mu.
+	streamFlushMu sync.Mutex
 	// settledTurns marks turns whose handleTurnComplete has already run
 	// to completion (turns row UPDATE-d, streaming items settled). A
 	// second EventTurnComplete for a settled turn is
@@ -566,6 +576,19 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
+	// Streamed command output may still sit in the persistence buffer.
+	// Flush it before completion runs: persistToolCallCompletion rebuilds
+	// command_output meta from the cumulative payload, and a buffered
+	// tail flushing after that rebuild would clobber the converged meta
+	// with delta-derived jitter (and the rebuild would miss the tail).
+	// Normally a no-op — Codex ships the aggregated-output Replace right
+	// before completion, which discards the buffer — this covers
+	// completions whose aggregatedOutput is absent.
+	if itemID := eventItemID(evt); itemID != "" {
+		if err := r.flushStreamingItem(evt.ThreadID, itemID); err != nil {
+			return fmt.Errorf("flush streamed output before completion %s: %w", itemID, err)
+		}
+	}
 	if handled, err := r.observeCodexUnifiedExecComplete(evt); handled || err != nil {
 		if handled && err == nil {
 			r.maybeFlushQueueAtBoundary(evt.ThreadID)

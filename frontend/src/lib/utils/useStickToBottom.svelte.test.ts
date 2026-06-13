@@ -91,6 +91,17 @@ function nextFrame(): Promise<void> {
     }),
   );
 }
+/** A rAF whose wall-clock gap differs from the steady 16.67ms — models
+ * dropped frames (33.34) or a long stall for the fixed-timestep spring
+ * tests. */
+function nextFrameAfter(ms: number): Promise<void> {
+  return new Promise<void>((resolve) =>
+    requestAnimationFrame(() => {
+      mockNow += ms;
+      resolve();
+    }),
+  );
+}
 function nextTimer(): Promise<void> {
   // Resolves after the 1ms scroll-handler / RO-clear setTimeout.
   return new Promise<void>((resolve) => setTimeout(resolve, 5));
@@ -2488,6 +2499,127 @@ describe('createUseStickToBottomController — spring chase', () => {
       for (let i = 0; i < 3; i++) await nextFrame();
       expect(geom.scrollTop).toBeGreaterThan(400);
       expect(geom.scrollTop).toBeLessThan(800);
+    });
+
+    it('dropped frames do not change the motion shape (fixed-timestep integration)', async () => {
+      // Same chase twice: steady 60Hz vs 30Hz (every gap a dropped
+      // frame). Sampled at equal wall-clock points the trajectories
+      // must match — the old integrator (one velocity update per rAF,
+      // position advanced by velocity·dt) converged measurably slower
+      // per second at 30Hz, so the chase changed shape exactly when the
+      // app was already stuttering.
+      //
+      // Time alignment: the first tick of a chase always integrates one
+      // step (lastTickAt seeds null), so both runs sample after steps
+      // 1, 3, 5, … — the 60Hz run via one frame then pairs, the 30Hz
+      // run via 33.34ms ticks that each integrate two steps after the
+      // first.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+
+      const at60: number[] = [];
+      await nextFrame();
+      at60.push(geom.scrollTop);
+      for (let i = 0; i < 6; i++) {
+        await nextFrame();
+        await nextFrame();
+        at60.push(geom.scrollTop);
+      }
+
+      // Fresh controller + geometry for the dropped-frames run.
+      controller.detach();
+      resetUseStickToBottomModuleStateForTest();
+      MockResizeObserver.instances = [];
+      controller = createUseStickToBottomController({ animationMode: () => mode });
+      geom.scrollHeight = 1000;
+      geom.contentHeight = 800;
+      geom.scrollTop = 400;
+      controller.attach(scrollEl, contentEl);
+      const ro2 = getRO();
+      ro2.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro2.fire(contentEl, 1200);
+
+      const at30: number[] = [];
+      for (let i = 0; i < 7; i++) {
+        await nextFrameAfter(33.34);
+        at30.push(geom.scrollTop);
+      }
+
+      expect(at60[0]).toBeGreaterThan(400); // both chases actually moved
+      for (let i = 0; i < at60.length; i++) {
+        expect(Math.abs(at60[i] - at30[i])).toBeLessThan(1);
+      }
+    });
+
+    it('a long rAF stall integrates a bounded catch-up burst, not the whole gap', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+
+      await nextFrame(); // first tick: one step
+      const afterFirst = geom.scrollTop;
+      expect(afterFirst).toBeGreaterThan(400);
+
+      // 200ms stall ≈ 12 dropped frames. rAF callbacks run in
+      // registration order, so the spring tick in a flush executes
+      // BEFORE the helper advances mockNow — the stalled delta is
+      // observed by the tick in the FOLLOWING frame, hence the extra
+      // plain nextFrame before sampling. The old integrator advanced
+      // position by velocity·12 in that one write (~776px on this
+      // geometry — a visible lurch); the fixed-timestep cap integrates
+      // at most SPRING_MAX_CATCHUP_STEPS steps (~552px here).
+      await nextFrameAfter(200);
+      await nextFrame();
+      const afterStall = geom.scrollTop;
+      expect(afterStall).toBeGreaterThan(afterFirst);
+      expect(afterStall).toBeLessThan(600);
+    });
+
+    it('holds position on sub-step frames at 120Hz, writing only when a whole 60Hz step elapses', async () => {
+      // At ~120Hz each rAF is ~8.33ms ≈ half a 60Hz step. The fixed-
+      // timestep integrator must NOT write on frames whose carry hasn't
+      // crossed a whole step (steps === 0) — it holds position and
+      // accumulates stepCarry — then writes on the frame the carry crosses
+      // 1.0. The old per-rAF integrator advanced position by velocity·dt
+      // EVERY frame, so it never produced two identical consecutive
+      // mid-chase positions (the mock scrollTop setter doesn't round, so a
+      // skipped write is the only way two samples come out byte-identical).
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+
+      const samples: number[] = [];
+      for (let i = 0; i < 14; i++) {
+        await nextFrameAfter(1000 / 120); // ~8.33ms
+        samples.push(geom.scrollTop);
+      }
+
+      // The chase really was animating (net forward progress)…
+      expect(samples[samples.length - 1]).toBeGreaterThan(samples[0]);
+      // …and stayed below the 800px target the whole window, so no clamp
+      // collision can fake an equal pair.
+      expect(samples[samples.length - 1]).toBeLessThan(800);
+      // …yet at least one sub-step frame wrote nothing: a position
+      // identical to the prior frame. Impossible under velocity·dt-per-rAF.
+      const heldAtLeastOnce = samples.some((s, i) => i > 0 && s === samples[i - 1]);
+      expect(heldAtLeastOnce).toBe(true);
     });
 
     it('sync-pins a positive delta caused by content width reflow instead of spring-chasing it', async () => {

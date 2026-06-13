@@ -27,7 +27,7 @@ func TestSessionStatusErrorPersistsAndSynthesizesTurnComplete(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn-start: %v", err)
 	}
-	*emissions = nil
+	emissions.reset()
 
 	exitMeta, _ := json.Marshal(provider.ProcessExitInfo{
 		Reason:   "provider process exited unexpectedly",
@@ -71,9 +71,9 @@ func TestSessionStatusErrorPersistsAndSynthesizesTurnComplete(t *testing.T) {
 	}
 
 	// 2. provider:session_died event emitted with ThreadID + ExitCode.
-	died := filterEmissions(*emissions, "provider:session_died")
+	died := filterEmissions(emissions.snapshot(), "provider:session_died")
 	if len(died) != 1 {
-		t.Fatalf("expected 1 provider:session_died, got %d (%+v)", len(died), *emissions)
+		t.Fatalf("expected 1 provider:session_died, got %d (%+v)", len(died), emissions.snapshot())
 	}
 	deathPayload, ok := died[0].data.(SessionDiedEvent)
 	if !ok {
@@ -84,9 +84,9 @@ func TestSessionStatusErrorPersistsAndSynthesizesTurnComplete(t *testing.T) {
 	}
 
 	// 3. Synthesized truncated turn-complete reached the frontend.
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
-		t.Fatalf("expected 1 provider:turn_completed (truncated synthesis), got %d (%+v)", len(completed), *emissions)
+		t.Fatalf("expected 1 provider:turn_completed (truncated synthesis), got %d (%+v)", len(completed), emissions.snapshot())
 	}
 }
 
@@ -112,11 +112,11 @@ func TestSessionStatusErrorWithoutOpenTurnSkipsSynthesis(t *testing.T) {
 		t.Fatalf("session-status error: %v", err)
 	}
 
-	died := filterEmissions(*emissions, "provider:session_died")
+	died := filterEmissions(emissions.snapshot(), "provider:session_died")
 	if len(died) != 1 {
 		t.Fatalf("expected provider:session_died emission")
 	}
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 0 {
 		t.Fatalf("expected no synthesized turn_completed without open turn, got %d", len(completed))
 	}
@@ -163,7 +163,7 @@ func TestSessionStatusErrorIsIdempotent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn-start: %v", err)
 	}
-	*emissions = nil
+	emissions.reset()
 
 	exitMeta, _ := json.Marshal(provider.ProcessExitInfo{
 		Reason:   "provider process exited unexpectedly",
@@ -201,7 +201,7 @@ func TestSessionStatusErrorIsIdempotent(t *testing.T) {
 		t.Fatalf("expected exactly 1 session_died notification row, got %d (%+v)", notifCount, items)
 	}
 
-	emitted := filterEmissions(*emissions, "provider:session_died")
+	emitted := filterEmissions(emissions.snapshot(), "provider:session_died")
 	if len(emitted) != 1 {
 		t.Fatalf("expected exactly 1 provider:session_died emission, got %d", len(emitted))
 	}
@@ -236,13 +236,13 @@ func TestCleanupThreadSynthesizesTruncatedTurnComplete(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn-start: %v", err)
 	}
-	*emissions = nil
+	emissions.reset()
 
 	router.CleanupThread("t1")
 
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
-		t.Fatalf("expected 1 truncated turn_completed from CleanupThread, got %d (%+v)", len(completed), *emissions)
+		t.Fatalf("expected 1 truncated turn_completed from CleanupThread, got %d (%+v)", len(completed), emissions.snapshot())
 	}
 	payload, ok := completed[0].data.(TurnCompletedEvent)
 	if !ok {
@@ -277,7 +277,7 @@ func TestCleanupThreadWithoutOpenTurnIsNoop(t *testing.T) {
 
 	router.CleanupThread("t1")
 
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 0 {
 		t.Fatalf("expected no turn_completed synthesis without open turn, got %d", len(completed))
 	}
@@ -342,13 +342,13 @@ func TestCleanupThreadSynthesizesAfterRound2PlusReRound(t *testing.T) {
 	if !router.hasInFlightTurnOrRound("t1") {
 		t.Fatal("precondition: round 2 must be live in currentRoundByThread")
 	}
-	*emissions = nil
+	emissions.reset()
 
 	router.CleanupThread("t1")
 
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
-		t.Fatalf("expected 1 truncated turn_completed for round 2, got %d (%+v)", len(completed), *emissions)
+		t.Fatalf("expected 1 truncated turn_completed for round 2, got %d (%+v)", len(completed), emissions.snapshot())
 	}
 	payload, ok := completed[0].data.(TurnCompletedEvent)
 	if !ok {
@@ -390,7 +390,7 @@ func TestSessionStatusErrorSynthesizesAfterRound2PlusReRound(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("re-init: %v", err)
 	}
-	*emissions = nil
+	emissions.reset()
 
 	exitMeta, _ := json.Marshal(provider.ProcessExitInfo{
 		Reason: "provider process exited unexpectedly",
@@ -405,9 +405,9 @@ func TestSessionStatusErrorSynthesizesAfterRound2PlusReRound(t *testing.T) {
 		t.Fatalf("session-status error: %v", err)
 	}
 
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
-		t.Fatalf("expected 1 truncated turn_completed for round 2, got %d (%+v)", len(completed), *emissions)
+		t.Fatalf("expected 1 truncated turn_completed for round 2, got %d (%+v)", len(completed), emissions.snapshot())
 	}
 	payload, ok := completed[0].data.(TurnCompletedEvent)
 	if !ok {

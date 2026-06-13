@@ -5,7 +5,11 @@ import {
   createThreadPane,
   LIVE_TODO_AUTOHIDE_MS,
 } from './thread.svelte';
-import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
+import {
+  END_OF_TURN_DRAIN_MS,
+  FAST_DRAIN_SNAP_LAG_CHARS,
+  type SmoothingClock,
+} from '../markdown/smoothing/PerItemSmoother';
 import {
   resetForTest as resetWorktreeIntent,
   setAttachBranch,
@@ -6800,6 +6804,118 @@ describe('createThreadPane', () => {
         }),
       ]);
       expect(pane.revealBoundary).toBeNull();
+    });
+
+    it('snaps the frontier outright when its backlog exceeds the snap threshold', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 't',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 0,
+            summary: '',
+            updatedAt: 2,
+          }),
+        );
+        // Backlog comfortably above the snap threshold: even at the
+        // elevated drain cap this would hold the waiting successor for
+        // whole seconds, so the sequencer snaps it in one burst instead.
+        const text = 'word '.repeat(
+          Math.ceil((FAST_DRAIN_SNAP_LAG_CHARS + 200) / 5),
+        );
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: text,
+          updatedAt: 3,
+        });
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+
+        // The successor upsert runs the sequencer synchronously: the
+        // oversized backlog snaps with no clock ticks, and the gate
+        // clears via the reentrancy-guarded recompute re-run (the snap's
+        // own onReveal recomputes against the caught-up smoother).
+        pane.upsertItem(
+          makeItem({
+            id: 'tool:0:1',
+            threadId: 't',
+            kind: 'tool_call',
+            status: 'running',
+            turnIndex: 0,
+            itemIndex: 1,
+            toolName: 'Bash',
+            summary: 'Bash',
+            updatedAt: 4,
+          }),
+        );
+        expect(pane.items.find((i) => i.id === 'text:0:0')?.summary).toBe(
+          text,
+        );
+        expect(pane.revealBoundary).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('settleTurn fast-drains leftover smoother backlog within the end-of-turn window', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 't',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 0,
+            summary: '',
+            updatedAt: 2,
+          }),
+        );
+        // 2000-char backlog on a solo tail row: the sequencer never
+        // fast-drains it (no successor), and at the adaptive ceiling
+        // (~10 word-aligned chars/frame) it would keep animating for
+        // ~3 seconds after the wire went quiet.
+        const text = 'word '.repeat(400);
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: text,
+          updatedAt: 3,
+        });
+        pane.settleTurn({
+          turnId: 'turn-1',
+          turnIndex: 0,
+          startedAt: 1,
+          completedAt: 2,
+          stopReason: 'end_turn',
+          assistantMessageId: 'text:0:0',
+          tokenUsage: null,
+          aborted: false,
+          errorMessage: '',
+        });
+        // The end-of-turn drain clears the backlog within ~the drain
+        // window (plus a little slack for word-boundary rounding).
+        const frames = Math.ceil(END_OF_TURN_DRAIN_MS / 16) + 10;
+        for (let i = 0; i < frames; i++) clock.tickFrame(16);
+        expect(pane.items.find((i) => i.id === 'text:0:0')?.summary).toBe(
+          text,
+        );
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
     });
   });
 

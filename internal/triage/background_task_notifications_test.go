@@ -728,7 +728,7 @@ func TestBackgroundTaskNotification_EnrichesExistingCompletionWithLoadingAndLoad
 		t.Fatalf("write output file: %v", err)
 	}
 
-	before := len(*emissions)
+	before := len(emissions.snapshot())
 	notificationMeta, _ := json.Marshal(map[string]any{
 		"task_id":     "task-enrich-notify",
 		"tool_use_id": "bg-enrich-notify",
@@ -764,7 +764,7 @@ func TestBackgroundTaskNotification_EnrichesExistingCompletionWithLoadingAndLoad
 		t.Fatalf("final notification_output_state = %v, want loaded", got)
 	}
 
-	upserts := findUpsertedItems((*emissions)[before:])
+	upserts := findUpsertedItems(emissions.snapshot()[before:])
 	var completionStates []string
 	for _, item := range upserts {
 		if item.ID != nextToolCompletionID("bg-enrich-notify") {

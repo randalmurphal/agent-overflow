@@ -149,7 +149,7 @@ func TestInterruptQueueDrainsInArrivalOrder(t *testing.T) {
 	// provider:item_event events fire for the two completions must also
 	// be A → B (the frontend reconciler replays emissions in order).
 	upsertOrder := []string{}
-	for _, item := range filterItemEventUpserts(*emissions) {
+	for _, item := range filterItemEventUpserts(emissions.snapshot()) {
 		if item.Kind != itemKindBackgroundDone {
 			continue
 		}
@@ -1152,7 +1152,7 @@ func TestTextBlockStartStreamsFirstChunkAsDelta(t *testing.T) {
 	}
 
 	var events []ItemStreamEvent
-	for _, e := range filterItemStreamEvents(*emissions) {
+	for _, e := range filterItemStreamEvents(emissions.snapshot()) {
 		if (e.Item != nil && e.Item.ID == textID) || e.ItemID == textID {
 			events = append(events, e)
 		}
