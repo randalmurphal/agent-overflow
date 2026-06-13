@@ -354,6 +354,56 @@ describe('<Composer>', () => {
     });
   });
 
+  it('uploads a pasted image on a claude thread (control for the claude-tui gate)', async () => {
+    const pane = await buildPane(makeTestThread({ provider: 'claude' }));
+    const draft = await buildDraft();
+    const upload = setBindingMock('UploadAttachment', async (
+      threadId: string,
+      filename: string,
+      mimeType: string,
+    ) => ({ ...makeAttachment('uploaded', filename), threadId, mimeType }));
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent(textarea, makeClipboardPaste([
+      new File(['png'], 'shot.png', { type: 'image/png' }),
+    ]));
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(
+      'thread-1',
+      'shot.png',
+      'image/png',
+      expect.any(String),
+    ));
+  });
+
+  it('blocks pasted and dropped attachments on a claude-tui thread', async () => {
+    // claude-tui carries no composer attachments — files are attached inside
+    // the real TUI via take-control. Both add-paths (paste + drop) must refuse
+    // the event before any upload runs. Identical setup to the claude control
+    // above; only the provider differs, so this fails if the gate is removed.
+    const pane = await buildPane(makeTestThread({ provider: 'claude-tui' }));
+    const draft = await buildDraft();
+    const upload = setBindingMock('UploadAttachment', async () =>
+      makeAttachment('should-not-upload'));
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    const paste = makeClipboardPaste([new File(['png'], 'shot.png', { type: 'image/png' })]);
+    await fireEvent(textarea, paste);
+    const drop = makeFileDrop([new File(['png'], 'drop.png', { type: 'image/png' })]);
+    await fireEvent(getByTestId('composer-root'), drop);
+
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(upload).not.toHaveBeenCalled();
+    expect(draft.attachments).toEqual([]);
+    // The handlers consumed the events so the browser/textarea never sees them.
+    expect(paste.defaultPrevented).toBe(true);
+    expect(drop.defaultPrevented).toBe(true);
+  });
+
   it('materializes once and preserves ordered placeholders for multiple first-pasted images', async () => {
     const pane = createThreadPane({ paneId: 'placeholder-multi-upload' });
     pane.startDraftPlaceholder(makeProject(), 'chat');

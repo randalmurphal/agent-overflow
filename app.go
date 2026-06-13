@@ -26,6 +26,7 @@ import (
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/settings"
@@ -363,8 +364,9 @@ type session struct {
 	provider string
 	token    string
 	// Exactly one of these is non-nil.
-	claude *claude.Session
-	codex  *codex.Session
+	claude    *claude.Session
+	codex     *codex.Session
+	claudetui *claudetui.Session
 	// liveness is the heap-allocated sibling that carries activity-tracking
 	// atomics. Never nil for registered sessions — spawnProviderSession sets
 	// it on construction. Stored behind a pointer so the value-type session
@@ -422,6 +424,8 @@ func (s session) providerSession() provider.Session {
 		return s.claude
 	case s.codex != nil:
 		return s.codex
+	case s.claudetui != nil:
+		return s.claudetui
 	default:
 		return nil
 	}

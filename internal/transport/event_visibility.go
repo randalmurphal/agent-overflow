@@ -11,6 +11,13 @@ var loopbackOnlyEventChannels = map[string]bool{
 	"provider:user_input":            true,
 	"terminal:exit":                  true,
 	"terminal:output":                true,
+	// provider:terminal_output carries the raw PTY bytes of a claude-tui
+	// take-control session — command output, file contents, anything on the
+	// TUI's screen — the same data class as terminal:output. The
+	// ProviderTerminal* RPCs are LocalOnly, so a LAN peer cannot arm the
+	// fan-out itself, but once a local pane attaches the sink emits to every
+	// subscriber; keep these frames loopback-only like their app-terminal twin.
+	"provider:terminal_output": true,
 	// provider:account carries the user's authenticated subscriptionType
 	// + tokenSource (oauth | apikey | console) + apiProvider. tokenSource
 	// is upstream-typed and discloses the auth model of the local user;

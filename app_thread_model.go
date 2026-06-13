@@ -78,7 +78,7 @@ func (a *App) UpdateThreadModelSelection(threadID string, providerName string, m
 
 func validThreadProvider(providerName string) bool {
 	switch providerName {
-	case string(provider.Claude), string(provider.Codex):
+	case string(provider.Claude), string(provider.Codex), string(provider.ClaudeTUI):
 		return true
 	default:
 		return false

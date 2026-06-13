@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
+  import TakeControlPane from '../takecontrol/TakeControlPane.svelte';
   import {
     focusPane,
     getFocusedPaneId,
@@ -25,6 +26,16 @@
   let layoutItems = $derived(getPaneLayoutItems());
   let minPaneWidth = $derived(getMinPaneWidth());
   let focusedPaneId = $derived(getFocusedPaneId());
+  // Source panes that currently have a paired take-control terminal pane. Both
+  // halves of the pair carry the shared top-border indicator so the user reads
+  // them as one bound entity across two panes.
+  let pairedSourceIds = $derived(
+    new Set(
+      layoutItems
+        .filter((item) => item.kind === 'take-control' && item.sourcePaneId)
+        .map((item) => item.sourcePaneId as string),
+    ),
+  );
   let hostEl: HTMLDivElement | undefined = $state(undefined);
   let scrollLeft = $state(0);
   let scrollClientWidth = $state(0);
@@ -195,44 +206,67 @@
     </section>
   {:else}
     {#each layoutItems as item, index (item.id)}
-      {@const pane = getPane(item.paneId)}
-      {#if pane}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
+      {#if item.kind === 'take-control'}
+        <!-- Take-control terminal pane: mirrors a claude-tui session's PTY. Not
+             a ThreadPane — it owns its own surface and is bound to its source
+             pane via TakeControlPane. No thread-drop/focus wiring; it can't host
+             a thread. The shared top border marks the pairing on both halves. -->
         <section
           use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
           style:flex-grow={item.ratio}
           style:flex-basis="0"
           style:min-width={`${minPaneWidth}px`}
-          class={[
-            'flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border-subtle/70',
-            focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
-            drag.draggingPaneId === item.paneId ? 'opacity-55' : '',
-            drag.duplicateDropPaneId === item.paneId ? 'ring-2 ring-accent/70 ring-inset' : '',
-          ].join(' ')}
+          class="take-control-pair-top flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border-subtle/70"
           data-pane-id={item.paneId}
           data-pane-kind={item.kind}
           data-pane-min-width={minPaneWidth}
           data-pane-ratio={item.ratio}
-          data-pane-focused={focusedPaneId === item.paneId}
-          onpointerdown={() => handlePaneFocus(item.paneId)}
-          onfocusin={() => handlePaneFocus(item.paneId)}
-          ondrop={(event) => drag.onPaneDrop(event, item.paneId)}
-          ondragend={drag.onPaneDragEnd}
         >
-          <ChatView {pane} onPaneDragStart={(event) => drag.onPaneDragStart(event, item.paneId)} />
+          <TakeControlPane paneId={item.paneId} />
         </section>
       {:else}
-        <section
-          style:flex-grow={item.ratio}
-          style:flex-basis="0"
-          style:min-width={`${minPaneWidth}px`}
-          class="flex min-h-0 min-w-0 items-center justify-center text-sm text-error"
-          data-pane-id={item.paneId}
-          data-pane-kind={item.kind}
-          data-pane-missing="true"
-        >
-          Pane unavailable.
-        </section>
+        {@const pane = getPane(item.paneId)}
+        {@const paired = pairedSourceIds.has(item.paneId)}
+        {#if pane}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <section
+            use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
+            style:flex-grow={item.ratio}
+            style:flex-basis="0"
+            style:min-width={`${minPaneWidth}px`}
+            class={[
+              'flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border-subtle/70',
+              paired ? 'take-control-pair-top' : '',
+              focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
+              drag.draggingPaneId === item.paneId ? 'opacity-55' : '',
+              drag.duplicateDropPaneId === item.paneId ? 'ring-2 ring-accent/70 ring-inset' : '',
+            ].join(' ')}
+            data-pane-id={item.paneId}
+            data-pane-kind={item.kind}
+            data-pane-min-width={minPaneWidth}
+            data-pane-ratio={item.ratio}
+            data-pane-focused={focusedPaneId === item.paneId}
+            data-pane-paired={paired}
+            onpointerdown={() => handlePaneFocus(item.paneId)}
+            onfocusin={() => handlePaneFocus(item.paneId)}
+            ondrop={(event) => drag.onPaneDrop(event, item.paneId)}
+            ondragend={drag.onPaneDragEnd}
+          >
+            <ChatView {pane} onPaneDragStart={(event) => drag.onPaneDragStart(event, item.paneId)} />
+          </section>
+        {:else}
+          <section
+            style:flex-grow={item.ratio}
+            style:flex-basis="0"
+            style:min-width={`${minPaneWidth}px`}
+            class="flex min-h-0 min-w-0 items-center justify-center text-sm text-error"
+            data-pane-id={item.paneId}
+            data-pane-kind={item.kind}
+            data-pane-missing="true"
+          >
+            Pane unavailable.
+          </section>
+        {/if}
       {/if}
       {#if index < layoutItems.length - 1}
         <div data-pane-gap-index={index + 1} class="shrink-0">

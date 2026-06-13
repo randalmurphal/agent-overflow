@@ -18,6 +18,11 @@
   --error: oklch(0.63 0.2 25);
   --warning: oklch(0.75 0.15 75);
   --provider-codex: oklch(0.72 0.15 55);
+  /* Terminal-green identity for the claude-tui provider — the phosphor green of
+     a CRT terminal. Drives the provider badge, the take-control button glyph,
+     and the shared pairing border. Bright here so it reads against dark
+     surfaces. */
+  --provider-claude-tui: oklch(0.82 0.2 145);
   --overlay: oklch(0 0 0 / 60%);
 
   /* Per-tool-kind icon colors. Cooler tones in the cobalt-violet
@@ -94,6 +99,9 @@ html.light {
   --error: oklch(0.5 0.18 27);
   --warning: oklch(0.6 0.16 78);
   --provider-codex: oklch(0.58 0.16 55);
+  /* Light-mode terminal green: deeper so the glyph/text reads against the light
+     surface tier. */
+  --provider-claude-tui: oklch(0.55 0.16 145);
   --overlay: oklch(0.22 0.01 255 / 28%);
 
   /* Light-mode icon palette. Same hues, lower lightness so the icons
@@ -162,6 +170,7 @@ html.light {
   --color-error: var(--error);
   --color-warning: var(--warning);
   --color-provider-codex: var(--provider-codex);
+  --color-provider-claude-tui: var(--provider-claude-tui);
   --color-overlay: var(--overlay);
 
   /* New semantic colors — the opacity-driven hierarchy layer. `fg` is
@@ -220,6 +229,17 @@ body {
 
 .chat-surface-ground {
   background-color: var(--surface-0);
+}
+
+/* Shared pairing indicator: a terminal-green bar along the top of both halves of
+   a take-control pair (the source thread pane and its take-control terminal
+   pane), marking them as one bound entity. A top border, NOT an inset shadow: the
+   take-control pane fills its body with an opaque terminal background that paints
+   over an inset shadow, hiding the bar on that half; a border draws outside the
+   content box where a child background can't cover it, so the bar shows on both.
+   box-sizing: border-box keeps the outer pane size unchanged (no layout shift). */
+.take-control-pair-top {
+  border-top: 2px solid var(--provider-claude-tui);
 }
 
 body::selection {

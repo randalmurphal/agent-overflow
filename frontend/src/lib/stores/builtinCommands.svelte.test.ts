@@ -203,6 +203,22 @@ describe('makeCommandContext', () => {
     pane.setShowPlanSidebar(true);
     expect(makeCommandContext(pane, {}).activeRhsPanel).toBe(true);
   });
+
+  // The fork palette/keybinding gate (thread.fork's `when: 'canForkActiveThread'`)
+  // ANDs a live session reference with the provider's fork capability. claude-tui
+  // drives the real TUI from outside and can't fork from AO, so the flag stays
+  // false even with a session — the same providerSupports('fork') gate the
+  // sidebar context menu uses.
+  it('canForkActiveThread requires a session AND a fork-capable provider', () => {
+    expect(makeCommandContext(readyPane(), {}).canForkActiveThread).toBe(false);
+    expect(
+      makeCommandContext(readyPane({ sessionRef: 'sess-1' }), {}).canForkActiveThread,
+    ).toBe(true);
+    expect(
+      makeCommandContext(readyPane({ provider: 'claude-tui', sessionRef: 'sess-1' }), {})
+        .canForkActiveThread,
+    ).toBe(false);
+  });
 });
 
 describe('rhs.close command', () => {

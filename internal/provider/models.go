@@ -104,6 +104,24 @@ var ClaudeModels = []ModelInfo{
 	},
 }
 
+// ClaudeTUIModels mirrors ClaudeModels: the interactive Claude Code TUI runs
+// the same claude binary, so it exposes the identical model catalog. Each
+// entry's Provider is stamped claude-tui so favorites and provider/model
+// round-trips resolve to the right provider. Built once from ClaudeModels;
+// Go's package-var dependency ordering guarantees ClaudeModels is initialized
+// first.
+var ClaudeTUIModels = withProvider(ClaudeModels, string(ClaudeTUI))
+
+// withProvider clones a model list and stamps every entry with providerName,
+// leaving the source slice untouched.
+func withProvider(src []ModelInfo, providerName string) []ModelInfo {
+	out := cloneModels(src)
+	for i := range out {
+		out[i].Provider = providerName
+	}
+	return out
+}
+
 // CodexModels lists models available through the Codex provider.
 //
 // Codex's live picker list comes from app-server model/list. This slice is
@@ -169,9 +187,11 @@ func ModelsForProvider(providerName string) []ModelInfo {
 
 func staticModelsForProvider(providerName string) []ModelInfo {
 	switch providerName {
-	case "claude":
+	case string(Claude):
 		return ClaudeModels
-	case "codex":
+	case string(ClaudeTUI):
+		return ClaudeTUIModels
+	case string(Codex):
 		return CodexModels
 	default:
 		return nil
@@ -194,7 +214,7 @@ func NormalizeModelSlug(providerName, model string) string {
 		default:
 			return model
 		}
-	case string(Claude):
+	case string(Claude), string(ClaudeTUI):
 		switch model {
 		case "fable", "fable-5":
 			return "claude-fable-5"
@@ -279,7 +299,7 @@ func providerDefaultReasoningEffort(providerName string) ReasoningEffort {
 	switch providerName {
 	case string(Codex):
 		return EffortHigh
-	case string(Claude):
+	case string(Claude), string(ClaudeTUI):
 		return EffortHigh
 	default:
 		return DefaultReasoningEffort
@@ -312,7 +332,7 @@ func providerSupportsReasoningEffort(providerName, effort string) bool {
 		default:
 			return false
 		}
-	case string(Claude):
+	case string(Claude), string(ClaudeTUI):
 		switch effort {
 		case string(EffortLow), string(EffortMedium), string(EffortHigh), string(EffortXHigh), string(EffortMax):
 			return true

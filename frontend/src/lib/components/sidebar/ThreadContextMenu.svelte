@@ -35,6 +35,7 @@
     isThreadSelected,
   } from '../../stores/threadFilter.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
+  import { providerSupports } from '../../providers/catalog';
   import { openThreadFromNavigation, openThreadInNewPane } from '../../stores/panes.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getSettings } from '../../stores/settings.svelte';
@@ -94,8 +95,12 @@
 
   // Fork is gated on the same predicate the palette command uses
   // (canForkActiveThread) — sessionRef is the cheap stand-in for "this
-  // thread has at least one turn and the provider has been started."
-  let canFork = $derived(Boolean(thread.sessionRef));
+  // thread has at least one turn and the provider has been started." It is
+  // additionally gated on provider support: claude-tui has no AO-mediated
+  // fork (forking happens inside the TUI, reached via take-control).
+  let canFork = $derived(
+    Boolean(thread.sessionRef) && providerSupports(thread.provider, 'fork'),
+  );
   // Discussion children (threads with a parentThreadId) cannot be
   // deleted in isolation — the parent thread owns the subtree's
   // lifecycle. Matches forge's right-click visibility.

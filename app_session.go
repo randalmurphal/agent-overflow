@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
@@ -347,6 +348,22 @@ func (a *App) spawnProviderSession(
 			token:    sessionToken,
 			codex:    sess,
 			liveness: liveness,
+		}, nil
+
+	case string(provider.ClaudeTUI):
+		cfg := claudetui.ConfigFromOptions(opts)
+		// The interactive provider drives the same `claude` binary as the
+		// headless one; there is no separate TUI binary setting.
+		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
+		sess, err := claudetui.NewSession(context.Background(), threadID, cfg, onEvent)
+		if err != nil {
+			return session{}, err
+		}
+		return session{
+			provider:  string(provider.ClaudeTUI),
+			token:     sessionToken,
+			claudetui: sess,
+			liveness:  liveness,
 		}, nil
 
 	default:

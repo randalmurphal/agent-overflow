@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/orphanreaper"
+	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
 	"agent-overflow/internal/transport"
@@ -67,6 +68,16 @@ func main() {
 	// reader that owns no GUI or transport. See internal/orphanreaper.
 	if len(os.Args) > 1 && os.Args[1] == orphanreaper.Subcommand() {
 		orphanreaper.RunChild()
+		return
+	}
+
+	// The interactive Claude TUI provider registers this binary as its hook
+	// command; Claude Code re-execs us with the __claude-hook subcommand for
+	// every captured hook event. Short-circuit before any other startup — same
+	// tiny-sidecar shape as the orphan reaper — so the relay client owns no GUI
+	// or transport. See internal/provider/claudetui/hookcmd.go.
+	if len(os.Args) > 1 && os.Args[1] == claudetui.HookSubcommand {
+		claudetui.RunHookChild()
 		return
 	}
 

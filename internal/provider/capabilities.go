@@ -30,7 +30,10 @@ func CapabilitiesForProvider(providerName string) Capabilities {
 			ModelCatalog:              CodexLiveModelCatalog,
 			BackgroundTerminalCleaner: CodexBackgroundTerminalCleaner,
 		}
-	case string(Claude):
+	case string(Claude), string(ClaudeTUI):
+		// claude-tui exposes the same static catalog as headless claude and
+		// has no background-terminal cleaner; named explicitly so it reads as
+		// a known provider rather than falling through to the default.
 		return Capabilities{}
 	default:
 		return Capabilities{}

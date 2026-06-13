@@ -612,6 +612,50 @@ func TestInterruptAndRevertIfCleanRevertsClaudeFirstTurn(t *testing.T) {
 	}
 }
 
+// TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession covers the
+// claude-tui revert-on-interrupt path. The interactive TUI reverts the just-sent
+// prompt natively on the Esc that InterruptAndRevertIfClean delivers (LIVE:
+// spike/claude-mitm/probe_hook_escrevert.py), so AO mirrors it — truncate the
+// turn + restore the draft — WITHOUT the headless-Claude steps of stopping the
+// session and rewriting a session file (claude-tui owns its own conversation; AO
+// has no fork file to write). Before the claude-tui branch existed this hit the
+// generic else and failed with "unsupported provider claude-tui" from
+// revertProviderConversationToMessage, killing the live session on the way.
+func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	thread := createCheckpointTestThread(t, app, "revert-tui", "claude-tui", t.TempDir())
+	insertUserItem(t, app.store, thread.ID, "u:0", 0, "the original prompt")
+
+	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	if err != nil {
+		t.Fatalf("interrupt-and-revert: %v", err)
+	}
+	if !result.Reverted {
+		t.Fatalf("expected Reverted=true, got Reverted=false reason=%q", result.Reason)
+	}
+	if result.UserItemID != "u:0" {
+		t.Fatalf("UserItemID = %q, want u:0", result.UserItemID)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items after revert = %d, want 0 (turn truncated to mirror the native revert)", len(items))
+	}
+
+	draft, ok, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("get draft: %v", err)
+	}
+	if !ok || draft.Content != "the original prompt" {
+		t.Fatalf("draft = (ok=%v, %q), want (true, \"the original prompt\")", ok, draft.Content)
+	}
+}
+
 // TestInterruptAndRevertIfCleanRevertsWithSynthesizedCheckpoint covers
 // the "at-send capture failed" path: no checkpoint row exists, the
 // revert helper synthesizes one with just TurnIndex. The revert should

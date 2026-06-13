@@ -162,6 +162,13 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "PrepareThreadWorktree", ID: 2870364785},                // main.App.PrepareThreadWorktree
 	{Name: "ProbeClaudeAccount", ID: 1313986574},                   // main.App.ProbeClaudeAccount
 	{Name: "ProbeCodexAccount", ID: 2614227175},                    // main.App.ProbeCodexAccount
+	{Name: "ProviderTerminalAttach", ID: 1393518281},               // main.App.ProviderTerminalAttach
+	{Name: "ProviderTerminalDetach", ID: 2584141779},               // main.App.ProviderTerminalDetach
+	{Name: "ProviderTerminalInput", ID: 1783659784},                // main.App.ProviderTerminalInput
+	{Name: "ProviderTerminalRefresh", ID: 1209472335},              // main.App.ProviderTerminalRefresh
+	{Name: "ProviderTerminalReplay", ID: 907422467},                // main.App.ProviderTerminalReplay
+	{Name: "ProviderTerminalResize", ID: 2998028796},               // main.App.ProviderTerminalResize
+	{Name: "ProviderTerminalSetControl", ID: 1382066673},           // main.App.ProviderTerminalSetControl
 	{Name: "RecheckClaudeAccount", ID: 2274850917},                 // main.App.RecheckClaudeAccount
 	{Name: "RecheckCodexAccount", ID: 227978482},                   // main.App.RecheckCodexAccount
 	{Name: "ReconfigureObservability", ID: 225050321},              // main.App.ReconfigureObservability

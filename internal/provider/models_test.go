@@ -48,6 +48,65 @@ func TestModelsForProvider_Codex(t *testing.T) {
 	}
 }
 
+func TestModelsForProvider_ClaudeTUI(t *testing.T) {
+	models := ModelsForProvider(string(ClaudeTUI))
+	if models == nil {
+		t.Fatal("expected non-nil slice for claude-tui")
+	}
+	// claude-tui drives the same binary, so its catalog mirrors claude's
+	// (same slugs / capabilities / windows / efforts) but is stamped claude-tui.
+	if len(models) != len(ClaudeModels) {
+		t.Fatalf("got %d models, want %d (parity with claude)", len(models), len(ClaudeModels))
+	}
+	for i, m := range models {
+		if m.Slug != ClaudeModels[i].Slug {
+			t.Errorf("model[%d].Slug = %q, want %q", i, m.Slug, ClaudeModels[i].Slug)
+		}
+		if m.Provider != string(ClaudeTUI) {
+			t.Errorf("model[%d].Provider = %q, want %q", i, m.Provider, string(ClaudeTUI))
+		}
+		if !slices.Equal(m.Capabilities, ClaudeModels[i].Capabilities) {
+			t.Errorf("model[%d].Capabilities = %v, want %v", i, m.Capabilities, ClaudeModels[i].Capabilities)
+		}
+		if !slices.Equal(m.ReasoningEfforts, ClaudeModels[i].ReasoningEfforts) {
+			t.Errorf("model[%d].ReasoningEfforts mismatch with claude", i)
+		}
+		if !slices.Equal(m.ContextWindows, ClaudeModels[i].ContextWindows) {
+			t.Errorf("model[%d].ContextWindows mismatch with claude", i)
+		}
+	}
+	// Stamping claude-tui must not mutate the shared ClaudeModels source.
+	for i, m := range ClaudeModels {
+		if m.Provider != "claude" {
+			t.Errorf("ClaudeModels[%d].Provider = %q, want claude (withProvider must clone, not mutate)", i, m.Provider)
+		}
+	}
+}
+
+func TestClaudeTUIResolvesLikeClaude(t *testing.T) {
+	// Alias normalization is shared with claude.
+	if got := NormalizeModelSlug(string(ClaudeTUI), "opus"); got != "claude-opus-4-8" {
+		t.Errorf("NormalizeModelSlug(claude-tui, opus) = %q, want claude-opus-4-8", got)
+	}
+	if _, found := FindModel(string(ClaudeTUI), "claude-opus-4-8"); !found {
+		t.Error("FindModel(claude-tui, claude-opus-4-8) not found")
+	}
+	// Shares claude's effort set; rejects a codex-only effort.
+	if !ReasoningEffortSupportedForModel(string(ClaudeTUI), "claude-opus-4-8", "max") {
+		t.Error("claude-tui should support effort 'max'")
+	}
+	if ReasoningEffortSupportedForModel(string(ClaudeTUI), "claude-opus-4-8", "minimal") {
+		t.Error("claude-tui must not support codex-only effort 'minimal'")
+	}
+	if got := DefaultReasoningEffortForModel(string(ClaudeTUI), "claude-opus-4-8", DefaultReasoningEffort); got != EffortXHigh {
+		t.Errorf("default effort for claude-tui opus-4-8 = %q, want xhigh", got)
+	}
+	// Static catalog, no background cleaner — identical posture to headless claude.
+	if caps := CapabilitiesForProvider(string(ClaudeTUI)); caps.ModelCatalog == CodexLiveModelCatalog {
+		t.Errorf("claude-tui must use the static catalog, got %q", caps.ModelCatalog)
+	}
+}
+
 func TestCodexModelsIncludeGPT55(t *testing.T) {
 	models := ModelsForProvider("codex")
 	if len(models) == 0 {

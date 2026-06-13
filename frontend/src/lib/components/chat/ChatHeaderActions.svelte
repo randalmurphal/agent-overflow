@@ -30,10 +30,17 @@
   import WorkspaceDiffBadge from '../git/WorkspaceDiffBadge.svelte';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
+  import ProviderIcon from '../shared/ProviderIcon.svelte';
+  import { isTakeControlOpen, toggleTakeControl } from '../../stores/takeControl.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
   let isDesignThread = $derived(pane.thread?.mode === 'design');
+  // Take-control is a claude-tui-only affordance: it opens a paired terminal
+  // pane mirroring the live TUI session. Absent for other providers (an
+  // unsupported control should not be shown rather than shown-and-disabled).
+  let isClaudeTui = $derived(pane.thread?.provider === 'claude-tui');
+  let takeControlOpen = $derived(isTakeControlOpen(pane.paneId));
 
   let terminalToggleChord = $derived(
     formatChord(keybindingForCommand('terminal.toggle') ?? 'mod+`'),
@@ -143,6 +150,26 @@
   {/if}
 
   <GitActionsControl {pane} />
+
+  {#if isClaudeTui}
+    <!-- Take-control: opens a paired terminal pane to the right that mirrors
+         this claude-tui session's live PTY. The terminal-green Claude glyph
+         ties the button to the TUI provider. Toggles the paired pane. -->
+    <Button
+      variant="secondary"
+      size="xs"
+      pressed={takeControlOpen}
+      ariaLabel="Toggle take-control terminal"
+      title="Take control — open the live Claude TUI terminal"
+      onclick={() => void ensureThenToggle(() => toggleTakeControl(pane.paneId))}
+      testId="take-control-toggle"
+      class="shrink-0 w-6 px-0"
+    >
+      {#snippet children()}
+        <ProviderIcon provider="claude-tui" size={13} />
+      {/snippet}
+    </Button>
+  {/if}
 
   <!-- Plain click shares runTerminalToggle with the mod+` chord
        (terminal.toggle) so opening focuses the terminal and closing hands

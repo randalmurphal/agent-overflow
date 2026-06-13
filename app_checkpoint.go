@@ -426,6 +426,23 @@ func (a *App) revertConversationLocked(args revertConversationLockedArgs) error 
 		if result != nil {
 			a.resetLiveCodexRollbackState(args.thread.ID)
 		}
+	} else if args.thread.Provider == string(provider.ClaudeTUI) {
+		// The interactive TUI reverts the just-sent prompt natively when it
+		// receives the Esc: the Esc aborts the in-flight /v1/messages and the
+		// dropped turn does not re-enter the next request (LIVE-confirmed in
+		// spike/claude-mitm/probe_hook_escrevert.py + probe_hook_revertcontext.py).
+		// InterruptAndRevertIfClean already delivered that Esc via the provider
+		// Interrupt above, so — unlike headless Claude — AO must NOT stop the
+		// session (it stays live for the next turn) or rewrite a session file (the
+		// TUI owns its own conversation; AO has no fork file to write). AO only
+		// mirrors the native revert in its own timeline + draft below. claude-tui
+		// Send clears the composer before its next paste so the prompt the TUI
+		// restored can't fuse with the re-send. A files-revert has no native TUI
+		// equivalent and is gated off in the UI (revert capability = false), so
+		// refuse it here as defense-in-depth.
+		if args.mode == RevertModeConversationAndFiles {
+			return fmt.Errorf("%s: claude-tui cannot revert workspace files", args.errorPrefix)
+		}
 	} else {
 		if err := a.stopSession(args.thread.ID); err != nil {
 			return fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)

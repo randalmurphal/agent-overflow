@@ -911,6 +911,32 @@ func TestRevertToMessageCheckpointCanRevertAgainAfterClaudeSessionFork(t *testin
 	assertClaudeSessionText(t, workspace, afterSecond.SessionRef, []string{"first"}, []string{"second", "third"})
 }
 
+// TestRevertConversationLockedRefusesClaudeTUIFilesRevert proves the
+// defense-in-depth guard in the claude-tui revert branch: claude-tui has no
+// native equivalent of an arbitrary-checkpoint workspace-file restore (its revert
+// is the TUI's own last-message Esc-revert), and the affordance is gated off in
+// the UI (revert capability = false), so a conversation-and-files revert is
+// refused rather than silently restoring files from a checkpoint. Calls the
+// helper directly to exercise the guard without standing up a git checkpoint.
+func TestRevertConversationLockedRefusesClaudeTUIFilesRevert(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	thread := createCheckpointTestThread(t, app, "tui-files", "claude-tui", t.TempDir())
+
+	err := app.revertConversationLocked(revertConversationLockedArgs{
+		thread:      thread,
+		userItem:    store.Item{ID: "u:0", ThreadID: thread.ID, TurnIndex: 0, Kind: "user_text", Role: "user"},
+		mode:        RevertModeConversationAndFiles,
+		errorPrefix: "revert checkpoint",
+	})
+	if err == nil {
+		t.Fatalf("expected claude-tui conversation-and-files revert to be refused")
+	}
+	if !strings.Contains(err.Error(), "cannot revert workspace files") {
+		t.Fatalf("error = %v, want it to mention cannot revert workspace files", err)
+	}
+}
+
 func createCheckpointTestThread(t *testing.T, app *App, id, provider, workspace string) store.Thread {
 	t.Helper()
 	now := time.Now().UnixMilli()

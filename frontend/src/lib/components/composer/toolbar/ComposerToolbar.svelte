@@ -22,6 +22,7 @@
   import RateLimitMeter from '../../chat/RateLimitMeter.svelte';
   import type { SendButtonAction } from './sendButtonTypes';
   import { asProviderID } from '../../../types/providers';
+  import { providerSupports } from '../../../providers/catalog';
   import { measureComposerToolbarCompact } from './composerToolbarDensity';
 
   interface Props {
@@ -80,6 +81,12 @@
   // turn completion).
   let showLimitRings = $derived(pane.isLocked && !!pane.thread?.provider);
   let providerID = $derived(asProviderID(pane.thread?.provider));
+  // Provider capability gates. claude-tui drives the real TUI, so the
+  // AO-mediated runtime-mode, plan, and MCP affordances are omitted — the
+  // human reaches them inside the terminal via take-control.
+  let supportsPlanMode = $derived(providerSupports(providerID, 'planMode'));
+  let supportsRuntimeModes = $derived(providerSupports(providerID, 'runtimeModes'));
+  let supportsMcp = $derived(providerSupports(providerID, 'mcp'));
   // Pickers render against either a persisted thread or a draft
   // placeholder. The pane carries a synthetic thread object in both
   // cases so the pickers can read its mode/provider/etc.; placeholder
@@ -142,11 +149,15 @@
   {#if hasComposableSurface}
     <ModelProviderMenu {pane} />
     <EffortMenu {pane} />
-    {#if !isDesignThread && !isDiscussionThread}
+    {#if !isDesignThread && !isDiscussionThread && supportsPlanMode}
       <AgentModeToggle {pane} />
     {/if}
-    <AccessToggle {pane} />
-    <McpServersTrigger {pane} />
+    {#if supportsRuntimeModes}
+      <AccessToggle {pane} />
+    {/if}
+    {#if supportsMcp}
+      <McpServersTrigger {pane} />
+    {/if}
     <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
   {/if}
   <div class="ml-auto flex items-center gap-1.5">

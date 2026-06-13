@@ -214,3 +214,12 @@ func isSoftRoundCloseStopReason(s string) bool {
 	}
 	return false
 }
+
+// IsSoftRoundCloseStopReason is the exported seam for the interactive (TUI)
+// provider, which reconstructs a turn-closing `result` envelope on exactly this
+// stop_reason set. Sharing the predicate keeps the two Claude transports from
+// drifting on "the model is done with the user's request" — a stop_reason added
+// to one would otherwise silently diverge the other. See isSoftRoundCloseStopReason.
+func IsSoftRoundCloseStopReason(s string) bool {
+	return isSoftRoundCloseStopReason(s)
+}

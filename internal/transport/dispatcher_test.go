@@ -608,6 +608,13 @@ func (p *privilegedApp) CloseThreadTerminals() string                 { return "
 func (p *privilegedApp) ResizeTerminal() string                       { return "ok" }
 func (p *privilegedApp) RefreshTerminal() string                      { return "ok" }
 func (p *privilegedApp) MoveThreadTerminals() string                  { return "ok" }
+func (p *privilegedApp) ProviderTerminalAttach() string               { return "ok" }
+func (p *privilegedApp) ProviderTerminalDetach() string               { return "ok" }
+func (p *privilegedApp) ProviderTerminalReplay() string               { return "ok" }
+func (p *privilegedApp) ProviderTerminalInput() string                { return "ok" }
+func (p *privilegedApp) ProviderTerminalResize() string               { return "ok" }
+func (p *privilegedApp) ProviderTerminalRefresh() string              { return "ok" }
+func (p *privilegedApp) ProviderTerminalSetControl() string           { return "ok" }
 func (p *privilegedApp) OpenInEditor() string                         { return "ok" }
 func (p *privilegedApp) OpenExternalURL() string                      { return "ok" }
 func (p *privilegedApp) BrowseDirectory() string                      { return "ok" }

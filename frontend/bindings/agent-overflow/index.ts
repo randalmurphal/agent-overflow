@@ -29,6 +29,7 @@ export {
     PayloadChunk,
     PayloadContent,
     PayloadPreview,
+    ProviderTerminalHandle,
     QueueFlushedItem,
     QueuedItem,
     RemoteEndpointSummary,

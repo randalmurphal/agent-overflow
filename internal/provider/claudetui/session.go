@@ -1,0 +1,458 @@
+package claudetui
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"sync"
+	"time"
+
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/terminal"
+)
+
+// session.go is the centerpiece: it implements provider.Session for the
+// interactive Claude TUI. It owns the PTY that runs the real `claude`, the
+// per-session gateway (ANTHROPIC_BASE_URL loopback proxy) and hook relay, and a
+// single claude.Parser fed reconstructed stream-json envelopes. The two live
+// sources — wire (gateway → reconstructor) and hooks (relay) — both enqueue
+// envelope bytes onto one feed channel; a single feedLoop goroutine drains it
+// through the parser so event emission is serialized exactly like the headless
+// read loop. See docs/architecture/claude-tui-provider.md.
+
+// Compile-time guarantee that *Session satisfies the provider.Session contract
+// the app layer calls into.
+var _ provider.Session = (*Session)(nil)
+
+// agentTurnDriver assertion: the gateway drives turn reconstruction through the
+// session so begin/end happen under the cross-request lock.
+var _ agentTurnDriver = (*Session)(nil)
+
+const (
+	// interruptKey is the raw byte the TUI reads as "abort this turn"; Interrupt
+	// writes it on Esc. Its "send" twin, submitKey, and the rest of the
+	// composer/send keystroke contract live with Send in session_send.go.
+	interruptKey = "\x1b"
+)
+
+// Session runs one interactive Claude TUI and reconstructs AO's normalized
+// event stream from outside the process.
+type Session struct {
+	threadID string
+	onEvent  func(provider.ProviderEvent)
+
+	// parser turns reconstructed stream-json envelopes into ProviderEvents.
+	// Driven exclusively from feedLoop, so its state stays single-goroutine.
+	parser *claude.Parser
+
+	// feed carries reconstructed envelope bytes from the wire + hook sources to
+	// the single parser goroutine. done closes on teardown to stop the loop and
+	// unblock any producer parked on feed.
+	feed chan json.RawMessage
+	done chan struct{}
+
+	// recMu guards the reconstructor's cross-request state (sawInit, turn-usage
+	// accumulation, session identity). begin/end/interrupt/setSessionInfo take
+	// it; the per-request onSSE path is lock-free (local assembler + feed send).
+	recMu sync.Mutex
+	rec   *reconstructor
+
+	gateway *gateway
+	relay   *hookRelay
+
+	// term owns the PTY running `claude`. One terminal session per AO session.
+	term       *terminal.Manager
+	terminalID string
+
+	// emitMu serializes every onEvent call so the parser goroutine, the proxy
+	// error path, and the PTY-exit path can't interleave events into triage —
+	// preserving the headless single-goroutine emission contract.
+	emitMu sync.Mutex
+
+	mu        sync.Mutex
+	sessionID string
+	pid       int
+	closing   bool
+	// sink receives raw PTY output for the take-control pane. nil until a pane
+	// attaches (AttachTerminal); the terminal ring still buffers output for
+	// replay regardless, so a detached session loses nothing.
+	sink func(terminalID string, sequence uint64, data []byte)
+	// controlHeld is the take-control input lease: true while a human drives the
+	// PTY via WriteInput. While held, Send is refused so AO's programmatic turns
+	// and the human's keystrokes never interleave into the TUI composer. Toggled
+	// by SetTakeControl; cleared by DetachTerminal.
+	controlHeld bool
+	// Cold-start composer-ready gate (see composerReady*), all under mu.
+	// onPTYOutput records the PTY byte count + last-output time until the gate
+	// latches; awaitComposerReady reads them to decide when the first Send may
+	// write. onPTYOutput already holds mu for the sink fan-out, so the gate adds
+	// no extra lock on the output hot path.
+	ptyBytes      int
+	lastPTYAt     time.Time
+	composerReady bool
+
+	// readyPoll / readyTimeout override the composerReady* poll cadence + bounded
+	// fallback; zero means use the package defaults. Set once before first use
+	// (a test shrinks them to exercise the timeout path fast) — read-only
+	// thereafter, so they need no lock.
+	readyPoll    time.Duration
+	readyTimeout time.Duration
+
+	logf func(format string, args ...any)
+}
+
+// NewSession spawns the interactive Claude TUI under a fresh gateway + hook
+// relay and starts the parser feed. The session is live on return: the PTY is
+// running and the proxy/relay are serving. ctx cancellation tears the session
+// down (the app passes a background context and relies on Close).
+func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(provider.ProviderEvent)) (s *Session, retErr error) {
+	if onEvent == nil {
+		return nil, fmt.Errorf("claudetui: onEvent callback is required")
+	}
+
+	s = &Session{
+		threadID: threadID,
+		onEvent:  onEvent,
+		parser:   claude.NewParser(),
+		feed:     make(chan json.RawMessage, 256),
+		done:     make(chan struct{}),
+		logf:     log.Printf,
+	}
+	// Seed the parser with the resolved model so result usage can be priced
+	// before the reconstructed init lands (mirrors the headless seed).
+	s.parser.SetModel(cfg.Model)
+	s.rec = newReconstructor(s.feedEnvelope)
+
+	// Anything started below is torn down by Close if a later step fails.
+	defer func() {
+		if retErr != nil {
+			_ = s.Close()
+		}
+	}()
+
+	relay, err := newHookRelay(s.feedEnvelope, s.onSessionInfo, s.onProxyError)
+	if err != nil {
+		return nil, err
+	}
+	s.relay = relay
+	relay.start()
+
+	gw, err := newGateway(cfg.Upstream, s, s.onProxyError)
+	if err != nil {
+		return nil, err
+	}
+	s.gateway = gw
+	gw.start()
+
+	go s.feedLoop()
+
+	launchOpts, err := buildLaunchOptions(cfg, gw.baseURL(), relay.url(), relay.authToken())
+	if err != nil {
+		return nil, err
+	}
+
+	s.term = terminal.NewManager(s.onPTYOutput, s.onPTYExit)
+	summary, err := s.term.Open(threadID, launchOpts)
+	if err != nil {
+		return nil, fmt.Errorf("claudetui: launch interactive claude: %w", err)
+	}
+	s.mu.Lock()
+	s.terminalID = summary.TerminalID
+	s.pid = summary.PID
+	s.mu.Unlock()
+
+	// Honor context cancellation as a teardown trigger for callers that pass a
+	// real context; with the app's background context this parks until Close.
+	go s.watchContext(ctx)
+
+	return s, nil
+}
+
+// watchContext tears the session down if the spawn context is cancelled,
+// exiting cleanly once the session closes on its own.
+func (s *Session) watchContext(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		_ = s.Close()
+	case <-s.done:
+	}
+}
+
+// feedEnvelope enqueues one reconstructed envelope for the parser goroutine.
+// Drops the envelope once the session is tearing down so a late wire/hook
+// source can't block on a drained loop.
+func (s *Session) feedEnvelope(line json.RawMessage) {
+	select {
+	case s.feed <- line:
+	case <-s.done:
+	}
+}
+
+// feedLoop is the single parser goroutine. It mirrors the headless read loop:
+// one ParseLine call at a time, each resulting event emitted in order. A parse
+// error is logged and skipped — one bad envelope must not wedge the stream.
+func (s *Session) feedLoop() {
+	for {
+		select {
+		case line := <-s.feed:
+			events, err := s.parser.ParseLine(s.threadID, line)
+			if err != nil {
+				s.logf("claudetui: parse error: %v (line: %s)", err, truncate(line, 200))
+				continue
+			}
+			for _, evt := range events {
+				if evt.Kind == provider.EventInit && evt.Meta != nil {
+					var info provider.SessionInfo
+					if json.Unmarshal(evt.Meta, &info) == nil && info.SessionID != "" {
+						s.setSessionID(info.SessionID)
+					}
+				}
+				s.emit(evt)
+			}
+		case <-s.done:
+			return
+		}
+	}
+}
+
+// emit serializes a single normalized event to the app. Held across onEvent so
+// the parser, proxy-error, and PTY-exit paths never interleave.
+func (s *Session) emit(evt provider.ProviderEvent) {
+	s.emitMu.Lock()
+	s.onEvent(evt)
+	s.emitMu.Unlock()
+}
+
+// --- agentTurnDriver (called from the gateway handler goroutine) ----------
+
+// beginAgentTurn opens reconstruction for one classAgent /v1/messages request.
+// Guarded so a parallel-subagent request can't race the shared init/turn state.
+func (s *Session) beginAgentTurn(req *messagesRequest) *agentRequest {
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	return s.rec.beginAgentRequest(req)
+}
+
+// endAgentTurn closes one request's reconstruction: emits the assembled
+// assistant envelope, folds usage, and synthesizes the turn-closing result when
+// the model is done.
+func (s *Session) endAgentTurn(ar *agentRequest) {
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	ar.end()
+}
+
+// onSessionInfo records identity from the SessionStart hook for both the
+// SessionID() accessor and the reconstructed init envelope.
+func (s *Session) onSessionInfo(sessionID, cwd, version string) {
+	if sessionID != "" {
+		s.setSessionID(sessionID)
+	}
+	s.recMu.Lock()
+	s.rec.setSessionInfo(sessionID, cwd, version)
+	s.recMu.Unlock()
+}
+
+// --- provider.Session -----------------------------------------------------
+
+// Interrupt aborts the current turn. The TUI cancels on Esc, which also aborts
+// the in-flight /v1/messages request (so the wire delivers no result). Because
+// the TUI path has no control-ack channel, we additionally synthesize the
+// interrupt result envelope the parser classifies as a user abort so the turn
+// closes. See turndriver.interruptTurn for the ordering caveat when an Esc
+// lands mid-stream.
+func (s *Session) Interrupt(ctx context.Context) error {
+	if err := s.writePTY([]byte(interruptKey)); err != nil {
+		return err
+	}
+	s.recMu.Lock()
+	s.rec.interruptTurn()
+	s.recMu.Unlock()
+	return nil
+}
+
+// RespondToApproval has no work on the interactive provider: full-access
+// auto-allows every tool at the relay, so no approval is ever pending. Returning
+// an error surfaces a miswired call instead of silently succeeding.
+func (s *Session) RespondToApproval(ctx context.Context, resp provider.ApprovalResponse) error {
+	return fmt.Errorf("claudetui: tool approvals are auto-allowed in full-access; no approval pending for %q", resp.RequestID)
+}
+
+// RespondToUserInput delivers the human's AskUserQuestion answer to the blocked
+// hook. The app emits EventUserInputResolved itself after this returns, so the
+// session must not also emit it.
+func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInputResponse) error {
+	return s.relay.respond(resp.RequestID, resp.Answers)
+}
+
+// PID returns the interactive claude's process id, which is also its
+// process-group id (the PTY child is a session leader via Setsid) so the orphan
+// reaper can group-kill the whole tree.
+func (s *Session) PID() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pid
+}
+
+// SessionID returns the provider session ref, learned from the SessionStart
+// hook or the reconstructed init. Empty until one of those arrives.
+func (s *Session) SessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionID
+}
+
+// Close tears down the PTY, gateway, relay, and parser. Idempotent and
+// nil-safe so the NewSession failure path can reuse it.
+func (s *Session) Close() error {
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closing = true
+	terminalID := s.terminalID
+	s.mu.Unlock()
+
+	// Stop the parser loop and release any producer parked on feed before
+	// shutting the proxy/relay down, so their handler goroutines don't deadlock
+	// on a feed send while Shutdown waits for them.
+	close(s.done)
+
+	var errs []error
+	if s.term != nil && terminalID != "" {
+		if err := s.term.Close(terminalID); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.gateway != nil {
+		if err := s.gateway.close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.relay != nil {
+		if err := s.relay.close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.parser != nil {
+		s.parser.Close()
+	}
+	return errors.Join(errs...)
+}
+
+// --- PTY callbacks --------------------------------------------------------
+
+// onPTYOutput fans raw terminal output to the attach sink when one is wired.
+// The terminal ring buffers output for replay independently, so a nil sink
+// simply means "nobody is attached yet."
+func (s *Session) onPTYOutput(threadID, terminalID string, sequence uint64, data []byte) {
+	s.mu.Lock()
+	// Feed the cold-start composer-ready gate until it latches: count bytes and
+	// stamp the last-output time so the first Send can wait for the init burst to
+	// settle. Skipped once ready, so a warm session pays nothing extra here (this
+	// lock is already taken for the sink fan-out below).
+	if !s.composerReady {
+		s.ptyBytes += len(data)
+		s.lastPTYAt = time.Now()
+	}
+	sink := s.sink
+	s.mu.Unlock()
+	if sink != nil {
+		sink(terminalID, sequence, data)
+	}
+}
+
+// onPTYExit surfaces interactive-claude death. A non-host-initiated exit (the
+// process died or the user quit it in take-control) emits the "error"
+// session-status triage promotes to session_died + a truncated turn-complete;
+// the trailing "disconnected" clears live state. A host-initiated Close skips
+// the error and just disconnects.
+func (s *Session) onPTYExit(threadID, terminalID string, status terminal.ExitStatus) {
+	s.mu.Lock()
+	closing := s.closing
+	s.mu.Unlock()
+
+	if !closing {
+		s.emit(provider.ProviderEvent{
+			Kind:      provider.EventSessionStatus,
+			ThreadID:  s.threadID,
+			Content:   "error",
+			Meta:      ptyExitMeta(status),
+			Timestamp: time.Now(),
+		})
+	}
+	s.emit(provider.ProviderEvent{
+		Kind:      provider.EventSessionStatus,
+		ThreadID:  s.threadID,
+		Content:   "disconnected",
+		Timestamp: time.Now(),
+	})
+}
+
+// onProxyError surfaces a gateway/relay infrastructure failure as a non-fatal
+// error event and logs it. These are rare (serve failure, a mid-stream client
+// write error) and never carry credential-bearing detail.
+func (s *Session) onProxyError(err error) {
+	if err == nil {
+		return
+	}
+	s.logf("claudetui: %v", err)
+	s.emit(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  s.threadID,
+		Content:   err.Error(),
+		Meta:      mustMarshal(map[string]any{"fatal": false}),
+		Timestamp: time.Now(),
+	})
+}
+
+// --- helpers --------------------------------------------------------------
+
+// writePTY writes raw bytes to the interactive claude's PTY.
+func (s *Session) writePTY(data []byte) error {
+	s.mu.Lock()
+	term, terminalID := s.term, s.terminalID
+	s.mu.Unlock()
+	if term == nil || terminalID == "" {
+		return fmt.Errorf("claudetui: no live terminal to write to")
+	}
+	return term.Write(terminalID, data)
+}
+
+func (s *Session) setSessionID(id string) {
+	s.mu.Lock()
+	s.sessionID = id
+	s.mu.Unlock()
+}
+
+// ptyExitMeta renders a chat-safe ProcessExitInfo from a terminal exit. It
+// synthesizes the reason from the controlled code/signal rather than passing
+// terminal.ExitStatus.Reason (which can embed host text) into the chat-visible
+// field — see provider.ProcessExitInfo's security note.
+func ptyExitMeta(status terminal.ExitStatus) json.RawMessage {
+	var info provider.ProcessExitInfo
+	switch {
+	case status.Signal != 0:
+		info.Signal = status.Signal.String()
+		info.Reason = "provider session terminated by signal " + info.Signal
+	case status.Code != 0:
+		info.ExitCode = status.Code
+		info.Reason = "provider session exited with code " + strconv.Itoa(status.Code)
+	default:
+		info.Reason = "provider session ended"
+	}
+	return mustMarshal(info)
+}
+
+// truncate bounds a byte slice for log lines.
+func truncate(b []byte, max int) string {
+	if len(b) <= max {
+		return string(b)
+	}
+	return string(b[:max])
+}

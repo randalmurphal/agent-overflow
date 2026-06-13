@@ -33,6 +33,7 @@
   import { parsePatchFiles, type PatchFile } from '../../utils/patchFiles';
   import { userFacingError } from '../../utils/userFacingError';
   import type { UserMessageActions } from './userMessageActions';
+  import { providerSupports } from '../../providers/catalog';
   import {
     isUiRenderTraceEnabled,
     recordUiTrace,
@@ -87,11 +88,18 @@
     const target = revertMessageTarget;
     return target ? target.itemId : null;
   });
+  // Revert-to-checkpoint and fork-from-message are AO-mediated affordances that
+  // claude-tui doesn't support — leaving the handlers undefined makes
+  // UserMessage drop the buttons (it derives `canRequest*` from
+  // `typeof on*Message === 'function'`), so the gate lands on every rendered
+  // user message from this single point.
+  const supportsRevert = $derived(providerSupports(pane.thread?.provider, 'revert'));
+  const supportsFork = $derived(providerSupports(pane.thread?.provider, 'fork'));
   const userMessageActions = $derived<UserMessageActions>({
-    onRevertMessage: openUserMessageRevert,
-    onConfirmRevertMessage: revertToUserMessage,
-    onCancelRevertMessage: cancelUserMessageRevert,
-    onForkMessage: forkFromUserMessage,
+    onRevertMessage: supportsRevert ? openUserMessageRevert : undefined,
+    onConfirmRevertMessage: supportsRevert ? revertToUserMessage : undefined,
+    onCancelRevertMessage: supportsRevert ? cancelUserMessageRevert : undefined,
+    onForkMessage: supportsFork ? forkFromUserMessage : undefined,
     revertTargetItemId: activeRevertTargetItemId,
     revertAffectedFiles,
     revertingItemId: revertPreviewItemId ?? (revertingMessage ? activeRevertTargetItemId : null),

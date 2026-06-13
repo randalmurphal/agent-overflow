@@ -176,7 +176,8 @@ describe('<ModelProviderMenu>', () => {
 
     const { getByTestId, findByRole } = render(ModelProviderMenu, { props: { pane } });
     await fireEvent.click(getByTestId('composer-model-menu-trigger'));
-    const claudeRow = await findByRole('menuitem', { name: /Claude/i });
+    // Anchored so it targets the "Claude" submenu, not "Claude TUI".
+    const claudeRow = await findByRole('menuitem', { name: /^Claude$/ });
     await fireEvent.click(claudeRow);
 
     await waitFor(() => {
@@ -349,7 +350,7 @@ describe('<ModelProviderMenu>', () => {
     expect(queryByRole('menuitem', { name: /Discussions/i })).toBeNull();
   });
 
-  it('on a fresh (empty) thread, shows both providers AND Discussions', async () => {
+  it('on a fresh (empty) thread, shows every provider AND Discussions', async () => {
     const pane = await buildPane(
       makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
     );
@@ -360,7 +361,11 @@ describe('<ModelProviderMenu>', () => {
     });
     await fireEvent.click(getByTestId('composer-model-menu-trigger'));
 
-    await findByRole('menuitem', { name: /Claude/i });
+    // All three providers are offered on a fresh thread — Claude, the
+    // interactive Claude TUI, and Codex — plus Discussions. The Claude match is
+    // anchored so it doesn't also pick up "Claude TUI".
+    await findByRole('menuitem', { name: /^Claude$/ });
+    await findByRole('menuitem', { name: 'Claude TUI' });
     await findByRole('menuitem', { name: /Codex/i });
     await findByRole('menuitem', { name: /Discussions/i });
   });

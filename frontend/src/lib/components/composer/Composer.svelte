@@ -48,6 +48,7 @@
     refreshDiffReviewComments,
   } from '../../stores/diffReviewComments.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { providerSupports } from '../../providers/catalog';
   import { registerQueueItem } from '../../stores/sendQueue.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
@@ -673,23 +674,41 @@
     return true;
   }
 
+  // Some providers don't carry composer attachments (claude-tui drives the real
+  // TUI, where files are attached inside the terminal via take-control). This
+  // fronts the prompt guard so the four add-paths (paste + three drag events)
+  // refuse the event before any upload state machinery runs — which also keeps
+  // the drag-active hint from appearing, since handleDragEnter bails first.
+  let supportsAttachments = $derived(providerSupports(pane.thread?.provider, 'attachments'));
+
+  function blockAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {
+    if (!supportsAttachments) {
+      event.preventDefault();
+      if (notify) {
+        addToast('warning', 'This provider doesn’t support attachments');
+      }
+      return true;
+    }
+    return blockPromptAttachment(event, notify);
+  }
+
   function handleDragEnter(event: DragEvent): void {
-    if (blockPromptAttachment(event, false)) return;
+    if (blockAttachment(event, false)) return;
     uploads.handleDragEnter(event);
   }
 
   function handleDragOver(event: DragEvent): void {
-    if (blockPromptAttachment(event, false)) return;
+    if (blockAttachment(event, false)) return;
     uploads.handleDragOver(event);
   }
 
   function handleDrop(event: DragEvent): void {
-    if (blockPromptAttachment(event)) return;
+    if (blockAttachment(event)) return;
     void uploads.handleDrop(event, imagePlaceholders.currentUploadInsertion());
   }
 
   function handlePaste(event: ClipboardEvent): void {
-    if (blockPromptAttachment(event)) return;
+    if (blockAttachment(event)) return;
     void uploads.handlePaste(event, imagePlaceholders.currentUploadInsertion());
   }
 

@@ -897,6 +897,45 @@ export class PayloadPreview {
 }
 
 /**
+ * ProviderTerminalHandle is what attaching to a provider PTY returns: the
+ * terminal id (for routing output + replay) plus its current summary (winsize)
+ * so the frontend can size an xterm to the last-drawn frame before writing the
+ * replay buffer.
+ */
+export class ProviderTerminalHandle {
+    "terminalID": string;
+    "threadID": string;
+    "summary": terminal$0.SessionSummary;
+
+    /** Creates a new ProviderTerminalHandle instance. */
+    constructor($$source: Partial<ProviderTerminalHandle> = {}) {
+        if (!("terminalID" in $$source)) {
+            this["terminalID"] = "";
+        }
+        if (!("threadID" in $$source)) {
+            this["threadID"] = "";
+        }
+        if (!("summary" in $$source)) {
+            this["summary"] = (new terminal$0.SessionSummary());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderTerminalHandle instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProviderTerminalHandle {
+        const $$createField2_0 = $$createType11;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("summary" in $$parsedSource) {
+            $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
+        }
+        return new ProviderTerminalHandle($$parsedSource as Partial<ProviderTerminalHandle>);
+    }
+}
+
+/**
  * QueueFlushedItem is one entry inside a QueueFlushedEvent. Carries
  * the original frontend-allocated queueItemId, the backend-allocated
  * userItemId (deterministic row id), and the message text so the
@@ -1015,7 +1054,7 @@ export class SendMessageOptions {
         const $$createField2_0 = $$createType6;
         const $$createField3_0 = $$createType6;
         const $$createField4_0 = $$createType2;
-        const $$createField5_0 = $$createType12;
+        const $$createField5_0 = $$createType13;
         const $$createField6_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
@@ -1153,7 +1192,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType13;
+        const $$createField2_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1442,9 +1481,9 @@ const $$createType7 = git$0.GitStatus.createFrom;
 const $$createType8 = LiveStateTodoStep.createFrom;
 const $$createType9 = $Create.Array($$createType8);
 const $$createType10 = $Create.Map($Create.Any, $Create.Any);
-const $$createType11 = store$0.DiffReviewSourceRef.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = terminal$0.SessionSummary.createFrom;
+const $$createType11 = terminal$0.SessionSummary.createFrom;
+const $$createType12 = store$0.DiffReviewSourceRef.createFrom;
+const $$createType13 = $Create.Nullable($$createType12);
 const $$createType14 = LiveStateActiveTurn.createFrom;
 const $$createType15 = $Create.Nullable($$createType14);
 const $$createType16 = flushqueue$0.QueuedItem.createFrom;

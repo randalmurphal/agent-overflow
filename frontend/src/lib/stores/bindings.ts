@@ -142,6 +142,15 @@ export {
   RestartTerminal,
   WriteTerminal,
 
+  // Provider terminal (claude-tui take-control)
+  ProviderTerminalAttach,
+  ProviderTerminalDetach,
+  ProviderTerminalReplay,
+  ProviderTerminalInput,
+  ProviderTerminalResize,
+  ProviderTerminalRefresh,
+  ProviderTerminalSetControl,
+
   // Discussion operations
   ListDiscussions,
   ListDiscussionsForThread,

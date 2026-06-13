@@ -13,6 +13,7 @@
     loadFromSettings as loadPaneLayoutFromSettings,
   } from './lib/stores/paneLayoutPersistence';
   import { flushPaneLayoutPersistence, setPaneLayoutItems } from './lib/stores/paneLayout.svelte';
+  import { installTakeControl } from './lib/stores/takeControl.svelte';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
   import { syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
@@ -267,6 +268,7 @@
         const threads = await loadThreads();
         await loadPaneLayoutFromSettings(threads);
         installPaneLayoutPersistence();
+        installTakeControl();
       } catch (err) {
         console.error('Failed to restore pane layout:', err);
         setPaneLayoutItems([]);

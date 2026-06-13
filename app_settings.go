@@ -139,7 +139,9 @@ func (a *App) providerBinaryPath(providerName string) string {
 	cfg := a.currentSettings()
 
 	switch providerName {
-	case string(provider.Claude):
+	case string(provider.Claude), string(provider.ClaudeTUI):
+		// The interactive TUI provider drives the same `claude` binary as the
+		// headless one — one binary setting backs both.
 		if path := strings.TrimSpace(cfg.ClaudeBinaryPath); path != "" {
 			return path
 		}

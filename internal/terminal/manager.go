@@ -200,6 +200,17 @@ func (m *Manager) ReplaySnapshot(terminalID string) (ReplaySnapshot, error) {
 	return sess.ReplaySnapshot(), nil
 }
 
+// Summary returns the current summary (winsize, pid, timing) for one terminal.
+// Backs the take-control attach path, which sizes a freshly mounted xterm to the
+// PTY's last-drawn dimensions before writing the replay.
+func (m *Manager) Summary(terminalID string) (SessionSummary, error) {
+	sess, err := m.get(terminalID)
+	if err != nil {
+		return SessionSummary{}, err
+	}
+	return sess.Summary(), nil
+}
+
 // Restart closes the current session and starts a fresh one with the same
 // options. The new session's ID replaces the old one.
 func (m *Manager) Restart(terminalID string) (SessionSummary, error) {

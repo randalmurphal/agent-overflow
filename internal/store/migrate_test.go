@@ -236,7 +236,7 @@ func TestThreadsProviderCheckRejectsBogusValue(t *testing.T) {
 		t.Fatal("INSERT with provider='xyz' must violate CHECK constraint")
 	}
 
-	for _, p := range []string{"claude", "codex"} {
+	for _, p := range []string{"claude", "codex", "claude-tui"} {
 		if _, err := s.db.Exec(`
 			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
 				created_at, updated_at, archived, mode)
@@ -886,6 +886,29 @@ func TestChatBarFavoritesAndProfilesCHECK(t *testing.T) {
 	); err == nil {
 		t.Fatal("profile with invalid effort must violate CHECK")
 	}
+
+	// claude-tui shares claude's effort set and is a first-class provider on
+	// both chat-bar tables post-v10.
+	if _, err := s.db.Exec(
+		`INSERT INTO chat_bar_favorites (kind, provider, value, label, created_at)
+		 VALUES ('model', 'claude-tui', 'claude-opus-4-8', 'Opus 4.8', 1)`,
+	); err != nil {
+		t.Fatalf("claude-tui model favorite must satisfy CHECK: %v", err)
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO chat_model_profiles (
+			provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
+		) VALUES ('claude-tui', 'claude-opus-4-8', 'max', 0, 1000000, 'full-access', 1)`,
+	); err != nil {
+		t.Fatalf("claude-tui profile with valid effort must satisfy CHECK: %v", err)
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO chat_model_profiles (
+			provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
+		) VALUES ('claude-tui', 'claude-sonnet-4-6', 'minimal', 0, 1000000, 'full-access', 1)`,
+	); err == nil {
+		t.Fatal("claude-tui profile with codex-only effort 'minimal' must violate coupling CHECK")
+	}
 }
 
 // --- v5: terminal mode + nullable project_id ---
@@ -1030,6 +1053,131 @@ func TestThreadsV5RebuildPreservesChildren(t *testing.T) {
 	}
 	if standalone != 1 {
 		t.Errorf("standalone terminal should survive project delete, got %d", standalone)
+	}
+}
+
+// TestV10ClaudeTUIProviderWidening guards the v10 rebuild that widens the
+// provider CHECK on all four provider-keyed tables to admit 'claude-tui'. It
+// seeds the pre-v10 schema with a claude thread (plus CASCADE children) and a
+// row in each leaf table, proves claude-tui is rejected everywhere before the
+// migration (so the post-migration acceptance is meaningful), applies the real
+// v10 rebuild, then asserts: the seeded rows survive, FK enforcement is clean
+// and restored, claude-tui is now accepted on every table, the provider/effort
+// coupling still rejects a codex-only effort under claude-tui, and CASCADE
+// remains wired.
+func TestV10ClaudeTUIProviderWidening(t *testing.T) {
+	db := migrateThrough(t, 9)
+
+	// Pre-image: a claude thread with a spread of CASCADE children, plus one
+	// row in each leaf table the rebuild touches.
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v10', '/v10', 'v10', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode)
+		VALUES ('t-v10', 'p-v10', 'Keep me', 'claude', '/tmp', '', 1, 1, 0, 'chat')`)
+	mustExec(t, db, `INSERT INTO turns (turn_id, thread_id, turn_index, started_at)
+		VALUES ('turn-v10', 't-v10', 0, 1)`)
+	mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+		summary, parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+		VALUES ('t-v10-user:0', 't-v10', 0, 0, 'user_text', 'user', 'completed', 'hi', '', 0, '', '', '', '{}', 1, 1)`)
+	mustExec(t, db, `INSERT INTO thread_checkpoints
+		(id, thread_id, user_item_id, turn_index, ref_name, captured_at, workspace_path)
+		VALUES ('chk-v10', 't-v10', 't-v10-user:0', 0, 'refs/x', 1000, '/tmp')`)
+	mustExec(t, db, `INSERT INTO chat_model_profiles
+		(provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at)
+		VALUES ('claude', 'claude-opus-4-7', 'high', 0, 1000000, 'full-access', 1)`)
+	mustExec(t, db, `INSERT INTO chat_bar_favorites (kind, provider, value, label, created_at)
+		VALUES ('model', 'claude', 'claude-opus-4-7', 'Opus 4.7', 1)`)
+	mustExec(t, db, `INSERT INTO new_thread_mcp_defaults (provider, workspace_path, disabled_servers, updated_at)
+		VALUES ('claude', '/tmp', '[]', 1)`)
+
+	// The same four inserts, opposite expectations across the migration
+	// boundary: rejected by the pre-v10 CHECK, accepted after the rebuild.
+	claudeTUIInserts := []struct {
+		table string
+		sql   string
+	}{
+		{"threads", `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+			VALUES ('t-tui', 'p-v10', 'TUI', 'claude-tui', '/tmp', 'claude-opus-4-8', 1, 1, 0, 'chat')`},
+		{"chat_model_profiles", `INSERT INTO chat_model_profiles
+			(provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at)
+			VALUES ('claude-tui', 'claude-opus-4-8', 'max', 0, 1000000, 'full-access', 1)`},
+		{"chat_bar_favorites", `INSERT INTO chat_bar_favorites (kind, provider, value, label, created_at)
+			VALUES ('model', 'claude-tui', 'claude-opus-4-8', 'Opus', 1)`},
+		{"new_thread_mcp_defaults", `INSERT INTO new_thread_mcp_defaults (provider, workspace_path, disabled_servers, updated_at)
+			VALUES ('claude-tui', '/tmp', '[]', 1)`},
+	}
+	for _, c := range claudeTUIInserts {
+		if _, err := db.Exec(c.sql); err == nil {
+			t.Errorf("pre-v10: %s must reject provider 'claude-tui'", c.table)
+		}
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 10)); err != nil {
+		t.Fatalf("apply v10 rebuild: %v", err)
+	}
+
+	// Seeded rows (thread + CASCADE children + each leaf table) survive.
+	for _, c := range []struct{ table, where string }{
+		{"threads", "id = 't-v10'"},
+		{"turns", "thread_id = 't-v10'"},
+		{"items", "thread_id = 't-v10'"},
+		{"thread_checkpoints", "thread_id = 't-v10'"},
+		{"chat_model_profiles", "provider = 'claude' AND model = 'claude-opus-4-7'"},
+		{"chat_bar_favorites", "kind = 'model' AND provider = 'claude' AND value = 'claude-opus-4-7'"},
+		{"new_thread_mcp_defaults", "provider = 'claude' AND workspace_path = '/tmp'"},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + c.table + ` WHERE ` + c.where).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", c.table, err)
+		}
+		if n != 1 {
+			t.Errorf("expected %s row to survive v10 rebuild, got %d", c.table, n)
+		}
+	}
+
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	if rows.Next() {
+		t.Error("foreign_key_check reported a violation after v10 rebuild")
+	}
+	rows.Close()
+
+	var fk int
+	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk); err != nil {
+		t.Fatalf("read foreign_keys: %v", err)
+	}
+	if fk != 1 {
+		t.Errorf("foreign_keys = %d after v10 rebuild, want 1 (re-enabled)", fk)
+	}
+
+	// claude-tui is now accepted on every widened table.
+	for _, c := range claudeTUIInserts {
+		if _, err := db.Exec(c.sql); err != nil {
+			t.Errorf("post-v10: %s must accept provider 'claude-tui': %v", c.table, err)
+		}
+	}
+
+	// The provider/effort coupling still bites: 'minimal' is a codex-only
+	// effort and must be rejected under claude-tui on both coupled tables.
+	if _, err := db.Exec(`UPDATE threads SET reasoning_effort = 'minimal' WHERE id = 't-tui'`); err == nil {
+		t.Error("post-v10: claude-tui thread + reasoning_effort='minimal' (codex-only) must violate coupling CHECK")
+	}
+	if _, err := db.Exec(`UPDATE chat_model_profiles SET reasoning_effort = 'minimal' WHERE provider = 'claude-tui'`); err == nil {
+		t.Error("post-v10: claude-tui chat_model_profiles + effort='minimal' must violate coupling CHECK")
+	}
+
+	// CASCADE survives the rebuild: dropping the project removes its threads.
+	mustExec(t, db, `DELETE FROM projects WHERE id = 'p-v10'`)
+	var remaining int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM threads WHERE id = 't-v10'`).Scan(&remaining); err != nil {
+		t.Fatalf("count t-v10 after project delete: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("post-v10 CASCADE broken: project delete left %d threads", remaining)
 	}
 }
 

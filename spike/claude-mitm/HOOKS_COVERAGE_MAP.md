@@ -346,8 +346,18 @@ discriminated `hookSpecificOutput`:
 - Hooks live in merged settings (`user → project → local → flag → policy`); inline
   `--settings '{"hooks":{…}}'` are applied (the `flagSettings` layer). Only an
   enterprise **policy** (`disableAllHooks`, `allowManagedHooksOnly`, plugin-only
-  restriction) can suppress them. (SRC, with the `--settings`→`flagSettings` parse
-  step inferred — trivially confirmable.)
+  restriction) can suppress them. **LIVE-confirmed (`probe_launchposture.py`, 2.1.170):**
+  a hook present **only** in the `--settings` flag (config-dir `settings.json` left
+  empty) fired — so AO can use the user's **real** `~/.claude` config dir (native
+  trust + auth + remembered acceptances) and inject just the one `AskUserQuestion`
+  hook via `--settings`, instead of managing an isolated `CLAUDE_CONFIG_DIR`.
+- **Full-access launch needs two pre-seeds, both confirmed in the 2.1.170 binary
+  (BIN):** `hasTrustDialogAccepted` (per-folder trust) **and**
+  `bypassPermissionsModeAccepted` (the one-time "Bypass Permissions mode" acceptance
+  Select, whose default row is "No, exit"). With the real config dir both are already
+  set by the user's normal full-access use (worked-in repos launch clean); a fresh
+  isolated config shows both screens until seeded. Org policy `disableBypassPermissionsMode`
+  is the killswitch — if set, full-access is unavailable and AO must detect + surface it.
 - **`CLAUDE_CONFIG_DIR` relocates the *entire* `.claude` tree** (credentials, projects/
   sessions, settings, CLAUDE.md, keybindings, plugins) — 150+ call sites (SRC). If AO
   uses an isolated config dir, the user must still authenticate through Claude Code's
@@ -887,11 +897,22 @@ The remaining edges:
    elsewhere, or a documented-but-unprobed path), but **none were exercised** and should be
    before claiming literal parity:
    - **Context compaction** (`EventCompactBoundary` / `ItemCompaction`, from
-     `parse_system.go`) — a long session **will** auto-compact; AO renders the boundary +
-     context-window snapshot. Recovery path is plausible (wire `system` message + the
-     **documented** `PreCompact`/`PostCompact` hooks + a transcript summary record) but
-     was **never probed** — no capture of a real compaction event exists. Cleanest genuine
-     omission; medium stakes (it happens in every long thread).
+     `parse_system.go`) — **CLOSED, LIVE-probed on 2.1.170 (`probe_compact.py`).** The
+     transcript carries the **same typed shape headless parses**: a
+     **`system/compact_boundary`** row with full **`compactMetadata`** (`trigger`,
+     `preTokens` 43577, `postTokens` 891, `durationMs`, preserved-segment uuids) plus an
+     **`isCompactSummary:true`** user row holding the summary text. So AO's existing
+     `compact_boundary`/`ItemCompaction` parser applies **directly off the transcript — no
+     wire inference required**, and `compactMetadata.preTokens` is the same field the
+     headless `advisor_pretokens_correlation` fixture relies on. Hooks corroborate
+     (`trigger:"manual"`): **`PreCompact`** fires on the command *before* the "enough
+     messages" check (so it is **not** proof compaction happened), **`PostCompact`**
+     carries the full `compact_summary`. The raw gateway wire shows it structurally too
+     (the summarization `POST /v1/messages` carries the full history at a distinct
+     `max_tokens` — 20000 vs the normal 32000 — then the next request's `messages[]`
+     collapses to the injected summary), but the transcript boundary row is the clean
+     source. Probed via manual `/compact`; auto-compaction rides the identical path
+     (`compactMetadata.trigger` distinguishes them).
    - **API-transport errors** (`EventError` / `ItemAPIError` on 429/529/overload, and the
      fatal `stop_reason` enums in `parse_assistant.go`) — §11 (FINDINGS) flags these as
      "capturable via response status + SSE `error` events, **not exercised on demand**."

@@ -265,6 +265,18 @@ var LocalOnlyMethods = map[string]bool{
 	"RecheckClaudeAccount":          true,
 	"RecheckCodexAccount":           true,
 
+	// claude-tui take-control: Attach arms raw-output fan-out and Replay
+	// returns the PTY frame buffer; Input/Resize/Refresh/SetControl steer the
+	// host PTY of a live provider subprocess, and Detach tears the attach down.
+	// Session-control + host-PTY class — never reachable from a LAN peer.
+	"ProviderTerminalAttach":     true,
+	"ProviderTerminalDetach":     true,
+	"ProviderTerminalReplay":     true,
+	"ProviderTerminalInput":      true,
+	"ProviderTerminalResize":     true,
+	"ProviderTerminalRefresh":    true,
+	"ProviderTerminalSetControl": true,
+
 	// 3. Settings mutation. A LAN-attached token-holder must not be
 	// able to reconfigure the server they're attached to.
 	"UpdateSettings":               true,

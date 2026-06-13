@@ -1704,6 +1704,72 @@ export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo>
 }
 
 /**
+ * ProviderTerminalAttach arms raw-output fan-out for the take-control pane and
+ * returns the live terminal handle. The sink emits `provider:terminal_output`
+ * for every chunk; the terminal ring keeps buffering for replay regardless, so
+ * nothing is lost between attach and the frontend's first replay fetch (the
+ * frontend dedupes overlap by the replay watermark).
+ */
+export function ProviderTerminalAttach(threadID: string): $CancellablePromise<$models.ProviderTerminalHandle> {
+    return $Call.ByID(1393518281, threadID).then(($result: any) => {
+        return $$createType77($result);
+    });
+}
+
+/**
+ * ProviderTerminalDetach stops output fan-out and releases the take-control
+ * lease for the session's terminal. Called when a take-control pane closes.
+ */
+export function ProviderTerminalDetach(threadID: string): $CancellablePromise<void> {
+    return $Call.ByID(2584141779, threadID);
+}
+
+/**
+ * ProviderTerminalInput delivers base64-encoded human keystrokes to the PTY.
+ * The session refuses input unless the take-control lease is held, so a
+ * read-only attach cannot inject keystrokes even if a caller tries.
+ */
+export function ProviderTerminalInput(threadID: string, dataB64: string): $CancellablePromise<void> {
+    return $Call.ByID(1783659784, threadID, dataB64);
+}
+
+/**
+ * ProviderTerminalRefresh forces the TUI to repaint a glitched frame via a
+ * winsize nudge (the visible grid is unchanged).
+ */
+export function ProviderTerminalRefresh(threadID: string): $CancellablePromise<void> {
+    return $Call.ByID(1209472335, threadID);
+}
+
+/**
+ * ProviderTerminalReplay returns the base64 replay buffer plus the output
+ * sequence watermark so a freshly mounted take-control xterm renders the
+ * provider's last frame. Mirrors GetTerminalReplay for the provider PTY.
+ */
+export function ProviderTerminalReplay(threadID: string): $CancellablePromise<$models.TerminalReplay> {
+    return $Call.ByID(907422467, threadID).then(($result: any) => {
+        return $$createType32($result);
+    });
+}
+
+/**
+ * ProviderTerminalResize forwards a winsize change to the PTY so the TUI
+ * repaints at the take-control pane's width.
+ */
+export function ProviderTerminalResize(threadID: string, rows: number, cols: number): $CancellablePromise<void> {
+    return $Call.ByID(2998028796, threadID, rows, cols);
+}
+
+/**
+ * ProviderTerminalSetControl acquires (control=true) or releases the human
+ * take-control input lease. While a human holds it, AO's programmatic Send is
+ * refused so the two input drivers never interleave.
+ */
+export function ProviderTerminalSetControl(threadID: string, control: boolean): $CancellablePromise<void> {
+    return $Call.ByID(1382066673, threadID, control);
+}
+
+/**
  * RecheckClaudeAccount evicts the cached result for the configured
  * Claude binary and re-runs ProbeClaudeAccount. This is the surface
  * the auth banner's "Recheck Auth" button calls after the user runs
@@ -1866,8 +1932,7 @@ export function RenameThread(id: string, title: string): $CancellablePromise<voi
  * channel is always on: a render-path exception is user-facing state we
  * must be able to diagnose after the fact, and silent frontend errors have
  * already cost us a multi-day memory-leak hunt (every throw mid-update
- * permanently leaks the deriveds that update had just connected). Returns
- * the log file path so the frontend can surface it.
+ * permanently leaks the deriveds that update had just connected).
  */
 export function ReportFrontendErrorBatch(lines: string[]): $CancellablePromise<string> {
     return $Call.ByID(2174329377, lines);
@@ -1941,7 +2006,7 @@ export function SavePayloadToFile(threadID: string, payloadID: string): $Cancell
  */
 export function SearchThreadItems(threadID: string, query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(1414650511, threadID, query, limit).then(($result: any) => {
-        return $$createType78($result);
+        return $$createType79($result);
     });
 }
 
@@ -1957,7 +2022,7 @@ export function SearchThreadItems(threadID: string, query: string, limit: number
  */
 export function SearchThreadMessages(query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(3644945077, query, limit).then(($result: any) => {
-        return $$createType78($result);
+        return $$createType79($result);
     });
 }
 
@@ -1967,7 +2032,7 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
  */
 export function SearchWorkspaceFiles(threadID: string, query: string, limit: number): $CancellablePromise<$models.WorkspaceFileSearchResult> {
     return $Call.ByID(3852272821, threadID, query, limit).then(($result: any) => {
-        return $$createType79($result);
+        return $$createType80($result);
     });
 }
 
@@ -2225,7 +2290,7 @@ export function TouchRemoteEndpoint(id: string): $CancellablePromise<void> {
  */
 export function TriggerMcpAuth(threadID: string, name: string): $CancellablePromise<$models.MCPAuthInitResult> {
     return $Call.ByID(1291217507, threadID, name).then(($result: any) => {
-        return $$createType80($result);
+        return $$createType81($result);
     });
 }
 
@@ -2606,7 +2671,8 @@ const $$createType73 = wsllauncher$0.Distro.createFrom;
 const $$createType74 = $Create.Array($$createType73);
 const $$createType75 = $models.TerminalHandle.createFrom;
 const $$createType76 = provider$0.AccountInfo.createFrom;
-const $$createType77 = store$0.ThreadMessageHit.createFrom;
-const $$createType78 = $Create.Array($$createType77);
-const $$createType79 = $models.WorkspaceFileSearchResult.createFrom;
-const $$createType80 = $models.MCPAuthInitResult.createFrom;
+const $$createType77 = $models.ProviderTerminalHandle.createFrom;
+const $$createType78 = store$0.ThreadMessageHit.createFrom;
+const $$createType79 = $Create.Array($$createType78);
+const $$createType80 = $models.WorkspaceFileSearchResult.createFrom;
+const $$createType81 = $models.MCPAuthInitResult.createFrom;

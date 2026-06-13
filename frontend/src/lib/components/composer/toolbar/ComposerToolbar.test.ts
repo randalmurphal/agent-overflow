@@ -137,6 +137,25 @@ describe('<ComposerToolbar>', () => {
     expect(collapsiblePlan).toBeTruthy();
   });
 
+  it('renders the runtime-access, MCP, and plan toggles for a claude thread', () => {
+    const { queryByTestId } = renderToolbar(makeThread({ provider: 'claude' }));
+    expect(queryByTestId('composer-access-toggle')).not.toBeNull();
+    expect(queryByTestId('composer-mcp-trigger')).not.toBeNull();
+    expect(queryByTestId('composer-agent-mode-toggle')).not.toBeNull();
+  });
+
+  it('omits the unsupported toggles for a claude-tui thread', () => {
+    // claude-tui has no AO-mediated runtime-mode / MCP / plan affordances —
+    // they live inside the real TUI, reached via take-control. The composer
+    // toolbar must not render those controls at all.
+    const { queryByTestId } = renderToolbar(makeThread({ provider: 'claude-tui' }));
+    expect(queryByTestId('composer-access-toggle')).toBeNull();
+    expect(queryByTestId('composer-mcp-trigger')).toBeNull();
+    expect(queryByTestId('composer-agent-mode-toggle')).toBeNull();
+    // The model + effort pickers stay — claude-tui reuses claude's catalog.
+    expect(queryByTestId('composer-effort-trigger')).not.toBeNull();
+  });
+
   it('remeasures when toolbar text changes without a container resize', async () => {
     let requiredWidth = 500;
     restoreDimensions = installToolbarDimensions(() => requiredWidth);

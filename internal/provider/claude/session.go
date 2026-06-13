@@ -850,6 +850,17 @@ func claudeAskUserQuestionAnswers(questions []provider.UserInputQuestion, answer
 	return out
 }
 
+// AskUserQuestionAnswers projects the user's selections into the
+// question-key→answer map Claude Code's AskUserQuestion tool consumes
+// (multi-select comma-joined). It is the exported seam for the interactive
+// (TUI) provider's hook answer-back, which feeds the same projection into
+// hookSpecificOutput.updatedInput rather than a stdin control_response — so
+// both Claude transports share one copy of the contract rather than drifting.
+// See claudeAskUserQuestionAnswers for why the comma-join is the contract.
+func AskUserQuestionAnswers(questions []provider.UserInputQuestion, answers map[string]provider.UserInputAnswer) map[string]string {
+	return claudeAskUserQuestionAnswers(questions, answers)
+}
+
 func claudeAskUserQuestionKeyCounts(questions []provider.UserInputQuestion) map[string]int {
 	counts := make(map[string]int, len(questions)*3)
 	for _, question := range questions {

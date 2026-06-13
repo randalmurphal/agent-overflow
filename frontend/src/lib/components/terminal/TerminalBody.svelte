@@ -1,10 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { Terminal } from '@xterm/xterm';
-  import { FitAddon } from '@xterm/addon-fit';
-  import { WebLinksAddon } from '@xterm/addon-web-links';
-  import { WebglAddon } from '@xterm/addon-webgl';
-  import '@xterm/xterm/css/xterm.css';
+  import type { Terminal } from '@xterm/xterm';
+  import type { FitAddon } from '@xterm/addon-fit';
   import {
     WriteTerminal,
     ResizeTerminal,
@@ -17,12 +14,7 @@
     notifyTerminalFocus,
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
-  import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
-  import { TERMINAL_ESCAPE_COMMAND_IDS } from '../../stores/paneNavCommands';
-  import { copyToClipboard } from '../../utils/clipboard';
-  import { addToast } from '../../stores/toast.svelte';
-  import { errString } from '../../utils/errors';
-  import { isClipboardChord } from './terminalKeys';
+  import { buildTerminal } from './terminalXterm';
 
   interface Props {
     handle: ThreadTerminalStateHandle;
@@ -67,145 +59,20 @@
     notifyTerminalFocus(paneId, false);
   }
 
-  // Copy/paste are handled in the widget rather than the rebindable command
-  // layer because they need the xterm selection/paste API and their platform
-  // split (the Shift asymmetry) does not express in the single-`mod` keybinding
-  // model. isClipboardChord (terminalKeys) owns the per-platform chord rules.
-  const isMac =
-    typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
-
-  // Build the xterm instance with its addons attached to the mount node.
-  // Extracted from hydrate() so the long renderer-choice rationale doesn't bury
-  // the replay/drain ordering that the rest of hydrate() turns on.
-  function buildTerminal(mount: HTMLDivElement): { term: Terminal; fit: FitAddon } {
-    const terminal = new Terminal({
-      convertEol: false,
-      cursorBlink: true,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-      fontSize: 13,
-      // 1.0 so Unicode half-block / box-drawing glyphs (▀ ▄ █) tile with no
-      // vertical gap — TUI sprite art and box borders render contiguously.
-      // A larger line-height makes each cell taller than the glyph and breaks
-      // block art into banded strips.
-      lineHeight: 1.0,
-      scrollback: 4000,
-      allowProposedApi: true,
-      theme: getXtermTheme(getResolvedTheme()),
+  // Every keystroke (main stream via term.onData, plus the Shift+Enter newline
+  // the widget produces internally) routes through here to the app terminal
+  // manager. Passed to buildTerminal as `onInput` and wired to term.onData so a
+  // single path owns input.
+  function writeInput(data: string): void {
+    WriteTerminal(terminalID, encodeTerminalInput(data)).catch((err) => {
+      console.error('terminal: WriteTerminal failed', err);
     });
-
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.loadAddon(new WebLinksAddon());
-    terminal.open(mount);
-
-    // Runs on every keydown in a focused xterm. It first fully consumes the
-    // in-widget special cases handled below — Shift+Enter (newline) and copy/
-    // paste (Cmd, or Ctrl+Shift+C/V) — so they never reach the shell. Everything
-    // else falls to the escape predicate: app chords that stay active inside a
-    // focused terminal bubble to App.svelte's window keydown handler instead of
-    // being encoded to the PTY — pane navigation (alt+h/l, alt+shift+h/l),
-    // terminal.refresh (alt+shift+r → repaint), terminal tab management
-    // (mod+shift+t/w, ctrl+tab/ctrl+shift+tab), and new pane (mod+shift+~).
-    // Returning false makes xterm skip its own handling WITHOUT preventDefault/
-    // stopPropagation, so the event reaches the app. Chords still gated on
-    // !terminalFocus (alt+arrow word-motion) are not matched by the predicate and
-    // fall through to the shell as before. The predicate reads live bindings, so
-    // a user rebind takes effect immediately.
-    terminal.attachCustomKeyEventHandler((event) => {
-      if (event.type !== 'keydown') return true;
-      // Shift+Enter inserts a newline instead of submitting. xterm's default
-      // sends CR (which the shell submits); we send LF (\n) — the byte Claude
-      // Code / Codex (and anything binding Ctrl+J) read as "new line, don't
-      // submit". At a bare shell LF is accept-line, identical to the CR it
-      // replaces, so the prompt is unaffected. We write the byte ourselves and
-      // fully consume the event: returning false stops xterm's CR,
-      // preventDefault stops the browser inserting a stray newline into xterm's
-      // helper textarea, and stopPropagation keeps it from reaching App.svelte's
-      // window keydown handler. Only the bare chord qualifies — Ctrl/Alt/Meta+
-      // Enter fall through so mod+enter (sidebar.cursor.open) isn't stolen.
-      if (
-        event.key === 'Enter' &&
-        event.shiftKey &&
-        !event.ctrlKey &&
-        !event.altKey &&
-        !event.metaKey
-      ) {
-        event.preventDefault();
-        event.stopPropagation();
-        WriteTerminal(terminalID, encodeTerminalInput('\n')).catch((err) => {
-          console.error('terminal: WriteTerminal (shift+enter) failed', err);
-        });
-        return false;
-      }
-      // Copy: Cmd+C (macOS) / Ctrl+Shift+C. Copy the selection to the clipboard
-      // and fully consume the event so it never reaches the PTY. A copy chord
-      // with no selection is a no-op but still consumed (never meant for the
-      // shell).
-      if (isClipboardChord(event, 'c', isMac)) {
-        event.preventDefault();
-        event.stopPropagation();
-        if (terminal.hasSelection()) {
-          void copyToClipboard(terminal.getSelection()).then((ok) => {
-            if (!ok) addToast('error', 'Copy failed: clipboard unavailable');
-          });
-        }
-        return false;
-      }
-      // Paste: Cmd+V (macOS) / Ctrl+Shift+V. Read the clipboard and feed it
-      // through term.paste so xterm honors bracketed-paste mode (multi-line
-      // safety). readText can reject (permission/focus) — surface it, never
-      // swallow.
-      if (isClipboardChord(event, 'v', isMac)) {
-        event.preventDefault();
-        event.stopPropagation();
-        navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text && !destroyed) terminal.paste(text);
-          })
-          .catch((err) => {
-            console.error('terminal: clipboard paste failed', err);
-            addToast('error', `Paste failed: ${errString(err)}`);
-          });
-        return false;
-      }
-      return !eventEscapesTerminalToCommand(event, TERMINAL_ESCAPE_COMMAND_IDS);
-    });
-
-    // Renderer choice is load-bearing for TUI art, not just perf. xterm draws
-    // box-drawing AND block/quadrant glyphs (U+2500–259F — the ▀ ▄ █ ▌ ▐ and
-    // quadrant ▖▗▘▙▚▛▜▝▞▟ that Claude Code's startup sprite is built from) with
-    // its own pixel-perfect custom-glyph atlas, but ONLY on the canvas/WebGL
-    // renderers. The default DOM renderer emits text and defers those glyphs to
-    // the system font, which tiles them with seams/misalignment (the fragmented-
-    // sprite bug). WebGL needs a WebGL2 context; construction throws if it's
-    // unavailable (headless tests, or any webview that disables 3D APIs —
-    // the WSL WebView2 launcher used to ship `--disable-3d-apis`, which
-    // silently forced this DOM fallback; see cmd/agent-overflow-windows
-    // browserArgs), and onContextLoss reverts to the DOM renderer if the GPU
-    // drops the context at runtime.
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => {
-        console.warn('terminal: WebGL context lost; reverting to DOM renderer');
-        webgl.dispose();
-      });
-      terminal.loadAddon(webgl);
-    } catch (err) {
-      console.warn(
-        'terminal: WebGL renderer unavailable; using DOM renderer ' +
-          '(block/box glyphs fall back to the system font)',
-        err,
-      );
-    }
-
-    return { term: terminal, fit: fitAddon };
   }
 
   async function hydrate() {
     if (!mountEl || destroyed) return;
 
-    const built = buildTerminal(mountEl);
+    const built = buildTerminal(mountEl, { onInput: writeInput, isDisposed: () => destroyed });
     term = built.term;
     fit = built.fit;
 
@@ -268,11 +135,7 @@
     // queue empty after the drain above; subsequent output drains normally.)
     hydrated = true;
 
-    dataDisposable = term.onData((data) => {
-      WriteTerminal(terminalID, encodeTerminalInput(data)).catch((err) => {
-        console.error('terminal: WriteTerminal failed', err);
-      });
-    });
+    dataDisposable = term.onData(writeInput);
 
     attachResizeObserver();
     scheduleFit();

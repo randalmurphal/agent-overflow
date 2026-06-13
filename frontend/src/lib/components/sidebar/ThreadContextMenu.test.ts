@@ -84,6 +84,17 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(labels).toContain('Delete');
   });
 
+  it('hides Fork Thread for claude-tui even with a session reference', () => {
+    // sessionRef is present, so the only thing hiding Fork is the provider
+    // capability gate: claude-tui forks inside the real TUI (via take-control),
+    // not through AO's fork-thread path.
+    const { baseElement } = renderMenu(makeThread({ provider: 'claude-tui' }));
+    const labels = visibleLabels(baseElement);
+    expect(labels).not.toContain('Fork Thread');
+    expect(labels).toContain('Rename Thread');
+    expect(labels).toContain('Delete');
+  });
+
   it('hides Delete for child (discussion) threads — the parent owns the lifecycle', () => {
     const { baseElement } = renderMenu(makeThread({ parentThreadId: 'parent-1' }));
     const labels = visibleLabels(baseElement);

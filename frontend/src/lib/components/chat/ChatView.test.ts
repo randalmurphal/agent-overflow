@@ -177,6 +177,39 @@ describe('<ChatView>', () => {
     expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
   });
 
+  it('hides the revert and fork message actions for a claude-tui thread', async () => {
+    // Same checkpointed-user-message setup as the revert test below, but on a
+    // claude-tui thread. The ready checkpoint makes the actions eligible to
+    // render (showMessageActions); only the provider capability gate keeps them
+    // off — so dropping the gate brings both buttons back and fails this test.
+    const thread: Thread = { ...seedThread(), provider: 'claude-tui' };
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    pane.diffPanel.setCheckpoints([{
+      id: 'checkpoint-1',
+      threadId: thread.id,
+      userItemId: userItem.id,
+      turnIndex: userItem.turnIndex,
+      status: 'ready',
+      files: [],
+      capturedAt: 1,
+    }]);
+    mockDrafts(new Map([[thread.id, '']]));
+
+    const { queryByLabelText } = render(ChatView, { props: { pane } });
+
+    expect(queryByLabelText('Revert to this message')).toBeNull();
+    expect(queryByLabelText('Fork from this message')).toBeNull();
+  });
+
   it.each([
     ['conversation-and-files', 'revert-conversation-and-files'] as const,
     ['conversation-only', 'revert-conversation-only'] as const,

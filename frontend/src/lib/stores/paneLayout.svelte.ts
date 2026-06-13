@@ -1,10 +1,21 @@
-export type PaneLayoutKind = 'thread';
+// 'thread' panes host a ChatView for a ThreadPane (the registry in
+// panes.svelte.ts). 'take-control' panes host the read-only/attach terminal
+// mirror of a claude-tui session's PTY; they are NOT ThreadPanes, are never
+// persisted (buildSnapshot skips any layout item with no ThreadPane), and are
+// always bound to a source thread pane via `sourcePaneId`. The take-control
+// registry in takeControl.svelte.ts owns their runtime state and the
+// open/close/cascade/switch-follow lifecycle.
+export type PaneLayoutKind = 'thread' | 'take-control';
 
 export interface PaneLayoutItem {
   id: string;
   paneId: string;
   kind: PaneLayoutKind;
   ratio: number;
+  // Set only on 'take-control' items: the paneId of the source thread pane
+  // this terminal mirror is paired to. Drives adjacency (it sits immediately
+  // right of its source) and cascade close (source closes → this closes).
+  sourcePaneId?: string;
 }
 
 export const DEFAULT_PANE_RATIO = 1;
@@ -58,12 +69,14 @@ function normalizeRatio(ratio: number): number {
 }
 
 function cloneLayoutItem(item: PaneLayoutItem): PaneLayoutItem {
-  return {
+  const cloned: PaneLayoutItem = {
     id: item.id,
     paneId: item.paneId,
     kind: item.kind,
     ratio: normalizeRatio(item.ratio),
   };
+  if (item.sourcePaneId !== undefined) cloned.sourcePaneId = item.sourcePaneId;
+  return cloned;
 }
 
 export function getPaneLayoutItems(): PaneLayoutItem[] {
@@ -103,7 +116,7 @@ export function movePaneLayoutItem(paneId: string, direction: -1 | 1): void {
   const next = layoutItems.slice();
   const [item] = next.splice(index, 1);
   next.splice(nextIndex, 0, item);
-  layoutItems = next;
+  layoutItems = resnapTakeControlItems(next);
   requestLayoutPersistence();
 }
 
@@ -114,8 +127,34 @@ export function movePaneLayoutItemToIndex(paneId: string, insertIndex: number): 
   const [item] = next.splice(index, 1);
   const clamped = Math.max(0, Math.min(next.length, insertIndex));
   next.splice(clamped, 0, item);
-  layoutItems = next;
+  layoutItems = resnapTakeControlItems(next);
   requestLayoutPersistence();
+}
+
+// resnapTakeControlItems re-pins every 'take-control' pane immediately to the
+// right of the thread pane it is paired to (sourcePaneId), preserving the
+// relative order of thread panes. This is the structural guarantee behind the
+// user-facing rule "it doesn't leave a dangling mf on the side": no reorder can
+// separate a take-control pane from its source. A take-control item whose
+// source is gone is dropped (the cascade-close path is the authoritative
+// remover; this is only a defensive sweep so a transient orphan can't render).
+function resnapTakeControlItems(items: PaneLayoutItem[]): PaneLayoutItem[] {
+  const takeControlBySource = new Map<string, PaneLayoutItem>();
+  const threadItems: PaneLayoutItem[] = [];
+  for (const item of items) {
+    if (item.kind === 'take-control' && item.sourcePaneId) {
+      takeControlBySource.set(item.sourcePaneId, item);
+    } else {
+      threadItems.push(item);
+    }
+  }
+  const result: PaneLayoutItem[] = [];
+  for (const item of threadItems) {
+    result.push(item);
+    const paired = takeControlBySource.get(item.paneId);
+    if (paired) result.push(paired);
+  }
+  return result;
 }
 
 export function resizeAdjacentPaneLayoutItems(

@@ -110,7 +110,10 @@ func legalEffortForProvider(providerName, effort string) bool {
 		default:
 			return false
 		}
-	case "claude":
+	case "claude", "claude-tui":
+		// claude-tui drives the same claude binary, so it shares claude's
+		// reasoning-effort set. Kept in lockstep with the provider/effort
+		// coupling CHECK on threads + chat_model_profiles (migrate.go).
 		switch effort {
 		case "low", "medium", "high", "xhigh", "max":
 			return true
@@ -123,8 +126,9 @@ func legalEffortForProvider(providerName, effort string) bool {
 }
 
 var legalProviders = map[string]struct{}{
-	"claude": {},
-	"codex":  {},
+	"claude":     {},
+	"codex":      {},
+	"claude-tui": {},
 }
 
 func validContextWindow(tokens int) bool {
@@ -825,9 +829,9 @@ func (s *Store) ClearLastTokenUsage(threadID string) error {
 	return s.UpdateLastTokenUsage(threadID, "")
 }
 
-// UpdateProvider overwrites the provider ('claude' / 'codex'). Invalid
-// values surface ErrInvalidProvider before hitting SQLite so the binding
-// can translate to a user-facing error.
+// UpdateProvider overwrites the provider ('claude' / 'codex' / 'claude-tui').
+// Invalid values surface ErrInvalidProvider before hitting SQLite so the
+// binding can translate to a user-facing error.
 func (s *Store) UpdateProvider(threadID, prov string) error {
 	if _, ok := legalProviders[prov]; !ok {
 		return fmt.Errorf("%w: %q", ErrInvalidProvider, prov)

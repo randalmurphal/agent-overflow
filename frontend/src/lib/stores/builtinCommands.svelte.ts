@@ -10,6 +10,7 @@ import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import type { TerminalHandle } from '../types/terminal';
 import { registerCommand, type CommandContext, type CommandFlags } from './commandRegistry.svelte';
+import { providerSupports } from '../providers/catalog';
 import { closeCheatSheet, isCheatSheetOpen, openCheatSheet } from './cheatSheet.svelte';
 import { closeMessageSearch, isMessageSearchOpen, openMessageSearch } from './messageSearch.svelte';
 import { closePalette, isPaletteOpen, openPalette } from './palette.svelte';
@@ -1010,7 +1011,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     turnActive: getActiveTurn(pane?.threadId ?? null) !== null,
     sendInFlight: isSendInFlight(pane?.threadId ?? null, pane?.sendInFlight ?? false),
     hasPendingPrompt: pane ? pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0 : false,
-    canForkActiveThread: !!thread?.sessionRef,
+    canForkActiveThread: !!thread?.sessionRef && providerSupports(thread?.provider, 'fork'),
     canStartDiscussion:
       !!thread && thread.mode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
     sidebarCursorActive: getSidebarCursorThreadId() !== null,
