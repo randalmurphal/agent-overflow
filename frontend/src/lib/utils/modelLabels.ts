@@ -4,7 +4,13 @@ import type { ProviderID } from '../types/providers';
 export type ModelProvider = ProviderID | string;
 
 export function displayModelLabel(provider: ModelProvider, slug: string, name?: string): string {
-  if (provider === PROVIDER_DEFINITIONS.claude.id) {
+  // claude-tui drives the same Claude models as the headless claude provider,
+  // so it shares the friendly-label formatting (slug "claude-opus-4-8" →
+  // "Opus 4.8") rather than falling through to the raw slug.
+  if (
+    provider === PROVIDER_DEFINITIONS.claude.id ||
+    provider === PROVIDER_DEFINITIONS['claude-tui'].id
+  ) {
     return displayClaudeModelLabel(slug, name);
   }
   return name?.trim() || slug;

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { fireEvent, render } from "@testing-library/svelte";
+import { fireEvent, render, waitFor } from "@testing-library/svelte";
 
 import EffortMenu from "./EffortMenu.svelte";
 import { createThreadPane } from "../../../stores/thread.svelte";
@@ -87,6 +87,37 @@ describe("<EffortMenu>", () => {
     );
     const { getByTestId } = render(EffortMenu, { props: { pane } });
     expect(triggerText(getByTestId)).toBe("High · 272k");
+  });
+
+  it("shows the context window on mount without opening a picker (eager catalog load)", async () => {
+    // Regression: the context segment (200k / 1M) used to stay hidden until the
+    // user opened the effort or model picker, because the catalog only loaded on
+    // picker open. EffortMenu now loads it eagerly, so the label is complete on
+    // first render. Mirrors the claude-tui Opus 4.8 case from the bug report.
+    setBindingMock("GetModelsForProvider", async () => [
+      {
+        slug: "claude-opus-4-8",
+        name: "Claude Opus 4.8",
+        provider: "claude-tui",
+        capabilities: [],
+        contextWindows: [
+          { tokens: 200000, label: "200k", tier: "standard" },
+          { tokens: 1000000, label: "1M", tier: "extended" },
+        ],
+        reasoningEfforts: [],
+      },
+    ]);
+    const pane = await buildPane(
+      makeThread({
+        provider: "claude-tui",
+        model: "claude-opus-4-8",
+        reasoningEffort: "xhigh",
+        contextWindow: 200000,
+      }),
+    );
+    const { getByTestId } = render(EffortMenu, { props: { pane } });
+    // No menu interaction — the eager $effect load resolves and the label fills in.
+    await waitFor(() => expect(triggerText(getByTestId)).toBe("xHigh · 200k"));
   });
 
   it("hides context for models with one selectable window", async () => {

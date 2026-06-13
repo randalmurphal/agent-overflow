@@ -9,6 +9,14 @@ describe('displayModelLabel', () => {
     expect(displayModelLabel('claude', 'claude-haiku-4-5')).toBe('Haiku 4.5');
   });
 
+  it('formats claude-tui slugs with the Claude formatter (same models, friendly label)', () => {
+    // The interactive provider runs the same Claude models, so the trigger
+    // shows "Opus 4.8", not the raw slug "claude-opus-4-8".
+    expect(displayModelLabel('claude-tui', 'claude-opus-4-8')).toBe('Opus 4.8');
+    expect(displayModelLabel('claude-tui', 'claude-sonnet-4-6')).toBe('Sonnet 4.6');
+    expect(displayModelLabel('claude-tui', 'claude-opus-4-8', 'Claude Opus 4.8')).toBe('Opus 4.8');
+  });
+
   it('strips trailing 8-digit release datestamps from Claude slugs', () => {
     // Canonical wire ids carry a release stamp the picker should not
     // display — surface "Haiku 4.5", not "Haiku 4.5 20251001".

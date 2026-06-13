@@ -122,6 +122,20 @@
     return labelParts.join(' · ');
   });
 
+  // Eagerly load the model catalog as soon as the active thread's
+  // provider/model is known, so the trigger label shows the context window
+  // (200k / 1M) on first render. Without this the catalog loads only when a
+  // picker opens, leaving the context segment of the label hidden until the
+  // user opens this menu or the model picker. ensureProviderModels is cached +
+  // single-flight, so this is a no-op once loaded; failures stay silent here
+  // (the user-initiated open path surfaces a toast if it still can't load).
+  $effect(() => {
+    if (!activeProvider || !activeModel) return;
+    ensureProviderModels(activeProvider).catch((err) => {
+      console.error('Preloading model capabilities failed:', err);
+    });
+  });
+
   async function ensureModelMetadata(): Promise<void> {
     const provider = activeProvider;
     if (!provider || !activeModel) return;
