@@ -72,9 +72,9 @@ func sseUpstream(t *testing.T, status int, gotBody *[]byte) *httptest.Server {
 	return srv
 }
 
-func newTestGateway(t *testing.T, upstream string, drive agentTurnDriver) *gateway {
+func newTestGateway(t *testing.T, upstream string, drive agentTurnDriver, onClassify func(requestClass, int, []byte)) *gateway {
 	t.Helper()
-	gw, err := newGateway(upstream, drive, func(err error) { t.Logf("gateway error: %v", err) })
+	gw, err := newGateway(upstream, drive, func(err error) { t.Logf("gateway error: %v", err) }, onClassify)
 	if err != nil {
 		t.Fatalf("newGateway: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestGatewayReconstructsAgentTurn(t *testing.T) {
 	var forwarded []byte
 	up := sseUpstream(t, http.StatusOK, &forwarded)
 	drive := newRecordingDriver()
-	gw := newTestGateway(t, up.URL, drive)
+	gw := newTestGateway(t, up.URL, drive, nil)
 
 	resp := postGateway(t, gw, http.MethodPost, "/v1/messages", agentReqBody)
 	body, _ := io.ReadAll(resp.Body)
@@ -148,6 +148,7 @@ func TestGatewayGatesNonAgentTraffic(t *testing.T) {
 	}{
 		{"preflight body", http.StatusOK, http.MethodPost, "/v1/messages", `{"model":"x","max_tokens":1,"tools":[{"name":"Bash"}]}`},
 		{"auxiliary no-tools", http.StatusOK, http.MethodPost, "/v1/messages", `{"model":"x","max_tokens":4096,"tools":[]}`},
+		{"suggestion-mode autocomplete", http.StatusOK, http.MethodPost, "/v1/messages", `{"model":"x","max_tokens":64000,"tools":[{"name":"Bash"}],"messages":[{"role":"user","content":"[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code.]"}]}`},
 		{"non-message path", http.StatusOK, http.MethodPost, "/v1/complete", agentReqBody},
 		{"non-200 upstream", http.StatusTooManyRequests, http.MethodPost, "/v1/messages", agentReqBody},
 		{"GET", http.StatusOK, http.MethodGet, "/v1/messages", ""},
@@ -156,7 +157,7 @@ func TestGatewayGatesNonAgentTraffic(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			up := sseUpstream(t, tc.status, nil)
 			drive := newRecordingDriver()
-			gw := newTestGateway(t, up.URL, drive)
+			gw := newTestGateway(t, up.URL, drive, nil)
 
 			resp := postGateway(t, gw, tc.method, tc.path, tc.body)
 			_, _ = io.Copy(io.Discard, resp.Body)
@@ -167,6 +168,88 @@ func TestGatewayGatesNonAgentTraffic(t *testing.T) {
 			begins, _, _ := drive.snapshot()
 			if begins != 0 {
 				t.Errorf("%s: opened %d turns, want 0", tc.name, begins)
+			}
+		})
+	}
+}
+
+// classifyCapture records every onClassify callback for assertion.
+type classifyCapture struct {
+	mu      sync.Mutex
+	entries []classifyEntry
+}
+
+type classifyEntry struct {
+	class  requestClass
+	status int
+	body   string
+}
+
+func (c *classifyCapture) record(class requestClass, status int, body []byte) {
+	c.mu.Lock()
+	c.entries = append(c.entries, classifyEntry{class: class, status: status, body: string(body)})
+	c.mu.Unlock()
+}
+
+func (c *classifyCapture) snapshot() []classifyEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]classifyEntry(nil), c.entries...)
+}
+
+// TestGatewayClassifyCallbackReportsEveryMessagesRequest proves the debug
+// classify hook fires for EVERY POST /v1/messages — agent and dropped classes
+// alike, and crucially on non-200 responses (the old code classified only
+// inside the agent+200 guard, so a dropped or failed call left no trace). Other
+// paths and non-POST methods must not fire it. This is the seam the phantom
+// investigation relies on to see which request produced a surfaced turn.
+func TestGatewayClassifyCallbackReportsEveryMessagesRequest(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    int
+		method    string
+		path      string
+		body      string
+		wantFire  bool
+		wantClass requestClass
+	}{
+		{"agent 200", http.StatusOK, http.MethodPost, "/v1/messages", agentReqBody, true, classAgent},
+		{"auxiliary 200", http.StatusOK, http.MethodPost, "/v1/messages", `{"model":"x","max_tokens":4096,"tools":[]}`, true, classAuxiliary},
+		{"preflight 200", http.StatusOK, http.MethodPost, "/v1/messages", `{"model":"x","max_tokens":1,"tools":[{"name":"Bash"}]}`, true, classPreflight},
+		{"nested-subcall 200", http.StatusOK, http.MethodPost, "/v1/messages", `{"model":"x","max_tokens":4096,"tools":[{"type":"web_search_20250305"}]}`, true, classNestedSubcall},
+		{"agent non-200", http.StatusTooManyRequests, http.MethodPost, "/v1/messages", agentReqBody, true, classAgent},
+		{"non-message path", http.StatusOK, http.MethodPost, "/v1/complete", agentReqBody, false, 0},
+		{"GET", http.StatusOK, http.MethodGet, "/v1/messages", "", false, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			up := sseUpstream(t, tc.status, nil)
+			cap := &classifyCapture{}
+			drive := newRecordingDriver()
+			gw := newTestGateway(t, up.URL, drive, cap.record)
+
+			resp := postGateway(t, gw, tc.method, tc.path, tc.body)
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+
+			entries := cap.snapshot()
+			if !tc.wantFire {
+				if len(entries) != 0 {
+					t.Fatalf("%s: classify fired %d time(s), want 0", tc.name, len(entries))
+				}
+				return
+			}
+			if len(entries) != 1 {
+				t.Fatalf("%s: classify fired %d time(s), want 1", tc.name, len(entries))
+			}
+			if entries[0].class != tc.wantClass {
+				t.Errorf("%s: class = %v, want %v", tc.name, entries[0].class, tc.wantClass)
+			}
+			if entries[0].status != tc.status {
+				t.Errorf("%s: status = %d, want %d", tc.name, entries[0].status, tc.status)
+			}
+			if entries[0].body != tc.body {
+				t.Errorf("%s: body = %q, want verbatim %q", tc.name, entries[0].body, tc.body)
 			}
 		})
 	}

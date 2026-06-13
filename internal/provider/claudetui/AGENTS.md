@@ -58,8 +58,11 @@ seconds; it is cold-resume history only. Tool results come from
 
 - `doc.go` — package purpose.
 - `classify.go` — `classifyRequest`: drops preflight / auxiliary /
-  nested-subcall `/v1/messages` calls so only real main-loop agent
-  turns (`classAgent`) surface as turns.
+  nested-subcall / suggestion-mode `/v1/messages` calls so only real
+  main-loop agent turns (`classAgent`) surface as turns. Suggestion mode
+  (next-message autocomplete) is the subtle one: it carries the full tool
+  set + budget like a real turn, so it's caught by the `[SUGGESTION MODE:`
+  marker on its synthetic last user message, not by tools/budget.
 - `reconstruct.go` — pure SSE → stream-json envelope core. The
   `messageAssembler` replays content-block deltas into one `assistant`
   message; synthesizers emit `stream_event` / `assistant` / `result` /

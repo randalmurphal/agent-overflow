@@ -275,7 +275,20 @@ from `probe_compact.py`, ported to Go):
 | Quota preflight | `max_tokens <= 1` | drop |
 | Title / topic generation | `tools == []` | drop |
 | Nested server-tool sub-call | tools all dated server tools (e.g. `web_search_20250305`) | fold into parent, don't surface |
-| **Real agent turn** | populated `tools` **and** `max_tokens > 1` | reconstruct → parser |
+| Suggestion-mode autocomplete | last user message starts with `[SUGGESTION MODE:` | drop |
+| **Real agent turn** | populated `tools` **and** `max_tokens > 1` **and** not suggestion-mode | reconstruct → parser |
+
+⚠ **Suggestion mode is the exception that breaks "tools + budget = real turn."**
+Claude Code's next-message autocomplete fires a `/v1/messages` request carrying
+the *full* tool set and `max_tokens`, so by tools/budget alone it is
+indistinguishable from a main-loop turn — but its response is the model's
+*prediction of what the user will type next*. Surfacing it renders a phantom
+assistant turn (LIVE: "Do that again", "the IPC flow as a sequence diagram").
+The only discriminator is the synthetic last user message, which opens with
+`[SUGGESTION MODE: Suggest what the user might naturally type next into Claude
+Code.]`. Matching the `[SUGGESTION MODE:` bracket prefix (the stable, structural
+part) drops it. Found via the `AGENT_OVERFLOW_DEBUG=provider` classify log; the
+gateway still forwards it upstream untouched so the TUI's ghost-text works.
 
 ### Turn boundaries (wire)
 

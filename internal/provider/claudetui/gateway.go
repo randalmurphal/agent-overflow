@@ -22,6 +22,11 @@ type gateway struct {
 	client   *http.Client
 	drive    agentTurnDriver
 	onError  func(error)
+	// onClassify, when non-nil, is called for every POST /v1/messages with its
+	// classification, the upstream status, and the request body — debug-only
+	// tracing wired by the session when the event logger is live. Body-derived
+	// only: no credential headers ever reach it. See debuglog.go.
+	onClassify func(class requestClass, status int, body []byte)
 
 	ln     net.Listener
 	server *http.Server
@@ -43,7 +48,7 @@ const defaultUpstream = "https://api.anthropic.com"
 // newGateway binds a loopback listener on an ephemeral port and prepares the
 // proxy. Call start to serve. baseURL is what gets injected as
 // ANTHROPIC_BASE_URL for the spawned claude.
-func newGateway(upstream string, drive agentTurnDriver, onError func(error)) (*gateway, error) {
+func newGateway(upstream string, drive agentTurnDriver, onError func(error), onClassify func(requestClass, int, []byte)) (*gateway, error) {
 	if upstream == "" {
 		upstream = defaultUpstream
 	}
@@ -52,10 +57,11 @@ func newGateway(upstream string, drive agentTurnDriver, onError func(error)) (*g
 		return nil, fmt.Errorf("claudetui gateway: bind loopback: %w", err)
 	}
 	g := &gateway{
-		upstream: strings.TrimRight(upstream, "/"),
-		drive:    drive,
-		onError:  onError,
-		ln:       ln,
+		upstream:   strings.TrimRight(upstream, "/"),
+		drive:      drive,
+		onError:    onError,
+		onClassify: onClassify,
+		ln:         ln,
 		client: &http.Client{
 			// No Client.Timeout: /v1/messages SSE streams are long-lived and a
 			// blanket deadline would truncate a turn. The transport bounds the
@@ -137,11 +143,17 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 
 	// Set up reconstruction only for a real main-loop agent turn; everything
 	// else (preflight, title gen, nested sub-calls, non-message paths) is
-	// forwarded transparently without surfacing as a turn.
+	// forwarded transparently without surfacing as a turn. Classify once and
+	// report every /v1/messages call (agent or dropped) to onClassify when the
+	// debug logger is live, so a phantom turn can be traced to its request.
 	var ar *agentRequest
 	var scanner *sseScanner
-	if r.Method == http.MethodPost && r.URL.Path == "/v1/messages" && resp.StatusCode == http.StatusOK {
-		if class, req := classifyRequest(body); class == classAgent {
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/messages" {
+		class, req := classifyRequest(body)
+		if g.onClassify != nil {
+			g.onClassify(class, resp.StatusCode, body)
+		}
+		if resp.StatusCode == http.StatusOK && class == classAgent {
 			ar = g.drive.beginAgentTurn(req)
 			scanner = newSSEScanner(ar.onSSE)
 		}

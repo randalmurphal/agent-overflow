@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/terminal"
@@ -103,6 +104,12 @@ type Session struct {
 	readyTimeout time.Duration
 
 	logf func(format string, args ...any)
+
+	// evlog, when non-nil, enables the debug-only diagnostics in debuglog.go:
+	// the reconstructed envelope feed (the TUI analog of the headless provider's
+	// raw stdio) and the per-request /v1/messages classification. nil unless
+	// AGENT_OVERFLOW_DEBUG opts the shared provider-event logger in.
+	evlog *logging.Logger
 }
 
 // NewSession spawns the interactive Claude TUI under a fresh gateway + hook
@@ -121,6 +128,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		feed:     make(chan json.RawMessage, 256),
 		done:     make(chan struct{}),
 		logf:     log.Printf,
+		evlog:    cfg.EventLogger,
 	}
 	// Seed the parser with the resolved model so result usage can be priced
 	// before the reconstructed init lands (mirrors the headless seed).
@@ -141,7 +149,13 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	s.relay = relay
 	relay.start()
 
-	gw, err := newGateway(cfg.Upstream, s, s.onProxyError)
+	// Classify logging is debug-gated: attach the callback only when the event
+	// logger is live so a production session does no extra per-request work.
+	var onClassify func(requestClass, int, []byte)
+	if s.evlog != nil {
+		onClassify = s.logClassify
+	}
+	gw, err := newGateway(cfg.Upstream, s, s.onProxyError, onClassify)
 	if err != nil {
 		return nil, err
 	}
@@ -199,6 +213,7 @@ func (s *Session) feedLoop() {
 	for {
 		select {
 		case line := <-s.feed:
+			s.logEnvelope(line)
 			events, err := s.parser.ParseLine(s.threadID, line)
 			if err != nil {
 				s.logf("claudetui: parse error: %v (line: %s)", err, truncate(line, 200))

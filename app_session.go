@@ -355,6 +355,7 @@ func (a *App) spawnProviderSession(
 		// The interactive provider drives the same `claude` binary as the
 		// headless one; there is no separate TUI binary setting.
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
+		cfg.EventLogger = a.logger
 		sess, err := claudetui.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return session{}, err
