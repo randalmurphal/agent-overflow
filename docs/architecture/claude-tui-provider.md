@@ -135,6 +135,21 @@ single feed channel, so a tool **start** (wire `assistant`) and its **completion
 (hook `user`) correlate by `tool_use_id` inside the shared parser state — exactly
 as they do in headless.
 
+**Start-before-completion ordering is not free here.** Headless gets it for
+nothing: stdout serializes the `assistant` line before the `user` line
+in-process. The TUI's two sources can invert it. The gateway forwards each SSE
+chunk to the CLI *before* teeing it to reconstruction (`gateway.stream`), and the
+assembled `assistant` envelope — the sole source of `EventToolStart` — is emitted
+only at request `end()`. A fast tool (e.g. `echo`) therefore runs and its
+`PostToolUse` hook enqueues the `user`/tool_result (`EventToolComplete`) on the
+feed channel *before* `end()` enqueues the `assistant`. Fed in that order, triage
+drops the completion (no launch row yet) and the turn-complete force-close marks
+the orphaned running tool_call errored — a successful command rendered as failed,
+its output lost. `reorder.go` (a `feedLoop` local, lock-free) closes the gap: it
+holds a hook tool_result until the `assistant` carrying its `tool_use_id` has been
+fed, then releases it. The shared parser and triage stay untouched — this is a
+TUI-only reconstruction-ordering correction.
+
 ### Two wire-only exceptions (no hook fires)
 
 Both confirmed LIVE in the spike with **both** post-hooks registered:

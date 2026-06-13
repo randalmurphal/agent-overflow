@@ -1,6 +1,7 @@
 package claudetui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -209,28 +210,51 @@ func (s *Session) feedEnvelope(line json.RawMessage) {
 // feedLoop is the single parser goroutine. It mirrors the headless read loop:
 // one ParseLine call at a time, each resulting event emitted in order. A parse
 // error is logged and skipped — one bad envelope must not wedge the stream.
+//
+// The reorder buffer restores the headless "tool start before completion"
+// ordering that the wire+hook split can invert (see reorder.go). It is a
+// feedLoop local: this goroutine is its only driver, so it stays lock-free and
+// is torn down with the loop. Live streaming deltas — by far the highest
+// frequency envelope and never part of tool ordering — skip it via a byte-prefix
+// check so they pay neither the classification nor a full parse.
 func (s *Session) feedLoop() {
+	reorder := newFeedReorder()
 	for {
 		select {
 		case line := <-s.feed:
-			s.logEnvelope(line)
-			events, err := s.parser.ParseLine(s.threadID, line)
-			if err != nil {
-				s.logf("claudetui: parse error: %v (line: %s)", err, truncate(line, 200))
+			if bytes.HasPrefix(line, streamEventPrefix) {
+				s.parseAndEmit(line)
 				continue
 			}
-			for _, evt := range events {
-				if evt.Kind == provider.EventInit && evt.Meta != nil {
-					var info provider.SessionInfo
-					if json.Unmarshal(evt.Meta, &info) == nil && info.SessionID != "" {
-						s.setSessionID(info.SessionID)
-					}
-				}
-				s.emit(evt)
+			for _, env := range reorder.admit(line) {
+				s.parseAndEmit(env)
 			}
 		case <-s.done:
 			return
 		}
+	}
+}
+
+// parseAndEmit logs, parses, and serially emits one reconstructed envelope.
+// Split out of feedLoop so the reorder buffer can replay several envelopes (a
+// held completion released right after its tool_use start) through the identical
+// path. A parse error is logged and skipped — one bad envelope must not wedge
+// the stream.
+func (s *Session) parseAndEmit(line json.RawMessage) {
+	s.logEnvelope(line)
+	events, err := s.parser.ParseLine(s.threadID, line)
+	if err != nil {
+		s.logf("claudetui: parse error: %v (line: %s)", err, truncate(line, 200))
+		return
+	}
+	for _, evt := range events {
+		if evt.Kind == provider.EventInit && evt.Meta != nil {
+			var info provider.SessionInfo
+			if json.Unmarshal(evt.Meta, &info) == nil && info.SessionID != "" {
+				s.setSessionID(info.SessionID)
+			}
+		}
+		s.emit(evt)
 	}
 }
 

@@ -119,6 +119,56 @@ func TestSessionEmitsTurnThroughParser(t *testing.T) {
 	}
 }
 
+// TestSessionReordersHookCompletionBeforeStart drives the wire+hook ordering
+// inversion end to end: a fast tool's PostToolUse hook lands its tool_result on
+// the feed BEFORE the gateway's end() emits the assembled assistant (the sole
+// EventToolStart source). The reorder buffer must still emit EventToolStart
+// before EventToolComplete, and the completion must keep its output. Without the
+// buffer the completion is fed first — triage would drop it and the
+// turn-complete force-close would mark the successful command failed. Red
+// without reorder.go.
+func TestSessionReordersHookCompletionBeforeStart(t *testing.T) {
+	s, rec := newWiredSession(t)
+
+	_, req := classifyRequest([]byte(agentReqBody))
+	ar := s.beginAgentTurn(req)
+
+	// Live deltas tee through as the gateway forwards them. stop_reason=tool_use
+	// ⇒ the model is not done: end() emits the assembled assistant but no result.
+	for _, sse := range []string{
+		`{"type":"message_start","message":{"id":"msg_1","model":"claude-haiku","role":"assistant","usage":{"input_tokens":5,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"echo hi\"}"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":5,"output_tokens":9}}`,
+		`{"type":"message_stop"}`,
+	} {
+		ar.onSSE(json.RawMessage(sse))
+	}
+
+	// The hook completion races onto the feed BEFORE end() emits the assistant.
+	s.feedEnvelope(json.RawMessage(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]},"tool_use_result":{"stdout":"hi","stderr":"","interrupted":false}}`))
+
+	s.endAgentTurn(ar) // emits the assembled assistant (EventToolStart for toolu_1)
+
+	rec.waitForKind(t, provider.EventToolComplete)
+	events := rec.snapshot()
+
+	idxStart := indexOfKind(events, provider.EventToolStart)
+	idxComplete := indexOfKind(events, provider.EventToolComplete)
+	if idxStart < 0 {
+		t.Fatalf("expected EventToolStart, got kinds %v", kindsOf(events))
+	}
+	if idxComplete <= idxStart {
+		t.Fatalf("tool start must precede completion: start=%d complete=%d (kinds %v)", idxStart, idxComplete, kindsOf(events))
+	}
+
+	completes := findKind(events, provider.EventToolComplete)
+	if len(completes) == 0 || !strings.Contains(completes[0].Content, "hi") {
+		t.Errorf("completion lost its output (was it dropped?): %+v", completes)
+	}
+}
+
 // TestSessionRespondToUserInputThroughRelay proves RespondToUserInput delivers
 // the answer to the live relay (and that an unknown request id surfaces an
 // error rather than panicking). The app — not the session — emits

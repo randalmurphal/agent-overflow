@@ -72,6 +72,14 @@ seconds; it is cold-resume history only. Tool results come from
   across a turn's several requests, close the turn on a done stop_reason
   (`end_turn`/`stop_sequence`/`refusal`), and synthesize the
   interrupt result.
+- `reorder.go` — `feedReorder`: restores the headless "tool start before
+  completion" ordering that the wire+hook split can invert. A fast tool's
+  `PostToolUse` hook can land its `tool_result` on the feed before the
+  gateway's `end()` emits the assembled `assistant` (the sole
+  `EventToolStart` source); fed in that order triage drops the completion
+  and the turn-complete force-close marks the command failed. The buffer
+  holds a hook tool_result until its `tool_use_id`'s start has been fed.
+  A `feedLoop` local — lock-free, shared parser/triage untouched.
 - `gateway.go` — the loopback reverse proxy. Reconstruction is set up
   only for `POST /v1/messages`, status 200, `classAgent`.
 - `hookmap.go` — hook payload → stream-json envelope mapping
@@ -102,6 +110,15 @@ Every source (`reconstructor.emit`, the relay, interrupt) only ever
 *enqueues* envelope bytes. All `onEvent` emissions are serialized under
 `emitMu` so the parser, proxy-error, and PTY-exit paths never interleave
 into triage.
+
+Because the two sources enqueue independently, the channel order is not
+guaranteed to be the headless order. A `feedReorder` local to `feedLoop`
+(`reorder.go`) corrects the one case that matters: a hook tool_result
+(`EventToolComplete`) racing ahead of its wire `assistant`
+(`EventToolStart`). It holds the completion until the start is fed, then
+releases it — keeping `ParseLine` single-goroutine and the shared
+parser/triage unchanged. Hot-path `stream_event` deltas skip it via a
+byte-prefix check.
 
 `recMu` guards the reconstructor's cross-request state (`sawInit`,
 turn-usage, identity). The per-request `onSSE` path is lock-free (a
