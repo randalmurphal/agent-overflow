@@ -57,9 +57,10 @@ type Session struct {
 	feed chan json.RawMessage
 	done chan struct{}
 
-	// recMu guards the reconstructor's cross-request state (sawInit, turn-usage
-	// accumulation, session identity). begin/end/interrupt/setSessionInfo take
-	// it; the per-request onSSE path is lock-free (local assembler + feed send).
+	// recMu guards the reconstructor's cross-request state (turn-usage
+	// accumulation, session identity, the subagent launch registry).
+	// begin/end/interrupt/setSessionInfo take it; the per-request onSSE path is
+	// lock-free (local assembler + feed send).
 	recMu sync.Mutex
 	rec   *reconstructor
 
@@ -276,6 +277,23 @@ func (s *Session) beginAgentTurn(req *messagesRequest) *agentRequest {
 	return s.rec.beginAgentRequest(req)
 }
 
+// beginSubagentTurn opens nesting reconstruction for one subagent request.
+// Resolves the launching Agent tool_call from the request (cached by agentID, or
+// content-matched on the subagent's task prompt) under the same lock as the
+// launch registry. Returns nil when no launch matches, so the gateway forwards
+// the request without reconstructing it rather than mis-attributing the
+// subagent's work to the main thread.
+func (s *Session) beginSubagentTurn(req *messagesRequest, agentID string) *agentRequest {
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	parent := s.rec.resolveSubagentParent(agentID, firstUserText(req.Messages))
+	if parent == "" {
+		s.logf("claudetui: subagent request agent_id=%s has no matching Agent launch; not reconstructed", agentID)
+		return nil
+	}
+	return s.rec.beginSubagentRequest(parent)
+}
+
 // endAgentTurn closes one request's reconstruction: emits the assembled
 // assistant envelope, folds usage, and synthesizes the turn-closing result when
 // the model is done.
@@ -283,6 +301,15 @@ func (s *Session) endAgentTurn(ar *agentRequest) {
 	s.recMu.Lock()
 	defer s.recMu.Unlock()
 	ar.end()
+}
+
+// queueUserEcho records an AO Send on the reconstructor's pending-echo FIFO so
+// the next main request confirms it with a user{isReplay} echo. Under recMu like
+// the other reconstructor mutators. Called by Send after the submit write lands.
+func (s *Session) queueUserEcho(content, uuid string) {
+	s.recMu.Lock()
+	s.rec.pushUserEcho(content, uuid)
+	s.recMu.Unlock()
 }
 
 // onSessionInfo records identity from the SessionStart hook for both the

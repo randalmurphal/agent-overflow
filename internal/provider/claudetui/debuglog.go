@@ -60,15 +60,16 @@ func (s *Session) logEnvelope(line json.RawMessage) {
 // classifySummary is the compact, credential-free shape logged for each
 // /v1/messages request.
 type classifySummary struct {
-	Class     string   `json:"class"`
-	Status    int      `json:"status"`
-	Model     string   `json:"model"`
-	MaxTokens int      `json:"max_tokens"`
-	NumTools  int      `json:"n_tools"`
-	Tools     []string `json:"tools,omitempty"`
-	NumMsgs   int      `json:"n_msgs"`
-	System    string   `json:"system_prefix,omitempty"`
-	LastUser  string   `json:"last_user_prefix,omitempty"`
+	Class      string   `json:"class"`
+	Status     int      `json:"status"`
+	Model      string   `json:"model"`
+	MaxTokens  int      `json:"max_tokens"`
+	NumTools   int      `json:"n_tools"`
+	Tools      []string `json:"tools,omitempty"`
+	NumMsgs    int      `json:"n_msgs"`
+	IsSubagent bool     `json:"is_subagent,omitempty"`
+	System     string   `json:"system_prefix,omitempty"`
+	LastUser   string   `json:"last_user_prefix,omitempty"`
 }
 
 // logClassify records the classification and a credential-free shape of one
@@ -82,15 +83,16 @@ func (s *Session) logClassify(class requestClass, status int, body []byte) {
 	// Best-effort: an unparseable body still logs its class and status.
 	_ = json.Unmarshal(body, &req)
 	sum := classifySummary{
-		Class:     class.String(),
-		Status:    status,
-		Model:     req.Model,
-		MaxTokens: req.MaxTokens,
-		NumTools:  len(req.Tools),
-		Tools:     capStrings(req.toolNames(), 8),
-		NumMsgs:   len(req.Messages),
-		System:    runePrefix(blockText(req.System), classifyLogPrefixRunes),
-		LastUser:  runePrefix(lastUserText(req.Messages), classifyLogPrefixRunes),
+		Class:      class.String(),
+		Status:     status,
+		Model:      req.Model,
+		MaxTokens:  req.MaxTokens,
+		NumTools:   len(req.Tools),
+		Tools:      capStrings(req.toolNames(), 8),
+		NumMsgs:    len(req.Messages),
+		IsSubagent: isSubagentSystem(req.System),
+		System:     runePrefix(blockText(req.System), classifyLogPrefixRunes),
+		LastUser:   runePrefix(lastUserText(req.Messages), classifyLogPrefixRunes),
 	}
 	data, err := json.Marshal(sum)
 	if err != nil {

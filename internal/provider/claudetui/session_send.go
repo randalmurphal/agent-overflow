@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"agent-overflow/internal/provider"
 )
 
@@ -99,7 +101,22 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	if err := s.settleComposer(ctx); err != nil {
 		return err
 	}
-	return s.writePTY(submit)
+	if err := s.writePTY(submit); err != nil {
+		return err
+	}
+	// Record the send so the reconstructor confirms it with a user{isReplay} echo
+	// on the next main request, consuming triage's pending-send FIFO. Direct sends
+	// carry an app-minted UserMessageUUID; queued sends (flush path) supply none,
+	// so mint a stable id here — persistDeferredUserText needs a non-empty
+	// provider_item_id or the queued row never lands. Pushed only after submit
+	// succeeds so a write failure (which the caller turns into a pending-send
+	// clear) leaves the echo FIFO aligned with the pending-send FIFO.
+	echoUUID := opts.UserMessageUUID
+	if echoUUID == "" {
+		echoUUID = uuid.NewString()
+	}
+	s.queueUserEcho(content, echoUUID)
+	return nil
 }
 
 // sendKeystrokes builds the ordered keystroke blocks Send writes to drive a user

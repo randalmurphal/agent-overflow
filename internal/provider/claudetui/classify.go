@@ -194,3 +194,38 @@ func lastUserText(messages []json.RawMessage) string {
 	}
 	return ""
 }
+
+// firstUserText returns the text of the first role:"user" message. For a
+// subagent request that is its task prompt — the Agent tool_use input.prompt
+// delivered verbatim — which reconstructor.resolveSubagentParent matches against
+// the registered launches to nest the subagent. (The CLI prepends a
+// system-reminder, so the match is a substring, not equality.)
+func firstUserText(messages []json.RawMessage) string {
+	for _, raw := range messages {
+		var m struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(raw, &m) != nil {
+			continue
+		}
+		if m.Role == "user" {
+			return blockText(m.Content)
+		}
+	}
+	return ""
+}
+
+// subagentSystemMarker is the flag Claude Code sets in a subagent's system
+// prompt. The authoritative operational signal that a /v1/messages request is a
+// subagent's is the X-Claude-Code-Agent-Id HTTP header (gateway.go) — that also
+// yields the agent id needed for correlation. This body-side mirror exists only
+// for the credential-free debug classify log, which never sees headers. Both are
+// present together on 2.1.170 (spike/claude-mitm).
+const subagentSystemMarker = "cc_is_subagent=true"
+
+// isSubagentSystem reports whether a request body's system prompt marks it as a
+// subagent. Body-only, for the debug log; routing uses the header.
+func isSubagentSystem(system json.RawMessage) bool {
+	return strings.Contains(blockText(system), subagentSystemMarker)
+}

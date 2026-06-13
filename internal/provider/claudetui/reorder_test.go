@@ -137,7 +137,7 @@ func TestFeedReorderIgnoresNonToolResultUser(t *testing.T) {
 // field reorder ever moved "type" off the front, the fast path would silently
 // stop matching and every delta would take the slow classification path.
 func TestStreamEventLineHasReorderFastPathPrefix(t *testing.T) {
-	line := streamEventLine(json.RawMessage(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}`))
+	line := streamEventLine(json.RawMessage(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}`), "")
 	if !bytes.HasPrefix(line, streamEventPrefix) {
 		t.Fatalf("streamEventLine output %s lost the %q fast-path prefix", line, streamEventPrefix)
 	}

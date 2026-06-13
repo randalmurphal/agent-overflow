@@ -68,10 +68,28 @@ seconds; it is cold-resume history only. Tool results come from
   message; synthesizers emit `stream_event` / `assistant` / `result` /
   `system:init` lines. No `ProviderEvent`s here — only envelope bytes.
 - `turndriver.go` — `reconstructor`: the cross-request turn state the
-  pure assembler lacks — emit `system:init` once, accumulate usage
-  across a turn's several requests, close the turn on a done stop_reason
-  (`end_turn`/`stop_sequence`/`refusal`), and synthesize the
-  interrupt result.
+  pure assembler lacks. Two independent turn-boundary signals mirror
+  headless (do not re-fuse them into one shape heuristic):
+  - **`system:init`** fires whenever a main request reopens a *settled*
+    loop (`turnSettled`). Headless re-inits on every main-loop restart —
+    a new user turn AND a backgrounded-task resume after the interim
+    `end_turn` (see `local_agent_outlives.ndjson`, init #2). triage's
+    `handleInit` opens a turn (pending send present) or re-arms the
+    settled round (none). This is what unstrands turns 2+.
+  - **the `user{isReplay}` echo** fires whenever an AO `Send` awaits
+    confirmation (the `userEchoes` FIFO, pushed by `Send`), consuming
+    triage's pending-send FIFO and stamping `provider_item_id`. Decoupled
+    from `turnSettled` so a mid-turn queued steer confirms without opening
+    a turn, and a backgrounded resume (no `Send`) emits none. The echo
+    uuid is the app-minted `UserMessageUUID` for direct sends, or a
+    `Send`-minted id for queued sends (the flush path supplies none and
+    `persistDeferredUserText` needs a non-empty id).
+
+  It also accumulates usage across a turn's several requests, closes the
+  turn on a done stop_reason (`end_turn`/`stop_sequence`/`refusal`,
+  flipping `turnSettled` back true), and synthesizes the interrupt
+  result. Also owns subagent correlation: the Agent/Task launch registry
+  and `resolveSubagentParent` (see §Subagents).
 - `reorder.go` — `feedReorder`: restores the headless "tool start before
   completion" ordering that the wire+hook split can invert. A fast tool's
   `PostToolUse` hook can land its `tool_result` on the feed before the
@@ -81,7 +99,9 @@ seconds; it is cold-resume history only. Tool results come from
   holds a hook tool_result until its `tool_use_id`'s start has been fed.
   A `feedLoop` local — lock-free, shared parser/triage untouched.
 - `gateway.go` — the loopback reverse proxy. Reconstruction is set up
-  only for `POST /v1/messages`, status 200, `classAgent`.
+  only for `POST /v1/messages`, status 200, `classAgent`. A `classAgent`
+  request carrying the `X-Claude-Code-Agent-Id` header is a subagent and
+  routes to `beginSubagentTurn` instead (see §Subagents).
 - `hookmap.go` — hook payload → stream-json envelope mapping
   (`PostToolUse*` → `tool_result`, `SessionStart` → identity,
   compaction boundary, AskUserQuestion → `control_request`).
@@ -120,15 +140,61 @@ releases it — keeping `ParseLine` single-goroutine and the shared
 parser/triage unchanged. Hot-path `stream_event` deltas skip it via a
 byte-prefix check.
 
-`recMu` guards the reconstructor's cross-request state (`sawInit`,
-turn-usage, identity). The per-request `onSSE` path is lock-free (a
-local assembler + a channel send); only `beginAgentTurn` / `endAgentTurn`
-/ `interruptTurn` / `onSessionInfo` take `recMu`.
+`recMu` guards the reconstructor's cross-request state (turn-usage,
+`turnSettled`, identity, the subagent launch registry, the pending-echo
+FIFO). The per-request `onSSE` path is lock-free (a local assembler + a
+channel send); only `beginAgentTurn` / `beginSubagentTurn` /
+`endAgentTurn` / `interruptTurn` / `onSessionInfo` / `queueUserEcho` (the
+`Send`-side echo enqueue) take `recMu`.
 
-**v1 limitation:** parallel-subagent wire turns may interleave
-imperfectly on the feed (two requests' envelopes mixing). Tool
-completions stay correct regardless — they arrive via hooks keyed by
-`tool_use_id`.
+Parallel subagents interleave on the feed (two requests' envelopes
+mixing), and that is fine: every subagent envelope carries its own
+`parent_tool_use_id`, and the parser keys streaming-block state by
+`(parent_tool_use_id, index)` — so two subagents' streams never collide,
+and each nests under its own Agent card. Tool completions are correct
+regardless: they arrive via hooks keyed by `tool_use_id` and update the
+item the parent-tagged start created.
+
+## Subagents
+
+A subagent (Claude's `Agent`/`Task` tool) runs its own `/v1/messages`
+turns, but its requests carry **no** parent linkage in the body. The
+gateway recognizes them by the `X-Claude-Code-Agent-Id` HTTP header
+(absent on main-agent requests) and routes them to `beginSubagentTurn`,
+which nests them under the launching Agent tool_call:
+
+1. **Launch registry.** When a main assistant emits an `Agent`/`Task`
+   `tool_use`, its `end()` records `(prompt → tool_use_id)`. The launch
+   happens-before the subagent's first request (Claude needs the full
+   main response, then spawns, then the subagent calls the API — a
+   network round trip later), so the registry is always populated in
+   time.
+2. **Forward-live join by content.** A subagent's first user message
+   contains its task prompt — the Agent `tool_use.input.prompt`
+   delivered verbatim (confirmed substring on 2.1.170). The first
+   request content-matches that against an unclaimed launch and *claims*
+   it, so two parallel launches each bind to a distinct subagent.
+   `X-Claude-Code-Agent-Id → parent` is cached so the subagent's later
+   requests skip the match.
+3. **Reconstruct nested, suppress turn artifacts.** Subagent
+   `stream_event` + `assistant` envelopes carry top-level
+   `parent_tool_use_id`. A subagent emits **no** `result` (it is not a
+   top-level turn; one would force-close the real turn) and folds **no**
+   usage into the main turn. Inner-tool completions need no special
+   handling — they arrive on hooks keyed by `tool_use_id`, and the
+   parser re-derives their parent from the parent-tagged start.
+
+Why these signals: the authoritative `agent_id ↔ Agent tool_use_id` join
+(`PostToolUse(Agent).tool_response.agentId`) only lands at Agent
+*completion* — too late to nest live. `SubagentStart` fires early but
+carries only `agent_id`, not the parent. Content-match is the only
+forward-live, ordering-independent signal. Its sole failure mode is two
+parallel agents with byte-identical prompts, where the binding is
+arbitrary but visually equivalent (both cards run identical work). If no
+launch matches, the request is forwarded **unreconstructed** rather than
+mis-attributed to the main thread — the Agent card still completes via
+its `PostToolUse` hook. All of this is binary behavior; re-probe with
+`spike/claude-mitm/` on version bump.
 
 ## Security boundary (load-bearing)
 

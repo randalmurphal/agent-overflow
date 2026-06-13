@@ -36,10 +36,20 @@ type gateway struct {
 // one agent turn's reconstruction. Begin/end mutate shared per-session
 // reconstruction state, so the session guards them; onSSE on the returned
 // agentRequest is lock-free (local assembler + the envelope feed channel).
+// beginSubagentTurn returns nil when the subagent can't be matched to its
+// launching Agent — the gateway then forwards the request without reconstructing.
 type agentTurnDriver interface {
 	beginAgentTurn(req *messagesRequest) *agentRequest
+	beginSubagentTurn(req *messagesRequest, agentID string) *agentRequest
 	endAgentTurn(ar *agentRequest)
 }
+
+// agentIDHeader is the per-subagent identifier Claude Code sets on a subagent's
+// /v1/messages requests; it is absent on main-agent requests. It both partitions
+// subagent turns from the main loop and keys the correlation that nests a
+// subagent's several requests under one Agent card. Confirmed on 2.1.170
+// (spike/claude-mitm). NEVER logged — see debuglog.go's body-only discipline.
+const agentIDHeader = "X-Claude-Code-Agent-Id"
 
 // defaultUpstream is the Anthropic API base the gateway forwards to when no
 // override is configured.
@@ -154,8 +164,18 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 			g.onClassify(class, resp.StatusCode, body)
 		}
 		if resp.StatusCode == http.StatusOK && class == classAgent {
-			ar = g.drive.beginAgentTurn(req)
-			scanner = newSSEScanner(ar.onSSE)
+			// A subagent's request carries X-Claude-Code-Agent-Id; route it to the
+			// nesting reconstruction so it surfaces under its Agent card instead of
+			// as a phantom main turn. beginSubagentTurn may return nil (parent not
+			// resolvable) — then the request is forwarded without reconstruction.
+			if agentID := r.Header.Get(agentIDHeader); agentID != "" {
+				ar = g.drive.beginSubagentTurn(req, agentID)
+			} else {
+				ar = g.drive.beginAgentTurn(req)
+			}
+			if ar != nil {
+				scanner = newSSEScanner(ar.onSSE)
+			}
 		}
 	}
 

@@ -47,11 +47,18 @@ type sseMessageStart struct {
 type streamEventEnvelope struct {
 	Type  string          `json:"type"`  // "stream_event"
 	Event json.RawMessage `json:"event"` // the raw SSE event, verbatim
+	// ParentToolUseID nests a subagent's streaming deltas under the Agent
+	// tool_call that launched it (top-level, exactly as headless emits it). Empty
+	// (omitted) for the main agent loop. See turndriver.go §subagent path.
+	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
 }
 
 type assistantEnvelope struct {
 	Type    string           `json:"type"` // "assistant"
 	Message assistantMessage `json:"message"`
+	// ParentToolUseID nests a subagent assistant message (and the tool_use
+	// starts inside it) under its parent Agent tool_call. Empty for the main loop.
+	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
 }
 
 type assistantMessage struct {
@@ -78,6 +85,25 @@ type initEnvelope struct {
 	CWD       string   `json:"cwd,omitempty"`
 	Tools     []string `json:"tools,omitempty"`
 	Version   string   `json:"claude_code_version,omitempty"`
+}
+
+// replayUserEnvelope is the `user{isReplay:true}` echo headless emits to confirm
+// a user message entered the agent's context. It is the sole wire source of the
+// parser's EventUserText, which consumes triage's pending-send FIFO and stamps
+// provider_item_id onto the optimistic user row. The reconstructor synthesizes
+// one per AO Send so the TUI path confirms sends exactly as headless does. The
+// top-level uuid becomes provider_item_id (parse_user_replay.go reads
+// firstNonEmpty(message.id, raw["uuid"])).
+type replayUserEnvelope struct {
+	Type     string            `json:"type"`     // "user"
+	IsReplay bool              `json:"isReplay"` // true — routes to parseUserReplay
+	UUID     string            `json:"uuid,omitempty"`
+	Message  replayUserMessage `json:"message"`
+}
+
+type replayUserMessage struct {
+	Role    string `json:"role"`    // "user"
+	Content string `json:"content"` // plain string; extractToolResultText handles it
 }
 
 // --- per-turn assembler ---------------------------------------------------
@@ -188,8 +214,11 @@ func (a *messageAssembler) ensureBlock(index int) {
 }
 
 // assistantLine renders the assembled assistant envelope as a stream-json
-// NDJSON line.
-func (a *messageAssembler) assistantLine() json.RawMessage {
+// NDJSON line. parentToolUseID is the launching Agent tool_call for a subagent
+// response (empty for the main loop); it threads through as top-level
+// parent_tool_use_id so the shared parser nests the message and its tool_use
+// starts under that Agent card.
+func (a *messageAssembler) assistantLine(parentToolUseID string) json.RawMessage {
 	content := make([]json.RawMessage, 0, len(a.order))
 	for _, idx := range a.order {
 		content = append(content, a.renderBlock(idx))
@@ -203,8 +232,46 @@ func (a *messageAssembler) assistantLine() json.RawMessage {
 			Content: content,
 			Usage:   a.usage,
 		},
+		ParentToolUseID: parentToolUseID,
 	}
 	return mustMarshal(env)
+}
+
+// agentLaunches harvests the Agent/Task tool_use blocks from an assembled main
+// assistant message: their tool_use id and the `prompt` from their input. The
+// prompt is what a following subagent request content-matches on to resolve its
+// parent (see reconstructor.resolveSubagentParent). The wire tool name is
+// "Agent" on 2.1.170 and "Task" on older builds; both are matched so a version
+// bump degrades to "subagent not nested", never a panic. Nesting itself is by
+// parent_tool_use_id, not the name, so this filter only scopes the registry.
+func (a *messageAssembler) agentLaunches() []agentLaunch {
+	var out []agentLaunch
+	for _, idx := range a.order {
+		block := a.blocks[idx]
+		if rawString(block["type"]) != "tool_use" {
+			continue
+		}
+		switch rawString(block["name"]) {
+		case "Agent", "Task":
+		default:
+			continue
+		}
+		id := rawString(block["id"])
+		if id == "" {
+			continue
+		}
+		prompt := ""
+		if b := a.inputBuf[idx]; b != nil && b.Len() > 0 {
+			var in struct {
+				Prompt string `json:"prompt"`
+			}
+			if json.Unmarshal([]byte(b.String()), &in) == nil {
+				prompt = in.Prompt
+			}
+		}
+		out = append(out, agentLaunch{toolUseID: id, prompt: prompt})
+	}
+	return out
 }
 
 // renderBlock merges a block's content_block fields with its accumulated
@@ -242,9 +309,10 @@ func parseToolInput(s string) json.RawMessage {
 // --- envelope synthesizers ------------------------------------------------
 
 // streamEventLine wraps a raw SSE event as a stream_event envelope for live
-// delta passthrough.
-func streamEventLine(sse json.RawMessage) json.RawMessage {
-	return mustMarshal(streamEventEnvelope{Type: "stream_event", Event: sse})
+// delta passthrough. parentToolUseID is empty for the main loop and the
+// launching Agent tool_call for a subagent's deltas.
+func streamEventLine(sse json.RawMessage, parentToolUseID string) json.RawMessage {
+	return mustMarshal(streamEventEnvelope{Type: "stream_event", Event: sse, ParentToolUseID: parentToolUseID})
 }
 
 // resultLine synthesizes a turn-complete result envelope. usage is the
@@ -279,6 +347,34 @@ func initLine(sessionID, model, cwd, version string, tools []string) json.RawMes
 		Tools:     tools,
 		Version:   version,
 	})
+}
+
+// replayUserLine synthesizes the user{isReplay:true} echo for one AO Send. uuid
+// is the app-minted UserMessageUUID (direct sends) or a Send-minted id (queued
+// sends, whose flush path supplies none) — either way a stable handle triage
+// stamps as provider_item_id. content is the user's text, used by the parser
+// only to tell genuine input from Claude-injected replay content; the
+// AO-persisted row summary stays authoritative once the pending send matches.
+func replayUserLine(uuid, content string) json.RawMessage {
+	return mustMarshal(replayUserEnvelope{
+		Type:     "user",
+		IsReplay: true,
+		UUID:     uuid,
+		Message:  replayUserMessage{Role: "user", Content: content},
+	})
+}
+
+// rawString decodes a JSON string value, returning "" for absent, null, or a
+// non-string value. Used to read assembled tool_use block fields (type/name/id).
+func rawString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
 }
 
 // mustMarshal marshals a value that is statically known to be marshalable

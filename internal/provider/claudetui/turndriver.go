@@ -2,14 +2,26 @@ package claudetui
 
 import (
 	"encoding/json"
+	"strings"
 
 	"agent-overflow/internal/provider/claude"
 )
 
 // turndriver.go owns the cross-request turn state that the pure assembler in
-// reconstruct.go does not: emitting system:init once, accumulating usage across
-// the several /v1/messages requests that make up one logical turn, and closing
-// the turn with a synthesized result envelope.
+// reconstruct.go does not: emitting system:init on every main-loop (re)start,
+// emitting the user{isReplay} echo that confirms each AO Send, accumulating
+// usage across the several /v1/messages requests that make up one logical turn,
+// and closing the turn with a synthesized result envelope.
+//
+// Two independent signals drive the turn-boundary envelopes, mirroring headless:
+//   - system:init fires whenever a main request (re)opens a SETTLED loop
+//     (turnSettled). Headless re-emits init on every main-loop restart — a new
+//     user turn AND a backgrounded-task resume after the interim end_turn (see
+//     the local_agent_outlives fixture, init #2). triage's handleInit then opens
+//     a turn (when a pending send waits) or re-arms the settled round.
+//   - the replay echo fires whenever an AO Send awaits confirmation (userEchoes),
+//     independent of turnSettled, so a mid-turn queued steer confirms without
+//     opening a new turn and a backgrounded resume (no Send) emits none.
 //
 // One reconstructor per session. The gateway calls beginAgentRequest for each
 // classAgent request, feeds its SSE events, then ends it. emit feeds each
@@ -31,11 +43,18 @@ type reconstructor struct {
 	sessionID string
 	cwd       string
 	version   string
-	sawInit   bool
 
 	// turn-usage accumulator, summed across a turn's requests for cost
 	// accounting and reset when a done-stop-reason closes the turn.
 	turn wireUsage
+	// turnSettled reports whether the main agent loop is between turns: true
+	// initially and after end()/interruptTurn() emits a result, false once a main
+	// request (re)opens the loop. A main request that finds it true emits
+	// system:init — the signal triage's handleInit keys on to open a turn (pending
+	// send present) or re-arm a settled round (none). A continuation finds it false
+	// and emits no init, so the turn stays open across its several requests.
+	// Guarded by the session's recMu (begin/end/interrupt).
+	turnSettled bool
 	// interrupted is set by interruptTurn when the user aborts a turn the TUI
 	// has no control-ack channel for. It neutralizes the LATE end() of the
 	// request that was in flight when the abort landed (the Esc cancels the
@@ -44,15 +63,71 @@ type reconstructor struct {
 	// aborted request's partial usage into the next turn. Cleared at the next
 	// beginAgentRequest. Guarded by the session's recMu (begin/end/interrupt).
 	interrupted bool
+
+	// userEchoes is the FIFO of AO Sends awaiting their wire confirmation. Send
+	// pushes one (content + uuid) per call; the next main request pops it and
+	// emits the user{isReplay:true} echo that consumes triage's pending-send FIFO
+	// and stamps provider_item_id onto the optimistic user row. Decoupled from
+	// turnSettled (see file header). Guarded by the session's recMu.
+	userEchoes []pendingUserEcho
+
+	// Subagent correlation (Claude `Agent`/`Task` tool). A subagent's
+	// /v1/messages requests carry no parent linkage in their body, so we rebuild
+	// it from two facts established before the subagent runs:
+	//   - launches: every Agent/Task tool_use seen on the MAIN wire, recorded
+	//     (prompt → tool_use_id) at that request's end(). The launch happens-before
+	//     the subagent request (Claude needs the full main response, then spawns,
+	//     then the subagent makes its first call — separated by a network round
+	//     trip), so the registry is always populated in time.
+	//   - byAgentID: X-Claude-Code-Agent-Id → resolved parent tool_use_id, so a
+	//     subagent's later requests skip the content match.
+	// resolveSubagentParent content-matches a subagent's first user message
+	// against an unclaimed launch's prompt (verified a verbatim substring on
+	// 2.1.170) and claims it. All registry access is under the session's recMu
+	// (registered in end(), read in beginSubagentTurn). See
+	// docs/architecture/claude-tui-provider.md §Subagents.
+	launches  []agentLaunch
+	byAgentID map[string]string
 }
+
+// agentLaunch is one Agent/Task tool_use seen on the main wire, awaiting the
+// subagent it spawned. claimed flips once a subagent request matches it, so two
+// parallel launches each bind to a distinct subagent.
+type agentLaunch struct {
+	toolUseID string
+	prompt    string
+	claimed   bool
+}
+
+// pendingUserEcho is one AO Send awaiting its wire confirmation echo. uuid is
+// the app-minted UserMessageUUID (direct sends) or a Send-minted id (queued
+// sends); content is the user's text.
+type pendingUserEcho struct {
+	content string
+	uuid    string
+}
+
+const (
+	// maxLaunches caps the unclaimed-launch registry; claimed entries are
+	// compacted out first, so this is only hit by a flood of never-matched
+	// launches (pathological). maxByAgentID caps the resolved cache, reset
+	// wholesale on overflow like the parser's correlation maps.
+	maxLaunches  = 256
+	maxByAgentID = 1024
+	// maxUserEchoes caps the pending-echo FIFO. Only hit if Sends never produce a
+	// matching wire request (pathological); the oldest is dropped so a stuck head
+	// can't strand every later send behind it.
+	maxUserEchoes = 256
+)
 
 func newReconstructor(emit func(json.RawMessage)) *reconstructor {
-	return &reconstructor{emit: emit}
+	// turnSettled starts true so the first main request emits init.
+	return &reconstructor{emit: emit, turnSettled: true}
 }
 
-// setSessionInfo records identity from the SessionStart hook so a later init
-// (and resume bookkeeping) can carry it. Safe to call before or after the
-// first agent request; the init is emitted at most once.
+// setSessionInfo records identity from the SessionStart hook so each init (and
+// resume bookkeeping) can carry it. Safe to call before or after the first agent
+// request; an init is emitted on every main-loop (re)start (see beginAgentRequest).
 func (r *reconstructor) setSessionInfo(sessionID, cwd, version string) {
 	if sessionID != "" {
 		r.sessionID = sessionID
@@ -65,30 +140,76 @@ func (r *reconstructor) setSessionInfo(sessionID, cwd, version string) {
 	}
 }
 
-// agentRequest reconstructs one /v1/messages agent response.
+// agentRequest reconstructs one /v1/messages agent response. parent is empty
+// for a main-loop request and the launching Agent tool_call's tool_use_id for a
+// subagent request; it threads onto every envelope so the parser nests the
+// subagent's work under that Agent card.
 type agentRequest struct {
-	r   *reconstructor
-	asm *messageAssembler
+	r      *reconstructor
+	asm    *messageAssembler
+	parent string
 }
 
 // beginAgentRequest starts reconstruction for one classAgent request, emitting
-// the one-time system:init from the first request's model/tools plus any hook
-// session info seen so far.
+// the two turn-boundary signals headless does (see file header):
+//
+//   - system:init when the loop is settled (turnSettled) — a new user turn or a
+//     backgrounded-task resume. It carries the request's model/tools plus any
+//     hook session info, and drives triage's handleInit (open a turn when a
+//     pending send waits, else re-arm the settled round).
+//   - the user{isReplay} echo when an AO Send awaits confirmation (userEchoes),
+//     consuming triage's pending-send FIFO and stamping provider_item_id.
+//
+// A tool-continuation request finds turnSettled false and no pending echo, so it
+// emits neither and the turn stays open across its several requests.
 func (r *reconstructor) beginAgentRequest(req *messagesRequest) *agentRequest {
 	// A fresh request starts un-interrupted; the flag only neutralizes the late
 	// end() of the one request the previous interrupt aborted.
 	r.interrupted = false
-	if !r.sawInit {
+	if r.turnSettled {
 		r.emit(initLine(r.sessionID, req.Model, r.cwd, r.version, req.toolNames()))
-		r.sawInit = true
+		r.turnSettled = false
+	}
+	if echo, ok := r.takeUserEcho(); ok {
+		r.emit(replayUserLine(echo.uuid, echo.content))
 	}
 	return &agentRequest{r: r, asm: newMessageAssembler()}
 }
 
+// pushUserEcho records an AO Send so the next main request can confirm it with a
+// replay echo. uuid is a stable, non-empty handle (the caller mints one for
+// queued sends, whose flush path supplies none). Caller holds the session recMu.
+func (r *reconstructor) pushUserEcho(content, uuid string) {
+	if len(r.userEchoes) >= maxUserEchoes {
+		r.userEchoes = r.userEchoes[1:]
+	}
+	r.userEchoes = append(r.userEchoes, pendingUserEcho{content: content, uuid: uuid})
+}
+
+// takeUserEcho pops the oldest pending echo (FIFO), matching the order triage
+// registered its pending sends. Caller holds the session recMu.
+func (r *reconstructor) takeUserEcho() (pendingUserEcho, bool) {
+	if len(r.userEchoes) == 0 {
+		return pendingUserEcho{}, false
+	}
+	echo := r.userEchoes[0]
+	r.userEchoes = r.userEchoes[1:]
+	return echo, true
+}
+
+// beginSubagentRequest starts reconstruction for one subagent /v1/messages
+// request, with parent already resolved to its launching Agent tool_call. Unlike
+// the main path it emits no system:init and arms no interrupt state — a subagent
+// is nested machinery, not a top-level turn.
+func (r *reconstructor) beginSubagentRequest(parent string) *agentRequest {
+	return &agentRequest{r: r, asm: newMessageAssembler(), parent: parent}
+}
+
 // onSSE streams one raw SSE event: passthrough for live deltas, plus folding
-// into the assembler for the end-of-response assistant envelope.
+// into the assembler for the end-of-response assistant envelope. Each delta
+// carries ar.parent so a subagent's stream nests under its Agent card.
 func (ar *agentRequest) onSSE(sse json.RawMessage) {
-	ar.r.emit(streamEventLine(sse))
+	ar.r.emit(streamEventLine(sse, ar.parent))
 	ar.asm.consume(sse)
 }
 
@@ -99,7 +220,24 @@ func (ar *agentRequest) end() {
 	// Emit the (possibly partial) assistant envelope even on an interrupted
 	// request, so triage sees and force-closes any orphaned tool_use start —
 	// matching the headless interrupt path.
-	ar.r.emit(ar.asm.assistantLine())
+	ar.r.emit(ar.asm.assistantLine(ar.parent))
+
+	if ar.parent != "" {
+		// Subagent request. Its assistant + tool_use starts nest under the Agent
+		// card via parent_tool_use_id; its inner tool completions arrive on hooks
+		// keyed by tool_use_id and the parser re-derives their parent from the
+		// start we just emitted — so nothing else is needed here. Deliberately NO
+		// result (it is not a top-level turn; emitting one would force-close the
+		// real turn) and NO usage folded into the main turn (subagent tokens are
+		// the model's private accounting). A subagent cannot itself spawn (Claude
+		// forbids recursive Agent), so it registers no launches.
+		return
+	}
+
+	// Main-loop request. Capture any Agent/Task launches so a following subagent
+	// request can resolve its parent — done before the interrupt short-circuit
+	// since the launch stands even if this turn is then aborted.
+	ar.r.registerAgentLaunches(ar.asm)
 	if ar.r.interrupted {
 		// interruptTurn already closed and reset the turn; billing this aborted
 		// request's partial usage would bleed into the next turn.
@@ -109,6 +247,11 @@ func (ar *agentRequest) end() {
 	if claude.IsSoftRoundCloseStopReason(ar.asm.stop) {
 		ar.r.emit(resultLine(ar.asm.stop, ar.r.turnUsageJSON(), false))
 		ar.r.turn = wireUsage{}
+		// Loop settled: the next main request (a new turn or a backgrounded
+		// resume) re-emits init. The reconstructor also settles at the interim
+		// end_turn of a backgrounded turn; the resume's init re-arms via
+		// handleInit, matching headless (which re-inits there too).
+		ar.r.turnSettled = true
 	}
 }
 
@@ -119,6 +262,9 @@ func (ar *agentRequest) end() {
 func (r *reconstructor) interruptTurn() {
 	r.emit(resultLine("", nil, true))
 	r.turn = wireUsage{}
+	// Loop settled by the abort: a queued send flushed on the interrupt boundary
+	// opens a fresh turn (init + echo) rather than resuming the aborted one.
+	r.turnSettled = true
 	r.interrupted = true
 }
 
@@ -141,4 +287,77 @@ func (r *reconstructor) turnUsageJSON() json.RawMessage {
 		return nil
 	}
 	return mustMarshal(r.turn)
+}
+
+// --- subagent correlation -------------------------------------------------
+
+// registerAgentLaunches records the Agent/Task tool_use launches in a finished
+// main assistant so a following subagent request can resolve its parent. Called
+// from the main path's end() under the session's recMu.
+func (r *reconstructor) registerAgentLaunches(asm *messageAssembler) {
+	launches := asm.agentLaunches()
+	if len(launches) == 0 {
+		return
+	}
+	if len(r.launches)+len(launches) > maxLaunches {
+		r.compactLaunches()
+	}
+	r.launches = append(r.launches, launches...)
+}
+
+// compactLaunches drops already-claimed launches, then bounds the slice to its
+// most recent entries if a flood of never-matched launches remains.
+func (r *reconstructor) compactLaunches() {
+	kept := make([]agentLaunch, 0, len(r.launches))
+	for _, l := range r.launches {
+		if !l.claimed {
+			kept = append(kept, l)
+		}
+	}
+	if len(kept) > maxLaunches {
+		kept = kept[len(kept)-maxLaunches:]
+	}
+	r.launches = kept
+}
+
+// resolveSubagentParent maps a subagent request to the Agent tool_call that
+// launched it. A cached agent id resolves directly; otherwise the subagent's
+// first user message is matched against an unclaimed launch's prompt (a verbatim
+// substring on 2.1.170) and that launch is claimed so a parallel sibling can't
+// also take it. Returns "" when no launch matches — the caller then forwards the
+// request without reconstructing it (the Agent card still completes via its
+// PostToolUse hook), degrading to "subagent internals not shown" rather than
+// mis-attributing them to the main thread. Caller holds recMu.
+func (r *reconstructor) resolveSubagentParent(agentID, firstUserText string) string {
+	if agentID != "" {
+		if parent, ok := r.byAgentID[agentID]; ok {
+			return parent
+		}
+	}
+	for i := range r.launches {
+		l := &r.launches[i]
+		if l.claimed || l.prompt == "" || !strings.Contains(firstUserText, l.prompt) {
+			continue
+		}
+		l.claimed = true
+		r.cacheAgent(agentID, l.toolUseID)
+		return l.toolUseID
+	}
+	return ""
+}
+
+// cacheAgent records a resolved X-Claude-Code-Agent-Id → parent mapping so the
+// subagent's later requests skip the content match. Bounded like the parser's
+// correlation maps: reset wholesale on overflow.
+func (r *reconstructor) cacheAgent(agentID, parent string) {
+	if agentID == "" || parent == "" {
+		return
+	}
+	if r.byAgentID == nil {
+		r.byAgentID = make(map[string]string)
+	}
+	if len(r.byAgentID) >= maxByAgentID {
+		r.byAgentID = make(map[string]string)
+	}
+	r.byAgentID[agentID] = parent
 }

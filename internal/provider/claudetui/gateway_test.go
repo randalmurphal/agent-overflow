@@ -16,11 +16,12 @@ import (
 // captures every reconstructed envelope, so a gateway test can assert which
 // inbound requests surface as agent turns and that the SSE was teed.
 type recordingDriver struct {
-	mu       sync.Mutex
-	begins   int
-	ends     int
-	envelope []json.RawMessage
-	rec      *reconstructor
+	mu        sync.Mutex
+	begins    int
+	subBegins int
+	ends      int
+	envelope  []json.RawMessage
+	rec       *reconstructor
 }
 
 func newRecordingDriver() *recordingDriver {
@@ -40,11 +41,28 @@ func (d *recordingDriver) beginAgentTurn(req *messagesRequest) *agentRequest {
 	return d.rec.beginAgentRequest(req)
 }
 
+func (d *recordingDriver) beginSubagentTurn(req *messagesRequest, agentID string) *agentRequest {
+	d.mu.Lock()
+	d.subBegins++
+	d.mu.Unlock()
+	parent := d.rec.resolveSubagentParent(agentID, firstUserText(req.Messages))
+	if parent == "" {
+		return nil
+	}
+	return d.rec.beginSubagentRequest(parent)
+}
+
 func (d *recordingDriver) endAgentTurn(ar *agentRequest) {
 	d.mu.Lock()
 	d.ends++
 	d.mu.Unlock()
 	ar.end()
+}
+
+func (d *recordingDriver) subagentBegins() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.subBegins
 }
 
 func (d *recordingDriver) snapshot() (begins, ends int, envelopes []json.RawMessage) {
@@ -85,9 +103,17 @@ func newTestGateway(t *testing.T, upstream string, drive agentTurnDriver, onClas
 
 func postGateway(t *testing.T, gw *gateway, method, path, body string) *http.Response {
 	t.Helper()
+	return postGatewayWithHeaders(t, gw, method, path, body, nil)
+}
+
+func postGatewayWithHeaders(t *testing.T, gw *gateway, method, path, body string, headers map[string]string) *http.Response {
+	t.Helper()
 	req, err := http.NewRequest(method, gw.baseURL()+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -133,6 +159,50 @@ func TestGatewayReconstructsAgentTurn(t *testing.T) {
 	if !sawStreamEvent {
 		t.Errorf("SSE was not teed into reconstruction; envelopes: %v", envelopes)
 	}
+}
+
+// TestGatewayRoutesSubagentByHeader proves the X-Claude-Code-Agent-Id header is
+// the discriminator between the main-loop and subagent reconstruction paths: an
+// otherwise-identical agent POST routes to beginSubagentTurn when the header is
+// present and beginAgentTurn when it is absent.
+func TestGatewayRoutesSubagentByHeader(t *testing.T) {
+	t.Run("agent-id header routes to subagent path", func(t *testing.T) {
+		up := sseUpstream(t, http.StatusOK, nil)
+		drive := newRecordingDriver()
+		gw := newTestGateway(t, up.URL, drive, nil)
+
+		resp := postGatewayWithHeaders(t, gw, http.MethodPost, "/v1/messages", agentReqBody,
+			map[string]string{agentIDHeader: "aid-abc123"})
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		// beginSubagentTurn is invoked synchronously before any body is streamed,
+		// so it has already run by the time the client drains the response.
+		if got := drive.subagentBegins(); got != 1 {
+			t.Fatalf("subagent begins = %d, want 1", got)
+		}
+		if begins, _, _ := drive.snapshot(); begins != 0 {
+			t.Fatalf("main-loop begins = %d, want 0 (subagent must not take the main path)", begins)
+		}
+	})
+
+	t.Run("no header routes to main path", func(t *testing.T) {
+		up := sseUpstream(t, http.StatusOK, nil)
+		drive := newRecordingDriver()
+		gw := newTestGateway(t, up.URL, drive, nil)
+
+		resp := postGateway(t, gw, http.MethodPost, "/v1/messages", agentReqBody)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		begins, _ := waitDriver(t, drive, 1)
+		if begins != 1 {
+			t.Fatalf("main-loop begins = %d, want 1", begins)
+		}
+		if got := drive.subagentBegins(); got != 0 {
+			t.Fatalf("subagent begins = %d, want 0 (no header must take the main path)", got)
+		}
+	})
 }
 
 // TestGatewayGatesNonAgentTraffic proves reconstruction is set up ONLY for a
