@@ -1428,6 +1428,186 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(typeof pane.scrollController?.notifyContentMaybeGrew).toBe('function');
     expect(typeof pane.scrollController?.notifyLiveContentMaybeGrew).toBe('function');
     expect(typeof pane.scrollController?.notifyHostLayoutSettled).toBe('function');
+    expect(typeof pane.scrollController?.preserveTimelineWindowAnchor).toBe('function');
+  });
+
+  it('vetoes timeline-window pruning when it would drop the visible anchor', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+    await waitFor(() => {
+      expect(getThreadScrollSnapshot(pane.threadId!)).toBeTruthy();
+    });
+    expect(container.querySelector('[data-item-id="a"]')).not.toBeNull();
+
+    const ctrl = pane.scrollController as
+      | (PaneScrollController & {
+        setEscapedFromLock(value: boolean): void;
+      })
+      | null;
+    expect(ctrl?.preserveTimelineWindowAnchor).toBeTypeOf('function');
+    if (!ctrl?.preserveTimelineWindowAnchor) return;
+
+    ctrl.setEscapedFromLock(true);
+    const run = vi.fn();
+    const keepsItem = vi.fn(() => false);
+
+    const result = ctrl.preserveTimelineWindowAnchor({ keepsItem, run });
+
+    expect(result).toBe(false);
+    expect(keepsItem).toHaveBeenCalledWith('a');
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('restores a kept visible anchor after timeline-window pruning', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+    ]);
+    let ctrl: (PaneScrollController & {
+      runExternalScroll(action: () => void, options?: unknown): void;
+      setEscapedFromLock(value: boolean): void;
+    }) | null = null;
+    let runExternalScroll: ReturnType<typeof vi.spyOn> | null = null;
+    const origAttach = pane.attachScrollController.bind(pane);
+    pane.attachScrollController = (controller) => {
+      ctrl = controller as typeof ctrl;
+      runExternalScroll = vi.spyOn(ctrl!, 'runExternalScroll');
+      origAttach(controller);
+    };
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+    await waitFor(() => {
+      expect(getThreadScrollSnapshot(pane.threadId!)).toBeTruthy();
+    });
+    expect(container.querySelector('[data-item-id="a"]')).not.toBeNull();
+
+    expect(ctrl).not.toBeNull();
+    const controller = ctrl!;
+    expect(controller.preserveTimelineWindowAnchor).toBeTypeOf('function');
+    if (!controller.preserveTimelineWindowAnchor) return;
+
+    controller.setEscapedFromLock(true);
+    const run = vi.fn();
+    const keepsItem = vi.fn((itemId: string) => itemId === 'a');
+
+    const result = controller.preserveTimelineWindowAnchor({ keepsItem, run });
+
+    expect(result).toBe(true);
+    expect(keepsItem).toHaveBeenCalledWith('a');
+    expect(run).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(runExternalScroll).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('re-pins bottom after timeline-window pruning without consuming user intent', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+    ]);
+    let ctrl: (PaneScrollController & {
+      forceStick(options?: unknown): void;
+      markAtBottom(): void;
+      runExternalScroll(action: () => void, options?: unknown): void;
+    }) | null = null;
+    let forceStick: ReturnType<typeof vi.spyOn> | null = null;
+    let markAtBottom: ReturnType<typeof vi.spyOn> | null = null;
+    let runExternalScroll: ReturnType<typeof vi.spyOn> | null = null;
+    const origAttach = pane.attachScrollController.bind(pane);
+    pane.attachScrollController = (controller) => {
+      ctrl = controller as typeof ctrl;
+      forceStick = vi.spyOn(ctrl!, 'forceStick');
+      markAtBottom = vi.spyOn(ctrl!, 'markAtBottom');
+      runExternalScroll = vi.spyOn(ctrl!, 'runExternalScroll');
+      origAttach(controller);
+    };
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+    await waitFor(() => {
+      expect(getThreadScrollSnapshot(pane.threadId!)).toBeTruthy();
+    });
+
+    expect(ctrl).not.toBeNull();
+    const controller = ctrl!;
+    expect(controller.preserveTimelineWindowAnchor).toBeTypeOf('function');
+    if (!controller.preserveTimelineWindowAnchor) return;
+
+    controller.forceStick({ reason: 'restore' });
+    forceStick?.mockClear();
+    markAtBottom?.mockClear();
+    runExternalScroll?.mockClear();
+    const run = vi.fn();
+
+    const result = controller.preserveTimelineWindowAnchor({
+      keepsItem: () => true,
+      run,
+    });
+
+    expect(result).toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(runExternalScroll).toHaveBeenCalledTimes(1);
+      expect(markAtBottom).toHaveBeenCalledTimes(1);
+      expect(forceStick).not.toHaveBeenCalled();
+    });
+  });
+
+  it('cancels a pending timeline-window prune restore on unmount', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+    ]);
+    let ctrl: (PaneScrollController & {
+      markAtBottom(): void;
+    }) | null = null;
+    let markAtBottom: ReturnType<typeof vi.spyOn> | null = null;
+    const origAttach = pane.attachScrollController.bind(pane);
+    pane.attachScrollController = (controller) => {
+      ctrl = controller as typeof ctrl;
+      markAtBottom = vi.spyOn(ctrl!, 'markAtBottom');
+      origAttach(controller);
+    };
+
+    const { unmount } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+    await waitFor(() => {
+      expect(getThreadScrollSnapshot(pane.threadId!)).toBeTruthy();
+    });
+
+    expect(ctrl).not.toBeNull();
+    const controller = ctrl!;
+    expect(controller.preserveTimelineWindowAnchor).toBeTypeOf('function');
+    if (!controller.preserveTimelineWindowAnchor) return;
+
+    controller.markAtBottom();
+    markAtBottom?.mockClear();
+    const run = vi.fn();
+
+    const result = controller.preserveTimelineWindowAnchor({
+      keepsItem: () => true,
+      run,
+    });
+    unmount();
+    await tick();
+
+    expect(result).toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(markAtBottom).not.toHaveBeenCalled();
   });
 
   it('host-layout reconciliation preserves the current sticky or escaped intent', async () => {

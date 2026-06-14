@@ -130,7 +130,15 @@ export interface PaneScrollController {
     anchor: HTMLElement,
     action: () => void | Promise<void>,
   ): Promise<void>;
+  preserveTimelineWindowAnchor?(
+    operation: TimelineWindowAnchorOperation,
+  ): boolean;
   readonly isAtBottom?: boolean;
+}
+
+export interface TimelineWindowAnchorOperation {
+  keepsItem(itemId: string): boolean;
+  run(): void;
 }
 
 export interface ScrollToItemOptions {

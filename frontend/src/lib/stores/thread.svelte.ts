@@ -188,6 +188,7 @@ export type {
   LoadOlderResult,
   PaneScrollController,
   ScrollToItemOptions,
+  TimelineWindowAnchorOperation,
 } from './threadPaneShared';
 
 export {
@@ -220,6 +221,9 @@ interface PrunedWindow {
   oldestCursor: TimelineCursorLike | null;
   newestCursor: TimelineCursorLike | null;
 }
+
+type PrunedWindowApplyResult = 'applied' | 'deferred';
+type PrunedWindowVetoPolicy = 'defer' | 'force';
 
 /**
  * Creates a self-contained thread pane state instance.
@@ -474,6 +478,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   let newestLoadedTurnIndex: number | null = $state(null);
   let hasMoreHistory: boolean = $state(false);
   let hasMoreNewer: boolean = $state(false);
+  let recentWindowPrunePending: boolean = $state(false);
   let loadingOlder: boolean = $state(false);
   let loadingNewer: boolean = $state(false);
 
@@ -833,6 +838,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     options: { hasMoreNewerAfterPrune?: boolean } = {},
   ): void {
     if (items.length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
+    const activeTurn = thread !== null ? getActiveTurn(thread.id) : null;
+    const exceedsHardCeiling =
+      items.length > ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS;
     // A head-drop on a visible, bottom-pinned timeline repaints the whole
     // viewport: the content height collapses by the dropped rows, the
     // browser clamps scrollTop, and virtua re-measures — seen as a blank
@@ -840,22 +848,23 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // settle (settleTurn calls back in here), holding the hard ceiling
     // as the memory backstop against a runaway turn.
     if (
-      items.length <= ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS
-      && thread !== null
-      && getActiveTurn(thread.id)
+      !exceedsHardCeiling
+      && activeTurn
     ) {
       return;
     }
+    if (recentWindowPrunePending && !exceedsHardCeiling) return;
+    const vetoPolicy = exceedsHardCeiling ? 'force' : 'defer';
     const next = keepRecentWindowItems(
       items,
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
     );
-    if (next.items.length === items.length) return;
-    replaceTimelineItems(next.items, { disposeDropped: true });
-    setLoadedCursors(next.oldestCursor, next.newestCursor);
-    hasMoreHistory = true;
-    hasMoreNewer = options.hasMoreNewerAfterPrune ?? false;
-    recomputeReveal();
+    const result = applyPrunedWindow(next, {
+      hasMoreHistoryAfterPrune: true,
+      hasMoreNewerAfterPrune: options.hasMoreNewerAfterPrune ?? false,
+      vetoPolicy,
+    });
+    recentWindowPrunePending = result === 'deferred';
   }
 
   function pruneToHeadWindowIfNeeded(): void {
@@ -864,11 +873,49 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       items,
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
     );
-    if (next.items.length === items.length) return;
-    replaceTimelineItems(next.items, { disposeDropped: true });
-    setLoadedCursors(next.oldestCursor, next.newestCursor);
-    hasMoreNewer = true;
-    recomputeReveal();
+    applyPrunedWindow(next, {
+      hasMoreNewerAfterPrune: true,
+      vetoPolicy: 'force',
+    });
+  }
+
+  function applyPrunedWindow(
+    next: PrunedWindow,
+    options: {
+      hasMoreHistoryAfterPrune?: boolean;
+      hasMoreNewerAfterPrune?: boolean;
+      vetoPolicy: PrunedWindowVetoPolicy;
+    },
+  ): PrunedWindowApplyResult {
+    if (next.items.length === items.length) return 'applied';
+    let operationApplied = false;
+    const apply = (): void => {
+      if (operationApplied) return;
+      operationApplied = true;
+      replaceTimelineItems(next.items, { disposeDropped: true });
+      setLoadedCursors(next.oldestCursor, next.newestCursor);
+      if (options.hasMoreHistoryAfterPrune !== undefined) {
+        hasMoreHistory = options.hasMoreHistoryAfterPrune;
+      }
+      if (options.hasMoreNewerAfterPrune !== undefined) {
+        hasMoreNewer = options.hasMoreNewerAfterPrune;
+      }
+      recomputeReveal();
+    };
+    const preserve = scrollController?.preserveTimelineWindowAnchor;
+    if (!preserve) {
+      apply();
+      return 'applied';
+    }
+    const keptItemIds = new Set(next.items.map((item) => item.id));
+    preserve({
+      keepsItem: (itemId) => keptItemIds.has(itemId),
+      run: apply,
+    });
+    if (operationApplied) return 'applied';
+    if (options.vetoPolicy === 'defer') return 'deferred';
+    apply();
+    return 'applied';
   }
 
   /**
@@ -1762,6 +1809,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       hasMoreHistory = cached.hasMoreHistory;
       hasMoreNewer = cached.hasMoreNewer;
       latestSettledTurn = cached.latestSettledTurn;
+      recentWindowPrunePending = false;
     } else {
       replaceTimelineItems([]);
       subagentFolds.clear();
@@ -1775,6 +1823,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       newestLoadedTurnIndex = null;
       hasMoreHistory = false;
       hasMoreNewer = false;
+      recentWindowPrunePending = false;
     }
     rowUiState.clear();
     disposeAllSmoothers();
@@ -2257,6 +2306,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get hasMoreNewer() {
       return hasMoreNewer;
     },
+    get hasDeferredRecentWindowPrune() {
+      return recentWindowPrunePending;
+    },
+    retryDeferredRecentWindowPrune(): void {
+      if (!recentWindowPrunePending) return;
+      recentWindowPrunePending = false;
+      pruneToRecentWindowIfNeeded();
+    },
     get loadingOlder() {
       return loadingOlder;
     },
@@ -2525,6 +2582,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       newestLoadedTurnIndex = null;
       hasMoreHistory = false;
       hasMoreNewer = false;
+      recentWindowPrunePending = false;
       loadingOlder = false;
       loadingNewer = false;
       subagentHydrationInFlight.clear();

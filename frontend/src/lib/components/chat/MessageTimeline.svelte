@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onDestroy, setContext, tick, untrack } from 'svelte';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    ThreadPane,
+    TimelineWindowAnchorOperation,
+  } from '../../stores/thread.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { createUseStickToBottomController } from '../../utils/useStickToBottom.svelte';
@@ -43,6 +46,7 @@
     captureTimelineAnchor,
     createAutoLoadOlderGate,
     resolveVisibleTimelineNodeIndex,
+    type TimelineAnchor,
   } from './timelineScroll';
   import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
   import {
@@ -394,7 +398,122 @@
     }, { preserveIntent: true });
   }
 
-  const paneScrollController = Object.assign(stick, { notifyHostLayoutSettled });
+  interface TimelineWindowAnchorIntent {
+    switchGeneration: number;
+    shouldStickToBottom: boolean;
+    anchor: TimelineAnchor | null;
+  }
+
+  function captureTimelineWindowAnchorIntent(): TimelineWindowAnchorIntent {
+    const shouldStickToBottom =
+      stick.isSticky || (!stick.escapedFromLock && stick.isAtBottom);
+    const currentListRef = listRef;
+    return {
+      switchGeneration: pane.switchGeneration,
+      shouldStickToBottom,
+      anchor: shouldStickToBottom || !currentListRef
+        ? null
+        : captureTimelineAnchor(
+            revealedNodes,
+            currentListRef,
+            currentListRef.getScrollOffset(),
+            { clampIndex: true },
+          ),
+    };
+  }
+
+  function canApplyPruneWithoutDroppingAnchor(
+    intent: TimelineWindowAnchorIntent,
+    operation: TimelineWindowAnchorOperation,
+  ): boolean {
+    if (intent.shouldStickToBottom || revealedNodes.length === 0) {
+      return true;
+    }
+    return intent.anchor !== null && operation.keepsItem(intent.anchor.itemId);
+  }
+
+  function restoreBottomAfterTimelineWindowPrune(): void {
+    const lastIndex = revealedNodes.length - 1;
+    stick.runExternalScroll(() => {
+      if (lastIndex >= 0) {
+        listRef?.scrollToIndex(lastIndex, { align: 'end' });
+      }
+      stick.markAtBottom();
+    }, { preserveIntent: true });
+    saveScrollSnapshot();
+  }
+
+  function restoreAnchorAfterTimelineWindowPrune(
+    anchor: TimelineAnchor,
+  ): void {
+    const idx = findTimelineNodeIndex(anchor.itemId);
+    if (idx < 0) return;
+    stick.runExternalScroll(() => {
+      listRef?.scrollToIndex(idx, {
+        align: 'start',
+        offset: -anchor.offsetTop,
+      });
+    }, { preserveIntent: true });
+    saveScrollSnapshot();
+  }
+
+  async function restoreTimelineWindowAnchorAfterPrune(
+    intent: TimelineWindowAnchorIntent,
+    token: number,
+    release: () => void,
+  ): Promise<void> {
+    try {
+      await tick();
+      if (token !== restoreToken) return;
+      if (pane.switchGeneration !== intent.switchGeneration) return;
+
+      if (intent.shouldStickToBottom) {
+        restoreBottomAfterTimelineWindowPrune();
+        return;
+      }
+
+      if (!listRef || !intent.anchor) return;
+      restoreAnchorAfterTimelineWindowPrune(intent.anchor);
+    } finally {
+      release();
+    }
+  }
+
+  function preserveTimelineWindowAnchor(
+    operation: TimelineWindowAnchorOperation,
+  ): boolean {
+    if (!listRef || !scrollEl) {
+      operation.run();
+      return true;
+    }
+
+    const intent = captureTimelineWindowAnchorIntent();
+    if (!canApplyPruneWithoutDroppingAnchor(intent, operation)) {
+      return false;
+    }
+
+    const release = stick.pauseAutoScroll();
+    const token = ++restoreToken;
+    try {
+      operation.run();
+    } catch (err) {
+      release();
+      throw err;
+    }
+    void restoreTimelineWindowAnchorAfterPrune(intent, token, release);
+    return true;
+  }
+
+  const paneScrollController = Object.assign(stick, {
+    notifyHostLayoutSettled,
+    preserveTimelineWindowAnchor,
+  });
+
+  $effect(() => {
+    if (!pane.hasDeferredRecentWindowPrune) return;
+    if (!stick.isSticky) return;
+    pane.retryDeferredRecentWindowPrune();
+  });
 
   // Hide contentEl while virtua and async row content settle. Fresh
   // virtua mounts start from `ESTIMATED_ROW_SIZE × N`; per-row
@@ -1229,6 +1348,7 @@
   onDestroy(() => {
     hostLayoutRetryToken += 1;
     rowUiPruneToken += 1;
+    restoreToken += 1;
     if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId);
     targetFlash.clear();
     autoLoadOlderGate.reset();

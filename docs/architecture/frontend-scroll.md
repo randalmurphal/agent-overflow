@@ -53,6 +53,16 @@ and virtua re-measures — a visible blank flash (incident 2026-06-10).
 `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS` is the memory backstop: a
 single turn streaming past it gets pruned mid-turn anyway.
 
+Structural window pruning goes through `MessageTimeline` when a timeline
+is mounted. The pane owns the window decision, but the timeline owns the
+DOM/virtua anchor transaction: bottom intent pins to the new bottom, and
+reading state preserves the first visible item when that item survives
+the prune. If a normal recent-window prune would drop the visible anchor,
+the pane defers it and retries when bottom intent returns instead of
+re-asking on every append. The hard ceiling is the only exception; it
+forces the prune even when anchor preservation vetoes the operation, and
+it is independent of provider turn state.
+
 Subagent child rows get a tighter bound than the window cap. Streaming
 children must live in `pane.items` (the delta pipeline applies only to
 loaded rows), but once a child settles and nothing can render it —
