@@ -191,7 +191,11 @@
     {extensions}
     onsettled={handleSettled}
     components={streamdownComponentsFor(parseIncompleteMarkdown)}
-  />
+  >
+    {#snippet inlineCitation({ token })}
+      {token.text ?? token.raw}
+    {/snippet}
+  </Streamdown>
 {/snippet}
 
 <div

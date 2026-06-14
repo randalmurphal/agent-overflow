@@ -84,6 +84,23 @@ describe('<AssistantMessage>', () => {
     expect(container.textContent).not.toContain('Show preview');
   });
 
+  it('renders bracketed numeric references as literal text', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({
+          status: 'completed',
+          summary: "So entry [32]'s main resume does mis-route it.",
+        }),
+      },
+    });
+
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.textContent).toContain("[32]'s main resume");
+      expect(body.querySelector('[data-streamdown-citation-preview]')).toBeNull();
+    });
+  });
+
   // Regression: svelte-streamdown's `parseIncompleteMarkdown` used to
   // count single italic/code delimiters across the WHOLE line — including
   // contents of inline code spans — and balance them with a trailing
