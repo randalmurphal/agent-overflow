@@ -117,7 +117,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	// same blob without a Store round-trip. The live UI gets an ordered
 	// provider:item_event delta immediately; SQLite receives buffered
 	// appends by interval, threshold, or lifecycle boundary.
-	payloadID := "thinking:" + itemID
+	payloadID := thinkingPayloadID(itemID)
 
 	if firstBlock {
 		metaEvt := evt
@@ -235,6 +235,16 @@ func thinkingItemID(turnIndex int, scope string, blockIndex int) string {
 
 func assistantTextPayloadID(threadID, itemID string) string {
 	return "assistant-text:" + threadID + ":" + itemID
+}
+
+// thinkingPayloadID is the deterministic payload id for a streaming
+// thinking-style row, keyed off the item id so later deltas address the same
+// blob without a Store round-trip. Shared by handleThinking, the
+// persistCompletedThinkingItem fallback, and handleCompactionReasoning — the
+// last reuses the thinking streaming machinery under its reserved scope, so its
+// payload follows the same convention.
+func thinkingPayloadID(itemID string) string {
+	return "thinking:" + itemID
 }
 
 func assistantTextPayload(threadID, itemID, content string, now int64) store.Payload {

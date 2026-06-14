@@ -20,6 +20,7 @@
     puzzle: 'text-ico-puzzle',
     clock: 'text-ico-clock',
     brain: 'text-ico-brain',
+    compaction: 'text-ico-compaction',
     generic: 'text-ico-generic',
   };
 
@@ -83,6 +84,14 @@
     <path d="M19.938 10.5a4 4 0 0 1 .585.396" />
     <path d="M6 18a4 4 0 0 1-1.967-.516" />
     <path d="M19.967 17.484A4 4 0 0 1 18 18" />
+  {:else if kind === 'compaction'}
+    <!-- lucide `list-collapse` icon (https://lucide.dev/icons/list-collapse):
+         three list lines collapsing into two carets — the compaction idiom. -->
+    <path d="M10 5h11" />
+    <path d="M10 12h11" />
+    <path d="M10 19h11" />
+    <path d="m3 10 3-3-3-3" />
+    <path d="m3 20 3-3-3-3" />
   {:else}
     <!-- Generic "tool" fallback: lucide wrench. Reads as a tool rather
          than the circle/exclamation idiom that the prior info-icon

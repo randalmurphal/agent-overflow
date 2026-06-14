@@ -944,7 +944,7 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 
 func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string) error {
 	itemID := r.nextThinkingItemID(threadID, turnIndex, scope)
-	payloadID := "thinking:" + itemID
+	payloadID := thinkingPayloadID(itemID)
 	now := time.Now().UnixMilli()
 	item := store.Item{
 		ID:        itemID,

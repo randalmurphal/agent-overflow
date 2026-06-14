@@ -150,7 +150,10 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		}
 	}()
 
-	relay, err := newHookRelay(s.feedEnvelope, s.onSessionInfo, s.onProxyError)
+	relay, err := newHookRelay(s.feedEnvelope, s.onSessionInfo, compactionHooks{
+		arm:      s.armCompaction,
+		finalize: s.finalizeCompaction,
+	}, s.onProxyError)
 	if err != nil {
 		return nil, err
 	}
@@ -300,6 +303,16 @@ func (s *Session) beginSubagentTurn(req *messagesRequest, agentID string) *agent
 	return s.rec.beginSubagentRequest(parent)
 }
 
+// beginCompactionCapture claims a classAgent request as the compaction
+// summarizer when a compaction is armed (PreCompact seen), returning nil
+// otherwise so the gateway falls through to normal routing. Under recMu like the
+// other reconstructor mutators (it reads + clears the armed flag).
+func (s *Session) beginCompactionCapture(req *messagesRequest) *agentRequest {
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	return s.rec.beginCompactionCapture()
+}
+
 // endAgentTurn closes one request's reconstruction: emits the assembled
 // assistant envelope, folds usage, and synthesizes the turn-closing result when
 // the model is done.
@@ -307,6 +320,24 @@ func (s *Session) endAgentTurn(ar *agentRequest) {
 	s.recMu.Lock()
 	defer s.recMu.Unlock()
 	ar.end()
+}
+
+// armCompaction arms the compaction-summarizer capture (PreCompact hook). Under
+// recMu like the other reconstructor mutators.
+func (s *Session) armCompaction() {
+	s.recMu.Lock()
+	s.rec.armCompaction()
+	s.recMu.Unlock()
+}
+
+// finalizeCompaction emits the Compacted boundary enriched with the captured
+// summarizer thinking + the committed summary (PostCompact hook). Under recMu;
+// the emit runs through the same feed channel the wire path uses, so it
+// serializes with the parser goroutine.
+func (s *Session) finalizeCompaction(trigger, summary string) {
+	s.recMu.Lock()
+	s.rec.finalizeCompaction(trigger, summary)
+	s.recMu.Unlock()
 }
 
 // queueUserEcho records an AO Send on the reconstructor's pending-echo FIFO so

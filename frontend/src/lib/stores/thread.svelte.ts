@@ -97,6 +97,7 @@ import {
   migrateThreadTerminalState,
 } from '../components/terminal/terminalStore.svelte';
 import {
+  COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY,
   THINKING_PAYLOAD_EXPANSION_STATE_KEY,
   thinkingPayloadVersionForItem,
 } from '../utils/payloadVersion';
@@ -1102,13 +1103,31 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (!sameBoundary(revealBoundary, next)) revealBoundary = next;
   }
 
-  // Smoothable kinds: assistant_text + thinking. Tool calls, errors,
-  // notifications, etc. pass through directly — they have their own
-  // rendering and don't benefit from word-aligned reveal. Accepts a
-  // plain string because `Item.kind` is `ItemKind | string` to absorb
-  // unknown wire values without forcing a runtime guard at every site.
+  // Reasoning-tail kinds share the live 3-line tail UX — a smoother-driven
+  // monotonic tail, a tail-trimmed summary, and mid-stream payload expansion:
+  // the model's `thinking` and the compaction summarizer's
+  // `compaction_reasoning`. They differ only in the row's icon/label and its
+  // payload-expansion namespace. Accepts a plain string because `Item.kind` is
+  // `ItemKind | string` to absorb unknown wire values without a guard at every
+  // site.
+  function isReasoningTailKind(kind: ItemKind | string): boolean {
+    return kind === 'thinking' || kind === 'compaction_reasoning';
+  }
+
+  // The payload-expansion namespace a reasoning-tail row reads from, matched by
+  // the row component so a mid-stream live delta lands where an expand will
+  // read it.
+  function reasoningExpansionStateKey(kind: ItemKind | string): string {
+    return kind === 'compaction_reasoning'
+      ? COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY
+      : THINKING_PAYLOAD_EXPANSION_STATE_KEY;
+  }
+
+  // Smoothable kinds: assistant_text + the reasoning-tail kinds. Tool calls,
+  // errors, notifications, etc. pass through directly — they have their own
+  // rendering and don't benefit from word-aligned reveal.
   function shouldSmoothKind(kind: ItemKind | string): boolean {
-    return kind === 'assistant_text' || kind === 'thinking';
+    return kind === 'assistant_text' || isReasoningTailKind(kind);
   }
 
   function getOrCreateSmoothing(
@@ -1150,10 +1169,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         const current = items[idx];
         const prevRevealed = previousRevealed;
         previousRevealed = revealed;
-        const nextSummary =
-          current.kind === 'thinking'
-            ? trimToTailRunes(revealed, THINKING_TAIL_RUNES)
-            : revealed;
+        // Reasoning-tail rows (thinking + compaction_reasoning) keep the
+        // summary tail-trimmed for memory; assistant_text keeps the full
+        // revealed text.
+        const isReasoningTail = isReasoningTailKind(current.kind);
+        const nextSummary = isReasoningTail
+          ? trimToTailRunes(revealed, THINKING_TAIL_RUNES)
+          : revealed;
         // Keep the row's `updatedAt` monotonic. A status-only patch
         // (e.g. bare `{status: 'completed', updatedAt: T}`) can land
         // between deltas and bump `current.updatedAt` past the
@@ -1165,11 +1187,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           updatedAt: Math.max(latestUpdatedAt, current.updatedAt),
         };
         items[idx] = nextItem;
-        if (nextItem.kind === 'thinking') {
+        if (isReasoningTail) {
           itemLiveThinkingTail.set(itemId, revealed);
           rowUiState.appendLivePayloadDeltaForItem(
             nextItem.id,
-            THINKING_PAYLOAD_EXPANSION_STATE_KEY,
+            reasoningExpansionStateKey(nextItem.kind),
             delta,
             thinkingPayloadVersionForItem(nextItem),
             prevRevealed,
@@ -3136,10 +3158,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         return;
       }
 
-      // Smoothable kinds (assistant_text + thinking): route the wire
-      // delta through the per-item smoother. The smoother's onReveal
-      // callback owns all subsequent writes to items[index].summary
-      // and to the live payload tail.
+      // Smoothable kinds (assistant_text + the reasoning-tail kinds
+      // thinking and compaction_reasoning): route the wire delta through
+      // the per-item smoother. The smoother's onReveal callback owns all
+      // subsequent writes to items[index].summary and to the live payload tail.
       const entry = getOrCreateSmoothing(evt.itemId, current.summary);
       entry.setLatestUpdatedAt(evt.updatedAt);
       entry.smoother.appendDelta(evt.delta);

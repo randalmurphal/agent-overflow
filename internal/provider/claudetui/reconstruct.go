@@ -331,6 +331,27 @@ func (a *messageAssembler) agentLaunches() []agentLaunch {
 	return out
 }
 
+// assembledText concatenates the accumulated output text across every block in
+// stream order — the compaction summarizer's summary, used as the fallback when
+// the PostCompact hook's compact_summary is empty. (The summarizer's reasoning is
+// not assembled for capture; it streams live — see turndriver.onSSE.)
+func (a *messageAssembler) assembledText() string {
+	var b strings.Builder
+	for _, idx := range a.order {
+		if sb := a.text[idx]; sb != nil {
+			b.WriteString(sb.String())
+		}
+	}
+	return b.String()
+}
+
+// blockType returns the content-block type recorded for an index (from its
+// content_block_start), or "" if the index is unseen. The compaction capture
+// uses it to forward only the summarizer's thinking-block frames live.
+func (a *messageAssembler) blockType(index int) string {
+	return rawString(a.blocks[index]["type"])
+}
+
 // renderBlock merges a block's content_block fields with its accumulated
 // streaming text/thinking/signature/input.
 func (a *messageAssembler) renderBlock(index int) json.RawMessage {
@@ -448,6 +469,31 @@ func taskNotificationLine(taskID, toolUseID, status, outputFile, summary string)
 		Status:     status,
 		OutputFile: outputFile,
 		Summary:    summary,
+	})
+}
+
+// compactBoundaryLine synthesizes the system:compact_boundary envelope for a
+// finished compaction. trigger is the PostCompact hook's trigger ("auto" |
+// "manual"); summary is the committed compaction summary
+// (turndriver.finalizeCompaction). They ride in compactMetadata — which the
+// shared parser preserves verbatim into the event meta when no context-window
+// snapshot is present (extractCompactBoundaryMeta) — so triage can lift the
+// summary into the Compacted divider's on-demand payload. `content` is left to
+// triage's default divider label. The summarizer's reasoning is NOT here: it
+// streamed live as a compaction_reasoning row (turndriver.onSSE). Headless
+// Claude never emits a summary here, so its boundary stays a plain divider.
+func compactBoundaryLine(trigger, summary string) json.RawMessage {
+	md := map[string]string{}
+	if trigger != "" {
+		md["trigger"] = trigger
+	}
+	if summary != "" {
+		md["summary"] = summary
+	}
+	return mustMarshal(map[string]json.RawMessage{
+		"type":            mustMarshal("system"),
+		"subtype":         mustMarshal("compact_boundary"),
+		"compactMetadata": mustMarshal(md),
 	})
 }
 

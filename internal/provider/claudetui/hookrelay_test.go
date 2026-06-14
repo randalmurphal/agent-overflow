@@ -20,6 +20,7 @@ func newTestRelay(t *testing.T, fed chan<- json.RawMessage) *hookRelay {
 			}
 		},
 		func(string, string, string) {},
+		compactionHooks{},
 		func(err error) { t.Errorf("relay error: %v", err) },
 	)
 	if err != nil {
@@ -42,6 +43,49 @@ func postHook(t *testing.T, relay *hookRelay, token, body string) *http.Response
 		t.Fatalf("post hook: %v", err)
 	}
 	return resp
+}
+
+// TestHookRelayCompactionDispatch proves the two compaction signals route to
+// their hooks: PreCompact arms the capture; PostCompact finalizes it with the
+// trigger and the committed summary. Channels carry the calls back so the assert
+// is race-safe across the relay's handler goroutine.
+func TestHookRelayCompactionDispatch(t *testing.T) {
+	armCh := make(chan struct{}, 1)
+	finalizeCh := make(chan [2]string, 1)
+	relay, err := newHookRelay(
+		func(json.RawMessage) {},
+		func(string, string, string) {},
+		compactionHooks{
+			arm:      func() { armCh <- struct{}{} },
+			finalize: func(trigger, summary string) { finalizeCh <- [2]string{trigger, summary} },
+		},
+		func(err error) { t.Errorf("relay error: %v", err) },
+	)
+	if err != nil {
+		t.Fatalf("newHookRelay: %v", err)
+	}
+	relay.start()
+	t.Cleanup(func() { _ = relay.close() })
+
+	pre := postHook(t, relay, relay.authToken(), `{"hook_event_name":"PreCompact","trigger":"auto"}`)
+	_ = pre.Body.Close()
+	select {
+	case <-armCh:
+	case <-time.After(time.Second):
+		t.Fatal("PreCompact did not arm the compaction capture")
+	}
+
+	post := postHook(t, relay, relay.authToken(),
+		`{"hook_event_name":"PostCompact","trigger":"auto","compact_summary":"committed summary"}`)
+	_ = post.Body.Close()
+	select {
+	case got := <-finalizeCh:
+		if got[0] != "auto" || got[1] != "committed summary" {
+			t.Errorf("finalize(%q, %q), want (auto, committed summary)", got[0], got[1])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PostCompact did not finalize the compaction")
+	}
 }
 
 // TestIsLoopback covers the peer check that guards BOTH the hook relay and the

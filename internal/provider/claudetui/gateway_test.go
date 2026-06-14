@@ -16,12 +16,13 @@ import (
 // captures every reconstructed envelope, so a gateway test can assert which
 // inbound requests surface as agent turns and that the SSE was teed.
 type recordingDriver struct {
-	mu        sync.Mutex
-	begins    int
-	subBegins int
-	ends      int
-	envelope  []json.RawMessage
-	rec       *reconstructor
+	mu            sync.Mutex
+	begins        int
+	subBegins     int
+	captureBegins int
+	ends          int
+	envelope      []json.RawMessage
+	rec           *reconstructor
 }
 
 func newRecordingDriver() *recordingDriver {
@@ -52,6 +53,16 @@ func (d *recordingDriver) beginSubagentTurn(req *messagesRequest, agentID string
 	return d.rec.beginSubagentRequest(parent)
 }
 
+func (d *recordingDriver) beginCompactionCapture(req *messagesRequest) *agentRequest {
+	ar := d.rec.beginCompactionCapture()
+	if ar != nil {
+		d.mu.Lock()
+		d.captureBegins++
+		d.mu.Unlock()
+	}
+	return ar
+}
+
 func (d *recordingDriver) endAgentTurn(ar *agentRequest) {
 	d.mu.Lock()
 	d.ends++
@@ -63,6 +74,12 @@ func (d *recordingDriver) subagentBegins() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.subBegins
+}
+
+func (d *recordingDriver) captureBeginsCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.captureBegins
 }
 
 func (d *recordingDriver) snapshot() (begins, ends int, envelopes []json.RawMessage) {
@@ -158,6 +175,77 @@ func TestGatewayReconstructsAgentTurn(t *testing.T) {
 	}
 	if !sawStreamEvent {
 		t.Errorf("SSE was not teed into reconstruction; envelopes: %v", envelopes)
+	}
+}
+
+// TestGatewayCapsOversizedRequestBody proves the memory-pressure backstop: a
+// request body larger than maxBodyBytes is refused with 413 and never read
+// unbounded into memory, classified, or forwarded upstream. The cap fails loud
+// because the body is proxied verbatim — a silent truncation would corrupt the
+// upstream request. A small cap keeps the test body tiny so the client finishes
+// writing before the server trips and replies, and so a valid agent body (which
+// WOULD forward and open a turn without the cap) discriminates the fix.
+func TestGatewayCapsOversizedRequestBody(t *testing.T) {
+	var forwarded []byte
+	up := sseUpstream(t, http.StatusOK, &forwarded)
+	drive := newRecordingDriver()
+	gw, err := newGateway(up.URL, drive, func(err error) { t.Logf("gateway error: %v", err) }, nil)
+	if err != nil {
+		t.Fatalf("newGateway: %v", err)
+	}
+	// Set before start(): read-only on the serving goroutine, so no race.
+	gw.maxBodyBytes = 16
+	gw.start()
+	t.Cleanup(func() { _ = gw.close() })
+
+	// agentReqBody is a valid agent request and far exceeds the 16-byte cap.
+	resp := postGateway(t, gw, http.MethodPost, "/v1/messages", agentReqBody)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413 (over-limit body must be refused)", resp.StatusCode)
+	}
+	// Refused before the upstream request is built — give any (erroneous) async
+	// begin a beat to land before asserting zero turns and zero forwarding.
+	time.Sleep(20 * time.Millisecond)
+	if begins, _, _ := drive.snapshot(); begins != 0 {
+		t.Errorf("opened %d turns, want 0 (over-limit body must not reconstruct)", begins)
+	}
+	if forwarded != nil {
+		t.Errorf("over-limit body forwarded upstream (%d bytes); want refused before forward", len(forwarded))
+	}
+}
+
+// TestGatewayRoutesArmedSummarizerToCapture proves the compaction routing: when
+// a compaction is armed (PreCompact seen), the next classAgent request — the
+// summarizer — routes to the capture path and NOT to beginAgentTurn, so it never
+// reconstructs as a turn. The summarizer carries no agent-id header (it is
+// main-loop), so without the armed check it would take the normal main path.
+func TestGatewayRoutesArmedSummarizerToCapture(t *testing.T) {
+	up := sseUpstream(t, http.StatusOK, nil)
+	drive := newRecordingDriver()
+	drive.rec.armCompaction() // PreCompact arrived
+	gw := newTestGateway(t, up.URL, drive, nil)
+
+	resp := postGateway(t, gw, http.MethodPost, "/v1/messages", agentReqBody)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	begins, _ := waitDriver(t, drive, 1) // capture path still calls endAgentTurn
+	if got := drive.captureBeginsCount(); got != 1 {
+		t.Fatalf("capture begins = %d, want 1 (armed summarizer must route to capture)", got)
+	}
+	if begins != 0 {
+		t.Fatalf("main-loop begins = %d, want 0 (summarizer must not take the main turn path)", begins)
+	}
+	// Suppressed: the summarizer emits no turn envelope (no PostCompact here, so
+	// no boundary either).
+	_, _, envelopes := drive.snapshot()
+	for _, e := range envelopes {
+		if strings.Contains(string(e), "stream_event") || strings.Contains(string(e), `"assistant"`) || strings.Contains(string(e), `"result"`) {
+			t.Errorf("summarizer leaked a turn envelope: %s", e)
+		}
 	}
 }
 

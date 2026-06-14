@@ -18,7 +18,7 @@ export function nonOverlappingSuffix(existing: string, delta: string): string {
  * stream as `existing`, never an unrelated string. That is what makes
  * "contained ⟹ already shown" sound — this is NOT a general-purpose string
  * merge. Both callers satisfy it (payloadExpansion.appendRevealedSuffix and
- * ThinkingBlock.mergeStreamingExpandedText feed reveals of the same item body).
+ * reasoningTailSource.reasoningBodyText feed reveals of the same item body).
  *
  * `existing` is what we already display (a flushed payload snapshot plus prior
  * live appends); `revealed` is the smoother's latest reveal of the same

@@ -119,6 +119,7 @@ export type ItemKind =
   | "user_text"
   | "assistant_text"
   | "thinking"
+  | "compaction_reasoning"
   | "tool_call"
   | "tool_completion"
   | "error"

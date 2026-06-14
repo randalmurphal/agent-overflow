@@ -74,8 +74,20 @@ none fits.
 - `stream_items.go` / `stream_state.go` / `block_events.go` —
   streaming text / thinking block lifecycle and the content-block
   index bookkeeping they depend on.
+- `compaction_reasoning.go` — routes claudetui's compaction-summarizer
+  reasoning (EventThinking / EventContentBlockStop carrying the reserved
+  `provider.CompactionReasoningScope`, dispatched ahead of the normal
+  handlers in `router.go`) to a top-level `compaction_reasoning` streaming
+  row — the live "compact" tail that settles just ABOVE the `compaction`
+  divider. Reuses the thinking streaming machinery (active-block maps,
+  tail-bounded persist, async settle) under the reserved scope; turn
+  resolution is `currentTurnIndex` (the sentinel is not a real subagent
+  parent), and the row is ParentID="" (top-level, never nested).
 - `usage_compaction.go` — context-window usage normalisation and
-  compaction boundary persistence.
+  compaction boundary persistence. `extractCompactionSummary` /
+  `buildCompactionPayload` lift the committed summary into an on-demand
+  `compaction` payload (raw text in data, like thinking) — summary-only,
+  because the summarizer's reasoning streamed separately as its own row.
 - `turn_events.go` — frontend-facing payload shapes for
   `provider:turn_started` / `provider:turn_completed` /
   `provider:subagent_notification`, plus the canonical stop-reason
@@ -93,6 +105,8 @@ none fits.
 | Diff | SQLite payload + meta to frontend. Full diff is on-demand. |
 | Command output | SQLite payload + meta to frontend. |
 | Thinking block | SQLite payload + preview to frontend. |
+| Thinking block w/ `CompactionReasoningScope` | Top-level `compaction_reasoning` streaming row (the live "compact" tail above the divider). Reuses thinking streaming machinery; dispatched ahead of `handleThinking` / `handleContentBlockStop`. See `compaction_reasoning.go`. |
+| Compaction boundary | `compaction` divider row + on-demand summary payload (`usage_compaction.go`). |
 | Turn metadata (cost/tokens) | Persist on turn completion. |
 | Context-window usage | Frontend context meter + `threads.last_token_usage`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |

@@ -25,6 +25,10 @@ type hookPayload struct {
 	// PreCompact / PostCompact.
 	Trigger            string `json:"trigger"`
 	CustomInstructions string `json:"custom_instructions"`
+	// CompactSummary is the committed summary the PostCompact hook carries — the
+	// authoritative summary text for the Compacted item (the captured summarizer
+	// SSE text is only a fallback). Empty on PreCompact.
+	CompactSummary string `json:"compact_summary"`
 }
 
 func parseHookPayload(raw []byte) (hookPayload, error) {
@@ -85,22 +89,6 @@ func postToolUseFailureEnvelope(p hookPayload) json.RawMessage {
 	return mustMarshal(userEnvelope{
 		Type:    "user",
 		Message: userMessage{Role: "user", Content: []json.RawMessage{mustMarshal(block)}},
-	})
-}
-
-// compactBoundaryEnvelope reconstructs a system:compact_boundary from a
-// PostCompact hook. The hook carries only the trigger; richer compactMetadata
-// (preTokens/postTokens) is a wire-side enrichment that v1 does not fold in, so
-// the boundary marks the timeline with the trigger alone.
-func compactBoundaryEnvelope(p hookPayload) json.RawMessage {
-	md := map[string]any{}
-	if p.Trigger != "" {
-		md["trigger"] = p.Trigger
-	}
-	return mustMarshal(map[string]json.RawMessage{
-		"type":            mustMarshal("system"),
-		"subtype":         mustMarshal("compact_boundary"),
-		"compactMetadata": mustMarshal(md),
 	})
 }
 

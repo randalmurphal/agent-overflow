@@ -1181,6 +1181,120 @@ func TestV10ClaudeTUIProviderWidening(t *testing.T) {
 	}
 }
 
+// TestV11CompactionReasoningKindWidening guards the v11 rebuild that widens the
+// items.kind CHECK to admit 'compaction_reasoning'. It seeds the pre-v11 schema
+// with a thread, a user item, and a thread_checkpoints row whose
+// (thread_id, user_item_id) FK REFERENCES items ON DELETE CASCADE — the one FK
+// the items rebuild must preserve — proves 'compaction_reasoning' is rejected
+// before the migration, applies the real v11 rebuild, then asserts: the seeded
+// rows survive, FK enforcement is clean and restored, the new kind is accepted,
+// a bogus kind is still rejected, and the items→thread_checkpoints CASCADE
+// survived the table swap.
+func TestV11CompactionReasoningKindWidening(t *testing.T) {
+	db := migrateThrough(t, 10)
+
+	// Pre-image: a thread, a user item carrying a payload (to exercise the GC
+	// trigger the rebuild must recreate), and a checkpoint pinned to that item
+	// by the FK the rebuild must carry across.
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v11', '/v11', 'v11', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode)
+		VALUES ('t-v11', 'p-v11', 'Keep me', 'claude-tui', '/tmp', '', 1, 1, 0, 'chat')`)
+	mustExec(t, db, `INSERT INTO payloads (id, kind, meta, data, created_at)
+		VALUES ('pl-v11', 'thinking', '{}', X'00', 1)`)
+	mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+		summary, payload_id, parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+		VALUES ('t-v11-user:0', 't-v11', 0, 0, 'user_text', 'user', 'completed', 'hi', 'pl-v11', '', 0, '', '', '', '{}', 1, 1)`)
+	mustExec(t, db, `INSERT INTO thread_checkpoints
+		(id, thread_id, user_item_id, turn_index, ref_name, captured_at, workspace_path)
+		VALUES ('chk-v11', 't-v11', 't-v11-user:0', 0, 'refs/x', 1000, '/tmp')`)
+
+	// A compaction_reasoning row: rejected by the pre-v11 CHECK, accepted after.
+	const reasoningInsert = `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+		summary, parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+		VALUES ('t-v11-reason:0', 't-v11', 0, 1, 'compaction_reasoning', 'assistant', 'completed',
+		'Reviewing the conversation', '', 0, '', '', '', '{}', 1, 1)`
+	if _, err := db.Exec(reasoningInsert); err == nil {
+		t.Fatal("pre-v11: items must reject kind 'compaction_reasoning'")
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 11)); err != nil {
+		t.Fatalf("apply v11 rebuild: %v", err)
+	}
+
+	// Seeded item + its CASCADE child survive the rebuild.
+	for _, c := range []struct{ table, where string }{
+		{"items", "id = 't-v11-user:0'"},
+		{"thread_checkpoints", "id = 'chk-v11'"},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + c.table + ` WHERE ` + c.where).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", c.table, err)
+		}
+		if n != 1 {
+			t.Errorf("expected %s row to survive v11 rebuild, got %d", c.table, n)
+		}
+	}
+
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	if rows.Next() {
+		t.Error("foreign_key_check reported a violation after v11 rebuild")
+	}
+	rows.Close()
+
+	var fk int
+	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk); err != nil {
+		t.Fatalf("read foreign_keys: %v", err)
+	}
+	if fk != 1 {
+		t.Errorf("foreign_keys = %d after v11 rebuild, want 1 (re-enabled)", fk)
+	}
+
+	// The new kind is now accepted; a bogus kind is still rejected.
+	if _, err := db.Exec(reasoningInsert); err != nil {
+		t.Errorf("post-v11: items must accept kind 'compaction_reasoning': %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+		summary, parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+		VALUES ('t-v11-bogus:0', 't-v11', 0, 2, 'not_a_kind', 'assistant', 'completed', '', '', 0, '', '', '', '{}', 1, 1)`); err == nil {
+		t.Error("post-v11: items must still reject a bogus kind")
+	}
+
+	// Both payload-GC triggers were recreated (a table rebuild drops the
+	// triggers attached to the old table — they must be reinstated explicitly).
+	for _, trg := range []string{"trg_items_gc_payload", "trg_items_gc_input_payload"} {
+		var name string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='trigger' AND name=?`, trg,
+		).Scan(&name); err != nil {
+			t.Errorf("post-v11: trigger %s missing after rebuild: %v", trg, err)
+		}
+	}
+
+	// CASCADE + GC trigger both survive the rebuild: deleting the user item
+	// removes its checkpoint (FK REFERENCES items, carried across with FK off)
+	// and sweeps its now-orphaned payload (trg_items_gc_payload firing).
+	mustExec(t, db, `DELETE FROM items WHERE id = 't-v11-user:0'`)
+	var checkpoints int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM thread_checkpoints WHERE id = 'chk-v11'`).Scan(&checkpoints); err != nil {
+		t.Fatalf("count chk-v11 after item delete: %v", err)
+	}
+	if checkpoints != 0 {
+		t.Errorf("post-v11 CASCADE broken: item delete left %d checkpoints", checkpoints)
+	}
+	var payloads int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = 'pl-v11'`).Scan(&payloads); err != nil {
+		t.Fatalf("count pl-v11 after item delete: %v", err)
+	}
+	if payloads != 0 {
+		t.Errorf("post-v11 payload GC broken: item delete left %d orphaned payloads", payloads)
+	}
+}
+
 // --- Helpers ---
 
 // migrateThrough opens an in-memory DB configured like production

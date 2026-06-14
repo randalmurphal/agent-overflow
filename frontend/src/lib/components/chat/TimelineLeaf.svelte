@@ -4,6 +4,8 @@
   import APIErrorRow from './APIErrorRow.svelte';
   import APIRetryRow from './APIRetryRow.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
+  import CompactionDivider from './CompactionDivider.svelte';
+  import CompactionReasoning from './CompactionReasoning.svelte';
   import NotificationRow from './NotificationRow.svelte';
   import SessionDiedNotification from './SessionDiedNotification.svelte';
   import TerminalInteractionRow from './TerminalInteractionRow.svelte';
@@ -81,6 +83,8 @@
     <ToolCallCard {pane} item={displayItem} {codexSubagentReceiverLabels} />
   {:else if displayItem.kind === 'thinking'}
     <ThinkingBlock {pane} item={displayItem} />
+  {:else if displayItem.kind === 'compaction_reasoning'}
+    <CompactionReasoning {pane} item={displayItem} />
   {:else if displayItem.kind === 'terminal_interaction'}
     <TerminalInteractionRow {pane} item={displayItem} />
   {:else if displayItem.kind === 'notification'}
@@ -98,14 +102,7 @@
       {displayItem.summary}
     </div>
   {:else if displayItem.kind === 'compaction'}
-    <div
-      data-testid="compaction-divider"
-      class="my-8 flex items-center gap-3 text-[0.625rem] uppercase tracking-[0.18em] text-fg-subtle"
-    >
-      <div class="h-px flex-1 bg-border-subtle"></div>
-      <span>{displayItem.summary || 'Context compacted'}</span>
-      <div class="h-px flex-1 bg-border-subtle"></div>
-    </div>
+    <CompactionDivider {pane} item={displayItem} />
   {:else}
     <AssistantMessage {pane} item={displayItem} />
   {/if}

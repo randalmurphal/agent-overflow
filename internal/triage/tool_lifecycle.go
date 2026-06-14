@@ -14,12 +14,20 @@ import (
 )
 
 const (
-	itemKindAssistantText  = "assistant_text"
-	itemKindThinking       = "thinking"
-	itemKindToolCall       = "tool_call"
-	itemKindBackgroundDone = "tool_completion"
-	itemKindNotification   = "notification"
-	itemKindUserText       = "user_text"
+	itemKindAssistantText = "assistant_text"
+	itemKindThinking      = "thinking"
+	// itemKindCompactionReasoning is the live "compact" tail: the claudetui
+	// compaction summarizer's reasoning, streamed (and settled) as its own
+	// top-level row just above the `compaction` divider. It rides the same
+	// streaming machinery as thinking (active-block maps, tail-bounded persist,
+	// settle) but renders with its own icon/label, and is created only for
+	// EventThinking carrying provider.CompactionReasoningScope. See
+	// handleCompactionReasoning.
+	itemKindCompactionReasoning = "compaction_reasoning"
+	itemKindToolCall            = "tool_call"
+	itemKindBackgroundDone      = "tool_completion"
+	itemKindNotification        = "notification"
+	itemKindUserText            = "user_text"
 	// itemKindAPIRetry is the live-updating retry indicator. One row
 	// per turn, deterministic id `retry:<turnIndex>` so re-attempts
 	// upsert in place. Status flips from running to completed when a

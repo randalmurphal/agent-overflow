@@ -201,12 +201,17 @@ def wire_sse_by_req(cap_path):
 
 
 class ClaudeSession:
-    def __init__(self, prompt, base_url, pty_log, cols=200, rows=50, extra_args=None):
+    def __init__(self, prompt, base_url, pty_log, cols=200, rows=50, extra_args=None,
+                 extra_env=None):
         self.prompt = prompt
         self.base_url = base_url
         self.pty_log = pty_log
         self.cols, self.rows = cols, rows
         self.extra_args = extra_args or []
+        # extra_env is applied AFTER the CLAUDE*/ANTHROPIC* strip in start(), so a
+        # probe can deliberately re-introduce a specific CLAUDE_CODE_* knob (e.g.
+        # CLAUDE_CODE_AUTO_COMPACT_WINDOW to force an early auto-compaction).
+        self.extra_env = extra_env or {}
         self.pid = self.master = None
         self.trust_handled = False
         self.submit_nudged = False
@@ -232,6 +237,7 @@ class ClaudeSession:
         env["CLAUDE_CONFIG_DIR"] = CONFIG_DIR
         env["ANTHROPIC_BASE_URL"] = self.base_url
         env["TERM"] = "xterm-256color"
+        env.update(self.extra_env)  # probe-controlled knobs survive the strip
         os.chdir(CWD)
         self.pid, self.master = pty.fork()
         if self.pid == 0:

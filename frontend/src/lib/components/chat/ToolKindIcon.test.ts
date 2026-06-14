@@ -22,6 +22,9 @@ const CASES: Array<{ kind: Kind; colorClass: string }> = [
   { kind: 'speech-bubble', colorClass: 'text-ico-speech-bubble' },
   { kind: 'checklist', colorClass: 'text-ico-checklist' },
   { kind: 'puzzle', colorClass: 'text-ico-puzzle' },
+  { kind: 'clock', colorClass: 'text-ico-clock' },
+  { kind: 'brain', colorClass: 'text-ico-brain' },
+  { kind: 'compaction', colorClass: 'text-ico-compaction' },
   { kind: 'generic', colorClass: 'text-ico-generic' },
 ];
 

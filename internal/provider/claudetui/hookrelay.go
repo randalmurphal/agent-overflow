@@ -26,10 +26,11 @@ import (
 // agent loop never stalls); AskUserQuestion blocks until the human answers in
 // AO. See docs/architecture/claude-tui-provider.md §The hook relay.
 type hookRelay struct {
-	token     string
-	feed      func(json.RawMessage)
-	onSession func(sessionID, cwd, version string)
-	onError   func(error)
+	token      string
+	feed       func(json.RawMessage)
+	onSession  func(sessionID, cwd, version string)
+	compaction compactionHooks
+	onError    func(error)
 
 	ln     net.Listener
 	server *http.Server
@@ -60,10 +61,20 @@ const hookAuthHeader = "X-AO-Hook-Token"
 
 var errRelayClosed = errors.New("claudetui: hook relay closed")
 
+// compactionHooks are the relay's two compaction-lifecycle callbacks into the
+// reconstructor (under the session's recMu): arm on PreCompact, finalize on
+// PostCompact with the committed summary. Both may be nil in tests that don't
+// exercise compaction.
+type compactionHooks struct {
+	arm      func()
+	finalize func(trigger, summary string)
+}
+
 // newHookRelay binds a loopback listener and mints a capability token. feed
 // enqueues reconstructed envelopes through the session's parser; onSession
-// records identity from SessionStart.
-func newHookRelay(feed func(json.RawMessage), onSession func(string, string, string), onError func(error)) (*hookRelay, error) {
+// records identity from SessionStart; compaction arms/finalizes the
+// compaction-summarizer capture.
+func newHookRelay(feed func(json.RawMessage), onSession func(string, string, string), compaction compactionHooks, onError func(error)) (*hookRelay, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("claudetui hook relay: bind loopback: %w", err)
@@ -74,12 +85,13 @@ func newHookRelay(feed func(json.RawMessage), onSession func(string, string, str
 		return nil, err
 	}
 	h := &hookRelay{
-		token:     token,
-		feed:      feed,
-		onSession: onSession,
-		onError:   onError,
-		ln:        ln,
-		pending:   map[string]*pendingQuestion{},
+		token:      token,
+		feed:       feed,
+		onSession:  onSession,
+		compaction: compaction,
+		onError:    onError,
+		ln:         ln,
+		pending:    map[string]*pendingQuestion{},
 	}
 	h.server = &http.Server{
 		Handler:           http.HandlerFunc(h.handle),
@@ -149,15 +161,25 @@ func (h *hookRelay) dispatch(w http.ResponseWriter, r *http.Request, p hookPaylo
 	case "SessionStart":
 		h.onSession(p.SessionID, p.CWD, "")
 		writeEmptyOK(w)
-	case "PostCompact":
-		// v1 emits the boundary with the hook's trigger so the timeline marks
-		// the compaction; wire-side preTokens enrichment is a later phase.
-		h.feed(compactBoundaryEnvelope(p))
-		writeEmptyOK(w)
 	case "PreCompact":
-		// Advisory only — PreCompact fires before the "enough messages" check,
-		// so it is not proof a compaction happened. PostCompact / the wire own
-		// the boundary.
+		// Arm the compaction-summarizer capture: the NEXT classAgent request is
+		// the summarizer, which the gateway then routes to the capture path
+		// instead of rendering as a turn. PreCompact alone is not proof a
+		// compaction committed (it fires even on a rejected /compact with too few
+		// messages — spike/claude-mitm Part A), so it only ARMS; PostCompact is
+		// the success signal. Re-arming discards any aborted prior attempt.
+		if h.compaction.arm != nil {
+			h.compaction.arm()
+		}
+		writeEmptyOK(w)
+	case "PostCompact":
+		// Finalize: emit the compact_boundary enriched with the captured
+		// summarizer thinking + the committed summary. This is the positive
+		// success signal (a failed compaction emits no PostCompact, so its
+		// capture is simply never rendered).
+		if h.compaction.finalize != nil {
+			h.compaction.finalize(p.Trigger, p.CompactSummary)
+		}
 		writeEmptyOK(w)
 	case "PreToolUse":
 		if p.ToolName == "AskUserQuestion" {

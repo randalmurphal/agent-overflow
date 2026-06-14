@@ -74,6 +74,27 @@ type reconstructor struct {
 	// beginAgentRequest. Guarded by the session's recMu (begin/end/interrupt).
 	interrupted bool
 
+	// compacting is armed by the PreCompact hook and consumed by the FIRST
+	// classAgent request after it — the compaction summarizer (a forked agent
+	// whose /v1/messages call is wire-identical to a normal turn except for its
+	// injected summary instruction). While armed, the gateway routes that one
+	// request to the capture path (beginCompactionCapture) instead of
+	// beginAgentTurn, so the summarizer's thinking + summary group under the
+	// Compacted item rather than surfacing as a phantom agent turn. The summarizer
+	// is provably the only classAgent POST between PreCompact and PostCompact
+	// (compactConversation makes no other model call; aux/suggestion calls are
+	// filtered by classifyRequest) — confirmed from source and against 2.1.170
+	// (spike/claude-mitm). Guarded by the session's recMu.
+	compacting bool
+	// pendingCompaction holds the captured summarizer thinking (+ summary
+	// fallback) until the PostCompact hook finalizes it into the enriched
+	// compact_boundary. Reset on every PreCompact so an aborted attempt's partial
+	// capture is discarded (a user submitting mid-compaction aborts the summarizer
+	// and triggers a fresh PreCompact + retry — observed on 2.1.170), and cleared
+	// on PostCompact. A capture that never sees a PostCompact (a failed compaction)
+	// is simply never emitted. Guarded by the session's recMu.
+	pendingCompaction *compactionCapture
+
 	// consecutiveAPIFailures counts how many times the CURRENT logical request
 	// has failed with a retryable API error (overloaded_error et al.) without a
 	// successful completion in between. It is the 1-indexed `attempt` the
@@ -177,6 +198,14 @@ type agentRequest struct {
 	r      *reconstructor
 	asm    *messageAssembler
 	parent string
+
+	// capture marks this request as the compaction summarizer: onSSE folds its
+	// SSE into the assembler WITHOUT emitting any live turn envelope (no
+	// stream_event passthrough, no assistant, no result), so it never surfaces as
+	// an agent turn; end() lifts the assembled thinking + summary into
+	// pendingCompaction for the finalizing PostCompact. Mutually exclusive with
+	// parent (a subagent is never a compaction summarizer).
+	capture bool
 
 	// errored is set by onSSE when a retryable mid-stream API `error` frame
 	// (overloaded_error) arrives on the main loop (the TUI will re-POST). end()
@@ -393,6 +422,21 @@ func (r *reconstructor) beginSubagentRequest(parent string) *agentRequest {
 // passthrough untouched, so any trailing terminal envelope still reaches the
 // parser and subagent internals are unaffected.
 func (ar *agentRequest) onSSE(sse json.RawMessage) {
+	if ar.capture {
+		// Compaction summarizer. Fold every frame into the assembler (the
+		// committed summary is still lifted out for the boundary), and forward
+		// ONLY the thinking-block frames live — tagged with the reserved
+		// compaction-reasoning scope — so the summarizer's reasoning streams as the
+		// live "compact" tail above the Compacted divider. The summary (text)
+		// block, message frames, and any tool frames stay suppressed, so the
+		// summarizer never surfaces as an agent turn. An aborted summarizer just
+		// leaves a partial assembler the next PreCompact discards.
+		ar.asm.consume(sse)
+		if line, ok := compactionReasoningPassthrough(ar.asm, sse); ok {
+			ar.r.emit(line)
+		}
+		return
+	}
 	if ar.parent == "" {
 		if msg, ok := parseRetryableStreamError(sse); ok {
 			ar.errored = true
@@ -408,6 +452,18 @@ func (ar *agentRequest) onSSE(sse json.RawMessage) {
 // source of EventToolStart), accumulates usage, and — when the model is done —
 // closes the turn with a synthesized result envelope.
 func (ar *agentRequest) end() {
+	if ar.capture {
+		// Compaction summarizer closed: lift the assembled summary into the
+		// pending capture as the boundary's fallback when the PostCompact hook
+		// carries no committed summary. The reasoning already streamed live (see
+		// onSSE), so it is not re-captured here. Emit nothing — it is not a turn. A
+		// partial capture from an aborted summarizer is harmless: the retry's
+		// PreCompact resets pendingCompaction before its capture lands.
+		ar.r.pendingCompaction = &compactionCapture{
+			summary: ar.asm.assembledText(),
+		}
+		return
+	}
 	if ar.parent != "" {
 		// Subagent request. Emit the (possibly partial) assistant — its tool_use
 		// starts nest under the Agent card via parent_tool_use_id; inner tool

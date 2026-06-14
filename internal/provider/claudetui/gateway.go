@@ -3,6 +3,7 @@ package claudetui
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -28,6 +29,12 @@ type gateway struct {
 	// only: no credential headers ever reach it. See debuglog.go.
 	onClassify func(class requestClass, status int, body []byte)
 
+	// maxBodyBytes caps how much of an inbound request body the gateway will
+	// buffer. Defaults to maxRequestBodyBytes; the field exists so tests can
+	// drive the over-limit path with a tiny body. Set once before start(), then
+	// read-only on the serving goroutines.
+	maxBodyBytes int64
+
 	ln     net.Listener
 	server *http.Server
 }
@@ -41,6 +48,11 @@ type gateway struct {
 type agentTurnDriver interface {
 	beginAgentTurn(req *messagesRequest) *agentRequest
 	beginSubagentTurn(req *messagesRequest, agentID string) *agentRequest
+	// beginCompactionCapture returns a capture agentRequest when a compaction is
+	// armed (PreCompact seen, summarizer not yet captured), else nil so the gateway
+	// falls through to normal subagent/main routing. The summarizer is the first
+	// classAgent request after PreCompact.
+	beginCompactionCapture(req *messagesRequest) *agentRequest
 	endAgentTurn(ar *agentRequest)
 }
 
@@ -55,6 +67,21 @@ const agentIDHeader = "X-Claude-Code-Agent-Id"
 // override is configured.
 const defaultUpstream = "https://api.anthropic.com"
 
+// maxRequestBodyBytes bounds how much of an inbound request body the gateway
+// buffers into memory. It is a memory-pressure backstop, not a correctness
+// gate: the upstream Anthropic API is the authority on request size (Messages
+// and Token Counting cap at 32 MB, enforced at Cloudflare's edge before the
+// request reaches the API), so this only needs to sit comfortably ABOVE the
+// largest body Claude Code legitimately sends through the proxy. 64 MiB is 2x
+// the 32 MB Messages limit — any request the upstream would accept passes with
+// headroom, and anything larger the upstream would reject anyway. We fail loud
+// (413) rather than silently truncate: this body is proxied verbatim upstream,
+// so a short read would corrupt the request. The interactive TUI inlines
+// attachments as base64 into /v1/messages rather than using the 500 MB Files
+// API, so that higher ceiling does not apply here; re-tune if a future Claude
+// Code build streams large bodies through a higher-limit endpoint.
+const maxRequestBodyBytes = 64 << 20 // 64 MiB
+
 // newGateway binds a loopback listener on an ephemeral port and prepares the
 // proxy. Call start to serve. baseURL is what gets injected as
 // ANTHROPIC_BASE_URL for the spawned claude.
@@ -67,11 +94,12 @@ func newGateway(upstream string, drive agentTurnDriver, onError func(error), onC
 		return nil, fmt.Errorf("claudetui gateway: bind loopback: %w", err)
 	}
 	g := &gateway{
-		upstream:   strings.TrimRight(upstream, "/"),
-		drive:      drive,
-		onError:    onError,
-		onClassify: onClassify,
-		ln:         ln,
+		upstream:     strings.TrimRight(upstream, "/"),
+		drive:        drive,
+		onError:      onError,
+		onClassify:   onClassify,
+		maxBodyBytes: maxRequestBodyBytes,
+		ln:           ln,
 		client: &http.Client{
 			// No Client.Timeout: /v1/messages SSE streams are long-lived and a
 			// blanket deadline would truncate a turn. The transport bounds the
@@ -125,8 +153,17 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.maxBodyBytes))
 	if err != nil {
+		// An over-limit body is the memory-pressure backstop firing, not an
+		// upstream fault: fail loud with 413 rather than forward a truncated
+		// (corrupt) body. Other read failures stay 502.
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			g.onError(fmt.Errorf("claudetui gateway: request body exceeds %d bytes", g.maxBodyBytes))
+			return
+		}
 		http.Error(w, "read request body", http.StatusBadGateway)
 		g.onError(fmt.Errorf("claudetui gateway: read request: %w", err))
 		return
@@ -164,23 +201,32 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 			g.onClassify(class, resp.StatusCode, body)
 		}
 		if resp.StatusCode == http.StatusOK && class == classAgent {
-			// A subagent's request carries X-Claude-Code-Agent-Id; route it to the
-			// nesting reconstruction so it surfaces under its Agent card instead of
-			// as a phantom main turn. beginSubagentTurn may return nil (parent not
-			// resolvable) — then the request is forwarded without reconstruction.
-			//
-			// The header alone is NOT sufficient: when the MAIN loop resumes to
-			// observe a backgrounded subagent's completion, Claude attaches that
-			// subagent's agent-id to the resume as well (plus cc_is_subagent=true).
-			// requestReportsAgentCompletion catches that observation — the body
-			// carries a <task-notification> whose task-id == agentID, the agent
-			// reporting itself — and keeps it on the main path, where
-			// emitBackgroundCompletions runs and the response surfaces as a
-			// top-level turn. See turndriver.go for the full rationale.
-			if agentID := r.Header.Get(agentIDHeader); agentID != "" && !requestReportsAgentCompletion(req.Messages, agentID) {
-				ar = g.drive.beginSubagentTurn(req, agentID)
-			} else {
-				ar = g.drive.beginAgentTurn(req)
+			// A compaction summarizer (the forked agent that runs between the
+			// PreCompact and PostCompact hooks) is wire-identical to a normal turn,
+			// so it can only be told apart by the armed hook state. Try the capture
+			// path first: when armed, it claims this request (and disarms) so the
+			// summarizer's thinking + summary group under the Compacted item instead
+			// of rendering as a phantom turn. nil when not armed — fall through to
+			// normal subagent/main routing.
+			if ar = g.drive.beginCompactionCapture(req); ar == nil {
+				// A subagent's request carries X-Claude-Code-Agent-Id; route it to the
+				// nesting reconstruction so it surfaces under its Agent card instead of
+				// as a phantom main turn. beginSubagentTurn may return nil (parent not
+				// resolvable) — then the request is forwarded without reconstruction.
+				//
+				// The header alone is NOT sufficient: when the MAIN loop resumes to
+				// observe a backgrounded subagent's completion, Claude attaches that
+				// subagent's agent-id to the resume as well (plus cc_is_subagent=true).
+				// requestReportsAgentCompletion catches that observation — the body
+				// carries a <task-notification> whose task-id == agentID, the agent
+				// reporting itself — and keeps it on the main path, where
+				// emitBackgroundCompletions runs and the response surfaces as a
+				// top-level turn. See turndriver.go for the full rationale.
+				if agentID := r.Header.Get(agentIDHeader); agentID != "" && !requestReportsAgentCompletion(req.Messages, agentID) {
+					ar = g.drive.beginSubagentTurn(req, agentID)
+				} else {
+					ar = g.drive.beginAgentTurn(req)
+				}
 			}
 			if ar != nil {
 				scanner = newSSEScanner(ar.onSSE)

@@ -429,7 +429,9 @@ func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 			return "{}"
 		}
 		return string(data)
-	case "thinking":
+	case itemKindThinking, itemKindCompactionReasoning:
+		// Compaction reasoning shares the thinking payload shape (preview +
+		// optional signature); both render as a tail-clipped reasoning body.
 		tm := ExtractThinkingMeta(evt.Content)
 		tm.Signature = metaNestedString(evt.Meta, "signature")
 		data, err := json.Marshal(tm)

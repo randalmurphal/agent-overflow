@@ -175,7 +175,7 @@ func TestSessionReordersHookCompletionBeforeStart(t *testing.T) {
 // EventUserInputResolved, so no resolved event is asserted here.
 func TestSessionRespondToUserInputThroughRelay(t *testing.T) {
 	s, _ := newWiredSession(t)
-	relay, err := newHookRelay(s.feedEnvelope, s.onSessionInfo, func(error) {})
+	relay, err := newHookRelay(s.feedEnvelope, s.onSessionInfo, compactionHooks{}, func(error) {})
 	if err != nil {
 		t.Fatalf("newHookRelay: %v", err)
 	}

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/svelte";
 
 import EffortMenu from "./EffortMenu.svelte";
@@ -118,6 +118,38 @@ describe("<EffortMenu>", () => {
     const { getByTestId } = render(EffortMenu, { props: { pane } });
     // No menu interaction — the eager $effect load resolves and the label fills in.
     await waitFor(() => expect(triggerText(getByTestId)).toBe("xHigh · 200k"));
+  });
+
+  it("stays silent when the eager catalog preload fails (no console.error)", async () => {
+    // Regression: the eager preload $effect is a best-effort prefetch and must
+    // swallow failures — the actionable failure surfaces on the user-initiated
+    // open path. EffortMenu mounts inside Composer, so a console.error here
+    // fired on every Composer render and tripped unrelated "no console.error"
+    // assertions. The trigger must still render the effort, just without the
+    // context segment.
+    const pane = await buildPane(makeThread({ provider: "claude" }));
+    // Clear any catalog warmed by the pane switch and make the fetch fail, so
+    // the eager preload actually reaches its error path.
+    resetProviderModelsForTest();
+    setBindingMock("GetModelsForProvider", async () => {
+      throw new Error("catalog unavailable");
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { getByTestId } = render(EffortMenu, { props: { pane } });
+    // Drive the eager preload to settlement deterministically: the $effect's
+    // load is single-flight, so awaiting the same call here resolves only once
+    // the rejection has propagated. The extra microtask lets the $effect's own
+    // .catch continuation run before we assert.
+    await ensureProviderModels("claude").catch(() => {});
+    await Promise.resolve();
+
+    // The preload genuinely fetched-and-threw (not a vacuous cache hit) ...
+    expect(getBindingMock("GetModelsForProvider")).toHaveBeenCalled();
+    // ... yet logged nothing, and the trigger still renders the effort.
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(triggerText(getByTestId)).toBe("High");
+    consoleError.mockRestore();
   });
 
   it("hides context for models with one selectable window", async () => {

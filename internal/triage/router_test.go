@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -443,9 +444,20 @@ func newTestRouter(t *testing.T) (*Router, *store.Store, *[]emitted) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	var emissions []emitted
+	// settleTurnStreaming fans out one goroutine per text/thinking scope,
+	// each calling r.emit; the per-call turnWG / WaitForPendingSettles barrier
+	// orders the test's read after every append, but the concurrent appends
+	// still race each other without this lock. Production's transport bus is
+	// concurrency-safe; this collector mirrors that (same guard telemetry_test
+	// already uses).
+	var (
+		emissionsMu sync.Mutex
+		emissions   []emitted
+	)
 	emit := func(eventName string, data any) {
+		emissionsMu.Lock()
 		emissions = append(emissions, emitted{eventName, data})
+		emissionsMu.Unlock()
 	}
 
 	router := NewRouter(st, emit)
@@ -606,6 +618,227 @@ func TestCompactBoundariesInSameTurnPersistDistinctRows(t *testing.T) {
 	}
 	if !strings.Contains(compactions[0].Meta, `"trigger":"auto"`) {
 		t.Fatalf("compaction meta not persisted: %q", compactions[0].Meta)
+	}
+	// A boundary with no captured thinking/summary (headless claude, Codex)
+	// links no payload — the heavy-payload path is claudetui-only.
+	if compactions[0].PayloadID != "" {
+		t.Fatalf("headless compaction must carry no payload, got payload_id %q", compactions[0].PayloadID)
+	}
+}
+
+// TestCompactBoundaryRoutesSummaryToPayload pins the claudetui grouping path: a
+// compact boundary whose meta carries the committed summary persists a cheap
+// row (trigger-only meta, no inlined summary) linked to an on-demand
+// "compaction" payload whose data holds the raw summary text and whose meta
+// holds a preview + size. The summarizer's reasoning streams separately as its
+// own compaction_reasoning row, so it is not in this payload. Without the
+// routing fix the heavy summary would inline into items.meta and no payload
+// would link.
+func TestCompactBoundaryRoutesSummaryToPayload(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	summary := "The user asked to fix compaction; the committed summary now routes to a payload."
+	meta, err := json.Marshal(map[string]string{
+		"trigger": "auto",
+		"summary": summary,
+	})
+	if err != nil {
+		t.Fatalf("marshal meta: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventCompactBoundary,
+		ThreadID:  "t1",
+		ItemID:    "compact-a",
+		Meta:      json.RawMessage(meta),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle compact: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	compactions := compactionItems(items)
+	if len(compactions) != 1 {
+		t.Fatalf("stored compactions = %d, want 1 (%+v)", len(compactions), items)
+	}
+	item := compactions[0]
+
+	// items.meta stays cheap: the trigger survives, the heavy summary does not.
+	if !strings.Contains(item.Meta, `"trigger":"auto"`) {
+		t.Fatalf("trigger dropped from meta: %q", item.Meta)
+	}
+	if strings.Contains(item.Meta, "summary") {
+		t.Fatalf("items.meta must stay cheap, leaked summary: %q", item.Meta)
+	}
+	if item.Summary != "Context compacted" {
+		t.Errorf("divider summary = %q, want the plain 'Context compacted' label", item.Summary)
+	}
+
+	// The row links a "compaction" payload (the frontend keys off PayloadKind
+	// to render the expander; both reach it cheaply via the timeline JOIN).
+	if item.PayloadKind != "compaction" {
+		t.Fatalf("PayloadKind = %q, want compaction", item.PayloadKind)
+	}
+	if item.PayloadID == "" {
+		t.Fatal("captured compaction did not link a payload")
+	}
+
+	// Payload meta (cheap, always-loaded) carries a summary preview + size.
+	var pm CompactionMeta
+	if err := json.Unmarshal([]byte(item.PayloadMeta), &pm); err != nil {
+		t.Fatalf("decode payload meta %q: %v", item.PayloadMeta, err)
+	}
+	if pm.SummaryChars != utf8.RuneCountInString(summary) {
+		t.Errorf("payload meta size = %+v, want summary=%d", pm, utf8.RuneCountInString(summary))
+	}
+	if !strings.HasPrefix(summary, pm.SummaryPreview) {
+		t.Errorf("payload meta preview %q is not a prefix of the summary", pm.SummaryPreview)
+	}
+
+	// Payload data (heavy, on-demand) is the raw summary text — same shape as a
+	// thinking payload, not a JSON wrapper.
+	data, err := st.GetPayloadData(item.PayloadID)
+	if err != nil {
+		t.Fatalf("get payload data: %v", err)
+	}
+	if string(data) != summary {
+		t.Fatalf("payload data = %q, want the raw summary text", data)
+	}
+
+	// The emitted upsert carries the hydrated PayloadKind so the frontend
+	// renders the expander without a follow-up read.
+	upserts := filterItemEventUpserts(*emissions)
+	if len(upserts) != 1 || upserts[0].PayloadKind != "compaction" {
+		t.Fatalf("emitted upserts = %+v, want one compaction-kind upsert", upserts)
+	}
+}
+
+func TestExtractCompactionSummary(t *testing.T) {
+	const trigger = `"auto"`
+	cases := []struct {
+		name        string
+		meta        string
+		wantSummary string
+		// wantRestSame asserts rest is the input meta byte-for-byte (the
+		// no-summary contract that keeps trigger persistence + context-window
+		// decoding untouched). When false, rest is the re-marshalled meta with
+		// the summary key stripped and is checked structurally instead.
+		wantRestSame bool
+	}{
+		{
+			name:        "summary captured",
+			meta:        `{"trigger":"auto","summary":"committed"}`,
+			wantSummary: "committed",
+		},
+		{
+			// A stale provider may still emit a thinking key; it is no longer
+			// part of the contract, so it is left in place (not stripped) and the
+			// summary is still extracted.
+			name:        "thinking key left untouched, summary extracted",
+			meta:        `{"trigger":"auto","thinking":"reasoning","summary":"committed"}`,
+			wantSummary: "committed",
+		},
+		{
+			// An empty-string summary is equivalent to absent — no payload, meta
+			// returned byte-for-byte.
+			name:         "empty summary string treated as absent",
+			meta:         `{"trigger":"auto","summary":""}`,
+			wantRestSame: true,
+		},
+		{
+			name:         "trigger only leaves meta untouched",
+			meta:         `{"trigger":"auto"}`,
+			wantRestSame: true,
+		},
+		{
+			// Only a string value is captured; a non-string summary is left in place.
+			name:         "non-string summary value is ignored",
+			meta:         `{"trigger":"auto","summary":42}`,
+			wantRestSame: true,
+		},
+		{
+			name:         "empty meta",
+			meta:         ``,
+			wantRestSame: true,
+		},
+		{
+			name:         "malformed meta (array) returned unchanged",
+			meta:         `["not","an","object"]`,
+			wantRestSame: true,
+		},
+		{
+			name:         "malformed meta (scalar) returned unchanged",
+			meta:         `"just a string"`,
+			wantRestSame: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			summary, rest := extractCompactionSummary(json.RawMessage(tc.meta))
+			if summary != tc.wantSummary {
+				t.Errorf("summary = %q, want %q", summary, tc.wantSummary)
+			}
+			if tc.wantRestSame {
+				if string(rest) != tc.meta {
+					t.Errorf("rest = %q, want byte-for-byte input %q", rest, tc.meta)
+				}
+				return
+			}
+			// Summary extracted: rest keeps the trigger and drops the heavy
+			// summary key so items.meta stays cheap.
+			var restObj map[string]json.RawMessage
+			if err := json.Unmarshal(rest, &restObj); err != nil {
+				t.Fatalf("rest is not a JSON object %q: %v", rest, err)
+			}
+			if got := string(restObj["trigger"]); got != trigger {
+				t.Errorf("rest trigger = %s, want %s", got, trigger)
+			}
+			if _, ok := restObj["summary"]; ok {
+				t.Errorf("rest still carries summary: %q", rest)
+			}
+		})
+	}
+}
+
+func TestBuildCompactionPayload(t *testing.T) {
+	if p := buildCompactionPayload("", 100); p != nil {
+		t.Fatalf("empty summary must not build a payload, got %+v", p)
+	}
+
+	const summary = "The committed compaction summary."
+	p := buildCompactionPayload(summary, 100)
+	if p == nil {
+		t.Fatal("summary built no payload")
+	}
+	if p.Kind != "compaction" {
+		t.Errorf("payload kind = %q, want compaction", p.Kind)
+	}
+	if p.ID == "" {
+		t.Error("payload missing id")
+	}
+	if p.CreatedAt != 100 {
+		t.Errorf("payload createdAt = %d, want 100", p.CreatedAt)
+	}
+
+	// Data is the raw summary text — same shape as a thinking payload.
+	if string(p.Data) != summary {
+		t.Errorf("payload data = %q, want the raw summary text", p.Data)
+	}
+
+	var pm CompactionMeta
+	if err := json.Unmarshal([]byte(p.Meta), &pm); err != nil {
+		t.Fatalf("decode payload meta %q: %v", p.Meta, err)
+	}
+	if pm.SummaryChars != utf8.RuneCountInString(summary) {
+		t.Errorf("summaryChars = %d, want %d", pm.SummaryChars, utf8.RuneCountInString(summary))
+	}
+	if !strings.HasPrefix(summary, pm.SummaryPreview) {
+		t.Errorf("summaryPreview %q is not a prefix of the summary", pm.SummaryPreview)
 	}
 }
 

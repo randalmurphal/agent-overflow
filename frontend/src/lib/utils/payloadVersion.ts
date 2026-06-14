@@ -4,6 +4,14 @@ import { parseJsonObject } from './parseJsonObject';
 const PAYLOAD_VERSION_EDGE_CHARS = 64;
 const PAYLOAD_VERSION_INLINE_MAX_CHARS = 160;
 export const THINKING_PAYLOAD_EXPANSION_STATE_KEY = 'thinking-full';
+export const COMPACTION_PAYLOAD_EXPANSION_STATE_KEY = 'compaction-full';
+// The live "compact" reasoning tail (its own row, above the compaction
+// divider). It rides the same streaming-payload-expansion machinery as
+// thinking — `thinkingPayloadVersionForItem` / `thinkingPayloadCacheEnabled`
+// are item-keyed and kind-agnostic — but under its own namespace so a
+// reasoning row and a divider for the same compaction never share an entry.
+export const COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY =
+  'compaction-reasoning-full';
 
 function stableStringHash(value: string): string {
   let hash = 0x811c9dc5;

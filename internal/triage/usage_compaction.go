@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 	"unicode"
@@ -16,6 +17,8 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
+
+	"github.com/google/uuid"
 )
 
 const usageEmitMinInterval = 500 * time.Millisecond
@@ -78,6 +81,16 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 	if err != nil {
 		return err
 	}
+
+	// The claudetui provider commits the compaction summarizer's summary onto
+	// the boundary meta. Lift that (potentially multi-KB) summary into an
+	// on-demand payload so items.meta stays a cheap {trigger} blob (Core
+	// Principle 4: heavy payloads load on demand). The summarizer's reasoning
+	// streamed live as its own compaction_reasoning row, so it is not here.
+	// Headless claude and Codex carry no summary, so it is empty, restMeta is
+	// evt.Meta byte-for-byte, and the row persists exactly as before.
+	summary, restMeta := extractCompactionSummary(evt.Meta)
+
 	item := store.Item{
 		ID:        itemID,
 		ThreadID:  evt.ThreadID,
@@ -86,11 +99,15 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 		Role:      "system",
 		Status:    statusCompleted,
 		Summary:   stringsx.FirstNonEmptyTrimmed(evt.Content, "Context compacted"),
-		Meta:      string(evt.Meta),
+		Meta:      string(restMeta),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := r.persistItem(item, nil); err != nil {
+	payload := buildCompactionPayload(summary, now)
+	if payload != nil {
+		item.PayloadID = payload.ID
+	}
+	if err := r.persistItem(item, payload); err != nil {
 		return err
 	}
 	r.resetUsageEmitThrottle(evt.ThreadID)
@@ -144,6 +161,71 @@ func normalizeProviderCompactionID(providerID string) string {
 	}
 	hash := sha256.Sum256([]byte(trimmed))
 	return fmt.Sprintf("sha256:%x", hash)
+}
+
+// extractCompactionSummary pulls the committed summary out of a compact-
+// boundary's meta (the verbatim compactMetadata the parser passes through) and
+// returns the meta with that key removed. That keeps items.meta a cheap
+// {trigger} blob while the heavy summary routes to a payload. When no summary
+// is present — headless claude, Codex, or a context-window snapshot — it
+// returns the meta unchanged byte-for-byte so trigger persistence and
+// context-window decoding are untouched.
+func extractCompactionSummary(meta json.RawMessage) (summary string, rest json.RawMessage) {
+	if len(meta) == 0 {
+		return "", meta
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(meta, &obj) != nil || obj == nil {
+		return "", meta
+	}
+	summary = jsonRawString(obj["summary"])
+	if summary == "" {
+		return "", meta
+	}
+	delete(obj, "summary")
+	rebuilt, err := json.Marshal(obj)
+	if err != nil {
+		// Couldn't rebuild a trimmed meta; fall back to the original so the
+		// trigger isn't lost. The summary still routes to its payload.
+		return summary, meta
+	}
+	return summary, rebuilt
+}
+
+// buildCompactionPayload builds the on-demand payload for a committed
+// compaction summary: preview/size in meta, the raw summary text in data
+// (same shape as a thinking payload — raw text, not a JSON wrapper). Returns
+// nil for an empty summary, so headless/Codex boundaries persist with no
+// payload exactly as before.
+func buildCompactionPayload(summary string, now int64) *store.Payload {
+	if summary == "" {
+		return nil
+	}
+	metaJSON, err := json.Marshal(ExtractCompactionMeta(summary))
+	if err != nil {
+		log.Printf("triage: marshal compaction payload meta: %v", err)
+		metaJSON = []byte("{}")
+	}
+	return &store.Payload{
+		ID:        uuid.NewString(),
+		Kind:      "compaction",
+		Meta:      string(metaJSON),
+		Data:      []byte(summary),
+		CreatedAt: now,
+	}
+}
+
+// jsonRawString decodes a JSON string value, returning "" when the raw is
+// empty or not a string.
+func jsonRawString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
 }
 
 func (r *Router) persistAndEmitContextWindow(threadID string, window provider.ContextWindow) error {

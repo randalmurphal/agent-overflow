@@ -75,19 +75,6 @@ func TestPostToolUseFailureEnvelope(t *testing.T) {
 	}
 }
 
-// TestCompactBoundaryEnvelope proves a PostCompact hook reconstructs a
-// system:compact_boundary the parser turns into an EventCompactBoundary, so a
-// compaction marks the timeline even though it's hook-sourced (not wire).
-func TestCompactBoundaryEnvelope(t *testing.T) {
-	p := hookPayload{HookEventName: "PostCompact", Trigger: "manual"}
-	events := parseEnvelope(t, nil, compactBoundaryEnvelope(p))
-
-	boundaries := findKind(events, provider.EventCompactBoundary)
-	if len(boundaries) != 1 {
-		t.Fatalf("expected 1 compact-boundary event, got %d (%v)", len(boundaries), kindsOf(events))
-	}
-}
-
 // TestAskUserQuestionControlRequest proves the PreToolUse AskUserQuestion
 // payload reconstructs the can_use_tool control_request parse_control turns into
 // an EventUserInputRequest carrying the question, keyed by the relay's

@@ -127,13 +127,17 @@
   // (200k / 1M) on first render. Without this the catalog loads only when a
   // picker opens, leaving the context segment of the label hidden until the
   // user opens this menu or the model picker. ensureProviderModels is cached +
-  // single-flight, so this is a no-op once loaded; failures stay silent here
-  // (the user-initiated open path surfaces a toast if it still can't load).
+  // single-flight, so this is a no-op once loaded.
   $effect(() => {
     if (!activeProvider || !activeModel) return;
-    ensureProviderModels(activeProvider).catch((err) => {
-      console.error('Preloading model capabilities failed:', err);
-    });
+    // Best-effort prefetch: a failure here is non-actionable, so swallow it
+    // rather than logging. The real, actionable failure surfaces on the
+    // user-initiated open path (ensureModelMetadata re-runs the load and
+    // raises a toast). Logging here would be production noise on every
+    // transient blip — and, because Composer mounts this menu, it fired a
+    // console.error on every Composer render in tests that don't mock the
+    // model-catalog binding.
+    ensureProviderModels(activeProvider).catch(() => {});
   });
 
   async function ensureModelMetadata(): Promise<void> {

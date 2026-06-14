@@ -42,6 +42,9 @@
   --ico-puzzle: oklch(0.74 0.14 325);
   --ico-clock: oklch(0.76 0.1 90);
   --ico-brain: oklch(0.76 0.14 15);
+  /* Compaction reasoning — a muted slate that reads as a system/meta
+     operation, adjacent to but distinct from the brain (thinking) hue. */
+  --ico-compaction: oklch(0.72 0.07 265);
   /* Intentional alias — unclassified tools share the secondary-text
      palette, keeping the dark/light pair in sync automatically. */
   --ico-generic: var(--text-secondary);
@@ -117,6 +120,8 @@ html.light {
   --ico-puzzle: oklch(0.5 0.16 325);
   --ico-clock: oklch(0.5 0.12 90);
   --ico-brain: oklch(0.52 0.16 15);
+  /* See dark-mode block for the compaction-hue rationale. */
+  --ico-compaction: oklch(0.5 0.09 265);
   /* See dark-mode block for the alias rationale. */
   --ico-generic: var(--text-secondary);
 
@@ -204,6 +209,7 @@ html.light {
   --color-ico-puzzle: var(--ico-puzzle);
   --color-ico-clock: var(--ico-clock);
   --color-ico-brain: var(--ico-brain);
+  --color-ico-compaction: var(--ico-compaction);
   --color-ico-generic: var(--ico-generic);
 }
 

@@ -122,6 +122,12 @@ seconds; it is cold-resume history only. Tool results come from
   completion row. Field extraction + the terminal-status gate reuse
   `claude.ExtractTaskNotificationFields` / `claude.NormalizeTaskTerminalStatus`
   so the tag shape and terminal set can't drift from the shared parser.
+- `compaction_capture.go` — the compaction-summarizer capture path
+  `turndriver.go`'s `onSSE`/`end` hand off to: `armCompaction` (PreCompact
+  arms), `beginCompactionCapture` (claims the summarizer's `classAgent`
+  request), `compactionReasoningPassthrough` (forwards only its thinking
+  frames live under the reserved scope), and `finalizeCompaction`
+  (PostCompact emits the boundary). See §Compaction capture.
 - `reorder.go` — `feedReorder`: restores the headless "tool start before
   completion" ordering that the wire+hook split can invert. A fast tool's
   `PostToolUse` hook can land its `tool_result` on the feed before the
@@ -136,11 +142,15 @@ seconds; it is cold-resume history only. Tool results come from
   routes to `beginSubagentTurn` instead (see §Subagents).
 - `hookmap.go` — hook payload → stream-json envelope mapping
   (`PostToolUse*` → `tool_result`, `SessionStart` → identity,
-  compaction boundary, AskUserQuestion → `control_request`).
+  AskUserQuestion → `control_request`). Compaction hooks carry no
+  envelope of their own: `Pre`/`PostCompact` drive the reconstructor's
+  capture state machine (see §Compaction capture), and
+  `hookPayload.CompactSummary` carries `PostCompact`'s committed summary.
 - `hookrelay.go` — the per-session loopback relay endpoint +
   capability token. Observe-mode events reconstruct and return at once;
   AskUserQuestion blocks until the human answers in AO (or the window
-  elapses → native TUI prompt).
+  elapses → native TUI prompt). `Pre`/`PostCompact` dispatch to the
+  reconstructor's `arm`/`finalize` compaction hooks.
 - `hookcmd.go` — `RunHookChild`: the `__claude-hook` subcommand. Tiny,
   **fail-open** (any error exits 0 with no stdout = "observe, don't
   interfere"). `main.go` short-circuits to it before any other startup,
@@ -228,6 +238,85 @@ launch matches, the request is forwarded **unreconstructed** rather than
 mis-attributed to the main thread — the Agent card still completes via
 its `PostToolUse` hook. All of this is binary behavior; re-probe with
 `spike/claude-mitm/` on version bump.
+
+## Compaction capture
+
+The compaction summarizer is a forked agent (`querySource:'compact'`,
+`maxTurns:1`) whose `/v1/messages` POST is wire-identical to a normal turn
+— same model, tools, budget — so it cannot be told apart by request shape.
+Left alone it would reconstruct as a phantom agent turn. Instead we **stream
+its reasoning live** as its own `compaction_reasoning` row (the "compact"
+tail) and commit only its summary onto the `system:compact_boundary`,
+detected purely from the public `Pre`/`PostCompact` hook lifecycle (never
+prompt-content markers, which churn on every CLI update).
+
+The state machine lives on the `reconstructor` (recMu-guarded), driven by
+the hook relay's `compactionHooks{arm, finalize}`:
+
+1. **`PreCompact` → arm.** `armCompaction()` sets `compacting` and resets
+   any pending capture. Auto-compaction is synchronous in Claude Code
+   (`query.ts`: `await deps.autocompact(...)` resolves PreCompact →
+   summarizer POST → PostCompact *before* the real-turn POST), so the
+   summarizer is the **only** `classAgent` POST in the armed window —
+   canonical ordering `UserPromptSubmit → PreCompact → summarizer POST →
+   PostCompact → real-turn POST`. No `UserPromptSubmit` signal is needed.
+2. **First armed `classAgent` POST → capture, disarm.** `gateway.handle`
+   tries `beginCompactionCapture` before the normal / subagent turn paths;
+   while armed it claims the request into a capture `agentRequest`
+   (disarming immediately). Its `onSSE` does two things per frame: it folds
+   the SSE into the assembler (for the summary fallback) AND, via
+   `compactionReasoningPassthrough`, forwards ONLY the summarizer's
+   **thinking** content-block frames live through `streamEventLine` tagged
+   with the reserved `provider.CompactionReasoningScope`. Message / text /
+   tool frames stay suppressed — no init, no summary-text deltas, no tool
+   starts, no `result`. The reasoning therefore streams as parser-native
+   thinking events carrying the reserved scope; everything else about the
+   summarizer turn is invisible.
+3. **`PostCompact` → finalize.** `finalizeCompaction(trigger, summary)`
+   emits one boundary whose `compactMetadata` carries `{trigger, summary}`
+   — **summary only**, because the reasoning already streamed. The hook's
+   committed `compact_summary` wins; the captured SSE text
+   (`pendingCompaction.summary`, assembled-text) is the fallback when the
+   hook carries none.
+
+Why the reserved scope (not a new event kind): `streamEventLine` stamps the
+scope as `parent_tool_use_id` on the envelope, so the shared `claude.Parser`
+emits ordinary `EventThinking` / `EventContentBlock*` carrying it — **zero
+parser change** (the #1 constraint). Triage dispatches that sentinel scope
+to dedicated handlers BEFORE its subagent-nesting logic. The sentinel can't
+collide with a real tool_use id.
+
+Edge cases:
+
+- **Abort / retry.** A user typing mid-compaction aborts summarizer #1; the
+  CLI fires a fresh `PreCompact` + retry. Because reasoning now streams
+  per-attempt, an aborted attempt's partial reasoning DOES stream (a brief,
+  sub-second tail that then settles) — accepted as a minor known limitation.
+  The **summary** guarantee is preserved at the boundary: the re-arm resets
+  `pendingCompaction`, so the finalized boundary's summary fallback always
+  comes from the **completed** retry, never the aborted partial.
+- **Failure (no `PostCompact`).** Drop the boundary silently — no summary
+  row. Any reasoning that already streamed settles on its own; the
+  summarizer already disarmed on capture, so the next real turn reconstructs
+  normally.
+- **Empty reasoning.** A thinking block with no deltas streams a
+  content-block start/stop but no `EventThinking`; triage creates no row
+  (handlers no-op on empty content).
+- **Session-memory compaction** (`trySessionMemoryCompaction`) fires **no**
+  `Pre`/`PostCompact` hooks, so it is hook-invisible here. It is gated off
+  by default (`tengu_session_memory` + `tengu_sm_compact` both required) and
+  treated as a documented known limitation, not handled.
+
+Downstream: triage routes the reserved-scope thinking to a top-level
+`compaction_reasoning` streaming row (the live "compact" tail, settling just
+ABOVE the divider), and `handleCompaction` lifts the `summary` out of the
+boundary meta into an on-demand `compaction` payload (items.meta stays a
+cheap `{trigger}` blob). The frontend renders the reasoning via
+`CompactionReasoning.svelte` (thinking-style 3-line tail) and the committed
+summary via `CompactionDivider.svelte`. Headless `claude` and Codex emit a
+boundary with no summary and stream no reasoning, so they render the plain
+divider. All binary behavior — re-probe with `spike/claude-mitm/` on
+version bump.
 
 ## Security boundary (load-bearing)
 

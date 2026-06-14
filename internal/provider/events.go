@@ -185,6 +185,17 @@ type ProviderEvent struct {
 	TurnComplete    TurnCompleteMeta `json:"-"`
 }
 
+// CompactionReasoningScope is the reserved ParentToolUseID the claudetui
+// provider stamps on the compaction summarizer's live thinking deltas. The
+// summarizer's /v1/messages turn is otherwise suppressed (it must not surface as
+// a phantom agent turn), but its reasoning streams live so the frontend can show
+// a "compact" tail above the "Context compacted" divider. Triage keys off this
+// sentinel to route those deltas to a top-level `compaction_reasoning` streaming
+// row instead of nesting them under an Agent card — the shared parser is
+// untouched (it just sees a parented thinking stream). The bracketed form can't
+// collide with a real Claude tool_use id (uuid / `toolu_…`).
+const CompactionReasoningScope = "__ao_compaction_reasoning__"
+
 // TurnCompleteMeta is the typed payload for EventTurnComplete. Turn
 // completion has several semantic sources (provider wire result, soft
 // round-close, synthetic truncation); keeping those as distinct Go types

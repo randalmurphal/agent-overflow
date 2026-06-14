@@ -33,6 +33,19 @@ type ThinkingMeta struct {
 	Signature  string `json:"signature,omitempty"`
 }
 
+// CompactionMeta is the cheap, always-loaded view of a compaction payload.
+// The claudetui provider commits the compaction summarizer's summary onto the
+// boundary; this meta lets the frontend label the expandable "Compacted" row
+// (a short summary preview + character size) without pulling the full summary
+// from the payload data blob. The summarizer's reasoning streams separately as
+// its own `compaction_reasoning` row, so it is not part of this view. Headless
+// claude and Codex carry no summary, so they persist no compaction payload and
+// this view never materializes for them.
+type CompactionMeta struct {
+	SummaryPreview string `json:"summaryPreview,omitempty"`
+	SummaryChars   int    `json:"summaryChars"`
+}
+
 // ProposedPlanMeta is the JSON structure for proposed plan payloads.
 type ProposedPlanMeta struct {
 	Title            string `json:"title"`
@@ -192,23 +205,29 @@ func stripANSIControlSequences(text string) string {
 	return b.String()
 }
 
+// metaPreviewRunes caps the rune length of the cheap text preview stored in
+// item meta (thinking deltas and the committed compaction summary) so the
+// frontend can label a row without loading the payload blob.
+const metaPreviewRunes = 200
+
 // ExtractThinkingMeta extracts preview from a thinking block.
 func ExtractThinkingMeta(content string) ThinkingMeta {
-	tm := ThinkingMeta{
+	return ThinkingMeta{
 		// Rough token estimate: runes / 4.
 		TokenCount: utf8.RuneCountInString(content) / 4,
+		Preview:    truncateRunes(content, metaPreviewRunes),
 	}
+}
 
-	// Preview: first ~200 runes (truncating at byte boundaries can split
-	// multi-byte UTF-8 characters and produce invalid output).
-	runes := []rune(content)
-	if len(runes) > 200 {
-		tm.Preview = string(runes[:200]) + "..."
-	} else {
-		tm.Preview = content
+// ExtractCompactionMeta builds the cheap meta view for a compaction payload
+// from the committed summary — the user-facing headline of a compaction. The
+// preview + size let the frontend label the expandable row without loading the
+// data blob.
+func ExtractCompactionMeta(summary string) CompactionMeta {
+	return CompactionMeta{
+		SummaryPreview: truncateRunes(summary, metaPreviewRunes),
+		SummaryChars:   utf8.RuneCountInString(summary),
 	}
-
-	return tm
 }
 
 // ExtractProposedPlanMeta builds lightweight metadata for proposed plan cards.

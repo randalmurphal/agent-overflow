@@ -450,6 +450,9 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 	case provider.EventContentBlockStart:
 		return r.handleContentBlockStart(evt)
 	case provider.EventContentBlockStop:
+		if eventParentID(evt) == provider.CompactionReasoningScope {
+			return r.settleCompactionReasoning(evt)
+		}
 		return r.handleContentBlockStop(evt)
 	case provider.EventSessionStatus:
 		return r.handleSessionStatus(evt)
@@ -500,6 +503,9 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 	case provider.EventCommandOutput:
 		return r.handleCommandOutput(evt)
 	case provider.EventThinking:
+		if eventParentID(evt) == provider.CompactionReasoningScope {
+			return r.handleCompactionReasoning(evt)
+		}
 		return r.handleThinking(evt)
 	case provider.EventProposedPlan:
 		return r.handleProposedPlan(evt)
