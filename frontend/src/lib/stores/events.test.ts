@@ -131,6 +131,36 @@ describe('setupEventListeners', () => {
     expect(paneB.items).toEqual([]);
   });
 
+  it('routes provider:todo_update to the matching pane and clears on empty/null steps', async () => {
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }));
+    const paneB = await buildPane(makeThread({ id: 'thread-b' }));
+    getAllPanes().set('a', paneA);
+    getAllPanes().set('b', paneB);
+
+    // A non-empty update populates only the matching pane.
+    emitWailsEvent('provider:todo_update', {
+      threadId: 'thread-a',
+      steps: [{ step: 'write tests', status: 'pending' }],
+    });
+    expect(paneA.liveTodo?.steps).toEqual([{ step: 'write tests', status: 'pending' }]);
+    expect(paneB.liveTodo).toBeNull();
+
+    // An empty update is the backend's clear signal (Task* delete-to-empty) —
+    // it must drop the list, not freeze on the last item.
+    emitWailsEvent('provider:todo_update', { threadId: 'thread-a', steps: [] });
+    expect(paneA.liveTodo).toBeNull();
+
+    // A null steps payload (a Go nil slice on the wire) must also clear via the
+    // handler's Array.isArray guard, not throw.
+    emitWailsEvent('provider:todo_update', {
+      threadId: 'thread-a',
+      steps: [{ step: 're-added', status: 'pending' }],
+    });
+    expect(paneA.liveTodo?.steps).toHaveLength(1);
+    emitWailsEvent('provider:todo_update', { threadId: 'thread-a', steps: null });
+    expect(paneA.liveTodo).toBeNull();
+  });
+
   it('evicts the cached snapshot when an active-thread item upsert changes the pane window', async () => {
     const cacheModule = await import('./threadItemCache');
     cacheModule.threadItemCache.clear();

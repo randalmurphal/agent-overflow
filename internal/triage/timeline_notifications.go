@@ -23,11 +23,11 @@ type timelineNotificationMeta struct {
 // truth, and ThreadPane is only the visible projection. See TodoUpdateEvent
 // / ActivityRailTodosBody.svelte for the rendering side.
 //
-// An empty list clears the backend snapshot without emitting. The
-// frontend also treats empty todo_update events as a clear signal, but
-// provider parsers usually suppress empty updates before they reach
-// users; keeping triage's snapshot clear prevents refresh from
-// resurrecting stale todo state.
+// Clearing is delegated to projectTodoSnapshot: an empty list drops the
+// backend snapshot AND emits an empty provider:todo_update when a snapshot
+// existed, so a live pane (which holds the last list in memory and only
+// re-reads the backend copy on refresh) drops it too. See that function for
+// the gating rationale.
 func (r *Router) handleTodoUpdate(evt provider.ProviderEvent) error {
 	steps := decodeTodoSteps(evt.Meta)
 	r.projectTodoSnapshot(evt.ThreadID, steps, eventTimestampMillis(evt))
@@ -36,15 +36,24 @@ func (r *Router) handleTodoUpdate(evt provider.ProviderEvent) error {
 
 // projectTodoSnapshot is the shared write-path for all producers of the
 // activity-rail todo list (Codex update_plan, legacy Claude TodoWrite,
-// new Claude Task* family). Empty steps clears the live snapshot
-// without emitting (frontend treats absence and empty identically;
-// provider parsers suppress empty updates before they reach triage).
-// Callers do NOT re-dispatch a synthetic EventTodoUpdate through Handle;
-// that would re-fire the stopped-thread check, api-retry
-// forward-progress check, and the test-only eventHook.
+// new Claude Task* family). Empty steps clears the snapshot AND emits an
+// empty provider:todo_update so a live pane drops the list — but only when
+// a snapshot actually existed. A pane holds the last non-empty list in
+// process memory and only re-reads the backend snapshot on refresh, so
+// "absence" alone leaves a cleared list frozen on screen until reload
+// (the 2026-06-14 Task* delete-to-empty incident: deletes arrive one at a
+// time and the final one empties the map). Gating the emit on a prior
+// snapshot keeps a malformed/empty wire payload from spawning a no-op
+// clear when nothing was showing. Callers do NOT re-dispatch a synthetic
+// EventTodoUpdate through Handle; that would re-fire the stopped-thread
+// check, api-retry forward-progress check, and the test-only eventHook.
 func (r *Router) projectTodoSnapshot(threadID string, steps []TodoStep, updatedAt int64) {
 	if len(steps) == 0 {
-		r.clearLiveTodoSnapshot(threadID)
+		if r.clearLiveTodoSnapshot(threadID) {
+			// Explicit empty slice (not nil) so the wire carries [] and honors
+			// the non-nullable TodoUpdateEvent.steps type the frontend declares.
+			r.emit("provider:todo_update", TodoUpdateEvent{ThreadID: threadID, Steps: []TodoStep{}})
+		}
 		return
 	}
 	r.setLiveTodoSnapshot(LiveTodoSnapshot{
@@ -67,13 +76,20 @@ func (r *Router) setLiveTodoSnapshot(snapshot LiveTodoSnapshot) {
 	r.mu.Unlock()
 }
 
-func (r *Router) clearLiveTodoSnapshot(threadID string) {
+// clearLiveTodoSnapshot drops the thread's backend refresh snapshot and
+// reports whether one existed. The caller (projectTodoSnapshot) uses the
+// return to decide whether a live clear is worth emitting — a clear is only
+// meaningful when there was a list to clear. CleanupThread deletes the map
+// entry directly (not through here) so teardown never emits.
+func (r *Router) clearLiveTodoSnapshot(threadID string) bool {
 	if r == nil || threadID == "" {
-		return
+		return false
 	}
 	r.mu.Lock()
+	_, existed := r.latestTodoByThread[threadID]
 	delete(r.latestTodoByThread, threadID)
 	r.mu.Unlock()
+	return existed
 }
 
 // LiveTodoSnapshot returns the latest per-thread live todo/update_plan

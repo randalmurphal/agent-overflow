@@ -127,11 +127,18 @@ func (r *Router) taskStepsLocked(threadID string) []TodoStep {
 		if !ok {
 			continue
 		}
+		// Bound the model-controlled text the same way the legacy TodoWrite
+		// path does in decodeTodoSteps — Subject/Owner come straight from the
+		// TaskCreate/TaskUpdate tool input (only TrimSpace'd upstream), so
+		// without this an oversized field would blow past the WS-payload /
+		// pane-snapshot safety net the maxTodo*Runes caps exist to enforce.
+		// Status is a normalized enum and needs no cap. Count is already
+		// bounded by maxTasksPerThread.
 		steps = append(steps, TodoStep{
-			Step:   task.Subject,
+			Step:   truncateRunes(task.Subject, maxTodoStepRunes),
 			Status: task.Status,
-			ID:     task.ID,
-			Owner:  task.Owner,
+			ID:     truncateRunes(task.ID, maxTodoIDRunes),
+			Owner:  truncateRunes(task.Owner, maxTodoOwnerRunes),
 		})
 	}
 	return steps

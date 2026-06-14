@@ -29,6 +29,20 @@ describe('liveTodoState', () => {
     expect(state.liveTodo).toBeNull();
   });
 
+  // An empty update is the wire signal for a cleared list — the backend emits
+  // an empty provider:todo_update when the Task* list is fully deleted, and the
+  // event listener routes it straight to setLiveTodo([]). It must drop the
+  // snapshot, not freeze on the last item (2026-06-14 todo-not-clearing fix).
+  it('clears the snapshot on an empty update', () => {
+    const state = createLiveTodoState();
+
+    state.setLiveTodo([{ step: 'write tests', status: 'pending' }]);
+    expect(state.liveTodo?.steps).toEqual([{ step: 'write tests', status: 'pending' }]);
+
+    state.setLiveTodo([]);
+    expect(state.liveTodo).toBeNull();
+  });
+
   it('auto-hides completed todos and suppresses repeated completed rows for the same cycle', () => {
     const state = createLiveTodoState();
 

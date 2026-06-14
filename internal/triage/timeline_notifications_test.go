@@ -154,7 +154,7 @@ func TestTodoUpdateEmptyDropsSilently(t *testing.T) {
 }
 
 func TestTodoUpdateEmptyClearsPriorLiveSnapshot(t *testing.T) {
-	router, st, _ := newTestRouter(t)
+	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
@@ -169,6 +169,7 @@ func TestTodoUpdateEmptyClearsPriorLiveSnapshot(t *testing.T) {
 	if _, ok := router.LiveTodoSnapshot("t1"); !ok {
 		t.Fatalf("expected live todo snapshot before clear")
 	}
+	countBefore := todoEmissionCount(emissions)
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventTodoUpdate,
 		ThreadID:  "t1",
@@ -179,6 +180,15 @@ func TestTodoUpdateEmptyClearsPriorLiveSnapshot(t *testing.T) {
 	}
 	if snapshot, ok := router.LiveTodoSnapshot("t1"); ok {
 		t.Fatalf("empty todo update did not clear live snapshot: %+v", snapshot)
+	}
+	// Clearing a prior live snapshot must reach live panes too, not just the
+	// backend refresh copy — an in-memory pane only re-reads the backend on
+	// refresh.
+	if got := todoEmissionCount(emissions) - countBefore; got != 1 {
+		t.Fatalf("clearing a prior snapshot: got %d new emissions, want 1 (the live clear)", got)
+	}
+	if last := lastTodoEmission(emissions); last == nil || len(last.Steps) != 0 {
+		t.Fatalf("clear emission must carry empty steps; got %+v", last)
 	}
 }
 

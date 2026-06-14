@@ -2,8 +2,10 @@ package triage
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"agent-overflow/internal/provider"
 )
@@ -187,7 +189,14 @@ func TestHandleTaskUpdateDeletedRemovesMiddleEntry(t *testing.T) {
 	}
 }
 
-func TestHandleTaskDeleteOnlyClearsSnapshot(t *testing.T) {
+// TestHandleTaskDeleteOnlyEmitsLiveClear pins the fix for the 2026-06-14
+// todo-not-clearing incident: deleting the last task must EMIT an empty
+// provider:todo_update so a live pane drops the list — not merely clear the
+// backend refresh snapshot. A live pane holds the last non-empty snapshot in
+// memory and only re-reads the backend copy on refresh/reconnect, so without
+// the emit the cleared list lingers on screen. The backend snapshot is still
+// cleared for the refresh path.
+func TestHandleTaskDeleteOnlyEmitsLiveClear(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -202,9 +211,113 @@ func TestHandleTaskDeleteOnlyClearsSnapshot(t *testing.T) {
 	if _, ok := router.LiveTodoSnapshot("t1"); ok {
 		t.Errorf("live snapshot should be cleared after deleting the only task")
 	}
-	countAfter := todoEmissionCount(emissions)
-	if countAfter != countBefore {
-		t.Errorf("expected no new emission for delete-to-empty; got %d new", countAfter-countBefore)
+	if got := todoEmissionCount(emissions) - countBefore; got != 1 {
+		t.Fatalf("delete-to-empty: got %d new emissions, want 1 (the live clear)", got)
+	}
+	last := lastTodoEmission(emissions)
+	if last == nil {
+		t.Fatalf("no provider:todo_update emission for the clear")
+	}
+	if last.ThreadID != "t1" {
+		t.Errorf("clear emission threadID: got %q, want t1", last.ThreadID)
+	}
+	if len(last.Steps) != 0 {
+		t.Errorf("clear emission must carry empty steps; got %+v", last.Steps)
+	}
+}
+
+// TestHandleTaskDeleteAllEmitsFinalClear reproduces the 2026-06-14 screenshot:
+// three tasks created then deleted one at a time. Each intermediate delete
+// emits the shrinking list; the final delete (list → empty) must emit an
+// empty-steps clear so the activity-rail Todos widget empties instead of
+// freezing on the last surviving item ("Write tests" in the report).
+func TestHandleTaskDeleteAllEmitsFinalClear(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	_ = router.Handle(taskCreateEvent("t1", "1", "Draft the API schema"))
+	_ = router.Handle(taskCreateEvent("t1", "2", "Implement the handler"))
+	_ = router.Handle(taskCreateEvent("t1", "3", "Write tests"))
+
+	for _, id := range []string{"1", "2", "3"} {
+		if err := router.Handle(taskUpdateEvent("t1", provider.TaskUpdateMeta{
+			TaskID: id, Deleted: true,
+		})); err != nil {
+			t.Fatalf("delete %s: %v", id, err)
+		}
+	}
+
+	if _, ok := router.LiveTodoSnapshot("t1"); ok {
+		t.Errorf("backend snapshot should be cleared after deleting all tasks")
+	}
+	last := lastTodoEmission(emissions)
+	if last == nil {
+		t.Fatalf("no provider:todo_update emission")
+	}
+	if last.ThreadID != "t1" {
+		t.Errorf("final clear emission threadID: got %q, want t1", last.ThreadID)
+	}
+	if len(last.Steps) != 0 {
+		t.Errorf("final emission after deleting all tasks must be an empty clear; got %+v", last.Steps)
+	}
+}
+
+// TestHandleTaskDeleteClearIsThreadScoped pins that draining one thread's list
+// to empty clears only that thread — the incident was a per-pane targeting
+// failure, so the clear must carry the right ThreadID and must not disturb a
+// concurrent thread's live snapshot.
+func TestHandleTaskDeleteClearIsThreadScoped(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	createTestThread(t, st, "t2")
+	seedOpenTurn(t, router, st, "t1", 0)
+	seedOpenTurn(t, router, st, "t2", 0)
+
+	_ = router.Handle(taskCreateEvent("t1", "1", "t1 task"))
+	_ = router.Handle(taskCreateEvent("t2", "1", "t2 task"))
+
+	_ = router.Handle(taskUpdateEvent("t1", provider.TaskUpdateMeta{TaskID: "1", Deleted: true}))
+
+	last := lastTodoEmission(emissions)
+	if last == nil || last.ThreadID != "t1" || len(last.Steps) != 0 {
+		t.Fatalf("expected an empty clear for t1; got %+v", last)
+	}
+	if _, ok := router.LiveTodoSnapshot("t1"); ok {
+		t.Errorf("t1 snapshot should be cleared")
+	}
+	s2, ok := router.LiveTodoSnapshot("t2")
+	if !ok || len(s2.Steps) != 1 || s2.Steps[0].Step != "t2 task" {
+		t.Errorf("t2 snapshot must be untouched by t1's clear; got %+v (ok=%v)", s2.Steps, ok)
+	}
+}
+
+// TestTaskStepsTruncatesOversizedFields pins the defense-in-depth cap on the
+// Task* projection: Subject/Owner are model-controlled and only TrimSpace'd
+// upstream, so taskStepsLocked must truncate them to the same maxTodo*Runes
+// bounds the legacy TodoWrite path enforces — otherwise an oversized field
+// reaches the WS payload and the in-memory pane snapshot unbounded.
+func TestTaskStepsTruncatesOversizedFields(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	longSubject := strings.Repeat("x", maxTodoStepRunes+50)
+	longOwner := strings.Repeat("y", maxTodoOwnerRunes+50)
+
+	_ = router.Handle(taskCreateEvent("t1", "1", longSubject))
+	_ = router.Handle(taskUpdateEvent("t1", provider.TaskUpdateMeta{TaskID: "1", Owner: longOwner}))
+
+	update := lastTodoEmission(emissions)
+	if update == nil || len(update.Steps) != 1 {
+		t.Fatalf("expected one projected step; got %+v", update)
+	}
+	step := update.Steps[0]
+	if got := utf8.RuneCountInString(step.Step); got > maxTodoStepRunes+len("...") {
+		t.Errorf("subject not truncated: %d runes (cap %d + ellipsis)", got, maxTodoStepRunes)
+	}
+	if got := utf8.RuneCountInString(step.Owner); got > maxTodoOwnerRunes+len("...") {
+		t.Errorf("owner not truncated: %d runes (cap %d + ellipsis)", got, maxTodoOwnerRunes)
 	}
 }
 
