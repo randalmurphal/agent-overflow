@@ -90,6 +90,25 @@ seconds; it is cold-resume history only. Tool results come from
   flipping `turnSettled` back true), and synthesizes the interrupt
   result. Also owns subagent correlation: the Agent/Task launch registry
   and `resolveSubagentParent` (see §Subagents).
+
+  It also reconstructs **background-task completions** from the request
+  body (`emitBackgroundCompletions`). A backgrounded command/agent's
+  completion crosses the wire ONLY as a `<task-notification>` the CLI
+  injects into the next `/v1/messages` body — the stream-json
+  `task_updated` + `task_notification` headless emits are CLI-internal and
+  never cross `/v1/messages`. For each terminal notification (one bearing
+  a `<status>`; a statusless body is a still-running stall ping, skipped)
+  it emits the same pair headless does, IN ORDER: `system/task_updated`
+  (triage stashes the host-side exit) then `system/task_notification`
+  (drains that stash → writes the `tool_completion` sibling at the current
+  write head). Both pass through `feedReorder` untouched and the feed is
+  FIFO, so stash-before-drain holds. Deduped by `task_id` (the
+  notification recurs in every later body). This fires ONLY for
+  backgrounded work — a foreground tool returns its result inline and
+  injects no notification, so an inline run never gets a separate
+  completion row. Field extraction + the terminal-status gate reuse
+  `claude.ExtractTaskNotificationFields` / `claude.NormalizeTaskTerminalStatus`
+  so the tag shape and terminal set can't drift from the shared parser.
 - `reorder.go` — `feedReorder`: restores the headless "tool start before
   completion" ordering that the wire+hook split can invert. A fast tool's
   `PostToolUse` hook can land its `tool_result` on the feed before the
@@ -142,8 +161,9 @@ byte-prefix check.
 
 `recMu` guards the reconstructor's cross-request state (turn-usage,
 `turnSettled`, identity, the subagent launch registry, the pending-echo
-FIFO). The per-request `onSSE` path is lock-free (a local assembler + a
-channel send); only `beginAgentTurn` / `beginSubagentTurn` /
+FIFO, the seen-background-task set). The per-request `onSSE` path is
+lock-free (a local assembler + a channel send); only `beginAgentTurn`
+(which runs `emitBackgroundCompletions`) / `beginSubagentTurn` /
 `endAgentTurn` / `interruptTurn` / `onSessionInfo` / `queueUserEcho` (the
 `Send`-side echo enqueue) take `recMu`.
 

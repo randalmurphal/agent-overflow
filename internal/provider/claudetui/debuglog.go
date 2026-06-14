@@ -22,16 +22,27 @@ import (
 //                           visible alongside the surfaced agent turns, so a
 //                           phantom turn can be traced to the request that
 //                           produced it and the class it was given.
+//   - direction "decision": the routing/reconstruction decision per classAgent
+//                           request — the route taken (main vs subagent vs
+//                           unmatched-and-forwarded), the Agent card a subagent
+//                           resolved to (and via cache vs content match), and
+//                           what emitBackgroundCompletions did with an injected
+//                           <task-notification> (emitted / deduped / skipped).
+//                           These are the branches the "in" feed cannot show on
+//                           its own: an unmatched subagent or a skipped
+//                           completion emits no envelope at all. See decisionLog.
 //
-// Both are gated on a non-nil EventLogger (NewProviderEventLogger returns nil
-// unless the env opts in), so a production session pays nothing.
+// All three are gated on a non-nil EventLogger (NewProviderEventLogger returns
+// nil unless the env opts in), so a production session pays nothing.
 //
-// SECURITY: every value logged here is derived from a RESPONSE envelope or a
-// REQUEST BODY. Credential headers (Authorization, x-api-key, the OAuth bearer)
-// live in HTTP headers, which never reach either path — the envelope feed is
-// body-only and logClassify is handed only the request body. This is the
-// dev-only, local-only, short-retention capture the area guide sanctions; the
-// produced file must never be committed.
+// SECURITY: every value logged here is derived from a RESPONSE envelope, a
+// REQUEST BODY, or the X-Claude-Code-Agent-Id header — the last an opaque
+// per-subagent identifier, not a credential. The credential headers
+// (Authorization, x-api-key, the OAuth bearer) are never read by any of these
+// paths: the envelope feed is body-only, logClassify is handed only the request
+// body, and logDecision records only the already-extracted agent id and the
+// reconstruction outcome. This is the dev-only, local-only, short-retention
+// capture the area guide sanctions; the produced file must never be committed.
 
 // logProvider is the provider tag on debug log entries for this package.
 const logProvider = "claude-tui"
@@ -106,6 +117,59 @@ func (s *Session) logClassify(class requestClass, status int, body []byte) {
 		Data:      string(data),
 	}); err != nil {
 		log.Printf("claudetui: classify log failed: %v", err)
+	}
+}
+
+// decisionLog is the credential-free record of one routing/reconstruction
+// decision (direction "decision"). It is heterogeneous by Event — omitempty
+// keeps each line to the fields that decision actually set:
+//
+//   - Event "route":         a classAgent request entered reconstruction.
+//     Route is "main" (no agent-id header), "subagent" (resolved to Parent, Via
+//     "cache" or "content-match"), or "subagent-unmatched" (no launch matched →
+//     forwarded WITHOUT reconstruction, the silent degradation). Init reports
+//     whether a main request (re)opened a settled loop (emitted system:init).
+//   - Event "bg_completion":  emitBackgroundCompletions saw a <task-notification>.
+//     Action is "emitted" (TaskID/ToolUseID completion synthesized), "deduped"
+//     (already seen — it recurs in history), "skipped-statusless" (a stall
+//     progress ping, still running), or "unroutable" (no <task-id>).
+//   - Event "turn_close":     a main request closed the turn with a result
+//     (Stop = the wire stop_reason); the loop settles.
+//   - Event "subagent_end":   a subagent request finished nesting under Parent.
+type decisionLog struct {
+	Event     string `json:"event"`
+	Route     string `json:"route,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
+	Parent    string `json:"parent,omitempty"`
+	Via       string `json:"via,omitempty"`
+	NumMsgs   int    `json:"n_msgs,omitempty"`
+	Init      bool   `json:"init,omitempty"`
+	TaskID    string `json:"task_id,omitempty"`
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Action    string `json:"action,omitempty"`
+	Stop      string `json:"stop,omitempty"`
+}
+
+// logDecision records one routing/reconstruction decision (direction
+// "decision"). Wired onto the reconstructor (reconstructor.debug) only when the
+// event logger is live, so a production session never builds a decisionLog.
+func (s *Session) logDecision(d decisionLog) {
+	if s.evlog == nil {
+		return
+	}
+	data, err := json.Marshal(d)
+	if err != nil {
+		log.Printf("claudetui: decision log marshal failed: %v", err)
+		return
+	}
+	if err := s.evlog.LogProviderEvent(logging.ProviderEventEntry{
+		ThreadID:  s.threadID,
+		Direction: "decision",
+		Provider:  logProvider,
+		Data:      string(data),
+	}); err != nil {
+		log.Printf("claudetui: decision log failed: %v", err)
 	}
 }
 

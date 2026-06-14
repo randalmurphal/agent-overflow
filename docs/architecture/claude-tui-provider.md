@@ -325,7 +325,53 @@ request's tool_results continue it.
 - `PostToolUseFailure` → same shape with `is_error:true` and `content` from
   `error`; `tool_response` is absent on failure.
 - Background-Bash dispatch `PostToolUse` (carries `backgroundTaskId`) is the
-  launch placeholder; the **completion** is the wire `<task-notification>`.
+  launch placeholder; the **completion** is the wire `<task-notification>`
+  (see §Background completions).
+
+### Background completions (wire)
+
+A backgrounded command or agent (`Bash run_in_background:true`, async `Agent`)
+finishes *after* its launching turn settled, so its completion can't ride that
+turn's hooks. Headless learns of it from two CLI-internal stream-json events —
+`system/task_updated` (host process exit) then `system/task_notification` (the
+agent-facing summary + `output_file`). **Neither crosses `/v1/messages`.** The
+only thing that does is the `<task-notification>` XML the CLI injects as a user
+message into the *next* request body so the model can react to it
+(`LocalShellTask.tsx` / `LocalAgentTask.tsx`).
+
+So `turndriver.emitBackgroundCompletions` scans each agent request body and, for
+every terminal `<task-notification>` it hasn't seen, reconstructs **both**
+headless events, in order:
+
+1. `system/task_updated` `{patch:{status}}` → `EventBackgroundTaskTerminal`.
+   triage *stashes* this as the host-side exit — it does **not** write a chat
+   row (invariant 21: `task_notification` is not a completion source, and a lone
+   `task_updated{completed}` only stashes).
+2. `system/task_notification` `{status, output_file, summary}` →
+   `EventBackgroundTaskNotification`. triage *drains* the stash from step 1 and
+   writes the `tool_completion` sibling at the current write head, reading
+   `output_file` for the command output.
+
+Feeding only the notification would never complete the tool: with no stashed
+terminal there is nothing to drain. Both envelopes are `system` / string-`user`
+lines that pass `feedReorder` through untouched, and the feed channel is FIFO, so
+stash-before-drain is guaranteed.
+
+Discriminators, all matching headless:
+
+- **Terminal vs stall.** A completion carries `<status>` (`completed` / `failed`
+  / `killed`); a stall ping (command blocked on input) omits it, and a statusless
+  body is skipped — the task is still running. `NormalizeTaskTerminalStatus` is
+  the shared gate.
+- **Backgrounded vs inline.** Only backgrounded work injects a
+  `<task-notification>`; a foreground tool returns its result inline as a
+  tool_result in the same turn. An inline run therefore never produces a separate
+  completion row — the desired UX.
+- **Dedup by `task_id`.** The notification persists in conversation history and
+  recurs in every later request body; a per-session seen-set reconstructs it once.
+
+Field extraction reuses `claude.ExtractTaskNotificationFields`, so the tag shape
+stays drift-free with the shared parser's synthetic-XML path.
 
 ### Compaction — transcript no longer required
 

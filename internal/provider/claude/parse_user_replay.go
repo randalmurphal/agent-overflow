@@ -190,7 +190,7 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 	content := extractToolResultText(msg.Content)
 
 	if isClaudeInjectedReplayContent(content) {
-		if fields, ok := extractReplayTaskNotificationFields(content); ok {
+		if fields, ok := ExtractTaskNotificationFields(content); ok {
 			return p.replayTaskNotificationEvents(threadID, fields, now), nil
 		}
 		return nil, nil
@@ -220,12 +220,18 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 	}}, nil
 }
 
-// replayTaskNotificationFields holds the inner-tag values lifted from
-// a `<task-notification>...</task-notification>` body in a suppressed
-// isReplay user envelope. Mirrors the field set the structured
-// `system/task_notification` envelope carries — only TaskID is
-// required; everything else is best-effort enrichment.
-type replayTaskNotificationFields struct {
+// TaskNotificationFields holds the inner-tag values lifted from a
+// `<task-notification>...</task-notification>` body. Mirrors the field
+// set the structured `system/task_notification` envelope carries — only
+// TaskID is required; everything else is best-effort enrichment.
+//
+// Exported because the claude-tui provider reconstructs the structured
+// task_updated + task_notification envelopes from a `<task-notification>`
+// it finds inline in a `/v1/messages` request body — its only wire
+// signal that a backgrounded task finished, since the stream-json system
+// envelopes headless emits never cross that wire. Reusing this one
+// extractor keeps both call sites drift-free against upstream tag changes.
+type TaskNotificationFields struct {
 	TaskID     string
 	ToolUseID  string
 	Status     string
@@ -233,7 +239,7 @@ type replayTaskNotificationFields struct {
 	Summary    string
 }
 
-// extractReplayTaskNotificationFields lifts the inner tags out of a
+// ExtractTaskNotificationFields lifts the inner tags out of a
 // `<task-notification>...</task-notification>` body when present.
 // Returns (fields, true) only when both wrapper tags appear AND the
 // body has a non-empty `<task-id>` — task_id is the idempotency key
@@ -241,17 +247,18 @@ type replayTaskNotificationFields struct {
 // launch; without it the event would be unroutable.
 //
 // Tags are extracted by shallow substring scan; the upstream wire
-// shape (LocalShellTask.tsx:160-165) keeps children non-nested
-// except for `<usage>`, which we ignore. A close-tag-before-open or
-// missing close returns ok=false so a malformed echo can't fabricate
-// fields.
-func extractReplayTaskNotificationFields(content string) (replayTaskNotificationFields, bool) {
+// shape (LocalShellTask.tsx / LocalAgentTask.tsx) keeps the children we
+// read non-nested. Sibling sections an agent notification adds after
+// `<summary>` (`<result>`, `<usage>`, `<worktree>`) are ignored — each
+// child is matched by its own tag. A close-tag-before-open or missing
+// close returns ok=false so a malformed echo can't fabricate fields.
+func ExtractTaskNotificationFields(content string) (TaskNotificationFields, bool) {
 	const openPrefix = "<task-notification"
 	const closeTag = "</task-notification>"
 	openIdx := strings.Index(content, openPrefix)
 	closeIdx := strings.Index(content, closeTag)
 	if openIdx < 0 || closeIdx < 0 || closeIdx < openIdx {
-		return replayTaskNotificationFields{}, false
+		return TaskNotificationFields{}, false
 	}
 	// Advance past the opening tag's `>` so `body` represents inner
 	// content only. Tolerant of an attribute-bearing variant
@@ -259,10 +266,10 @@ func extractReplayTaskNotificationFields(content string) (replayTaskNotification
 	// from current Claude releases.
 	bodyStart := strings.Index(content[openIdx:closeIdx], ">")
 	if bodyStart < 0 {
-		return replayTaskNotificationFields{}, false
+		return TaskNotificationFields{}, false
 	}
 	body := content[openIdx+bodyStart+1 : closeIdx]
-	fields := replayTaskNotificationFields{
+	fields := TaskNotificationFields{
 		TaskID:     extractXMLChild(body, "task-id"),
 		ToolUseID:  extractXMLChild(body, "tool-use-id"),
 		Status:     extractXMLChild(body, "status"),
@@ -303,7 +310,7 @@ func extractXMLChild(body, tag string) string {
 // inputs whichever wire path Claude chose. The XML wrapper doesn't
 // expose `parent_tool_use_id`; the shared builder falls back to the
 // parser's task_id ↔ tool_use_id map for it.
-func (p *Parser) replayTaskNotificationEvents(threadID string, fields replayTaskNotificationFields, now time.Time) []provider.ProviderEvent {
+func (p *Parser) replayTaskNotificationEvents(threadID string, fields TaskNotificationFields, now time.Time) []provider.ProviderEvent {
 	return []provider.ProviderEvent{p.buildBackgroundTaskNotificationEvent(threadID, backgroundTaskNotificationFields{
 		TaskID:     fields.TaskID,
 		ToolUseID:  fields.ToolUseID,

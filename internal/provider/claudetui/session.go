@@ -136,6 +136,12 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// before the reconstructed init lands (mirrors the headless seed).
 	s.parser.SetModel(cfg.Model)
 	s.rec = newReconstructor(s.feedEnvelope)
+	// Debug-gated: record per-request routing/reconstruction decisions to the
+	// "decision" event stream only when the logger is live, so a production
+	// session never builds a decisionLog (the hook stays nil). See debuglog.go.
+	if s.evlog != nil {
+		s.rec.debug = s.logDecision
+	}
 
 	// Anything started below is torn down by Close if a later step fails.
 	defer func() {

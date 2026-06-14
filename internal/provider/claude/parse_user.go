@@ -484,7 +484,7 @@ func extractTaskOutputCompletion(content json.RawMessage, toolUseResult json.Raw
 	}
 
 	taskID := firstNonEmpty(readRawString(task["task_id"]), readRawString(task["taskId"]))
-	status := normalizeTaskTerminalStatus(firstNonEmpty(readRawString(task["status"]), readRawString(payload["status"])))
+	status := NormalizeTaskTerminalStatus(firstNonEmpty(readRawString(task["status"]), readRawString(payload["status"])))
 	if taskID == "" || status == "" {
 		return taskOutputCompletion{}, false
 	}

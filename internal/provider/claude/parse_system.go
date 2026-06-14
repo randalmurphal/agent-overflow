@@ -163,7 +163,7 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	if json.Unmarshal(raw["patch"], &patch) != nil {
 		return nil, nil
 	}
-	status := normalizeTaskTerminalStatus(firstNonEmpty(
+	status := NormalizeTaskTerminalStatus(firstNonEmpty(
 		readRawString(patch["status"]),
 		readRawString(raw["status"]),
 	))
@@ -291,7 +291,13 @@ func (p *Parser) buildBackgroundTaskNotificationEvent(threadID string, fields ba
 	}
 }
 
-func normalizeTaskTerminalStatus(status string) string {
+// NormalizeTaskTerminalStatus maps a raw task status to the canonical
+// terminal value (completed / killed / failed) or "" when the status is
+// non-terminal or absent. Exported so the claude-tui provider can gate
+// its reconstructed task_updated synthesis on exactly what this parser
+// will accept as a terminal: a statusless `<task-notification>` (a stall
+// progress ping) normalises to "" and must not synthesise a completion.
+func NormalizeTaskTerminalStatus(status string) string {
 	switch status {
 	case "completed":
 		return "completed"

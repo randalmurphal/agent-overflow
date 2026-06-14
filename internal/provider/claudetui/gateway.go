@@ -168,7 +168,16 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 			// nesting reconstruction so it surfaces under its Agent card instead of
 			// as a phantom main turn. beginSubagentTurn may return nil (parent not
 			// resolvable) — then the request is forwarded without reconstruction.
-			if agentID := r.Header.Get(agentIDHeader); agentID != "" {
+			//
+			// The header alone is NOT sufficient: when the MAIN loop resumes to
+			// observe a backgrounded subagent's completion, Claude attaches that
+			// subagent's agent-id to the resume as well (plus cc_is_subagent=true).
+			// requestReportsAgentCompletion catches that observation — the body
+			// carries a <task-notification> whose task-id == agentID, the agent
+			// reporting itself — and keeps it on the main path, where
+			// emitBackgroundCompletions runs and the response surfaces as a
+			// top-level turn. See turndriver.go for the full rationale.
+			if agentID := r.Header.Get(agentIDHeader); agentID != "" && !requestReportsAgentCompletion(req.Messages, agentID) {
 				ar = g.drive.beginSubagentTurn(req, agentID)
 			} else {
 				ar = g.drive.beginAgentTurn(req)

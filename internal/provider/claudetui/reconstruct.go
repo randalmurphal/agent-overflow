@@ -106,6 +106,41 @@ type replayUserMessage struct {
 	Content string `json:"content"` // plain string; extractToolResultText handles it
 }
 
+// taskUpdatedEnvelope is the system/task_updated stream-json envelope headless
+// emits when a backgrounded task reaches a terminal state. claude-tui synthesizes
+// it from a request-body <task-notification> (turndriver.emitBackgroundCompletions);
+// the parser turns it into EventBackgroundTaskTerminal, which triage stashes as the
+// host-side process exit. That stash is what the paired task_notification drains to
+// write the tool_completion sibling — without it the notification alone never
+// completes the launch (triage invariant 21: task_notification is not a completion
+// source). See docs/architecture/claude-tui-provider.md §Background completions.
+type taskUpdatedEnvelope struct {
+	Type      string           `json:"type"`    // "system"
+	Subtype   string           `json:"subtype"` // "task_updated"
+	TaskID    string           `json:"task_id"`
+	ToolUseID string           `json:"tool_use_id,omitempty"`
+	Patch     taskUpdatedPatch `json:"patch"`
+}
+
+type taskUpdatedPatch struct {
+	Status string `json:"status"` // completed | failed | killed
+}
+
+// taskNotificationEnvelope is the system/task_notification stream-json envelope.
+// Paired with (and fed right after) taskUpdatedEnvelope, it carries the human
+// summary and output_file; the parser emits EventBackgroundTaskNotification, which
+// drains the stash the task_updated left and writes the tool_completion sibling at
+// the current write head.
+type taskNotificationEnvelope struct {
+	Type       string `json:"type"`    // "system"
+	Subtype    string `json:"subtype"` // "task_notification"
+	TaskID     string `json:"task_id"`
+	ToolUseID  string `json:"tool_use_id,omitempty"`
+	Status     string `json:"status,omitempty"`
+	OutputFile string `json:"output_file,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+}
+
 // --- per-turn assembler ---------------------------------------------------
 
 // messageAssembler replays one agent request's SSE content-block deltas into a
@@ -361,6 +396,36 @@ func replayUserLine(uuid, content string) json.RawMessage {
 		IsReplay: true,
 		UUID:     uuid,
 		Message:  replayUserMessage{Role: "user", Content: content},
+	})
+}
+
+// taskUpdatedLine synthesizes the system/task_updated envelope for a reconstructed
+// background-task terminal. status is the raw <status> from the <task-notification>;
+// the parser re-normalizes it (claude.NormalizeTaskTerminalStatus) and emits no
+// terminal for a non-terminal value, so a caller that already gated on a terminal
+// status gets a stash and one that didn't gets a harmless no-op.
+func taskUpdatedLine(taskID, toolUseID, status string) json.RawMessage {
+	return mustMarshal(taskUpdatedEnvelope{
+		Type:      "system",
+		Subtype:   "task_updated",
+		TaskID:    taskID,
+		ToolUseID: toolUseID,
+		Patch:     taskUpdatedPatch{Status: status},
+	})
+}
+
+// taskNotificationLine synthesizes the system/task_notification envelope fed right
+// after taskUpdatedLine, carrying the summary and output_file triage reads onto the
+// tool_completion sibling it writes when it drains the task_updated stash.
+func taskNotificationLine(taskID, toolUseID, status, outputFile, summary string) json.RawMessage {
+	return mustMarshal(taskNotificationEnvelope{
+		Type:       "system",
+		Subtype:    "task_notification",
+		TaskID:     taskID,
+		ToolUseID:  toolUseID,
+		Status:     status,
+		OutputFile: outputFile,
+		Summary:    summary,
 	})
 }
 

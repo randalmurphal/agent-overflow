@@ -1,6 +1,7 @@
 package claudetui
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 
@@ -38,6 +39,15 @@ type wireUsage struct {
 type reconstructor struct {
 	emit func(json.RawMessage)
 
+	// debug, when non-nil, records a credential-free decisionLog at each
+	// routing/reconstruction branch the "in" envelope feed cannot show on its
+	// own: the route a request took, the Agent card a subagent resolved to (and
+	// via cache vs content match), and what emitBackgroundCompletions did with an
+	// injected <task-notification> — including the silent unmatched-subagent and
+	// skipped-completion cases. nil in production (the Session wires it only when
+	// the event logger is live) → zero cost. See debuglog.go.
+	debug func(decisionLog)
+
 	// session identity, seeded from the SessionStart hook (may be empty until
 	// it arrives — the first agent request still emits init with model/tools).
 	sessionID string
@@ -70,6 +80,14 @@ type reconstructor struct {
 	// and stamps provider_item_id onto the optimistic user row. Decoupled from
 	// turnSettled (see file header). Guarded by the session's recMu.
 	userEchoes []pendingUserEcho
+
+	// seenTaskTerminals dedups reconstructed background-task completions by
+	// task_id. A terminal <task-notification> stays in the conversation history,
+	// so it recurs in every later request body; without this we'd re-stash and
+	// re-drain the same completion on each request. One entry per backgrounded
+	// task that completed (bounded by a session's background-task count). Guarded
+	// by the session's recMu (begin/end/interrupt). See emitBackgroundCompletions.
+	seenTaskTerminals map[string]struct{}
 
 	// Subagent correlation (Claude `Agent`/`Task` tool). A subagent's
 	// /v1/messages requests carry no parent linkage in their body, so we rebuild
@@ -122,7 +140,7 @@ const (
 
 func newReconstructor(emit func(json.RawMessage)) *reconstructor {
 	// turnSettled starts true so the first main request emits init.
-	return &reconstructor{emit: emit, turnSettled: true}
+	return &reconstructor{emit: emit, turnSettled: true, seenTaskTerminals: map[string]struct{}{}}
 }
 
 // setSessionInfo records identity from the SessionStart hook so each init (and
@@ -166,13 +184,21 @@ func (r *reconstructor) beginAgentRequest(req *messagesRequest) *agentRequest {
 	// A fresh request starts un-interrupted; the flag only neutralizes the late
 	// end() of the one request the previous interrupt aborted.
 	r.interrupted = false
+	initEmitted := r.turnSettled
 	if r.turnSettled {
 		r.emit(initLine(r.sessionID, req.Model, r.cwd, r.version, req.toolNames()))
 		r.turnSettled = false
 	}
+	if r.debug != nil {
+		r.debug(decisionLog{Event: "route", Route: "main", NumMsgs: len(req.Messages), Init: initEmitted})
+	}
 	if echo, ok := r.takeUserEcho(); ok {
 		r.emit(replayUserLine(echo.uuid, echo.content))
 	}
+	// After init re-opened the loop (or a continuation kept it open), fold in any
+	// backgrounded command/agent that finished since the last request — the only
+	// place its completion crosses the wire is this body.
+	r.emitBackgroundCompletions(req.Messages)
 	return &agentRequest{r: r, asm: newMessageAssembler()}
 }
 
@@ -195,6 +221,135 @@ func (r *reconstructor) takeUserEcho() (pendingUserEcho, bool) {
 	echo := r.userEchoes[0]
 	r.userEchoes = r.userEchoes[1:]
 	return echo, true
+}
+
+// taskNotificationProbe is the cheap byte-scan needle that gates the full parse in
+// emitBackgroundCompletions: only a request message whose raw bytes contain it can
+// carry a <task-notification>, so the common case (no background completion in this
+// request) skips the per-message unmarshal entirely.
+var taskNotificationProbe = []byte("<task-notification")
+
+// emitBackgroundCompletions reconstructs the background-task completion events
+// headless emits, from the only signal claude-tui gets for them: a
+// <task-notification> the CLI injects into a /v1/messages request body when a
+// backgrounded command or agent finishes. The stream-json system/task_updated +
+// system/task_notification headless emits are CLI-internal and never cross the
+// /v1/messages wire; a foreground tool returns its result inline and injects no
+// notification, so this fires only for genuinely backgrounded work — an inline run
+// never produces a separate completion row.
+//
+// For each terminal notification not seen before, it emits the same pair headless
+// does, in order: task_updated (parser EventBackgroundTaskTerminal → triage stashes
+// the host-side exit) then task_notification (EventBackgroundTaskNotification →
+// drains that stash → writes the tool_completion sibling at the current write head).
+// Both are system/user-string envelopes that pass through feedReorder untouched, and
+// the feed channel is FIFO, so the stash-before-drain order holds.
+//
+// A statusless <task-notification> is a stall progress ping, not a terminal: the
+// task is still running, so it is skipped (matching headless, where print.ts treats
+// the absence of <status> as non-terminal). Dedup is by task_id — the notification
+// stays in history and recurs in every later request body. Covers backgrounded Bash
+// commands and backgrounded agents alike; both share the tag shape.
+//
+// Caller holds the session recMu (beginAgentRequest).
+func (r *reconstructor) emitBackgroundCompletions(messages []json.RawMessage) {
+	eachTaskNotification(messages, func(fields claude.TaskNotificationFields, ok bool) bool {
+		if !ok {
+			r.logBgDecision(decisionLog{Event: "bg_completion", Action: "unroutable"})
+			return true // missing or malformed task-id — unroutable
+		}
+		if claude.NormalizeTaskTerminalStatus(fields.Status) == "" {
+			r.logBgDecision(decisionLog{Event: "bg_completion", TaskID: fields.TaskID, ToolUseID: fields.ToolUseID, Status: fields.Status, Action: "skipped-statusless"})
+			return true // statusless stall ping — the task is still running
+		}
+		if _, seen := r.seenTaskTerminals[fields.TaskID]; seen {
+			r.logBgDecision(decisionLog{Event: "bg_completion", TaskID: fields.TaskID, ToolUseID: fields.ToolUseID, Status: fields.Status, Action: "deduped"})
+			return true
+		}
+		r.seenTaskTerminals[fields.TaskID] = struct{}{}
+		r.emit(taskUpdatedLine(fields.TaskID, fields.ToolUseID, fields.Status))
+		r.emit(taskNotificationLine(fields.TaskID, fields.ToolUseID, fields.Status, fields.OutputFile, fields.Summary))
+		r.logBgDecision(decisionLog{Event: "bg_completion", TaskID: fields.TaskID, ToolUseID: fields.ToolUseID, Status: fields.Status, Action: "emitted"})
+		return true // process every notification in the body
+	})
+}
+
+// eachTaskNotification invokes fn for every user message carrying a
+// <task-notification>, passing the extracted fields and whether a usable task-id
+// was found (ok=false marks a missing or malformed task-id — unroutable). fn
+// returns false to stop early. It is the single definition of "what counts as a
+// task-notification
+// message," shared by the routing discriminator (requestReportsAgentCompletion)
+// and the emitter (emitBackgroundCompletions) so a routing decision can never
+// disagree with what actually gets emitted. The byte-probe skips the common
+// no-notification message without a parse.
+func eachTaskNotification(messages []json.RawMessage, fn func(fields claude.TaskNotificationFields, ok bool) bool) {
+	for _, raw := range messages {
+		if !bytes.Contains(raw, taskNotificationProbe) {
+			continue
+		}
+		var m struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(raw, &m) != nil || m.Role != "user" {
+			continue
+		}
+		fields, ok := claude.ExtractTaskNotificationFields(blockText(m.Content))
+		if !fn(fields, ok) {
+			return
+		}
+	}
+}
+
+// requestReportsAgentCompletion reports whether a /v1/messages body carries a
+// <task-notification> whose task-id equals agentID — i.e. this header-bearing
+// request is the MAIN loop waking to observe that backgrounded subagent's
+// completion, NOT a genuine subagent turn.
+//
+// It is the gateway's main-vs-subagent discriminator for a request carrying the
+// X-Claude-Code-Agent-Id header. The header alone is ambiguous: Claude attaches
+// the just-completed subagent's agent-id (and cc_is_subagent=true) to the main
+// loop's resume that drains its <task-notification>, so routing on the header
+// misroutes that observation as a subagent continuation — dropping the completion
+// (emitBackgroundCompletions only runs off the main path) and nesting the main
+// response under the Agent card (spike/claude-mitm 2026-06-13: the second of two
+// backgrounded subagents never surfaced).
+//
+// The deterministic tell is structural, not prose: a backgrounded subagent's
+// task_id IS its agent_id (2.1.170: agent afb0472fd557c6a6e ⇒ task
+// afb0472fd557c6a6e), and a genuine subagent turn never reports its OWN
+// completion (a subagent can't background itself). So a self-referential
+// task-notification — task-id == this request's agent-id — uniquely marks the
+// main loop's observation. A subagent that backgrounds a CHILD and polls carries
+// the child's task-id (≠ its own agent-id), so it correctly stays on the subagent
+// path. Status is not checked: a still-running progress ping for this agent is
+// equally the main loop, not the subagent's own turn.
+//
+// Shares eachTaskNotification with emitBackgroundCompletions so the routing
+// decision can't drift from what that method later emits.
+func requestReportsAgentCompletion(messages []json.RawMessage, agentID string) bool {
+	if agentID == "" {
+		return false
+	}
+	found := false
+	eachTaskNotification(messages, func(fields claude.TaskNotificationFields, ok bool) bool {
+		if ok && fields.TaskID == agentID {
+			found = true
+			return false // self-referential notification is conclusive — stop scanning
+		}
+		return true
+	})
+	return found
+}
+
+// logBgDecision records one emitBackgroundCompletions branch when the debug hook
+// is wired (no-op otherwise). Keeps the per-branch call sites in
+// emitBackgroundCompletions to one line each.
+func (r *reconstructor) logBgDecision(d decisionLog) {
+	if r.debug != nil {
+		r.debug(d)
+	}
 }
 
 // beginSubagentRequest starts reconstruction for one subagent /v1/messages
@@ -231,6 +386,9 @@ func (ar *agentRequest) end() {
 		// real turn) and NO usage folded into the main turn (subagent tokens are
 		// the model's private accounting). A subagent cannot itself spawn (Claude
 		// forbids recursive Agent), so it registers no launches.
+		if ar.r.debug != nil {
+			ar.r.debug(decisionLog{Event: "subagent_end", Route: "subagent", Parent: ar.parent})
+		}
 		return
 	}
 
@@ -252,6 +410,9 @@ func (ar *agentRequest) end() {
 		// end_turn of a backgrounded turn; the resume's init re-arms via
 		// handleInit, matching headless (which re-inits there too).
 		ar.r.turnSettled = true
+		if ar.r.debug != nil {
+			ar.r.debug(decisionLog{Event: "turn_close", Route: "main", Stop: ar.asm.stop})
+		}
 	}
 }
 
@@ -331,6 +492,7 @@ func (r *reconstructor) compactLaunches() {
 func (r *reconstructor) resolveSubagentParent(agentID, firstUserText string) string {
 	if agentID != "" {
 		if parent, ok := r.byAgentID[agentID]; ok {
+			r.logBgDecision(decisionLog{Event: "route", Route: "subagent", AgentID: agentID, Parent: parent, Via: "cache"})
 			return parent
 		}
 	}
@@ -341,8 +503,10 @@ func (r *reconstructor) resolveSubagentParent(agentID, firstUserText string) str
 		}
 		l.claimed = true
 		r.cacheAgent(agentID, l.toolUseID)
+		r.logBgDecision(decisionLog{Event: "route", Route: "subagent", AgentID: agentID, Parent: l.toolUseID, Via: "content-match"})
 		return l.toolUseID
 	}
+	r.logBgDecision(decisionLog{Event: "route", Route: "subagent-unmatched", AgentID: agentID, Via: "none"})
 	return ""
 }
 
