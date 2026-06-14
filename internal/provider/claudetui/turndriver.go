@@ -74,6 +74,17 @@ type reconstructor struct {
 	// beginAgentRequest. Guarded by the session's recMu (begin/end/interrupt).
 	interrupted bool
 
+	// consecutiveAPIFailures counts how many times the CURRENT logical request
+	// has failed with a retryable API error (overloaded_error et al.) without a
+	// successful completion in between. It is the 1-indexed `attempt` the
+	// reconstruction stamps on each synthesized system.api_retry, mirroring
+	// withRetry.ts's loop counter so triage's hide-under-4 gate behaves
+	// identically to headless. Incremented in the errored end() branch; reset to
+	// zero on a successful request completion (any terminal stop_reason) and on
+	// interrupt — exactly when withRetry's operation() returns or aborts. Guarded
+	// by the session's recMu (end/interrupt). See agentRequest.errored.
+	consecutiveAPIFailures int
+
 	// userEchoes is the FIFO of AO Sends awaiting their wire confirmation. Send
 	// pushes one (content + uuid) per call; the next main request pops it and
 	// emits the user{isReplay:true} echo that consumes triage's pending-send FIFO
@@ -166,6 +177,15 @@ type agentRequest struct {
 	r      *reconstructor
 	asm    *messageAssembler
 	parent string
+
+	// errored is set by onSSE when a retryable mid-stream API `error` frame
+	// (overloaded_error) arrives on the main loop (the TUI will re-POST). end()
+	// then emits a system.api_retry instead of this attempt's assistant envelope.
+	// errMsg carries the frame's human copy for a visible row. Main-loop only —
+	// subagent retries are not surfaced as turn-level api_retry. Written and read
+	// on the same goroutine (the gateway drives onSSE to completion before end()).
+	errored bool
+	errMsg  string
 }
 
 // beginAgentRequest starts reconstruction for one classAgent request, emitting
@@ -363,7 +383,23 @@ func (r *reconstructor) beginSubagentRequest(parent string) *agentRequest {
 // onSSE streams one raw SSE event: passthrough for live deltas, plus folding
 // into the assembler for the end-of-response assistant envelope. Each delta
 // carries ar.parent so a subagent's stream nests under its Agent card.
+//
+// A retryable mid-stream API `error` frame (overloaded_error after HTTP 200) is
+// the signal Claude Code's withRetry catches to re-POST. On the main loop it is
+// recorded here so end() can emit the matching system.api_retry and skip this
+// failed attempt's partial output (headless discards it on retry); the frame is
+// then NOT passed through (the shared parser drops it, the assembler ignores it).
+// A NON-retryable error frame and a subagent error frame both fall through to the
+// passthrough untouched, so any trailing terminal envelope still reaches the
+// parser and subagent internals are unaffected.
 func (ar *agentRequest) onSSE(sse json.RawMessage) {
+	if ar.parent == "" {
+		if msg, ok := parseRetryableStreamError(sse); ok {
+			ar.errored = true
+			ar.errMsg = msg
+			return
+		}
+	}
 	ar.r.emit(streamEventLine(sse, ar.parent))
 	ar.asm.consume(sse)
 }
@@ -372,29 +408,54 @@ func (ar *agentRequest) onSSE(sse json.RawMessage) {
 // source of EventToolStart), accumulates usage, and — when the model is done —
 // closes the turn with a synthesized result envelope.
 func (ar *agentRequest) end() {
-	// Emit the (possibly partial) assistant envelope even on an interrupted
-	// request, so triage sees and force-closes any orphaned tool_use start —
-	// matching the headless interrupt path.
-	ar.r.emit(ar.asm.assistantLine(ar.parent))
-
 	if ar.parent != "" {
-		// Subagent request. Its assistant + tool_use starts nest under the Agent
-		// card via parent_tool_use_id; its inner tool completions arrive on hooks
-		// keyed by tool_use_id and the parser re-derives their parent from the
-		// start we just emitted — so nothing else is needed here. Deliberately NO
+		// Subagent request. Emit the (possibly partial) assistant — its tool_use
+		// starts nest under the Agent card via parent_tool_use_id; inner tool
+		// completions arrive on hooks keyed by tool_use_id and the parser
+		// re-derives their parent from the start we just emitted. Deliberately NO
 		// result (it is not a top-level turn; emitting one would force-close the
 		// real turn) and NO usage folded into the main turn (subagent tokens are
 		// the model's private accounting). A subagent cannot itself spawn (Claude
 		// forbids recursive Agent), so it registers no launches.
+		ar.r.emit(ar.asm.assistantLine(ar.parent))
 		if ar.r.debug != nil {
 			ar.r.debug(decisionLog{Event: "subagent_end", Route: "subagent", Parent: ar.parent})
 		}
 		return
 	}
 
-	// Main-loop request. Capture any Agent/Task launches so a following subagent
-	// request can resolve its parent — done before the interrupt short-circuit
-	// since the launch stands even if this turn is then aborted.
+	if ar.errored {
+		if ar.r.interrupted {
+			// The user aborted before this failed attempt's end() ran;
+			// interruptTurn already emitted the interrupt result and reset the
+			// turn. Emit nothing: a phantom api_retry after the interrupt result
+			// would mis-order the closed turn, and bumping consecutiveAPIFailures
+			// here would leak a stale attempt count into the next turn.
+			return
+		}
+		// This main-loop attempt failed with a retryable API error; the TUI's
+		// withRetry will re-POST. Mirror headless: emit system.api_retry carrying
+		// the 1-indexed failed-attempt count (triage hides it under 4), and emit
+		// NO assistant envelope (headless discards a failed attempt's partial
+		// output on retry) and NO result (the retry continues the same logical
+		// request, so the loop must stay open — turnSettled is untouched). The
+		// next request finds the loop open and reconstructs as a continuation.
+		ar.r.consecutiveAPIFailures++
+		ar.r.emit(apiRetryLine(ar.r.consecutiveAPIFailures, overloadedErrorStatus, ar.errMsg, ar.r.sessionID))
+		if ar.r.debug != nil {
+			ar.r.debug(decisionLog{Event: "api_retry", Route: "main", Attempt: ar.r.consecutiveAPIFailures})
+		}
+		return
+	}
+
+	// Successful (or user-aborted) main-loop request. Emit the assembled
+	// assistant envelope even when interrupted, so triage sees and force-closes
+	// any orphaned tool_use start — matching the headless interrupt path.
+	ar.r.emit(ar.asm.assistantLine(ar.parent))
+
+	// Capture any Agent/Task launches so a following subagent request can resolve
+	// its parent — done before the interrupt short-circuit since the launch
+	// stands even if this turn is then aborted.
 	ar.r.registerAgentLaunches(ar.asm)
 	if ar.r.interrupted {
 		// interruptTurn already closed and reset the turn; billing this aborted
@@ -402,6 +463,14 @@ func (ar *agentRequest) end() {
 		return
 	}
 	ar.r.accumulate(ar.asm.usage)
+	if ar.asm.stop != "" {
+		// The request returned a complete message (any terminal stop_reason), so
+		// withRetry's operation() succeeded: the logical request's retry sequence
+		// is over and the next failure starts a fresh attempt count. Reset here —
+		// NOT only on a soft round close — so a tool_use-stopped continuation
+		// (model not done) still resets, matching withRetry's per-request loop.
+		ar.r.consecutiveAPIFailures = 0
+	}
 	if claude.IsSoftRoundCloseStopReason(ar.asm.stop) {
 		ar.r.emit(resultLine(ar.asm.stop, ar.r.turnUsageJSON(), false))
 		ar.r.turn = wireUsage{}
@@ -427,6 +496,9 @@ func (r *reconstructor) interruptTurn() {
 	// opens a fresh turn (init + echo) rather than resuming the aborted one.
 	r.turnSettled = true
 	r.interrupted = true
+	// The abort ends any in-flight retry sequence; the next failure (in a new
+	// turn) starts a fresh attempt count.
+	r.consecutiveAPIFailures = 0
 }
 
 func (r *reconstructor) accumulate(usageRaw json.RawMessage) {

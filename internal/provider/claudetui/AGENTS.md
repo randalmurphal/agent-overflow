@@ -66,7 +66,11 @@ seconds; it is cold-resume history only. Tool results come from
 - `reconstruct.go` — pure SSE → stream-json envelope core. The
   `messageAssembler` replays content-block deltas into one `assistant`
   message; synthesizers emit `stream_event` / `assistant` / `result` /
-  `system:init` lines. No `ProviderEvent`s here — only envelope bytes.
+  `system:init` / `system:api_retry` lines. `parseRetryableStreamError`
+  recognises the raw Anthropic `overloaded_error` frame that parse_stream.go
+  would otherwise drop, so a transient mid-stream overload can become an
+  `api_retry` (see §Errors in claude-tui-provider.md). No `ProviderEvent`s here
+  — only envelope bytes.
 - `turndriver.go` — `reconstructor`: the cross-request turn state the
   pure assembler lacks. Two independent turn-boundary signals mirror
   headless (do not re-fuse them into one shape heuristic):
@@ -90,6 +94,15 @@ seconds; it is cold-resume history only. Tool results come from
   flipping `turnSettled` back true), and synthesizes the interrupt
   result. Also owns subagent correlation: the Agent/Task launch registry
   and `resolveSubagentParent` (see §Subagents).
+
+  **API retries (main loop):** when `onSSE` sees a mid-stream `error` frame
+  (Claude Code's `withRetry` will re-POST), `end()` emits a `system:api_retry`
+  carrying a 1-indexed `attempt` from `consecutiveAPIFailures` — reset on any
+  successful completion (terminal stop_reason) or interrupt, so it mirrors
+  `withRetry.ts`'s per-request loop and triage hides attempts < 4 exactly as
+  headless does. A failed attempt emits NO `assistant` envelope and does NOT
+  settle the loop (the retry continues the same logical request). Subagent
+  error frames are not surfaced as turn-level retries.
 
   It also reconstructs **background-task completions** from the request
   body (`emitBackgroundCompletions`). A backgrounded command/agent's

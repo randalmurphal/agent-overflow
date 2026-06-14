@@ -188,7 +188,7 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	g.stream(w, resp.Body, scanner)
+	g.stream(r.Context(), w, resp.Body, scanner)
 
 	if ar != nil {
 		g.drive.endAgentTurn(ar)
@@ -219,15 +219,24 @@ func (g *gateway) buildUpstreamRequest(r *http.Request, body []byte) (*http.Requ
 }
 
 // stream copies the upstream response to the client, flushing each chunk for
-// live SSE, and tees into the scanner when one is set.
-func (g *gateway) stream(w http.ResponseWriter, body io.Reader, scanner *sseScanner) {
+// live SSE, and tees into the scanner when one is set. ctx is the inbound
+// request's context; when it is canceled the client (the interactive claude)
+// aborted its own request — it is retrying after a transient API error, or the
+// user pressed Esc — so the resulting read/write failures are NOT gateway
+// faults and must not surface as an error banner. The retry surfaces as
+// api_retry on the reconstructed stream; the Esc closes the turn via the
+// interrupt path. A genuine upstream failure (ctx still live) keeps surfacing
+// with its real message so the actual issue is visible.
+func (g *gateway) stream(ctx context.Context, w http.ResponseWriter, body io.Reader, scanner *sseScanner) {
 	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 16*1024)
 	for {
 		n, readErr := body.Read(buf)
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				g.onError(fmt.Errorf("claudetui gateway: client write: %w", werr))
+				if ctx.Err() == nil {
+					g.onError(fmt.Errorf("claudetui gateway: client write: %w", werr))
+				}
 				return
 			}
 			if flusher != nil {
@@ -241,7 +250,14 @@ func (g *gateway) stream(w http.ResponseWriter, body io.Reader, scanner *sseScan
 			return
 		}
 		if readErr != nil {
-			g.onError(fmt.Errorf("claudetui gateway: upstream read: %w", readErr))
+			// A canceled inbound context is the authoritative "client went away"
+			// signal (the TUI aborting to retry, or user Esc) — the read failure
+			// is its symptom, not a gateway fault, so suppress it. The upstream
+			// request uses this same context, so a genuine upstream failure only
+			// ever surfaces with the context still live.
+			if ctx.Err() == nil {
+				g.onError(fmt.Errorf("claudetui gateway: upstream read: %w", readErr))
+			}
 			return
 		}
 	}

@@ -397,10 +397,49 @@ confirmed; probe before the interrupt code ships.
 
 ### Errors
 
-API/stream errors surface as a wire `error` SSE event and normalize to AO's
-existing `EventError` (user-facing state, not a log line — Core Principle 5).
-**[validate-at-build]** via an inject-test (gateway upstream → stub returning
-429 / 500 / overloaded) rather than waiting to get unlucky with a live error.
+A mid-stream API error arrives as a wire `error` SSE event **after** HTTP 200
+(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`).
+Crucially, it is NOT all one user-facing `EventError` — it splits by whether
+Claude Code's own `withRetry` (`withRetry.ts`) retries it:
+
+- **Retryable — `overloaded_error` only.** `withRetry` retries a *status-less*
+  mid-stream error ONLY when its message matches `overloaded_error` (its
+  `shouldRetry` string-match; the SDK drops the 529 status mid-stream). Every
+  other status-less mid-stream type falls through to "do not retry." So the
+  reconstruction (`reconstruct.parseRetryableStreamError` → `agentRequest.end`)
+  synthesizes the `system.api_retry` envelope headless emits for `overloaded_error`
+  and nothing else, with a 1-indexed `attempt` counted per logical request
+  (`reconstructor.consecutiveAPIFailures`, reset on any terminal stop_reason or
+  interrupt — mirroring `withRetry`'s per-request loop). It flows through the
+  shared parser's `EventAPIRetry` and triage's `apiRetryHideAttemptsBelow=4` gate,
+  so the first three attempts are hidden exactly as in the real TUI. A failed
+  attempt emits **no** assistant envelope (headless discards a failed attempt's
+  partial output on retry) and does not settle the loop.
+- **Terminal (auth / billing / invalid_request)** — surfaces through the
+  existing `assistant.error` enum / `result{is_error}` path as a fatal
+  `EventError`. These arrive pre-stream (non-200), not as a mid-stream frame.
+- **Non-overload mid-stream error** — a non-`overloaded_error` `type:"error"`
+  frame after 200 is NOT modeled as a retry (that would be a perpetual hidden
+  `api_retry` that never settles). It falls through `onSSE`'s passthrough so any
+  trailing terminal envelope still reaches the parser. Whether the API ever sheds
+  such a frame, and whether a trailing terminal envelope follows it, is unprobed
+  binary behavior — synthesizing a terminal `EventError` for this case is a
+  spike-gated follow-on (build-probe #2). It is believed empty in practice
+  (non-retryable errors arrive pre-stream as non-200).
+
+The TUI's retry aborts its own gateway request, which cancels the inbound
+context. `gateway.stream` treats a canceled-context read/write failure as the
+client going away (retry, or user Esc) and does **not** surface it — the prior
+`upstream read: context canceled` banner was the symptom that made the
+2026-06-14 overload incident look like a gateway crash. A genuine upstream read
+error (context still live) still surfaces with its real message.
+
+Regression coverage: `reconstruct_apiretry_test.go` (attempt counting +
+suppression + reset, tool_use-stop reset, partial-output discard, subagent ignore,
+non-retryable fall-through, interrupt-vs-errored ordering) and
+`gateway_stream_test.go` (abort suppression vs. real error). The two Blocking-fix
+cases (non-retryable misclassification, interrupt phantom retry) are RED without
+their fix.
 
 ## Driving input
 
@@ -529,7 +568,11 @@ bump). Use the spike harness in `spike/claude-mitm/`.
    no-`message_stop` close (pre-output) reliably distinguish an interrupted turn,
    and that the synthesized `error_during_execution` result classifies correctly.
 2. **API-error shape via inject-test.** Gateway upstream → a stub returning 429 /
-   500 / overloaded; confirm the SSE/error shape normalizes to `EventError`.
+   500 / overloaded. Confirm the split in §Errors: a mid-stream `overloaded_error`
+   frame (after HTTP 200) reconstructs to `system.api_retry` (suppressed under
+   attempt 4), and a terminal pre-stream error normalizes to `EventError`. The
+   2026-06-14 incident confirmed the mid-stream/overload arm against a live
+   `overloaded_error`; the synthetic inject-test still owes the 429/500 arms.
 3. **End-to-end AskUserQuestion via the production relay** (not the canned-answer
    spike): loopback token round-trip, 0-keystroke answer-back.
 4. **Tool-result fidelity:** confirm `PostToolUse.tool_response` reconstructs a

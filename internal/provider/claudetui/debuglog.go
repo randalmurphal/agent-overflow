@@ -136,6 +136,9 @@ func (s *Session) logClassify(class requestClass, status int, body []byte) {
 //   - Event "turn_close":     a main request closed the turn with a result
 //     (Stop = the wire stop_reason); the loop settles.
 //   - Event "subagent_end":   a subagent request finished nesting under Parent.
+//   - Event "api_retry":      a main attempt failed with a retryable error
+//     (overloaded_error) and a system.api_retry was synthesized; Attempt is the
+//     1-indexed failed-attempt count (triage hides it under 4).
 type decisionLog struct {
 	Event     string `json:"event"`
 	Route     string `json:"route,omitempty"`
@@ -149,6 +152,7 @@ type decisionLog struct {
 	Status    string `json:"status,omitempty"`
 	Action    string `json:"action,omitempty"`
 	Stop      string `json:"stop,omitempty"`
+	Attempt   int    `json:"attempt,omitempty"`
 }
 
 // logDecision records one routing/reconstruction decision (direction

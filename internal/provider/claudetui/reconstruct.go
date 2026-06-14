@@ -1,6 +1,7 @@
 package claudetui
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -124,6 +125,27 @@ type taskUpdatedEnvelope struct {
 
 type taskUpdatedPatch struct {
 	Status string `json:"status"` // completed | failed | killed
+}
+
+// apiRetryEnvelope is the system/api_retry stream-json envelope Claude Code emits
+// while its withRetry wrapper re-POSTs a transiently-failed request (overloaded,
+// 5xx, connection blip). The reconstruction synthesizes it from the raw Anthropic
+// SSE `error` frame the gateway taps — the frame parse_stream.go has no case for
+// and silently drops — so the TUI path renders the same retry row the headless
+// path does, suppressed under attempt 4 by the shared triage gate. `attempt` is
+// 1-indexed (the attempt that just failed), matching withRetry.ts's loop counter;
+// the parser reads `attempt`, `max_retries`, and the flat `error` string via
+// buildClaudeAPIRetryMeta. `error_status`/`session_id` are wire-fidelity extras
+// the parser ignores. Wire shape: docs/references/claude-wire.md
+// §system.api_retry. Behavior: docs/architecture/claude-tui-provider.md §Errors.
+type apiRetryEnvelope struct {
+	Type        string `json:"type"`        // "system"
+	Subtype     string `json:"subtype"`     // "api_retry"
+	Attempt     int    `json:"attempt"`     // 1-indexed: the attempt that just failed
+	MaxRetries  int    `json:"max_retries"` // withRetry DEFAULT_MAX_RETRIES (10)
+	ErrorStatus int    `json:"error_status,omitempty"`
+	Error       string `json:"error,omitempty"` // human copy, e.g. "Overloaded"
+	SessionID   string `json:"session_id,omitempty"`
 }
 
 // taskNotificationEnvelope is the system/task_notification stream-json envelope.
@@ -427,6 +449,100 @@ func taskNotificationLine(taskID, toolUseID, status, outputFile, summary string)
 		OutputFile: outputFile,
 		Summary:    summary,
 	})
+}
+
+// defaultMaxRetries mirrors Claude Code's withRetry DEFAULT_MAX_RETRIES — the
+// value a visible retry row shows as the "n/N" denominator. Claude Code lets
+// CLAUDE_CODE_MAX_RETRIES override it, but the reconstruction can't see that env,
+// so it reports the default. Cosmetic only: triage's hide-under-4 gate keys on
+// `attempt`, never on max_retries.
+const defaultMaxRetries = 10
+
+// overloadedErrorStatus is the HTTP-ish status stamped on an overload api_retry.
+// The Anthropic SDK drops the 529 status when the overload is shed mid-stream
+// (after HTTP 200), so the reconstruction supplies it from the error type. The
+// shared parser ignores error_status (it reads attempt/max_retries/error); this
+// is wire fidelity for a visible (attempt >= 4) row.
+const overloadedErrorStatus = 529
+
+// maxStreamErrorMessageChars bounds the upstream-controlled error copy carried
+// onto a synthesized api_retry. The error message comes from the Anthropic
+// response body; capping it at the synthesis boundary keeps a hostile or
+// pathological upstream from bloating the persisted row meta (triage caps the
+// row *summary* separately, but the meta `error` field is otherwise unbounded).
+const maxStreamErrorMessageChars = 256
+
+// apiRetryLine synthesizes the system/api_retry envelope for one failed attempt.
+// attempt is 1-indexed (the attempt that just failed); errStatus is 529 for an
+// overload; errMsg is the human copy surfaced on a visible row.
+func apiRetryLine(attempt, errStatus int, errMsg, sessionID string) json.RawMessage {
+	return mustMarshal(apiRetryEnvelope{
+		Type:        "system",
+		Subtype:     "api_retry",
+		Attempt:     attempt,
+		MaxRetries:  defaultMaxRetries,
+		ErrorStatus: errStatus,
+		Error:       errMsg,
+		SessionID:   sessionID,
+	})
+}
+
+// overloadRetryProbe is the cheap byte-scan needle that gates the full parse in
+// parseRetryableStreamError. onSSE runs that check on every main-loop SSE frame,
+// but a retryable error frame is rare (text/thinking deltas dominate), so the
+// common case skips the unmarshal. The needle is `overloaded_error` itself — the
+// exact token Claude Code's withRetry string-matches to decide a mid-stream error
+// is retryable — so it is both specific (a false positive only on a delta whose
+// text contains that literal token) and impossible to miss a real overload frame
+// on. Mirrors taskNotificationProbe in turndriver.go.
+var overloadRetryProbe = []byte("overloaded_error")
+
+// parseRetryableStreamError reports whether a raw Anthropic SSE frame is a
+// mid-stream error Claude Code's withRetry would re-POST on — i.e. an
+// `overloaded_error` event delivered after HTTP 200 when the API sheds load
+// (`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`).
+// It returns the capped human message (falling back to the error type) and
+// ok=true only for that retryable case.
+//
+// Scope is deliberately just overloaded_error: withRetry retries a status-less
+// mid-stream error ONLY when its message matches overloaded_error (its
+// `shouldRetry` string-match); every other mid-stream error type is status-less
+// and falls through to "do not retry". Restricting to overloaded_error keeps the
+// reconstruction faithful AND prevents a non-retryable terminal error from being
+// mis-modeled as a perpetual hidden retry that never settles — a non-overload
+// error frame instead falls through onSSE's passthrough, so any trailing terminal
+// envelope the CLI emits still reaches the shared parser. Surfacing a
+// non-overload mid-stream error as a terminal EventError is a separate,
+// spike-gated follow-on (claude-tui-provider.md §Errors, build-probe #2).
+func parseRetryableStreamError(raw json.RawMessage) (message string, ok bool) {
+	if !bytes.Contains(raw, overloadRetryProbe) {
+		return "", false
+	}
+	var ev struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &ev) != nil || ev.Type != "error" || ev.Error.Type != "overloaded_error" {
+		return "", false
+	}
+	message = ev.Error.Message
+	if message == "" {
+		message = ev.Error.Type
+	}
+	return truncateRunes(message, maxStreamErrorMessageChars), true
+}
+
+// truncateRunes caps a string at n runes without splitting a multi-byte
+// codepoint. Used to bound the upstream-controlled api_retry error copy.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 // rawString decodes a JSON string value, returning "" for absent, null, or a
