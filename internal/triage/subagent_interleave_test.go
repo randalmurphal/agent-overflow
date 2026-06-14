@@ -67,8 +67,8 @@ func TestMainTextSurvivesInterleavedSubagentToolEvents(t *testing.T) {
 	// card: a meta-only EventToolStart targeting agentA, with NO ParentToolUseID
 	// (scope ""). This is the fragmenting event — parse_assistant.go emits it,
 	// and if the handleToolStart gate doesn't recognize it as a meta-update it
-	// runs settleStreamingBeforeTimelineBoundary, whose scope-"" branch calls
-	// settleTurnStreaming and settles the live main text mid-stream.
+	// runs settleStreamingBeforeTimelineBoundary and settles the live main-scope
+	// (scope "") text mid-stream.
 	subModelMeta, _ := json.Marshal(map[string]any{"subagent_model": "claude-opus-4-8"})
 	step("subA model stamp", provider.ProviderEvent{
 		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "agentA",
@@ -226,5 +226,79 @@ func TestMainTextSurvivesConsecutiveSubagentModelStamps(t *testing.T) {
 	}
 	if want := "Both done."; mainText[0].Summary != want {
 		t.Fatalf("main text = %q, want %q", mainText[0].Summary, want)
+	}
+}
+
+// TestSubagentTextSurvivesMainLoopToolStart is the dual of the main-text guard:
+// a backgrounded subagent streams text (scope = its Agent tool_use_id) while
+// the MAIN loop starts a real tool (scope ""). A main-loop tool start runs in
+// PARALLEL with the subagent — it must settle only its own (main) scope, never
+// the subagent's live text. Before the fix, an unscoped tool start settled
+// EVERY scope at the turn and split the subagent's message mid-stream into two
+// items. (Contrast an unscoped error, which uses settleAllScopesIfUnscoped and
+// deliberately splits scoped text.)
+func TestSubagentTextSurvivesMainLoopToolStart(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	step := func(label string, evt provider.ProviderEvent) {
+		t.Helper()
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+	}
+
+	step("turn start", provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", Timestamp: time.Now(),
+	})
+
+	// Main loop launches a backgrounded Agent (scope ""); it then runs
+	// concurrently with the main loop.
+	agentStartMeta, _ := json.Marshal(map[string]any{"toolName": "Agent"})
+	step("launch agent", provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "agentA",
+		ItemType: "Agent", Meta: agentStartMeta, Timestamp: time.Now(),
+	})
+
+	// The subagent streams text under scope agentA as two deltas.
+	step("sub d1", provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Role: "assistant",
+		Content: "Sub thinking", ParentToolUseID: "agentA", Timestamp: time.Now(),
+	})
+
+	// The MAIN loop starts a real tool (scope "") mid-subagent-stream. This is
+	// the boundary that must settle ONLY the main scope, not agentA's text.
+	readStartMeta, _ := json.Marshal(map[string]any{"toolName": "Read"})
+	step("main read start", provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "readMain",
+		ItemType: "Read", Meta: readStartMeta, Timestamp: time.Now(),
+	})
+
+	step("sub d2", provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Role: "assistant",
+		Content: " continues.", ParentToolUseID: "agentA", Timestamp: time.Now(),
+	})
+	step("sub stop", provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", ParentToolUseID: "agentA",
+		Meta: json.RawMessage(`{"index":0,"blockType":"text"}`), Content: "Sub thinking continues.",
+		ContentPresent: true, Timestamp: time.Now(),
+	})
+	router.WaitForPendingSettles()
+
+	var subText []store.Item
+	for _, it := range findItemsByKind(t, st, "t1", itemKindAssistantText) {
+		if it.ParentID == "agentA" {
+			subText = append(subText, it)
+		}
+	}
+	if len(subText) != 1 {
+		var got []string
+		for _, it := range subText {
+			got = append(got, it.ID+"="+it.Summary)
+		}
+		t.Fatalf("subagent-scope assistant_text items = %d, want 1 (fragmented):\n%v", len(subText), got)
+	}
+	if want := "Sub thinking continues."; subText[0].Summary != want {
+		t.Fatalf("subagent text = %q, want %q", subText[0].Summary, want)
 	}
 }

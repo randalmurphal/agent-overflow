@@ -514,12 +514,49 @@ func (r *Router) fireEventHook(evt provider.ProviderEvent) {
 	}
 }
 
-func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEvent, boundary string) {
+// settleBreadth decides how broadly settleStreamingBeforeTimelineBoundary
+// settles in-flight streaming when the boundary event is UNSCOPED (scope "").
+// A scoped boundary (parent_tool_use_id set) always settles just that scope;
+// this choice only changes the unscoped case. Callers must pick deliberately —
+// the two semantics are genuinely different, not interchangeable.
+type settleBreadth int
+
+const (
+	// settleBoundaryScopeOnly settles only the boundary's own scope. An
+	// unscoped main-loop tool start runs in PARALLEL with a backgrounded
+	// subagent's stream — settling the whole turn would chop the subagent's
+	// live text mid-stream and fragment its message into separate rows. Tool
+	// starts use this (TestSubagentTextSurvivesMainLoopToolStart).
+	settleBoundaryScopeOnly settleBreadth = iota
+	// settleAllScopesIfUnscoped settles every scope's streaming at the turn
+	// when the boundary is UNSCOPED (a scoped boundary still settles just its
+	// own scope — breadth only changes the unscoped case). An unscoped error is
+	// a turn-wide row that DELIBERATELY splits scoped subagent text around it
+	// (TestUnscopedErrorSplitsScopedAssistantTextAroundVisibleErrorRow). The
+	// error and the two Codex boundaries (terminal-interaction, completion-only)
+	// use this. The Codex two only PRESERVE prior behavior — not a proven-safe
+	// choice: Codex re-emits child-thread events onto the parent with
+	// parent_tool_use_id set (provider/codex/session.go), so a parent-scope
+	// boundary overlapping a live child text stream would hit the same
+	// fragmentation this fixes for Claude. Unobserved so far — spike before
+	// assuming safe; if seen, switch those two to settleBoundaryScopeOnly.
+	settleAllScopesIfUnscoped
+)
+
+// settleStreamingBeforeTimelineBoundary settles in-flight streaming
+// text/thinking so a new timeline row (tool start, error, terminal
+// interaction) lands AFTER the text it follows instead of interleaving into it.
+// A scoped boundary settles just its own scope; an unscoped boundary settles
+// per breadth (see settleBreadth). settleStreamingScope resolves the scope's
+// turn — turnIndexForScope falls through to the current turn for scope "".
+// Settling every scope unconditionally is reserved for handleTurnComplete,
+// where the turn is actually ending.
+func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEvent, boundary string, breadth settleBreadth) {
 	if !r.hasActiveStreamingItem(evt.ThreadID) {
 		return
 	}
 	scope := eventParentID(evt)
-	if scope == "" {
+	if scope == "" && breadth == settleAllScopesIfUnscoped {
 		turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 		if err != nil {
 			log.Printf("triage: settle streaming before %s: %v", boundary, err)
@@ -539,7 +576,7 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	if isToolStartMetaUpdateOnly(evt.Meta) {
 		return r.persistToolCallLaunch(evt)
 	}
-	r.settleStreamingBeforeTimelineBoundary(evt, "tool start")
+	r.settleStreamingBeforeTimelineBoundary(evt, "tool start", settleBoundaryScopeOnly)
 	// Codex TUI does not flush a unified-exec wait streak just because an
 	// unrelated top-level tool starts. Wait streaks flush on assistant
 	// content, turn boundaries, terminal interactions, or matching command
@@ -900,7 +937,7 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 			return err
 		}
 	} else if r.hasActiveStreamingItem(evt.ThreadID) {
-		r.settleStreamingBeforeTimelineBoundary(evt, "error item")
+		r.settleStreamingBeforeTimelineBoundary(evt, "error item", settleAllScopesIfUnscoped)
 	}
 
 	scope := strings.TrimSpace(evt.ParentToolUseID)

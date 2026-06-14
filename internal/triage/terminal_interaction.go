@@ -104,7 +104,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	// not emit a normal tool-start event for it. Close the current assistant
 	// text/thinking block first so any post-wait assistant text starts a new row
 	// instead of appending onto the pre-wait sentence.
-	r.settleStreamingBeforeTimelineBoundary(evt, "terminal interaction")
+	r.settleStreamingBeforeTimelineBoundary(evt, "terminal interaction", settleAllScopesIfUnscoped)
 
 	if itemID == "" {
 		seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
