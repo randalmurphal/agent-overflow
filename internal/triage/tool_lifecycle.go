@@ -683,21 +683,23 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 }
 
 // RecoverOrphanedBackgroundTasks walks every persisted Claude
-// backgrounded tool_call row that is still `running`, still live, has a
-// task_id, and has no completion sibling. These are launches whose
-// owning provider session died with the previous app instance — the
-// agent will never observe completion (the session is gone), so we
-// synthesise the observation here by writing the chat-side
-// `tool_completion` sibling directly.
+// backgrounded tool_call row that is still `running`, still live, and
+// has no completion sibling. These are launches whose owning provider
+// session died with the previous app instance — the agent will never
+// observe completion (the session is gone), so we synthesise the
+// observation here by writing the chat-side `tool_completion` sibling
+// directly. Covers both `claude` (headless) and `claude-tui`; the
+// latter's launches carry no task_id, which is fine — the sibling is
+// keyed off the launch id (backgroundCompletionID), not the task_id.
 //
 // If a `pending_background_task_terminals` stash row exists for the
-// launch, we drain it and merge its data (status/exit_code/output_file)
-// into the synthesized meta so the recovered sibling reflects the real
-// outcome the host captured. When there's no stash we fall back to
-// status="killed" — the host never reported an exit, so "we killed it
-// at app shutdown" is the closest truthful state. The sibling carries
-// `source="session_died"` in both cases so the frontend can render the
-// distinct provenance.
+// launch (only possible when it has a task_id), we drain it and merge
+// its data (status/exit_code/output_file) into the synthesized meta so
+// the recovered sibling reflects the real outcome the host captured.
+// When there's no stash we fall back to status="killed" — the host
+// never reported an exit, so "we killed it at app shutdown" is the
+// closest truthful state. The sibling carries `source="session_died"`
+// in both cases so the frontend can render the distinct provenance.
 //
 // Called once during App.ServiceStartup, after the store is open and
 // before any provider session can spawn. Idempotent: running this twice
@@ -709,10 +711,6 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 // after drain but before sibling write leaves the launch as a stashless
 // orphan that the next boot's sweep recovers with status="killed".
 //
-// Launches whose meta carries no task_id (rare race: tool_use block
-// persisted before the task_started envelope) are excluded by the store
-// query — without a task_id we have no idempotency key.
-//
 // Returns the count of recovered launches; logs but does not propagate
 // per-launch errors so one bad row can't poison the whole sweep.
 func (r *Router) RecoverOrphanedBackgroundTasks() (int, error) {
@@ -723,12 +721,11 @@ func (r *Router) RecoverOrphanedBackgroundTasks() (int, error) {
 	now := time.Now().UnixMilli()
 	recovered := 0
 	for _, launch := range launches {
+		// task_id may be empty: claude-tui launches carry is_background
+		// without a task_id (no task_started reconstruction). The sibling
+		// is keyed off the launch id, so recovery stays idempotent either
+		// way; the task_id only gates the (task_id-keyed) stash drain.
 		taskID := taskIDFromItemMeta(launch.Meta)
-		if taskID == "" {
-			log.Printf("triage: skip Claude background recovery for %s/%s (no task_id meta)",
-				launch.ThreadID, launch.ID)
-			continue
-		}
 
 		syntheticEvt := provider.ProviderEvent{
 			ThreadID:  launch.ThreadID,
@@ -740,19 +737,24 @@ func (r *Router) RecoverOrphanedBackgroundTasks() (int, error) {
 			ToolUseID: launch.ID,
 			Source:    "session_died",
 		}
-		stash, stashFound, err := r.store.TakePendingBackgroundTerminal(launch.ThreadID, taskID)
-		if err != nil {
-			log.Printf("triage: drain stranded background-terminal stash %s/%s: %v", launch.ThreadID, taskID, err)
+		stashFound := false
+		if taskID != "" {
+			stash, found, err := r.store.TakePendingBackgroundTerminal(launch.ThreadID, taskID)
+			if err != nil {
+				log.Printf("triage: drain stranded background-terminal stash %s/%s: %v", launch.ThreadID, taskID, err)
+			}
+			if found {
+				stashFound = true
+				mergeStashIntoTerminalMeta(&meta, stash)
+			}
 		}
-		if stashFound {
-			mergeStashIntoTerminalMeta(&meta, stash)
-		} else {
+		if !stashFound {
 			// No host-reported outcome — the launch was running when the
 			// app died. "killed" is the closest truthful state.
 			meta.Status = "killed"
 		}
 		if err := r.writeBackgroundCompletionSibling(syntheticEvt, meta, stashFound); err != nil {
-			log.Printf("triage: synthesise session_died sibling %s/%s: %v", launch.ThreadID, taskID, err)
+			log.Printf("triage: synthesise session_died sibling %s/%s: %v", launch.ThreadID, launch.ID, err)
 			continue
 		}
 		recovered++

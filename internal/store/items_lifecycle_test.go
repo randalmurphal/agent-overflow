@@ -1669,6 +1669,7 @@ func TestListRecoverableClaudeBackgroundLaunchesFiltersToRecoverableRows(t *test
 
 	for _, thread := range []Thread{
 		{ID: "t-claude", ProjectID: defaultTestProjectID, Title: "Claude", Provider: "claude", WorkspacePath: "/tmp", CreatedAt: now, UpdatedAt: now},
+		{ID: "t-claudetui", ProjectID: defaultTestProjectID, Title: "Claude TUI", Provider: "claude-tui", WorkspacePath: "/tmp", CreatedAt: now, UpdatedAt: now},
 		{ID: "t-codex", ProjectID: defaultTestProjectID, Title: "Codex", Provider: "codex", WorkspacePath: "/tmp", CreatedAt: now, UpdatedAt: now},
 	} {
 		if err := s.CreateThread(thread); err != nil {
@@ -1693,17 +1694,24 @@ func TestListRecoverableClaudeBackgroundLaunchesFiltersToRecoverableRows(t *test
 		}
 	}
 
-	seed(Item{ID: "recoverable", ThreadID: "t-claude", Meta: `{"task_id":"task-recoverable"}`})
-	seed(Item{ID: "skip-no-task-id", ThreadID: "t-claude", Meta: `{}`})
-	seed(Item{ID: "skip-empty-task-id", ThreadID: "t-claude", Meta: `{"task_id":"   "}`})
-	seed(Item{ID: "skip-numeric-task-id", ThreadID: "t-claude", Meta: `{"task_id":123}`})
-	seed(Item{ID: "skip-object-task-id", ThreadID: "t-claude", Meta: `{"task_id":{"id":"task-object"}}`})
+	// Recoverable: headless + interactive, with and without a task_id. The
+	// completion sibling is keyed off the launch id, so a missing task_id
+	// is fine — and claude-tui launches NEVER carry one (no task_started
+	// reconstruction), so requiring it is exactly what hid them from
+	// startup recovery and left them "running" forever after a restart.
+	seed(Item{ID: "recover-claude-taskid", ThreadID: "t-claude", Meta: `{"task_id":"task-a"}`})
+	seed(Item{ID: "recover-claude-no-taskid", ThreadID: "t-claude", Meta: `{}`})
+	seed(Item{ID: "recover-claudetui-taskid", ThreadID: "t-claudetui", Meta: `{"task_id":"task-b"}`})
+	seed(Item{ID: "recover-claudetui-no-taskid", ThreadID: "t-claudetui", Meta: `{}`})
+
+	// Skipped: inactive (Codex-owned flag), Codex provider, already paired
+	// with a completion sibling.
 	seed(Item{ID: "skip-inactive", ThreadID: "t-claude", Meta: `{"task_id":"task-inactive","live_background_active":false}`})
 	seed(Item{ID: "skip-codex", ThreadID: "t-codex", ToolName: "collab_agent", Meta: `{"task_id":"task-codex"}`})
-	seed(Item{ID: "skip-completed-sibling", ThreadID: "t-claude", Meta: `{"task_id":"task-settled"}`})
+	seed(Item{ID: "skip-completed-sibling", ThreadID: "t-claudetui", Meta: `{}`})
 
 	if _, err := s.AppendItem(Item{
-		ID: "skip-completed-sibling-done", ThreadID: "t-claude", TurnIndex: 2,
+		ID: "skip-completed-sibling-done", ThreadID: "t-claudetui", TurnIndex: 2,
 		Kind: "tool_completion", Role: "assistant", Status: "completed",
 		IsBackground: true, CompletionOf: "skip-completed-sibling",
 		Summary: "done", CreatedAt: now, UpdatedAt: now,
@@ -1711,15 +1719,47 @@ func TestListRecoverableClaudeBackgroundLaunchesFiltersToRecoverableRows(t *test
 		t.Fatalf("seed completion sibling: %v", err)
 	}
 
+	// Skipped: bypass the seed defaults to exercise the negative side of
+	// the status='running' and is_background=1 predicates. A completed
+	// background launch and a still-running non-background tool_call must
+	// both be excluded — otherwise a future edit dropping either predicate
+	// would slip through unnoticed.
+	for _, item := range []Item{
+		{ID: "skip-not-running", ThreadID: "t-claude", TurnIndex: 1, Kind: "tool_call", Role: "assistant", Status: "completed", IsBackground: true, ToolName: "Bash", Summary: "skip-not-running", Meta: `{"task_id":"task-done"}`, CreatedAt: now, UpdatedAt: now},
+		{ID: "skip-not-background", ThreadID: "t-claude", TurnIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: false, ToolName: "Bash", Summary: "skip-not-background", Meta: `{"task_id":"task-fg"}`, CreatedAt: now, UpdatedAt: now},
+	} {
+		if _, err := s.AppendItem(item); err != nil {
+			t.Fatalf("seed %s: %v", item.ID, err)
+		}
+	}
+
 	got, err := s.ListRecoverableClaudeBackgroundLaunches()
 	if err != nil {
 		t.Fatalf("ListRecoverableClaudeBackgroundLaunches: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("got %d rows, want 1: %+v", len(got), got)
+
+	gotIDs := make(map[string]bool, len(got))
+	for _, it := range got {
+		gotIDs[it.ID] = true
 	}
-	if got[0].ID != "recoverable" {
-		t.Fatalf("got[0].ID = %q, want recoverable", got[0].ID)
+	want := []string{
+		"recover-claude-taskid",
+		"recover-claude-no-taskid",
+		"recover-claudetui-taskid",
+		"recover-claudetui-no-taskid",
+	}
+	for _, id := range want {
+		if !gotIDs[id] {
+			t.Errorf("expected %q to be recoverable, missing from result", id)
+		}
+	}
+	for _, id := range []string{"skip-inactive", "skip-codex", "skip-completed-sibling", "skip-not-running", "skip-not-background"} {
+		if gotIDs[id] {
+			t.Errorf("expected %q to be excluded, but it was returned", id)
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d rows, want %d: %+v", len(got), len(want), got)
 	}
 }
 

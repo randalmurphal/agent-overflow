@@ -464,9 +464,17 @@ func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item,
 
 // ListRecoverableClaudeBackgroundLaunches returns Claude backgrounded
 // tool_call rows that startup recovery can safely settle. A recoverable
-// launch is still running, still live, has no completion sibling, and
-// carries meta.task_id so triage can write an idempotent synthetic
-// completion.
+// launch is still running, still live, and has no completion sibling.
+//
+// It covers both the headless `claude` and interactive `claude-tui`
+// providers — they share the Claude background-task lifecycle. claude-tui
+// never reconstructs `system/task_started`, so its launches carry
+// `is_background=1` with NO `task_id`; we therefore do NOT require one.
+// The completion sibling is keyed off the launch id
+// (backgroundCompletionID), so the synthetic completion is idempotent
+// with or without a task_id. At boot no provider session from the
+// previous app instance survives, so every still-running backgrounded
+// launch is provably an orphan whose owning session is dead.
 //
 // This intentionally excludes Codex background projection rows. Codex
 // owns those through the ghost-flip/reconcile path, and inactive Codex
@@ -486,13 +494,11 @@ func (s *Store) ListRecoverableClaudeBackgroundLaunches() ([]Item, error) {
 		   FROM items
 		   JOIN threads ON threads.id = items.thread_id
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
-		  WHERE threads.provider = 'claude'
+		  WHERE threads.provider IN ('claude', 'claude-tui')
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
 		    AND items.is_background = 1
 		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
-		    AND json_type(items.meta, '$.task_id') = 'text'
-		    AND trim(json_extract(items.meta, '$.task_id')) <> ''
 		    AND NOT EXISTS (
 		      SELECT 1 FROM items c
 		       WHERE c.thread_id = items.thread_id

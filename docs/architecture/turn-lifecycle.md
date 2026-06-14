@@ -195,18 +195,30 @@ the launch would render as "running" forever in chat and tray.
 
 `Router.RecoverOrphanedBackgroundTasks` runs once during
 `App.ServiceStartup`. It queries
-`Store.ListRecoverableClaudeBackgroundLaunches` for every Claude
-`tool_call` row that is `status='running'`, still live, has no
-completion sibling, and has a `task_id` in `items.meta`. For each one,
-it writes the `tool_completion` sibling directly with
-`source="session_died"`, `status="killed"` — no stash row is staged.
-Writing the sibling is the same terminal step the steady-state
-observation path takes after draining a stash, so the recovery path
-reuses `writeBackgroundCompletionSibling` end-to-end. Idempotent and
+`Store.ListRecoverableClaudeBackgroundLaunches` for every `claude` or
+`claude-tui` `tool_call` row that is `status='running'`, still live,
+and has no completion sibling. For each one it writes the
+`tool_completion` sibling directly with `source="session_died"`. When a
+`pending_background_task_terminals` stash exists for the launch it
+drains and merges the real captured outcome; otherwise it falls back to
+`status="killed"` (the launch was running when the app died, so "we
+killed it at shutdown" is the closest truthful state). Writing the
+sibling is the same terminal step the steady-state observation path
+takes after draining a stash, so the recovery path reuses
+`writeBackgroundCompletionSibling` end-to-end. Idempotent and
 crash-safe: if the process dies mid-sweep, the launch row is still
 `status='running'` with no sibling, so the next boot's sweep finds it
-again. Launches that never received their `task_started` meta merge are
-excluded because there is no `task_id` to key the synthetic completion.
+again.
+
+A `task_id` is **not** required. The synthetic completion sibling is
+keyed off the launch id (`backgroundCompletionID` returns
+`"complete:"+launchID`), so it is idempotent with or without one — and
+the `task_id` only gates the (task-id-keyed) stash drain above. This
+matters for `claude-tui`: the interactive provider reconstructs
+`is_background=1` from the tool_use input but never reconstructs
+`system/task_started`, so its backgrounded launches carry no `task_id`.
+Requiring one is exactly what left them rendering "running" forever
+after a restart.
 
 Codex background projections use a different lifecycle. Inactive Codex
 rows can remain `status='running'` with

@@ -2225,13 +2225,15 @@ func TestRecoverOrphanedBackgroundTasks(t *testing.T) {
 	}
 }
 
-// TestRecoverOrphanedBackgroundTasksSkipsLaunchWithoutTaskID pins the
-// edge case for launches that never received their task_started meta
-// merge before the previous app instance died. Without a task_id we
-// have no idempotency key for the synthetic completion, so the store
-// excludes the row from startup recovery rather than letting triage
-// rediscover and log the same unrecoverable launch on every boot.
-func TestRecoverOrphanedBackgroundTasksSkipsLaunchWithoutTaskID(t *testing.T) {
+// TestRecoverOrphanedBackgroundTasksWithoutTaskID pins that a launch
+// carrying no task_id is still recovered. claude-tui backgrounded tools
+// never receive a task_started meta merge, so their launches are
+// is_background=1 with NO task_id; the synthetic completion sibling is
+// keyed off the LAUNCH id (backgroundCompletionID), so no task_id is
+// needed. Before the claude-tui fix the store query excluded these and
+// they rendered "running" forever after a restart — this is the
+// regression guard for that.
+func TestRecoverOrphanedBackgroundTasksWithoutTaskID(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -2251,11 +2253,36 @@ func TestRecoverOrphanedBackgroundTasksSkipsLaunchWithoutTaskID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	if recovered != 0 {
-		t.Errorf("recovered = %d, want 0 for no-task-id launch", recovered)
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1 (no-task-id launch must still recover)", recovered)
 	}
-	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 0 {
-		t.Errorf("unexpected sibling for no-task-id launch: %+v", dones)
+
+	// Sibling materialised, keyed off the launch id (not a task_id), with
+	// status=killed since there was no host-reported exit.
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 recovery sibling, got %+v", dones)
+	}
+	if want := backgroundCompletionID("bg-no-task-id", ""); dones[0].ID != want {
+		t.Errorf("sibling ID = %q, want %q (keyed off launch id)", dones[0].ID, want)
+	}
+	if dones[0].CompletionOf != "bg-no-task-id" {
+		t.Errorf("CompletionOf = %q, want bg-no-task-id", dones[0].CompletionOf)
+	}
+	if dones[0].Status != statusKilled {
+		t.Errorf("Status = %q, want %q", dones[0].Status, statusKilled)
+	}
+
+	// Idempotent: the second pass sees the sibling and recovers nothing.
+	recovered2, err := router.RecoverOrphanedBackgroundTasks()
+	if err != nil {
+		t.Fatalf("recover (2nd): %v", err)
+	}
+	if recovered2 != 0 {
+		t.Errorf("idempotency broken: 2nd pass recovered %d, want 0", recovered2)
+	}
+	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 1 {
+		t.Errorf("idempotency broken: sibling count after 2nd pass = %d, want 1", len(dones))
 	}
 }
 
