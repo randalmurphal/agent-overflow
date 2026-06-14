@@ -64,9 +64,16 @@ type Router struct {
 	activeTextBlockRefs     map[string]activeStreamBlock
 	activeThinkingBlockRefs map[string]activeStreamBlock
 	streamingItemCounts     map[string]int
-	errorSeqByScope         map[string]int
-	compactionSeqByScope    map[string]int
-	notificationSeqByScope  map[string]int
+	// streamingScopeCounts mirrors streamingItemCounts at SCOPE
+	// granularity (key threadID|scope). The thread-wide counter gates the
+	// interrupt-queue DRAIN (drain once the whole thread is idle); the
+	// scoped counter gates the QUEUE decision so a new row defers
+	// (invariant 11) only behind a SAME-scope stream. A main-scope
+	// completion must not queue behind a concurrent subagent-scope stream.
+	streamingScopeCounts   map[string]int
+	errorSeqByScope        map[string]int
+	compactionSeqByScope   map[string]int
+	notificationSeqByScope map[string]int
 	// streamPersistBuffers decouple the live UI stream from durable
 	// history writes. Text/thinking deltas emit immediately on ordered
 	// provider:item_event deltas, then flush to SQLite by interval, byte
@@ -312,6 +319,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		activeTextBlockRefs:        make(map[string]activeStreamBlock),
 		activeThinkingBlockRefs:    make(map[string]activeStreamBlock),
 		streamingItemCounts:        make(map[string]int),
+		streamingScopeCounts:       make(map[string]int),
 		errorSeqByScope:            make(map[string]int),
 		compactionSeqByScope:       make(map[string]int),
 		notificationSeqByScope:     make(map[string]int),

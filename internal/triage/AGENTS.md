@@ -212,7 +212,12 @@ Keep the synchronous state flip under `r.mu`, and keep the
 `streamingItemCounts` decrement plus interrupt-queue drain inside the
 settle goroutine so the `0 -> drain` transition happens after SQLite
 has the row. See `stream_state.go` and `multi_result_test.go` before
-changing the cleanup cadence.
+changing the cleanup cadence. Two counters move in lockstep
+(`incStreamingCounts`/`decStreamingCounts`): the thread-wide
+`streamingItemCounts` gates the interrupt-queue DRAIN; the per-scope
+`streamingScopeCounts` gates the QUEUE decision, so a new mid-stream row
+defers only behind a SAME-scope stream (invariant 11). A new
+streaming-block kind must bump both via those helpers.
 
 ## Raw chat content
 

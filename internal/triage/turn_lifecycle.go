@@ -720,6 +720,7 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	r.blockIndexByScope[key] = -1
 	r.clearActiveStreamBlocksForTurnLocked(threadID, turnIndex)
 	r.streamingItemCounts[threadID] = 0
+	deleteByPrefix(r.streamingScopeCounts, threadID+"|")
 	delete(r.errorSeqByScope, key)
 	// Clear the settled marker so a re-init (Claude resend system.init
 	// after an interrupt; Codex resend turn/started) can settle the
@@ -936,6 +937,7 @@ func (r *Router) clearOpenTurn(threadID string) {
 	delete(r.openTurns, threadID)
 	delete(r.interruptQueue, threadID)
 	delete(r.streamingItemCounts, threadID)
+	deleteByPrefix(r.streamingScopeCounts, threadID+"|")
 	// openAPIRetryRows tracks "thread has a running api_retry row that
 	// still needs flipping". By turn-end the row was either flipped
 	// already or the turn closed without forward progress; either way
@@ -1182,6 +1184,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	delete(r.openTurns, threadID)
 	delete(r.interruptQueue, threadID)
 	delete(r.streamingItemCounts, threadID)
+	deleteByPrefix(r.streamingScopeCounts, threadID+"|")
 	delete(r.workspacePathByThread, threadID)
 	for key, pending := range r.pendingCommandDiffs {
 		if pending.ThreadID == threadID {
@@ -1292,6 +1295,7 @@ func (r *Router) ResetThreadForRollback(threadID string) {
 	delete(r.openTurns, threadID)
 	delete(r.interruptQueue, threadID)
 	delete(r.streamingItemCounts, threadID)
+	deleteByPrefix(r.streamingScopeCounts, threadID+"|")
 	delete(r.workspacePathByThread, threadID)
 	for key, pending := range r.pendingCommandDiffs {
 		if pending.ThreadID == threadID {

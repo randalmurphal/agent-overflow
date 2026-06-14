@@ -2800,3 +2800,222 @@ func TestAskUserQuestionLifecycle_PreservesPreviewInQuestions(t *testing.T) {
 		t.Errorf("meta missing second preview body marker: %q", items[0].Meta)
 	}
 }
+
+// TestBackgroundCompletionOrdersBeforeLaterMainTextDespiteSubagentStream is the
+// scope-aware refinement of invariant 11. A backgrounded Agent completes while a
+// DIFFERENT scope (a concurrent backgrounded subagent) is mid-stream, then the
+// main loop emits a NEW main-scope text row. The completion ARRIVED before that
+// text, so it must sort before it.
+//
+// The interrupt queue must defer a main-scope completion only behind a
+// SAME-scope (main) stream, never behind a subagent-scope stream — a main-scope
+// "-> done" row can't fragment subagent-nested text. The old thread-wide check
+// queued the completion behind the subagent stream; because backgrounded
+// subagents stream continuously, the queue drained only at idle, landing the
+// completion AFTER the later main text.
+//
+// Reproduces thread 4d82b192 turn 18: "Report CPU model -> done" (Agent A)
+// rendered after "First back" because A's completion was queued behind Agent B's
+// still-streaming subagent text and drained past "First back".
+func TestBackgroundCompletionOrdersBeforeLaterMainTextDespiteSubagentStream(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	step := func(label string, evt provider.ProviderEvent) {
+		t.Helper()
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+	}
+
+	step("turn start", provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", Timestamp: time.Now(),
+	})
+
+	launch := func(itemID, desc string) provider.ProviderEvent {
+		meta, _ := json.Marshal(map[string]any{
+			"toolName":      "Agent",
+			"is_background": true,
+			"input":         map[string]any{"description": desc, "run_in_background": true},
+		})
+		return provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: "t1", ItemID: itemID, ItemType: "Agent",
+			Meta: meta, Timestamp: time.Now(),
+		}
+	}
+
+	// Two backgrounded Agent launches (main scope).
+	step("launch A", launch("agentA", "Report CPU model"))
+	step("launch B", launch("agentB", "Report OS name"))
+
+	// Agent B's subagent is mid-stream: an open text block in B's (non-main)
+	// scope. This bumps the thread-wide streaming counter.
+	step("subagent B text", provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Role: "assistant",
+		Content: "checking os-release", ParentToolUseID: "agentB", Timestamp: time.Now(),
+	})
+
+	// Agent A reports done (main-scope completion) WHILE B streams. It must not
+	// defer behind B's subagent stream.
+	completionMeta, _ := json.Marshal(map[string]any{
+		"task_id": "taskA", "tool_use_id": "agentA", "status": "completed", "source": "task_output",
+	})
+	step("A completion", provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "agentA",
+		Meta: completionMeta, Content: `Agent "Report CPU model" completed`, Timestamp: time.Now(),
+	})
+
+	// Main loop then emits its acknowledgment — a NEW main-scope text row that
+	// arrived AFTER A's completion and must therefore sort after it.
+	step("First back", provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Role: "assistant",
+		Content: "First back — Agent A done.", Timestamp: time.Now(),
+	})
+
+	// Settle both streams so any queued item drains.
+	step("subagent stop", provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", ParentToolUseID: "agentB",
+		Meta: json.RawMessage(`{"index":0,"blockType":"text"}`), Content: "checking os-release",
+		ContentPresent: true, Timestamp: time.Now(),
+	})
+	step("main stop", provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1",
+		Meta: json.RawMessage(`{"index":0,"blockType":"text"}`), Content: "First back — Agent A done.",
+		ContentPresent: true, Timestamp: time.Now(),
+	})
+	router.WaitForPendingSettles()
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 background_done sibling, got %d", len(dones))
+	}
+	completion := dones[0]
+
+	var firstBack store.Item
+	var found bool
+	for _, it := range findItemsByKind(t, st, "t1", itemKindAssistantText) {
+		if it.ParentID == "" && strings.HasPrefix(it.Summary, "First back") {
+			firstBack, found = it, true
+		}
+	}
+	if !found {
+		t.Fatal("'First back' main text row not found")
+	}
+
+	beforeFirstBack := completion.TurnIndex < firstBack.TurnIndex ||
+		(completion.TurnIndex == firstBack.TurnIndex && completion.ItemIndex < firstBack.ItemIndex)
+	if !beforeFirstBack {
+		t.Fatalf("A completion (turn %d idx %d) must sort BEFORE 'First back' (turn %d idx %d): "+
+			"it arrived first but was deferred behind the subagent stream",
+			completion.TurnIndex, completion.ItemIndex, firstBack.TurnIndex, firstBack.ItemIndex)
+	}
+}
+
+// TestSameScopeBackgroundCompletionStillDefersBehindOwnSubagentStream is the
+// positive control for the scope-aware deferral: the fix must NOT over-correct.
+// A completion in the SAME scope as the open stream still has to defer
+// (invariant 11) — a row nested under a subagent can't render above that
+// subagent's own still-streaming text.
+//
+// A backgrounded tool runs INSIDE subagent agentB (scope "agentB"); its
+// completion arrives while agentB's text is mid-stream (also scope "agentB").
+// It must queue, then drain AFTER agentB's text settles. If a future change
+// keyed the queue decision on the wrong field (so the completion's scope no
+// longer matched the stream's), the mid-stream assertion below would catch it:
+// the completion would persist immediately instead of queuing.
+func TestSameScopeBackgroundCompletionStillDefersBehindOwnSubagentStream(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	step := func(label string, evt provider.ProviderEvent) {
+		t.Helper()
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+	}
+
+	step("turn start", provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", Timestamp: time.Now(),
+	})
+
+	// Top-level backgrounded Agent (scope "").
+	agentMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Agent", "is_background": true,
+		"input": map[string]any{"description": "Inspect host", "run_in_background": true},
+	})
+	step("launch agentB", provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "agentB", ItemType: "Agent",
+		Meta: agentMeta, Timestamp: time.Now(),
+	})
+
+	// A backgrounded tool launched INSIDE agentB: its ParentID resolves to
+	// "agentB" (the same scope agentB streams under).
+	innerMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Bash", "is_background": true,
+		"input": map[string]any{"command": "sleep 5"},
+	})
+	step("launch inner", provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bgInner", ItemType: "Bash",
+		Meta: innerMeta, ParentToolUseID: "agentB", Timestamp: time.Now(),
+	})
+
+	// agentB streams text (scope "agentB") — opens the same-scope stream.
+	step("agentB text", provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Role: "assistant",
+		Content: "inner work", ParentToolUseID: "agentB", Timestamp: time.Now(),
+	})
+
+	// The inner tool completes WHILE agentB streams. Same scope → must defer.
+	innerDoneMeta, _ := json.Marshal(map[string]any{
+		"task_id": "taskInner", "tool_use_id": "bgInner", "status": "completed", "source": "task_output",
+	})
+	step("inner completion", provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bgInner",
+		Meta: innerDoneMeta, ParentToolUseID: "agentB", Content: `Background command "sleep 5" completed`,
+		Timestamp: time.Now(),
+	})
+
+	// Mid-stream: the completion must be QUEUED, not persisted. (Persisting it
+	// here would split agentB's text around it.)
+	if queued := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(queued) != 0 {
+		t.Fatalf("same-scope completion persisted mid-stream (got %d background_done rows); "+
+			"it must defer behind agentB's own stream", len(queued))
+	}
+
+	// agentB keeps streaming, then its block closes — draining the queue.
+	step("agentB text 2", provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Role: "assistant",
+		Content: " continues", ParentToolUseID: "agentB", Timestamp: time.Now(),
+	})
+	step("agentB stop", provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", ParentToolUseID: "agentB",
+		Meta: json.RawMessage(`{"index":0,"blockType":"text"}`), Content: "inner work continues",
+		ContentPresent: true, Timestamp: time.Now(),
+	})
+	router.WaitForPendingSettles()
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 background_done after agentB settled, got %d", len(dones))
+	}
+	completion := dones[0]
+	if completion.ParentID != "agentB" {
+		t.Fatalf("inner completion ParentID = %q, want \"agentB\" (subagent scope)", completion.ParentID)
+	}
+
+	var agentText store.Item
+	var found bool
+	for _, it := range findItemsByKind(t, st, "t1", itemKindAssistantText) {
+		if it.ParentID == "agentB" {
+			agentText, found = it, true
+		}
+	}
+	if !found {
+		t.Fatal("agentB subagent text row not found")
+	}
+	if !(completion.TurnIndex == agentText.TurnIndex && completion.ItemIndex > agentText.ItemIndex) {
+		t.Fatalf("same-scope completion (turn %d idx %d) must sort AFTER agentB's text (turn %d idx %d): "+
+			"it arrived mid-stream and must not split the subagent's message",
+			completion.TurnIndex, completion.ItemIndex, agentText.TurnIndex, agentText.ItemIndex)
+	}
+}

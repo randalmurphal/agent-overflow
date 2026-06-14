@@ -257,13 +257,27 @@ resolves to the card's turn.
 end event mutates the same row — automatic. For anything that triage
 creates as a NEW row during an active streaming phase (currently:
 backgrounded `tool_completion`), the streaming-phase interrupt queue
-defers `item_index` assignment until the stream settles.
+defers `item_index` assignment until the **same-scope** stream settles.
+Scope is the row's `parent_id`: `""` for the main loop, the Agent
+tool_use_id for a subagent.
 
 **Rationale.** If a backgrounded tool completes mid-stream, the new
 completion row would get the next available `item_index` and render
 ABOVE the still-streaming text row (which got its lower index when
 the segment began). The queue defers the insert until streaming
 settles, then assigns indexes in the intended visual order.
+
+**Scope-aware deferral.** The defer is SAME-scope only. A main-scope
+completion (`parent_id == ""`) must NOT queue behind a concurrent
+subagent-scope stream — a subagent's nested text can't be the tail a
+main-timeline row would jump above, and a backgrounded subagent streams
+continuously, so the queue would drain only at thread idle. That landed
+the completion AFTER later main text it actually preceded (thread
+`4d82b192` turn 18: Agent A's "Report CPU model → done" rendered below
+"First back" instead of above it). The QUEUE decision keys on scope
+(`streamingScopeCounts`); the DRAIN stays thread-wide (drain once every
+scope is idle) — conservative and correct, since relative order within
+each scope is what matters and a queued row never strands.
 
 **If new event kinds are added later that produce fresh rows mid-turn,
 they must route through the queue too**, or the same "new row inserts
@@ -282,12 +296,20 @@ dispatch (and then inserting at that captured slot via the now-removed
 documented in
 `internal/triage/handle_user_text_test.go::TestHandleUserText_DeferredFlush_LandsAfterContentThatArrivedFirst`.
 
-**Enforcement.** `Router.maybeDeferOrPersist` /
-`Router.drainInterruptQueue` in
-`internal/triage/stream_state.go`.
+**Enforcement.** `Router.maybeDeferOrPersist` (queues on
+`Router.hasActiveStreamingItemForScope`, backed by the per-scope
+`streamingScopeCounts`) / `Router.drainInterruptQueue` (drains on the
+thread-wide `Router.hasActiveStreamingItem`) in
+`internal/triage/stream_state.go`. Both the thread-wide and scoped
+counters decrement in `finishSettle` (settle END, not settle start) so
+a same-scope completion keeps queuing FIFO across an async settle.
 
-**Test.** Queue ordering coverage in
-`internal/triage/tool_lifecycle_test.go` alongside the end-to-end
+**Test.** Same-scope FIFO queue ordering in
+`internal/triage/stream_state_test.go::TestInterruptQueueDrainsInArrivalOrder`;
+the scope-aware refinement (a main-scope completion not deferring behind
+a concurrent subagent stream) in
+`internal/triage/tool_lifecycle_test.go::TestBackgroundCompletionOrdersBeforeLaterMainTextDespiteSubagentStream`,
+alongside the end-to-end
 `app_e2e_lifecycle_test.go` scenarios that drive mixed inline +
 backgrounded mid-stream completions. Queued-user-text MAX+1-at-echo
 coverage in
