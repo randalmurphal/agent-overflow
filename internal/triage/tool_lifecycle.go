@@ -54,6 +54,31 @@ type toolStartMeta struct {
 	ParentToolUseID string          `json:"parent_tool_use_id"`
 }
 
+// isMetaUpdateOnly reports whether this EventToolStart only annotates an
+// already-persisted tool_call row (merging correlation metadata that
+// arrived on a later signal) rather than launching a new tool. Two forms:
+//   - an explicit meta_update_only flag (Codex spawn-agent receiver labels);
+//   - the implicit shape — no toolName, no input, carrying one of the
+//     correlation keys: task_id and/or parent_tool_use_id from Claude's
+//     system/task_started (they ride together), or subagent_model from a
+//     subagent assistant envelope.
+//
+// The handleToolStart gate and persistToolCallLaunch MUST agree on this. If
+// the gate under-detects, the event runs settleStreamingBeforeTimelineBoundary
+// and wrongly settles whatever streaming text is live — for the subagent
+// model-stamp (ItemID = parent Agent tool_use_id, no ParentToolUseID, so it
+// settles the MAIN scope) that fragments the main message mid-stream whenever
+// a backgrounded subagent reports in. If persist under-detects it fabricates a
+// duplicate launch row. One predicate keeps the two from drifting.
+func (m toolStartMeta) isMetaUpdateOnly() bool {
+	if m.MetaUpdateOnly {
+		return true
+	}
+	return strings.TrimSpace(m.ToolName) == "" &&
+		len(m.Input) == 0 &&
+		(m.TaskID != "" || m.SubagentModel != "" || m.ParentToolUseID != "")
+}
+
 type toolCompleteMeta struct {
 	IsBackground bool            `json:"is_background"`
 	IsError      bool            `json:"is_error"`
@@ -91,9 +116,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	// These updates preserve the existing status and payload. If the
 	// update carries toolName/input, the persisted summary/meta are also
 	// refreshed so the UI can render the new metadata immediately.
-	metaUpdateOnly := meta.MetaUpdateOnly || strings.TrimSpace(meta.ToolName) == "" &&
-		len(meta.Input) == 0 &&
-		(meta.TaskID != "" || meta.SubagentModel != "" || meta.ParentToolUseID != "")
+	metaUpdateOnly := meta.isMetaUpdateOnly()
 
 	existing, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
 	if err != nil {
@@ -1202,7 +1225,7 @@ func decodeToolStartMeta(raw json.RawMessage) toolStartMeta {
 }
 
 func isToolStartMetaUpdateOnly(raw json.RawMessage) bool {
-	return decodeToolStartMeta(raw).MetaUpdateOnly
+	return decodeToolStartMeta(raw).isMetaUpdateOnly()
 }
 
 func decodeToolCompleteMeta(raw json.RawMessage) toolCompleteMeta {
