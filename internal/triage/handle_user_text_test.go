@@ -80,7 +80,7 @@ func TestHandleUserText_PendingSendMatch_StampsProviderItemID(t *testing.T) {
 
 	// Reset emissions captured during the seed so the assertion below
 	// only sees the upsert produced by handleUserText.
-	*emissions = (*emissions)[:0]
+	emissions.reset()
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventUserText,
@@ -123,9 +123,9 @@ func TestHandleUserText_PendingSendMatch_StampsProviderItemID(t *testing.T) {
 		t.Fatalf("pending-send branch must not also mint a wire-only row")
 	}
 
-	upserts := itemUpsertEmissionsForID(*emissions, "t1", "user:0")
+	upserts := itemUpsertEmissionsForID(emissions.snapshot(), "t1", "user:0")
 	if len(upserts) != 1 {
-		t.Fatalf("expected exactly one provider:item_event upsert for user:0, got %d (emissions: %+v)", len(upserts), *emissions)
+		t.Fatalf("expected exactly one provider:item_event upsert for user:0, got %d (emissions: %+v)", len(upserts), emissions.snapshot())
 	}
 	if upserts[0].Meta != persisted.Meta {
 		t.Fatalf("emitted upsert meta %q != persisted meta %q", upserts[0].Meta, persisted.Meta)
@@ -287,7 +287,7 @@ func TestHandleUserText_NoPending_PersistsWireOnlyRow(t *testing.T) {
 		t.Fatalf("threads.updated_at moved across wire-only EventUserText: before=%d after=%d", before, after)
 	}
 
-	upserts := itemUpsertEmissionsForID(*emissions, "t1", "user:wire:codex_item_42")
+	upserts := itemUpsertEmissionsForID(emissions.snapshot(), "t1", "user:wire:codex_item_42")
 	if len(upserts) != 1 {
 		t.Fatalf("expected one provider:item_event upsert for the wire-only row, got %d", len(upserts))
 	}
@@ -414,7 +414,7 @@ func TestHandleUserText_NoPending_NoProviderItemID_NoOp(t *testing.T) {
 			t.Fatalf("no rows should be persisted for missing provider_item_id, got: %+v", r)
 		}
 	}
-	for _, e := range *emissions {
+	for _, e := range emissions.snapshot() {
 		if e.eventName == "provider:item_event" {
 			ev, ok := e.data.(ItemStreamEvent)
 			if !ok {
@@ -441,7 +441,7 @@ func TestHandleUserText_PendingSendMatch_EmptyProviderItemID_LogsAndNoOp(t *test
 
 	router.RegisterPendingSend("t1", "user:0", 0)
 	seedUserTextRow(t, st, "t1", 0, "queued message", `{"attachments":[]}`)
-	*emissions = (*emissions)[:0]
+	emissions.reset()
 
 	var logBuf bytes.Buffer
 	prev := log.Writer()
@@ -474,7 +474,7 @@ func TestHandleUserText_PendingSendMatch_EmptyProviderItemID_LogsAndNoOp(t *test
 		t.Fatalf("row Meta should be unchanged on empty-id branch, got %q", persisted.Meta)
 	}
 
-	for _, e := range *emissions {
+	for _, e := range emissions.snapshot() {
 		if e.eventName != "provider:item_event" {
 			continue
 		}
@@ -548,7 +548,7 @@ func TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUIDWithoutReEmit(
 	}); err != nil {
 		t.Fatalf("seed checkpoint: %v", err)
 	}
-	*emissions = (*emissions)[:0]
+	emissions.reset()
 
 	var logBuf bytes.Buffer
 	prev := log.Writer()
@@ -585,7 +585,7 @@ func TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUIDWithoutReEmit(
 	}
 
 	// The row meta is byte-identical, so no upsert should re-emit.
-	if upserts := itemUpsertEmissionsForID(*emissions, "t1", "user:0"); len(upserts) != 0 {
+	if upserts := itemUpsertEmissionsForID(emissions.snapshot(), "t1", "user:0"); len(upserts) != 0 {
 		t.Fatalf("honoured-id path re-emitted %d upserts for user:0, want 0", len(upserts))
 	}
 	persisted, found, err := st.GetThreadItem("t1", "user:0")
@@ -625,7 +625,7 @@ func TestHandleUserText_PreStampedIDDrift_OverwritesAndLogs(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed checkpoint: %v", err)
 	}
-	*emissions = (*emissions)[:0]
+	emissions.reset()
 
 	var logBuf bytes.Buffer
 	prev := log.Writer()
@@ -664,7 +664,7 @@ func TestHandleUserText_PreStampedIDDrift_OverwritesAndLogs(t *testing.T) {
 			cp.ProviderUserMessageID, cp.ProviderParentUUID)
 	}
 
-	upserts := itemUpsertEmissionsForID(*emissions, "t1", "user:0")
+	upserts := itemUpsertEmissionsForID(emissions.snapshot(), "t1", "user:0")
 	if len(upserts) != 1 {
 		t.Fatalf("expected exactly one upsert for the overwrite, got %d", len(upserts))
 	}
@@ -714,7 +714,7 @@ func TestHandleUserText_PendingMatchWithMissingTargetRow_LogsAndReturns(t *testi
 	}
 
 	// And no spurious upsert emission should reach the frontend.
-	for _, e := range *emissions {
+	for _, e := range emissions.snapshot() {
 		if e.eventName == "provider:item_event" {
 			ev, ok := e.data.(ItemStreamEvent)
 			if !ok {

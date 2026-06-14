@@ -1,4 +1,4 @@
-import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import { SvelteSet } from 'svelte/reactivity';
 import type { ApprovalKind } from '../types/events';
 import type { Item, Thread } from '../types/models';
 import {
@@ -81,14 +81,22 @@ let liveStateHydratingThreads: Set<string> = $state(new Set());
 const approvalIDsByThread = new Map<string, Set<string>>();
 const awaitingInputIDsByThread = new Map<string, Set<string>>();
 const approvalThreadByID = new Map<string, string>();
-// activeTurnByThread is the global per-thread ActiveTurn registry.
+// activeTurnBoxByThread is the global per-thread ActiveTurn registry.
 // `isThreadWorking` combines it with pending-send and send-queue bridge
-// state to answer "is this thread working?". SvelteMap (from
-// `svelte/reactivity`) is the doc-recommended pattern for reactive Map
-// state in Svelte 5: .set / .delete are tracked individually, so
-// writers don't have to rebuild the binding via `new Map(prev).set(...)`
-// on every update. Readers (`getActiveTurn`, `isThreadWorking`) see the
-// same value either way; only the write hot path benefits.
+// state to answer "is this thread working?".
+//
+// Each thread gets its own reactive box (one `$state.raw` signal)
+// rather than one SvelteMap: reading a MISSING key from a SvelteMap
+// subscribes the reader to the whole-map version, and idle threads ARE
+// the missing-key case here (entries clear on round completion). With
+// a shared map, every turn start/complete on ANY thread invalidated
+// every idle pane's working indicator and every sidebar row — at the
+// per-wire-round cadence that is multiple cross-pane invalidations per
+// second while any pane streams. With per-thread boxes, a reader only
+// re-evaluates when ITS thread's turn changes (plus one re-run per
+// box CREATION, via activeTurnBoxCreationVersion below). Boxes are
+// created on first write and live for the session (bounded by distinct
+// thread ids observed; `clearThreadStatus` drops the archived ones).
 //
 // Under the per-wire-round emission cadence (see
 // internal/triage/AGENTS.md "Wire-round vs logical-turn"), each entry
@@ -98,7 +106,58 @@ const approvalThreadByID = new Map<string, string>();
 // turn. This is what flips the working indicator off between rounds
 // in Claude's multi-result-per-turn cascade so the UI reflects "model
 // is engaged right now" rather than "user-typed prompt is in flight."
-const activeTurnByThread = new SvelteMap<string, ActiveTurn>();
+interface ActiveTurnBox {
+  get current(): ActiveTurn | null;
+  set current(turn: ActiveTurn | null);
+}
+
+function newActiveTurnBox(): ActiveTurnBox {
+  // `$state.raw`: the ActiveTurn record is replaced wholesale, never
+  // mutated field-by-field, so deep proxying would be pure overhead.
+  let current: ActiveTurn | null = $state.raw(null);
+  return {
+    get current() {
+      return current;
+    },
+    set current(turn) {
+      current = turn;
+    },
+  };
+}
+
+const activeTurnBoxByThread = new Map<string, ActiveTurnBox>();
+
+// Bumped when a box is CREATED — not when a turn starts or ends.
+// Readers of a thread with no box yet track this instead of the box
+// (see readActiveTurn); after the thread's first-ever turn creates the
+// box, those readers re-run once and track the box directly.
+let activeTurnBoxCreationVersion = $state(0);
+
+// Writer-side accessor. Only writers create boxes: Svelte does not
+// register state created inside the currently-running reaction as a
+// dependency of that reaction, so a reader that lazily created its own
+// box could never track it. Writers (projectTurnStarted etc.) run from
+// event handlers, outside any reaction, where creation is safe.
+function activeTurnBoxForWrite(threadId: string): ActiveTurnBox {
+  let box = activeTurnBoxByThread.get(threadId);
+  if (!box) {
+    box = newActiveTurnBox();
+    activeTurnBoxByThread.set(threadId, box);
+    activeTurnBoxCreationVersion += 1;
+  }
+  return box;
+}
+
+function readActiveTurn(threadId: string): ActiveTurn | null {
+  const box = activeTurnBoxByThread.get(threadId);
+  if (!box) {
+    // Track creations so this thread's first-ever turn re-runs the
+    // reader; on that re-run the box exists and is tracked directly.
+    void activeTurnBoxCreationVersion;
+    return null;
+  }
+  return box.current;
+}
 const completedTurnIDsByThread = new Map<string, Set<string>>();
 const pendingSendThreads = new SvelteSet<string>();
 const planReadyThreads = new Set<string>();
@@ -258,7 +317,16 @@ export function setThreadStatus(threadId: string, status: ThreadLiveStatus): voi
  * only and must not outlive their thread.
  */
 export function clearThreadStatus(threadId: string): void {
-  activeTurnByThread.delete(threadId);
+  const turnBox = activeTurnBoxByThread.get(threadId);
+  if (turnBox) {
+    // Null the signal BEFORE dropping the box: a still-mounted reader
+    // re-runs off the null write, re-reads through `readActiveTurn`
+    // (which tracks `activeTurnBoxCreationVersion` while box-less and
+    // re-attaches when its thread's next turn creates a fresh box); the
+    // orphan is GC'd with the reader.
+    turnBox.current = null;
+    activeTurnBoxByThread.delete(threadId);
+  }
   completedTurnIDsByThread.delete(threadId);
   pendingSendThreads.delete(threadId);
   planReadyThreads.delete(threadId);
@@ -338,7 +406,7 @@ export function hasPendingSend(threadId: string | null | undefined): boolean {
 
 export function isThreadWorking(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
-  return activeTurnByThread.has(threadId)
+  return readActiveTurn(threadId) !== null
     || pendingSendThreads.has(threadId)
     || hasQueueItems(threadId);
 }
@@ -454,9 +522,10 @@ export function projectTurnStarted(
   // original startedAt for an exact-match round keeps the working-
   // indicator's elapsed-seconds counter monotonically increasing
   // instead of rewinding on each duplicate.
-  const existing = activeTurnByThread.get(threadId);
+  const turnBox = activeTurnBoxForWrite(threadId);
+  const existing = turnBox.current;
   if (existing && existing.turnId === turnId) return;
-  activeTurnByThread.set(threadId, { turnId, turnIndex, startedAt });
+  turnBox.current = { turnId, turnIndex, startedAt };
   recalculateThreadStatus(threadId);
 }
 
@@ -475,9 +544,9 @@ export function projectTurnCompleted(
 ): void {
   if (!threadId || !turnId) return;
   markCompletedTurnID(threadId, turnId);
-  const current = activeTurnByThread.get(threadId);
-  if (current && current.turnId === turnId) {
-    activeTurnByThread.delete(threadId);
+  const turnBox = activeTurnBoxByThread.get(threadId);
+  if (turnBox && turnBox.current?.turnId === turnId) {
+    turnBox.current = null;
   }
   if (opts.errorMessage && opts.errorMessage.length > 0) {
     errorThreads.add(threadId);
@@ -525,7 +594,7 @@ function hasCompletedTurnID(threadId: string, turnId: string): boolean {
  */
 export function getActiveTurn(threadId: string | null | undefined): ActiveTurn | null {
   if (!threadId) return null;
-  return activeTurnByThread.get(threadId) ?? null;
+  return readActiveTurn(threadId);
 }
 
 /**
@@ -683,7 +752,9 @@ export function projectPlanResolved(threadId: string): void {
  * send queue because `isThreadWorking` reads that bridge state.
  */
 export function resetForTest(): void {
-  activeTurnByThread.clear();
+  for (const box of activeTurnBoxByThread.values()) box.current = null;
+  activeTurnBoxByThread.clear();
+  activeTurnBoxCreationVersion = 0;
   completedTurnIDsByThread.clear();
   pendingSendThreads.clear();
   planReadyThreads.clear();

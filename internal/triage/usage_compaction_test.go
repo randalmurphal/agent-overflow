@@ -28,9 +28,9 @@ func TestPersistAndEmitContextWindow_CodexBaselineFormula(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	usageEmits := filterEmissions(*emissions, "provider:usage")
+	usageEmits := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEmits) != 1 {
-		t.Fatalf("expected 1 usage emission, got %+v", *emissions)
+		t.Fatalf("expected 1 usage emission, got %+v", emissions.snapshot())
 	}
 	got := usageEmits[0].data.(provider.UsageEvent)
 	// (200000-12000) effective window = 188000.
@@ -62,9 +62,9 @@ func TestPersistAndEmitContextWindow_ClaudePlainRatio(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	usageEmits := filterEmissions(*emissions, "provider:usage")
+	usageEmits := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEmits) != 1 {
-		t.Fatalf("expected 1 usage emission, got %+v", *emissions)
+		t.Fatalf("expected 1 usage emission, got %+v", emissions.snapshot())
 	}
 	got := usageEmits[0].data.(provider.UsageEvent)
 	want := float64(100000) / float64(200000) * 100 // 50
@@ -89,9 +89,9 @@ func TestPersistAndEmitContextWindow_ExceededPlumbsThrough(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	usageEmits := filterEmissions(*emissions, "provider:usage")
+	usageEmits := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEmits) != 1 {
-		t.Fatalf("expected 1 usage emission, got %+v", *emissions)
+		t.Fatalf("expected 1 usage emission, got %+v", emissions.snapshot())
 	}
 	got := usageEmits[0].data.(provider.UsageEvent)
 	if !got.Exceeded {
@@ -126,8 +126,8 @@ func TestHandleTokenUsage_DropsSubagentEvents(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	if got := len(filterEmissions(*emissions, "provider:usage")); got != 0 {
-		t.Fatalf("expected 0 usage emissions for subagent token usage, got %d (%+v)", got, *emissions)
+	if got := len(filterEmissions(emissions.snapshot(), "provider:usage")); got != 0 {
+		t.Fatalf("expected 0 usage emissions for subagent token usage, got %d (%+v)", got, emissions.snapshot())
 	}
 	thread, err := st.GetThread("t1")
 	if err != nil {
@@ -179,7 +179,7 @@ func TestThrottledEmitUsageSuppressesRapidEvents(t *testing.T) {
 	fire(51000)
 	fire(52000)
 
-	usageEmits := filterEmissions(*emissions, "provider:usage")
+	usageEmits := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEmits) != 1 {
 		t.Fatalf("expected 1 emission (first passes, rest throttled), got %d", len(usageEmits))
 	}
@@ -208,18 +208,18 @@ func TestFlushUsageEmitThrottleDrainsPending(t *testing.T) {
 	fire(50000)
 	fire(60000)
 
-	before := len(filterEmissions(*emissions, "provider:usage"))
+	before := len(filterEmissions(emissions.snapshot(), "provider:usage"))
 	if before != 1 {
 		t.Fatalf("pre-flush: expected 1 emission, got %d", before)
 	}
 
 	router.FlushUsageEmitThrottle("t1")
 
-	after := len(filterEmissions(*emissions, "provider:usage"))
+	after := len(filterEmissions(emissions.snapshot(), "provider:usage"))
 	if after != 2 {
 		t.Fatalf("post-flush: expected 2 emissions, got %d", after)
 	}
-	last := filterEmissions(*emissions, "provider:usage")[1].data.(provider.UsageEvent)
+	last := filterEmissions(emissions.snapshot(), "provider:usage")[1].data.(provider.UsageEvent)
 	if last.UsedTokens != 60000 {
 		t.Errorf("flushed emission tokens: got %d, want 60000", last.UsedTokens)
 	}
@@ -244,7 +244,7 @@ func TestResetUsageEmitThrottleAllowsImmediateNextEmit(t *testing.T) {
 	fire(50000)
 	fire(60000)
 
-	usageEmits := filterEmissions(*emissions, "provider:usage")
+	usageEmits := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEmits) != 1 {
 		t.Fatalf("pre-reset: expected 1 emission, got %d", len(usageEmits))
 	}
@@ -252,7 +252,7 @@ func TestResetUsageEmitThrottleAllowsImmediateNextEmit(t *testing.T) {
 	router.resetUsageEmitThrottle("t1")
 	fire(30000)
 
-	usageEmits = filterEmissions(*emissions, "provider:usage")
+	usageEmits = filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEmits) != 2 {
 		t.Fatalf("post-reset: expected 2 emissions, got %d", len(usageEmits))
 	}

@@ -40,6 +40,7 @@ const (
 	itemKindAPIError = "api_error"
 
 	payloadKindToolCallResult = "tool_call_result"
+	payloadKindCommandOutput  = "command_output"
 
 	statusRunning   = "running"
 	statusStreaming = "streaming"

@@ -98,7 +98,7 @@ func TestToolStartPersistsLifecycleItem(t *testing.T) {
 		t.Errorf("item.Meta input.command = %v, want ls -la", input["command"])
 	}
 
-	upserted := findUpsertedItems(*emissions)
+	upserted := findUpsertedItems(emissions.snapshot())
 	if len(upserted) != 1 || upserted[0].ID != scopedID {
 		t.Errorf("expected 1 upsert for %s, got %+v", scopedID, upserted)
 	}
@@ -348,7 +348,7 @@ func TestToolCompleteFlipsInlineStatus(t *testing.T) {
 	}
 
 	// Two upserts: one at launch, one at completion. Both for the same id.
-	upserted := findUpsertedItems(*emissions)
+	upserted := findUpsertedItems(emissions.snapshot())
 	if len(upserted) != 2 {
 		t.Fatalf("expected 2 upserts (launch + completion), got %d", len(upserted))
 	}
@@ -1561,7 +1561,7 @@ func TestHandleEventBackgroundTaskTerminal_InsertsSibling(t *testing.T) {
 	// Sibling emission lands as provider:item_event with the same id
 	// so the frontend reconciler merges in place.
 	siblingUpserts := 0
-	for _, item := range filterItemEventUpserts(*emissions) {
+	for _, item := range filterItemEventUpserts(emissions.snapshot()) {
 		if item.ID == nextToolCompletionID("bg-insert") {
 			siblingUpserts++
 		}
@@ -1660,7 +1660,7 @@ func TestHandleEventBackgroundTaskTerminal_TaskUpdatedStashesNoSibling(t *testin
 
 	// Frontend nudge: provider:background_task_state with state=exited.
 	sawExited := false
-	for _, e := range *emissions {
+	for _, e := range emissions.snapshot() {
 		if e.eventName != "provider:background_task_state" {
 			continue
 		}
@@ -1724,7 +1724,7 @@ func TestHandleEventBackgroundTaskTerminal_StashThenObservationFlow(t *testing.T
 	// Phase 2: task_output observation arrives. Different (richer)
 	// fields — output_file present here, status/exit_code already in
 	// stash. Drains stash, writes sibling, emits state=drained.
-	*emissions = (*emissions)[:0]
+	emissions.reset()
 	observeMeta, _ := json.Marshal(map[string]any{
 		"task_id":     "tsk-flow",
 		"tool_use_id": "bg-flow",
@@ -1763,7 +1763,7 @@ func TestHandleEventBackgroundTaskTerminal_StashThenObservationFlow(t *testing.T
 
 	// Frontend nudge: provider:background_task_state(state=drained).
 	sawDrained := false
-	for _, e := range *emissions {
+	for _, e := range emissions.snapshot() {
 		if e.eventName != "provider:background_task_state" {
 			continue
 		}

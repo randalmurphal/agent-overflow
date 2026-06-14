@@ -4,6 +4,7 @@ import type { TimelineNode } from '../../utils/subagentGrouping';
 import {
   activeRowUiRetentionSignature,
   collectTimelineRowUiRetention,
+  timelineRowUiPruneSignature,
 } from './timelineRowUiRetention';
 
 describe('timeline row UI retention', () => {
@@ -31,11 +32,11 @@ describe('timeline row UI retention', () => {
       },
     );
 
-    expect(new Set(result.retention.itemIds)).toEqual(new Set(['agent-parent']));
-    expect([...result.retention.payloads]).toEqual([
+    expect(new Set(result.itemIds)).toEqual(new Set(['agent-parent']));
+    expect([...result.payloads]).toEqual([
       { threadId: 'thread-a', payloadId: 'payload-parent' },
     ]);
-    expect(new Set(result.retention.groupKeys)).toEqual(new Set(['group:agent-parent']));
+    expect(new Set(result.groupKeys)).toEqual(new Set(['group:agent-parent']));
   });
 
   it('retains expanded subagent descendants', () => {
@@ -62,11 +63,11 @@ describe('timeline row UI retention', () => {
       },
     );
 
-    expect(new Set(result.retention.itemIds)).toEqual(new Set([
+    expect(new Set(result.itemIds)).toEqual(new Set([
       'agent-parent',
       'agent-child',
     ]));
-    expect(new Set([...result.retention.payloads].map((payload) => payload.payloadId))).toEqual(
+    expect(new Set([...result.payloads].map((payload) => payload.payloadId))).toEqual(
       new Set(['payload-parent', 'payload-child']),
     );
   });
@@ -101,11 +102,11 @@ describe('timeline row UI retention', () => {
       },
     );
 
-    expect(new Set(result.retention.itemIds)).toEqual(new Set([
+    expect(new Set(result.itemIds)).toEqual(new Set([
       'agent-child',
       'visible-row',
     ]));
-    expect(new Set(result.retention.groupKeys)).toEqual(new Set(['group:agent-parent']));
+    expect(new Set(result.groupKeys)).toEqual(new Set(['group:agent-parent']));
   });
 
   it('changes active signature when an active row completes', () => {
@@ -121,6 +122,49 @@ describe('timeline row UI retention', () => {
       activeRowUiRetentionSignature([completed]),
     );
     expect(activeRowUiRetentionSignature([completed])).toBe('');
+  });
+
+  // The prune dedupe signature must ignore per-delta summary churn (so
+  // streaming text never re-triggers retention collection) while still
+  // changing on the inputs retention actually depends on: window
+  // position, structure revision, reveal gate, and active-row
+  // membership/payload linkage.
+  it('prune signature ignores streaming summary churn but sees retention inputs', () => {
+    const streaming = makeItem({
+      id: 'row-1',
+      threadId: 'thread-a',
+      status: 'streaming',
+      summary: 'partial',
+    });
+    const base = {
+      threadId: 'thread-a',
+      timelineRevision: 3,
+      revealTurnIndex: 2,
+      revealItemIndex: 7,
+      nodesLength: 10,
+      range: { first: 4, last: 9 },
+      items: [streaming],
+    };
+
+    const grown = { ...streaming, summary: 'partial plus more streamed text' };
+    expect(timelineRowUiPruneSignature({ ...base, items: [grown] })).toBe(
+      timelineRowUiPruneSignature(base),
+    );
+
+    expect(timelineRowUiPruneSignature({ ...base, range: { first: 5, last: 9 } })).not.toBe(
+      timelineRowUiPruneSignature(base),
+    );
+    expect(timelineRowUiPruneSignature({ ...base, timelineRevision: 4 })).not.toBe(
+      timelineRowUiPruneSignature(base),
+    );
+    const linked = { ...streaming, payloadId: 'payload-1' };
+    expect(timelineRowUiPruneSignature({ ...base, items: [linked] })).not.toBe(
+      timelineRowUiPruneSignature(base),
+    );
+    const settled = { ...streaming, status: 'completed' as const };
+    expect(timelineRowUiPruneSignature({ ...base, items: [settled] })).not.toBe(
+      timelineRowUiPruneSignature(base),
+    );
   });
 });
 

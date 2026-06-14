@@ -4,8 +4,14 @@ import {
   __setSmoothingClockForTest,
   createThreadPane,
   LIVE_TODO_AUTOHIDE_MS,
+  type PaneScrollController,
+  type TimelineWindowAnchorOperation,
 } from './thread.svelte';
-import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
+import {
+  END_OF_TURN_DRAIN_MS,
+  FAST_DRAIN_SNAP_LAG_CHARS,
+  type SmoothingClock,
+} from '../markdown/smoothing/PerItemSmoother';
 import {
   resetForTest as resetWorktreeIntent,
   setAttachBranch,
@@ -4195,6 +4201,203 @@ describe('createThreadPane', () => {
       expect(pane.hasMoreHistory).toBe(true);
     });
 
+    it('runs the settle-time recent-window prune inside the scroll-controller rebase transaction', async () => {
+      const pane = createThreadPane();
+      const initial = Array.from({ length: 800 }, (_, index) =>
+        makeItem({
+          id: `t${index}`,
+          threadId: 'prune-rebase',
+          turnIndex: index,
+          itemIndex: 0,
+        }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: 799,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 'prune-rebase' }));
+      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: 800, startedAt: 1 });
+      pane.upsertItem(
+        makeItem({
+          id: 't800',
+          threadId: 'prune-rebase',
+          turnIndex: 800,
+          itemIndex: 0,
+        }),
+      );
+
+      let itemCountDuringTransaction = 0;
+      const preserveTimelineWindowAnchor = vi.fn((
+        operation: TimelineWindowAnchorOperation,
+      ) => {
+        itemCountDuringTransaction = pane.items.length;
+        expect(operation.keepsItem('t300')).toBe(false);
+        expect(operation.keepsItem('t301')).toBe(true);
+        operation.run();
+        return true;
+      });
+      pane.attachScrollController({
+        pauseAutoScroll: () => () => {},
+        notifyContentMaybeGrew: () => {},
+        notifyLiveContentMaybeGrew: () => {},
+        preserveTimelineWindowAnchor,
+      } satisfies PaneScrollController);
+
+      pane.settleTurn({
+        turnId: 'turn-800',
+        turnIndex: 800,
+        startedAt: 1,
+        completedAt: 2,
+        stopReason: 'end_turn',
+        assistantMessageId: null,
+        tokenUsage: null,
+        aborted: false,
+        errorMessage: '',
+      });
+
+      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(itemCountDuringTransaction).toBe(801);
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+      expect(pane.items[0].id).toBe('t301');
+    });
+
+    it('defers a recent-window prune when the scroll-controller cannot preserve the visible anchor', async () => {
+      const pane = createThreadPane();
+      const initial = Array.from({ length: 800 }, (_, index) =>
+        makeItem({
+          id: `t${index}`,
+          threadId: 'prune-veto',
+          turnIndex: index,
+          itemIndex: 0,
+        }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: 799,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 'prune-veto' }));
+      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: 800, startedAt: 1 });
+      pane.upsertItem(
+        makeItem({
+          id: 't800',
+          threadId: 'prune-veto',
+          turnIndex: 800,
+          itemIndex: 0,
+        }),
+      );
+
+      const preserveTimelineWindowAnchor = vi.fn(() => false);
+      pane.attachScrollController({
+        pauseAutoScroll: () => () => {},
+        notifyContentMaybeGrew: () => {},
+        notifyLiveContentMaybeGrew: () => {},
+        preserveTimelineWindowAnchor,
+      } satisfies PaneScrollController);
+
+      pane.settleTurn({
+        turnId: 'turn-800',
+        turnIndex: 800,
+        startedAt: 1,
+        completedAt: 2,
+        stopReason: 'end_turn',
+        assistantMessageId: null,
+        tokenUsage: null,
+        aborted: false,
+        errorMessage: '',
+      });
+
+      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(pane.items).toHaveLength(801);
+      expect(pane.items[0].id).toBe('t0');
+      expect(pane.hasMoreHistory).toBe(false);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
+
+      const retryPreserve = vi.fn((
+        operation: TimelineWindowAnchorOperation,
+      ) => {
+        operation.run();
+        return true;
+      });
+      pane.attachScrollController({
+        pauseAutoScroll: () => () => {},
+        notifyContentMaybeGrew: () => {},
+        notifyLiveContentMaybeGrew: () => {},
+        preserveTimelineWindowAnchor: retryPreserve,
+      } satisfies PaneScrollController);
+
+      pane.retryDeferredRecentWindowPrune();
+
+      expect(retryPreserve).toHaveBeenCalledTimes(1);
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+      expect(pane.items[0].id).toBe('t301');
+      expect(pane.hasMoreHistory).toBe(true);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(false);
+    });
+
+    it('does not treat a prune as applied unless the scroll-controller runs it', async () => {
+      const pane = createThreadPane();
+      const initial = Array.from({ length: 800 }, (_, index) =>
+        makeItem({
+          id: `t${index}`,
+          threadId: 'prune-missing-run',
+          turnIndex: index,
+          itemIndex: 0,
+        }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: 799,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 'prune-missing-run' }));
+      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: 800, startedAt: 1 });
+      pane.upsertItem(
+        makeItem({
+          id: 't800',
+          threadId: 'prune-missing-run',
+          turnIndex: 800,
+          itemIndex: 0,
+        }),
+      );
+
+      const preserveTimelineWindowAnchor = vi.fn(() => true);
+      pane.attachScrollController({
+        pauseAutoScroll: () => () => {},
+        notifyContentMaybeGrew: () => {},
+        notifyLiveContentMaybeGrew: () => {},
+        preserveTimelineWindowAnchor,
+      } satisfies PaneScrollController);
+
+      pane.settleTurn({
+        turnId: 'turn-800',
+        turnIndex: 800,
+        startedAt: 1,
+        completedAt: 2,
+        stopReason: 'end_turn',
+        assistantMessageId: null,
+        tokenUsage: null,
+        aborted: false,
+        errorMessage: '',
+      });
+
+      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(pane.items).toHaveLength(801);
+      expect(pane.items[0].id).toBe('t0');
+      expect(pane.hasMoreHistory).toBe(false);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
+    });
+
     it('prunes mid-turn anyway once the hard ceiling is exceeded', async () => {
       const pane = createThreadPane();
       const initial = Array.from({ length: 800 }, (_, index) =>
@@ -4236,6 +4439,148 @@ describe('createThreadPane', () => {
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items.at(-1)?.id).toBe('t1600');
       expect(pane.hasMoreHistory).toBe(true);
+    });
+
+    it('forces the hard-ceiling prune when visible-anchor preservation vetoes it', async () => {
+      const pane = createThreadPane();
+      const initial = Array.from({ length: 800 }, (_, index) =>
+        makeItem({
+          id: `t${index}`,
+          threadId: 'fold-ceiling-veto',
+          turnIndex: index,
+          itemIndex: 0,
+        }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: 799,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 'fold-ceiling-veto' }));
+      pane.setActiveTurn({ turnId: 'turn-x', turnIndex: 800, startedAt: 1 });
+
+      const preserveTimelineWindowAnchor = vi.fn(() => false);
+      pane.attachScrollController({
+        pauseAutoScroll: () => () => {},
+        notifyContentMaybeGrew: () => {},
+        notifyLiveContentMaybeGrew: () => {},
+        preserveTimelineWindowAnchor,
+      } satisfies PaneScrollController);
+
+      pane.upsertItems(
+        Array.from({ length: 800 }, (_, index) =>
+          makeItem({
+            id: `t${800 + index}`,
+            threadId: 'fold-ceiling-veto',
+            turnIndex: 800 + index,
+            itemIndex: 0,
+          }),
+        ),
+      );
+      expect(preserveTimelineWindowAnchor).not.toHaveBeenCalled();
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS);
+
+      pane.upsertItem(
+        makeItem({
+          id: 't1600',
+          threadId: 'fold-ceiling-veto',
+          turnIndex: 1600,
+          itemIndex: 0,
+        }),
+      );
+
+      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+      expect(pane.items[0].id).toBe('t1101');
+      expect(pane.items.at(-1)?.id).toBe('t1600');
+      expect(pane.hasMoreHistory).toBe(true);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(false);
+    });
+
+    it('forces the hard-ceiling prune after a settled deferred prune keeps growing', async () => {
+      const pane = createThreadPane();
+      const initial = Array.from({ length: 800 }, (_, index) =>
+        makeItem({
+          id: `t${index}`,
+          threadId: 'settled-ceiling-veto',
+          turnIndex: index,
+          itemIndex: 0,
+        }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: 799,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 'settled-ceiling-veto' }));
+      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: 800, startedAt: 1 });
+      pane.upsertItem(
+        makeItem({
+          id: 't800',
+          threadId: 'settled-ceiling-veto',
+          turnIndex: 800,
+          itemIndex: 0,
+        }),
+      );
+
+      const preserveTimelineWindowAnchor = vi.fn(() => false);
+      pane.attachScrollController({
+        pauseAutoScroll: () => () => {},
+        notifyContentMaybeGrew: () => {},
+        notifyLiveContentMaybeGrew: () => {},
+        preserveTimelineWindowAnchor,
+      } satisfies PaneScrollController);
+
+      pane.settleTurn({
+        turnId: 'turn-800',
+        turnIndex: 800,
+        startedAt: 1,
+        completedAt: 2,
+        stopReason: 'end_turn',
+        assistantMessageId: null,
+        tokenUsage: null,
+        aborted: false,
+        errorMessage: '',
+      });
+      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(pane.items).toHaveLength(801);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
+
+      pane.upsertItem(
+        makeItem({
+          id: 't801',
+          threadId: 'settled-ceiling-veto',
+          turnIndex: 801,
+          itemIndex: 0,
+        }),
+      );
+      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(pane.items).toHaveLength(802);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
+
+      pane.upsertItems(
+        Array.from({ length: 799 }, (_, index) =>
+          makeItem({
+            id: `t${802 + index}`,
+            threadId: 'settled-ceiling-veto',
+            turnIndex: 802 + index,
+            itemIndex: 0,
+          }),
+        ),
+      );
+
+      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(2);
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+      expect(pane.items[0].id).toBe('t1101');
+      expect(pane.items.at(-1)?.id).toBe('t1600');
+      expect(pane.hasMoreHistory).toBe(true);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(false);
     });
   });
 
@@ -6800,6 +7145,118 @@ describe('createThreadPane', () => {
         }),
       ]);
       expect(pane.revealBoundary).toBeNull();
+    });
+
+    it('snaps the frontier outright when its backlog exceeds the snap threshold', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 't',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 0,
+            summary: '',
+            updatedAt: 2,
+          }),
+        );
+        // Backlog comfortably above the snap threshold: even at the
+        // elevated drain cap this would hold the waiting successor for
+        // whole seconds, so the sequencer snaps it in one burst instead.
+        const text = 'word '.repeat(
+          Math.ceil((FAST_DRAIN_SNAP_LAG_CHARS + 200) / 5),
+        );
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: text,
+          updatedAt: 3,
+        });
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+
+        // The successor upsert runs the sequencer synchronously: the
+        // oversized backlog snaps with no clock ticks, and the gate
+        // clears via the reentrancy-guarded recompute re-run (the snap's
+        // own onReveal recomputes against the caught-up smoother).
+        pane.upsertItem(
+          makeItem({
+            id: 'tool:0:1',
+            threadId: 't',
+            kind: 'tool_call',
+            status: 'running',
+            turnIndex: 0,
+            itemIndex: 1,
+            toolName: 'Bash',
+            summary: 'Bash',
+            updatedAt: 4,
+          }),
+        );
+        expect(pane.items.find((i) => i.id === 'text:0:0')?.summary).toBe(
+          text,
+        );
+        expect(pane.revealBoundary).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('settleTurn fast-drains leftover smoother backlog within the end-of-turn window', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 't',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 0,
+            summary: '',
+            updatedAt: 2,
+          }),
+        );
+        // 2000-char backlog on a solo tail row: the sequencer never
+        // fast-drains it (no successor), and at the adaptive ceiling
+        // (~10 word-aligned chars/frame) it would keep animating for
+        // ~3 seconds after the wire went quiet.
+        const text = 'word '.repeat(400);
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: text,
+          updatedAt: 3,
+        });
+        pane.settleTurn({
+          turnId: 'turn-1',
+          turnIndex: 0,
+          startedAt: 1,
+          completedAt: 2,
+          stopReason: 'end_turn',
+          assistantMessageId: 'text:0:0',
+          tokenUsage: null,
+          aborted: false,
+          errorMessage: '',
+        });
+        // The end-of-turn drain clears the backlog within ~the drain
+        // window (plus a little slack for word-boundary rounding).
+        const frames = Math.ceil(END_OF_TURN_DRAIN_MS / 16) + 10;
+        for (let i = 0; i < frames; i++) clock.tickFrame(16);
+        expect(pane.items.find((i) => i.id === 'text:0:0')?.summary).toBe(
+          text,
+        );
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
     });
   });
 

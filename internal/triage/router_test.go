@@ -129,8 +129,8 @@ func TestHandleReturnsSentinelForUnknownKind(t *testing.T) {
 	if !errors.Is(err, ErrUnhandledEventKind) {
 		t.Fatalf("expected ErrUnhandledEventKind, got %v", err)
 	}
-	if len(*emissions) != 0 {
-		t.Fatalf("expected 0 emissions for unhandled kind, got %d: %+v", len(*emissions), *emissions)
+	if len(emissions.snapshot()) != 0 {
+		t.Fatalf("expected 0 emissions for unhandled kind, got %d: %+v", len(emissions.snapshot()), emissions.snapshot())
 	}
 }
 
@@ -436,7 +436,37 @@ type emitted struct {
 	data      any
 }
 
-func newTestRouter(t *testing.T) (*Router, *store.Store, *[]emitted) {
+// emissionLog is the test-side emit recorder. Production emits from
+// more than one goroutine — async stream settlement and the
+// stream-persist flush timers both run off the provider read loop — so
+// the recorder must be mutex-guarded; a bare slice closure races under
+// `make test-race`. Tests read via snapshot(), which returns a copy:
+// the log is append-only, so indexes into one snapshot stay valid in
+// any later one.
+type emissionLog struct {
+	mu     sync.Mutex
+	events []emitted
+}
+
+func (l *emissionLog) add(e emitted) {
+	l.mu.Lock()
+	l.events = append(l.events, e)
+	l.mu.Unlock()
+}
+
+func (l *emissionLog) snapshot() []emitted {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]emitted(nil), l.events...)
+}
+
+func (l *emissionLog) reset() {
+	l.mu.Lock()
+	l.events = nil
+	l.mu.Unlock()
+}
+
+func newTestRouter(t *testing.T) (*Router, *store.Store, *emissionLog) {
 	t.Helper()
 	st, err := store.New(":memory:")
 	if err != nil {
@@ -444,24 +474,13 @@ func newTestRouter(t *testing.T) (*Router, *store.Store, *[]emitted) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	// settleTurnStreaming fans out one goroutine per text/thinking scope,
-	// each calling r.emit; the per-call turnWG / WaitForPendingSettles barrier
-	// orders the test's read after every append, but the concurrent appends
-	// still race each other without this lock. Production's transport bus is
-	// concurrency-safe; this collector mirrors that (same guard telemetry_test
-	// already uses).
-	var (
-		emissionsMu sync.Mutex
-		emissions   []emitted
-	)
+	emissions := &emissionLog{}
 	emit := func(eventName string, data any) {
-		emissionsMu.Lock()
-		emissions = append(emissions, emitted{eventName, data})
-		emissionsMu.Unlock()
+		emissions.add(emitted{eventName, data})
 	}
 
 	router := NewRouter(st, emit)
-	return router, st, &emissions
+	return router, st, emissions
 }
 
 func createTestThread(t *testing.T, st *store.Store, id string) {
@@ -516,7 +535,7 @@ func TestInlineEventEmit(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	upserts := filterItemEventUpserts(*emissions)
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	if len(upserts) != 1 {
 		t.Fatalf("expected 1 provider:item_event upsert, got %d", len(upserts))
 	}
@@ -550,18 +569,18 @@ func TestCompactBoundaryAndRateLimitsEmit(t *testing.T) {
 	// without a window in meta does NOT emit a reset — that flash of 0%
 	// was the bug; the next thread/tokenUsage/updated overwrites the
 	// meter naturally.
-	if got := len(filterEmissions(*emissions, "provider:event")); got != 0 {
-		t.Fatalf("expected zero provider:event emissions, got %d (%+v)", got, *emissions)
+	if got := len(filterEmissions(emissions.snapshot(), "provider:event")); got != 0 {
+		t.Fatalf("expected zero provider:event emissions, got %d (%+v)", got, emissions.snapshot())
 	}
-	usageEmits := filterEmissions(*emissions, "provider:usage")
+	usageEmits := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEmits) != 1 {
-		t.Fatalf("expected 1 provider:usage emission (rate_limits only — no compact reset), got %+v", *emissions)
+		t.Fatalf("expected 1 provider:usage emission (rate_limits only — no compact reset), got %+v", emissions.snapshot())
 	}
 	if got := usageEmits[0].data.(provider.UsageEvent).Action; got != "rate_limits" {
 		t.Fatalf("rate-limits usage action = %q, want %q", got, "rate_limits")
 	}
-	if len(filterItemEventUpserts(*emissions)) != 1 {
-		t.Fatalf("expected compact boundary item upsert, got %+v", *emissions)
+	if len(filterItemEventUpserts(emissions.snapshot())) != 1 {
+		t.Fatalf("expected compact boundary item upsert, got %+v", emissions.snapshot())
 	}
 }
 
@@ -592,7 +611,7 @@ func TestCompactBoundariesInSameTurnPersistDistinctRows(t *testing.T) {
 		}
 	}
 
-	upserts := filterItemEventUpserts(*emissions)
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	if len(upserts) != 2 {
 		t.Fatalf("expected 2 compaction upserts, got %+v", upserts)
 	}
@@ -711,7 +730,7 @@ func TestCompactBoundaryRoutesSummaryToPayload(t *testing.T) {
 
 	// The emitted upsert carries the hydrated PayloadKind so the frontend
 	// renders the expander without a follow-up read.
-	upserts := filterItemEventUpserts(*emissions)
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	if len(upserts) != 1 || upserts[0].PayloadKind != "compaction" {
 		t.Fatalf("emitted upserts = %+v, want one compaction-kind upsert", upserts)
 	}
@@ -1010,9 +1029,9 @@ func TestCompactBoundaryWithContextWindowEmitsUsageSnapshot(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	usageEmits := filterEmissions(*emissions, "provider:usage")
+	usageEmits := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEmits) != 1 {
-		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
+		t.Fatalf("expected 1 provider:usage emission, got %+v", emissions.snapshot())
 	}
 	usage := usageEmits[0].data.(provider.UsageEvent)
 	if usage.Action != "usage" {
@@ -1065,9 +1084,9 @@ func TestCompactBoundaryWithAggregateOnlyUsageMetaDoesNotReset(t *testing.T) {
 	}
 
 	// Only the original token-usage emission. No compact-driven reset.
-	usageEmits := filterEmissions(*emissions, "provider:usage")
+	usageEmits := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEmits) != 1 {
-		t.Fatalf("expected exactly the prior usage emission, got %+v", *emissions)
+		t.Fatalf("expected exactly the prior usage emission, got %+v", emissions.snapshot())
 	}
 	if got := usageEmits[0].data.(provider.UsageEvent).Action; got != "usage" {
 		t.Fatalf("usage action: got %q, want usage", got)
@@ -1116,9 +1135,9 @@ func TestCompactBoundaryFollowedByTokenUsageOverwrites(t *testing.T) {
 		t.Fatalf("handle post-compact: %v", err)
 	}
 
-	usageEmits := filterEmissions(*emissions, "provider:usage")
+	usageEmits := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEmits) != 2 {
-		t.Fatalf("expected pre-compact + post-compact usage emissions only, got %+v", *emissions)
+		t.Fatalf("expected pre-compact + post-compact usage emissions only, got %+v", emissions.snapshot())
 	}
 	final := usageEmits[len(usageEmits)-1].data.(provider.UsageEvent)
 	if final.UsedTokens != 30000 {
@@ -1174,12 +1193,12 @@ func TestRateLimitsRoutedToUsageChannel(t *testing.T) {
 		t.Fatalf("handle rate-limits: %v", err)
 	}
 
-	if got := len(filterEmissions(*emissions, "provider:event")); got != 0 {
-		t.Fatalf("expected 0 provider:event emissions, got %d (%+v)", got, *emissions)
+	if got := len(filterEmissions(emissions.snapshot(), "provider:event")); got != 0 {
+		t.Fatalf("expected 0 provider:event emissions, got %d (%+v)", got, emissions.snapshot())
 	}
-	usage := filterEmissions(*emissions, "provider:usage")
+	usage := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usage) != 1 {
-		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
+		t.Fatalf("expected 1 provider:usage emission, got %+v", emissions.snapshot())
 	}
 	payload, ok := usage[0].data.(provider.UsageEvent)
 	if !ok {
@@ -1220,9 +1239,9 @@ func TestRateLimitsTolereatesMissingMeta(t *testing.T) {
 		t.Fatalf("handle empty rate-limits: %v", err)
 	}
 
-	usage := filterEmissions(*emissions, "provider:usage")
+	usage := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usage) != 1 {
-		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
+		t.Fatalf("expected 1 provider:usage emission, got %+v", emissions.snapshot())
 	}
 	payload := usage[0].data.(provider.UsageEvent)
 	if payload.Action != "rate_limits" {
@@ -1256,14 +1275,14 @@ func TestSessionStatusDropsTransientKinds(t *testing.T) {
 		}
 	}
 
-	if got := len(filterEmissions(*emissions, "provider:status")); got != 0 {
-		t.Fatalf("expected 0 provider:status emissions for transients, got %d (%+v)", got, *emissions)
+	if got := len(filterEmissions(emissions.snapshot(), "provider:status")); got != 0 {
+		t.Fatalf("expected 0 provider:status emissions for transients, got %d (%+v)", got, emissions.snapshot())
 	}
-	if got := len(filterEmissions(*emissions, "provider:session_died")); got != 0 {
-		t.Fatalf("expected 0 provider:session_died emissions for transients, got %d (%+v)", got, *emissions)
+	if got := len(filterEmissions(emissions.snapshot(), "provider:session_died")); got != 0 {
+		t.Fatalf("expected 0 provider:session_died emissions for transients, got %d (%+v)", got, emissions.snapshot())
 	}
-	if got := len(filterEmissions(*emissions, "provider:event")); got != 0 {
-		t.Fatalf("expected 0 provider:event emissions for transients, got %d (%+v)", got, *emissions)
+	if got := len(filterEmissions(emissions.snapshot(), "provider:event")); got != 0 {
+		t.Fatalf("expected 0 provider:event emissions for transients, got %d (%+v)", got, emissions.snapshot())
 	}
 }
 
@@ -1285,8 +1304,8 @@ func TestSessionStatusUnknownContentIsSilentDrop(t *testing.T) {
 		t.Fatalf("handle unknown session-status: %v", err)
 	}
 
-	if len(*emissions) != 0 {
-		t.Fatalf("expected zero emissions for unknown session-status, got %+v", *emissions)
+	if len(emissions.snapshot()) != 0 {
+		t.Fatalf("expected zero emissions for unknown session-status, got %+v", emissions.snapshot())
 	}
 
 	// Second emission of the same unknown content should also not emit
@@ -1295,8 +1314,8 @@ func TestSessionStatusUnknownContentIsSilentDrop(t *testing.T) {
 	if err := router.Handle(evt); err != nil {
 		t.Fatalf("handle repeat unknown session-status: %v", err)
 	}
-	if len(*emissions) != 0 {
-		t.Fatalf("repeat unknown session-status emitted %+v", *emissions)
+	if len(emissions.snapshot()) != 0 {
+		t.Fatalf("repeat unknown session-status emitted %+v", emissions.snapshot())
 	}
 }
 
@@ -1321,10 +1340,10 @@ func TestModelReroutedUpdatesThread(t *testing.T) {
 	if thread.Model != "gpt-5.4" {
 		t.Fatalf("expected updated model, got %q", thread.Model)
 	}
-	if len(*emissions) != 1 || (*emissions)[0].eventName != "thread:updated" {
-		t.Fatalf("expected thread:updated emission for model reroute, got %+v", *emissions)
+	if len(emissions.snapshot()) != 1 || emissions.snapshot()[0].eventName != "thread:updated" {
+		t.Fatalf("expected thread:updated emission for model reroute, got %+v", emissions.snapshot())
 	}
-	tue := (*emissions)[0].data.(ThreadUpdateEvent)
+	tue := emissions.snapshot()[0].data.(ThreadUpdateEvent)
 	if tue.Action != "patch" {
 		t.Fatalf("expected action=patch, got %q", tue.Action)
 	}
@@ -1363,10 +1382,10 @@ func TestThreadRenamedUpdatesThread(t *testing.T) {
 	if thread.Title != "New Title" {
 		t.Fatalf("expected updated title, got %q", thread.Title)
 	}
-	if len(*emissions) != 1 || (*emissions)[0].eventName != "thread:updated" {
-		t.Fatalf("expected thread:updated emission for thread rename, got %+v", *emissions)
+	if len(emissions.snapshot()) != 1 || emissions.snapshot()[0].eventName != "thread:updated" {
+		t.Fatalf("expected thread:updated emission for thread rename, got %+v", emissions.snapshot())
 	}
-	tue := (*emissions)[0].data.(ThreadUpdateEvent)
+	tue := emissions.snapshot()[0].data.(ThreadUpdateEvent)
 	if tue.Action != "patch" {
 		t.Fatalf("expected action=patch, got %q", tue.Action)
 	}
@@ -1418,9 +1437,9 @@ func TestContextWindowUsageEmitsContextMeterUpdate(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	usageEvents := filterEmissions(*emissions, "provider:usage")
+	usageEvents := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEvents) != 1 {
-		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
+		t.Fatalf("expected 1 provider:usage emission, got %+v", emissions.snapshot())
 	}
 	usage, ok := usageEvents[0].data.(provider.UsageEvent)
 	if !ok {
@@ -1469,7 +1488,7 @@ func TestGenericTokenUsageDoesNotEmitContextMeterUpdate(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	usageEvents := filterEmissions(*emissions, "provider:usage")
+	usageEvents := filterEmissions(emissions.snapshot(), "provider:usage")
 	if len(usageEvents) != 0 {
 		t.Fatalf("expected no provider:usage emission, got %+v", usageEvents)
 	}
@@ -1502,9 +1521,9 @@ func TestApprovalRequestEmitsProviderApproval(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	approvalEvents := filterEmissions(*emissions, "provider:approval")
+	approvalEvents := filterEmissions(emissions.snapshot(), "provider:approval")
 	if len(approvalEvents) != 1 {
-		t.Fatalf("expected 1 provider:approval emission, got %+v", *emissions)
+		t.Fatalf("expected 1 provider:approval emission, got %+v", emissions.snapshot())
 	}
 	approval, ok := approvalEvents[0].data.(provider.ApprovalEvent)
 	if !ok {
@@ -1572,7 +1591,7 @@ func TestApprovalDeclineBeforeToolStartCreatesSyntheticToolCall(t *testing.T) {
 		t.Fatalf("summary = %q, want command preview", items[0].Summary)
 	}
 
-	approvalEvents := filterEmissions(*emissions, "provider:approval")
+	approvalEvents := filterEmissions(emissions.snapshot(), "provider:approval")
 	if len(approvalEvents) != 2 {
 		t.Fatalf("expected request + resolve approval events, got %+v", approvalEvents)
 	}
@@ -1795,8 +1814,8 @@ func TestEventInitUpdatesSessionRef(t *testing.T) {
 
 	// EventInit persists the session ref but does not emit on a wire
 	// channel — there is no frontend contract for "init arrived".
-	if len(*emissions) != 0 {
-		t.Fatalf("expected 0 emissions for EventInit, got %d: %+v", len(*emissions), *emissions)
+	if len(emissions.snapshot()) != 0 {
+		t.Fatalf("expected 0 emissions for EventInit, got %d: %+v", len(emissions.snapshot()), emissions.snapshot())
 	}
 
 	// Should update session ref.
@@ -1889,7 +1908,7 @@ func TestTextDeltaEmitsSemanticDeltasWithoutSnapshotSpam(t *testing.T) {
 		}
 	}
 
-	events := filterItemStreamEvents(*emissions)
+	events := filterItemStreamEvents(emissions.snapshot())
 	// One creation upsert + one delta per chunk — no full-snapshot re-upserts
 	// per chunk (the "without snapshot spam" guarantee). The creation upsert
 	// carries NO content; the first chunk streams as a delta so the frontend
@@ -2046,7 +2065,7 @@ func TestDiffPersistsHeavy(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	upserts := filterItemEventUpserts(*emissions)
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	if len(upserts) == 0 {
 		t.Fatal("expected at least one provider:item_event upsert")
 	}
@@ -2118,8 +2137,8 @@ func TestDiffReplaceUpsertsExistingPayload(t *testing.T) {
 	if !strings.Contains(string(data), "+newer") {
 		t.Fatalf("expected replacement diff content, got %q", string(data))
 	}
-	if len(filterItemEventUpserts(*emissions)) < 2 {
-		t.Fatalf("expected at least 2 item upserts, got %d", len(filterItemEventUpserts(*emissions)))
+	if len(filterItemEventUpserts(emissions.snapshot())) < 2 {
+		t.Fatalf("expected at least 2 item upserts, got %d", len(filterItemEventUpserts(emissions.snapshot())))
 	}
 }
 
@@ -2213,7 +2232,16 @@ func TestCommandOutputPersistsHeavy(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	upserts := filterItemEventUpserts(*emissions)
+	// Streaming output buffers; the payload write and the wire upsert
+	// both land at the flush boundary.
+	if upserts := filterItemEventUpserts(emissions.snapshot()); len(upserts) != 0 {
+		t.Fatalf("expected no upsert before flush, got %d", len(upserts))
+	}
+	if err := router.FlushThread("t1"); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	if len(upserts) == 0 {
 		t.Fatal("expected at least one provider:item_event upsert")
 	}
@@ -2235,14 +2263,14 @@ func TestCommandOutputPersistsHeavy(t *testing.T) {
 
 // TestCommandOutputMultipleDeltasAppend pins the append-in-SQLite
 // behaviour that replaced the O(N^2) read-append-write path. Two
-// separate outputDelta events for the same item_id must cumulate in
+// separate flush windows for the same item_id must cumulate in
 // the payload blob, not overwrite each other.
 func TestCommandOutputMultipleDeltasAppend(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	insertToolCallItem(t, st, "t1", "cmd-1", "Bash: streaming", "command_execution", "running")
 
-	// First chunk: creates the payload with data "chunk1\n".
+	// First window: flush creates the payload with data "chunk1\n".
 	meta1, _ := json.Marshal(map[string]any{"command": "streaming", "exitCode": 0})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventCommandOutput,
@@ -2253,6 +2281,9 @@ func TestCommandOutputMultipleDeltasAppend(t *testing.T) {
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("handle first: %v", err)
+	}
+	if err := router.FlushThread("t1"); err != nil {
+		t.Fatalf("flush first: %v", err)
 	}
 
 	items, err := st.ListItems("t1")
@@ -2267,7 +2298,7 @@ func TestCommandOutputMultipleDeltasAppend(t *testing.T) {
 		t.Fatal("no payload id after first delta")
 	}
 
-	// Second chunk: must append, not replace.
+	// Second window: must append, not replace.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventCommandOutput,
 		ThreadID:  "t1",
@@ -2277,6 +2308,9 @@ func TestCommandOutputMultipleDeltasAppend(t *testing.T) {
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("handle second: %v", err)
+	}
+	if err := router.FlushThread("t1"); err != nil {
+		t.Fatalf("flush second: %v", err)
 	}
 
 	items, err = st.ListItems("t1")
@@ -2363,9 +2397,9 @@ func TestProposedPlanPersistsHeavy(t *testing.T) {
 		t.Fatalf("item summary: got %q, want %q", items[0].Summary, "Ship it")
 	}
 
-	upserts := filterItemEventUpserts(*emissions)
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	if len(upserts) == 0 {
-		t.Fatalf("expected provider:item_event upsert, got %+v", *emissions)
+		t.Fatalf("expected provider:item_event upsert, got %+v", emissions.snapshot())
 	}
 	if !strings.Contains(upserts[len(upserts)-1].Meta, `"planVersion":1`) {
 		t.Fatalf("final plan upsert meta = %s, want decorated plan state", upserts[len(upserts)-1].Meta)
@@ -2553,11 +2587,11 @@ func TestReasoningDeltasPersistOnTurnComplete(t *testing.T) {
 		t.Fatalf("status after turn complete: got %q, want completed", items[0].Status)
 	}
 
-	if len(filterItemEventUpserts(*emissions)) < 1 {
-		t.Fatalf("expected initial streaming upsert, got %+v", *emissions)
+	if len(filterItemEventUpserts(emissions.snapshot())) < 1 {
+		t.Fatalf("expected initial streaming upsert, got %+v", emissions.snapshot())
 	}
-	if len(filterItemEventPatches(*emissions)) < 1 {
-		t.Fatalf("expected settle patch, got %+v", *emissions)
+	if len(filterItemEventPatches(emissions.snapshot())) < 1 {
+		t.Fatalf("expected settle patch, got %+v", emissions.snapshot())
 	}
 }
 
@@ -2623,7 +2657,7 @@ func TestThinkingDeltaEmitsSemanticDeltasWithoutSnapshotSpam(t *testing.T) {
 		}
 	}
 
-	upserts := filterItemEventUpserts(*emissions)
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	if len(upserts) != 1 {
 		t.Fatalf("provider:item_event upsert count = %d, want 1 initial row: %+v", len(upserts), upserts)
 	}
@@ -2633,7 +2667,7 @@ func TestThinkingDeltaEmitsSemanticDeltasWithoutSnapshotSpam(t *testing.T) {
 	if upserts[0].Summary != "" {
 		t.Fatalf("creation upsert summary = %q, want empty (content streams as deltas)", upserts[0].Summary)
 	}
-	deltas := filterItemEventDeltas(*emissions)
+	deltas := filterItemEventDeltas(emissions.snapshot())
 	wantDeltas := []string{"plan ", "more", " done"}
 	if len(deltas) != len(wantDeltas) {
 		t.Fatalf("provider:item_event delta count = %d, want %d (first chunk + 2 follow-ups): %+v",
@@ -2803,11 +2837,11 @@ func TestTurnCompleteWithAccumulatedText(t *testing.T) {
 		t.Errorf("status: got %q, want completed", items[0].Status)
 	}
 
-	upserts := filterItemEventUpserts(*emissions)
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	if len(upserts) != 1 {
 		t.Errorf("expected 1 initial streaming upsert (settle is a patch), got %d", len(upserts))
 	}
-	patches := filterItemEventPatches(*emissions)
+	patches := filterItemEventPatches(emissions.snapshot())
 	if len(patches) != 1 {
 		t.Errorf("expected 1 settle patch, got %d", len(patches))
 	}
@@ -2840,7 +2874,7 @@ func TestTurnCompleteWithoutAccumulatedText(t *testing.T) {
 	}
 
 	// Empty turn produces no item upserts.
-	upserts := filterItemEventUpserts(*emissions)
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	if len(upserts) != 0 {
 		t.Errorf("expected 0 item upserts for empty turn, got %d: %+v", len(upserts), upserts)
 	}
@@ -2854,7 +2888,7 @@ func TestTurnCompleteWithoutAccumulatedText(t *testing.T) {
 	// turns row to update because turn_start never fired). The
 	// frontend's indicator stays in whatever state it was in,
 	// untouched by this orphan complete.
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 0 {
 		t.Errorf("expected 0 provider:turn_completed emissions for orphan complete, got %d: %+v", len(completed), completed)
 	}
@@ -2911,7 +2945,7 @@ func TestTurnCompleteDoesNotAutoRenameClaudeThread(t *testing.T) {
 	// Auto-rename heuristics live on the app layer, not in triage. Turn
 	// completion here should NOT flip the title nor emit a thread row
 	// update for the old Claude-thread fallback.
-	updates := filterEmissions(*emissions, "thread:updated")
+	updates := filterEmissions(emissions.snapshot(), "thread:updated")
 	if len(updates) != 0 {
 		t.Fatalf("expected 0 thread:updated emissions, got %d (%+v)", len(updates), updates)
 	}
@@ -3088,9 +3122,9 @@ func TestErrorPersistsTimelineItem(t *testing.T) {
 		t.Fatalf("summary: got %q, want provider blew up", items[0].Summary)
 	}
 
-	upserts := filterItemEventUpserts(*emissions)
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	if len(upserts) != 1 {
-		t.Fatalf("expected 1 provider:item_event upsert, got %+v", *emissions)
+		t.Fatalf("expected 1 provider:item_event upsert, got %+v", emissions.snapshot())
 	}
 }
 
@@ -3266,7 +3300,7 @@ func TestFatalErrorOrderingMatchesSpec(t *testing.T) {
 
 	// Clear emissions up to this point — we only want the fatal-error
 	// fan-out in the sequence check.
-	*emissions = (*emissions)[:0]
+	emissions.reset()
 
 	// 2. Fire a fatal EventError. This exercises the spec ordering.
 	fatalMeta, _ := json.Marshal(map[string]any{"fatal": true})
@@ -3282,7 +3316,7 @@ func TestFatalErrorOrderingMatchesSpec(t *testing.T) {
 	//   - the flipped streaming text item (Kind=assistant_text, Status=errored)
 	//   - the new error row (Kind=error)
 	//   - the drained background_done row (Kind=background_done, Status=errored)
-	upserts := filterItemEventUpserts(*emissions)
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	var sequence []string
 	for _, item := range upserts {
 		switch {
@@ -3481,9 +3515,9 @@ func TestFatalErrorFlipsStreamingItemsToErrored(t *testing.T) {
 		t.Fatalf("second item kind: got %q, want error", items[1].Kind)
 	}
 
-	upserts := filterItemEventUpserts(*emissions)
+	upserts := filterItemEventUpserts(emissions.snapshot())
 	if len(upserts) < 3 {
-		t.Fatalf("expected streaming upsert, flip upsert, and error upsert; got %+v", *emissions)
+		t.Fatalf("expected streaming upsert, flip upsert, and error upsert; got %+v", emissions.snapshot())
 	}
 }
 
@@ -3508,8 +3542,8 @@ func TestPersistHeavyReturnsErrorOnClosedStore(t *testing.T) {
 		t.Fatal("expected error from Handle when store is closed")
 	}
 
-	if len(*emissions) != 0 {
-		t.Fatalf("expected 0 emissions on failed persist, got %d", len(*emissions))
+	if len(emissions.snapshot()) != 0 {
+		t.Fatalf("expected 0 emissions on failed persist, got %d", len(emissions.snapshot()))
 	}
 }
 
@@ -4067,7 +4101,7 @@ func TestHandleEventSubagentNotification_EmitsPassthrough(t *testing.T) {
 		t.Errorf("subagent notification must not persist items; got %+v", items)
 	}
 
-	notif := filterEmissions(*emissions, "provider:subagent_notification")
+	notif := filterEmissions(emissions.snapshot(), "provider:subagent_notification")
 	if len(notif) != 1 {
 		t.Fatalf("expected 1 provider:subagent_notification emission, got %d", len(notif))
 	}
@@ -4094,7 +4128,7 @@ func TestPersistItemFieldsAndPatch_NoEmitOnStoreError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent item, got nil")
 	}
-	patches := filterItemEventPatches(*emissions)
+	patches := filterItemEventPatches(emissions.snapshot())
 	if len(patches) != 0 {
 		t.Fatalf("expected 0 patch emissions on store error, got %d", len(patches))
 	}
@@ -4130,7 +4164,7 @@ func TestPersistItemFieldsAndPatch_EmitsPatchOnSuccess(t *testing.T) {
 		t.Fatalf("persist and patch: %v", err)
 	}
 
-	patches := filterItemEventPatches(*emissions)
+	patches := filterItemEventPatches(emissions.snapshot())
 	if len(patches) != 1 {
 		t.Fatalf("expected 1 patch emission, got %d", len(patches))
 	}

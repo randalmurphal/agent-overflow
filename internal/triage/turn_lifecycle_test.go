@@ -271,7 +271,7 @@ func TestHandleEventTurnStart_InsertsTurnRow(t *testing.T) {
 	// identifier; persistence uses the logical id so all rounds of
 	// one logical turn share a single `turns` row. See
 	// internal/triage/AGENTS.md "Wire-round vs logical-turn".
-	started := filterEmissions(*emissions, "provider:turn_started")
+	started := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(started) != 1 {
 		t.Fatalf("expected 1 provider:turn_started emission, got %d", len(started))
 	}
@@ -371,13 +371,13 @@ func TestHandleEventTurnComplete_UpdatesTurnRow(t *testing.T) {
 	// uuid that turn_started allocated — same round, same id —
 	// distinct from the persisted logical id ("t1:3"). See
 	// internal/triage/AGENTS.md "Wire-round vs logical-turn".
-	started := filterEmissions(*emissions, "provider:turn_started")
+	started := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(started) != 1 {
 		t.Fatalf("expected 1 provider:turn_started emission, got %d", len(started))
 	}
 	startedRoundID := started[0].data.(TurnStartedEvent).TurnID
 
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
 		t.Fatalf("expected 1 provider:turn_completed emission, got %d", len(completed))
 	}
@@ -427,7 +427,7 @@ func TestHandleEventTurnComplete_NestedEmissionDoesNotCountAsActivity(t *testing
 		t.Fatalf("turn complete: %v", err)
 	}
 
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
 		t.Fatalf("expected 1 provider:turn_completed emission, got %d", len(completed))
 	}
@@ -656,7 +656,7 @@ func TestHandleEventTurnComplete_InterruptedMapsCanonicalStopReason(t *testing.T
 		t.Errorf("stop_reason = %q, want interrupted (aborted overrides)", turn.StopReason)
 	}
 
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
 		t.Fatalf("expected 1 provider:turn_completed, got %d", len(completed))
 	}
@@ -834,7 +834,7 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 	// frontend uses its own per-round identity for indicator /
 	// composer / Stop-button gating, decoupled from whatever the
 	// provider names the logical turn.
-	started := filterEmissions(*emissions, "provider:turn_started")
+	started := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(started) != 1 {
 		t.Fatalf("expected 1 provider:turn_started emission, got %d", len(started))
 	}
@@ -901,7 +901,7 @@ func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
 	// that turn_started emitted — the round opened by handleTurnStart
 	// closes here. A different value would mean the round bookkeeping
 	// (currentRoundByThread / takeOpenRound) is mis-routing rounds.
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
 		t.Fatalf("expected 1 provider:turn_completed emission, got %d", len(completed))
 	}
@@ -966,10 +966,10 @@ func TestTurnCompleteErrorNoRoundPersistsErrorItem(t *testing.T) {
 
 	// The item upsert is the chosen frontend surface; no round existed,
 	// so no provider:turn_completed may fire.
-	if completes := filterEmissions(*emissions, "provider:turn_completed"); len(completes) != 0 {
+	if completes := filterEmissions(emissions.snapshot(), "provider:turn_completed"); len(completes) != 0 {
 		t.Fatalf("provider:turn_completed fired %d times for a roundless error result", len(completes))
 	}
-	upserts := filterEmissions(*emissions, "provider:item_event")
+	upserts := filterEmissions(emissions.snapshot(), "provider:item_event")
 	if len(upserts) == 0 {
 		t.Fatalf("no provider:item_event emitted for the orphan error item")
 	}
@@ -1203,7 +1203,7 @@ func TestTurnCompleteErrorWithOpenRoundUnchanged(t *testing.T) {
 		t.Fatalf("error turn complete: %v", err)
 	}
 
-	completes := filterEmissions(*emissions, "provider:turn_completed")
+	completes := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completes) != 1 {
 		t.Fatalf("provider:turn_completed = %d emissions, want 1", len(completes))
 	}

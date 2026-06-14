@@ -77,14 +77,17 @@ go-test:
 # Scoped to packages with non-trivial goroutine wiring rather than the
 # full repo because -race is slow; the listed packages are the ones
 # whose teardown / rebind / event-bus paths are most likely to surface
-# data-race regressions. The repo root (`.`) is included so the App
-# integration tests (transport server boot, multi-session shutdown,
-# event-emit fan-out) get the race detector too — that's the surface
-# most likely to hide a real-world race. The 600s timeout absorbs the
-# App boot suite, which runs ~380s under -race on slower hosts (WSL,
-# CI runners). Tighten only if you've measured headroom.
+# data-race regressions. Triage is included for its stream-persist
+# timer flushes, which run off the provider read loop and serialize
+# against replace/settle writes via streamFlushMu. The repo root (`.`)
+# is included so the App integration tests (transport server boot,
+# multi-session shutdown, event-emit fan-out) get the race detector
+# too — that's the surface most likely to hide a real-world race. The
+# 600s timeout absorbs the App boot suite, which runs ~380s under
+# -race on slower hosts (WSL, CI runners). Tighten only if you've
+# measured headroom.
 test-race:
-	go test -race -timeout 600s ./internal/transport/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... .
+	go test -race -timeout 600s ./internal/transport/... ./internal/triage/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... .
 
 install:
 	go install tool

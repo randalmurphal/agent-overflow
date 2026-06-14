@@ -104,8 +104,9 @@ type batchEventEntry struct {
 }
 
 // batchFrame is the server-side envelope for coalesced event delivery.
-// Used only by the per-connection coalescing writer for non-loopback
-// peers. Wire shape: {"type":"batch","events":[...]}.
+// Produced by the per-connection coalescing writer whenever a flush
+// window holds more than one event; single-event windows ship as plain
+// "event" frames. Wire shape: {"type":"batch","events":[...]}.
 type batchFrame struct {
 	Type   string            `json:"type"`
 	Events []batchEventEntry `json:"events"`

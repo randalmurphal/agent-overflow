@@ -104,6 +104,13 @@ const EXTERNAL_SCROLL_TAG_CLEAR_MS = 100;
 // scroll-follow that feels responsive without overshooting visibly.
 const DEFAULT_SPRING = { damping: 0.7, stiffness: 0.05, mass: 1.25 } as const;
 const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
+// Cap on how many fixed 60Hz steps one rAF tick may integrate. A
+// stalled rAF (heavy frame, tab back from background) would otherwise
+// pay its entire gap at once — a many-step advance the cross-target
+// clamp turns into a visible teleport. Four steps ≈ 67ms of motion per
+// real frame keeps post-stall catch-up brisk but smooth; anything
+// longer is absorbed by subsequent frames and the arrival snap.
+const SPRING_MAX_CATCHUP_STEPS = 4;
 // Keep chasing for this long after the last positive grow event. Without
 // this, the spring would consider itself "arrived" between streaming
 // chunks and stop, then have to spin up again on the next chunk —
@@ -570,6 +577,11 @@ export function createUseStickToBottomController(
   let velocity = 0;
   let accumulated = 0;
   let lastTickAt: number | null = null;
+  // Fractional 60Hz steps carried between rAF ticks by the fixed-
+  // timestep integrator (see the dtFrames block in the spring tick).
+  // On a 120Hz display each rAF contributes ~0.5; steps fire on the
+  // frames where the carry crosses a whole step.
+  let stepCarry = 0;
   // Monotonic counter (cheaper than `Symbol('spring')` per start). 0 means
   // no spring in flight; positive values identify the current spring run.
   let springToken = 0;
@@ -977,6 +989,7 @@ export function createUseStickToBottomController(
     velocity = 0;
     accumulated = 0;
     lastTickAt = null;
+    stepCarry = 0;
     // Reset the target-change timestamp so a stale value can't trick a
     // fresh chase into thinking it's within the retain window right out
     // of the gate (matches the historical 80LoC-spring cleanup semantics).
@@ -1005,6 +1018,7 @@ export function createUseStickToBottomController(
     const myToken = ++springGen;
     springToken = myToken;
     lastTickAt = null;
+    stepCarry = 0;
     // Force the first tick of this chase to record so the trace shows
     // every chase boundary, not just every ~12th sampled write.
     springTickSinceLastTrace = SPRING_TICK_TRACE_SAMPLE - 1;
@@ -1025,8 +1039,24 @@ export function createUseStickToBottomController(
         return;
       }
 
-      const dt = lastTickAt === null ? 1 : (now - lastTickAt) / SIXTY_FPS_INTERVAL_MS;
+      // Fixed-timestep integration: convert wall-clock elapsed time into
+      // whole 60Hz steps (the fractional remainder carries to the next
+      // frame via stepCarry) and run the velocity recurrence once per
+      // step. The recurrence has no dt term — each evaluation IS one
+      // 60Hz step — so the old shape (one velocity update per rAF,
+      // position advanced by velocity·dt) made the motion shape
+      // rate-dependent: dropped frames doubled the position advance
+      // while velocity evolved a single step, visibly changing the
+      // chase's damping exactly when the app was already stuttering.
+      // 120Hz displays land half a step per rAF and write on the frames
+      // where the carry crosses a whole step, keeping the tuned 60Hz
+      // motion. dtFrames is clamped so a long rAF gap integrates a
+      // bounded burst (see SPRING_MAX_CATCHUP_STEPS).
+      const dtFrames = lastTickAt === null ? 1 : (now - lastTickAt) / SIXTY_FPS_INTERVAL_MS;
       lastTickAt = now;
+      stepCarry += Math.min(dtFrames, SPRING_MAX_CATCHUP_STEPS);
+      const steps = Math.floor(stepCarry);
+      stepCarry -= steps;
 
       // Cache per-tick. `targetScrollTop()` reads `scrollHeight` /
       // `clientHeight` — both force layout. Compute once per frame.
@@ -1061,24 +1091,38 @@ export function createUseStickToBottomController(
           sentinelEntryTarget = -1;
         } else {
           sentinelEntryTarget = -1;
-          velocity = (DEFAULT_SPRING.damping * velocity + DEFAULT_SPRING.stiffness * diff) / DEFAULT_SPRING.mass;
-          accumulated += velocity * dt;
-          const next = current + accumulated;
-          // Pre-clamp in JS so we know the post-state without a second
-          // layout read just to check whether the browser clamped. Cross-
-          // target clamps in EITHER direction count as kinematic
-          // overshoot: a positive-diff chase overshoots when
-          // `next > target`, a negative-diff chase (the symmetric branch
-          // that lets the spring follow shrinks) overshoots when
-          // `next < target`. Both clamp to `target` and zero `accumulated`
-          // below.
-          const crossedTarget =
-            (current < target && next > target)
-            || (current > target && next < target);
-          const clamped = crossedTarget ? target : next;
-          writeCaller = crossedTarget ? 'spring.overshoot' : 'spring.tick';
-          writeScrollTop(clamped);
-          if (scrollEl.scrollTop !== current) accumulated = 0;
+          // `steps` can be 0 on a high-refresh frame whose carry hasn't
+          // crossed a whole 60Hz step yet — skip the write entirely so
+          // the position only moves at the tuned cadence.
+          if (steps > 0) {
+            for (let step = 0; step < steps; step += 1) {
+              // Re-derive the remaining gap per step from the in-frame
+              // position (`current + accumulated`) — pure arithmetic, no
+              // extra layout reads — so a multi-step catch-up follows the
+              // same curve N sequential 60Hz frames would have.
+              const stepDiff = target - (current + accumulated);
+              velocity =
+                (DEFAULT_SPRING.damping * velocity + DEFAULT_SPRING.stiffness * stepDiff)
+                / DEFAULT_SPRING.mass;
+              accumulated += velocity;
+            }
+            const next = current + accumulated;
+            // Pre-clamp in JS so we know the post-state without a second
+            // layout read just to check whether the browser clamped. Cross-
+            // target clamps in EITHER direction count as kinematic
+            // overshoot: a positive-diff chase overshoots when
+            // `next > target`, a negative-diff chase (the symmetric branch
+            // that lets the spring follow shrinks) overshoots when
+            // `next < target`. Both clamp to `target` and zero `accumulated`
+            // below.
+            const crossedTarget =
+              (current < target && next > target)
+              || (current > target && next < target);
+            const clamped = crossedTarget ? target : next;
+            writeCaller = crossedTarget ? 'spring.overshoot' : 'spring.tick';
+            writeScrollTop(clamped);
+            if (scrollEl.scrollTop !== current) accumulated = 0;
+          }
         }
       } else {
         // Caught up to the bottom. `accumulated` is always dropped — we're

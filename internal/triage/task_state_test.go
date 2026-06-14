@@ -30,9 +30,10 @@ func taskUpdateEvent(threadID string, meta provider.TaskUpdateMeta) provider.Pro
 	}
 }
 
-func lastTodoEmission(emissions *[]emitted) *TodoUpdateEvent {
-	for i := len(*emissions) - 1; i >= 0; i-- {
-		e := (*emissions)[i]
+func lastTodoEmission(emissions *emissionLog) *TodoUpdateEvent {
+	snap := emissions.snapshot()
+	for i := len(snap) - 1; i >= 0; i-- {
+		e := snap[i]
 		if e.eventName == "provider:todo_update" {
 			if update, ok := e.data.(TodoUpdateEvent); ok {
 				return &update
@@ -42,9 +43,9 @@ func lastTodoEmission(emissions *[]emitted) *TodoUpdateEvent {
 	return nil
 }
 
-func todoEmissionCount(emissions *[]emitted) int {
+func todoEmissionCount(emissions *emissionLog) int {
 	n := 0
-	for _, e := range *emissions {
+	for _, e := range emissions.snapshot() {
 		if e.eventName == "provider:todo_update" {
 			n++
 		}

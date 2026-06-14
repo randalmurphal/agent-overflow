@@ -676,8 +676,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	profile := connProfile{
-		isLoopback:     isLoopback,
-		coalesceEvents: !isLoopback,
+		isLoopback: isLoopback,
 	}
 
 	// Use the server's root context so Shutdown can cancel us promptly,

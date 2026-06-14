@@ -197,7 +197,7 @@ func TestCodexUnifiedExecStartWaitsForTypedTerminalInteraction(t *testing.T) {
 	if len(live) != 1 || live[0].ID != "cmd-live" || !live[0].IsBackground || live[0].Status != statusRunning {
 		t.Fatalf("typed terminal interaction should background unified exec: %+v", live)
 	}
-	if countEvents(*emissions, "provider:background_tasks_changed") == 0 {
+	if countEvents(emissions.snapshot(), "provider:background_tasks_changed") == 0 {
 		t.Fatal("start did not emit provider:background_tasks_changed")
 	}
 }
@@ -256,7 +256,7 @@ func TestCodexUnifiedExecQuickCompletionPersistsNormalCommand(t *testing.T) {
 	if string(data) != "ok\n" {
 		t.Fatalf("payload = %q, want ok newline", string(data))
 	}
-	if countEvents(*emissions, codexBackgroundTasksChangedEventName) < 2 {
+	if countEvents(emissions.snapshot(), codexBackgroundTasksChangedEventName) < 2 {
 		t.Fatal("quick completion did not emit tray refresh for live tracker removal")
 	}
 }
@@ -408,7 +408,7 @@ func TestCodexUnifiedExecIdleCompletionAfterTurnCompleteClearsTransientStateWith
 	if live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0); len(live) != 0 {
 		t.Fatalf("idle late completion should clear live tray: %+v", live)
 	}
-	for _, item := range filterItemEventUpserts(*emissions) {
+	for _, item := range filterItemEventUpserts(emissions.snapshot()) {
 		if item.ID == "cmd-late" {
 			t.Fatalf("idle late completion emitted history upsert: %+v", item)
 		}
@@ -460,7 +460,7 @@ func TestCodexUnifiedExecIdleCompletionAfterInterruptedTurnClearsTransientStateW
 	if live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0); len(live) != 0 {
 		t.Fatalf("interrupted late completion should clear live tray: %+v", live)
 	}
-	for _, item := range filterItemEventUpserts(*emissions) {
+	for _, item := range filterItemEventUpserts(emissions.snapshot()) {
 		if item.ID == "cmd-interrupted-late" {
 			t.Fatalf("interrupted late completion emitted history upsert: %+v", item)
 		}
@@ -518,7 +518,7 @@ func TestCodexUnifiedExecCompletionDuringLaterActiveTurnPersistsAtObservedTurn(t
 		t.Fatalf("later active completion status/payload = %+v", row)
 	}
 	foundUpsert := false
-	for _, item := range filterItemEventUpserts(*emissions) {
+	for _, item := range filterItemEventUpserts(emissions.snapshot()) {
 		if item.ID != "cmd-later-active" {
 			continue
 		}
@@ -528,7 +528,7 @@ func TestCodexUnifiedExecCompletionDuringLaterActiveTurnPersistsAtObservedTurn(t
 		}
 	}
 	if !foundUpsert {
-		t.Fatalf("later active completion did not emit provider:item_event upsert; emissions=%+v", *emissions)
+		t.Fatalf("later active completion did not emit provider:item_event upsert; emissions=%+v", emissions.snapshot())
 	}
 }
 

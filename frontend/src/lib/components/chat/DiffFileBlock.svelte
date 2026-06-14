@@ -34,7 +34,7 @@
   import DiffLineContent from './DiffLineContent.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import { dispatchInlineFileTokens } from './diffInlineTokenize';
-  import { buildInlineDiffRows } from './inlineDiffRows';
+  import { buildInlineDiffRowsCached } from './inlineDiffRows';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { getDiffTheme } from '../../stores/diffTheme.svelte';
@@ -81,7 +81,7 @@
     hasMoreDiffContent = false,
   }: Props = $props();
 
-  let inlineRows = $derived(buildInlineDiffRows(file.lines));
+  let inlineRows = $derived(buildInlineDiffRowsCached(file.lines));
   let visibleRows = $derived(inlineRows.rows);
   let hasBody = $derived(visibleRows.length > 0);
   let isLong = $derived(inlineRows.hasOverflow);

@@ -762,9 +762,11 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
 function applyItemStreamEvent(evt: ItemStreamEvent): void {
   if (!evt || !evt.threadId) return;
   if (evt.action === 'upsert' && evt.item) {
+    // Boundary validation only. Thread-status projection and
+    // proposed-plan sync happen at flush time alongside the pane
+    // apply — running them here gave every upsert WS message its own
+    // global-store write + effect flush outside the rAF batch.
     if (!isValidItemForThread(evt.item, evt.threadId)) return;
-    projectThreadItem(evt.item);
-    syncProposedPlanStatus(evt.item);
   } else if (evt.action === 'delta') {
     if (!isBoundedString(evt.threadId, 512)) return;
     if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
@@ -820,8 +822,13 @@ function flushItemEventQueue(): void {
     }
   }
   const pendingUpserts: PendingItemUpsert[] = [];
+  const pendingUpsertItemKeys = new Set<string>();
   const notifiedUpserts: Item[] = [];
   const pendingDeltas = new Map<string, ItemDeltaEvent & { chunks: string[] }>();
+  const pendingDeltaItemKeys = new Set<string>();
+
+  const itemConflictKey = (threadId: string, itemId: string): string =>
+    `${threadId}\u0000${itemId}`;
 
   const flushPendingUpserts = () => {
     if (pendingUpserts.length === 0) return;
@@ -829,9 +836,12 @@ function flushItemEventQueue(): void {
     applyItemUpserts(pendingUpserts);
     notifiedUpserts.push(...semanticUpserts);
     pendingUpserts.length = 0;
+    pendingUpsertItemKeys.clear();
   };
 
   const queueDelta = (evt: ItemDeltaEvent) => {
+    // Coalescing key includes kind (a row's text and thinking streams
+    // coalesce separately); the per-item conflict key does not.
     const key = `${evt.threadId}\u0000${evt.itemId}\u0000${evt.kind}`;
     const existing = pendingDeltas.get(key);
     if (existing) {
@@ -840,6 +850,7 @@ function flushItemEventQueue(): void {
       return;
     }
     pendingDeltas.set(key, { ...evt, delta: '', chunks: [evt.delta] });
+    pendingDeltaItemKeys.add(itemConflictKey(evt.threadId, evt.itemId));
   };
 
   const flushPendingDeltas = () => {
@@ -855,24 +866,43 @@ function flushItemEventQueue(): void {
       applyItemDelta(coalesced);
     }
     pendingDeltas.clear();
+    pendingDeltaItemKeys.clear();
   };
 
+  // Apply order is preserved PER ITEM, not globally: a pending buffer
+  // only flushes early when the incoming event targets an item that
+  // buffer already holds. Items are independent in pane state, so
+  // cross-item reordering inside one rAF flush is safe — and it is what
+  // keeps a tool burst (upserts, patches, and deltas of many different
+  // rows interleaved on the wire) applying as one upsert batch -> one
+  // items-array swap -> one structural re-derive, instead of
+  // fragmenting into per-transition micro-batches that each paid an
+  // O(window) array copy and a full timeline regroup.
   for (const evt of events) {
     if (!evt || !evt.threadId) continue;
     if (evt.action === 'upsert') {
-      flushPendingDeltas();
       if (!isValidItemForThread(evt.item, evt.threadId)) continue;
+      const itemKey = itemConflictKey(evt.threadId, evt.item.id);
+      // A queued delta for this row must land before the upsert
+      // replaces the row's summary wholesale.
+      if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
+      // Global projections ride the batched flush (one macrotask, one
+      // effect flush) instead of the per-message WS handler.
+      projectThreadItem(evt.item);
+      syncProposedPlanStatus(evt.item);
       pendingUpserts.push({ item: evt.item, countsAsActivity: evt.countsAsActivity });
+      pendingUpsertItemKeys.add(itemKey);
       continue;
     }
     if (evt.action === 'meta') {
       // Re-validated meta blob (e.g. live path-link allowlist for an
       // in-flight assistant_text row). Pending deltas for the same row
       // must apply FIRST so the new meta lands against text the user
-      // has already seen; upserts in the same batch must apply too so
-      // the row exists by the time we set its meta.
-      flushPendingDeltas();
-      flushPendingUpserts();
+      // has already seen; a pending upsert for the same row must apply
+      // too so the row exists by the time we set its meta.
+      const itemKey = itemConflictKey(evt.threadId, evt.itemId);
+      if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
+      if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
       for (const pane of iterPanes()) {
         if (pane.threadId !== evt.threadId) continue;
         pane.applyItemMeta(evt);
@@ -880,8 +910,9 @@ function flushItemEventQueue(): void {
       continue;
     }
     if (evt.action === 'patch') {
-      flushPendingDeltas();
-      flushPendingUpserts();
+      const itemKey = itemConflictKey(evt.threadId, evt.itemId);
+      if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
+      if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
       for (const pane of iterPanes()) {
         if (pane.threadId !== evt.threadId) continue;
         pane.applyItemPatch(evt);
@@ -890,10 +921,20 @@ function flushItemEventQueue(): void {
     }
     if (evt.action !== 'delta') continue;
 
-    flushPendingUpserts();
+    // A pending upsert for this row carries the full summary; the
+    // delta extends it, so the upsert must land first.
+    if (pendingUpsertItemKeys.has(itemConflictKey(evt.threadId, evt.itemId))) {
+      flushPendingUpserts();
+    }
     queueDelta(evt);
   }
 
+  // Tail order is safe: no item can be pending in BOTH buffers here.
+  // Queuing a delta flushes that row's pending upsert first, and
+  // buffering an upsert flushes that row's pending delta first (the
+  // per-item conflict checks above), so the two pending sets are always
+  // disjoint per item by the time we reach the tail. Draining deltas
+  // then upserts therefore can't reorder any single row's events.
   flushPendingDeltas();
   flushPendingUpserts();
   // Sidebar activity is bumped only at meaningful interaction
@@ -1428,6 +1469,10 @@ export function setupEventListeners(): () => void {
         case 'provider:turn_completed':
         case 'thread:updated': {
           refreshSidebarProjections();
+          // Per-pane on purpose: refreshFromBackend refetches THAT
+          // pane's loaded window (two panes on one thread can hold
+          // different slices), so this cannot dedupe by threadId the
+          // way the usage branch below does.
           for (const pane of iterPanes()) {
             if (!pane.threadId) continue;
             void pane.refreshFromBackend();

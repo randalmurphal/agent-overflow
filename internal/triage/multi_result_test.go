@@ -337,11 +337,11 @@ func TestRoundEmissionPerWireResult(t *testing.T) {
 	}
 
 	// Two starts, two completes — one per wire round.
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 2 {
 		t.Fatalf("expected 2 provider:turn_started emissions (one per wire round), got %d: %+v", len(starts), starts)
 	}
-	completes := filterEmissions(*emissions, "provider:turn_completed")
+	completes := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completes) != 2 {
 		t.Fatalf("expected 2 provider:turn_completed emissions (one per wire round), got %d: %+v", len(completes), completes)
 	}
@@ -402,7 +402,7 @@ func TestRoundStartedAfterSystemInit(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
-	*emissions = nil // discard the round-1 turn_started/turn_completed
+	emissions.reset() // discard the round-1 turn_started/turn_completed
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventInit, ThreadID: "t1",
@@ -411,7 +411,7 @@ func TestRoundStartedAfterSystemInit(t *testing.T) {
 		t.Fatalf("re-init: %v", err)
 	}
 
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 1 {
 		t.Fatalf("expected 1 provider:turn_started after re-init, got %d: %+v", len(starts), starts)
 	}
@@ -467,11 +467,11 @@ func TestRoundEmission_RecoveryResume_OrphanCompleteIsSilent(t *testing.T) {
 		t.Fatalf("orphan complete: %v", err)
 	}
 
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 0 {
 		t.Errorf("expected 0 provider:turn_started emissions on recovery resume, got %d: %+v", len(starts), starts)
 	}
-	completes := filterEmissions(*emissions, "provider:turn_completed")
+	completes := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completes) != 0 {
 		t.Errorf("expected 0 provider:turn_completed emissions on orphan complete (no open round), got %d: %+v", len(completes), completes)
 	}
@@ -541,7 +541,7 @@ func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
 		t.Fatalf("t2 turn start: %v", err)
 	}
 
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 2 {
 		t.Fatalf("expected 2 provider:turn_started emissions (one per thread), got %d", len(starts))
 	}
@@ -565,7 +565,7 @@ func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
 
 	// Complete t1 — the emit MUST carry t1's round id, leaving t2's
 	// slot intact.
-	*emissions = nil
+	emissions.reset()
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: normalTurnCompleteMeta(),
@@ -573,7 +573,7 @@ func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("t1 turn complete: %v", err)
 	}
-	completes := filterEmissions(*emissions, "provider:turn_completed")
+	completes := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completes) != 1 {
 		t.Fatalf("expected 1 provider:turn_completed for t1, got %d", len(completes))
 	}
@@ -589,7 +589,7 @@ func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
 	}
 
 	// Complete t2 — emit must carry t2's round id, not t1's.
-	*emissions = nil
+	emissions.reset()
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t2",
 		TurnComplete: normalTurnCompleteMeta(),
@@ -597,7 +597,7 @@ func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("t2 turn complete: %v", err)
 	}
-	completes = filterEmissions(*emissions, "provider:turn_completed")
+	completes = filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completes) != 1 {
 		t.Fatalf("expected 1 provider:turn_completed for t2, got %d", len(completes))
 	}
@@ -629,7 +629,7 @@ func TestNoRoundEmissionOnRealSessionInit(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 0 {
 		t.Errorf("expected 0 provider:turn_started for real session init, got %d: %+v (handleInit must only re-light when a prior round of THIS logical turn already settled)", len(starts), starts)
 	}
@@ -674,7 +674,7 @@ func TestSyntheticTruncatedTurnComplete_ThenRealResult_NoDuplicateEmission(t *te
 		t.Fatalf("real turn-complete: %v", err)
 	}
 
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
 		t.Errorf("expected exactly 1 provider:turn_completed emission, got %d (idempotent guard regression)", len(completed))
 	}
@@ -982,7 +982,7 @@ func TestAssistantErrorThenResultSettlesExactlyOnce(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn start: %v", err)
 	}
-	*emissions = nil
+	emissions.reset()
 
 	// assistant.error envelope → EventError{fatal:true,
 	// expect_turn_complete:true, error: rate_limit}. The opt-in flag
@@ -1016,7 +1016,7 @@ func TestAssistantErrorThenResultSettlesExactlyOnce(t *testing.T) {
 		t.Fatalf("real turn complete: %v", err)
 	}
 
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
 		t.Fatalf("expected exactly 1 provider:turn_completed, got %d", len(completed))
 	}
@@ -1242,7 +1242,7 @@ func TestSoftThenRealTurnComplete_RealisticCascade(t *testing.T) {
 	}
 
 	// Soft fired exactly one provider:turn_completed for the round.
-	completedAfterSoft := filterEmissions(*emissions, "provider:turn_completed")
+	completedAfterSoft := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completedAfterSoft) != 1 {
 		t.Fatalf("expected exactly 1 provider:turn_completed after soft, got %d", len(completedAfterSoft))
 	}
@@ -1281,7 +1281,7 @@ func TestSoftThenRealTurnComplete_RealisticCascade(t *testing.T) {
 	}
 
 	// No second provider:turn_completed for the round.
-	completedAfterReal := filterEmissions(*emissions, "provider:turn_completed")
+	completedAfterReal := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completedAfterReal) != 1 {
 		t.Fatalf("expected still exactly 1 provider:turn_completed after real, got %d", len(completedAfterReal))
 	}
@@ -1339,7 +1339,7 @@ func TestSoftThenRealTurnComplete_LateResultErrorUpdatesSettledTurn(t *testing.T
 		t.Fatalf("late error result: %v", err)
 	}
 
-	completed := filterEmissions(*emissions, "provider:turn_completed")
+	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
 		t.Fatalf("expected only the soft provider:turn_completed emission, got %d", len(completed))
 	}
@@ -1482,11 +1482,11 @@ func TestSoftThenInitThenSoftThenReal_ReRoundCascade(t *testing.T) {
 	// Per-round emissions: 2 starts (handleTurnStart + re-round init)
 	// and 2 completes (soft #1 + soft #2). The trailing real result
 	// emitted nothing because soft #2 already consumed round 2's slot.
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 2 {
 		t.Errorf("expected 2 provider:turn_started, got %d", len(starts))
 	}
-	completes := filterEmissions(*emissions, "provider:turn_completed")
+	completes := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completes) != 2 {
 		t.Errorf("expected 2 provider:turn_completed, got %d", len(completes))
 	}
@@ -1556,7 +1556,7 @@ func TestParentContentResumeReArmsAfterSoftClose(t *testing.T) {
 			t.Fatalf("cycle %d soft close: %v", cycle, err)
 		}
 
-		*emissions = nil // discard this cycle's turn_completed
+		emissions.reset() // discard this cycle's turn_completed
 
 		// Parent resumes the SAME turn with a fresh content block. First
 		// block re-arms; a second block in the same resumed round must NOT
@@ -1568,7 +1568,7 @@ func TestParentContentResumeReArmsAfterSoftClose(t *testing.T) {
 			t.Fatalf("cycle %d resume block 2: %v", cycle, err)
 		}
 
-		starts := filterEmissions(*emissions, "provider:turn_started")
+		starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 		if len(starts) != 1 {
 			t.Fatalf("cycle %d: expected exactly 1 provider:turn_started on parent resume, got %d: %+v",
 				cycle, len(starts), starts)
@@ -1678,7 +1678,7 @@ func TestParentContentResumeDoesNotCollideRowIDs(t *testing.T) {
 
 	// Wire-round cadence: one turn_completed per soft-close + one for the
 	// final result = the round re-armed by the resume was properly closed.
-	completes := filterEmissions(*emissions, "provider:turn_completed")
+	completes := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completes) != 2 {
 		t.Fatalf("expected exactly 2 provider:turn_completed (soft close + final result), got %d: %+v",
 			len(completes), completes)
@@ -1709,7 +1709,7 @@ func TestSubagentContentDoesNotReArmDuringSoftClose(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("soft close: %v", err)
 	}
-	*emissions = nil
+	emissions.reset()
 
 	// Subagent streams content while the parent round is closed.
 	subBlock := parentContentBlockStart("t1", "text")
@@ -1718,7 +1718,7 @@ func TestSubagentContentDoesNotReArmDuringSoftClose(t *testing.T) {
 		t.Fatalf("subagent content block: %v", err)
 	}
 
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 0 {
 		t.Fatalf("subagent content must NOT re-arm the parent round (invariant 27), got %d turn_started: %+v",
 			len(starts), starts)
@@ -1742,12 +1742,12 @@ func TestParentContentDoesNotReArmMidRound(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn start: %v", err)
 	}
-	*emissions = nil // discard round-1 turn_started
+	emissions.reset() // discard round-1 turn_started
 
 	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
 		t.Fatalf("mid-round content block: %v", err)
 	}
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 0 {
 		t.Fatalf("mid-round (open, unsettled) content must not re-arm, got %d: %+v", len(starts), starts)
 	}
@@ -1768,12 +1768,12 @@ func TestParentContentDoesNotReArmFreshSession(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	*emissions = nil
+	emissions.reset()
 
 	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
 		t.Fatalf("fresh-session content block: %v", err)
 	}
-	starts := filterEmissions(*emissions, "provider:turn_started")
+	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 0 {
 		t.Fatalf("fresh-session content must not synthesize a round, got %d: %+v", len(starts), starts)
 	}

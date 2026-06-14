@@ -5,6 +5,7 @@ import {
   BASE_CHARS_PER_SEC,
   ADAPTIVE_TRIGGER_CHARS,
   ADAPTIVE_CATCHUP_MS,
+  FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS,
   MAX_ADVANCE_PER_TICK_CHARS,
   type SmoothingClock,
 } from './PerItemSmoother';
@@ -372,7 +373,8 @@ describe('PerItemSmoother — reveal sequencing primitives', () => {
 
   it('requestFastDrain finishes a large lag sooner than the per-tick cap would', () => {
     // 80 three-char word units = 320 chars. Without fast-drain the per-tick
-    // cap (14 chars) bounds the rate; fast-drain lifts it to hit the window.
+    // cap (14 chars) bounds the rate; fast-drain raises the cap so the lag
+    // clears near the requested window.
     const text = 'ab '.repeat(80);
     const { clock, smoother, reveals } = makeSmoother();
     smoother.appendDelta(text);
@@ -427,5 +429,89 @@ describe('PerItemSmoother — reveal sequencing primitives', () => {
     smoother.requestFastDrain();
     expect(clock.pendingCount()).toBe(0);
     expect(smoother.isCaughtUp()).toBe(true);
+  });
+
+  it('fast-drain reveals in bounded per-tick chunks, never one giant frame', () => {
+    // 400 three-char units = 1200 chars. The drain-rate math wants this
+    // gone inside the 200ms window (~96 chars/frame, and once the deadline
+    // passes, the whole remainder in one frame); the finite drain cap must
+    // bound every frame's reveal so the backlog lands as fast motion, not
+    // a single mega markdown re-parse.
+    const text = 'ab '.repeat(400);
+    const { clock, smoother, reveals } = makeSmoother();
+    smoother.appendDelta(text);
+    smoother.requestFastDrain(FAST_DRAIN_WINDOW);
+    let frames = 0;
+    while (!smoother.isCaughtUp() && frames < 200) {
+      clock.tickFrame(16);
+      frames++;
+    }
+    expect(smoother.getRevealed()).toBe(text);
+    for (const r of reveals) {
+      expect(r.delta.length).toBeLessThanOrEqual(
+        FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS,
+      );
+    }
+    // Capped throughput means the drain deliberately overshoots its 200ms
+    // target instead of bursting: 1200 chars needs at least len/cap frames.
+    expect(frames).toBeGreaterThanOrEqual(
+      Math.floor(text.length / FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS),
+    );
+  });
+
+  it('fast-drain still advances through a word unit larger than the drain cap', () => {
+    // A single unbroken token bigger than the drain cap (long URL /
+    // identifier). The cap expands to that one unit's size — budget
+    // accumulates until it fits — so the drain never stalls on it.
+    const giant = 'x'.repeat(FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS + 24);
+    const text = `${giant} tail words follow now`;
+    const { clock, smoother, reveals } = makeSmoother();
+    smoother.appendDelta(text);
+    smoother.requestFastDrain(FAST_DRAIN_WINDOW);
+    let frames = 0;
+    while (!smoother.isCaughtUp() && frames < 200) {
+      clock.tickFrame(16);
+      frames++;
+    }
+    expect(smoother.getRevealed()).toBe(text);
+    // The giant token revealed as one whole chunk, never split mid-word.
+    const giantReveal = reveals.find((r) => r.delta.includes(giant));
+    expect(giantReveal).toBeDefined();
+  });
+
+  it('returns to steady-state cadence immediately after a drain finishes', () => {
+    // Drain a backlog with an already-expired deadline so the rate math
+    // dumps the full lag into the budget each tick, leaving a large
+    // residual at the moment of catch-up. That residual must clamp back
+    // to the steady-state cap (not the drain cap) so text appended right
+    // after the drain reveals at the normal cadence instead of briefly
+    // rushing through the leftover budget.
+    const backlog = 'ab '.repeat(67);
+    const { clock, smoother, reveals } = makeSmoother();
+    smoother.appendDelta(backlog);
+    smoother.requestFastDrain(0);
+    let frames = 0;
+    while (!smoother.isCaughtUp() && frames < 50) {
+      clock.tickFrame(16);
+      frames++;
+    }
+    expect(smoother.getRevealed()).toBe(backlog);
+
+    reveals.length = 0;
+    smoother.appendDelta('xy '.repeat(20));
+    clock.tickFrame(16);
+    clock.tickFrame(16);
+    clock.tickFrame(16);
+    const revealedAfterDrain = reveals.reduce(
+      (n, r) => n + r.delta.length,
+      0,
+    );
+    // Steady state over 3 frames: one residual spend of ≤ the per-tick cap
+    // plus ~2.5 chars/frame of base-rate accrual (word-rounded) ≈ 21 chars.
+    // A residual clamped at the drain cap instead would sustain the full
+    // 14-char cap for all 3 frames (~36 chars).
+    expect(revealedAfterDrain).toBeLessThanOrEqual(
+      MAX_ADVANCE_PER_TICK_CHARS + 12,
+    );
   });
 });

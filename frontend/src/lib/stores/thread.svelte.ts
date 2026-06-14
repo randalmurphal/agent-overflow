@@ -140,7 +140,11 @@ import { createThreadDesignState } from './threadDesignState.svelte';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import { SvelteMap } from 'svelte/reactivity';
-import { PerItemSmoother } from '../markdown/smoothing/PerItemSmoother';
+import {
+  END_OF_TURN_DRAIN_MS,
+  FAST_DRAIN_SNAP_LAG_CHARS,
+  PerItemSmoother,
+} from '../markdown/smoothing/PerItemSmoother';
 import {
   LOAD_OLDER_ITEM_BUDGET,
   ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
@@ -185,6 +189,7 @@ export type {
   LoadOlderResult,
   PaneScrollController,
   ScrollToItemOptions,
+  TimelineWindowAnchorOperation,
 } from './threadPaneShared';
 
 export {
@@ -217,6 +222,9 @@ interface PrunedWindow {
   oldestCursor: TimelineCursorLike | null;
   newestCursor: TimelineCursorLike | null;
 }
+
+type PrunedWindowApplyResult = 'applied' | 'deferred';
+type PrunedWindowVetoPolicy = 'defer' | 'force';
 
 /**
  * Creates a self-contained thread pane state instance.
@@ -471,6 +479,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   let newestLoadedTurnIndex: number | null = $state(null);
   let hasMoreHistory: boolean = $state(false);
   let hasMoreNewer: boolean = $state(false);
+  let recentWindowPrunePending: boolean = $state(false);
   let loadingOlder: boolean = $state(false);
   let loadingNewer: boolean = $state(false);
 
@@ -830,6 +839,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     options: { hasMoreNewerAfterPrune?: boolean } = {},
   ): void {
     if (items.length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
+    const activeTurn = thread !== null ? getActiveTurn(thread.id) : null;
+    const exceedsHardCeiling =
+      items.length > ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS;
     // A head-drop on a visible, bottom-pinned timeline repaints the whole
     // viewport: the content height collapses by the dropped rows, the
     // browser clamps scrollTop, and virtua re-measures — seen as a blank
@@ -837,22 +849,23 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // settle (settleTurn calls back in here), holding the hard ceiling
     // as the memory backstop against a runaway turn.
     if (
-      items.length <= ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS
-      && thread !== null
-      && getActiveTurn(thread.id)
+      !exceedsHardCeiling
+      && activeTurn
     ) {
       return;
     }
+    if (recentWindowPrunePending && !exceedsHardCeiling) return;
+    const vetoPolicy = exceedsHardCeiling ? 'force' : 'defer';
     const next = keepRecentWindowItems(
       items,
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
     );
-    if (next.items.length === items.length) return;
-    replaceTimelineItems(next.items, { disposeDropped: true });
-    setLoadedCursors(next.oldestCursor, next.newestCursor);
-    hasMoreHistory = true;
-    hasMoreNewer = options.hasMoreNewerAfterPrune ?? false;
-    recomputeReveal();
+    const result = applyPrunedWindow(next, {
+      hasMoreHistoryAfterPrune: true,
+      hasMoreNewerAfterPrune: options.hasMoreNewerAfterPrune ?? false,
+      vetoPolicy,
+    });
+    recentWindowPrunePending = result === 'deferred';
   }
 
   function pruneToHeadWindowIfNeeded(): void {
@@ -861,11 +874,49 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       items,
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
     );
-    if (next.items.length === items.length) return;
-    replaceTimelineItems(next.items, { disposeDropped: true });
-    setLoadedCursors(next.oldestCursor, next.newestCursor);
-    hasMoreNewer = true;
-    recomputeReveal();
+    applyPrunedWindow(next, {
+      hasMoreNewerAfterPrune: true,
+      vetoPolicy: 'force',
+    });
+  }
+
+  function applyPrunedWindow(
+    next: PrunedWindow,
+    options: {
+      hasMoreHistoryAfterPrune?: boolean;
+      hasMoreNewerAfterPrune?: boolean;
+      vetoPolicy: PrunedWindowVetoPolicy;
+    },
+  ): PrunedWindowApplyResult {
+    if (next.items.length === items.length) return 'applied';
+    let operationApplied = false;
+    const apply = (): void => {
+      if (operationApplied) return;
+      operationApplied = true;
+      replaceTimelineItems(next.items, { disposeDropped: true });
+      setLoadedCursors(next.oldestCursor, next.newestCursor);
+      if (options.hasMoreHistoryAfterPrune !== undefined) {
+        hasMoreHistory = options.hasMoreHistoryAfterPrune;
+      }
+      if (options.hasMoreNewerAfterPrune !== undefined) {
+        hasMoreNewer = options.hasMoreNewerAfterPrune;
+      }
+      recomputeReveal();
+    };
+    const preserve = scrollController?.preserveTimelineWindowAnchor;
+    if (!preserve) {
+      apply();
+      return 'applied';
+    }
+    const keptItemIds = new Set(next.items.map((item) => item.id));
+    preserve({
+      keepsItem: (itemId) => keptItemIds.has(itemId),
+      run: apply,
+    });
+    if (operationApplied) return 'applied';
+    if (options.vetoPolicy === 'defer') return 'deferred';
+    apply();
+    return 'applied';
   }
 
   /**
@@ -1051,8 +1102,33 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * gate is kept in sync by explicit calls from `applyItemDelta`,
    * `applyItemPatch`, `upsertItemsBatch`, `onReveal` (on catch-up), and the
    * item-removal paths; `disposeAllSmoothers` clears the boundary directly.
+   *
+   * Reentrancy: the oversized-backlog snap below fires `onReveal`
+   * synchronously, whose catch-up branch calls back into this function.
+   * The guard collapses the nested call into a re-run after the current
+   * pass — without it, the outer pass would overwrite the boundary and
+   * pause/resume decisions the nested pass just computed from fresher
+   * state.
    */
+  let recomputingReveal = false;
+  let recomputeRevealAgain = false;
   function recomputeReveal(): void {
+    if (recomputingReveal) {
+      recomputeRevealAgain = true;
+      return;
+    }
+    recomputingReveal = true;
+    try {
+      do {
+        recomputeRevealAgain = false;
+        recomputeRevealPass();
+      } while (recomputeRevealAgain);
+    } finally {
+      recomputingReveal = false;
+    }
+  }
+
+  function recomputeRevealPass(): void {
     let frontier: Item | null = null;
     for (const [id, entry] of itemSmoothers) {
       const item = getItemById(id);
@@ -1090,7 +1166,19 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         if (compareItemsByTimelinePosition(item, f) > 0) entry.smoother.pause();
         else entry.smoother.resume();
       }
-      if (hasSuccessor) itemSmoothers.get(f.id)?.smoother.requestFastDrain();
+      if (hasSuccessor) {
+        const frontierSmoother = itemSmoothers.get(f.id)?.smoother;
+        // A backlog too large to rush through at the drain cap would
+        // hold the waiting successor for whole seconds — snap it in one
+        // deliberate burst instead. Below the threshold, drain at the
+        // elevated (finite) per-tick cap so the finish reads as motion
+        // without a single-frame mega re-parse.
+        if (frontierSmoother && frontierSmoother.getLag() > FAST_DRAIN_SNAP_LAG_CHARS) {
+          frontierSmoother.snap();
+        } else {
+          frontierSmoother?.requestFastDrain();
+        }
+      }
     } else {
       // Nothing is gating — make sure no smoother is left paused (the
       // frontier may have drained between recomputes).
@@ -1743,6 +1831,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       hasMoreHistory = cached.hasMoreHistory;
       hasMoreNewer = cached.hasMoreNewer;
       latestSettledTurn = cached.latestSettledTurn;
+      recentWindowPrunePending = false;
     } else {
       replaceTimelineItems([]);
       subagentFolds.clear();
@@ -1756,6 +1845,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       newestLoadedTurnIndex = null;
       hasMoreHistory = false;
       hasMoreNewer = false;
+      recentWindowPrunePending = false;
     }
     rowUiState.clear();
     disposeAllSmoothers();
@@ -2238,6 +2328,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get hasMoreNewer() {
       return hasMoreNewer;
     },
+    get hasDeferredRecentWindowPrune() {
+      return recentWindowPrunePending;
+    },
+    retryDeferredRecentWindowPrune(): void {
+      if (!recentWindowPrunePending) return;
+      recentWindowPrunePending = false;
+      pruneToRecentWindowIfNeeded();
+    },
     get loadingOlder() {
       return loadingOlder;
     },
@@ -2506,6 +2604,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       newestLoadedTurnIndex = null;
       hasMoreHistory = false;
       hasMoreNewer = false;
+      recentWindowPrunePending = false;
       loadingOlder = false;
       loadingNewer = false;
       subagentHydrationInFlight.clear();
@@ -3494,6 +3593,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         });
       }
       latestSettledTurn = settled;
+      // The wire is done; any smoother still behind is pure backlog. At
+      // the adaptive ceiling (~840 cps) a multi-KB reasoning backlog
+      // keeps animating for many seconds after the turn settled — drain
+      // it within ~END_OF_TURN_DRAIN_MS instead. First-drain-wins
+      // semantics keep an earlier sequencer drain's tighter deadline.
+      for (const entry of itemSmoothers.values()) {
+        entry.smoother.requestFastDrain(END_OF_TURN_DRAIN_MS);
+      }
       // Run the deferred window prune now that the turn is quiet — the
       // streaming-append path skips it while a turn is active so the
       // head-drop repaint never lands mid-stream.

@@ -24,6 +24,17 @@ type GitStatusSubscriptionResult struct {
 // Frontend listens, filters by SubscriptionID, and updates its local
 // status state. One event per actual change — gitwatch dedups
 // against the previous status before broadcasting.
+//
+// Per-subscription emission is deliberate. N same-workspace panes do
+// produce N copies of each change, but the expensive work (fs watcher,
+// git subprocess, PR lookup) is already shared via gitwatch.Manager's
+// per-cwd refcount; the duplicated part is a ~300-byte scalar struct at
+// a debounced ≤4Hz cadence, and the transport's per-connection
+// coalescing batches simultaneous copies into one frame. A shared
+// `subscriptionIds []string` emit was evaluated (2026-06) and rejected:
+// it would duplicate the manager's per-workspace bookkeeping at the app
+// layer, change the wire contract, and mix subscription ids from
+// different WS connections into one event for no perceivable win.
 type GitStatusEvent struct {
 	SubscriptionID string           `json:"subscriptionId"`
 	Status         gitops.GitStatus `json:"status"`

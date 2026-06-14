@@ -72,7 +72,7 @@ func TestCompactionReasoningStreamsAsTopLevelRow(t *testing.T) {
 
 	// Every streamed delta carries the compaction_reasoning kind so the frontend
 	// routes them to the compact tail, never the thinking renderer.
-	deltas := filterItemEventDeltas(*emissions)
+	deltas := filterItemEventDeltas(emissions.snapshot())
 	if len(deltas) == 0 {
 		t.Fatal("no streaming deltas emitted for compaction reasoning")
 	}

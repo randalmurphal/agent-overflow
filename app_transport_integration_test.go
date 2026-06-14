@@ -15,12 +15,14 @@ import (
 
 // TestIntegration_AppEmitReachesWSClient pins the Phase C wire
 // contract end-to-end: an App.emit call must fan out to a connected WS
-// client as a `{type:"event"}` frame with per-channel monotonic seq
-// and a raw-payload `data` field (no SeqEnvelope wrap). The integration
-// test in internal/transport exercises the dispatcher + bus in
-// isolation; this one exercises the App→bus→WS path so a regression
-// like SetEventBus failing to wire the bus, or a.emit reaching for a
-// stale field, fails here even though the unit tests still pass.
+// client with per-channel monotonic seq and a raw-payload `data` field
+// (no SeqEnvelope wrap) — either as a `{type:"event"}` frame or inside
+// a `{type:"batch"}` frame when emits share a coalescing window. The
+// integration test in internal/transport exercises the dispatcher +
+// bus in isolation; this one exercises the App→bus→WS path so a
+// regression like SetEventBus failing to wire the bus, or a.emit
+// reaching for a stale field, fails here even though the unit tests
+// still pass.
 //
 // We don't register the App with the dispatcher because the test only
 // needs the emit path. A bare RPC dispatcher with no methods is fine —
@@ -85,7 +87,8 @@ func TestIntegration_AppEmitReachesWSClient(t *testing.T) {
 	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer readCancel()
 
-	first := readNextEventFrame(t, conn, readCtx, "test:channel")
+	reader := &wsEventReader{conn: conn}
+	first := reader.next(t, readCtx, "test:channel")
 	if first.Seq != 1 {
 		t.Fatalf("first event seq = %d, want 1", first.Seq)
 	}
@@ -99,7 +102,7 @@ func TestIntegration_AppEmitReachesWSClient(t *testing.T) {
 		t.Fatalf("first data.hello = %q, want \"world\"", firstData.Hello)
 	}
 
-	second := readNextEventFrame(t, conn, readCtx, "test:channel")
+	second := reader.next(t, readCtx, "test:channel")
 	if second.Seq != 2 {
 		t.Fatalf("second event seq = %d, want 2", second.Seq)
 	}
@@ -114,14 +117,28 @@ func TestIntegration_AppEmitReachesWSClient(t *testing.T) {
 	}
 }
 
-// readNextEventFrame consumes WS messages until it sees an `event`
-// frame on the requested channel. Other frames (replay markers,
-// keepalives) are ignored so the test stays robust to additions in the
-// wire format that aren't this test's concern.
-func readNextEventFrame(t *testing.T, conn *websocket.Conn, ctx context.Context, channel string) eventFrame {
+// wsEventReader consumes WS messages until it sees an event on the
+// requested channel, expanding `batch` frames (the coalescing writer
+// packs same-window events into one frame) into ordered single events.
+// Other frames (replay markers, keepalives) are ignored so the test
+// stays robust to additions in the wire format that aren't this test's
+// concern.
+type wsEventReader struct {
+	conn    *websocket.Conn
+	pending []eventFrame
+}
+
+func (r *wsEventReader) next(t *testing.T, ctx context.Context, channel string) eventFrame {
 	t.Helper()
 	for {
-		_, raw, err := conn.Read(ctx)
+		for len(r.pending) > 0 {
+			frame := r.pending[0]
+			r.pending = r.pending[1:]
+			if frame.Channel == channel {
+				return frame
+			}
+		}
+		_, raw, err := r.conn.Read(ctx)
 		if err != nil {
 			t.Fatalf("ws read: %v", err)
 		}
@@ -129,22 +146,29 @@ func readNextEventFrame(t *testing.T, conn *websocket.Conn, ctx context.Context,
 		if err := json.Unmarshal(raw, &frame); err != nil {
 			t.Fatalf("decode frame: %v (raw: %s)", err, string(raw))
 		}
-		if frame.Type == "event" && frame.Channel == channel {
-			return frame
+		switch frame.Type {
+		case "event":
+			if frame.Channel == channel {
+				return frame
+			}
+		case "batch":
+			r.pending = append(r.pending, frame.Events...)
 		}
 	}
 }
 
 // eventFrame mirrors the subset of transport.ServerFrame we care about
-// here. We don't import the transport struct because this test is in
-// package main and we want the wire shape — the test would still need
-// to fail if the JSON tags drifted, and re-using the struct would mask
-// that.
+// here (plus the batch envelope's entry list, whose entries carry the
+// same channel/seq/data shape). We don't import the transport struct
+// because this test is in package main and we want the wire shape —
+// the test would still need to fail if the JSON tags drifted, and
+// re-using the struct would mask that.
 type eventFrame struct {
 	Type    string          `json:"type"`
 	Channel string          `json:"channel"`
 	Seq     uint64          `json:"seq"`
 	Data    json.RawMessage `json:"data"`
+	Events  []eventFrame    `json:"events,omitempty"`
 }
 
 // waitForSubscriber polls bus.SubscriberCount until it reaches at least

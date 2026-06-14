@@ -7,7 +7,7 @@ import type {
 } from '../../types/models';
 import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
 import { parseJsonObject } from '../../utils/parseJsonObject';
-import { parsePatchFiles, type PatchFile, type PatchLine } from '../../utils/patchFiles';
+import { parsePatchFilesCached, type PatchFile, type PatchLine } from '../../utils/patchFiles';
 import { isCodexCollabControlToolName } from './codexCollabControls';
 import { commandTextForItem, isCommandToolName } from './commandDisplay';
 
@@ -278,7 +278,9 @@ function parseCommandOutputMeta(item: Item): CommandOutputMeta | null {
 }
 
 function patchFileFromDiffMeta(diffMeta: DiffMeta): PatchFile {
-  const parsed = parsePatchFiles(diffMeta.preview);
+  // Cached parse: this runs inside every ToolCallCard's presentation
+  // $derived, so it re-executes on each virtua remount and item churn.
+  const parsed = parsePatchFilesCached(diffMeta.preview);
   if (parsed.length > 0 && parsed[0]) {
     return parsed[0];
   }

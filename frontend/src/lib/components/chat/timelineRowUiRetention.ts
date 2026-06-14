@@ -16,9 +16,34 @@ export interface TimelineRowUiRetentionOptions {
   isGroupExpanded(groupKey: string): boolean;
 }
 
-export interface TimelineRowUiRetentionResult {
-  retention: RowUiStateRetention;
-  signature: string;
+export interface TimelineRowUiPruneSignatureInputs {
+  threadId: string | null;
+  timelineRevision: number;
+  revealTurnIndex: number | string;
+  revealItemIndex: number | string;
+  nodesLength: number;
+  range: TimelineRowUiRetentionRange;
+  items: readonly Item[];
+}
+
+// Dedupe signature for a prune run. Captures every input the retention
+// collection depends on (window position, structure revision, reveal
+// gate, active-row membership) WITHOUT walking the node tree, so a
+// no-op prune bails before allocating retention sets. Computed at
+// prune cadence, NOT as a reactive derived — `pane.items` churns its
+// array reference on every streaming delta, and a derived tracking it
+// would walk the full item list per chunk just to compare equal.
+export function timelineRowUiPruneSignature(inputs: TimelineRowUiPruneSignatureInputs): string {
+  return [
+    inputs.threadId,
+    inputs.timelineRevision,
+    inputs.revealTurnIndex,
+    inputs.revealItemIndex,
+    inputs.nodesLength,
+    inputs.range.first,
+    inputs.range.last,
+    activeRowUiRetentionSignature(inputs.items),
+  ].join('|');
 }
 
 export function activeRowUiRetentionSignature(items: readonly Item[]): string {
@@ -40,7 +65,7 @@ export function collectTimelineRowUiRetention(
   items: readonly Item[],
   range: TimelineRowUiRetentionRange,
   options: TimelineRowUiRetentionOptions,
-): TimelineRowUiRetentionResult {
+): RowUiStateRetention {
   const retainedItemIds = new Set<string>();
   const retainedPayloads = new Map<string, PayloadExpansionRetentionKey>();
   const retainedGroupKeys = new Set<string>();
@@ -66,20 +91,9 @@ export function collectTimelineRowUiRetention(
   }
 
   return {
-    retention: {
-      itemIds: retainedItemIds,
-      payloads: retainedPayloads.values(),
-      groupKeys: retainedGroupKeys,
-    },
-    signature: [
-      nodes.length,
-      range.first,
-      range.last,
-      retainStart,
-      retainEnd,
-      tailStart,
-      activeRowUiRetentionSignature(items),
-    ].join('|'),
+    itemIds: retainedItemIds,
+    payloads: retainedPayloads.values(),
+    groupKeys: retainedGroupKeys,
   };
 }
 

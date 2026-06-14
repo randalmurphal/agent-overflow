@@ -66,7 +66,7 @@ See `internal/triage/AGENTS.md` for the routing table. The short form:
 
 - Text deltas, tool notifications, approvals → passthrough to frontend.
 - Diffs → SQLite + meta to frontend.
-- Command output → SQLite + meta to frontend.
+- Command output → SQLite + meta to frontend, buffered per flush window (100ms / 64KB / lifecycle boundary).
 - Thinking blocks → SQLite + preview to frontend.
 - Turn metadata (cost, tokens) → inline to frontend + persist on thread.
 - Errors → distinct event type; frontend renders as status/alert.

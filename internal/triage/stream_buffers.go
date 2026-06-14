@@ -2,6 +2,7 @@ package triage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -14,6 +15,16 @@ import (
 const (
 	streamPersistInterval      = 250 * time.Millisecond
 	streamPersistByteThreshold = 4096
+
+	// Command output buffers both the SQLite append AND the wire-visible
+	// item upsert (text/thinking emit live deltas per chunk; command rows
+	// have no delta channel — the row upsert is what bumps updatedAt and
+	// refreshes an expanded output view). A shorter interval keeps the
+	// expanded live tail at ~10Hz. The byte threshold is larger than the
+	// text one because a fast producer (build logs, file dumps) ships
+	// PTY-sized chunks; a 4KB cap would flush per chunk and buy nothing.
+	commandOutputPersistInterval      = 100 * time.Millisecond
+	commandOutputPersistByteThreshold = 64 * 1024
 )
 
 type ItemDeltaEvent struct {
@@ -31,8 +42,12 @@ type streamPersistBuffer struct {
 	payloadID    string
 	summaryDelta string
 	payloadDelta string
-	updatedAt    int64
-	timer        *time.Timer
+	// meta carries the most recent chunk's provider meta. Only
+	// command_output flushes consume it (buildPayloadMeta reads
+	// command/exit fields from it); text/thinking leave it nil.
+	meta      json.RawMessage
+	updatedAt int64
+	timer     *time.Timer
 }
 
 type pendingStreamFlush struct {
@@ -42,6 +57,7 @@ type pendingStreamFlush struct {
 	payloadID    string
 	summaryDelta string
 	payloadDelta string
+	meta         json.RawMessage
 	updatedAt    int64
 }
 
@@ -97,6 +113,52 @@ func (r *Router) bufferStreamPersistence(delta pendingStreamFlush) error {
 	return r.flushStreamingItem(delta.threadID, delta.itemID)
 }
 
+// bufferCommandOutputPersistence stages a Codex command-output delta.
+// Unlike text/thinking, command output has no live wire-delta channel —
+// the flush is what writes SQLite AND emits the row upsert, so until a
+// flush fires the chunk is invisible to both. handleCommandOutput
+// guarantees the item row exists before the first stage for an item.
+func (r *Router) bufferCommandOutputPersistence(threadID, itemID, content string, meta json.RawMessage, updatedAt int64) error {
+	return r.bufferStreamPersistence(pendingStreamFlush{
+		threadID:     threadID,
+		itemID:       itemID,
+		kind:         payloadKindCommandOutput,
+		payloadDelta: content,
+		meta:         meta,
+		updatedAt:    updatedAt,
+	})
+}
+
+// hasCommandOutputBuffer reports whether a command-output persistence
+// buffer is live for the item. handleCommandOutput uses it to skip the
+// per-chunk item read on the streaming hot path: a live buffer implies
+// the row's existence was already verified at window start.
+func (r *Router) hasCommandOutputBuffer(threadID, itemID string) bool {
+	key := streamPersistKey(threadID, itemID)
+	r.mu.Lock()
+	buffer := r.streamPersistBuffers[key]
+	live := buffer != nil && buffer.kind == payloadKindCommandOutput
+	r.mu.Unlock()
+	return live
+}
+
+// discardCommandOutputBufferLocked drops a pending command-output buffer
+// without flushing. Used by the Replace path: the authoritative
+// aggregated-output snapshot subsumes every buffered delta, so flushing
+// first would only burn a write that the rewrite immediately overwrites.
+// Caller must hold r.mu (and streamFlushMu — see handleCommandOutput).
+func (r *Router) discardCommandOutputBufferLocked(threadID, itemID string) {
+	key := streamPersistKey(threadID, itemID)
+	buffer := r.streamPersistBuffers[key]
+	if buffer == nil || buffer.kind != payloadKindCommandOutput {
+		return
+	}
+	if buffer.timer != nil {
+		buffer.timer.Stop()
+	}
+	delete(r.streamPersistBuffers, key)
+}
+
 // stageStreamPersistence records a live delta in the in-memory flush buffer.
 // When flushOnThreshold is false, the caller owns the threshold flush after
 // its wire-visible side effect has run. That preserves the invariant that
@@ -127,8 +189,11 @@ func (r *Router) stageStreamPersistence(delta pendingStreamFlush, flushOnThresho
 	if buffer.payloadID == "" {
 		buffer.payloadID = delta.payloadID
 	}
+	if len(delta.meta) > 0 {
+		buffer.meta = delta.meta
+	}
 
-	if len(buffer.summaryDelta)+len(buffer.payloadDelta) >= streamPersistByteThreshold {
+	if len(buffer.summaryDelta)+len(buffer.payloadDelta) >= persistByteThresholdForKind(buffer.kind) {
 		flushNow = true
 		if !flushOnThreshold {
 			r.scheduleStreamPersistenceLocked(key, buffer)
@@ -140,11 +205,25 @@ func (r *Router) stageStreamPersistence(delta pendingStreamFlush, flushOnThresho
 	return flushNow
 }
 
+func persistByteThresholdForKind(kind string) int {
+	if kind == payloadKindCommandOutput {
+		return commandOutputPersistByteThreshold
+	}
+	return streamPersistByteThreshold
+}
+
+func persistIntervalForKind(kind string) time.Duration {
+	if kind == payloadKindCommandOutput {
+		return commandOutputPersistInterval
+	}
+	return streamPersistInterval
+}
+
 func (r *Router) scheduleStreamPersistenceLocked(key string, buffer *streamPersistBuffer) {
 	if buffer.timer != nil {
 		return
 	}
-	buffer.timer = time.AfterFunc(streamPersistInterval, func() {
+	buffer.timer = time.AfterFunc(persistIntervalForKind(buffer.kind), func() {
 		r.flushStreamPersistenceKey(key)
 	})
 }
@@ -169,11 +248,19 @@ func (r *Router) takeStreamPersistenceLocked(key string) *pendingStreamFlush {
 		payloadID:    buffer.payloadID,
 		summaryDelta: buffer.summaryDelta,
 		payloadDelta: buffer.payloadDelta,
+		meta:         buffer.meta,
 		updatedAt:    buffer.updatedAt,
 	}
 }
 
+// flushStreamPersistenceKey is the timer callback. It holds streamFlushMu
+// across extract+write so a concurrent replace/settle on the read loop
+// cannot interleave with the SQLite write — without it a timer flush
+// extracted-but-not-committed when a command's authoritative Replace
+// snapshot lands would append a duplicate output tail after the rewrite.
 func (r *Router) flushStreamPersistenceKey(key string) {
+	r.streamFlushMu.Lock()
+	defer r.streamFlushMu.Unlock()
 	r.mu.Lock()
 	pending := r.takeStreamPersistenceLocked(key)
 	r.mu.Unlock()
@@ -186,6 +273,8 @@ func (r *Router) flushStreamPersistenceKey(key string) {
 }
 
 func (r *Router) flushStreamingItem(threadID, itemID string) error {
+	r.streamFlushMu.Lock()
+	defer r.streamFlushMu.Unlock()
 	key := streamPersistKey(threadID, itemID)
 	r.mu.Lock()
 	pending := r.takeStreamPersistenceLocked(key)
@@ -197,6 +286,8 @@ func (r *Router) flushStreamingItem(threadID, itemID string) error {
 }
 
 func (r *Router) flushStreamingThread(threadID string) error {
+	r.streamFlushMu.Lock()
+	defer r.streamFlushMu.Unlock()
 	prefix := threadID + "|"
 	r.mu.Lock()
 	pending := make([]pendingStreamFlush, 0)
@@ -230,6 +321,8 @@ func (r *Router) FlushThread(threadID string) error {
 }
 
 func (r *Router) flushAllStreamPersistence() error {
+	r.streamFlushMu.Lock()
+	defer r.streamFlushMu.Unlock()
 	r.mu.Lock()
 	pending := make([]pendingStreamFlush, 0, len(r.streamPersistBuffers))
 	for key := range r.streamPersistBuffers {
@@ -302,6 +395,8 @@ func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 			return fmt.Errorf("thinking stream append payload %s: %w", flush.payloadID, err)
 		}
 		return nil
+	case payloadKindCommandOutput:
+		return r.flushCommandOutputPersistence(flush)
 	default:
 		return fmt.Errorf("unknown stream persistence kind %q for %s", flush.kind, flush.itemID)
 	}

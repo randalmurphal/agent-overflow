@@ -445,3 +445,77 @@ func TestIntegration_ShutdownDrainsInflightRPCs(t *testing.T) {
 		t.Fatalf("second Shutdown should be a no-op, got %v", err)
 	}
 }
+
+// TestIntegration_LoopbackBurstCoalescesIntoBatchFrame pins the
+// transport policy that loopback connections coalesce too: a burst of
+// events emitted within one coalesce window must reach a loopback
+// client as a single {type:"batch"} frame, not one frame per event.
+// (The receiving webview pays per-message — macrotask + JSON.parse +
+// effect flush — so per-event framing on loopback was a streaming-jank
+// source; see AGENTS.md "Per-connection transport policy".)
+func TestIntegration_LoopbackBurstCoalescesIntoBatchFrame(t *testing.T) {
+	f := newIntegrationFixture(t)
+	conn := f.dial(t)
+
+	// One RPC round-trip guarantees the server-side connHandler is
+	// constructed — bus.Subscribe() happens before the read loop serves
+	// RPCs — so the burst below cannot race the subscription.
+	resp := callRPC(t, conn, "SimpleCall", "warmup")
+	if resp.Error != nil {
+		t.Fatalf("warmup rpc failed: %v", resp.Error)
+	}
+
+	const burstSize = 5
+	for i := 0; i < burstSize; i++ {
+		if _, err := f.bus.Emit("burst:test", map[string]int{"i": i}); err != nil {
+			t.Fatalf("emit %d: %v", i, err)
+		}
+	}
+
+	// Collect frames until every burst event has arrived. Events may
+	// split across windows under scheduler noise, so the hard assertion
+	// is "all events arrived AND at least one multi-event batch frame
+	// was used" rather than "exactly one batch of five".
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	received := 0
+	sawMultiEventBatch := false
+	for received < burstSize {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("ws read after %d/%d events: %v", received, burstSize, err)
+		}
+		var head struct {
+			Type   string            `json:"type"`
+			Events []batchEventEntry `json:"events"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			t.Fatalf("decode frame: %v", err)
+		}
+		switch head.Type {
+		case frameTypeEvent:
+			received++
+		case frameTypeBatch:
+			if len(head.Events) < 2 {
+				t.Fatalf("batch frame with %d events; single-event windows must use plain event frames", len(head.Events))
+			}
+			for _, e := range head.Events {
+				if e.Channel != "burst:test" {
+					t.Fatalf("batch entry channel = %q, want burst:test", e.Channel)
+				}
+			}
+			sawMultiEventBatch = true
+			received += len(head.Events)
+		case frameTypeRPC:
+			// Stray response from a slow earlier test helper — ignore.
+		default:
+			t.Fatalf("unexpected frame type %q", head.Type)
+		}
+	}
+	if received != burstSize {
+		t.Fatalf("received %d events, want %d", received, burstSize)
+	}
+	if !sawMultiEventBatch {
+		t.Fatal("burst arrived entirely as per-event frames; loopback coalescing is not active")
+	}
+}

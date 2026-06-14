@@ -261,7 +261,7 @@ func TestEagerPersistDeferredFlushSends_PersistsAndNilsDeferred(t *testing.T) {
 
 	// Should have emitted provider:item_event upserts.
 	upsertCount := 0
-	for _, e := range *emissions {
+	for _, e := range emissions.snapshot() {
 		if e.eventName == "provider:item_event" {
 			upsertCount++
 		}

@@ -91,6 +91,59 @@ export function parsePatchFiles(patch: string): PatchFile[] {
   return files;
 }
 
+// Content-keyed memo over parsePatchFiles for render-hot preview
+// paths: inline diff rows re-parse their preview patch on every virtua
+// remount and every item-churn re-derive, and returning the SAME
+// parsed array for the same patch string gives downstream
+// identity-keyed memos (buildInlineDiffRowsCached's WeakMap) a stable
+// key. Callers MUST treat the result as immutable — it is shared
+// across rows and remounts.
+//
+// The cache holds the patch string itself as the key, so it is sized
+// for line-bounded preview patches and payload prefixes
+// (≤ INLINE_DIFF_PAYLOAD_PREVIEW_BYTES). Inputs too large to share the
+// budget bypass the cache; full multi-MB payload parses (diff sidebar,
+// panel drawer, revert flow) should keep calling parsePatchFiles.
+export const PATCH_PARSE_CACHE_MAX_TOTAL_CHARS = 2 * 1024 * 1024;
+export const PATCH_PARSE_CACHE_MAX_ENTRY_CHARS = PATCH_PARSE_CACHE_MAX_TOTAL_CHARS / 4;
+const parsePatchCache = new Map<string, PatchFile[]>();
+let parsePatchCacheTotalChars = 0;
+
+export function parsePatchFilesCached(patch: string): PatchFile[] {
+  if (patch.length > PATCH_PARSE_CACHE_MAX_ENTRY_CHARS) return parsePatchFiles(patch);
+  const hit = parsePatchCache.get(patch);
+  if (hit) {
+    // Refresh recency: Map iterates in insertion order, so re-inserting
+    // makes the eviction loop drop the least-recently-USED entry first.
+    parsePatchCache.delete(patch);
+    parsePatchCache.set(patch, hit);
+    return hit;
+  }
+  const parsed = parsePatchFiles(patch);
+  parsePatchCache.set(patch, parsed);
+  parsePatchCacheTotalChars += patch.length;
+  while (parsePatchCacheTotalChars > PATCH_PARSE_CACHE_MAX_TOTAL_CHARS) {
+    const oldest = parsePatchCache.keys().next().value;
+    if (oldest === undefined) break;
+    parsePatchCache.delete(oldest);
+    parsePatchCacheTotalChars -= oldest.length;
+  }
+  return parsed;
+}
+
+/** Test-only reset. The cache is module-global process state; without
+ * this, eviction-budget tests would observe entries left by earlier
+ * tests in the same file. */
+export function __resetParsePatchCacheForTest(): void {
+  parsePatchCache.clear();
+  parsePatchCacheTotalChars = 0;
+}
+
+/** Test-only inspection. */
+export function __parsePatchCacheStatsForTest(): { entries: number; chars: number } {
+  return { entries: parsePatchCache.size, chars: parsePatchCacheTotalChars };
+}
+
 export function extractPatchFile(patch: string, filePath: string): string | null {
   if (!patch.trim() || !filePath) return null;
 

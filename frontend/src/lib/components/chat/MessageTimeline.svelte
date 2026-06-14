@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onDestroy, setContext, tick, untrack } from 'svelte';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    ThreadPane,
+    TimelineWindowAnchorOperation,
+  } from '../../stores/thread.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { createUseStickToBottomController } from '../../utils/useStickToBottom.svelte';
@@ -43,11 +46,12 @@
     captureTimelineAnchor,
     createAutoLoadOlderGate,
     resolveVisibleTimelineNodeIndex,
+    type TimelineAnchor,
   } from './timelineScroll';
   import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
   import {
-    activeRowUiRetentionSignature,
     collectTimelineRowUiRetention,
+    timelineRowUiPruneSignature,
   } from './timelineRowUiRetention';
 
   // Initial item-size estimate for virtua. Real sizes come from the
@@ -252,10 +256,6 @@
     return untrack(() => timelineRowDecorations(revealedNodes, activeTurnIndex));
   });
 
-  let rowUiActiveRetentionSignature = $derived(
-    activeRowUiRetentionSignature(pane.items),
-  );
-
   let activeTurnStructuralSignature = $derived.by(() => {
     const threadId = pane.threadId;
     const activeTurn = getActiveTurn(threadId);
@@ -398,7 +398,122 @@
     }, { preserveIntent: true });
   }
 
-  const paneScrollController = Object.assign(stick, { notifyHostLayoutSettled });
+  interface TimelineWindowAnchorIntent {
+    switchGeneration: number;
+    shouldStickToBottom: boolean;
+    anchor: TimelineAnchor | null;
+  }
+
+  function captureTimelineWindowAnchorIntent(): TimelineWindowAnchorIntent {
+    const shouldStickToBottom =
+      stick.isSticky || (!stick.escapedFromLock && stick.isAtBottom);
+    const currentListRef = listRef;
+    return {
+      switchGeneration: pane.switchGeneration,
+      shouldStickToBottom,
+      anchor: shouldStickToBottom || !currentListRef
+        ? null
+        : captureTimelineAnchor(
+            revealedNodes,
+            currentListRef,
+            currentListRef.getScrollOffset(),
+            { clampIndex: true },
+          ),
+    };
+  }
+
+  function canApplyPruneWithoutDroppingAnchor(
+    intent: TimelineWindowAnchorIntent,
+    operation: TimelineWindowAnchorOperation,
+  ): boolean {
+    if (intent.shouldStickToBottom || revealedNodes.length === 0) {
+      return true;
+    }
+    return intent.anchor !== null && operation.keepsItem(intent.anchor.itemId);
+  }
+
+  function restoreBottomAfterTimelineWindowPrune(): void {
+    const lastIndex = revealedNodes.length - 1;
+    stick.runExternalScroll(() => {
+      if (lastIndex >= 0) {
+        listRef?.scrollToIndex(lastIndex, { align: 'end' });
+      }
+      stick.markAtBottom();
+    }, { preserveIntent: true });
+    saveScrollSnapshot();
+  }
+
+  function restoreAnchorAfterTimelineWindowPrune(
+    anchor: TimelineAnchor,
+  ): void {
+    const idx = findTimelineNodeIndex(anchor.itemId);
+    if (idx < 0) return;
+    stick.runExternalScroll(() => {
+      listRef?.scrollToIndex(idx, {
+        align: 'start',
+        offset: -anchor.offsetTop,
+      });
+    }, { preserveIntent: true });
+    saveScrollSnapshot();
+  }
+
+  async function restoreTimelineWindowAnchorAfterPrune(
+    intent: TimelineWindowAnchorIntent,
+    token: number,
+    release: () => void,
+  ): Promise<void> {
+    try {
+      await tick();
+      if (token !== restoreToken) return;
+      if (pane.switchGeneration !== intent.switchGeneration) return;
+
+      if (intent.shouldStickToBottom) {
+        restoreBottomAfterTimelineWindowPrune();
+        return;
+      }
+
+      if (!listRef || !intent.anchor) return;
+      restoreAnchorAfterTimelineWindowPrune(intent.anchor);
+    } finally {
+      release();
+    }
+  }
+
+  function preserveTimelineWindowAnchor(
+    operation: TimelineWindowAnchorOperation,
+  ): boolean {
+    if (!listRef || !scrollEl) {
+      operation.run();
+      return true;
+    }
+
+    const intent = captureTimelineWindowAnchorIntent();
+    if (!canApplyPruneWithoutDroppingAnchor(intent, operation)) {
+      return false;
+    }
+
+    const release = stick.pauseAutoScroll();
+    const token = ++restoreToken;
+    try {
+      operation.run();
+    } catch (err) {
+      release();
+      throw err;
+    }
+    void restoreTimelineWindowAnchorAfterPrune(intent, token, release);
+    return true;
+  }
+
+  const paneScrollController = Object.assign(stick, {
+    notifyHostLayoutSettled,
+    preserveTimelineWindowAnchor,
+  });
+
+  $effect(() => {
+    if (!pane.hasDeferredRecentWindowPrune) return;
+    if (!stick.isSticky) return;
+    pane.retryDeferredRecentWindowPrune();
+  });
 
   // Hide contentEl while virtua and async row content settle. Fresh
   // virtua mounts start from `ESTIMATED_ROW_SIZE × N`; per-row
@@ -592,11 +707,19 @@
   }
 
   function currentVisibleTimelineRange(): { first: number; last: number } | null {
-    if (!listRef || !scrollEl || revealedNodes.length === 0) return null;
+    if (!listRef || revealedNodes.length === 0) return null;
     try {
+      // Virtua's cached geometry only — a clientHeight read here would
+      // force layout, and the prune used to run behind scroll frames
+      // interleaved with streaming DOM writes. A zero viewport means
+      // virtua hasn't measured yet; pruning against it would treat
+      // every row as offscreen and drop leased expansion state that's
+      // about to be visible.
+      const viewport = listRef.getViewportSize();
+      if (viewport <= 0) return null;
       const offset = Math.max(0, listRef.getScrollOffset());
       const first = clampTimelineIndex(listRef.findItemIndex(offset));
-      const last = clampTimelineIndex(listRef.findItemIndex(offset + scrollEl.clientHeight));
+      const last = clampTimelineIndex(listRef.findItemIndex(offset + viewport));
       if (first < 0 || last < 0) return null;
       return first <= last ? { first, last } : { first: last, last: first };
     } catch (err) {
@@ -621,6 +744,21 @@
     const range = currentVisibleTimelineRange();
     if (!range) return;
 
+    // Every signature input is available without walking the node tree,
+    // so a no-op prune (same window, same structure, same active rows)
+    // bails before the retention collection allocates anything.
+    const signature = timelineRowUiPruneSignature({
+      threadId: pane.threadId,
+      timelineRevision: pane.timelineRevision,
+      revealTurnIndex: pane.revealBoundary?.turnIndex ?? '',
+      revealItemIndex: pane.revealBoundary?.itemIndex ?? '',
+      nodesLength: revealedNodes.length,
+      range,
+      items: pane.items,
+    });
+    if (signature === lastRowUiPruneSignature) return;
+    lastRowUiPruneSignature = signature;
+
     const retention = collectTimelineRowUiRetention(
       revealedNodes,
       pane.items,
@@ -631,24 +769,19 @@
         isGroupExpanded: pane.isSubagentGroupExpanded,
       },
     );
-    const signature = [
-      pane.threadId,
-      pane.timelineRevision,
-      pane.revealBoundary?.turnIndex ?? '',
-      pane.revealBoundary?.itemIndex ?? '',
-      retention.signature,
-    ].join('|');
-    if (signature === lastRowUiPruneSignature) return;
-    lastRowUiPruneSignature = signature;
-
-    pane.pruneRowUiState(retention.retention);
+    pane.pruneRowUiState(retention);
   }
 
+  // Prune cadence: structural timeline changes (revision / reveal /
+  // thread switch) plus scroll END — never per scroll frame. Retention
+  // is recomputed fresh on every run, so active-row transitions that
+  // ride no structural bump (a lone settle flip) are picked up by the
+  // next trigger; until then the stale entry is only over-retained,
+  // never prematurely pruned.
   $effect(() => {
     pane.threadId;
     pane.timelineRevision;
     pane.revealBoundary;
-    rowUiActiveRetentionSignature;
     scheduleRowUiStatePrune();
   });
 
@@ -669,7 +802,9 @@
   function handleVirtuaScroll(offset: number): void {
     saveScrollSnapshot();
     maybeAutoLoadOlder(offset);
-    scheduleRowUiStatePrune();
+    // No prune here: this fires every scroll frame (60Hz under the
+    // spring), and pruning is a memory bound, not a render input.
+    // Scroll-end + structural effects cover it.
   }
 
   function handleVirtuaScrollEnd(): void {
@@ -1213,6 +1348,7 @@
   onDestroy(() => {
     hostLayoutRetryToken += 1;
     rowUiPruneToken += 1;
+    restoreToken += 1;
     if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId);
     targetFlash.clear();
     autoLoadOlderGate.reset();
