@@ -413,7 +413,7 @@ pre, code, kbd, samp, .ansi-body {
   border-collapse: collapse;
   margin: 0.5rem 0;
   font-size: 0.8125rem;
-  table-layout: fixed;
+  table-layout: auto;
   width: 100%;
   max-width: 100%;
 }
@@ -447,7 +447,7 @@ pre, code, kbd, samp, .ansi-body {
 .markdown-body [data-streamdown-table] table {
   display: table;
   overflow: visible;
-  table-layout: fixed;
+  table-layout: auto;
   width: 100%;
   max-width: 100%;
   margin: 0;
