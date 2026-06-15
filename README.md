@@ -34,8 +34,9 @@ when `AGENT_OVERFLOW_DEBUG=provider`, plus runtime logs), `attachments/`
 ## Setup
 
 Requires Go 1.26.2+, Node 24+, and pnpm 10+. On Linux, Wails v3 also needs
-`libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `pkg-config`, and `gcc`
-(install via your distro's package manager).
+`libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `pkg-config`, and `gcc`
+(install via your distro's package manager; the GTK4 / WebKitGTK 6.0
+stack ships on Ubuntu 23.04+ / Debian 13+).
 
 ```sh
 make install    # installs wails3 CLI (via go.mod tool directive) + pnpm deps
