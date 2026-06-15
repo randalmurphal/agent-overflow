@@ -143,6 +143,27 @@ describe('<ChatMarkdown> path-link rendering', () => {
     expect(anyOpenAnchor).toBeNull();
   });
 
+  it('renders email-shaped prose as text without Streamdown blocked markers', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '(composer@0.7s unchanged) <test@example.com> https://example.com',
+        pathRefs: [],
+      },
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('(composer@0.7s unchanged)');
+      expect(container.textContent).toContain('<test@example.com>');
+    });
+
+    expect(container.textContent).not.toContain('[blocked]');
+    expect(container.querySelector('[data-streamdown-link-blocked]')).toBeNull();
+    expect(container.querySelector('a[href^="mailto:"]')).toBeNull();
+
+    const webLink = container.querySelector('a[href="https://example.com/"]');
+    expect(webLink?.textContent).toBe('https://example.com');
+  });
+
   it('unwraps a ```markdown fence so inner code blocks render correctly', async () => {
     const source = [
       '```markdown',

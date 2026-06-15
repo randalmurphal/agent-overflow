@@ -368,15 +368,29 @@ index 1131b2c3261d104c151289c31e126dea2167ab30..4325191ac0af03ce76ab8c114fb68c1d
          return getContext('POPOVER')
              ? undefined
 diff --git a/dist/marked/index.js b/dist/marked/index.js
-index fe8c295baecc3f82c02f7b401325fb32a88514e8..735a5b761f732a5819ac9cfa1fa75812b4ec99bb 100644
+index fe8c295baecc3f82c02f7b401325fb32a88514e8..cbe4022b8b8ed9b4b38f14a4da3dacd77774669a 100644
 --- a/dist/marked/index.js
 +++ b/dist/marked/index.js
-@@ -1,4 +1,17 @@
+@@ -1,4 +1,31 @@
  import { Lexer } from 'marked';
 +// marked 16's GFM del regex treats ~text~ (single tilde) as strikethrough,
 +// producing false positives on approximate values like ~240MB. Require ~~.
 +const _fixedDel = /^(~~)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/;
 +Lexer.rules.inline.gfm.del = Lexer.rules.inline.breaks.del = _fixedDel;
++// Disable marked's mailto autolinking. Agent prose commonly uses
++// labels like `composer@0.7s`; marked sees those as email addresses,
++// Streamdown rejects the resulting `mailto:` URL, then renders a
++// visible `[blocked]` marker. HTTP/HTTPS/FTP and `www.` autolinks
++// still go through the original rules.
++const _emailUrlAlternative = '|^[A-Za-z0-9._+-]+(@)[a-zA-Z0-9-_]+(?:\\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![-_])';
++const _emailAutolinkAlternative = "|[a-zA-Z0-9.!#$%&'*+/=?_`{|}~-]+(@)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?![-_])";
++const _removeRegexAlternative = (re, alternative) => new RegExp(re.source.replace(alternative, ''), re.flags);
++Lexer.rules.inline.gfm.url = _removeRegexAlternative(Lexer.rules.inline.gfm.url, _emailUrlAlternative);
++Lexer.rules.inline.breaks.url = _removeRegexAlternative(Lexer.rules.inline.breaks.url, _emailUrlAlternative);
++Lexer.rules.inline.normal.autolink = _removeRegexAlternative(Lexer.rules.inline.normal.autolink, _emailAutolinkAlternative);
++Lexer.rules.inline.gfm.autolink = _removeRegexAlternative(Lexer.rules.inline.gfm.autolink, _emailAutolinkAlternative);
++Lexer.rules.inline.breaks.autolink = _removeRegexAlternative(Lexer.rules.inline.breaks.autolink, _emailAutolinkAlternative);
++Lexer.rules.inline.pedantic.autolink = _removeRegexAlternative(Lexer.rules.inline.pedantic.autolink, _emailAutolinkAlternative);
 +// marked's GFM inline `text` rule begins with `[`~]+` — a COMBINED run of
 +// backticks AND tildes — so a `~` fused to a backtick (e.g. ~`code`) gets
 +// swallowed into a literal text run and the code span never opens (it can
