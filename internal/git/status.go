@@ -341,11 +341,16 @@ func (c *Core) CountUnpushedCommits(cwd, branch string) (count int, hasUpstream 
 	if branch == "" {
 		return 0, false, nil
 	}
+	if err := validateBranchName(branch); err != nil {
+		return 0, false, err
+	}
 	upstream, ok := c.upstreamFor(cwd, branch)
 	if !ok {
 		return 0, false, nil
 	}
-	stdout, _, err := c.Execute(cwd, "rev-list", "--count", branch, "^"+upstream)
+	// The trailing "--" disambiguates refs from pathspecs when a branch
+	// name also exists as a filesystem path in the worktree.
+	stdout, _, err := c.Execute(cwd, "rev-list", "--count", branch, "^"+upstream, "--")
 	if err != nil {
 		return 0, true, err
 	}

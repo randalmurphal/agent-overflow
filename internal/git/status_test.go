@@ -766,6 +766,18 @@ func TestCountUnpushedCommitsReportsNoUpstreamWhenUnconfigured(t *testing.T) {
 	}
 }
 
+func TestCountUnpushedCommitsRejectsFlagShapedBranch(t *testing.T) {
+	core := NewCore()
+
+	_, _, err := core.CountUnpushedCommits(t.TempDir(), "--objects")
+	if err == nil {
+		t.Fatal("expected flag-shaped branch name to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must not start with -") {
+		t.Fatalf("error = %q, want branch validation failure", err)
+	}
+}
+
 func TestCountUnpushedCommitsCountsCommitsAhead(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	core := NewCore()
@@ -808,6 +820,44 @@ func TestCountUnpushedCommitsCountsCommitsAhead(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("count = %d, want 2 unpushed commits", count)
+	}
+}
+
+func TestCountUnpushedCommitsSeparatesBranchNameFromPath(t *testing.T) {
+	repo, _ := repoWithOrigin(t)
+	core := NewCore()
+
+	const branch = "spike/claude-mitm"
+	testutil.RunGit(t, repo, "checkout", "-b", branch)
+
+	collidingPath := filepath.Join(repo, filepath.FromSlash(branch))
+	if err := os.MkdirAll(collidingPath, 0o755); err != nil {
+		t.Fatalf("create colliding path: %v", err)
+	}
+	readmePathspec := branch + "/README.md"
+	if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(readmePathspec)), []byte("path with the same name as the branch\n"), 0o644); err != nil {
+		t.Fatalf("write colliding path file: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", readmePathspec)
+	testutil.RunGit(t, repo, "commit", "-m", "add branch path collision")
+	testutil.RunGit(t, repo, "push", "-u", "origin", branch)
+
+	unpushedPathspec := branch + "/unpushed.md"
+	if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(unpushedPathspec)), []byte("unpushed\n"), 0o644); err != nil {
+		t.Fatalf("write unpushed path file: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", unpushedPathspec)
+	testutil.RunGit(t, repo, "commit", "-m", "add unpushed collision file")
+
+	count, hasUpstream, err := core.CountUnpushedCommits(repo, branch)
+	if err != nil {
+		t.Fatalf("CountUnpushedCommits: %v", err)
+	}
+	if !hasUpstream {
+		t.Fatal("expected hasUpstream=true with pushed tracking branch")
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1 unpushed commit", count)
 	}
 }
 

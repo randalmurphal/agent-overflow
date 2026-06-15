@@ -28,16 +28,17 @@ before `make install`.
 - `make build` — production build (`wails3 build`)
 - `make go-build` — `go build ./...` with repo-standard platform env
 - `make go-test` — `go test ./...` with repo-standard platform env
-- `make check` — `make go-build` + `pnpm run check`
-- `make test` — `make go-test` + `pnpm test`
+- `make check` — `make go-build` + `cd frontend && pnpm run check`
+- `make test` — `make go-test` + `cd frontend && pnpm test`
 - `make verify` — full release gate
 - `make release` — builds direct-install artifacts in `dist/release/<version>/`
 
-Every task must leave `make go-build`, `make go-test`, `pnpm run check`, and
-`pnpm run build` passing. On macOS, use the Make targets rather than bare
-`go build ./...` / `go test ./...`; the Makefile exports the cgo deployment
-target flags Wails needs to keep Objective-C objects and final binaries on the
-same minimum macOS version.
+Every task must leave `make go-build`, `make go-test`,
+`cd frontend && pnpm run check`, and `cd frontend && pnpm run build` passing.
+On macOS, use the Make targets rather than bare `go build ./...` /
+`go test ./...`; the Makefile exports the cgo deployment target flags Wails
+needs to keep Objective-C objects and final binaries on the same minimum macOS
+version.
 
 ## Core Principles
 
