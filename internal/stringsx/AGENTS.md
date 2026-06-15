@@ -16,6 +16,11 @@ package can depend on it without introducing a cycle.
 - `joinnonempty.go` — `JoinNonEmpty(sep, parts...)` trims each part and
   joins the non-blank survivors with `sep`. Used for composing system
   prompts where any section may be empty.
+- `ansi.go` — `SkipANSIEscape(s, i)` returns the index just past the
+  ANSI/OSC escape at `s[i]` (CSI / OSC / charset / bare ESC; an
+  unterminated sequence resumes past the ESC instead of swallowing the
+  tail). Generic over `[]byte | string` so the claudetui PTY scan and the
+  triage command-line de-ANSI share one escape skipper.
 
 ## Responsibility boundary
 

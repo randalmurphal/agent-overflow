@@ -174,6 +174,16 @@ seconds; it is cold-resume history only. Tool results come from
 - `session.go` — the `provider.Session` impl. Owns the PTY (via
   `internal/terminal`), gateway, relay, and the single `claude.Parser`
   fed off one serialized channel.
+- `session_send.go` — the send half of `Session`: the composer/send
+  keystroke contract (bracketed paste, inline image path injection,
+  composer clear, submit CR) and the `buildSendSteps` step builder.
+- `composer_ready.go` — the cold-start composer-ready gate.
+  `noteComposerOutput` scans PTY boot output for the bottom status bar
+  (de-ANSI'd, ALL chrome markers required) and `awaitComposerReady` holds
+  the FIRST send until the Ink composer is parked reading stdin, so the
+  submit CR isn't read in the same chunk as the paste and swallowed (the
+  worktree-switch / opening-message bug). Bounded-timeout fallback; binary
+  behavior — re-probe on version bump (`spike/claude-mitm/`).
 
 ## Concurrency model
 

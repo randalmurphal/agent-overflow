@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"agent-overflow/internal/stringsx"
 )
 
 // DiffMeta is the JSON structure stored in payloads.meta for diffs.
@@ -186,21 +188,20 @@ func compactCommandLine(text string) string {
 	return strings.Join(strings.Fields(stripANSIControlSequences(text)), " ")
 }
 
+// stripANSIControlSequences removes ANSI/OSC escape sequences from a command
+// line, preserving every other byte (case, spacing) for the compact preview.
+// The escape-boundary logic is shared with the claudetui PTY scan via
+// stringsx.SkipANSIEscape, so this also drops OSC / charset / bare-ESC sequences
+// that the old CSI-only stripper used to leak into the preview.
 func stripANSIControlSequences(text string) string {
 	var b strings.Builder
-	for i := 0; i < len(text); i++ {
-		if text[i] != 0x1b || i+1 >= len(text) || text[i+1] != '[' {
-			b.WriteByte(text[i])
+	for i := 0; i < len(text); {
+		if text[i] == 0x1b {
+			i = stringsx.SkipANSIEscape(text, i)
 			continue
 		}
-		i += 2
-		for i < len(text) {
-			c := text[i]
-			if c >= 0x40 && c <= 0x7e {
-				break
-			}
-			i++
-		}
+		b.WriteByte(text[i])
+		i++
 	}
 	return b.String()
 }

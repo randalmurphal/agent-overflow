@@ -89,16 +89,18 @@ type Session struct {
 	// and the human's keystrokes never interleave into the TUI composer. Toggled
 	// by SetTakeControl; cleared by DetachTerminal.
 	controlHeld bool
-	// Cold-start composer-ready gate (see composerReady*), all under mu.
-	// onPTYOutput records the PTY byte count + last-output time until the gate
-	// latches; awaitComposerReady reads them to decide when the first Send may
-	// write. onPTYOutput already holds mu for the sink fan-out, so the gate adds
-	// no extra lock on the output hot path.
-	ptyBytes      int
-	lastPTYAt     time.Time
-	composerReady bool
+	// Cold-start composer-ready gate (see composer_ready.go), all under mu.
+	// onPTYOutput feeds raw output to noteComposerOutput until the composer bar
+	// marker is seen (composerMarkerSeen); awaitComposerReady waits on that to
+	// release the first Send. composerScanBuf is the bounded scratch tail the scan
+	// matches against, released once the marker lands or the gate latches.
+	// onPTYOutput already holds mu for the sink fan-out, so the gate adds no extra
+	// lock on the output hot path.
+	composerMarkerSeen bool
+	composerReady      bool
+	composerScanBuf    []byte
 
-	// readyPoll / readyTimeout override the composerReady* poll cadence + bounded
+	// readyPoll / readyTimeout override the composer-ready poll cadence + bounded
 	// fallback; zero means use the package defaults. Set once before first use
 	// (a test shrinks them to exercise the timeout path fast) — read-only
 	// thereafter, so they need no lock.
@@ -455,14 +457,12 @@ func (s *Session) Close() error {
 // simply means "nobody is attached yet."
 func (s *Session) onPTYOutput(threadID, terminalID string, sequence uint64, data []byte) {
 	s.mu.Lock()
-	// Feed the cold-start composer-ready gate until it latches: count bytes and
-	// stamp the last-output time so the first Send can wait for the init burst to
-	// settle. Skipped once ready, so a warm session pays nothing extra here (this
-	// lock is already taken for the sink fan-out below).
-	if !s.composerReady {
-		s.ptyBytes += len(data)
-		s.lastPTYAt = time.Now()
-	}
+	// Feed the cold-start composer-ready gate until it latches: scan boot output
+	// for the composer bar marker so the first Send waits until claude has mounted
+	// its composer and is parked reading input. noteComposerOutput no-ops once the
+	// marker is seen or the gate has latched, so a warm session pays nothing extra
+	// here (this lock is already taken for the sink fan-out below).
+	s.noteComposerOutput(data)
 	sink := s.sink
 	s.mu.Unlock()
 	if sink != nil {

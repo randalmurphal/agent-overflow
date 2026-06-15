@@ -384,38 +384,136 @@ func assertSteps(t *testing.T, got, want []sendStep) {
 	}
 }
 
-// TestPtyReadyForSend pins the cold-start readiness predicate: a Send may only
-// write once the init output burst has landed AND the PTY stream has gone idle.
-// Either alone is not enough — sending mid-burst (or before any output) is the
-// cold-start bug where the submit CR is swallowed with the paste. The end-to-end
-// proof is spike/claude-mitm/probe_cold_submit.py (immediate 0/3, idle-gate 3/3).
-func TestPtyReadyForSend(t *testing.T) {
-	cases := []struct {
-		name  string
-		bytes int
-		quiet time.Duration
-		want  bool
-	}{
-		{"no output yet", 0, time.Second, false},
-		{"mid burst, not idle", composerReadyMinBytes, 0, false},
-		{"burst landed but still streaming", composerReadyMinBytes, composerReadyQuiet - time.Millisecond, false},
-		{"idle but too little output", composerReadyMinBytes - 1, composerReadyQuiet, false},
-		{"burst landed and idle", composerReadyMinBytes, composerReadyQuiet, true},
-		{"well past both thresholds", 1 << 16, time.Second, true},
+// TestNormalizeForMarker pins the de-ANSI normalization the composer-bar match
+// relies on: the TUI lays the bar out with cursor/color escapes and padding, so
+// only after stripping escapes, dropping whitespace, lowercasing, and discarding
+// non-ASCII glyphs do the chrome markers appear as a contiguous substring.
+func TestNormalizeForMarker(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"strips CSI color codes", "\x1b[1mHELLO\x1b[0m", "hello"},
+		{"drops spaces and lowercases", "Bypass Permissions On", "bypasspermissionson"},
+		{"strips OSC sequences", "\x1b]0;a title\x07abc", "abc"},
+		{"drops high/multibyte glyphs", "⏵⏵ shift", "shift"},
+		{"keeps plus and parens", "(shift+tab to cycle)", "(shift+tabtocycle)"},
+		{
+			"realistic bar normalizes to its markers",
+			"\x1b[2m⏵⏵ \x1b[0mbypass permissions on \x1b[2m(shift+tab to cycle)\x1b[0m",
+			"bypasspermissionson(shift+tabtocycle)",
+		},
+		// An unterminated CSI/OSC must NOT swallow the bytes after it — a stray
+		// ESC[ / ESC] in replayed boot output would otherwise hide a composer bar
+		// rendered later in the same tail. SkipANSIEscape resumes just past the ESC.
+		{"unterminated OSC keeps trailing text", "\x1b]0;titleabc", "]0;titleabc"},
+		{"truncated CSI at buffer end keeps trailing text", "abc\x1b[1;2", "abc[1;2"},
+		{"charset designator is skipped", "\x1b(Babc", "abc"},
+		{"bare ESC consumes one byte", "\x1bXabc", "abc"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ptyReadyForSend(tc.bytes, tc.quiet); got != tc.want {
-				t.Errorf("ptyReadyForSend(%d, %v) = %v, want %v", tc.bytes, tc.quiet, got, tc.want)
+			if got := string(normalizeForMarker([]byte(tc.in))); got != tc.want {
+				t.Errorf("normalizeForMarker(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
+	// The markers must actually be substrings of a normalized bar, or the gate
+	// can never open — guard against the two drifting apart.
+	bar := normalizeForMarker([]byte("\x1b[1m⏵⏵ bypass permissions on (shift+tab to cycle)\x1b[0m"))
+	for _, m := range composerBarMarkers {
+		if !bytes.Contains(bar, m) {
+			t.Errorf("composer bar %q does not contain marker %q", bar, m)
+		}
+	}
 }
 
-// TestAwaitComposerReady covers the three gate outcomes: an already-latched
-// session returns at once, an observed-ready PTY latches and returns, and a
-// never-ready session honors ctx cancellation instead of spinning to the
-// timeout.
+// TestNoteComposerOutput pins the boot-output scan that opens the gate: the whole
+// bar flips it (even split across chunks and through ANSI), a single marker phrase
+// or arbitrary content never does, an unterminated OSC can't swallow a bar that
+// follows it, the scratch buffer stays bounded and is released on a match, and a
+// latched session stops scanning.
+func TestNoteComposerOutput(t *testing.T) {
+	t.Run("flips on the rendered bar and frees the buffer", func(t *testing.T) {
+		s := &Session{}
+		s.noteComposerOutput([]byte("\x1b[1mbypass permissions on\x1b[0m (shift+tab to cycle)"))
+		if !s.composerMarkerSeen {
+			t.Error("expected composerMarkerSeen once the bottom bar renders")
+		}
+		if s.composerScanBuf != nil {
+			t.Error("scratch buffer should be released after a match")
+		}
+	})
+
+	t.Run("matches the full bar split across chunks", func(t *testing.T) {
+		s := &Session{}
+		s.noteComposerOutput([]byte("bypass permissions on (shift+tab "))
+		if s.composerMarkerSeen {
+			t.Fatal("a partial bar (only one marker complete) must not match")
+		}
+		s.noteComposerOutput([]byte("to cycle) more"))
+		if !s.composerMarkerSeen {
+			t.Error("expected a match once the whole bar has arrived across chunks")
+		}
+	})
+
+	t.Run("one marker alone does not open the gate", func(t *testing.T) {
+		// Prose mentioning a single chrome phrase (e.g. replayed transcript text)
+		// must not be mistaken for the mounted bar — the gate needs every marker,
+		// so a lone phrase keeps it shut. This guards the auto-sent first message
+		// on a worktree switch against a premature open (the swallow bug's class).
+		s := &Session{}
+		s.noteComposerOutput([]byte("\x1b[1mbypass permissions on\x1b[0m today"))
+		if s.composerMarkerSeen {
+			t.Error("a single marker phrase must not open the gate; the full bar is required")
+		}
+	})
+
+	t.Run("an unterminated OSC before the bar still opens the gate", func(t *testing.T) {
+		// A stray ESC] with no BEL/ST (e.g. raw bytes in replayed tool output during
+		// boot) must not swallow the composer bar that renders after it in the same
+		// accumulated tail. Without the SkipANSIEscape resume-past-ESC behavior this
+		// hangs the gate until the timeout.
+		s := &Session{}
+		s.noteComposerOutput([]byte("\x1b]9;notification with no terminator " +
+			"bypass permissions on (shift+tab to cycle)"))
+		if !s.composerMarkerSeen {
+			t.Error("an unterminated OSC must not swallow the bar that follows it")
+		}
+	})
+
+	t.Run("arbitrary content never matches", func(t *testing.T) {
+		s := &Session{}
+		for i := 0; i < 40; i++ {
+			s.noteComposerOutput(bytes.Repeat([]byte("lorem ipsum dolor sit amet "), 32))
+		}
+		if s.composerMarkerSeen {
+			t.Error("non-bar content must not be mistaken for the composer bar")
+		}
+	})
+
+	t.Run("scan buffer stays bounded", func(t *testing.T) {
+		s := &Session{}
+		s.noteComposerOutput(bytes.Repeat([]byte("x"), maxComposerScanBytes*3))
+		if len(s.composerScanBuf) > maxComposerScanBytes {
+			t.Errorf("scan buffer grew to %d, want <= %d", len(s.composerScanBuf), maxComposerScanBytes)
+		}
+	})
+
+	t.Run("latched session stops scanning", func(t *testing.T) {
+		s := &Session{composerReady: true}
+		s.noteComposerOutput([]byte("bypass permissions on (shift+tab to cycle)"))
+		if s.composerMarkerSeen {
+			t.Error("a latched session must not keep scanning")
+		}
+		if s.composerScanBuf != nil {
+			t.Error("a latched session must not accumulate output")
+		}
+	})
+}
+
+// TestAwaitComposerReady covers the gate outcomes: an already-latched session
+// returns at once, the bar marker rendering latches and releases the send, a
+// volume burst WITHOUT the bar does not (the premature-fire guard that was the
+// real bug), a never-ready session falls back to the bounded timeout, and ctx
+// cancellation is honored instead of spinning.
 func TestAwaitComposerReady(t *testing.T) {
 	t.Run("latched returns immediately", func(t *testing.T) {
 		s := &Session{composerReady: true, logf: func(string, ...any) {}}
@@ -424,19 +522,15 @@ func TestAwaitComposerReady(t *testing.T) {
 		}
 	})
 
-	t.Run("becomes ready while polling and latches", func(t *testing.T) {
-		// Start not-ready (enough bytes, but output just arrived so quiet is below
-		// the threshold), then flip to idle from another goroutine so the poll loop
-		// observes the transition rather than passing on the first check.
+	t.Run("becomes ready when the bar renders, and latches", func(t *testing.T) {
+		// Start not-ready, then render the composer bar from another goroutine so
+		// the poll loop observes the transition rather than passing on the first
+		// check. noteComposerOutput runs under mu, as it does from onPTYOutput.
 		s := &Session{readyPoll: time.Millisecond, logf: func(string, ...any) {}}
-		s.mu.Lock()
-		s.ptyBytes = composerReadyMinBytes + 1
-		s.lastPTYAt = time.Now()
-		s.mu.Unlock()
 		go func() {
 			time.Sleep(5 * time.Millisecond)
 			s.mu.Lock()
-			s.lastPTYAt = time.Now().Add(-time.Hour) // now idle well past the gate
+			s.noteComposerOutput([]byte("\x1b[1mbypass permissions on (shift+tab to cycle)\x1b[0m"))
 			s.mu.Unlock()
 		}()
 		if err := s.awaitComposerReady(context.Background()); err != nil {
@@ -446,13 +540,45 @@ func TestAwaitComposerReady(t *testing.T) {
 		latched := s.composerReady
 		s.mu.Unlock()
 		if !latched {
-			t.Error("composerReady should latch true once observed ready")
+			t.Error("composerReady should latch true once the bar is seen")
+		}
+	})
+
+	t.Run("a volume burst without the bar does not release (premature-fire guard)", func(t *testing.T) {
+		// The bug: the old gate released on ">=512 bytes + >=400ms idle", so a
+		// pre-composer boot/resume gap (lots of output, then a quiet beat before the
+		// composer mounts) opened the gate and the CR was swallowed. Feed a big
+		// NON-bar burst and leave the stream idle: the gate must NOT open on volume —
+		// only the bounded timeout (no bar ever renders here) may release it. A
+		// regression to the byte heuristic returns near-instantly and fails this.
+		s := &Session{
+			readyPoll:    time.Millisecond,
+			readyTimeout: 80 * time.Millisecond,
+			logf:         func(string, ...any) {},
+		}
+		s.mu.Lock()
+		s.noteComposerOutput(bytes.Repeat([]byte("booting... "), 200)) // >2KB, no bar
+		s.mu.Unlock()
+		start := time.Now()
+		if err := s.awaitComposerReady(context.Background()); err != nil {
+			t.Fatalf("awaitComposerReady = %v, want nil", err)
+		}
+		if elapsed := time.Since(start); elapsed < 70*time.Millisecond {
+			t.Errorf("released after %v on byte volume alone; only the bar marker or "+
+				"the timeout may open the gate (premature-fire bug)", elapsed)
+		}
+		s.mu.Lock()
+		seen := s.composerMarkerSeen
+		s.mu.Unlock()
+		if seen {
+			t.Error("composerMarkerSeen should be false — no bar was rendered")
 		}
 	})
 
 	t.Run("times out and proceeds, logging once", func(t *testing.T) {
-		// ptyBytes stays 0, so the gate never opens; the bounded timeout must let
-		// the send proceed anyway (a re-sendable miss beats a hang) and log once.
+		// No bar ever renders, so the gate never opens on its own; the bounded
+		// timeout must let the send proceed anyway (a re-sendable miss beats a hang)
+		// and log once.
 		var logged int
 		s := &Session{
 			readyPoll:    time.Millisecond,
@@ -478,8 +604,8 @@ func TestAwaitComposerReady(t *testing.T) {
 	})
 
 	t.Run("honors cancellation mid-poll", func(t *testing.T) {
-		// Gate shut (ptyBytes 0) with the timeout far off, so only cancellation can
-		// end an in-flight poll — proves ctx.Done() interrupts the wait promptly.
+		// Gate shut (no bar rendered) with the timeout far off, so only cancellation
+		// can end an in-flight poll — proves ctx.Done() interrupts the wait promptly.
 		s := &Session{
 			readyPoll:    time.Millisecond,
 			readyTimeout: time.Hour,

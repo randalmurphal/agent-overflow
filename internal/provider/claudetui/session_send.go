@@ -13,9 +13,10 @@ import (
 
 // session_send.go is the send half of the Session: driving a user turn into the
 // real TUI composer by writing keystrokes to the PTY. It owns the composer/send
-// keystroke contract (bracketed paste, composer-clear, submit) and the cold-start
-// readiness gate that keeps the first turn from being swallowed. The rest of the
-// Session (lifecycle, parser feed, PTY callbacks) lives in session.go.
+// keystroke contract (bracketed paste, composer-clear, submit). The cold-start
+// readiness gate that holds the first turn until the composer has mounted lives
+// in composer_ready.go; the rest of the Session (lifecycle, parser feed, PTY
+// callbacks) lives in session.go.
 
 const (
 	// bracketedPaste* frame composer input so multi-line content lands as one
@@ -60,22 +61,6 @@ const (
 	// the common already-empty case.
 	composerClearKey        = "\x15"
 	composerClearKeystrokes = 16
-	// composerReady* gate the FIRST Send until the freshly-launched TUI has
-	// reached steady-state input reading. Before that, claude hasn't begun
-	// draining stdin, so our submit CR is read in the same chunk as the paste and
-	// swallowed — the turn types into the composer but never sends (the user hit
-	// this on the opening message; the second message, sent warm, worked).
-	// Readiness = the init output burst has landed (>= MinBytes) AND the PTY
-	// stream has since gone idle (>= Quiet), i.e. claude is parked reading.
-	// LIVE-validated in spike/claude-mitm/probe_cold_submit.py: send-immediately
-	// 0/3 submitted, idle-gate 3/3, and a two-message run reproduced the exact
-	// "first sticks, second sends" report. Latched once; warm sends skip the wait.
-	// Poll is the gate's check cadence; Timeout is a bounded fallback so a
-	// pathological never-idle stream degrades to a re-sendable miss, never a hang.
-	composerReadyMinBytes = 512
-	composerReadyQuiet    = 400 * time.Millisecond
-	composerReadyPoll     = 40 * time.Millisecond
-	composerReadyTimeout  = 8 * time.Second
 )
 
 // Send delivers a user turn by pasting the content into the TUI composer and
@@ -99,9 +84,10 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	if strings.TrimSpace(content) == "" && len(imagePaths) == 0 {
 		return fmt.Errorf("claudetui: user message requires text or image content")
 	}
-	// Cold-start guard: don't write until the freshly-launched TUI is parked
-	// reading input, or the submit CR is swallowed with the paste and the turn
-	// never sends (see composerReady*). Latched, so only the first send waits.
+	// Cold-start guard: don't write until the freshly-launched TUI has mounted its
+	// composer and is parked reading input, or the submit CR is swallowed with the
+	// paste and the turn never sends (see composer_ready.go). Latched, so only the
+	// first send waits.
 	if err := s.awaitComposerReady(ctx); err != nil {
 		return err
 	}
@@ -258,60 +244,5 @@ func (s *Session) settle(ctx context.Context, d time.Duration) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
-	}
-}
-
-// ptyReadyForSend reports whether the launched TUI has reached steady-state input
-// reading: its init output burst has landed (bytes) and the PTY stream has since
-// been idle long enough (quiet) that claude is parked reading rather than still
-// painting startup. See composerReady* for why the first send must wait for this.
-// On a brand-new session lastPTYAt is the zero Time, so the caller's quiet is
-// effectively infinite; the bytes >= MinBytes half is what holds the gate shut
-// until the init burst actually lands.
-func ptyReadyForSend(bytes int, quiet time.Duration) bool {
-	return bytes >= composerReadyMinBytes && quiet >= composerReadyQuiet
-}
-
-// awaitComposerReady blocks until the just-launched TUI is parked reading input,
-// so the first Send's submit CR is read as a distinct keypress instead of being
-// swallowed with the paste (the cold-start bug). The result is latched under mu:
-// only the first cold send pays the wait; every later send returns immediately.
-// On the bounded timeout it proceeds anyway — a swallowed re-sendable submit beats
-// hanging the send — and that timeout is the live safety net, since production
-// callers pass context.Background(); the ctx branch is for tests / a future
-// cancellable caller.
-func (s *Session) awaitComposerReady(ctx context.Context) error {
-	s.mu.Lock()
-	ready := s.composerReady
-	s.mu.Unlock()
-	if ready {
-		return nil
-	}
-	poll, timeout := s.readyPoll, s.readyTimeout
-	if poll <= 0 {
-		poll = composerReadyPoll
-	}
-	if timeout <= 0 {
-		timeout = composerReadyTimeout
-	}
-	deadline := time.Now().Add(timeout)
-	for {
-		s.mu.Lock()
-		ok := ptyReadyForSend(s.ptyBytes, time.Since(s.lastPTYAt))
-		timedOut := time.Now().After(deadline)
-		if ok || timedOut {
-			s.composerReady = true
-			s.mu.Unlock()
-			if timedOut && !ok {
-				s.logf("claudetui: composer-ready gate timed out after %s; sending anyway", timeout)
-			}
-			return nil
-		}
-		s.mu.Unlock()
-		select {
-		case <-time.After(poll):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
 	}
 }
