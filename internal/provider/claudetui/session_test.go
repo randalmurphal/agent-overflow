@@ -1,8 +1,10 @@
 package claudetui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -192,48 +194,193 @@ func TestSessionRespondToUserInputThroughRelay(t *testing.T) {
 	}
 }
 
-// TestSessionSendValidation covers the two reject-before-write branches: the
-// interactive provider has no stdin image path, and blank content is refused.
+// TestSessionSendValidation covers the reject-before-write branches: a send with
+// neither text nor an image attachment is refused, and an image attachment that
+// arrives without a resolved on-disk path is a wiring bug we fail loudly on
+// rather than silently dropping the image. Both fire before the composer-ready
+// gate, so a bare session (no live PTY) exercises them.
 func TestSessionSendValidation(t *testing.T) {
 	s := &Session{logf: func(string, ...any) {}}
 	ctx := context.Background()
 
-	if err := s.Send(ctx, "hello", provider.SendOptions{
+	if err := s.Send(ctx, "   ", provider.SendOptions{}); err == nil {
+		t.Error("Send with neither text nor attachments should error")
+	}
+	if err := s.Send(ctx, "", provider.SendOptions{
 		Attachments: []provider.ImageAttachment{{ID: "img1"}},
 	}); err == nil {
-		t.Error("Send with image attachments should error on the interactive provider")
-	}
-	if err := s.Send(ctx, "   ", provider.SendOptions{}); err == nil {
-		t.Error("Send with blank content should error")
+		t.Error("Send with an attachment missing its on-disk path should error")
 	}
 }
 
-// TestSendKeystrokes pins the keystroke contract Send writes to the PTY: a
-// composer-clear FIRST (so a prompt the TUI restored on a prior Esc-revert can't
-// fuse with this paste), then the bracketed-paste-wrapped content, then submit.
-func TestSendKeystrokes(t *testing.T) {
-	clear, paste, submit := sendKeystrokes("hello world")
+// TestBuildSendSteps pins the PTY keystroke contract for the send shapes,
+// including the gap that must follow each block: a composer-clear FIRST (so an
+// Esc-revert leftover can't fuse with this send), the message body replayed as a
+// paste per segment with each image pasted at its "[Image #i]" marker, then
+// submit. Every interior paste→paste boundary is the longer pasteSettle so two
+// bracketed pastes don't merge into one chunk; clear→first-paste and
+// last-paste→submit are the short composerSettle, and submit has no trailing gap.
+func TestBuildSendSteps(t *testing.T) {
+	clearData := []byte(strings.Repeat("\x15", composerClearKeystrokes))
+	paste := func(s string) []byte { return []byte("\x1b[200~" + s + "\x1b[201~") }
 
-	// Clear is exactly composerClearKeystrokes Ctrl-U presses and nothing else,
-	// so it is a no-op on an already-empty composer.
-	if want := strings.Repeat("\x15", composerClearKeystrokes); string(clear) != want {
-		t.Errorf("clear = %q, want %d Ctrl-U presses", clear, composerClearKeystrokes)
-	}
-	if got, want := string(paste), "\x1b[200~hello world\x1b[201~"; got != want {
-		t.Errorf("paste = %q, want %q", got, want)
-	}
-	if string(submit) != "\r" {
-		t.Errorf("submit = %q, want CR", submit)
+	t.Run("text only", func(t *testing.T) {
+		assertSteps(t, buildSendSteps("hello world", nil), []sendStep{
+			{data: clearData, settle: composerSettle},
+			{data: paste("hello world"), settle: composerSettle},
+			{data: []byte("\r")},
+		})
+	})
+
+	t.Run("image inline in the middle", func(t *testing.T) {
+		// The user dropped the image mid-text; the composer left "[Image #1]" at
+		// that offset. The path pastes in place, between the two text runs, so
+		// Claude labels the image inline instead of front-loading it.
+		assertSteps(t, buildSendSteps("look at [Image #1] this", []string{"/a/one.png"}), []sendStep{
+			{data: clearData, settle: composerSettle},
+			{data: paste("look at "), settle: pasteSettle},
+			{data: paste("/a/one.png"), settle: pasteSettle},
+			{data: paste(" this"), settle: composerSettle},
+			{data: []byte("\r")},
+		})
+	})
+
+	t.Run("image marker at the start", func(t *testing.T) {
+		assertSteps(t, buildSendSteps("[Image #1] caption", []string{"/a/one.png"}), []sendStep{
+			{data: clearData, settle: composerSettle},
+			{data: paste("/a/one.png"), settle: pasteSettle},
+			{data: paste(" caption"), settle: composerSettle},
+			{data: []byte("\r")},
+		})
+	})
+
+	t.Run("two images at their markers", func(t *testing.T) {
+		assertSteps(t, buildSendSteps("a [Image #1] b [Image #2] c", []string{"/a/one.png", "/b/two.jpg"}), []sendStep{
+			{data: clearData, settle: composerSettle},
+			{data: paste("a "), settle: pasteSettle},
+			{data: paste("/a/one.png"), settle: pasteSettle},
+			{data: paste(" b "), settle: pasteSettle},
+			{data: paste("/b/two.jpg"), settle: pasteSettle},
+			{data: paste(" c"), settle: composerSettle},
+			{data: []byte("\r")},
+		})
+	})
+
+	t.Run("image only (marker alone, no surrounding text)", func(t *testing.T) {
+		// ensureImagePlaceholders produces "[Image #1]" for an image-only send, so
+		// there is no text run: the image paste is followed by composerSettle
+		// (paste→submit), not pasteSettle.
+		assertSteps(t, buildSendSteps("[Image #1]", []string{"/a/one.png"}), []sendStep{
+			{data: clearData, settle: composerSettle},
+			{data: paste("/a/one.png"), settle: composerSettle},
+			{data: []byte("\r")},
+		})
+	})
+
+	t.Run("missing marker appends the image after the text", func(t *testing.T) {
+		// Defensive fallback: ensureImagePlaceholders should always leave a marker,
+		// but if one is absent the image is appended rather than silently dropped.
+		assertSteps(t, buildSendSteps("no marker here", []string{"/a/one.png"}), []sendStep{
+			{data: clearData, settle: composerSettle},
+			{data: paste("no marker here"), settle: pasteSettle},
+			{data: paste("/a/one.png"), settle: composerSettle},
+			{data: []byte("\r")},
+		})
+	})
+
+	t.Run("adjacent image markers paste back-to-back", func(t *testing.T) {
+		// Two images dropped with no text between them: two image pastes in a row,
+		// and the image→image boundary must still be the longer pasteSettle so the
+		// two paths don't merge into one chunk.
+		assertSteps(t, buildSendSteps("[Image #1][Image #2]", []string{"/a/one.png", "/b/two.jpg"}), []sendStep{
+			{data: clearData, settle: composerSettle},
+			{data: paste("/a/one.png"), settle: pasteSettle},
+			{data: paste("/b/two.jpg"), settle: composerSettle},
+			{data: []byte("\r")},
+		})
+	})
+
+	t.Run("two missing markers append both images after the text", func(t *testing.T) {
+		// Both markers absent: text run, then both images appended in order, with the
+		// interior text→image and image→image boundaries both pasteSettle.
+		assertSteps(t, buildSendSteps("just text", []string{"/a/one.png", "/b/two.jpg"}), []sendStep{
+			{data: clearData, settle: composerSettle},
+			{data: paste("just text"), settle: pasteSettle},
+			{data: paste("/a/one.png"), settle: pasteSettle},
+			{data: paste("/b/two.jpg"), settle: composerSettle},
+			{data: []byte("\r")},
+		})
+	})
+}
+
+// TestBracketedPasteStripsStrayMarkers proves a stray paste marker embedded in
+// content is removed so it can't reframe the paste: a stray END would close the
+// paste early (tail read as raw keystrokes), and a stray START resets Claude's
+// paste buffer (dropping everything before it). Applies to both image paths and
+// text, which share bracketedPaste.
+func TestBracketedPasteStripsStrayMarkers(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		{"stray end terminator", "before\x1b[201~after", "\x1b[200~beforeafter\x1b[201~"},
+		{"stray start marker", "before\x1b[200~after", "\x1b[200~beforeafter\x1b[201~"},
+		{"both markers", "a\x1b[200~b\x1b[201~c", "\x1b[200~abc\x1b[201~"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := string(bracketedPaste(tc.in)); got != tc.want {
+				t.Errorf("bracketedPaste(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 
-// TestSendKeystrokesStripsStrayPasteTerminator proves a paste terminator embedded
-// in user content is removed, so it can't close the bracketed paste early and
-// have the tail interpreted as raw keystrokes.
-func TestSendKeystrokesStripsStrayPasteTerminator(t *testing.T) {
-	_, paste, _ := sendKeystrokes("before\x1b[201~after")
-	if got, want := string(paste), "\x1b[200~beforeafter\x1b[201~"; got != want {
-		t.Errorf("paste = %q, want %q", got, want)
+// TestAttachmentPaths proves the path extractor returns each attachment's Path in
+// order and fails loudly when one is missing — the app layer must resolve a path
+// for this provider, and a missing one would otherwise silently drop the image.
+func TestAttachmentPaths(t *testing.T) {
+	got, err := attachmentPaths([]provider.ImageAttachment{
+		{ID: "a", Path: "/x/a.png"},
+		{ID: "b", Path: "/y/b.jpg"},
+	})
+	if err != nil {
+		t.Fatalf("attachmentPaths: %v", err)
+	}
+	if want := []string{"/x/a.png", "/y/b.jpg"}; !slices.Equal(got, want) {
+		t.Errorf("paths = %v, want %v", got, want)
+	}
+
+	if _, err := attachmentPaths([]provider.ImageAttachment{{ID: "noPath"}}); err == nil {
+		t.Error("attachmentPaths with a missing Path should error")
+	}
+
+	// A control byte in a path is refused rather than pasted: a newline would
+	// split one path into two in Claude's parser, and a paste terminator / ESC
+	// could break out of the bracketed paste into raw keystrokes.
+	for _, bad := range []string{"/x/a\n/y/b.png", "/x/" + bracketedPasteEnd + ".png", "/x/\x7f.png"} {
+		if _, err := attachmentPaths([]provider.ImageAttachment{{ID: "ctrl", Path: bad}}); err == nil {
+			t.Errorf("attachmentPaths with a control byte in %q should error", bad)
+		}
+	}
+
+	if got, err := attachmentPaths(nil); err != nil || got != nil {
+		t.Errorf("attachmentPaths(nil) = (%v, %v), want (nil, nil)", got, err)
+	}
+}
+
+// assertSteps compares an ordered send sequence (data + the gap after each block)
+// against the expected contract.
+func assertSteps(t *testing.T, got, want []sendStep) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d steps, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i].data, want[i].data) {
+			t.Errorf("step %d data = %q, want %q", i, got[i].data, want[i].data)
+		}
+		if got[i].settle != want[i].settle {
+			t.Errorf("step %d settle = %v, want %v", i, got[i].settle, want[i].settle)
+		}
 	}
 }
 

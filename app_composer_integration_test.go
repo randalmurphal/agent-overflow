@@ -58,6 +58,28 @@ func composerSeedThread(t *testing.T, app *App, id, workspacePath string) store.
 	return thread
 }
 
+// composerSeedThreadWithProvider mirrors composerSeedThread but lets the caller
+// pick the provider, for tests that exercise provider-specific send wiring.
+func composerSeedThreadWithProvider(t *testing.T, app *App, id, providerKind string) store.Thread {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	thread := store.Thread{
+		ID:            id,
+		ProjectID:     defaultTestProjectID,
+		Title:         "Composer Thread",
+		Provider:      providerKind,
+		WorkspacePath: t.TempDir(),
+		Model:         "claude-sonnet",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	return thread
+}
+
 // tinyPNGBase64 returns a short but valid PNG base64 string — enough to pass
 // the MIME whitelist without bloating test output.
 func tinyPNGBase64() string {
@@ -492,6 +514,63 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 	}
 	if strings.Contains(string(captured), "attachment://") {
 		t.Fatalf("captured stdin should not contain attachment markdown refs: %q", string(captured))
+	}
+}
+
+// TestResolveSendMessageAttachmentsByProvider proves the provider-aware attachment
+// resolve that backs claude-tui image paste: claude-tui receives the on-disk PATH
+// and NO image bytes (it pastes the path into the real TUI composer, where Claude
+// reads the file), while a bytes-based provider (claude) receives the Data and no
+// path. Mis-wiring either branch would silently break image sends for one provider.
+func TestResolveSendMessageAttachmentsByProvider(t *testing.T) {
+	app, rootDir := newComposerTestApp(t)
+
+	claudeThread := composerSeedThread(t, app, "by-provider-claude", "")
+	tuiThread := composerSeedThreadWithProvider(t, app, "by-provider-tui", string(provider.ClaudeTUI))
+
+	claudeAtt, err := app.UploadAttachment(claudeThread.ID, "pic.png", "image/png", tinyPNGBase64())
+	if err != nil {
+		t.Fatalf("UploadAttachment(claude): %v", err)
+	}
+	tuiAtt, err := app.UploadAttachment(tuiThread.ID, "pic.png", "image/png", tinyPNGBase64())
+	if err != nil {
+		t.Fatalf("UploadAttachment(claude-tui): %v", err)
+	}
+
+	// claude → inline bytes, no path.
+	claudeResolved, _, err := app.resolveSendMessageAttachments(claudeThread.ID, []string{claudeAtt.ID})
+	if err != nil {
+		t.Fatalf("resolve(claude): %v", err)
+	}
+	if len(claudeResolved) != 1 {
+		t.Fatalf("resolve(claude): got %d attachments, want 1", len(claudeResolved))
+	}
+	if len(claudeResolved[0].Data) == 0 {
+		t.Error("claude attachment must carry image bytes")
+	}
+	if claudeResolved[0].Path != "" {
+		t.Errorf("claude attachment must not carry a path, got %q", claudeResolved[0].Path)
+	}
+
+	// claude-tui → on-disk path, no bytes.
+	tuiResolved, _, err := app.resolveSendMessageAttachments(tuiThread.ID, []string{tuiAtt.ID})
+	if err != nil {
+		t.Fatalf("resolve(claude-tui): %v", err)
+	}
+	if len(tuiResolved) != 1 {
+		t.Fatalf("resolve(claude-tui): got %d attachments, want 1", len(tuiResolved))
+	}
+	if len(tuiResolved[0].Data) != 0 {
+		t.Errorf("claude-tui attachment must be path-only, got %d image bytes", len(tuiResolved[0].Data))
+	}
+	if tuiResolved[0].Path == "" {
+		t.Fatal("claude-tui attachment must carry the on-disk path")
+	}
+	if !strings.HasPrefix(tuiResolved[0].Path, rootDir) {
+		t.Errorf("claude-tui path %q is not under the attachment root %q", tuiResolved[0].Path, rootDir)
+	}
+	if _, err := os.Stat(tuiResolved[0].Path); err != nil {
+		t.Errorf("claude-tui path is not a real file on disk: %v", err)
 	}
 }
 

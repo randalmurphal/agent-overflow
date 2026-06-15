@@ -48,11 +48,14 @@ describe('provider catalog', () => {
     }
   });
 
-  it('withholds every AO-mediated affordance from claude-tui', () => {
-    // claude-tui reaches these inside the real TUI via take-control, so the UI
-    // must hide/disable them. Every flag must be false — a regression that
-    // flips one back on would let an unsupported affordance render.
+  it('withholds every AO-mediated affordance from claude-tui except attachments', () => {
+    // claude-tui reaches most affordances inside the real TUI via take-control, so
+    // the UI must hide/disable them — every flag false guards against one flipping
+    // back on. attachments is the exception: AO injects an image's file path into
+    // the TUI composer, so claude-tui DOES accept composer attachments.
+    expect(providerSupports('claude-tui', 'attachments')).toBe(true);
     for (const capability of ALL_CAPABILITIES) {
+      if (capability === 'attachments') continue;
       expect(providerSupports('claude-tui', capability)).toBe(false);
     }
   });

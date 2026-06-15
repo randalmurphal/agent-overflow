@@ -59,14 +59,17 @@ const FULL_CAPABILITIES: ProviderCapabilities = {
   mcp: true,
 };
 
-// claude-tui supports none of the AO-mediated affordances — they live inside
-// the real TUI, reached through take-control.
+// claude-tui drives the real TUI, so most AO-mediated affordances live inside
+// the terminal (reached through take-control) and stay off here. Image
+// attachments are the exception: AO pastes an attachment's file PATH into the
+// TUI composer, where Claude's paste handler reads it into a real image block —
+// so claude-tui DOES accept composer attachments.
 const TUI_CAPABILITIES: ProviderCapabilities = {
   runtimeModes: false,
   planMode: false,
   fork: false,
   revert: false,
-  attachments: false,
+  attachments: true,
   mcp: false,
 };
 

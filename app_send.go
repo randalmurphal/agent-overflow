@@ -394,21 +394,49 @@ func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []str
 		return nil, nil, fmt.Errorf("attachment store not initialized")
 	}
 
+	// claude-tui ingests an image by pasting its on-disk PATH into the real TUI
+	// composer (Claude reads the file itself); every other provider base64-encodes
+	// the bytes inline. Look up the provider once — only on the rarer send that
+	// actually carries attachments — so the path-ingesting provider loads just the
+	// path and never reads image bytes it won't use.
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load thread: %w", err)
+	}
+	pathOnly := thread.Provider == string(provider.ClaudeTUI)
+
+	// Order is load-bearing: providerAttachments comes out in attachmentIDs order,
+	// the same order the composer numbered its "[Image #N]" markers against. The
+	// claude-tui send splits the message at those markers and indexes this slice
+	// positionally (image #i → providerAttachments[i-1]; see claudetui's
+	// splitContentByImageMarkers), so this loop must stay a straight 1:1 walk —
+	// don't reorder or dedup here or inline images would bind to the wrong file.
 	providerAttachments := make([]provider.ImageAttachment, 0, len(attachmentIDs))
 	persistedAttachments := make([]store.Attachment, 0, len(attachmentIDs))
 	for _, attachmentID := range attachmentIDs {
-		record, data, err := a.attachments.ReadThreadBytes(threadID, attachmentID)
+		var (
+			record store.Attachment
+			att    provider.ImageAttachment
+			err    error
+		)
+		if pathOnly {
+			var path string
+			record, path, err = a.attachments.PathForThread(threadID, attachmentID)
+			att.Path = path
+		} else {
+			var data []byte
+			record, data, err = a.attachments.ReadThreadBytes(threadID, attachmentID)
+			att.Data = data
+		}
 		if err != nil {
 			return nil, nil, err
 		}
+		att.ID = record.ID
+		att.Filename = record.Filename
+		att.MimeType = record.MimeType
+		att.Size = record.Size
 		persistedAttachments = append(persistedAttachments, record)
-		providerAttachments = append(providerAttachments, provider.ImageAttachment{
-			ID:       record.ID,
-			Filename: record.Filename,
-			MimeType: record.MimeType,
-			Size:     record.Size,
-			Data:     data,
-		})
+		providerAttachments = append(providerAttachments, att)
 	}
 	return providerAttachments, persistedAttachments, nil
 }

@@ -216,25 +216,47 @@ func (s *Store) ReadBytes(attachmentID string) (store.Attachment, []byte, error)
 	return record, data, nil
 }
 
+// resolveThreadAttachment resolves an attachment's metadata and absolute path,
+// enforcing thread ownership so a stale cross-thread id cannot reference another
+// thread's file. Shared by the byte-read and path-only accessors; the ownership
+// check is the boundary that keeps one thread from forcing a read of (or a
+// reference to) another thread's attachment.
+func (s *Store) resolveThreadAttachment(threadID, attachmentID string) (store.Attachment, string, error) {
+	record, absolutePath, ok, err := s.Get(attachmentID)
+	if err != nil {
+		return store.Attachment{}, "", err
+	}
+	if !ok {
+		return store.Attachment{}, "", fmt.Errorf("attachment: id %q not found", attachmentID)
+	}
+	if record.ThreadID != threadID {
+		return store.Attachment{}, "", fmt.Errorf("attachment %q belongs to thread %s, not %s", attachmentID, record.ThreadID, threadID)
+	}
+	return record, absolutePath, nil
+}
+
 // ReadThreadBytes returns bytes only when the attachment belongs to the
 // expected thread. Ownership is checked from metadata before reading the file
 // so stale cross-thread IDs cannot force unnecessary large reads.
 func (s *Store) ReadThreadBytes(threadID, attachmentID string) (store.Attachment, []byte, error) {
-	record, absolutePath, ok, err := s.Get(attachmentID)
+	record, absolutePath, err := s.resolveThreadAttachment(threadID, attachmentID)
 	if err != nil {
 		return store.Attachment{}, nil, err
-	}
-	if !ok {
-		return store.Attachment{}, nil, fmt.Errorf("attachment: id %q not found", attachmentID)
-	}
-	if record.ThreadID != threadID {
-		return store.Attachment{}, nil, fmt.Errorf("attachment %q belongs to thread %s, not %s", attachmentID, record.ThreadID, threadID)
 	}
 	data, err := os.ReadFile(absolutePath)
 	if err != nil {
 		return store.Attachment{}, nil, fmt.Errorf("attachment: read file: %w", err)
 	}
 	return record, data, nil
+}
+
+// PathForThread returns the absolute on-disk path for an attachment, enforcing
+// the same thread-ownership check as ReadThreadBytes but skipping the file read.
+// Used by providers that ingest an image by path (claude-tui pastes the path
+// into the real TUI composer) rather than by inline bytes, so a send never reads
+// image bytes it won't use.
+func (s *Store) PathForThread(threadID, attachmentID string) (store.Attachment, string, error) {
+	return s.resolveThreadAttachment(threadID, attachmentID)
 }
 
 // List returns metadata for every attachment on a thread.

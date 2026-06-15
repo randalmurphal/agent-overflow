@@ -28,6 +28,22 @@ const (
 	// submit key, so the Enter isn't swallowed by the paste handler. The spike
 	// found the Ink composer needs a short gap here.
 	composerSettle = 60 * time.Millisecond
+	// claudePasteCompletionWindow mirrors Claude's PASTE_COMPLETION_TIMEOUT_MS
+	// (src/hooks/usePasteHandler.ts): the input-quiet gap after which the Ink
+	// composer treats a bracketed paste as complete. A second paste arriving
+	// inside this window merges into the first's chunk buffer — the two payloads
+	// concatenate, so an image PATH fuses with the text and neither parses as
+	// intended. Source is 2.1.88; cross-checked against the installed 2.1.170 in
+	// spike/claude-mitm/probe_hook_attach.py.
+	claudePasteCompletionWindow = 100 * time.Millisecond
+	// pasteSettle is the gap Send leaves between two CONSECUTIVE bracketed pastes
+	// (the image paste and the text paste of one send), sized above the completion
+	// window with margin for binary drift and scheduling jitter so each lands as
+	// its own composer block. composerSettle stays correct everywhere a
+	// paste-merge is impossible: clear→firstpaste (the clear is Ctrl-U keystrokes,
+	// not a paste) and lastpaste→submit (the submit CR is deferred by the paste
+	// handler's pastePendingRef, not merged into the paste).
+	pasteSettle = claudePasteCompletionWindow + 100*time.Millisecond
 	// submitKey is the raw byte the TUI reads as "send" (interruptKey, its "abort
 	// this turn" twin, lives with Interrupt in session.go).
 	submitKey = "\r"
@@ -63,8 +79,12 @@ const (
 )
 
 // Send delivers a user turn by pasting the content into the TUI composer and
-// pressing Enter. The interactive provider has no stdin image path, so image
-// attachments are rejected rather than silently dropped.
+// pressing Enter. Image attachments are pasted as their absolute on-disk file
+// PATHS: the real TUI's paste handler reads each path into an image content
+// block (Strategy A, LIVE in spike/claude-mitm/probe_hook_attach.py), so an
+// image send needs no stdin image protocol the interactive provider lacks. The
+// app layer resolves each attachment to a Path for this provider — see
+// resolveSendMessageAttachments.
 func (s *Session) Send(ctx context.Context, content string, opts provider.SendOptions) error {
 	s.mu.Lock()
 	held := s.controlHeld
@@ -72,11 +92,12 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	if held {
 		return fmt.Errorf("claudetui: a human holds take-control of the terminal; release control to send")
 	}
-	if len(opts.Attachments) > 0 {
-		return fmt.Errorf("claudetui: image attachments are not supported on the interactive provider")
+	imagePaths, err := attachmentPaths(opts.Attachments)
+	if err != nil {
+		return err
 	}
-	if strings.TrimSpace(content) == "" {
-		return fmt.Errorf("claudetui: user message requires text content")
+	if strings.TrimSpace(content) == "" && len(imagePaths) == 0 {
+		return fmt.Errorf("claudetui: user message requires text or image content")
 	}
 	// Cold-start guard: don't write until the freshly-launched TUI is parked
 	// reading input, or the submit CR is swallowed with the paste and the turn
@@ -84,33 +105,29 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	if err := s.awaitComposerReady(ctx); err != nil {
 		return err
 	}
-	// The composer-clear empties any prompt the TUI restored on a prior Esc-revert
-	// (see composerClearKey); a settle between each block gives the Ink composer a
-	// beat so the paste isn't interleaved with the line-kill and the Enter isn't
-	// swallowed by the paste handler.
-	clear, paste, submit := sendKeystrokes(content)
-	if err := s.writePTY(clear); err != nil {
-		return err
-	}
-	if err := s.settleComposer(ctx); err != nil {
-		return err
-	}
-	if err := s.writePTY(paste); err != nil {
-		return err
-	}
-	if err := s.settleComposer(ctx); err != nil {
-		return err
-	}
-	if err := s.writePTY(submit); err != nil {
-		return err
+	// Drive the composer one block at a time, settling between blocks so the Ink
+	// paste handler ingests each cleanly: a short beat after the line-kill clear,
+	// the longer pasteSettle between any two consecutive bracketed pastes so they
+	// don't merge (the message body replays as interleaved text/image pastes),
+	// then a short beat before the submit CR. buildSendSteps owns the ordering and
+	// the per-gap durations; Send just writes and waits.
+	for _, step := range buildSendSteps(content, imagePaths) {
+		if err := s.writePTY(step.data); err != nil {
+			return err
+		}
+		if err := s.settle(ctx, step.settle); err != nil {
+			return err
+		}
 	}
 	// Record the send so the reconstructor confirms it with a user{isReplay} echo
 	// on the next main request, consuming triage's pending-send FIFO. Direct sends
 	// carry an app-minted UserMessageUUID; queued sends (flush path) supply none,
 	// so mint a stable id here — persistDeferredUserText needs a non-empty
-	// provider_item_id or the queued row never lands. Pushed only after submit
-	// succeeds so a write failure (which the caller turns into a pending-send
-	// clear) leaves the echo FIFO aligned with the pending-send FIFO.
+	// provider_item_id or the queued row never lands. Pushed only after the writes
+	// succeed so a write failure (which the caller turns into a pending-send clear)
+	// leaves the echo FIFO aligned with the pending-send FIFO. The echo carries the
+	// TEXT only; the image rides the optimistically-persisted user row (its
+	// attachment meta), which the echo confirms by id.
 	echoUUID := opts.UserMessageUUID
 	if echoUUID == "" {
 		echoUUID = uuid.NewString()
@@ -119,28 +136,125 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	return nil
 }
 
-// sendKeystrokes builds the ordered keystroke blocks Send writes to drive a user
-// turn into the TUI composer: clear the composer, paste the content, submit.
-//   - clear is composerClearKeystrokes line-kills so a prompt the TUI restored to
-//     the composer on a prior Esc-revert can't fuse with this paste.
-//   - paste wraps the content in bracketed-paste markers, stripping any stray
-//     terminator first so user content can't close the paste early and have its
-//     tail interpreted as raw keystrokes.
-func sendKeystrokes(content string) (clear, paste, submit []byte) {
-	clear = []byte(strings.Repeat(composerClearKey, composerClearKeystrokes))
-	safe := strings.ReplaceAll(content, bracketedPasteEnd, "")
-	paste = []byte(bracketedPasteStart + safe + bracketedPasteEnd)
-	submit = []byte(submitKey)
-	return clear, paste, submit
+// sendStep is one PTY write Send issues, paired with the settle that must follow
+// it. settle is 0 for the final submit, which has nothing after it.
+type sendStep struct {
+	data   []byte
+	settle time.Duration
 }
 
-// settleComposer gives the Ink TUI a beat to ingest a block of input (a clear or
-// a paste) before the next keystroke, so a following Enter isn't swallowed by
-// the paste handler and a paste isn't interleaved with the preceding line-kill.
-// Honors ctx cancellation so a Stop mid-send returns promptly.
-func (s *Session) settleComposer(ctx context.Context) error {
+// buildSendSteps builds the ordered PTY writes (and the gap after each) that
+// drive one user turn into the TUI composer:
+//  1. composer-clear: composerClearKeystrokes Ctrl-U line-kills so a prompt the
+//     TUI restored on a prior Esc-revert can't fuse with this send.
+//  2. the message body, replayed IN ORDER as a paste per segment. The composer
+//     embeds an "[Image #i]" marker at each image's drop point;
+//     splitContentByImageMarkers turns the content back into text runs and images
+//     at their original positions. Each text run is one bracketed paste; each
+//     image is its own bracketed paste of the absolute PATH at that spot, which
+//     Claude's paste handler reads into an image block and labels inline (so the
+//     image lands where the user put it, not front-loaded). Text and image pastes
+//     stay SEPARATE — a path shares its paste with no text, because Claude routes
+//     a paste's non-image remainder through a space-split that would mangle text
+//     containing " /". Empty text runs are skipped.
+//  3. submit: the CR.
+//
+// Every body segment is a bracketed paste, so each interior boundary is the
+// merge-sensitive paste→paste case and takes the longer pasteSettle; the
+// clear→first-paste and last-paste→submit boundaries can't merge and take the
+// short composerSettle, and submit (nothing follows) takes 0.
+func buildSendSteps(content string, imagePaths []string) []sendStep {
+	type block struct {
+		data    []byte
+		isPaste bool
+	}
+	blocks := []block{{data: []byte(strings.Repeat(composerClearKey, composerClearKeystrokes))}}
+	for _, part := range splitContentByImageMarkers(content, len(imagePaths)) {
+		if part.imageIndex >= 0 {
+			blocks = append(blocks, block{data: bracketedPaste(imagePaths[part.imageIndex]), isPaste: true})
+			continue
+		}
+		if part.text != "" {
+			blocks = append(blocks, block{data: bracketedPaste(part.text), isPaste: true})
+		}
+	}
+	blocks = append(blocks, block{data: []byte(submitKey)})
+
+	steps := make([]sendStep, len(blocks))
+	for i, b := range blocks {
+		var settle time.Duration
+		switch {
+		case i == len(blocks)-1:
+			settle = 0 // submit: nothing follows
+		case b.isPaste && blocks[i+1].isPaste:
+			settle = pasteSettle // two bracketed pastes back-to-back must not merge
+		default:
+			settle = composerSettle
+		}
+		steps[i] = sendStep{data: b.data, settle: settle}
+	}
+	return steps
+}
+
+// bracketedPaste wraps content in bracketed-paste markers so it lands in the
+// composer as one block, stripping any stray paste marker first so the content
+// can't reframe the paste. Both markers are dangerous, not just the terminator: a
+// stray END (bracketedPasteEnd) closes the paste early and the tail reads as raw
+// keystrokes, and a stray START (bracketedPasteStart) is matched ahead of the
+// in-paste literal branch by Claude's tokenizer and RESETS the paste buffer —
+// silently dropping everything pasted before it (claude-code's parse-keypress.ts:
+// the PASTE_START token sets pasteBuffer=""). Removing both keeps the frame intact.
+func bracketedPaste(content string) []byte {
+	safe := strings.NewReplacer(bracketedPasteStart, "", bracketedPasteEnd, "").Replace(content)
+	return []byte(bracketedPasteStart + safe + bracketedPasteEnd)
+}
+
+// attachmentPaths extracts the absolute file paths claude-tui pastes into the
+// composer to ingest images. The app layer resolves each attachment to a Path
+// for this provider; a missing one is a wiring bug we fail loudly on rather than
+// silently dropping the image from the user's turn.
+func attachmentPaths(attachments []provider.ImageAttachment) ([]string, error) {
+	if len(attachments) == 0 {
+		return nil, nil
+	}
+	paths := make([]string, 0, len(attachments))
+	for _, att := range attachments {
+		if att.Path == "" {
+			return nil, fmt.Errorf("claudetui: image attachment %q has no on-disk path", att.ID)
+		}
+		// A control byte in a path would corrupt its bracketed paste: a \n splits
+		// one path into two in Claude's paste parser, and a paste terminator or
+		// ESC could break out of the paste into raw keystrokes. The store never
+		// produces such a path (a uuid + whitelisted extension under an
+		// app-controlled root), so this is defense-in-depth: fail loudly if a
+		// future path scheme ever yields one rather than paste it.
+		if i := strings.IndexFunc(att.Path, isPasteUnsafeRune); i >= 0 {
+			return nil, fmt.Errorf("claudetui: image attachment %q path contains a control byte at offset %d; refusing to paste", att.ID, i)
+		}
+		paths = append(paths, att.Path)
+	}
+	return paths, nil
+}
+
+// isPasteUnsafeRune reports whether r is a C0 control or DEL — bytes that have no
+// place in a filesystem path and would corrupt the bracketed-paste framing (a
+// newline splits a path, ESC/terminator can break out of the paste). High bytes
+// (UTF-8 multibyte, e.g. a non-ASCII home dir) are intentionally left alone.
+func isPasteUnsafeRune(r rune) bool {
+	return r < 0x20 || r == 0x7f
+}
+
+// settle gives the Ink TUI a beat between PTY writes, honoring ctx cancellation
+// so a Stop mid-send returns promptly. d picks the gap: composerSettle (the short
+// ingest beat) or pasteSettle (the longer gap that keeps two bracketed pastes
+// from merging). A non-positive d is a no-op — the final submit has no trailing
+// gap.
+func (s *Session) settle(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
 	select {
-	case <-time.After(composerSettle):
+	case <-time.After(d):
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

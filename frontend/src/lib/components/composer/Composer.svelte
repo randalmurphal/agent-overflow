@@ -674,11 +674,12 @@
     return true;
   }
 
-  // Some providers don't carry composer attachments (claude-tui drives the real
-  // TUI, where files are attached inside the terminal via take-control). This
-  // fronts the prompt guard so the four add-paths (paste + three drag events)
-  // refuse the event before any upload state machinery runs — which also keeps
-  // the drag-active hint from appearing, since handleDragEnter bails first.
+  // If a provider opts out of composer attachments, this fronts the prompt guard
+  // so the four add-paths (paste + three drag events) refuse the event before any
+  // upload state machinery runs — which also keeps the drag-active hint from
+  // appearing, since handleDragEnter bails first. No current provider sets
+  // attachments:false — claude-tui ingests pasted images by injecting the file
+  // path into the real TUI composer — so this only guards a future opt-out.
   let supportsAttachments = $derived(providerSupports(pane.thread?.provider, 'attachments'));
 
   function blockAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {

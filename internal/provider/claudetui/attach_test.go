@@ -40,7 +40,7 @@ func TestTakeControlLeaseGatesSend(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "take-control") {
 		t.Fatalf("Send with the lease released should reach content validation, not the lease error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "text content") {
+	if !strings.Contains(err.Error(), "text or image content") {
 		t.Fatalf("blank Send should fail content validation, got %v", err)
 	}
 }

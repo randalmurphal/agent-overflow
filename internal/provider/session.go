@@ -21,14 +21,21 @@ type SendOptions struct {
 }
 
 // ImageAttachment is the provider-ready form of a user-attached image.
-// Bytes are kept out of the store timeline metadata and loaded only for the
-// provider send that needs them.
+// Exactly one of Data / Path carries the image, chosen per provider so we
+// load only the representation the send needs:
+//   - Data: the raw bytes, base64-encoded inline on the wire (headless claude,
+//     codex). Kept out of the store timeline metadata and loaded only for the
+//     send that needs them.
+//   - Path: the absolute on-disk path, for a provider that ingests an image by
+//     path rather than by bytes. claude-tui pastes the path into the real TUI
+//     composer, where Claude reads the file itself — so it never loads Data.
 type ImageAttachment struct {
 	ID       string
 	Filename string
 	MimeType string
 	Size     int64
 	Data     []byte
+	Path     string
 }
 
 // Session is the minimal interface both provider.{claude,codex}.Session

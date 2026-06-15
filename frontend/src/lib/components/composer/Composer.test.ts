@@ -106,6 +106,17 @@ function makeFileDrop(files: File[]): DragEvent {
   return event;
 }
 
+function makeTextPaste(text: string): ClipboardEvent {
+  const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+  Object.defineProperty(event, 'clipboardData', {
+    value: {
+      items: [{ kind: 'string', type: 'text/plain' }],
+      getData: () => text,
+    },
+  });
+  return event;
+}
+
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
     id: 'project-placeholder',
@@ -378,30 +389,54 @@ describe('<Composer>', () => {
     ));
   });
 
-  it('blocks pasted and dropped attachments on a claude-tui thread', async () => {
-    // claude-tui carries no composer attachments — files are attached inside
-    // the real TUI via take-control. Both add-paths (paste + drop) must refuse
-    // the event before any upload runs. Identical setup to the claude control
-    // above; only the provider differs, so this fails if the gate is removed.
+  it('uploads a pasted image on a claude-tui thread', async () => {
+    // claude-tui ingests images by injecting the file path into the real TUI
+    // composer, so it accepts composer attachments like any other provider.
+    // Same setup as the claude control above; only the provider differs, so this
+    // fails if the claude-tui attachment capability regresses to false.
+    const pane = await buildPane(makeTestThread({ provider: 'claude-tui' }));
+    const draft = await buildDraft();
+    const upload = setBindingMock('UploadAttachment', async (
+      threadId: string,
+      filename: string,
+      mimeType: string,
+    ) => ({ ...makeAttachment('uploaded', filename), threadId, mimeType }));
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent(textarea, makeClipboardPaste([
+      new File(['png'], 'shot.png', { type: 'image/png' }),
+    ]));
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(
+      'thread-1',
+      'shot.png',
+      'image/png',
+      expect.any(String),
+    ));
+  });
+
+  it('lets a plain text paste through on a claude-tui thread', async () => {
+    // The attachment gate must only intercept image payloads — a plain text
+    // paste has to reach the textarea untouched. Regression for the bug where a
+    // capability-gated provider preventDefault'd every paste, text included.
     const pane = await buildPane(makeTestThread({ provider: 'claude-tui' }));
     const draft = await buildDraft();
     const upload = setBindingMock('UploadAttachment', async () =>
       makeAttachment('should-not-upload'));
 
-    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
-    const paste = makeClipboardPaste([new File(['png'], 'shot.png', { type: 'image/png' })]);
+    const paste = makeTextPaste('just some words');
     await fireEvent(textarea, paste);
-    const drop = makeFileDrop([new File(['png'], 'drop.png', { type: 'image/png' })]);
-    await fireEvent(getByTestId('composer-root'), drop);
 
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
     expect(upload).not.toHaveBeenCalled();
     expect(draft.attachments).toEqual([]);
-    // The handlers consumed the events so the browser/textarea never sees them.
-    expect(paste.defaultPrevented).toBe(true);
-    expect(drop.defaultPrevented).toBe(true);
+    // Not consumed: the textarea performs its native text insertion.
+    expect(paste.defaultPrevented).toBe(false);
   });
 
   it('materializes once and preserves ordered placeholders for multiple first-pasted images', async () => {

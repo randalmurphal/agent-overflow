@@ -375,6 +375,50 @@ func TestUploadSuccessfulEndStateHasNoTmpFile(t *testing.T) {
 	}
 }
 
+// TestPathForThreadReturnsOwnedPath proves the path-only accessor returns the
+// resolved absolute path for an attachment owned by the thread, and refuses both
+// a cross-thread id (the ownership boundary it shares with ReadThreadBytes) and
+// a missing id — so a stale id can't reference another thread's file by path.
+func TestPathForThreadReturnsOwnedPath(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+	seedThread(t, meta, "t2")
+
+	record, err := attStore.Upload("t1", "pic.png", "image/png", pngData(t), 0)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	// Owner thread: returns the record and the resolved absolute path, which
+	// must point at the real on-disk file.
+	gotRecord, path, err := attStore.PathForThread("t1", record.ID)
+	if err != nil {
+		t.Fatalf("PathForThread(owner): %v", err)
+	}
+	if gotRecord.ID != record.ID {
+		t.Errorf("record id = %q, want %q", gotRecord.ID, record.ID)
+	}
+	if want := filepath.Join(attStore.root, record.RelativePath); path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
+	if !filepath.IsAbs(path) {
+		t.Errorf("path %q is not absolute", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("returned path does not exist on disk: %v", err)
+	}
+
+	// Wrong thread: the ownership check refuses it and no path leaks.
+	if _, p, err := attStore.PathForThread("t2", record.ID); err == nil {
+		t.Errorf("PathForThread for a cross-thread id should error, got path %q", p)
+	}
+
+	// Missing id: not found, not a panic.
+	if _, _, err := attStore.PathForThread("t1", "does-not-exist"); err == nil {
+		t.Error("PathForThread for a missing id should error")
+	}
+}
+
 // TestUploadFileWriteFailureLeavesNoRow injects a file-write failure by
 // making the attachment root directory read-only and verifying no DB
 // row is inserted if the tmp write fails.
