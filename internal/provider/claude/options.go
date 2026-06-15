@@ -17,9 +17,10 @@ func claudeEffortFromOption(effort provider.ReasoningEffort) string {
 	case provider.EffortHigh:
 		return "high"
 	case provider.EffortXHigh:
-		// Claude CLI accepts max for the extra-high tier on models whose SDK
-		// descriptor names the option xhigh.
-		return "max"
+		// 2.1.170's --effort accepts `xhigh` natively (a distinct tier between
+		// high and max), so pass it through instead of collapsing to max — the
+		// old workaround from when the flag's value set lacked xhigh.
+		return "xhigh"
 	case provider.EffortMax:
 		return "max"
 	default:

@@ -34,8 +34,8 @@ func TestSessionOptionsFromThreadToClaudeConfigXHigh(t *testing.T) {
 	if cfg.SystemPrompt != "You are the agent." {
 		t.Errorf("SystemPrompt = %q, want unchanged", cfg.SystemPrompt)
 	}
-	if cfg.ReasoningEffort != "max" {
-		t.Errorf("ReasoningEffort = %q, want max", cfg.ReasoningEffort)
+	if cfg.ReasoningEffort != "xhigh" {
+		t.Errorf("ReasoningEffort = %q, want xhigh (2.1.170 --effort accepts xhigh natively; no longer collapsed to max)", cfg.ReasoningEffort)
 	}
 	if cfg.Model != "claude-opus-4-7[1m]" {
 		t.Errorf("Model = %q, want claude-opus-4-7[1m]", cfg.Model)

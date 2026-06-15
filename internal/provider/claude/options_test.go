@@ -17,7 +17,7 @@ func TestClaudeEffortFromOption(t *testing.T) {
 		{provider.EffortLow, "low"},
 		{provider.EffortMedium, "medium"},
 		{provider.EffortHigh, "high"},
-		{provider.EffortXHigh, "max"},
+		{provider.EffortXHigh, "xhigh"},
 		{provider.EffortMax, "max"},
 		{provider.EffortNone, ""},
 		{provider.EffortMinimal, ""},

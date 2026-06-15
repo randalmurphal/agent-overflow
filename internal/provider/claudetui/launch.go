@@ -58,6 +58,12 @@ func buildLaunchOptions(cfg Config, gatewayURL, hookURL, hookToken string) (term
 	if cfg.Model != "" {
 		args = append(args, "--model", cfg.Model)
 	}
+	if cfg.ReasoningEffort != "" {
+		// Same global --effort flag headless passes (provider/claude/session.go);
+		// without it the interactive TUI runs at the model's default tier and the
+		// AO effort selection is silently ignored.
+		args = append(args, "--effort", cfg.ReasoningEffort)
+	}
 	if cfg.Resume != "" {
 		args = append(args, "--resume", cfg.Resume)
 	}

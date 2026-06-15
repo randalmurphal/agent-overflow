@@ -28,3 +28,35 @@ func TestBuildLaunchOptionsEnablesThinkingDisplay(t *testing.T) {
 		t.Errorf("launch args missing --thinking-display summarized; got %v", opts.Args)
 	}
 }
+
+// TestBuildLaunchOptionsPassesEffort guards the effort fix: when the session
+// carries a reasoning effort, the interactive TUI must launch with
+// `--effort <level>`. Without it the TUI falls back to the model's default tier
+// (xhigh on opus-4-8) and the AO effort selection is silently ignored — the
+// reported bug. Same global flag headless passes (provider/claude/session.go).
+func TestBuildLaunchOptionsPassesEffort(t *testing.T) {
+	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", ReasoningEffort: "high"}
+	opts, err := buildLaunchOptions(cfg, "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	if err != nil {
+		t.Fatalf("buildLaunchOptions: %v", err)
+	}
+	if !hasArgPair(opts.Args, "--effort", "high") {
+		t.Errorf("launch args missing --effort high; got %v", opts.Args)
+	}
+}
+
+// TestBuildLaunchOptionsOmitsEffortWhenUnset: a session with no effort selection
+// must NOT pass --effort, so the CLI keeps its own default rather than receiving
+// an empty value.
+func TestBuildLaunchOptionsOmitsEffortWhenUnset(t *testing.T) {
+	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
+	opts, err := buildLaunchOptions(cfg, "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	if err != nil {
+		t.Fatalf("buildLaunchOptions: %v", err)
+	}
+	for i, a := range opts.Args {
+		if a == "--effort" {
+			t.Errorf("launch args unexpectedly contain --effort (at index %d); got %v", i, opts.Args)
+		}
+	}
+}

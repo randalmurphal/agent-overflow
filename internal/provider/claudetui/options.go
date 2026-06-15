@@ -30,6 +30,13 @@ type Config struct {
 	WorkDir string
 	// Resume, when set, is the provider session ref to resume (--resume).
 	Resume string
+	// ReasoningEffort is the resolved `--effort` value (low/medium/high/xhigh/
+	// max), already mapped from SessionOptions by claude.ConfigFromOptions.
+	// Empty means "omit the flag" so the CLI keeps its own default. The
+	// interactive TUI honors the same global --effort flag headless does;
+	// without passing it the session runs at the model's default tier (xhigh on
+	// opus-4-8) regardless of the AO selection.
+	ReasoningEffort string
 	// Env is the base environment for the spawned claude. Empty means inherit
 	// the current process environment.
 	Env []string
@@ -49,9 +56,10 @@ type Config struct {
 func ConfigFromOptions(opts provider.SessionOptions) Config {
 	base := claude.ConfigFromOptions(opts)
 	return Config{
-		Model:   base.Model,
-		WorkDir: base.WorkDir,
-		Resume:  base.Resume,
+		Model:           base.Model,
+		WorkDir:         base.WorkDir,
+		Resume:          base.Resume,
+		ReasoningEffort: base.ReasoningEffort,
 	}
 }
 
