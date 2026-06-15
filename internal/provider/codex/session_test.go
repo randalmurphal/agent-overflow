@@ -4404,7 +4404,7 @@ done
 			Filename: "snap.png",
 			MimeType: "image/png",
 			Size:     8,
-			Data:     []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A},
+			Path:     "/tmp/att-1/snap.png",
 		}},
 	})
 	if err != nil {
@@ -4442,12 +4442,12 @@ done
 		t.Fatalf("input length = %d, want image-only input", len(input))
 	}
 	imageInput := input[0].(map[string]any)
-	if imageInput["type"] != "image" {
-		t.Fatalf("input type = %v, want image", imageInput["type"])
+	if imageInput["type"] != "localImage" {
+		t.Fatalf("input type = %v, want localImage", imageInput["type"])
 	}
-	wantURL := "data:image/png;base64,iVBORw0KGgo="
-	if imageInput["url"] != wantURL {
-		t.Fatalf("image url = %v, want %s", imageInput["url"], wantURL)
+	wantPath := "/tmp/att-1/snap.png"
+	if imageInput["path"] != wantPath {
+		t.Fatalf("image path = %v, want %s", imageInput["path"], wantPath)
 	}
 }
 

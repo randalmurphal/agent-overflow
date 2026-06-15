@@ -394,23 +394,26 @@ func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []str
 		return nil, nil, fmt.Errorf("attachment store not initialized")
 	}
 
-	// claude-tui ingests an image by pasting its on-disk PATH into the real TUI
-	// composer (Claude reads the file itself); every other provider base64-encodes
-	// the bytes inline. Look up the provider once — only on the rarer send that
-	// actually carries attachments — so the path-ingesting provider loads just the
-	// path and never reads image bytes it won't use.
+	// Two providers ingest an image by its on-disk PATH and read the file
+	// themselves (provider.PathImageIngestion) — claude-tui pastes the path into the
+	// real TUI composer, and Codex takes a `localImage` input item (which also earns
+	// Codex's native numbered <image name=…> tag). Headless Claude has no local-path
+	// image source on the Anthropic API, so it base64-encodes the bytes inline. Look
+	// up the capability once — only on the rarer send that actually carries
+	// attachments — so a path-ingesting provider loads just the path and never reads
+	// bytes it won't use.
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load thread: %w", err)
 	}
-	pathOnly := thread.Provider == string(provider.ClaudeTUI)
+	pathOnly := provider.CapabilitiesForProvider(thread.Provider).ImageIngestion == provider.PathImageIngestion
 
 	// Order is load-bearing: providerAttachments comes out in attachmentIDs order,
-	// the same order the composer numbered its "[Image #N]" markers against. The
-	// claude-tui send splits the message at those markers and indexes this slice
-	// positionally (image #i → providerAttachments[i-1]; see claudetui's
-	// splitContentByImageMarkers), so this loop must stay a straight 1:1 walk —
-	// don't reorder or dedup here or inline images would bind to the wrong file.
+	// the same order the composer numbered its "[Image #N]" markers against. Every
+	// provider's send splits the message at those markers and indexes this slice
+	// positionally (image #i → providerAttachments[i-1]; see
+	// provider.SplitContentByImageMarkers), so this loop must stay a straight 1:1
+	// walk — don't reorder or dedup here or inline images would bind to the wrong file.
 	providerAttachments := make([]provider.ImageAttachment, 0, len(attachmentIDs))
 	persistedAttachments := make([]store.Attachment, 0, len(attachmentIDs))
 	for _, attachmentID := range attachmentIDs {

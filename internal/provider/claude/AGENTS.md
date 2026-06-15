@@ -56,6 +56,11 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   `isInterrupt`; a successful ack calls `Parser.MarkInterruptAcked`
   before any later `ParseLine` — the CLI writes ack before result,
   verified 6/6 on 2.1.170).
+- `message_content.go` — `buildUserMessageBlocks`: shapes the outbound
+  `user` message into ordered Anthropic content blocks, placing each
+  image at its composer `[Image #N]` marker (inline placement) via the
+  shared `provider.SplitContentByImageMarkers`. Headless Claude inlines
+  image bytes as base64 (no local-path source on the Messages API).
 - `sessionleaf.go` / `sessionleaf_branch.go` — cold-resume leaf
   reconstruction for `--resume-session-at`. `claudeLeafTracker` (shared
   with the live wire path) picks the leaf in FILE order;

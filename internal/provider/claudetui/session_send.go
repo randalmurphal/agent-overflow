@@ -149,8 +149,8 @@ type sendStep struct {
 //     TUI restored on a prior Esc-revert can't fuse with this send.
 //  2. the message body, replayed IN ORDER as a paste per segment. The composer
 //     embeds an "[Image #i]" marker at each image's drop point;
-//     splitContentByImageMarkers turns the content back into text runs and images
-//     at their original positions. Each text run is one bracketed paste; each
+//     provider.SplitContentByImageMarkers turns the content back into text runs and
+//     images at their original positions. Each text run is one bracketed paste; each
 //     image is its own bracketed paste of the absolute PATH at that spot, which
 //     Claude's paste handler reads into an image block and labels inline (so the
 //     image lands where the user put it, not front-loaded). Text and image pastes
@@ -169,13 +169,13 @@ func buildSendSteps(content string, imagePaths []string) []sendStep {
 		isPaste bool
 	}
 	blocks := []block{{data: []byte(strings.Repeat(composerClearKey, composerClearKeystrokes))}}
-	for _, part := range splitContentByImageMarkers(content, len(imagePaths)) {
-		if part.imageIndex >= 0 {
-			blocks = append(blocks, block{data: bracketedPaste(imagePaths[part.imageIndex]), isPaste: true})
+	for _, part := range provider.SplitContentByImageMarkers(content, len(imagePaths)) {
+		if part.ImageIndex >= 0 {
+			blocks = append(blocks, block{data: bracketedPaste(imagePaths[part.ImageIndex]), isPaste: true})
 			continue
 		}
-		if part.text != "" {
-			blocks = append(blocks, block{data: bracketedPaste(part.text), isPaste: true})
+		if part.Text != "" {
+			blocks = append(blocks, block{data: bracketedPaste(part.Text), isPaste: true})
 		}
 	}
 	blocks = append(blocks, block{data: []byte(submitKey)})

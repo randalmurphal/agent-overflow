@@ -14,11 +14,17 @@ func TestCapabilitiesForProvider(t *testing.T) {
 			want:     Capabilities{},
 		},
 		{
+			name:     "claude-tui",
+			provider: string(ClaudeTUI),
+			want:     Capabilities{ImageIngestion: PathImageIngestion},
+		},
+		{
 			name:     "codex",
 			provider: string(Codex),
 			want: Capabilities{
 				ModelCatalog:              CodexLiveModelCatalog,
 				BackgroundTerminalCleaner: CodexBackgroundTerminalCleaner,
+				ImageIngestion:            PathImageIngestion,
 			},
 		},
 		{
