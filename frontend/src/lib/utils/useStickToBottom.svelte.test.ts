@@ -4930,6 +4930,57 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop).toBe(500);
       });
 
+      it('oscillation recovery snaps SYNCHRONOUSLY in the contentRO callback (no rAF gap)', async () => {
+        // Regression: bug-report-20260615T182227Z. An above-viewport row
+        // remeasure (an image user-message row remounted by virtua)
+        // transiently dips contentEl, the browser auto-clamps scrollTop
+        // during the dip, then the row regrows and strands scrollTop below
+        // the restored bottom. The spring-tick oscillationSnap recovers it
+        // — but rAF callbacks fire BEFORE ResizeObserver callbacks within a
+        // frame (HTML "update the rendering"), so a snap reacting to the
+        // regrow's RO delivery always lands one frame late, painting the
+        // stranded position as a one-frame jump. Recovery must happen
+        // synchronously inside the regrow's contentRO callback, before any
+        // rAF tick.
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        // Spring chases to target 500, arrives, enters sentinel
+        // (sentinelEntryTarget = 500).
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900); // target = 500
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 360) await nextFrame(); // past retain → sentinel
+
+        // Dip: above-viewport row shrinks -37, browser auto-clamps
+        // scrollTop 500 → 463 (max = 1063 - 600).
+        geom.scrollHeight = 1063;
+        geom.contentHeight = 863;
+        geom.scrollTop = 463; // native clamp during the low point
+        ro.fire(contentEl, 863); // contentRO delta = -37
+        // The dip itself does not snap (target 463 ≠ sentinel entry 500);
+        // the negative-delta carve-out leaves scrollTop at the clamp.
+        expect(geom.scrollTop).toBe(463);
+
+        // Regrow: row returns +37, total back to the pre-dip value, target
+        // back to the sentinel entry (500), scrollTop still stranded at 463.
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900); // contentRO delta = +37
+
+        // FIX: re-pinned to the bottom synchronously inside the ro.fire
+        // above — asserted WITHOUT awaiting a frame. Without the fix
+        // scrollTop is still 463 here and only the next spring tick (rAF)
+        // would recover it.
+        expect(geom.scrollTop).toBe(500);
+
+        // And it stays put — no late spring-tick correction re-moves it.
+        for (let i = 0; i < 5; i++) await nextFrame();
+        expect(geom.scrollTop).toBe(500);
+      });
+
       it('real content growth during sentinel still spring-chases normally', async () => {
         const ro = getRO();
         ro.fire(contentEl, 800);

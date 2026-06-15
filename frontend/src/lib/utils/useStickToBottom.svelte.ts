@@ -997,6 +997,24 @@ export function createUseStickToBottomController(
     sentinelEntryTarget = -1;
   }
 
+  // Settle the spring at a target it has already reached, shared by both
+  // oscillation-recovery sites: the spring-tick path (the spring caught up
+  // to a target that had returned to the sentinel-entry value) and the
+  // synchronous contentRO path (an above-viewport remeasure regrow). The
+  // body is load-bearing and must stay identical across both — zero
+  // velocity/accumulated so the arrival check stays settled, and consume
+  // `sentinelEntryTarget` so the OTHER site's snap no-ops for this same
+  // oscillation. `springToken` is intentionally left untouched: the spring
+  // stays sentinel-alive so the external-write gate stays engaged. Extracted
+  // so the two sites can't drift — the same reason `springGateOpen()` is shared.
+  function snapOscillationToBottom(caller: string, top: number): void {
+    writeCaller = caller;
+    writeScrollTop(top);
+    velocity = 0;
+    accumulated = 0;
+    sentinelEntryTarget = -1;
+  }
+
   // Shared gate predicate. Used by both `startSpringIfNeeded` and the
   // contentRO positive-delta branch so the two sites can't drift on
   // which conditions allow the spring. The `warm` check is intentionally
@@ -1084,11 +1102,7 @@ export function createUseStickToBottomController(
         // below the restored target. Snap back instantly — a spring
         // chase for zero net content change is a visible artifact.
         if (sentinelEntryTarget >= 0 && target === sentinelEntryTarget) {
-          writeCaller = 'spring.oscillationSnap';
-          writeScrollTop(target);
-          velocity = 0;
-          accumulated = 0;
-          sentinelEntryTarget = -1;
+          snapOscillationToBottom('spring.oscillationSnap', target);
         } else {
           sentinelEntryTarget = -1;
           // `steps` can be 0 on a high-refresh frame whose carry hasn't
@@ -1289,7 +1303,14 @@ export function createUseStickToBottomController(
       // refresh side effect; with the lift, the trace and gate read
       // the same `isNearBottomState` and the IIFE disappears.
       refreshIsNearBottom();
-      const overshootMagnitude = Math.max(0, scrollEl.scrollTop - targetScrollTop());
+      // Cache the bottom target once per RO delivery. `targetScrollTop()`
+      // reads `scrollHeight` + `clientHeight` (forced layout), and neither
+      // changes across this synchronous callback — the only writes here are to
+      // `scrollTop`, which don't affect them — so the overshoot guard, the
+      // oscillation snap, and the delta-branch pins can all reuse one read.
+      // Mirrors the spring tick's per-frame `const target` discipline.
+      const target = targetScrollTop();
+      const overshootMagnitude = Math.max(0, scrollEl.scrollTop - target);
       const overshoot = overshootMagnitude > 0;
       const positiveWillPin = delta > 0
         && isAtBottomState
@@ -1319,7 +1340,7 @@ export function createUseStickToBottomController(
         scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
         scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
         clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-        target: scrollEl ? Math.round(targetScrollTop()) : null,
+        target: scrollEl ? Math.round(target) : null,
       }));
 
       // Overscroll guard: if browser auto-clamping or virtua corrections
@@ -1360,10 +1381,51 @@ export function createUseStickToBottomController(
         && (springToken === 0 || overshootMagnitude > SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX)
       ) {
         writeCaller = 'contentRO.overshoot';
-        writeScrollTop(targetScrollTop());
+        writeScrollTop(target);
       }
 
-      if (delta > 0) {
+      // ===== Synchronous sentinel oscillation recovery =====
+      // A row ABOVE the viewport that transiently shrinks-then-regrows —
+      // virtua remounting/remeasuring a replaced element, e.g. an image
+      // user-message row scrolled out of the live window — momentarily drops
+      // virtua's total size. Because virtua sizes its container explicitly
+      // (`contain: size` + `height: <totalSize>px`), that drop is the
+      // contentEl height we observe here. While pinned at the exact bottom,
+      // the browser SYNCHRONOUSLY clamps scrollTop down during the dip (a
+      // native operation that bypasses the property-descriptor write gate).
+      // When the row regrows, total returns to the pre-dip value but
+      // scrollTop is stranded below the restored bottom.
+      //
+      // The spring tick's `spring.oscillationSnap` already recovers this, but
+      // it runs in a rAF — and per the HTML "update the rendering" order, rAF
+      // callbacks fire BEFORE ResizeObserver callbacks within a frame, so a
+      // snap reacting to THIS regrow RO delivery always lands one frame late.
+      // That stranded frame paints as a one-frame jump
+      // (bug-report-20260615T182227Z: codex thread, above-viewport image row
+      // remeasure, ~37px upward jolt). Recovering synchronously here — in the
+      // same RO delivery as the regrow, before paint — closes the gap.
+      //
+      // Gated identically to the spring-tick snap: only while a spring is
+      // sentinel-idle (`springToken !== 0 && sentinelEntryTarget >= 0`) and
+      // the new target has returned to exactly the sentinel-entry value, so
+      // genuine new growth (target beyond the entry) still spring-chases and
+      // active chases are untouched. The >=1px stranded check ignores
+      // sub-pixel rounding between the browser-rounded scrollTop readback and
+      // the computed target. The shared snap (`snapOscillationToBottom`)
+      // consumes `sentinelEntryTarget`, making the later spring-tick snap a
+      // no-op for this same oscillation.
+      const sentinelOscillationStranded =
+        springToken !== 0
+        && sentinelEntryTarget >= 0
+        && isAtBottomState
+        && !escapedFromLockState
+        && pauseDepth === 0
+        && target === sentinelEntryTarget
+        && Math.abs(scrollEl.scrollTop - sentinelEntryTarget) >= 1;
+
+      if (sentinelOscillationStranded) {
+        snapOscillationToBottom('contentRO.oscillationSnap', target);
+      } else if (delta > 0) {
         // Positive delta: choose between sync-pin (default) and spring
         // chase (when the consumer signals "real content streaming and
         // the controller has warmed past mount settle").
@@ -1397,7 +1459,7 @@ export function createUseStickToBottomController(
             startSpringIfNeeded();
           } else {
             writeCaller = 'contentRO.positiveDelta';
-            writeScrollTop(targetScrollTop());
+            writeScrollTop(target);
           }
         }
       } else if (delta < 0) {
@@ -1450,7 +1512,7 @@ export function createUseStickToBottomController(
             writeCaller = widthReflowActive
               ? 'contentRO.negativeDeltaReflow'
               : 'contentRO.negativeDelta';
-            writeScrollTop(targetScrollTop());
+            writeScrollTop(target);
           } else {
             // Spring is the single writer mid-chase; sync write is
             // suppressed above. The target nonetheless moved (downward),
