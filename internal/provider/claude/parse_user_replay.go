@@ -190,10 +190,24 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 	content := extractToolResultText(msg.Content)
 
 	if isClaudeInjectedReplayContent(content) {
-		if fields, ok := ExtractTaskNotificationFields(content); ok {
-			return p.replayTaskNotificationEvents(threadID, fields, now), nil
+		// Replay every `<task-notification>` in the body, not just the
+		// first. The coalesced multi-notification flush is confirmed on
+		// the claude-tui /v1/messages wire (sibling completions during a
+		// TaskOutput(block=true) wait, spike/claude-mitm/
+		// probe_taskoutput_siblings.py); this headless echo is fed from
+		// the same enqueuePendingNotification source, so we extract all
+		// defensively even though a headless multi-block bundle has not
+		// been captured directly. A non-routable block (empty <task-id>)
+		// has no idempotency key, so it is skipped rather than fabricating
+		// a malformed completion.
+		var events []provider.ProviderEvent
+		for _, fields := range ExtractAllTaskNotificationFields(content) {
+			if !fields.Routable() {
+				continue
+			}
+			events = append(events, p.replayTaskNotificationEvents(threadID, fields, now)...)
 		}
-		return nil, nil
+		return events, nil
 	}
 
 	providerItemID := firstNonEmpty(msg.ID, readRawString(raw["uuid"]))
@@ -239,36 +253,82 @@ type TaskNotificationFields struct {
 	Summary    string
 }
 
-// ExtractTaskNotificationFields lifts the inner tags out of a
-// `<task-notification>...</task-notification>` body when present.
-// Returns (fields, true) only when both wrapper tags appear AND the
-// body has a non-empty `<task-id>` — task_id is the idempotency key
-// triage uses to drain the pending-terminal stash and resolve the
-// launch; without it the event would be unroutable.
+// Routable reports whether the notification carries the `<task-id>` that
+// triage uses as the idempotency key — to resolve the launch and drain
+// the pending-terminal stash. A notification with an empty task_id can't
+// be keyed, so every caller skips it rather than synthesizing a
+// completion that resolves to no launch and can't be deduped. This is the
+// one definition of that rule; the scanner and both call sites
+// (parseUserReplay here, claudetui's eachTaskNotification) ask it here so
+// a routing decision can't drift from an emission decision.
+func (f TaskNotificationFields) Routable() bool { return f.TaskID != "" }
+
+// ExtractAllTaskNotificationFields lifts the fields out of EVERY
+// `<task-notification>` block in content, in wire order. When a
+// backgrounded command finishes while the agent is blocked on a
+// TaskOutput(block=true) poll, the CLI coalesces one
+// "[SYSTEM NOTIFICATION - NOT USER INPUT]" + `<task-notification>` per
+// completed task into a SINGLE message — the TaskOutput-waited task AND
+// any sibling that finished during the wait (confirmed on 2.1.170:
+// spike/claude-mitm/probe_taskoutput_siblings.py). Extracting only the
+// first would silently drop the rest, stranding those launches as
+// "running" forever. Each returned element carries the parsed fields;
+// callers skip the non-routable ones (fields.Routable() == false, i.e. an
+// empty <task-id>) rather than the extractor swallowing them.
+func ExtractAllTaskNotificationFields(content string) []TaskNotificationFields {
+	var out []TaskNotificationFields
+	for from := 0; from < len(content); {
+		fields, end := scanTaskNotification(content, from)
+		if end < 0 {
+			break
+		}
+		out = append(out, fields)
+		from = end
+	}
+	return out
+}
+
+// scanTaskNotification parses the first `<task-notification>...
+// </task-notification>` block at or after `from`. It returns the parsed
+// fields and the index in content just past the closing tag — or end<0
+// when no balanced block remains, so a caller loop can terminate.
 //
-// Tags are extracted by shallow substring scan; the upstream wire
-// shape (LocalShellTask.tsx / LocalAgentTask.tsx) keeps the children we
-// read non-nested. Sibling sections an agent notification adds after
+// The closing tag is sought AFTER the opening tag, so a stray
+// `</task-notification>` before the next open is ignored instead of
+// truncating the scan. That matters for ExtractAllTaskNotificationFields:
+// a malformed or echoed close in one block must not strand the valid
+// blocks that follow it (the multi-extract loop would otherwise stop on
+// the first close-before-open it hit). A missing close (an unterminated
+// `<task-notification`) yields end<0 so a malformed echo can't fabricate
+// a block.
+//
+// Tags are extracted by shallow substring scan; the upstream wire shape
+// (LocalShellTask.tsx / LocalAgentTask.tsx) keeps the children we read
+// non-nested. Sibling sections an agent notification adds after
 // `<summary>` (`<result>`, `<usage>`, `<worktree>`) are ignored — each
-// child is matched by its own tag. A close-tag-before-open or missing
-// close returns ok=false so a malformed echo can't fabricate fields.
-func ExtractTaskNotificationFields(content string) (TaskNotificationFields, bool) {
+// child is matched by its own tag.
+func scanTaskNotification(content string, from int) (TaskNotificationFields, int) {
 	const openPrefix = "<task-notification"
 	const closeTag = "</task-notification>"
-	openIdx := strings.Index(content, openPrefix)
-	closeIdx := strings.Index(content, closeTag)
-	if openIdx < 0 || closeIdx < 0 || closeIdx < openIdx {
-		return TaskNotificationFields{}, false
+	rel := content[from:]
+	openIdx := strings.Index(rel, openPrefix)
+	if openIdx < 0 {
+		return TaskNotificationFields{}, -1
 	}
+	closeRel := strings.Index(rel[openIdx:], closeTag)
+	if closeRel < 0 {
+		return TaskNotificationFields{}, -1
+	}
+	closeIdx := openIdx + closeRel
 	// Advance past the opening tag's `>` so `body` represents inner
 	// content only. Tolerant of an attribute-bearing variant
 	// `<task-notification foo="bar">` even though we don't expect one
 	// from current Claude releases.
-	bodyStart := strings.Index(content[openIdx:closeIdx], ">")
+	bodyStart := strings.Index(rel[openIdx:closeIdx], ">")
 	if bodyStart < 0 {
-		return TaskNotificationFields{}, false
+		return TaskNotificationFields{}, -1
 	}
-	body := content[openIdx+bodyStart+1 : closeIdx]
+	body := rel[openIdx+bodyStart+1 : closeIdx]
 	fields := TaskNotificationFields{
 		TaskID:     extractXMLChild(body, "task-id"),
 		ToolUseID:  extractXMLChild(body, "tool-use-id"),
@@ -276,10 +336,7 @@ func ExtractTaskNotificationFields(content string) (TaskNotificationFields, bool
 		OutputFile: extractXMLChild(body, "output-file"),
 		Summary:    extractXMLChild(body, "summary"),
 	}
-	if fields.TaskID == "" {
-		return fields, false
-	}
-	return fields, true
+	return fields, from + closeIdx + len(closeTag)
 }
 
 // extractXMLChild returns the trimmed, entity-decoded inner text of

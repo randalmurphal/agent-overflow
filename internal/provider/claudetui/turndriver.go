@@ -323,15 +323,27 @@ func (r *reconstructor) emitBackgroundCompletions(messages []json.RawMessage) {
 	})
 }
 
-// eachTaskNotification invokes fn for every user message carrying a
-// <task-notification>, passing the extracted fields and whether a usable task-id
+// eachTaskNotification invokes fn for every <task-notification> carried by an
+// injected message, passing the extracted fields and whether a usable task-id
 // was found (ok=false marks a missing or malformed task-id — unroutable). fn
 // returns false to stop early. It is the single definition of "what counts as a
-// task-notification
-// message," shared by the routing discriminator (requestReportsAgentCompletion)
-// and the emitter (emitBackgroundCompletions) so a routing decision can never
-// disagree with what actually gets emitted. The byte-probe skips the common
-// no-notification message without a parse.
+// task-notification message," shared by the routing discriminator
+// (requestReportsAgentCompletion) and the emitter (emitBackgroundCompletions)
+// so a routing decision can never disagree with what actually gets emitted. The
+// byte-probe skips the common no-notification message without a parse.
+//
+// Two wire facts drive the role + multi-extract handling (both confirmed on
+// 2.1.170, spike/claude-mitm/probe_taskoutput_siblings.py):
+//
+//   - When a sibling backgrounded command finishes while the agent is blocked
+//     on TaskOutput(block=true), the CLI flushes the completions as a SINGLE
+//     role:"system" message ("[SYSTEM NOTIFICATION - NOT USER INPUT]") with
+//     STRING content — not the role:"user" array-content message a
+//     between-turns resume uses. Accept both injected roles; reject assistant,
+//     which would only carry the tag if the model quoted it in its own output.
+//   - That one message COALESCES a <task-notification> per just-finished task
+//     (the TaskOutput-waited one AND the sibling). Extract ALL, not just the
+//     first, or every task after the first stays "running" forever.
 func eachTaskNotification(messages []json.RawMessage, fn func(fields claude.TaskNotificationFields, ok bool) bool) {
 	for _, raw := range messages {
 		if !bytes.Contains(raw, taskNotificationProbe) {
@@ -341,12 +353,13 @@ func eachTaskNotification(messages []json.RawMessage, fn func(fields claude.Task
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		}
-		if json.Unmarshal(raw, &m) != nil || m.Role != "user" {
+		if json.Unmarshal(raw, &m) != nil || (m.Role != "user" && m.Role != "system") {
 			continue
 		}
-		fields, ok := claude.ExtractTaskNotificationFields(blockText(m.Content))
-		if !fn(fields, ok) {
-			return
+		for _, fields := range claude.ExtractAllTaskNotificationFields(blockText(m.Content)) {
+			if !fn(fields, fields.Routable()) {
+				return
+			}
 		}
 	}
 }

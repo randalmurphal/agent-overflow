@@ -370,8 +370,8 @@ Discriminators, all matching headless:
 - **Dedup by `task_id`.** The notification persists in conversation history and
   recurs in every later request body; a per-session seen-set reconstructs it once.
 
-Field extraction reuses `claude.ExtractTaskNotificationFields`, so the tag shape
-stays drift-free with the shared parser's synthetic-XML path.
+Field extraction reuses `claude.ExtractAllTaskNotificationFields`, so the tag
+shape stays drift-free with the shared parser's synthetic-XML path.
 
 ### Compaction — transcript no longer required
 

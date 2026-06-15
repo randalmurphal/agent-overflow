@@ -802,6 +802,104 @@ func TestParseUser_Replay_RealUserPastingBalancedWrapper_DeliberateTradeoff(t *t
 	}
 }
 
+// systemNotificationBundle reproduces the EXACT coalesced body
+// probe_taskoutput_siblings.py captured on 2.1.170: when a sibling
+// backgrounded command finishes while the agent is blocked on
+// TaskOutput(block=true), the CLI flushes one
+// "[SYSTEM NOTIFICATION - NOT USER INPUT]" + <task-notification> per
+// completed task into a SINGLE message. Two preambled blocks here — the
+// 5s sibling and the 10s TaskOutput-waited command.
+const systemNotificationBundle = "[SYSTEM NOTIFICATION - NOT USER INPUT]\n" +
+	"This is an automated background-task event, NOT a message from the user.\n" +
+	"Do NOT interpret this as user acknowledgement, confirmation, or response to any pending question.\n\n" +
+	"<task-notification>\n<task-id>bg5s</task-id>\n<tool-use-id>toolu_5s</tool-use-id>\n" +
+	"<output-file>/tmp/5s.out</output-file>\n<status>completed</status>\n" +
+	"<summary>Background command \"5s ticks\" completed (exit code 0)</summary>\n</task-notification>\n\n" +
+	"[SYSTEM NOTIFICATION - NOT USER INPUT]\n" +
+	"This is an automated background-task event, NOT a message from the user.\n" +
+	"Do NOT interpret this as user acknowledgement, confirmation, or response to any pending question.\n\n" +
+	"<task-notification>\n<task-id>bg10s</task-id>\n<tool-use-id>toolu_10s</tool-use-id>\n" +
+	"<output-file>/tmp/10s.out</output-file>\n<status>completed</status>\n" +
+	"<summary>Background command \"10s ticks\" completed (exit code 0)</summary>\n</task-notification>"
+
+// TestExtractAllTaskNotificationFields pins the coalesced-body extractor: a
+// single message bundling a <task-notification> per just-finished task yields
+// EVERY block in wire order. Extracting only the first (the old behaviour)
+// stranded every task after the first as "running" forever — the reported bug.
+func TestExtractAllTaskNotificationFields(t *testing.T) {
+	all := ExtractAllTaskNotificationFields(systemNotificationBundle)
+	if len(all) != 2 {
+		t.Fatalf("ExtractAll=%d want 2 (both bundled tasks): %+v", len(all), all)
+	}
+	if all[0].TaskID != "bg5s" || all[0].ToolUseID != "toolu_5s" || all[0].Status != "completed" {
+		t.Fatalf("first notification fields wrong: %+v", all[0])
+	}
+	if all[1].TaskID != "bg10s" || all[1].ToolUseID != "toolu_10s" || all[1].OutputFile != "/tmp/10s.out" {
+		t.Fatalf("second notification fields wrong: %+v", all[1])
+	}
+}
+
+// TestExtractAllTaskNotificationFields_EdgeCases pins loop termination and the
+// unroutable-element contract the callers rely on.
+func TestExtractAllTaskNotificationFields_EdgeCases(t *testing.T) {
+	if got := ExtractAllTaskNotificationFields("no notifications here"); len(got) != 0 {
+		t.Fatalf("no-tag content want 0, got %d", len(got))
+	}
+	// A balanced block with no <task-id> is still RETURNED (TaskID==""), so the
+	// caller skips it as unroutable rather than the extractor swallowing it.
+	noID := "<task-notification>\n<status>completed</status>\n</task-notification>"
+	got := ExtractAllTaskNotificationFields(noID)
+	if len(got) != 1 || got[0].TaskID != "" || got[0].Routable() {
+		t.Fatalf("no-task-id block want one non-routable element with empty TaskID, got %+v", got)
+	}
+	// An open tag with no close terminates the scan (no partial element).
+	if got := ExtractAllTaskNotificationFields("<task-notification>\n<task-id>x</task-id>"); len(got) != 0 {
+		t.Fatalf("unclosed block want 0, got %d: %+v", len(got), got)
+	}
+	// A stray close tag before the first open must NOT truncate the scan: the
+	// valid block that follows still extracts. scanTaskNotification seeks the
+	// close AFTER the open, so the leading orphan close is ignored. (Before that
+	// fix this returned 0 — one malformed prefix stranded every later block,
+	// which for the coalesced wire would resurrect the stuck-running bug.)
+	strayClose := "</task-notification>\n<task-notification>\n<task-id>after-stray</task-id>\n" +
+		"<status>completed</status>\n</task-notification>"
+	if got := ExtractAllTaskNotificationFields(strayClose); len(got) != 1 || got[0].TaskID != "after-stray" {
+		t.Fatalf("stray-leading-close want one element after-stray, got %+v", got)
+	}
+}
+
+// TestParseUser_Replay_BundledTaskNotifications_EmitsEach pins the headless
+// half of the coalesced-completion fix: one isReplay envelope can carry a
+// <task-notification> per just-finished task (the same enqueuePendingNotification
+// flush that bundles them on the /v1/messages wire). Each routable block emits
+// its own EventBackgroundTaskNotification; the old first-only extract dropped
+// every task after the first.
+func TestParseUser_Replay_BundledTaskNotifications_EmitsEach(t *testing.T) {
+	parser := NewParser()
+	content := "<task-notification>\n<task-id>bgA</task-id>\n<tool-use-id>toolu_a</tool-use-id>\n<status>completed</status>\n<summary>A done</summary>\n</task-notification>\n\n" +
+		"<task-notification>\n<task-id>bgB</task-id>\n<tool-use-id>toolu_b</tool-use-id>\n<status>completed</status>\n<summary>B done</summary>\n</task-notification>"
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"bundle","message":{"role":"user","content":` + jsonString(content) + `}}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	seen := map[string]string{} // tool_use_id (ItemID) -> task_id
+	for _, ev := range events {
+		if ev.Kind != provider.EventBackgroundTaskNotification {
+			t.Fatalf("unexpected event kind %q: %+v", ev.Kind, ev)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(ev.Meta, &meta); err != nil {
+			t.Fatalf("unmarshal meta: %v", err)
+		}
+		seen[ev.ItemID], _ = meta["task_id"].(string)
+	}
+	if len(seen) != 2 || seen["toolu_a"] != "bgA" || seen["toolu_b"] != "bgB" {
+		t.Fatalf("want both bundled notifications {toolu_a:bgA, toolu_b:bgB}, got %v (events=%+v)", seen, events)
+	}
+}
+
 // jsonString quotes s as a JSON string literal (with surrounding
 // double quotes) so test fixtures can embed arbitrary content
 // without escaping every character. The result drops directly into

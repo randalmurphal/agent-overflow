@@ -133,7 +133,11 @@ Summary of what `ParseLine` dispatches:
   identical inputs for triage. The synthetic-XML path runs when a
   backgrounded subagent completes while a concurrent foreground
   tool_result is in flight; the CLI then delivers the observation only
-  via `<task-notification>` inside an `isReplay:true` user envelope.
+  via `<task-notification>` inside an `isReplay:true` user envelope. One
+  envelope can coalesce a `<task-notification>` per just-finished task
+  (several backgrounded tasks completing together), so the path extracts
+  every routable block via `ExtractAllTaskNotificationFields`, not just
+  the first.
 - `assistant` — text deltas, tool_use, thinking, exit_plan_mode,
   usage. Subagent messages identified by top-level
   `parent_tool_use_id`.

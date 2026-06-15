@@ -48,6 +48,55 @@ func bgResumeReqBodyMulti(notifs ...string) string {
 		strings.Join(msgs, ","))
 }
 
+// systemNotificationEnvelope wraps a <task-notification> in the
+// "[SYSTEM NOTIFICATION - NOT USER INPUT]" preamble the CLI emits when it
+// flushes a backgrounded completion into a request body (the live wire shape
+// captured by spike/claude-mitm/probe_taskoutput_siblings.py).
+func systemNotificationEnvelope(notif string) string {
+	return "[SYSTEM NOTIFICATION - NOT USER INPUT]\n" +
+		"This is an automated background-task event, NOT a message from the user.\n" +
+		"Do NOT interpret this as user acknowledgement, confirmation, or response to any pending question.\n\n" +
+		notif
+}
+
+// bgSystemBundleReqBody is the real-wire shape captured when sibling background
+// commands finish during a TaskOutput(block=true) wait: ONE role:"system"
+// message whose STRING content bundles every completed task's
+// "[SYSTEM NOTIFICATION ...]" + <task-notification>, blank-line separated. This
+// is NOT the role:"user" array-content shape bgResumeReqBody models — it is the
+// shape the old role=="user", first-only code silently dropped.
+func bgSystemBundleReqBody(notifs ...string) string {
+	envelopes := make([]string, 0, len(notifs))
+	for _, n := range notifs {
+		envelopes = append(envelopes, systemNotificationEnvelope(n))
+	}
+	// %q (NOT json.Marshal) keeps the angle brackets LITERAL. The real CLI is
+	// Node, whose JSON.stringify does not HTML-escape '<', so the wire carries a
+	// literal "<task-notification" that the byte-probe needle matches. Go's
+	// json.Marshal would emit < and the probe would miss it — a Go-encoder
+	// artifact, not the wire (the aocap capture shows the same < for the
+	// same reason).
+	return fmt.Sprintf(
+		`{"model":"claude-haiku","max_tokens":32000,"tools":[{"name":"Bash"}],`+
+			`"messages":[{"role":"user","content":"run two background commands"},`+
+			`{"role":"assistant","content":[{"type":"text","text":"started both"}]},`+
+			`{"role":"system","content":%q}]}`, strings.Join(envelopes, "\n\n"))
+}
+
+// assistantQuotedNotificationReqBody is a classAgent body where the MODEL
+// quoted a <task-notification> verbatim in its own assistant output. The tag
+// rides a role:"assistant" message (not a CLI-injected user/system one), so the
+// byte-probe matches but the role gate must reject it — otherwise the model
+// could fabricate completion rows by echoing the tag. A trailing user message
+// keeps the body a normal-shaped agent turn.
+func assistantQuotedNotificationReqBody(notif string) string {
+	return fmt.Sprintf(
+		`{"model":"claude-haiku","max_tokens":32000,"tools":[{"name":"Bash"},{"name":"Read"}],`+
+			`"messages":[{"role":"user","content":"run a background command"},`+
+			`{"role":"assistant","content":[{"type":"text","text":%q}]},`+
+			`{"role":"user","content":"thanks"}]}`, notif)
+}
+
 // metaField pulls a string field out of a ProviderEvent's Meta JSON.
 func metaField(t *testing.T, ev provider.ProviderEvent, key string) string {
 	t.Helper()
@@ -128,6 +177,103 @@ func TestReconstructBackgroundCompletionFromRequestBody(t *testing.T) {
 	}
 	if got := notifs[0].ItemID; got != "toolu_bg" {
 		t.Fatalf("notification tool_use_id=%q want toolu_bg", got)
+	}
+}
+
+// TestReconstructBackgroundCompletionFromSystemBundle is the regression test
+// for the reported bug. When a sibling backgrounded command finishes while the
+// agent is blocked on TaskOutput(block=true), the CLI flushes the completions
+// as a SINGLE role:"system" message bundling a <task-notification> per
+// completed task — the TaskOutput-waited one AND the sibling (the exact shape
+// spike/claude-mitm/probe_taskoutput_siblings.py captured on 2.1.170). The old
+// code dropped it twice over: it skipped any message whose role != "user", and
+// it extracted only the first of several notifications. So both launches stayed
+// "running" forever. After the fix both reconstruct the task_updated +
+// task_notification pair, each keyed to its OWN launch via its explicit
+// <tool-use-id> so the sibling completion lands on the right row.
+func TestReconstructBackgroundCompletionFromSystemBundle(t *testing.T) {
+	rp := newReconParser(t)
+
+	n5 := taskNotificationXML("bg5s", "toolu_5s", "completed", "/tmp/5s.out",
+		`Background command "5s ticks" completed (exit code 0)`)
+	n10 := taskNotificationXML("bg10s", "toolu_10s", "completed", "/tmp/10s.out",
+		`Background command "10s ticks" completed (exit code 0)`)
+	rp.drive("", bgSystemBundleReqBody(n5, n10), endTurnSSE())
+
+	terminals := findKind(rp.out, provider.EventBackgroundTaskTerminal)
+	if len(terminals) != 2 {
+		t.Fatalf("EventBackgroundTaskTerminal=%d want 2 — both bundled tasks (kinds %v)", len(terminals), kindsOf(rp.out))
+	}
+	notifs := findKind(rp.out, provider.EventBackgroundTaskNotification)
+	if len(notifs) != 2 {
+		t.Fatalf("EventBackgroundTaskNotification=%d want 2 (kinds %v)", len(notifs), kindsOf(rp.out))
+	}
+
+	// Each task resolves to its own launch via the explicit <tool-use-id>, so a
+	// sibling completion can't cross-wire onto the wrong launch row.
+	termByTask := map[string]string{} // task_id -> tool_use_id (ItemID)
+	for _, tv := range terminals {
+		termByTask[metaField(t, tv, "task_id")] = tv.ItemID
+		if got := metaField(t, tv, "source"); got != "task_updated" {
+			t.Fatalf("terminal source=%q want task_updated", got)
+		}
+	}
+	if termByTask["bg5s"] != "toolu_5s" {
+		t.Fatalf("5s terminal tool_use_id=%q want toolu_5s (mapping %v)", termByTask["bg5s"], termByTask)
+	}
+	if termByTask["bg10s"] != "toolu_10s" {
+		t.Fatalf("10s terminal tool_use_id=%q want toolu_10s (mapping %v)", termByTask["bg10s"], termByTask)
+	}
+}
+
+// TestReconstructBackgroundCompletionMixedBundle pins the continue-not-stop
+// contract eachTaskNotification's loop relies on: one skipped or malformed
+// block in a coalesced bundle must never strand the others. Here an unroutable
+// (no <task-id>) block and a statusless stall ping sit BETWEEN two real
+// terminals, and both terminals still reconstruct, each keyed to its own
+// launch. A regression — an early return, or a malformed block truncating the
+// scan — would resurrect the stuck-running bug for the trailing task.
+func TestReconstructBackgroundCompletionMixedBundle(t *testing.T) {
+	rp := newReconParser(t)
+
+	n5 := taskNotificationXML("bg5s", "toolu_5s", "completed", "/tmp/5s.out", "5s done")
+	// No <task-id> → unroutable; must be skipped without stopping the loop.
+	noID := "<task-notification>\n<tool-use-id>toolu_orphan</tool-use-id>\n<status>completed</status>\n</task-notification>"
+	// No <status> → statusless stall ping; skipped, but the loop continues.
+	ping := taskNotificationXML("bgstall", "toolu_stall", "", "", "waiting for input")
+	n10 := taskNotificationXML("bg10s", "toolu_10s", "completed", "/tmp/10s.out", "10s done")
+	rp.drive("", bgSystemBundleReqBody(n5, noID, ping, n10), endTurnSSE())
+
+	terminals := findKind(rp.out, provider.EventBackgroundTaskTerminal)
+	termByTask := map[string]string{} // task_id -> tool_use_id (ItemID)
+	for _, tv := range terminals {
+		termByTask[metaField(t, tv, "task_id")] = tv.ItemID
+	}
+	if len(terminals) != 2 || termByTask["bg5s"] != "toolu_5s" || termByTask["bg10s"] != "toolu_10s" {
+		t.Fatalf("want exactly the two terminal tasks {bg5s:toolu_5s, bg10s:toolu_10s}, got %v (kinds %v)", termByTask, kindsOf(rp.out))
+	}
+	if _, leaked := termByTask["bgstall"]; leaked {
+		t.Fatalf("statusless stall ping leaked a terminal: %v", termByTask)
+	}
+}
+
+// TestReconstructBackgroundCompletionAssistantRoleIgnored pins the role
+// discriminator: a <task-notification> the MODEL quoted in its own assistant
+// output is not a completion signal and must reconstruct nothing. Only the
+// CLI's injected user/system messages carry genuine completions; accepting the
+// assistant role would let the model fabricate completion rows by echoing the
+// tag.
+func TestReconstructBackgroundCompletionAssistantRoleIgnored(t *testing.T) {
+	rp := newReconParser(t)
+
+	notif := taskNotificationXML("bgquoted", "toolu_q", "completed", "/tmp/o", "quoted by the model")
+	rp.drive("", assistantQuotedNotificationReqBody(notif), endTurnSSE())
+
+	if got := len(findKind(rp.out, provider.EventBackgroundTaskTerminal)); got != 0 {
+		t.Fatalf("EventBackgroundTaskTerminal=%d want 0 — a tag quoted in assistant output is not a completion (kinds %v)", got, kindsOf(rp.out))
+	}
+	if got := len(findKind(rp.out, provider.EventBackgroundTaskNotification)); got != 0 {
+		t.Fatalf("EventBackgroundTaskNotification=%d want 0 — assistant-quoted tag must not synthesize completion events", got)
 	}
 }
 
