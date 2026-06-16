@@ -170,3 +170,24 @@ export function patchTimelineNodeItemRefs(
   }
   return changed ? result : (skeleton as TimelineNode[]);
 }
+
+export function patchStructuralTimelineNodeItemRefs(
+  skeleton: readonly TimelineNode[],
+  structuralIndexes: readonly number[],
+  getItem: (id: string) => Item | undefined,
+  aggregates?: SubagentLiveAggregates,
+): TimelineNode[] {
+  if (structuralIndexes.length === 0) return skeleton as TimelineNode[];
+
+  let result: TimelineNode[] | null = null;
+  for (const index of structuralIndexes) {
+    const node = skeleton[index];
+    if (!node || node.kind === 'leaf') continue;
+    const patched = patchNode(node, getItem, aggregates);
+    if (patched === node) continue;
+    if (!result) result = [...skeleton];
+    result[index] = patched;
+  }
+
+  return result ?? (skeleton as TimelineNode[]);
+}

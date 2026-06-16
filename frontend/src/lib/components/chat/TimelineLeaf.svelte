@@ -36,10 +36,11 @@
     targetFlashNonce?: number;
   } = $props();
 
-  // Single source of truth: `pane.items[i]` carries streaming deltas
-  // (applied in-place via `applyItemDelta`) and the completion summary.
-  // No overlay; no `$derived` reconciliation needed.
-  const displayItem = $derived(item);
+  // Resolve by id at the row boundary so ordinary leaf streams can update
+  // this row without forcing MessageTimeline to rebuild the whole
+  // virtualizer data array. The prop remains the structural fallback for the
+  // brief teardown / prune window where the row outlives the pane item.
+  const displayItem = $derived(pane.getItemById(item.id) ?? item);
 
   // Notification kind is encoded on meta.kind for sub-discrimination —
   // session-died notifications carry their own renderer (the historical

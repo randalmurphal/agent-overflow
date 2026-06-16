@@ -5,6 +5,7 @@
     ThreadPane,
     TimelineWindowAnchorOperation,
   } from '../../stores/thread.svelte';
+  import type { Item } from '../../types/models';
   import { addToast } from '../../stores/toast.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { createUseStickToBottomController } from '../../utils/useStickToBottom.svelte';
@@ -26,7 +27,7 @@
   import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
   import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
   import { filterRedundantNotifications } from '../../utils/notificationFilter';
-  import { patchTimelineNodeItemRefs } from '../../utils/timelineNodePatch';
+  import { patchStructuralTimelineNodeItemRefs } from '../../utils/timelineNodePatch';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
   import ReadGroupRow from './ReadGroupRow.svelte';
@@ -201,11 +202,24 @@
   });
   const targetFlash = createTimelineTargetFlash(TARGET_FLASH_MS);
 
+  function currentTimelineLeafItem(node: TimelineNode): Item | null {
+    if (node.kind !== 'leaf') return null;
+    return pane.getItemById(node.item.id) ?? node.item;
+  }
+
+  function timelineNodeHasRail(node: TimelineNode, leafItem: Item | null): boolean {
+    if (leafItem) {
+      return RAIL_LEAF_KINDS.has(leafItem.kind)
+        && !RAIL_EXEMPT_PAYLOAD_KINDS.has(leafItem.payloadKind ?? '');
+    }
+    return RAIL_GROUP_KINDS.has(node.kind);
+  }
+
   // Two-phase derivation: structuralNodes runs the expensive grouping
   // pipeline only when the item window changes shape (timelineRevision
-  // bump). groupedNodes is a cheap O(M) patch pass that swaps in fresh
-  // item refs on every streaming delta, with structural sharing so
-  // unchanged nodes keep the same object reference and skip re-render.
+  // bump). groupedNodes patches only structural roots (subagent/read/wait
+  // groups); plain leaf rows resolve their current item inside TimelineLeaf
+  // so ordinary text streaming does not rebuild the virtualizer data array.
   // Stable identity on purpose: both derivations below receive this and
   // re-read fold state via the pane on each run (fold mutations always
   // ride a timelineRevision bump, so no extra reactivity is needed).
@@ -218,8 +232,21 @@
       ),
     );
   });
+  function structuralPatchIndexesFor(nodes: readonly TimelineNode[]): number[] {
+    const indexes: number[] = [];
+    for (let i = 0; i < nodes.length; i += 1) {
+      if (nodes[i].kind !== 'leaf') indexes.push(i);
+    }
+    return indexes;
+  }
+  let structuralPatchIndexes = $derived(structuralPatchIndexesFor(structuralNodes));
   let groupedNodes = $derived.by(() =>
-    patchTimelineNodeItemRefs(structuralNodes, (id) => pane.getItemById(id), subagentAggregates),
+    patchStructuralTimelineNodeItemRefs(
+      structuralNodes,
+      structuralPatchIndexes,
+      (id) => pane.getItemById(id),
+      subagentAggregates,
+    ),
   );
   // Reveal gate: while a turn streams, the pane's sequencer holds the next
   // top-level row back until the current item's smoother drains
@@ -248,8 +275,8 @@
     // `pane.revealBoundary` (a $state that only changes when the gate
     // advances — NOT per streaming delta) so divider/boundary indexes
     // realign with the gated set without recomputing on every chunk;
-    // `revealedNodes` is read inside `untrack` because its array ref churns
-    // each delta even when the boundary is unchanged.
+    // `revealedNodes` is read inside `untrack` because structural/group
+    // patches can change its array ref even when the boundary is unchanged.
     pane.timelineRevision;
     pane.revealBoundary;
 
@@ -266,12 +293,11 @@
     // change) or the reveal gate advancing — NOT on every streaming
     // summary delta. Track `timelineRevision` (bumps only on structural
     // item-window change) and `revealBoundary` (the reveal gate), then
-    // read `revealedNodes` / `pane.items` inside `untrack`: both array
-    // refs churn on every delta (`groupedNodes` swaps fresh item refs
-    // each chunk) even though the tail IDENTITY keys below do not, so
-    // tracking them rebuilt these slice/map/join strings ~per chunk
-    // only for the downstream effect to compare-equal and bail. The
-    // tracked deps above flip exactly when the output can change.
+    // read `revealedNodes` / `pane.items` inside `untrack`: item refs can
+    // change without changing the tail IDENTITY keys below, so tracking the
+    // arrays rebuilt these slice/map/join strings for work the downstream
+    // effect would compare-equal and ignore. The tracked deps above flip
+    // exactly when the output can change.
     // Mirrors the `rowDecorations` derived above.
     pane.timelineRevision;
     pane.revealBoundary;
@@ -1469,6 +1495,7 @@
           onscrollend={handleVirtuaScrollEnd}
         >
           {#snippet children(node: TimelineNode, index: number)}
+            {@const currentLeafItem = currentTimelineLeafItem(node)}
             <!-- Outer per-row wrapper. We do NOT set data-item-id here:
                  only TimelineLeaf owns that attribute on its root. Structural
                  rows stay unanchored, and tests rely on the divider rendering
@@ -1482,11 +1509,7 @@
                  gutter aligns with adjacent tool rows. Everything else
                  (assistant_text, user_text, notifications, api errors)
                  renders flat and breaks the line. -->
-            {@const isRail =
-              (node.kind === 'leaf'
-                && RAIL_LEAF_KINDS.has(node.item.kind)
-                && !RAIL_EXEMPT_PAYLOAD_KINDS.has(node.item.payloadKind ?? '')) ||
-              RAIL_GROUP_KINDS.has(node.kind)}
+            {@const isRail = timelineNodeHasRail(node, currentLeafItem)}
             <div data-row-index={index} class:mt-4={rowDecorations.toolTextBoundaryIndexes.has(index)}>
               {#if index === 0}
                 <!-- Top of timeline. Load-older button (when applicable) and

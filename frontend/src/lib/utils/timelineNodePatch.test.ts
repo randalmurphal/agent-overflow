@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { patchTimelineNodeItemRefs } from './timelineNodePatch';
+import {
+  patchStructuralTimelineNodeItemRefs,
+  patchTimelineNodeItemRefs,
+} from './timelineNodePatch';
 import type { Item } from '../types/models';
 import type { SubagentFoldAggregate } from './subagentFold';
 import type {
@@ -424,5 +427,56 @@ describe('patchTimelineNodeItemRefs', () => {
     const nodes: TimelineNode[] = [leaf(a)];
     const result = patchTimelineNodeItemRefs(nodes, () => undefined);
     expect(result).toBe(nodes);
+  });
+});
+
+describe('patchStructuralTimelineNodeItemRefs', () => {
+  it('returns the same array and performs no lookups when there are no structural nodes', () => {
+    const a = mkItem({ id: 'a', summary: 'hello' });
+    const b = mkItem({ id: 'b', summary: 'world' });
+    const nodes: TimelineNode[] = [leaf(a), leaf(b)];
+    const seen: string[] = [];
+
+    const result = patchStructuralTimelineNodeItemRefs(nodes, [], (id) => {
+      seen.push(id);
+      return undefined;
+    });
+
+    expect(result).toBe(nodes);
+    expect(seen).toEqual([]);
+  });
+
+  it('patches only structural root indexes and leaves top-level leaves untouched', () => {
+    const before = mkItem({ id: 'before', summary: 'before' });
+    const parent = mkItem({ id: 'parent', kind: 'tool_call', summary: 'launch' });
+    const child = mkItem({ id: 'child', summary: 'child' });
+    const after = mkItem({ id: 'after', summary: 'after' });
+    const group: SubagentGroupNode = {
+      kind: 'group',
+      parent,
+      groupKey: 'parent',
+      children: [leaf(child)],
+      descendantCount: 1,
+      loadedDescendantCount: 1,
+      latestChildSummary: 'child',
+    };
+    const nodes: TimelineNode[] = [leaf(before), group, leaf(after)];
+    const childUpdated = mkItem({ id: 'child', summary: 'child updated' });
+    const seen: string[] = [];
+
+    const result = patchStructuralTimelineNodeItemRefs(nodes, [1], (id) => {
+      seen.push(id);
+      if (id === 'child') return childUpdated;
+      if (id === 'parent') return parent;
+      return undefined;
+    });
+
+    expect(seen).toEqual(['parent', 'child']);
+    expect(result).not.toBe(nodes);
+    expect(result[0]).toBe(nodes[0]);
+    expect(result[2]).toBe(nodes[2]);
+    const patchedGroup = result[1] as SubagentGroupNode;
+    expect((patchedGroup.children[0] as TimelineLeaf).item).toBe(childUpdated);
+    expect(patchedGroup.latestChildSummary).toBe('child updated');
   });
 });

@@ -113,6 +113,31 @@ describe('<MessageTimeline>', () => {
     expect(compactionDivider).toHaveClass('my-8');
   });
 
+  it('updates a visible leaf row from pane state', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'text:0:0',
+        kind: 'assistant_text',
+        summary: 'first version',
+        updatedAt: 1,
+      }),
+    ]);
+    const { getByText, queryByText } = render(MessageTimeline, { props: { pane } });
+
+    expect(getByText('first version')).toBeInTheDocument();
+
+    pane.applyItemPatch({
+      threadId: 'thread-1',
+      itemId: 'text:0:0',
+      kind: 'assistant_text',
+      patch: { summary: 'second version', updatedAt: 2 },
+    });
+    await tick();
+
+    expect(queryByText('first version')).toBeNull();
+    expect(getByText('second version')).toBeInTheDocument();
+  });
+
   it('dispatches terminal_interaction items to TerminalInteractionRow', async () => {
     // Phase 6: `terminal_interaction` items land in the timeline as
     // muted "Waited for background terminal" markers — a distinct
@@ -693,6 +718,41 @@ describe('<MessageTimeline>', () => {
     expect(wrappers[0].className).toContain('border-l');
     expect(wrappers[1].getAttribute('data-rail')).toBe('false');
     expect(wrappers[1].className).not.toContain('border-l');
+  });
+
+  it('updates leaf rail chrome from pane state after a non-structural upsert', async () => {
+    const tool = makeItem({
+      id: 'plan-1',
+      itemIndex: 0,
+      kind: 'tool_call',
+      summary: 'Plan',
+    });
+    const pane = await buildPane(undefined, [tool]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    const wrapper = () => container.querySelector('[data-testid="message-timeline-node"]');
+
+    expect(wrapper()?.getAttribute('data-rail')).toBe('true');
+    expect(wrapper()?.className).toContain('border-l');
+
+    const revisionBefore = pane.timelineRevision;
+    pane.upsertItem({
+      ...tool,
+      payloadId: 'plan-payload',
+      payloadKind: 'proposed_plan',
+      payloadMeta: JSON.stringify({
+        title: 'Ship it',
+        lineCount: 3,
+        charCount: 12,
+        preview: '# Ship it',
+      }),
+      updatedAt: tool.updatedAt + 1,
+    });
+    await tick();
+
+    expect(pane.timelineRevision).toBe(revisionBefore);
+    expect(wrapper()?.getAttribute('data-rail')).toBe('false');
+    expect(wrapper()?.className).not.toContain('border-l');
   });
 
   it('keeps a single Read as a normal expandable row (grouping requires a run of >=2)', async () => {
