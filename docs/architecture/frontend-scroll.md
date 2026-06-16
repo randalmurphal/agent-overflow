@@ -39,17 +39,19 @@ fallback.
 Both auto-load triggers share one direction-agnostic gate
 (`createAutoLoadGate` in `timelineScroll.ts`). It is gesture-armed —
 `disarm()` after every load, re-armed only by a real wheel/touchmove/
-keydown (the post-load re-anchor / anchor-preserving prune is a
-programmatic scroll and must not re-arm) plus a 350ms cooldown fallback —
-and its progress guard compares the **full** floor cursor
+keydown (the post-load `shift` compensation is a programmatic scroll and
+must not re-arm) plus a 350ms cooldown fallback — and its progress guard
+compares the **full** floor cursor
 (`oldestLoadedCursor` / `newestLoadedCursor`), turnIndex **and** itemIndex.
 Keying the guard on turnIndex alone latched auto-load off on long
 single-turn threads, where paging advances the item floor but never the
 turn floor (incident bug-report-20260616T143320Z): a 400-item turn 57
 loaded once, then the guard read 57 === 57 and refused every later
-auto-load until a manual click. Auto-load-newer appends below the viewport
-and must not scroll; auto-load-older re-anchors to the pre-load reading
-position.
+auto-load until a manual click. Neither direction re-anchors after the
+load: the prepend (older) and the head-prune (newer) hold the reading
+position through virtua's native `shift` (see **Load Paging** below), so
+auto-load-newer never scrolls and auto-load-older leaves the user exactly
+where they were reading even if they keep scrolling as the page arrives.
 
 `threadItemCache.ts` is a small LRU of visible-window snapshots, not a
 full-history cache. It rejects oversized snapshots, evicts inactive
@@ -60,6 +62,40 @@ reloads so revert/reload flows do not paint stale rows.
 paging. Existing in-memory rows keep their references; missing rows are
 added and the result is sorted. This preserves virtua row identity while
 remaining correct under persist-then-emit ordering.
+
+## Load Paging (virtua `shift`)
+
+`loadOlder` and `loadNewer` mutate the window at one end and prune the
+other, and they drive virtua's native `shift` so the reading position
+holds without an explicit re-anchor. `shift` tells virtua which end a
+length change hit: on a **head** change it unshifts (grow) or front-splices
+(prune) its size cache and compensates `scrollTop` in the same frame; on a
+**tail** change it does neither. Without it virtua assumes every change is
+at the tail and misindexes its whole size cache on a prepend, forcing a
+re-measure of every visible row — the "viewport shifts, scrollbar jumps
+around" load jank.
+
+The store exposes the direction as `pane.pendingTimelineShiftAtHead`, bound
+to `<Virtualizer shift={...}>`, set synchronously at the `items` mutation
+so virtua reads it in the same flush and reset in the paging method's
+`finally`. The grow (prepend/append) and the prune are deliberately split
+across **two flushes** (`await tick()` between them): coalesced, a
+head-grow plus a tail-shrink collapse into one net length change that a
+single `shift` boolean cannot describe — and when the page budget equals
+the prune count the net length is unchanged, so virtua dispatches nothing
+at all and the cache scrambles. This was confirmed by driving the installed
+virtua core directly; the cache semantics are codified in
+`virtuaShiftCache.test.ts` as a version-bump tripwire, and the store's
+two-flush sequencing + shift direction are covered in
+`thread.svelte.test.ts`.
+
+Only `loadOlder` / `loadNewer` use `shift`; they apply the paired prune
+directly (the dropped end is always opposite the reading viewport, so there
+is nothing to veto or restore). The streaming / settle prune keeps the
+explicit anchor transaction (`preserveTimelineWindowAnchor`, below) — it
+fires under a bottom-pinned viewport mid-turn where the incident-hardened
+defer-and-restore behavior matters — and leaves `pendingTimelineShiftAtHead`
+false.
 
 ## Live Window Bounds
 
@@ -72,8 +108,9 @@ and virtua re-measures — a visible blank flash (incident 2026-06-10).
 `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS` is the memory backstop: a
 single turn streaming past it gets pruned mid-turn anyway.
 
-Structural window pruning goes through `MessageTimeline` when a timeline
-is mounted. The pane owns the window decision, but the timeline owns the
+The streaming / settle window prune goes through `MessageTimeline` when a
+timeline is mounted (the paging prunes use `shift` instead — see **Load
+Paging**). The pane owns the window decision, but the timeline owns the
 DOM/virtua anchor transaction: bottom intent pins to the new bottom, and
 reading state preserves the first visible item when that item survives
 the prune. If a normal recent-window prune would drop the visible anchor,

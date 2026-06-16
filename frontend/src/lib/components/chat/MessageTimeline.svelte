@@ -1324,48 +1324,30 @@
   // ============================================================
   // Load older
   // ============================================================
-  // Capture the user's reading position BEFORE the await, then explicitly
-  // re-anchor after the items prepend. Avoids virtua's `shift` mode (which
-  // is documented as fragile across async boundaries) — explicit
-  // scrollToIndex is deterministic.
+  // The prepend holds the reading position via virtua's native `shift`:
+  // pane.loadOlder sets pane.pendingTimelineShiftAtHead for the head-grow
+  // flush, so virtua keeps its size cache aligned and compensates scrollTop
+  // in one step. There is deliberately NO explicit re-anchor here — a
+  // re-anchor captured before the await would yank the user back if they
+  // kept scrolling while the page loaded. The pause lease keeps the
+  // prepend's scrollHeight growth from re-sticking; `escaped` marks the
+  // user as reading older.
   async function handleLoadOlder(): Promise<void> {
     if (!listRef) return;
-    const offsetBefore = listRef.getScrollOffset();
-    const anchor = captureTimelineAnchor(revealedNodes, listRef, offsetBefore);
-    const anchorId = anchor?.itemId ?? null;
-    const anchorOffsetTop = anchor?.offsetTop ?? 0;
-
     const release = stick.pauseAutoScroll();
-    // The user is reading older — must not auto-restick from the
-    // post-prepend scrollHeight jump. Without this, the controller's
-    // content RO would observe the positive delta and sync-pin the
-    // user to the new bottom.
     stick.setEscapedFromLock(true);
-    const myToken = ++restoreToken;
     const switchGenAtStart = pane.switchGeneration;
     try {
-      const result = await pane.loadOlder();
+      await pane.loadOlder();
       await tick();
-      if (myToken !== restoreToken || !listRef || result.status !== 'loaded') return;
-      if (!anchorId) return;
-      const newIdx = findTimelineNodeIndex(anchorId);
-      if (newIdx < 0) return;
-      stick.runExternalScroll(() => {
-        listRef?.scrollToIndex(newIdx, { align: 'start', offset: -anchorOffsetTop });
-      });
       saveScrollSnapshot();
     } finally {
       release();
-      // Disarm the auto-load gate so the post-load anchor-restore doesn't
-      // re-fire the cascade. A fresh user gesture (wheel/touchmove/keydown)
-      // re-arms — programmatic scrolls like the anchor-restore above don't
-      // qualify; the 350ms cooldown is the fallback. Guard on
-      // switchGeneration, NOT restoreToken: when loadOlder's internal
-      // head-prune fires it runs `preserveTimelineWindowAnchor`, which bumps
-      // restoreToken mid-load — a token guard would then skip the disarm and
-      // leave the gate armed. switchGeneration only changes on a real thread
-      // switch/reload, which is the one case we must NOT disarm (the new
-      // pane's gate was just reset()).
+      // Disarm so the prepend's shift compensation (a programmatic scrollTop
+      // write, not a user gesture) can't re-fire the gate into a cascade. A
+      // real wheel/touch/keydown re-arms; the 350ms cooldown is the
+      // fallback. Guard on switchGeneration so a thread switch mid-load
+      // (which already reset the new pane's gate) is not disarmed.
       if (pane.switchGeneration === switchGenAtStart) autoLoadOlderGate.disarm();
     }
   }
@@ -1391,37 +1373,31 @@
       release();
       // The scrollToIndex(end) above can land in the bottom trigger zone;
       // disarm so that programmatic scroll can't auto-fire another load.
-      // Guard on switchGeneration (see handleLoadOlder): loadNewer's internal
-      // head-prune bumps restoreToken mid-load, so a token guard would skip
-      // the disarm.
+      // Guard on switchGeneration (a thread switch mid-load already reset the
+      // new pane's gate).
       if (pane.switchGeneration === switchGenAtStart) autoLoadNewerGate.disarm();
     }
   }
 
   // Auto-load-newer path. Unlike the manual button it must NOT scroll:
-  // newer rows append below the viewport so the reading position is
-  // unchanged, and loadNewer's head-prune is anchor-preserving
-  // (preserveTimelineWindowAnchor). The pause lease guards the transient
-  // scrollHeight growth from a restick; disarm() afterward mirrors
-  // handleLoadOlder so the prune's anchor-preserving programmatic scroll
-  // can't re-fire the gate into a cascade.
+  // newer rows append below the viewport (tail-grow, no shift) so the
+  // reading position is unchanged, and loadNewer's head-prune holds position
+  // via virtua's native `shift`. The pause lease guards the transient
+  // scrollHeight growth from a restick.
   async function handleLoadNewerAuto(): Promise<void> {
     if (!listRef) return;
     const release = stick.pauseAutoScroll();
-    const myToken = ++restoreToken;
     const switchGenAtStart = pane.switchGeneration;
     try {
-      const result = await pane.loadNewer();
+      await pane.loadNewer();
       await tick();
-      if (myToken !== restoreToken || !listRef || result.status !== 'loaded') return;
       saveScrollSnapshot();
     } finally {
       release();
-      // Disarm on switchGeneration, not restoreToken: loadNewer's head-prune
-      // bumps restoreToken mid-load via preserveTimelineWindowAnchor, so a
-      // token guard would skip the disarm and leave the gate armed — and the
-      // prune's bottom-restore can re-anchor to the new bottom, re-firing the
-      // load on the next frame (cascade). See handleLoadOlder.
+      // Disarm so the head-prune's shift compensation (programmatic, not a
+      // user gesture) can't re-fire the gate into a cascade. Guard on
+      // switchGeneration so a thread switch mid-load (which already reset the
+      // new pane's gate) is not disarmed. See handleLoadOlder.
       if (pane.switchGeneration === switchGenAtStart) autoLoadNewerGate.disarm();
     }
   }
@@ -1603,6 +1579,7 @@
           bind:this={listRef}
           scrollRef={scrollEl}
           data={revealedNodes}
+          shift={pane.pendingTimelineShiftAtHead}
           getKey={(node) => timelineNodeKey(node)}
           itemSize={ESTIMATED_ROW_SIZE}
           bufferSize={BUFFER_SIZE_PX}

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import {
   __setSmoothingClockForTest,
   createThreadPane,
@@ -2554,6 +2554,9 @@ describe('createThreadPane', () => {
       expect(pane.oldestLoadedTurnIndex).toBe(3);
       expect(pane.hasMoreHistory).toBe(true);
       expect(pane.loadingOlder).toBe(false);
+      // The grow-flush set the shift flag; the finally always clears it, even
+      // on this small window that never reaches the tail-prune.
+      expect(pane.pendingTimelineShiftAtHead).toBe(false);
       expect(result).toEqual({
         status: 'loaded',
         insertedBeforeWindow: true,
@@ -2619,6 +2622,9 @@ describe('createThreadPane', () => {
       // fetch must not leak into it.
       expect(pane.threadId).toBe('thread-b');
       expect(pane.items.some((it) => it.id === 'stale')).toBe(false);
+      // loadOlder set the shift flag before awaiting the (stale) fetch; the
+      // finally clears it even though the result was discarded as stale.
+      expect(pane.pendingTimelineShiftAtHead).toBe(false);
     });
 
     it('loadUntilItem returns true when the item is already in-window', async () => {
@@ -3628,6 +3634,153 @@ describe('createThreadPane', () => {
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.hasMoreHistory).toBe(true);
       expect(pane.hasMoreNewer).toBe(true);
+    });
+
+    // === virtua `shift` signal (pendingTimelineShiftAtHead) ===
+    // The prepend/append and the window prune must land in SEPARATE flushes
+    // so virtua's `shift` can be correct for each end. Coalesced, a
+    // head-grow + tail-shrink collapse into one net length change that no
+    // single `shift` boolean can represent, and virtua's size cache
+    // scrambles (the load jank). See the spike notes in
+    // docs/architecture/frontend-scroll.md.
+    it('loadOlder prepends (head-shift) and prunes the tail in a later flush', async () => {
+      const pane = createThreadPane();
+      const initial = Array.from(
+        { length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS },
+        (_, index) =>
+          makeItem({
+            id: `t${index}`,
+            threadId: 't',
+            turnIndex: 1000 + index,
+            itemIndex: 0,
+          }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 1000,
+        newestTurnIndex: 1000 + ACTIVE_TIMELINE_WINDOW_MAX_ITEMS - 1,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: false,
+      }));
+      let releaseOlder!: (value: unknown) => void;
+      setBindingMock(
+        'ListItemsBeforeCursor',
+        () =>
+          new Promise((resolve) => {
+            releaseOlder = resolve;
+          }),
+      );
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_MAX_ITEMS);
+      expect(pane.pendingTimelineShiftAtHead).toBe(false);
+
+      const pending = pane.loadOlder();
+      releaseOlder({
+        items: [
+          makeItem({ id: 'older', threadId: 't', turnIndex: 999, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 999,
+        hasMore: true,
+        hasMoreOlder: true,
+      });
+      // Resume loadOlder past the fetch await, through the synchronous
+      // prepend, up to its first internal `await tick()` — but NOT through
+      // the deferred tail-prune (which lives after that tick).
+      await Promise.resolve();
+
+      // Flush 1: head-grow applied with shift=true, prune NOT yet — the
+      // window has grown past the cap, proving the two are separate flushes.
+      expect(pane.pendingTimelineShiftAtHead).toBe(true);
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_MAX_ITEMS + 1);
+      expect(pane.items[0]?.id).toBe('older');
+
+      await pending;
+      await tick();
+
+      // Flush 2: tail-prune ran; head (the freshly prepended rows) kept,
+      // newer history now exists, and the one-shot shift hint is cleared.
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+      expect(pane.items[0]?.id).toBe('older');
+      expect(pane.hasMoreNewer).toBe(true);
+      expect(pane.pendingTimelineShiftAtHead).toBe(false);
+    });
+
+    it('loadNewer appends (no shift) then head-prunes (head-shift) in a later flush', async () => {
+      const pane = createThreadPane();
+      const initial = Array.from(
+        { length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS },
+        (_, index) =>
+          makeItem({
+            id: `t${index}`,
+            threadId: 't',
+            turnIndex: index,
+            itemIndex: 0,
+          }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS - 1,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: true,
+      }));
+      setBindingMock('ListItemsAfterCursor', async () => ({
+        items: [
+          makeItem({
+            id: `t${ACTIVE_TIMELINE_WINDOW_MAX_ITEMS}`,
+            threadId: 't',
+            turnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+            itemIndex: 0,
+          }),
+        ],
+        oldestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: true,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      // Record (length, shift) after every flush so the two-flush sequence
+      // is observable without racing internal awaits.
+      const snapshots: Array<{ len: number; shift: boolean }> = [];
+      const stop = $effect.root(() => {
+        $effect(() => {
+          snapshots.push({
+            len: pane.items.length,
+            shift: pane.pendingTimelineShiftAtHead,
+          });
+        });
+      });
+      try {
+        flushSync();
+        snapshots.length = 0;
+
+        await pane.loadNewer();
+        await tick();
+        flushSync();
+      } finally {
+        stop();
+      }
+
+      // Tail-grow flush: appended past the cap with shift=false.
+      expect(snapshots).toContainEqual({
+        len: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS + 1,
+        shift: false,
+      });
+      // Head-prune flush: a SEPARATE flush at the target length carrying
+      // shift=true (virtua splices its cache from the front).
+      expect(snapshots).toContainEqual({
+        len: ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+        shift: true,
+      });
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+      expect(pane.hasMoreHistory).toBe(true);
+      expect(pane.pendingTimelineShiftAtHead).toBe(false);
     });
 
     it('loadOlder does not invent a newer-history gap from the older page response', async () => {
