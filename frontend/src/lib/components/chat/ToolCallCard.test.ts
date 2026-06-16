@@ -1549,7 +1549,8 @@ describe("<ToolCallCard> backgrounded status indicator", () => {
 
     const status = getByTestId("command-output-status");
     expect(status.getAttribute("data-state")).toBe("backgrounded");
-    expect(status.getAttribute("aria-label")).toBe("Backgrounded");
+    const indicator = status.querySelector('[data-testid="indicator"]');
+    expect(indicator?.getAttribute("aria-label")).toBe("Backgrounded");
     expect(queryByTestId("tool-call-backgrounded-badge")).toBeNull();
   });
 

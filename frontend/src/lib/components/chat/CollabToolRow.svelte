@@ -24,7 +24,7 @@
   } from '../../utils/payloadExpansion.svelte';
   import CollabToolRowDetails from './CollabToolRowDetails.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
-  import Indicator from './Indicator.svelte';
+  import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import {
     collabInputFromMeta,
@@ -217,7 +217,11 @@
     {trailingActions}
   >
     {#snippet status()}
-      <Indicator state={showRunningStatus || badgeStatus === 'failure' ? indicatorState : null} />
+      <ToolRowStatusIndicator
+        item={effectiveStatusItem}
+        state={showRunningStatus || badgeStatus === 'failure' ? indicatorState : null}
+        testId="collab-tool-row-status"
+      />
     {/snippet}
   </ToolHeaderMeta>
 {/snippet}

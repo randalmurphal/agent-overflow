@@ -6,7 +6,7 @@
   import { terminalInteractionLabelFromSummary } from './commandDisplay';
   import CommandOutput from './CommandOutput.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
-  import Indicator from './Indicator.svelte';
+  import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
@@ -49,7 +49,7 @@
         statusSlotTestId="terminal-interaction-status-slot"
         timestamp={{ testId: 'terminal-interaction-time', value: item.createdAt, label: time }}
       >
-        {#snippet status()}<Indicator state={isRunning ? 'running' : null} />{/snippet}
+        {#snippet status()}<ToolRowStatusIndicator {item} state={isRunning ? 'running' : null} testId="terminal-interaction-status" />{/snippet}
       </ToolHeaderMeta>
     {/snippet}
   </TranscriptDisclosureHeader>

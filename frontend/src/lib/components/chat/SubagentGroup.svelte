@@ -40,9 +40,9 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { SubagentGroupNode, TimelineNode } from '../../utils/subagentGrouping';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
-  import Indicator from './Indicator.svelte';
+  import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
-  import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
   let {
@@ -249,16 +249,11 @@
           duration={{ testId: 'subagent-group-duration', label: elapsedLabel }}
         >
           {#snippet status()}
-            {#if isRunning || completionStatus === 'failure'}
-              <span
-                data-testid="subagent-group-status"
-                data-status={parent.status}
-                data-state={indicatorState}
-                aria-label={indicatorAriaLabel(indicatorState)}
-              >
-                <Indicator state={indicatorState} />
-              </span>
-            {/if}
+            <ToolRowStatusIndicator
+              item={parent}
+              state={isRunning || completionStatus === 'failure' ? indicatorState : null}
+              testId="subagent-group-status"
+            />
           {/snippet}
         </ToolHeaderMeta>
       {/snippet}

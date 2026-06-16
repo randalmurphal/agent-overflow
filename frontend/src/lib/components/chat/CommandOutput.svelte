@@ -22,9 +22,9 @@
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
-  import Indicator from './Indicator.svelte';
+  import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
-  import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
 
@@ -185,15 +185,7 @@
       {trailingActions}
     >
       {#snippet status()}
-        {#if indicatorState}
-          <span
-            data-testid="command-output-status"
-            data-state={indicatorState}
-            aria-label={indicatorAriaLabel(indicatorState)}
-          >
-            <Indicator state={indicatorState} class="command-output-status" />
-          </span>
-        {/if}
+        <ToolRowStatusIndicator item={effectiveStatusItem} state={indicatorState} testId="command-output-status" />
       {/snippet}
     </ToolHeaderMeta>
   {/snippet}

@@ -22,7 +22,7 @@
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
-  import Indicator from './Indicator.svelte';
+  import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
   import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
@@ -147,7 +147,7 @@
         class="ml-auto"
         timestamp={{ testId: 'tool-result-time', value: item.createdAt, label: time }}
       >
-        {#snippet status()}<Indicator state={completionStatus === 'failure' ? indicatorState : null} />{/snippet}
+        {#snippet status()}<ToolRowStatusIndicator {item} state={completionStatus === 'failure' ? indicatorState : null} testId="tool-result-status" />{/snippet}
       </ToolHeaderMeta>
     {/snippet}
   </TranscriptDisclosureHeader>

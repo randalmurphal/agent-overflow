@@ -541,7 +541,8 @@ describe('App integration — messaging flow', () => {
 
     const status = await findByTestId('command-output-status');
     expect(status.getAttribute('data-state')).toBe('backgrounded');
-    expect(status.getAttribute('aria-label')).toBe('Backgrounded');
+    const indicator = status.querySelector('[data-testid="indicator"]');
+    expect(indicator?.getAttribute('aria-label')).toBe('Backgrounded');
 
     // 3. Turn ends while the backgrounded work is still in flight.
     // getActiveTurn(pane.threadId) clears, the working indicator hides, and the

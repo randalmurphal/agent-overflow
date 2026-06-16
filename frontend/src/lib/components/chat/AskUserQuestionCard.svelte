@@ -19,8 +19,8 @@
    *
    * Status rendering reuses `deriveCompletionStatus` so the row state
    * stays consistent with every other tool card. Running shows an
-   * Indicator dot, answered renders no success chrome, and failures
-   * show an error Indicator plus RowError.
+   * indicator dot, answered renders no success chrome, and failures
+   * show an error indicator plus RowError.
    */
   import { untrack } from 'svelte';
   import Check from 'lucide-svelte/icons/check';
@@ -36,9 +36,9 @@
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
-  import Indicator from './Indicator.svelte';
+  import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
-  import { indicatorAriaLabel, indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import {
     answersForQuestion as answersForQuestionFromMap,
     classifyAnswers,
@@ -158,27 +158,11 @@
         timestamp={{ testId: 'ask-user-question-time', value: item.createdAt, label: time }}
       >
         {#snippet status()}
-          {#if isRunningQuestion}
-            <span
-              data-testid="ask-user-question-status"
-              data-status={item.status}
-              data-state={indicatorState}
-              aria-label={indicatorAriaLabel(indicatorState)}
-            >
-              <Indicator state={indicatorState} />
-            </span>
-          {:else}
-            {#if completionStatus === 'failure'}
-              <span
-                data-testid="ask-user-question-status"
-                data-status={item.status}
-                data-state={indicatorState}
-                aria-label={indicatorAriaLabel(indicatorState)}
-              >
-                <Indicator state={indicatorState} />
-              </span>
-            {/if}
-          {/if}
+          <ToolRowStatusIndicator
+            {item}
+            state={isRunningQuestion || completionStatus === 'failure' ? indicatorState : null}
+            testId="ask-user-question-status"
+          />
         {/snippet}
       </ToolHeaderMeta>
     {/snippet}

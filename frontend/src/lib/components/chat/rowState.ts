@@ -39,14 +39,6 @@ export function rowErrorForStatus(status: ItemStatus, fallback: string): RowErro
   return null;
 }
 
-export function indicatorAriaLabel(state: IndicatorState): string | undefined {
-  if (state === 'running') return 'Running';
-  if (state === 'backgrounded') return 'Backgrounded';
-  if (state === 'error') return 'Errored';
-  if (state === 'declined') return 'Declined';
-  return undefined;
-}
-
 /**
  * Tool-row failure projection used by AgentRow/AdvisorRow. The
  * `??` fallback collapses two branches that several rows otherwise
