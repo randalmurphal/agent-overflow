@@ -23,7 +23,13 @@ describe('markdown CSS', () => {
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*width:\s*100%;/s);
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*max-width:\s*100%;/s);
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*margin:\s*0;/s);
-    expect(appCss).toMatch(/\.markdown-body\s+th,\s*\n\.markdown-body\s+td\s*\{[^}]*overflow-wrap:\s*anywhere;/s);
-    expect(appCss).toMatch(/\.markdown-body\s+th,\s*\n\.markdown-body\s+td\s*\{[^}]*word-break:\s*break-word;/s);
+    // Cells use break-word, NOT anywhere. With table-layout:auto the browser
+    // sizes each column from its cell's min-content width; `anywhere` collapses
+    // that to ~1ch and starves narrow columns (#, Sev), splitting short values
+    // mid-token. `break-word` sizes columns from real word widths while still
+    // wrapping truly overlong tokens. The negative guard keeps anyone from
+    // regressing it back to `anywhere`. See the table block in app.css.
+    expect(appCss).toMatch(/\.markdown-body\s+th,\s*\n\.markdown-body\s+td\s*\{[^}]*overflow-wrap:\s*break-word;/s);
+    expect(appCss).not.toMatch(/\.markdown-body\s+th,\s*\n\.markdown-body\s+td\s*\{[^}]*overflow-wrap:\s*anywhere;/s);
   });
 });

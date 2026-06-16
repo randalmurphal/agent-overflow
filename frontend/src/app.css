@@ -423,8 +423,16 @@ pre, code, kbd, samp, .ansi-body {
   padding: 0.35rem 0.625rem;
   text-align: left;
   vertical-align: top;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  /* break-word, not anywhere: with table-layout:auto the browser sizes each
+     column from its cell's min-content width, and `anywhere` collapses that
+     to ~1ch — which starves narrow columns (#, Sev) and splits short values
+     mid-token. `break-word` keeps min-content at the longest word so columns
+     size to their content, while still breaking truly overlong tokens as a
+     last resort (no horizontal scrollbar). `word-break` is omitted on
+     purpose: its legacy `break-word` value re-introduces the anywhere
+     collapse in some engines. Inline code keeps `anywhere` (above) so long
+     code tokens still wrap rather than force column width. */
+  overflow-wrap: break-word;
 }
 .markdown-body thead th {
   background: var(--surface-0);

@@ -84,7 +84,11 @@ export const chatMarkdownTheme: ThemeOverride = {
     // No outer border / rounded shell — definition comes from the
     // header bg + per-row separators below.
     base: 'overflow-visible max-w-full my-3 border-0 rounded-none',
-    table: 'w-full table-fixed border-collapse min-w-0',
+    // table-auto (not fixed): app.css `.markdown-body … table` already forces
+    // table-layout:auto via higher specificity, so `table-fixed` here was a
+    // silently-overridden no-op. Keep them in agreement — columns size to
+    // content (see the table block + overflow-wrap note in app.css).
+    table: 'w-full table-auto border-collapse min-w-0',
   },
   thead: {
     base: 'bg-surface-1 text-fg-muted',
