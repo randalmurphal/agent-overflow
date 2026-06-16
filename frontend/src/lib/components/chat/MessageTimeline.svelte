@@ -1415,6 +1415,19 @@
      fading with it. It's a paint-only effect, so like the padding-bottom
      above it never changes scrollHeight/clientHeight/scrollTop and stays
      clear of the controller.
+     `scrollbar-gutter: stable both-edges` keeps the centered
+     `mx-auto max-w-[62rem]` rows aligned with ChatView's composer overlay.
+     The styled `::-webkit-scrollbar` (app.css) is a classic, space-consuming
+     bar, not an overlay, so without a reserved gutter the centered column
+     jumps ~5px left the moment the bar appears. `both-edges` is required,
+     not single-edge `stable`: WebKitGTK reserves the gutter only while the
+     bar is actually present, so a single-edge gutter still shifts the column
+     on the idle→scrolling transition. Symmetric reservation holds the center
+     in both states, and idle reserves zero (no always-visible bar, no idle
+     offset). Verified in WebKitGTK 6.0 2.52.3; see
+     docs/architecture/frontend-scroll.md.
+     ChannelView.svelte is left-aligned, so the bar only reflows its right
+     edge and it needs no gutter — that is why this directive is chat-only.
      Layout shape mirrors discussion/ChannelView.svelte
      (`relative flex h-full flex-col` + `flex-1 min-h-0 overflow-y-auto`)
      so the two surfaces stay in lockstep. -->
@@ -1424,6 +1437,7 @@
     class="flex-1 min-h-0 overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/25"
     style:overscroll-behavior-y="contain"
     style:overflow-anchor="none"
+    style:scrollbar-gutter="stable both-edges"
     style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
     style:mask={TOP_FADE_MASK}
     style:-webkit-mask={TOP_FADE_MASK}

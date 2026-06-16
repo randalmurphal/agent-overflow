@@ -208,6 +208,18 @@ moving bottom instead of sync-pinning mid-chase.
 scroll anchoring otherwise fights both virtua's jump correction and the
 controller's sync-pin.
 
+`scrollbar-gutter: stable both-edges` belongs on the chat scroll
+container. The styled `::-webkit-scrollbar` (app.css) is a classic,
+space-consuming bar, not an overlay, so a bare `overflow-y: auto` shifts
+the centered `mx-auto max-w-[62rem]` rows ~5px left — out of alignment
+with the absolute composer overlay — the moment the bar appears.
+`both-edges`, not single-edge `stable`, is required: WebKitGTK reserves
+the gutter only while the bar is actually present, so a single edge still
+shifts the column on the idle→scrolling transition. Symmetric reservation
+holds the center in both states and reserves nothing when idle (no
+always-visible bar). `ChannelView` is left-aligned, so the bar reflows
+only its right edge and needs no gutter — keep this directive chat-only.
+
 Status banners are absolute overlays, not reserved layout slots. They
 must not change the scroll surface height on mount/unmount.
 
