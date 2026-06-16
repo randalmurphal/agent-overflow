@@ -58,12 +58,12 @@
   // Initial item-size estimate for virtua. Real sizes come from the
   // per-item ResizeObserver virtua wraps each row in; this constant only
   // matters for the first render before measurements stabilise.
-  const ESTIMATED_ROW_SIZE = 90;
+  const ESTIMATED_ROW_SIZE = 56;
   // Extra buffer rendered above + below the viewport. Sized for two viewports
   // worth of rows on each side so fast scrolls (trackpad fling, scrollbar
   // drag) don't outrun the rendered window — that was the source of the
   // "text disappears under the composer then reappears" flicker. Each
-  // ~90px row × 1800px = ~20 extra rows per side. Trade ~4MB of mounted
+  // ~56px row × 1800px = ~32 extra rows per side. Trade a few MB of mounted
   // DOM/component state for the smoother scroll. Revisit only if it's
   // ever measured to hurt mount-time on first-open.
   const BUFFER_SIZE_PX = 1800;
@@ -357,15 +357,13 @@
   let anyMarkdownSettledSinceArm = $state(false);
 
   // Spring while live content advanced within SPRING_MODE_HOLD_MS, else
-  // sync-pin. The pane stamps `lastLiveContentAt` on every reveal /
-  // streaming delta / overwrite patch / new provider row, so during a
+  // sync-pin. The pane stamps `lastLiveContentAt` on prose/reasoning
+  // reveals, direct text patches, and text-like provider rows, so during a
   // stream the latch reads 'spring' continuously and falls to 'instant'
-  // ~SPRING_MODE_HOLD_MS after the last advance. The hold also covers
-  // inter-round gaps (tool-call emission → tool-result processing) where
-  // the previous round's content stamp is still recent, keeping the
-  // spring sentinel alive and the external-write gate closed across the
-  // gap — the wire-round-gap protection, now content-driven. The hold
-  // (500ms) stays > the controller's spring sentinel lifetime
+  // ~SPRING_MODE_HOLD_MS after the last advance. Tool rows deliberately do
+  // not stamp; their virtual estimates often remeasure almost immediately,
+  // and sync-pinning those corrections is smoother than spring-chasing them.
+  // The hold (500ms) stays > the controller's spring sentinel lifetime
   // (RETAIN_ANIMATION_DURATION_MS = 350ms); see springAnimationLatch.ts.
   function animationModeForScroll(): 'spring' | 'instant' {
     return latchedSpringMode(performance.now(), pane.lastLiveContentAt, SPRING_MODE_HOLD_MS);
@@ -623,16 +621,18 @@
   // When the next top-level row arrives (assistant text/tool call), relying
   // only on contentRO timing can miss the first bottom target, especially
   // because assistant text then grows through Streamdown's async markdown
-  // layout. This structural nudge asks the sticky controller to re-check the
+  // layout. This structural path first marks the upcoming ResizeObserver
+  // growth as append-like, so command/tool row batches can spring-follow
+  // instead of snapping, then asks the sticky controller to re-check the
   // bottom after Svelte and virtua have had a frame to publish the new row.
   // It keys off tail row identity and order (id, kind, turnIndex,
   // itemIndex), not status transitions or summary deltas, so normal
   // streaming chunks and tool-call lifecycle status changes use the
-  // contentRO path. The nudge uses the live-content controller hook,
-  // which honors spring mode. Sidebar/host layout nudges keep using the
-  // instant notifyContentMaybeGrew path; ChatView composer-height changes
-  // use the live-capable hook so activity-rail changes during streaming
-  // can continue the spring.
+  // contentRO path. The delayed nudge uses the live-content controller hook,
+  // which honors spring mode or the just-marked structural-append window.
+  // Sidebar/host layout nudges keep using the instant notifyContentMaybeGrew
+  // path; ChatView composer-height changes use the live-capable hook so
+  // activity-rail changes during streaming can continue the spring.
   $effect(() => {
     const signature = activeTurnStructuralSignature;
     if (!signature) {
@@ -651,6 +651,7 @@
     lastLiveFollowSignature = signature;
     const threadId = pane.threadId;
     if (!threadId) return;
+    stick.markStructuralContentPending();
     const token = ++liveFollowNudgeToken;
     void notifyAfterActiveTurnStructuralChange(signature, token, threadId);
   });
@@ -703,12 +704,12 @@
   });
 
   // Per-row resize tracker. Diagnostic-only — gated on the trace flag, so
-  // production builds skip the observer wiring entirely. Observes every
-  // [data-row-index] wrapper virtua mounts and records each height delta
-  // alongside a small tag fingerprint of suspect descendants (shiki,
-  // skeleton, mermaid, katex, sd-code, img, approval/todo/working). This
-  // is the surface that names which row(s) and which child element class
-  // is responsible for an unexpected ±N px oscillation on thread re-entry.
+  // production builds skip it entirely. It intentionally avoids adding more
+  // ResizeObservers to DEBUG runs: WebKit already warns when the app's real
+  // content/virtualizer observers loop, and diagnostic observers should not
+  // make that worse. Mutations schedule one rAF measurement pass over mounted
+  // [data-row-index] wrappers and record height deltas after the initial
+  // baseline.
   $effect(() => {
     if (!isUiRenderTraceEnabled() || !contentEl) return;
     return startTimelineRowResizeTrace(contentEl);

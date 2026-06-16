@@ -234,11 +234,11 @@ describe('setupEventListeners', () => {
     cacheModule.threadItemCache.clear();
   });
 
-  it('stamps lastLiveContentAt when a provider upsert changes the pane window', async () => {
-    // A new provider row arriving is live content — the events.ts fan-out
-    // marks it so the chat scroll controller spring-chases (content-keyed
-    // animation latch). lastLiveContentAt is 0 until something streams,
-    // then carries a real performance.now() reading.
+  it('stamps lastLiveContentAt when an assistant-text provider upsert changes the pane window', async () => {
+    // A new text-like provider row arriving is live content — the events.ts
+    // fan-out marks it so the chat scroll controller spring-chases
+    // (content-keyed animation latch). lastLiveContentAt is 0 until
+    // something streams, then carries a real performance.now() reading.
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
     getAllPanes().set('a', pane);
     expect(pane.lastLiveContentAt).toBe(0);
@@ -261,6 +261,31 @@ describe('setupEventListeners', () => {
     // production latch compute a huge negative delta → permanently 'spring'.
     expect(pane.lastLiveContentAt).toBeGreaterThanOrEqual(before);
     expect(pane.lastLiveContentAt).toBeLessThanOrEqual(after);
+  });
+
+  it('does not stamp lastLiveContentAt for new Bash rows', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    getAllPanes().set('a', pane);
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: makeItem({
+        id: 'bash-1',
+        threadId: 'thread-a',
+        kind: 'tool_call',
+        role: 'assistant',
+        status: 'running',
+        toolName: 'Bash',
+        summary: 'Bash: ls',
+        meta: JSON.stringify({ input: { command: 'ls' } }),
+      }),
+    });
+    await nextFrame();
+
+    expect(pane.items.map((item) => item.id)).toEqual(['bash-1']);
+    expect(pane.lastLiveContentAt).toBe(0);
   });
 
   it('does not stamp lastLiveContentAt for a redundant upsert that leaves the window unchanged', async () => {
@@ -326,7 +351,7 @@ describe('setupEventListeners', () => {
     expect(pane.lastLiveContentAt).toBe(0);
   });
 
-  it('stamps lastLiveContentAt when same-row Bash completion adds failure chrome', async () => {
+  it('does not stamp lastLiveContentAt when same-row Bash completion adds failure chrome', async () => {
     const item = makeItem({
       id: 'bash-1',
       threadId: 'thread-a',
@@ -341,7 +366,6 @@ describe('setupEventListeners', () => {
     getAllPanes().set('a', pane);
     expect(pane.lastLiveContentAt).toBe(0);
 
-    const before = performance.now();
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
       threadId: 'thread-a',
@@ -360,12 +384,10 @@ describe('setupEventListeners', () => {
       },
     });
     await nextFrame();
-    const after = performance.now();
 
     expect(pane.items[0].status).toBe('completed');
     expect(pane.items[0].payloadKind).toBe('command_output');
-    expect(pane.lastLiveContentAt).toBeGreaterThanOrEqual(before);
-    expect(pane.lastLiveContentAt).toBeLessThanOrEqual(after);
+    expect(pane.lastLiveContentAt).toBe(0);
   });
 
   it('does not let off-window new rows stamp over visible same-row Bash success chrome', async () => {
@@ -2457,6 +2479,7 @@ describe('setupEventListeners', () => {
 
     expect(applySpy).toHaveBeenCalledTimes(1);
     expect(pane.getItemById('exec-1')?.summary).toBe('line1+2+3');
+    expect(pane.lastLiveContentAt).toBe(0);
   });
 
   it('preserves per-item apply order when upserts and deltas interleave on one row', async () => {

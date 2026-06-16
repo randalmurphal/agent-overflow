@@ -91,8 +91,9 @@ describe('<CompactionReasoning>', () => {
   });
 
   it('smooths a streaming reasoning delta through the pane live tail', async () => {
-    // The crux: a compaction_reasoning item must be smoothable (shouldSmoothKind
-    // includes it) so the row reads the per-pane live tail and follows it,
+    // The crux: a compaction_reasoning item must be smoothable
+    // (isSmoothLiveContentKind includes it) so the row reads the per-pane live
+    // tail and follows it,
     // exactly like thinking. Without that wiring the body would fall back to the
     // trimmed summary and never spring the tail.
     const clock = new FakeSmoothingClock();

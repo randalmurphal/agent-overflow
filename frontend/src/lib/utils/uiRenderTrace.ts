@@ -24,8 +24,9 @@ const MAX_PENDING_FILE_LINES = 200;
 // being collateral damage when a snapshot trace (chat.dom / chat.state)
 // blows the per-line cap and Go rejects the whole batch.
 const MAX_LINE_BYTES = UI_TRACE_MAX_LINE_BYTES;
-const MAX_DOM_ROWS = 160;
-const PREVIEW_CHARS = 120;
+const MAX_DOM_ROWS = 64;
+const PREVIEW_CHARS = 80;
+const DOM_TRACE_MIN_INTERVAL_MS = 250;
 const FILE_FLUSH_DELAY_MS = 500;
 
 export interface UiTraceRecord {
@@ -53,11 +54,19 @@ declare global {
   }
 }
 
+interface PendingDomTrace {
+  label: string;
+  build: () => unknown;
+  frame: number | null;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
 let enabled = initialEnabled();
 let nextSeq = 1;
 const records: UiTraceRecord[] = [];
 const pendingFileLines: string[] = [];
-const pendingDomFrames = new Map<string, number>();
+const pendingDomTraces = new Map<string, PendingDomTrace>();
+const lastDomTraceAtByKey = new Map<string, number>();
 let fileFlushTimer: number | null = null;
 let lastTraceFilePath: string | null = null;
 
@@ -84,6 +93,12 @@ export function setUiRenderTraceEnabled(next: boolean): void {
 export function clearUiRenderTrace(): void {
   records.length = 0;
   pendingFileLines.length = 0;
+  for (const pending of pendingDomTraces.values()) {
+    if (pending.frame !== null) cancelAnimationFrame(pending.frame);
+    if (pending.timer !== null) clearTimeout(pending.timer);
+  }
+  pendingDomTraces.clear();
+  lastDomTraceAtByKey.clear();
   if (fileFlushTimer !== null) {
     clearTimeout(fileFlushTimer);
     fileFlushTimer = null;
@@ -115,12 +130,37 @@ export function scheduleDomUiTrace(
   build: () => unknown,
 ): void {
   if (!isUiRenderTraceEnabled()) return;
-  if (pendingDomFrames.has(key)) return;
-  const frame = requestAnimationFrame(() => {
-    pendingDomFrames.delete(key);
-    recordUiTrace(label, build());
-  });
-  pendingDomFrames.set(key, frame);
+  const existing = pendingDomTraces.get(key);
+  if (existing) {
+    existing.label = label;
+    existing.build = build;
+    return;
+  }
+
+  const pending: PendingDomTrace = {
+    label,
+    build,
+    frame: null,
+    timer: null,
+  };
+  pendingDomTraces.set(key, pending);
+
+  const scheduleFrame = () => {
+    pending.timer = null;
+    pending.frame = requestAnimationFrame(() => {
+      pendingDomTraces.delete(key);
+      lastDomTraceAtByKey.set(key, Date.now());
+      recordUiTrace(pending.label, pending.build());
+    });
+  };
+
+  const lastAt = lastDomTraceAtByKey.get(key) ?? Number.NEGATIVE_INFINITY;
+  const delay = Math.max(0, DOM_TRACE_MIN_INTERVAL_MS - (Date.now() - lastAt));
+  if (delay > 0) {
+    pending.timer = setTimeout(scheduleFrame, delay);
+  } else {
+    scheduleFrame();
+  }
 }
 
 export function installUiRenderTraceApi(): void {
@@ -310,10 +350,9 @@ export function summarizePaneForTrace(pane: ThreadPane): Record<string, unknown>
     // The items array used to live here. It dominated the trace file
     // (single chat.state snapshot averaged ~45 KB on a 228-item thread,
     // burning ~25% of the 10 MB rotation cap on data that changes very
-    // slowly between consecutive emissions). The DOM trace
-    // (chat.dom / timeline.dom) already captures the rendered rows
-    // with text previews; that's the relevant signal for visual /
-    // scroll regressions.
+    // slowly between consecutive emissions). The DOM traces capture
+    // rendered row identity and scroll geometry; row text is intentionally
+    // omitted so DEBUG tracing does not walk every mounted row's text.
   };
 }
 
@@ -329,7 +368,6 @@ export function snapshotChatDomForTrace(root: HTMLElement | undefined): Record<s
       .slice(0, MAX_DOM_ROWS)
       .map((el) => ({
         itemId: el.dataset.itemId ?? '',
-        textPreview: preview(el.textContent ?? ''),
       })),
     approvalCount: root.querySelectorAll('[data-testid="approval-card"]').length,
     activityRailMounted: root.querySelector('[data-testid="activity-rail"]') !== null,

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearUiRenderTrace,
   getUiRenderTraceRecords,
@@ -6,64 +6,25 @@ import {
 } from '../../utils/uiRenderTrace';
 import { startTimelineRowResizeTrace } from './messageTimelineTrace';
 
-class FireableResizeObserver {
-  static instances: FireableResizeObserver[] = [];
-
-  observed: Element[] = [];
-  disconnected = false;
-
-  constructor(private readonly callback: ResizeObserverCallback) {
-    FireableResizeObserver.instances.push(this);
-  }
-
-  observe(target: Element): void {
-    this.observed.push(target);
-  }
-
-  unobserve(target: Element): void {
-    this.observed = this.observed.filter((candidate) => candidate !== target);
-  }
-
-  disconnect(): void {
-    this.disconnected = true;
-    this.observed = [];
-  }
-
-  fire(target: Element, height: number): void {
-    this.callback([
-      {
-        target,
-        contentRect: { height } as DOMRectReadOnly,
-      } as ResizeObserverEntry,
-    ], this as unknown as ResizeObserver);
-  }
+async function nextFrame(): Promise<void> {
+  await Promise.resolve();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 describe('messageTimelineTrace', () => {
-  let originalRO: typeof ResizeObserver | undefined;
-
   beforeEach(() => {
     clearUiRenderTrace();
     setUiRenderTraceEnabled(true);
-    FireableResizeObserver.instances = [];
-    originalRO = globalThis.ResizeObserver;
-    (globalThis as unknown as { ResizeObserver: typeof FireableResizeObserver }).ResizeObserver
-      = FireableResizeObserver;
   });
 
   afterEach(() => {
-    if (originalRO) {
-      (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver
-        = originalRO;
-    } else {
-      delete (globalThis as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
-    }
     clearUiRenderTrace();
     setUiRenderTraceEnabled(false);
   });
 
-  it('records row resize traces after the initial measurement', () => {
+  it('records row resize traces after the initial measurement', async () => {
     const root = document.createElement('div');
+    document.body.appendChild(root);
     root.innerHTML = `
       <div data-row-index="7">
         <div data-item-id="item-7">
@@ -71,16 +32,19 @@ describe('messageTimelineTrace', () => {
         </div>
       </div>
     `;
-    const row = root.querySelector('[data-row-index]')!;
+    const row = root.querySelector<HTMLElement>('[data-row-index]')!;
+    let height = 20;
+    row.getBoundingClientRect = () => ({ height }) as DOMRect;
 
     const stop = startTimelineRowResizeTrace(root);
-    const ro = FireableResizeObserver.instances[0];
-    expect(ro?.observed).toContain(row);
 
-    ro?.fire(row, 20);
+    await nextFrame();
     expect(getUiRenderTraceRecords()).toEqual([]);
 
-    ro?.fire(row, 35);
+    height = 35;
+    row.querySelector('code')!.textContent = 'hello world';
+    await nextFrame();
+
     const records = getUiRenderTraceRecords();
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
@@ -91,38 +55,79 @@ describe('messageTimelineTrace', () => {
         prevHeight: 20,
         newHeight: 35,
         delta: 15,
-        contentTags: 'shiki,sd-code',
       },
     });
-    expect(records[0]?.data).toMatchObject({
-      descendants: {
-        preChildCount: 1,
-        preTextLen: 5,
-        sdCodeId: 'code-1',
-      },
-    });
+    expect(records[0]?.data).not.toHaveProperty('contentTags');
+    expect(records[0]?.data).not.toHaveProperty('descendants');
 
     stop();
-    expect(ro?.disconnected).toBe(true);
+    root.remove();
   });
 
-  it('tracks rows added after startup and unobserves removed rows', async () => {
+  it('tracks rows added after startup and ignores them after removal', async () => {
     const root = document.createElement('div');
+    document.body.appendChild(root);
     const stop = startTimelineRowResizeTrace(root);
-    const ro = FireableResizeObserver.instances[0];
 
     const row = document.createElement('div');
     row.dataset.rowIndex = '2';
     row.innerHTML = '<div data-item-id="added">Added row</div>';
+    let height = 10;
+    row.getBoundingClientRect = () => ({ height }) as DOMRect;
     root.appendChild(row);
-    await Promise.resolve();
+    await nextFrame();
 
-    expect(ro?.observed).toContain(row);
+    height = 22;
+    row.querySelector('[data-item-id]')!.textContent = 'Added row with more text';
+    await nextFrame();
+    expect(getUiRenderTraceRecords()).toHaveLength(1);
 
     root.removeChild(row);
-    await Promise.resolve();
+    await nextFrame();
+    clearUiRenderTrace();
 
-    expect(ro?.observed).not.toContain(row);
+    height = 35;
+    row.querySelector('[data-item-id]')!.textContent = 'Detached row changed';
+    await nextFrame();
+
+    expect(getUiRenderTraceRecords()).toEqual([]);
     stop();
+    root.remove();
+  });
+
+  it('measures only rows dirtied by descendant mutations after baseline', async () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    root.innerHTML = `
+      <div data-row-index="1"><div data-item-id="row-1">First row</div></div>
+      <div data-row-index="2"><div data-item-id="row-2">Second row</div></div>
+    `;
+    const [first, second] = Array.from(root.querySelectorAll<HTMLElement>('[data-row-index]'));
+    let firstHeight = 20;
+    let secondHeight = 30;
+    const firstMeasure = vi.fn(() => ({ height: firstHeight }) as DOMRect);
+    const secondMeasure = vi.fn(() => ({ height: secondHeight }) as DOMRect);
+    first.getBoundingClientRect = firstMeasure;
+    second.getBoundingClientRect = secondMeasure;
+
+    const stop = startTimelineRowResizeTrace(root);
+    await nextFrame();
+    const firstBaselineCalls = firstMeasure.mock.calls.length;
+    const secondBaselineCalls = secondMeasure.mock.calls.length;
+
+    firstHeight = 45;
+    first.querySelector('[data-item-id]')!.textContent = 'First row with more text';
+    await nextFrame();
+
+    expect(firstMeasure.mock.calls.length).toBeGreaterThan(firstBaselineCalls);
+    expect(secondMeasure.mock.calls.length).toBe(secondBaselineCalls);
+    expect(getUiRenderTraceRecords()).toHaveLength(1);
+    expect(getUiRenderTraceRecords()[0]).toMatchObject({
+      label: 'timeline.row.resize',
+      data: { rowIndex: '1', itemId: 'row-1', prevHeight: 20, newHeight: 45 },
+    });
+
+    stop();
+    root.remove();
   });
 });

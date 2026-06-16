@@ -7263,10 +7263,10 @@ describe('createThreadPane', () => {
   // `pane.lastLiveContentAt` is the source the chat scroll controller
   // latches on to decide spring vs sync-pin (MessageTimeline's
   // animationModeForScroll → latchedSpringMode). It must advance ONLY on
-  // genuine live timeline content arriving — text reveals, streaming
-  // deltas, final-summary patches, new provider rows — and must NOT
-  // advance on thread switch, bulk history loads, meta-only updates, or
-  // the optimistic-send / rollback paths that drive `upsertItems`
+  // genuine smooth live timeline content arriving — text reveals,
+  // final-summary patches, text-like provider rows — and must NOT
+  // advance on thread switch, tool output growth, bulk history loads,
+  // meta-only updates, or the optimistic-send / rollback paths that drive `upsertItems`
   // directly. Each test ticks the fake clock to a nonzero base first so a
   // `=== 0` assertion genuinely means "never stamped" rather than
   // "stamped at time 0".
@@ -7375,14 +7375,16 @@ describe('createThreadPane', () => {
       }
     });
 
-    it('stamps on a non-smoothed streaming delta (bypasses the smoother)', async () => {
+    it('does not stamp on a non-smoothed streaming delta (bypasses the smoother)', async () => {
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);
       try {
         clock.tickFrame(16); // base now()=16
         const pane = await buildPane(makeThread({ id: 'stamp-nonsmooth' }));
         // tool_call is not a smoothable kind — applyItemDelta writes
-        // summary directly and must stamp inline (no onReveal to do it).
+        // summary directly. It deliberately does not stamp the spring latch:
+        // command output geometry is measured by its own renderer, and
+        // sync-pinning is less janky than animating transient estimates.
         pane.upsertItem(
           makeItem({
             id: 'tool:0:0',
@@ -7403,7 +7405,7 @@ describe('createThreadPane', () => {
           delta: 'put',
           updatedAt: 2,
         });
-        expect(pane.lastLiveContentAt).toBe(16);
+        expect(pane.lastLiveContentAt).toBe(0);
         expect(pane.items[0].summary).toBe('output');
         expect(pane.__itemSmootherCountForTest()).toBe(0); // never smoothed
       } finally {

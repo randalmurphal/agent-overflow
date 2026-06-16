@@ -142,7 +142,8 @@ The gate drops virtua writes only when all of these are true:
 - the controller is logically at bottom,
 - the user has not escaped,
 - no pause lease is active,
-- animation mode is `spring`,
+- animation mode is `spring`, or a one-shot structural append spring is in
+  flight,
 - a spring chase is in flight.
 
 This is intentionally narrow. Pre-warm writes are hidden, instant-mode
@@ -154,15 +155,25 @@ spring sentinel lifetime, pause-depth races, and gate coupling.
 ## Live Content Animation
 
 Chat chooses animation mode with a content-keyed latch. `ThreadPane`
-stamps `lastLiveContentAt` whenever genuine live timeline content
-advances; `MessageTimeline` returns `spring` for
-`SPRING_MODE_HOLD_MS` after that stamp and `instant` otherwise.
+stamps `lastLiveContentAt` whenever smooth text-like live timeline content
+advances: assistant prose, thinking, compaction reasoning, and direct text
+patches. `MessageTimeline` returns `spring` for `SPRING_MODE_HOLD_MS` after
+that stamp and `instant` otherwise.
 
 The spring is keyed on content arrival, not provider turn state. It
-therefore covers end-of-turn smoother drains and wire-round gaps, while
-late Streamdown typesetting on settled content sync-pins invisibly.
+therefore covers end-of-turn smoother drains and text-stream gaps, while
+tool rows and late Streamdown typesetting on settled content sync-pin
+invisibly by default.
 `SPRING_MODE_HOLD_MS` must remain greater than the spring sentinel
 retain duration.
+
+Structural transcript appends have a narrower override:
+`markStructuralContentPending()` makes the next near-term command/tool row
+growth spring-eligible even when the content latch currently returns
+`instant`. This is intentionally one-shot. After the structural append
+spring arrives it cancels instead of entering the streaming sentinel, so
+virtua/browser `scrollTop` corrections are not suppressed after the append
+settles.
 
 `spring` is an eligibility signal, not an unconditional animation. If
 `contentRO` observes a content-width change, the controller opens a short

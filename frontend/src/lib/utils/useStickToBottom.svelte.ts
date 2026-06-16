@@ -23,10 +23,13 @@
 //     clears — flow in with a smooth animation. Gated by a quiescence-based warm
 //     state: spring stays off until contentRO has been quiet for
 //     QUIET_MS or the FAILSAFE_MS deadline trips, whichever comes
-//     first. The warm gate defends against the original 80LoC-spring-
-//     delete regression (commit e00723f) where mount-time virtua
-//     remeasurement and async Streamdown typesetting would spring-
-//     chase a thread restore visibly.
+//     first. A one-shot structural-append mark can also make the next
+//     near-term command/tool row growth spring-eligible while
+//     animationMode is 'instant'; that path cancels after arrival and does
+//     not enter the streaming sentinel. The warm gate defends against the
+//     original 80LoC-spring-delete regression (commit e00723f) where
+//     mount-time virtua remeasurement and async Streamdown typesetting
+//     would spring-chase a thread restore visibly.
 //
 // User-initiated snaps (the scroll-to-bottom chip) and thread restores
 // go through `forceStick()` which writes scrollTop directly.
@@ -97,20 +100,30 @@ const PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX = 1;
 const RECENT_DOWN_INTENT_WINDOW_MS = 250;
 const SCROLLBAR_DRAG_SESSION_FAILSAFE_MS = 30_000;
 const EXTERNAL_SCROLL_TAG_CLEAR_MS = 100;
+const PROGRAMMATIC_SCROLL_EVENT_TOKEN_TTL_MS = 500;
+const MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS = 128;
+const PROGRAMMATIC_SCROLL_EVENT_DUPLICATE_BUDGET = 4;
+const STRUCTURAL_APPEND_SPRING_WINDOW_MS = 250;
 
 // ===== Spring chase tuning =====
-// Defaults match upstream stackblitz-labs/use-stick-to-bottom:
-// damping 0.7, stiffness 0.05, mass 1.25. These produce a smooth
-// scroll-follow that feels responsive without overshooting visibly.
-const DEFAULT_SPRING = { damping: 0.7, stiffness: 0.05, mass: 1.25 } as const;
+// Tuned from upstream stackblitz-labs/use-stick-to-bottom defaults
+// (damping 0.7, stiffness 0.05, mass 1.25). A 0.05 stiffness takes
+// roughly half a second to settle a one-line scroll target change, which
+// leaves WebKit spending too long in the low-velocity rounded tail during
+// fast streaming. 0.08 keeps the no-visible-overshoot shape but catches
+// line-sized target jumps quickly enough that consecutive wraps read as one
+// continuous follow.
+const DEFAULT_SPRING = { damping: 0.7, stiffness: 0.08, mass: 1.25 } as const;
 const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
 // Cap on how many fixed 60Hz steps one rAF tick may integrate. A
 // stalled rAF (heavy frame, tab back from background) would otherwise
 // pay its entire gap at once — a many-step advance the cross-target
 // clamp turns into a visible teleport. Four steps ≈ 67ms of motion per
-// real frame keeps post-stall catch-up brisk but smooth; anything
+// real frame kept post-stall catch-up brisk but smooth with the original
+// spring. The faster streaming-follow spring uses three steps to preserve
+// the same bounded-burst behavior; anything
 // longer is absorbed by subsequent frames and the arrival snap.
-const SPRING_MAX_CATCHUP_STEPS = 4;
+const SPRING_MAX_CATCHUP_STEPS = 3;
 // Keep chasing for this long after the last positive grow event. Without
 // this, the spring would consider itself "arrived" between streaming
 // chunks and stop, then have to spin up again on the next chunk —
@@ -295,10 +308,18 @@ export interface UseStickToBottomController {
    * Notify the controller that live transcript content may have advanced
    * without the content ResizeObserver producing a usable positive delta.
    * Uses the same escape/pause/user-intent gates as notifyContentMaybeGrew,
-   * but honors animationMode: active chat turns spring-chase instead of
+   * but honors animationMode and structural-append marks: active chat turns
+   * and just-appended command/tool row batches spring-chase instead of
    * sync-pinning.
    */
   notifyLiveContentMaybeGrew(): void;
+  /**
+   * Mark the next near-term content growth as append-like structural
+   * transcript growth. This lets command/tool row batches spring-follow
+   * instead of snapping, without making unrelated idle layout reflows
+   * spring-eligible.
+   */
+  markStructuralContentPending(): void;
   /**
    * Run an explicit user disclosure action while preserving the user's
    * current follow intent. Sticky users stay pinned to bottom; escaped
@@ -433,8 +454,11 @@ export interface UseStickToBottomOptions {
   /**
    * Picks animation behavior for autonomous content growth (contentRO
    * positive deltas). Called per-fire — return 'spring' to make the
-   * delta spring-eligible, 'instant' to sync-pin. Width-driven layout
-   * correction still sync-pins even when this returns 'spring'.
+   * delta spring-eligible, 'instant' to sync-pin. A one-shot
+   * markStructuralContentPending() call can make the next near-term
+   * structural append spring-eligible even while this returns 'instant'.
+   * Width-driven layout correction still sync-pins even when this returns
+   * 'spring'.
    * Defaults to () => 'instant' (sync-pin everywhere) so existing
    * callers behave identically to the pre-spring-restoration controller.
    *
@@ -506,6 +530,7 @@ export function createUseStickToBottomController(
   let resizeDifference = 0;
   let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
   let ignoreScrollToTop = -1;
+  let pendingProgrammaticScrollEventTokens: { top: number; expiresAt: number; remaining: number }[] = [];
   let externalScrollIgnoreUntil = 0;
   let externalScrollClearTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -577,11 +602,6 @@ export function createUseStickToBottomController(
   let velocity = 0;
   let accumulated = 0;
   let lastTickAt: number | null = null;
-  // Fractional 60Hz steps carried between rAF ticks by the fixed-
-  // timestep integrator (see the dtFrames block in the spring tick).
-  // On a 120Hz display each rAF contributes ~0.5; steps fire on the
-  // frames where the carry crosses a whole step.
-  let stepCarry = 0;
   // Monotonic counter (cheaper than `Symbol('spring')` per start). 0 means
   // no spring in flight; positive values identify the current spring run.
   let springToken = 0;
@@ -595,7 +615,10 @@ export function createUseStickToBottomController(
   // restarting (visibly jittery). "TargetChanged" rather than "Grew"
   // because the symmetric spring now follows shrinks as well as growths.
   let lastTargetChangedAt = 0;
+  let arrivalReadbackAcceptedTarget: number | null = null;
   let springStopRequested = false;
+  let structuralAppendSpringUntil = 0;
+  let springStartedFromStructuralAppend = false;
   // The target when the sentinel first entered after a chase. When the
   // sentinel tick sees diff > 0 but target === sentinelEntryTarget, the
   // content oscillated and returned to the same height — snap instantly.
@@ -728,6 +751,46 @@ export function createUseStickToBottomController(
     // incomplete.
     return Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
   }
+
+  function isWithinArrivalDistance(current: number, target: number): boolean {
+    return Math.abs(current - target) <= ARRIVAL_DISTANCE_PX;
+  }
+
+  function scrollTopIsAtTarget(target: number): boolean {
+    return !scrollEl || isWithinArrivalDistance(scrollEl.scrollTop, target);
+  }
+
+  function scrollTargetsMatch(a: number, b: number): boolean {
+    return isWithinArrivalDistance(a, b);
+  }
+
+  function acceptedReadbackMatchesTarget(target: number): boolean {
+    return arrivalReadbackAcceptedTarget !== null
+      && scrollTargetsMatch(arrivalReadbackAcceptedTarget, target)
+      && scrollTopIsAtTarget(target);
+  }
+
+  function shouldWriteExactArrivalTarget(target: number): boolean {
+    if (!scrollEl) return false;
+    if (scrollEl.scrollTop === target) return false;
+    if (!scrollTopIsAtTarget(target)) return true;
+    return !acceptedReadbackMatchesTarget(target);
+  }
+
+  function recordArrivalReadbackAcceptance(target: number): void {
+    if (scrollEl && scrollEl.scrollTop !== target && scrollTopIsAtTarget(target)) {
+      arrivalReadbackAcceptedTarget = target;
+      return;
+    }
+    arrivalReadbackAcceptedTarget = null;
+  }
+
+  function writeExactArrivalTarget(caller: string, target: number): void {
+    writeCaller = caller;
+    writeScrollTop(target);
+    recordArrivalReadbackAcceptance(target);
+  }
+
   function distanceFromBottom(): number {
     if (!scrollEl) return 0;
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
@@ -799,6 +862,7 @@ export function createUseStickToBottomController(
 
   function recordRecentDownIntent(source: 'wheel' | 'key' | 'touch'): void {
     if (!escapedFromLockState) return;
+    clearProgrammaticScrollState();
     cancelTargetAnimation();
     restoreSnapArmed = false;
     recentDownIntentUntil = nowMs() + RECENT_DOWN_INTENT_WINDOW_MS;
@@ -887,6 +951,7 @@ export function createUseStickToBottomController(
     // Tag using the BROWSER-rounded read so the scroll handler's
     // `scrollTop === ignoreScrollToTop` check matches.
     ignoreScrollToTop = scrollEl.scrollTop;
+    recordProgrammaticScrollEventToken(ignoreScrollToTop);
     lastObservedScrollTopForRestick = scrollEl.scrollTop;
     refreshIsNearBottom();
     if (shouldTrace) {
@@ -916,6 +981,51 @@ export function createUseStickToBottomController(
     if (original && original !== 'auto') scrollEl.style.scrollBehavior = 'auto';
     writeProgrammaticScrollTop(value);
     if (original && original !== 'auto') scrollEl.style.scrollBehavior = original;
+  }
+
+  function recordProgrammaticScrollEventToken(top: number): void {
+    const now = nowMs();
+    pendingProgrammaticScrollEventTokens.push({
+      top,
+      expiresAt: now + PROGRAMMATIC_SCROLL_EVENT_TOKEN_TTL_MS,
+      remaining: PROGRAMMATIC_SCROLL_EVENT_DUPLICATE_BUDGET,
+    });
+    if (pendingProgrammaticScrollEventTokens.length > MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS) {
+      pendingProgrammaticScrollEventTokens.splice(
+        0,
+        pendingProgrammaticScrollEventTokens.length - MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS,
+      );
+    }
+  }
+
+  function consumeProgrammaticScrollEventToken(top: number): boolean {
+    if (pendingProgrammaticScrollEventTokens.length === 0) return false;
+    const now = nowMs();
+    let consumed = false;
+    let writeIndex = 0;
+    for (const token of pendingProgrammaticScrollEventTokens) {
+      if (token.expiresAt < now) continue;
+      if (!consumed && token.top === top) {
+        consumed = true;
+        token.remaining -= 1;
+        if (token.remaining > 0) {
+          pendingProgrammaticScrollEventTokens[writeIndex] = token;
+          writeIndex += 1;
+        }
+        continue;
+      }
+      pendingProgrammaticScrollEventTokens[writeIndex] = token;
+      writeIndex += 1;
+    }
+    pendingProgrammaticScrollEventTokens.length = writeIndex;
+    return consumed;
+  }
+
+  function clearProgrammaticScrollState(): void {
+    pendingProgrammaticScrollEventTokens = [];
+    ignoreScrollToTop = -1;
+    structuralAppendSpringUntil = 0;
+    springStartedFromStructuralAppend = false;
   }
 
   function requestFrame(callback: FrameRequestCallback): number {
@@ -989,7 +1099,8 @@ export function createUseStickToBottomController(
     velocity = 0;
     accumulated = 0;
     lastTickAt = null;
-    stepCarry = 0;
+    arrivalReadbackAcceptedTarget = null;
+    springStartedFromStructuralAppend = false;
     // Reset the target-change timestamp so a stale value can't trick a
     // fresh chase into thinking it's within the retain window right out
     // of the gate (matches the historical 80LoC-spring cleanup semantics).
@@ -1027,16 +1138,18 @@ export function createUseStickToBottomController(
       && isAtBottomState
       && !escapedFromLockState
       && !prefersReducedMotion()
-      && options.animationMode?.() === 'spring';
+      && (options.animationMode?.() === 'spring' || structuralAppendSpringUntil > nowMs());
   }
 
   function startSpringIfNeeded(): void {
     if (springToken !== 0) return;
     if (!springGateOpen()) return;
+    springStartedFromStructuralAppend =
+      options.animationMode?.() !== 'spring'
+      && structuralAppendSpringUntil > nowMs();
     const myToken = ++springGen;
     springToken = myToken;
     lastTickAt = null;
-    stepCarry = 0;
     // Force the first tick of this chase to record so the trace shows
     // every chase boundary, not just every ~12th sampled write.
     springTickSinceLastTrace = SPRING_TICK_TRACE_SAMPLE - 1;
@@ -1057,41 +1170,37 @@ export function createUseStickToBottomController(
         return;
       }
 
-      // Fixed-timestep integration: convert wall-clock elapsed time into
-      // whole 60Hz steps (the fractional remainder carries to the next
-      // frame via stepCarry) and run the velocity recurrence once per
-      // step. The recurrence has no dt term — each evaluation IS one
-      // 60Hz step — so the old shape (one velocity update per rAF,
-      // position advanced by velocity·dt) made the motion shape
-      // rate-dependent: dropped frames doubled the position advance
-      // while velocity evolved a single step, visibly changing the
-      // chase's damping exactly when the app was already stuttering.
-      // 120Hz displays land half a step per rAF and write on the frames
-      // where the carry crosses a whole step, keeping the tuned 60Hz
-      // motion. dtFrames is clamped so a long rAF gap integrates a
-      // bounded burst (see SPRING_MAX_CATCHUP_STEPS).
+      // Frame-rate independent spring integration. One full step matches
+      // the tuned 60Hz recurrence; higher-refresh frames integrate a
+      // fractional step and still write every rAF, so 120Hz displays do not
+      // see every other frame held. Long gaps are capped to a bounded burst
+      // so a blocked frame cannot pay the entire stall in one write.
       const dtFrames = lastTickAt === null ? 1 : (now - lastTickAt) / SIXTY_FPS_INTERVAL_MS;
       lastTickAt = now;
-      stepCarry += Math.min(dtFrames, SPRING_MAX_CATCHUP_STEPS);
-      const steps = Math.floor(stepCarry);
-      stepCarry -= steps;
+      const integrationFrames = Math.min(Math.max(dtFrames, 0), SPRING_MAX_CATCHUP_STEPS);
 
       // Cache per-tick. `targetScrollTop()` reads `scrollHeight` /
       // `clientHeight` — both force layout. Compute once per frame.
       const target = targetScrollTop();
       const current = scrollEl.scrollTop;
-      const diff = target - current;
+      if (
+        arrivalReadbackAcceptedTarget !== null
+        && !scrollTargetsMatch(arrivalReadbackAcceptedTarget, target)
+      ) {
+        arrivalReadbackAcceptedTarget = null;
+      }
 
       // Whether the consumer still wants spring follow, and whether a
       // target change landed recently enough that more content is probably
       // still arriving. Hoisted above the diff branch so the caught-up
-      // (diff === 0) case can decide whether to KEEP momentum for the next
-      // growth or shed it and settle; the arrival check below reuses both.
-      const wantsSpringNow = options.animationMode?.() === 'spring';
+      // branch can decide whether to KEEP momentum for the next growth or
+      // shed it and settle; the arrival check below reuses both.
+      const wantsStreamingSpringNow = options.animationMode?.() === 'spring';
+      const wantsSpringNow = wantsStreamingSpringNow || springStartedFromStructuralAppend;
       const withinTargetChangeRetainWindow =
         wantsSpringNow && now - lastTargetChangedAt < RETAIN_ANIMATION_DURATION_MS;
 
-      if (diff !== 0) {
+      if (current !== target && !acceptedReadbackMatchesTarget(target)) {
         // Content oscillation guard: if the sentinel was idle
         // (sentinelEntryTarget set) and the target returned to the
         // sentinel entry value, the content layer oscillated in
@@ -1101,24 +1210,29 @@ export function createUseStickToBottomController(
         // bypasses the property-descriptor gate), stranding scrollTop
         // below the restored target. Snap back instantly — a spring
         // chase for zero net content change is a visible artifact.
-        if (sentinelEntryTarget >= 0 && target === sentinelEntryTarget) {
+        if (sentinelEntryTarget >= 0 && scrollTargetsMatch(target, sentinelEntryTarget)) {
           snapOscillationToBottom('spring.oscillationSnap', target);
         } else {
+          arrivalReadbackAcceptedTarget = null;
           sentinelEntryTarget = -1;
-          // `steps` can be 0 on a high-refresh frame whose carry hasn't
-          // crossed a whole 60Hz step yet — skip the write entirely so
-          // the position only moves at the tuned cadence.
-          if (steps > 0) {
-            for (let step = 0; step < steps; step += 1) {
+          if (integrationFrames > 0) {
+            let remainingFrames = integrationFrames;
+            while (remainingFrames > 0) {
+              const stepFraction = Math.min(1, remainingFrames);
+              remainingFrames -= stepFraction;
               // Re-derive the remaining gap per step from the in-frame
               // position (`current + accumulated`) — pure arithmetic, no
               // extra layout reads — so a multi-step catch-up follows the
-              // same curve N sequential 60Hz frames would have.
+              // same curve N sequential 60Hz frames would have. Fractional
+              // steps use proportional stiffness and exponential damping so
+              // high-refresh frames advance smoothly without changing the
+              // 60Hz shape.
               const stepDiff = target - (current + accumulated);
               velocity =
-                (DEFAULT_SPRING.damping * velocity + DEFAULT_SPRING.stiffness * stepDiff)
+                (Math.pow(DEFAULT_SPRING.damping, stepFraction) * velocity
+                  + DEFAULT_SPRING.stiffness * stepFraction * stepDiff)
                 / DEFAULT_SPRING.mass;
-              accumulated += velocity;
+              accumulated += velocity * stepFraction;
             }
             const next = current + accumulated;
             // Pre-clamp in JS so we know the post-state without a second
@@ -1135,15 +1249,22 @@ export function createUseStickToBottomController(
             const clamped = crossedTarget ? target : next;
             writeCaller = crossedTarget ? 'spring.overshoot' : 'spring.tick';
             writeScrollTop(clamped);
+            if (clamped === target) {
+              recordArrivalReadbackAcceptance(target);
+            }
             if (scrollEl.scrollTop !== current) accumulated = 0;
           }
         }
       } else {
-        // Caught up to the bottom. `accumulated` is always dropped — we're
-        // exactly on target, so there is no sub-pixel position carry to
-        // keep. Nothing is written in this branch, so a retained velocity
-        // can't move the viewport on its own; it only seeds the next
-        // diff > 0 tick, where the cross-target clamp still bounds overshoot.
+        // Caught up to the bottom. Exact equality is the normal path; the
+        // accepted-readback path covers engines that already rejected an exact
+        // target write but read back within the one-pixel arrival band.
+        //
+        // `accumulated` is always dropped — there is no useful sub-pixel
+        // position carry to keep. Nothing is written in this branch, so a
+        // retained velocity can't move the viewport on its own; it only seeds
+        // the next diff > 0 tick, where the cross-target clamp still bounds
+        // overshoot.
         //
         // KEEP a gentle upward follow velocity across the catch-up instead
         // of zeroing it — that is what turns a line-by-line stream into one
@@ -1177,10 +1298,10 @@ export function createUseStickToBottomController(
       // Bidirectional — applies to downward chases (shrinks) as well as
       // upward (growth).
       const arrived =
-        Math.abs(scrollEl.scrollTop - target) < ARRIVAL_DISTANCE_PX
+        scrollTopIsAtTarget(target)
         && Math.abs(velocity) < ARRIVAL_VELOCITY_THRESHOLD;
       if (arrived && !withinTargetChangeRetainWindow) {
-        if (wantsSpringNow) {
+        if (wantsStreamingSpringNow) {
           // Streaming active but no target change within the retain
           // window (async shiki load, inter-chunk gap, parseIncomplete
           // Markdown rebalance). Keep the spring sentinel-alive so the
@@ -1192,14 +1313,14 @@ export function createUseStickToBottomController(
           // The next positive contentRO delta bumps lastTargetChangedAt
           // and the chase resumes on the following tick.
           //
-          // Snap pixel-perfect on sentinel entry (diff non-zero means
-          // the spring converged within 1px but didn't land exactly);
-          // subsequent sentinel ticks see diff===0 and skip the write,
-          // avoiding trace noise. Zeroing velocity/accumulated keeps the
-          // arrival check stable across sentinel ticks.
-          if (diff !== 0) {
-            writeCaller = 'spring.arrive';
-            writeScrollTop(target);
+          // Snap pixel-perfect on sentinel entry only when the browser readback
+          // is outside the accepted arrival band. Some engines reject the exact
+          // max scrollTop by one CSS pixel; repeatedly writing that rejected
+          // target is pure jank and creates needless ResizeObserver pressure.
+          // Zeroing velocity/accumulated keeps the arrival check stable across
+          // sentinel ticks.
+          if (shouldWriteExactArrivalTarget(target)) {
+            writeExactArrivalTarget('spring.arrive', target);
           }
           velocity = 0;
           accumulated = 0;
@@ -1210,9 +1331,11 @@ export function createUseStickToBottomController(
           return;
         }
         // Snap to the exact target on arrival so the final paint lands
-        // pixel-perfect rather than 0.5px above the bottom.
-        writeCaller = 'spring.arrive';
-        writeScrollTop(target);
+        // pixel-perfect rather than 0.5px above the bottom, unless the browser
+        // already accepted a value inside the arrival band.
+        if (shouldWriteExactArrivalTarget(target)) {
+          writeExactArrivalTarget('spring.arrive', target);
+        }
         cancelSpring();
         return;
       }
@@ -1311,7 +1434,7 @@ export function createUseStickToBottomController(
       // Mirrors the spring tick's per-frame `const target` discipline.
       const target = targetScrollTop();
       const overshootMagnitude = Math.max(0, scrollEl.scrollTop - target);
-      const overshoot = overshootMagnitude > 0;
+      const overshoot = overshootMagnitude > ARRIVAL_DISTANCE_PX;
       const positiveWillPin = delta > 0
         && isAtBottomState
         && !escapedFromLockState
@@ -1337,6 +1460,7 @@ export function createUseStickToBottomController(
         widthDelta: prevWidth === undefined ? null : roundCssPx(nextWidth - prevWidth),
         widthChanged,
         widthReflowActive,
+        structuralAppendSpringPending: structuralAppendSpringUntil > nowMs(),
         scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
         scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
         clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
@@ -1420,8 +1544,8 @@ export function createUseStickToBottomController(
         && isAtBottomState
         && !escapedFromLockState
         && pauseDepth === 0
-        && target === sentinelEntryTarget
-        && Math.abs(scrollEl.scrollTop - sentinelEntryTarget) >= 1;
+        && scrollTargetsMatch(target, sentinelEntryTarget)
+        && !isWithinArrivalDistance(scrollEl.scrollTop, sentinelEntryTarget);
 
       if (sentinelOscillationStranded) {
         snapOscillationToBottom('contentRO.oscillationSnap', target);
@@ -1557,6 +1681,7 @@ export function createUseStickToBottomController(
 
   function escapeFromUserInput(source: 'wheel' | 'key' | 'touch' | 'pointer'): void {
     if (!scrollEl) return;
+    clearProgrammaticScrollState();
     if (source !== 'pointer') clearScrollbarDragSession();
     const targetScrollEl = scrollEl;
     if (!escapedFromLockState && isUiRenderTraceEnabled()) {
@@ -1635,7 +1760,10 @@ export function createUseStickToBottomController(
     const tag = ignoreScrollToTop;
     ignoreScrollToTop = -1;
     const externalTagged = externalScrollIgnoreUntil > nowMs();
-    const tagged = scrollTopAtEvent === tag || externalTagged;
+    const exactTagged = scrollTopAtEvent === tag;
+    const tokenTagged = consumeProgrammaticScrollEventToken(scrollTopAtEvent);
+    const controllerTagged = exactTagged || tokenTagged;
+    const tagged = controllerTagged || externalTagged;
     // Tagged programmatic write — bail synchronously without scheduling
     // the deferral timer. Steady-state streaming fires a sync-pin write
     // on every contentRO positive delta; allocating a closure + timer
@@ -2104,6 +2232,7 @@ export function createUseStickToBottomController(
       pauseDepth,
       isNearBottomState,
       warm,
+      structuralAppendSpringPending: structuralAppendSpringUntil > nowMs(),
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
       scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
@@ -2112,9 +2241,16 @@ export function createUseStickToBottomController(
     if (!gate.canPin) return;
 
     const target = targetScrollTop();
+    if (scrollEl && scrollTopIsAtTarget(target)) {
+      if (shouldWriteExactArrivalTarget(target)) {
+        writeExactArrivalTarget('notifyLiveContentMaybeGrew.arrive', target);
+      }
+      refreshIsNearBottom();
+      return;
+    }
     if (willSpring && scrollEl) {
       const current = scrollEl.scrollTop;
-      if (current < target) {
+      if (target - current > ARRIVAL_DISTANCE_PX) {
         lastTargetChangedAt = nowMs();
         startSpringIfNeeded();
         return;
@@ -2138,6 +2274,10 @@ export function createUseStickToBottomController(
     // modes, warm-up, reduced-motion users, and no-distance/overshoot
     // nudges where a spring has nothing useful to chase.
     instantPinAfterExternalGeometryChange('notifyLiveContentMaybeGrew');
+  }
+
+  function markStructuralContentPending(): void {
+    structuralAppendSpringUntil = nowMs() + STRUCTURAL_APPEND_SPRING_WINDOW_MS;
   }
 
   function pauseAutoScroll(): () => void {
@@ -2251,23 +2391,15 @@ export function createUseStickToBottomController(
           origSet.call(el, value);
           return;
         }
-        // animationMode === 'instant': the controller's contentRO
-        // would respond to this growth with a synchronous sync-pin,
-        // not a spring chase. virtua's `$fixScrollJump` and the
-        // controller's pin would BOTH write the same target (the new
-        // bottom). Letting virtua's write land first is strictly
-        // better: contentEl's contentRO fires in a separate RO
-        // delivery loop from virtua's per-row ROs (different observer
-        // instances), so the controller's pin lands ~3ms later. In
-        // that gap the DOM sits with the new scrollHeight but the
-        // old scrollTop — a visible "right → wrong → right" flicker
-        // where the bottom of a row that grew is briefly cut off
-        // (bug-report-20260524T183128Z: seq 149 reveal at correct
-        // bottom, seq 150 suppressed virtua write to 21839, seq 151
-        // contentRO 3ms later pinning to 21839). Pass through so
-        // virtua and the controller arrive at the same target in the
-        // same paint.
-        if (options.animationMode?.() === 'instant') {
+        // Plain animationMode === 'instant': the controller's contentRO
+        // would respond to this growth with a synchronous sync-pin, not a
+        // spring chase. virtua's `$fixScrollJump` and the controller's pin
+        // would BOTH write the same target (the new bottom), so let virtua's
+        // write land in the same paint. Structural-append springs are the
+        // exception: they intentionally animate command/tool row batches even
+        // though the prose latch is instant, so keep the spring as the single
+        // writer while that chase is in flight.
+        if (options.animationMode?.() === 'instant' && !springStartedFromStructuralAppend) {
           origSet.call(el, value);
           return;
         }
@@ -2447,6 +2579,7 @@ export function createUseStickToBottomController(
       externalScrollClearTimer = null;
     }
     externalScrollIgnoreUntil = 0;
+    clearProgrammaticScrollState();
     clearRecentDownIntent();
     clearScrollbarDragSession();
     cancelTargetAnimation();
@@ -2494,6 +2627,7 @@ export function createUseStickToBottomController(
     pauseAutoScroll,
     notifyContentMaybeGrew,
     notifyLiveContentMaybeGrew,
+    markStructuralContentPending,
     preserveScrollAnchor,
     attach,
     detach,

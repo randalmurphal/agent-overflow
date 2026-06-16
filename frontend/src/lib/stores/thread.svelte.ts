@@ -154,6 +154,8 @@ import {
   SPINNER_THRESHOLD_MS,
   THINKING_TAIL_RUNES,
   getSmoothingClockForTest,
+  isReasoningTailKind,
+  isSmoothLiveContentKind,
   loadOlderResult,
   nowForLiveContent,
   sameRhsPanel,
@@ -242,8 +244,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // changes shape or identity; `applyItemDelta` intentionally does not bump.
   let timelineRevision = $state(0);
   // Non-reactive timestamp of the last LIVE timeline content advance — a
-  // smoother reveal, a non-smoothed streaming delta, an overwrite patch,
-  // or a new provider row. Read imperatively by the scroll controller
+  // smoother reveal, an overwrite patch, or a text-like provider row.
+  // Read imperatively by the scroll controller
   // (MessageTimeline's `animationMode` getter) to choose spring vs
   // sync-pin; see utils/springAnimationLatch.ts. Deliberately NOT
   // `$state`: it is stamped up to ~60×/sec during a drain and is never
@@ -1191,17 +1193,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (!sameBoundary(revealBoundary, next)) revealBoundary = next;
   }
 
-  // Reasoning-tail kinds share the live 3-line tail UX — a smoother-driven
-  // monotonic tail, a tail-trimmed summary, and mid-stream payload expansion:
-  // the model's `thinking` and the compaction summarizer's
-  // `compaction_reasoning`. They differ only in the row's icon/label and its
-  // payload-expansion namespace. Accepts a plain string because `Item.kind` is
-  // `ItemKind | string` to absorb unknown wire values without a guard at every
-  // site.
-  function isReasoningTailKind(kind: ItemKind | string): boolean {
-    return kind === 'thinking' || kind === 'compaction_reasoning';
-  }
-
   // The payload-expansion namespace a reasoning-tail row reads from, matched by
   // the row component so a mid-stream live delta lands where an expand will
   // read it.
@@ -1209,13 +1200,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     return kind === 'compaction_reasoning'
       ? COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY
       : THINKING_PAYLOAD_EXPANSION_STATE_KEY;
-  }
-
-  // Smoothable kinds: assistant_text + the reasoning-tail kinds. Tool calls,
-  // errors, notifications, etc. pass through directly — they have their own
-  // rendering and don't benefit from word-aligned reveal.
-  function shouldSmoothKind(kind: ItemKind | string): boolean {
-    return kind === 'assistant_text' || isReasoningTailKind(kind);
   }
 
   function getOrCreateSmoothing(
@@ -1404,7 +1388,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           itemLiveThinkingTail.delete(it.id);
           continue;
         }
-        if (!shouldSmoothKind(it.kind)) continue;
+        if (!isSmoothLiveContentKind(it.kind)) continue;
         const received = entry.smoother.getReceived();
         if (it.summary === received) continue;
         if (
@@ -3243,12 +3227,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // word-aligned reveal. Replace the entry rather than mutating in
       // place so virtua's per-row ResizeObserver stays quiet on
       // unchanged rows; the streaming row is genuinely growing, so a
-      // fresh reference is the correct signal.
-      if (!shouldSmoothKind(current.kind)) {
-        // Non-smoothed streaming kinds (tool output growth, etc.) grow
-        // content height directly here, bypassing the smoother's onReveal
-        // stamp — mark the advance so the controller spring-chases.
-        stampLiveContent();
+      // fresh reference is the correct signal. These rows also bypass the
+      // spring latch: command output and tool chrome can remeasure quickly
+      // under WebKit, so sticky follow should sync-pin while their geometry
+      // stabilizes instead of animating toward transient estimates.
+      if (!isSmoothLiveContentKind(current.kind)) {
         items[index] = {
           ...current,
           summary: current.summary + evt.delta,

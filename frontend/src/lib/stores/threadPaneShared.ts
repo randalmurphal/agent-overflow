@@ -1,4 +1,4 @@
-import type { Thread } from '../types/models';
+import type { ItemKind, Thread } from '../types/models';
 import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
 import type { RhsPanel } from './rhsPanelSlot.svelte';
 import type { ActiveTurn } from './threadStatuses.svelte';
@@ -23,6 +23,21 @@ export function getSmoothingClockForTest(): SmoothingClock | undefined {
 // written from inside `onReveal` shares that callback's time source.
 export function nowForLiveContent(): number {
   return smoothingClockForTest?.now() ?? performance.now();
+}
+
+// Reasoning-tail kinds share the live 3-line tail UX — a smoother-driven
+// monotonic tail, a tail-trimmed summary, and mid-stream payload expansion.
+// Accepts a plain string because `Item.kind` is `ItemKind | string` to absorb
+// unknown wire values without a guard at every call site.
+export function isReasoningTailKind(kind: ItemKind | string): boolean {
+  return kind === 'thinking' || kind === 'compaction_reasoning';
+}
+
+// Smoothable kinds: assistant_text + the reasoning-tail kinds. Tool calls,
+// errors, notifications, etc. pass through directly — they have their own
+// rendering and don't benefit from word-aligned reveal.
+export function isSmoothLiveContentKind(kind: ItemKind | string): boolean {
+  return kind === 'assistant_text' || isReasoningTailKind(kind);
 }
 
 /**

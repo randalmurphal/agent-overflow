@@ -6,7 +6,7 @@ import {
   type UseStickToBottomController,
 } from './useStickToBottom.svelte';
 import { latchedSpringMode, SPRING_MODE_HOLD_MS } from './springAnimationLatch';
-import { clearUiRenderTrace, setUiRenderTraceEnabled } from './uiRenderTrace';
+import { clearUiRenderTrace, getUiRenderTraceRecords, setUiRenderTraceEnabled } from './uiRenderTrace';
 
 // happy-dom doesn't measure layout, so tests stub scrollHeight /
 // clientHeight / scrollTop on the scroll element via Object.defineProperty.
@@ -19,13 +19,28 @@ interface Geometry {
   contentHeight: number;
 }
 
-function stubGeometry(scrollEl: HTMLElement, contentEl: HTMLElement, geom: Geometry): void {
+interface StubGeometryOptions {
+  setScrollTop?: (value: number, geom: Geometry) => void;
+}
+
+function stubGeometry(
+  scrollEl: HTMLElement,
+  contentEl: HTMLElement,
+  geom: Geometry,
+  options: StubGeometryOptions = {},
+): void {
   Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => geom.scrollHeight });
   Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => geom.clientHeight });
   Object.defineProperty(scrollEl, 'scrollTop', {
     configurable: true,
     get: () => geom.scrollTop,
-    set: (v: number) => { geom.scrollTop = Math.max(0, Math.min(v, geom.scrollHeight - geom.clientHeight)); },
+    set: (v: number) => {
+      if (options.setScrollTop) {
+        options.setScrollTop(v, geom);
+        return;
+      }
+      geom.scrollTop = Math.max(0, Math.min(v, geom.scrollHeight - geom.clientHeight));
+    },
   });
   Object.defineProperty(contentEl, 'scrollHeight', { configurable: true, get: () => geom.contentHeight });
 }
@@ -77,11 +92,11 @@ class MockResizeObserver {
 }
 
 // rAF frames advance performance.now in 16.67ms steps so animateScrollTo's
-// easeOutCubic interpolation makes real progress per tick in the test
-// environment (happy-dom's rAF doesn't drive performance.now on its
-// own). Tests that assert event-driven behavior (sync-pin, scroll
-// handler, gesture handlers) don't depend on this — those happen
-// synchronously without rAF.
+// easeOutCubic interpolation and the scroll-follow spring make real
+// progress per tick in the test environment (happy-dom's rAF doesn't drive
+// performance.now on its own). Tests that assert event-driven behavior
+// (sync-pin, scroll handler, gesture handlers) don't depend on this — those
+// happen synchronously without rAF.
 let mockNow = 0;
 function nextFrame(): Promise<void> {
   return new Promise<void>((resolve) =>
@@ -92,8 +107,7 @@ function nextFrame(): Promise<void> {
   );
 }
 /** A rAF whose wall-clock gap differs from the steady 16.67ms — models
- * dropped frames (33.34) or a long stall for the fixed-timestep spring
- * tests. */
+ * high-refresh frames (8.33), dropped frames (33.34), or a long stall. */
 function nextFrameAfter(ms: number): Promise<void> {
   return new Promise<void>((resolve) =>
     requestAnimationFrame(() => {
@@ -767,6 +781,28 @@ describe('createUseStickToBottomController', () => {
       fireScroll(scrollEl);
       await nextTimer();
       // Tagged programmatic write: should not flip escape or anything.
+      expect(controller.escapedFromLock).toBe(false);
+    });
+
+    it('ignores delayed duplicate scroll events from controller-owned writes', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      expect(geom.scrollTop).toBe(500);
+
+      setUiRenderTraceEnabled(true);
+      clearUiRenderTrace();
+
+      fireScroll(scrollEl);
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      const scrollEvents = getUiRenderTraceRecords().filter((record) =>
+        record.label.startsWith('scroll.scrollEvent'),
+      );
+      expect(scrollEvents).toEqual([]);
       expect(controller.escapedFromLock).toBe(false);
     });
 
@@ -2501,7 +2537,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBeLessThan(800);
     });
 
-    it('dropped frames do not change the motion shape (fixed-timestep integration)', async () => {
+    it('dropped frames keep the same broad motion shape', async () => {
       // Same chase twice: steady 60Hz vs 30Hz (every gap a dropped
       // frame). Sampled at equal wall-clock points the trajectories
       // must match — the old integrator (one velocity update per rAF,
@@ -2509,11 +2545,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       // per second at 30Hz, so the chase changed shape exactly when the
       // app was already stuttering.
       //
-      // Time alignment: the first tick of a chase always integrates one
-      // step (lastTickAt seeds null), so both runs sample after steps
-      // 1, 3, 5, … — the 60Hz run via one frame then pairs, the 30Hz
-      // run via 33.34ms ticks that each integrate two steps after the
-      // first.
+      // Time alignment: sample both runs at roughly the same wall-clock
+      // points. The dropped-frame run integrates multiple bounded internal
+      // steps in one rAF, so it should stay close to the steady run without
+      // needing byte-identical positions.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150); // warm
@@ -2556,7 +2591,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       expect(at60[0]).toBeGreaterThan(400); // both chases actually moved
       for (let i = 0; i < at60.length; i++) {
-        expect(Math.abs(at60[i] - at30[i])).toBeLessThan(1);
+        expect(Math.abs(at60[i] - at30[i])).toBeLessThan(25);
       }
     });
 
@@ -2573,14 +2608,11 @@ describe('createUseStickToBottomController — spring chase', () => {
       const afterFirst = geom.scrollTop;
       expect(afterFirst).toBeGreaterThan(400);
 
-      // 200ms stall ≈ 12 dropped frames. rAF callbacks run in
-      // registration order, so the spring tick in a flush executes
-      // BEFORE the helper advances mockNow — the stalled delta is
-      // observed by the tick in the FOLLOWING frame, hence the extra
-      // plain nextFrame before sampling. The old integrator advanced
-      // position by velocity·12 in that one write (~776px on this
-      // geometry — a visible lurch); the fixed-timestep cap integrates
-      // at most SPRING_MAX_CATCHUP_STEPS steps (~552px here).
+      // 200ms stall ≈ 12 dropped frames. rAF callbacks run in registration
+      // order, so the spring tick in a flush executes BEFORE the helper
+      // advances mockNow — the stalled delta is observed by the tick in the
+      // FOLLOWING frame, hence the extra plain nextFrame before sampling.
+      // The cap must prevent paying the whole gap in one visible lurch.
       await nextFrameAfter(200);
       await nextFrame();
       const afterStall = geom.scrollTop;
@@ -2588,15 +2620,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(afterStall).toBeLessThan(600);
     });
 
-    it('holds position on sub-step frames at 120Hz, writing only when a whole 60Hz step elapses', async () => {
-      // At ~120Hz each rAF is ~8.33ms ≈ half a 60Hz step. The fixed-
-      // timestep integrator must NOT write on frames whose carry hasn't
-      // crossed a whole step (steps === 0) — it holds position and
-      // accumulates stepCarry — then writes on the frame the carry crosses
-      // 1.0. The old per-rAF integrator advanced position by velocity·dt
-      // EVERY frame, so it never produced two identical consecutive
-      // mid-chase positions (the mock scrollTop setter doesn't round, so a
-      // skipped write is the only way two samples come out byte-identical).
+    it('advances every sub-step frame at 120Hz', async () => {
+      // At ~120Hz each rAF is ~8.33ms. The spring must still write a
+      // fractional step every frame; holding alternate frames is visible
+      // stair-stepping on ProMotion displays.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150); // warm
@@ -2614,12 +2641,11 @@ describe('createUseStickToBottomController — spring chase', () => {
       // The chase really was animating (net forward progress)…
       expect(samples[samples.length - 1]).toBeGreaterThan(samples[0]);
       // …and stayed below the 800px target the whole window, so no clamp
-      // collision can fake an equal pair.
+      // collision can fake a monotonic run.
       expect(samples[samples.length - 1]).toBeLessThan(800);
-      // …yet at least one sub-step frame wrote nothing: a position
-      // identical to the prior frame. Impossible under velocity·dt-per-rAF.
-      const heldAtLeastOnce = samples.some((s, i) => i > 0 && s === samples[i - 1]);
-      expect(heldAtLeastOnce).toBe(true);
+      for (let i = 1; i < samples.length; i += 1) {
+        expect(samples[i]).toBeGreaterThan(samples[i - 1]);
+      }
     });
 
     it('sync-pins a positive delta caused by content width reflow instead of spring-chasing it', async () => {
@@ -2731,6 +2757,69 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(800);
       for (let i = 0; i < 3; i++) await nextFrame();
       expect(geom.scrollTop).toBe(800);
+    });
+
+    it('structural append mark spring-chases the next positive delta even when animation mode is instant', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      mode = 'instant';
+
+      controller.markStructuralContentPending();
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+
+      expect(geom.scrollTop).toBe(400);
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(600);
+    });
+
+    it('structural append spring cancels after arrival in instant mode', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      mode = 'instant';
+
+      controller.markStructuralContentPending();
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+
+      await advanceUntil(() => Math.abs(geom.scrollTop - 600) <= 1);
+      while (mockNow < 360) await nextFrame();
+
+      geom.scrollHeight = 1300;
+      scrollEl.scrollTop = 650;
+
+      expect(geom.scrollTop).toBe(650);
+    });
+
+    it('structural append spring absorbs a quick measured-height correction', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      mode = 'instant';
+
+      controller.markStructuralContentPending();
+      geom.scrollHeight = 1250;
+      geom.contentHeight = 1050;
+      ro.fire(contentEl, 1050);
+      expect(geom.scrollTop).toBe(400);
+
+      // The command row's estimate is corrected before the first spring
+      // paint. The correction must not sync-write to the corrected bottom;
+      // the active spring should read the new target and move there.
+      geom.scrollHeight = 1180;
+      geom.contentHeight = 980;
+      ro.fire(contentEl, 980);
+      expect(geom.scrollTop).toBe(400);
+
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(580);
+      await advanceUntil(() => Math.abs(geom.scrollTop - 580) <= 1);
     });
 
     it('notifyLiveContentMaybeGrew clamps instead of springing when already past target', async () => {
@@ -5858,6 +5947,39 @@ describe('createUseStickToBottomController — spring chase', () => {
         await nextFrame();
         // Spring sentinel absorbs the 1px and lands at 500.
         await advanceUntil(() => geom.scrollTop === 500);
+      });
+
+      it('does not keep writing when browser readback stays one pixel short of target', async () => {
+        controller.detach();
+        const writes: number[] = [];
+        stubGeometry(scrollEl, contentEl, geom, {
+          setScrollTop: (value, g) => {
+            writes.push(value);
+            const max = Math.max(0, g.scrollHeight - g.clientHeight);
+            const clamped = Math.max(0, Math.min(value, max));
+            g.scrollTop = clamped >= max ? Math.max(0, max - 1) : clamped;
+          },
+        });
+        controller = createUseStickToBottomController({ animationMode: () => mode });
+        controller.attach(scrollEl, contentEl);
+
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+        writes.length = 0;
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+
+        await advanceUntil(() => Math.abs(geom.scrollTop - 500) <= 1);
+        while (mockNow < 360) await nextFrame();
+
+        const writesAfterSettling = writes.length;
+        for (let i = 0; i < 20; i++) await nextFrame();
+
+        expect(geom.scrollTop).toBe(499);
+        expect(writes.length).toBe(writesAfterSettling);
       });
 
       it('delayed structural nudge does not snap a small corrected-target overshoot mid-spring', async () => {

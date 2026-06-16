@@ -13,8 +13,7 @@ import {
 } from '../../utils/uiRenderTrace';
 
 const MAX_TRACE_NODES = 120;
-const MAX_TRACE_DOM_ROWS = 160;
-const TRACE_TEXT_PREVIEW_CHARS = 120;
+const MAX_TRACE_DOM_ROWS = 64;
 
 export function recordTimelineRenderTrace(
   pane: ThreadPane,
@@ -77,8 +76,8 @@ export function recordTimelineRenderTrace(
     // (single timeline.state snapshot averaged ~63 KB on a 228-item
     // thread, burning ~57% of the 10 MB rotation cap on data that
     // barely changes between consecutive emissions). The DOM trace
-    // (timeline.dom, scheduled below) captures the rendered rows with
-    // text previews; the kind/turn information is in `nodes` above.
+    // (timeline.dom, scheduled below) captures rendered row identity and
+    // scroll geometry; the kind/turn information is in `nodes` above.
   });
   scheduleDomUiTrace('timeline', 'timeline.dom', () => ({
     threadId: pane.threadId,
@@ -87,7 +86,6 @@ export function recordTimelineRenderTrace(
       .slice(0, MAX_TRACE_DOM_ROWS)
       .map((el) => ({
         itemId: el.dataset.itemId ?? '',
-        textPreview: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, TRACE_TEXT_PREVIEW_CHARS),
       })),
     scrollOffset: listRef ? Math.round(listRef.getScrollOffset()) : 0,
     scrollSize: listRef ? Math.round(listRef.getScrollSize()) : 0,
@@ -99,110 +97,113 @@ export function startTimelineRowResizeTrace(root: Element): () => void {
   if (!isUiRenderTraceEnabled()) return () => {};
 
   const ROW_SELECTOR = '[data-row-index]';
-  const tracked = new Map<Element, { rowIndex: string; height: number }>();
+  const tracked = new Map<Element, { rowIndex: string; height: number | null }>();
+  const dirtyRows = new Set<Element>();
+  let measureFrame: number | null = null;
 
-  const ro = new ResizeObserver((entries) => {
-    for (const entry of entries) {
-      const t = tracked.get(entry.target);
+  const measureRowHeight = (el: Element): number =>
+    Math.round((el as HTMLElement).getBoundingClientRect().height);
+
+  const measureTrackedRows = () => {
+    measureFrame = null;
+    const rowsToMeasure = Array.from(dirtyRows);
+    dirtyRows.clear();
+    for (const el of rowsToMeasure) {
+      const t = tracked.get(el);
       if (!t) continue;
-      const newHeight = Math.round(entry.contentRect.height);
+      if (!el.isConnected) {
+        tracked.delete(el);
+        continue;
+      }
+      const newHeight = measureRowHeight(el);
+      if (t.height === null) {
+        t.height = newHeight;
+        continue;
+      }
       if (newHeight === t.height) continue;
       const prevHeight = t.height;
       t.height = newHeight;
-      // Skip the initial 0/-1 -> N first measurement (no real "change").
-      if (prevHeight < 0) continue;
-      const targetEl = entry.target as HTMLElement;
-      const itemId = targetEl.querySelector<HTMLElement>('[data-item-id]')?.dataset.itemId ?? '';
-      const textPreview = (targetEl.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 100);
+      const itemEl = el.querySelector<HTMLElement>('[data-item-id]');
       recordUiTrace('timeline.row.resize', {
         rowIndex: t.rowIndex,
-        itemId,
+        itemId: itemEl?.dataset.itemId ?? '',
         prevHeight,
         newHeight,
         delta: newHeight - prevHeight,
-        contentTags: fingerprintTimelineRow(targetEl),
-        outerHTMLLen: targetEl.outerHTML.length,
-        childCount: targetEl.querySelectorAll('*').length,
-        descendants: inspectTimelineRowDescendants(targetEl),
-        textPreview,
       });
     }
-  });
+  };
+
+  const scheduleMeasure = () => {
+    if (measureFrame !== null) return;
+    measureFrame = requestAnimationFrame(measureTrackedRows);
+  };
+
+  const markDirty = (el: Element | null) => {
+    if (!el || !tracked.has(el)) return;
+    dirtyRows.add(el);
+    scheduleMeasure();
+  };
+
+  const rowForMutationTarget = (target: Node): Element | null => {
+    if (target instanceof Element) {
+      if (target.matches(ROW_SELECTOR)) return target;
+      return target.closest(ROW_SELECTOR);
+    }
+    return target.parentElement?.closest(ROW_SELECTOR) ?? null;
+  };
 
   const trackElement = (el: Element) => {
     if (tracked.has(el)) return;
     tracked.set(el, {
       rowIndex: (el as HTMLElement).dataset.rowIndex ?? '',
-      height: -1,
+      height: null,
     });
-    ro.observe(el);
+    markDirty(el);
   };
 
   const untrackElement = (el: Element) => {
-    if (!tracked.delete(el)) return;
-    ro.unobserve(el);
+    tracked.delete(el);
+    dirtyRows.delete(el);
   };
 
   root.querySelectorAll(ROW_SELECTOR).forEach(trackElement);
 
   const mo = new MutationObserver((mutations) => {
     for (const m of mutations) {
+      if (m.type === 'childList') {
+        markDirty(rowForMutationTarget(m.target));
+      }
       m.addedNodes.forEach((n) => {
         if (!(n instanceof Element)) return;
-        if (n.matches(ROW_SELECTOR)) trackElement(n);
-        n.querySelectorAll?.(ROW_SELECTOR).forEach(trackElement);
+        if (n.matches(ROW_SELECTOR)) {
+          trackElement(n);
+        }
+        n.querySelectorAll?.(ROW_SELECTOR).forEach((el) => {
+          trackElement(el);
+        });
       });
       m.removedNodes.forEach((n) => {
         if (!(n instanceof Element)) return;
         if (n.matches(ROW_SELECTOR)) untrackElement(n);
         n.querySelectorAll?.(ROW_SELECTOR).forEach(untrackElement);
       });
+      if (m.type === 'attributes' || m.type === 'characterData') {
+        markDirty(rowForMutationTarget(m.target));
+      }
     }
   });
-  mo.observe(root, { childList: true, subtree: true });
+  mo.observe(root, {
+    attributes: true,
+    attributeFilter: ['class', 'style'],
+    characterData: true,
+    childList: true,
+    subtree: true,
+  });
 
   return () => {
     mo.disconnect();
-    ro.disconnect();
+    if (measureFrame !== null) cancelAnimationFrame(measureFrame);
     tracked.clear();
   };
-}
-
-function fingerprintTimelineRow(el: Element): string {
-  const tags: string[] = [];
-  if (el.querySelector('pre.shiki, pre[class*="shiki"]')) tags.push('shiki');
-  if (el.querySelector('[class*="skeleton"], [class*="animate-pulse"]')) tags.push('skeleton');
-  if (el.querySelector('[data-mermaid-source], svg.mermaid, .mermaid svg')) tags.push('mermaid');
-  if (el.querySelector('.katex, [class*="katex"]')) tags.push('katex');
-  if (el.querySelector('[data-streamdown-code]')) tags.push('sd-code');
-  if (el.querySelector('img')) tags.push('img');
-  if (el.querySelector('[data-testid="approval-card"]')) tags.push('approval');
-  if (el.querySelector('[data-testid="todo-list"]')) tags.push('todo');
-  if (el.querySelector('[data-testid*="working"]')) tags.push('working');
-  return tags.join(',');
-}
-
-function inspectTimelineRowDescendants(el: Element): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  const pre = el.querySelector('pre');
-  if (pre) {
-    out.preClass = (pre.className?.toString() ?? '').slice(0, 120);
-    out.preChildCount = pre.children.length;
-    out.preTextLen = (pre.textContent ?? '').length;
-  }
-  const sdCode = el.querySelector('[data-streamdown-code]');
-  if (sdCode) out.sdCodeId = sdCode.getAttribute('data-streamdown-code') ?? '';
-  const mermaid = el.querySelector('[data-mermaid-source]');
-  if (mermaid) {
-    out.mermaidHasSvg = mermaid.querySelector('svg') !== null;
-    out.mermaidChildCount = mermaid.children.length;
-  }
-  const katex = el.querySelector('.katex, [class*="katex"]');
-  if (katex) out.katexRendered = katex.querySelector('.katex-mathml') !== null;
-  const img = el.querySelector('img');
-  if (img) {
-    out.imgComplete = (img as HTMLImageElement).complete;
-    out.imgNaturalH = (img as HTMLImageElement).naturalHeight;
-  }
-  return out;
 }

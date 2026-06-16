@@ -3,15 +3,17 @@
 // 'instant' (same-paint sync-pin, no perceptible motion). See
 // docs/architecture/frontend-scroll.md for the two behaviors.
 //
-// The latch keys on WHEN live timeline content last advanced — a text
-// reveal, a streaming delta, or a new provider row — NOT on whether a
-// provider turn is active. Keying on content (data mutation) rather than
-// turn lifecycle is what fixes the two edge bugs (turn ends while the
-// agent keeps streaming; the end-of-turn word-by-word drain tail that
-// reveals for seconds after the wire turn closes) AND keeps idle
-// async-typesetting reflow on settled content sync-pinned: shiki / KaTeX
-// / mermaid grow row height but never advance content, so they never
-// refresh `lastLiveContentAt` and the latch stays 'instant'.
+// The latch keys on WHEN smooth live timeline content last advanced — a
+// text/reasoning reveal, direct text patch, or text-like provider row —
+// NOT on whether a provider turn is active. Keying on content (data
+// mutation) rather than turn lifecycle is what fixes the two edge bugs
+// (turn ends while the agent keeps streaming; the end-of-turn
+// word-by-word drain tail that reveals for seconds after the wire turn
+// closes) AND keeps idle async-typesetting reflow on settled content
+// sync-pinned: shiki / KaTeX / mermaid grow row height but never advance
+// content, so they never refresh `lastLiveContentAt` and the latch stays
+// 'instant'. Tool rows also stay sync-pinned because their virtual
+// estimates often remeasure immediately after insertion.
 //
 // `lastLiveContentAt` is stamped on the owning ThreadPane (see
 // `stores/thread.svelte.ts`); MessageTimeline reads it per-contentRO-fire

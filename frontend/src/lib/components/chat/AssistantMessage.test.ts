@@ -576,6 +576,35 @@ describe('<AssistantMessage>', () => {
     expect(container.querySelector('[aria-label="Copy message"]')).toBeNull();
   });
 
+  it('reserves the copy button slot before completed content can be copied', async () => {
+    const streamingItem = makeItem({
+      status: 'streaming',
+      summary: 'streaming text',
+    });
+    const completedItem = { ...streamingItem, status: 'completed' as const };
+    const { container, getByLabelText, queryByLabelText, rerender } = render(
+      AssistantMessage,
+      {
+        props: { item: streamingItem },
+      },
+    );
+
+    const streamingSlot = container.querySelector(
+      '[data-testid="assistant-message-copy-slot"]',
+    );
+    expect(streamingSlot?.className).toContain('h-7');
+    expect(streamingSlot?.className).toContain('w-7');
+    expect(queryByLabelText('Copy message')).toBeNull();
+
+    await rerender({ item: completedItem });
+
+    const completedSlot = container.querySelector(
+      '[data-testid="assistant-message-copy-slot"]',
+    );
+    expect(completedSlot?.className).toBe(streamingSlot?.className);
+    expect(getByLabelText('Copy message')).toBeInTheDocument();
+  });
+
   it('hides the copy button when summary is whitespace-only', () => {
     const { container } = render(AssistantMessage, {
       props: { item: makeItem({ status: 'completed', summary: '   \n  ' }) },

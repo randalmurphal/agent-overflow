@@ -46,7 +46,6 @@ import { setProviderRateLimits } from './rateLimitsInfo.svelte';
 import { addToast } from './toast.svelte';
 import { getThreadById, getThreads, refreshThreads, removeThread, replaceThread, touchThreadActivity } from './threads.svelte';
 import { parseJsonObject } from '../utils/parseJsonObject';
-import { deriveCompletionStatus } from '../utils/toolCompletionStatus';
 import { errString } from '../utils/errors';
 import {
   projectApprovalRequest,
@@ -76,6 +75,7 @@ import {
   DESIGN_RELOAD_MAIN_EVENT,
   DESIGN_OPTIONS_UPDATE_EVENT,
 } from './eventNames';
+import { isSmoothLiveContentKind } from './threadPaneShared';
 
 /**
  * Min interval between consecutive `design:reload-main` cache-bust
@@ -636,25 +636,12 @@ function itemUpsertCountsAsActivity(upsert: PendingItemUpsert): boolean {
   return userTextCountsAsActivity(upsert.item);
 }
 
-function statusAddsVisibleErrorRow(status: Item['status']): boolean {
-  return status === 'errored' || status === 'declined' || status === 'killed';
-}
-
-function itemAddsVisibleFailureChrome(item: Item): boolean {
-  return deriveCompletionStatus(item) === 'failure';
-}
-
-function isSameRowSuccessfulCommandOutputChrome(existing: Item, incoming: Item): boolean {
-  return existing.kind === 'tool_call'
-    && incoming.kind === 'tool_call'
-    && incoming.payloadKind === 'command_output'
-    && !incoming.completionOf
-    && existing.summary === incoming.summary
-    && existing.meta === incoming.meta
-    && !itemAddsVisibleFailureChrome(incoming);
+function providerUpsertCanUseSpringLatch(item: Item): boolean {
+  return isSmoothLiveContentKind(item.kind);
 }
 
 function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming: Item): boolean {
+  if (!providerUpsertCanUseSpringLatch(incoming)) return false;
   if (!existing) return true;
   if (existing.summary !== incoming.summary) return true;
   if (
@@ -664,12 +651,6 @@ function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming:
     || existing.parentId !== incoming.parentId
     || existing.completionOf !== incoming.completionOf
   ) return true;
-  if (statusAddsVisibleErrorRow(incoming.status) && existing.status !== incoming.status) {
-    return true;
-  }
-  if (isSameRowSuccessfulCommandOutputChrome(existing, incoming)) {
-    return false;
-  }
   return existing.payloadId !== incoming.payloadId
     || existing.payloadKind !== incoming.payloadKind
     || existing.payloadMeta !== incoming.payloadMeta;
@@ -722,13 +703,11 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
       const hasLiveContentAdvance = applied.changedItems.some((item) =>
         providerUpsertAdvancesLiveContent(previousItemsById.get(item.id), item),
       );
-      // A provider upsert that advances visible row content marks the
-      // scroll-animation latch so the controller spring-chases. Same-row
-      // success chrome, such as an inline Bash completion attaching a
-      // collapsed command_output payload, deliberately does not stamp:
-      // it can re-render the row without changing bottom geometry, and
-      // keeping the spring latch alive for that churn makes unrelated
-      // late measurements animate.
+      // A provider upsert that advances text-like live content marks the
+      // scroll-animation latch so the controller spring-chases. Tool rows
+      // deliberately do not stamp: command batches often enter with a
+      // virtual size estimate and remeasure a few milliseconds later, and
+      // spring-chasing those transient targets is visible WebKit stutter.
       if (hasLiveContentAdvance) pane.markLiveContentAdvanced();
     }
   }

@@ -47,14 +47,19 @@
     <time class="tabular-nums" datetime={isoTime}>
       {time}
     </time>
-    {#if canCopy}
-      <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
-        <CopyButton
-          text={item.summary}
-          label="Copy message"
-          onError={() => addToast('error', 'Failed to copy')}
-        />
-      </span>
-    {/if}
+    <span
+      data-testid="assistant-message-copy-slot"
+      class="flex h-7 w-7 shrink-0 items-center justify-center"
+    >
+      {#if canCopy}
+        <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+          <CopyButton
+            text={item.summary}
+            label="Copy message"
+            onError={() => addToast('error', 'Failed to copy')}
+          />
+        </span>
+      {/if}
+    </span>
   </div>
 </div>

@@ -6,7 +6,9 @@ import {
   installUiRenderTraceApi,
   isUiRenderTraceEnabled,
   recordUiTrace,
+  scheduleDomUiTrace,
   setUiRenderTraceEnabled,
+  snapshotChatDomForTrace,
 } from './uiRenderTrace';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 
@@ -15,6 +17,8 @@ describe('uiRenderTrace', () => {
     clearUiRenderTrace();
     setUiRenderTraceEnabled(false);
     delete window.__agentOverflowUiTrace;
+    vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('does not record while disabled', () => {
@@ -35,6 +39,60 @@ describe('uiRenderTrace', () => {
     expect(records[0]?.label).toBe('chat.state');
     expect(records[0]?.data).toEqual({ threadId: 't1' });
     expect(records[0]?.seq).toBeGreaterThan(0);
+  });
+
+  it('coalesces repeated DOM traces and throttles the next snapshot', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const frameCallbacks: FrameRequestCallback[] = [];
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {});
+    setUiRenderTraceEnabled(true);
+
+    scheduleDomUiTrace('chat', 'chat.dom', () => ({ version: 'old' }));
+    scheduleDomUiTrace('chat', 'chat.dom', () => ({ version: 'latest' }));
+
+    expect(getUiRenderTraceRecords()).toEqual([]);
+    expect(frameCallbacks).toHaveLength(1);
+    frameCallbacks.shift()?.(0);
+
+    expect(getUiRenderTraceRecords()).toMatchObject([
+      { label: 'chat.dom', data: { version: 'latest' } },
+    ]);
+
+    scheduleDomUiTrace('chat', 'chat.dom', () => ({ version: 'delayed' }));
+    expect(frameCallbacks).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(249);
+    expect(frameCallbacks).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(frameCallbacks).toHaveLength(1);
+    frameCallbacks.shift()?.(250);
+
+    expect(getUiRenderTraceRecords()).toMatchObject([
+      { label: 'chat.dom', data: { version: 'latest' } },
+      { label: 'chat.dom', data: { version: 'delayed' } },
+    ]);
+  });
+
+  it('snapshots chat DOM row identity without reading row text previews', () => {
+    const root = document.createElement('div');
+    root.dataset.threadId = 'thread-1';
+    root.innerHTML = `
+      <div data-item-id="item-1">large rendered row text</div>
+      <div data-item-id="item-2">another rendered row</div>
+      <div data-testid="message-timeline-scroll"></div>
+    `;
+
+    const snapshot = snapshotChatDomForTrace(root);
+
+    expect(snapshot.timelineRows).toEqual([
+      { itemId: 'item-1' },
+      { itemId: 'item-2' },
+    ]);
   });
 
   it('flushes trace records to the backend in compact batches', async () => {
