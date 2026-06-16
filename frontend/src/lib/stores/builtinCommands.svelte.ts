@@ -256,11 +256,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     },
   });
 
-  // Pane navigation stays reachable from inside a focused terminal: the vim
-  // chords (alt+h/l, alt+shift+h/l) are un-gated here AND in the Go defaults,
-  // and TerminalBody's xterm key handler lets exactly those chords bubble out
-  // instead of writing them to the PTY. The alt+arrow twins keep their
-  // !terminalFocus rule-gate so the shell still owns alt+arrow word-motion.
+  // Pane navigation stays reachable from inside a focused terminal: the default
+  // vim chords (alt+h/l, alt+shift+h/l) are un-gated here AND in the Go
+  // defaults, and TerminalBody's xterm key handler lets those configured chords
+  // bubble out instead of writing them to the PTY.
   registerCommand({
     id: 'pane.focusLeft',
     label: 'Pane: Focus Left',

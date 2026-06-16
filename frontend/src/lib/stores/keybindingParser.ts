@@ -29,6 +29,15 @@ export interface Chord {
   modKey: boolean;
 }
 
+type ChordKeyboardEvent = {
+  key: string;
+  code?: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+};
+
 export type WhenNode =
   | { type: 'identifier'; name: string }
   | { type: 'not'; node: WhenNode }
@@ -138,13 +147,9 @@ export function encodeChord(chord: Chord): string {
  */
 export function chordMatches(
   chord: Chord,
-  event: { key: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean },
+  event: ChordKeyboardEvent,
   isMac: boolean,
 ): boolean {
-  // Normalize the event key to lowercase for case-insensitive match.
-  const evKey = event.key.toLowerCase();
-  if (evKey !== chord.key.toLowerCase()) return false;
-
   // Resolve the `mod` alias.
   const wantMeta = chord.metaKey || (chord.modKey && isMac);
   const wantCtrl = chord.ctrlKey || (chord.modKey && !isMac);
@@ -153,7 +158,27 @@ export function chordMatches(
   if (event.ctrlKey !== wantCtrl) return false;
   if (event.shiftKey !== chord.shiftKey) return false;
   if (event.altKey !== chord.altKey) return false;
-  return true;
+  return eventKeyMatchesChord(chord, event, isMac);
+}
+
+function eventKeyMatchesChord(
+  chord: Chord,
+  event: Pick<ChordKeyboardEvent, 'key' | 'code' | 'altKey'>,
+  isMac: boolean,
+): boolean {
+  const wantedKey = chord.key.toLowerCase();
+  if (event.key.toLowerCase() === wantedKey) return true;
+  if (!isMac || !event.altKey) return false;
+  return macOptionLetterFromCode(event.code) === wantedKey;
+}
+
+export function macOptionLetterFromCode(code: string | undefined): string | null {
+  if (!code?.startsWith('Key') || code.length !== 4) return null;
+  const codeUnit = code.charCodeAt(3);
+  if (codeUnit >= 65 && codeUnit <= 90) {
+    return String.fromCharCode(codeUnit + 32);
+  }
+  return null;
 }
 
 // ---- when expression ----

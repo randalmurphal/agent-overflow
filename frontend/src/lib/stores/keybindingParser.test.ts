@@ -63,8 +63,12 @@ describe('keybindingParser — chords', () => {
 });
 
 describe('keybindingParser — chordMatches', () => {
-  const ev = (key: string, mods: Partial<{ metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }> = {}) => ({
+  const ev = (
+    key: string,
+    mods: Partial<{ code: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }> = {},
+  ) => ({
     key,
+    code: mods.code,
     metaKey: false,
     ctrlKey: false,
     shiftKey: false,
@@ -92,6 +96,20 @@ describe('keybindingParser — chordMatches', () => {
   it('matches case-insensitively', () => {
     const chord = parseChord('mod+k');
     expect(chordMatches(chord, ev('K', { metaKey: true }), true)).toBe(true);
+  });
+
+  it('matches macOS Option-letter chords by physical key code when event.key is the produced glyph', () => {
+    expect(chordMatches(parseChord('alt+h'), ev('˙', { code: 'KeyH', altKey: true }), true))
+      .toBe(true);
+    expect(chordMatches(parseChord('alt+l'), ev('¬', { code: 'KeyL', altKey: true }), true))
+      .toBe(true);
+    expect(chordMatches(parseChord('alt+shift+l'), ev('Ò', { code: 'KeyL', altKey: true, shiftKey: true }), true))
+      .toBe(true);
+  });
+
+  it('does not use physical-key fallback off macOS', () => {
+    expect(chordMatches(parseChord('alt+h'), ev('˙', { code: 'KeyH', altKey: true }), false))
+      .toBe(false);
   });
 
   // The default terminal.newPane chord is `mod+shift+~` — the SHIFTED glyph,

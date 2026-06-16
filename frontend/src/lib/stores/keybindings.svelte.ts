@@ -18,6 +18,7 @@ import type { Chord, WhenNode } from './keybindingParser';
 import {
   chordMatches,
   encodeChord,
+  macOptionLetterFromCode,
   tryParseChord,
   tryParseWhen,
 } from './keybindingParser';
@@ -218,8 +219,9 @@ export function eventMatchesKeybindingCommand(
 // handler uses it to decide whether a chord should *escape* the terminal to the
 // app. `when` evaluation only reads `flags`, and the pane-nav commands carry no
 // command-level `when`, so modelling terminalFocus alone is sufficient — a
-// chord still rule-gated on `!terminalFocus` (alt+arrow) evaluates false and is
-// left for the shell, while an un-gated chord (alt+h/l) matches and escapes.
+// chord still rule-gated on `!terminalFocus` evaluates false and is left for the
+// shell, while an un-gated chord (the default alt+h/l pane-nav bindings) matches
+// and escapes.
 const TERMINAL_FOCUSED_CTX = { flags: { terminalFocus: true } } as unknown as CommandContext;
 
 /**
@@ -271,7 +273,7 @@ export function formatChord(key: string, isMac?: boolean): string {
 export function encodeChordFromEvent(event: KeyboardEvent, isMac?: boolean): string | null {
   const mac = isMac ?? (typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform));
   // Ignore pure modifier keys — a chord needs an actual key.
-  const key = event.key.toLowerCase();
+  const key = eventKeyForChordCapture(event, mac);
   if (
     key === 'control' ||
     key === 'meta' ||
@@ -299,4 +301,12 @@ export function encodeChordFromEvent(event: KeyboardEvent, isMac?: boolean): str
     chord.modKey = true;
   }
   return encodeChord(chord);
+}
+
+function eventKeyForChordCapture(event: KeyboardEvent, isMac: boolean): string {
+  if (isMac && event.altKey) {
+    const optionLetter = macOptionLetterFromCode(event.code);
+    if (optionLetter) return optionLetter;
+  }
+  return event.key.toLowerCase();
 }

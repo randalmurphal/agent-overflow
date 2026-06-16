@@ -9,6 +9,7 @@ import {
   getKeybindingIssues,
   resetKeybindingsToDefaults,
   formatChord,
+  encodeChordFromEvent,
   eventMatchesKeybindingCommand,
   eventEscapesTerminalToCommand,
 } from './keybindings.svelte';
@@ -19,6 +20,14 @@ import {
 } from './commandRegistry.svelte';
 import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+
+type TestKeyMods = {
+  code?: string;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
+};
 
 function baseCtx(extra: Partial<CommandContext> = {}): CommandContext {
   return {
@@ -37,9 +46,10 @@ function baseCtx(extra: Partial<CommandContext> = {}): CommandContext {
   } as CommandContext;
 }
 
-function ev(key: string, mods: Partial<KeyboardEvent> = {}): KeyboardEvent {
-  // happy-dom provides KeyboardEvent; Object.assign flips the modifier flags.
+function ev(key: string, mods: TestKeyMods = {}): KeyboardEvent {
+  // happy-dom provides KeyboardEvent; define readonly keyboard fields directly.
   const e = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+  Object.defineProperty(e, 'code', { value: mods.code ?? '' });
   Object.defineProperty(e, 'metaKey', { value: mods.metaKey ?? false });
   Object.defineProperty(e, 'ctrlKey', { value: mods.ctrlKey ?? false });
   Object.defineProperty(e, 'shiftKey', { value: mods.shiftKey ?? false });
@@ -120,6 +130,16 @@ describe('keybindings store — dispatch', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it('dispatches macOS Option-letter chords when event.key is the produced glyph', () => {
+    const run = vi.fn();
+    registerCommand({ id: 'pane.focusLeft', label: 'Pane Left', run });
+    setKeybindingsForTest([{ key: 'alt+h', command: 'pane.focusLeft' }]);
+
+    expect(dispatchKey(ev('˙', { code: 'KeyH', altKey: true }), baseCtx(), { isMac: true }))
+      .toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('does not dispatch pane navigation commands while terminal focus is active', () => {
     const run = vi.fn();
     registerCommand({ id: 'pane.focusLeft', label: 'Pane Left', when: '!terminalFocus', run });
@@ -166,9 +186,9 @@ describe('keybindings store — dispatch', () => {
 });
 
 describe('eventEscapesTerminalToCommand (terminal key-escape predicate)', () => {
-  // Mirrors the real defaults' asymmetry: the vim chord is un-gated (escapes a
-  // focused terminal to drive pane nav) while its arrow twin keeps the
-  // !terminalFocus rule-gate (stays in the shell as word-motion).
+  // Mirrors the configurable terminal escape rule: an un-gated pane-nav chord
+  // escapes a focused terminal, while a user-bound chord still gated on
+  // !terminalFocus stays in the shell as word-motion.
   const PANE_NAV_RULES = [
     { key: 'alt+h', command: 'pane.focusLeft' },
     { key: 'alt+arrowleft', command: 'pane.focusLeft', when: '!terminalFocus' },
@@ -187,11 +207,41 @@ describe('eventEscapesTerminalToCommand (terminal key-escape predicate)', () => 
     ).toBe(true);
   });
 
+  it('lets macOS Option-letter glyph events escape the terminal for un-gated pane-nav chords', () => {
+    registerCommand({ id: 'pane.focusRight', label: 'Pane Right', run: vi.fn() });
+    registerCommand({ id: 'pane.moveRight', label: 'Move Right', run: vi.fn() });
+    setKeybindingsForTest([
+      { key: 'alt+h', command: 'pane.focusLeft' },
+      { key: 'alt+l', command: 'pane.focusRight' },
+      { key: 'alt+shift+l', command: 'pane.moveRight' },
+    ]);
+
+    const escapes = (event: KeyboardEvent): boolean =>
+      eventEscapesTerminalToCommand(event, PANE_NAV_COMMAND_IDS, { isMac: true });
+    expect(escapes(ev('˙', { code: 'KeyH', altKey: true }))).toBe(true);
+    expect(escapes(ev('¬', { code: 'KeyL', altKey: true }))).toBe(true);
+    expect(escapes(ev('Ò', { code: 'KeyL', altKey: true, shiftKey: true }))).toBe(true);
+  });
+
   it('keeps a !terminalFocus-gated arrow chord in the shell', () => {
     setKeybindingsForTest(PANE_NAV_RULES);
     expect(
       eventEscapesTerminalToCommand(ev('ArrowLeft', { altKey: true }), PANE_NAV_COMMAND_IDS, { isMac: false }),
     ).toBe(false);
+  });
+
+  it('lets a settings-shaped un-gated arrow rebind escape the terminal', () => {
+    setKeybindingsForTest([
+      {
+        key: 'alt+arrowleft',
+        command: 'pane.focusLeft',
+        defaultId: 'pane.focusLeft.vim',
+        defaultKey: 'alt+h',
+      },
+    ]);
+    expect(
+      eventEscapesTerminalToCommand(ev('ArrowLeft', { altKey: true }), PANE_NAV_COMMAND_IDS, { isMac: false }),
+    ).toBe(true);
   });
 
   it('ignores keys not bound to a pane-nav command', () => {
@@ -390,5 +440,19 @@ describe('keybindings store — display formatting', () => {
   it('formats mod as Command on macOS hosts', () => {
     expect(formatChord('mod+k', true)).toBe('⌘K');
     expect(formatChord('mod+shift+g', true)).toBe('⇧⌘G');
+  });
+});
+
+describe('keybindings store — chord capture', () => {
+  it('captures macOS Option-letter chords by physical key instead of the produced glyph', () => {
+    expect(encodeChordFromEvent(ev('˙', { code: 'KeyH', altKey: true }), true)).toBe('alt+h');
+    expect(encodeChordFromEvent(ev('¬', { code: 'KeyL', altKey: true }), true)).toBe('alt+l');
+    expect(encodeChordFromEvent(ev('Ò', { code: 'KeyL', altKey: true, shiftKey: true }), true))
+      .toBe('alt+shift+l');
+  });
+
+  it('does not normalize Option-letter produced glyphs off macOS', () => {
+    expect(encodeChordFromEvent(ev('Ò', { code: 'KeyL', altKey: true, shiftKey: true }), false))
+      .not.toBe('alt+shift+l');
   });
 });

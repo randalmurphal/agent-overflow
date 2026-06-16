@@ -85,9 +85,9 @@ export function buildTerminal(
   // (mod+shift+t/w, ctrl+tab/ctrl+shift+tab), and new pane (mod+shift+~).
   // Returning false makes xterm skip its own handling WITHOUT preventDefault/
   // stopPropagation, so the event reaches the app. Chords still gated on
-  // !terminalFocus (alt+arrow word-motion) are not matched by the predicate and
-  // fall through to the shell as before. The predicate reads live bindings, so
-  // a user rebind takes effect immediately.
+  // !terminalFocus are not matched by the predicate and fall through to the
+  // shell as before. The predicate reads live bindings, so a user rebind takes
+  // effect immediately.
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
     // Shift+Enter inserts a newline instead of submitting. xterm's default

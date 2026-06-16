@@ -90,13 +90,14 @@ var Defaults = []Keybinding{
 	// for a separate reason: terminal.new isn't editableReachable, so it can't
 	// reach the editable xterm textarea and falls through to the shell.
 	//
-	// Pane navigation is deliberately ASYMMETRIC across its alt twins. The vim
-	// chords (alt+h/l, alt+shift+h/l) carry NO terminalFocus gate so they drive
-	// pane focus/move even from inside a terminal: TerminalBody's xterm key
-	// handler recognises exactly these and lets them bubble to the app instead
-	// of writing them to the PTY (writing them is what made alt+l run `ls`).
-	// Their arrow twins KEEP the `!terminalFocus` gate so the shell still owns
-	// alt+arrow word-motion; the same xterm handler leaves those for the PTY.
+	// Pane navigation uses Option/Alt + h/l by default, not Option/Alt + arrow.
+	// On macOS, Option+Arrow is word-motion in text fields; stealing it for pane
+	// focus makes normal editing feel broken. The vim chords carry NO
+	// terminalFocus gate so they drive pane focus/move even from inside a
+	// terminal: TerminalBody's xterm key handler recognises un-gated bindings
+	// for these pane-nav commands and lets them bubble to the app instead of
+	// writing them to the PTY (writing them is what made alt+l run `ls`). Users
+	// can still rebind these commands in Settings if they prefer arrow chords.
 	{Key: "mod+n", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.primary"},
 	{Key: "mod+shift+n", Command: "thread.newPane", When: "!terminalFocus", DefaultID: "thread.newPane"},
 	// Uses the SHIFTED glyph `~`, not the bare backtick: Ctrl/Cmd+Shift+` yields
@@ -123,13 +124,9 @@ var Defaults = []Keybinding{
 	{Key: "mod+shift+o", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.alternate"},
 	{Key: "mod+shift+d", Command: "thread.new.discussion", When: "!terminalFocus", DefaultID: "thread.new.discussion"},
 	{Key: "mod+w", Command: "pane.close", When: "!terminalFocus", DefaultID: "pane.close"},
-	{Key: "alt+arrowleft", Command: "pane.focusLeft", When: "!terminalFocus", DefaultID: "pane.focusLeft.arrow"},
 	{Key: "alt+h", Command: "pane.focusLeft", DefaultID: "pane.focusLeft.vim"},
-	{Key: "alt+arrowright", Command: "pane.focusRight", When: "!terminalFocus", DefaultID: "pane.focusRight.arrow"},
 	{Key: "alt+l", Command: "pane.focusRight", DefaultID: "pane.focusRight.vim"},
-	{Key: "alt+shift+arrowleft", Command: "pane.moveLeft", When: "!terminalFocus", DefaultID: "pane.moveLeft.arrow"},
 	{Key: "alt+shift+h", Command: "pane.moveLeft", DefaultID: "pane.moveLeft.vim"},
-	{Key: "alt+shift+arrowright", Command: "pane.moveRight", When: "!terminalFocus", DefaultID: "pane.moveRight.arrow"},
 	{Key: "alt+shift+l", Command: "pane.moveRight", DefaultID: "pane.moveRight.vim"},
 	{Key: "mod+shift+g", Command: "diff.panel.toggle", When: "hasActiveThread && !terminalFocus", DefaultID: "diff.panel.toggle"},
 	// mod+f is in-thread "find" (search the current thread's messages), matching

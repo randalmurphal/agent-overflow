@@ -100,43 +100,45 @@ func TestModWClosesPaneAndYieldsToTerminalFocus(t *testing.T) {
 	}
 }
 
-// TestPaneNavVimChordsEscapeTerminalFocus pins the asymmetry behind "alt+h/l
-// must navigate panes from inside a terminal, but alt+l must not run `ls`": the
-// vim pane-nav chords are UN-gated (no !terminalFocus) so they bubble out of a
-// focused xterm (TerminalBody's key handler recognises exactly these), while
-// their alt+arrow twins KEEP the !terminalFocus gate so the shell still owns
-// alt+arrow word-motion. A regression re-adding the gate to a vim chord would
-// silently re-break alt+h/l inside the terminal.
-func TestPaneNavVimChordsEscapeTerminalFocus(t *testing.T) {
-	whenByKey := func(key string) (when string, count int) {
+// TestPaneNavDefaultsUseVimChordsOnly pins the macOS-friendly default: alt+h/l
+// navigate panes, while alt+arrow is left to native text-editing word motion.
+// The vim pane-nav chords are UN-gated (no !terminalFocus) so they bubble out of
+// a focused xterm; a regression re-adding the gate would silently re-break
+// alt+h/l inside the terminal.
+func TestPaneNavDefaultsUseVimChordsOnly(t *testing.T) {
+	bindingsByKey := func(key string) []Keybinding {
+		var matches []Keybinding
 		for _, b := range Defaults {
 			if b.Key == key {
-				when = b.When
-				count++
+				matches = append(matches, b)
 			}
 		}
-		return when, count
+		return matches
 	}
 
-	// Vim chords: un-gated (escape a focused terminal).
-	for _, key := range []string{"alt+h", "alt+l", "alt+shift+h", "alt+shift+l"} {
-		when, count := whenByKey(key)
-		if count != 1 {
-			t.Fatalf("want exactly one %q binding, got %d", key, count)
+	expected := map[string]string{
+		"alt+h":       "pane.focusLeft",
+		"alt+l":       "pane.focusRight",
+		"alt+shift+h": "pane.moveLeft",
+		"alt+shift+l": "pane.moveRight",
+	}
+	for key, command := range expected {
+		matches := bindingsByKey(key)
+		if len(matches) != 1 {
+			t.Fatalf("want exactly one %q binding, got %d", key, len(matches))
 		}
-		if when != "" {
-			t.Errorf("%q When = %q, want \"\" (un-gated so it escapes a focused terminal)", key, when)
+		if matches[0].Command != command {
+			t.Errorf("%q Command = %q, want %q", key, matches[0].Command, command)
+		}
+		if matches[0].When != "" {
+			t.Errorf("%q When = %q, want \"\" (un-gated so it escapes a focused terminal)", key, matches[0].When)
 		}
 	}
 
-	// Arrow twins: keep the gate (shell owns alt+arrow word-motion).
 	for _, key := range []string{"alt+arrowleft", "alt+arrowright", "alt+shift+arrowleft", "alt+shift+arrowright"} {
-		when, count := whenByKey(key)
-		if count != 1 {
-			t.Fatalf("want exactly one %q binding, got %d", key, count)
-		}
-		if when != "!terminalFocus" {
-			t.Errorf("%q When = %q, want %q (gated so the shell keeps alt+arrow word-motion)", key, when, "!terminalFocus")
+		matches := bindingsByKey(key)
+		if len(matches) != 0 {
+			t.Errorf("want no default %q binding, got %d: %+v", key, len(matches), matches)
 		}
 	}
 }

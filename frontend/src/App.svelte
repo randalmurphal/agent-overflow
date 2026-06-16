@@ -85,9 +85,10 @@
   // (see commandRegistry's `editableReachable`); the set is derived from
   // the live registry so adding a new editable-reachable command requires
   // only the per-command flag, not a parallel list here. The
-  // textarea-word-op fallback (alt+arrow / ctrl+arrow) deliberately yields
-  // to these chords when a keybinding matches — see handleGlobalKeydown
-  // below.
+  // textarea-word-op fallback (Option/Alt+Arrow / Ctrl+Arrow) deliberately
+  // yields to these chords when a keybinding matches — see handleGlobalKeydown
+  // below. The shipped pane-nav defaults avoid Option/Alt+Arrow on macOS, but
+  // user rebinds still pass through this same configurable path.
   let EDITABLE_REACHABLE_COMMANDS = $derived(
     new Set(listCommands().filter((c) => c.editableReachable).map((c) => c.id)),
   );
@@ -176,10 +177,10 @@
     const ctx = makeAppCommandContext(currentContextPane());
 
     // Editable target: a keybinding in EDITABLE_REACHABLE_COMMANDS wins
-    // ahead of the word-op fallback. This is what lets alt+arrow drive
-    // pane.focusLeft / focusRight from inside the composer; for chords
-    // that DON'T match a reachable command (alt+backspace, ctrl+arrow,
-    // etc.) the word-op fallback still runs.
+    // ahead of the word-op fallback. This is what lets configured editable
+    // commands fire from inside the composer; for chords that DON'T match a
+    // reachable command (alt+backspace, ctrl+arrow, alt+arrow by default, etc.)
+    // the word-op fallback still runs.
     if (editable) {
       if (eventMatchesKeybindingCommand(ev, ctx, EDITABLE_REACHABLE_COMMANDS)) {
         if (dispatchKey(ev, ctx)) ev.preventDefault();
