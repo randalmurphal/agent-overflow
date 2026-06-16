@@ -13,6 +13,9 @@ over stdio.
 - `session_notifications.go` — notification pre-processing, child
   routing, classifier invocation, event enrichment, turn-state tracking,
   and final event emission.
+- `session_rollout_notifications.go` — narrow tailing of the active
+  Codex rollout file for detached-child mailbox notifications that
+  resumed app-server sessions do not expose as raw events.
 - `server_requests.go` — server-initiated request dispatch:
   approvals, MCP elicitation, structured user input, and dynamic tools.
 - `turn_input.go` — outbound `message/send` / `turn/steer` user-input
@@ -50,8 +53,9 @@ over stdio.
   `Kind: "mcp-elicitation"`; the dispatch lives in `server_requests.go`'s
   server-request handler.
 - `subagent_notifications.go` — `<subagent_notification>` XML-tag parser
-  for detached-child-agent terminal signals injected into the next
-  user-message. Pure parsing (regex + JSON decode), no Session state.
+  for detached-child-agent terminal signals in raw mailbox carriers,
+  rollout `response_item` records, and legacy standalone user-message
+  carriers. Pure parsing (regex + JSON decode), no Session state.
 - `options.go` — `SessionOptions → Config` hydration, binary probe.
 - `mcpstatus.go` — ephemeral MCP status fetcher (`MCPStatusFetcher`,
   drives `mcpServerStatus/list` via an inline JSON-RPC client) plus
@@ -135,8 +139,16 @@ for the wire sequence. Key points:
   separate `thread_id`.
 - Parent's `turn/completed` does NOT wait for spawned children.
 - Child completion signals the parent via either explicit `wait`
-  tool OR a `<subagent_notification>` XML tag in the next user
-  message.
+  tool OR a mailbox-delivered raw message carrying a
+  `<subagent_notification>` XML tag. Current Codex exposes that marker
+  as contextual `role:"user"` input. Fresh `thread/start` sessions can
+  expose it through `rawResponseItem/completed` when raw events are
+  enabled; resumed sessions cannot opt into that raw stream, so
+  Agent Overflow also tails the active rollout JSONL from EOF and parses
+  appended `response_item` records for the same standalone shape. Traces
+  and older flows can expose the same marker inside a serialized
+  `InterAgentCommunication` assistant/commentary message or a standalone
+  user-message carrier.
 - Wire enum for the wait tool is `"wait"` (not `"waitAgent"`).
 
 ## Responsibility boundary

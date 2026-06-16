@@ -145,7 +145,7 @@ describe('<BackgroundTaskTrayRow>', () => {
     expect(getByTestId('agent-row-preview').textContent).toContain('Explorer');
   });
 
-  it('routes Codex collab tray rows through CollabToolRow with spawn status enabled', () => {
+  it('routes Codex collab tray rows through CollabToolRow with agent status enabled', () => {
     const launch = makeItem({
       id: 'bg-collab',
       kind: 'tool_call',
@@ -163,7 +163,7 @@ describe('<BackgroundTaskTrayRow>', () => {
 
     const { getByTestId } = renderTrayRow(taskFor(launch));
 
-    expect(getByTestId('collab-tool-row-label').textContent).toBe('spawn');
+    expect(getByTestId('collab-tool-row-label').textContent).toBe('agent');
     expect(getByTestId('collab-tool-row-status-slot').querySelector('[data-state="running"]')).not.toBeNull();
   });
 

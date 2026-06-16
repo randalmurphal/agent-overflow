@@ -80,9 +80,12 @@ type Session struct {
 	// production Session leaves it at zero to use the default.
 	requestTimeoutOverride time.Duration
 	// childParentByThread maps a spawned collab receiver thread back to the
-	// parent SpawnAgent tool-call item id. Notifications from the child
-	// thread are re-emitted onto the parent thread with ParentToolUseID set
-	// to this card id.
+	// parent SpawnAgent tool-call item id. Raw spawn_agent output can also
+	// return an `agent_id` before the typed child-thread metadata arrives;
+	// current Codex completion notifications may echo that same value as
+	// `agent_path`, so it is indexed here as a resolver alias too.
+	// Notifications from the child thread are re-emitted onto the parent
+	// thread with ParentToolUseID set to this card id.
 	//
 	// childParentByAgentPath maps Codex's subagent_notification
 	// `agent_path` value back to the same parent card. Named Codex agents
@@ -101,15 +104,17 @@ type Session struct {
 	// `internal/triage/codex_background.go` on the first model-produced
 	// yield or at the turn-close catchall — this session package only
 	// surfaces the wire fields; it doesn't project them.
-	childParentByThread    map[string]string
-	childParentByAgentPath map[string]string
-	agentPathByThread      map[string]string
-	agentMetaByThread      map[string]collabReceiverMeta
-	collabMetadataReads    chan struct{}
-	rawToolCallsByID       map[string]rawToolCall
-	waitReceiverIDsByCall  map[string][]string
-	planBuffersByItemID    map[string]*planBuffer
-	planBuffersByTurnID    map[string]*planBuffer
+	childParentByThread       map[string]string
+	childParentByAgentPath    map[string]string
+	agentPathByThread         map[string]string
+	agentMetaByThread         map[string]collabReceiverMeta
+	subagentNotificationDedup map[subagentNotificationDedupKey]struct{}
+	rolloutObserverWG         sync.WaitGroup
+	collabMetadataReads       chan struct{}
+	rawToolCallsByID          map[string]rawToolCall
+	waitReceiverIDsByCall     map[string][]string
+	planBuffersByItemID       map[string]*planBuffer
+	planBuffersByTurnID       map[string]*planBuffer
 	// probeFn is a test-only override for Probe(). When non-nil, Probe
 	// skips the wire call and returns the result from this function.
 	// Production Session construction (NewSession) never sets it.
@@ -215,27 +220,28 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	}
 
 	s := &Session{
-		proc:                   proc,
-		ctx:                    childCtx,
-		threadID:               threadID,
-		model:                  cfg.Model,
-		reasoningEffort:        cfg.ReasoningEffort,
-		serviceTier:            cfg.ServiceTier,
-		approvalPolicy:         cfg.ApprovalPolicy,
-		sandbox:                cfg.Sandbox,
-		pending:                make(map[int64]chan json.RawMessage),
-		onEvent:                onEvent,
-		cancel:                 cancel,
-		readDone:               make(chan struct{}),
-		childParentByThread:    make(map[string]string),
-		childParentByAgentPath: make(map[string]string),
-		agentPathByThread:      make(map[string]string),
-		agentMetaByThread:      make(map[string]collabReceiverMeta),
-		collabMetadataReads:    make(chan struct{}, 4),
-		rawToolCallsByID:       make(map[string]rawToolCall),
-		waitReceiverIDsByCall:  make(map[string][]string),
-		planBuffersByItemID:    make(map[string]*planBuffer),
-		planBuffersByTurnID:    make(map[string]*planBuffer),
+		proc:                      proc,
+		ctx:                       childCtx,
+		threadID:                  threadID,
+		model:                     cfg.Model,
+		reasoningEffort:           cfg.ReasoningEffort,
+		serviceTier:               cfg.ServiceTier,
+		approvalPolicy:            cfg.ApprovalPolicy,
+		sandbox:                   cfg.Sandbox,
+		pending:                   make(map[int64]chan json.RawMessage),
+		onEvent:                   onEvent,
+		cancel:                    cancel,
+		readDone:                  make(chan struct{}),
+		childParentByThread:       make(map[string]string),
+		childParentByAgentPath:    make(map[string]string),
+		agentPathByThread:         make(map[string]string),
+		agentMetaByThread:         make(map[string]collabReceiverMeta),
+		subagentNotificationDedup: make(map[subagentNotificationDedupKey]struct{}),
+		collabMetadataReads:       make(chan struct{}, 4),
+		rawToolCallsByID:          make(map[string]rawToolCall),
+		waitReceiverIDsByCall:     make(map[string][]string),
+		planBuffersByItemID:       make(map[string]*planBuffer),
+		planBuffersByTurnID:       make(map[string]*planBuffer),
 	}
 
 	// Start stdout reader goroutine before sending any requests.
@@ -287,6 +293,9 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		log.Printf("codex: %s response missing thread.id; response: %s", method, string(resp))
 		s.Close()
 		return nil, fmt.Errorf("codex: %s: response did not contain a thread ID", method)
+	}
+	if method == "thread/resume" {
+		s.startRolloutSubagentNotificationObserver(readNestedString(resp, "thread", "path"))
 	}
 
 	meta, _ := json.Marshal(provider.SessionInfo{
@@ -499,9 +508,10 @@ func (s *Session) Close() error {
 	if s.readDone != nil {
 		<-s.readDone
 	}
+	s.rolloutObserverWG.Wait()
 	// Drop session-scoped maps so the closed Session doesn't hold onto
 	// per-turn / per-child-thread entries indefinitely. The dispatch
-	// goroutine has exited by this point (readDone closed), so no
+	// goroutine and rollout observer have exited by this point, so no
 	// concurrent writer races these deletions. We deliberately leave
 	// s.pending as an empty map (readLoop already drained it) — a late
 	// sendRequest caller would otherwise panic writing to a nil map;
@@ -513,6 +523,7 @@ func (s *Session) Close() error {
 	s.childParentByAgentPath = nil
 	s.agentPathByThread = nil
 	s.agentMetaByThread = nil
+	s.subagentNotificationDedup = nil
 	s.rawToolCallsByID = nil
 	s.waitReceiverIDsByCall = nil
 	s.mu.Unlock()

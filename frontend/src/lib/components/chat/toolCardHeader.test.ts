@@ -125,6 +125,7 @@ describe("classifyToolName", () => {
   it("collab_agent classifies as subagent", () => {
     const out = classifyToolName("collab_agent");
     expect(out.icon).toBe("robot");
+    expect(out.label).toBe("agent");
     expect(out.isSubagent).toBe(true);
   });
 

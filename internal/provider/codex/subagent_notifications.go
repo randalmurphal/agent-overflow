@@ -9,11 +9,11 @@ import (
 
 // subagentNotification is the parsed shape of a single
 // <subagent_notification>{...}</subagent_notification> tag that Codex
-// core injects into the NEXT user-message item when a detached child
-// agent has reached a terminal state without a parent `wait`
-// outstanding. See codex-source's `core/src/contextual_user_message.rs`
-// for the tag constants and `core/tests/suite/subagent_notifications.rs`
-// for the canonical wire shape (test fixture, lines 274-296).
+// core delivers to the parent mailbox when a detached child agent has
+// reached a terminal state without a parent `wait` outstanding. See
+// codex-source's `core/src/context/subagent_notification.rs` for the
+// tag constants and `core/tests/suite/subagent_notifications.rs` for
+// the canonical wire shape.
 //
 // The tag payload is a JSON object with at least `agent_path` and
 // `status`; `status` is serialized from Codex core's AgentStatus. Unit
@@ -224,6 +224,109 @@ func extractSubagentNotificationsAndRemainderFromUserMessage(params json.RawMess
 		builder.WriteString(text)
 	}
 	return parseSubagentNotificationsWithCarrierRemainder(builder.String())
+}
+
+type interAgentCommunicationMessage struct {
+	Author          string   `json:"author"`
+	Recipient       string   `json:"recipient"`
+	OtherRecipients []string `json:"other_recipients"`
+	Content         string   `json:"content"`
+	TriggerTurn     *bool    `json:"trigger_turn"`
+}
+
+// extractSubagentNotificationsAndRemainderFromRawInterAgentMessageItem inspects
+// the raw Responses API item Codex emits when it records a mailbox-delivered
+// InterAgentCommunication into the parent turn. The raw item is intentionally
+// not a public app-server timeline event, so keep this parser narrow:
+// message item, assistant role, commentary phase, exactly one
+// output_text content block containing the InterAgentCommunication JSON
+// wrapper, and notification tags inside the wrapper's content field.
+func extractSubagentNotificationsAndRemainderFromRawInterAgentMessageItem(item map[string]json.RawMessage) ([]subagentNotification, string) {
+	if strings.TrimSpace(readRawString(item, "role")) != "assistant" {
+		return nil, ""
+	}
+	if strings.TrimSpace(readRawString(item, "phase")) != "commentary" {
+		return nil, ""
+	}
+
+	text, ok := rawMessageSingleTextOfType(item, "output_text")
+	if !ok {
+		return nil, ""
+	}
+	if !strings.Contains(text, "subagent_notification") {
+		return nil, ""
+	}
+
+	var communication interAgentCommunicationMessage
+	if err := json.Unmarshal([]byte(text), &communication); err != nil {
+		return nil, ""
+	}
+	if strings.TrimSpace(communication.Author) == "" ||
+		strings.TrimSpace(communication.Recipient) == "" ||
+		strings.TrimSpace(communication.Content) == "" ||
+		communication.TriggerTurn == nil ||
+		*communication.TriggerTurn {
+		return nil, ""
+	}
+
+	notifications, remainder := parseSubagentNotificationsWithCarrierRemainder(communication.Content)
+	if !interAgentNotificationAuthorMatches(communication.Author, notifications) {
+		return nil, ""
+	}
+	return notifications, remainder
+}
+
+// extractSubagentNotificationsAndRemainderFromRawUserMessageItem inspects the
+// current Codex contextual-user mailbox shape. Core stores these
+// model-visible session markers as raw Responses API message items with
+// role=user and a single input_text block containing only the rendered
+// <subagent_notification> fragment.
+func extractSubagentNotificationsAndRemainderFromRawUserMessageItem(item map[string]json.RawMessage) ([]subagentNotification, string) {
+	if strings.TrimSpace(readRawString(item, "role")) != "user" {
+		return nil, ""
+	}
+	// Contextual user fragments are not phase-scoped. If upstream starts
+	// putting these in a phase, add that exact observed shape rather than
+	// widening this parser to arbitrary raw user messages.
+	if strings.TrimSpace(readRawString(item, "phase")) != "" {
+		return nil, ""
+	}
+
+	text, ok := rawMessageSingleTextOfType(item, "input_text")
+	if !ok || !strings.Contains(text, "subagent_notification") {
+		return nil, ""
+	}
+	return parseSubagentNotificationsWithCarrierRemainder(text)
+}
+
+func interAgentNotificationAuthorMatches(author string, notifications []subagentNotification) bool {
+	author = strings.TrimSpace(author)
+	if author == "" || len(notifications) == 0 {
+		return false
+	}
+	for _, notification := range notifications {
+		if strings.TrimSpace(notification.AgentPath) != author {
+			return false
+		}
+	}
+	return true
+}
+
+func rawMessageSingleTextOfType(item map[string]json.RawMessage, allowedType string) (string, bool) {
+	contentRaw, ok := item["content"]
+	if !ok || len(contentRaw) == 0 {
+		return "", false
+	}
+	var blocks []map[string]json.RawMessage
+	if json.Unmarshal(contentRaw, &blocks) != nil || len(blocks) != 1 {
+		return "", false
+	}
+	block := blocks[0]
+	if strings.TrimSpace(readRawString(block, "type")) != allowedType {
+		return "", false
+	}
+	text, present := readRawStringPresent(block, "text")
+	return text, present
 }
 
 // buildSubagentNotificationMeta serialises a parsed subagentNotification

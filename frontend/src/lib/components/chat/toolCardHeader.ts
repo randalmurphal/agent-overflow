@@ -185,7 +185,7 @@ export function classifyToolName(
     case "collab_agent":
       return {
         icon: "robot",
-        label: "spawn",
+        label: "agent",
         isSubagent: true,
       };
     case "Plan":

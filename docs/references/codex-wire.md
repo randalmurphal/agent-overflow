@@ -353,15 +353,60 @@ spawn-agent completion row.
 
 **(b) Implicit via `<subagent_notification>`**: When a detached
 child finishes and the parent has NO `wait` outstanding, Codex core
-enqueues an `InterAgentCommunication` with
-`trigger_turn: false`. On the parent's NEXT user turn, the injected
-user message includes:
+enqueues a mailbox notification for the parent. The parent sees it when
+the mailbox item is accepted into pending input for a later parent turn.
+Current Codex renders this as contextual user state; with
+`thread/start.experimentalRawEvents=true`, app-server exposes that
+boundary as a `rawResponseItem/completed` message item with `role:
+"user"` and a single `input_text` block:
+
+```json
+{
+  "type": "message",
+  "role": "user",
+  "content": [{
+    "type": "input_text",
+    "text": "<subagent_notification>{...}</subagent_notification>"
+  }]
+}
+```
+
+`thread/resume` does not currently expose an `experimentalRawEvents`
+opt-in. After Agent Overflow restarts onto an existing Codex thread, the
+same parent-observation boundary is therefore read from the active
+rollout JSONL instead: an appended `response_item` record whose
+`payload` is the message item above. The observer starts at EOF during
+session construction, so old notifications in history are not replayed.
+
+Some traces and rollout tooling can also expose the same parent-mailbox
+delivery as a serialized `InterAgentCommunication` in an
+assistant/commentary raw message:
+
+```json
+{
+  "type": "message",
+  "role": "assistant",
+  "phase": "commentary",
+  "content": [{
+    "type": "output_text",
+    "text": "{\"author\":\"/root/researcher\",\"recipient\":\"/root\",\"other_recipients\":[],\"content\":\"<subagent_notification>{...}</subagent_notification>\",\"trigger_turn\":false}"
+  }]
+}
+```
+
+The wrapper's `content` field includes:
 
 ```
 <subagent_notification>
 {"agent_path":"<child_thread_reference>","status":"completed"}
 </subagent_notification>
 ```
+
+Older/replay paths may also expose the same fragment inside a
+`userMessage` `item/completed` carrier. Agent Overflow handles these
+observed carriers, but the raw mailbox / rollout response-item carrier
+is the preferred signal because it corresponds to the parent accepting
+the context, not merely the child reaching terminal state.
 
 Test coverage:
 `codex-rs/core/tests/suite/subagent_notifications.rs:274-296`.
@@ -494,13 +539,27 @@ we don't infer turn activity from session status).
 
 ---
 
-## `<subagent_notification>` tag inside user messages
+## `<subagent_notification>` parent-mailbox carrier
 
 When Codex core detects a detached child thread that finished without
-a matching `wait` outstanding on the parent, it injects a notification
-fragment into the parent's NEXT user-message item. The fragment lands
-as part of the `item/completed` (`type: userMessage`) text content,
-wrapped in `<subagent_notification>` tags.
+a matching `wait` outstanding on the parent, it enqueues an
+`InterAgentCommunication` / contextual-user notification for the parent.
+On mailbox delivery, raw events can expose a `rawResponseItem/completed`
+message item. Current Codex app-server builds that context as `role:
+"user"` with a direct `<subagent_notification>` fragment in the single
+`input_text` block. Some traces and rollout tooling expose a serialized
+`InterAgentCommunication` wrapper in an assistant/commentary raw message;
+that wrapper's `content` field carries the same notification fragment.
+On resumed threads, app-server has no raw-event opt-in; Agent Overflow
+tails the active rollout file from EOF and parses appended
+`response_item` records with the same `role:"user"` / `input_text`
+payload as the parent-sees-context signal.
+
+Compatibility path: older/replay builds can still surface the same
+fragment inside an `item/completed` (`type: userMessage`) text content
+carrier. That path is parsed only when the carrier is standalone and
+resolves to a known spawned child, so user prose cannot forge a
+completion row.
 
 ### Authoritative wire shape
 
@@ -522,16 +581,19 @@ plain strings.
 
 ### Current state in agent-overflow
 
-Extraction is wired at the parser (`session.go` pulls
-`<subagent_notification>` fragments out of user-message item text) and
-emits `EventSubagentNotification`. The provider also maps child
+Extraction is wired at the Codex session parser: it pulls
+`<subagent_notification>` fragments out of raw mailbox message carriers
+(direct raw user context or serialized raw inter-agent wrapper), appended
+rollout `response_item` records on resumed sessions, and the legacy
+standalone user-message carrier, then emits
+`EventSubagentNotification`. The provider also maps child
 `turn/completed` lifecycle notifications to `EventSubagentStatus`, which
 is used as live-state evidence only; it does not write parent transcript
 completion rows. The provider maps named `agent_path` values back to the
 parent `spawn_agent` item when it has seen the child `thread/started`;
 triage falls back to receiver-thread matching for legacy unnamed flows.
 Parent transcript completions are written from explicit `wait_agent`
-completion or `<subagent_notification>`.
+completion or `EventSubagentNotification`.
 
 ---
 
@@ -563,6 +625,13 @@ Important ordering observed:
   subagent completion under the wait row. The later
   `subagent_notification` is a secondary notification path, not the
   source of truth for the wait-attached completion.
+- For detached `spawn_agent` completions with no explicit wait, the
+  parent-observation signal is currently the raw `message` item with
+  `role:"user"` and a direct `input_text` notification fragment. Some
+  traces can expose the same delivery as a serialized
+  `InterAgentCommunication` assistant message; in both cases the
+  notification is parsed only after that mailbox context is accepted
+  into parent input.
 - 2026-05-04 spike against `codex-cli 0.128.0` confirmed
   `turn/completed` shape as `{threadId, turn}` with no
   `lastAssistantMessageId`, and confirmed parent `turn/completed`

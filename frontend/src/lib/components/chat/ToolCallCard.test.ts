@@ -336,9 +336,9 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("agent-row-preview").textContent).not.toContain("Subagent");
   });
 
-  it('renders non-Codex collab_agent rows with the "spawn" classifier label', async () => {
+  it('renders non-Codex collab_agent rows with the "agent" classifier label', async () => {
     // Codex collab_agent uses a different input shape — the inline
-    // CollabToolRow renders the spawn card. The plain
+    // CollabToolRow renders the agent card. The plain
     // GenericToolCallRow fallback path keeps the classifier label so
     // it never goes blank when something else routes a collab_agent
     // row through here.
@@ -350,7 +350,7 @@ describe("<ToolCallCard> header dispatcher", () => {
       toolName: "collab_agent",
     });
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
-    expect(getByTestId("tool-call-card-label").textContent).toContain("spawn");
+    expect(getByTestId("tool-call-card-label").textContent).toContain("agent");
   });
 
   it("renders a speech-bubble icon for send_input", async () => {
@@ -1553,7 +1553,7 @@ describe("<ToolCallCard> backgrounded status indicator", () => {
     expect(queryByTestId("tool-call-backgrounded-badge")).toBeNull();
   });
 
-  it("does not show a backgrounded indicator for Codex subagent launch history rows", async () => {
+  it("shows the backgrounded indicator for running Codex subagent launch rows", async () => {
     const pane = await buildPane(makeThread({ provider: "codex" }));
     const item = makeItem({
       id: "spawn-bg",
@@ -1569,10 +1569,13 @@ describe("<ToolCallCard> backgrounded status indicator", () => {
     });
 
     expect(queryByTestId("tool-call-card")).toBeNull();
+    expect(getByTestId("collab-tool-row-label").textContent).toContain("agent");
     expect(getByTestId("collab-tool-row").textContent).toContain(
       "Spawned agent",
     );
-    expect(getByTestId("collab-tool-row").textContent).not.toContain("…");
+    expect(getByTestId("indicator").getAttribute("data-state")).toBe(
+      "backgrounded",
+    );
   });
 
   it("renders the running indicator when !isBackground && status === running", async () => {

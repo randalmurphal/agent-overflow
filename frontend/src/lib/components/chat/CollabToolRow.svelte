@@ -148,7 +148,7 @@
     effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
   );
   let showRunningStatus = $derived(
-    (showSpawnStatus || !spawnInfo) &&
+    (isStatusBackgroundedLaunch || showSpawnStatus || !spawnInfo) &&
       tool !== 'wait_agent' &&
       (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
   );
@@ -165,7 +165,7 @@
     if (tool === 'wait_agent') return item.kind === 'tool_completion' ? 'waited' : 'waiting';
     if (tool === 'close_agent') return 'closed';
     if (tool === 'resume_agent') return 'resume';
-    return 'spawn';
+    return 'agent';
   });
   let hasOutputShell = $derived(
     item.kind === 'tool_completion' &&

@@ -218,6 +218,7 @@ func (s *Session) handleRawSpawnAgentOutput(call rawToolCall, item map[string]js
 	if output.AgentID == "" {
 		return
 	}
+	s.rememberRawSpawnAgentIDForSubagentNotifications(output.AgentID, call.CallID)
 	meta := collabReceiverMeta{
 		ThreadID:      output.AgentID,
 		AgentNickname: strings.TrimSpace(output.Nickname),

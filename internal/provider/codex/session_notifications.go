@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"log"
 	"strings"
@@ -8,6 +9,13 @@ import (
 
 	"agent-overflow/internal/provider"
 )
+
+const maxSubagentNotificationDedupEntries = 1024
+
+type subagentNotificationDedupKey struct {
+	ParentItemID string
+	MetaHash     [sha256.Size]byte
+}
 
 func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 	// mcpServer/oauthLogin/completed is a side-channel signal directed
@@ -25,6 +33,9 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 	params = s.observeRawResponseItem(method, params)
 	providerThreadID := providerThreadIDFromParams(params)
 	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
+	if s.emitSubagentNotificationsFromRawMailboxCarrier(method, params, providerThreadID, parentToolUseID) {
+		return
+	}
 	if parentToolUseID != "" {
 		s.rememberAgentPathForProviderThread(providerThreadID, parentToolUseID, params)
 	}
@@ -77,28 +88,118 @@ func (s *Session) emitSubagentNotificationsFromUserCarrier(method string, params
 		return false
 	}
 	notifications, remainder := extractSubagentNotificationsAndRemainderFromUserMessage(params)
-	if len(notifications) == 0 {
-		return false
-	}
 	// Codex-injected subagent notifications are standalone contextual user
 	// fragments. If a tag appears inside ordinary user prose, treat it as
 	// literal text rather than a forgeable control message.
-	if strings.TrimSpace(remainder) != "" || !s.allSubagentNotificationsResolveToParent(notifications) {
+	return s.emitResolvedSubagentNotifications(notifications, remainder, true)
+}
+
+func (s *Session) emitSubagentNotificationsFromRawMailboxCarrier(
+	method string,
+	params json.RawMessage,
+	providerThreadID string,
+	parentToolUseID string,
+) bool {
+	// Codex's MultiAgentV2 path delivers detached child completions to
+	// the parent mailbox as model-visible context. App-server has no typed
+	// timeline event for that boundary; with experimental raw events
+	// enabled, the accepted mailbox item is visible as a raw message
+	// immediately before the next sampling request is built. That is the
+	// "parent has seen this context" signal the completion row should
+	// follow.
+	if method != "rawResponseItem/completed" {
 		return false
 	}
-	for _, n := range notifications {
-		parentItemID := s.parentToolUseForAgentPath(n.AgentPath)
-		if parentItemID == "" {
-			parentItemID = s.parentToolUseForProviderThread(n.AgentPath)
-		}
-		s.onEvent(provider.ProviderEvent{
-			Kind:      provider.EventSubagentNotification,
-			ThreadID:  s.threadID,
-			ItemID:    parentItemID,
-			Meta:      buildSubagentNotificationMeta(n),
-			Timestamp: time.Now(),
-		})
+	if strings.TrimSpace(parentToolUseID) != "" {
+		return false
 	}
+	if s.codexThreadID != "" && strings.TrimSpace(providerThreadID) != s.codexThreadID {
+		return false
+	}
+
+	item := readNestedObject(params, "item")
+	return s.emitResolvedSubagentNotificationsFromRawMessageItem(item)
+}
+
+func (s *Session) emitResolvedSubagentNotificationsFromRawMessageItem(item map[string]json.RawMessage) bool {
+	if item == nil || readRawString(item, "type") != "message" {
+		return false
+	}
+
+	var notifications []subagentNotification
+	var remainder string
+	switch strings.TrimSpace(readRawString(item, "role")) {
+	case "user":
+		notifications, remainder = extractSubagentNotificationsAndRemainderFromRawUserMessageItem(item)
+	case "assistant":
+		notifications, remainder = extractSubagentNotificationsAndRemainderFromRawInterAgentMessageItem(item)
+	default:
+		return false
+	}
+	return s.emitResolvedSubagentNotifications(notifications, remainder, false)
+}
+
+func (s *Session) emitResolvedSubagentNotifications(notifications []subagentNotification, remainder string, requireKnownParent bool) bool {
+	if len(notifications) == 0 {
+		return false
+	}
+	if strings.TrimSpace(remainder) != "" {
+		return false
+	}
+	if requireKnownParent && !s.allSubagentNotificationsResolveToParent(notifications) {
+		return false
+	}
+	emitted := false
+	for _, n := range notifications {
+		if s.emitSubagentNotification(n, requireKnownParent) {
+			emitted = true
+		}
+	}
+	return emitted
+}
+
+func (s *Session) emitSubagentNotification(n subagentNotification, requireKnownParent bool) bool {
+	if s.onEvent == nil {
+		return false
+	}
+	parentItemID := s.parentToolUseForAgentPath(n.AgentPath)
+	if parentItemID == "" {
+		parentItemID = s.parentToolUseForProviderThread(n.AgentPath)
+	}
+	if parentItemID == "" && requireKnownParent {
+		return false
+	}
+	meta := buildSubagentNotificationMeta(n)
+	if !s.claimSubagentNotification(parentItemID, meta) {
+		return false
+	}
+	s.onEvent(provider.ProviderEvent{
+		Kind:      provider.EventSubagentNotification,
+		ThreadID:  s.threadID,
+		ItemID:    parentItemID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+	return true
+}
+
+func (s *Session) claimSubagentNotification(parentItemID string, meta json.RawMessage) bool {
+	key := subagentNotificationDedupKey{
+		ParentItemID: parentItemID,
+		MetaHash:     sha256.Sum256(meta),
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.subagentNotificationDedup == nil {
+		s.subagentNotificationDedup = make(map[subagentNotificationDedupKey]struct{})
+	}
+	if _, ok := s.subagentNotificationDedup[key]; ok {
+		return false
+	}
+	if len(s.subagentNotificationDedup) >= maxSubagentNotificationDedupEntries {
+		s.subagentNotificationDedup = make(map[subagentNotificationDedupKey]struct{})
+	}
+	s.subagentNotificationDedup[key] = struct{}{}
 	return true
 }
 

@@ -159,6 +159,15 @@ func (s *Session) setParentToolUseForProviderThread(providerThreadID, parentTool
 	s.mu.Unlock()
 }
 
+func (s *Session) rememberRawSpawnAgentIDForSubagentNotifications(agentID, parentToolUseID string) {
+	// Raw spawn_agent output in older/current app-server builds returns
+	// `agent_id` before the richer typed child-thread metadata arrives.
+	// Detached completion notifications can later use that exact value as
+	// `agent_path`, so index it through the same resolver as receiver
+	// thread IDs.
+	s.setParentToolUseForProviderThread(strings.TrimSpace(agentID), strings.TrimSpace(parentToolUseID))
+}
+
 func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) {
 	if providerThreadID == "" {
 		return

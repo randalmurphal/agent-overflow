@@ -1196,13 +1196,12 @@ func (r *Router) emitInline(evt provider.ProviderEvent) error {
 	return nil
 }
 
-// handleSubagentNotification is the pass-through router for Codex
-// `<subagent_notification>` tags. Emission is triage's job; persistence
-// is deliberately NOT — the notification isn't a timeline row today
-// (tray/subagent UI will decide what to render later). The handler only
-// forwards the Meta payload (agent_path, status, optional extras) onto
-// `provider:subagent_notification` so the frontend can opt in without
-// the parser-side emission needing to land first.
+// handleSubagentNotification routes Codex `<subagent_notification>` tags.
+// The raw notification itself is forwarded on `provider:subagent_notification`
+// for live observers, then the Codex background projector uses the same
+// signal to stamp terminal child state and, when every child for a
+// spawn_agent launch is terminal, synthesize the transcript
+// `tool_completion` sibling.
 //
 // See docs/architecture/turn-lifecycle.md and
 // docs/archive/turn-lifecycle-refactor-plan.md WT-codex-parser for the

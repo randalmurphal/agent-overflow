@@ -1449,6 +1449,116 @@ func TestDispatchLineRawSpawnOutputLabelsLaterWaitAgent(t *testing.T) {
 	}
 }
 
+func TestDispatchLineRawSpawnOutputMapsAgentIDForSubagentNotification(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:               "parent-thread",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    make(map[string]string),
+		childParentByAgentPath: make(map[string]string),
+		agentPathByThread:      make(map[string]string),
+		agentMetaByThread:      make(map[string]collabReceiverMeta),
+		rawToolCallsByID:       make(map[string]rawToolCall),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"agent_type\":\"default\",\"message\":\"Run a command, then finish\"}"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"019ecee6-4686-75e3-91aa-6594ec7aab09\",\"nickname\":\"Pasteur\"}"}}}`))
+	if got := s.parentToolUseForProviderThread("019ecee6-4686-75e3-91aa-6594ec7aab09"); got != "spawn-1" {
+		t.Fatalf("parent for raw spawn agent id = %q, want spawn-1", got)
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"019ecee6-4686-75e3-91aa-6594ec7aab09\",\"status\":{\"completed\":\"detached child finished after bash command\"}}</subagent_notification>"}]}}}`))
+
+	var notif *provider.ProviderEvent
+	for i := range events {
+		switch events[i].Kind {
+		case provider.EventSubagentNotification:
+			notif = &events[i]
+		case provider.EventUserText:
+			if strings.Contains(events[i].Content, "subagent_notification") {
+				t.Fatalf("subagent notification carrier emitted as user text: %+v", events[i])
+			}
+		}
+	}
+	if notif == nil {
+		t.Fatalf("expected EventSubagentNotification, got %+v", events)
+	}
+	if notif.ItemID != "spawn-1" {
+		t.Fatalf("notification ItemID = %q, want spawn-1", notif.ItemID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(notif.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["agent_path"] != "019ecee6-4686-75e3-91aa-6594ec7aab09" {
+		t.Fatalf("meta.agent_path = %v, want raw spawned agent id", meta["agent_path"])
+	}
+	if meta["message"] != "detached child finished after bash command" {
+		t.Fatalf("meta.message = %v, want child completion message", meta["message"])
+	}
+}
+
+func TestDispatchLineRawSpawnOutputMapsAgentIDForRawUserSubagentNotification(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:               "parent-thread",
+		codexThreadID:          "parent-provider-thread",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    make(map[string]string),
+		childParentByAgentPath: make(map[string]string),
+		agentPathByThread:      make(map[string]string),
+		agentMetaByThread:      make(map[string]collabReceiverMeta),
+		rawToolCallsByID:       make(map[string]rawToolCall),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-provider-thread","turnId":"turn-1","item":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"agent_type\":\"default\",\"message\":\"Run a command, then finish\"}"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-provider-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"019ecef1-4a59-7932-8c94-76099197299b\",\"nickname\":\"Bernoulli\"}"}}}`))
+	if got := s.parentToolUseForProviderThread("019ecef1-4a59-7932-8c94-76099197299b"); got != "spawn-1" {
+		t.Fatalf("parent for raw spawn agent id = %q, want spawn-1", got)
+	}
+
+	s.dispatchLine(rawUserSubagentNotificationLineForThread(t, "parent-provider-thread", map[string]any{
+		"agent_path": "019ecef1-4a59-7932-8c94-76099197299b",
+		"status": map[string]any{
+			"completed": "detached child retest finished after bash command",
+		},
+	}))
+
+	var notif *provider.ProviderEvent
+	for i := range events {
+		switch events[i].Kind {
+		case provider.EventSubagentNotification:
+			notif = &events[i]
+		case provider.EventUserText:
+			if strings.Contains(events[i].Content, "subagent_notification") {
+				t.Fatalf("raw user subagent carrier emitted as user text: %+v", events[i])
+			}
+		}
+	}
+	if notif == nil {
+		t.Fatalf("expected EventSubagentNotification, got %+v", events)
+	}
+	if notif.ItemID != "spawn-1" {
+		t.Fatalf("notification ItemID = %q, want spawn-1", notif.ItemID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(notif.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["agent_path"] != "019ecef1-4a59-7932-8c94-76099197299b" {
+		t.Fatalf("meta.agent_path = %v, want raw spawned agent id", meta["agent_path"])
+	}
+	if meta["message"] != "detached child retest finished after bash command" {
+		t.Fatalf("meta.message = %v, want child completion message", meta["message"])
+	}
+}
+
 func TestReadChildThreadMetadataEmitsSpawnMetaUpdate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -4965,6 +5075,523 @@ func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
 	}
 }
 
+func TestDispatchLineRawInterAgentSubagentNotificationEmitsEvent(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:      "parent-thread",
+		codexThreadID: "parent-provider-thread",
+		pending:       make(map[int64]chan json.RawMessage),
+		childParentByAgentPath: map[string]string{
+			"/root/researcher": "call-collab-1",
+		},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	line := rawInterAgentSubagentNotificationLineForThread(t, "parent-provider-thread", map[string]any{
+		"agent_path": "/root/researcher",
+		"status": map[string]any{
+			"completed": "No findings.",
+		},
+	})
+	s.dispatchLine(line)
+
+	var notif *provider.ProviderEvent
+	for i := range events {
+		if events[i].Kind == provider.EventSubagentNotification {
+			notif = &events[i]
+			break
+		}
+	}
+	if notif == nil {
+		t.Fatalf("expected EventSubagentNotification among emitted events; got %+v", events)
+	}
+	if notif.ThreadID != "parent-thread" {
+		t.Errorf("ThreadID: got %q, want parent-thread", notif.ThreadID)
+	}
+	if notif.ItemID != "call-collab-1" {
+		t.Errorf("ItemID: got %q, want call-collab-1", notif.ItemID)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(notif.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["agent_path"] != "/root/researcher" {
+		t.Errorf("meta.agent_path: got %v, want /root/researcher", meta["agent_path"])
+	}
+	if meta["status"] != "completed" {
+		t.Errorf("meta.status: got %v, want completed", meta["status"])
+	}
+	if meta["message"] != "No findings." {
+		t.Errorf("meta.message: got %v, want final child answer", meta["message"])
+	}
+}
+
+func TestDispatchLineRawInterAgentSubagentNotificationWithoutPhaseIgnored(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:      "parent-thread",
+		codexThreadID: "parent-provider-thread",
+		pending:       make(map[int64]chan json.RawMessage),
+		childParentByAgentPath: map[string]string{
+			"/root/researcher": "call-collab-1",
+		},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	line := rawInterAgentSubagentNotificationLineForThreadAndPhase(t, "parent-provider-thread", "", map[string]any{
+		"agent_path": "/root/researcher",
+		"status":     "completed",
+	})
+	s.dispatchLine(line)
+
+	for _, evt := range events {
+		if evt.Kind == provider.EventSubagentNotification {
+			t.Fatalf("no-phase raw carrier must not emit control event: %+v", events)
+		}
+	}
+}
+
+func TestDispatchLineRawInterAgentSubagentNotificationMixedContentIgnored(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
+		childParentByAgentPath: map[string]string{
+			"/root/researcher": "call-collab-1",
+		},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	line := rawInterAgentMessageLine(t, "ordinary note\n"+subagentNotificationTag(t, map[string]any{
+		"agent_path": "/root/researcher",
+		"status":     "completed",
+	}))
+	s.dispatchLine(line)
+
+	for _, evt := range events {
+		if evt.Kind == provider.EventSubagentNotification {
+			t.Fatalf("mixed raw inter-agent content must not emit control event: %+v", events)
+		}
+	}
+}
+
+func TestDispatchLineRawInterAgentSubagentNotificationAuthorMismatchIgnored(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
+		childParentByAgentPath: map[string]string{
+			"/root/other": "call-collab-1",
+		},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	line := rawInterAgentSubagentNotificationLine(t, map[string]any{
+		"agent_path": "/root/other",
+		"status":     "completed",
+	})
+	s.dispatchLine(line)
+
+	for _, evt := range events {
+		if evt.Kind == provider.EventSubagentNotification {
+			t.Fatalf("author-mismatched raw inter-agent content must not emit control event: %+v", events)
+		}
+	}
+}
+
+func TestDispatchLineRawInterAgentSubagentNotificationFromChildThreadIgnored(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:      "parent-thread",
+		codexThreadID: "parent-provider-thread",
+		pending:       make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{
+			"child-provider-thread": "call-collab-1",
+		},
+		childParentByAgentPath: map[string]string{
+			"/root/researcher": "call-collab-1",
+		},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	line := rawInterAgentSubagentNotificationLineForThread(t, "child-provider-thread", map[string]any{
+		"agent_path": "/root/researcher",
+		"status":     "completed",
+	})
+	s.dispatchLine(line)
+
+	for _, evt := range events {
+		if evt.Kind == provider.EventSubagentNotification {
+			t.Fatalf("child-thread raw inter-agent content must not emit parent-observed completion: %+v", events)
+		}
+	}
+}
+
+func TestDispatchLineRawUserSubagentNotificationMixedContentIgnored(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{
+			"child-done": "call-collab-1",
+		},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	line := rawUserMessageLineForThread(t, "parent-thread", "ordinary note\n"+subagentNotificationTag(t, map[string]any{
+		"agent_path": "child-done",
+		"status":     "completed",
+	}))
+	s.dispatchLine(line)
+
+	for _, evt := range events {
+		if evt.Kind == provider.EventSubagentNotification {
+			t.Fatalf("mixed raw user content must not emit control event: %+v", events)
+		}
+	}
+}
+
+func TestDispatchLineRawUserSubagentNotificationWrongBlockTypeIgnored(t *testing.T) {
+	for _, blockType := range []string{"output_text", "text"} {
+		t.Run(blockType, func(t *testing.T) {
+			var events []provider.ProviderEvent
+			s := &Session{
+				threadID: "parent-thread",
+				pending:  make(map[int64]chan json.RawMessage),
+				childParentByThread: map[string]string{
+					"child-done": "call-collab-1",
+				},
+				onEvent: func(evt provider.ProviderEvent) {
+					events = append(events, evt)
+				},
+			}
+
+			line := rawUserMessageLineForThreadAndBlockType(t, "parent-thread", blockType, subagentNotificationTag(t, map[string]any{
+				"agent_path": "child-done",
+				"status":     "completed",
+			}))
+			s.dispatchLine(line)
+
+			for _, evt := range events {
+				if evt.Kind == provider.EventSubagentNotification {
+					t.Fatalf("raw user %s block must not emit control event: %+v", blockType, events)
+				}
+			}
+		})
+	}
+}
+
+func TestDispatchLineRawInterAgentSubagentNotificationWrongBlockTypeIgnored(t *testing.T) {
+	for _, blockType := range []string{"input_text", "text"} {
+		t.Run(blockType, func(t *testing.T) {
+			var events []provider.ProviderEvent
+			s := &Session{
+				threadID: "parent-thread",
+				pending:  make(map[int64]chan json.RawMessage),
+				childParentByAgentPath: map[string]string{
+					"/root/researcher": "call-collab-1",
+				},
+				onEvent: func(evt provider.ProviderEvent) {
+					events = append(events, evt)
+				},
+			}
+
+			line := rawInterAgentMessageLineForThreadAndPhaseAndBlockType(t, "parent-thread", "commentary", subagentNotificationTag(t, map[string]any{
+				"agent_path": "/root/researcher",
+				"status":     "completed",
+			}), blockType)
+			s.dispatchLine(line)
+
+			for _, evt := range events {
+				if evt.Kind == provider.EventSubagentNotification {
+					t.Fatalf("raw assistant %s block must not emit control event: %+v", blockType, events)
+				}
+			}
+		})
+	}
+}
+
+func TestDispatchLineRawAssistantMessageDoesNotEmitSubagentNotification(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	line := rawMessageLine(t, "plain assistant commentary")
+	s.dispatchLine(line)
+
+	if len(events) != 0 {
+		t.Fatalf("ordinary raw assistant message should stay non-visual, got %+v", events)
+	}
+}
+
+func TestRolloutSubagentNotificationLineEmitsEvent(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "parent-thread",
+		childParentByThread: map[string]string{
+			"child-done": "call-collab-1",
+		},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	line := rolloutUserSubagentNotificationLine(t, "child-done", map[string]any{
+		"completed": "detached child finished",
+	})
+	if !s.emitSubagentNotificationsFromRolloutLine(line) {
+		t.Fatal("rollout notification line was not consumed")
+	}
+
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want one EventSubagentNotification", events)
+	}
+	if events[0].Kind != provider.EventSubagentNotification {
+		t.Fatalf("event kind = %q, want %q", events[0].Kind, provider.EventSubagentNotification)
+	}
+	if events[0].ItemID != "call-collab-1" {
+		t.Fatalf("ItemID = %q, want call-collab-1", events[0].ItemID)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["agent_path"] != "child-done" {
+		t.Errorf("meta.agent_path = %v, want child-done", meta["agent_path"])
+	}
+	if meta["status"] != "completed" {
+		t.Errorf("meta.status = %v, want completed", meta["status"])
+	}
+	if meta["message"] != "detached child finished" {
+		t.Errorf("meta.message = %v, want detached child finished", meta["message"])
+	}
+}
+
+func TestRolloutSubagentNotificationLineEmitsWithoutProviderMapping(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "parent-thread",
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	if !s.emitSubagentNotificationsFromRolloutLine(rolloutUserSubagentNotificationLine(t, "child-resumed", map[string]any{
+		"completed": "detached child finished after resume",
+	})) {
+		t.Fatal("rollout notification line was not consumed")
+	}
+
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want one EventSubagentNotification", events)
+	}
+	if events[0].Kind != provider.EventSubagentNotification {
+		t.Fatalf("event kind = %q, want %q", events[0].Kind, provider.EventSubagentNotification)
+	}
+	if events[0].ItemID != "" {
+		t.Fatalf("ItemID = %q, want empty so triage can resolve persisted launch", events[0].ItemID)
+	}
+}
+
+func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:      "parent-thread",
+		codexThreadID: "parent-provider-thread",
+		pending:       make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{
+			"child-done": "call-collab-1",
+		},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	rawLine := rawUserSubagentNotificationLineForThread(t, "parent-provider-thread", map[string]any{
+		"agent_path": "child-done",
+		"status": map[string]any{
+			"completed": "detached child finished",
+		},
+	})
+	s.dispatchLine(rawLine)
+	s.emitSubagentNotificationsFromRolloutLine(rolloutUserSubagentNotificationLine(t, "child-done", map[string]any{
+		"completed": "detached child finished",
+	}))
+
+	var notificationCount int
+	for _, evt := range events {
+		if evt.Kind == provider.EventSubagentNotification {
+			notificationCount++
+		}
+	}
+	if notificationCount != 1 {
+		t.Fatalf("EventSubagentNotification count = %d, want 1; events=%+v", notificationCount, events)
+	}
+}
+
+func TestWatchRolloutSubagentNotificationsEmitsSplitLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout-2026-06-16T00-01-18-parent-provider-thread.jsonl")
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatalf("write empty rollout: %v", err)
+	}
+
+	events := make(chan provider.ProviderEvent, 1)
+	s := &Session{
+		threadID:      "parent-thread",
+		codexThreadID: "parent-provider-thread",
+		readDone:      make(chan struct{}),
+		onEvent: func(evt provider.ProviderEvent) {
+			events <- evt
+		},
+	}
+	path, offset, err := prepareRolloutSubagentNotificationObserver(path, "parent-provider-thread")
+	if err != nil {
+		t.Fatalf("prepare rollout observer: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.watchRolloutSubagentNotifications(ctx, path, offset)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("rollout watcher did not exit after cancel")
+		}
+	})
+
+	line := append(rolloutUserSubagentNotificationLine(t, "child-resumed", "completed"), '\n')
+	split := len(line) / 2
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("open append: %v", err)
+	}
+	if _, err := file.Write(line[:split]); err != nil {
+		file.Close()
+		t.Fatalf("append first half: %v", err)
+	}
+	select {
+	case evt := <-events:
+		t.Fatalf("watcher emitted before newline: %+v", evt)
+	case <-time.After(rolloutSubagentNotificationPollInterval * 2):
+	}
+	if _, err := file.Write(line[split:]); err != nil {
+		file.Close()
+		t.Fatalf("append second half: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close rollout: %v", err)
+	}
+
+	select {
+	case evt := <-events:
+		if evt.Kind != provider.EventSubagentNotification {
+			t.Fatalf("event kind = %q, want %q", evt.Kind, provider.EventSubagentNotification)
+		}
+		if evt.ItemID != "" {
+			t.Fatalf("ItemID = %q, want empty for persisted triage resolution", evt.ItemID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for rollout notification event")
+	}
+}
+
+func TestReadRolloutAppendStartsAfterExistingHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	historical := append(rolloutUserSubagentNotificationLine(t, "child-old", "completed"), '\n')
+	if err := os.WriteFile(path, historical, 0644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	offset, ok := waitForRolloutNotificationStartOffset(ctx, path)
+	if !ok {
+		t.Fatal("waitForRolloutNotificationStartOffset returned !ok")
+	}
+	if offset != int64(len(historical)) {
+		t.Fatalf("offset = %d, want %d", offset, len(historical))
+	}
+
+	fresh := append(rolloutUserSubagentNotificationLine(t, "child-fresh", "completed"), '\n')
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("open append: %v", err)
+	}
+	if _, err := file.Write(fresh); err != nil {
+		file.Close()
+		t.Fatalf("append rollout: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close rollout: %v", err)
+	}
+
+	chunk, _, err := readRolloutAppend(path, offset)
+	if err != nil {
+		t.Fatalf("readRolloutAppend: %v", err)
+	}
+	if string(chunk) != string(fresh) {
+		t.Fatalf("chunk = %q, want only fresh line %q", string(chunk), string(fresh))
+	}
+}
+
+func TestPrepareRolloutSubagentNotificationObserverValidatesPath(t *testing.T) {
+	dir := t.TempDir()
+	valid := filepath.Join(dir, "rollout-2026-06-16T00-01-18-parent-provider-thread.jsonl")
+	if err := os.WriteFile(valid, []byte("history\n"), 0644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+	path, offset, err := prepareRolloutSubagentNotificationObserver(valid, "parent-provider-thread")
+	if err != nil {
+		t.Fatalf("valid rollout rejected: %v", err)
+	}
+	if path != filepath.Clean(valid) {
+		t.Fatalf("path = %q, want %q", path, filepath.Clean(valid))
+	}
+	if offset != int64(len("history\n")) {
+		t.Fatalf("offset = %d, want history length", offset)
+	}
+
+	mismatch := filepath.Join(dir, "rollout-2026-06-16T00-01-18-other-thread.jsonl")
+	if err := os.WriteFile(mismatch, nil, 0644); err != nil {
+		t.Fatalf("write mismatch rollout: %v", err)
+	}
+	if _, _, err := prepareRolloutSubagentNotificationObserver(mismatch, "parent-provider-thread"); err == nil {
+		t.Fatal("expected mismatched thread id path to be rejected")
+	}
+
+	symlink := filepath.Join(dir, "rollout-2026-06-16T00-01-18-parent-provider-thread-link.jsonl")
+	if err := os.Symlink(valid, symlink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, _, err := prepareRolloutSubagentNotificationObserver(symlink, "parent-provider-thread"); err == nil {
+		t.Fatal("expected symlink rollout path to be rejected")
+	}
+}
+
 func TestDispatchLineSubagentNotificationCarrierDoesNotEmitUserTextWhenMapped(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
@@ -4994,6 +5621,169 @@ func TestDispatchLineSubagentNotificationCarrierDoesNotEmitUserTextWhenMapped(t 
 	if !sawNotification {
 		t.Fatalf("expected EventSubagentNotification, got %+v", events)
 	}
+}
+
+func rawInterAgentSubagentNotificationLine(t *testing.T, notification map[string]any) []byte {
+	t.Helper()
+	return rawInterAgentSubagentNotificationLineForThread(t, "parent-thread", notification)
+}
+
+func rawInterAgentSubagentNotificationLineForThread(t *testing.T, threadID string, notification map[string]any) []byte {
+	t.Helper()
+	return rawInterAgentSubagentNotificationLineForThreadAndPhase(t, threadID, "commentary", notification)
+}
+
+func rawInterAgentSubagentNotificationLineForThreadAndPhase(t *testing.T, threadID string, phase string, notification map[string]any) []byte {
+	t.Helper()
+	return rawInterAgentMessageLineForThreadAndPhase(t, threadID, phase, subagentNotificationTag(t, notification))
+}
+
+func subagentNotificationTag(t *testing.T, notification map[string]any) string {
+	t.Helper()
+	encoded, err := json.Marshal(notification)
+	if err != nil {
+		t.Fatalf("marshal subagent notification: %v", err)
+	}
+	return "<subagent_notification>" + string(encoded) + "</subagent_notification>"
+}
+
+func rawUserSubagentNotificationLineForThread(t *testing.T, threadID string, notification map[string]any) []byte {
+	t.Helper()
+	return rawUserMessageLineForThread(t, threadID, subagentNotificationTag(t, notification))
+}
+
+func rolloutUserSubagentNotificationLine(t *testing.T, agentPath string, status any) []byte {
+	t.Helper()
+	item := map[string]any{
+		"type": "message",
+		"role": "user",
+		"content": []map[string]string{
+			{
+				"type": "input_text",
+				"text": subagentNotificationTag(t, map[string]any{
+					"agent_path": agentPath,
+					"status":     status,
+				}),
+			},
+		},
+	}
+	line, err := json.Marshal(map[string]any{
+		"timestamp": "2026-06-16T05:55:55.622Z",
+		"type":      "response_item",
+		"payload":   item,
+	})
+	if err != nil {
+		t.Fatalf("marshal rollout response item: %v", err)
+	}
+	return line
+}
+
+func rawUserMessageLineForThread(t *testing.T, threadID string, text string) []byte {
+	t.Helper()
+	return rawUserMessageLineForThreadAndBlockType(t, threadID, "input_text", text)
+}
+
+func rawUserMessageLineForThreadAndBlockType(t *testing.T, threadID string, blockType string, text string) []byte {
+	t.Helper()
+	item := map[string]any{
+		"type": "message",
+		"role": "user",
+		"content": []map[string]string{
+			{
+				"type": blockType,
+				"text": text,
+			},
+		},
+	}
+	line, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "rawResponseItem/completed",
+		"params": map[string]any{
+			"threadId": threadID,
+			"turnId":   "turn-2",
+			"item":     item,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal raw user message line: %v", err)
+	}
+	return line
+}
+
+func rawInterAgentMessageLine(t *testing.T, content string) []byte {
+	t.Helper()
+	return rawInterAgentMessageLineForThread(t, "parent-thread", content)
+}
+
+func rawInterAgentMessageLineForThread(t *testing.T, threadID string, content string) []byte {
+	t.Helper()
+	return rawInterAgentMessageLineForThreadAndPhase(t, threadID, "commentary", content)
+}
+
+func rawInterAgentMessageLineForThreadAndPhase(t *testing.T, threadID string, phase string, content string) []byte {
+	t.Helper()
+	return rawInterAgentMessageLineForThreadAndPhaseAndBlockType(t, threadID, phase, content, "output_text")
+}
+
+func rawInterAgentMessageLineForThreadAndPhaseAndBlockType(t *testing.T, threadID string, phase string, content string, blockType string) []byte {
+	t.Helper()
+	communication := map[string]any{
+		"author":           "/root/researcher",
+		"recipient":        "/root",
+		"other_recipients": []string{},
+		"content":          content,
+		"trigger_turn":     false,
+	}
+	encoded, err := json.Marshal(communication)
+	if err != nil {
+		t.Fatalf("marshal inter-agent communication: %v", err)
+	}
+	return rawMessageLineForThreadAndPhaseAndBlockType(t, threadID, phase, blockType, string(encoded))
+}
+
+func rawMessageLine(t *testing.T, text string) []byte {
+	t.Helper()
+	return rawMessageLineForThread(t, "parent-thread", text)
+}
+
+func rawMessageLineForThread(t *testing.T, threadID string, text string) []byte {
+	t.Helper()
+	return rawMessageLineForThreadAndPhase(t, threadID, "commentary", text)
+}
+
+func rawMessageLineForThreadAndPhase(t *testing.T, threadID string, phase string, text string) []byte {
+	t.Helper()
+	return rawMessageLineForThreadAndPhaseAndBlockType(t, threadID, phase, "output_text", text)
+}
+
+func rawMessageLineForThreadAndPhaseAndBlockType(t *testing.T, threadID string, phase string, blockType string, text string) []byte {
+	t.Helper()
+	item := map[string]any{
+		"type": "message",
+		"role": "assistant",
+		"content": []map[string]string{
+			{
+				"type": blockType,
+				"text": text,
+			},
+		},
+	}
+	if phase != "" {
+		item["phase"] = phase
+	}
+	line, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "rawResponseItem/completed",
+		"params": map[string]any{
+			"threadId": threadID,
+			"turnId":   "turn-2",
+			"item":     item,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal raw message line: %v", err)
+	}
+	return line
 }
 
 func TestDispatchLineSubagentNotificationMixedContentKeepsUserText(t *testing.T) {
