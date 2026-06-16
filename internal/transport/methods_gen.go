@@ -30,6 +30,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "AutoResumeThread", ID: 4095667805},                     // main.App.AutoResumeThread
 	{Name: "BookmarkUIRenderTrace", ID: 1374242488},                // main.App.BookmarkUIRenderTrace
 	{Name: "BrowseDirectory", ID: 320967638},                       // main.App.BrowseDirectory
+	{Name: "CheckForUpdate", ID: 2347956003},                       // main.App.CheckForUpdate
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282},          // main.App.CleanCodexBackgroundTerminals
 	{Name: "ClearDraft", ID: 296814681},                            // main.App.ClearDraft
 	{Name: "CloseTerminal", ID: 2702963191},                        // main.App.CloseTerminal
@@ -52,6 +53,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297},                 // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974},                         // main.App.DeleteThread
 	{Name: "DismissDesignOptionSet", ID: 1381421528},               // main.App.DismissDesignOptionSet
+	{Name: "DownloadUpdate", ID: 115027584},                        // main.App.DownloadUpdate
 	{Name: "EnsureDesignWorkdir", ID: 1465371311},                  // main.App.EnsureDesignWorkdir
 	{Name: "ForkThread", ID: 4063914461},                           // main.App.ForkThread
 	{Name: "ForkThreadFromMessage", ID: 3977213964},                // main.App.ForkThreadFromMessage
@@ -186,6 +188,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RespondToApproval", ID: 1919237704},                    // main.App.RespondToApproval
 	{Name: "RespondToUserInput", ID: 1071592868},                   // main.App.RespondToUserInput
 	{Name: "RestartTerminal", ID: 4152403588},                      // main.App.RestartTerminal
+	{Name: "RestartToUpdate", ID: 3141913084},                      // main.App.RestartToUpdate
 	{Name: "RevertToMessageCheckpoint", ID: 263750815},             // main.App.RevertToMessageCheckpoint
 	{Name: "RevertToMessageCheckpointWithOptions", ID: 4144907731}, // main.App.RevertToMessageCheckpointWithOptions
 	{Name: "SaveDraft", ID: 3025273299},                            // main.App.SaveDraft

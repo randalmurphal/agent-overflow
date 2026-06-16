@@ -4,6 +4,8 @@
   import Settings from 'lucide-svelte/icons/settings';
   import Icon from '../primitives/Icon.svelte';
   import Button from '../primitives/Button.svelte';
+  import UpdateBadge from '../shared/UpdateBadge.svelte';
+  import { hasPendingUpdate } from '../../stores/updates.svelte';
 
   interface Props {
     onOpenSettings?: () => void;
@@ -23,7 +25,9 @@
       {#snippet leading()}
         <Icon icon={Settings} size={13} strokeWidth={2} class="opacity-80" />
       {/snippet}
-      {#snippet children()}Settings{/snippet}
+      {#snippet children()}
+        Settings{#if hasPendingUpdate()}<UpdateBadge />{/if}
+      {/snippet}
     </Button>
   </div>
 {/if}

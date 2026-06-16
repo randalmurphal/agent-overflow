@@ -13,7 +13,11 @@
   import KeybindingsSettings from './KeybindingsSettings.svelte';
   import McpServersSettings from './McpServersSettings.svelte';
   import ObservabilitySettings from './ObservabilitySettings.svelte';
+  import UpdatesSettings from './UpdatesSettings.svelte';
+  import UpdateBadge from '../shared/UpdateBadge.svelte';
+  import { SETTINGS_SECTIONS, type SettingsSection } from './sections';
   import { Version } from '../../stores/bindings';
+  import { hasPendingUpdate } from '../../stores/updates.svelte';
 
   let appVersion = $state('');
   $effect(() => {
@@ -26,16 +30,6 @@
       });
   });
 
-  type Section =
-    | 'general'
-    | 'providers'
-    | 'editor'
-    | 'network'
-    | 'discussions'
-    | 'keybindings'
-    | 'mcp'
-    | 'observability'
-    | 'archived';
   type ContextSettingsTarget = {
     threadId?: string;
     provider: string;
@@ -51,30 +45,18 @@
     contextTarget = null,
   }: {
     onClose: () => void;
-    initialSection?: Section;
+    initialSection?: SettingsSection;
     contextTarget?: ContextSettingsTarget;
   } = $props();
 
-  let activeSection: Section = $state('general');
-
-  const sections: Array<{ id: Section; label: string }> = [
-    { id: 'general', label: 'General' },
-    { id: 'providers', label: 'Providers' },
-    { id: 'editor', label: 'Editor' },
-    { id: 'mcp', label: 'MCP Servers' },
-    { id: 'network', label: 'Network' },
-    { id: 'discussions', label: 'Discussions' },
-    { id: 'keybindings', label: 'Keybindings' },
-    { id: 'observability', label: 'Observability' },
-    { id: 'archived', label: 'Archived' },
-  ];
+  let activeSection: SettingsSection = $state('general');
 
   $effect(() => {
     activeSection = initialSection;
   });
 
   function handleTabKeydown(e: KeyboardEvent) {
-    const ids = sections.map((s) => s.id);
+    const ids = SETTINGS_SECTIONS.map((s) => s.id);
     const idx = ids.indexOf(activeSection);
     if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
       e.preventDefault();
@@ -124,7 +106,7 @@
       role="tablist"
       aria-label="Settings Sections"
     >
-      {#each sections as section}
+      {#each SETTINGS_SECTIONS as section}
         <button
           id="settings-tab-{section.id}"
           onclick={() => activeSection = section.id}
@@ -139,6 +121,9 @@
               : 'text-fg-muted hover:text-fg hover:bg-surface-2/30'}"
         >
           {section.label}
+          {#if section.id === 'updates' && hasPendingUpdate()}
+            <UpdateBadge />
+          {/if}
         </button>
       {/each}
     </div>
@@ -152,6 +137,8 @@
       <div class="mx-auto max-w-3xl">
         {#if activeSection === 'general'}
           <GeneralSettings />
+        {:else if activeSection === 'updates'}
+          <UpdatesSettings />
         {:else if activeSection === 'providers'}
           <ProviderSettings contextTarget={contextTarget} />
         {:else if activeSection === 'editor'}

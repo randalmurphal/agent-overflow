@@ -400,4 +400,16 @@ var LocalOnlyMethods = map[string]bool{
 	"ListMcpServerStatuses":        true,
 	"RefreshMcpServerStatus":       true,
 	"TriggerMcpAuth":               true,
+
+	// 9. In-app self-update. CheckForUpdate / DownloadUpdate reach out to the
+	// GitHub releases API and stream a binary to disk (network + local-FS
+	// writes, category 1); RestartToUpdate spawns the swap helper and quits
+	// the host process (external-process + lifecycle control, category 1/2).
+	// Kept loopback-only with the rest of the surface — self-update is a
+	// desktop-host control, not something a LAN-attached --connect peer should
+	// drive. A remote client still sees the backend version via App.Version
+	// (not local-only).
+	"CheckForUpdate":  true,
+	"DownloadUpdate":  true,
+	"RestartToUpdate": true,
 }

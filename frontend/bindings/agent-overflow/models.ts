@@ -1383,6 +1383,44 @@ export class ThreadLiveState {
 }
 
 /**
+ * UpdateAvailability is the result of CheckForUpdate. Supported is false on
+ * builds that can't self-update, in which case the frontend hides the update
+ * section entirely. When Supported && Available, the release fields describe
+ * the newer version the user may choose to install.
+ */
+export class UpdateAvailability {
+    "supported": boolean;
+    "available": boolean;
+    "currentVersion": string;
+    "latestVersion"?: string;
+    "releaseName"?: string;
+    "releaseNotes"?: string;
+
+    /** Creates a new UpdateAvailability instance. */
+    constructor($$source: Partial<UpdateAvailability> = {}) {
+        if (!("supported" in $$source)) {
+            this["supported"] = false;
+        }
+        if (!("available" in $$source)) {
+            this["available"] = false;
+        }
+        if (!("currentVersion" in $$source)) {
+            this["currentVersion"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UpdateAvailability instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UpdateAvailability {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UpdateAvailability($$parsedSource as Partial<UpdateAvailability>);
+    }
+}
+
+/**
  * WorkspaceFileSearchResult is the RPC shape for workspace-file search hits.
  */
 export class WorkspaceFileSearchResult {

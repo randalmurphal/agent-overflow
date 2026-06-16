@@ -269,6 +269,11 @@ export {
   RefreshMcpServerStatus,
   TriggerMcpAuth,
 
+  // In-app self-update (app_updater.go). LocalOnly — loopback callers only.
+  CheckForUpdate,
+  DownloadUpdate,
+  RestartToUpdate,
+
   // Build-time stamped binary version (Settings footer).
   Version,
 } from '../../../bindings/agent-overflow/app.js';
@@ -308,6 +313,7 @@ export {
   MCPAuthInitResult,
   RemoteEndpointSummary,
   TerminalOpenOptions,
+  UpdateAvailability,
   WorktreeStatus,
 } from '../../../bindings/agent-overflow/models.js';
 export {

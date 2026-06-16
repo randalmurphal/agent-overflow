@@ -57,8 +57,9 @@
   } from './lib/stores/threadCreation.svelte';
   import { addToast } from './lib/stores/toast.svelte';
   import { userFacingError } from './lib/utils/userFacingError';
+  import { initUpdates } from './lib/stores/updates.svelte';
+  import type { SettingsSection } from './lib/components/settings/sections';
 
-  type SettingsSection = 'general' | 'providers' | 'editor' | 'network' | 'discussions' | 'keybindings' | 'mcp' | 'observability' | 'archived';
   type SettingsContextTarget = {
     threadId?: string;
     provider: string;
@@ -263,6 +264,9 @@
 
   onMount(() => {
     const cleanupEvents = setupEventListeners();
+    // Passive on-launch update check + updater:* event bridge. No-op on builds
+    // without an updater; never downloads or installs without an explicit click.
+    const cleanupUpdates = initUpdates();
     void (async () => {
       try {
         const threads = await loadThreads();
@@ -344,6 +348,7 @@
     return () => {
       flushPaneLayout();
       cleanupEvents();
+      cleanupUpdates();
       cleanupExternalLinks();
       cleanupZoomKeys();
       window.removeEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);

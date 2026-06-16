@@ -44,6 +44,7 @@ export {
     TerminalReplay,
     ThreadDefaults,
     ThreadLiveState,
+    UpdateAvailability,
     WorkspaceFileSearchResult,
     WorktreeStatus
 } from "./models.js";

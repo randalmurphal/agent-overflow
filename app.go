@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/wailsapp/wails/v3/pkg/updater"
+
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/claudeconfig"
@@ -143,6 +145,14 @@ type App struct {
 	// close. atomic.Pointer matches eventBus — wiring can land any time
 	// without racing Shutdown's reader.
 	transportServer atomic.Pointer[transport.Server]
+	// updater drives in-app self-update (check / download / restart) via the
+	// Wails app.Updater singleton. Set once at desktop boot by initUpdater
+	// (app_updater_desktop.go) before the transport server starts, so the
+	// updater RPC handlers observe it without a race. Stays nil in the
+	// headless WSL backend (no Wails application) and in tests; every updater
+	// RPC method guards the nil case and reports the feature unsupported
+	// rather than panicking.
+	updater *updater.Updater
 	// shuttingDown is flipped to true once Shutdown begins. Binding entry
 	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race
