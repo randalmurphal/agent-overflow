@@ -569,8 +569,8 @@ describe('scroll integration — load older', () => {
   });
 
   // Cascade-prevention. Before the fix, the auto-load gate's
-  // floor-progress predicate cleared the moment `oldestLoadedTurnIndex`
-  // advanced, so the anchor-restore programmatic scroll that followed
+  // floor-progress predicate cleared the moment the floor cursor advanced,
+  // so the anchor-restore programmatic scroll that followed
   // `pane.loadOlder()` re-fired the gate on the next tick. With the
   // user-input-armed gate, a successive button click loads exactly one
   // section per click (and never auto-cascades without a real user
@@ -1375,16 +1375,16 @@ describe('scroll integration — auto-load-older trigger', () => {
     expect(loadOlder).not.toHaveBeenCalled();
   });
 
-  it('does not fire pane.loadOlder when oldestLoadedTurnIndex is null (defensive null-floor exit)', async () => {
-    // Edge case: backend returns hasMore=true with no items so floor
-    // stays null. Without the null-floor early-return in
-    // maybeAutoLoadOlder, every scroll tick would re-enter loadOlder
-    // (which itself noops on null floor) — the guard's `!== null`
-    // precondition would never engage. Pin the defensive exit.
+  it('does not fire pane.loadOlder when oldestLoadedCursor is null (defensive null-floor exit)', async () => {
+    // Edge case: backend returns hasMore=true with no items so the floor
+    // cursor stays null. Without the null-floor early-return in the gate,
+    // every scroll tick would re-enter loadOlder (which itself noops on a
+    // null floor) — the progress guard's cursor compare would never engage.
+    // Pin the defensive exit.
     const pane = await buildPane(undefined, []);
     Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
     Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => false });
-    Object.defineProperty(pane, 'oldestLoadedTurnIndex', { configurable: true, get: () => null });
+    Object.defineProperty(pane, 'oldestLoadedCursor', { configurable: true, get: () => null });
     const loadOlder = vi.spyOn(pane, 'loadOlder');
 
     const { container } = render(MessageTimeline, { props: { pane } });
@@ -1401,7 +1401,7 @@ describe('scroll integration — auto-load-older trigger', () => {
     const pane = await buildPane(undefined, items);
     Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
     Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => true });
-    Object.defineProperty(pane, 'oldestLoadedTurnIndex', { configurable: true, get: () => 5 });
+    Object.defineProperty(pane, 'oldestLoadedCursor', { configurable: true, get: () => ({ turnIndex: 5, itemIndex: 0 }) });
     const loadOlder = vi.spyOn(pane, 'loadOlder');
 
     const { container } = render(MessageTimeline, { props: { pane } });
@@ -1410,6 +1410,77 @@ describe('scroll integration — auto-load-older trigger', () => {
     await tick();
 
     expect(loadOlder).not.toHaveBeenCalled();
+  });
+});
+
+describe('scroll integration — auto-load-newer trigger', () => {
+  // Mirror of the auto-load-older trigger at the bottom edge: the
+  // Virtualizer's `onscroll` runs handleVirtuaScroll → maybeAutoLoadNewer →
+  // handleLoadNewerAuto. These pin the cheap-gate guards (the positive
+  // trigger + geometry math live in timelineScroll.test.ts where geometry
+  // is deterministic; happy-dom reports zero row geometry).
+  function dispatchScrollAtBottom(container: HTMLElement): HTMLElement {
+    const scrollEl = container.querySelector(
+      '[data-testid="message-timeline-scroll"]',
+    ) as HTMLElement;
+    expect(scrollEl).not.toBeNull();
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      configurable: true, get: () => 400, set: () => {},
+    });
+    Object.defineProperty(scrollEl, 'scrollHeight', {
+      configurable: true, get: () => 1000,
+    });
+    Object.defineProperty(scrollEl, 'clientHeight', {
+      configurable: true, get: () => 600,
+    });
+    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return scrollEl;
+  }
+
+  it('does not fire pane.loadNewer when pane.hasMoreNewer is false', async () => {
+    const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
+    const pane = await buildPane(undefined, items);
+    Object.defineProperty(pane, 'hasMoreNewer', { configurable: true, get: () => false });
+    const loadNewer = vi.spyOn(pane, 'loadNewer');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    dispatchScrollAtBottom(container);
+    await tick();
+
+    expect(loadNewer).not.toHaveBeenCalled();
+  });
+
+  it('does not fire pane.loadNewer when newestLoadedCursor is null (defensive null-ceiling exit)', async () => {
+    const pane = await buildPane(undefined, []);
+    Object.defineProperty(pane, 'hasMoreNewer', { configurable: true, get: () => true });
+    Object.defineProperty(pane, 'loadingNewer', { configurable: true, get: () => false });
+    Object.defineProperty(pane, 'newestLoadedCursor', { configurable: true, get: () => null });
+    const loadNewer = vi.spyOn(pane, 'loadNewer');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    dispatchScrollAtBottom(container);
+    dispatchScrollAtBottom(container);
+    await tick();
+
+    expect(loadNewer).not.toHaveBeenCalled();
+  });
+
+  it('does not fire pane.loadNewer while a load is already in flight', async () => {
+    const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
+    const pane = await buildPane(undefined, items);
+    Object.defineProperty(pane, 'hasMoreNewer', { configurable: true, get: () => true });
+    Object.defineProperty(pane, 'loadingNewer', { configurable: true, get: () => true });
+    Object.defineProperty(pane, 'newestLoadedCursor', { configurable: true, get: () => ({ turnIndex: 5, itemIndex: 0 }) });
+    const loadNewer = vi.spyOn(pane, 'loadNewer');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    dispatchScrollAtBottom(container);
+    await tick();
+
+    expect(loadNewer).not.toHaveBeenCalled();
   });
 });
 

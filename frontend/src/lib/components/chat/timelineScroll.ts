@@ -1,3 +1,4 @@
+import { compareCursors, type TimelineCursorLike } from '../../stores/threadItems';
 import type { Item } from '../../types/models';
 import {
   findTimelineNodeIndex,
@@ -16,53 +17,59 @@ export interface TimelineGeometry {
   getItemOffset(index: number): number;
 }
 
-interface TimelineAutoLoadOlderPrecheckState {
-  offset: number;
-  hasMoreHistory: boolean;
-  loadingOlder: boolean;
-  oldestLoadedTurnIndex: number | null;
+/**
+ * Lazy geometry predicate. Returns true when the viewport sits inside the
+ * prefetch zone at the loading edge — near the top for an older-gate, near
+ * the bottom for a newer-gate. The gate calls this LAST, only after the
+ * cheap state gates pass, so the per-scroll-frame virtua index lookup it
+ * performs stays off the hot path while the gate is disarmed, mid-load, or
+ * already-attempted at the current floor.
+ */
+export type AutoLoadTriggerZone = () => boolean;
+
+export interface AutoLoadGateState {
+  hasMore: boolean;
+  loading: boolean;
+  /**
+   * Floor cursor in the load direction: the oldest loaded item for an
+   * older-gate, the newest loaded for a newer-gate. The progress guard
+   * compares the FULL cursor (turnIndex AND itemIndex). Paging within a
+   * single huge turn advances itemIndex but never turnIndex, so a guard
+   * keyed on turnIndex alone reads "no progress" and latches auto-load off
+   * — the common "one giant turn" Codex/Claude thread. Comparing the whole
+   * cursor keeps paging alive through such turns.
+   */
+  floorCursor: TimelineCursorLike | null;
   restoredThreadId: string | null;
   threadId: string | null;
-  attemptedAtFloor: number | null;
-  offsetThreshold: number;
+  inTriggerZone: AutoLoadTriggerZone;
 }
 
-export interface AutoLoadOlderGateOptions {
-  offsetThreshold: number;
-  indexThreshold: number;
-}
-
-export interface AutoLoadOlderGateState {
-  offset: number;
-  hasMoreHistory: boolean;
-  loadingOlder: boolean;
-  oldestLoadedTurnIndex: number | null;
-  restoredThreadId: string | null;
-  threadId: string | null;
-  findFirstVisibleIndex: (offset: number) => number;
-}
-
-export interface AutoLoadOlderGate {
-  readonly attemptedAtFloor: number | null;
+export interface AutoLoadGate {
+  readonly attemptedAtFloor: TimelineCursorLike | null;
   readonly armed: boolean;
   reset(): void;
-  shouldLoad(state: AutoLoadOlderGateState): boolean;
+  shouldLoad(state: AutoLoadGateState): boolean;
   /**
-   * Suspends auto-load until a real user gesture arrives (or the
-   * fallback cooldown elapses). Called after every `pane.loadOlder()`
-   * completes — without this, the anchor-restore programmatic scroll
-   * that follows the prepend re-fires the gate on the next tick and
-   * walks the entire history in a cascade.
+   * Suspends auto-load until a real user gesture arrives (or the fallback
+   * cooldown elapses). Called after every load completes — without this,
+   * the anchor-restore programmatic scroll that follows an older prepend,
+   * or the anchor-preserving prune that follows a newer append, re-fires
+   * the gate on the next tick and walks the history in a cascade.
    */
   disarm(): void;
   /**
-   * Re-arms the gate. Wired to wheel / touchmove / keydown listeners
-   * on the scroll surface so a real user gesture re-enables auto-load
-   * exactly once per user action. Programmatic scrolls
-   * (`listRef.scrollToIndex`, anchor restore) don't fire these events
-   * so they cannot re-arm.
+   * Re-arms the gate. Wired to wheel / touchmove / keydown listeners on the
+   * scroll surface so a real user gesture re-enables auto-load exactly once
+   * per user action. Programmatic scrolls (`listRef.scrollToIndex`, anchor
+   * restore) don't fire these events so they cannot re-arm.
    */
   armOnGesture(): void;
+}
+
+export interface AutoLoadZoneThresholds {
+  offsetThreshold: number;
+  indexThreshold: number;
 }
 
 /**
@@ -117,38 +124,70 @@ export function captureTimelineAnchor(
   };
 }
 
-function shouldInspectAutoLoadOlderIndex(state: TimelineAutoLoadOlderPrecheckState): boolean {
-  if (!state.hasMoreHistory) return false;
-  if (state.loadingOlder) return false;
-
-  // `pane.loadOlder()` already noops on a null floor, but the progress
-  // guard below only works when there is a concrete floor to compare.
-  // Without this, malformed backend state (`hasMore=true` with no loaded
-  // items) can re-fire the load on every scroll tick.
-  if (state.oldestLoadedTurnIndex === null) return false;
-
-  // Restoration must finish first. Loading older rows mid-restore races
-  // the anchor capture against an unstable scrollTop.
-  if (state.restoredThreadId !== state.threadId) return false;
-  if (state.offset >= state.offsetThreshold) return false;
-
-  // Progress guard: if a previous attempt did not advance the floor, do
-  // not hammer the same query while the user lingers near the top.
-  return state.attemptedAtFloor !== state.oldestLoadedTurnIndex;
-}
-
-function isAutoLoadOlderIndexEligible(
-  firstVisibleIndex: number,
-  indexThreshold: number,
+/**
+ * Older edge: viewport within `offsetThreshold` px of the top AND the
+ * topmost rendered row within the first `indexThreshold` nodes. The
+ * `firstVisibleIndex` thunk is invoked only after the cheap offset
+ * pre-check passes, keeping the virtua lookup off the hot path.
+ */
+export function isWithinTopTriggerZone(
+  offset: number,
+  thresholds: AutoLoadZoneThresholds,
+  firstVisibleIndex: () => number,
 ): boolean {
-  return firstVisibleIndex <= indexThreshold;
+  if (offset >= thresholds.offsetThreshold) return false;
+  return firstVisibleIndex() <= thresholds.indexThreshold;
 }
 
-export function createAutoLoadOlderGate({
-  offsetThreshold,
-  indexThreshold,
-}: AutoLoadOlderGateOptions): AutoLoadOlderGate {
-  let attemptedAtFloor: number | null = null;
+/**
+ * Newer edge: viewport within `offsetThreshold` px of the bottom AND the
+ * bottommost rendered row within the last `indexThreshold` nodes. Mirror of
+ * `isWithinTopTriggerZone`; `lastVisibleIndex` is a thunk for the same
+ * deferral reason.
+ */
+export function isWithinBottomTriggerZone(
+  distanceFromBottom: number,
+  nodeCount: number,
+  thresholds: AutoLoadZoneThresholds,
+  lastVisibleIndex: () => number,
+): boolean {
+  if (distanceFromBottom >= thresholds.offsetThreshold) return false;
+  return lastVisibleIndex() >= nodeCount - 1 - thresholds.indexThreshold;
+}
+
+export interface BottomEdgeGeometry {
+  distanceFromBottom: number;
+  bottomProbeOffset: number;
+}
+
+/**
+ * Derives the two bottom-edge quantities the newer trigger needs from raw
+ * scroll geometry: how far the viewport is from the scrollable bottom, and
+ * the offset to probe for the bottommost rendered row. Pulled out as a pure
+ * function so the (sign-error-prone) arithmetic is unit-testable without a
+ * live DOM — happy-dom reports zero geometry. `bottomProbeOffset` lands in
+ * the composer padding past the last row at max scroll, which clamps the
+ * virtua lookup to the final index (intended).
+ */
+export function bottomEdgeGeometry(
+  scrollHeight: number,
+  clientHeight: number,
+  offset: number,
+): BottomEdgeGeometry {
+  return {
+    distanceFromBottom: scrollHeight - clientHeight - offset,
+    bottomProbeOffset: offset + clientHeight - 1,
+  };
+}
+
+/**
+ * Direction-agnostic auto-load gate. The older and newer triggers share
+ * one arming/cooldown/progress state machine; only the floor cursor
+ * (oldest vs newest) and the `inTriggerZone` geometry differ, and both are
+ * supplied per `shouldLoad` call.
+ */
+export function createAutoLoadGate(): AutoLoadGate {
+  let attemptedAtFloor: TimelineCursorLike | null = null;
   let armed = true;
   let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -159,13 +198,20 @@ export function createAutoLoadOlderGate({
     }
   }
 
+  // First attempt (null) always counts as progress; afterwards the floor
+  // cursor must have moved since the last attempt — compared on the FULL
+  // cursor so item-level progress within one turn re-enables the load.
+  function madeProgressSince(floorCursor: TimelineCursorLike): boolean {
+    return attemptedAtFloor === null
+      || compareCursors(attemptedAtFloor, floorCursor) !== 0;
+  }
+
   return {
     get attemptedAtFloor() { return attemptedAtFloor; },
     get armed() { return armed; },
     reset(): void {
-      // Thread switch: clear all state. The new thread should be free
-      // to auto-load older from frame 0 if its initial slice triggers
-      // the geometry conditions.
+      // Thread switch: clear all state. The new thread should be free to
+      // auto-load from frame 0 if its initial slice triggers the geometry.
       attemptedAtFloor = null;
       armed = true;
       clearCooldown();
@@ -174,10 +220,10 @@ export function createAutoLoadOlderGate({
       armed = false;
       clearCooldown();
       cooldownTimer = setTimeout(() => {
-        // Fallback: if no user gesture arrives within the cooldown
-        // window, re-arm anyway. Defends against edge devices where
-        // gesture detection misses an event (touch momentum scroll
-        // with sparse `touchmove`).
+        // Fallback: if no user gesture arrives within the cooldown window,
+        // re-arm anyway. Defends against edge devices where gesture
+        // detection misses an event (touch momentum scroll with sparse
+        // `touchmove`).
         armed = true;
         cooldownTimer = null;
       }, AUTO_LOAD_COOLDOWN_MS);
@@ -186,29 +232,31 @@ export function createAutoLoadOlderGate({
       armed = true;
       clearCooldown();
     },
-    shouldLoad(state: AutoLoadOlderGateState): boolean {
-      // Gesture-armed: after each load, `disarm()` flips this false.
-      // Only a real user gesture (wheel/touchmove/keydown wired by
-      // the timeline) or the cooldown fallback can flip it back true.
-      // Programmatic scrolls don't fire those events, so the
-      // anchor-restore after a load cannot cascade.
+    shouldLoad(state: AutoLoadGateState): boolean {
+      // Gesture-armed: after each load, `disarm()` flips this false. Only a
+      // real user gesture (wheel/touchmove/keydown wired by the timeline) or
+      // the cooldown fallback flips it back true. Programmatic scrolls don't
+      // fire those events, so a post-load re-anchor cannot cascade.
       if (!armed) return false;
-
-      if (!shouldInspectAutoLoadOlderIndex({
-        offset: state.offset,
-        hasMoreHistory: state.hasMoreHistory,
-        loadingOlder: state.loadingOlder,
-        oldestLoadedTurnIndex: state.oldestLoadedTurnIndex,
-        restoredThreadId: state.restoredThreadId,
-        threadId: state.threadId,
-        attemptedAtFloor,
-        offsetThreshold,
-      })) return false;
-
-      const firstVisibleIndex = state.findFirstVisibleIndex(state.offset);
-      if (!isAutoLoadOlderIndexEligible(firstVisibleIndex, indexThreshold)) return false;
-
-      attemptedAtFloor = state.oldestLoadedTurnIndex;
+      if (!state.hasMore) return false;
+      if (state.loading) return false;
+      // pane.loadOlder/loadNewer already noop on a null floor, but the
+      // progress guard needs a concrete cursor to compare. Without this,
+      // malformed backend state (`hasMore=true` with no loaded items)
+      // re-fires the load on every scroll tick.
+      if (state.floorCursor === null) return false;
+      // Restoration must finish first. Loading mid-restore races the anchor
+      // capture against an unstable scrollTop.
+      if (state.restoredThreadId !== state.threadId) return false;
+      // Progress guard: don't hammer the same query while the user lingers
+      // at the edge if the previous attempt didn't move the floor cursor.
+      if (!madeProgressSince(state.floorCursor)) return false;
+      // Expensive virtua geometry — deferred until the cheap gates pass.
+      if (!state.inTriggerZone()) return false;
+      attemptedAtFloor = {
+        turnIndex: state.floorCursor.turnIndex,
+        itemIndex: state.floorCursor.itemIndex,
+      };
       return true;
     },
   };

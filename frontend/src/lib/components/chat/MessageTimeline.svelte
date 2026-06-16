@@ -44,9 +44,13 @@
   } from '../../utils/timelineMemoryDiagnostics';
   import type { UserMessageActions } from './userMessageActions';
   import {
+    bottomEdgeGeometry,
     captureTimelineAnchor,
-    createAutoLoadOlderGate,
+    createAutoLoadGate,
+    isWithinBottomTriggerZone,
+    isWithinTopTriggerZone,
     resolveVisibleTimelineNodeIndex,
+    type AutoLoadZoneThresholds,
     type TimelineAnchor,
   } from './timelineScroll';
   import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
@@ -97,14 +101,19 @@
     `left top / calc(100% - ${SCROLLBAR_SAFE_PX}px) 100% no-repeat, ` +
     `linear-gradient(#000, #000) right top / ${SCROLLBAR_SAFE_PX}px 100% no-repeat`;
   const TARGET_FLASH_MS = 900;
-  // Auto-load-older trigger thresholds. When the user scrolls within
-  // AUTO_LOAD_OFFSET_PX of the top AND the topmost rendered row is one
-  // of the first AUTO_LOAD_INDEX_THRESHOLD items, fire `pane.loadOlder()`
-  // so the next batch slots in before the user runs out of buffer. The
-  // index gate is what keeps an idle small-thread render from auto-
-  // loading just because the whole thing fits in viewport.
+  // Auto-load trigger thresholds, shared by both edges. Older: when the
+  // user scrolls within AUTO_LOAD_OFFSET_PX of the TOP and the topmost
+  // rendered row is one of the first AUTO_LOAD_INDEX_THRESHOLD nodes, fire
+  // `pane.loadOlder()`. Newer: the mirror at the BOTTOM fires
+  // `pane.loadNewer()`. Either way the next batch slots in before the user
+  // runs out of buffer. The index gate keeps an idle small-thread render
+  // from auto-loading just because the whole thing fits in viewport.
   const AUTO_LOAD_OFFSET_PX = 800;
   const AUTO_LOAD_INDEX_THRESHOLD = 5;
+  const AUTO_LOAD_ZONE: AutoLoadZoneThresholds = {
+    offsetThreshold: AUTO_LOAD_OFFSET_PX,
+    indexThreshold: AUTO_LOAD_INDEX_THRESHOLD,
+  };
   // Keep the live-follow nudge scoped to the tail. A structural change
   // outside the tail can happen during load-older / search-window loads,
   // where bottom-follow is either paused or irrelevant. Active turn
@@ -196,10 +205,8 @@
   // scroll, programmatic scrollToItem — so async restore work can detect
   // staleness and bail.
   let restoreToken = 0;
-  const autoLoadOlderGate = createAutoLoadOlderGate({
-    offsetThreshold: AUTO_LOAD_OFFSET_PX,
-    indexThreshold: AUTO_LOAD_INDEX_THRESHOLD,
-  });
+  const autoLoadOlderGate = createAutoLoadGate();
+  const autoLoadNewerGate = createAutoLoadGate();
   const targetFlash = createTimelineTargetFlash(TARGET_FLASH_MS);
 
   function currentTimelineLeafItem(node: TimelineNode): Item | null {
@@ -567,15 +574,18 @@
     const surface = scrollEl;
     stick.attach(surface, contentEl);
 
-    // Re-arm the auto-load-older gate on real user gestures so each
-    // user scroll-up loads exactly one section, not a cascade.
-    // `handleLoadOlder` calls `autoLoadOlderGate.disarm()` after each
-    // load; the anchor-restore that follows is a programmatic scroll
-    // (`listRef.scrollToIndex`) which does NOT fire these listeners,
-    // so the gate stays disarmed until the user actually moves. The
-    // 350ms cooldown in the gate itself is a fallback for devices
+    // Re-arm both auto-load gates on real user gestures so each user
+    // scroll loads exactly one section per direction, not a cascade.
+    // `handleLoadOlder` / `handleLoadNewerAuto` call `disarm()` after each
+    // load; the anchor-restore (older) or anchor-preserving prune (newer)
+    // that follows is a programmatic scroll which does NOT fire these
+    // listeners, so the gate stays disarmed until the user actually moves.
+    // The 350ms cooldown in the gate itself is a fallback for devices
     // where gesture detection misses an event.
-    const onUserGesture = (): void => autoLoadOlderGate.armOnGesture();
+    const onUserGesture = (): void => {
+      autoLoadOlderGate.armOnGesture();
+      autoLoadNewerGate.armOnGesture();
+    };
     surface.addEventListener('wheel', onUserGesture, { passive: true });
     surface.addEventListener('touchmove', onUserGesture, { passive: true });
     surface.addEventListener('keydown', onUserGesture);
@@ -828,7 +838,12 @@
 
   function handleVirtuaScroll(offset: number): void {
     saveScrollSnapshot();
-    maybeAutoLoadOlder(offset);
+    // Older and newer zones are geometrically exclusive in a normal window
+    // (you can't be near both edges at once), but a degenerate window that
+    // fits in the viewport could satisfy both; firing one direction per
+    // frame avoids two concurrent loads racing the shared pagingGeneration.
+    if (maybeAutoLoadOlder(offset)) return;
+    maybeAutoLoadNewer(offset);
     // No prune here: this fires every scroll frame (60Hz under the
     // spring), and pruning is a memory bound, not a render input.
     // Scroll-end + structural effects cover it.
@@ -841,21 +856,66 @@
 
   // Auto-load-older trigger. Fires `pane.loadOlder()` when the user is
   // reading near the top of the loaded window, so older items page in
-  // before they hit a wall. The "Load older messages" button at the
-  // top of the timeline is the explicit fallback when auto-load is
-  // bypassed (no progress, fast-skip past the threshold, etc.).
-  function maybeAutoLoadOlder(offset: number): void {
-    if (!listRef) return;
+  // before they hit a wall. The "Load older messages" button at the top of
+  // the timeline is the explicit fallback when auto-load is bypassed (no
+  // progress, fast-skip past the threshold, etc.). Returns whether it fired.
+  function maybeAutoLoadOlder(offset: number): boolean {
+    // Cheap pre-check before building the gate-state object + zone closure
+    // on every scroll frame. `shouldLoad`'s own `!hasMore` check remains the
+    // authoritative gate; this just keeps the allocation off the hot path.
+    if (!listRef || !pane.hasMoreHistory) return false;
+    const list = listRef;
     if (!autoLoadOlderGate.shouldLoad({
-      offset,
-      hasMoreHistory: pane.hasMoreHistory,
-      loadingOlder: pane.loadingOlder,
-      oldestLoadedTurnIndex: pane.oldestLoadedTurnIndex,
+      hasMore: pane.hasMoreHistory,
+      loading: pane.loadingOlder,
+      floorCursor: pane.oldestLoadedCursor,
       restoredThreadId,
       threadId: pane.threadId,
-      findFirstVisibleIndex: (top) => listRef!.findItemIndex(top),
-    })) return;
+      inTriggerZone: () => isWithinTopTriggerZone(
+        offset,
+        AUTO_LOAD_ZONE,
+        () => list.findItemIndex(offset),
+      ),
+    })) return false;
     void handleLoadOlder();
+    return true;
+  }
+
+  // Auto-load-newer trigger — mirror of older at the bottom edge. Fires
+  // `pane.loadNewer()` when the user scrolls within the prefetch zone of
+  // the loaded window's bottom while more recent history is unloaded
+  // (`hasMoreNewer`, set after an older-paging prune dropped the tail, or
+  // after a search jump into the middle). Returns whether it fired.
+  function maybeAutoLoadNewer(offset: number): boolean {
+    // Cheap pre-check (mirror of maybeAutoLoadOlder): `hasMoreNewer` is false
+    // for most of a thread's life, so this keeps the gate-state object + zone
+    // closure off the per-frame path until the user has actually paged away
+    // from the tail. `shouldLoad`'s `!hasMore` check stays authoritative.
+    if (!listRef || !scrollEl || !pane.hasMoreNewer) return false;
+    const list = listRef;
+    const viewport = scrollEl;
+    if (!autoLoadNewerGate.shouldLoad({
+      hasMore: pane.hasMoreNewer,
+      loading: pane.loadingNewer,
+      floorCursor: pane.newestLoadedCursor,
+      restoredThreadId,
+      threadId: pane.threadId,
+      inTriggerZone: () => {
+        const edge = bottomEdgeGeometry(
+          viewport.scrollHeight,
+          viewport.clientHeight,
+          offset,
+        );
+        return isWithinBottomTriggerZone(
+          edge.distanceFromBottom,
+          revealedNodes.length,
+          AUTO_LOAD_ZONE,
+          () => list.findItemIndex(edge.bottomProbeOffset),
+        );
+      },
+    })) return false;
+    void handleLoadNewerAuto();
+    return true;
   }
 
   function responsePillDuration(node: TimelineNode): string {
@@ -967,6 +1027,7 @@
         }
       }
       autoLoadOlderGate.reset();
+      autoLoadNewerGate.reset();
       if (nextThreadId && scrollSnapshotThreadId) {
         stick.setEscapedFromLock(true);
         // Re-arm the warm-up gate BEFORE the DOM update flushes. The
@@ -1281,6 +1342,7 @@
     // user to the new bottom.
     stick.setEscapedFromLock(true);
     const myToken = ++restoreToken;
+    const switchGenAtStart = pane.switchGeneration;
     try {
       const result = await pane.loadOlder();
       await tick();
@@ -1294,23 +1356,27 @@
       saveScrollSnapshot();
     } finally {
       release();
-      // Disarm the auto-load gate so the post-load anchor-restore
-      // doesn't re-fire the cascade. A fresh user gesture
-      // (wheel/touchmove/keydown) is required to re-arm — programmatic
-      // scrolls like the anchor-restore above don't qualify. The gate
-      // also re-arms after AUTO_LOAD_COOLDOWN_MS as a fallback.
-      // Guard with the token so a load that finished after a thread
-      // switch can't disarm the NEW thread's gate ($effect.pre already
-      // called reset() for the new thread; disarming after that would
-      // strand the new pane unable to auto-load older for 350ms).
-      if (myToken === restoreToken) autoLoadOlderGate.disarm();
+      // Disarm the auto-load gate so the post-load anchor-restore doesn't
+      // re-fire the cascade. A fresh user gesture (wheel/touchmove/keydown)
+      // re-arms — programmatic scrolls like the anchor-restore above don't
+      // qualify; the 350ms cooldown is the fallback. Guard on
+      // switchGeneration, NOT restoreToken: when loadOlder's internal
+      // head-prune fires it runs `preserveTimelineWindowAnchor`, which bumps
+      // restoreToken mid-load — a token guard would then skip the disarm and
+      // leave the gate armed. switchGeneration only changes on a real thread
+      // switch/reload, which is the one case we must NOT disarm (the new
+      // pane's gate was just reset()).
+      if (pane.switchGeneration === switchGenAtStart) autoLoadOlderGate.disarm();
     }
   }
 
+  // Manual "Load newer messages" button. Jumps to the end of the freshly
+  // loaded page (align:'end') so the click visibly reveals newer content.
   async function handleLoadNewer(): Promise<void> {
     if (!listRef) return;
     const release = stick.pauseAutoScroll();
     const myToken = ++restoreToken;
+    const switchGenAtStart = pane.switchGeneration;
     try {
       const result = await pane.loadNewer();
       await tick();
@@ -1323,6 +1389,40 @@
       saveScrollSnapshot();
     } finally {
       release();
+      // The scrollToIndex(end) above can land in the bottom trigger zone;
+      // disarm so that programmatic scroll can't auto-fire another load.
+      // Guard on switchGeneration (see handleLoadOlder): loadNewer's internal
+      // head-prune bumps restoreToken mid-load, so a token guard would skip
+      // the disarm.
+      if (pane.switchGeneration === switchGenAtStart) autoLoadNewerGate.disarm();
+    }
+  }
+
+  // Auto-load-newer path. Unlike the manual button it must NOT scroll:
+  // newer rows append below the viewport so the reading position is
+  // unchanged, and loadNewer's head-prune is anchor-preserving
+  // (preserveTimelineWindowAnchor). The pause lease guards the transient
+  // scrollHeight growth from a restick; disarm() afterward mirrors
+  // handleLoadOlder so the prune's anchor-preserving programmatic scroll
+  // can't re-fire the gate into a cascade.
+  async function handleLoadNewerAuto(): Promise<void> {
+    if (!listRef) return;
+    const release = stick.pauseAutoScroll();
+    const myToken = ++restoreToken;
+    const switchGenAtStart = pane.switchGeneration;
+    try {
+      const result = await pane.loadNewer();
+      await tick();
+      if (myToken !== restoreToken || !listRef || result.status !== 'loaded') return;
+      saveScrollSnapshot();
+    } finally {
+      release();
+      // Disarm on switchGeneration, not restoreToken: loadNewer's head-prune
+      // bumps restoreToken mid-load via preserveTimelineWindowAnchor, so a
+      // token guard would skip the disarm and leave the gate armed — and the
+      // prune's bottom-restore can re-anchor to the new bottom, re-firing the
+      // load on the next frame (cascade). See handleLoadOlder.
+      if (pane.switchGeneration === switchGenAtStart) autoLoadNewerGate.disarm();
     }
   }
 
@@ -1379,6 +1479,7 @@
     if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId);
     targetFlash.clear();
     autoLoadOlderGate.reset();
+    autoLoadNewerGate.reset();
     stick.detach();
   });
 </script>

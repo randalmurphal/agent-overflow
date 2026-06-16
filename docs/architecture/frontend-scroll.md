@@ -30,7 +30,26 @@ The switch runs `SwitchThread`, live-state hydration, recent-turn fetch,
 checkpoint refresh, and the initial slice under one `Promise.allSettled`.
 There is no second wider-window load on switch. Older history pages in
 lazily through `pane.loadOlder()` when the user scrolls near the top, with
-the manual "Load older messages" button as the explicit fallback.
+the manual "Load older messages" button as the explicit fallback. The
+bottom edge mirrors this: when the window has been pruned away from the
+tail (`hasMoreNewer`), scrolling near the bottom pages forward through
+`pane.loadNewer()`, with the "Load newer / Jump to latest" control as the
+fallback.
+
+Both auto-load triggers share one direction-agnostic gate
+(`createAutoLoadGate` in `timelineScroll.ts`). It is gesture-armed —
+`disarm()` after every load, re-armed only by a real wheel/touchmove/
+keydown (the post-load re-anchor / anchor-preserving prune is a
+programmatic scroll and must not re-arm) plus a 350ms cooldown fallback —
+and its progress guard compares the **full** floor cursor
+(`oldestLoadedCursor` / `newestLoadedCursor`), turnIndex **and** itemIndex.
+Keying the guard on turnIndex alone latched auto-load off on long
+single-turn threads, where paging advances the item floor but never the
+turn floor (incident bug-report-20260616T143320Z): a 400-item turn 57
+loaded once, then the guard read 57 === 57 and refused every later
+auto-load until a manual click. Auto-load-newer appends below the viewport
+and must not scroll; auto-load-older re-anchors to the pre-load reading
+position.
 
 `threadItemCache.ts` is a small LRU of visible-window snapshots, not a
 full-history cache. It rejects oversized snapshots, evicts inactive
