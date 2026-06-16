@@ -755,12 +755,9 @@ describe('<MessageTimeline>', () => {
     expect(wrapper()?.className).not.toContain('border-l');
   });
 
-  it('keeps a single Read as a normal expandable row (grouping requires a run of >=2)', async () => {
-    // Isolated reads keep their full GenericToolCallRow chrome —
-    // chev + label + linked body preview.
-    // Without this guard, the compact row would replace EVERY Read
-    // row in the timeline and lose the expansion affordance for users
-    // who want to inspect the file's loaded contents inline.
+  it('renders a single Read through the stable read_group row from first appearance', async () => {
+    // A one-item read_group keeps the same virtualized row key and
+    // component shell when another adjacent Read arrives later.
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'read:lonely',
@@ -770,10 +767,34 @@ describe('<MessageTimeline>', () => {
         summary: 'Read: src/lib/foo.ts',
       }),
     ]);
-    const { queryByTestId, getByTestId } = render(MessageTimeline, { props: { pane } });
+    const { container, queryByTestId, getByTestId, getAllByTestId } = render(MessageTimeline, { props: { pane } });
 
-    expect(queryByTestId('read-group-row')).toBeNull();
-    expect(getByTestId('tool-call-card')).toBeInTheDocument();
+    const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
+    expect(wrappers).toHaveLength(1);
+    expect(wrappers[0].getAttribute('data-rail')).toBe('true');
+    const initialReadRow = getByTestId('read-group-row');
+    expect(initialReadRow).toBeInTheDocument();
+    expect(getByTestId('read-group-row-label').textContent).toBe('read');
+    expect(queryByTestId('tool-call-card')).toBeNull();
+    expect(getAllByTestId('editor-link').map((el) => el.getAttribute('data-path'))).toEqual([
+      'src/lib/foo.ts',
+    ]);
+
+    pane.upsertItem(makeItem({
+      id: 'read:second',
+      itemIndex: 1,
+      kind: 'tool_call',
+      toolName: 'Read',
+      summary: 'Read: src/lib/bar.ts',
+    }));
+    await tick();
+
+    expect(getByTestId('read-group-row')).toBe(initialReadRow);
+    expect(container.querySelectorAll('[data-testid="message-timeline-node"]')).toHaveLength(1);
+    expect(getAllByTestId('editor-link').map((el) => el.getAttribute('data-path'))).toEqual([
+      'src/lib/foo.ts',
+      'src/lib/bar.ts',
+    ]);
   });
 
   it('renders one wrapper per timeline node', async () => {

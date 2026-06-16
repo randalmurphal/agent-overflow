@@ -67,7 +67,55 @@ describe('<ReadGroupRow>', () => {
     ]);
     expect(links[0].className).toContain('break-all');
     expect(links[0].getAttribute('title')).toBe('Open foo.ts in editor');
-    expect(getByTestId('read-group-row-label').textContent).toBe('reads');
+    expect(getByTestId('read-group-row-label').textContent).toBe('read');
+  });
+
+  it('keeps the first Read timestamp while additional files append', () => {
+    const firstCreatedAt = Date.UTC(2026, 0, 2, 3, 4, 5);
+    const secondCreatedAt = Date.UTC(2026, 0, 2, 3, 5, 5);
+    const group = mkGroup([
+      mkReadItem('r1', 'Read: /home/me/repo/src/foo.ts', { createdAt: firstCreatedAt }),
+      mkReadItem('r2', 'Read: /home/me/repo/src/bar.ts', { createdAt: secondCreatedAt }),
+    ]);
+    const { getByTestId, getAllByTestId } = render(ReadGroupRow, {
+      props: { pane: paneWithWorkspace('/home/me/repo'), group },
+    });
+
+    expect(getByTestId('read-group-row-label').textContent).toBe('read');
+    expect(getByTestId('read-group-row-time').getAttribute('datetime')).toBe(
+      new Date(firstCreatedAt).toISOString(),
+    );
+    expect(getAllByTestId('editor-link').map((el) => el.getAttribute('data-path'))).toEqual([
+      'src/foo.ts',
+      'src/bar.ts',
+    ]);
+  });
+
+  it('renders a pathless fallback as plain text instead of an editor link', () => {
+    const group = mkGroup([
+      mkReadItem('r1', 'Read: result unavailable'),
+    ]);
+    const { getByTestId, queryByTestId } = render(ReadGroupRow, {
+      props: { pane: paneWithWorkspace('/home/me/repo'), group },
+    });
+
+    expect(queryByTestId('editor-link')).toBeNull();
+    expect(getByTestId('read-group-row-list').textContent).toContain('result unavailable');
+  });
+
+  it('projects a later derived failure into the shared status and error row', () => {
+    const group = mkGroup([
+      mkReadItem('r1', 'Read: /home/me/repo/src/foo.ts'),
+      mkReadItem('r2', 'Read: /home/me/repo/src/bar.ts', {
+        payloadMeta: JSON.stringify({ is_error: true }),
+      }),
+    ]);
+    const { getByTestId } = render(ReadGroupRow, {
+      props: { pane: paneWithWorkspace('/home/me/repo'), group },
+    });
+
+    expect(getByTestId('read-group-row-status').getAttribute('data-state')).toBe('error');
+    expect(getByTestId('row-error').textContent).toContain('Read failed');
   });
 
   it('leaves paths outside the workspace absolute so EditorLink can resolve them', () => {
@@ -182,17 +230,16 @@ describe('<ReadGroupRow>', () => {
     const { getByTestId } = render(ReadGroupRow, {
       props: { pane: paneWithWorkspace(''), group },
     });
-    const row = getByTestId('read-group-row');
-    const chevronSlot = row.children[0] as HTMLElement;
+    const toggle = getByTestId('read-group-row-toggle');
+    const chevronSlot = toggle.children[0] as HTMLElement;
     expect(chevronSlot.querySelector('svg')).not.toBeNull();
     expect(chevronSlot.className).toContain('opacity-30');
   });
 
   it('renders the eye tool-kind so the rail rhythm matches single Read rows', () => {
     // The continuous left rail under consecutive tool rows aligns
-    // icon columns by tool kind. ReadGroupRow keeps `eye` (same as a
-    // solitary Read row's classification) so swapping a single Read
-    // for a run-of-two doesn't shift the icon column under it.
+    // icon columns by tool kind. ReadGroupRow keeps `eye` for both
+    // one-file and multi-file read rows.
     const group = mkGroup([
       mkReadItem('r1', 'Read: a.go'),
       mkReadItem('r2', 'Read: b.go'),

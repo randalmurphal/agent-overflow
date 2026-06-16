@@ -224,9 +224,10 @@
 
   // Two-phase derivation: structuralNodes runs the expensive grouping
   // pipeline only when the item window changes shape (timelineRevision
-  // bump). groupedNodes patches only structural roots (subagent/read/wait
-  // groups); plain leaf rows resolve their current item inside TimelineLeaf
-  // so ordinary text streaming does not rebuild the virtualizer data array.
+  // bump). groupedNodes patches only child-bearing structural roots
+  // (subagent/wait groups); plain leaf rows and read_group rows resolve
+  // their current items inside their row components so ordinary
+  // streaming does not rebuild the virtualizer data array.
   // Stable identity on purpose: both derivations below receive this and
   // re-read fold state via the pane on each run (fold mutations always
   // ride a timelineRevision bump, so no extra reactivity is needed).
@@ -242,7 +243,8 @@
   function structuralPatchIndexesFor(nodes: readonly TimelineNode[]): number[] {
     const indexes: number[] = [];
     for (let i = 0; i < nodes.length; i += 1) {
-      if (nodes[i].kind !== 'leaf') indexes.push(i);
+      const node = nodes[i];
+      if (node.kind === 'group' || node.kind === 'wait_group') indexes.push(i);
     }
     return indexes;
   }

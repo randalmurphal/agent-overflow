@@ -3,8 +3,7 @@ import { findPathRanges } from '../../utils/pathLinkify';
 import { waitAgentDisplayReceiverIds } from '../../utils/waitAgentDisplay';
 import { isCommandToolName } from './commandDisplay';
 
-const STRUCTURED_PATH_PREVIEW_TOOLS = new Set([
-  'Read',
+const STRUCTURED_FILE_EDIT_TOOLS = new Set([
   'Edit',
   'MultiEdit',
   'Write',
@@ -12,6 +11,8 @@ const STRUCTURED_PATH_PREVIEW_TOOLS = new Set([
   'file_change',
   'fileChange',
 ]);
+
+const STRUCTURED_PATH_PREVIEW_TOOLS = new Set(['Read', ...STRUCTURED_FILE_EDIT_TOOLS]);
 
 /**
  * Decoded preview shape. The single-segment plain-text result is the
@@ -114,6 +115,27 @@ export function presentToolCardInputPreview(
     text: displayText,
     path: { path: pathDisplay.target, line: decoded.path.line, col: decoded.path.col },
   };
+}
+
+export function structuredToolPathTarget(
+  item: Item,
+  itemMeta: Record<string, unknown> | null,
+  workspacePath: string,
+): string {
+  const rawPath = primaryStructuredPath(item, itemMeta);
+  if (!rawPath) return '';
+  const decoded = decodeToolCardPreview(rawPath);
+  const path = decoded.path?.path ?? rawPath;
+  return displayPathForTarget(path, workspacePath).target;
+}
+
+export function structuredFileEditPathTarget(
+  item: Item,
+  itemMeta: Record<string, unknown> | null,
+  workspacePath: string,
+): string {
+  if (!STRUCTURED_FILE_EDIT_TOOLS.has((item.toolName ?? '').trim())) return '';
+  return structuredToolPathTarget(item, itemMeta, workspacePath);
 }
 
 function basenameOf(path: string): string {

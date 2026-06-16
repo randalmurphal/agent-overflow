@@ -192,6 +192,42 @@ describe("<ToolCallCard> header dispatcher", () => {
     }
   });
 
+  it("renders pending structured Edit calls as stable diff placeholders with full paths", async () => {
+    const pane = await buildPane(
+      makeThread({ provider: "claude", workspacePath: "/home/me/repo" }),
+    );
+    const item = makeItem({
+      id: "edit-pending",
+      kind: "tool_call",
+      status: "running",
+      toolName: "Edit",
+      summary: "Edit: Composer.svelte",
+      meta: JSON.stringify({
+        toolName: "Edit",
+        input: {
+          file_path: "/home/me/repo/frontend/src/lib/components/composer/Composer.svelte",
+        },
+      }),
+    });
+
+    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    expect(queryByTestId("tool-call-card")).toBeNull();
+    expect(getByTestId("diff-file-block")).toHaveAttribute(
+      "data-file-path",
+      "frontend/src/lib/components/composer/Composer.svelte",
+    );
+    expect(getByTestId("diff-file-path").textContent).toContain(
+      "frontend/src/lib/components/composer/Composer.svelte",
+    );
+    expect(getByTestId("diff-file-status").getAttribute("data-state")).toBe(
+      "running",
+    );
+    expect(queryByTestId("diff-file-body")).toBeNull();
+  });
+
   it("renders an eye icon for Read", async () => {
     const pane = await buildPane();
     const item = makeItem({

@@ -208,8 +208,8 @@ export interface WaitGroupNode {
 }
 
 /**
- * Top-level wrapper that folds adjacent Read tool_calls into a single
- * compact row. Produced by `groupConsecutiveReads` (`readGrouping.ts`)
+ * Top-level wrapper that renders adjacent Read tool_calls through one
+ * stable row. Produced by `groupConsecutiveReads` (`readGrouping.ts`)
  * as a post-pass over the output of `groupItemsBySubagent`, so Reads
  * nested inside a subagent stay inside their parent group and only
  * the top-level transcript collapses. Has no expansion or body — the
@@ -217,11 +217,11 @@ export interface WaitGroupNode {
  */
 export interface ReadGroupNode {
   kind: 'read_group';
-  /** Stable structural key derived from the first member's coordinates. */
+  /** Stable structural key derived from the first member id. */
   groupKey: string;
   /** Carried directly because this node has no synthetic anchor item. */
   threadId: string;
-  /** Grouped Read tool_call items in timeline order. Always >= 2. */
+  /** Grouped Read tool_call items in timeline order. Always >= 1. */
   members: Item[];
 }
 

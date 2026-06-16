@@ -182,6 +182,7 @@
     workspacePath={paneWorkspacePath(pane)}
     toolName={item.toolName}
     createdAt={item.createdAt}
+    statusItem={item}
     {hasMoreDiffContent}
   />
 {/each}

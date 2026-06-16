@@ -31,6 +31,8 @@
   import Icon from '../primitives/Icon.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
+  import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
+  import RowError from './RowError.svelte';
   import DiffLineContent from './DiffLineContent.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import { dispatchInlineFileTokens } from './diffInlineTokenize';
@@ -40,6 +42,7 @@
   import { getDiffTheme } from '../../stores/diffTheme.svelte';
   import type { DiffTheme } from '../../utils/diffHighlighterPool';
   import type { PatchFile, PatchLine } from '../../utils/patchFiles';
+  import type { Item } from '../../types/models';
   import { lineTintClass } from '../../utils/diffLineTint';
   import { languageFromPath } from '../../utils/diffLanguage';
   import type { LineToken } from '../../utils/tokenCache';
@@ -48,6 +51,8 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { classifyToolName } from './toolCardHeader';
   import { formatTimeOfDay } from '../../utils/format';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { indicatorStateForItem, rowErrorWithFallback } from './rowState';
 
   interface Props {
     pane?: ThreadPane;
@@ -66,6 +71,10 @@
     /** Owning item's creation time (ms epoch). Renders the right-edge
      *  clock time every other tool row shows; omitted → no timestamp. */
     createdAt?: number;
+    /** Owning item status. When present, the diff row reserves the same
+     *  status slot as generic tool rows so pending/completed/error edits
+     *  keep stable header geometry. */
+    statusItem?: Pick<Item, 'kind' | 'status' | 'isBackground' | 'payloadMeta'>;
     hasMoreDiffContent?: boolean;
   }
 
@@ -78,6 +87,7 @@
     workspacePath,
     toolName,
     createdAt,
+    statusItem,
     hasMoreDiffContent = false,
   }: Props = $props();
 
@@ -111,15 +121,19 @@
       ? undefined
       : { testId: 'diff-file-time', value: createdAt, label: formatTimeOfDay(createdAt) },
   );
+  let showHeaderMeta = $derived(statusItem !== undefined || timestampSlot !== undefined);
+  let statusPayloadMeta = $derived(parseJsonObject(statusItem?.payloadMeta));
+  let indicatorState = $derived(
+    statusItem ? indicatorStateForItem(statusItem, { meta: statusPayloadMeta }) : null,
+  );
+  let rowError = $derived(
+    statusItem
+      ? rowErrorWithFallback(statusItem, { meta: statusPayloadMeta, fallback: 'File edit failed' })
+      : null,
+  );
 
   let classification = $derived(classifyToolName(toolName ?? null));
-  let labelText = $derived.by(() => {
-    if (toolName === 'apply_patch') return 'patch';
-    if (toolName === 'Write') return 'write';
-    if (toolName === 'NotebookEdit') return 'notebook';
-    if (toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'file_change' || toolName === 'fileChange') return 'edit';
-    return toolName ? classification.label : 'diff';
-  });
+  let labelText = $derived(toolName ? classification.label : 'diff');
 
   let displayPath = $derived.by(() => {
     if (file.kind !== 'renamed') return file.path;
@@ -144,7 +158,7 @@
   });
 
   $effect(() => {
-    if (!effectiveExpanded) return;
+    if (!effectiveExpanded || !hasBody) return;
     const t = theme;
     const linesNow = dispatchableLines;
     const langNow = lang;
@@ -260,14 +274,26 @@
             <Icon icon={PanelRightOpen} size={12} />
           </button>
         {/if}
-        {#if timestampSlot}
+        {#if showHeaderMeta}
           <!-- Last in the actions row so the clock time column-aligns
                with every other tool row's right-edge timestamp. -->
-          <ToolHeaderMeta statusSlotTestId="diff-file-status-slot" timestamp={timestampSlot} />
+          <ToolHeaderMeta statusSlotTestId="diff-file-status-slot" timestamp={timestampSlot}>
+            {#snippet status()}
+              {#if statusItem}
+                <ToolRowStatusIndicator item={statusItem} state={indicatorState} testId="diff-file-status" />
+              {/if}
+            {/snippet}
+          </ToolHeaderMeta>
         {/if}
       {/snippet}
     </TranscriptDisclosureHeader>
   </div>
+
+  {#if rowError}
+    <div class="ml-5 px-3 pb-1">
+      <RowError tone={rowError.tone} msg={rowError.msg} />
+    </div>
+  {/if}
 
   {#if effectiveExpanded && canToggle}
     <div id={regionDomId}>

@@ -33,6 +33,7 @@
       item,
       provider: pane.thread?.provider,
       surface: 'timeline',
+      workspacePath: paneWorkspacePath(pane),
     }),
   );
 </script>
@@ -63,6 +64,22 @@
     workspacePath={paneWorkspacePath(pane)}
     toolName={item.toolName}
     createdAt={item.createdAt}
+    statusItem={item}
+  />
+{:else if presentation.kind === 'file-edit-placeholder'}
+  <!-- Pending / failed Claude file-edit tools use the same inline
+       diff-row shell as completed edits, even before exact patch
+       content is available. That keeps the row path, status slot, and
+       header geometry stable across the lifecycle. -->
+  <DiffFileBlock
+    {pane}
+    file={presentation.file}
+    threadId={item.threadId}
+    itemId={item.id}
+    workspacePath={paneWorkspacePath(pane)}
+    toolName={item.toolName}
+    createdAt={item.createdAt}
+    statusItem={item}
   />
 {:else if presentation.kind === 'diff-stack'}
   <!-- Multi-file diff (Claude Edit/Write/MultiEdit/NotebookEdit;

@@ -412,6 +412,44 @@ describe('<DiffFileBlock>', () => {
     expectBefore(getByTestId('diff-file-open-sidebar'), time);
   });
 
+  it('reserves the shared status slot and renders the running indicator when statusItem is provided', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'Edit',
+    });
+    const { getByTestId } = render(DiffFileBlock, {
+      props: {
+        file: makePatchFile({ lines: [] }),
+        threadId: 'thread-1',
+        toolName: 'Edit',
+        statusItem: item,
+      },
+    });
+
+    expect(getByTestId('diff-file-status-slot')).toBeInTheDocument();
+    expect(getByTestId('diff-file-status').getAttribute('data-state')).toBe('running');
+  });
+
+  it('shows the shared error row for failed edit placeholders', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'errored',
+      toolName: 'Edit',
+    });
+    const { getByTestId } = render(DiffFileBlock, {
+      props: {
+        file: makePatchFile({ lines: [] }),
+        threadId: 'thread-1',
+        toolName: 'Edit',
+        statusItem: item,
+      },
+    });
+
+    expect(getByTestId('diff-file-status').getAttribute('data-state')).toBe('error');
+    expect(getByTestId('row-error').textContent).toContain('File edit failed');
+  });
+
   it('omits the timestamp and its meta strip when createdAt is not provided', () => {
     const { queryByTestId } = render(DiffFileBlock, {
       props: { file: makePatchFile(), threadId: 'thread-1', toolName: 'Edit' },

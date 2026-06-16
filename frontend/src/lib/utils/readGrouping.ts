@@ -6,20 +6,19 @@
 // stay inside their parent group untouched, both because those
 // surfaces already have their own packing and because the rail
 // continuity for subagent transcripts is owned by the group
-// container. Status (running, errored, declined, completed) is
-// intentionally ignored when grouping — the row shows just file
-// names, so failure-state distinctions don't matter at this granularity.
+// container. Status (running, errored, declined, completed) does not
+// split groups; the renderer derives visible status/error state from
+// the current members.
 //
-// `MIN_GROUP_SIZE = 2` keeps single Read rows rendering as normal
-// GenericToolCallRow leaves with their full disclosure / EditorLink
-// chrome; only an actual run of consecutive reads collapses.
+// Single Read rows also project through `read_group`. That keeps the
+// virtualized row key and component shell stable when a second adjacent
+// Read arrives: the row appends another file link instead of swapping
+// from GenericToolCallRow to ReadGroupRow.
 //
 // The function is pure — fresh array out, no mutation of `nodes`.
 
 import type { Item } from '../types/models';
 import type { TimelineLeaf, TimelineNode } from './subagentGrouping';
-
-const MIN_GROUP_SIZE = 2;
 
 function isReadLeaf(node: TimelineNode): node is TimelineLeaf {
   if (node.kind !== 'leaf') return false;
@@ -47,11 +46,6 @@ export function groupConsecutiveReads(nodes: TimelineNode[]): TimelineNode[] {
     let j = i + 1;
     while (j < nodes.length && isReadLeaf(nodes[j])) j += 1;
     const runLength = j - i;
-    if (runLength < MIN_GROUP_SIZE) {
-      out.push(head);
-      i += 1;
-      continue;
-    }
     const members: Item[] = new Array(runLength);
     for (let k = 0; k < runLength; k += 1) {
       members[k] = (nodes[i + k] as TimelineLeaf).item;

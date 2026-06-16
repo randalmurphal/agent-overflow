@@ -10,6 +10,7 @@ import { parseJsonObject } from '../../utils/parseJsonObject';
 import { parsePatchFilesCached, type PatchFile, type PatchLine } from '../../utils/patchFiles';
 import { isCodexCollabControlToolName } from './codexCollabControls';
 import { commandTextForItem, isCommandToolName } from './commandDisplay';
+import { structuredFileEditPathTarget } from './toolCardPreview';
 
 export type ToolPresentationSurface = 'timeline' | 'tray';
 
@@ -20,6 +21,7 @@ export interface ToolPresentationInput {
   displayItem?: Item;
   statusItem?: Item;
   outputItem?: Item;
+  workspacePath?: string;
 }
 
 export type ToolPresentation =
@@ -40,6 +42,11 @@ export type ToolPresentation =
       kind: 'single-file-diff';
       item: Item;
       payloadId?: string;
+      file: PatchFile;
+    }
+  | {
+      kind: 'file-edit-placeholder';
+      item: Item;
       file: PatchFile;
     }
   | {
@@ -86,6 +93,7 @@ export type TimelineToolPresentation = Extract<
   | { kind: 'collab' }
   | { kind: 'proposed-plan' }
   | { kind: 'single-file-diff' }
+  | { kind: 'file-edit-placeholder' }
   | { kind: 'diff-stack' }
   | { kind: 'tool-result' }
   | { kind: 'command' }
@@ -164,6 +172,15 @@ function resolveTimelineToolPresentation(input: ToolPresentationInput): ToolPres
       item,
       payloadId,
       meta: toolResultMeta,
+    };
+  }
+
+  const fileEditPlaceholder = fileEditPlaceholderPatchFile(item, input.workspacePath ?? '');
+  if (fileEditPlaceholder) {
+    return {
+      kind: 'file-edit-placeholder',
+      item,
+      file: fileEditPlaceholder,
     };
   }
 
@@ -319,6 +336,19 @@ function isCollabControlTool(provider: string | null | undefined, item: Item): b
     provider === PROVIDER_DEFINITIONS.codex.id &&
     isCodexCollabControlToolName(item.toolName?.trim())
   );
+}
+
+function fileEditPlaceholderPatchFile(item: Item, workspacePath: string): PatchFile | null {
+  const itemMeta = parseJsonObject(item.meta);
+  const path = structuredFileEditPathTarget(item, itemMeta, workspacePath).trim();
+  if (!path) return null;
+  return {
+    path,
+    kind: 'modified',
+    additions: 0,
+    deletions: 0,
+    lines: [] as PatchLine[],
+  };
 }
 
 function collapsedCommandPreview(item: Item, meta: CommandOutputMeta): string {

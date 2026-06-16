@@ -243,6 +243,40 @@ describe('resolveToolPresentation', () => {
     expect(presentation.meta.inlineDiff?.files[0]?.path).toBe('src/app.ts');
   });
 
+  it('keeps completed structured file edits on the diff stack when inline diff metadata exists', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'Edit',
+      payloadId: 'payload-tool-result',
+      payloadKind: 'tool_result',
+      meta: JSON.stringify({
+        toolName: 'Edit',
+        input: {
+          file_path: '/home/me/repo/src/app.ts',
+        },
+      }),
+      payloadMeta: JSON.stringify({
+        itemType: 'tool_result',
+        title: 'Edited files',
+        inlineDiff: {
+          availability: 'exact_patch',
+          files: [{ path: 'src/app.ts' }],
+        },
+      }),
+    });
+
+    const presentation = resolveToolPresentation({
+      item,
+      provider: 'claude',
+      workspacePath: '/home/me/repo',
+    });
+
+    expect(presentation.kind).toBe('diff-stack');
+    if (presentation.kind !== 'diff-stack') return;
+    expect(presentation.meta.inlineDiff?.files[0]?.path).toBe('src/app.ts');
+  });
+
   it('routes non-diff tool_result payloads to the tool result card', () => {
     const item = makeItem({
       payloadKind: 'tool_result',
@@ -258,6 +292,37 @@ describe('resolveToolPresentation', () => {
     expect(presentation.kind).toBe('tool-result');
     if (presentation.kind !== 'tool-result') return;
     expect(presentation.meta.preview).toBe('No matches');
+  });
+
+  it('routes structured pending file edits to a diff-row placeholder with a full relative path', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'Edit',
+      summary: 'Edit: Composer.svelte',
+      meta: JSON.stringify({
+        toolName: 'Edit',
+        input: {
+          file_path: '/home/me/repo/frontend/src/lib/components/composer/Composer.svelte',
+        },
+      }),
+    });
+
+    const presentation = resolveToolPresentation({
+      item,
+      provider: 'claude',
+      workspacePath: '/home/me/repo',
+    });
+
+    expect(presentation.kind).toBe('file-edit-placeholder');
+    if (presentation.kind !== 'file-edit-placeholder') return;
+    expect(presentation.file).toMatchObject({
+      path: 'frontend/src/lib/components/composer/Composer.svelte',
+      kind: 'modified',
+      additions: 0,
+      deletions: 0,
+      lines: [],
+    });
   });
 
   it('uses tray launch and completion items for command presentation', () => {
