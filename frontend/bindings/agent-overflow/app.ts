@@ -401,8 +401,10 @@ export function DismissDesignOptionSet(threadID: string, setID: string): $Cancel
  *     the user can roll back. The newer-than-current gate is deliberately
  *     skipped for an explicit pick; integrity verification still applies.
  * 
- * The updater itself serialises concurrent downloads and re-validates the
- * pending release before streaming.
+ * Only one download runs at a time: it claims updaterBusy under updaterMu and
+ * returns ErrUpdateBusy if another is already in flight. The busy flag also
+ * fences a concurrent CheckForUpdate out of re-targeting the provider while the
+ * chosen release is being resolved and installed.
  */
 export function DownloadUpdate(tag: string): $CancellablePromise<void> {
     return $Call.ByID(115027584, tag);
