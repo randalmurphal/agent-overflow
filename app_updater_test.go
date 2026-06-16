@@ -109,7 +109,10 @@ func TestUpdaterRPCsUnsupportedWhenNil(t *testing.T) {
 		t.Fatal("CheckForUpdate: expected Supported=false when updater is nil")
 	}
 
-	if err := a.DownloadUpdate(); !errors.Is(err, ErrUpdatesUnsupported) {
+	if _, err := a.ListReleases(); !errors.Is(err, ErrUpdatesUnsupported) {
+		t.Fatalf("ListReleases: want ErrUpdatesUnsupported, got %v", err)
+	}
+	if err := a.DownloadUpdate(""); !errors.Is(err, ErrUpdatesUnsupported) {
 		t.Fatalf("DownloadUpdate: want ErrUpdatesUnsupported, got %v", err)
 	}
 	if err := a.RestartToUpdate(); !errors.Is(err, ErrUpdatesUnsupported) {

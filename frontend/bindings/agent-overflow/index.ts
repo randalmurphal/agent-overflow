@@ -32,6 +32,7 @@ export {
     ProviderTerminalHandle,
     QueueFlushedItem,
     QueuedItem,
+    ReleaseSummary,
     RemoteEndpointSummary,
     RevertToMessageCheckpointOptions,
     SendMessageOptions,

@@ -51,6 +51,12 @@ var (
 	// ErrNoUpdateToDownload is returned by DownloadUpdate when CheckForUpdate
 	// has not found a newer release to download.
 	ErrNoUpdateToDownload = errors.New("app: no update is available to download")
+	// ErrInvalidReleaseTag is returned by DownloadUpdate when the caller passes
+	// a tag that fails validation (defense-in-depth before it reaches a URL).
+	ErrInvalidReleaseTag = errors.New("app: invalid release tag")
+	// ErrUpdateBusy is returned by DownloadUpdate when another download/install
+	// is already in flight (the updater handles one at a time).
+	ErrUpdateBusy = errors.New("app: an update is already being installed")
 )
 
 // UpdateAvailability is the result of CheckForUpdate. Supported is false on
@@ -75,6 +81,26 @@ func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 		return UpdateAvailability{Supported: false, CurrentVersion: version}, nil
 	}
 
+	a.updaterMu.Lock()
+	defer a.updaterMu.Unlock()
+
+	// A download/install is in flight (only reachable from a second --connect
+	// client — the same client's UI blocks checks during a download). Running
+	// Check now would retarget the provider and overwrite the pending release
+	// the installer is about to use, so report the current state without
+	// probing the network. The busy client's next check, after the install
+	// settles, returns the authoritative answer.
+	if a.updaterBusy {
+		return UpdateAvailability{Supported: true, CurrentVersion: a.updater.CurrentVersion()}, nil
+	}
+
+	// The passive check always reports the newest release: clear any tag a
+	// prior DownloadUpdate aimed the provider at, so rolling back to an older
+	// version doesn't make a later check report that older version as "latest".
+	if a.updaterProvider != nil {
+		a.updaterProvider.SetTarget("")
+	}
+
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), updaterCheckTimeout)
 	defer cancel()
 
@@ -93,31 +119,99 @@ func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 	return out, nil
 }
 
-// DownloadUpdate downloads, verifies, and stages the release found by a prior
-// CheckForUpdate. It returns as soon as the work is launched: the download
-// blocks for seconds-to-minutes, so it runs off the RPC goroutine and the
-// frontend tracks progress + the terminal (ready / error) state via the
+// DownloadUpdate downloads, verifies, and stages a release, then leaves it
+// pending a user-driven restart. It returns as soon as the work is launched:
+// the download blocks for seconds-to-minutes, so it runs off the RPC goroutine
+// and the frontend tracks progress + the terminal (ready / error) state via the
 // bridged updater:* events. Decoupling from the RPC lifecycle also means a
 // WebSocket reconnect mid-download doesn't abandon the install.
 //
-// The synchronous guards give the caller immediate feedback for the common
-// misuse (no prior check, unsupported build); the updater itself serialises
-// concurrent downloads and re-validates the pending release before streaming.
-func (a *App) DownloadUpdate() error {
+// tag selects which release to install:
+//
+//   - "" installs the pending release a prior CheckForUpdate already found
+//     (the latest). This requires StateAvailable now, so the common misuse
+//     (download with no prior check) fails fast and synchronously.
+//   - a specific tag (e.g. "v0.0.7") aims the provider at that exact release
+//     and resolves it in the goroutine below — including an OLDER version, so
+//     the user can roll back. The newer-than-current gate is deliberately
+//     skipped for an explicit pick; integrity verification still applies.
+//
+// Only one download runs at a time: it claims updaterBusy under updaterMu and
+// returns ErrUpdateBusy if another is already in flight. The busy flag also
+// fences a concurrent CheckForUpdate out of re-targeting the provider while the
+// chosen release is being resolved and installed.
+func (a *App) DownloadUpdate(tag string) error {
 	if a.updater == nil {
 		return ErrUpdatesUnsupported
 	}
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
-	if st := a.updater.State(); st != updater.StateAvailable {
-		// StateAvailable is the only phase from which a download is valid; any
-		// other phase means no checked-and-pending release (or a flow already
-		// in progress). Surfaced synchronously so the button can react.
-		return fmt.Errorf("%w (state=%s)", ErrNoUpdateToDownload, st)
+	if tag != "" && !validReleaseTag(tag) {
+		return fmt.Errorf("%w: %q", ErrInvalidReleaseTag, tag)
 	}
 
+	// Claim the updater under updaterMu so this whole resolve+install is
+	// serialized against CheckForUpdate (and a second DownloadUpdate). The
+	// empty-tag precondition is re-checked here, holding the lock, so a
+	// concurrent check can't flip the state between the guard and the claim.
+	a.updaterMu.Lock()
+	if a.updaterBusy {
+		a.updaterMu.Unlock()
+		return ErrUpdateBusy
+	}
+	if tag == "" {
+		// Empty tag installs the already-staged latest; require StateAvailable
+		// so a download with no prior check fails fast. A specific tag resolves
+		// its own pending release below, so it has no such precondition.
+		if st := a.updater.State(); st != updater.StateAvailable {
+			a.updaterMu.Unlock()
+			return fmt.Errorf("%w (state=%s)", ErrNoUpdateToDownload, st)
+		}
+	}
+	a.updaterBusy = true
+	a.updaterMu.Unlock()
+
 	go func() {
+		defer func() {
+			a.updaterMu.Lock()
+			a.updaterBusy = false
+			a.updaterMu.Unlock()
+		}()
+
+		if tag != "" {
+			// Retarget + resolve under the lock so a racing CheckForUpdate can't
+			// reset the provider target between SetTarget and Check. updaterBusy
+			// (still set) keeps that check from running its own Check until the
+			// install finishes, so the pending release stays this tag's. Bound
+			// the resolve by the short check timeout — not the download timeout
+			// — so the lock (which a concurrent check may wait on) is held only
+			// for the metadata round trip, never the multi-minute download.
+			rctx, rcancel := context.WithTimeout(a.lifeCtx(), updaterCheckTimeout)
+			a.updaterMu.Lock()
+			if a.updaterProvider != nil {
+				a.updaterProvider.SetTarget(tag)
+			}
+			rel, err := a.updater.Check(rctx)
+			a.updaterMu.Unlock()
+			rcancel()
+			// Check errors are RETURNED by the updater, not emitted, so on
+			// failure we surface our own updater:error — the frontend has
+			// already flipped to "downloading" and would otherwise hang with no
+			// terminal event. A nil release means the tag isn't installable on
+			// this platform (no matching asset).
+			if err != nil {
+				log.Printf("updater: resolve %s failed: %v", tag, err)
+				a.emit("updater:error", updater.ErrorInfo{Stage: updater.StageCheck, Message: err.Error(), Provider: "github"})
+				return
+			}
+			if rel == nil {
+				log.Printf("updater: resolve %s returned no installable release", tag)
+				a.emit("updater:error", updater.ErrorInfo{Stage: updater.StageCheck, Message: fmt.Sprintf("release %s is not installable on this platform", tag), Provider: "github"})
+				return
+			}
+		}
+
 		ctx, cancel := context.WithTimeout(a.lifeCtx(), updaterDownloadTimeout)
 		defer cancel()
 		// DownloadAndInstall emits EventVerifying / EventInstalling /

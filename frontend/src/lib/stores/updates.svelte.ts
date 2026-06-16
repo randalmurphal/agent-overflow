@@ -8,11 +8,15 @@
 
 import {
   CheckForUpdate,
+  ListReleases,
   DownloadUpdate,
   RestartToUpdate,
 } from './bindings';
+import type { ReleaseSummary } from './bindings';
 import { wailsEventOn } from './wailsEvents';
 import { userFacingError } from '../utils/userFacingError';
+
+export type { ReleaseSummary };
 
 export type UpdaterPhase =
   | 'idle'
@@ -48,6 +52,18 @@ const state = $state({
   written: 0,
   total: 0,
   error: '',
+
+  // Version selection (the "Advanced" disclosure). Lazily populated by
+  // loadVersions the first time the user expands it — the common path only
+  // ever installs the latest and never pays for this list.
+  availableVersions: [] as ReleaseSummary[],
+  versionsLoaded: false,
+  versionsLoading: false,
+  versionsError: '',
+  // selectedTag is the release the Advanced picker will install. '' until the
+  // list loads, then defaulted to the latest stable. A specific (possibly
+  // older) tag here drives a by-tag download — the rollback path.
+  selectedTag: '',
 });
 
 export type UpdateState = typeof state;
@@ -72,6 +88,54 @@ export function hasPendingUpdate(): boolean {
  * new check/download while any of them is current. */
 export function isDownloadInFlight(phase: UpdaterPhase): boolean {
   return phase === 'downloading' || phase === 'verifying' || phase === 'installing';
+}
+
+/**
+ * loadVersions fetches the installable releases for the Advanced version picker.
+ * Lazy: call it the first time the user expands the disclosure. Read-only — it
+ * never downloads or installs. On success it defaults the selection to the
+ * latest stable so the picker opens on the safe choice.
+ */
+export async function loadVersions(): Promise<void> {
+  if (!state.supported || state.versionsLoading) return;
+  state.versionsLoading = true;
+  state.versionsError = '';
+  try {
+    const releases = await ListReleases();
+    state.availableVersions = releases;
+    state.versionsLoaded = true;
+    // Default (or re-anchor) the selection to the latest stable. Re-anchor only
+    // when the current pick is gone, so a reload doesn't clobber a deliberate
+    // selection that's still valid.
+    if (!releases.some((r) => r.tag === state.selectedTag)) {
+      state.selectedTag = releases.find((r) => r.isLatest)?.tag ?? releases[0]?.tag ?? '';
+    }
+  } catch (err) {
+    state.versionsError = userFacingError(err, 'Could not load available versions.');
+  } finally {
+    state.versionsLoading = false;
+  }
+}
+
+/** selectVersion sets which release the Advanced picker will install. */
+export function selectVersion(tag: string): void {
+  state.selectedTag = tag;
+}
+
+/** selectedVersion returns the currently-selected release summary, if any. */
+export function selectedVersion(): ReleaseSummary | undefined {
+  return state.availableVersions.find((r) => r.tag === state.selectedTag);
+}
+
+/**
+ * canInstallSelected reports whether the Advanced "Install" action is valid for
+ * the current selection: a real, non-current release while nothing else is in
+ * flight. Reinstalling the running version is a no-op, so it's disallowed.
+ */
+export function canInstallSelected(): boolean {
+  const v = selectedVersion();
+  if (!v || v.isCurrent) return false;
+  return !isDownloadInFlight(state.phase) && state.phase !== 'checking' && state.phase !== 'ready';
 }
 
 /**
@@ -118,12 +182,26 @@ export async function runUpdateCheck(): Promise<void> {
 }
 
 /**
- * startUpdateDownload downloads, verifies, and stages the pending release. The
- * backend runs the work asynchronously and reports progress + the terminal
- * state via updater:* events, which this store bridges into `state`.
+ * startUpdateDownload downloads, verifies, and stages a release. The backend
+ * runs the work asynchronously and reports progress + the terminal state via
+ * updater:* events, which this store bridges into `state`.
+ *
+ * tag === '' installs the pending latest (the passive-check result) and is only
+ * valid from 'available'. A specific tag installs that exact release — possibly
+ * an OLDER one (rollback) — and is valid from any resting phase, since the
+ * backend resolves it on demand rather than relying on a staged pending release.
  */
-export async function startUpdateDownload(): Promise<void> {
-  if (!state.supported || state.phase !== 'available') return;
+export async function startUpdateDownload(tag = ''): Promise<void> {
+  if (!state.supported) return;
+  if (tag === '') {
+    if (state.phase !== 'available') return;
+  } else if (
+    isDownloadInFlight(state.phase) ||
+    state.phase === 'checking' ||
+    state.phase === 'ready'
+  ) {
+    return;
+  }
   state.error = '';
   state.written = 0;
   state.total = 0;
@@ -131,7 +209,7 @@ export async function startUpdateDownload(): Promise<void> {
   // backend confirms via updater:download-started / updater:progress.
   state.phase = 'downloading';
   try {
-    await DownloadUpdate();
+    await DownloadUpdate(tag);
   } catch (err) {
     state.phase = 'error';
     state.error = userFacingError(err, 'Could not start the update download.');
@@ -213,5 +291,10 @@ export function resetForTest(): void {
   state.written = 0;
   state.total = 0;
   state.error = '';
+  state.availableVersions = [];
+  state.versionsLoaded = false;
+  state.versionsLoading = false;
+  state.versionsError = '';
+  state.selectedTag = '';
   initialized = false;
 }

@@ -783,6 +783,7 @@ func (p *privilegedApp) TriggerMcpAuth() string         { return "ok" }
 
 // 9. In-app self-update (network + local-FS + host-process control).
 func (p *privilegedApp) CheckForUpdate() string  { return "ok" }
+func (p *privilegedApp) ListReleases() string    { return "ok" }
 func (p *privilegedApp) DownloadUpdate() string  { return "ok" }
 func (p *privilegedApp) RestartToUpdate() string { return "ok" }
 

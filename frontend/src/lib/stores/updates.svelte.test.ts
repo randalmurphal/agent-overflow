@@ -1,15 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// The store reaches the backend through these three RPC wrappers; replace the
-// module so each test controls their resolution. The store imports nothing else
-// from ./bindings, so a minimal factory is sufficient.
+// The store reaches the backend through these RPC wrappers; replace the module
+// so each test controls their resolution. The store imports nothing else from
+// ./bindings, so a minimal factory is sufficient.
 vi.mock('./bindings', () => ({
   CheckForUpdate: vi.fn(),
+  ListReleases: vi.fn(),
   DownloadUpdate: vi.fn(),
   RestartToUpdate: vi.fn(),
 }));
 
-import { CheckForUpdate, DownloadUpdate, RestartToUpdate } from './bindings';
+import { CheckForUpdate, ListReleases, DownloadUpdate, RestartToUpdate } from './bindings';
 import {
   getUpdateState,
   hasPendingUpdate,
@@ -17,8 +18,13 @@ import {
   runUpdateCheck,
   startUpdateDownload,
   restartForUpdate,
+  loadVersions,
+  selectVersion,
+  selectedVersion,
+  canInstallSelected,
   initUpdates,
   resetForTest,
+  type ReleaseSummary,
 } from './updates.svelte';
 import {
   emitWailsEvent,
@@ -27,8 +33,23 @@ import {
 } from '../../test/mocks/wailsio-runtime';
 
 const mockCheck = vi.mocked(CheckForUpdate);
+const mockList = vi.mocked(ListReleases);
 const mockDownload = vi.mocked(DownloadUpdate);
 const mockRestart = vi.mocked(RestartToUpdate);
+
+function release(tag: string, overrides: Partial<ReleaseSummary> = {}): ReleaseSummary {
+  return {
+    tag,
+    version: tag.replace(/^v/, ''),
+    name: '',
+    publishedAt: '',
+    prerelease: false,
+    isLatest: false,
+    isCurrent: false,
+    isOlder: false,
+    ...overrides,
+  } as ReleaseSummary;
+}
 
 // One macrotask flush so a fire-and-forget runUpdateCheck() (the launch check
 // inside initUpdates) settles before assertions.
@@ -52,6 +73,7 @@ describe('updates store', () => {
     resetWailsMocks();
     resetForTest();
     mockCheck.mockReset();
+    mockList.mockReset().mockResolvedValue([]);
     mockDownload.mockReset().mockResolvedValue(undefined);
     mockRestart.mockReset().mockResolvedValue(undefined);
   });
@@ -147,7 +169,9 @@ describe('updates store', () => {
     it('starts the download and optimistically flips to "downloading" from "available"', async () => {
       getUpdateState().phase = 'available';
       await startUpdateDownload();
-      expect(mockDownload).toHaveBeenCalledOnce();
+      // The latest path passes the empty tag, which the backend maps to the
+      // already-staged pending release.
+      expect(mockDownload).toHaveBeenCalledWith('');
       expect(getUpdateState().phase).toBe('downloading');
     });
 
@@ -167,6 +191,110 @@ describe('updates store', () => {
       await startUpdateDownload();
       expect(getUpdateState().phase).toBe('error');
       expect(getUpdateState().error).not.toBe('');
+    });
+
+    it('installs a specific (older) version from "up-to-date" — the rollback path', async () => {
+      // The by-tag flow must work even with no pending update: a rollback while
+      // already on the latest has phase "up-to-date", not "available".
+      getUpdateState().phase = 'up-to-date';
+      await startUpdateDownload('v0.0.6');
+      expect(mockDownload).toHaveBeenCalledWith('v0.0.6');
+      expect(getUpdateState().phase).toBe('downloading');
+    });
+
+    it('allows a by-tag retry from the "error" phase', async () => {
+      getUpdateState().phase = 'error';
+      await startUpdateDownload('v0.0.6');
+      expect(mockDownload).toHaveBeenCalledWith('v0.0.6');
+      expect(getUpdateState().phase).toBe('downloading');
+    });
+
+    it('refuses a by-tag install while a download is already in flight', async () => {
+      getUpdateState().phase = 'downloading';
+      await startUpdateDownload('v0.0.6');
+      expect(mockDownload).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('version selection', () => {
+    const versions = () => [
+      release('v0.0.9', { prerelease: true }),
+      release('v0.0.8', { isLatest: true, name: 'Latest' }),
+      release('v0.0.7', { isCurrent: true }),
+      release('v0.0.6', { isOlder: true }),
+    ];
+
+    it('loadVersions populates the list and defaults the selection to latest', async () => {
+      mockList.mockResolvedValue(versions());
+      await loadVersions();
+      const s = getUpdateState();
+      expect(s.versionsLoaded).toBe(true);
+      expect(s.availableVersions).toHaveLength(4);
+      expect(s.selectedTag).toBe('v0.0.8');
+    });
+
+    it('loadVersions surfaces an error and stays unloaded on failure', async () => {
+      mockList.mockRejectedValue(new Error('list boom'));
+      await loadVersions();
+      const s = getUpdateState();
+      expect(s.versionsError).not.toBe('');
+      expect(s.versionsLoaded).toBe(false);
+    });
+
+    it('loadVersions leaves the selection empty when no versions are installable', async () => {
+      mockList.mockResolvedValue([]);
+      await loadVersions();
+      const s = getUpdateState();
+      expect(s.versionsLoaded).toBe(true);
+      expect(s.availableVersions).toHaveLength(0);
+      expect(s.selectedTag).toBe('');
+    });
+
+    it('loadVersions falls back to the newest entry when none is marked latest', async () => {
+      // No stable release (all prereleases) → no isLatest → default to the
+      // newest listed entry rather than leaving nothing selected.
+      mockList.mockResolvedValue([
+        release('v0.1.0-rc2', { prerelease: true }),
+        release('v0.1.0-rc1', { prerelease: true }),
+      ]);
+      await loadVersions();
+      expect(getUpdateState().selectedTag).toBe('v0.1.0-rc2');
+    });
+
+    it('loadVersions preserves a still-valid selection across a reload', async () => {
+      mockList.mockResolvedValue(versions());
+      await loadVersions();
+      selectVersion('v0.0.6');
+      await loadVersions(); // same list returned again
+      expect(getUpdateState().selectedTag).toBe('v0.0.6');
+    });
+
+    it('selectedVersion resolves the picked summary', async () => {
+      mockList.mockResolvedValue(versions());
+      await loadVersions();
+      selectVersion('v0.0.6');
+      expect(selectedVersion()?.tag).toBe('v0.0.6');
+      expect(selectedVersion()?.isOlder).toBe(true);
+    });
+
+    it('canInstallSelected allows a downgrade but refuses the current version', async () => {
+      mockList.mockResolvedValue(versions());
+      await loadVersions();
+      getUpdateState().phase = 'up-to-date';
+
+      selectVersion('v0.0.6'); // older — rollback allowed
+      expect(canInstallSelected()).toBe(true);
+
+      selectVersion('v0.0.7'); // the running version — reinstall is a no-op
+      expect(canInstallSelected()).toBe(false);
+    });
+
+    it('canInstallSelected is false while an install is in flight', async () => {
+      mockList.mockResolvedValue(versions());
+      await loadVersions();
+      selectVersion('v0.0.6');
+      getUpdateState().phase = 'downloading';
+      expect(canInstallSelected()).toBe(false);
     });
   });
 
@@ -234,6 +362,18 @@ describe('updates store', () => {
       const s = getUpdateState();
       expect(s.phase).toBe('error');
       expect(s.error).toBe('Update verify failed: digest mismatch');
+    });
+
+    it('formats a by-tag resolve failure (stage "check") emitted by the backend goroutine', () => {
+      // The rollback path emits stage "check" when a chosen tag can't be
+      // resolved; the store must render it the same way as any other stage.
+      emitWailsEvent('updater:error', {
+        stage: 'check',
+        message: 'release v9.9.9 is not installable on this platform',
+      });
+      const s = getUpdateState();
+      expect(s.phase).toBe('error');
+      expect(s.error).toBe('Update check failed: release v9.9.9 is not installable on this platform');
     });
 
     it('cleanup unsubscribes every channel', () => {

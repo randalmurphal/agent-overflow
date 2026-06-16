@@ -1,9 +1,11 @@
 <script lang="ts">
   // Settings → Updates. Renders the reactive updater store and drives the
   // check / download / restart flow. Every state-changing action is an explicit
-  // button press — nothing downloads or installs on its own.
+  // button press — nothing downloads or installs on its own. The "Advanced"
+  // version picker (rollback included) lives in VersionPicker.
   import SettingsHeader from './SettingsHeader.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
+  import VersionPicker from './VersionPicker.svelte';
   import { PRIMARY_BUTTON_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
   import {
     getUpdateState,
@@ -17,6 +19,10 @@
 
   const checking = $derived(s.phase === 'checking');
   const downloading = $derived(isDownloadInFlight(s.phase));
+  // The progress / restart block renders for ANY install in flight — the latest
+  // flow and a by-tag rollback alike — so it can't hang off the latestVersion
+  // card (a rollback while up-to-date has no latestVersion).
+  const showActive = $derived(downloading || s.phase === 'ready');
   const progressPercent = $derived(
     s.total > 0 ? Math.min(100, Math.round((s.written / s.total) * 100)) : 0,
   );
@@ -94,13 +100,23 @@
             <button class={PRIMARY_BUTTON_CLASS} onclick={() => void startUpdateDownload()}>
               Download
             </button>
-          {:else if s.phase === 'ready'}
-            <button class={PRIMARY_BUTTON_CLASS} onclick={() => void restartForUpdate()}>
-              Restart to update
-            </button>
           {/if}
         </div>
 
+        {#if s.releaseNotes}
+          <details class="text-[0.71875rem] text-fg-muted">
+            <summary class="cursor-pointer text-fg-subtle hover:text-fg">Release notes</summary>
+            <pre
+              class="mt-2 max-h-60 overflow-y-auto whitespace-pre-wrap font-sans leading-relaxed">{s.releaseNotes}</pre>
+          </details>
+        {/if}
+      </section>
+    {/if}
+
+    {#if showActive}
+      <section
+        class="flex flex-col gap-3 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/40 px-4 py-3"
+      >
         {#if downloading}
           <div class="flex flex-col gap-1.5">
             <div class="flex items-center justify-between text-[0.6875rem] text-fg-muted">
@@ -119,19 +135,22 @@
         {/if}
 
         {#if s.phase === 'ready'}
-          <p class="text-[0.6875rem] text-fg-muted">
-            The update is ready. Agent Overflow will restart to finish installing.
-          </p>
-        {/if}
-
-        {#if s.releaseNotes}
-          <details class="text-[0.71875rem] text-fg-muted">
-            <summary class="cursor-pointer text-fg-subtle hover:text-fg">Release notes</summary>
-            <pre
-              class="mt-2 max-h-60 overflow-y-auto whitespace-pre-wrap font-sans leading-relaxed">{s.releaseNotes}</pre>
-          </details>
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-[0.6875rem] text-fg-muted">
+              The update is ready. Agent Overflow will restart to finish installing.
+            </p>
+            <button class={PRIMARY_BUTTON_CLASS} onclick={() => void restartForUpdate()}>
+              Restart to update
+            </button>
+          </div>
         {/if}
       </section>
+    {/if}
+
+    <!-- Hidden during an active install so a second, conflicting install can't
+         be started; canInstallSelected() is the in-flight guard otherwise. -->
+    {#if !showActive}
+      <VersionPicker />
     {/if}
   {/if}
 </div>

@@ -145,6 +145,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListProposedPlanComments", ID: 2030403250},             // main.App.ListProposedPlanComments
 	{Name: "ListRecentThreadItems", ID: 2604956482},                // main.App.ListRecentThreadItems
 	{Name: "ListRecentTurns", ID: 1083162294},                      // main.App.ListRecentTurns
+	{Name: "ListReleases", ID: 397986043},                          // main.App.ListReleases
 	{Name: "ListRemoteEndpoints", ID: 3443007043},                  // main.App.ListRemoteEndpoints
 	{Name: "ListSubagentDescendants", ID: 1299118478},              // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506},                        // main.App.ListTerminals

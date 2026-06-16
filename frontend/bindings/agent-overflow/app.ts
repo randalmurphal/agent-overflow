@@ -384,19 +384,28 @@ export function DismissDesignOptionSet(threadID: string, setID: string): $Cancel
 }
 
 /**
- * DownloadUpdate downloads, verifies, and stages the release found by a prior
- * CheckForUpdate. It returns as soon as the work is launched: the download
- * blocks for seconds-to-minutes, so it runs off the RPC goroutine and the
- * frontend tracks progress + the terminal (ready / error) state via the
+ * DownloadUpdate downloads, verifies, and stages a release, then leaves it
+ * pending a user-driven restart. It returns as soon as the work is launched:
+ * the download blocks for seconds-to-minutes, so it runs off the RPC goroutine
+ * and the frontend tracks progress + the terminal (ready / error) state via the
  * bridged updater:* events. Decoupling from the RPC lifecycle also means a
  * WebSocket reconnect mid-download doesn't abandon the install.
  * 
- * The synchronous guards give the caller immediate feedback for the common
- * misuse (no prior check, unsupported build); the updater itself serialises
- * concurrent downloads and re-validates the pending release before streaming.
+ * tag selects which release to install:
+ * 
+ *   - "" installs the pending release a prior CheckForUpdate already found
+ *     (the latest). This requires StateAvailable now, so the common misuse
+ *     (download with no prior check) fails fast and synchronously.
+ *   - a specific tag (e.g. "v0.0.7") aims the provider at that exact release
+ *     and resolves it in the goroutine below — including an OLDER version, so
+ *     the user can roll back. The newer-than-current gate is deliberately
+ *     skipped for an explicit pick; integrity verification still applies.
+ * 
+ * The updater itself serialises concurrent downloads and re-validates the
+ * pending release before streaming.
  */
-export function DownloadUpdate(): $CancellablePromise<void> {
-    return $Call.ByID(115027584);
+export function DownloadUpdate(tag: string): $CancellablePromise<void> {
+    return $Call.ByID(115027584, tag);
 }
 
 /**
@@ -1455,6 +1464,16 @@ export function ListRecentTurns(threadID: string, limit: number): $CancellablePr
 }
 
 /**
+ * ListReleases returns the installable releases for the running platform, newest
+ * first, so the frontend can offer a version picker. Read-only; LocalOnly.
+ */
+export function ListReleases(): $CancellablePromise<$models.ReleaseSummary[]> {
+    return $Call.ByID(397986043).then(($result: any) => {
+        return $$createType70($result);
+    });
+}
+
+/**
  * ListRemoteEndpoints returns every saved `--connect` target with the
  * Token field stripped. The local UI fetches a token on-demand via
  * GetRemoteEndpointToken when copying a launch command — that pattern
@@ -1464,7 +1483,7 @@ export function ListRecentTurns(threadID: string, limit: number): $CancellablePr
  */
 export function ListRemoteEndpoints(): $CancellablePromise<$models.RemoteEndpointSummary[]> {
     return $Call.ByID(3443007043).then(($result: any) => {
-        return $$createType69($result);
+        return $$createType71($result);
     });
 }
 
@@ -1489,13 +1508,13 @@ export function ListSubagentDescendants(threadID: string, rootItemID: string): $
  */
 export function ListTerminals(threadID: string): $CancellablePromise<terminal$0.SessionSummary[]> {
     return $Call.ByID(2445206506, threadID).then(($result: any) => {
-        return $$createType71($result);
+        return $$createType73($result);
     });
 }
 
 export function ListThreadCheckpoints(threadID: string): $CancellablePromise<$models.CheckpointView[]> {
     return $Call.ByID(1853132444, threadID).then(($result: any) => {
-        return $$createType73($result);
+        return $$createType75($result);
     });
 }
 
@@ -1544,7 +1563,7 @@ export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
  */
 export function ListWSLDistros(): $CancellablePromise<wsllauncher$0.Distro[]> {
     return $Call.ByID(2332614075).then(($result: any) => {
-        return $$createType75($result);
+        return $$createType77($result);
     });
 }
 
@@ -1573,7 +1592,7 @@ export function MarkThreadUnread(id: string): $CancellablePromise<void> {
  */
 export function MoveThreadTerminals(fromThreadID: string, toThreadID: string): $CancellablePromise<terminal$0.SessionSummary[]> {
     return $Call.ByID(3013708277, fromThreadID, toThreadID).then(($result: any) => {
-        return $$createType71($result);
+        return $$createType73($result);
     });
 }
 
@@ -1623,7 +1642,7 @@ export function OpenInEditor(path: string, line: number, col: number, workspaceP
  */
 export function OpenTerminal(threadID: string, opts: $models.TerminalOpenOptions): $CancellablePromise<$models.TerminalHandle> {
     return $Call.ByID(2247958725, threadID, opts).then(($result: any) => {
-        return $$createType76($result);
+        return $$createType78($result);
     });
 }
 
@@ -1689,7 +1708,7 @@ export function PrepareThreadWorktree(threadID: string, baseBranch: string, requ
  */
 export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(1313986574).then(($result: any) => {
-        return $$createType77($result);
+        return $$createType79($result);
     });
 }
 
@@ -1727,7 +1746,7 @@ export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo
  */
 export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(2614227175).then(($result: any) => {
-        return $$createType77($result);
+        return $$createType79($result);
     });
 }
 
@@ -1740,7 +1759,7 @@ export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo>
  */
 export function ProviderTerminalAttach(threadID: string): $CancellablePromise<$models.ProviderTerminalHandle> {
     return $Call.ByID(1393518281, threadID).then(($result: any) => {
-        return $$createType78($result);
+        return $$createType80($result);
     });
 }
 
@@ -1811,7 +1830,7 @@ export function ProviderTerminalSetControl(threadID: string, control: boolean): 
  */
 export function RecheckClaudeAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(2274850917).then(($result: any) => {
-        return $$createType77($result);
+        return $$createType79($result);
     });
 }
 
@@ -1825,7 +1844,7 @@ export function RecheckClaudeAccount(): $CancellablePromise<provider$0.AccountIn
  */
 export function RecheckCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(227978482).then(($result: any) => {
-        return $$createType77($result);
+        return $$createType79($result);
     });
 }
 
@@ -2001,7 +2020,7 @@ export function RespondToUserInput(threadID: string, response: provider$0.UserIn
  */
 export function RestartTerminal(terminalID: string): $CancellablePromise<$models.TerminalHandle> {
     return $Call.ByID(4152403588, terminalID).then(($result: any) => {
-        return $$createType76($result);
+        return $$createType78($result);
     });
 }
 
@@ -2045,7 +2064,7 @@ export function SavePayloadToFile(threadID: string, payloadID: string): $Cancell
  */
 export function SearchThreadItems(threadID: string, query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(1414650511, threadID, query, limit).then(($result: any) => {
-        return $$createType80($result);
+        return $$createType82($result);
     });
 }
 
@@ -2061,7 +2080,7 @@ export function SearchThreadItems(threadID: string, query: string, limit: number
  */
 export function SearchThreadMessages(query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(3644945077, query, limit).then(($result: any) => {
-        return $$createType80($result);
+        return $$createType82($result);
     });
 }
 
@@ -2071,7 +2090,7 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
  */
 export function SearchWorkspaceFiles(threadID: string, query: string, limit: number): $CancellablePromise<$models.WorkspaceFileSearchResult> {
     return $Call.ByID(3852272821, threadID, query, limit).then(($result: any) => {
-        return $$createType81($result);
+        return $$createType83($result);
     });
 }
 
@@ -2329,7 +2348,7 @@ export function TouchRemoteEndpoint(id: string): $CancellablePromise<void> {
  */
 export function TriggerMcpAuth(threadID: string, name: string): $CancellablePromise<$models.MCPAuthInitResult> {
     return $Call.ByID(1291217507, threadID, name).then(($result: any) => {
-        return $$createType82($result);
+        return $$createType84($result);
     });
 }
 
@@ -2702,17 +2721,19 @@ const $$createType65 = $Create.Array($$createType64);
 const $$createType66 = $Create.Array($$createType7);
 const $$createType67 = store$0.Turn.createFrom;
 const $$createType68 = $Create.Array($$createType67);
-const $$createType69 = $Create.Array($$createType0);
-const $$createType70 = terminal$0.SessionSummary.createFrom;
-const $$createType71 = $Create.Array($$createType70);
-const $$createType72 = checkpoint$0.View.createFrom;
+const $$createType69 = $models.ReleaseSummary.createFrom;
+const $$createType70 = $Create.Array($$createType69);
+const $$createType71 = $Create.Array($$createType0);
+const $$createType72 = terminal$0.SessionSummary.createFrom;
 const $$createType73 = $Create.Array($$createType72);
-const $$createType74 = wsllauncher$0.Distro.createFrom;
+const $$createType74 = checkpoint$0.View.createFrom;
 const $$createType75 = $Create.Array($$createType74);
-const $$createType76 = $models.TerminalHandle.createFrom;
-const $$createType77 = provider$0.AccountInfo.createFrom;
-const $$createType78 = $models.ProviderTerminalHandle.createFrom;
-const $$createType79 = store$0.ThreadMessageHit.createFrom;
-const $$createType80 = $Create.Array($$createType79);
-const $$createType81 = $models.WorkspaceFileSearchResult.createFrom;
-const $$createType82 = $models.MCPAuthInitResult.createFrom;
+const $$createType76 = wsllauncher$0.Distro.createFrom;
+const $$createType77 = $Create.Array($$createType76);
+const $$createType78 = $models.TerminalHandle.createFrom;
+const $$createType79 = provider$0.AccountInfo.createFrom;
+const $$createType80 = $models.ProviderTerminalHandle.createFrom;
+const $$createType81 = store$0.ThreadMessageHit.createFrom;
+const $$createType82 = $Create.Array($$createType81);
+const $$createType83 = $models.WorkspaceFileSearchResult.createFrom;
+const $$createType84 = $models.MCPAuthInitResult.createFrom;

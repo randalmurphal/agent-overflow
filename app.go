@@ -153,6 +153,21 @@ type App struct {
 	// RPC method guards the nil case and reports the feature unsupported
 	// rather than panicking.
 	updater *updater.Updater
+	// updaterProvider is the targetable GitHub provider behind a.updater,
+	// retained so the version-selection RPCs (ListReleases, DownloadUpdate)
+	// can enumerate releases and aim a download at a specific tag. Set
+	// alongside a.updater by initUpdater; nil on the headless backend.
+	updaterProvider *targetableProvider
+	// updaterMu serializes the provider-retarget-then-resolve sequences that
+	// CheckForUpdate (SetTarget("")+Check) and DownloadUpdate (SetTarget(tag)+
+	// Check) perform. Without it, a concurrent passive CheckForUpdate from a
+	// second --connect client could reset the target between a by-tag
+	// download's SetTarget and its Check, resolving "latest" instead of the
+	// picked tag. updaterBusy (guarded by this mutex) marks an in-flight
+	// download so a racing CheckForUpdate skips its network probe rather than
+	// clobbering the pending release the installer is about to use.
+	updaterMu   sync.Mutex
+	updaterBusy bool
 	// shuttingDown is flipped to true once Shutdown begins. Binding entry
 	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race

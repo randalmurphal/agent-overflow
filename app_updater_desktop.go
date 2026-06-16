@@ -67,20 +67,28 @@ func initUpdater(appService *App, app *application.App) {
 	// including the body read — a fixed cap would abort downloads on slow
 	// links. Per-call deadlines via context (updaterCheckTimeout /
 	// updaterDownloadTimeout) bound each operation instead; DefaultTransport
-	// still applies sane dial / TLS-handshake timeouts.
+	// still applies sane dial / TLS-handshake timeouts. Shared with the
+	// targetable wrapper so list/by-tag API calls use the same client.
+	httpClient := &http.Client{}
 	provider, err := github.New(github.Config{
 		Repository:    updaterRepository,
 		ChecksumAsset: updaterChecksumAsset,
-		HTTPClient:    &http.Client{},
+		HTTPClient:    httpClient,
 	})
 	if err != nil {
 		log.Printf("updater: github provider init failed: %v — in-app updates disabled", err)
 		return
 	}
 
+	// targetable adds version selection (ListReleases + by-tag download) on top
+	// of the stock latest-only provider; verifiedProvider still wraps it, so
+	// every resolved release — latest or a specific tag — is checksum-verified
+	// or rejected fail-closed.
+	targetable := newTargetableProvider(provider, updaterRepository, updaterChecksumAsset, version, httpClient)
+
 	if err := app.Updater.Init(updater.Config{
 		CurrentVersion: version,
-		Providers:      []updater.Provider{verifiedProvider{inner: provider}},
+		Providers:      []updater.Provider{verifiedProvider{inner: targetable}},
 		Window:         updater.WindowNone, // we drive our own Svelte UI
 	}); err != nil {
 		log.Printf("updater: init failed: %v — in-app updates disabled", err)
@@ -88,6 +96,7 @@ func initUpdater(appService *App, app *application.App) {
 	}
 
 	appService.updater = app.Updater
+	appService.updaterProvider = targetable
 	bridgeUpdaterEvents(appService, app)
 	log.Printf("updater: configured for %s (current version %s)", updaterRepository, version)
 }

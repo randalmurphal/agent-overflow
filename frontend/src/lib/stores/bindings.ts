@@ -271,6 +271,7 @@ export {
 
   // In-app self-update (app_updater.go). LocalOnly — loopback callers only.
   CheckForUpdate,
+  ListReleases,
   DownloadUpdate,
   RestartToUpdate,
 
@@ -311,6 +312,7 @@ export {
   GitWorkspaceState,
   GitStatusSubscriptionResult,
   MCPAuthInitResult,
+  ReleaseSummary,
   RemoteEndpointSummary,
   TerminalOpenOptions,
   UpdateAvailability,

@@ -990,6 +990,87 @@ export const QueuedItem = flushqueue$0.QueuedItem;
 export type QueuedItem = flushqueue$0.QueuedItem;
 
 /**
+ * ReleaseSummary describes one installable release for the version picker. Only
+ * releases that ship an asset for the running platform AND a checksum sidecar
+ * are surfaced — anything else can't be installed here, so it's omitted.
+ */
+export class ReleaseSummary {
+    /**
+     * e.g. "v0.0.7"
+     */
+    "tag": string;
+
+    /**
+     * tag without the leading "v"
+     */
+    "version": string;
+
+    /**
+     * release title
+     */
+    "name": string;
+
+    /**
+     * RFC3339, or "" if absent
+     */
+    "publishedAt": string;
+    "prerelease": boolean;
+
+    /**
+     * newest stable (matches /releases/latest)
+     */
+    "isLatest": boolean;
+
+    /**
+     * same version as the running build
+     */
+    "isCurrent": boolean;
+
+    /**
+     * older than the running build (a downgrade)
+     */
+    "isOlder": boolean;
+
+    /** Creates a new ReleaseSummary instance. */
+    constructor($$source: Partial<ReleaseSummary> = {}) {
+        if (!("tag" in $$source)) {
+            this["tag"] = "";
+        }
+        if (!("version" in $$source)) {
+            this["version"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("publishedAt" in $$source)) {
+            this["publishedAt"] = "";
+        }
+        if (!("prerelease" in $$source)) {
+            this["prerelease"] = false;
+        }
+        if (!("isLatest" in $$source)) {
+            this["isLatest"] = false;
+        }
+        if (!("isCurrent" in $$source)) {
+            this["isCurrent"] = false;
+        }
+        if (!("isOlder" in $$source)) {
+            this["isOlder"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReleaseSummary instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReleaseSummary {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReleaseSummary($$parsedSource as Partial<ReleaseSummary>);
+    }
+}
+
+/**
  * RemoteEndpointSummary is the wire shape returned by
  * ListRemoteEndpoints. Aliased to the canonical settings type so the
  * projection (and its token-redaction guarantee) lives next to the
