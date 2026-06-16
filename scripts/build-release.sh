@@ -151,13 +151,13 @@ if [ "$SKIP_MACOS" -eq 0 ]; then
 		Darwin)
 			echo "==> Building macOS app bundle"
 			( cd "$ROOT_DIR" && VERSION="$VERSION" wails3 task darwin:package )
-			( cd "$ROOT_DIR/bin" && zip -qr "$OUT_DIR/AgentOverflow-macos.zip" "agent-overflow.app" )
+			( cd "$ROOT_DIR/bin" && zip -qr "$OUT_DIR/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
 			;;
 		*)
 			if command -v docker >/dev/null 2>&1 && docker image inspect wails-cross >/dev/null 2>&1; then
 				echo "==> Building macOS app bundle with Docker cross image"
 				( cd "$ROOT_DIR" && VERSION="$VERSION" wails3 task darwin:package )
-				( cd "$ROOT_DIR/bin" && zip -qr "$OUT_DIR/AgentOverflow-macos.zip" "agent-overflow.app" )
+				( cd "$ROOT_DIR/bin" && zip -qr "$OUT_DIR/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
 			else
 				echo "==> Skipping macOS app bundle; Docker image wails-cross is not available."
 			fi

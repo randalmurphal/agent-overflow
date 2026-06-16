@@ -54,7 +54,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev zip
+          sudo apt-get install -y gcc pkg-config libgtk-4-dev libwebkitgtk-6.0-dev zip
 
       - name: Install project tools
         run: |
@@ -128,13 +128,13 @@ jobs:
         run: |
           VERSION="$VERSION" wails3 task darwin:package
           mkdir -p "dist/release/$VERSION"
-          ( cd bin && zip -qr "../dist/release/$VERSION/AgentOverflow-macos.zip" "agent-overflow.app" )
+          ( cd bin && zip -qr "../dist/release/$VERSION/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
 
       - name: Upload raw macOS artifact
         uses: actions/upload-artifact@v7
         with:
           name: macos-raw
-          path: dist/release/${{ env.VERSION }}/AgentOverflow-macos.zip
+          path: dist/release/${{ env.VERSION }}/agent-overflow-darwin-arm64.zip
           if-no-files-found: error
 
   package:
@@ -198,6 +198,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           release_tag="v$VERSION"
-          gh release view "$release_tag" >/dev/null 2>&1 || gh release create "$release_tag" --title "Agent Overflow $release_tag" --notes "Direct test release."
-          gh release upload "$release_tag" dist/release/"$VERSION"/* --clobber
+          # Write-once: a published release is the integrity anchor clients pull
+          # and verify against, so refuse to overwrite one. Re-running or
+          # re-pushing a tag fails loudly instead of silently swapping the bytes
+          # users download. Delete the release by hand to deliberately republish.
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            echo "Release $release_tag already exists — refusing to overwrite published assets." >&2
+            echo "Delete the release manually if you intend to republish this tag." >&2
+            exit 1
+          fi
+          # --generate-notes builds the body from merged PRs/commits since the
+          # previous tag; the client renders it in the Updates panel.
+          gh release create "$release_tag" \
+            --title "Agent Overflow $release_tag" \
+            --generate-notes \
+            dist/release/"$VERSION"/*

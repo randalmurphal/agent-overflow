@@ -208,7 +208,7 @@ artifact_name_for_mode() {
 			printf '%s\n' agent-overflow-wsl-amd64.exe
 			;;
 		macos)
-			printf '%s\n' AgentOverflow-macos.zip
+			printf '%s\n' agent-overflow-darwin-arm64.zip
 			;;
 		*) echo "ERROR: unsupported mode: $MODE" >&2; exit 2 ;;
 	esac

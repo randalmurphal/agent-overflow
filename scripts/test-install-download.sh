@@ -22,7 +22,7 @@ write_checksums() {
 	(
 		cd "$dir"
 		rm -f SHASUMS256
-		for file in AgentOverflow-macos.zip agent-overflow-linux-amd64 agent-overflow-wsl-amd64.exe appicon.png; do
+		for file in agent-overflow-darwin-arm64.zip agent-overflow-linux-amd64 agent-overflow-wsl-amd64.exe appicon.png; do
 			printf '%s  %s\n' "$(hash_file "$file")" "$file"
 		done > SHASUMS256
 	)
@@ -38,7 +38,7 @@ make_fake_release() {
 	mkdir -p "$macos_stage/Agent Overflow.app/Contents/MacOS"
 	printf '#!/usr/bin/env sh\nexit 0\n' > "$macos_stage/Agent Overflow.app/Contents/MacOS/agent-overflow"
 	chmod +x "$macos_stage/Agent Overflow.app/Contents/MacOS/agent-overflow"
-	( cd "$macos_stage" && zip -qr "$dir/AgentOverflow-macos.zip" "Agent Overflow.app" )
+	( cd "$macos_stage" && zip -qr "$dir/agent-overflow-darwin-arm64.zip" "Agent Overflow.app" )
 	cp "$ROOT_DIR/build/appicon.png" "$dir/appicon.png"
 	write_checksums "$dir"
 }

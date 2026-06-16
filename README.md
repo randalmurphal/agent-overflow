@@ -88,7 +88,7 @@ local artifact path still works when you want to bypass download mode:
 
 ```sh
 ./scripts/install.sh --linux ./dist/release/0.0.1/agent-overflow-linux-amd64
-./scripts/install.sh --macos ./dist/release/0.0.1/AgentOverflow-macos.zip
+./scripts/install.sh --macos ./dist/release/0.0.1/agent-overflow-darwin-arm64.zip
 ./scripts/install.sh --wsl ./dist/release/0.0.1/agent-overflow-wsl-amd64.exe
 ```
 
