@@ -71,7 +71,7 @@
   <div
     class="flex items-center gap-3 text-[0.625rem] uppercase tracking-[0.18em] text-fg-subtle"
   >
-    <div class="h-px flex-1 bg-border-subtle"></div>
+    <div class="h-px flex-1 bg-border-strong"></div>
     {#if hasCapture}
       <button
         type="button"
@@ -94,7 +94,7 @@
     {:else}
       <span>{label}</span>
     {/if}
-    <div class="h-px flex-1 bg-border-subtle"></div>
+    <div class="h-px flex-1 bg-border-strong"></div>
   </div>
 
   {#if hasCapture && expanded}

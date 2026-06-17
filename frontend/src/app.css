@@ -8,6 +8,11 @@
   --terminal-bg: #000000;
   --code-inline-bg: oklch(0.275 0.014 285.82);
   --border: oklch(0.3 0.014 285.82);
+  /* Louder counterpart to --border / --border-subtle: the "prominent"
+     step of the border scale. On dark surfaces "more prominent" means
+     lighter, so this sits brighter than --border. Drives turn / response
+     dividers and hover-emphasized control borders (WorktreeNameInput). */
+  --border-strong: oklch(0.52 0.014 285.82);
   --text-primary: oklch(0.95 0.006 285.82);
   --text-secondary: oklch(0.7 0.006 285.82);
   /* Cobalt-violet primary. Replaces the prior generic dev-tool blue so
@@ -89,6 +94,12 @@ html.light {
   --terminal-bg: #fafafb;
   --code-inline-bg: oklch(0.9 0.012 255);
   --border: oklch(0.84 0.014 255);
+  /* Light-mode "prominent" border. The dark block goes lighter than
+     --border; light mode goes the other way — toward white the line
+     vanishes against --surface-0 (0.985), so prominence here means a
+     touch darker than --border, not brighter. Keeps the same
+     subtle < border < strong contrast ordering in both themes. */
+  --border-strong: oklch(0.74 0.016 255);
   --text-primary: oklch(0.23 0.014 255);
   --text-secondary: oklch(0.48 0.018 255);
   --accent: oklch(0.55 0.18 276);
@@ -187,6 +198,7 @@ html.light {
   --color-fg-subtle: var(--fg-subtle);
   --color-fg-hint: var(--fg-hint);
   --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
   --color-card: var(--card);
 
   /* Shadow scale exposed as utilities. */

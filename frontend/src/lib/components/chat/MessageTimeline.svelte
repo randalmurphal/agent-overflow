@@ -1653,14 +1653,14 @@
                        classes above change. -->
                   <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
                     <div class="my-3 flex h-[1.625rem] items-center gap-3">
-                      <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+                      <span class="h-px flex-1 bg-border-strong" aria-hidden="true"></span>
                       {#if showResponsePill}
                         <span
                           class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[0.625rem] uppercase leading-tight tracking-[0.14em] text-text-secondary"
                         >
                           Response{#if responseDuration}{' '}<span class="normal-case tabular-nums tracking-normal">{responseDuration}</span>{/if}
                         </span>
-                        <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+                        <span class="h-px flex-1 bg-border-strong" aria-hidden="true"></span>
                       {/if}
                     </div>
                   </div>
