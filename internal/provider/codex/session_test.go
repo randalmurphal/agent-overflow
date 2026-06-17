@@ -1271,6 +1271,56 @@ func TestDispatchLineSuppressesChildCompacted(t *testing.T) {
 	}
 }
 
+// TestDispatchLineSuppressesChildContextCompactionItem ensures the newer
+// `contextCompaction` item lifecycle cannot leak a child compaction divider
+// onto the parent thread. Older Codex builds emitted `thread/compacted`;
+// current builds emit `item/completed` with item.type = contextCompaction.
+func TestDispatchLineSuppressesChildContextCompactionItem(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"child-provider-1","turnId":"child-turn-1","item":{"type":"contextCompaction","id":"compact-child-1"},"completedAtMs":1781709441420}}`))
+
+	if len(events) != 0 {
+		t.Fatalf("expected no events for child context compaction item, got %+v", events)
+	}
+}
+
+func TestDispatchLineEmitsParentContextCompactionItem(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		codexThreadID:       "provider-parent",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","turnId":"parent-turn-1","item":{"type":"contextCompaction","id":"compact-parent-1"},"completedAtMs":1781709692716}}`))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 parent compaction event, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventCompactBoundary {
+		t.Fatalf("event kind = %q, want %q", events[0].Kind, provider.EventCompactBoundary)
+	}
+	if events[0].ItemID != "compact-parent-1" {
+		t.Fatalf("item id = %q, want compact-parent-1", events[0].ItemID)
+	}
+	if events[0].ThreadID != "parent-thread" {
+		t.Fatalf("thread id = %q, want parent-thread", events[0].ThreadID)
+	}
+}
+
 // TestDispatchLineSuppressesChildNameUpdated ensures child-thread name updates
 // don't rename the parent thread.
 func TestDispatchLineSuppressesChildNameUpdated(t *testing.T) {

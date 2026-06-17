@@ -44,10 +44,9 @@ func (s *Session) allSubagentNotificationsResolveToParent(notifications []subage
 
 // isChildTurnLifecycleNotification lists the methods that drive the
 // child-spawn EventSubagentStatus emission (see childLifecycleEvent
-// below). Coupled-pair with `isChildSuppressedThreadNotification`: these
-// two functions partition the child-thread notifications we care about
-// — anything in either set is intercepted before reaching the parent
-// dispatch in session_notifications.go.
+// below). The child lifecycle and suppression helpers partition the
+// child-thread notifications we care about — anything in those sets is
+// intercepted before reaching the parent dispatch in session_notifications.go.
 func isChildTurnLifecycleNotification(method string) bool {
 	switch method {
 	case "turn/started", "turn/completed":
@@ -69,7 +68,8 @@ func isChildTurnLifecycleNotification(method string) bool {
 // `turn/started` / `turn/completed` are intentionally NOT here — they
 // drive the EventSubagentStatus emission that the spawn card needs.
 // Routing for those lives in `isChildTurnLifecycleNotification` above
-// (coupled-pair: adding to one without the other is a subtle bug).
+// (adding child notification handling in one helper but not the matching
+// lifecycle / suppression helper is a subtle bug).
 //
 // `error` and unrecognised `thread/*` methods (e.g. a future
 // `thread/error`) are ALSO intentionally not suppressed — subagent
@@ -81,6 +81,20 @@ func isChildSuppressedThreadNotification(method string) bool {
 		"thread/compacted",
 		"thread/name/updated":
 		return true
+	default:
+		return false
+	}
+}
+
+// isChildSuppressedItemNotification lists item lifecycle notifications that
+// describe child-thread state rather than child transcript content. Codex now
+// emits compaction as `item/*` with `item.type:"contextCompaction"` instead of
+// only the older `thread/compacted` notification, so this mirrors
+// isChildSuppressedThreadNotification for that item shape.
+func isChildSuppressedItemNotification(method string, params json.RawMessage) bool {
+	switch method {
+	case "item/started", "item/completed":
+		return classifyCodexItemType(params) == "contextCompaction"
 	default:
 		return false
 	}

@@ -42,17 +42,21 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 	if method == "thread/started" {
 		s.rememberAgentMetaForProviderThread(providerThreadID, params)
 	}
-	if parentToolUseID != "" && isChildSuppressedThreadNotification(method) {
-		// Drop child-thread state notifications that would otherwise
-		// overwrite the parent thread's projection. See
-		// isChildSuppressedThreadNotification for the rationale.
-		return
-	}
-	if parentToolUseID != "" && isChildTurnLifecycleNotification(method) {
-		if evt := s.childLifecycleEvent(method, params, parentToolUseID); evt != nil {
-			s.onEvent(*evt)
+	if parentToolUseID != "" {
+		childStateNotification := isChildSuppressedThreadNotification(method) ||
+			isChildSuppressedItemNotification(method, params)
+		if childStateNotification {
+			// Drop child-thread state notifications that would otherwise
+			// overwrite the parent thread's projection. See the suppression
+			// helpers in collab_agents.go for the rationale.
+			return
 		}
-		return
+		if isChildTurnLifecycleNotification(method) {
+			if evt := s.childLifecycleEvent(method, params, parentToolUseID); evt != nil {
+				s.onEvent(*evt)
+			}
+			return
+		}
 	}
 
 	if method == "item/plan/delta" {
