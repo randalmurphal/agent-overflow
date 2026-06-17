@@ -19,11 +19,11 @@ function lex(text: string, extension: ReturnType<typeof buildPathLinkExtension>)
     gfm: true,
     extensions: {
       block: [],
-      inline: [extension.tokenizer.bind(extension)],
+      inline: [extension.tokenizer],
       childTokens: {},
       renderers: {},
       startBlock: [],
-      startInline: [extension.start.bind(extension)],
+      startInline: [extension.start],
     },
     // marked's options bag carries more fields, but the inline lexer
     // only reads what we listed above.
@@ -277,6 +277,71 @@ describe('buildPathLinkExtension', () => {
     expect(links).toHaveLength(2);
     expect(links[0].raw).toBe('src/foo.ts');
     expect(links[1].raw).toBe('internal/router.go');
+  });
+
+  it('rewrites an allowlisted markdown link href to the open-in-editor scheme', () => {
+    const path = '/workspace/src/external_jwt.py';
+    const ext = buildPathLinkExtension([{ path }], '/workspace');
+    const links = findLinks(lex(`[external_jwt.py](${path}:636)`, ext));
+
+    expect(links).toHaveLength(1);
+    expect(links[0].raw).toBe(`[external_jwt.py](${path}:636)`);
+    expect(links[0].childTypes).toEqual(['text']);
+    expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
+    expect(links[0].href).toContain(`path=${encodeURIComponent(path)}`);
+    expect(links[0].href).toContain('line=636');
+    expect(links[0].href).toContain('workspace=%2Fworkspace');
+  });
+
+  it('rewrites an adjacent allowlisted markdown link', () => {
+    const path = '/workspace/src/external_jwt.py';
+    const ext = buildPathLinkExtension([{ path }], '/workspace');
+    const links = findLinks(lex(`prefix[external_jwt.py](${path}:636)`, ext));
+
+    expect(links).toHaveLength(1);
+    expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
+    expect(links[0].href).toContain('line=636');
+  });
+
+  it('extracts :line:col from an allowlisted markdown link href', () => {
+    const path = '/workspace/src/external_jwt.py';
+    const ext = buildPathLinkExtension([{ path }], '/workspace');
+    const links = findLinks(lex(`[external_jwt.py](${path}:636:9)`, ext));
+
+    expect(links).toHaveLength(1);
+    expect(links[0].href).toContain('line=636');
+    expect(links[0].href).toContain('col=9');
+  });
+
+  it('extracts the start line from an allowlisted markdown link href range', () => {
+    const path = '/workspace/src/external_jwt.py';
+    const ext = buildPathLinkExtension([{ path }], '/workspace');
+    const links = findLinks(lex(`[external_jwt.py](${path}:636-640)`, ext));
+
+    expect(links).toHaveLength(1);
+    expect(links[0].href).toContain('line=636');
+    expect(links[0].href).not.toContain('line=640');
+    expect(links[0].href).not.toContain('col=');
+  });
+
+  it('does not create nested path links when a markdown link label is also a path', () => {
+    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '/workspace');
+    const links = findLinks(lex('[src/foo.ts](src/foo.ts:42)', ext));
+
+    expect(links).toHaveLength(1);
+    expect(links[0].raw).toBe('[src/foo.ts](src/foo.ts:42)');
+    expect(links[0].childTypes).toEqual(['text']);
+    expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
+    expect(links[0].href).toContain('line=42');
+  });
+
+  it('preserves a normal markdown link when the href path is not allowlisted', () => {
+    const ext = buildPathLinkExtension([{ path: '/workspace/src/external_jwt.py' }], '/workspace');
+    const href = '/workspace/src/other.py:636';
+    const links = findLinks(lex(`[other.py](${href})`, ext));
+
+    expect(links).toHaveLength(1);
+    expect(links[0].href).toBe(href);
   });
 
   it('widens to include a leading @ when preceded by a boundary', () => {

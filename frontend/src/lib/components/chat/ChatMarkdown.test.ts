@@ -116,6 +116,45 @@ describe('<ChatMarkdown> path-link rendering', () => {
     expect(anchor).toBeNull();
   });
 
+  it('routes an allowlisted markdown file link through the editor href with line number', async () => {
+    const path = '/repo/src/external_jwt.py';
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: `[external_jwt.py](${path}:636)`,
+        workspacePath: '/repo',
+        pathRefs: [{ path }],
+      },
+    });
+
+    await waitFor(() => {
+      const anchor = container.querySelector('a[href^="agent-overflow:open"]');
+      expect(anchor).not.toBeNull();
+      expect(anchor?.textContent).toBe('external_jwt.py');
+      const href = anchor?.getAttribute('href') ?? '';
+      expect(href).toContain(`path=${encodeURIComponent(path)}`);
+      expect(href).toContain('line=636');
+      expect(href).toContain('workspace=%2Frepo');
+    });
+  });
+
+  it('renders one editor anchor when a markdown link label is also an allowlisted path', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '[src/foo.ts](src/foo.ts:42)',
+        workspacePath: '/repo',
+        pathRefs: [{ path: 'src/foo.ts' }],
+      },
+    });
+
+    await waitFor(() => {
+      const anchors = container.querySelectorAll('a[href^="agent-overflow:open"]');
+      expect(anchors).toHaveLength(1);
+      const href = anchors[0].getAttribute('href') ?? '';
+      expect(href).toContain('path=src%2Ffoo.ts');
+      expect(href).toContain('line=42');
+    });
+  });
+
   it('rejects a raw markdown link with the path-link scheme but no nonce', async () => {
     // The agent's prose flows verbatim through ChatMarkdown. A
     // hostile agent could try to short-circuit the validator by

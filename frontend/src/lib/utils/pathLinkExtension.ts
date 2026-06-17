@@ -78,6 +78,14 @@ const BOUNDARY_CHARS = new Set<string>([
   '<', '>', '=',
 ]);
 
+// Shared suffix grammar for every path-link surface:
+// `:line`, `:line:col`, and `:line-endLine`. The editor opens at the
+// start line for ranges, so the end line is intentionally consumed but
+// not captured.
+const PATH_SUFFIX_SOURCE = `:(\\d+)(?:-\\d+|:(\\d+))?`;
+const OPTIONAL_PATH_SUFFIX_SOURCE = `(?:${PATH_SUFFIX_SOURCE})?`;
+const PATH_SUFFIX_RE = new RegExp(`^${PATH_SUFFIX_SOURCE}$`);
+
 function isBoundary(ch: string | undefined): boolean {
   return ch === undefined || BOUNDARY_CHARS.has(ch);
 }
@@ -86,7 +94,7 @@ interface PathLinkExtension {
   name: 'pathLink';
   level: 'inline';
   start(src: string): number | undefined;
-  tokenizer(src: string, tokens: Token[] | TokensList): GenericLinkToken | undefined;
+  tokenizer(this: unknown, src: string, tokens: Token[] | TokensList): GenericLinkToken | undefined;
 }
 
 // Shape that satisfies both marked's runtime contract and streamdown's
@@ -94,6 +102,23 @@ interface PathLinkExtension {
 // patched package's deep import path).
 interface GenericLinkToken extends Tokens.Link {
   type: 'link';
+}
+
+interface PathLinkTokenizerContext {
+  lexer?: {
+    state?: {
+      inLink?: boolean;
+    };
+    tokenizer?: {
+      link?: (src: string) => Tokens.Link | Tokens.Image | undefined;
+    };
+  };
+}
+
+interface ParsedPathTarget {
+  path: string;
+  line: number | undefined;
+  col: number | undefined;
 }
 
 /**
@@ -148,9 +173,8 @@ export function buildPathLinkExtension(
   // `:line` / `:line:col` / `:line-endLine` variants so an agent
   // referencing a range gets the same treatment from the prose
   // tokenizer and the tool-card preview matcher.
-  const suffix = `(?::(\\d+)(?:-\\d+|:(\\d+))?)?`;
-  const bareRe = new RegExp(`^(@)?(${alternation})${suffix}`);
-  const wrappedRe = new RegExp(`^\`(@)?(${alternation})${suffix}\``);
+  const bareRe = new RegExp(`^(@)?(${alternation})${OPTIONAL_PATH_SUFFIX_SOURCE}`);
+  const wrappedRe = new RegExp(`^\`(@)?(${alternation})${OPTIONAL_PATH_SUFFIX_SOURCE}\``);
 
   // Build a link token from a successful regex match. `childKind`
   // selects the marked token type that wraps the visible text inside
@@ -173,13 +197,30 @@ export function buildPathLinkExtension(
     tokens: [{ type: childKind, raw, text: inner }],
   });
 
+  const parseAllowlistedTarget = (target: string): ParsedPathTarget | null => {
+    for (const path of paths) {
+      if (!target.startsWith(path)) continue;
+      const suffixText = target.slice(path.length);
+      const suffix = parsePathSuffix(suffixText);
+      if (!suffix) continue;
+      return { path, line: suffix.line, col: suffix.col };
+    }
+    return null;
+  };
+
   return {
     name: 'pathLink',
     level: 'inline',
     start(src) {
-      return earliestPathHit(src, paths);
+      return earliestPathLinkHit(src, paths);
     },
-    tokenizer(src, tokens) {
+    tokenizer(this: unknown, src, tokens) {
+      if (isInsideMarkdownLinkLabel(this)) return undefined;
+
+      if (src.startsWith('[')) {
+        return markdownPathLinkToken(src, this, parseAllowlistedTarget, workspacePath);
+      }
+
       // Boundary check: marked invokes inline extensions at every
       // position it advances to — including positions reached by
       // consuming non-extension text. Without this guard, an
@@ -285,7 +326,7 @@ export function parsePathLinkHref(href: string | null | undefined): {
  * "no allowlisted path appears anywhere in this slice" and the lexer
  * falls through to its built-in tokenizers.
  */
-function earliestPathHit(src: string, paths: readonly string[]): number | undefined {
+function earliestPathLinkHit(src: string, paths: readonly string[]): number | undefined {
   let earliest = -1;
   for (const path of paths) {
     let from = 0;
@@ -308,7 +349,56 @@ function earliestPathHit(src: string, paths: readonly string[]): number | undefi
       from = idx + 1;
     }
   }
+  const markdownHit = earliestMarkdownLinkHit(src);
+  if (markdownHit !== undefined && (earliest === -1 || markdownHit < earliest)) {
+    earliest = markdownHit;
+  }
   return earliest === -1 ? undefined : earliest;
+}
+
+function earliestMarkdownLinkHit(src: string): number | undefined {
+  const idx = src.indexOf('](');
+  if (idx <= 0) return undefined;
+  const open = src.lastIndexOf('[', idx);
+  return open === -1 ? undefined : open;
+}
+
+function markdownPathLinkToken(
+  src: string,
+  ctx: unknown,
+  parseAllowlistedTarget: (target: string) => ParsedPathTarget | null,
+  workspacePath: string,
+): GenericLinkToken | undefined {
+  const tokenizerContext = ctx as PathLinkTokenizerContext;
+  const token = tokenizerContext.lexer?.tokenizer?.link?.(src);
+  if (!token || token.type !== 'link') return undefined;
+  const parsed = parseAllowlistedTarget(token.href);
+  if (!parsed) return token;
+  return {
+    ...token,
+    href: buildPathLinkHref(parsed.path, parsed.line, parsed.col, workspacePath),
+  };
+}
+
+function parsePathSuffix(suffix: string): {
+  line: number | undefined;
+  col: number | undefined;
+} | null {
+  if (suffix === '') {
+    return { line: undefined, col: undefined };
+  }
+  const match = PATH_SUFFIX_RE.exec(suffix);
+  if (!match) return null;
+  const line = Number(match[1]);
+  const col = match[2] ? Number(match[2]) : undefined;
+  if (!Number.isSafeInteger(line) || line <= 0) return null;
+  if (col !== undefined && (!Number.isSafeInteger(col) || col <= 0)) return null;
+  return { line, col };
+}
+
+function isInsideMarkdownLinkLabel(ctx: unknown): boolean {
+  const tokenizerContext = ctx as PathLinkTokenizerContext;
+  return tokenizerContext.lexer?.state?.inLink === true;
 }
 
 function escapeRegex(s: string): string {
