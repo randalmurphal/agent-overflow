@@ -95,85 +95,62 @@ export function recordTimelineRenderTrace(
 
 export function startTimelineRowResizeTrace(root: Element): () => void {
   if (!isUiRenderTraceEnabled()) return () => {};
+  if (typeof ResizeObserver === 'undefined') return () => {};
 
   const ROW_SELECTOR = '[data-row-index]';
-  const tracked = new Map<Element, { rowIndex: string; height: number | null }>();
-  const dirtyRows = new Set<Element>();
-  let measureFrame: number | null = null;
+  const trackedHeights = new Map<Element, number | null>();
 
-  const measureRowHeight = (el: Element): number =>
-    Math.round((el as HTMLElement).getBoundingClientRect().height);
-
-  const measureTrackedRows = () => {
-    measureFrame = null;
-    const rowsToMeasure = Array.from(dirtyRows);
-    dirtyRows.clear();
-    for (const el of rowsToMeasure) {
-      const t = tracked.get(el);
-      if (!t) continue;
-      if (!el.isConnected) {
-        tracked.delete(el);
+  const resizeObserver = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      const row = entry.target;
+      if (!row.isConnected) {
+        untrackElement(row);
         continue;
       }
-      const newHeight = measureRowHeight(el);
-      if (t.height === null) {
-        t.height = newHeight;
+      const prevHeight = trackedHeights.get(row);
+      if (prevHeight === undefined) continue;
+      const newHeight = Math.round(entry.contentRect.height);
+      if (prevHeight === null) {
+        trackedHeights.set(row, newHeight);
         continue;
       }
-      if (newHeight === t.height) continue;
-      const prevHeight = t.height;
-      t.height = newHeight;
-      const itemEl = el.querySelector<HTMLElement>('[data-item-id]');
+      if (newHeight === prevHeight) continue;
+      trackedHeights.set(row, newHeight);
+      const itemEl = row.querySelector<HTMLElement>('[data-item-id]');
       recordUiTrace('timeline.row.resize', {
-        rowIndex: t.rowIndex,
+        rowIndex: (row as HTMLElement).dataset.rowIndex ?? '',
         itemId: itemEl?.dataset.itemId ?? '',
         prevHeight,
         newHeight,
         delta: newHeight - prevHeight,
       });
     }
-  };
-
-  const scheduleMeasure = () => {
-    if (measureFrame !== null) return;
-    measureFrame = requestAnimationFrame(measureTrackedRows);
-  };
-
-  const markDirty = (el: Element | null) => {
-    if (!el || !tracked.has(el)) return;
-    dirtyRows.add(el);
-    scheduleMeasure();
-  };
-
-  const rowForMutationTarget = (target: Node): Element | null => {
-    if (target instanceof Element) {
-      if (target.matches(ROW_SELECTOR)) return target;
-      return target.closest(ROW_SELECTOR);
-    }
-    return target.parentElement?.closest(ROW_SELECTOR) ?? null;
-  };
+  });
 
   const trackElement = (el: Element) => {
-    if (tracked.has(el)) return;
-    tracked.set(el, {
-      rowIndex: (el as HTMLElement).dataset.rowIndex ?? '',
-      height: null,
-    });
-    markDirty(el);
+    if (trackedHeights.has(el)) return;
+    trackedHeights.set(el, null);
+    resizeObserver.observe(el);
   };
 
   const untrackElement = (el: Element) => {
-    tracked.delete(el);
-    dirtyRows.delete(el);
+    if (!trackedHeights.has(el)) return;
+    resizeObserver.unobserve(el);
+    trackedHeights.delete(el);
+  };
+
+  const mutationTargetIsInsideRow = (target: Node): boolean => {
+    if (target instanceof Element) {
+      return target.closest(ROW_SELECTOR) !== null;
+    }
+    return target.parentElement?.closest(ROW_SELECTOR) !== null;
   };
 
   root.querySelectorAll(ROW_SELECTOR).forEach(trackElement);
 
   const mo = new MutationObserver((mutations) => {
     for (const m of mutations) {
-      if (m.type === 'childList') {
-        markDirty(rowForMutationTarget(m.target));
-      }
+      if (mutationTargetIsInsideRow(m.target)) continue;
       m.addedNodes.forEach((n) => {
         if (!(n instanceof Element)) return;
         if (n.matches(ROW_SELECTOR)) {
@@ -188,22 +165,16 @@ export function startTimelineRowResizeTrace(root: Element): () => void {
         if (n.matches(ROW_SELECTOR)) untrackElement(n);
         n.querySelectorAll?.(ROW_SELECTOR).forEach(untrackElement);
       });
-      if (m.type === 'attributes' || m.type === 'characterData') {
-        markDirty(rowForMutationTarget(m.target));
-      }
     }
   });
   mo.observe(root, {
-    attributes: true,
-    attributeFilter: ['class', 'style'],
-    characterData: true,
     childList: true,
     subtree: true,
   });
 
   return () => {
     mo.disconnect();
-    if (measureFrame !== null) cancelAnimationFrame(measureFrame);
-    tracked.clear();
+    resizeObserver.disconnect();
+    trackedHeights.clear();
   };
 }

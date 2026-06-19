@@ -716,12 +716,10 @@
   });
 
   // Per-row resize tracker. Diagnostic-only — gated on the trace flag, so
-  // production builds skip it entirely. It intentionally avoids adding more
-  // ResizeObservers to DEBUG runs: WebKit already warns when the app's real
-  // content/virtualizer observers loop, and diagnostic observers should not
-  // make that worse. Mutations schedule one rAF measurement pass over mounted
-  // [data-row-index] wrappers and record height deltas after the initial
-  // baseline.
+  // production builds skip it entirely. The helper observes mounted
+  // [data-row-index] wrappers with ResizeObserver and keeps its
+  // MutationObserver scoped to row add/remove discovery, so streaming text
+  // mutations do not trigger trace-side layout measurements.
   $effect(() => {
     if (!isUiRenderTraceEnabled() || !contentEl) return;
     return startTimelineRowResizeTrace(contentEl);
