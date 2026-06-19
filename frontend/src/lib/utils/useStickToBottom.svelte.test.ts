@@ -1694,6 +1694,27 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(false);
     });
 
+    it('clears only its own debug stick-state hook on detach', () => {
+      setUiRenderTraceEnabled(true);
+      try {
+        controller.detach();
+        controller.attach(scrollEl, contentEl);
+        expect(window.__stickState).toBeTypeOf('function');
+
+        controller.detach();
+        expect(window.__stickState).toBeUndefined();
+
+        controller.attach(scrollEl, contentEl);
+        const replacementHook = () => ({ owner: 'newer-controller' });
+        window.__stickState = replacementHook;
+
+        controller.detach();
+        expect(window.__stickState).toBe(replacementHook);
+      } finally {
+        delete window.__stickState;
+      }
+    });
+
     it('attach with new elements detaches old listeners', async () => {
       const newScrollEl = document.createElement('div');
       const newContentEl = document.createElement('div');

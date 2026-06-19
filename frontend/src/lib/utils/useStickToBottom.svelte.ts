@@ -523,6 +523,7 @@ export function createUseStickToBottomController(
   let detachScroll: (() => void) | undefined;
   let detachPointer: (() => void) | undefined;
   let detachKeyTouch: (() => void) | undefined;
+  let stickStateDevHook: (() => Record<string, unknown>) | undefined;
 
   let targetAnimationFrame: number | null = null;
   let targetAnimationResolve: ((result: 'completed' | 'cancelled') => void) | null = null;
@@ -2517,9 +2518,7 @@ export function createUseStickToBottomController(
   // pasting into bug reports.
   function installStickStateDevHook(): void {
     if (typeof window === 'undefined' || !isUiRenderTraceEnabled()) return;
-    (window as Window & {
-      __stickState?: () => Record<string, unknown>;
-    }).__stickState = () => {
+    const hook = () => {
       const dist = scrollEl
         ? scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight
         : null;
@@ -2552,6 +2551,16 @@ export function createUseStickToBottomController(
         publicIsAtBottom: !escapedFromLockState && (isAtBottomState || isNearBottomState),
       };
     };
+    stickStateDevHook = hook;
+    window.__stickState = hook;
+  }
+
+  function uninstallStickStateDevHook(): void {
+    if (typeof window === 'undefined' || !stickStateDevHook) return;
+    if (window.__stickState === stickStateDevHook) {
+      delete window.__stickState;
+    }
+    stickStateDevHook = undefined;
   }
 
   function detach(): void {
@@ -2570,6 +2579,7 @@ export function createUseStickToBottomController(
     detachPointer = undefined;
     detachKeyTouch?.();
     detachKeyTouch = undefined;
+    uninstallStickStateDevHook();
     if (resizeClearTimer) {
       clearTimeout(resizeClearTimer);
       resizeClearTimer = null;

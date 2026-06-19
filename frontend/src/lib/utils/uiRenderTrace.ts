@@ -1,6 +1,7 @@
 import { AppendUIRenderTraceBatch, BookmarkUIRenderTrace } from '../stores/bindings';
 import { getActiveTurn } from '../stores/threadStatuses.svelte';
 import type { ThreadPane } from '../stores/thread.svelte';
+import { redactDiagnosticText } from './diagnosticRedaction';
 import { UI_TRACE_MAX_LINE_BYTES } from './uiTraceLimits';
 
 // The trace surface is opt-in at build time via VITE_AGENT_OVERFLOW_UI_TRACE
@@ -51,6 +52,7 @@ interface UiTraceApi {
 declare global {
   interface Window {
     __agentOverflowUiTrace?: UiTraceApi;
+    __stickState?: () => Record<string, unknown>;
   }
 }
 
@@ -200,16 +202,13 @@ function installBugReportHotkey(): void {
 }
 
 async function captureBugReport(): Promise<void> {
-  const win = window as Window & {
-    __stickState?: () => Record<string, unknown>;
-  };
-  const stickState = win.__stickState?.() ?? null;
+  const stickState = window.__stickState?.() ?? null;
   // Marker trace event — searchable via `grep user.bugReport` on the
   // file. Includes the full stick state so the bug moment is
   // self-describing even without scanning surrounding events.
   recordUiTrace('user.bugReport', {
     capturedAt: Date.now(),
-    href: typeof location !== 'undefined' ? location.href : '',
+    href: typeof location !== 'undefined' ? redactDiagnosticText(location.href) : '',
     stickState,
   });
   // Force-flush before bookmarking so the marker is on disk and the

@@ -41,7 +41,24 @@ type ProbeGlobal = typeof globalThis & {
   __svelteZombieMint?: (report: ZombieMintReport) => void;
 };
 
-export function installZombieMintProbe(): void {
+interface ZombieMintProbeEnv {
+  MODE?: string;
+  VITE_AGENT_OVERFLOW_ZOMBIE_MINT_PROBE?: string;
+}
+
+const ZOMBIE_MINT_PROBE_BUILD_GATE =
+  shouldInstallZombieMintProbe(import.meta.env);
+
+export function shouldInstallZombieMintProbe(env: ZombieMintProbeEnv): boolean {
+  return env.MODE === 'test' || env.VITE_AGENT_OVERFLOW_ZOMBIE_MINT_PROBE === '1';
+}
+
+export function maybeInstallZombieMintProbe(): void {
+  if (!ZOMBIE_MINT_PROBE_BUILD_GATE) return;
+  installZombieMintProbe();
+}
+
+function installZombieMintProbe(): void {
   const g = globalThis as ProbeGlobal;
   if (g.__svelteZombieMint !== undefined) return;
   g.__svelteZombieMint = (report) => {

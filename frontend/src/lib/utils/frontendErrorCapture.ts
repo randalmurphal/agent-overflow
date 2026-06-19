@@ -1,5 +1,6 @@
 import { ReportFrontendErrorBatch } from '../stores/bindings';
 import { UI_TRACE_MAX_LINE_BYTES } from './uiTraceLimits';
+import { redactDiagnosticText } from './diagnosticRedaction';
 
 /*
  * Always-on global error capture. Window `error` and `unhandledrejection`
@@ -188,7 +189,7 @@ function stackOf(value: unknown): string {
 // deliberately keeps transport tokens out of history and LAN responses;
 // an error message embedding a full URL must not undo that.
 function redact(value: string): string {
-  return value.replace(/([?&](?:token|t)=)[^&\s"']+/gi, '$1[redacted]');
+  return redactDiagnosticText(value);
 }
 
 function firstStackFrame(stack: string): string {

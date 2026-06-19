@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { installZombieMintProbe, resetZombieMintProbeForTest } from './zombieMintProbe';
+import {
+  maybeInstallZombieMintProbe,
+  resetZombieMintProbeForTest,
+  shouldInstallZombieMintProbe,
+} from './zombieMintProbe';
 import {
   flushFrontendErrors,
   resetFrontendErrorCaptureForTest,
@@ -18,7 +22,7 @@ describe('zombieMintProbe', () => {
 
   it('reports probe payloads as diagnostic records', async () => {
     setBindingMock('ReportFrontendErrorBatch', async () => '/tmp/frontend-errors.jsonl');
-    installZombieMintProbe();
+    maybeInstallZombieMintProbe();
 
     (globalThis as ProbeGlobal).__svelteZombieMint!({
       kind: 'reconnect',
@@ -43,7 +47,7 @@ describe('zombieMintProbe', () => {
 
   it('redacts secrets in probe stacks and messages', async () => {
     setBindingMock('ReportFrontendErrorBatch', async () => '/tmp/frontend-errors.jsonl');
-    installZombieMintProbe();
+    maybeInstallZombieMintProbe();
 
     (globalThis as ProbeGlobal).__svelteZombieMint!({
       kind: 'connect-dirty',
@@ -69,7 +73,24 @@ describe('zombieMintProbe', () => {
     const g = globalThis as ProbeGlobal;
     const sentinel = () => {};
     g.__svelteZombieMint = sentinel;
-    installZombieMintProbe();
+    maybeInstallZombieMintProbe();
     expect(g.__svelteZombieMint).toBe(sentinel);
+  });
+
+  it('installs through the build-gated entry point in tests', () => {
+    maybeInstallZombieMintProbe();
+    expect((globalThis as ProbeGlobal).__svelteZombieMint).toBeTypeOf('function');
+  });
+
+  it('keeps normal builds opt-in while allowing the explicit probe flag', () => {
+    expect(shouldInstallZombieMintProbe({ MODE: 'production' })).toBe(false);
+    expect(shouldInstallZombieMintProbe({ MODE: 'development' })).toBe(false);
+    expect(
+      shouldInstallZombieMintProbe({
+        MODE: 'production',
+        VITE_AGENT_OVERFLOW_ZOMBIE_MINT_PROBE: '1',
+      }),
+    ).toBe(true);
+    expect(shouldInstallZombieMintProbe({ MODE: 'test' })).toBe(true);
   });
 });

@@ -2,7 +2,7 @@ import { mount } from 'svelte';
 import App from './App.svelte';
 import { appTitleForEnv } from './appTitle';
 import { installFrontendErrorCapture } from './lib/utils/frontendErrorCapture';
-import { installZombieMintProbe } from './lib/utils/zombieMintProbe';
+import { maybeInstallZombieMintProbe } from './lib/utils/zombieMintProbe';
 
 // Self-hosted fonts. Four weights of each family covers every surface
 // the app uses today (body/medium/semibold/bold). Loaded before the
@@ -22,8 +22,11 @@ document.title = appTitleForEnv(import.meta.env);
 
 // Install before mount so mount-time exceptions are captured too.
 installFrontendErrorCapture();
-// Receiver for the patched Svelte runtime's leak probe — must exist
-// before the first render so mount-time mints are captured.
-installZombieMintProbe();
+// Receiver for the patched Svelte runtime's leak probe. The probe is
+// intentionally opt-in because the global callback itself shows up as
+// a heap root in production/debug snapshots; enable with
+// VITE_AGENT_OVERFLOW_ZOMBIE_MINT_PROBE=1 when re-rolling the Svelte
+// patch or investigating a suspected regression.
+maybeInstallZombieMintProbe();
 
 mount(App, { target: document.getElementById('app')! });

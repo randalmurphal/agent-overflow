@@ -17,6 +17,8 @@ describe('uiRenderTrace', () => {
     clearUiRenderTrace();
     setUiRenderTraceEnabled(false);
     delete window.__agentOverflowUiTrace;
+    delete window.__stickState;
+    window.history.replaceState(null, '', '/');
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
@@ -145,8 +147,8 @@ describe('uiRenderTrace', () => {
 
     // Stub the stick-state hook so the marker carries something
     // distinctive.
-    (window as Window & { __stickState?: () => Record<string, unknown> })
-      .__stickState = () => ({ marker: 'sentinel' });
+    window.__stickState = () => ({ marker: 'sentinel' });
+    window.history.pushState(null, '', '/trace?t=supersecret&access_token=access456&safe=1');
 
     // Synthesize Ctrl+Shift+B.
     const event = new KeyboardEvent('keydown', {
@@ -166,6 +168,9 @@ describe('uiRenderTrace', () => {
     expect(marker).toBeDefined();
     expect((marker?.data as { stickState: { marker: string } }).stickState.marker)
       .toBe('sentinel');
+    expect(JSON.stringify(marker)).toContain('t=[redacted]&access_token=[redacted]&safe=1');
+    expect(JSON.stringify(marker)).not.toContain('supersecret');
+    expect(JSON.stringify(marker)).not.toContain('access456');
     expect(clipboardText).toBe(bookmarkPath);
   });
 
