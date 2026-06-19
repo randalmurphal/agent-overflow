@@ -42,6 +42,7 @@
     readMermaidRenderedHeight,
     writeMermaidRenderedHeight,
   } from './renderedHeightCache';
+  import { createRenderedHeightRecorder } from './renderedHeightMeasurement';
 
   // Per-source rendered-height cache. Same story as
   // StreamdownMathHost: the source-text fallback only covers the
@@ -117,39 +118,41 @@
 
   $effect(() => {
     if (!wrapperEl) return;
-    const recordRenderedHeight = () => {
-      // Measure the INNER mermaid wrapper (the one svelte-streamdown
-      // renders the SVG into), not the outer host. The outer host's
-      // offsetHeight is the grid max of `fallback`, `min-height-pin`,
-      // and the inner mermaid wrapper — caching THAT value compounds
-      // across remounts because each remount would treat the
-      // pinned-and-padded value as the new ground truth, and the
-      // post-flip layout (fallback dropped, inner alone dictates)
-      // would appear as a shrink. The inner wrapper's height is the
-      // pure rendered SVG height, which is what subsequent remounts
-      // should pin to so the wrapper holds stable across the
-      // pre→post-flip transition. Same regression shape as
-      // bug-report-20260528T172207Z applied to mermaid.
-      const inner = wrapperEl?.querySelector<HTMLElement>('[data-streamdown-mermaid]');
-      const h = inner?.offsetHeight ?? 0;
-      if (h <= 0) return;
-      writeMermaidRenderedHeight(token.text, h);
+    const sourceKey = token.text;
+    // Measure the INNER mermaid wrapper (the one svelte-streamdown
+    // renders the SVG into), not the outer host. The outer host's
+    // offsetHeight is the grid max of `fallback`, `min-height-pin`,
+    // and the inner mermaid wrapper — caching THAT value compounds
+    // across remounts. The recorder waits until layout reports a
+    // positive inner height so the SVG mutation cannot race ahead of
+    // layout and leave the remount cache empty. Same regression shape
+    // as bug-report-20260528T172207Z applied to mermaid.
+    const heightRecorder = createRenderedHeightRecorder({
+      root: () => wrapperEl,
+      innerSelector: '[data-streamdown-mermaid]',
+      cacheKey: () => sourceKey,
+      writeHeight: writeMermaidRenderedHeight,
+    });
+    const markRendered = () => {
+      mermaidRendered = true;
+      heightRecorder.record();
     };
 
     if (wrapperEl.querySelector('[data-mermaid-svg] *')) {
-      mermaidRendered = true;
-      recordRenderedHeight();
-      return;
+      markRendered();
+      return heightRecorder.cancel;
     }
     const observer = new MutationObserver(() => {
       if (wrapperEl?.querySelector('[data-mermaid-svg] *')) {
-        mermaidRendered = true;
         observer.disconnect();
-        recordRenderedHeight();
+        markRendered();
       }
     });
     observer.observe(wrapperEl, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      heightRecorder.cancel();
+    };
   });
 </script>
 

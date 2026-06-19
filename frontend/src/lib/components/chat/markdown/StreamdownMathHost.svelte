@@ -32,6 +32,7 @@
   import { untrack } from 'svelte';
   import Math from 'svelte-streamdown/math';
   import { readMathRenderedHeight, writeMathRenderedHeight } from './renderedHeightCache';
+  import { createRenderedHeightRecorder } from './renderedHeightMeasurement';
 
   // Per-source rendered-height cache. The source-text fallback alone
   // only protects the FIRST mount: it sizes the wrapper to the
@@ -106,41 +107,43 @@
 
   $effect(() => {
     if (!wrapperEl) return;
-    const recordRenderedHeight = () => {
-      // Measure the INNER math wrapper (the one KaTeX renders into),
-      // not the outer host. The outer host's offsetHeight is the
-      // grid max of `fallback`, `min-height-pin`, and the rendered
-      // math wrapper — caching THAT value compounds across remounts
-      // because each remount would treat the pinned-and-padded value
-      // as the new ground truth, and the post-flip layout (fallback
-      // dropped, min-height drops, math wrapper alone dictates) would
-      // appear as a shrink. The inner wrapper's height is the pure
-      // rendered KaTeX height, which is what subsequent remounts
-      // should pin to so the wrapper holds stable across the
-      // pre→post-flip transition.
-      const inner = wrapperEl?.querySelector<HTMLElement>('[data-streamdown-block-math]');
-      const h = inner?.offsetHeight ?? 0;
-      if (h <= 0) return;
-      writeMathRenderedHeight(token.text, h);
+    const sourceKey = token.text;
+    // Measure the INNER math wrapper (the one KaTeX renders into),
+    // not the outer host. The outer host's offsetHeight is the
+    // grid max of `fallback`, `min-height-pin`, and the rendered
+    // math wrapper — caching THAT value compounds across remounts.
+    // The recorder waits until layout reports a positive inner height
+    // so a renderer mutation that beats layout cannot leave the
+    // remount cache empty.
+    const heightRecorder = createRenderedHeightRecorder({
+      root: () => wrapperEl,
+      innerSelector: '[data-streamdown-block-math]',
+      cacheKey: () => sourceKey,
+      writeHeight: writeMathRenderedHeight,
+    });
+    const markRendered = () => {
+      mathRendered = true;
+      heightRecorder.record();
     };
 
     // Synchronous check first — when the KaTeX cache hits, the inner
     // html is already in the DOM by the time this effect runs and
     // we never need to attach an observer.
     if (wrapperEl.querySelector('.katex')) {
-      mathRendered = true;
-      recordRenderedHeight();
-      return;
+      markRendered();
+      return heightRecorder.cancel;
     }
     const observer = new MutationObserver(() => {
       if (wrapperEl?.querySelector('.katex')) {
-        mathRendered = true;
         observer.disconnect();
-        recordRenderedHeight();
+        markRendered();
       }
     });
     observer.observe(wrapperEl, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      heightRecorder.cancel();
+    };
   });
 </script>
 
