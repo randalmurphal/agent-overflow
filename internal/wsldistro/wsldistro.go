@@ -1,11 +1,10 @@
 package wsldistro
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
 	"path/filepath"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // FileName is the on-disk name of the launcher config under
@@ -40,17 +39,13 @@ func Load(dir string) (*Config, error) {
 	if dir == "" {
 		return nil, errors.New("wsldistro: empty directory path")
 	}
-	path := filepath.Join(dir, FileName)
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
 	var c Config
-	if err := json.Unmarshal(b, &c); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", path, err)
+	found, err := atomicfile.ReadJSON(filepath.Join(dir, FileName), &c)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
 	}
 	return &c, nil
 }
@@ -60,11 +55,12 @@ func Load(dir string) (*Config, error) {
 // Config so a typo at the call site doesn't quietly clobber the file
 // with a zero-value config.
 //
-// Write is atomic via tempfile + Rename so a crash between truncate
-// and flush can't leave a partial wsl.json that the next launch fails
-// to decode. The launcher and the WSL backend both write this file
-// (the launcher after a successful boot, the backend on a Settings
-// change), so torn-write protection is load-bearing.
+// Write is atomic via tempfile + Rename (see internal/atomicfile) so a
+// crash between truncate and flush can't leave a partial wsl.json that
+// the next launch fails to decode. The launcher and the WSL backend
+// both write this file (the launcher after a successful boot, the
+// backend on a Settings change), so torn-write protection is
+// load-bearing.
 func Save(dir string, c *Config) error {
 	if dir == "" {
 		return errors.New("wsldistro: empty directory path")
@@ -72,42 +68,5 @@ func Save(dir string, c *Config) error {
 	if c == nil {
 		return errors.New("wsldistro: nil config")
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dir, err)
-	}
-	b, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode: %w", err)
-	}
-	path := filepath.Join(dir, FileName)
-	tmp, err := os.CreateTemp(dir, FileName+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create tempfile in %s: %w", dir, err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("chmod %s: %w", tmpPath, err)
-	}
-	if _, err := tmp.Write(b); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("write %s: %w", tmpPath, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("sync %s: %w", tmpPath, err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("close %s: %w", tmpPath, err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		cleanup()
-		return fmt.Errorf("rename %s -> %s: %w", tmpPath, path, err)
-	}
-	return nil
+	return atomicfile.WriteJSON(filepath.Join(dir, FileName), c)
 }

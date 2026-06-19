@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"agent-overflow/internal/windowgeom"
 )
 
 // NetworkSettings groups LAN-bind preferences for the embedded
@@ -234,6 +236,15 @@ type Settings struct {
 	// and the focused pane. Same persistence rationale as
 	// ProjectSortMode: webview localStorage is not durable everywhere.
 	PaneLayout PaneLayoutSettings `json:"paneLayout"`
+
+	// Window stores the desktop window placement (position, size, and
+	// maximized/fullscreen state) so the app reopens where it was last
+	// closed. Owned by the Go side, not the frontend — written from
+	// window move/resize events, never through the Settings UI. The zero
+	// value (Valid=false) means "never saved" and the window centers.
+	// Not used by the WSL/Windows launcher, which is a separate window in
+	// a separate coordinate space and persists to its own window.json.
+	Window windowgeom.Geometry `json:"window"`
 }
 
 // DefaultSettings provides sane defaults for all settings fields.

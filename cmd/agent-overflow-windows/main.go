@@ -53,10 +53,12 @@ import (
 
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/uikeys"
+	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed picker.html
@@ -193,26 +195,11 @@ func main() {
 		initialURL = "/loading"
 	}
 
-	app := buildApp(distros, initialURL)
+	// buildApp creates the window (and, when chosen != "", kicks off the
+	// backend launch) on ApplicationStarted — see its doc for why creation is
+	// deferred into the running app loop.
+	app := buildApp(distros, initialURL, chosen, transient)
 	logBootPhase("launcher.before_run", bootStarted)
-
-	if chosen != "" {
-		// We already know which distro; skip the picker and go
-		// straight to launching the backend. The launch path takes
-		// 5-15 seconds on cold boot, so we run it on a goroutine and
-		// the window's /loading state covers the gap.
-		//
-		// launchAndShow owns the WebView URL on every exit path: on
-		// success it points at the WSL backend, on connectivity
-		// failure at /connectivity-error (with the actionable
-		// .wslconfig fix), on any other failure at /picker. Don't
-		// override here — the goroutine just logs.
-		go func() {
-			if err := app.launchAndShow(chosen, transient); err != nil {
-				log.Printf("launch backend: %v", err)
-			}
-		}()
-	}
 
 	app.run()
 }
@@ -367,12 +354,21 @@ func openLog() (*os.File, error) {
 // HTML. It also owns the Launcher / window references so we can flip
 // the window URL once the backend boots.
 type launcherApp struct {
-	wails   *application.App
+	wails *application.App
+	// window is created on the ApplicationStarted handler goroutine and read by
+	// the single-instance callback / launchAndShow; access it via win() (under
+	// mu), never the field directly.
 	window  *application.WebviewWindow
 	distros []wsllauncher.Distro
 
 	mu       sync.Mutex
 	launcher *wsllauncher.Launcher
+
+	// flushGeometry persists the window placement immediately. Set on the
+	// ApplicationStarted handler (with window) and read on shutdown as a
+	// backstop to the WindowClosing flush; both under mu. nil until that
+	// handler runs.
+	flushGeometry func()
 
 	// backendURL holds the full http://127.0.0.1:<port>/?t=<token> URL
 	// once launchAndShow points the WebView at the WSL backend. Read by
@@ -446,6 +442,15 @@ func (a *launcherApp) validateDistroName(name string) error {
 func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	ctx := context.Background()
 
+	// The window is created on the ApplicationStarted handler, which kicks off
+	// this call (or PickDistro does, after the picker has rendered), so it's set
+	// by now; capture it under the mutex once and drive all SetURL calls through
+	// it rather than re-reading the shared field.
+	w := a.win()
+	if w == nil {
+		return errors.New("launchAndShow: window not created yet")
+	}
+
 	started := time.Now()
 	defer logBootPhase("launcher.launch_and_show.total", started)
 
@@ -453,7 +458,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	binPath, err := a.ensurePayloadInstalled(ctx, distro)
 	logBootPhase("launcher.ensure_payload", phaseStarted)
 	if err != nil {
-		a.window.SetURL("/picker")
+		w.SetURL("/picker")
 		return fmt.Errorf("install payload: %w", err)
 	}
 
@@ -464,7 +469,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	})
 	logBootPhase("launcher.wsl_launch", phaseStarted)
 	if err != nil {
-		a.window.SetURL("/picker")
+		w.SetURL("/picker")
 		return fmt.Errorf("launch backend: %w", err)
 	}
 
@@ -487,10 +492,10 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 		log.Printf("connectivity probe failed: %v", err)
 		var httpErr bootstrapHTTPError
 		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusInternalServerError {
-			a.window.SetURL("/startup-error")
+			w.SetURL("/startup-error")
 			return fmt.Errorf("backend failed during startup: %w", err)
 		}
-		a.window.SetURL("/connectivity-error")
+		w.SetURL("/connectivity-error")
 		return fmt.Errorf("backend booted but unreachable from Windows: %w", err)
 	}
 	logBootPhase("launcher.probe_bootstrap", phaseStarted)
@@ -519,7 +524,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	// Hard-coding the IPv4 literal makes the WebView navigation
 	// race-free against the OS resolver and the dual-stack hosts file.
 	url := fmt.Sprintf("http://127.0.0.1:%d/?t=%s", bs.Port, bs.Token)
-	// Same redaction shape probeBootstrap uses (line ~528). The token is
+	// Same redaction shape probeBootstrap uses. The token is
 	// the per-launch credential; leaking it through launcher.log (which
 	// persists in %APPDATA% across runs and is a likely artifact in user
 	// bug reports) would let an attacker with file-system read replay
@@ -529,7 +534,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	// SetURL and the SPA's first bootstrap fetch still finds the token.
 	a.backendURL.Store(&url)
 	phaseStarted = time.Now()
-	a.window.SetURL(url)
+	w.SetURL(url)
 	logBootPhase("launcher.window_set_url", phaseStarted)
 	return nil
 }
@@ -753,7 +758,20 @@ func (a *launcherApp) persistSuccessfulLaunch(distro string) error {
 // make dev-wsl adds the remote-debugging port (so a developer can
 // attach Chrome DevTools / talk CDP from inside WSL) plus the staged
 // memory-reduction experiments described in browserArgs.
-func buildApp(distros []wsllauncher.Distro, initialURL string) *launcherApp {
+// win returns the window under the mutex. It's created on the ApplicationStarted
+// handler goroutine (see buildApp) while the single-instance callback and
+// launchAndShow may read it concurrently; nil until that handler runs.
+func (a *launcherApp) win() *application.WebviewWindow {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.window
+}
+
+// buildApp wires the Wails app and registers the window-creation handler.
+// chosen/transient describe the resolved launch target: when chosen is
+// non-empty the handler also kicks off the backend launch (the picker is
+// skipped).
+func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient bool) *launcherApp {
 	a := &launcherApp{distros: distros}
 	mode := wslSingleInstanceMode()
 	title := appidentity.AppTitle(mode)
@@ -761,7 +779,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL string) *launcherApp {
 
 	app := application.New(application.Options{
 		Name:           title,
-		SingleInstance: wslSingleInstanceOptions(func() *application.WebviewWindow { return a.window }),
+		SingleInstance: wslSingleInstanceOptions(a.win),
 		Services: []application.Service{
 			application.NewService(a),
 		},
@@ -781,9 +799,16 @@ func buildApp(distros []wsllauncher.Distro, initialURL string) *launcherApp {
 		// also lean on the Job Object — this hook is the graceful
 		// shutdown path; the Job Object is the unconditional one.
 		OnShutdown: func() {
+			// Backstop the WindowClosing flush so the final placement is
+			// persisted even if that event didn't fire. Uses the tracker's
+			// in-memory latest, so it's safe after the window is gone.
 			a.mu.Lock()
+			flush := a.flushGeometry
 			l := a.launcher
 			a.mu.Unlock()
+			if flush != nil {
+				flush()
+			}
 			if l != nil {
 				_ = l.Stop()
 			}
@@ -791,7 +816,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL string) *launcherApp {
 	})
 	a.wails = app
 
-	a.window = app.Window.NewWithOptions(application.WebviewWindowOptions{
+	opts := application.WebviewWindowOptions{
 		Title:            title,
 		Width:            1280,
 		Height:           800,
@@ -810,6 +835,37 @@ func buildApp(distros []wsllauncher.Distro, initialURL string) *launcherApp {
 		// Ctrl+R re-navigates with the bootstrap token after the SPA
 		// scrubs it from window.location — see uikeys.BrowserWithReload.
 		KeyBindings: uikeys.BrowserWithReload(a.currentBackendURL),
+	}
+	// Reopen where we left off last. The window is created here — on
+	// ApplicationStarted — rather than before app.Run() so it materializes
+	// synchronously against a live app loop. That's what lets RestoreAndTrack
+	// maximize/fullscreen a restored window on the monitor it was saved on and
+	// reveal it already in that state (Wails' creation-time maximize lands on
+	// the primary and flashes). The placement survives the picker → backend
+	// SetURL navigation because it's the same window object, and is stored
+	// Windows-side in window.json, not the WSL settings.
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		w, flush := uiwindow.RestoreAndTrack(app, opts, loadWindowGeometry(), saveWindowGeometry)
+		a.mu.Lock()
+		a.window = w
+		a.flushGeometry = flush
+		a.mu.Unlock()
+
+		if chosen == "" {
+			return
+		}
+		// We already know which distro; skip the picker and launch the backend.
+		// The launch path takes 5-15s on cold boot, so run it off the event
+		// goroutine while the window's /loading state covers the gap. We start
+		// it only after the window exists so launchAndShow's SetURL calls land.
+		// launchAndShow owns the WebView URL on every exit path: WSL backend on
+		// success, /connectivity-error or /picker on failure — the goroutine
+		// just logs.
+		go func() {
+			if err := a.launchAndShow(chosen, transient); err != nil {
+				log.Printf("launch backend: %v", err)
+			}
+		}()
 	})
 
 	return a

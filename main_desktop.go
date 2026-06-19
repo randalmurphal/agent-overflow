@@ -14,12 +14,17 @@ import (
 	"context"
 	"io/fs"
 	"log"
+	"sync"
 
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/clientmode"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/uikeys"
+	"agent-overflow/internal/uiwindow"
+	"agent-overflow/internal/windowgeom"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 // runClient is the Phase F remote-client entry point. Instead of
@@ -91,11 +96,23 @@ func runClient(rawURL string) {
 // into WSL is a separate cmd/ — see cmd/agent-overflow-windows.
 func runDesktop(listenAddr string) {
 	appService := NewApp()
-	var window *application.WebviewWindow
+	// window + its tracker flush are created on the ApplicationStarted handler
+	// goroutine (see below) and read by the single-instance callback and the
+	// post-Run backstop, so guard both.
+	var (
+		winMu         sync.Mutex
+		window        *application.WebviewWindow
+		flushGeometry func()
+	)
+	getWindow := func() *application.WebviewWindow {
+		winMu.Lock()
+		defer winMu.Unlock()
+		return window
+	}
 	title := appidentity.AppTitle(nativeSingleInstanceMode())
 	app := application.New(application.Options{
 		Name:           title,
-		SingleInstance: desktopSingleInstanceOptions(func() *application.WebviewWindow { return window }),
+		SingleInstance: desktopSingleInstanceOptions(getWindow),
 		Services: []application.Service{
 			application.NewService(appService),
 		},
@@ -121,7 +138,7 @@ func runDesktop(listenAddr string) {
 		fatalf("transport: AppURL is empty after Start (server addr = %q); refusing to fall through to Wails IPC scheme", srv.Addr())
 	}
 
-	window = app.Window.NewWithOptions(application.WebviewWindowOptions{
+	opts := application.WebviewWindowOptions{
 		Title:            title,
 		Width:            1280,
 		Height:           800,
@@ -130,9 +147,30 @@ func runDesktop(listenAddr string) {
 		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
 		URL:              appURL,
 		KeyBindings:      uikeys.BrowserWithReload(srv.AppURL),
+	}
+	// Reopen where we left off last. The window is created on ApplicationStarted
+	// (not here) so it materializes synchronously against a live app loop — that
+	// lets uiwindow.RestoreAndTrack maximize/fullscreen a restored window on the
+	// monitor it was saved on, and reveal it already in that state, instead of
+	// flashing at normal size or always landing on the primary. See
+	// uiwindow.RestoreAndTrack for why creation must happen here.
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		w, flush := uiwindow.RestoreAndTrack(app, opts, loadPersistedWindowGeometry(), appService.persistWindowGeometry)
+		winMu.Lock()
+		window = w
+		flushGeometry = flush
+		winMu.Unlock()
 	})
 
 	runErr := app.Run()
+	// Backstop the WindowClosing flush: persist the final placement from the
+	// tracker's in-memory latest (safe even though the window is now gone).
+	winMu.Lock()
+	flush := flushGeometry
+	winMu.Unlock()
+	if flush != nil {
+		flush()
+	}
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), transportShutdownTimeout)
 	defer cancel()
@@ -142,6 +180,19 @@ func runDesktop(listenAddr string) {
 	if runErr != nil {
 		fatalf("wails run: %v", runErr)
 	}
+}
+
+// loadPersistedWindowGeometry reads the saved desktop window placement from
+// settings.json before ServiceStartup constructs the settings service,
+// mirroring loadPersistedNetworkSettings. Returns the zero (never-saved)
+// Geometry on any failure so a missing or corrupt file simply centers the
+// window at the default size.
+func loadPersistedWindowGeometry() windowgeom.Geometry {
+	dir := bootSettingsDir()
+	if dir == "" {
+		return windowgeom.Geometry{}
+	}
+	return settings.NewService(dir).Get().Window
 }
 
 func desktopSingleInstanceOptions(window func() *application.WebviewWindow) *application.SingleInstanceOptions {

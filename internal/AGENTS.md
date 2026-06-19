@@ -22,6 +22,7 @@ one closest to what you're touching.
 | `screenshot/` | Headless-Chromium-driven full-page capture (chrome-headless-shell + chromedp) backing the design `read_screenshot` MCP tool. |
 | `attachment/` | Message attachment storage (metadata in store, bytes on disk). |
 | `settings/` | Persistent settings JSON with validation. |
+| `atomicfile/` | Crash-safe small-JSON state files: `WriteJSON` (temp + fsync + rename, 0600/0700) and `ReadJSON` (absent → not-found, not error). Backs `wsldistro`'s `wsl.json` and the launcher's `window.json`. Stdlib-only. |
 | `logging/` | Structured NDJSON provider-event logging. |
 | `observability/` | Opt-in OpenTelemetry tracing + NDJSON replay writer. |
 | `platform/` | Runtime-environment probes shared by host-specific packages, such as WSL detection. |
@@ -46,6 +47,8 @@ one closest to what you're touching.
 | `wsldistro/` | Cross-process schema for `%APPDATA%\agent-overflow\wsl.json` — atomic Load/Save and the WSL-side path resolver fed by the launcher's WSLENV-injected env var. Shared between `cmd/agent-overflow-windows` and the WSL backend. |
 | `shellenv/` | Probes the user's login shell for PATH at startup and merges it into `os.Environ()`. Lets `exec.LookPath("claude")` etc. find binaries installed via nvm/asdf/`~/.local/bin` when launched outside a terminal (WSL backend, Finder-launched `.app`). |
 | `uikeys/` | Browser-style WebviewWindow keybindings (Ctrl+/-/=/R/F11) shared by every window the app opens — desktop binary, `--connect` remote client, and the Windows WSL launcher. |
+| `windowgeom/` | GUI-free desktop-window placement: the persisted `Geometry` shape, `Clamp` (validate/anchor a saved window against the current screens), and the debounced `Tracker` that coalesces move/resize/state events into one write. Embedded by `settings`; no Wails. |
+| `uiwindow/` | Wails glue binding a live `WebviewWindow` to `windowgeom`: `RestoreAndTrack` (called from an `ApplicationStarted` handler) creates the window with a saved placement restored — maximized/fullscreen on the monitor it was saved on, no flash — and `Track` wires window events to a debounced sink. GUI-only (imports Wails), like `uikeys`. |
 | `uitrace/` | JSONL diagnostic appenders for the frontend: the dev-only render trace (`AppendUIRenderTraceBatch`) and the always-on runtime-error log (`ReportFrontendErrorBatch`). Validates each line, caps the batch, and rotates at `MaxFileBytes`. |
 | `dirbrowse/` | Project-picker directory listing. Backs the `BrowseDirectory` binding with path normalisation, `.git`-marker detection, EntryLimit truncation, and missing-path fallback. |
 | `keybindings/` | Persisted keybindings config + merge. Owns `Defaults`, atomic Get/Update/Reset Service, and the user-override `Merge` that backs the three Keybindings bindings. |

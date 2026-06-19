@@ -505,26 +505,36 @@ func fatalf(format string, args ...any) {
 	os.Exit(1)
 }
 
+// bootSettingsDir resolves the directory holding settings.json for the
+// boot-time reads that run before App.ServiceStartup constructs the settings
+// service (the App service hasn't initialised yet when main.go builds the
+// transport / window, so we can't reach through it for the path). It mirrors
+// initStores' fallback chain — UserConfigDir → UserHomeDir, then
+// /agent-overflow — so every pre-Start reader resolves the same file the App
+// later writes. Returns "" when neither base dir is resolvable; callers treat
+// that as "no persisted preference".
+func bootSettingsDir() string {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return ""
+		}
+		base = home
+	}
+	return filepath.Join(base, "agent-overflow")
+}
+
 // loadPersistedNetworkSettings reads the user's settings.json without
 // involving App.ServiceStartup so the boot-time transport bind can
 // honor the persisted Phase E LAN-bind preference. Returns the zero
 // value (BindAll=false) on any failure — a corrupt or missing file
 // must not block startup.
-//
-// Why duplicate the configDir math from app.go: the App service hasn't
-// initialised yet when main.go constructs the transport, so we can't
-// reach through it for the settings path. The lookup mirrors
-// initStores' fallback chain (UserConfigDir → UserHomeDir).
 func loadPersistedNetworkSettings() settings.NetworkSettings {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return settings.NetworkSettings{}
-		}
-		configDir = home
+	dir := bootSettingsDir()
+	if dir == "" {
+		return settings.NetworkSettings{}
 	}
-	dir := filepath.Join(configDir, "agent-overflow")
 	return settings.NewService(dir).Get().Network
 }
 

@@ -5,6 +5,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as windowgeom$0 from "../windowgeom/models.js";
+
 /**
  * EditorSettings groups the open-in-editor preferences. Lives in its
  * own nested object so future fields (custom argv template, last-used
@@ -466,6 +470,17 @@ export class Settings {
      */
     "paneLayout": PaneLayoutSettings;
 
+    /**
+     * Window stores the desktop window placement (position, size, and
+     * maximized/fullscreen state) so the app reopens where it was last
+     * closed. Owned by the Go side, not the frontend — written from
+     * window move/resize events, never through the Settings UI. The zero
+     * value (Valid=false) means "never saved" and the window centers.
+     * Not used by the WSL/Windows launcher, which is a separate window in
+     * a separate coordinate space and persists to its own window.json.
+     */
+    "window": windowgeom$0.Geometry;
+
     /** Creates a new Settings instance. */
     constructor($$source: Partial<Settings> = {}) {
         if (!("theme" in $$source)) {
@@ -567,6 +582,9 @@ export class Settings {
         if (!("paneLayout" in $$source)) {
             this["paneLayout"] = (new PaneLayoutSettings());
         }
+        if (!("window" in $$source)) {
+            this["window"] = (new windowgeom$0.Geometry());
+        }
 
         Object.assign(this, $$source);
     }
@@ -583,6 +601,7 @@ export class Settings {
         const $$createField33_0 = $$createType7;
         const $$createField35_0 = $$createType2;
         const $$createField36_0 = $$createType8;
+        const $$createField37_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
@@ -608,6 +627,9 @@ export class Settings {
         if ("paneLayout" in $$parsedSource) {
             $$parsedSource["paneLayout"] = $$createField36_0($$parsedSource["paneLayout"]);
         }
+        if ("window" in $$parsedSource) {
+            $$parsedSource["window"] = $$createField37_0($$parsedSource["window"]);
+        }
         return new Settings($$parsedSource as Partial<Settings>);
     }
 }
@@ -622,3 +644,4 @@ const $$createType5 = RetentionSettings.createFrom;
 const $$createType6 = RemoteEndpoint.createFrom;
 const $$createType7 = $Create.Array($$createType6);
 const $$createType8 = PaneLayoutSettings.createFrom;
+const $$createType9 = windowgeom$0.Geometry.createFrom;

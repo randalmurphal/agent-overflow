@@ -210,6 +210,47 @@ func TestNetworkSettingsBindAllRoundTripAndSparseDefault(t *testing.T) {
 	}
 }
 
+// TestWindowGeometryRoundTripAndSparseDefault confirms the desktop window
+// placement persists like every other nested setting: Update writes the
+// patch, a fresh service reload yields the same placement, and the file omits
+// the key once it equals the (never-saved) default again.
+func TestWindowGeometryRoundTripAndSparseDefault(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{"window": map[string]any{
+		"x": 120, "y": 80, "width": 1100, "height": 720, "maximized": true, "valid": true,
+	}})
+	if err != nil {
+		t.Fatalf("Update(window) error = %v", err)
+	}
+	if updated.Window.X != 120 || updated.Window.Width != 1100 || !updated.Window.Maximized || !updated.Window.Valid {
+		t.Fatalf("Window = %+v, want x=120 w=1100 maximized valid", updated.Window)
+	}
+
+	reloaded := NewService(dir).Get()
+	if reloaded.Window.X != 120 || reloaded.Window.Height != 720 || !reloaded.Window.Valid {
+		t.Fatalf("reloaded Window = %+v, want persisted placement", reloaded.Window)
+	}
+
+	// Reset to the zero (never-saved) placement; the file must omit the
+	// window key entirely since it now equals DefaultSettings.Window.
+	if _, err := svc.Update(map[string]any{"window": map[string]any{}}); err != nil {
+		t.Fatalf("Update(window reset) error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal settings file: %v", err)
+	}
+	if _, ok := fileMap["window"]; ok {
+		t.Fatalf("settings file = %s, want window omitted when default", string(data))
+	}
+}
+
 // TestCollapseDiffPreviewsRoundTripAndSparseDefault confirms the
 // chat-timeline diff-collapse toggle persists like every other
 // setting: Update writes the patch, a fresh service reload yields the
