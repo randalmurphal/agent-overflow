@@ -4416,6 +4416,7 @@ describe('createThreadPane', () => {
       expect(itemCountDuringTransaction).toBe(801);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items[0].id).toBe('t301');
+      expect(pane.pendingTimelineShiftAtHead).toBe(false);
     });
 
     it('defers a recent-window prune when the scroll-controller cannot preserve the visible anchor', async () => {

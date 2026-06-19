@@ -47,6 +47,7 @@
     bottomEdgeGeometry,
     captureTimelineAnchor,
     createAutoLoadGate,
+    isPureKeyedHeadDrop,
     isWithinBottomTriggerZone,
     isWithinTopTriggerZone,
     resolveVisibleTimelineNodeIndex,
@@ -266,6 +267,11 @@
   // live-follow nudge, scroll-to-index) must read THIS, not `groupedNodes`,
   // so the indices line up with what virtua actually renders.
   let revealedNodes = $derived(sliceRevealedNodes(groupedNodes, pane.revealBoundary));
+  let timelineWindowPruneShiftAtHead = $state(false);
+  let timelineWindowPruneShiftResetToken = 0;
+  let virtualizerShiftAtHead = $derived(
+    pane.pendingTimelineShiftAtHead || timelineWindowPruneShiftAtHead,
+  );
   let codexReceiverLabels = $derived.by(() => {
     const provider = pane.thread?.provider;
     // Receiver labels come from spawn-row metadata. Summary-only streaming
@@ -465,6 +471,24 @@
     return intent.anchor !== null && operation.keepsItem(intent.anchor.itemId);
   }
 
+  function timelineNodeKeys(): string[] {
+    return revealedNodes.map((node) => timelineNodeKey(node));
+  }
+
+  function markTimelineWindowPruneShiftForOneFlush(): void {
+    timelineWindowPruneShiftAtHead = true;
+    const resetToken = ++timelineWindowPruneShiftResetToken;
+    void tick().then(() => {
+      if (timelineWindowPruneShiftResetToken !== resetToken) return;
+      timelineWindowPruneShiftAtHead = false;
+    });
+  }
+
+  function clearTimelineWindowPruneShift(): void {
+    timelineWindowPruneShiftResetToken += 1;
+    timelineWindowPruneShiftAtHead = false;
+  }
+
   function restoreBottomAfterTimelineWindowPrune(): void {
     const lastIndex = revealedNodes.length - 1;
     stick.runExternalScroll(() => {
@@ -527,8 +551,13 @@
 
     const release = stick.pauseAutoScroll();
     const token = ++restoreToken;
+    const beforeNodeKeys = timelineNodeKeys();
     try {
       operation.run();
+      const afterNodeKeys = timelineNodeKeys();
+      if (isPureKeyedHeadDrop(beforeNodeKeys, afterNodeKeys)) {
+        markTimelineWindowPruneShiftForOneFlush();
+      }
     } catch (err) {
       release();
       throw err;
@@ -1028,6 +1057,7 @@
       }
       autoLoadOlderGate.reset();
       autoLoadNewerGate.reset();
+      clearTimelineWindowPruneShift();
       if (nextThreadId && scrollSnapshotThreadId) {
         stick.setEscapedFromLock(true);
         // Re-arm the warm-up gate BEFORE the DOM update flushes. The
@@ -1579,7 +1609,7 @@
           bind:this={listRef}
           scrollRef={scrollEl}
           data={revealedNodes}
-          shift={pane.pendingTimelineShiftAtHead}
+          shift={virtualizerShiftAtHead}
           getKey={(node) => timelineNodeKey(node)}
           itemSize={ESTIMATED_ROW_SIZE}
           bufferSize={BUFFER_SIZE_PX}

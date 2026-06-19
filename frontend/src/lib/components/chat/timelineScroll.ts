@@ -124,6 +124,20 @@ export function captureTimelineAnchor(
   };
 }
 
+export function isPureKeyedHeadDrop(
+  beforeKeys: readonly string[],
+  afterKeys: readonly string[],
+): boolean {
+  if (afterKeys.length >= beforeKeys.length) return false;
+  const removedCount = beforeKeys.length - afterKeys.length;
+  for (let index = 0; index < afterKeys.length; index += 1) {
+    if (beforeKeys[removedCount + index] !== afterKeys[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Older edge: viewport within `offsetThreshold` px of the top AND the
  * topmost rendered row within the first `indexThreshold` nodes. The

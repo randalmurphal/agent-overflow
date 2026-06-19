@@ -75,11 +75,11 @@ at the tail and misindexes its whole size cache on a prepend, forcing a
 re-measure of every visible row — the "viewport shifts, scrollbar jumps
 around" load jank.
 
-The store exposes the direction as `pane.pendingTimelineShiftAtHead`, bound
-to `<Virtualizer shift={...}>`, set synchronously at the `items` mutation
-so virtua reads it in the same flush and reset in the paging method's
-`finally`. The grow (prepend/append) and the prune are deliberately split
-across **two flushes** (`await tick()` between them): coalesced, a
+The store exposes the paging direction as `pane.pendingTimelineShiftAtHead`,
+bound into `<Virtualizer shift={...}>`, set synchronously at the `items`
+mutation so virtua reads it in the same flush, and reset in the paging
+method's `finally`. The grow (prepend/append) and the prune are deliberately
+split across **two flushes** (`await tick()` between them): coalesced, a
 head-grow plus a tail-shrink collapse into one net length change that a
 single `shift` boolean cannot describe — and when the page budget equals
 the prune count the net length is unchanged, so virtua dispatches nothing
@@ -89,13 +89,18 @@ virtua core directly; the cache semantics are codified in
 two-flush sequencing + shift direction are covered in
 `thread.svelte.test.ts`.
 
-Only `loadOlder` / `loadNewer` use `shift`; they apply the paired prune
-directly (the dropped end is always opposite the reading viewport, so there
-is nothing to veto or restore). The streaming / settle prune keeps the
-explicit anchor transaction (`preserveTimelineWindowAnchor`, below) — it
-fires under a bottom-pinned viewport mid-turn where the incident-hardened
-defer-and-restore behavior matters — and leaves `pendingTimelineShiftAtHead`
-false.
+`loadOlder` / `loadNewer` apply the paired prune directly (the dropped end is
+always opposite the reading viewport, so there is nothing to veto or restore).
+The streaming / settle prune keeps the explicit anchor transaction
+(`preserveTimelineWindowAnchor`, below) because it can fire under a
+bottom-pinned viewport where the incident-hardened defer-and-restore behavior
+matters. That path does not ask the pane's raw item window whether the prune
+is a head-drop; `<Virtualizer>` receives filtered/grouped `revealedNodes`.
+`MessageTimeline` compares the rendered `timelineNodeKey` list before and
+after the prune, and marks a local one-flush `shift` only when the rendered
+nodes are a strict suffix. That prevents a prune through a Read group,
+notification filter, subagent group, or reveal boundary from splicing virtua's
+size cache against the wrong row set.
 
 ## Live Window Bounds
 

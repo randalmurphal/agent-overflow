@@ -965,7 +965,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // transaction (preserveTimelineWindowAnchor) because it can fire under a
   // bottom-pinned, mid-turn viewport, and it can be vetoed/deferred when the
   // prune would drop the visible anchor (vetoPolicy). Leaves the shift flag
-  // false — virtua is not told this is a head change.
+  // false — MessageTimeline owns the rendered-node head-shift hint because
+  // virtua receives grouped/revealed nodes, not raw pane items.
   function applyPrunedWindow(
     next: PrunedWindow,
     options: {

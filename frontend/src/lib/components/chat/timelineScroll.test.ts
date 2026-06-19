@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { makeItem } from '../../../test/helpers/chat';
-import { groupItemsBySubagent } from '../../utils/subagentGrouping';
+import type { Item } from '../../types/models';
+import { groupConsecutiveReads } from '../../utils/readGrouping';
+import { groupItemsBySubagent, timelineNodeKey } from '../../utils/subagentGrouping';
 import {
   bottomEdgeGeometry,
   captureTimelineAnchor,
   centeredScrollTop,
   createAutoLoadGate,
+  isPureKeyedHeadDrop,
   isWithinBottomTriggerZone,
   isWithinTopTriggerZone,
   resolveVisibleTimelineNodeIndex,
@@ -31,6 +34,11 @@ function gateState(overrides: Partial<AutoLoadGateState> = {}): AutoLoadGateStat
     inTriggerZone: () => true,
     ...overrides,
   };
+}
+
+function timelineNodeKeysForItems(items: Item[]): string[] {
+  return groupConsecutiveReads(groupItemsBySubagent(items)).map((node) =>
+    timelineNodeKey(node));
 }
 
 describe('timelineScroll', () => {
@@ -103,6 +111,51 @@ describe('timelineScroll', () => {
     const nodes = groupItemsBySubagent([makeItem({ id: 'a', summary: 'first' })]);
 
     expect(captureTimelineAnchor(nodes, geometry(-1, 0), 200)).toBeNull();
+  });
+
+  it('detects a pure rendered head drop from virtualizer keys', () => {
+    const before = ['row:a', 'row:b', 'row:c'];
+    const after = ['row:b', 'row:c'];
+
+    expect(isPureKeyedHeadDrop(before, after)).toBe(true);
+    expect(isPureKeyedHeadDrop(before, ['row:a', 'row:b'])).toBe(false);
+    expect(isPureKeyedHeadDrop(before, before)).toBe(false);
+  });
+
+  it('does not treat a prune through a rendered Read group as a pure head drop', () => {
+    const readA = makeItem({
+      id: 'read-a',
+      threadId: 'thread-reads',
+      itemIndex: 0,
+      kind: 'tool_call',
+      toolName: 'Read',
+    });
+    const readB = makeItem({
+      id: 'read-b',
+      threadId: 'thread-reads',
+      itemIndex: 1,
+      kind: 'tool_call',
+      toolName: 'Read',
+    });
+    const tail = makeItem({
+      id: 'tail',
+      threadId: 'thread-reads',
+      itemIndex: 2,
+      kind: 'assistant_text',
+    });
+
+    const beforeKeys = timelineNodeKeysForItems([readA, readB, tail]);
+    const afterKeys = timelineNodeKeysForItems([readB, tail]);
+
+    expect(beforeKeys).toEqual([
+      'rg:thread-reads:reads:read-a',
+      'l:thread-reads:tail',
+    ]);
+    expect(afterKeys).toEqual([
+      'rg:thread-reads:reads:read-b',
+      'l:thread-reads:tail',
+    ]);
+    expect(isPureKeyedHeadDrop(beforeKeys, afterKeys)).toBe(false);
   });
 
   // ============================================================
