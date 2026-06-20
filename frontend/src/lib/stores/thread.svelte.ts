@@ -3543,6 +3543,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     diffCardExpandedOverride: rowUiState.diffCardExpandedOverride,
     setDiffCardExpanded: rowUiState.setDiffCardExpanded,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
+    cachedTimelineRowHeight: rowUiState.cachedTimelineRowHeight,
+    rememberTimelineRowHeight: rowUiState.rememberTimelineRowHeight,
     pruneRowUiState: rowUiState.pruneRowUiState,
     // Live smoother-revealed text for a streaming thinking row.
     // Returns null when no smoother is active (settled rows, non-thinking

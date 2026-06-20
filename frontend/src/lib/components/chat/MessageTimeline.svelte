@@ -59,6 +59,10 @@
     collectTimelineRowUiRetention,
     timelineRowUiPruneSignature,
   } from './timelineRowUiRetention';
+  import {
+    createTimelineRowGeometryReservation,
+    timelineRowGeometryKey,
+  } from './timelineRowGeometry';
 
   // Initial item-size estimate for virtua. Real sizes come from the
   // per-item ResizeObserver virtua wraps each row in; this constant only
@@ -162,6 +166,15 @@
     userMessageActions?: UserMessageActions;
   } = $props();
 
+  const rowGeometryReservation = createTimelineRowGeometryReservation({
+    cachedTimelineRowHeight(key) {
+      return pane.cachedTimelineRowHeight(key);
+    },
+    rememberTimelineRowHeight(key, height) {
+      pane.rememberTimelineRowHeight(key, height);
+    },
+  });
+
   // Inner scroll container. We own scrolling here; <Virtualizer> renders
   // its measured rows inside `contentEl` and reads/writes via scrollRef.
   // The element is wrapped in a non-scrolling `relative flex h-full
@@ -175,6 +188,7 @@
   let contentEl: HTMLDivElement | undefined = $state(undefined);
   // Imperative handle into virtua. Set once Virtualizer mounts.
   let listRef: VirtualizerHandle | undefined = $state(undefined);
+  let rowGeometryWidth = $state(0);
 
   let restoredThreadId: string | null = $state(null);
   // Diagnostic: timestamp of the most recent legitimate `restoredThreadId = null`
@@ -221,6 +235,18 @@
         && !RAIL_EXEMPT_PAYLOAD_KINDS.has(leafItem.payloadKind ?? '');
     }
     return RAIL_GROUP_KINDS.has(node.kind);
+  }
+
+  function rowGeometryShellSignature(index: number, isRail: boolean): string {
+    return [
+      index === 0 ? 'first' : 'middle',
+      index === 0 && pane.hasMoreHistory ? 'load-older' : 'no-load-older',
+      index === 0 && pane.loadingOlder ? 'loading-older' : 'idle-older',
+      rowDecorations.responseDividerIndexes.has(index) ? 'response-divider' : 'no-divider',
+      rowDecorations.responsePillIndexes.has(index) ? 'response-pill' : 'no-response-pill',
+      rowDecorations.toolTextBoundaryIndexes.has(index) ? 'tool-boundary' : 'no-tool-boundary',
+      isRail ? 'rail' : 'flat',
+    ].join(':');
   }
 
   // Two-phase derivation: structuralNodes runs the expensive grouping
@@ -625,6 +651,29 @@
       surface.removeEventListener('touchmove', onUserGesture);
       surface.removeEventListener('keydown', onUserGesture);
     };
+  });
+
+  function setRowGeometryWidth(width: number): void {
+    const nextWidth = Number.isFinite(width) ? Math.max(0, Math.round(width)) : 0;
+    if (rowGeometryWidth === nextWidth) return;
+    rowGeometryWidth = nextWidth;
+  }
+
+  $effect(() => {
+    const surface = scrollEl;
+    if (!surface) {
+      setRowGeometryWidth(0);
+      return;
+    }
+
+    setRowGeometryWidth(surface.getBoundingClientRect().width);
+    if (typeof ResizeObserver === 'undefined') return;
+
+    const observer = new ResizeObserver((entries) => {
+      setRowGeometryWidth(entries[0]?.contentRect.width ?? 0);
+    });
+    observer.observe(surface);
+    return () => observer.disconnect();
   });
 
   let liveFollowSignatureInitialized = false;
@@ -1619,6 +1668,14 @@
         >
           {#snippet children(node: TimelineNode, index: number)}
             {@const currentLeafItem = currentTimelineLeafItem(node)}
+            {@const isRail = timelineNodeHasRail(node, currentLeafItem)}
+            {@const rowGeometry = timelineRowGeometryKey(
+              node,
+              currentLeafItem,
+              rowGeometryWidth,
+              pane.isSubagentGroupExpanded,
+              rowGeometryShellSignature(index, isRail),
+            )}
             <!-- Outer per-row wrapper. We do NOT set data-item-id here:
                  only TimelineLeaf owns that attribute on its root. Structural
                  rows stay unanchored, and tests rely on the divider rendering
@@ -1632,68 +1689,73 @@
                  gutter aligns with adjacent tool rows. Everything else
                  (assistant_text, user_text, notifications, api errors)
                  renders flat and breaks the line. -->
-            {@const isRail = timelineNodeHasRail(node, currentLeafItem)}
-            <div data-row-index={index} class:mt-4={rowDecorations.toolTextBoundaryIndexes.has(index)}>
-              {#if index === 0}
-                <!-- Top of timeline. Load-older button (when applicable) and
-                     a small top breathing-room spacer ride inside the first
-                     row. When user scrolls to the very top, the button is
-                     the first thing they see. After load-older completes,
-                     the explicit scrollToIndex re-anchors them to where they
-                     were reading — the button moves up out of view. -->
-                <div class="pt-6 mx-auto w-full max-w-[62rem] px-6">
-                  {#if pane.hasMoreHistory}
-                    <div class="mb-3 flex justify-center">
-                      <Button
-                        variant="secondary"
-                        size="xs"
-                        onclick={handleLoadOlder}
-                        loading={pane.loadingOlder}
-                        testId="load-older-messages"
-                      >
-                        {#snippet children()}
-                          {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
-                        {/snippet}
-                      </Button>
-                    </div>
-                  {/if}
-                </div>
-              {/if}
-
-              <div class="mx-auto w-full max-w-[62rem] px-6">
-                {#if rowDecorations.responseDividerIndexes.has(index)}
-                  {@const showResponsePill = rowDecorations.responsePillIndexes.has(index)}
-                  {@const responseDuration = responsePillDuration(node)}
-                  <!-- Two visual modes share a fixed wrapper height
-                       (`h-[1.625rem]` = 26px = pill chrome: text-[0.625rem]
-                       × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
-                       Labeled mode renders `line | gap | pill | gap | line`,
-                       unlabeled mode renders one continuous full-width line.
-                       The pill's `leading-tight` keeps its content inside
-                       the fixed wrapper across font-loading variance.
-                       Fixed `h-` (not the codebase's usual `min-h-` slot
-                       convention) is deliberate: both branches MUST be the
-                       exact same height so promoting an intermediate
-                       divider to "final" on turn settle never shifts row
-                       geometry — satisfies the "no late transcript
-                       adornments on completion" rule in
-                       `frontend/AGENTS.md`. Re-derive 1.625rem if the pill
-                       classes above change. -->
-                  <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
-                    <div class="my-3 flex h-[1.625rem] items-center gap-3">
-                      <span class="h-px flex-1 bg-border-strong" aria-hidden="true"></span>
-                      {#if showResponsePill}
-                        <span
-                          class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[0.625rem] uppercase leading-tight tracking-[0.14em] text-text-secondary"
+            <div
+              data-row-index={index}
+              data-row-geometry-key={rowGeometry.key}
+              use:rowGeometryReservation={rowGeometry}
+              class:mt-4={rowDecorations.toolTextBoundaryIndexes.has(index)}
+            >
+              <div data-row-geometry-content>
+                {#if index === 0}
+                  <!-- Top of timeline. Load-older button (when applicable) and
+                       a small top breathing-room spacer ride inside the first
+                       row. When user scrolls to the very top, the button is
+                       the first thing they see. After load-older completes,
+                       the explicit scrollToIndex re-anchors them to where they
+                       were reading — the button moves up out of view. -->
+                  <div class="pt-6 mx-auto w-full max-w-[62rem] px-6">
+                    {#if pane.hasMoreHistory}
+                      <div class="mb-3 flex justify-center">
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          onclick={handleLoadOlder}
+                          loading={pane.loadingOlder}
+                          testId="load-older-messages"
                         >
-                          Response{#if responseDuration}{' '}<span class="normal-case tabular-nums tracking-normal">{responseDuration}</span>{/if}
-                        </span>
-                        <span class="h-px flex-1 bg-border-strong" aria-hidden="true"></span>
-                      {/if}
-                    </div>
+                          {#snippet children()}
+                            {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
+                          {/snippet}
+                        </Button>
+                      </div>
+                    {/if}
                   </div>
                 {/if}
-                <!-- Rail offsets: ml-[14px] places the border-l 14px
+
+                <div class="mx-auto w-full max-w-[62rem] px-6">
+                  {#if rowDecorations.responseDividerIndexes.has(index)}
+                    {@const showResponsePill = rowDecorations.responsePillIndexes.has(index)}
+                    {@const responseDuration = responsePillDuration(node)}
+                    <!-- Two visual modes share a fixed wrapper height
+                         (`h-[1.625rem]` = 26px = pill chrome: text-[0.625rem]
+                         × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
+                         Labeled mode renders `line | gap | pill | gap | line`,
+                         unlabeled mode renders one continuous full-width line.
+                         The pill's `leading-tight` keeps its content inside
+                         the fixed wrapper across font-loading variance.
+                         Fixed `h-` (not the codebase's usual `min-h-` slot
+                         convention) is deliberate: both branches MUST be the
+                         exact same height so promoting an intermediate
+                         divider to "final" on turn settle never shifts row
+                         geometry — satisfies the "no late transcript
+                         adornments on completion" rule in
+                         `frontend/AGENTS.md`. Re-derive 1.625rem if the pill
+                         classes above change. -->
+                    <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
+                      <div class="my-3 flex h-[1.625rem] items-center gap-3">
+                        <span class="h-px flex-1 bg-border-strong" aria-hidden="true"></span>
+                        {#if showResponsePill}
+                          <span
+                            class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[0.625rem] uppercase leading-tight tracking-[0.14em] text-text-secondary"
+                          >
+                            Response{#if responseDuration}{' '}<span class="normal-case tabular-nums tracking-normal">{responseDuration}</span>{/if}
+                          </span>
+                          <span class="h-px flex-1 bg-border-strong" aria-hidden="true"></span>
+                        {/if}
+                      </div>
+                    </div>
+                  {/if}
+                  <!-- Rail offsets: ml-[14px] places the border-l 14px
                      inside the row column (under the chev gutter);
                      pl-[18px] shifts content past the icon + label
                      gutters so the row body lines up with the body
@@ -1708,6 +1770,7 @@
                   {@render renderNode(node, 1)}
                 </div>
               </div>
+            </div>
             </div>
           {/snippet}
         </Virtualizer>

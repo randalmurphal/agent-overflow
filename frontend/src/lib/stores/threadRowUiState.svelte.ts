@@ -48,6 +48,8 @@ export interface ThreadRowUiState {
    *  the collapseDiffPreviews setting default. */
   setDiffCardExpanded(itemId: string, filePath: string, expanded: boolean | undefined): void;
   attachmentCacheFor(itemId: string): AttachmentPreviewCache;
+  cachedTimelineRowHeight(key: TimelineRowGeometryKey): number | undefined;
+  rememberTimelineRowHeight(key: TimelineRowGeometryKey, height: number): void;
   disposeItems(items: Iterable<Item>): void;
   pruneRowUiState(retention: RowUiStateRetention): void;
   clear(): void;
@@ -58,8 +60,23 @@ export interface ThreadRowUiState {
     subagentGroups: number;
     diffCardOverrideItems: number;
     attachmentItems: number;
+    rowGeometryItems: number;
   };
 }
+
+export interface TimelineRowGeometryKey {
+  key: string;
+  signature: string;
+  width: number;
+  ownerItemIds: readonly string[];
+}
+
+interface TimelineRowGeometryEntry extends TimelineRowGeometryKey {
+  cacheKey: string;
+  height: number;
+}
+
+const MAX_TIMELINE_ROW_GEOMETRY_WIDTHS_PER_SIGNATURE = 3;
 
 export interface PayloadExpansionRetentionKey {
   threadId: string;
@@ -75,6 +92,7 @@ export interface RowUiStateRetention {
   itemIds: Iterable<string>;
   payloads: Iterable<PayloadExpansionRetentionKey>;
   groupKeys: Iterable<string>;
+  rowGeometryKeys: Iterable<string>;
 }
 
 /**
@@ -203,6 +221,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     new Map(),
   );
   const attachmentBlobs = new Map<string, Map<string, ImagePreviewItem>>();
+  const timelineRowHeights = new Map<string, TimelineRowGeometryEntry>();
   let attachmentClearGeneration = 0;
 
   function expansionStateFor(
@@ -521,11 +540,21 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     attachmentBlobs.delete(itemId);
   }
 
+  function disposeTimelineRowGeometryForItems(itemIds: ReadonlySet<string>): void {
+    if (itemIds.size === 0) return;
+    for (const [cacheKey, entry] of timelineRowHeights) {
+      if (!entry.ownerItemIds.some((itemId) => itemIds.has(itemId))) continue;
+      timelineRowHeights.delete(cacheKey);
+    }
+  }
+
   function disposeItems(items: Iterable<Item>): void {
     let nextGroupExpanded: Set<string> | null = null;
     let nextDiffOverrides: Map<string, ReadonlyMap<string, boolean>> | null = null;
+    const disposedItemIds = new Set<string>();
     for (const item of items) {
       const itemId = item.id;
+      disposedItemIds.add(itemId);
       disposeItemExpansionStates(itemId);
       if (
         item.payloadId
@@ -545,6 +574,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         nextDiffOverrides.delete(itemId);
       }
     }
+    disposeTimelineRowGeometryForItems(disposedItemIds);
     if (nextGroupExpanded) subagentGroupExpanded = nextGroupExpanded;
     if (nextDiffOverrides) diffCardExpandedOverrides = nextDiffOverrides;
   }
@@ -556,6 +586,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       retainedPayloads.add(payloadExpansionRegistryKey(payload.threadId, payload.payloadId));
     }
     const retainedGroupKeys = new Set(retention.groupKeys);
+    const retainedRowGeometryKeys = new Set(retention.rowGeometryKeys);
 
     for (const [key, entry] of expansionStates) {
       if (entry.owner.kind === 'item') {
@@ -570,6 +601,11 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     for (const itemId of attachmentBlobs.keys()) {
       if (retainedItemIds.has(itemId)) continue;
       disposeAttachmentBlobsForItem(itemId);
+    }
+
+    for (const [cacheKey, entry] of timelineRowHeights) {
+      if (retainedRowGeometryKeys.has(entry.key)) continue;
+      timelineRowHeights.delete(cacheKey);
     }
 
     let nextGroupExpanded: Set<string> | null = null;
@@ -657,6 +693,52 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     };
   }
 
+  function cachedTimelineRowHeight(key: TimelineRowGeometryKey): number | undefined {
+    const normalized = normalizeTimelineRowGeometryKey(key);
+    if (!normalized) return undefined;
+    const cacheKey = timelineRowGeometryCacheKey(normalized);
+    const cached = timelineRowHeights.get(cacheKey);
+    if (!cached) return undefined;
+    return cached.height;
+  }
+
+  function rememberTimelineRowHeight(key: TimelineRowGeometryKey, height: number): void {
+    const normalized = normalizeTimelineRowGeometryKey(key);
+    const normalizedHeight = normalizeTimelineRowHeight(height);
+    if (!normalized || normalizedHeight === null) return;
+    const cacheKey = timelineRowGeometryCacheKey(normalized);
+    const cached = timelineRowHeights.get(cacheKey);
+    if (
+      cached
+      && cached.height === normalizedHeight
+    ) {
+      return;
+    }
+    for (const [existingCacheKey, entry] of timelineRowHeights) {
+      if (entry.key !== normalized.key) continue;
+      if (entry.signature === normalized.signature) continue;
+      timelineRowHeights.delete(existingCacheKey);
+    }
+    timelineRowHeights.set(cacheKey, {
+      ...normalized,
+      cacheKey,
+      height: normalizedHeight,
+    });
+    pruneExtraTimelineRowGeometryWidths(normalized);
+  }
+
+  function pruneExtraTimelineRowGeometryWidths(key: TimelineRowGeometryKey): void {
+    const matchingCacheKeys: string[] = [];
+    for (const [existingCacheKey, entry] of timelineRowHeights) {
+      if (entry.key !== key.key || entry.signature !== key.signature) continue;
+      matchingCacheKeys.push(existingCacheKey);
+    }
+    while (matchingCacheKeys.length > MAX_TIMELINE_ROW_GEOMETRY_WIDTHS_PER_SIGNATURE) {
+      const oldest = matchingCacheKeys.shift();
+      if (oldest) timelineRowHeights.delete(oldest);
+    }
+  }
+
   function revokePreview(preview: ImagePreviewItem): void {
     if (preview.url.startsWith('blob:')) URL.revokeObjectURL(preview.url);
   }
@@ -684,6 +766,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     payloadExpansionKeysByPayload.clear();
     subagentGroupExpanded = new Set();
     diffCardExpandedOverrides = new Map();
+    timelineRowHeights.clear();
     attachmentClearGeneration += 1;
     disposeAttachmentBlobs();
   }
@@ -699,6 +782,8 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     diffCardExpandedOverride,
     setDiffCardExpanded,
     attachmentCacheFor,
+    cachedTimelineRowHeight,
+    rememberTimelineRowHeight,
     disposeItems,
     pruneRowUiState,
     clear,
@@ -718,7 +803,35 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         subagentGroups: subagentGroupExpanded.size,
         diffCardOverrideItems: diffCardExpandedOverrides.size,
         attachmentItems: attachmentBlobs.size,
+        rowGeometryItems: timelineRowHeights.size,
       };
     },
   };
+}
+
+export function normalizeTimelineRowGeometryKey(
+  key: TimelineRowGeometryKey,
+): TimelineRowGeometryKey | null {
+  const rowKey = key.key.trim();
+  const signature = key.signature.trim();
+  if (!rowKey || !signature) return null;
+  const width = Math.max(0, Math.round(key.width));
+  if (!Number.isFinite(width)) return null;
+  const rawOwnerItemIds = Array.isArray(key.ownerItemIds) ? key.ownerItemIds : [];
+  const ownerItemIds = [...new Set(
+    rawOwnerItemIds
+      .map((itemId) => itemId.trim())
+      .filter((itemId) => itemId.length > 0),
+  )];
+  return { key: rowKey, signature, width, ownerItemIds };
+}
+
+export function timelineRowGeometryCacheKey(key: TimelineRowGeometryKey): string {
+  return JSON.stringify([key.key, key.signature, key.width]);
+}
+
+function normalizeTimelineRowHeight(height: number): number | null {
+  if (!Number.isFinite(height)) return null;
+  const normalized = Math.round(height);
+  return normalized > 0 ? normalized : null;
 }

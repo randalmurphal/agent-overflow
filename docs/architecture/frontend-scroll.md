@@ -295,6 +295,13 @@ Do not replay virtua row-size caches across thread switches. Measurements
 depend on expanded payloads, loaded thumbnails, and row-local layout
 state; the UI state is deliberately cleared on switch to bound memory.
 
+`MessageTimeline` may keep a per-pane row-geometry reservation for mounted
+timeline nodes. That cache is keyed by rendered row key, row content
+signature, and scroll-pane width, pruned with the row UI retention window,
+and applied only as a temporary `min-height` while a remounted row catches
+back up to its last measured height. It is not a persisted virtua size
+cache and must not drive `scrollTop` writes.
+
 Rows inside the transcript should keep their shell stable after first
 render. Add details inside reserved slots; do not append completion-only
 history rows or late adornments that change row geometry.

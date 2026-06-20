@@ -66,6 +66,10 @@ Use these pane registries instead of local row state:
   diff-card expand/collapse overrides. Tri-state: an absent entry
   follows the `collapseDiffPreviews` setting default; pass `undefined`
   to clear the override.
+- `pane.cachedTimelineRowHeight(...)` /
+  `pane.rememberTimelineRowHeight(...)` for temporary remount geometry
+  reservations. These are row-key + signature + width entries pruned with
+  the visible row UI window, not virtua size-cache snapshots.
 
 Payload bytes go through `utils/payloadDataCache.ts`, keyed by
 `(threadId, payloadId, version)` and byte-bounded by its LRU. Per-pane

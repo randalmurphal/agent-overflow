@@ -459,6 +459,42 @@ describe('createThreadRowUiState', () => {
     revoke.mockRestore();
   });
 
+  it('caches timeline row heights by key, signature, and width', () => {
+    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const key = {
+      key: 'l:thread-a:item-a',
+      signature: 'signature-a',
+      width: 420,
+      ownerItemIds: ['item-a'],
+    };
+
+    expect(rowUiState.cachedTimelineRowHeight(key)).toBeUndefined();
+
+    rowUiState.rememberTimelineRowHeight(key, 123.4);
+
+    expect(rowUiState.cachedTimelineRowHeight(key)).toBe(123);
+    expect(rowUiState.cachedTimelineRowHeight({
+      ...key,
+      signature: 'signature-b',
+    })).toBeUndefined();
+    expect(rowUiState.cachedTimelineRowHeight({
+      ...key,
+      width: 421,
+    })).toBeUndefined();
+
+    const widerKey = { ...key, width: 900 };
+    rowUiState.rememberTimelineRowHeight(widerKey, 200);
+    expect(rowUiState.cachedTimelineRowHeight(key)).toBe(123);
+    expect(rowUiState.cachedTimelineRowHeight(widerKey)).toBe(200);
+
+    rowUiState.rememberTimelineRowHeight({
+      ...key,
+      signature: 'signature-c',
+    }, 300);
+    expect(rowUiState.cachedTimelineRowHeight(key)).toBeUndefined();
+    expect(rowUiState.cachedTimelineRowHeight(widerKey)).toBeUndefined();
+  });
+
   it('disposes per-item expansion and attachment state', () => {
     const item = makeItem({
       id: 'tool:5:0',
@@ -491,14 +527,24 @@ describe('createThreadRowUiState', () => {
 
     rowUiState.setDiffCardExpanded(item.id, 'src/foo.ts', true);
     rowUiState.setDiffCardExpanded('item-other', 'src/keep.ts', false);
+    const rowGeometryKey = {
+      key: `l:${item.threadId}:${item.id}`,
+      signature: 'row-signature',
+      width: 800,
+      ownerItemIds: [item.id],
+    };
+    rowUiState.rememberTimelineRowHeight(rowGeometryKey, 144);
 
     expect(rowUiState.debugStats().itemExpansionStates).toBe(1);
     expect(rowUiState.debugStats().payloadExpansionStates).toBe(1);
+    expect(rowUiState.debugStats().rowGeometryItems).toBe(1);
     rowUiState.disposeItems([item]);
 
     expect(rowUiState.debugStats().itemExpansionStates).toBe(0);
     expect(rowUiState.debugStats().payloadExpansionStates).toBe(0);
     expect(rowUiState.debugStats().attachmentItems).toBe(0);
+    expect(rowUiState.debugStats().rowGeometryItems).toBe(0);
+    expect(rowUiState.cachedTimelineRowHeight(rowGeometryKey)).toBeUndefined();
     expect(rowUiState.isSubagentGroupExpanded(item.id)).toBe(false);
     expect(rowUiState.isSubagentGroupExpanded(`wait:${item.id}`)).toBe(false);
     // Diff card overrides for the disposed item drop; others survive.
@@ -594,6 +640,7 @@ describe('createThreadRowUiState', () => {
         itemIds: [],
         payloads: [],
         groupKeys: [],
+        rowGeometryKeys: [],
       });
 
       expect(rowUiState.debugStats().expansionStates).toBe(0);
@@ -645,6 +692,7 @@ describe('createThreadRowUiState', () => {
       itemIds: [],
       payloads: [],
       groupKeys: [],
+      rowGeometryKeys: [],
     });
     rowUiState.appendLivePayloadDeltaForItem(
       item.id,
@@ -719,6 +767,20 @@ describe('createThreadRowUiState', () => {
       size: 1,
       url: 'blob:retained-attachment',
     });
+    const oldRowGeometryKey = {
+      key: `l:${oldItem.threadId}:${oldItem.id}`,
+      signature: 'old-row-signature',
+      width: 800,
+      ownerItemIds: [oldItem.id],
+    };
+    const retainedRowGeometryKey = {
+      key: `l:${retainedItem.threadId}:${retainedItem.id}`,
+      signature: 'retained-row-signature',
+      width: 800,
+      ownerItemIds: [retainedItem.id],
+    };
+    rowUiState.rememberTimelineRowHeight(oldRowGeometryKey, 111);
+    rowUiState.rememberTimelineRowHeight(retainedRowGeometryKey, 222);
 
     expect(rowUiState.debugStats()).toMatchObject({
       expansionStates: 4,
@@ -727,12 +789,14 @@ describe('createThreadRowUiState', () => {
       subagentGroups: 2,
       diffCardOverrideItems: 2,
       attachmentItems: 2,
+      rowGeometryItems: 2,
     });
 
     rowUiState.pruneRowUiState({
       itemIds: [retainedItem.id],
       payloads: [{ threadId: 'thread-a', payloadId: 'payload-retained' }],
       groupKeys: ['group-retained'],
+      rowGeometryKeys: [retainedRowGeometryKey.key],
     });
 
     expect(rowUiState.debugStats()).toMatchObject({
@@ -742,6 +806,7 @@ describe('createThreadRowUiState', () => {
       subagentGroups: 1,
       diffCardOverrideItems: 1,
       attachmentItems: 1,
+      rowGeometryItems: 1,
     });
     expect(revoke).toHaveBeenCalledWith('blob:old-attachment');
     expect(rowUiState.isSubagentGroupExpanded('group-old')).toBe(false);
@@ -750,6 +815,8 @@ describe('createThreadRowUiState', () => {
     expect(rowUiState.diffCardExpandedOverride(retainedItem.id, 'src/retained.ts')).toBe(false);
     expect(retainedAttachmentCache.get('retained-attachment')).toBeTruthy();
     expect(oldAttachmentCache.get('old-attachment')).toBeUndefined();
+    expect(rowUiState.cachedTimelineRowHeight(oldRowGeometryKey)).toBeUndefined();
+    expect(rowUiState.cachedTimelineRowHeight(retainedRowGeometryKey)).toBe(222);
 
     retainedAttachmentCache.set('retained-after-prune', {
       id: 'retained-after-prune',
