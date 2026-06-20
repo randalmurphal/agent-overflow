@@ -146,8 +146,36 @@ corrupt every project on the machine. Use
      `src/lib/utils/zombieMintProbe.ts`) that fires if a future svelte
      re-introduces the hunk-1 shape. Keep while hunk 1 exists; drop
      alongside it.
-- `svelte-streamdown@3.0.1.patch` — rendering fixes for the markdown
-  pipeline.
+- `svelte-streamdown@3.1.1.patch` — markdown-pipeline fixes, grouped by
+  concern. Behavior is held across version bumps: re-roll by
+  `git apply --reject`-ing the prior patch into a clean `pnpm patch`
+  edit-dir, hand-merging only the rejected hunks, then diffing the
+  in-flight-completion battery old-vs-new to prove the inline path is
+  byte-identical. Pieces to preserve on the next bump:
+  1. **`$`-prose guard** (`marked/marked-math.js`,
+     `singleDollarLooksLikeProse`) — a bare single `$` only opens inline
+     math when its closer is not an identifier char and its content holds
+     no backtick; otherwise agent prose like `$ref … $foo` renders as
+     serif KaTeX. Regression: `components/chat/AssistantMessage.test.ts`.
+  2. **lexer-rule overrides** (`marked/index.js`, top-of-file) — require
+     `~~` for strikethrough (single `~` false-positives on `~240MB`),
+     disable mailto autolinking (`composer@0.7s` → bogus `mailto:`), and
+     split the GFM text rule's leading ``[`~]+`` run so a `~` cannot
+     swallow an adjacent backtick. Composes with upstream's
+     bottom-of-file options cache + incremental `parseBlocks`.
+  3. **deferred-typesetting hosts** (`Block`, `Elements/{Code,Math,
+     Mermaid}`, `context`, `Streamdown`) — `registerAsyncResource` /
+     `pendingAsyncCount` / `onsettled` let a Streamdown signal when its
+     async work (shiki, katex, mermaid) has settled, so the
+     committed-prefix vs volatile-tail two-instance split in
+     `ChatMarkdown.svelte` defers math/mermaid typesetting off the
+     streaming tail. Orthogonal to upstream's parse cache — they stack.
+  4. **completion-disable** (`utils/parse-incomplete-markdown.js`) — a
+     trailing `.filter` drops the 10 inline emphasis/code/math
+     speculative completers (they mis-close on lone delimiters
+     mid-stream); the structural completers (links, citations,
+     footnotes, fences, MDX) keep upstream's behavior. Re-enabling the
+     safe ones (bold/italic/strike) is a separate follow-up.
 
 ## References
 

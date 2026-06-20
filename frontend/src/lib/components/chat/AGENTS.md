@@ -112,7 +112,7 @@ Path linkification runs inside marked parsing from the server-validated
 per-page-load nonce and is the only `agent-overflow:open` form admitted
 by Streamdown's `transformUrl`.
 
-The `svelte-streamdown@3.0.1` pnpm patch is intentional. Parser bugs in
+The `svelte-streamdown@3.1.1` pnpm patch is intentional. Parser bugs in
 that pipeline go upstream-then-patch; do not duplicate parser fixes in
 `markdownEnhance.ts` or the host wrappers. Regression coverage lives in
 `AssistantMessage.test.ts`.
