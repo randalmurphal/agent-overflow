@@ -368,7 +368,7 @@ index 1131b2c3261d104c151289c31e126dea2167ab30..4325191ac0af03ce76ab8c114fb68c1d
          return getContext('POPOVER')
              ? undefined
 diff --git a/dist/marked/index.js b/dist/marked/index.js
-index fe8c295baecc3f82c02f7b401325fb32a88514e8..cbe4022b8b8ed9b4b38f14a4da3dacd77774669a 100644
+index fe8c295baecc3f82c02f7b401325fb32a88514e8..ec5ba79e54c1860c68f82fa9d1aa6681b7350b65 100644
 --- a/dist/marked/index.js
 +++ b/dist/marked/index.js
 @@ -1,4 +1,31 @@
@@ -404,10 +404,10 @@ index fe8c295baecc3f82c02f7b401325fb32a88514e8..cbe4022b8b8ed9b4b38f14a4da3dacd7
  import { markedFootnote } from './marked-footnotes.js';
  import { markedMath } from './marked-math.js';
 diff --git a/dist/marked/marked-math.js b/dist/marked/marked-math.js
-index 893ba7e456c000e18817c495e8949733ac18efde..1b4288fa6fa4c038787850d2c3e33af20d346810 100644
+index 893ba7e456c000e18817c495e8949733ac18efde..8159bff5f739736319afdd83389c6d219fb600a9 100644
 --- a/dist/marked/marked-math.js
 +++ b/dist/marked/marked-math.js
-@@ -1,6 +1,19 @@
+@@ -1,9 +1,51 @@
  // Math parsing rules
 -// Block math: supports both newline format ($$\nmath\n$$) and single-line format ($$math$$)
 -const blockRule = /^(\$\$)(?:\n((?:\\[\s\S]|[^\\])+?)\n\1(?:\n|$)|([^$\n]+?)\1(?=\s|$|$))/;
@@ -429,7 +429,39 @@ index 893ba7e456c000e18817c495e8949733ac18efde..1b4288fa6fa4c038787850d2c3e33af2
  // Inline math: handles both single ($) and double ($$) dollar delimiters
  // Avoids matching currency by checking context and requiring proper content
  const inlineRule = /^(\${1,2})(?!\$)((?:[^$\n]|\\\$)*?)\1(?!\d)/;
-@@ -22,8 +35,9 @@ export const markedMath = [
++// A single `$…$` span is real inline math only when its closing `$` is
++// followed by whitespace/punctuation/end-of-line AND its content holds no
++// backtick. Agent prose is dense with `$`-prefixed tokens (`$ref`, `$PATH`,
++// `$HOME`, jQuery `$el`) and inline code spans (`` `$ref` ``, `` `$` ``); a
++// bare `$` opens a span that closes on the `$` of a *later* such token,
++// swallowing the prose between into a KaTeX render (serif font, collapsed
++// whitespace — the reported "`$ref` … `$ref`" corruption). Two independent
++// tells that a span is prose, not math:
++//   (a) the closing `$` abuts an identifier char — `$PATH and $HOME`, or a
++//       span that closes on a bare `$ref`/`$foo` in running text.
++//   (b) the captured content contains a backtick — the closing `$` lives
++//       inside a code span (`` `$` `` / `` `$ref` ``), so the content runs
++//       up to and includes that span's opening backtick. Real inline math
++//       never contains a backtick, and (a) alone misses this because the
++//       char *after* the close is the code span's backtick, not an
++//       identifier (the `` `$` `` … `` `$` `` case the word-char-only guard
++//       shipped without — observed rendering "ref cycles" closing on the"
++//       as serif math).
++// Caller gates on single `$`; `$$…$$` carries explicit math intent and is
++// exempt, mirroring the currency guard's scoping. The identifier class
++// matches this patch's parse-incomplete-markdown.js prev-char check;
++// `inlineRule`'s `(?!\d)` already bars a trailing digit, so (a) effectively
++// adds letters/underscore. `charAfterClose` is `src.charAt(match[0].length)`
++// for whichever string `match` came from; `content` is `match[2]`. Known
++// residual: pure bare-`$` prose with no backtick whose closer is
++// whitespace/punctuation (e.g. "$foo and bar$ here") still parses as math —
++// rare in agent output. Regression: AssistantMessage.test.ts.
++const singleDollarLooksLikeProse = (content, charAfterClose) =>
++    /[\p{L}\p{N}_]/u.test(charAfterClose) || content.includes('`');
+ // Enhanced currency detection patterns
+ const currencyPatterns = {
+     // Simple price patterns: $123, $123.45, $1,234.56
+@@ -22,8 +64,9 @@ export const markedMath = [
          tokenizer(src) {
              const match = src.match(blockRule);
              if (match) {
@@ -441,6 +473,32 @@ index 893ba7e456c000e18817c495e8949733ac18efde..1b4288fa6fa4c038787850d2c3e33af2
                  return {
                      type: 'math',
                      isInline: false,
+@@ -61,6 +104,13 @@ export const markedMath = [
+                             searchSrc = src.substring(index);
+                             continue;
+                         }
++                        // Single-`$` prose guard (see singleDollarLooksLikeProse).
++                        if (dollarCount === '$' &&
++                            singleDollarLooksLikeProse(content, possibleMath.charAt(match[0].length))) {
++                            index += dollarIndex + 1;
++                            searchSrc = src.substring(index);
++                            continue;
++                        }
+                         return currentIndex;
+                     }
+                 }
+@@ -80,6 +130,11 @@ export const markedMath = [
+                     // This looks like currency with single dollars, skip it
+                     return;
+                 }
++                // Single-`$` prose guard (see singleDollarLooksLikeProse).
++                if (dollarCount === '$' &&
++                    singleDollarLooksLikeProse(content, src.charAt(match[0].length))) {
++                    return;
++                }
+                 return {
+                     type: 'math',
+                     isInline: true, // Inline tokenizer always produces inline math
 diff --git a/dist/marked/marked-subsup.js b/dist/marked/marked-subsup.js
 index 7e63670452888e539d36d95e8580eeba09eb20b2..65f2e02cb5c011bbf914a5f75a364e4e9a97ab28 100644
 --- a/dist/marked/marked-subsup.js

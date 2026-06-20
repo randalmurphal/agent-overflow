@@ -348,6 +348,87 @@ describe('<AssistantMessage>', () => {
     });
   });
 
+  // Regression: single-`$` inline math vs. agent prose. Agents emit
+  // `$`-prefixed identifiers constantly — `$ref` (JSON Schema), `$PATH`
+  // / `$HOME` (shell), jQuery `$el` — and inline code spans like
+  // `` `$` `` / `` `$ref` ``. A bare `$` used to open a KaTeX inline-math
+  // span that closed on the `$` of a *later* token, swallowing the prose
+  // between them and rendering it in math mode (serif font, collapsed
+  // whitespace — visibly corrupt; the reported `` `$ref` … `$ref` ``
+  // paragraph). The `singleDollarLooksLikeProse` guard in
+  // `patches/svelte-streamdown@3.0.1.patch` rejects a single-`$` span when
+  // EITHER its closing `$` abuts an identifier char (it closed on a bare
+  // `$ref`/`$PATH`) OR its captured content holds a backtick — the closing
+  // `$` landed inside a `` `$` `` code span, so the content ran up to that
+  // span's opening backtick. The backtick arm is load-bearing: in that case
+  // the closer's *next* char is a backtick, not an identifier, which the
+  // original word-char-only guard missed (the observed `ref cycles" closing
+  // on the` serif blob). The load-bearing assertion is `.math-inline` being
+  // null — that host span is emitted only when an inline-math token was
+  // created. (textContent alone is not a discriminator: KaTeX is not
+  // typeset in the test env, so a swallowed span's raw source text would
+  // still appear.) The cases cover both guard sites: a closer mid-prose
+  // is dropped by the `start()` scanner, while a span that *opens* the
+  // text run (leading `$`) is dropped only by the `tokenizer()` site,
+  // which marked calls at offset 0 before consulting `start()`.
+  it.each([
+    {
+      name: 'a `$ref` chain with a backtick-flanked closer',
+      summary:
+        'the `$ref` cycle detector from this branch\'s "reject recursive $ref cycles" work — **doubly recursive**: self-calls on `$ref` targets',
+      intact: 'doubly recursive',
+    },
+    {
+      name: 'a span closing on a `$` inside a code span (backtick arm)',
+      summary: 'recursive $ref cycles closing on the `$` sigil',
+      intact: 'recursive $ref cycles closing on the',
+    },
+    {
+      name: 'bare shell variables mid-sentence',
+      summary: 'export $PATH and $HOME before the run',
+      intact: 'export $PATH and $HOME before the run',
+    },
+    {
+      name: 'a leading `$` opening the text run',
+      summary: '$ref points to $HOME here',
+      intact: '$ref points to $HOME here',
+    },
+  ])('does not swallow $name into an inline math span', async ({ summary, intact }) => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'completed', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.textContent).toContain(intact);
+    });
+    expect(body.querySelector('.math-inline')).toBeNull();
+  });
+
+  // Positive control: the guard must not disable real inline math. The
+  // closing `$` of genuine math is followed by a space, punctuation, or
+  // end-of-line — never an identifier char — so it survives. The
+  // end-of-line row also covers the `charAt` boundary: past the string
+  // end it returns '', which is not an identifier char. Without this,
+  // dropping single-`$` math outright would pass the negative cases above
+  // while silently regressing genuine math.
+  it.each([
+    { name: 'mid-sentence', summary: 'amortized $O(n^2)$ here', source: 'O(n^2)' },
+    { name: 'at end of line', summary: 'the upper bound is $x$', source: 'x' },
+  ])(
+    'still renders real single-$ inline math ($name) as a math span',
+    async ({ summary, source }) => {
+      const { getByTestId } = render(AssistantMessage, {
+        props: { item: makeItem({ status: 'completed', summary }) },
+      });
+      const body = getByTestId('assistant-message-body');
+      await waitFor(() => {
+        const math = body.querySelector('.math-inline');
+        expect(math).not.toBeNull();
+        expect(math?.getAttribute('data-math-source')).toBe(source);
+      });
+    },
+  );
+
   // Regression for the "runaway-spread" streaming jitter: Streamdown's
   // inline-emphasis plugins used to speculatively close unmatched
   // delimiters at end-of-line. On the next chunk the synthesized closer
