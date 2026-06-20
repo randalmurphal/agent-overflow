@@ -176,6 +176,14 @@ corrupt every project on the machine. Use
      mid-stream); the structural completers (links, citations,
      footnotes, fences, MDX) keep upstream's behavior. Re-enabling the
      safe ones (bold/italic/strike) is a separate follow-up.
+  5. **subscript range-guard** (`marked/marked-subsup.js`) — `subRule`'s
+     closing `~` carries a `(?!\d)` lookahead so approximate-range prose
+     like `~5~10` / `~50~100` no longer tokenizes its low bound as
+     `<sub>5</sub>`. Legit subscript (`H~2~O`, closing `~` before a
+     letter) is unaffected. `supRule` (`^N^M`) is deliberately left
+     unguarded — carets are rare in agent prose and none was reported;
+     revisit if `^5^10`-style superscript false-positives surface.
+     Regression: `AssistantMessage.test.ts`.
 
 ## References
 

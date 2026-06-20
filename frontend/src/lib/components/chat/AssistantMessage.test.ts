@@ -307,6 +307,29 @@ describe('<AssistantMessage>', () => {
     });
   });
 
+  // Regression (Tier 3): the `subRule` digit-lookahead `~(?!\d)`. Agents write
+  // approximate ranges like `~5~10` / `~50~100` (≈5–10); without the lookahead
+  // the first `~N~` pair tokenized as `<sub>5</sub>`, eating the low bound into
+  // a subscript and dropping the tildes. A closing `~` immediately before a
+  // digit now blocks the match, so the range stays literal text. Legitimate
+  // subscript (`H~2~O` — closing `~` before a letter) is unaffected, as the
+  // positive case above asserts.
+  it('does not subscript an approximate range like ~5~10', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({ status: 'completed', summary: 'the range ~5~10 is typical' }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      // Literal tildes survive (no sub ate them) AND no <sub> was synthesised.
+      // Without the lookahead, `~5~10` → `<sub>5</sub>10`, so textContent would
+      // read `…range 510 is typical` and this contains-check would fail.
+      expect(body.textContent).toContain('~5~10');
+      expect(body.querySelector('sub')).toBeNull();
+    });
+  });
+
   // Regression (Tier 2, superscript half): `supRule` had the same defect as
   // `subRule` — a backtick counted as superscript content and the rule ran
   // before the code-span tokenizer, so `` ^`x`^ `` became a `<sup>` wrapping

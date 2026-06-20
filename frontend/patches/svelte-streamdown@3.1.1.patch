@@ -500,13 +500,13 @@ index 6410baf2e2d586647b47639ab72f9e041cd4a158..92c49d4965aa9273fd2685e2813ba786
                      type: 'math',
                      isInline: true, // Inline tokenizer always produces inline math
 diff --git a/dist/marked/marked-subsup.js b/dist/marked/marked-subsup.js
-index 7e63670452888e539d36d95e8580eeba09eb20b2..65f2e02cb5c011bbf914a5f75a364e4e9a97ab28 100644
+index 7e63670452888e539d36d95e8580eeba09eb20b2..0f36fa1af7ebdaa274242a6e6486b7994c424890 100644
 --- a/dist/marked/marked-subsup.js
 +++ b/dist/marked/marked-subsup.js
 @@ -1,5 +1,5 @@
 -const subRule = /^~([^~\s](?:[^~]*[^~\s])?)~/; // ~text~
 -const supRule = /^\^([^\^\s](?:[^\^]*[^\^\s])?)\^/; // ^text^
-+const subRule = /^~([^~`\s]+)~/; // ~text~ — no spaces/backticks (code spans bind tighter)
++const subRule = /^~([^~`\s]+)~(?!\d)/; // ~text~ — no spaces/backticks (code spans bind tighter); closing ~ not before a digit so approx-range prose like ~5~10 / ~50~100 stays plain instead of sub(5)
 +const supRule = /^\^([^\^`\s](?:[^\^`]*[^\^`\s])?)\^/; // ^text^ — no backticks (code spans bind tighter)
  export const markedSub = {
      name: 'sub',
