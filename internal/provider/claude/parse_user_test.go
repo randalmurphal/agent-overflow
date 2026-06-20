@@ -107,6 +107,57 @@ func TestAppendToolResultBlock_PlaceholderEmitsCompleteWithBackgroundFlag(t *tes
 	}
 }
 
+// TestAppendToolResultBlock_TimeoutAutoBackgroundSetsBackgroundFlag pins
+// the timeout auto-background path: the CLI moves a FOREGROUND Bash to the
+// background once it exceeds its timeout. Unlike the run_in_background:true
+// case, the tool_use input carries NO background flag, so the launch-time
+// `backgroundToolUses` hint is empty — the `tool_use_result.backgroundTaskId`
+// wire marker is the ONLY signal. The completion must still emit
+// is_background=true so triage keeps the launch row running (and the later
+// task_updated terminal writes the sibling completion). Captured from a real
+// session: input keys are {command, description}; the sibling carries
+// `assistantAutoBackgrounded:false` alongside `backgroundTaskId`. See
+// claude-wire.md §E2.
+func TestAppendToolResultBlock_TimeoutAutoBackgroundSetsBackgroundFlag(t *testing.T) {
+	parser := NewParser()
+
+	// Foreground launch — NO run_in_background in the input.
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"make check","description":"Run full type check"}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+	if parser.isBackground("tool-bg") {
+		t.Fatal("precondition: a launch without run_in_background must not be flagged in backgroundToolUses")
+	}
+
+	line := []byte(`{"type":"user","tool_use_result":{"stdout":"","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false,"backgroundTaskId":"bhulux5j4","assistantAutoBackgrounded":false},"message":{"role":"user","content":[{"tool_use_id":"tool-bg","type":"tool_result","content":"Command running in background with ID: bhulux5j4. Output is being written to: /tmp/bhulux5j4.output","is_error":false}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventToolComplete {
+		t.Fatalf("Kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+	}
+	if events[0].ItemID != "tool-bg" {
+		t.Fatalf("ItemID: got %q, want tool-bg", events[0].ItemID)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["is_background"] != true {
+		t.Fatalf("is_background: got %v, want true (backgroundTaskId marker)", meta["is_background"])
+	}
+	// The wire-marker path must not touch backgroundToolUses — there was
+	// never a launch-time entry to allocate or release.
+	if len(parser.backgroundToolUses) != 0 {
+		t.Errorf("backgroundToolUses must stay empty for the timeout path; got %v", parser.backgroundToolUses)
+	}
+}
+
 // TestAppendToolResultBlock_InlineToolNoBackgroundFlag confirms the
 // negative case — a plain inline tool's completion must NOT carry
 // is_background, so triage can flip status=errored in the

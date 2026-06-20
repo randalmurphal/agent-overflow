@@ -149,20 +149,34 @@ func (p *Parser) appendToolResultBlock(
 	// per-spec "keep status=running for background" rule is a triage
 	// decision keyed off `is_background` in meta, not a parser-level
 	// drop of the event.
-	isBackground := p.isBackground(toolUseID)
+	//
+	// Two INDEPENDENT signals mark a tool_result as a backgrounded
+	// placeholder (the real terminal arrives later via the task
+	// lifecycle), and either one is sufficient:
+	//
+	//   1. flaggedAtLaunch — the tool_use carried `run_in_background:true`,
+	//      recorded at assistant-parse time in `backgroundToolUses`.
+	//   2. markedOnWire — `tool_use_result.backgroundTaskId` is present.
+	//      This is Claude's authoritative wire marker and the ONLY signal
+	//      when the CLI auto-backgrounds a foreground command that exceeds
+	//      its Bash timeout: that input has no `run_in_background` flag, so
+	//      (1) is empty. See claude-wire.md §E2.
+	flaggedAtLaunch := p.isBackground(toolUseID)
+	isBackground := flaggedAtLaunch || toolResultBackgrounded(toolUseResultRaw)
 	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,
 		isBackground,
 		block, content, toolUseResultRaw,
 	)
-	// The tool_use_id → is_background correlation is a one-shot: once
-	// the placeholder tool_result echoes, the flag has served its
-	// purpose. Release it so backgroundToolUses doesn't leak across a
-	// long session. The triage row is already tagged
+	// The tool_use_id → is_background correlation is a one-shot: once the
+	// placeholder tool_result echoes, the launch-time flag has served its
+	// purpose. Release it so backgroundToolUses doesn't leak across a long
+	// session. Keyed on flaggedAtLaunch, not isBackground: the wire-marker
+	// path (timeout auto-background) never populated the map, so there is
+	// nothing to release for it. The triage row is already tagged
 	// `is_background=true`; any later task_updated / TaskOutput writes a
-	// sibling via EventBackgroundTaskTerminal and does not re-read this
-	// map.
-	if isBackground {
+	// sibling via EventBackgroundTaskTerminal and does not re-read this map.
+	if flaggedAtLaunch {
 		p.clearBackground(toolUseID)
 	}
 
@@ -446,6 +460,27 @@ func extractToolResultText(content json.RawMessage) string {
 		}
 	}
 	return string(builder)
+}
+
+// toolResultBackgrounded reports whether a tool_result's structured
+// `tool_use_result` sibling carries a non-empty `backgroundTaskId` —
+// Claude's authoritative wire marker that the command is now running in the
+// background. It is set for EVERY backgrounding trigger:
+//
+//   - `input.run_in_background: true` (model/user asked for it),
+//   - assistant-initiated mid-run backgrounding
+//     (`tool_use_result.assistantAutoBackgrounded: true`),
+//   - the CLI auto-backgrounding a foreground command that exceeds its Bash
+//     timeout — the input carries NO `run_in_background` flag, so the
+//     launch-time `backgroundToolUses` hint is absent and this marker is the
+//     only signal.
+//
+// The id equals the `task_id` carried by the `system/task_started` +
+// `system/task_updated` lifecycle, so the later terminal still writes the
+// sibling completion row unchanged. See claude-wire.md §E2.
+func toolResultBackgrounded(toolUseResult json.RawMessage) bool {
+	id, _ := readStringAtAnyKey(toolUseResult, "backgroundTaskId")
+	return strings.TrimSpace(id) != ""
 }
 
 // extractExitCode pulls `exit_code` from either the tool_result block's

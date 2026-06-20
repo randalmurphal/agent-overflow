@@ -634,8 +634,8 @@ enrichments (below) layer on top — they do NOT replace the completion.
 
 ### E2 — Backgrounded Bash placeholder
 
-**Fires ~instantly** after the tool_use with
-`input.run_in_background: true`.
+**Fires ~instantly** once a Bash command starts running in the
+background.
 
 ```json
 {"type": "user",
@@ -656,13 +656,38 @@ enrichments (below) layer on top — they do NOT replace the completion.
  }}
 ```
 
-Marker: `tool_use_result.backgroundTaskId` present.
+**Marker: `tool_use_result.backgroundTaskId` present.** This is the
+authoritative signal and is set for ALL THREE ways a command ends up
+backgrounded — do NOT key off `input.run_in_background` alone:
+
+1. **Explicit** — the tool_use input carried `run_in_background: true`.
+   (The example above.)
+2. **Timeout auto-background** — the CLI moves a *foreground* command to
+   the background once it exceeds its Bash timeout. The tool_use input
+   carries NO `run_in_background` flag (observed input keys: just
+   `{command, description}`), so the launch-time hint is absent and
+   `backgroundTaskId` is the only signal. The sibling additionally
+   carries `"assistantAutoBackgrounded": false`. Captured 2026-06-20 from
+   a real session (thread `d920dc89`, command `make check`).
+3. **Assistant-initiated** — the model backgrounds a running command
+   mid-execution. The sibling's `assistantAutoBackgrounded` boolean is the
+   field that distinguishes this trigger (captured = `false` in the timeout
+   case above; the `true` variant is inferred from the field name, not yet
+   captured). Either way `backgroundTaskId` is still present, so the parser
+   needs no per-trigger branch.
+
+`backgroundTaskId` equals the `task_id` carried by the
+`system/task_started` + `system/task_updated` lifecycle, so the terminal
+that writes the sibling `tool_completion` row is unaffected by which
+trigger fired.
 
 **Parser behavior**: DOES emit `EventToolComplete` for the tool's
-own id (universal invariant). Per agent-overflow spec, triage keeps
-the `tool_call` row at `status='running'` for backgrounded tools —
-the sibling `tool_completion` row comes later via the task lifecycle.
-See [`turn-lifecycle.md`](../architecture/turn-lifecycle.md).
+own id (universal invariant), with `is_background: true` whenever the
+marker is present (see `toolResultBackgrounded` in `parse_user.go`).
+Per agent-overflow spec, triage keeps the `tool_call` row at
+`status='running'` for backgrounded tools — the sibling
+`tool_completion` row comes later via the task lifecycle. See
+[`turn-lifecycle.md`](../architecture/turn-lifecycle.md).
 
 ### E3 — TaskOutput `tool_result`
 
