@@ -184,6 +184,22 @@ corrupt every project on the machine. Use
      unguarded — carets are rare in agent prose and none was reported;
      revisit if `^5^10`-style superscript false-positives surface.
      Regression: `AssistantMessage.test.ts`.
+  6. **setext-dash-guard** (`utils/parse-incomplete-markdown.js`,
+     `stripDanglingSetextUnderline`) — mid-stream a nested bullet's marker
+     arrives a chunk before its text, so the volatile tail momentarily ends
+     in `…text:\n  -`; CommonMark reads that lone `-`/`=` run under a
+     non-blank line as a Setext underline and balloons the line above to
+     `<h2>`/`<h1>` for one chunk (font + margin + re-wrap), collapsing back
+     the next chunk. The guard drops a trailing lone `^[ \t]*[-=]+[ \t]*$`
+     line when the line above is non-blank, applied AFTER
+     `defaultParser.parse` so an open fence is sealed first (a `-` inside it
+     is no longer the last line). Streaming volatile-tail only: prefix and
+     settled instances pass `parseIncompleteMarkdown === false`, so a
+     *settled* Setext heading still renders (a streamed one defers one
+     chunk — rare; agent prose uses ATX `#`). No upstream issue filed —
+     a general svelte-streamdown streaming bug, candidate to upstream. Full
+     rationale + the blank-above safety net are in the source comment.
+     Regression: `AssistantMessage.test.ts`.
 
 ## References
 

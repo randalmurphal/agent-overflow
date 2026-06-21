@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   svelte-streamdown@3.1.1:
-    hash: 808b7b76b662e0998ad12495ab6d056ef5d2b3d6a2520f4a54b8523ba567a3ba
+    hash: 62eeda252e178974688d13a1fec2c1a6c60016573c78cee77256f82f64a34497
     path: patches/svelte-streamdown@3.1.1.patch
   svelte@5.56.3:
     hash: a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e
@@ -72,7 +72,7 @@ importers:
         version: 5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)
       svelte-streamdown:
         specifier: 3.1.1
-        version: 3.1.1(patch_hash=808b7b76b662e0998ad12495ab6d056ef5d2b3d6a2520f4a54b8523ba567a3ba)(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))
+        version: 3.1.1(patch_hash=62eeda252e178974688d13a1fec2c1a6c60016573c78cee77256f82f64a34497)(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))
       virtua:
         specifier: 0.49.1
         version: 0.49.1(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))
@@ -2861,7 +2861,7 @@ snapshots:
     transitivePeerDependencies:
       - picomatch
 
-  svelte-streamdown@3.1.1(patch_hash=808b7b76b662e0998ad12495ab6d056ef5d2b3d6a2520f4a54b8523ba567a3ba)(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)):
+  svelte-streamdown@3.1.1(patch_hash=62eeda252e178974688d13a1fec2c1a6c60016573c78cee77256f82f64a34497)(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)):
     dependencies:
       '@floating-ui/dom': 1.7.6
       '@shikijs/langs': 3.23.0

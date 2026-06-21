@@ -548,6 +548,168 @@ describe('<AssistantMessage>', () => {
     },
   );
 
+  // Regression: transient Setext-heading "balloon" during streaming.
+  // CommonMark reads a non-blank line followed by a lone run of `-`/`=` as a
+  // Setext heading. Mid-stream, a nested/tight bullet's marker arrives a chunk
+  // before its text, so the volatile tail momentarily ends in
+  // `…parent text:\n  -`. marked then promotes the parent line to <h2>
+  // (larger font + heading margins + a re-wrap), and one chunk later — when the
+  // bullet text streams in — it collapses back to a paragraph + nested <ul>.
+  // That up-then-down relayout is the visible jank. The
+  // `stripDanglingSetextUnderline` hunk in
+  // `patches/svelte-streamdown@3.1.1.patch` drops a trailing lone `-`/`=` line
+  // (when the line above is non-blank) from `parseIncompleteMarkdown`'s output,
+  // so the underline never promotes the line above while it is the last thing
+  // streamed. It runs only on the volatile tail; settled messages and the
+  // committed prefix pass `parseIncompleteMarkdown === false` and are untouched.
+  it('does not transiently promote a streamed line to a heading on a dangling bullet marker', async () => {
+    // Volatile tail ends in the first nested marker before its text arrives.
+    const summary = [
+      '- first point here',
+      '- second point splits into two:',
+      '  -',
+    ].join('\n');
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      // The parent line's text must still be present…
+      expect(body.textContent).toContain('second point splits into two:');
+      // …but NOT as a heading. Without the fix marked emits an <h2> here.
+      expect(body.querySelector('h1, h2')).toBeNull();
+    });
+  });
+
+  it('does not promote a top-level streamed line on a dangling dash', async () => {
+    const summary = 'A sentence that ends with a colon:\n-';
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.textContent).toContain('ends with a colon:');
+      expect(body.querySelector('h1, h2')).toBeNull();
+    });
+  });
+
+  // Pins the any-indent guard. The regex is `^[ \t]*[-=]+[ \t]*$` (any leading
+  // whitespace), NOT `^ {0,3}…` — a `{0,3}` ceiling would miss a DOUBLE-nested
+  // bullet whose marker lands at column 4, which marked still mis-promotes to
+  // <h2> mid-stream. (Indented code can't be the false positive: it requires a
+  // blank line above, which the blank-above guard rejects.) Reverting the regex
+  // to `{0,3}` passes every ≤2-space case above but fails here.
+  it('does not promote a double-nested 4-space dangling bullet marker', async () => {
+    const summary = ['- a', '  - b', '    -'].join('\n');
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.textContent).toContain('b');
+      expect(body.querySelector('h1, h2')).toBeNull();
+    });
+  });
+
+  // Pins the `=` branch. `=` is in the regex for symmetry with `-` (Setext H1),
+  // and is the only heading-1 path; without `=` in the alternation a streamed
+  // `Title\n===` balloons to <h1> exactly like the dash case.
+  it('does not promote a top-level streamed line on a dangling = underline', async () => {
+    const summary = 'Big Title in progress\n===';
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.textContent).toContain('Big Title in progress');
+      expect(body.querySelector('h1, h2')).toBeNull();
+    });
+  });
+
+  // Positive control 1: the fix only touches the streaming volatile tail. A
+  // SETTLED Setext heading parses with `parseIncompleteMarkdown === false`, so
+  // `Title\n---` must still render <h2>. Guards against the strip leaking onto
+  // the authoritative (committed/settled) path and eating real headings.
+  it('still renders a settled Setext heading as a real heading', async () => {
+    const summary = 'Section Title\n---\n\nbody text follows here';
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'completed', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const heading = body.querySelector('h2');
+      expect(heading).not.toBeNull();
+      expect(heading?.textContent).toBe('Section Title');
+    });
+  });
+
+  // Positive control 2: once the nested bullet's text arrives the strip must NOT
+  // eat it — a real nested list renders. The regex only matches a LONE `-`/`=`
+  // run, so `  - nested child` is never stripped.
+  it('renders the nested bullet as a list item once its text streams in', async () => {
+    const summary = [
+      '- first point here',
+      '- second point splits into two:',
+      '  - nested child item',
+    ].join('\n');
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      // Assert the real structure, not just absence of a heading: the child
+      // must land in an <li>. A future over-strip that ate the `- ` marker
+      // would still leave the text present and no heading, slipping past a
+      // text-only check — this catches it.
+      const li = [...body.querySelectorAll('li')].find((el) =>
+        el.textContent?.includes('nested child item'),
+      );
+      expect(li).not.toBeUndefined();
+      expect(body.querySelector('h1, h2')).toBeNull();
+    });
+  });
+
+  // Boundary guard for strip-after-parse ordering. The strip runs on
+  // `defaultParser.parse(text)` OUTPUT, not the raw input, specifically so an
+  // open code fence is sealed first — a `-` line inside the fence is then no
+  // longer the trailing line and survives. If a future re-roll moved the strip
+  // BEFORE the parse, the trailing dash of a streamed open fence would be eaten
+  // out of the code. Asserts the dash stays in the code source.
+  it('keeps a trailing dash inside a streamed open code fence', async () => {
+    const summary = '```js\nconst x = 1\n-';
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const code = body.querySelector('[data-code-source]');
+      expect(code).not.toBeNull();
+      const src = code?.getAttribute('data-code-source') ?? '';
+      expect(src).toContain('const x = 1');
+      expect(src).toContain('-');
+      expect(body.querySelector('h1, h2')).toBeNull();
+    });
+  });
+
+  // Boundary guard for the single-line guard (`lastNewline < 0`). A lone
+  // streamed `---` is a thematic break, not a Setext underline — there is no
+  // line above it to promote. Without the guard the strip would slice off the
+  // last char (`---` → `--`) and destroy the rule. Asserts the <hr> survives.
+  // (The blank-above guard is NOT reachable at the component level — the
+  // boundary splitter commits the blank line into the prefix, so a tail like
+  // `text\n\n---` arrives as a single-line `---`; that branch is covered by the
+  // parser-level battery, not here.)
+  it('does not corrupt a lone streamed thematic break into a paragraph', async () => {
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary: '---' }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.querySelector('hr')).not.toBeNull();
+      expect(body.querySelector('h1, h2')).toBeNull();
+    });
+  });
+
   it('wraps inline command flags instead of scrolling horizontally', async () => {
     const { getByTestId } = render(AssistantMessage, {
       props: {

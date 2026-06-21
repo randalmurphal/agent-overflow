@@ -619,7 +619,7 @@ index 44ad02dae663a9666a57e514f0d235482041b3bd..ff190a15393b475b2bd00e0acbb117a0
      }
      static create(languages = bundledLanguagesInfo, additionalThemes, additionalLanguages) {
 diff --git a/dist/utils/parse-incomplete-markdown.js b/dist/utils/parse-incomplete-markdown.js
-index 3ea67e6ea3b6805339846252d1a3cd85914e2dd6..e44e1cf07c893f3e5afef34520e41c3857be249d 100644
+index 3ea67e6ea3b6805339846252d1a3cd85914e2dd6..35a45770a21638256afe44b461f34caa0a4567be 100644
 --- a/dist/utils/parse-incomplete-markdown.js
 +++ b/dist/utils/parse-incomplete-markdown.js
 @@ -298,6 +298,8 @@ export class IncompleteMarkdownParser {
@@ -659,7 +659,7 @@ index 3ea67e6ea3b6805339846252d1a3cd85914e2dd6..e44e1cf07c893f3e5afef34520e41c38
                                  const prevChar = i > 0 ? line[i - 1] : '';
                                  const nextChar = i < line.length - 1 ? line[i + 1] : '';
                                  if (prevChar &&
-@@ -853,7 +860,18 @@ export class IncompleteMarkdownParser {
+@@ -853,17 +860,54 @@ export class IncompleteMarkdownParser {
                      return text;
                  }
              }
@@ -679,7 +679,44 @@ index 3ea67e6ea3b6805339846252d1a3cd85914e2dd6..e44e1cf07c893f3e5afef34520e41c38
      }
  }
  // Legacy function for backward compatibility
-@@ -894,6 +912,32 @@ const isWithinMathBlock = (text, position) => {
+ const defaultPlugins = IncompleteMarkdownParser.createDefaultPlugins();
+ const defaultParser = new IncompleteMarkdownParser(defaultPlugins);
++// Drop a dangling Setext underline so the streamed line above it is not
++// transiently promoted to a heading. CommonMark reads a non-blank line followed
++// by a lone run of `-`/`=` as a Setext heading, so mid-stream the underline-only
++// line of a nested bullet ("  -" arriving before its text) flips the line above
++// to <h2> for one chunk, then collapses back once the bullet text streams in — a
++// visible font/margin/re-wrap "balloon". Indented code, thematic breaks, and
++// list starts all require a blank line above (or no line above), so guarding on
++// a non-blank preceding line leaves them untouched. Runs AFTER
++// defaultParser.parse so fence-completion has already sealed any open code fence
++// (its trailing `-` is then no longer the last line). Streaming-tail only: the
++// committed prefix and the settled single instance pass
++// parseIncompleteMarkdown === false and never reach this path.
++const stripDanglingSetextUnderline = (text) => {
++    const lastNewline = text.lastIndexOf('\n');
++    if (lastNewline < 0) {
++        return text; // single line: a list-start "-", never a Setext underline
++    }
++    if (!/^[ \t]*[-=]+[ \t]*$/.test(text.slice(lastNewline + 1))) {
++        return text; // last line is not a lone run of `-`/`=`
++    }
++    const prevLineStart = text.lastIndexOf('\n', lastNewline - 1) + 1;
++    if (text.slice(prevLineStart, lastNewline).trim() === '') {
++        return text; // blank line above: thematic break / indented code / list start, not Setext
++    }
++    return text.slice(0, lastNewline); // drop the dangling underline line
++};
+ export const parseIncompleteMarkdown = (text) => {
+     if (!text || typeof text !== 'string') {
+         return text;
+     }
+-    return defaultParser.parse(text);
++    return stripDanglingSetextUnderline(defaultParser.parse(text));
+ };
+ // Utility functions
+ const findEndOfCellOrLineContaining = (text, position) => {
+@@ -894,6 +938,32 @@ const isWithinMathBlock = (text, position) => {
      }
      return inInlineMath || inBlockMath;
  };
