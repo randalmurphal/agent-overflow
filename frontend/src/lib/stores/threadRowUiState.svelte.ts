@@ -295,6 +295,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
           chunkBytes: rowOptions.chunkBytes,
           requestTimeoutMs: rowOptions.requestTimeoutMs,
           cacheEnabled: currentCacheEnabled,
+          onExpandedChange: () => invalidateTimelineRowGeometryForItem(itemId),
         },
       ),
     );
@@ -548,6 +549,17 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     }
   }
 
+  // A deliberate expand/collapse legitimately resizes the row. Drop its
+  // preserved remount geometry so the size-reservation cache — which
+  // exists to smooth *involuntary* agent-driven resizes across virtua
+  // remounts — never reserves a stale expanded height against a freshly
+  // collapsed row. Synchronous on purpose: a collapse also shifts rows
+  // and can trigger a virtua remount that reads this cache in the same
+  // frame, so the stale entry must be gone before that read.
+  function invalidateTimelineRowGeometryForItem(itemId: string): void {
+    disposeTimelineRowGeometryForItems(new Set([itemId]));
+  }
+
   function disposeItems(items: Iterable<Item>): void {
     let nextGroupExpanded: Set<string> | null = null;
     let nextDiffOverrides: Map<string, ReadonlyMap<string, boolean>> | null = null;
@@ -663,6 +675,10 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       next.set(itemId, inner);
     }
     diffCardExpandedOverrides = next;
+    // The card's open/closed state drives the whole row's height; a diff
+    // card is a payload-expansion override that never flips the payload
+    // handle's `expanded`, so invalidate here too.
+    invalidateTimelineRowGeometryForItem(itemId);
   }
 
   function attachmentCacheFor(itemId: string): AttachmentPreviewCache {

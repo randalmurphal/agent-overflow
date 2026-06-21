@@ -73,6 +73,16 @@ export interface PayloadExpansionOptions {
    * keep their explicit expand-on-click contract.
    */
   loadOnMount?: boolean;
+  /**
+   * Fired synchronously whenever the open/closed state actually flips
+   * (expand, collapse, or a load-on-mount hydrate). Lets the owner react
+   * to a deliberate height change at the instant it happens — the
+   * timeline uses it to drop the row's preserved remount geometry so a
+   * stale expanded height is never reserved against a freshly collapsed
+   * row. Must stay synchronous: a next-flush hook races the collapse's
+   * own virtua remount.
+   */
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 export function createPayloadExpansion(
@@ -86,8 +96,18 @@ export function createPayloadExpansion(
   const payloadVersion = options.payloadVersion;
   const loadMode = options.loadMode ?? 'preview';
   const cacheEnabled = options.cacheEnabled;
+  const onExpandedChange = options.onExpandedChange;
 
   let expanded = $state(false);
+
+  // Single write path for the open/closed flag so every transition
+  // (expand, collapse, load-on-mount hydrate) notifies the owner exactly
+  // once, synchronously, on an actual change.
+  function setExpandedFlag(next: boolean): void {
+    if (expanded === next) return;
+    expanded = next;
+    onExpandedChange?.(next);
+  }
   let loadingPreview = $state(false);
   let loadingFull = $state(false);
   let error = $state<string | null>(null);
@@ -231,7 +251,7 @@ export function createPayloadExpansion(
     loadedPayloadID = id;
     loadedPayloadVersion = version;
     error = null;
-    if (opts.expandOnHit) expanded = true;
+    if (opts.expandOnHit) setExpandedFlag(true);
     return true;
   }
 
@@ -330,7 +350,7 @@ export function createPayloadExpansion(
   }
 
   async function expand(): Promise<void> {
-    if (!expanded) expanded = true;
+    setExpandedFlag(true);
     await ensureLoaded();
   }
 
@@ -420,7 +440,7 @@ export function createPayloadExpansion(
   }
 
   function collapse(): void {
-    expanded = false;
+    setExpandedFlag(false);
     loadingPreview = false;
     loadingFull = false;
     cancelInflight();

@@ -495,6 +495,67 @@ describe('createThreadRowUiState', () => {
     expect(rowUiState.cachedTimelineRowHeight(widerKey)).toBeUndefined();
   });
 
+  it('drops preserved row geometry when a diff card is toggled, sparing other rows', () => {
+    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+    const key = {
+      key: 'l:thread-a:item-a',
+      signature: 'sig-a',
+      width: 800,
+      ownerItemIds: ['item-a'],
+    };
+    const otherKey = {
+      key: 'l:thread-a:item-b',
+      signature: 'sig-b',
+      width: 800,
+      ownerItemIds: ['item-b'],
+    };
+    rowUiState.rememberTimelineRowHeight(key, 200);
+    rowUiState.rememberTimelineRowHeight(otherKey, 90);
+
+    // Collapsing the card is a deliberate height change; its stale
+    // expanded geometry must not survive to be reserved on a remount.
+    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', false);
+
+    expect(rowUiState.cachedTimelineRowHeight(key)).toBeUndefined();
+    expect(rowUiState.cachedTimelineRowHeight(otherKey)).toBe(90);
+  });
+
+  it('drops preserved row geometry when an item expansion handle collapses', async () => {
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: 'body',
+      nextOffset: 4,
+      totalSize: 4,
+      isComplete: true,
+    }));
+    const item = makeItem({
+      id: 'tool:5:0',
+      kind: 'tool_call',
+      payloadId: 'payload-a',
+      threadId: 'thread-a',
+    });
+    const rowUiState = createThreadRowUiState({
+      getItemById(itemId: string): Item | undefined {
+        return itemId === item.id ? item : undefined;
+      },
+    });
+    const key = {
+      key: `l:${item.threadId}:${item.id}`,
+      signature: 'sig',
+      width: 800,
+      ownerItemIds: [item.id],
+    };
+
+    const handle = rowUiState.expansionStateFor(item);
+    await handle.expand();
+    rowUiState.rememberTimelineRowHeight(key, 200);
+    expect(rowUiState.cachedTimelineRowHeight(key)).toBe(200);
+
+    // The user collapses the row: its preserved expanded height is dropped
+    // synchronously, before any collapse-driven remount can reserve it.
+    handle.collapse();
+    expect(rowUiState.cachedTimelineRowHeight(key)).toBeUndefined();
+  });
+
   it('disposes per-item expansion and attachment state', () => {
     const item = makeItem({
       id: 'tool:5:0',
