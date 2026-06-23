@@ -13,6 +13,9 @@
   interface Props {
     label: string;
     disabled?: boolean;
+    /** Optional `data-testid` stamp — mirrors Button's `testId` so icon-only
+     *  controls can migrate to this primitive without losing their test hook. */
+    testId?: string;
     onClick?: (e: MouseEvent) => void;
     size?: 'sm' | 'md';
     variant?: 'ghost' | 'subtle';
@@ -24,6 +27,7 @@
   let {
     label,
     disabled = false,
+    testId,
     onClick,
     size = 'md',
     variant = 'ghost',
@@ -72,6 +76,7 @@
     VARIANT_CLASSES[variant],
   ].join(' ')}
   data-icon-button
+  data-testid={testId}
 >
   {@render children()}
 </button>

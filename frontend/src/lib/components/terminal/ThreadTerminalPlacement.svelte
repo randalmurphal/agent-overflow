@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { leaseDuringSettle } from '../../utils/scrollLeaseDuringTransition';
   import LazyThreadTerminalDrawer from './LazyThreadTerminalDrawer.svelte';
   import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
 
@@ -24,6 +25,14 @@
     },
     consumeFocusRequest() {
       return pane.consumeTerminalFocusRequest();
+    },
+    settleAfterAsyncMount() {
+      // Cold first open: the lazy drawer commits after setShowTerminal's
+      // 2-rAF open lease has released, and the controller has no scrollEl RO.
+      // Re-run the same settle lease so a stuck-to-bottom timeline re-pins to
+      // the new (shorter) bottom instead of leaving the latest messages hidden
+      // behind the drawer. No-op when no controller is registered.
+      leaseDuringSettle(pane.scrollController);
     },
   });
 </script>

@@ -36,7 +36,18 @@
 
     loadThreadTerminalDrawer()
       .then((component) => {
-        if (!cancelled) Drawer = component;
+        if (cancelled) return;
+        Drawer = component;
+        // Cold-open re-pin (see terminalDrawerTypes.settleAfterAsyncMount): the
+        // real drawer is an in-flow shrink-0 box (120–320px) that steals height
+        // from the flex-1 timeline, and it commits HERE — after setShowTerminal's
+        // 2-rAF open lease has already released (this branch only runs because the
+        // dynamic import resolved late) and with no scrollEl ResizeObserver
+        // watching. Without this, a stuck-to-bottom timeline won't re-pin and the
+        // latest messages hide behind the terminal. The warm path renders the
+        // drawer in-flush under the open lease and never reaches here (onMount
+        // early-returns when Drawer is already cached).
+        surface.settleAfterAsyncMount?.();
       })
       .catch((err) => {
         if (!cancelled) {

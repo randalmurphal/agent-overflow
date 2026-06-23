@@ -38,6 +38,21 @@
 
   let { pane }: { pane: ThreadPane } = $props();
 
+  // Shared chrome for the split-button's two segments. The `h-6` here is
+  // load-bearing: it locks BOTH segments to the 24px header-cluster height (same
+  // as an xs Button / PrBadge). Keeping the height in ONE place is the point —
+  // if the two halves drift apart, or either drifts off 24px, the control's
+  // async git-status mount grows the chat header and reflows the timeline (the
+  // bug this control originally caused). Per-segment bits (padding, which corners
+  // round, the shared middle border) are appended at each use site.
+  // Font size + focus-ring match the rest of the header cluster (xs Button,
+  // PrBadge: text-[0.6875rem] / ring-accent/40), not just the height — so the
+  // split-button reads as one of the cluster, not a slightly-bigger outlier.
+  const SPLIT_BTN_BASE =
+    'inline-flex items-center h-6 text-[0.6875rem] border border-border text-text-secondary ' +
+    'hover:text-text-primary hover:border-text-secondary cursor-pointer ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
+
   // Live status for this pane's workspace, observed by the shared gitStatus
   // slot. Reading through $derived keeps this control reactive to the single
   // subscription without owning it.
@@ -139,7 +154,7 @@
 {#if statusError}
   <Button
     variant="danger-outline"
-    size="sm"
+    size="xs"
     onclick={() => void pane.gitStatus.refreshNow()}
     testId="git-actions-error"
     title="Failed to load git status. Click to retry."
@@ -152,7 +167,7 @@
       onclick={executePrimary}
       disabled={primaryAction.disabled || actionLoading}
       title={primaryAction.tooltip}
-      class="text-xs px-2.5 py-1 rounded-l border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      class="{SPLIT_BTN_BASE} px-2.5 rounded-l disabled:opacity-40 disabled:cursor-not-allowed"
     >
       {actionLoading ? '...' : primaryAction.label}
     </button>
@@ -162,7 +177,7 @@
       aria-label="More git actions"
       aria-expanded={showDropdown}
       aria-haspopup="menu"
-      class="text-xs px-1 py-1 rounded-r border border-l-0 border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      class="{SPLIT_BTN_BASE} px-1 rounded-r border-l-0"
     >
       <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-80" />
     </button>

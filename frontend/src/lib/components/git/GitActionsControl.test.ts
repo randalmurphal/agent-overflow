@@ -227,3 +227,54 @@ describe('<GitActionsControl> forge labels', () => {
     expect(item?.getAttribute('aria-disabled')).toBe('true');
   });
 });
+
+describe('<GitActionsControl> header action controls are height-locked', () => {
+  // The chat header is auto-height (ChatHeader `py-2` + its tallest child).
+  // Every action item is locked to `h-6` (24px) so async-loaded git chrome can
+  // MOUNT without changing the header height. GitActionsControl only renders
+  // once `pane.gitStatus.status` arrives (async, after a thread switch); if its
+  // button is 2px taller than the rest of the cluster it grows the header from
+  // 41px to 43px, the `flex-1` timeline below loses 2px, and the scroll
+  // controller correctly re-pins to bottom — the visible 1–2px "settle shift"
+  // on cached-thread switch (see SCROLL_SETTLE_RCA.md). The split-button was
+  // hand-rolled at 26px (`text-xs` 16px line + `py-1` 8px + `border` 2px); these
+  // tests pin it (and the error button) to the 24px cluster height. happy-dom
+  // reports zero geometry, so the contract is asserted via the height class.
+  beforeEach(async () => {
+    resetPanesForTest();
+    setBindingMock('GetSettings', async () => null);
+    setBindingMock('GetProviderStatuses', async () => []);
+    await loadSettings();
+  });
+
+  it('locks the repo split-button (primary + caret) to the h-6 cluster height', async () => {
+    const pane = await buildPane();
+    pane.gitStatus.set(status({ isRepo: true, hasChanges: true }));
+    const { container } = render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    const primary = container.querySelector<HTMLButtonElement>('div.flex > button:first-of-type');
+    const caret = container.querySelector<HTMLButtonElement>('button[aria-label="More git actions"]');
+    expect(primary).not.toBeNull();
+    expect(caret).not.toBeNull();
+    // h-6 (24px) == every other header action item (xs Button, PrBadge). The
+    // explicit height IS the contract that stops the async git-status mount from
+    // growing the header and reflowing the timeline. (The original bug was a
+    // hand-rolled `py-1`+border button with no explicit height = 26px; we assert
+    // the positive height contract, not the absence of the historical class —
+    // under border-box `py-1` can't change an `h-6` box's outer height anyway.)
+    expect(primary!.className).toContain('h-6');
+    expect(caret!.className).toContain('h-6');
+  });
+
+  it('locks the git-error retry button to the h-6 cluster height', async () => {
+    const pane = await buildPane();
+    pane.gitStatus.setError(true);
+    const { findByTestId } = render(GitActionsControl, { props: { pane } });
+    const errorBtn = await findByTestId('git-actions-error');
+    // size="xs" → h-6; size="sm" (the prior value) is h-7 (28px) and would jump
+    // the header 4px on git error.
+    expect(errorBtn.className).toContain('h-6');
+    expect(errorBtn.className).not.toContain('h-7');
+  });
+});

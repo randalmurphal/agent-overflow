@@ -27,6 +27,7 @@
   import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanReviewSurface from './ProposedPlanReviewSurface.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
@@ -222,15 +223,14 @@
             onSave={planExport.openSaveDialog}
           />
         {/if}
-        <button
-          type="button"
-          onclick={() => ctx.close()}
-          data-testid="plan-sidebar-close"
-          aria-label="Close Plan Sidebar"
-          class="rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        <IconButton
+          label="Close Plan Sidebar"
+          size="sm"
+          testId="plan-sidebar-close"
+          onClick={() => ctx.close()}
         >
-          <Icon icon={X} size={14} />
-        </button>
+          {#snippet children()}<Icon icon={X} size={14} />{/snippet}
+        </IconButton>
       </div>
     </div>
 
