@@ -68,6 +68,7 @@ Read that before touching:
 - `src/lib/components/chat/MessageTimeline.svelte`
 - `src/lib/components/discussion/ChannelView.svelte`
 - `src/lib/utils/useStickToBottom.svelte.ts`
+- `src/lib/utils/threadVirtuaSizeCache.ts`
 
 Short version: `MessageTimeline` owns the scroll container, `virtua`
 owns row geometry, and `useStickToBottom` owns scroll intent and every

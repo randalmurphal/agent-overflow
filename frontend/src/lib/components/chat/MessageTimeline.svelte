@@ -17,11 +17,18 @@
     type ScrollSnapshot,
   } from '../../utils/threadScrollSnapshots';
   import {
+    getReplayableVirtuaCache,
+    setThreadVirtuaSizeCache,
+    type VirtuaCacheSnapshot,
+    type VirtuaSizeCacheKey,
+  } from '../../utils/threadVirtuaSizeCache';
+  import {
     groupItemsBySubagent,
     sliceRevealedNodes,
     timelineNodeKey,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
+  import { timelineStructureSignature } from '../../utils/timelineStructureSignature';
   import { groupConsecutiveReads } from '../../utils/readGrouping';
   import { timelineRowDecorations } from './timelineRows';
   import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
@@ -189,6 +196,15 @@
   // Imperative handle into virtua. Set once Virtualizer mounts.
   let listRef: VirtualizerHandle | undefined = $state(undefined);
   let rowGeometryWidth = $state(0);
+
+  // virtua measured-size snapshot to replay into the next {#key pane.threadId}
+  // mount, so a revisited thread skips the estimate→measure cascade (the
+  // thread-switch flicker). Computed on the threadId edge in $effect.pre
+  // below — BEFORE the remount — because virtua reads `cache` once at
+  // construction. `undefined` falls back to the flat itemSize estimate (the
+  // pre-cache behavior). See utils/threadVirtuaSizeCache.ts.
+  let virtuaReplayCache = $state<VirtuaCacheSnapshot | undefined>(undefined);
+  let virtuaReplayCacheThreadId: string | null = null;
 
   let restoredThreadId: string | null = $state(null);
   // Diagnostic: timestamp of the most recent legitimate `restoredThreadId = null`
@@ -679,6 +695,15 @@
   let liveFollowSignatureInitialized = false;
   let lastLiveFollowSignature = '';
   let liveFollowNudgeToken = 0;
+  // Switch-generation + loading state the live-follow tracker last
+  // baselined against. A thread switch / same-thread reload bumps the
+  // generation, and the initial slice load (which lands AFTER the bump on a
+  // cache miss — `loading` stays true until `runParallelLoad` settles)
+  // grows the tail. Both change `activeTurnStructuralSignature` but neither
+  // is an in-turn append, so we must NOT arm the structural-append spring
+  // across them (see the effect below). Sentinels re-baseline on first run.
+  let liveFollowSwitchGeneration = -1;
+  let liveFollowLoading = false;
 
   function nextAnimationFrame(): Promise<void> {
     return new Promise((resolve) => {
@@ -725,6 +750,48 @@
   // activity-rail changes during streaming can continue the spring.
   $effect(() => {
     const signature = activeTurnStructuralSignature;
+    const switchGeneration = pane.switchGeneration;
+    const loading = pane.loading;
+
+    // Thread switch / same-thread reload / initial load: re-baseline WITHOUT
+    // marking. `activeTurnStructuralSignature` embeds the thread id, so a
+    // switch flips it old→new, a reload (revert-to-checkpoint) rebuilds it in
+    // place, and the initial slice load then grows the tail as items arrive.
+    // All cross into a freshly mounted timeline whose virtua rows are still
+    // estimate→measure settling — they are a restore, not an in-turn append.
+    // Calling `markStructuralContentPending()` here makes the post-restore
+    // measurement growth spring-chase the new bottom (a visible multi-hundred-
+    // px scroll on switch into an actively-streaming thread —
+    // bug-report-20260622T041049Z). Re-baseline like a fresh mount instead.
+    //
+    // Gated on switchGeneration (not threadId) so same-thread reloads count
+    // too (mirrors `scrollSnapshotSwitchGeneration` in the restore path), AND
+    // on `pane.loading` because a cache MISS loads the slice asynchronously
+    // AFTER the generation bump — `loading` stays true across the whole
+    // switch+load (set true at switchThread start, false only after
+    // `runParallelLoad` settles), so its transitions bracket the settle even
+    // when the final signature lands in a later flush than the bump. Only a
+    // genuine append to the settled, mounted timeline reaches the mark below.
+    //
+    // All three disjuncts below are load-bearing — none is redundant:
+    //   - `loading`         : true across the whole switch+load window.
+    //   - `loadingChanged`  : the cache-MISS closing edge — the slice lands
+    //                         as `loading` flips false, a flush where
+    //                         `loading` itself already reads false.
+    //   - `generationChanged`: the cache-HIT case, where the slice is
+    //                         synchronous and this effect never observes
+    //                         `loading === true` at all.
+    const generationChanged = switchGeneration !== liveFollowSwitchGeneration;
+    const loadingChanged = loading !== liveFollowLoading;
+    if (generationChanged || loading || loadingChanged) {
+      liveFollowSwitchGeneration = switchGeneration;
+      liveFollowLoading = loading;
+      liveFollowSignatureInitialized = signature !== '';
+      lastLiveFollowSignature = signature;
+      liveFollowNudgeToken += 1;
+      return;
+    }
+
     if (!signature) {
       liveFollowSignatureInitialized = false;
       lastLiveFollowSignature = '';
@@ -1017,6 +1084,13 @@
     const threadId = snapshotThreadId();
     if (!threadId) return;
     saveScrollSnapshotForThread(threadId);
+    // Refresh the measured-size cache on the same triggers as the scroll
+    // position snapshot — restore, scroll, load-older settle. Size-gated, so
+    // it only re-slices when the cascade actually grew the surface; every
+    // other call is a cheap O(1) no-op. This co-location is why the outgoing
+    // thread's size cache is fresh at switch time (its most recent
+    // saveScrollSnapshot IS the capture), mirroring the position snapshot.
+    maybePersistVirtuaSizeCache();
   }
 
   function saveScrollSnapshotForThread(threadId: string): void {
@@ -1053,6 +1127,120 @@
       throw err;
     }
   }
+
+  // ============================================================
+  // virtua measured-size cache (per-thread, replays across switches)
+  // ============================================================
+
+  // The validity stamp for a measured-size snapshot: row height is keyed on
+  // pane width (wrap point), the rendered node sequence + per-leaf content
+  // (structureSig), and non-default expansion (taller rows). A snapshot only
+  // replays when all three still match — otherwise virtua falls back to the
+  // flat estimate. (Display settings — fontSize, fonts, collapseDiffPreviews —
+  // also affect height but are a deliberately-unkeyed benign residual; see the
+  // header of utils/threadVirtuaSizeCache.ts.) `rowGeometryWidth` persists
+  // across switches (MessageTimeline is not keyed on threadId), so it carries
+  // the correct width into the next mount. structureSig is computed from
+  // `revealedNodes` — the exact array virtua receives as `data` — so capture and
+  // the next mount's lookup sign the same thing; it superseded an earlier
+  // version of this key that read `pane.timelineRevision`, a monotonic counter
+  // that was never restored on re-entry and so could never match on a revisit
+  // (the field itself remains, as the timeline-derivation trigger).
+  function currentVirtuaSizeKey(): VirtuaSizeCacheKey {
+    return {
+      width: Math.round(rowGeometryWidth),
+      structureSig: timelineStructureSignature(revealedNodes),
+      expansionSig: pane.expansionSignature(),
+    };
+  }
+
+  // Total scroll size at the last capture. The estimate→measure cascade only
+  // moves this when rows actually measure, so it gates the capture: we re-snap
+  // exactly when (and only when) virtua's geometry changed, never per scroll
+  // frame. Reset on the threadId edge so the incoming thread's first measured
+  // size is never mistaken for "unchanged" against the outgoing thread's.
+  let lastPersistedScrollSize = -1;
+
+  // Capture virtua's current measured sizes for the active thread, but only
+  // when the total scroll size changed since the last capture — so a 60Hz
+  // spring chase doesn't re-slice the size array every frame. The most recent
+  // capture before a switch is what the return replays; mirroring the
+  // scroll-snapshot strategy, we never capture in the switch effect.pre
+  // because `pane` has already mutated to the incoming thread by then.
+  //
+  // Mid-stream cost is known and tolerated: on an actively-streaming thread the
+  // size-gate passes once per geometry change (each append grows the total), so
+  // getCache() + the O(N) structureSig rebuild in currentVirtuaSizeKey() run
+  // ~5–20×/sec — bounded by the gate (never per-frame) and only while the
+  // visible thread streams. Only the settle capture (isWarm rising) matters for
+  // replay; the interim ones are overwritten. Deliberately NOT gated on
+  // spring-chase state: that would risk dropping the settle capture on an
+  // already-warm streaming thread (isWarm does not re-arm), regressing replay.
+  function maybePersistVirtuaSizeCache(): void {
+    const threadId = snapshotThreadId();
+    if (!threadId || !listRef || restoredThreadId !== threadId) return;
+    const list = listRef;
+    // ONLY the virtua geometry reads are guarded: the inner ref can be nulled
+    // while our outer handle is still bound (teardown), and both calls throw a
+    // TypeError then. Key construction (currentVirtuaSizeKey → structureSig /
+    // expansionSig) stays OUTSIDE the guard so a real bug there fails loudly
+    // instead of masquerading as teardown and silently disabling the cache.
+    let scrollSize: number;
+    let snapshot: VirtuaCacheSnapshot;
+    try {
+      // O(1) read (virtua's cached total) — the cheap change-gate. Skip the
+      // getCache() slice entirely when geometry hasn't moved (60Hz spring).
+      scrollSize = list.getScrollSize();
+      if (scrollSize === lastPersistedScrollSize) return;
+      snapshot = list.getCache();
+    } catch (err) {
+      // Skip this capture; the next change refreshes it. `lastPersistedScrollSize`
+      // is intentionally NOT advanced here, so a teardown-throw doesn't gate out
+      // the retry. Re-throw anything that isn't the documented teardown shape.
+      if (err instanceof TypeError) return;
+      throw err;
+    }
+    lastPersistedScrollSize = scrollSize;
+    setThreadVirtuaSizeCache(threadId, { snapshot, ...currentVirtuaSizeKey() });
+  }
+
+  // Resolve the replay snapshot for the INCOMING thread before the
+  // {#key pane.threadId} block remounts the <Virtualizer>. virtua consumes
+  // `cache` once at construction, and $effect.pre runs before DOM flush, so
+  // `virtuaReplayCache` is settled by the time the remount reads it. Gated on
+  // the threadId edge: mid-thread revision/width churn must not recompute it
+  // (the mounted Virtualizer ignores a changed `cache` anyway), and the
+  // same-thread revert flow keeps threadId constant so it never remounts.
+  $effect.pre(() => {
+    const threadId = pane.threadId;
+    if (threadId === virtuaReplayCacheThreadId) return;
+    virtuaReplayCacheThreadId = threadId;
+    lastPersistedScrollSize = -1;
+    virtuaReplayCache = threadId
+      ? untrack(() => getReplayableVirtuaCache(threadId, currentVirtuaSizeKey()))
+      : undefined;
+  });
+
+  // Guarantee a post-settle capture. The scroll-driven captures
+  // (handleVirtuaScroll/ScrollEnd → saveScrollSnapshot) only store settled
+  // sizes if the cascade's bottom-pin re-pins reach virtua's onscroll — which
+  // an idle, bottom-pinned thread the user never scrolls cannot rely on, so the
+  // only stored snapshot would be the pre-settle estimate and the NEXT visit
+  // would replay it and still cascade. `stick.isWarm` is the controller's
+  // existing "measurement cascade has settled" signal (QUIET_MS of geometry
+  // stillness); on its rising edge the sizes are final. Capture is `untrack`ed
+  // so this effect depends ONLY on isWarm — not on the geometry/content
+  // maybePersistVirtuaSizeCache reads — keeping it a settle-edge trigger, not a
+  // content watcher. Size-gated downstream, so if a scroll capture already
+  // stored the settled total this is a no-op; cascade-interim warm flickers
+  // store interim sizes the final settle overwrites.
+  let lastWarmForCapture = false;
+  $effect(() => {
+    const warm = stick.isWarm;
+    const rising = warm && !lastWarmForCapture;
+    lastWarmForCapture = warm;
+    if (rising) untrack(() => maybePersistVirtuaSizeCache());
+  });
 
   // Reset restoration tracking on thread change BEFORE the new thread's
   // effects run, AND suspend auto-follow until restoreToBottom (or
@@ -1647,8 +1835,13 @@
            so contentEl.scrollHeight reflects virtua's totalSize exactly.
            {#key pane.threadId} forces the <Virtualizer> to remount on
            every thread switch so its internal row-size store resets with
-           the timeline. Row-size snapshots are not replayed because they
-           are only valid with the row UI state that produced them. -->
+           the timeline. `cache` replays the previous visit's measured sizes
+           when the validity key still matches (width + structure + expansion),
+           so a revisited thread mounts at its final height instead of
+           re-running the estimate→measure cascade — the thread-switch
+           flicker. On any mismatch `virtuaReplayCache` is undefined and
+           virtua falls back to the flat itemSize estimate. See
+           utils/threadVirtuaSizeCache.ts and docs/architecture/frontend-scroll.md. -->
       <div
         bind:this={contentEl}
         style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}
@@ -1658,6 +1851,7 @@
           bind:this={listRef}
           scrollRef={scrollEl}
           data={revealedNodes}
+          cache={virtuaReplayCache}
           shift={virtualizerShiftAtHead}
           getKey={(node) => timelineNodeKey(node)}
           itemSize={ESTIMATED_ROW_SIZE}

@@ -149,6 +149,15 @@ export function scheduleDomUiTrace(
 
   const scheduleFrame = () => {
     pending.timer = null;
+    // The throttle timer (setTimeout below) can fire after the document is
+    // gone — between test files in the unit suite, or during shutdown — when
+    // `requestAnimationFrame` is no longer defined. This is a best-effort
+    // diagnostic frame, so drop it rather than throw an unhandled ReferenceError
+    // (which surfaces as a suite-level error even though no test failed).
+    if (typeof requestAnimationFrame === 'undefined') {
+      pendingDomTraces.delete(key);
+      return;
+    }
     pending.frame = requestAnimationFrame(() => {
       pendingDomTraces.delete(key);
       lastDomTraceAtByKey.set(key, Date.now());

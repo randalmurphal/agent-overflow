@@ -2142,6 +2142,83 @@ describe('createUseStickToBottomController — spring chase', () => {
     vi.restoreAllMocks();
   });
 
+  // The cold-thread-switch flicker: after the controller has pinned the DOM
+  // to true bottom, virtua's `$fixScrollJump` requests an anchor-preserving
+  // offset BELOW bottom (its delta only compensates above-viewport remeasure,
+  // not at/below-fold growth). The external-write gate must redirect that
+  // bottom-locked stale-anchor write to true bottom instead of letting it
+  // paint one frame short. These lock the gate DECISION; the actual no-flicker
+  // is only observable in the real app (happy-dom has no layout), so the
+  // assertions are on where the redirected write lands.
+  describe('virtua $fixScrollJump anchor redirect', () => {
+    it('redirects a stale below-bottom virtua write to true bottom (instant-mode exit)', async () => {
+      // Idle cold-switch thread is animationMode==='instant'; without the
+      // redirect, virtua's write exits through the instant pass-through and
+      // the short frame lands.
+      mode = 'instant';
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initial; warm still false
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+      // Content grows; the controller sync-pins the DOM to the new bottom.
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      expect(geom.scrollTop).toBe(600); // DOM at true bottom → domAlreadyPinned
+      // virtua's $fixScrollJump now requests a stale anchor 390px short.
+      scrollEl.scrollTop = 210;
+      // Redirected to true bottom, not left at the stale 210.
+      expect(geom.scrollTop).toBe(600);
+    });
+
+    it('redirects a stale below-bottom virtua write to true bottom (spring mode, no chase)', async () => {
+      // mode='spring' with no chase in flight (springToken===0) exits through
+      // the springToken===0 pass-through — the second exit the redirect must
+      // also cover.
+      mode = 'spring';
+      const ro = getRO();
+      ro.fire(contentEl, 800); // initial; DOM already at bottom (400)
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+      expect(geom.scrollTop).toBe(400); // at bottom, no spring engaged
+      scrollEl.scrollTop = 50; // virtua stale anchor, 350px short
+      expect(geom.scrollTop).toBe(400); // redirected to bottom
+    });
+
+    it('does NOT redirect when the DOM is not yet pinned to bottom (legit compensation passes)', async () => {
+      // Mid-cascade: the controller has not pinned yet, so the DOM sits below
+      // bottom. virtua's write here is legitimate above-viewport compensation
+      // and must land untouched — the redirect is narrow to domAlreadyPinned.
+      mode = 'instant';
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      geom.scrollTop = 300; // position DOM below bottom (600) without the gate
+      scrollEl.scrollTop = 350; // virtua compensation through the gate
+      expect(geom.scrollTop).toBe(350); // not redirected — lands as virtua asked
+    });
+
+    it('does NOT redirect a virtua write that stops just short of the epsilon band', async () => {
+      // Boundary: a write exactly AUTO_FOLLOW_BOTTOM_EPSILON_PX (4px) short of
+      // bottom is NOT "moving away" (requestedMovesAwayFromBottom is strict
+      // `> epsilon`), so it must pass through, not snap to bottom. Pins that
+      // threshold — without it a predicate mutation to always-true survives.
+      mode = 'instant';
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      expect(geom.scrollTop).toBe(600); // pinned at true bottom
+      scrollEl.scrollTop = 596; // 4px short — exactly the epsilon boundary
+      expect(geom.scrollTop).toBe(596); // passes through, not redirected to 600
+    });
+  });
+
   describe('warm-up gate', () => {
     it('sync-pins (no spring) during the warm-up window even when mode=spring', async () => {
       const ro = getRO();
@@ -2425,18 +2502,78 @@ describe('createUseStickToBottomController — spring chase', () => {
       localScrollEl?.remove();
     });
 
-    it('signal truthy at first RO fire shortens the quiet window to ~one frame', async () => {
-      // Baseline established by the existing warm-up gate suite: with no
-      // signal, isWarm flips at QUIET_MS (100ms). With the signal truthy
-      // at bump time, we use SETTLED_QUIET_MS (16ms) instead.
+    it('shortens the quiet window once geometry holds still and the signal is on', async () => {
+      // The shortened SETTLED_QUIET_MS (16ms) window is only used once the
+      // surface has stopped moving. The FIRST fire has no baseline, so it
+      // is treated as still-moving and holds the conservative QUIET_MS
+      // (100ms) window; a subsequent small (≤ WARMUP_SETTLE_EPSILON_PX)
+      // delta with the signal on then admits the shortcut.
       settled = true;
       buildLocalController({ signal: () => settled });
       const ro = getLocalRO();
-      ro.fire(localContentEl, 800);
-      // 30ms is well past SETTLED_QUIET_MS (16ms) but well short of
-      // QUIET_MS (100ms). If the shortcut works, warm is true here;
-      // otherwise we'd still be waiting until ~100ms.
+      ro.fire(localContentEl, 800); // first fire — unknown geometry
+      // 30ms is past SETTLED_QUIET_MS (16ms) but short of QUIET_MS (100ms):
+      // a buggy first-fire shortcut would already be warm here.
       await waitMs(30);
+      expect(localController.isWarm).toBe(false);
+      ro.fire(localContentEl, 804); // +4px — surface settled, signal on
+      // 45ms clears SETTLED_QUIET_MS (16ms) with real-timer slack, still
+      // well under QUIET_MS (100ms) so a conservative-window regression fails.
+      await waitMs(45);
+      expect(localController.isWarm).toBe(true);
+    });
+
+    it('keeps warm false through a virtua estimate→measure cascade even with the settle signal on', async () => {
+      // Idle-thread flicker regression: virtua mounts rows at the flat
+      // ESTIMATED_ROW_SIZE then corrects to measured heights over a series
+      // of contentRO fires spaced wider than SETTLED_QUIET_MS. With the
+      // settle signal already on (svelte-streamdown idle for an
+      // already-rendered thread), a shortened window would fire in the gap
+      // between two corrections and reveal a still-growing surface. Warm
+      // must stay false until the cascade goes quiet — geometry, not the
+      // settle signal, gates the reveal.
+      settled = true;
+      buildLocalController({ signal: () => settled });
+      const ro = getLocalRO();
+      // Mount estimate, then large corrections ~30ms apart (each well past
+      // SETTLED_QUIET_MS=16ms). After each, warm must still be false.
+      ro.fire(localContentEl, 1000);
+      await waitMs(30);
+      expect(localController.isWarm).toBe(false);
+      ro.fire(localContentEl, 2000);
+      await waitMs(30);
+      expect(localController.isWarm).toBe(false);
+      ro.fire(localContentEl, 3000);
+      await waitMs(30);
+      expect(localController.isWarm).toBe(false);
+      // Cascade goes quiet → warm reveals after the conservative QUIET_MS
+      // RO-silence window (geometry-driven, not a cascade-duration guess).
+      await waitMs(150);
+      expect(localController.isWarm).toBe(true);
+    });
+
+    it('a width-only (height delta 0) reflow between cascade steps does not admit the short window', async () => {
+      // Cold-boot residual: a padding-var / width-only reflow fires a
+      // contentRO with height delta exactly 0. It carries no new height
+      // information, so it must NOT reset geometry-stability to "settled"
+      // mid-cascade — otherwise the shortened window fires before the next
+      // correction lands. (The contentRO's own delta===0 early-out runs
+      // AFTER the quiet-timer bump, so this RO does reach the gate.) The
+      // gate keeps the prior large magnitude → stays conservative.
+      settled = true;
+      buildLocalController({ signal: () => settled });
+      const ro = getLocalRO();
+      ro.fire(localContentEl, 1000); // mount estimate (first fire, no baseline)
+      await waitMs(30);
+      expect(localController.isWarm).toBe(false);
+      ro.fire(localContentEl, 2000); // +1000 cascade correction (still moving)
+      ro.fire(localContentEl, 2000); // width-only reflow: delta 0, no height info
+      // 30ms is past SETTLED_QUIET_MS (16ms): a delta-0 RO that wrongly
+      // counted as "settled" would have already revealed here.
+      await waitMs(30);
+      expect(localController.isWarm).toBe(false);
+      // Cascade quiet → conservative QUIET_MS window reveals.
+      await waitMs(150);
       expect(localController.isWarm).toBe(true);
     });
 
@@ -2448,16 +2585,19 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Signal still false → no quiet timer armed → warm stays false.
       expect(localController.isWarm).toBe(false);
 
-      // Flip signal; notify arms SETTLED_QUIET_MS timer.
+      // Flip signal; notify arms the quiet timer. Only the first (baseline)
+      // fire has happened, so geometry is still unknown — the conservative
+      // QUIET_MS window applies, not the shortened one.
       settled = true;
       localController.notifyQuietContextSignalChanged();
-      await waitMs(30);
+      await waitMs(120);
       expect(localController.isWarm).toBe(true);
     });
 
     it('notifyQuietContextSignalChanged arms timer after RO evidence', async () => {
       // RO fires while signal is false → no timer. Settled fires later
-      // → notify arms SETTLED_QUIET_MS from that moment.
+      // → notify arms the quiet timer from that moment. Only the baseline
+      // fire happened, so geometry is unknown → conservative QUIET_MS.
       buildLocalController({ signal: () => settled });
       const ro = getLocalRO();
       ro.fire(localContentEl, 800);
@@ -2466,7 +2606,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       settled = true;
       localController.notifyQuietContextSignalChanged();
-      await waitMs(30);
+      await waitMs(120);
       expect(localController.isWarm).toBe(true);
     });
 
@@ -2486,12 +2626,13 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
 
     it('notifyQuietContextSignalChanged is a no-op when already warm', async () => {
-      // Start with signal true so the quiet timer can fire and warm.
+      // Start with signal true so the quiet timer can fire and warm. The
+      // single baseline fire holds the conservative QUIET_MS window.
       settled = true;
       buildLocalController({ signal: () => settled });
       const ro = getLocalRO();
       ro.fire(localContentEl, 800);
-      await waitMs(30);
+      await waitMs(120);
       expect(localController.isWarm).toBe(true);
 
       // Notify after warm should be a safe no-op.
@@ -2511,12 +2652,13 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
 
     it('armWarmup() re-armed cascade: signal toggled mid-cycle does not leak across re-arm', async () => {
-      // First cycle: signal true → warm fires quickly.
+      // First cycle: signal true → the baseline fire warms after the
+      // conservative QUIET_MS window (geometry not yet proven stable).
       settled = true;
       buildLocalController({ signal: () => settled });
       const ro = getLocalRO();
       ro.fire(localContentEl, 800);
-      await waitMs(30);
+      await waitMs(120);
       expect(localController.isWarm).toBe(true);
 
       // Second cycle: armWarmup() drops warm. Reset signal to false
@@ -2530,10 +2672,38 @@ describe('createUseStickToBottomController — spring chase', () => {
       await waitMs(150);
       expect(localController.isWarm).toBe(false);
 
-      // Signal flips → notify arms SETTLED_QUIET_MS.
+      // Signal flips → notify arms the quiet timer. The last RO delta
+      // (10px > WARMUP_SETTLE_EPSILON_PX) leaves geometry "still moving",
+      // so the conservative QUIET_MS window applies.
       settled = true;
       localController.notifyQuietContextSignalChanged();
+      await waitMs(120);
+      expect(localController.isWarm).toBe(true);
+    });
+
+    it('notifyQuietContextSignalChanged holds the conservative window when geometry is still moving', async () => {
+      // The notify arming site must pick its window by geometry too: when
+      // the settle signal flips on mid-cascade (large last delta), it must
+      // NOT take the shortened window. A regression hardcoding
+      // SETTLED_QUIET_MS here passes every end-state test (warm eventually
+      // true) — this pins the INTERMEDIATE hold that distinguishes the two.
+      // signal starts false → the cascade fires arm no quiet timer, but
+      // they still record geometry as moving.
+      buildLocalController({ signal: () => settled });
+      const ro = getLocalRO();
+      ro.fire(localContentEl, 1000); // first fire — no baseline, signal off
+      ro.fire(localContentEl, 2200); // +1200 cascade step (geometry moving), signal off
       await waitMs(30);
+      expect(localController.isWarm).toBe(false); // no timer armed while signal off
+      // Settle signal flips on → notify arms the quiet timer. Last delta
+      // 1200 > WARMUP_SETTLE_EPSILON_PX → conservative QUIET_MS, not 16ms.
+      settled = true;
+      localController.notifyQuietContextSignalChanged();
+      // 30ms is past SETTLED_QUIET_MS (16ms) but short of QUIET_MS (100ms):
+      // a shortened-window regression would already be warm here.
+      await waitMs(30);
+      expect(localController.isWarm).toBe(false);
+      await waitMs(150);
       expect(localController.isWarm).toBe(true);
     });
   });
@@ -5605,6 +5775,47 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Gate suppressed it: scrollTop did not jump to 800; the spring
       // is still the single writer.
       expect(geom.scrollTop).toBe(springStart);
+    });
+
+    it('passes a LARGE external write through during a spring chase (measurement correction, not a 1-2 line snap)', async () => {
+      // Regression for bug-report-20260622T041049Z: switching into an
+      // actively-streaming thread armed a spring (structural-append mark or
+      // prose spring-mode), then virtua's fresh-mount estimate→measure pass
+      // landed a single +2276px (~1.7-viewport) $fixScrollJump write. The
+      // previous gate suppressed it because a chase was in flight, so the
+      // spring chased the entire delta — a visible ~1s multi-hundred-px
+      // "spring scroll". A jump larger than the viewport is a layout
+      // correction, not streamed content: it must pass through so virtua
+      // snaps it in one paint (invisible) and the spring resolves from the
+      // corrected position. Counterpart to the small-jump suppression above.
+      mode = 'spring';
+
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Start a spring chase (springStart ends up between 400 and 800).
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const springStart = geom.scrollTop;
+      expect(springStart).toBeGreaterThan(400);
+      expect(springStart).toBeLessThan(800);
+
+      // Fresh-mount remeasure: content height jumps far past the viewport
+      // and virtua writes scrollTop to the new bottom in one shot. With
+      // clientHeight 600, the jump from the spring position exceeds a
+      // viewport, so the gate must let it land.
+      geom.scrollHeight = 2400; // max scrollTop = 2400 - 600 = 1800
+      geom.contentHeight = 2200;
+      const bigCorrection = 1700;
+      expect(bigCorrection - springStart).toBeGreaterThan(geom.clientHeight);
+      scrollEl.scrollTop = bigCorrection;
+
+      // Large correction landed in the same paint instead of being
+      // suppressed in favor of a visible spring chase.
+      expect(geom.scrollTop).toBe(bigCorrection);
     });
 
     it('passes an external scrollTop write through during a width-reflow settle window', async () => {

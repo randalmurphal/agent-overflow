@@ -927,4 +927,80 @@ describe('createThreadRowUiState', () => {
     expect(rowUiState.isSubagentGroupExpanded('group-a')).toBe(false);
     expect(rowUiState.diffCardExpandedOverride(item.id, 'src/foo.ts')).toBeUndefined();
   });
+
+  // expansionSignature stamps a virtua measured-size snapshot so it only
+  // replays into a remount whose rows will render at the same heights — see
+  // utils/threadVirtuaSizeCache.ts. The contract: empty for a thread at
+  // default expansion (the state clear() restores on every switch), non-empty
+  // the moment any row is expanded taller than default, and deterministic so
+  // capture and restore compare equal.
+  describe('expansionSignature', () => {
+    it('is empty when every row is at default expansion', () => {
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      expect(rowUiState.expansionSignature()).toBe('');
+    });
+
+    it('reflects an expanded subagent group', () => {
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      rowUiState.toggleSubagentGroupExpanded('group-a');
+      expect(rowUiState.expansionSignature()).toContain('g:group-a');
+    });
+
+    it('reflects a diff-card override (any value — the user pinned away from default)', () => {
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      rowUiState.setDiffCardExpanded('item-1', 'src/foo.ts', true);
+      expect(rowUiState.expansionSignature()).toContain('d:item-1/src/foo.ts=1');
+    });
+
+    it('stamps a force-collapsed diff override distinctly from expanded', () => {
+      // A `false` override is a real non-default state (the card is pinned away
+      // from the collapseDiffPreviews default), so the `=0` arm must stamp AND
+      // differ from `=1` — otherwise two different row heights share a
+      // signature and the cache replays the wrong one. (The prior coverage only
+      // asserted `=1`; "returns to empty after clear" toggled a group too, so
+      // its non-empty check never proved the `=0` branch.)
+      const collapsed = createThreadRowUiState({ getItemById: () => undefined });
+      collapsed.setDiffCardExpanded('item-1', 'src/foo.ts', false);
+      expect(collapsed.expansionSignature()).toContain('d:item-1/src/foo.ts=0');
+
+      const expanded = createThreadRowUiState({ getItemById: () => undefined });
+      expanded.setDiffCardExpanded('item-1', 'src/foo.ts', true);
+      expect(collapsed.expansionSignature()).not.toBe(expanded.expansionSignature());
+    });
+
+    it('reflects an expanded payload handle', async () => {
+      setBindingMock('GetPayloadData', async () => ({ data: 'x' }));
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      const handle = rowUiState.expansionStateForPayload('payload-a', 'thread-a', 1);
+      await handle.expand();
+      expect(handle.expanded).toBe(true);
+      expect(rowUiState.expansionSignature()).toContain('p:');
+    });
+
+    it('is deterministic regardless of expansion order (capture == restore)', () => {
+      // Each segment (g:/d:/p:) is sorted independently, so insertion order
+      // must not change the string — capture and restore visit the same maps in
+      // whatever order they were populated. Exercise both the g: and d: sorts.
+      const a = createThreadRowUiState({ getItemById: () => undefined });
+      a.toggleSubagentGroupExpanded('group-b');
+      a.toggleSubagentGroupExpanded('group-a');
+      a.setDiffCardExpanded('item-2', 'src/z.ts', true);
+      a.setDiffCardExpanded('item-1', 'src/a.ts', false);
+      const b = createThreadRowUiState({ getItemById: () => undefined });
+      b.setDiffCardExpanded('item-1', 'src/a.ts', false);
+      b.toggleSubagentGroupExpanded('group-a');
+      b.setDiffCardExpanded('item-2', 'src/z.ts', true);
+      b.toggleSubagentGroupExpanded('group-b');
+      expect(a.expansionSignature()).toBe(b.expansionSignature());
+    });
+
+    it('returns to empty after clear() (the switch-in reset)', () => {
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      rowUiState.toggleSubagentGroupExpanded('group-a');
+      rowUiState.setDiffCardExpanded('item-1', 'src/foo.ts', false);
+      expect(rowUiState.expansionSignature()).not.toBe('');
+      rowUiState.clear();
+      expect(rowUiState.expansionSignature()).toBe('');
+    });
+  });
 });

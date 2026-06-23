@@ -90,6 +90,7 @@ import {
   type TimelineCursorLike,
 } from './threadItems';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
+import { clearThreadVirtuaSizeCache } from '../utils/threadVirtuaSizeCache';
 import { ListThreadSliceAround } from './bindings';
 import { sameNormalizedPath } from '../utils/path';
 import {
@@ -1744,11 +1745,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       items.length > 0 &&
       items.length <= MAX_CACHED_SNAPSHOT_ITEMS
     ) {
-      // Deliberately do not snapshot virtua's row-size cache here. Those
-      // sizes are only valid with the row UI state that produced them
-      // (expanded payloads, loaded thumbnails, nested bodies). switchThread
-      // clears that state for the incoming thread, so replaying old row
-      // sizes can make virtua trust geometry the DOM cannot reproduce.
+      // Virtua's row-size cache is snapshotted, but NOT here: it lives in
+      // MessageTimeline (`utils/threadVirtuaSizeCache.ts`), keyed by the
+      // scroll-pane width + structure signature + expansion signature that make
+      // the sizes valid — all component state the store can't see. The store has
+      // no `listRef` to call `getCache()` on anyway. That keyed replay is
+      // what lets a re-entry skip the estimate→measure cascade safely; here
+      // we cache only the items.
       threadItemCache.set(outgoingThreadId, {
         items,
         oldestLoadedCursor,
@@ -1767,6 +1770,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     }
     if (sameThreadReswitch) {
       threadItemCache.evict(incomingThreadId);
+      // Revert-to-checkpoint mutates this thread's items in place; its
+      // measured-size snapshot is now stale (the structure/content key would
+      // also refuse it, but evict to free it promptly — same as the item cache).
+      clearThreadVirtuaSizeCache(incomingThreadId);
     }
     if (outgoingThreadId) {
       rhsPanelSlot.snapshotForThread(outgoingThreadId);
@@ -3250,6 +3257,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       recomputeReveal();
       if (thread) {
         threadItemCache.evict(thread.id);
+        clearThreadVirtuaSizeCache(thread.id);
       }
       return removed;
     },
@@ -3283,6 +3291,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       recomputeReveal();
       if (thread) {
         threadItemCache.evict(thread.id);
+        clearThreadVirtuaSizeCache(thread.id);
       }
       return removed;
     },
@@ -3542,6 +3551,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     diffCardExpandedOverride: rowUiState.diffCardExpandedOverride,
     setDiffCardExpanded: rowUiState.setDiffCardExpanded,
+    /** Validity stamp for replaying a virtua measured-size snapshot across a
+     *  thread switch — see utils/threadVirtuaSizeCache.ts. */
+    expansionSignature: rowUiState.expansionSignature,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
     cachedTimelineRowHeight: rowUiState.cachedTimelineRowHeight,
     rememberTimelineRowHeight: rowUiState.rememberTimelineRowHeight,

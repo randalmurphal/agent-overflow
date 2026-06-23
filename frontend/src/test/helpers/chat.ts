@@ -63,6 +63,10 @@ export function installPaneMocks(items: Item[] = []): void {
   // don't care don't have to stub them.
   setBindingMock('MarkThreadRead', async () => {});
   setBindingMock('MarkThreadUnread', async () => {});
+  // switchThread fires AutoResumeThread as a fire-and-forget leg inside
+  // runParallelLoad; leaving it unmocked floods every buildPane-based test
+  // with a swallowed "called without a mock" console.error. No-op default.
+  setBindingMock('AutoResumeThread', async () => {});
   // The pane loads the initial slice of history via ListThreadSliceAround
   // on switch (works for both bottom-snapshot and saved-anchor cases).
   // ListRecentThreadItems is the canonical wider-window binding used by

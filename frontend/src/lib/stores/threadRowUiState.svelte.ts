@@ -47,6 +47,15 @@ export interface ThreadRowUiState {
   /** Pass `undefined` to clear the override so the card re-follows
    *  the collapseDiffPreviews setting default. */
   setDiffCardExpanded(itemId: string, filePath: string, expanded: boolean | undefined): void;
+  /**
+   * A stable string of the thread's non-default row-UI expansion state —
+   * the validity stamp for replaying a virtua measured-size snapshot across
+   * a thread switch (see utils/threadVirtuaSizeCache.ts). Empty when every
+   * row is at its default expansion, which is the state `clear()` resets to
+   * on switch-in, so a snapshot captured with anything expanded (taller
+   * rows) cannot match a freshly-mounted timeline and is correctly refused.
+   */
+  expansionSignature(): string;
   attachmentCacheFor(itemId: string): AttachmentPreviewCache;
   cachedTimelineRowHeight(key: TimelineRowGeometryKey): number | undefined;
   rememberTimelineRowHeight(key: TimelineRowGeometryKey, height: number): void;
@@ -787,6 +796,39 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     disposeAttachmentBlobs();
   }
 
+  // See the interface doc. Serializes only USER deviations from default —
+  // the collapseDiffPreviews setting and a payload's default-collapsed height
+  // are identical at capture and restore, so defaults never change row
+  // heights across a switch and are not stamped. Read imperatively (capture
+  // on settle, restore on mount), never inside a reactive scope.
+  function expansionSignature(): string {
+    const parts: string[] = [];
+    if (subagentGroupExpanded.size > 0) {
+      parts.push('g:' + [...subagentGroupExpanded].sort().join(','));
+    }
+    if (diffCardExpandedOverrides.size > 0) {
+      const diffs: string[] = [];
+      for (const [itemId, files] of diffCardExpandedOverrides) {
+        for (const [filePath, expanded] of files) {
+          diffs.push(`${itemId}/${filePath}=${expanded ? 1 : 0}`);
+        }
+      }
+      parts.push('d:' + diffs.sort().join(','));
+    }
+    const expandedPayloads: string[] = [];
+    for (const entry of expansionStates.values()) {
+      if (!entry.handle.expanded) continue;
+      const owner = entry.owner;
+      expandedPayloads.push(
+        owner.kind === 'item' ? `i:${owner.itemId}:${owner.stateKey}` : `y:${owner.payloadId}`,
+      );
+    }
+    if (expandedPayloads.length > 0) {
+      parts.push('p:' + expandedPayloads.sort().join(','));
+    }
+    return parts.join('|');
+  }
+
   return {
     expansionStateFor,
     retainExpansionStateFor,
@@ -797,6 +839,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     toggleSubagentGroupExpanded,
     diffCardExpandedOverride,
     setDiffCardExpanded,
+    expansionSignature,
     attachmentCacheFor,
     cachedTimelineRowHeight,
     rememberTimelineRowHeight,

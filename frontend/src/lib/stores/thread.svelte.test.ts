@@ -38,6 +38,12 @@ import {
 } from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import {
+  clearThreadVirtuaSizeCacheForTest,
+  peekThreadVirtuaSizeCacheForTest,
+  setThreadVirtuaSizeCache,
+  type VirtuaCacheSnapshot,
+} from '../utils/threadVirtuaSizeCache';
+import {
   resetLayoutMetricsForTest,
   setPaneWidth,
 } from './layoutMetrics.svelte';
@@ -7704,5 +7710,46 @@ describe('createThreadPane', () => {
         __setSmoothingClockForTest(undefined);
       }
     });
+  });
+});
+
+describe('virtua size cache eviction on item mutation', () => {
+  // With the self-validating structureSig key these evictions are memory
+  // housekeeping (a stale snapshot is refused on the key mismatch anyway), but
+  // they free the entry immediately instead of waiting for the LRU. Guard each
+  // call site so a future edit that drops one is caught.
+  const seedEntry = {
+    width: 0,
+    structureSig: 'seed',
+    expansionSig: '',
+    snapshot: { tag: 'seed' } as unknown as VirtuaCacheSnapshot,
+  };
+
+  beforeEach(() => {
+    clearThreadVirtuaSizeCacheForTest();
+  });
+
+  it('evicts the size cache when an item is removed by id', async () => {
+    const pane = await buildPane(makeThread({ id: 't' }), [makeItem({ id: 'x', threadId: 't' })]);
+    setThreadVirtuaSizeCache('t', { ...seedEntry });
+    expect(peekThreadVirtuaSizeCacheForTest('t')).toBeTruthy();
+    pane.removeItemById('x');
+    expect(peekThreadVirtuaSizeCacheForTest('t')).toBeUndefined();
+  });
+
+  it('evicts the size cache when a turn is truncated', async () => {
+    const pane = await buildPane(makeThread({ id: 't' }), [
+      makeItem({ id: 'x', threadId: 't', turnIndex: 1 }),
+    ]);
+    setThreadVirtuaSizeCache('t', { ...seedEntry });
+    pane.removeItemsFromTurn(1);
+    expect(peekThreadVirtuaSizeCacheForTest('t')).toBeUndefined();
+  });
+
+  it('evicts the size cache on a same-thread reswitch', async () => {
+    const pane = await buildPane(makeThread({ id: 't' }));
+    setThreadVirtuaSizeCache('t', { ...seedEntry });
+    await pane.switchThread(makeThread({ id: 't' }));
+    expect(peekThreadVirtuaSizeCacheForTest('t')).toBeUndefined();
   });
 });

@@ -69,7 +69,10 @@ Use these pane registries instead of local row state:
 - `pane.cachedTimelineRowHeight(...)` /
   `pane.rememberTimelineRowHeight(...)` for temporary remount geometry
   reservations. These are row-key + signature + width entries pruned with
-  the visible row UI window, not virtua size-cache snapshots.
+  the visible row UI window — a per-row `min-height` reservation, distinct
+  from the per-thread virtua `CacheSnapshot` replay in
+  `utils/threadVirtuaSizeCache.ts` (which restores virtua's whole measured
+  size store on a validity-key match).
 
 Payload bytes go through `utils/payloadDataCache.ts`, keyed by
 `(threadId, payloadId, version)` and byte-bounded by its LRU. Per-pane

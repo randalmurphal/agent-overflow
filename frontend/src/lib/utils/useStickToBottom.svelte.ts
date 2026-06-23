@@ -220,7 +220,38 @@ const FAILSAFE_MS = 2500;
 // contentRO silence after the last event so the post-typesetting layout
 // has time to settle, but the conservative 100ms wait that defends
 // against late typesetting is no longer needed. 16ms ≈ one rAF tick.
+//
+// CRITICAL: the shortened window is only sound once the SURFACE has
+// stopped moving. `quietContextSignal` reports svelte-streamdown's async
+// state — it is blind to virtua's estimate→measure cascade, which mounts
+// rows at ESTIMATED_ROW_SIZE and grows scrollHeight over a sequence of
+// contentRO fires spaced WIDER than SETTLED_QUIET_MS. If we shorten the
+// window while that cascade is in flight, the timer fires in the gap
+// between two corrections and reveals a still-growing surface — the
+// "lands right, flickers, lands right again" idle-thread regression. So
+// the shortened window is gated on geometry stability
+// (`quietWindowForGeometry`): a large contentRO height delta keeps us on
+// the conservative QUIET_MS window (which each cascade fire resets, so it
+// only closes once the cascade goes quiet — geometry-driven, not a
+// cascade-duration guess); only a small delta admits the shortcut.
+// Granularity: the gate keys on the AGGREGATE contentRO height delta, so a
+// lone row measuring within the epsilon of its estimate and correcting a
+// frame ahead of a later large step could still admit the shortcut early.
+// Accepted as an unlikely residual — per-row tracking would need the
+// second observer the scroll contract forbids, and a real cascade fire
+// measures many rows at once, so the aggregate step dwarfs any single
+// in-band row.
 const SETTLED_QUIET_MS = 16;
+// A contentRO height delta at or below this counts as "the surface has
+// effectively settled" — small enough that revealing on SETTLED_QUIET_MS
+// cannot show a perceptible bottom-shift. Anything larger is treated as
+// virtua's estimate→measure cascade still in flight. Absolute px, not
+// viewport-relative: the threshold is human-perceptible scroll
+// displacement, which does not scale with viewport height. virtua mounts
+// rows at ESTIMATED_ROW_SIZE (56px, see MessageTimeline.svelte), so each
+// per-row correction is |measured − 56| — tens-to-hundreds of px for any
+// real multi-line chat row, comfortably clear of this floor.
+const WARMUP_SETTLE_EPSILON_PX = 8;
 
 const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
 const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
@@ -660,6 +691,13 @@ export function createUseStickToBottomController(
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
   let failsafeTimer: ReturnType<typeof setTimeout> | null = null;
   let hasFirstContentRO = false;
+  // Magnitude of the most recent contentRO height change, shared by both
+  // quiet-timer arming sites (`bumpQuietTimer`, `notifyQuietContextSignalChanged`)
+  // so the shortened window stays geometry-gated. Reset to +Infinity each
+  // warm-up cycle: geometry is assumed to be moving until a small delta is
+  // actually observed, so the first fire (which has no baseline) and any
+  // large correction both hold us on the conservative window.
+  let lastContentHeightDelta = Number.POSITIVE_INFINITY;
 
   function clearWarmupTimers(): void {
     if (quietTimer) {
@@ -687,6 +725,7 @@ export function createUseStickToBottomController(
     clearWarmupTimers();
     warm = false;
     hasFirstContentRO = false;
+    lastContentHeightDelta = Number.POSITIVE_INFINITY;
     // ONLY arm the failsafe. The quiet timer is armed by `bumpQuietTimer`
     // on the FIRST contentRO event — gating the "quiet" signal on actual
     // RO evidence is what defends against the load-bearing case where
@@ -702,9 +741,37 @@ export function createUseStickToBottomController(
     failsafeTimer = setTimeout(() => markWarm('failsafe'), FAILSAFE_MS);
   }
 
-  function bumpQuietTimer(): void {
+  // Pick the quiet window for an arm. The shortened SETTLED_QUIET_MS is
+  // only sound once the surface has stopped moving in large steps; while
+  // virtua's estimate→measure cascade is still growing scrollHeight we use
+  // the conservative QUIET_MS window, which each cascade fire resets so it
+  // closes only after the cascade goes quiet. See WARMUP_SETTLE_EPSILON_PX.
+  function quietWindowForGeometry(): number {
+    return lastContentHeightDelta <= WARMUP_SETTLE_EPSILON_PX
+      ? SETTLED_QUIET_MS
+      : QUIET_MS;
+  }
+
+  // `heightDelta` is the contentRO height change driving this bump
+  // (undefined on the first fire — no baseline yet). It keeps the shortened
+  // window geometry-gated: until we have observed the surface hold still,
+  // a thread's mount cascade cannot trip an early reveal.
+  function bumpQuietTimer(heightDelta?: number): void {
     if (warm) return;
     hasFirstContentRO = true;
+    // First fire (undefined) has no baseline → treat as still-moving. A
+    // height delta of exactly 0 is a spurious / width-only / padding-var
+    // reflow (this runs before the contentRO's own `delta === 0` early-out)
+    // and carries no new height information — keep the prior magnitude so a
+    // reflow interleaved between two large cascade steps cannot masquerade
+    // as "settled" and trip the shortened window. That interleave is the
+    // cold-boot residual: cascade steps are far apart and font/layout
+    // reflows fire in the gaps.
+    if (heightDelta === undefined) {
+      lastContentHeightDelta = Number.POSITIVE_INFINITY;
+    } else if (heightDelta !== 0) {
+      lastContentHeightDelta = Math.abs(heightDelta);
+    }
     if (quietTimer) clearTimeout(quietTimer);
     if (!options.quietContextSignal) {
       quietTimer = setTimeout(() => markWarm('quiet'), QUIET_MS);
@@ -715,7 +782,7 @@ export function createUseStickToBottomController(
       quietTimer = null;
       return;
     }
-    quietTimer = setTimeout(() => markWarm('quiet'), SETTLED_QUIET_MS);
+    quietTimer = setTimeout(() => markWarm('quiet'), quietWindowForGeometry());
   }
 
   function notifyQuietContextSignalChanged(): void {
@@ -735,7 +802,10 @@ export function createUseStickToBottomController(
     }));
     if (outcome === 'noop_warm' || outcome === 'noop_no_ro' || outcome === 'noop_signal_falsy') return;
     if (quietTimer) clearTimeout(quietTimer);
-    quietTimer = setTimeout(() => markWarm('quiet'), SETTLED_QUIET_MS);
+    // Geometry-gated like bumpQuietTimer: if the surface was still moving in
+    // large steps at the last contentRO, the settle signal flipping does not
+    // license an early reveal — the cascade outlasts the settle signal.
+    quietTimer = setTimeout(() => markWarm('quiet'), quietWindowForGeometry());
   }
 
   // ===== Geometry =====
@@ -1369,8 +1439,10 @@ export function createUseStickToBottomController(
       // remeasurement, Streamdown's typesetting backfill, and
       // parseIncompleteMarkdown rebalance all fire multiple RO callbacks
       // in close succession during mount; we want warm to fire only
-      // once they're done.
-      bumpQuietTimer();
+      // once they're done. The height delta keeps the shortened settle
+      // window gated on geometry stability (undefined on the first fire,
+      // which has no baseline — see bumpQuietTimer).
+      bumpQuietTimer(prev === undefined ? undefined : nextHeight - prev);
 
       if (prev === undefined) {
         // First fire: snap to bottom synchronously so the initial paint
@@ -2384,6 +2456,52 @@ export function createUseStickToBottomController(
           origSet.call(el, value);
           return;
         }
+        // Genuinely bottom-locked (warm, isAtBottomState, not escaped, not
+        // paused) AND the DOM is already pinned to true bottom — the
+        // controller's contentRO/spring pin already landed there this
+        // cascade. virtua's `$fixScrollJump` is now requesting an
+        // anchor-preserving offset BELOW true bottom: its `delta` only
+        // compensates above-viewport remeasures, not the at/below-fold row
+        // growth that pushed the bottom down. Letting it land paints one
+        // frame a few hundred px short of bottom, then the next controller
+        // pin snaps back — the cold-thread-switch flicker (correct →
+        // up-jump → correct). Redirect the write to true bottom instead of
+        // dropping it. Dropping is what the branch above documents as the
+        // revert-to-top / right→wrong→right regression: a swallowed write
+        // fires no "scroll" event, and virtua re-syncs its internal offset
+        // model from the DOM through that listener (virtua core: the jump
+        // path writes the DOM and relies on the resulting scroll event to
+        // feed the model), so suppression diverges virtua's model from the DOM.
+        // Redirecting keeps the DOM at the bottom the controller already
+        // pinned, so virtua's DOM-derived model — last synced by that landed
+        // pin — stays correct and the stale-anchor frame is never painted.
+        // Narrow by construction: it fires ONLY when the DOM is already at
+        // bottom (`domAlreadyPinned`) and virtua tries to move meaningfully
+        // away from it, so virtua's legitimate above-viewport compensation
+        // (DOM not yet pinned, or the user scrolled up — already passed
+        // through above) is untouched, and an in-flight spring chase (DOM
+        // intentionally below target → not `domAlreadyPinned`) falls through
+        // to the spring-protection branches unchanged. The redirect target
+        // is `targetScrollTop()`, the exact value the controller's own pin
+        // writes, so the two writers can never disagree on the bottom.
+        const bottomTarget = targetScrollTop();
+        const currentScrollTop = origGet.call(el) as number;
+        const domAlreadyPinned =
+          bottomTarget - currentScrollTop <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+        const requestedMovesAwayFromBottom =
+          bottomTarget - value > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+        if (domAlreadyPinned && requestedMovesAwayFromBottom) {
+          if (isUiRenderTraceEnabled()) trace('scroll.virtuaAnchorRedirect', () => ({
+            requested: Math.round(value),
+            bottomTarget: Math.round(bottomTarget),
+            current: Math.round(currentScrollTop),
+            springToken,
+            scrollHeight: Math.round(scrollEl?.scrollHeight ?? 0),
+            clientHeight: Math.round(scrollEl?.clientHeight ?? 0),
+          }));
+          origSet.call(el, bottomTarget);
+          return;
+        }
         // Active content-width reflow: the paired contentRO is going to
         // sync-pin, not spring-chase. Let virtua's anchor-preserving
         // compensation land in the same paint instead of suppressing it
@@ -2421,6 +2539,39 @@ export function createUseStickToBottomController(
           origSet.call(el, value);
           return;
         }
+        // Large measurement-correction carve-out. The suppression below
+        // exists to keep the spring the single writer for virtua's SMALL
+        // (1–2 line) `$fixScrollJump` anchor compensations during a chase.
+        // But a fresh-mount estimate→measure pass or a late async-typesetting
+        // reflow (shiki/katex/mermaid) lands as ONE jump larger than the
+        // viewport. Suppressing virtua's instant correction there leaves the
+        // spring to chase the entire delta — the visible multi-hundred-px
+        // "spring scroll" on a thread switch into an actively-streaming thread
+        // (bug-report-20260622T041049Z: a single +2276px / ~1.7-viewport
+        // virtua write suppressed, then a ~1s 2300px spring chase). A jump
+        // that large is a layout correction, not streamed content: let
+        // virtua's write land in the same paint (invisible) and the spring
+        // resolves from the corrected position on its next tick (current ==
+        // target → arrives → cancels). Symmetric with the positive contentRO
+        // pin and the negative overshoot snap — incremental content springs,
+        // bulk corrections snap. Viewport-relative so it self-scales and
+        // cannot fire on real per-chunk streaming growth.
+        //
+        // Safety invariant: this branch is reached ONLY by non-controller
+        // writes (virtua `$fixScrollJump`, browser auto-anchor). Every
+        // streamed-content follow write — the contentRO positive pin and
+        // every spring tick — is controller-owned and already passed through
+        // at the `controllerOwnsScrollTopWrite` guard at the top of this
+        // setter. So the threshold discriminates among virtua's anchor
+        // corrections; it never sees streamed content and cannot snap it.
+        // `currentScrollTop` is the same DOM read captured above for the
+        // anchor-redirect check; no scrollTop write lands between there and
+        // here (every interceding branch returns), so it is still current.
+        const requestedScrollJump = Math.abs(value - currentScrollTop);
+        if (requestedScrollJump > el.clientHeight) {
+          origSet.call(el, value);
+          return;
+        }
         // Warm + sticking-and-engaged + spring chase in flight. Drop
         // the write so the spring in the contentRO callback is the
         // single writer responding to content growth. virtua's
@@ -2432,7 +2583,7 @@ export function createUseStickToBottomController(
         // compute a positive delta, and continue the chase smoothly.
         if (isUiRenderTraceEnabled()) trace('scroll.externalWriteSuppressed', () => ({
           requested: Math.round(value),
-          current: Math.round(origGet.call(el) as number),
+          current: Math.round(currentScrollTop),
           springToken,
           warm,
           isAtBottomState,

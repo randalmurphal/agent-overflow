@@ -20,18 +20,25 @@
 //   - Composer-height CSS variable propagation through the chat column.
 //   - Reserved-slot banner height stability across mount/unmount.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
+import { projectTurnStarted, projectTurnCompleted } from '../../stores/threadStatuses.svelte';
 import type { PaneScrollController, ThreadPane } from '../../stores/thread.svelte';
 import {
   clearThreadScrollSnapshotsForTest,
   getThreadScrollSnapshot,
   setThreadScrollSnapshot,
 } from '../../utils/threadScrollSnapshots';
+import {
+  clearThreadVirtuaSizeCacheForTest,
+  getReplayableVirtuaCache,
+  peekThreadVirtuaSizeCacheForTest,
+} from '../../utils/threadVirtuaSizeCache';
+import * as virtuaSizeCacheModule from '../../utils/threadVirtuaSizeCache';
 import MessageTimeline from './MessageTimeline.svelte';
 import ChatView from './ChatView.svelte';
 
@@ -80,10 +87,12 @@ function installResizeObserverCapture(): {
 function watchStickNotifications(pane: ThreadPane): {
   instantCalls(): number;
   liveCalls(): number;
+  structuralMarks(): number;
   reset(): void;
 } {
   let instantSpy: ReturnType<typeof vi.spyOn> | null = null;
   let liveSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let structuralSpy: ReturnType<typeof vi.spyOn> | null = null;
   const originalAttach = pane.attachScrollController.bind(pane);
   pane.attachScrollController = (controller) => {
     instantSpy = vi.spyOn(controller, 'notifyContentMaybeGrew');
@@ -91,14 +100,20 @@ function watchStickNotifications(pane: ThreadPane): {
       controller as PaneScrollController & { notifyLiveContentMaybeGrew(): void },
       'notifyLiveContentMaybeGrew',
     );
+    structuralSpy = vi.spyOn(
+      controller as PaneScrollController & { markStructuralContentPending(): void },
+      'markStructuralContentPending',
+    );
     originalAttach(controller);
   };
   return {
     instantCalls: () => instantSpy?.mock.calls.length ?? 0,
     liveCalls: () => liveSpy?.mock.calls.length ?? 0,
+    structuralMarks: () => structuralSpy?.mock.calls.length ?? 0,
     reset: () => {
       instantSpy?.mockClear();
       liveSpy?.mockClear();
+      structuralSpy?.mockClear();
     },
   };
 }
@@ -106,12 +121,14 @@ function watchStickNotifications(pane: ThreadPane): {
 beforeEach(async () => {
   resetBindingMocks();
   clearThreadScrollSnapshotsForTest();
+  clearThreadVirtuaSizeCacheForTest();
   setBindingMock('GetSettings', async () => null);
   await loadSettings();
 });
 
 afterEach(() => {
   clearThreadScrollSnapshotsForTest();
+  clearThreadVirtuaSizeCacheForTest();
 });
 
 describe('scroll integration — per-thread snapshot save/restore', () => {
@@ -141,6 +158,131 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     if (snap?.kind === 'anchor') {
       expect(['a', 'b']).toContain(snap.itemId);
     }
+  });
+
+  // The virtua measured-size cache is what lets a revisited thread skip the
+  // estimate→measure cascade (the thread-switch flicker). This proves the
+  // wiring: a mount that settles persists a replayable entry stamped with the
+  // thread's validity key. virtua's actual replay-at-final-height behavior is
+  // proven separately against the installed core (it can't be observed in
+  // happy-dom, which reports zero geometry).
+  it('persists a replayable virtua size cache for a thread after mount settles', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'first' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
+    ]);
+    pane.thread!.id = 'thread-size-cache';
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await tick();
+
+    // Persist fired once warm-up settled AND restoration completed (the
+    // effect depends on both — see the ordering note in MessageTimeline).
+    const entry = peekThreadVirtuaSizeCacheForTest('thread-size-cache');
+    expect(entry).toBeTruthy();
+    // The structure signature encodes both leaves (the reproducible key that
+    // replaced the inert monotonic revision counter).
+    expect(entry?.structureSig).toContain('L:a:');
+    expect(entry?.structureSig).toContain('L:b:');
+    expect(entry?.expansionSig).toBe('');
+
+    // It round-trips through the validity gate with its captured key…
+    expect(
+      getReplayableVirtuaCache('thread-size-cache', {
+        width: entry!.width,
+        structureSig: entry!.structureSig,
+        expansionSig: entry!.expansionSig,
+      }),
+    ).toBe(entry!.snapshot);
+
+    // …and a stale key (items changed → different structure) refuses the
+    // replay → estimate fallback.
+    expect(
+      getReplayableVirtuaCache('thread-size-cache', {
+        width: entry!.width,
+        structureSig: entry!.structureSig + '\nL:c:completed:1:0',
+        expansionSig: entry!.expansionSig,
+      }),
+    ).toBeUndefined();
+  });
+
+  // The decisive regression: actually switch away and back, and prove the
+  // replay resolves on return. The cache was previously stamped with
+  // `pane.timelineRevision`, a monotonic per-pane counter never restored on a
+  // cache-hit re-entry — so every revisit computed a strictly-greater revision
+  // than capture and `getReplayableVirtuaCache` always returned undefined (the
+  // architecture trace saw revision 2→4→5 across A→B→A; severing the replay arm
+  // left the whole scroll suite green). The structure signature is reproducible
+  // for A's unchanged rows, so the settled sizes replay on return instead of
+  // re-running the estimate→measure cascade. RED on the old key, GREEN now.
+  it('resolves the replay snapshot when switching away and back (A→B→A)', async () => {
+    const resolveSpy = vi.spyOn(virtuaSizeCacheModule, 'getReplayableVirtuaCache');
+    // Restore via onTestFinished so a failed assertion below can't leak the spy
+    // (which calls through) into sibling tests — the suite has no global mock restore.
+    onTestFinished(() => resolveSpy.mockRestore());
+    const aItems = [
+      makeItem({ id: 'a0', threadId: 'thread-aba-a', summary: 'alpha one' }),
+      makeItem({ id: 'a1', threadId: 'thread-aba-a', itemIndex: 1, summary: 'alpha two' }),
+    ];
+    const pane = await buildPane(makeThread({ id: 'thread-aba-a' }), aItems);
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await waitForAnimationFrame();
+
+    // First visit captured A's settled size cache.
+    const firstEntry = peekThreadVirtuaSizeCacheForTest('thread-aba-a');
+    expect(firstEntry).toBeTruthy();
+    const firstSig = firstEntry!.structureSig;
+
+    // Switch to an uncached thread B.
+    const threadB = makeThread({ id: 'thread-aba-b' });
+    const bItems = [makeItem({ id: 'b0', threadId: threadB.id, summary: 'beta' })];
+    setBindingMock('SwitchThread', async () => threadB);
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: bItems,
+      oldestTurnIndex: 0,
+      hasMore: false,
+    }));
+    await pane.switchThread(threadB);
+    await tick();
+    await tick();
+    await waitForAnimationFrame();
+
+    // Switch back to A — a threadItemCache hit, so A's node structure (and thus
+    // the signature) reproduces exactly.
+    resolveSpy.mockClear();
+    setBindingMock('SwitchThread', async () => makeThread({ id: 'thread-aba-a' }));
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: aItems,
+      oldestTurnIndex: 0,
+      hasMore: false,
+    }));
+    await pane.switchThread(makeThread({ id: 'thread-aba-a' }));
+    await tick();
+    await tick();
+    await waitForAnimationFrame();
+
+    // The component asked the resolver for A on the return and got a defined
+    // snapshot — a cache HIT, not the estimate fallback. (If the spy ever stops
+    // intercepting the component's import, the first assertion fails loudly
+    // rather than passing vacuously.)
+    const aCallIndexes = resolveSpy.mock.calls
+      .map((call, i) => (call[0] === 'thread-aba-a' ? i : -1))
+      .filter((i) => i >= 0);
+    expect(aCallIndexes.length).toBeGreaterThan(0);
+    expect(
+      aCallIndexes.some((i) => {
+        const result = resolveSpy.mock.results[i];
+        return result.type === 'return' && result.value !== undefined;
+      }),
+    ).toBe(true);
+
+    // And the key itself reproduced: the return-visit signature equals the
+    // first-visit signature (the property the monotonic revision counter lacked).
+    expect(peekThreadVirtuaSizeCacheForTest('thread-aba-a')?.structureSig).toBe(firstSig);
   });
 
   it('saves an anchor snapshot after escape even inside the near-bottom band', async () => {
@@ -1902,6 +2044,108 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await waitForAnimationFrame();
     await waitFor(() => expect(notifyWatch.liveCalls()).toBeGreaterThan(0));
     expect(notifyWatch.instantCalls()).toBe(0);
+  });
+
+  it('does not arm the structural-append spring when switching into a streaming thread (cache miss)', async () => {
+    // Regression for bug-report-20260622T041049Z. Switching INTO a thread
+    // whose turn is live transitions `activeTurnStructuralSignature`
+    // old-thread → new-thread, and on a cache MISS the slice loads
+    // asynchronously AFTER the switch-generation bump — while pane.loading is
+    // still true. Neither the switch nor the initial load is an in-turn
+    // append, so the live-follow effect must NOT call
+    // markStructuralContentPending() across the switch+load+settle. If it
+    // does, the structural-append spring chases the post-restore virtua
+    // measurement backlog and the user sees a multi-hundred-px scroll on
+    // switch. The fix re-baselines (without marking) while switchGeneration
+    // changed OR pane.loading is true OR loading just toggled — covering the
+    // async cache-miss slice that lands in a later flush than the bump.
+    const threadA = makeThread({ id: 'thread-switch-spring-a' });
+    const pane = await buildPane(threadA, [
+      makeItem({
+        id: 'a-text',
+        threadId: threadA.id,
+        kind: 'assistant_text',
+        status: 'completed',
+        summary: 'thread A tail',
+      }),
+    ]);
+    // Thread A is itself mid-turn so its signature is non-empty: the switch
+    // is a clean working→working transition the unfixed effect marks on
+    // immediately, not just on the later slice load.
+    projectTurnStarted(threadA.id, 'turn-a', 0, 1);
+    // Clear the global registry box the instant it's created, via onTestFinished
+    // so a failed assertion below can't leak this live turn into later tests
+    // sharing the module-level registry. (Same for thread B once it starts.)
+    onTestFinished(() => projectTurnCompleted(threadA.id, 'turn-a'));
+
+    const notifyWatch = watchStickNotifications(pane);
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await waitForAnimationFrame();
+    notifyWatch.reset();
+
+    // Thread B is streaming in the background (backend already emitted
+    // turn_started) and is NOT cached, so its slice loads async on switch.
+    const threadB = makeThread({ id: 'thread-switch-spring-b' });
+    const bItems = [
+      makeItem({
+        id: 'b-text-0',
+        threadId: threadB.id,
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'assistant_text',
+        status: 'streaming',
+        summary: 'thread B first',
+      }),
+    ];
+    projectTurnStarted(threadB.id, 'turn-b', 0, 1);
+    onTestFinished(() => projectTurnCompleted(threadB.id, 'turn-b'));
+    setBindingMock('SwitchThread', async () => threadB);
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: bItems,
+      oldestTurnIndex: 0,
+      hasMore: false,
+    }));
+    // Live-state hydrate must echo B's active turn; returning null would
+    // clear the box (applyThreadLiveStateSnapshot) and empty the signature,
+    // hiding the bug under a trivially-passing assertion.
+    setBindingMock('GetThreadLiveState', async (tid: string) => ({
+      threadId: tid,
+      activeTurn:
+        tid === threadB.id
+          ? { threadId: threadB.id, turnId: 'turn-b', turnIndex: 0, startedAt: 1 }
+          : null,
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
+    }));
+
+    await pane.switchThread(threadB);
+    await tick();
+    await tick();
+    await waitForAnimationFrame();
+    await waitForScrollIntent();
+
+    // The whole switch + async slice load + loading-settle must not arm the
+    // structural-append spring.
+    expect(notifyWatch.structuralMarks()).toBe(0);
+
+    // ...but a genuine append to the now-settled, mounted thread B tail still
+    // marks. The fix re-baselines on switch/load only — it does not disable
+    // live-follow for real in-turn growth.
+    notifyWatch.reset();
+    pane.upsertItem(makeItem({
+      id: 'b-text-1',
+      threadId: threadB.id,
+      turnIndex: 0,
+      itemIndex: 1,
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'thread B second',
+    }));
+    await tick();
+    expect(notifyWatch.structuralMarks()).toBeGreaterThan(0);
   });
 
   it('does not nudge sticky follow for ordinary streaming text deltas', async () => {

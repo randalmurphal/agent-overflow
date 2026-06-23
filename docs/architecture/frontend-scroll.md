@@ -150,6 +150,41 @@ then gone quiet for `QUIET_MS`, or until `FAILSAFE_MS` elapses. The quiet
 timer is gated on ResizeObserver evidence; do not replace it with a plain
 wall-clock delay.
 
+A consumer that knows its async typesetting (svelte-streamdown's
+shiki/katex/mermaid) has settled can pass `quietContextSignal` to shorten
+the quiet window to `SETTLED_QUIET_MS` (~one frame). That shortcut is
+itself gated on **geometry stability**: `quietContextSignal` is blind to
+virtua's estimate→measure cascade, which grows `scrollHeight` over a
+series of contentRO fires spaced wider than `SETTLED_QUIET_MS`. Revealing
+on the short window mid-cascade shows the surface land right, flicker as
+the cascade finishes, then land right again — the idle-thread flicker. So
+the controller only takes the short window when the latest contentRO
+height delta is `≤ WARMUP_SETTLE_EPSILON_PX`; a larger delta (or the
+first fire, which has no baseline) holds the conservative `QUIET_MS`
+window, which each cascade fire resets so it closes only once the cascade
+goes quiet. A height delta of exactly `0` (a width-only / padding-var
+reflow) carries no new height information, so the gate keeps the prior
+magnitude rather than reading it as "settled" — otherwise a reflow firing
+in the gap between two cascade steps would trip the short window early
+(the cold-boot residual, where steps are far apart and font/layout
+reflows fire in the gaps). Reveal tracks `scrollHeight` stability, never a
+guess at how long the cascade takes. This lengthens the hidden window for
+genuinely cascading threads (the ones that would have flickered) by the
+minimum needed; `FAILSAFE_MS` still caps the worst case.
+
+The geometry gate only ever masks the cascade — it cannot prevent it,
+because the cascade settles in bursts spaced wider than any safe quiet
+window (trace `bug-report-20260622T225817Z`: a final +200–500px burst
+landed ~160ms after reveal, longer than even `QUIET_MS`). For a
+**revisited** thread the cascade is instead *eliminated*: `MessageTimeline`
+replays the previous visit's measured-size snapshot into virtua (see "Row
+And Payload State" below), so the surface mounts at its final height and
+the gate sees ~zero contentRO deltas and reveals immediately. The geometry
+gate therefore now guards only the **first** visit to a thread within a
+session — where no snapshot exists yet and the estimate→measure cascade is
+unavoidable — and is best-effort there. Both defenses coexist: replay
+removes the cascade when it can, the gate hides it when it can't.
+
 On thread switch, `MessageTimeline` must call `stick.armWarmup()` from
 `$effect.pre` so `isWarm=false` before the new DOM paints. The restore
 effect then calls `stick.forceStick({ reason: 'restore' })` and schedules
@@ -213,6 +248,41 @@ nothing to protect. If code changes any gate condition, run the
 `useStickToBottom.svelte.test.ts` blocks for external write gates,
 spring sentinel lifetime, pause-depth races, and gate coupling.
 
+Two carve-outs sit inside the drop conditions, evaluated in ladder order
+before the suppression below.
+
+The first is an **anchor-redirect**, not a pass-through. When the DOM is
+already pinned to true bottom (within `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) and
+virtua's `$fixScrollJump` requests a `scrollTop` meaningfully *below* it, the
+write is rewritten to `targetScrollTop()` — the exact value the controller's
+own pin writes — instead of being dropped. virtua's anchor `delta` only
+compensates above-viewport remeasures, not the at/below-fold row growth that
+pushed the bottom down, so letting the requested value land paints one frame a
+few hundred px short of bottom before the next controller pin snaps back: the
+cold thread-switch flicker (correct → up-jump → correct). *Dropping* the write
+instead is what the pre-warm and escaped pass-throughs above exist to avoid — a
+swallowed write fires no `scroll` event, and virtua re-derives its internal
+offset from the DOM through that event, so suppression desyncs virtua's model
+(the revert-to-top regression). Redirecting keeps the DOM at the bottom the
+controller already pinned, so virtua's DOM-derived model stays correct and the
+stale-anchor frame never paints. It fires only when the DOM is already pinned
+and virtua moves away from it; an in-flight spring chase (DOM intentionally
+below target) is not already-pinned and falls through unchanged.
+
+The second is a magnitude pass-through: even when all drop conditions hold, a
+write whose magnitude exceeds one viewport (`clientHeight`) passes through.
+The suppression exists to keep the spring the single writer for virtua's
+small (1–2 line) `$fixScrollJump` anchor compensations during a chase. A
+fresh-mount estimate→measure pass or a late async-typesetting reflow
+(shiki/katex/mermaid) instead lands as one above-viewport jump; suppressing
+that leaves the spring to chase the whole delta — the visible multi-hundred-px
+"spring scroll" on switch into an actively-streaming thread. A jump that
+large is a bulk layout correction, not streamed content (which is
+controller-owned and already passed through at the top of the gate), so it
+snaps in the same paint and the spring resolves from the corrected position.
+The threshold only ever discriminates among virtua's anchor corrections; it
+never sees content.
+
 ## Live Content Animation
 
 Chat chooses animation mode with a content-keyed latch. `ThreadPane`
@@ -235,6 +305,16 @@ growth spring-eligible even when the content latch currently returns
 spring arrives it cancels instead of entering the streaming sentinel, so
 virtua/browser `scrollTop` corrections are not suppressed after the append
 settles.
+
+The effect that calls `markStructuralContentPending()` re-baselines its
+active-turn tail signature — recording it without marking — across a thread
+switch, a same-thread reload (`pane.switchGeneration` bump), and the initial
+slice load (while `pane.loading` is true, which on a cache miss outlives the
+generation bump). That signature embeds the thread id and tail row identity,
+so a switch into an actively-streaming thread, and its async first slice,
+both change it; treating either as an append would arm the structural-append
+spring and make the post-restore measurement backlog a visible scroll. Only a
+genuine append to the settled, mounted timeline reaches the mark.
 
 `spring` is an eligibility signal, not an unconditional animation. If
 `contentRO` observes a content-width change, the controller opens a short
@@ -291,9 +371,66 @@ survive remount lives on `ThreadPane` registries keyed by item id,
 payload id, or subagent group key. Loaded payload bytes live in the
 byte-bounded module cache in `payloadDataCache.ts`.
 
-Do not replay virtua row-size caches across thread switches. Measurements
-depend on expanded payloads, loaded thumbnails, and row-local layout
-state; the UI state is deliberately cleared on switch to bound memory.
+virtua row-size caches ARE replayed across thread switches, but only under
+a strict validity key (`utils/threadVirtuaSizeCache.ts`). The `{#key
+pane.threadId}` block remounts the `<Virtualizer>` on every switch, so
+without a replay it re-runs the full estimate→measure cascade — the
+thread-switch flicker, identical for cached and uncached threads because
+the item cache avoids the *fetch*, not the virtua *remeasure*. Replaying
+the previous visit's `CacheSnapshot` (`listRef.getCache()`) makes virtua
+mount at the already-measured total: it computes total size from the
+restored sizes on the first frame, and its resize handler no-ops every
+re-measure that matches a restored size (verified against the installed
+virtua 0.49.1 core — the action-3 handler filters out items whose new size
+equals the cached size and bumps no state version). Zero re-render, zero
+scroll jump.
+
+The replay is sound only when the rows re-render at the heights they were
+measured at, so a snapshot is refused (virtua falls back to the flat
+`itemSize` estimate — the old behavior, never worse) unless three things
+still match: **scroll-pane width** (the wrap point), a **structure
+signature** (`timelineStructureSignature` over the rendered node sequence
+plus per-leaf content — id, status, `summary.length`, `updatedAt`), and a
+**non-default expansion signature** (`pane.expansionSignature()` over
+expanded subagent groups, diff overrides, and payloads). A handful of global
+display settings (`fontSize`, the sans/mono fonts, `collapseDiffPreviews`) also
+change row height but are deliberately **not** keyed — a documented, benign
+residual: toggling one mid-session then revisiting a thread replays stale
+heights, which the warm-up gate masks as a cold first visit (the estimate→
+measure cascade re-runs and corrects them), never a crash or stuck viewport.
+Keying them would make the residual airtight but buys no visible change (same
+masked cascade either way) at the cost of a drift-prone signature; the choice is
+recorded in `threadVirtuaSizeCache.ts`. The structure signature superseded an
+earlier version of this key that read `pane.timelineRevision` — a monotonic
+per-pane counter that is never restored on a cache-hit re-entry, so every
+revisit computed a strictly-greater revision than capture and the replay
+**never matched** (the cache was inert; the switch-back flicker was never
+actually fixed). `pane.timelineRevision` itself remains as the
+timeline-derivation reactivity trigger; it was just the wrong input to key the
+size replay on. The signature is reproducible instead: revisiting a settled
+thread yields the identical string, and it is content-aware (Go bumps
+`updatedAt` on every streaming append), so a backgrounded thread that
+changed and got reloaded is refused on the key alone — eviction
+(`thread.svelte.ts` removal/reswitch, `threads.svelte.ts removeThread`) is
+memory housekeeping, not the correctness guard. Row-UI state is reset to
+default on every switch (`rowUiState.clear()`), so at restore time the
+expansion signature is the default one — which is exactly why a thread that
+was idle-at-default replays cleanly and a thread that had something expanded
+(taller rows) is correctly refused.
+
+Captures must store the **settled** sizes or the replay restores a
+mid-cascade height. They ride two triggers, both routed through one
+size-gated persist (gated on `getScrollSize()` so a 60Hz spring does not
+re-slice the array): the scroll-position snapshot (`saveScrollSnapshot`),
+and the rising edge of `stick.isWarm` — the controller's
+"measurement-cascade-settled" signal — which guarantees a final-height
+capture for a thread the user views but never scrolls (the scroll triggers
+alone can miss settle if the bottom-pin re-pins do not reach virtua's
+`onscroll`). The store is a bounded session-only LRU (memory: ~one float
+per loaded row per recent thread) — it does not persist to SQLite and does
+not violate the visible-thread memory budget. This replays revisits within a
+session; a genuine first visit has no snapshot and still cascades (hidden by
+the warm-up gate, above).
 
 `MessageTimeline` may keep a per-pane row-geometry reservation for mounted
 timeline nodes. That cache is keyed by rendered row key, row content
