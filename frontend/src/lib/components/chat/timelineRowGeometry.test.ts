@@ -27,14 +27,14 @@ class FireableResizeObserver {
     this.observed.clear();
   }
 
-  trigger(target: Element, height: number): void {
+  trigger(target: Element, height: number, width: number): void {
     if (!this.observed.has(target)) {
       throw new Error('target is not observed');
     }
     this.callback([
       {
         target,
-        contentRect: { height },
+        contentRect: { width, height },
       } as ResizeObserverEntry,
     ], this as unknown as ResizeObserver);
   }
@@ -66,10 +66,36 @@ describe('timeline row geometry reservation', () => {
     const action = createTimelineRowGeometryReservation(cache);
     const handle = action(row, rowKey());
 
-    observer().trigger(content, 95.6);
+    observer().trigger(content, 95.6, 800);
 
     expect(row.style.minHeight).toBe('');
     expect(cache.rememberedHeights()).toEqual([96]);
+
+    handle?.destroy?.();
+  });
+
+  it('remembers a height under the measured width, not the laggy param width', () => {
+    const { row, content } = makeRow();
+    const cache = makeCache();
+    const action = createTimelineRowGeometryReservation(cache);
+    // params.width is the stale wide value the surface RO has not yet caught
+    // up from (column reflowed 1137 -> 879); the row already reflowed and was
+    // measured tall at the narrow width.
+    const params: TimelineRowGeometryReservationParams = {
+      key: 'l:thread-a:item-a',
+      signature: 'signature-a',
+      width: 1137,
+      ownerItemIds: ['item-a'],
+    };
+    const handle = action(row, params);
+
+    observer().trigger(content, 875, 879);
+
+    // The tall narrow-layout height belongs to the width it was measured at
+    // (879), never the laggy wide param width (1137) — otherwise a remount at
+    // 1137 reserves 875 and strands the timeline above the composer.
+    expect(cache.cachedTimelineRowHeight({ ...params, width: 879 })).toBe(875);
+    expect(cache.cachedTimelineRowHeight({ ...params, width: 1137 })).toBeUndefined();
 
     handle?.destroy?.();
   });
@@ -84,12 +110,12 @@ describe('timeline row geometry reservation', () => {
 
     expect(row.style.minHeight).toBe('235px');
 
-    observer().trigger(content, 169);
+    observer().trigger(content, 169, 800);
 
     expect(row.style.minHeight).toBe('235px');
     expect(cache.rememberedHeights()).toEqual([]);
 
-    observer().trigger(content, 235);
+    observer().trigger(content, 235, 800);
 
     expect(row.style.minHeight).toBe('');
     expect(cache.rememberedHeights()).toEqual([235]);
@@ -105,7 +131,7 @@ describe('timeline row geometry reservation', () => {
     const action = createTimelineRowGeometryReservation(cache);
     const handle = action(row, key);
 
-    observer().trigger(content, 169);
+    observer().trigger(content, 169, 800);
     vi.advanceTimersByTime(750);
 
     expect(row.style.minHeight).toBe('');

@@ -30,6 +30,7 @@ interface RowReservationState {
   initialMinHeight: string;
   reservedHeight: number;
   lastMeasuredHeight: number;
+  lastMeasuredWidth: number;
   releaseTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -92,7 +93,11 @@ export function createTimelineRowGeometryReservation(
       for (const entry of entries) {
         const state = statesByContent.get(entry.target);
         if (!state) continue;
-        handleMeasuredHeight(state, Math.round(entry.contentRect.height));
+        handleMeasuredHeight(
+          state,
+          Math.round(entry.contentRect.height),
+          Math.round(entry.contentRect.width),
+        );
       }
     });
     return observer;
@@ -106,6 +111,7 @@ export function createTimelineRowGeometryReservation(
       initialMinHeight: row.style.minHeight,
       reservedHeight: 0,
       lastMeasuredHeight: 0,
+      lastMeasuredWidth: 0,
       releaseTimer: null,
     };
 
@@ -169,6 +175,7 @@ export function createTimelineRowGeometryReservation(
 
     state.params = normalized;
     state.lastMeasuredHeight = 0;
+    state.lastMeasuredWidth = 0;
     clearReservationTimer(state);
 
     const cachedHeight = cache.cachedTimelineRowHeight(normalized);
@@ -185,19 +192,43 @@ export function createTimelineRowGeometryReservation(
     }, ROW_GEOMETRY_STALE_RESERVATION_RELEASE_MS);
   }
 
-  function handleMeasuredHeight(state: RowReservationState, height: number): void {
+  function handleMeasuredHeight(
+    state: RowReservationState,
+    height: number,
+    measuredWidth: number,
+  ): void {
     const params = state.params;
     if (!params || height <= 0) return;
     state.lastMeasuredHeight = height;
+    if (measuredWidth > 0) state.lastMeasuredWidth = measuredWidth;
 
+    // Hold the reservation while the remounted row is still settling shorter
+    // than what we reserved (image / markdown reflow). The applyParams timer
+    // is the backstop if it never grows back.
     if (state.reservedHeight > 0 && height < state.reservedHeight) {
       return;
     }
 
-    cache.rememberTimelineRowHeight(params, height);
+    rememberMeasuredHeight(state);
     if (state.reservedHeight > 0) {
       releaseReservation(state, false);
     }
+  }
+
+  // Cache the height under the width the ResizeObserver actually measured it
+  // at, NOT params.width. params.width is the surface width threaded through
+  // props; it lags by a frame during a column-width reflow, so keying off it
+  // caches a tall narrow-layout height under the new wide width — and the next
+  // remount at the wide width reserves that too-tall height and strands the
+  // timeline above the composer. contentRect.width is atomic with the height
+  // just reported, so it is always the width this height is valid for. At a
+  // steady width it equals params.width (zero horizontal padding between the
+  // scroll surface's content box and data-row-geometry-content), so this only
+  // diverges across a reflow.
+  function rememberMeasuredHeight(state: RowReservationState): void {
+    if (!state.params || state.lastMeasuredHeight <= 0) return;
+    const width = state.lastMeasuredWidth > 0 ? state.lastMeasuredWidth : state.params.width;
+    cache.rememberTimelineRowHeight({ ...state.params, width }, state.lastMeasuredHeight);
   }
 
   function releaseReservation(state: RowReservationState, rememberLastMeasured: boolean): void {
@@ -206,8 +237,8 @@ export function createTimelineRowGeometryReservation(
     state.reservedHeight = 0;
     clearReservationTimer(state);
 
-    if (rememberLastMeasured && state.params && state.lastMeasuredHeight > 0) {
-      cache.rememberTimelineRowHeight(state.params, state.lastMeasuredHeight);
+    if (rememberLastMeasured) {
+      rememberMeasuredHeight(state);
     }
   }
 
