@@ -199,26 +199,80 @@ export function installUiRenderTraceApi(): void {
 // The user pastes the path; whoever's reading the report greps for
 // `user.bugReport` to land on the bug moment with full surrounding
 // context. Active only in DEBUG=1 builds.
+let bugReportHotkeyInstalled = false;
+
 function installBugReportHotkey(): void {
   if (!UI_TRACE_BUILD_GATE || typeof window === 'undefined') return;
+  // Idempotent: installUiRenderTraceApi can be called more than once (HMR
+  // re-eval, re-mount, repeated test setup). Without this guard each call adds
+  // another keydown listener and a single Ctrl+Shift+B fires N captures —
+  // N bookmarks, N×frames duplicated in the trace.
+  if (bugReportHotkeyInstalled) return;
+  bugReportHotkeyInstalled = true;
   window.addEventListener('keydown', (e) => {
     // Match the lowercase key code so the binding works regardless of
     // shift's effect on `e.key`. `code` is the physical key.
-    if (!(e.ctrlKey && e.shiftKey && e.code === 'KeyB')) return;
-    e.preventDefault();
-    void captureBugReport();
+    if (!e.ctrlKey || !e.shiftKey) return;
+    if (e.code === 'KeyB') {
+      e.preventDefault();
+      void captureBugReport();
+    } else if (e.code === 'KeyY') {
+      // Arm/disarm the pane-geometry rolling sampler (paneGeometryProbe.ts) so a
+      // following Ctrl+Shift+B dumps the whole transition of a transient glitch,
+      // not just the instant the key was pressed. Deliberately NOT KeyR:
+      // Ctrl+Shift+R is the webview's hard-reload and is not page-cancelable.
+      e.preventDefault();
+      const record = window.__paneGeometryRecord;
+      if (!record) {
+        console.info('[BugReport] pane-geometry probe not active yet — open a thread first.');
+        return;
+      }
+      console.info(
+        record()
+          ? '[BugReport] pane-geometry recording ON. Now make the glitch happen on screen (close the RHS panel, or continue a chat), then press Ctrl+Shift+B to dump.'
+          : '[BugReport] pane-geometry recording OFF.',
+      );
+    }
   });
 }
 
 async function captureBugReport(): Promise<void> {
   const stickState = window.__stickState?.() ?? null;
-  // Marker trace event — searchable via `grep user.bugReport` on the
-  // file. Includes the full stick state so the bug moment is
-  // self-describing even without scanning surrounding events.
+  // Per-pane geometry dump (utils/paneGeometryProbe.ts). Unlike stickState
+  // (last-writer-wins, single pane, distanceFromBottom-centric), this reports
+  // EVERY mounted timeline with virtua's cached bottom-row slot vs the real DOM
+  // row height — the deltas that discriminate the width-reflow strand, where a
+  // healthy bottom and the strand both read distanceFromBottom ~0.
+  const paneGeometry = window.__paneGeometry?.() ?? null;
+  const capturedAt = Date.now();
+  // If the rolling sampler was armed (Ctrl+Shift+Y), it holds up to ~80 full
+  // multi-pane frames — for a transient strand that self-heals in ~1s, THIS, not
+  // the single snapshot above, captures the reserve→release transition. Folding
+  // the whole buffer into the marker's `data` blew the 64KiB per-line cap, so the
+  // marker was silently dropped (`__droppedOversize`) and every capture came back
+  // empty. Emit each frame as its OWN trace line instead (one frame ≈ one
+  // single-shot dump, well under cap) and correlate to the marker by `recId`.
+  const recording = window.__paneGeometryRecording?.() ?? null;
+  if (recording) {
+    for (const frame of recording) {
+      recordUiTrace('user.bugReportRecFrame', {
+        recId: capturedAt,
+        t: frame.t,
+        panes: frame.panes,
+      });
+    }
+  }
+  // Marker trace event — searchable via `grep user.bugReport` on the file.
+  // Includes the full stick state so the bug moment is self-describing even
+  // without scanning surrounding events. The rolling-buffer frames are the
+  // separate `user.bugReportRecFrame` lines above (recId === capturedAt);
+  // `paneGeometryRecordingFrames` is their count, or null if never armed.
   recordUiTrace('user.bugReport', {
-    capturedAt: Date.now(),
+    capturedAt,
     href: typeof location !== 'undefined' ? redactDiagnosticText(location.href) : '',
     stickState,
+    paneGeometry,
+    paneGeometryRecordingFrames: recording?.length ?? null,
   });
   // Force-flush before bookmarking so the marker is on disk and the
   // bookmark file captures it. Without this, the in-memory pending

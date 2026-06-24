@@ -49,6 +49,10 @@
     countMountedTimelineMemoryNodes,
     installTimelineMemoryDiagnostics,
   } from '../../utils/timelineMemoryDiagnostics';
+  import {
+    installPaneGeometryProbe,
+    type PaneGeometrySnapshot,
+  } from '../../utils/paneGeometryProbe';
   import type { UserMessageActions } from './userMessageActions';
   import {
     bottomEdgeGeometry,
@@ -69,6 +73,7 @@
   import {
     createTimelineRowGeometryReservation,
     timelineRowGeometryKey,
+    directRowGeometryContent,
   } from './timelineRowGeometry';
 
   // Initial item-size estimate for virtua. Real sizes come from the
@@ -840,6 +845,105 @@
     ...countMountedTimelineMemoryNodes(scrollEl),
     paneState: pane.debugMemoryStats(),
   })));
+
+  // Dev-only per-pane scroll-geometry probe for the width-reflow strand
+  // (last message left floating high after a pane widens, never self-correcting).
+  // Reports virtua's cached bottom-row slot vs the real DOM row height and the
+  // min-height reservation's contribution, so a Ctrl+Shift+B capture at a stable
+  // strand names the mechanism. Reads THIS pane's controller + refs directly, so
+  // it is immune to __stickState's last-writer-wins. See utils/paneGeometryProbe.ts.
+  function captureTimelineGeometry(): PaneGeometrySnapshot {
+    const snapshot: PaneGeometrySnapshot = {
+      paneId: pane.paneId,
+      threadId: pane.threadId || null,
+      isAtBottom: stick.isAtBottom,
+      isSticky: stick.isSticky,
+      escapedFromLock: stick.escapedFromLock,
+      isWarm: stick.isWarm,
+      scrollTop: null,
+      scrollHeight: null,
+      clientHeight: null,
+      clientWidth: null,
+      distanceFromBottom: null,
+      rowGeometryWidth,
+      itemsLength: pane.items.length,
+      virtuaScrollSize: null,
+      cachedSizeSum: null,
+      bottomRenderedIndex: null,
+      rows: [],
+    };
+    try {
+      const surface = scrollEl;
+      if (surface) {
+        snapshot.scrollTop = Math.round(surface.scrollTop);
+        snapshot.scrollHeight = Math.round(surface.scrollHeight);
+        snapshot.clientHeight = Math.round(surface.clientHeight);
+        snapshot.clientWidth = Math.round(surface.clientWidth);
+        snapshot.distanceFromBottom = Math.round(
+          surface.scrollHeight - surface.scrollTop - surface.clientHeight,
+        );
+      }
+
+      // virtua's per-index cached sizes. getCache() returns an opaque snapshot
+      // whose runtime shape is [sizes[], estimate] (threadVirtuaSizeCache.ts /
+      // virtuaShiftCache.test.ts). Read defensively — the inner ref can null
+      // mid-teardown and both calls throw a TypeError then.
+      let sizes: number[] | null = null;
+      const list = listRef;
+      if (list) {
+        try {
+          snapshot.virtuaScrollSize = Math.round(list.getScrollSize());
+          const cache = list.getCache() as unknown;
+          if (Array.isArray(cache) && Array.isArray(cache[0])) {
+            sizes = (cache[0] as number[]).map((value) =>
+              (Number.isFinite(value) ? value : 0));
+            snapshot.cachedSizeSum = Math.round(
+              sizes.reduce((sum, value) => sum + value, 0),
+            );
+          }
+        } catch (err) {
+          if (!(err instanceof TypeError)) throw err;
+        }
+      }
+
+      if (contentEl) {
+        const wrappers = contentEl.querySelectorAll<HTMLElement>('[data-row-index]');
+        let bottomIndex = -1;
+        for (const wrapper of wrappers) {
+          const index = Number(wrapper.dataset.rowIndex);
+          if (!Number.isInteger(index)) continue;
+          const content = directRowGeometryContent(wrapper);
+          const wrapperHeight = wrapper.offsetHeight;
+          const contentHeight = content ? content.offsetHeight : null;
+          const cachedSize =
+            sizes && index >= 0 && index < sizes.length ? Math.round(sizes[index]) : null;
+          const inlineMinHeight = wrapper.style.minHeight;
+          const minHeightPx = inlineMinHeight.endsWith('px')
+            ? Math.round(parseFloat(inlineMinHeight))
+            : null;
+          snapshot.rows.push({
+            index,
+            geometryKey: wrapper.dataset.rowGeometryKey ?? null,
+            wrapperHeight,
+            contentHeight,
+            reservationInflation:
+              contentHeight === null ? null : wrapperHeight - contentHeight,
+            minHeightPx,
+            cachedSize,
+            cacheVsWrapper: cachedSize === null ? null : cachedSize - wrapperHeight,
+          });
+          if (index > bottomIndex) bottomIndex = index;
+        }
+        snapshot.rows.sort((a, b) => a.index - b.index);
+        snapshot.bottomRenderedIndex = bottomIndex >= 0 ? bottomIndex : null;
+      }
+    } catch (err) {
+      snapshot.error = String(err);
+    }
+    return snapshot;
+  }
+
+  $effect(() => installPaneGeometryProbe(pane.paneId, captureTimelineGeometry));
 
   // Trace virtua remount transitions: listRef goes undefined → defined
   // when the {#key pane.threadId} block remounts the Virtualizer. This

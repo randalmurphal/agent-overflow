@@ -249,7 +249,7 @@ export function createTimelineRowGeometryReservation(
   }
 }
 
-function directRowGeometryContent(row: HTMLElement): HTMLElement | null {
+export function directRowGeometryContent(row: HTMLElement): HTMLElement | null {
   for (const child of row.children) {
     if (
       child instanceof HTMLElement

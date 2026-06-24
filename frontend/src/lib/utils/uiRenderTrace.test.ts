@@ -18,6 +18,7 @@ describe('uiRenderTrace', () => {
     setUiRenderTraceEnabled(false);
     delete window.__agentOverflowUiTrace;
     delete window.__stickState;
+    delete window.__paneGeometryRecording;
     window.history.replaceState(null, '', '/');
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -172,6 +173,51 @@ describe('uiRenderTrace', () => {
     expect(JSON.stringify(marker)).not.toContain('supersecret');
     expect(JSON.stringify(marker)).not.toContain('access456');
     expect(clipboardText).toBe(bookmarkPath);
+  });
+
+  it('Ctrl+Shift+B emits each armed recording frame as its own correlated line, not inline in the marker', async () => {
+    // Regression guard: folding the whole ~80-frame rolling buffer into the
+    // marker's `data` blew the 64KiB per-line trace cap, so the marker was
+    // dropped as __droppedOversize and every capture came back empty. Frames must
+    // go to separate `user.bugReportRecFrame` lines correlated by recId.
+    setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
+    setBindingMock('BookmarkUIRenderTrace', async () => '/tmp/bookmark.jsonl');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn(async () => {}) },
+    });
+    installUiRenderTraceApi();
+    window.__agentOverflowUiTrace?.enable();
+
+    // Arm: stub the rolling-buffer read hook with three frames.
+    const frames = [
+      { t: 0, panes: { main: { bottomRenderedIndex: 195 } } },
+      { t: 100, panes: { main: { bottomRenderedIndex: 195 } } },
+      { t: 200, panes: { main: { bottomRenderedIndex: 195 } } },
+    ];
+    window.__paneGeometryRecording = (() => frames) as never;
+
+    window.dispatchEvent(new KeyboardEvent('keydown', {
+      ctrlKey: true, shiftKey: true, code: 'KeyB', bubbles: true, cancelable: true,
+    }));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    const records = getUiRenderTraceRecords();
+    const marker = records.find((r) => r.label === 'user.bugReport');
+    expect(marker).toBeDefined();
+    const recId = (marker?.data as { capturedAt: number }).capturedAt;
+    // Marker carries only the count, not the payload.
+    expect((marker?.data as { paneGeometryRecordingFrames: number }).paneGeometryRecordingFrames).toBe(3);
+    expect(JSON.stringify(marker)).not.toContain('bottomRenderedIndex');
+
+    // Three frame lines, each correlated to the marker and carrying its payload.
+    const frameLines = records.filter((r) => r.label === 'user.bugReportRecFrame');
+    expect(frameLines).toHaveLength(3);
+    expect(frameLines.every((r) => (r.data as { recId: number }).recId === recId)).toBe(true);
+    expect(frameLines.map((r) => (r.data as { t: number }).t)).toEqual([0, 100, 200]);
+    expect((frameLines[0]?.data as { panes: { main?: unknown } }).panes.main).toBeDefined();
+
+    delete window.__paneGeometryRecording;
   });
 
   it('Ctrl+Shift+B falls back to the live trace path when bookmarking fails', async () => {
