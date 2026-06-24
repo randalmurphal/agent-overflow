@@ -1189,6 +1189,18 @@ export function createUseStickToBottomController(
   // oscillation. `springToken` is intentionally left untouched: the spring
   // stays sentinel-alive so the external-write gate stays engaged. Extracted
   // so the two sites can't drift — the same reason `springGateOpen()` is shared.
+  //
+  // FOOTGUN — this is a one-shot CLAMP RECOVERY, not an oscillation source. If
+  // you ever catch it firing every frame in a sustained ±N px limit cycle (text
+  // visibly "vibrating"/flickering, idle or while streaming), the bug is NOT
+  // here: some other code is driving a per-frame content-height oscillation that
+  // keeps re-arming the snap. The classic cause is a forced synchronous layout
+  // read (getBoundingClientRect / offsetHeight) in a ResizeObserver or Svelte
+  // `use:` action hot path — see timelineRowGeometry.ts `applyParams`, where
+  // exactly this once happened. Do NOT "fix" the vibration by adding a
+  // stop-after-N break here: this snap exists to rescue scrollTop from a browser
+  // max-scroll clamp, and a break would instead STRAND it there — the
+  // post-width-reflow floating-message bug it recovers from. Fix the driver.
   function snapOscillationToBottom(caller: string, top: number): void {
     writeCaller = caller;
     writeScrollTop(top);

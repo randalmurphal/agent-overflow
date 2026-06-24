@@ -1993,6 +1993,21 @@
               use:rowGeometryReservation={rowGeometry}
               class:mt-4={rowDecorations.toolTextBoundaryIndexes.has(index)}
             >
+              <!-- Row-geometry measurement anchor for the min-height
+                   reservation in timelineRowGeometry.ts. MUST stay free of
+                   horizontal padding and border. The reservation caches each
+                   row's height keyed by width, and must RESERVE under the same
+                   width bucket it REMEMBERED: the remember path keys off this
+                   element's own ResizeObserver contentRect.width (content-box),
+                   the reserve path keys off rowGeometryWidth — the scroll
+                   surface's contentRect.width threaded in as a prop (also
+                   content-box). The two are equal only while there is zero
+                   horizontal padding/border between the surface's content box
+                   and this element. Add px-/border here and they diverge: every
+                   reserve lookup misses the bucket the remember path wrote, the
+                   reservation silently no-ops, and the post-width-reflow scroll
+                   strand returns. Keep padding on the inner wrapper below, never
+                   on this element. -->
               <div data-row-geometry-content>
                 {#if index === 0}
                   <!-- Top of timeline. Load-older button (when applicable) and

@@ -150,6 +150,18 @@ export function createTimelineRowGeometryReservation(
     ensureObserver()?.observe(nextContent);
   }
 
+  // KEEP THIS FREE OF SYNCHRONOUS LAYOUT READS. applyParams runs on every
+  // action update — every reactive param change, which during streaming is
+  // many times per second. An earlier strand fix read the row's own width
+  // here with a synchronous getBoundingClientRect(); the forced reflow it
+  // triggered each update drove a per-frame content-height oscillation, and
+  // useStickToBottom's oscillation-snap recovery limit-cycled on it — a
+  // sustained ±~16px scroll cycle that showed as the timeline text
+  // "vibrating"/flickering, both idle and while streaming. Everything this
+  // reservation needs about width/height arrives ASYNCHRONOUSLY via the
+  // ResizeObserver (handleMeasuredHeight's contentRect). Read from there —
+  // never with a sync layout query (getBoundingClientRect, offsetHeight/Width,
+  // getComputedStyle on a laid-out element, scrollHeight) in this path.
   function applyParams(
     state: RowReservationState,
     nextParams: TimelineRowGeometryReservationParams,
