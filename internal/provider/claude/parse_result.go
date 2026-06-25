@@ -102,6 +102,10 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	}
 
 	assistantMessageID := p.takeLastAssistantMessageID()
+	// Drop the per-turn snapshot discriminator + recovery state at the
+	// same turn boundary so a streamed id (or recovery ordinal) from this
+	// turn can't affect the next (see streamedMessageIDs / recoveredBlockSeq).
+	p.clearSnapshotRecoveryState()
 	var usagePayload *provider.TokenUsage
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
 		usagePayload = &usage

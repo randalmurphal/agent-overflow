@@ -39,6 +39,21 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 	parentToolUseID := readRawString(raw["parent_tool_use_id"])
 
 	switch eventType {
+	case "message_start":
+		// Record the message id so the coalesced `assistant` snapshot
+		// carrying the same id is recognised as already-streamed and its
+		// text/thinking blocks are dropped (anti-double-render). A snapshot
+		// whose id was never seen here never streamed and is recovered as a
+		// completed block — see parse_assistant.go and the streamedMessageIDs
+		// field doc. No downstream event: message_start carries no content.
+		var msg struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(eventObj["message"], &msg) == nil {
+			p.rememberStreamedMessageID(msg.ID)
+		}
+		return nil, nil
+
 	case "content_block_start":
 		index, _ := readIntAtAnyKey(eventRaw, "index")
 		var block map[string]json.RawMessage
@@ -50,14 +65,10 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 			return nil, nil
 		}
 		p.rememberStreamBlock(parentToolUseID, index, blockType)
-		meta, _ := json.Marshal(map[string]any{
-			"index":     index,
-			"blockType": blockType,
-		})
 		return []provider.ProviderEvent{{
 			Kind:            provider.EventContentBlockStart,
 			ThreadID:        threadID,
-			Meta:            meta,
+			Meta:            blockMeta(index, blockType),
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
 		}}, nil
@@ -65,14 +76,10 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 	case "content_block_stop":
 		index, _ := readIntAtAnyKey(eventRaw, "index")
 		blockType := p.takeStreamBlock(parentToolUseID, index)
-		meta, _ := json.Marshal(map[string]any{
-			"index":     index,
-			"blockType": blockType,
-		})
 		return []provider.ProviderEvent{{
 			Kind:            provider.EventContentBlockStop,
 			ThreadID:        threadID,
-			Meta:            meta,
+			Meta:            blockMeta(index, blockType),
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
 		}}, nil
@@ -150,6 +157,18 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 	default:
 		return nil, nil
 	}
+}
+
+// blockMeta builds the {index, blockType} JSON meta carried by content-
+// block lifecycle events (content_block_start / content_block_stop) and by
+// the snapshot-recovery EventContentBlockStop (parse_assistant.go). triage
+// reads "blockType" from it via blockTypeForStop; "index" is informational.
+func blockMeta(index int, blockType string) json.RawMessage {
+	meta, _ := json.Marshal(map[string]any{
+		"index":     index,
+		"blockType": blockType,
+	})
+	return meta
 }
 
 // buildSoftTurnComplete inspects a top-level `message_delta` envelope

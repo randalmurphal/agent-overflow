@@ -125,12 +125,28 @@ func TestParseAssistantExitPlanModeBlock(t *testing.T) {
 	}
 }
 
+// assistantMessageStartLine builds the stream_event.message_start that
+// precedes a normal streamed assistant message. Its id marks the message
+// as already-streamed, so the coalesced `assistant` snapshot carrying the
+// same id drops its text/thinking blocks (anti-double-render) instead of
+// recovering them. Production always emits this before a snapshot
+// (--include-partial-messages); the never-streamed recovery path is
+// covered by the partial_messages_test.go suite.
+func assistantMessageStartLine(id string) []byte {
+	return []byte(`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"` + id + `","role":"assistant","content":[]}}}`)
+}
+
 func TestParseAssistantThinkingBlockIsSkipped(t *testing.T) {
-	// Thinking blocks on the coalesced `assistant` envelope are skipped
-	// for the same reason as text blocks — stream_event thinking_delta
-	// is the sole source of thinking content.
+	// A thinking block on the coalesced `assistant` envelope is dropped
+	// when it already streamed (stream_event thinking_delta is the sole
+	// source of thinking content). The snapshot must not re-emit it on any
+	// channel — neither a streaming EventThinking nor a completed block.
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, assistantMessageStartLine("msg-1")); err != nil {
+		t.Fatalf("parse message_start: %v", err)
+	}
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"thinking","thinking":"Let me consider..."}]}}`)
-	events, err := ParseLine(testThread, line)
+	events, err := parser.ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -138,15 +154,22 @@ func TestParseAssistantThinkingBlockIsSkipped(t *testing.T) {
 		if e.Kind == provider.EventThinking {
 			t.Fatalf("assistant envelope emitted EventThinking for a thinking block: %+v", e)
 		}
+		if e.Kind == provider.EventContentBlockStop && e.ContentPresent {
+			t.Fatalf("already-streamed thinking re-emitted as a completed block: %+v", e)
+		}
 	}
 }
 
 func TestParseAssistantWithUsage(t *testing.T) {
-	// Text blocks are skipped (streamed via stream_event); usage is still
-	// emitted from the assistant envelope.
+	// Text is dropped (already streamed — message_start marks it); usage is
+	// still emitted from the assistant envelope.
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, assistantMessageStartLine("msg-1")); err != nil {
+		t.Fatalf("parse message_start: %v", err)
+	}
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}}`)
 
-	events, err := ParseLine(testThread, line)
+	events, err := parser.ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -166,11 +189,15 @@ func TestParseAssistantWithUsage(t *testing.T) {
 }
 
 func TestParseAssistantMultipleBlocks(t *testing.T) {
-	// Thinking and text are skipped on the assistant envelope (streamed
-	// via stream_event). Only the tool_use fires.
+	// Thinking and text are dropped on the assistant envelope (already
+	// streamed — message_start marks them). Only the tool_use fires.
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, assistantMessageStartLine("msg-1")); err != nil {
+		t.Fatalf("parse message_start: %v", err)
+	}
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"hello"},{"type":"tool_use","id":"t1","name":"Edit","input":{"file":"x"}}]}}`)
 
-	events, err := ParseLine(testThread, line)
+	events, err := parser.ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

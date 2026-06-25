@@ -83,6 +83,47 @@ type Parser struct {
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.
 	streamBlockTypes map[string]string
+	// streamedMessageIDs records every `message.id` seen on a
+	// stream_event.message_start this turn. It is the discriminator the
+	// coalesced `assistant` snapshot uses to decide whether a text/thinking
+	// block already streamed (drop, to avoid the double render pinned by
+	// TestAssistantEnvelopeDoesNotDuplicateStreamedText) or never streamed
+	// (recover as a completed block). The never-streamed case is a
+	// CLI-internal retry whose response arrives as a snapshot with no
+	// preceding stream lifecycle — thread fc24607e, where dropping it lost
+	// the agent's entire reply. This discriminator is process-local: a fresh
+	// process (session resume / crash recovery) starts with an empty set, yet
+	// recovery stays safe because `claude --resume` does NOT re-emit historical
+	// assistant content on stdout — a resumed turn streams only the NEW
+	// message; prior turns load into the model's context silently
+	// (spike-verified 2.1.170; see claude-wire.md §"Resume does not re-emit
+	// assistant content" and the resume_no_assistant_replay fixture). So a bare
+	// assistant snapshot is always an in-turn CLI retry, never replayed history
+	// that SQLite already holds. A SET, not a single "last id", because one
+	// logical turn can interleave multiple messages and their per-block
+	// snapshots (Claude 2.1.154+); a single field would mis-classify an
+	// out-of-order snapshot. Cleared at the turn boundary (parseResult) so
+	// ids never leak across turns. Bounded by parserStreamBlockCap with the
+	// same wholesale-reset-on-overflow policy as streamBlockTypes; the cap
+	// is a theoretical backstop only (the set clears every `result`, so a
+	// single turn never approaches 1024 message_starts).
+	streamedMessageIDs map[string]struct{}
+	// recoveredBlockSeq assigns a stable, monotonic per-message ordinal to
+	// each text/thinking block recovered from a never-streamed `assistant`
+	// snapshot. Claude delivers a coalesced message as SEPARATE single-block
+	// snapshot envelopes that all share one message.id (verified in the
+	// checked-in fixtures: one envelope per thinking/text/tool_use block),
+	// so the per-envelope content index is always 0 and cannot disambiguate
+	// two same-kind blocks of the same message. The recovery item id is
+	// `message.id#ordinal` from this counter, so same-kind blocks land on
+	// distinct rows instead of the second overwriting the first via
+	// FindStreamItemByProviderItemID. The ordinal only needs to be unique
+	// within the turn — the sole context recovery ever fires in — because
+	// `claude --resume` does not re-deliver assistant snapshots across
+	// processes (see the streamedMessageIDs doc above), so there is no
+	// cross-process replay whose ids would need to be reproduced. Cleared at
+	// the turn boundary with streamedMessageIDs; bounded by parserStreamBlockCap.
+	recoveredBlockSeq map[string]int
 	// model is the latest model id observed on this session. Seeded from
 	// the system/init line and used to price result usage so triage
 	// doesn't have to reach back into the store for pricing. When
@@ -181,6 +222,8 @@ func (p *Parser) Close() {
 	p.taskToolUses = nil
 	p.subagentModelStamped = nil
 	p.streamBlockTypes = nil
+	p.streamedMessageIDs = nil
+	p.recoveredBlockSeq = nil
 	p.lastAssistantMessageID = ""
 	p.interruptAcked = false
 }
@@ -565,6 +608,79 @@ func (p *Parser) takeStreamBlock(parentToolUseID string, index int) string {
 
 func streamBlockKey(parentToolUseID string, index int) string {
 	return fmt.Sprintf("%s:%d", parentToolUseID, index)
+}
+
+// rememberStreamedMessageID records a message id observed on a
+// stream_event.message_start. See the streamedMessageIDs field doc for
+// why this is a set and how the assistant-snapshot recovery path uses
+// it. Bounded by parserStreamBlockCap with wholesale reset on overflow,
+// matching the sibling stream maps.
+func (p *Parser) rememberStreamedMessageID(id string) {
+	if p == nil || id == "" {
+		return
+	}
+	if p.streamedMessageIDs == nil {
+		p.streamedMessageIDs = make(map[string]struct{})
+	}
+	if len(p.streamedMessageIDs) >= parserStreamBlockCap {
+		p.streamedMessageIDs = make(map[string]struct{})
+	}
+	p.streamedMessageIDs[id] = struct{}{}
+}
+
+// hasStreamedMessageID reports whether a message id was seen in a
+// stream_event.message_start this turn — i.e. whether its content blocks
+// already streamed delta-by-delta and the coalesced `assistant` snapshot
+// for the same id must be dropped to avoid a double render. Read-only
+// (the has* prefix is the package's read-only-method convention).
+func (p *Parser) hasStreamedMessageID(id string) bool {
+	if p == nil || id == "" || p.streamedMessageIDs == nil {
+		return false
+	}
+	_, ok := p.streamedMessageIDs[id]
+	return ok
+}
+
+// nextRecoveredBlockIndex returns the next per-message recovery ordinal
+// and advances it. See the recoveredBlockSeq field doc for why a
+// parser-tracked counter (not the envelope-local content index) is needed
+// to keep same-kind recovered blocks of one message on distinct rows.
+// Bounded by parserStreamBlockCap with wholesale reset, matching the
+// sibling stream maps.
+func (p *Parser) nextRecoveredBlockIndex(messageID string) int {
+	if p == nil {
+		return 0
+	}
+	if p.recoveredBlockSeq == nil {
+		p.recoveredBlockSeq = make(map[string]int)
+	}
+	if len(p.recoveredBlockSeq) >= parserStreamBlockCap {
+		p.recoveredBlockSeq = make(map[string]int)
+	}
+	idx := p.recoveredBlockSeq[messageID]
+	p.recoveredBlockSeq[messageID] = idx + 1
+	return idx
+}
+
+// recoveredBlockItemID builds the provider item id for a recovered
+// snapshot block: the message id plus the per-message recovery ordinal.
+// The bare message id still goes onto the turns row via
+// setLastAssistantMessageID — the two ids are never reconciled against
+// each other, so the suffix is safe.
+func recoveredBlockItemID(messageID string, index int) string {
+	return fmt.Sprintf("%s#%d", messageID, index)
+}
+
+// clearSnapshotRecoveryState drops the per-turn assistant-snapshot
+// discriminator + recovery maps (streamedMessageIDs and
+// recoveredBlockSeq) at the turn boundary so neither leaks into the next
+// turn. Called by parseResult alongside takeLastAssistantMessageID.
+func (p *Parser) clearSnapshotRecoveryState() {
+	if p == nil {
+		return
+	}
+	p.streamedMessageIDs = nil
+	p.recoveredBlockSeq = nil
 }
 
 // firstNonEmpty is a tiny alias for stringsx.FirstNonEmpty. Kept package-

@@ -1,0 +1,27 @@
+{
+  "claude_code_version": "2.1.170",
+  "captured_at": "2026-06-24T17:51:00Z",
+  "scenario": "Two headless turns sharing one session. Turn 1 (fresh) sends 'reply ALPHA' and the model streams ALPHA. Turn 2 re-launches the SAME binary with `--resume <session_id>` and sends 'reply BETA'. Question: does the resumed process re-emit turn 1's assistant content (ALPHA) on stdout? Determines whether parse_assistant.go's never-streamed snapshot recovery duplicates history on every reopen/crash-recovery.",
+  "cmd": [
+    "claude",
+    "--input-format", "stream-json",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--permission-prompt-tool", "stdio",
+    "--include-partial-messages",
+    "--replay-user-messages",
+    "--thinking-display", "summarized",
+    "--resume", "<turn-1 session_id>"
+  ],
+  "finding": "case_A — resume does NOT re-emit historical assistant content on stdout",
+  "key_observations": {
+    "turn1_top_level_types": {"system": 2, "stream_event": 7, "user": 1, "assistant": 1, "rate_limit_event": 1, "result": 1},
+    "turn2_top_level_types": {"system": 2, "stream_event": 7, "user": 1, "assistant": 1, "rate_limit_event": 1, "result": 1},
+    "turn2_contains_ALPHA": false,
+    "turn2_sole_assistant_envelope_text": "BETA",
+    "turn2_only_isReplay_envelope": "the just-sent user message (BETA), echoed by --replay-user-messages with isReplay:true; NO assistant envelope carried isReplay",
+    "interpretation": "Turn 2's envelope counts are IDENTICAL to turn 1's (one assistant, one user). A resume that replayed history would show extra assistant/user envelopes for turn 1's content. It shows none — `--resume` loads prior turns into the model's context silently and streams only the NEW turn."
+  },
+  "reconciliation": "Spike-verified here: ASSISTANT text/thinking is NOT re-emitted on resume, and the only isReplay:true envelope is the just-sent user message. NOT tested here: whether historical user-role tool_results re-fire on resume — design notes elsewhere claim --resume 'replays the full session log including tool_results'; that would be a separate user-path mechanism (parse_user_replay.go), not the assistant path. Either way it is irrelevant to the snapshot-recovery path in parse_assistant.go, which only touches `assistant` envelopes.",
+  "purpose": "Backs the safety argument for the streamedMessageIDs discriminator (parser.go) and the never-streamed snapshot recovery (parse_assistant.go): a bare `assistant` snapshot with no in-process message_start is always an in-turn CLI-internal retry, never replayed history. Recovery therefore cannot duplicate the assistant history on reopen. See claude-wire.md §'Resume does not re-emit assistant content'."
+}

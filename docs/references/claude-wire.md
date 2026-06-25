@@ -1345,6 +1345,46 @@ could clobber a previously-known good reading.
 
 ---
 
+## Resume does not re-emit assistant content (stdout)
+
+Spike-verified on 2.1.170 (2026-06-24), fixture
+[`fixtures/claude/resume_no_assistant_replay_20260624.summary.json`](fixtures/claude/resume_no_assistant_replay_20260624.summary.json).
+
+`claude --resume <id>` loads prior turns into the model's context
+**silently** — it does **not** re-emit historical `assistant` content
+(text / thinking) on stdout. A resumed process streams only the **new**
+turn, with the same envelope shape a fresh turn produces
+(`stream_event:message_start` → `content_block_*` deltas → coalesced
+`assistant` snapshot → `result`). Two back-to-back turns sharing one
+session emit identical top-level envelope counts on resume (one
+`assistant`, one `user`); turn 2's stdout contains none of turn 1's
+assistant text.
+
+The only replayed envelope is the **user** message the client just
+sent, echoed with `isReplay:true` by `--replay-user-messages` (routed
+through `parse_user_replay.go`). Assistant envelopes never carry
+`isReplay`.
+
+This is the safety anchor for the snapshot-recovery path
+(`parse_assistant.go` → the `streamedMessageIDs` discriminator in
+`parser.go`): because resume never delivers a historical `assistant`
+snapshot, a bare snapshot with no in-process `message_start` is
+**always** an in-turn CLI-internal retry (thread fc24607e), never
+replayed history. Recovering it cannot duplicate the assistant history
+on reopen — the discriminator being process-local (empty on a fresh
+resume) is therefore not a hazard.
+
+> Design notes elsewhere say `--resume` "replays the full session log
+> including tool_results". This spike did **not** exercise that path —
+> it verified only that assistant text/thinking is not re-emitted and
+> that the just-sent user message is echoed `isReplay:true`. Whether
+> historical user-role `tool_result`s re-fire on resume is a separate,
+> unverified-here mechanism (it would route through `parse_user_replay.go`,
+> not the assistant path) and is irrelevant either way to the
+> snapshot-recovery path this section anchors.
+
+---
+
 ## Session JSONL: active-branch semantics (`--resume` / `--resume-session-at`)
 
 Not a wire shape — the on-disk contract for

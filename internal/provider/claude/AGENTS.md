@@ -254,6 +254,17 @@ start and complete. These are load-bearing rules enforced by
   turns; iter[-1] is ~50% off on advisor turns. Authoritative for the
   current `parse_stream.go` direct top-level read and the
   `TestParseStreamEventMessageDeltaUsesTopLevel*` regression set.
+- `docs/references/fixtures/claude/resume_no_assistant_replay_20260624.summary.json`
+  — sanitized two-turn spike (claude 2.1.170): a `--resume`d process does
+  NOT re-emit prior turns' assistant content on stdout; it streams only
+  the new turn (identical envelope counts turn-1 vs turn-2, zero ALPHA in
+  turn-2). Backs the snapshot-recovery safety argument for the
+  `streamedMessageIDs` discriminator (`parser.go`) and never-streamed
+  recovery (`parse_assistant.go`): a bare `assistant` snapshot is always
+  an in-turn CLI retry, never replayed history. Documentation summary, not
+  a replayed wire log — the Go regression guard is
+  `TestAssistantEnvelopeDoesNotDuplicateStreamedText`. See
+  `claude-wire.md §"Resume does not re-emit assistant content"`.
 
 Use these in tests via file path. When fresh captures prove wire drift,
 refresh the checked-in fixtures from a new `AGENT_OVERFLOW_DEBUG=provider`

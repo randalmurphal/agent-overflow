@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 // The tests in this file pin the architectural fix for the
@@ -1776,5 +1777,360 @@ func TestParentContentDoesNotReArmFreshSession(t *testing.T) {
 	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 0 {
 		t.Fatalf("fresh-session content must not synthesize a round, got %d: %+v", len(starts), starts)
+	}
+}
+
+// TestLateFoldSettlesOrphanStreamingItem is the Bug 2 regression test for
+// thread fc24607e — the permanent "thinking spinner". A logical turn
+// settles once (soft round-close), the CLI re-rounds the SAME turn (a
+// task_notification continuation), and the re-round opens a streaming
+// thinking block that STALLS — no content_block_stop ever arrives. When
+// the trailing wire `result` lands it is a late-fold (the turn was
+// already settled), and handleTurnComplete returns early without calling
+// settleTurnStreaming. The orphaned thinking item is therefore left at
+// status=streaming forever, which the frontend renders as a thinking
+// block that never resolves.
+//
+// FAILS before Fix B: the orphan stays status=streaming after the final
+// result. PASSES after: the late-fold path settles orphan streams too.
+func TestLateFoldSettlesOrphanStreamingItem(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Turn 0 starts, streams a thinking block that closes cleanly, and the
+	// parent soft-closes — the FIRST settlement of the logical turn.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventThinking, ThreadID: "t1",
+		Content: "Round-one reasoning that closes cleanly.", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("round-1 thinking: %v", err)
+	}
+	if err := router.settleStreamingScope("t1", ""); err != nil {
+		t.Fatalf("settle round-1: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"}, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("soft close: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	// The CLI re-rounds the SAME logical turn: content_block_start re-arms,
+	// then attempt-1 thinking streams... and STALLS. No content_block_stop
+	// is ever emitted for it — it is orphaned at status=streaming.
+	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
+		t.Fatalf("re-round re-arm: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventThinking, ThreadID: "t1",
+		Content: "Re-round reasoning that never gets a content_block_stop.", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("orphan thinking: %v", err)
+	}
+
+	// Setup invariant: exactly one orphan thinking item at status=streaming
+	// before the final result (round-1 thinking already settled above).
+	var orphanID string
+	for _, it := range findItemsByKind(t, st, "t1", itemKindThinking) {
+		if it.Status == statusStreaming {
+			if orphanID != "" {
+				t.Fatalf("setup: more than one streaming thinking item")
+			}
+			orphanID = it.ID
+		}
+	}
+	if orphanID == "" {
+		t.Fatalf("setup: expected an orphan thinking item at status=streaming")
+	}
+
+	// The trailing wire `result` settles the logical turn — a late-fold,
+	// since the soft close already claimed settlement.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("final result: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	settled, found, err := st.GetThreadItem("t1", orphanID)
+	if err != nil {
+		t.Fatalf("get orphan after final result: %v", err)
+	}
+	if !found {
+		t.Fatalf("orphan thinking item vanished")
+	}
+	if settled.Status == statusStreaming {
+		t.Fatalf("Bug 2: orphan thinking item stuck at status=streaming after turn complete — the permanent thinking spinner")
+	}
+	if settled.Status != statusCompleted {
+		t.Errorf("orphan thinking settled to %q, want %q", settled.Status, statusCompleted)
+	}
+}
+
+// TestLateFoldForceClosesOrphanToolCall covers the tool-call sibling of
+// the late-fold settlement gap (invariant 23). A foreground tool_call
+// opened on a re-round whose tool_result the provider dropped is left at
+// status=running; if the trailing wire `result` is a late-fold it skips
+// forceCloseOrphanToolCalls and the tool card hangs "running" forever.
+//
+// FAILS before Fix B: the tool_call stays status=running. PASSES after:
+// the late-fold path force-closes orphan foreground tool_calls too.
+func TestLateFoldForceClosesOrphanToolCall(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	// First settlement of the logical turn.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"}, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("soft close: %v", err)
+	}
+
+	// A re-round opens a foreground tool_call whose tool_result never
+	// arrives. It is orphaned at status=running on the same logical turn.
+	insertToolCallItem(t, st, "t1", "tool-orphan", "Bash: long task", "Bash", statusRunning)
+
+	// Trailing wire result late-folds the already-settled turn.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("final result: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	settled, found, err := st.GetThreadItem("t1", "tool-orphan")
+	if err != nil {
+		t.Fatalf("get tool_call after final result: %v", err)
+	}
+	if !found {
+		t.Fatalf("tool_call vanished")
+	}
+	if settled.Status == statusRunning {
+		t.Fatalf("Bug 2 (tool variant): orphan foreground tool_call stuck at status=running after turn complete")
+	}
+	if settled.Status != statusErrored {
+		t.Errorf("orphan tool_call settled to %q, want %q", settled.Status, statusErrored)
+	}
+}
+
+// TestLateFoldOrphanSettlesErroredWhenTruncated pins the errored branch of
+// the late-fold orphan settle: when the trailing wire complete is
+// truncated/aborted (not a clean end_turn), the orphan streaming item must
+// settle to errored, not completed — mirroring the full path's
+// settledTurnStatus choice. Without exercising this, the truncated branch
+// of the late-fold settle is unguarded.
+func TestLateFoldOrphanSettlesErroredWhenTruncated(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	// First settlement of the logical turn (soft close).
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"}, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("soft close: %v", err)
+	}
+
+	// Re-round opens an orphan thinking item that never closes.
+	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
+		t.Fatalf("re-round re-arm: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventThinking, ThreadID: "t1",
+		Content: "Reasoning interrupted before it closes.", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("orphan thinking: %v", err)
+	}
+	var orphanID string
+	for _, it := range findItemsByKind(t, st, "t1", itemKindThinking) {
+		if it.Status == statusStreaming {
+			orphanID = it.ID
+		}
+	}
+	if orphanID == "" {
+		t.Fatalf("setup: expected an orphan thinking item at status=streaming")
+	}
+
+	// Trailing wire complete is aborted — a truncated late-fold.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "interrupted", Aborted: true},
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("final aborted result: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	settled, found, err := st.GetThreadItem("t1", orphanID)
+	if err != nil {
+		t.Fatalf("get orphan after aborted result: %v", err)
+	}
+	if !found {
+		t.Fatalf("orphan thinking item vanished")
+	}
+	if settled.Status == statusStreaming {
+		t.Fatalf("orphan thinking stuck at status=streaming after truncated turn complete")
+	}
+	if settled.Status != statusErrored {
+		t.Errorf("orphan thinking settled to %q, want %q (truncated late-fold)", settled.Status, statusErrored)
+	}
+}
+
+// TestCLIRetrySnapshotRecoversContentAndSettlesOrphan is the end-to-end
+// capstone for thread fc24607e, exercising the triage side of BOTH fixes
+// composing on the exact failure scenario:
+//
+//  1. Turn 0 settles once (message X, soft close).
+//  2. A task_notification re-rounds the SAME turn; attempt-1 thinking
+//     streams and STALLS (orphan, never closed) — Bug 2.
+//  3. The CLI internally retries and delivers attempt 2 as a coalesced
+//     snapshot with a fresh message id and no stream lifecycle. Fix A
+//     surfaces those never-streamed blocks as content-bearing
+//     EventContentBlockStop events (fed here as the parser would emit
+//     them); triage's !active+finalContentPresent path persists them as
+//     completed rows — Bug 1 recovery.
+//  4. The trailing wire `result` late-folds; Fix B settles the orphan.
+//
+// End state: attempt-1 partial thinking settled, attempt-2 thinking and
+// the recovered synthesis text both completed, and NO row left streaming.
+// Before the fixes the orphan stays streaming (the user's stuck spinner)
+// even though the recovered content lands — exactly the fc24607e DB state
+// plus the recovery the fixes add.
+func TestCLIRetrySnapshotRecoversContentAndSettlesOrphan(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	const (
+		retryThinking = "Reconsidering: both sources confirmed; the edge is non-canonical."
+		synthesisText = "Both sources are in. Synthesis: the finding->vendor edge is non-canonical."
+	)
+
+	// 1. Turn 0: message X streams and the parent soft-closes (first settle).
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1",
+		Content: "With the source confirmed, here is the first response.", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("message X delta: %v", err)
+	}
+	if err := router.settleStreamingScope("t1", ""); err != nil {
+		t.Fatalf("settle message X: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"}, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("soft close: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	// 2. Re-round (task_notification continuation): attempt-1 thinking
+	// streams and stalls — no content_block_stop. Orphan at streaming.
+	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
+		t.Fatalf("re-round re-arm: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventThinking, ThreadID: "t1",
+		Content: "Attempt-1 partial reasoning that stalls mid-stream.", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("attempt-1 orphan thinking: %v", err)
+	}
+
+	// 3. Attempt 2 arrives as a coalesced snapshot (fresh id, no stream
+	// lifecycle). Fix A emits these as content-bearing EventContentBlockStop
+	// events keyed on `message.id#ordinal`; feed them exactly as the parser
+	// would (separate single-block envelopes → recovery ordinals 0, 1). The
+	// explicit blockType + per-block ItemID makes triage persist each as a
+	// NEW completed row (the never-streamed-recovery path).
+	for _, blk := range []struct{ itemID, kind, content string }{
+		{"msg_attempt2#0", "thinking", retryThinking},
+		{"msg_attempt2#1", "text", synthesisText},
+	} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:           provider.EventContentBlockStop,
+			ThreadID:       "t1",
+			ItemID:         blk.itemID,
+			Content:        blk.content,
+			ContentPresent: true,
+			Meta:           json.RawMessage(`{"blockType":"` + blk.kind + `"}`),
+			Timestamp:      time.Now(),
+		}); err != nil {
+			t.Fatalf("recover %s: %v", blk.kind, err)
+		}
+	}
+	router.WaitForPendingSettles()
+
+	// 4. Trailing wire result late-folds; Fix B settles the orphan stream.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn", AssistantMessageID: "msg_attempt2"},
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("final result: %v", err)
+	}
+	router.WaitForPendingSettles()
+
+	// No row may be left streaming — the direct encoding of "no stuck
+	// thinking spinner".
+	allItems, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	for _, it := range allItems {
+		if it.Status == statusStreaming {
+			t.Fatalf("Bug 2: item %s (%s) left at status=streaming after recovery+late-fold", it.ID, it.Kind)
+		}
+	}
+
+	// The synthesis text was recovered as a completed assistant_text row
+	// with the exact content (Bug 1 recovery — the lost agent response).
+	var recoveredText *store.Item
+	texts := findItemsByKind(t, st, "t1", itemKindAssistantText)
+	for i := range texts {
+		if texts[i].Summary == synthesisText {
+			recoveredText = &texts[i]
+		}
+	}
+	if recoveredText == nil {
+		t.Fatalf("Bug 1: synthesis text never recovered as an assistant_text item")
+	}
+	if recoveredText.Status != statusCompleted {
+		t.Errorf("recovered synthesis text status = %q, want %q", recoveredText.Status, statusCompleted)
+	}
+
+	// Both the orphaned attempt-1 thinking and the recovered attempt-2
+	// thinking exist and are completed (>= 2 distinct thinking rows, none
+	// streaming, which the loop above already guaranteed).
+	thinking := findItemsByKind(t, st, "t1", itemKindThinking)
+	if len(thinking) < 2 {
+		t.Fatalf("expected >= 2 thinking rows (orphan + recovered), got %d", len(thinking))
+	}
+	for _, it := range thinking {
+		if it.Status != statusCompleted {
+			t.Errorf("thinking row %s status = %q, want %q", it.ID, it.Status, statusCompleted)
+		}
 	}
 }

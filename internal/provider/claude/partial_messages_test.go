@@ -48,10 +48,27 @@ func TestBuildArgsIncludesPartialMessagesFlag(t *testing.T) {
 // summary that contains the text twice. This was the root cause of a
 // user-visible rendering artefact where a single mermaid diagram in an
 // agent response was persisted and rendered twice.
+//
+// The discriminator that distinguishes "already streamed" (drop) from
+// "coalesced-only retry" (recover) keys on the `stream_event.message_start`
+// id: a normal streamed message always opens with a message_start, and
+// the per-block coalesced `assistant` snapshot(s) carry that same
+// message.id (verified across the checked-in fixtures). So the realistic
+// streamed sequence here is message_start → content_block_delta →
+// assistant snapshot, all sharing one id — and the snapshot must drop.
 func TestAssistantEnvelopeDoesNotDuplicateStreamedText(t *testing.T) {
 	parser := NewParser()
 
-	// Stream the text deltas first — this is the source-of-truth path.
+	// The message opens with a message_start carrying its id — this is
+	// what marks the message as "streamed" for the anti-duplication
+	// discriminator. Every production streamed message has one
+	// (--include-partial-messages is always on).
+	messageStart := []byte(`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_abc","role":"assistant","content":[]}}}`)
+	if _, err := parser.ParseLine(testThread, messageStart); err != nil {
+		t.Fatalf("parse message_start: %v", err)
+	}
+
+	// Stream the text deltas — this is the source-of-truth path.
 	streamDelta := []byte(`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello "}}}`)
 	deltaEvents, err := parser.ParseLine(testThread, streamDelta)
 	if err != nil {
@@ -61,10 +78,12 @@ func TestAssistantEnvelopeDoesNotDuplicateStreamedText(t *testing.T) {
 		t.Fatalf("expected one EventTextDelta from stream path, got %+v", deltaEvents)
 	}
 
-	// Now the coalesced assistant envelope arrives with the full text.
-	// The parser MUST NOT emit a second EventTextDelta — triage would
-	// append the content onto the already-streamed summary and the
-	// final row would contain duplicated text.
+	// Now the coalesced assistant envelope arrives with the full text,
+	// carrying the SAME id as the message_start. The parser MUST NOT
+	// re-emit the content on ANY channel — not as a streaming delta
+	// (EventTextDelta/EventThinking) and not as a completed-block event
+	// (EventContentBlockStop with content). Either would re-append the
+	// already-streamed text and double the final row.
 	assistantLine := []byte(`{"type":"assistant","message":{"id":"msg_abc","role":"assistant","content":[{"type":"text","text":"hello world"}]}}`)
 	assistantEvents, err := parser.ParseLine(testThread, assistantLine)
 	if err != nil {
@@ -77,7 +96,435 @@ func TestAssistantEnvelopeDoesNotDuplicateStreamedText(t *testing.T) {
 		if e.Kind == provider.EventThinking {
 			t.Fatalf("assistant envelope emitted EventThinking, duplicating stream path: content=%q", e.Content)
 		}
+		if e.Kind == provider.EventContentBlockStop && e.ContentPresent {
+			t.Fatalf("assistant envelope emitted a content-bearing EventContentBlockStop for an already-streamed message, duplicating stream path: content=%q", e.Content)
+		}
 	}
+}
+
+// TestAssistantSnapshotWithoutPriorStreamEmitsCompletedContent is the
+// Bug 1 regression test for thread fc24607e. When the Claude CLI
+// internally retries mid-turn, it delivers the retry's response as a
+// coalesced `assistant` snapshot with a FRESH message id and ZERO
+// preceding stream_event lifecycle (no message_start, no
+// content_block_*). The parser's anti-duplication guard drops text and
+// thinking blocks on the assumption they already streamed — but this
+// message never streamed, so dropping it silently discards the agent's
+// entire visible response (the user saw only a stuck thinking spinner).
+//
+// The fix: a snapshot whose id was NEVER seen in a message_start is
+// surfaced as a completed-block event (EventContentBlockStop with the
+// block content and ContentPresent=true) so triage can persist it as a
+// completed row. This test FAILS before the fix (the blocks are dropped,
+// so no content-bearing event is emitted).
+func TestAssistantSnapshotWithoutPriorStreamEmitsCompletedContent(t *testing.T) {
+	parser := NewParser()
+
+	// A different message id streamed-and-stalled earlier in the turn
+	// (attempt 1). It must NOT make the retry's id look "streamed".
+	stalledStart := []byte(`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_attempt1","role":"assistant","content":[]}}}`)
+	if _, err := parser.ParseLine(testThread, stalledStart); err != nil {
+		t.Fatalf("parse stalled message_start: %v", err)
+	}
+
+	// Attempt 2: a CLI-internal retry delivered as a coalesced snapshot
+	// with a fresh id and no stream lifecycle, as SEPARATE single-block
+	// envelopes sharing one id (thinking, then text) — the real wire shape.
+	const (
+		retryThinking = "Reconsidering: both sources are confirmed."
+		retryText     = "Both sources are in. Synthesis: the finding→vendor edge is non-canonical."
+	)
+	envelopes := [][]byte{
+		[]byte(`{"type":"assistant","message":{"id":"msg_attempt2","role":"assistant","content":[{"type":"thinking","thinking":"` + retryThinking + `"}]}}`),
+		[]byte(`{"type":"assistant","message":{"id":"msg_attempt2","role":"assistant","content":[{"type":"text","text":"` + retryText + `"}]}}`),
+	}
+
+	var events []provider.ProviderEvent
+	for i, env := range envelopes {
+		got, err := parser.ParseLine(testThread, env)
+		if err != nil {
+			t.Fatalf("parse retry envelope %d: %v", i, err)
+		}
+		events = append(events, got...)
+	}
+
+	var gotThinking, gotText *provider.ProviderEvent
+	for i := range events {
+		e := &events[i]
+		if e.Kind != provider.EventContentBlockStop || !e.ContentPresent {
+			continue
+		}
+		switch contentBlockStopType(t, e.Meta) {
+		case "thinking":
+			gotThinking = e
+		case "text":
+			gotText = e
+		}
+	}
+
+	if gotThinking == nil {
+		t.Fatalf("never-streamed snapshot dropped its thinking block (Bug 1); events=%+v", events)
+	}
+	if gotThinking.Content != retryThinking {
+		t.Errorf("recovered thinking content = %q, want %q", gotThinking.Content, retryThinking)
+	}
+	// The item id folds a per-message recovery ordinal onto the message id
+	// so same-kind blocks can't collide; thinking is recovered first (0).
+	if gotThinking.ItemID != "msg_attempt2#0" {
+		t.Errorf("recovered thinking ItemID = %q, want msg_attempt2#0 (message id + recovery ordinal)", gotThinking.ItemID)
+	}
+
+	if gotText == nil {
+		t.Fatalf("never-streamed snapshot dropped its text block (Bug 1) — this is the lost agent response; events=%+v", events)
+	}
+	if gotText.Content != retryText {
+		t.Errorf("recovered text content = %q, want %q", gotText.Content, retryText)
+	}
+	if gotText.ItemID != "msg_attempt2#1" {
+		t.Errorf("recovered text ItemID = %q, want msg_attempt2#1 (message id + recovery ordinal)", gotText.ItemID)
+	}
+
+	// The recovery path must NOT also emit streaming deltas — that would
+	// double-render against the completed-block events above.
+	for _, e := range events {
+		if e.Kind == provider.EventTextDelta || e.Kind == provider.EventThinking {
+			t.Fatalf("recovery emitted a streaming delta (%s) on top of the completed block: content=%q", e.Kind, e.Content)
+		}
+	}
+}
+
+// TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent pins the
+// regression fix for a duplicate-rendering bug introduced alongside the
+// never-streamed snapshot recovery
+// (TestAssistantSnapshotWithoutPriorStreamEmitsCompletedContent).
+//
+// The Claude CLI emits a synthetic *error* envelope as a bare `assistant`
+// snapshot: a UUID message id that never streams, `model:"<synthetic>"`, a
+// single `text` block holding the human-readable error copy ("API Error:
+// …"), and an `error` enum at the ENVELOPE top level — a sibling of
+// `message`, NOT `message.error`. Shape verified verbatim against
+// provider-events logs (Claude Code 2.1.170; all captured error envelopes
+// carried the enum top-level with a lone text block).
+//
+// That text block IS the error copy: it is already surfaced once as the
+// EventError summary (the api_error row). Recovery fires on any
+// never-streamed text, so before the fix it ALSO emitted the same text as
+// a normal completed content block — one error envelope rendered twice:
+// a plain assistant_text line PLUS the red api_error box. That is the
+// user-reported "error messages come in as normal text" regression.
+//
+// The fix gates text/thinking recovery on "no error enum" so an error
+// envelope's content belongs solely to the EventError path. This test
+// FAILS before the fix (a content-bearing EventContentBlockStop is
+// emitted) and passes after — while still asserting EventError fires with
+// the error copy, so a duplicate isn't traded for a silent drop.
+func TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent(t *testing.T) {
+	parser := NewParser()
+
+	const errCopy = "API Error: Stream idle timeout - partial response received"
+	// Verbatim wire shape (ids sanitized) from
+	// provider-events-2026-06-24.ndjson: UUID id (never streamed),
+	// synthetic model, single text block, top-level `error` enum.
+	envelope := []byte(`{"type":"assistant","message":{"id":"dfa3c492-9b19-419c-b441-92d548c3133d","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"` + errCopy + `"}]},"parent_tool_use_id":null,"error":"unknown"}`)
+	events, err := parser.ParseLine(testThread, envelope)
+	if err != nil {
+		t.Fatalf("parse error envelope: %v", err)
+	}
+
+	var recovered, errorEvt *provider.ProviderEvent
+	for i := range events {
+		e := &events[i]
+		switch {
+		case e.Kind == provider.EventContentBlockStop && e.ContentPresent:
+			recovered = e
+		case e.Kind == provider.EventError:
+			errorEvt = e
+		}
+	}
+
+	if recovered != nil {
+		t.Fatalf("error envelope recovered its text as a normal content block (the duplicate assistant_text row behind the regression): ItemID=%q Content=%q", recovered.ItemID, recovered.Content)
+	}
+	if errorEvt == nil {
+		t.Fatalf("error envelope did not emit EventError — the error copy would be silently dropped; events=%+v", events)
+	}
+	if errorEvt.Content != errCopy {
+		t.Errorf("EventError summary = %q, want the wire error copy %q", errorEvt.Content, errCopy)
+	}
+}
+
+// TestSubagentAssistantErrorEnvelopeDoesNotRecoverErrorText is the
+// subagent counterpart: an error envelope carrying a top-level
+// parent_tool_use_id must also keep its text out of the recovery path.
+// Subagents never stream (no message_start ever carries a
+// parent_tool_use_id — confirmed across production logs), so without the
+// error gate EVERY subagent error envelope's text would recover into a
+// nested assistant_text row beside the api_error row. The gate lives in
+// the shared block loop, so this asserts the same no-recover + EventError
+// guarantee holds when parent_tool_use_id is set, and that the EventError
+// stays nested under the parent Task.
+func TestSubagentAssistantErrorEnvelopeDoesNotRecoverErrorText(t *testing.T) {
+	parser := NewParser()
+
+	const (
+		parentID = "toolu_task_parent"
+		errCopy  = "API Error: Stream idle timeout - partial response received"
+	)
+	envelope := []byte(`{"type":"assistant","parent_tool_use_id":"` + parentID + `","message":{"id":"a1b2c3d4-0000-0000-0000-000000000000","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"` + errCopy + `"}]},"error":"unknown"}`)
+	events, err := parser.ParseLine(testThread, envelope)
+	if err != nil {
+		t.Fatalf("parse subagent error envelope: %v", err)
+	}
+
+	var recovered, errorEvt *provider.ProviderEvent
+	for i := range events {
+		e := &events[i]
+		switch {
+		case e.Kind == provider.EventContentBlockStop && e.ContentPresent:
+			recovered = e
+		case e.Kind == provider.EventError:
+			errorEvt = e
+		}
+	}
+
+	if recovered != nil {
+		t.Fatalf("subagent error envelope recovered its text as a content block (nested duplicate): ItemID=%q Content=%q", recovered.ItemID, recovered.Content)
+	}
+	if errorEvt == nil {
+		t.Fatalf("subagent error envelope did not emit EventError; events=%+v", events)
+	}
+	if errorEvt.ParentToolUseID != parentID {
+		t.Errorf("EventError ParentToolUseID = %q, want %q (the failure closes the parent Task's turn)", errorEvt.ParentToolUseID, parentID)
+	}
+}
+
+// TestAssistantErrorEnvelopeWithMessageLevelEnumDoesNotRecover pins the
+// recovery gate for the SECOND error-enum wire placement the parser
+// supports: `message.error` (inside the message object), which
+// assistantErrorEnum reads BEFORE the top-level `error` field. The two
+// verbatim-shape tests above both put the enum at the envelope top level;
+// without this test a future simplification of assistantErrorEnum that
+// dropped the message.error read would silently un-gate recovery for this
+// shape with no failing test. The assistantMessage.Error field doc records
+// message.error as a real cross-version shape. Fails before the fix (the
+// text recovers into a duplicate row), passes after.
+func TestAssistantErrorEnvelopeWithMessageLevelEnumDoesNotRecover(t *testing.T) {
+	parser := NewParser()
+
+	const errCopy = "Rate limit reached - please wait before retrying"
+	// Enum inside `message` (no top-level `error`), never-streamed UUID id,
+	// populated text block — exercises the msg.Error-first branch of
+	// assistantErrorEnum so the gate is pinned for both enum placements.
+	envelope := []byte(`{"type":"assistant","message":{"id":"f00dbabe-0000-0000-0000-000000000000","model":"<synthetic>","role":"assistant","error":"rate_limit","content":[{"type":"text","text":"` + errCopy + `"}]}}`)
+	events, err := parser.ParseLine(testThread, envelope)
+	if err != nil {
+		t.Fatalf("parse message-level error envelope: %v", err)
+	}
+
+	var recovered, errorEvt *provider.ProviderEvent
+	for i := range events {
+		e := &events[i]
+		switch {
+		case e.Kind == provider.EventContentBlockStop && e.ContentPresent:
+			recovered = e
+		case e.Kind == provider.EventError:
+			errorEvt = e
+		}
+	}
+
+	if recovered != nil {
+		t.Fatalf("message.error envelope recovered its text as a content block (duplicate): ItemID=%q Content=%q", recovered.ItemID, recovered.Content)
+	}
+	if errorEvt == nil {
+		t.Fatalf("message.error envelope did not emit EventError; events=%+v", events)
+	}
+	if errorEvt.Content != errCopy {
+		t.Errorf("EventError summary = %q, want the wire error copy %q", errorEvt.Content, errCopy)
+	}
+}
+
+// TestStreamedSnapshotDroppedEvenAfterLaterMessageStart justifies keying
+// the discriminator on a SET of streamed ids rather than a single
+// "last streamed id" field. Claude's 2.1.154+ wire splits one logical
+// turn into multiple messages; if a coalesced snapshot for message A
+// arrives after message B has already opened (interleaving), a single
+// last-id field would read B, mismatch A, and wrongly re-emit A's
+// already-streamed content (reintroducing the doubling bug). A set
+// remembers both, so A's snapshot still drops.
+func TestStreamedSnapshotDroppedEvenAfterLaterMessageStart(t *testing.T) {
+	parser := NewParser()
+
+	for _, id := range []string{"msg_A", "msg_B"} {
+		line := []byte(`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"` + id + `","role":"assistant","content":[]}}}`)
+		if _, err := parser.ParseLine(testThread, line); err != nil {
+			t.Fatalf("parse message_start %s: %v", id, err)
+		}
+	}
+
+	// Snapshot for the EARLIER message A arrives after B opened. A
+	// streamed, so its content must still be dropped.
+	snapshot := []byte(`{"type":"assistant","message":{"id":"msg_A","role":"assistant","content":[{"type":"text","text":"streamed A content"}]}}`)
+	events, err := parser.ParseLine(testThread, snapshot)
+	if err != nil {
+		t.Fatalf("parse snapshot A: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventContentBlockStop && e.ContentPresent {
+			t.Fatalf("snapshot for already-streamed msg_A was re-emitted after msg_B opened (single-field discriminator bug): content=%q", e.Content)
+		}
+		if e.Kind == provider.EventTextDelta || e.Kind == provider.EventThinking {
+			t.Fatalf("snapshot for already-streamed msg_A emitted a delta: content=%q", e.Content)
+		}
+	}
+}
+
+// TestStreamedMessageIDsClearedAtResult pins that the streamed-id set is
+// reset at the turn boundary (`result`). Without the clear it would grow
+// unbounded across a session, and a provider that ever reused a message
+// id in a later turn would have a genuine retry-snapshot wrongly dropped.
+func TestStreamedMessageIDsClearedAtResult(t *testing.T) {
+	parser := NewParser()
+
+	streamA := []byte(`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_reuse","role":"assistant","content":[]}}}`)
+	if _, err := parser.ParseLine(testThread, streamA); err != nil {
+		t.Fatalf("parse message_start: %v", err)
+	}
+	resultLine := []byte(`{"type":"result","subtype":"success","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	if _, err := parser.ParseLine(testThread, resultLine); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+
+	// Next turn: the SAME id arrives as a coalesced snapshot with no new
+	// message_start. Because the set cleared at the prior result, this id
+	// reads as never-streamed and its content is recovered.
+	snapshot := []byte(`{"type":"assistant","message":{"id":"msg_reuse","role":"assistant","content":[{"type":"text","text":"fresh turn content"}]}}`)
+	events, err := parser.ParseLine(testThread, snapshot)
+	if err != nil {
+		t.Fatalf("parse snapshot: %v", err)
+	}
+	var recovered bool
+	for _, e := range events {
+		if e.Kind == provider.EventContentBlockStop && e.ContentPresent && e.Content == "fresh turn content" {
+			recovered = true
+		}
+	}
+	if !recovered {
+		t.Fatalf("reused id was treated as still-streamed after a result cleared the set; events=%+v", events)
+	}
+}
+
+// TestNeverStreamedSnapshotSameKindBlocksDoNotCollide pins the
+// collision-safe recovery key against the REAL wire shape. Claude
+// delivers a coalesced message as SEPARATE single-block `assistant`
+// snapshot envelopes that all share one message.id (verified in the
+// checked-in fixtures: one envelope per thinking/text/tool_use block), so
+// the per-envelope content index is ALWAYS 0 and cannot disambiguate two
+// same-kind blocks of the same message. If the recovery key used that
+// envelope-local index, both never-streamed text blocks would key on
+// `id#0` and triage's FindStreamItemByProviderItemID (kind-scoped) would
+// make the second overwrite the first — silent content loss, the exact
+// bug class being fixed. A parser-tracked per-message recovery ordinal
+// keeps them distinct across envelopes.
+func TestNeverStreamedSnapshotSameKindBlocksDoNotCollide(t *testing.T) {
+	parser := NewParser()
+
+	const (
+		firstText  = "First half of the answer."
+		secondText = "Second half of the answer."
+	)
+	// Two same-kind (text) blocks of ONE never-streamed message, each in
+	// its own single-block envelope sharing the same id — the real wire.
+	envelopes := [][]byte{
+		[]byte(`{"type":"assistant","message":{"id":"msg_multi","role":"assistant","content":[{"type":"text","text":"` + firstText + `"}]}}`),
+		[]byte(`{"type":"assistant","message":{"id":"msg_multi","role":"assistant","content":[{"type":"text","text":"` + secondText + `"}]}}`),
+	}
+
+	byID := make(map[string]string)
+	for i, env := range envelopes {
+		events, err := parser.ParseLine(testThread, env)
+		if err != nil {
+			t.Fatalf("parse envelope %d: %v", i, err)
+		}
+		for _, e := range events {
+			if e.Kind == provider.EventContentBlockStop && e.ContentPresent && contentBlockStopType(t, e.Meta) == "text" {
+				if prev, dup := byID[e.ItemID]; dup {
+					t.Fatalf("two text blocks of one message shared recovery ItemID %q (collision): %q and %q", e.ItemID, prev, e.Content)
+				}
+				byID[e.ItemID] = e.Content
+			}
+		}
+	}
+
+	if len(byID) != 2 {
+		t.Fatalf("expected 2 distinct recovered text blocks, got %d: %+v", len(byID), byID)
+	}
+	if byID["msg_multi#0"] != firstText {
+		t.Errorf("ordinal 0 = %q, want %q", byID["msg_multi#0"], firstText)
+	}
+	if byID["msg_multi#1"] != secondText {
+		t.Errorf("ordinal 1 = %q, want %q (per-message recovery ordinal, not envelope-local index)", byID["msg_multi#1"], secondText)
+	}
+}
+
+// TestNeverStreamedSubagentSnapshotRecoversUnderParentToolUseID pins that
+// the snapshot-recovery path propagates parent_tool_use_id onto the
+// recovered EventContentBlockStop. A CLI-internal retry inside a Task
+// subagent arrives as a coalesced `assistant` snapshot carrying a
+// top-level parent_tool_use_id and no stream lifecycle. If recovery
+// dropped that id, triage would persist the recovered row at the top
+// level instead of nested under the parent Task — the subagent's reply
+// would surface in the wrong place (or look lost). The non-subagent
+// recovery is covered by TestAssistantSnapshotWithoutPriorStreamEmitsCompletedContent;
+// this is the parent_tool_use_id != "" counterpart.
+func TestNeverStreamedSubagentSnapshotRecoversUnderParentToolUseID(t *testing.T) {
+	parser := NewParser()
+
+	const (
+		parentID = "toolu_task_parent"
+		subText  = "Subagent finished: 2 files changed."
+	)
+	// Bare snapshot, fresh id, no message_start, top-level parent_tool_use_id.
+	snapshot := []byte(`{"type":"assistant","parent_tool_use_id":"` + parentID + `","message":{"id":"msg_sub_retry","role":"assistant","content":[{"type":"text","text":"` + subText + `"}]}}`)
+	events, err := parser.ParseLine(testThread, snapshot)
+	if err != nil {
+		t.Fatalf("parse subagent snapshot: %v", err)
+	}
+
+	var recovered *provider.ProviderEvent
+	for i := range events {
+		e := &events[i]
+		if e.Kind == provider.EventContentBlockStop && e.ContentPresent && contentBlockStopType(t, e.Meta) == "text" {
+			recovered = e
+		}
+	}
+	if recovered == nil {
+		t.Fatalf("never-streamed subagent snapshot dropped its text block; events=%+v", events)
+	}
+	if recovered.Content != subText {
+		t.Errorf("recovered subagent content = %q, want %q", recovered.Content, subText)
+	}
+	if recovered.ParentToolUseID != parentID {
+		t.Errorf("recovered subagent ParentToolUseID = %q, want %q (recovery must keep the row nested under the parent Task)", recovered.ParentToolUseID, parentID)
+	}
+	if recovered.ItemID != "msg_sub_retry#0" {
+		t.Errorf("recovered subagent ItemID = %q, want msg_sub_retry#0", recovered.ItemID)
+	}
+}
+
+// contentBlockStopType pulls the blockType discriminator out of an
+// EventContentBlockStop's Meta, matching triage's blockTypeForStop read.
+func contentBlockStopType(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	if len(raw) == 0 {
+		return ""
+	}
+	var meta struct {
+		BlockType string `json:"blockType"`
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("decode content_block_stop meta %q: %v", raw, err)
+	}
+	return meta.BlockType
 }
 
 // TestAssistantEnvelopeStillEmitsToolUseAndUsage confirms the skip is

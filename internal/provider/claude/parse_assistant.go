@@ -141,22 +141,42 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 		}
 	}
 
+	// An `assistant.error` envelope (e.g. the synthetic "API Error: …"
+	// snapshot) carries its human-readable error copy as a `text` block AND
+	// an error enum. That text is surfaced once below as the EventError
+	// summary (assistantErrorSummary). Computed here so the recovery branch
+	// can skip it: recovering a never-streamed error text block would emit
+	// it a SECOND time as a normal assistant_text row, duplicating the
+	// api_error row (the "error messages come in as normal text"
+	// regression — see TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent).
+	// The error path is the sole owner of an error envelope's content.
+	errorEnum := assistantErrorEnum(raw, msg)
+
 	for _, block := range msg.Content {
 		switch block.Type {
 		case "text":
-			// Text content is already emitted delta-by-delta via the
-			// stream_event path (`parse_stream.go`) — `--include-partial-
-			// messages` is always on for our session. Emitting again
-			// from the coalesced assistant envelope would append the
-			// full block on top of the streamed partials, doubling the
-			// text in the cumulative summary. This manifested as a
-			// user-visible rendering bug (mermaid diagrams appearing
-			// twice) after the closure gate started actually rendering
-			// their content.
+			// Drop already-streamed text — re-emitting the coalesced
+			// snapshot would double it (the bug pinned by
+			// TestAssistantEnvelopeDoesNotDuplicateStreamedText). A
+			// never-streamed message is a CLI-internal retry whose reply
+			// arrived as a snapshot with no stream lifecycle; recover it so
+			// it isn't silently lost. See the streamedMessageIDs field doc.
+			// Skip error envelopes entirely (errorEnum != ""): their text is
+			// the error copy, owned by the EventError path below — see the
+			// errorEnum comment above.
+			if errorEnum == "" && !p.hasStreamedMessageID(msg.ID) {
+				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "text", block.Text, now)
+			}
 		case "tool_use":
 			events = p.appendToolUseEvent(events, threadID, parentToolUseID, msg.ID, now, block)
 		case "thinking":
-			// Same as text: streamed via stream_event thinking_delta.
+			// Same contract as text, including the error-envelope skip. The
+			// thinking signature is not recovered (the streamed path
+			// captures it on content_block_stop; the session jsonl stays
+			// authoritative for resume). See the streamedMessageIDs field doc.
+			if errorEnum == "" && !p.hasStreamedMessageID(msg.ID) {
+				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "thinking", block.Thinking, now)
+			}
 		case "server_tool_use":
 			// Claude's server-side tool call (today: `advisor`). The
 			// matching result arrives on a SECOND assistant envelope
@@ -183,7 +203,8 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// tells the triage router not to synthesize a duplicate TurnComplete.
 	// Subagent assistant errors (parent_tool_use_id != "") use the parent
 	// thread's open turn; the failure still closes the parent turn.
-	if errorEnum := assistantErrorEnum(raw, msg); errorEnum != "" {
+	// errorEnum is computed once above (it also gates content recovery).
+	if errorEnum != "" {
 		errMeta, _ := json.Marshal(map[string]any{
 			"api_error_enum":       errorEnum,
 			"error":                errorEnum,
@@ -201,6 +222,51 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	}
 
 	return events, nil
+}
+
+// appendRecoveredBlockEvent emits a completed-block event for a
+// text/thinking block that arrived on a coalesced `assistant` snapshot
+// without ever streaming (the CLI-internal-retry case — see the `text`
+// branch in parseAssistant and the streamedMessageIDs field doc). It
+// rides the EventContentBlockStop channel so triage's late-completion
+// handler (settleStreaming*Async's !active+ContentPresent branch)
+// persists it as a completed row directly — no streaming state, no
+// dependence on the turn-lifecycle late-fold settle.
+//
+// The item id is `message.id#ordinal` (recoveredBlockItemID), the ordinal
+// coming from a parser-tracked per-message counter rather than the
+// envelope-local content index, because Claude delivers each block as its
+// own single-block snapshot envelope (so the content index is always 0).
+// That keeps two same-kind blocks of one message on distinct rows instead
+// of the second overwriting the first via FindStreamItemByProviderItemID.
+// Empty blocks are skipped (nothing to recover) and do not consume an
+// ordinal.
+//
+// Note: because this event carries content with ContentPresent=true,
+// triage settles it SYNCHRONOUSLY on the read-loop goroutine (the
+// !active branch of settleStreaming*Async runs persistOrUpdateCompleted*
+// inline), unlike a normal empty content_block_stop which dispatches
+// async. Acceptable: this is the cold CLI-retry path only.
+func (p *Parser) appendRecoveredBlockEvent(
+	events []provider.ProviderEvent,
+	threadID, parentToolUseID, messageID string,
+	blockType, content string,
+	now time.Time,
+) []provider.ProviderEvent {
+	if content == "" {
+		return events
+	}
+	index := p.nextRecoveredBlockIndex(messageID)
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventContentBlockStop,
+		ThreadID:        threadID,
+		ItemID:          recoveredBlockItemID(messageID, index),
+		Content:         content,
+		ContentPresent:  true,
+		Meta:            blockMeta(index, blockType),
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	})
 }
 
 func assistantErrorEnum(raw map[string]json.RawMessage, msg assistantMessage) string {

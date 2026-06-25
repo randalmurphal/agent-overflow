@@ -293,8 +293,37 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		// lifecycle settlement. Late usage on a duplicate is still folded
 		// into the existing turn row below so accounting is not lost.
 		if !r.claimTurnSettlement(evt.ThreadID, turnIndex) {
+			// Late-fold path: a second activity-counting result for an
+			// already-settled logical turn (the multi-result / re-round
+			// pattern). persistLateTurnPayload folds the late turns-row
+			// columns below, but the turn can still carry streaming items or
+			// running foreground tool_calls opened on the LATER round that no
+			// content_block_stop or tool_result ever closed — e.g. a
+			// CLI-internal retry whose first attempt stalled mid-thinking
+			// (thread fc24607e). Without settling them here they leak a
+			// permanent status=streaming / status=running row: the user's
+			// stuck "thinking" spinner.
+			//
+			// This is a deliberate SUBSET of the full settle path: the
+			// once-per-logical-turn steps (turns-row settle,
+			// markTurnItemsErrored, forced interrupt-drain) already ran at the
+			// first settlement, so only the orphan settle + force-close repeat
+			// here — both idempotent on the common cascade (drained active
+			// maps / no running foreground tool_calls → no-ops). It must NOT
+			// touch the id-allocating counters: invariant 27 keeps re-round
+			// row ids from colliding. Settle failures are returned (the wire
+			// pump logs a returned error and keeps reading) so they surface
+			// the same way the full path's persistErr does.
+			lateStatus := settledTurnStatus(meta)
+			var lateErr error
+			if settleErr := r.settleTurnStreaming(evt.ThreadID, turnIndex, lateStatus); settleErr != nil {
+				lateErr = settleErr
+			}
+			if fcErr := r.forceCloseOrphanToolCalls(evt.ThreadID, turnIndex, now); fcErr != nil && lateErr == nil {
+				lateErr = fcErr
+			}
 			r.persistLateTurnPayload(evt, turnIndex, meta)
-			return nil
+			return lateErr
 		}
 	}
 	var persistErr error
@@ -320,11 +349,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			}
 		}
 		if persistErr == nil {
-			status := statusCompleted
-			if truncated {
-				status = statusErrored
-			}
-			if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, status); err != nil {
+			if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, settledTurnStatus(meta)); err != nil {
 				persistErr = err
 			}
 		}
@@ -412,6 +437,17 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 // truncation.
 func turnCompleteIsTruncated(meta turnCompleteMeta) bool {
 	return meta.Truncated || meta.Aborted
+}
+
+// settledTurnStatus maps a completed turn's meta to the status its
+// streaming items settle to: errored when the turn was truncated/aborted,
+// completed otherwise. Shared by the full settlement path and the
+// late-fold orphan settle so the two can't drift.
+func settledTurnStatus(meta turnCompleteMeta) string {
+	if turnCompleteIsTruncated(meta) {
+		return statusErrored
+	}
+	return statusCompleted
 }
 
 // forceCloseOrphanToolCalls flips every status=running +
