@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -145,7 +147,18 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = resolvedBranch
+	var purge []string
 	if !gitops.SameFilesystemPath(previousWorkspace, thread.WorkspacePath) {
+		// Carry the Claude transcript to the new slug BEFORE committing. A
+		// relocation that can't preserve the conversation refuses the whole
+		// create — tear the worktree back down and leave the thread resumable
+		// from its current workspace rather than silently start fresh.
+		moved, err := a.copyClaudeSessionForWorkspaceChange(thread, previousWorkspace)
+		if err != nil {
+			_ = core.RemoveWorktreeForce(project, worktreePath, true)
+			return store.Thread{}, fmt.Errorf("create worktree: %w", err)
+		}
+		purge = moved
 		if err := a.updateThreadAndInvalidateCheckpointsForWorkspaceChange(thread, "create worktree", project); err != nil {
 			_ = core.RemoveWorktreeForce(project, worktreePath, true)
 			return store.Thread{}, err
@@ -156,6 +169,8 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 		_ = core.RemoveWorktreeForce(project, worktreePath, true)
 		return store.Thread{}, err
 	}
+	// Commit succeeded — drop the stale pre-move copies (best-effort).
+	a.purgeRelocatedClaudeSessions(threadID, purge)
 	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("create worktree: refresh thread after workspace switch: %w", err)
@@ -205,7 +220,16 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = branch
+	var purge []string
 	if !gitops.SameFilesystemPath(previousWorkspace, thread.WorkspacePath) {
+		// Carry the Claude transcript to the new slug before committing; refuse
+		// the attach (and tear the worktree back down) if it can't be preserved.
+		moved, err := a.copyClaudeSessionForWorkspaceChange(thread, previousWorkspace)
+		if err != nil {
+			_ = core.RemoveWorktreeForce(project, worktreePath, true)
+			return store.Thread{}, fmt.Errorf("attach worktree: %w", err)
+		}
+		purge = moved
 		if err := a.updateThreadAndInvalidateCheckpointsForWorkspaceChange(thread, "attach worktree", project); err != nil {
 			_ = core.RemoveWorktreeForce(project, worktreePath, true)
 			return store.Thread{}, err
@@ -214,6 +238,7 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 		_ = core.RemoveWorktreeForce(project, worktreePath, true)
 		return store.Thread{}, err
 	}
+	a.purgeRelocatedClaudeSessions(threadID, purge)
 	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("attach worktree: refresh thread after workspace switch: %w", err)
@@ -382,6 +407,21 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 			} else {
 				a.deleteCheckpointRefsBestEffort(id, "remove worktree", project, refs)
 			}
+			// Claude resolves --resume against the slug of the current cwd, so
+			// reattaching to the project root strands the transcript under the
+			// deleted worktree's slug — the next resume would fail with "No
+			// conversation found". Move it so the conversation survives; we never
+			// clear the session ref or silently start fresh. The reattach is
+			// already committed above and the worktree is gone, so unlike
+			// switch/create/attach this can't be aborted: a hard failure is
+			// surfaced and resume is left to fail loudly. This runs before the
+			// restart below, which re-resolves the session at the new cwd.
+			moved, err := a.copyClaudeSessionForWorkspaceChange(t, previousWorkspace)
+			if err != nil {
+				sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session relocate failed: %w", id, err))
+			} else {
+				a.purgeRelocatedClaudeSessions(id, moved)
+			}
 		}
 		// Other panes only know to re-render when the thread:updated event
 		// fires — without it the sibling pane keeps showing the deleted
@@ -398,6 +438,91 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 		return fmt.Errorf("worktree removed but %d threads need attention: %w", len(sweepErrs), errors.Join(sweepErrs...))
 	}
 	return nil
+}
+
+// claudeSessionRefs returns a Claude thread's deduped, non-empty session refs
+// (the live SessionRef plus any PendingForkRef) in a stable order. Both can
+// have a transcript on disk that a workspace change must carry along.
+func claudeSessionRefs(t store.Thread) []string {
+	refs := make([]string, 0, 2)
+	for _, ref := range []string{t.SessionRef, t.PendingForkRef} {
+		ref = strings.TrimSpace(ref)
+		if ref != "" && !slices.Contains(refs, ref) {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
+// copyClaudeSessionForWorkspaceChange copies a Claude thread's session
+// transcript(s) into t.WorkspacePath's project slug so `claude --resume` keeps
+// resolving them after the workspace changes. Claude keys session lookup on the
+// cwd slug, so moving a thread to a directory that never held its session would
+// otherwise brick the next resume with "No conversation found".
+//
+// It is the COPY half of a move and does NOT delete the originals: it returns
+// the source paths so the caller can purge them with purgeRelocatedClaudeSessions
+// AFTER it commits the workspace change. That ordering is what makes the change
+// abort-safe — a hard error here leaves every source transcript intact, so a
+// caller that can roll back (switch/create/attach) refuses the change with the
+// conversation still resumable from its current workspace.
+//
+// Returns a hard error (and no purge list) when ANY ref would be stranded: the
+// destination slug is uncomputable, or the transcript copy failed. A genuinely
+// missing transcript (nothing to relocate) and a partial subagent-subdir copy
+// are both non-fatal and logged — never a reason to fabricate a fresh session.
+//
+// Both the headless `claude` provider and `claude-tui` run the same CLI binary
+// with cwd-keyed `--resume` (claude-tui learns its session id from the
+// SessionStart hook and persists it through the same handleInit path), so both
+// brick identically on a workspace change and both relocate here. Codex no-ops:
+// it resumes by thread id from ~/.codex, not a cwd slug, so it has no equivalent
+// failure.
+func (a *App) copyClaudeSessionForWorkspaceChange(t store.Thread, fromWorkspace string) ([]string, error) {
+	if t.Provider != string(provider.Claude) && t.Provider != string(provider.ClaudeTUI) {
+		return nil, nil
+	}
+	var purge []string
+	for _, ref := range claudeSessionRefs(t) {
+		src, dest, err := sessionfork.RelocateSession(ref, fromWorkspace, t.WorkspacePath)
+		switch {
+		case err == nil:
+			if src != dest {
+				purge = append(purge, src)
+			}
+		case errors.Is(err, sessionfork.ErrSessionFileNotFound):
+			// Nothing on disk to relocate — the session is already gone, or this
+			// thread never produced a transcript under the old slug. Resume will
+			// surface "No conversation found" if truly gone; we deliberately do
+			// NOT fabricate a fresh session in its place.
+			log.Printf("thread %s: claude session %s not on disk during workspace change; leaving resume to surface", t.ID, ref)
+		case errors.Is(err, sessionfork.ErrSubagentCopyIncomplete):
+			// Soft: the main transcript relocated (resume works), but the subagent
+			// subdir copy was partial. Surface it and keep going, but deliberately
+			// do NOT purge the source — keeping it preserves the un-copied subagent
+			// history under the old slug (a harmless duplicate of the main
+			// transcript, overwritten if the thread returns) rather than losing it.
+			log.Printf("thread %s: claude session %s relocated but subagent history incomplete: %v", t.ID, ref, err)
+		default:
+			// Hard: the conversation would be stranded at the new cwd. Abort with
+			// nothing moved; the caller decides whether to refuse or surface.
+			return nil, fmt.Errorf("relocate claude session %s: %w", ref, err)
+		}
+	}
+	return purge, nil
+}
+
+// purgeRelocatedClaudeSessions removes the pre-move source transcripts returned
+// by copyClaudeSessionForWorkspaceChange. It MUST run only after the workspace
+// change has committed: a removal failure leaves a harmless orphan (the
+// authoritative copy is already at the new slug, and every relocation overwrites
+// the destination), so it is logged, never surfaced.
+func (a *App) purgeRelocatedClaudeSessions(threadID string, purge []string) {
+	for _, src := range purge {
+		if err := sessionfork.RemoveSessionTranscript(src); err != nil {
+			log.Printf("thread %s: purge stale claude transcript %s after workspace change: %v", threadID, src, err)
+		}
+	}
 }
 
 func (a *App) resolveProjectWorkspaceStateAfterRemoval(project, currentWorkspacePath, removedWorktreePath string) (GitWorkspaceState, error) {
@@ -604,13 +729,24 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 			thread.Branch = core.CurrentBranch(worktree.Path)
 		}
 	}
+	var purge []string
 	if !gitops.SameFilesystemPath(previousWorkspace, thread.WorkspacePath) {
+		// Carry the Claude transcript to the target slug before committing. If it
+		// can't be preserved, refuse the switch: the thread stays in its current
+		// workspace, where its history still resolves, rather than moving into a
+		// state where resume fails.
+		moved, err := a.copyClaudeSessionForWorkspaceChange(thread, previousWorkspace)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("switch workspace: %w", err)
+		}
+		purge = moved
 		if err := a.updateThreadAndInvalidateCheckpointsForWorkspaceChange(thread, "switch workspace", project); err != nil {
 			return store.Thread{}, err
 		}
 	} else if err := a.store.UpdateThread(thread); err != nil {
 		return store.Thread{}, err
 	}
+	a.purgeRelocatedClaudeSessions(threadID, purge)
 	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("switch workspace: refresh thread after workspace switch: %w", err)

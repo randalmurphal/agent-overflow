@@ -27,9 +27,56 @@ SDK `fork_session(session_id, up_to_message_id)`:
   as the requested index is found.
 - `locate.go` — `LocateSessionFile`: resolves
   `~/.claude/projects/<slug>/<sessionID>.jsonl`. The slug is the
-  workspace's CANONICAL absolute path (symlinks resolved) with separators
-  replaced by `-`. Falls back to scanning every project dir if the
-  primary lookup misses.
+  workspace's CANONICAL absolute path (symlinks resolved) encoded by
+  `sanitizeProjectComponent` — every non-alphanumeric rune → `-`,
+  mirroring Claude's `sanitizePath` (sessionStoragePortable.ts), NOT just
+  path separators. (The earlier separators-only encoding silently missed
+  for any path with `.`/`_`/`:` — i.e. nearly all of them — making the
+  full-dir scan the de-facto path.) `MaxSanitizedSlugLen` (200) caps the
+  slug; above it Claude appends a `Bun.hash` suffix Go can't reproduce, so
+  `exactWorkspaceSlug` reports `ok=false` rather than guess. Falls back to
+  scanning every project dir if the primary lookup misses.
+- `relocate.go` — moves a session's transcript JSONL (+ its
+  `<sessionID>/` subagent subdir) between project slugs so `claude
+  --resume` run with cwd == destWorkspace resolves it. Claude keys resume
+  on the cwd slug, so ANY workspace change — worktree create/attach,
+  switch, or the removal reattach to the project root — would otherwise
+  strand the transcript under the old slug ("No conversation found"). We
+  move it, never clear the ref / start fresh. Split into the two halves of
+  a move so the caller can sequence them around its own commit:
+  - `RelocateSession(sessionID, fromWorkspace, destWorkspace) ->
+    (srcFile, destFile, err)` is the COPY half. It writes the source (the
+    authoritative latest — Claude only appends under the running cwd) OVER
+    any stale copy at the destination, then leaves the source in place.
+    Overwriting (not no-op-if-exists) is load-bearing: a thread returning
+    to a workspace it visited before must resume the latest transcript,
+    not the stale copy that visit left behind. `srcFile == destFile` means
+    nothing moved (already at dest). Hard error with `destFile == ""` when
+    the dest slug is uncomputable (over-length → unreproducible `Bun.hash`
+    suffix) or the copy fails — an abortable caller refuses the change with
+    the source intact. `ErrSessionFileNotFound` (both paths empty) when the
+    transcript is genuinely gone — the caller surfaces it, never fabricates.
+    `ErrSubagentCopyIncomplete` (destFile SET) is soft: resume works, only
+    subagent history is partial.
+  - `RemoveSessionTranscript(jsonlPath)` is the DELETE half: run on the
+    pre-move source AFTER the workspace change commits, so the transcript
+    follows the cwd as a single copy instead of accumulating stale
+    duplicates under every slug visited. Idempotent on absent files; the
+    `<id>/` subdir is derived from the JSONL basename, so path-traversal
+    tokens (`.`/`..`, a bare `.jsonl`, or a name with no `.jsonl` suffix)
+    are refused up front — otherwise a crafted basename could steer the
+    `RemoveAll` off the session's own subdir (e.g. `...jsonl` → `..` →
+    the whole projects dir). A post-commit failure leaves a harmless
+    orphan (dest is authoritative + always overwritten), so callers log it.
+
+  The COPY-before-commit / DELETE-after-commit ordering is what makes the
+  change abort-safe: `app_worktree.go`'s `copyClaudeSessionForWorkspaceChange`
+  copies all refs, and only `purgeRelocatedClaudeSessions` (post-commit)
+  deletes the sources — a hard copy failure leaves every source in place so
+  switch/create/attach refuse and the thread stays resumable where it is.
+  Deletion can't abort (the worktree is already gone), so there the hard
+  error surfaces and resume is left to fail loudly — bricked, never
+  fabricated.
 
 ## Re-chain rule (invariant 28)
 
@@ -68,10 +115,14 @@ support fork-at-point with consistent semantics.
 
 - What BELONGS here:
   - JSONL parse / slice / UUID remap / parent-chain rewrite.
-  - Locating session files in the standard Claude home layout.
-  - Atomic file writes with `O_EXCL`.
+  - Locating session files in the standard Claude home layout, and
+    moving them between project slugs (`RelocateSession` copy half +
+    `RemoveSessionTranscript` delete half).
+  - Atomic file writes (`O_EXCL` fork composer) and crash-safe streaming
+    file/tree copies (temp + fsync + rename, no `io.ReadAll`).
 - What does NOT belong here:
-  - Decisions about *when* to fork (caller's job).
+  - Decisions about *when* to fork or *when* to relocate, and the
+    copy-then-commit-then-purge sequencing — all the caller's job.
   - Updating thread rows / SessionRef plumbing — that's `app_thread_fork.go`
     or `app_checkpoint.go`.
   - Provider lifecycle (start/stop the Claude subprocess) — that's

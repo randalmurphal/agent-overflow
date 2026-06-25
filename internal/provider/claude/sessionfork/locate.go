@@ -25,19 +25,20 @@ var ErrSessionFileNotFound = errors.New("sessionfork: session file not found")
 // dir under ~/.claude/projects/ — sessions can migrate when a workspace
 // is moved.
 func LocateSessionFile(sessionID, workspacePath string) (string, error) {
-	if sessionID == "" {
+	if strings.TrimSpace(sessionID) == "" {
 		return "", fmt.Errorf("sessionfork: empty sessionID")
 	}
-	// Defensive: reject sessionIDs that could break out of the
-	// projects dir via path components. Production callers always pass
-	// a UUID read from SQLite (server-set), but this helper is exposed
-	// at package boundary so a future caller could pass user-influenced
-	// input. Cheaper to validate once than audit every call site.
-	if strings.ContainsAny(sessionID, "/\\") || strings.Contains(sessionID, "..") {
-		return "", fmt.Errorf("sessionfork: sessionID contains path separator or traversal: %q", sessionID)
+	// Defensive: reject sessionIDs that could break out of the projects dir via
+	// path components or a NUL byte before the id ever reaches filepath.Join.
+	// SessionRef originates from the provider's wire system_init.session_id (a
+	// real process boundary, not a Go-minted UUID), and this helper is exposed
+	// at the package boundary, so a malformed id must be caught here. Cheaper to
+	// validate once than to audit every call site.
+	if strings.ContainsAny(sessionID, "/\\\x00") || strings.Contains(sessionID, "..") {
+		return "", fmt.Errorf("sessionfork: sessionID contains path separator, NUL, or traversal: %q", sessionID)
 	}
 
-	projectsDir, err := projectsDir()
+	pdir, err := projectsDir()
 	if err != nil {
 		return "", err
 	}
@@ -49,7 +50,7 @@ func LocateSessionFile(sessionID, workspacePath string) (string, error) {
 			abs, err := filepath.Abs(canonical)
 			if err == nil {
 				slug := projectSlug(abs)
-				candidate := filepath.Join(projectsDir, slug, sessionID+".jsonl")
+				candidate := filepath.Join(pdir, slug, sessionID+".jsonl")
 				if fileExists(candidate) {
 					return candidate, nil
 				}
@@ -58,7 +59,7 @@ func LocateSessionFile(sessionID, workspacePath string) (string, error) {
 	}
 
 	// Fallback: scan all project dirs.
-	entries, err := os.ReadDir(projectsDir)
+	entries, err := os.ReadDir(pdir)
 	if err != nil {
 		// No projects dir at all = no session files. Treat as a normal
 		// not-found rather than a hard error, so callers can fall back
@@ -73,7 +74,7 @@ func LocateSessionFile(sessionID, workspacePath string) (string, error) {
 		if !e.IsDir() {
 			continue
 		}
-		candidate := filepath.Join(projectsDir, e.Name(), sessionID+".jsonl")
+		candidate := filepath.Join(pdir, e.Name(), sessionID+".jsonl")
 		if fileExists(candidate) {
 			return candidate, nil
 		}
@@ -92,16 +93,78 @@ func projectsDir() (string, error) {
 	return filepath.Join(home, ".claude", "projects"), nil
 }
 
-// projectSlug encodes a canonical absolute path the way Claude does:
-// replace separators with '-' and prepend '-'. Idempotent on the leading
-// dash.
+// MaxSanitizedSlugLen mirrors MAX_SANITIZED_LENGTH in Claude's
+// sessionStoragePortable.ts. At or below it the slug is the sanitized path
+// verbatim; above it the CLI truncates to this length and appends a
+// `Bun.hash(name)` suffix — a hash we cannot reproduce in Go — so an
+// over-length path's exact project dir is unknowable from here.
+const MaxSanitizedSlugLen = 200
+
+// sanitizeProjectComponent encodes a string into a Claude project-dir name the
+// way sessionStoragePortable.ts `sanitizePath` does: every non-alphanumeric
+// rune becomes '-'. Claude's JS `String.replace(/[^a-zA-Z0-9]/g, '-')` runs
+// over UTF-16 code units; for BMP paths — effectively all real workspace paths
+// — rune iteration is equivalent (astral-plane chars would yield one '-' here
+// vs two in JS, an irrelevant edge for filesystem paths).
+func sanitizeProjectComponent(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
+}
+
+// projectSlug encodes a canonical absolute path the way Claude does
+// (sanitizeProjectComponent). Used for LocateSessionFile's primary-lookup
+// candidate, so the over-length case returns a best-effort truncated prefix
+// WITHOUT the Bun.hash suffix: it simply won't match the real dir, and the
+// caller falls through to the full project-dir scan. Earlier this replaced
+// only path separators, which silently missed for any path containing '.',
+// '_', ':' (i.e. nearly all of them) and made the scan the de-facto path.
 func projectSlug(absPath string) string {
-	// Replace every os.PathSeparator with '-'. On unix that's '/'.
-	slug := strings.ReplaceAll(absPath, string(os.PathSeparator), "-")
+	slug := sanitizeProjectComponent(absPath)
+	if len(slug) > MaxSanitizedSlugLen {
+		slug = slug[:MaxSanitizedSlugLen]
+	}
+	// Absolute paths begin with a separator, so the sanitized form already
+	// leads with '-'. Keep the guard for the degenerate relative-path caller.
 	if !strings.HasPrefix(slug, "-") {
 		slug = "-" + slug
 	}
 	return slug
+}
+
+// exactWorkspaceSlug resolves workspacePath to its canonical absolute form and
+// returns the EXACT Claude project-dir slug. ok is false when the sanitized
+// slug exceeds MaxSanitizedSlugLen — there the CLI appends a Bun.hash suffix we
+// can't reproduce, so callers that must land in a precise directory (session
+// relocation) treat !ok as "unresolvable" rather than guess and misplace.
+func exactWorkspaceSlug(workspacePath string) (slug string, ok bool, err error) {
+	if strings.TrimSpace(workspacePath) == "" {
+		return "", false, fmt.Errorf("sessionfork: empty workspace path")
+	}
+	// Match Claude's realpath-based canonicalization. The destination is the
+	// reattach target and must exist, so a resolve failure is a real error,
+	// not a soft miss.
+	canonical, err := filepath.EvalSymlinks(workspacePath)
+	if err != nil {
+		return "", false, fmt.Errorf("sessionfork: canonicalize %s: %w", workspacePath, err)
+	}
+	abs, err := filepath.Abs(canonical)
+	if err != nil {
+		return "", false, fmt.Errorf("sessionfork: abs %s: %w", canonical, err)
+	}
+	s := sanitizeProjectComponent(abs)
+	if len(s) > MaxSanitizedSlugLen {
+		return "", false, nil
+	}
+	return s, true, nil
 }
 
 func fileExists(p string) bool {

@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/checkpoint"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
@@ -1327,4 +1328,617 @@ func assertThreadCheckpointsInvalidated(t *testing.T, app *App, threadID, repo, 
 
 func samePath(left, right string) bool {
 	return testutil.CanonicalPath(nil, left) == testutil.CanonicalPath(nil, right)
+}
+
+// claudeProjectSlugForTest mirrors Claude's sanitizePath (and sessionfork's
+// exactWorkspaceSlug) for the common <=200-char case: canonicalize, then map
+// every non-alphanumeric rune to '-'.
+func claudeProjectSlugForTest(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("evalsymlinks %s: %v", path, err)
+	}
+	abs, err := filepath.Abs(canonical)
+	if err != nil {
+		t.Fatalf("abs %s: %v", canonical, err)
+	}
+	var b strings.Builder
+	for _, r := range abs {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
+}
+
+// Worktree removal must NOT brick a Claude thread's session. Claude resolves
+// --resume against the slug of the current cwd, so reattaching to the project
+// root would strand the transcript under the deleted worktree's slug and the
+// next resume would fail with "No conversation found". The sweep relocates the
+// transcript to the root's slug AND preserves the session ref — it must never
+// clear the ref or silently start a fresh session.
+func TestGitRemoveWorktreeRelocatesClaudeSessionAndKeepsRef(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	owner := testThread("thread-claude-relocate")
+	owner.ProjectID = project.ID
+	owner.WorkspacePath = repo
+	owner.Provider = string(provider.Claude)
+	if err := app.store.CreateThread(owner); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	worktreePath, err := app.GitCreateWorktree(owner.ID, "feature/relocate")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+
+	// Point HOME at a temp ~/.claude AFTER git setup — InitGitRepo uses
+	// repo-local git config, so this doesn't disturb git. Simulate a session
+	// born inside the worktree: its transcript lives only under the worktree's
+	// slug.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	const sessionID = "01079734-relocate-test"
+	live, err := app.store.GetThread(owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	live.WorkspacePath = worktreePath
+	live.WorktreePath = worktreePath
+	live.SessionRef = sessionID
+	if err := app.store.UpdateThread(live); err != nil {
+		t.Fatalf("UpdateThread(set session) error = %v", err)
+	}
+
+	wtDir := filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(t, worktreePath))
+	if err := os.MkdirAll(wtDir, 0o700); err != nil {
+		t.Fatalf("mkdir worktree slug dir: %v", err)
+	}
+	srcTranscript := filepath.Join(wtDir, sessionID+".jsonl")
+	if err := os.WriteFile(srcTranscript, []byte("{\"type\":\"user\"}\n"), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	if err := app.GitRemoveWorktree(owner.ID); err != nil {
+		t.Fatalf("GitRemoveWorktree() error = %v", err)
+	}
+
+	// Transcript relocated under the project-root slug, so resume with cwd ==
+	// repo resolves it.
+	wantDest := filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(t, repo), sessionID+".jsonl")
+	if _, err := os.Stat(wantDest); err != nil {
+		t.Errorf("transcript not relocated to project-root slug %q: %v", wantDest, err)
+	}
+	if located, err := sessionfork.LocateSessionFile(sessionID, repo); err != nil {
+		t.Errorf("LocateSessionFile from repo root: %v", err)
+	} else if !samePath(located, wantDest) {
+		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
+	}
+
+	// Move, not copy: the stale transcript under the deleted worktree's slug is
+	// purged so exactly one copy follows the thread (no orphan left behind on the
+	// dead slug, no stale copy the locate fallback could later surface).
+	if _, err := os.Stat(srcTranscript); !os.IsNotExist(err) {
+		t.Errorf("old worktree-slug transcript should be purged after move, stat err = %v", err)
+	}
+
+	// The session ref MUST survive — relocation preserves the conversation; it
+	// never clears the ref or starts fresh (the whole point of the fix).
+	refreshed, err := app.store.GetThread(owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if refreshed.SessionRef != sessionID {
+		t.Errorf("SessionRef = %q, want preserved %q (must not clear / start fresh)", refreshed.SessionRef, sessionID)
+	}
+	if !samePath(refreshed.WorkspacePath, repo) {
+		t.Errorf("WorkspacePath = %q, want project root %q", refreshed.WorkspacePath, repo)
+	}
+}
+
+// relocateTestEnv is the shared scaffolding for the worktree-removal relocation
+// tests: a thread attached to a fresh worktree with HOME pointed at a temp
+// ~/.claude.
+type relocateTestEnv struct {
+	app          *App
+	repo         string
+	owner        store.Thread
+	worktreePath string
+	home         string
+}
+
+// setupWorktreeThreadForRelocate builds a thread on a fresh worktree for the
+// given provider. HOME is set AFTER git init (InitGitRepo uses repo-local git
+// config, so the temp HOME doesn't disturb git) and points at an empty dir, so
+// each test controls exactly what lives under ~/.claude.
+func setupWorktreeThreadForRelocate(t *testing.T, name, providerName string) relocateTestEnv {
+	t.Helper()
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	owner := testThread(name)
+	owner.ProjectID = project.ID
+	owner.WorkspacePath = repo
+	owner.Provider = providerName
+	if err := app.store.CreateThread(owner); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	worktreePath, err := app.GitCreateWorktree(owner.ID, "feature/"+name)
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	return relocateTestEnv{app: app, repo: repo, owner: owner, worktreePath: worktreePath, home: home}
+}
+
+// placeWorktreeTranscript writes a minimal transcript for id under workspace's
+// Claude project slug — the dir Claude would have written it to while the
+// thread ran in that workspace.
+func placeWorktreeTranscript(t *testing.T, home, workspace, id string) {
+	t.Helper()
+	dir := filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(t, workspace))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir slug dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte("{\"type\":\"user\"}\n"), 0o600); err != nil {
+		t.Fatalf("write transcript %s: %v", id, err)
+	}
+}
+
+// attachSessionToWorktree points the thread at the worktree and sets its
+// session refs, mirroring a session that ran inside the worktree before removal.
+func attachSessionToWorktree(t *testing.T, env relocateTestEnv, sessionRef, pendingForkRef string) {
+	t.Helper()
+	live, err := env.app.store.GetThread(env.owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	live.WorkspacePath = env.worktreePath
+	live.WorktreePath = env.worktreePath
+	live.SessionRef = sessionRef
+	live.PendingForkRef = pendingForkRef
+	if err := env.app.store.UpdateThread(live); err != nil {
+		t.Fatalf("UpdateThread() error = %v", err)
+	}
+}
+
+// Worktree removal must relocate a thread's PendingForkRef transcript too, not
+// just SessionRef. The lazy-fork resume (`--fork-session`) reads the forked
+// transcript at the new cwd slug, so leaving it under the deleted worktree
+// would brick the pending fork. Both refs must land under the root slug and
+// survive on the thread row.
+func TestGitRemoveWorktreeRelocatesPendingForkRef(t *testing.T) {
+	env := setupWorktreeThreadForRelocate(t, "thread-fork-relocate", string(provider.Claude))
+
+	const sessionID = "session-keep"
+	const forkID = "pending-fork-keep"
+	attachSessionToWorktree(t, env, sessionID, forkID)
+	placeWorktreeTranscript(t, env.home, env.worktreePath, sessionID)
+	placeWorktreeTranscript(t, env.home, env.worktreePath, forkID)
+
+	if err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
+		t.Fatalf("GitRemoveWorktree() error = %v", err)
+	}
+
+	for _, id := range []string{sessionID, forkID} {
+		want := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.repo), id+".jsonl")
+		if located, err := sessionfork.LocateSessionFile(id, env.repo); err != nil {
+			t.Errorf("LocateSessionFile(%s) from repo root: %v", id, err)
+		} else if !samePath(located, want) {
+			t.Errorf("LocateSessionFile(%s) = %q, want relocated %q", id, located, want)
+		}
+	}
+
+	refreshed, err := env.app.store.GetThread(env.owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if refreshed.SessionRef != sessionID {
+		t.Errorf("SessionRef = %q, want preserved %q", refreshed.SessionRef, sessionID)
+	}
+	if refreshed.PendingForkRef != forkID {
+		t.Errorf("PendingForkRef = %q, want preserved %q", refreshed.PendingForkRef, forkID)
+	}
+}
+
+// claude-tui runs the SAME `claude` CLI binary with cwd-keyed `--resume` and
+// persists its SessionRef through the same handleInit path as the headless
+// claude provider, so it bricks on a workspace change identically — and must
+// relocate identically. Regression guard for the provider gate in
+// copyClaudeSessionForWorkspaceChange: scoping that gate to provider.Claude
+// alone silently strands every claude-tui transcript (this test fails on both
+// the relocate and the purge assertion without the claude-tui branch of the
+// gate).
+func TestGitRemoveWorktreeRelocatesClaudeTUISession(t *testing.T) {
+	env := setupWorktreeThreadForRelocate(t, "thread-claude-tui-relocate", string(provider.ClaudeTUI))
+
+	const sessionID = "claude-tui-session-keep"
+	attachSessionToWorktree(t, env, sessionID, "")
+	placeWorktreeTranscript(t, env.home, env.worktreePath, sessionID)
+	srcTranscript := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.worktreePath), sessionID+".jsonl")
+
+	if err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
+		t.Fatalf("GitRemoveWorktree() error = %v", err)
+	}
+
+	// Relocated under the project-root slug so `claude --resume` with cwd == repo
+	// resolves it.
+	wantDest := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.repo), sessionID+".jsonl")
+	if located, err := sessionfork.LocateSessionFile(sessionID, env.repo); err != nil {
+		t.Errorf("LocateSessionFile from repo root: %v", err)
+	} else if !samePath(located, wantDest) {
+		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
+	}
+
+	// Move, not copy: the worktree-slug source is purged so exactly one copy
+	// follows the thread.
+	if _, err := os.Stat(srcTranscript); !os.IsNotExist(err) {
+		t.Errorf("old worktree-slug transcript should be purged after move, stat err = %v", err)
+	}
+
+	// Ref preserved — relocation never clears the ref or starts a fresh session.
+	refreshed, err := env.app.store.GetThread(env.owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if refreshed.SessionRef != sessionID {
+		t.Errorf("SessionRef = %q, want preserved %q (must not clear / start fresh)", refreshed.SessionRef, sessionID)
+	}
+}
+
+// The user's hard rule: "rather brick a session than default to a fresh
+// session." When the transcript is already gone from disk, worktree removal
+// must still SUCCEED, leave the SessionRef intact, and leave the session
+// genuinely unresolvable — never cleared, never replaced with a fresh one.
+func TestGitRemoveWorktreeMissingTranscriptPreservesRefAndDoesNotFabricate(t *testing.T) {
+	env := setupWorktreeThreadForRelocate(t, "thread-missing-transcript", string(provider.Claude))
+
+	// A populated ~/.claude/projects but NO transcript for this session.
+	if err := os.MkdirAll(filepath.Join(env.home, ".claude", "projects"), 0o700); err != nil {
+		t.Fatalf("mkdir projects: %v", err)
+	}
+
+	const sessionID = "01079734-gone"
+	attachSessionToWorktree(t, env, sessionID, "")
+
+	// Removal succeeds even though there is nothing to relocate.
+	if err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
+		t.Fatalf("GitRemoveWorktree() must succeed when transcript is already gone, got %v", err)
+	}
+
+	refreshed, err := env.app.store.GetThread(env.owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	// Ref preserved — never cleared, never swapped for a fresh session.
+	if refreshed.SessionRef != sessionID {
+		t.Errorf("SessionRef = %q, want preserved %q (must not clear / fabricate fresh)", refreshed.SessionRef, sessionID)
+	}
+	if !samePath(refreshed.WorkspacePath, env.repo) {
+		t.Errorf("WorkspacePath = %q, want project root %q", refreshed.WorkspacePath, env.repo)
+	}
+	// Positive proof of "bricked, not fabricated": the session stays
+	// unresolvable from the reattach target.
+	if _, err := sessionfork.LocateSessionFile(sessionID, env.repo); !errors.Is(err, sessionfork.ErrSessionFileNotFound) {
+		t.Errorf("LocateSessionFile err = %v, want ErrSessionFileNotFound (bricked, not silently rehomed)", err)
+	}
+}
+
+// Relocation is Claude-only. A Codex thread (resumes by thread id from
+// ~/.codex, not a cwd-keyed slug) must pass through worktree removal untouched:
+// removal succeeds, the ref is preserved, and no ~/.claude/projects dir is
+// created — proof the Claude-only relocation never ran.
+func TestGitRemoveWorktreeCodexThreadSkipsRelocation(t *testing.T) {
+	env := setupWorktreeThreadForRelocate(t, "thread-codex-noop", string(provider.Codex))
+
+	const sessionID = "codex-thread-xyz"
+	attachSessionToWorktree(t, env, sessionID, "")
+
+	if err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
+		t.Fatalf("GitRemoveWorktree() error = %v", err)
+	}
+
+	refreshed, err := env.app.store.GetThread(env.owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if refreshed.SessionRef != sessionID {
+		t.Errorf("SessionRef = %q, want preserved %q", refreshed.SessionRef, sessionID)
+	}
+	if !samePath(refreshed.WorkspacePath, env.repo) {
+		t.Errorf("WorkspacePath = %q, want project root %q", refreshed.WorkspacePath, env.repo)
+	}
+	if _, statErr := os.Stat(filepath.Join(env.home, ".claude", "projects")); !os.IsNotExist(statErr) {
+		t.Errorf("~/.claude/projects must not exist for a Codex thread (stat err = %v)", statErr)
+	}
+}
+
+// A subagent-subdir copy failure must NOT fail the whole worktree removal: the
+// transcript itself relocated, so --resume works, and only subagent history is
+// partial. The sweep logs it and continues. Reverting the ErrSubagentCopyIncomplete
+// switch arm to `return err` makes GitRemoveWorktree fail here — that's the
+// regression this guards (the package-level E4 only proves the sentinel is
+// returned, not that the app caller swallows it).
+func TestGitRemoveWorktreeSubagentCopyFailureDoesNotFailReattach(t *testing.T) {
+	env := setupWorktreeThreadForRelocate(t, "thread-subagent-fail", string(provider.Claude))
+
+	const sessionID = "01079734-subfail"
+	attachSessionToWorktree(t, env, sessionID, "")
+
+	// Source: transcript + a subagent subdir, both under the worktree slug.
+	placeWorktreeTranscript(t, env.home, env.worktreePath, sessionID)
+	wtSlugDir := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.worktreePath))
+	if err := os.MkdirAll(filepath.Join(wtSlugDir, sessionID), 0o700); err != nil {
+		t.Fatalf("mkdir src subagent subdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtSlugDir, sessionID, "agent.jsonl"), []byte("sub\n"), 0o600); err != nil {
+		t.Fatalf("write src subagent: %v", err)
+	}
+
+	// Block ONLY the subagent copy at the destination (repo-root slug):
+	// pre-create the <id>/ path as a regular file so copyTree's MkdirAll fails
+	// while <id>.jsonl still copies cleanly.
+	rootSlugDir := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.repo))
+	if err := os.MkdirAll(rootSlugDir, 0o700); err != nil {
+		t.Fatalf("mkdir root slug dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootSlugDir, sessionID), []byte("blocker\n"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	// Removal must SUCCEED despite the subagent-subdir copy failure.
+	if err := env.app.GitRemoveWorktree(env.owner.ID); err != nil {
+		t.Fatalf("GitRemoveWorktree() must succeed when only the subagent subdir copy fails, got %v", err)
+	}
+
+	// The transcript itself relocated, so resume resolves at the root slug.
+	wantDest := filepath.Join(rootSlugDir, sessionID+".jsonl")
+	if located, err := sessionfork.LocateSessionFile(sessionID, env.repo); err != nil {
+		t.Errorf("LocateSessionFile from repo root: %v", err)
+	} else if !samePath(located, wantDest) {
+		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
+	}
+	refreshed, err := env.app.store.GetThread(env.owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if refreshed.SessionRef != sessionID {
+		t.Errorf("SessionRef = %q, want preserved %q", refreshed.SessionRef, sessionID)
+	}
+
+	// Soft-failure contract: because the subagent copy failed, the destination
+	// holds only the main transcript — the source <id>/ subdir is the ONLY
+	// complete copy of the subagent history. The helper must therefore NOT purge
+	// the source on the soft path. (The source lives under HOME/.claude/projects,
+	// not inside the removed worktree, so it is still on disk to assert against.)
+	// Flipping the ErrSubagentCopyIncomplete arm to append the source to the
+	// purge list would delete this and silently lose subagent history.
+	if _, err := os.Stat(filepath.Join(wtSlugDir, sessionID, "agent.jsonl")); err != nil {
+		t.Errorf("source subagent history must survive a soft subagent-copy failure (no purge): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wtSlugDir, sessionID+".jsonl")); err != nil {
+		t.Errorf("source transcript must survive a soft subagent-copy failure (no purge): %v", err)
+	}
+}
+
+// setupRootThreadForRelocate builds a Claude thread anchored at the project ROOT
+// (no worktree yet) with a session transcript already on disk under the root
+// slug, then returns the env. This is the precondition for the create/attach
+// relocation tests: a live session born in the root that a workspace change must
+// carry to the new worktree slug. HOME is set AFTER git init (repo-local config),
+// so the temp ~/.claude holds exactly the transcript we stage.
+func setupRootThreadForRelocate(t *testing.T, name, sessionID string) (env relocateTestEnv, srcTranscript string) {
+	t.Helper()
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	// Pre-create the branch the attach test will point at; harmless for create.
+	testutil.RunGit(t, repo, "branch", "feature/"+name)
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	owner := testThread(name)
+	owner.ProjectID = project.ID
+	owner.WorkspacePath = repo
+	owner.Provider = string(provider.Claude)
+	owner.SessionRef = sessionID
+	if err := app.store.CreateThread(owner); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	placeWorktreeTranscript(t, home, repo, sessionID)
+	srcTranscript = filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(t, repo), sessionID+".jsonl")
+	return relocateTestEnv{app: app, repo: repo, owner: owner, home: home}, srcTranscript
+}
+
+// assertSessionMovedTo verifies the move landed exactly one transcript at the
+// destination workspace's slug, resolvable by --resume from there, with the
+// pre-move source purged and the session ref preserved on the thread row.
+func assertSessionMovedTo(t *testing.T, env relocateTestEnv, destWorkspace, srcTranscript, sessionID string) {
+	t.Helper()
+	wantDest := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, destWorkspace), sessionID+".jsonl")
+	if _, err := os.Stat(wantDest); err != nil {
+		t.Errorf("transcript not relocated to destination slug %q: %v", wantDest, err)
+	}
+	if located, err := sessionfork.LocateSessionFile(sessionID, destWorkspace); err != nil {
+		t.Errorf("LocateSessionFile from destination: %v", err)
+	} else if !samePath(located, wantDest) {
+		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
+	}
+	if _, err := os.Stat(srcTranscript); !os.IsNotExist(err) {
+		t.Errorf("pre-move source transcript should be purged, stat err = %v", err)
+	}
+	refreshed, err := env.app.store.GetThread(env.owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if refreshed.SessionRef != sessionID {
+		t.Errorf("SessionRef = %q, want preserved %q (must not clear / start fresh)", refreshed.SessionRef, sessionID)
+	}
+	if !samePath(refreshed.WorkspacePath, destWorkspace) {
+		t.Errorf("WorkspacePath = %q, want destination %q", refreshed.WorkspacePath, destWorkspace)
+	}
+}
+
+// Creating a worktree changes the thread's cwd, so Claude would resolve --resume
+// against the new worktree slug — where the root-born transcript doesn't live.
+// PrepareThreadWorktree must carry it to the worktree slug (and purge the root
+// copy) so resume keeps working; it never clears the ref or starts fresh.
+func TestPrepareThreadWorktreeRelocatesClaudeSession(t *testing.T) {
+	const sessionID = "01079734-create"
+	env, srcTranscript := setupRootThreadForRelocate(t, "create-relocate", sessionID)
+
+	worktreePath, err := env.app.GitCreateWorktree(env.owner.ID, "feature/new-create")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+	assertSessionMovedTo(t, env, worktreePath, srcTranscript, sessionID)
+}
+
+// Attaching to an existing branch's worktree changes the thread's cwd the same
+// way create does — the root-born transcript must move to the attached worktree
+// slug, the root copy is purged, and the ref survives.
+func TestAttachThreadWorktreeRelocatesClaudeSession(t *testing.T) {
+	const sessionID = "01079734-attach"
+	env, srcTranscript := setupRootThreadForRelocate(t, "attach-relocate", sessionID)
+
+	updated, err := env.app.AttachThreadWorktree(env.owner.ID, "feature/attach-relocate")
+	if err != nil {
+		t.Fatalf("AttachThreadWorktree() error = %v", err)
+	}
+	assertSessionMovedTo(t, env, updated.WorktreePath, srcTranscript, sessionID)
+}
+
+// slugTranscriptPath returns the on-disk path Claude would resume from for id
+// when cwd == workspace.
+func slugTranscriptPath(t *testing.T, home, workspace, id string) string {
+	t.Helper()
+	return filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(t, workspace), id+".jsonl")
+}
+
+// writeTranscriptContent writes exact bytes to the transcript slug path for id
+// under workspace, creating the slug dir. Used by the round-trip test to seed
+// and then grow specific transcript content (placeWorktreeTranscript only writes
+// a fixed one-line body).
+func writeTranscriptContent(t *testing.T, home, workspace, id, content string) {
+	t.Helper()
+	path := slugTranscriptPath(t, home, workspace, id)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir slug dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write transcript content: %v", err)
+	}
+}
+
+// The switch-back data-loss trap. A thread that visits a workspace, accrues
+// turns elsewhere, then returns must resume the LATEST transcript — not a stale
+// copy left under the destination slug from the earlier visit. The move
+// overwrites the destination and purges the source on every switch, so exactly
+// one authoritative copy follows the cwd. The pre-fix helper (copy-if-absent,
+// never purge) failed this: on the return switch it saw a stale destination,
+// no-op'd, and resume silently dropped the turns taken away. This test plants
+// that exact stale copy and asserts it is overwritten.
+func TestSwitchThreadWorkspaceRoundTripPreservesLatestTurns(t *testing.T) {
+	env := setupWorktreeThreadForRelocate(t, "roundtrip", string(provider.Claude))
+
+	const sessionID = "01079734-roundtrip"
+	attachSessionToWorktree(t, env, sessionID, "")
+	// Session born in the worktree with one turn.
+	writeTranscriptContent(t, env.home, env.worktreePath, sessionID, "turn1\n")
+
+	// Switch worktree -> root: the transcript moves to the root slug; the
+	// worktree copy is purged.
+	if _, err := env.app.switchThreadWorkspace(env.owner.ID, env.repo); err != nil {
+		t.Fatalf("switchThreadWorkspace(->root) error = %v", err)
+	}
+	rootPath := slugTranscriptPath(t, env.home, env.repo, sessionID)
+	if _, err := os.Stat(rootPath); err != nil {
+		t.Fatalf("transcript not at root slug after first switch: %v", err)
+	}
+
+	// Claude appends a turn while the thread runs in the root.
+	if err := os.WriteFile(rootPath, []byte("turn1\nturn2\n"), 0o600); err != nil {
+		t.Fatalf("grow root transcript: %v", err)
+	}
+	// Plant a STALE leftover at the worktree slug — as if an earlier purge had
+	// failed. The return switch must overwrite it, not resume it.
+	writeTranscriptContent(t, env.home, env.worktreePath, sessionID, "STALE-turn1-only\n")
+
+	// Switch root -> worktree: the latest root transcript overwrites the stale
+	// worktree copy and the root copy is purged.
+	if _, err := env.app.switchThreadWorkspace(env.owner.ID, env.worktreePath); err != nil {
+		t.Fatalf("switchThreadWorkspace(->worktree) error = %v", err)
+	}
+
+	wtPath := slugTranscriptPath(t, env.home, env.worktreePath, sessionID)
+	got, err := os.ReadFile(wtPath)
+	if err != nil {
+		t.Fatalf("read worktree transcript after round trip: %v", err)
+	}
+	if string(got) != "turn1\nturn2\n" {
+		t.Errorf("worktree transcript = %q, want latest %q (stale copy must be overwritten, not resumed)", got, "turn1\nturn2\n")
+	}
+	if _, err := os.Stat(rootPath); !os.IsNotExist(err) {
+		t.Errorf("root copy should be purged after switch back, stat err = %v", err)
+	}
+}
+
+// Guard-and-refuse at the helper boundary: when the destination workspace's slug
+// is unresolvable (sanitized form exceeds MaxSanitizedSlugLen, where Claude
+// appends an unreproducible Bun.hash suffix), copyClaudeSessionForWorkspaceChange
+// must return a hard error with NO purge list and leave the source transcript
+// untouched — so an abortable caller (switch/create/attach) can refuse the change
+// with the conversation still resumable from its current workspace.
+func TestCopyClaudeSessionForWorkspaceChangeRefusesUnresolvableDest(t *testing.T) {
+	app := newTestAppWithStore(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	fromWS := t.TempDir()
+	const sessionID = "01079734-overlength"
+	placeWorktreeTranscript(t, home, fromWS, sessionID)
+	srcTranscript := slugTranscriptPath(t, home, fromWS, sessionID)
+
+	// Destination dir must EXIST (exactWorkspaceSlug canonicalizes via
+	// EvalSymlinks) so we hit the genuine over-length slug guard rather than a
+	// canonicalize-failure path. A 220-char component sanitizes — with the home
+	// prefix — well past the 200-char ceiling.
+	overlong := filepath.Join(home, strings.Repeat("d", 220))
+	if err := os.MkdirAll(overlong, 0o700); err != nil {
+		t.Fatalf("mkdir overlong dest: %v", err)
+	}
+	thread := store.Thread{
+		ID:            "thread-overlength",
+		Provider:      string(provider.Claude),
+		WorkspacePath: overlong,
+		SessionRef:    sessionID,
+	}
+
+	purge, err := app.copyClaudeSessionForWorkspaceChange(thread, fromWS)
+	if err == nil {
+		t.Fatal("expected hard error for unresolvable destination slug, got nil")
+	}
+	if purge != nil {
+		t.Errorf("purge = %v, want nil on hard failure (nothing moved, nothing to purge)", purge)
+	}
+	if _, statErr := os.Stat(srcTranscript); statErr != nil {
+		t.Errorf("source transcript must survive a refused relocation: %v", statErr)
+	}
 }
