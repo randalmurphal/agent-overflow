@@ -74,6 +74,7 @@
     createTimelineRowGeometryReservation,
     timelineRowGeometryKey,
     directRowGeometryContent,
+    observeScrollSurfaceContentWidth,
   } from './timelineRowGeometry';
 
   // Initial item-size estimate for virtua. Real sizes come from the
@@ -636,9 +637,11 @@
   // Publish the controller on the pane so external surfaces (sidebar
   // resizers, resizable drawers) can acquire a `pauseAutoScroll()` lease
   // during gestures. The effect's return function detaches symmetrically
-  // when the pane reference changes (rare — ChatView re-keys on thread
-  // switch, which remounts the timeline) and on component teardown, so
-  // a stale pointer to a torn-down controller can't leak.
+  // when the `pane` reference changes and on component teardown, so a stale
+  // pointer to a torn-down controller can't leak. (A thread switch remounts
+  // only the inner {#key pane.threadId} Virtualizer — this component and its
+  // scrollEl persist — so detach here is driven by a `pane` prop swap, not a
+  // remount.)
   $effect(() => {
     pane.attachScrollController(paneScrollController);
     return () => pane.detachScrollController(paneScrollController);
@@ -674,27 +677,31 @@
     };
   });
 
-  function setRowGeometryWidth(width: number): void {
-    const nextWidth = Number.isFinite(width) ? Math.max(0, Math.round(width)) : 0;
-    if (rowGeometryWidth === nextWidth) return;
-    rowGeometryWidth = nextWidth;
-  }
-
+  // Row-geometry width is the scroll surface's CONTENT-box width, sourced ONLY
+  // from the async ResizeObserver inside observeScrollSurfaceContentWidth. This
+  // effect must depend on `scrollEl` alone: it never reads `rowGeometryWidth`
+  // and never seeds it from a synchronous layout query. Either would
+  // re-subscribe the effect to `rowGeometryWidth`, so any write — including the
+  // surface RO's own async delivery — re-triggers it; the re-run disconnects and
+  // re-creates the observer, and a fresh observe() always schedules an initial
+  // delivery (per spec). With a border-box gBCR seed disagreeing with that
+  // content-box delivery, the two values never converge, so the effect re-fires
+  // forever at literal idle — re-rendering every visible row each time. That is
+  // the width-oscillation feedback loop documented on
+  // observeScrollSurfaceContentWidth (idle CPU/heap-churn incident 2026-06-26;
+  // the CPU trace caught this exact effect re-running ~33k times in 30s of
+  // idle). The RO's first delivery — content-box, before paint — sets the
+  // initial width; until then it stays 0 (one frame of width-0 geometry keys,
+  // which simply miss the height cache and reserve nothing).
   $effect(() => {
     const surface = scrollEl;
     if (!surface) {
-      setRowGeometryWidth(0);
+      rowGeometryWidth = 0;
       return;
     }
-
-    setRowGeometryWidth(surface.getBoundingClientRect().width);
-    if (typeof ResizeObserver === 'undefined') return;
-
-    const observer = new ResizeObserver((entries) => {
-      setRowGeometryWidth(entries[0]?.contentRect.width ?? 0);
+    return observeScrollSurfaceContentWidth(surface, (width) => {
+      rowGeometryWidth = width;
     });
-    observer.observe(surface);
-    return () => observer.disconnect();
   });
 
   let liveFollowSignatureInitialized = false;

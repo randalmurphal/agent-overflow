@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createTimelineRowGeometryReservation,
+  observeScrollSurfaceContentWidth,
   ROW_GEOMETRY_CONTENT_ATTR,
   type TimelineRowGeometryCache,
   type TimelineRowGeometryReservationParams,
@@ -138,6 +139,156 @@ describe('timeline row geometry reservation', () => {
     expect(cache.rememberedHeights()).toEqual([169]);
 
     handle?.destroy?.();
+  });
+
+  it('skips re-reservation when update() receives value-equal params (raw fast path)', () => {
+    vi.useFakeTimers();
+    const { row } = makeRow();
+    const key = rowKey();
+    const cache = makeCache([[key, 235]]);
+    const action = createTimelineRowGeometryReservation(cache);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    // Count only the reservation's 750ms stale-release timer, ignoring any
+    // unrelated setTimeout traffic from the environment.
+    const releaseArms = () => setTimeoutSpy.mock.calls.filter((call) => call[1] === 750).length;
+
+    const handle = action(row, key);
+    expect(releaseArms()).toBe(1); // first apply armed the stale-release timer
+    expect(row.style.minHeight).toBe('235px');
+
+    // The common per-render case: a fresh object with identical values.
+    handle?.update?.({ ...rowKey() });
+
+    expect(releaseArms()).toBe(1); // bailed before normalize — no re-arm
+    expect(row.style.minHeight).toBe('235px');
+
+    handle?.destroy?.();
+  });
+
+  it('treats a normalization-only update() difference as unchanged (post-normalize fallback)', () => {
+    vi.useFakeTimers();
+    const { row } = makeRow();
+    const key = rowKey(); // key:'l:thread-a:item-a', signature:'signature-a', width:800, owners:['item-a']
+    const cache = makeCache([[key, 235]]);
+    const action = createTimelineRowGeometryReservation(cache);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const releaseArms = () => setTimeoutSpy.mock.calls.filter((call) => call[1] === 750).length;
+
+    const handle = action(row, key);
+    expect(releaseArms()).toBe(1);
+
+    // Raw differs (whitespace key, fractional width, duplicate owner) so the raw
+    // fast path misses — but it normalizes to exactly `key`, so the
+    // post-normalize fallback must still bail.
+    handle?.update?.({
+      key: '  l:thread-a:item-a  ',
+      signature: 'signature-a',
+      width: 800.4,
+      ownerItemIds: ['item-a', 'item-a'],
+    });
+
+    expect(releaseArms()).toBe(1); // fallback bailed — no re-reserve
+    expect(row.style.minHeight).toBe('235px');
+
+    handle?.destroy?.();
+  });
+
+  it('re-reserves on an update() whose signature genuinely changed', () => {
+    vi.useFakeTimers();
+    const { row } = makeRow();
+    const key = rowKey();
+    const changedKey = { ...rowKey(), signature: 'signature-b' };
+    const cache = makeCache([[key, 235], [changedKey, 250]]);
+    const action = createTimelineRowGeometryReservation(cache);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const releaseArms = () => setTimeoutSpy.mock.calls.filter((call) => call[1] === 750).length;
+
+    const handle = action(row, key);
+    expect(row.style.minHeight).toBe('235px');
+    expect(releaseArms()).toBe(1);
+
+    handle?.update?.(changedKey);
+
+    // Re-reserved under the new signature's cached height; timer cleared + re-armed.
+    expect(row.style.minHeight).toBe('250px');
+    expect(releaseArms()).toBe(2);
+
+    handle?.destroy?.();
+  });
+
+  describe('observeScrollSurfaceContentWidth', () => {
+    it('reports the content-box width and never makes a synchronous layout read', () => {
+      const surface = document.createElement('div');
+      document.body.append(surface);
+      // Border-box (getBoundingClientRect) deliberately disagrees with the
+      // content-box (ResizeObserver) width by the scrollbar gutter. If the
+      // observer ever consulted a layout query, the width would flip between
+      // the two sources and oscillate — the feedback loop this guards against.
+      const getRect = vi.fn(() => ({ width: 815 }) as DOMRect);
+      Object.defineProperty(surface, 'getBoundingClientRect', {
+        configurable: true,
+        value: getRect,
+      });
+
+      const widths: number[] = [];
+      const stop = observeScrollSurfaceContentWidth(surface, (width) => widths.push(width));
+
+      // Nothing is reported synchronously, and no layout query is made.
+      expect(widths).toEqual([]);
+      expect(getRect).not.toHaveBeenCalled();
+
+      observer().trigger(surface, 600, 800);
+
+      expect(widths).toEqual([800]);
+      expect(getRect).not.toHaveBeenCalled();
+
+      stop();
+    });
+
+    it('observes the surface once and disconnects on cleanup', () => {
+      const surface = document.createElement('div');
+      const stop = observeScrollSurfaceContentWidth(surface, () => {});
+
+      const ro = observer();
+      expect(FireableResizeObserver.instances).toHaveLength(1); // exactly one observer created
+      expect(ro.observed.has(surface)).toBe(true);
+
+      stop();
+      expect(ro.observed.size).toBe(0);
+    });
+
+    it('rounds and clamps the measured width', () => {
+      const surface = document.createElement('div');
+      const widths: number[] = [];
+      const stop = observeScrollSurfaceContentWidth(surface, (width) => widths.push(width));
+
+      observer().trigger(surface, 100, 784.6);
+      observer().trigger(surface, 100, -5);
+      observer().trigger(surface, 100, Number.NaN); // non-finite is ignored, not pushed
+
+      expect(widths).toEqual([785, 0]);
+
+      stop();
+    });
+
+    it('returns a no-op cleanup when ResizeObserver is unavailable', () => {
+      const saved = globalThis.ResizeObserver;
+      Reflect.deleteProperty(globalThis, 'ResizeObserver');
+      try {
+        const widths: number[] = [];
+        const before = FireableResizeObserver.instances.length;
+        const stop = observeScrollSurfaceContentWidth(
+          document.createElement('div'),
+          (width) => widths.push(width),
+        );
+        stop();
+
+        expect(FireableResizeObserver.instances.length).toBe(before);
+        expect(widths).toEqual([]);
+      } finally {
+        globalThis.ResizeObserver = saved;
+      }
+    });
   });
 });
 

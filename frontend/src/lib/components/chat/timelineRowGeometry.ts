@@ -166,6 +166,15 @@ export function createTimelineRowGeometryReservation(
     state: RowReservationState,
     nextParams: TimelineRowGeometryReservationParams,
   ): void {
+    const current = state.params;
+    // Fast path: timelineRowGeometryKey already emits a clean, integer-width,
+    // de-duplicated key, so on an unchanged re-render nextParams is value-equal
+    // to the stored (normalized) params. Compare the raw params first to skip
+    // normalizeTimelineRowGeometryKey's allocation (two trims, a Set, and a
+    // spread) — this action's `update` runs on every reactive param change,
+    // many times per second during streaming.
+    if (current && sameReservationParams(current, nextParams)) return;
+
     const normalized = normalizeTimelineRowGeometryKey(nextParams);
     if (!normalized) {
       state.params = null;
@@ -174,16 +183,10 @@ export function createTimelineRowGeometryReservation(
       return;
     }
 
-    const current = state.params;
-    if (
-      current
-      && current.key === normalized.key
-      && current.signature === normalized.signature
-      && current.width === normalized.width
-      && sameOwnerItemIds(current.ownerItemIds, normalized.ownerItemIds)
-    ) {
-      return;
-    }
+    // Fallback: raw params differed only in fields normalization touches
+    // (whitespace, duplicate ownerItemIds, width rounding) yet still resolve to
+    // the stored params — nothing to re-reserve.
+    if (current && sameReservationParams(current, normalized)) return;
 
     state.params = normalized;
     state.lastMeasuredHeight = 0;
@@ -261,6 +264,37 @@ export function createTimelineRowGeometryReservation(
   }
 }
 
+// Observe a scroll surface's CONTENT-box width and report each integer change
+// through `onWidth`. Returns a cleanup that disconnects the observer.
+//
+// Content-box (ResizeObserver `contentRect.width`) is the ONLY width the
+// row-geometry cache may key on: the reserve path threads this surface width
+// into every row's geometry key, while the remember path keys off each row's
+// own `contentRect.width` (see rememberMeasuredHeight and the
+// data-row-geometry-content comment in MessageTimeline), and the two must
+// agree. NEVER seed from getBoundingClientRect() / clientWidth here: those are
+// border-box — they include the `scrollbar-gutter: stable both-edges`
+// reservation, disagree with `contentRect` by the gutter width, and a second
+// disagreeing source turns the width signal into a self-sustaining oscillation
+// that re-renders every visible row forever (idle CPU/heap-churn incident
+// 2026-06-26). One box, one source, asynchronous only — the same rule the
+// applyParams comment above enforces for the per-row reservation path.
+export function observeScrollSurfaceContentWidth(
+  surface: Element,
+  onWidth: (width: number) => void,
+): () => void {
+  if (typeof ResizeObserver === 'undefined') return () => {};
+  const observer = new ResizeObserver((entries) => {
+    // `=== undefined` is load-bearing: it narrows `number | undefined` to
+    // `number` for Math.round (Number.isFinite is not a TS type predicate).
+    const measured = entries[0]?.contentRect.width;
+    if (measured === undefined || !Number.isFinite(measured)) return;
+    onWidth(Math.max(0, Math.round(measured)));
+  });
+  observer.observe(surface);
+  return () => observer.disconnect();
+}
+
 export function directRowGeometryContent(row: HTMLElement): HTMLElement | null {
   for (const child of row.children) {
     if (
@@ -299,6 +333,18 @@ function sameOwnerItemIds(a: readonly string[], b: readonly string[]): boolean {
     if (a[index] !== b[index]) return false;
   }
   return true;
+}
+
+function sameReservationParams(
+  a: TimelineRowGeometryReservationParams,
+  b: TimelineRowGeometryReservationParams,
+): boolean {
+  return (
+    a.key === b.key
+    && a.signature === b.signature
+    && a.width === b.width
+    && sameOwnerItemIds(a.ownerItemIds, b.ownerItemIds)
+  );
 }
 
 export function timelineRowGeometryKey(

@@ -888,6 +888,19 @@ describe('scroll integration — composer height + layout invariance', () => {
     }
   });
 
+  // NOTE: the width-oscillation regression (idle CPU/heap-churn incident
+  // 2026-06-26) is intentionally NOT covered here. The loop is a real-RO +
+  // real-layout feedback engine — each effect re-run recreates the surface
+  // observer, whose fresh observe() schedules an initial content-box delivery
+  // that disagrees with the border-box gBCR seed. happy-dom reports zero
+  // geometry and its stub ResizeObserver does not auto-fire on observe(), so the
+  // engine cannot exist here: any component-level assertion passes identically
+  // with and without the fix (verified) and would be coverage theater. The
+  // discriminating guard lives at the unit level in timelineRowGeometry.test.ts
+  // ("reports the content-box width and never makes a synchronous layout
+  // read"), which fails on the old gBCR-seeded behavior and passes on the
+  // content-box-only helper. Do not re-add a happy-dom self-retrigger test.
+
   it('composer-height growth uses the live-capable notification path during live output', async () => {
     const roCapture = installResizeObserverCapture();
 

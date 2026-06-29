@@ -436,8 +436,15 @@ the warm-up gate, above).
 timeline nodes. That cache is keyed by rendered row key, row content
 signature, and scroll-pane width, pruned with the row UI retention window,
 and applied only as a temporary `min-height` while a remounted row catches
-back up to its last measured height. It is not a persisted virtua size
-cache and must not drive `scrollTop` writes.
+back up to its last measured height. The width is the scroll surface's
+**content-box** width, observed asynchronously through
+`observeScrollSurfaceContentWidth` (`timelineRowGeometry.ts`) — never a
+synchronous or border-box read (`getBoundingClientRect`, `clientWidth`). The
+reserve path and the per-row remember path must key on the same box; a second,
+disagreeing width source turns the width signal into a self-sustaining
+oscillation that re-renders every row at idle (CPU/heap-churn incident
+2026-06-26). It is not a persisted virtua size cache and must not drive
+`scrollTop` writes.
 
 Rows inside the transcript should keep their shell stable after first
 render. Add details inside reserved slots; do not append completion-only
