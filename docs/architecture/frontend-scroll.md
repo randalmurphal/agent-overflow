@@ -331,6 +331,27 @@ the spring so estimate/correct row measurement pairs do not snap the
 viewport. Width-driven shrink corrections and large overshoots still
 snap immediately.
 
+At idle — spring settled (`springToken === 0`) and pinned at the bottom —
+the content box height can flip ±1-2px every ResizeObserver delivery when
+the fractional sub-pixel total lands on an X.5 boundary under a fractional
+device-pixel-ratio (WSLg / HiDPI). The bottom target
+(`scrollHeight - clientHeight`) flips with it, and the `contentRO`
+positive/negative-delta sync-pins re-pin `scrollTop` to that moving target
+on every wobble frame — a self-sustaining ±2px limit cycle (the whole idle
+viewport visibly vibrates). The **idle re-pin deadband** breaks it: when no
+spring is in flight and `scrollTop` is already within
+`IDLE_REPIN_DEADBAND_PX` of the target, the re-pin is skipped
+(`idlePinWithinDeadband`, folded into both `positiveWillPin` and
+`negativeWillPin`). It keys on distance-from-target, not delta magnitude,
+so genuine growth moves the target ≥ a line height (gap ≫ deadband) and
+pins normally; the `springToken === 0` gate makes it idle-scoped by
+construction — during streaming the spring holds its token across
+inter-chunk gaps, so an active chase is never touched. Full mechanism + the
+capture it was root-caused from:
+[`settle-flicker-analysis.md`](settle-flicker-analysis.md). Coverage: the
+net-zero `±2px` oscillation test (≤2 `scrollTop` writes with the gate, 24
+without).
+
 ## Layout Rules
 
 `ChatView.svelte` positions the composer and live-turn UI as an absolute
@@ -490,6 +511,12 @@ Useful trace records:
 - `scroll.escape.set` — escape state changes.
 - `scroll.refreshIsNearBottom` — geometric near-bottom changes.
 - `chat.state` / `chat.dom` — MessageTimeline snapshots.
+- `timeline.margin.diverge` — settle-flicker regression oracle. Fires when a
+  row's bottom margin escapes its content box (virtua counts it in its measured
+  total; the row's content-box observer does not), which used to drive a
+  `contentRO` transient and an `oscillationSnap`. Must stay silent; see
+  [`settle-flicker-analysis.md`](settle-flicker-analysis.md) for the root cause
+  and the `[data-row-geometry-content] { display: flow-root }` containment fix.
 
 Work backward from the visible symptom to the last relevant
 `scroll.contentRO`. If the user intended to stick and

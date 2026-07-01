@@ -1,10 +1,42 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { cleanup, render } from '@testing-library/svelte';
 import {
   clearUiRenderTrace,
   getUiRenderTraceRecords,
   setUiRenderTraceEnabled,
 } from '../../utils/uiRenderTrace';
-import { startTimelineRowResizeTrace } from './messageTimelineTrace';
+import { REASONING_TAIL_SELECTOR, startTimelineRowResizeTrace } from './messageTimelineTrace';
+import ThinkingBlock from './ThinkingBlock.svelte';
+import CompactionReasoning from './CompactionReasoning.svelte';
+import { makeItem } from '../../../test/helpers/chat';
+import { resetBindingMocks } from '../../../test/mocks/bindings-app';
+
+// Drift guard for the reasoning-tail jump oracle. The oracle is silent=healthy:
+// `startReasoningTailJumpTrace` finds bodies via REASONING_TAIL_SELECTOR, so a
+// rename of ReasoningTailRow's `${idPrefix}-body` testid (or a wrapper idPrefix)
+// would make it track nothing and go permanently dark with NO failing test.
+// These render the real rows and assert the selector still resolves to a body —
+// a rename now breaks the build instead of silently blinding the monitor.
+// Defined before the ResizeObserver-overriding suite below so it runs against
+// the pristine happy-dom environment (matching ThinkingBlock.test.ts).
+describe('REASONING_TAIL_SELECTOR drift guard', () => {
+  beforeEach(() => resetBindingMocks());
+  afterEach(() => cleanup());
+
+  it('matches the body ThinkingBlock renders', () => {
+    const { container } = render(ThinkingBlock, {
+      props: { item: makeItem({ kind: 'thinking', summary: 'reasoning' }) },
+    });
+    expect(container.querySelector(REASONING_TAIL_SELECTOR)).not.toBeNull();
+  });
+
+  it('matches the body CompactionReasoning renders', () => {
+    const { container } = render(CompactionReasoning, {
+      props: { item: makeItem({ kind: 'compaction_reasoning', summary: 'reasoning' }) },
+    });
+    expect(container.querySelector(REASONING_TAIL_SELECTOR)).not.toBeNull();
+  });
+});
 
 async function nextFrame(): Promise<void> {
   await Promise.resolve();

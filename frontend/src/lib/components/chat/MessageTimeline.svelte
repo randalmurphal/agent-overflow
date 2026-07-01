@@ -43,7 +43,12 @@
   import TimelineLeaf from './TimelineLeaf.svelte';
   import WaitGroup from './WaitGroup.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
-  import { recordTimelineRenderTrace, startTimelineRowResizeTrace } from './messageTimelineTrace';
+  import {
+    recordTimelineRenderTrace,
+    startTimelineRowResizeTrace,
+    startVirtuaMarginDivergenceTrace,
+    startReasoningTailJumpTrace,
+  } from './messageTimelineTrace';
   import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
   import {
     countMountedTimelineMemoryNodes,
@@ -979,6 +984,31 @@
   $effect(() => {
     if (!isUiRenderTraceEnabled() || !contentEl) return;
     return startTimelineRowResizeTrace(contentEl);
+  });
+
+  // Settle-flicker regression oracle. Observes virtua's `contain: layout` item
+  // wrappers AND their inner [data-row-index] rows, and emits
+  // `timeline.margin.diverge` only when a frame moves the wrapper by a
+  // different amount than the row — the escaped-margin signature the
+  // `[data-row-geometry-content] { display: flow-root }` fix eliminated. With
+  // the fix in place it stays silent; any emission flags a new wrapper chain
+  // that re-opened the collapse-out. Same trace-flag gate, so production skips
+  // it entirely.
+  $effect(() => {
+    if (!isUiRenderTraceEnabled() || !contentEl) return;
+    return startVirtuaMarginDivergenceTrace(contentEl);
+  });
+
+  // Streaming-thinking flicker regression oracle. Tracks each reasoning-tail
+  // body and emits `timeline.reasoning.tailJump` only when a frame re-wraps it
+  // (width change) with no text delta yet leaves the newest line below the
+  // 3-line window — the stale imperative-pin signature the TailClampedText
+  // flex bottom-anchor eliminated. Silent with the fix; an emission flags a
+  // regression (or, on the pre-fix build, confirms the trigger fires live).
+  // Same trace-flag gate, so production skips it entirely.
+  $effect(() => {
+    if (!isUiRenderTraceEnabled() || !contentEl) return;
+    return startReasoningTailJumpTrace(contentEl);
   });
 
   // ============================================================
@@ -2015,6 +2045,21 @@
                    reservation silently no-ops, and the post-width-reflow scroll
                    strand returns. Keep padding on the inner wrapper below, never
                    on this element. -->
+              <!-- Style-load-bearing: app.css sets `display: flow-root` on
+                   [data-row-geometry-content] to establish a BFC that CONTAINS
+                   each row's trailing bottom margin in its own content box
+                   (UserMessage's `.group mb-5`, the error card `mb-4`,
+                   notification / retry `mb-1.5`, …). Without it those margins
+                   collapse out through this all-plain wrapper chain and are
+                   trapped only by virtua's `contain: layout` item wrapper, so
+                   virtua's measured total and the per-row content-box
+                   ResizeObserver disagree and oscillate during streaming reflow
+                   → scrollTop clamp → `spring.oscillationSnap` = the settle
+                   flicker. Keyed to the attribute (not a class) so a refactor
+                   here can't drop it silently; it is display-only, so the
+                   width-bucket keying above is unaffected. Coupling + behavioral
+                   regression test + full analysis: see the rule's comment in
+                   app.css and docs/architecture/settle-flicker-analysis.md. -->
               <div data-row-geometry-content>
                 {#if index === 0}
                   <!-- Top of timeline. Load-older button (when applicable) and

@@ -1,58 +1,106 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, configDefaults } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import tailwindcss from '@tailwindcss/vite';
+import { playwright } from '@vitest/browser-playwright';
 import { resolve } from 'node:path';
 
-// Test-only config. Intentionally does NOT load the tailwindcss plugin -- tests
-// render components against mocked wails bindings and don't exercise styles,
-// and tailwind's vite plugin resolves project-level paths we'd otherwise have
-// to stub. Aliases `@wailsio/runtime` and the generated Wails bindings to
-// deterministic fakes in `src/test/mocks/`.
+// Shared resolve config for the happy-dom suite. Use the browser entry for
+// Svelte so `mount()` is available in tests (without this Vitest resolves
+// svelte's `default` export -> index-server.js -> lifecycle_function_unavailable).
+// Aliases `@wailsio/runtime` and the generated Wails bindings to deterministic
+// fakes in `src/test/mocks/`.
+const happyDomResolve = {
+  conditions: ['browser'],
+  alias: [
+    { find: '@wailsio/runtime', replacement: resolve(__dirname, 'src/test/mocks/wailsio-runtime.ts') },
+    // Matches the relative path that lib/stores/bindings.ts imports from.
+    // Both the worktree path and any nested depth resolve to the mock.
+    { find: '../../../bindings/agent-overflow/app.js', replacement: resolve(__dirname, 'src/test/mocks/bindings-app.ts') },
+    { find: '../../../bindings/agent-overflow/internal/provider/models.js', replacement: resolve(__dirname, 'src/test/mocks/bindings-models.ts') },
+    // Vitest's loader can't parse raw CSS imported outside of a Svelte
+    // `<style>` block -- `svelte-streamdown`'s Math element does
+    // `import 'katex/dist/katex.min.css'`, which would crash component tests
+    // with "Unknown file extension '.css'". Stub it explicitly.
+    { find: 'katex/dist/katex.min.css', replacement: resolve(__dirname, 'src/test/mocks/empty-css.ts') },
+  ],
+};
+
+// Two projects:
+//  - `unit`: the default happy-dom component/store suite. Deliberately does NOT
+//    load tailwindcss -- those tests render against mocked bindings and don't
+//    exercise styles, and tailwind's plugin resolves project-level paths we'd
+//    otherwise have to stub.
+//  - `browser`: real-Chromium layout suite. happy-dom reports zero geometry, so
+//    pixel invariants (a row's trailing margin must stay inside its content box;
+//    markdown rows stay flush) can only be verified with a real layout engine.
+//    Loads tailwindcss so the test can import the production app.css and assert
+//    against the real cascade. Files matched by `*.browser.test.ts`.
+//
+// The default `pnpm test` runs ONLY the unit project, so the `make test` /
+// `make verify` gate needs no browser binary (`make install` does not provision
+// one). Run the browser suite explicitly with `pnpm test:browser`, which needs
+// `pnpm exec playwright install chromium`.
 export default defineConfig({
-  plugins: [svelte()],
-  resolve: {
-    // Use the browser entry for Svelte so `mount()` is available in tests.
-    // Without this Vitest would resolve `svelte`'s `default` export, which
-    // points at index-server.js and throws lifecycle_function_unavailable.
-    conditions: ['browser'],
-    alias: [
-      { find: '@wailsio/runtime', replacement: resolve(__dirname, 'src/test/mocks/wailsio-runtime.ts') },
-      // Matches the relative path that lib/stores/bindings.ts imports from.
-      // Both the worktree path and any nested depth resolve to the mock.
-      { find: '../../../bindings/agent-overflow/app.js', replacement: resolve(__dirname, 'src/test/mocks/bindings-app.ts') },
-      { find: '../../../bindings/agent-overflow/internal/provider/models.js', replacement: resolve(__dirname, 'src/test/mocks/bindings-models.ts') },
-      // Vitest's loader can't parse raw CSS imported outside of a
-      // Svelte `<style>` block — `svelte-streamdown`'s Math element
-      // does `import 'katex/dist/katex.min.css'`, which would crash
-      // component tests with "Unknown file extension '.css'". Stub it
-      // explicitly. (Other CSS imports flow through vite-plugin-svelte
-      // or `?raw`, which are handled correctly already.)
-      { find: 'katex/dist/katex.min.css', replacement: resolve(__dirname, 'src/test/mocks/empty-css.ts') },
-    ],
-  },
   test: {
-    environment: 'happy-dom',
-    environmentOptions: {
-      happyDOM: {
-        settings: {
-          navigation: {
-            // Component tests assert iframe attributes and mocked
-            // postMessage behavior; they do not need happy-dom to
-            // perform real /design/... iframe navigations. Letting
-            // those fetches run leaves aborted async tasks behind
-            // during cleanup and floods stderr with teardown noise.
-            disableChildFrameNavigation: true,
+    projects: [
+      {
+        plugins: [svelte()],
+        resolve: happyDomResolve,
+        test: {
+          name: 'unit',
+          environment: 'happy-dom',
+          environmentOptions: {
+            happyDOM: {
+              settings: {
+                navigation: {
+                  // Component tests assert iframe attributes and mocked
+                  // postMessage behavior; they do not need happy-dom to perform
+                  // real /design/... iframe navigations. Letting those fetches
+                  // run leaves aborted async tasks behind during cleanup and
+                  // floods stderr with teardown noise.
+                  disableChildFrameNavigation: true,
+                },
+              },
+            },
+          },
+          globals: false,
+          setupFiles: ['./src/test/setup.ts'],
+          include: ['src/**/*.{test,spec}.{ts,js}'],
+          // Real-browser layout tests run in the `browser` project below.
+          exclude: [...configDefaults.exclude, 'src/**/*.browser.{test,spec}.{ts,js}'],
+          // Svelte 5 component imports are ESM-first; keep transforms minimal.
+          server: {
+            deps: {
+              inline: [/@testing-library\/svelte/, /svelte/],
+            },
           },
         },
       },
-    },
-    globals: false,
-    setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/*.{test,spec}.{ts,js}'],
-    // Svelte 5 component imports are ESM-first; keep transforms minimal.
-    server: {
-      deps: {
-        inline: [/@testing-library\/svelte/, /svelte/],
+      {
+        // Mounting real Svelte components (MessageTimeline + rows) in the
+        // browser project needs the svelte plugin AND the same bindings/runtime
+        // aliases the unit project uses -- otherwise component imports of the
+        // generated Wails bindings resolve to the real transport client and the
+        // mount throws. tailwindcss stays so app.css compiles against the real
+        // cascade. Order: svelte first so .svelte transforms run before tailwind
+        // post-processes the emitted CSS.
+        plugins: [svelte(), tailwindcss()],
+        resolve: happyDomResolve,
+        test: {
+          name: 'browser',
+          include: ['src/**/*.browser.{test,spec}.{ts,js}'],
+          browser: {
+            enabled: true,
+            provider: playwright(),
+            headless: true,
+            instances: [{ browser: 'chromium' }],
+            // These are geometry assertions on invisible off-screen divs; a
+            // failure screenshot is useless and would litter the tree with
+            // `.vitest-attachments/` + `__screenshots__/` byproducts.
+            screenshotFailures: false,
+          },
+        },
       },
-    },
+    ],
   },
 });

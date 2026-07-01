@@ -64,6 +64,11 @@ export const ArchiveThread = dispatch('ArchiveThread');
 export const UnarchiveThread = dispatch('UnarchiveThread');
 export const CreateThread = dispatch('CreateThread');
 export const GetThreadDefaults = dispatch('GetThreadDefaults');
+// StartTerminal is imported by stores/bindings.ts. The unit (happy-dom)
+// project resolves a missing named export leniently, so its absence went
+// uncaught there; the browser project's real ESM loader is strict and fails
+// the import. Keep the mock complete against everything bindings.ts imports.
+export const StartTerminal = dispatch('StartTerminal');
 export const DeleteThread = dispatch('DeleteThread');
 export const ForkThread = dispatch('ForkThread');
 export const GetThread = dispatch('GetThread');
@@ -420,3 +425,32 @@ export const TriggerMcpAuth = dispatch('TriggerMcpAuth');
 // backend echo is faithfully simulated.
 export const RegisterQueueItem = dispatch('RegisterQueueItem');
 export const GetQueueState = dispatch('GetQueueState');
+
+// Browser-project loader sync. The unit (happy-dom) project resolves a missing
+// named export to `undefined` (lenient), so these never broke unit tests even
+// though the real bindings export them. The `browser` vitest project uses a
+// real ESM loader (strict named exports) and fails any component graph that
+// transitively imports one of these. They are RPCs no current test exercises;
+// dispatch() makes them reject loudly if a test ever does hit them unmocked.
+// Keep this block a superset of bindings/agent-overflow/app.ts so it can't
+// drift again (see scripts diffing real-vs-mock exports).
+export const CheckForUpdate = dispatch('CheckForUpdate');
+export const DownloadUpdate = dispatch('DownloadUpdate');
+export const RestartToUpdate = dispatch('RestartToUpdate');
+export const ListReleases = dispatch('ListReleases');
+export const ReconfigureObservability = dispatch('ReconfigureObservability');
+export const ProbeCodexAccount = dispatch('ProbeCodexAccount');
+export const SavePayloadToFile = dispatch('SavePayloadToFile');
+export const GetWorkingTreeDiff = dispatch('GetWorkingTreeDiff');
+export const GitStageAll = dispatch('GitStageAll');
+export const ListArchivedThreads = dispatch('ListArchivedThreads');
+export const PinThread = dispatch('PinThread');
+export const UnpinThread = dispatch('UnpinThread');
+export const UpdateProjectSortPositions = dispatch('UpdateProjectSortPositions');
+export const ProviderTerminalAttach = dispatch('ProviderTerminalAttach');
+export const ProviderTerminalDetach = dispatch('ProviderTerminalDetach');
+export const ProviderTerminalInput = dispatch('ProviderTerminalInput');
+export const ProviderTerminalRefresh = dispatch('ProviderTerminalRefresh');
+export const ProviderTerminalReplay = dispatch('ProviderTerminalReplay');
+export const ProviderTerminalResize = dispatch('ProviderTerminalResize');
+export const ProviderTerminalSetControl = dispatch('ProviderTerminalSetControl');

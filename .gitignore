@@ -35,6 +35,13 @@ frontend/package.json.md5
 .claude/
 .playwright-mcp
 
+# Vitest browser-mode byproducts (failure screenshots / attachments).
+# Generation is suppressed via browser.screenshotFailures:false in
+# vitest.config.ts; this is a belt-and-braces guard. Intentional
+# visual-regression baselines, if ever added, live in committed
+# __screenshots__/ dirs (deliberately NOT ignored here).
+frontend/.vitest-attachments/
+
 # Binaries built into the repo root
 /agent-overflow
 /db-rebake

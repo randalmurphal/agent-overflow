@@ -302,13 +302,47 @@ pre, code, kbd, samp, .ansi-body {
    deep inside the .md-committed / .md-volatile wrapper (see the seam rule
    below), so these must reach THROUGH the wrapper to the real block — a bare
    `> :first-child` matches the wrapper instead, leaving the block's own margin
-   to collapse up and out. That's harmless only while every ancestor up to the
-   row stays plain; a wrapper that gained padding/overflow/display-BFC would
-   trap it as stray top space. Same "wrappers stay plain" dependency as the
-   seam rule. (`.md-committed`/`.md-volatile` carry no margin themselves, so
-   the wrapper is never the intended target here.) */
+   to collapse up and out. Two layers depend on these resets:
+
+   1. The inner .md-committed / .md-volatile wrappers must stay plain — no
+      padding/border/overflow or BFC — both so this selector reaches THROUGH
+      them to the real block and so block margins collapse across the seam
+      (see the seam rule below). (`.md-committed`/`.md-volatile` carry no
+      margin themselves, so the wrapper is never the intended target here.)
+
+   2. The row wrapper [data-row-geometry-content] DELIBERATELY establishes a
+      BFC (display:flow-root) to contain non-markdown rows' trailing bottom
+      margins — the rule is just below. A BFC would trap a child's TOP margin
+      as stray top space, so that is safe for markdown flush ONLY because this
+      rule zeros the first block's top margin (nothing is left to trap). The two
+      rules are coupled: if this reset regresses, the BFC resurfaces the gap on
+      every assistant message. */
 .markdown-body > :first-child > :first-child { margin-top: 0; }
 .markdown-body > :last-child > :last-child { margin-bottom: 0; }
+
+/* Settle-moment scroll-flicker fix (COUPLED to the two edge resets above).
+   Each timeline row renders inside [data-row-geometry-content]; the wrapper
+   chain up to virtua is otherwise all-plain (no vertical padding/border, no
+   BFC), so a row's trailing bottom margin — UserMessage `.group mb-5`, the
+   error card `mb-4`, notification/retry `mb-1.5`, api-error `mb-3` — collapses
+   straight out of the row and is trapped only by virtua's `contain: layout`
+   item wrapper. That makes virtua's measured row total (margin included) and
+   our per-row content-box ResizeObserver (margin excluded) disagree; virtua
+   re-measures the trapped margin inconsistently while reflowing around a
+   growing streaming row, so its total oscillates → the browser clamps scrollTop
+   on the transient shrink → `spring.oscillationSnap` snaps it back = the
+   visible flicker (worse as margin-bearing rows stack near the tail).
+   `display: flow-root` makes the row its own BFC so the margin is contained in
+   the row's content box: virtua and the content-box observer now measure the
+   same, stable height. Display-only — no padding/border — so the geometry
+   reservation's width-bucket keying (see MessageTimeline.svelte) is unaffected.
+   Flush-safe for markdown only because the resets above zero the first block's
+   top margin (see point 2). Behavioral regression:
+   components/chat/rowMarginContainment.browser.test.ts. Full analysis:
+   docs/architecture/settle-flicker-analysis.md. */
+[data-row-geometry-content] {
+  display: flow-root;
+}
 .markdown-body h1 {
   font-size: 1.125rem;
   font-weight: 600;

@@ -2555,3 +2555,35 @@ describe('scroll integration — draft placeholder transitions', () => {
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).toBeNull();
   });
 });
+
+describe('row geometry containment — application point', () => {
+  // The settle-flicker fix lives in app.css as
+  // `[data-row-geometry-content] { display: flow-root }`, keyed to that
+  // attribute. rowMarginContainment.browser.test.ts proves the CSS RULE
+  // contains the margin (real Chromium); this binary-free test proves the
+  // APPLICATION POINT — MessageTimeline still stamps the attribute on every
+  // row's measurement wrapper, so a rename/drop here fails a test instead of
+  // silently disabling the BFC. happy-dom has no geometry, so it asserts
+  // structure, not the containment itself.
+  it('wraps every rendered row in exactly one [data-row-geometry-content] anchor', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'geo-a', summary: 'first' }),
+      makeItem({ id: 'geo-b', itemIndex: 1, summary: 'second' }),
+    ]);
+    pane.thread!.id = 'thread-geometry-anchor';
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await waitFor(() => {
+      expect(container.querySelector('[data-row-index]')).not.toBeNull();
+    });
+
+    const rows = container.querySelectorAll('[data-row-index]');
+    expect(rows.length).toBeGreaterThan(0);
+    // One anchor per row, each nested inside its row: the BFC must wrap the
+    // row's content for the trailing margin to be contained.
+    expect(container.querySelectorAll('[data-row-geometry-content]').length).toBe(rows.length);
+    for (const row of rows) {
+      expect(row.querySelector('[data-row-geometry-content]')).not.toBeNull();
+    }
+  });
+});

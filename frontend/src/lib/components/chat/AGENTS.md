@@ -125,6 +125,17 @@ that pipeline go upstream-then-patch; do not duplicate parser fixes in
 happy-dom reports zero geometry, so `MessageTimeline.svelte` enables
 virtua `ssrCount` only under `import.meta.env.MODE === 'test'`.
 
+Layout invariants that happy-dom cannot see (margin containment, flush,
+oscillation geometry) run in the real-Chromium `browser` vitest project
+(Playwright); name those files `*.browser.test.ts`. They import the production
+`app.css` so the assertion is coupled to the real cascade — e.g.
+`rowMarginContainment.browser.test.ts` guards the settle-flicker fix
+(`[data-row-geometry-content] { display: flow-root }`). `pnpm test` runs the
+unit project only, so the `make test` / `make verify` gate needs no browser
+binary; run the browser suite explicitly with `pnpm test:browser`, which needs a
+chromium build: `pnpm exec playwright install chromium`. See
+`frontend/vitest.config.ts`.
+
 `scroll.test.ts` covers MessageTimeline-level behavior: snapshot
 save/restore, load-older flow, scroll-to-item routing, and layout
 invariants. Individual row behavior belongs in row-specific tests.
