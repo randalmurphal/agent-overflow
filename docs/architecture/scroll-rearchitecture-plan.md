@@ -150,11 +150,22 @@ deliberately.
 
 ### Consolidate (Stage 1-2)
 
-- Two `shift` owners (`pane.pendingTimelineShiftAtHead` + local
-  `timelineWindowPruneShiftAtHead`, merged at MessageTimeline:326) → one.
+- ~~Two `shift` owners → one~~ — RECLASSIFIED KEEP during Stage 1: the two
+  signals exist because their decision inputs live in different layers (the
+  store owns load-flow shifts over items; pure-keyed-head-drop detection
+  needs grouped node KEYS, a component-level projection). Merging would
+  move a render-flush-timed concern into the store without deleting either
+  lifecycle. The single `virtualizerShiftAtHead` derived is the one owner.
 - ChannelView's escape→arm→restore switch dance, controller publication
-  effect, attach effect, composer-RO notify, chip wiring — all duplicated
-  with MessageTimeline → shared helper.
+  effect, attach effect, composer-RO notify, chip wiring — duplicated with
+  MessageTimeline. DEFERRED to Stage 4: `restoreToBottom()` as a
+  single-call API absorbs the dance naturally; extracting a shared helper
+  now would be churned again by the API shrink. (Also corrected: the test
+  inventory's "ChannelView has zero scroll tests" claim is false —
+  ChannelView.test.ts covers overflow-anchor, initial-load sync-pin, chip
+  reveal/escape/forceStick, escaped-while-posting, and composer-resize
+  re-pin. The only hole is the switch-dance ordering itself; cover it in
+  Stage 4 alongside the API change.)
 - Redundant self-tag pair: `ignoreScrollToTop` exact tag + token FIFO
   (`exactTagged || tokenTagged` at `:1911`) → one expected-value check under
   a single write site.

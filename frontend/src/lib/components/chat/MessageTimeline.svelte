@@ -224,14 +224,6 @@
   let virtuaReplayCacheThreadId: string | null = null;
 
   let restoredThreadId: string | null = $state(null);
-  // Diagnostic: timestamp of the most recent legitimate `restoredThreadId = null`
-  // (i.e. one that the `$effect.pre` thread-switch path performed).
-  // Used to flag stale-restore conditions if restoreToBottom() ever
-  // fires with a stale-looking lastEffectPreAt → diff > ~50 ms means
-  // a path other than $effect.pre cleared restoredThreadId. See the
-  // seq-509 trace investigation that motivated the restore-snap
-  // consent gate in useStickToBottom.
-  let lastEffectPreAt = 0;
   // Tracks which thread we last persisted into the snapshot store via
   // the thread-switch effect — separate from `restoredThreadId` so a
   // thread switch can dispose the previous snapshot before the next
@@ -1439,13 +1431,6 @@
       if (scrollSnapshotThreadId) {
         restoredThreadId = null;
         restoreToken += 1;
-        if (isUiRenderTraceEnabled()) {
-          // Diagnostic-only — gated to keep prod builds free of any
-          // observable cost. The companion read at the restore $effect
-          // is also gated, so production reads -1 (initial) and the
-          // dead branch is DCE-friendly.
-          lastEffectPreAt = Date.now();
-        }
       }
       autoLoadOlderGate.reset();
       autoLoadNewerGate.reset();
@@ -1528,8 +1513,6 @@
     // outgoing thread before our forceStick landed.
     const snap = getThreadScrollSnapshot(threadId);
     if (isUiRenderTraceEnabled()) {
-      const now = Date.now();
-      const msSinceEffectPre = lastEffectPreAt === 0 ? -1 : now - lastEffectPreAt;
       recordUiTrace('timeline.restore.effect', {
         threadId,
         snapKind: snap?.kind ?? null,
@@ -1543,15 +1526,6 @@
         scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
         scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
         clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-        // Diagnostic: a healthy thread-switch sequence has the
-        // $effect.pre fire immediately before this restore $effect.
-        // If msSinceEffectPre is large (> a few ms) OR -1 (never
-        // fired), some path OTHER than the thread-switch effect
-        // cleared `restoredThreadId` — that's the seq-509 stale
-        // restore class of bug. With the new forceStick({reason:
-        // 'restore'}) consent gate this no longer slams the user,
-        // but it still indicates a state-management bug to find.
-        msSinceEffectPre,
       });
     }
     if (!snap || snap.kind === 'bottom') {
