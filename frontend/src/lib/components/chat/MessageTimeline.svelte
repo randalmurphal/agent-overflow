@@ -169,11 +169,16 @@
   const RAIL_EXEMPT_PAYLOAD_KINDS = new Set<string>(['proposed_plan']);
   const EMPTY_RECEIVER_LABELS = new Map<string, string>();
   // happy-dom returns 0 for clientHeight/clientWidth, which makes virtua
-  // mount zero rows. In test runs we ask virtua to mount everything via
-  // ssrCount so test assertions can find the rendered DOM. Production
-  // (vite dev/build) always sees the default `undefined`, leaving virtua
-  // free to virtualize.
-  const IS_TEST = import.meta.env.MODE === 'test';
+  // mount zero rows. In happy-dom test runs we ask virtua to mount
+  // everything via ssrCount so test assertions can find the rendered DOM.
+  // The real-Chromium `browser` vitest project also runs with MODE==='test'
+  // but has real geometry and MUST keep real windowing (streaming outcome
+  // tests count row unmounts; a 100k-row flat render then unmount wave
+  // would poison those counters), so the gate keys on happy-dom's window
+  // marker, not MODE alone. Production (vite dev/build) always sees the
+  // default `undefined`, leaving virtua free to virtualize.
+  const IS_TEST = import.meta.env.MODE === 'test'
+    && typeof window !== 'undefined' && 'happyDOM' in window;
 
   let {
     pane,

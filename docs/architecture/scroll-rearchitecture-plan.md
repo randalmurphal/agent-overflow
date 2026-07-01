@@ -225,10 +225,13 @@ No stage begins until the previous is merged and observed in real use.
 3. **Commit the contract list.** The 27 must-survive behavioral contracts
    (§5) land as `docs/architecture/scroll-contracts.md` so every stage
    reviews against the same checklist.
-4. **Runtime invariant oracles (dev-only).** Assert-and-trace when: two
-   programmatic writes land in one frame; a write lands while a lease is
-   held; scrollTop moves >1px with no matching intent/observation. These
-   catch seam bugs in dev before they become bug reports.
+4. **Runtime invariant oracles (dev-only)** — MOVED to Stage 2. The naive
+   versions false-positive on legitimate behavior today:
+   `preserveScrollAnchor` intentionally writes during its own lease, user
+   `forceStick` writes during a drag lease, and two writes per frame is
+   documented current behavior (overshoot snap + pin). The oracles become
+   precise only once the resolver makes auto-vs-explicit a first-class
+   distinction and one-write-per-frame an actual invariant.
 
 ### Stage 1 — Prune and consolidate (no architecture change)
 

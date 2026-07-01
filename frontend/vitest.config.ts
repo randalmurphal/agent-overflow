@@ -86,9 +86,26 @@ export default defineConfig({
         // post-processes the emitted CSS.
         plugins: [svelte(), tailwindcss()],
         resolve: happyDomResolve,
+        // Scan the browser test files (and their component imports) up front
+        // so Vite's dep optimizer pre-bundles everything they reach. Without
+        // this, deps discovered mid-run (@testing-library/svelte from the
+        // setup file; lucide icons / streamdown / idiomorph from mounting the
+        // real MessageTimeline) trigger a re-optimize + full reload that
+        // fails collection ("failed to find the current suite") on the first
+        // run after a cache wipe.
+        optimizeDeps: {
+          include: ['@testing-library/svelte'],
+          entries: [
+            'src/**/*.browser.{test,spec}.{ts,js}',
+            'src/test/setup.browser.ts',
+          ],
+        },
         test: {
           name: 'browser',
           include: ['src/**/*.browser.{test,spec}.{ts,js}'],
+          // Chromium needs none of setup.ts's happy-dom polyfills — only the
+          // cross-test resets of module-level stores/caches (see the file).
+          setupFiles: ['./src/test/setup.browser.ts'],
           browser: {
             enabled: true,
             provider: playwright(),
