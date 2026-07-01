@@ -86,6 +86,18 @@ const STICK_TO_BOTTOM_OFFSET_PX = 70;
 // height estimation + browser scrollTop rounding that routinely lands
 // 1-3px short during streaming.
 const AUTO_FOLLOW_BOTTOM_EPSILON_PX = 4;
+// Idle re-pin deadband. Once the spring has settled (springToken === 0) and
+// scrollTop is already within this many px of the bottom target, a nonzero
+// content-height delta is treated as fractional-DPR wobble — not real growth —
+// and the re-pin is skipped, breaking the idle viewport-vibration limit cycle
+// at its source. Value: large enough to clear the observed ~2px idle flip with
+// margin, small enough to stay well below the ≥~line-height gap of genuine
+// catch-up growth; equal to AUTO_FOLLOW_BOTTOM_EPSILON_PX by design — "close
+// enough to count as at-bottom" and "close enough not to fight a wobble" are
+// the same tolerance. Full mechanism (fractional-DPR X.5-boundary height flip →
+// moving target → self-sustaining ±2px cycle) + the capture it was root-caused
+// from: docs/architecture/settle-flicker-analysis.md.
+const IDLE_REPIN_DEADBAND_PX = 4;
 // ResizeObserver width jitter below half a CSS pixel is usually rounding
 // noise. Wider changes mean the content column reflowed; any paired height
 // delta is layout correction, not new live transcript content.
@@ -1520,20 +1532,35 @@ export function createUseStickToBottomController(
       const target = targetScrollTop();
       const overshootMagnitude = Math.max(0, scrollEl.scrollTop - target);
       const overshoot = overshootMagnitude > ARRIVAL_DISTANCE_PX;
+      // Idle re-pin deadband gate. Only while no spring is in flight
+      // (springToken === 0 — the spring holds its token across inter-chunk
+      // gaps during streaming, so this never trips mid-chase) AND scrollTop is
+      // already within IDLE_REPIN_DEADBAND_PX of the bottom: a nonzero height
+      // delta here is the fractional-DPR content-box wobble, and re-pinning
+      // chases a target that never stops moving → the idle viewport-vibration
+      // limit cycle. Suppress the pin; real growth moves the target ≥ a line
+      // height away (gap ≫ deadband) and pins normally on the next delivery.
+      const distanceFromTarget = Math.abs(scrollEl.scrollTop - target);
+      const idlePinWithinDeadband =
+        springToken === 0 && distanceFromTarget <= IDLE_REPIN_DEADBAND_PX;
       const positiveWillPin = delta > 0
         && isAtBottomState
         && !escapedFromLockState
-        && pauseDepth === 0;
+        && pauseDepth === 0
+        && !idlePinWithinDeadband;
       const negativeWillPin = delta < 0
         && (isAtBottomState || isNearBottomState)
         && !escapedFromLockState
-        && pauseDepth === 0;
+        && pauseDepth === 0
+        && !idlePinWithinDeadband;
       if (isUiRenderTraceEnabled()) trace('scroll.contentRO', () => ({
         prev: Math.round(prev),
         next: Math.round(nextHeight),
         delta: Math.round(delta),
         overshoot,
         overshootMagnitude: Math.round(overshootMagnitude),
+        distanceFromTarget: Math.round(distanceFromTarget),
+        idlePinWithinDeadband,
         positiveWillPin,
         negativeWillPin,
         isAtBottomState,

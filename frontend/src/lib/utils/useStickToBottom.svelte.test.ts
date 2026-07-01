@@ -756,6 +756,72 @@ describe('createUseStickToBottomController', () => {
       // must run cleanly.
       expect(true).toBe(true);
     });
+
+    it('stops re-pinning an idle sub-pixel oscillation at the bottom (settle-vibration deadband)', () => {
+      // Reproduces the idle full-viewport "vibration" limit cycle confirmed
+      // from bug-report-20260701T012813Z (WSLg, fractional DPR). While pinned
+      // at the bottom with NO spring in flight (springToken === 0),
+      // `contentRect.height` lands on an X.5 boundary and flips ±2px every
+      // ResizeObserver delivery; the bottom target flips with it. The sync-pin
+      // used to re-pin scrollTop on EVERY nonzero delta — that write perturbed
+      // fractional layout, the RO re-fired the opposite delta, and the cycle
+      // sustained itself (~2 writes per cycle, forever; the whole viewport
+      // shimmers). The IDLE_REPIN_DEADBAND_PX gate stops re-pinning once
+      // scrollTop is already within the deadband of the bottom, breaking the
+      // feedback at its source. Without the gate this asserts FAILS (~24
+      // writes across 12 cycles).
+      const ro = getRO();
+      // Pin at the exact bottom (scrollTop 400 === scrollHeight - clientHeight).
+      ro.fire(contentEl, 800);
+      expect(geom.scrollTop).toBe(400);
+
+      // Count the controller's scrollTop write DECISIONS — each writeScrollTop
+      // assigns scrollEl.scrollTop exactly once. The test's own browser-clamp
+      // simulation writes the `geom` field directly and is NOT counted.
+      let controllerWrites = 0;
+      const desc = Object.getOwnPropertyDescriptor(scrollEl, 'scrollTop')!;
+      const realGet = desc.get as () => number;
+      const realSet = desc.set as (value: number) => void;
+      Object.defineProperty(scrollEl, 'scrollTop', {
+        configurable: true,
+        get: realGet,
+        set(value: number) {
+          controllerWrites += 1;
+          realSet.call(this, value);
+        },
+      });
+
+      // 12 net-zero ±2px cycles. scrollHeight tracks contentHeight (constant
+      // padding). On each shrink the browser clamps scrollTop into range
+      // synchronously before the RO fires — modeled by writing geom directly.
+      for (let i = 0; i < 12; i++) {
+        geom.contentHeight = 802; // grow +2
+        geom.scrollHeight = 1002;
+        ro.fire(contentEl, 802);
+        geom.contentHeight = 800; // shrink -2
+        geom.scrollHeight = 1000;
+        geom.scrollTop = Math.min(geom.scrollTop, geom.scrollHeight - geom.clientHeight);
+        ro.fire(contentEl, 800);
+      }
+
+      // With the deadband the controller recognizes it is within the band of
+      // the bottom and stops re-pinning. Without it, ~24 writes accumulate.
+      expect(controllerWrites).toBeLessThanOrEqual(2);
+    });
+
+    it('still pins line-sized growth beyond the deadband (deadband is sub-line)', () => {
+      // Guards the upper bound: the deadband must not swallow a genuine line
+      // of streaming content. A wrapped line (~24px, gap ≫ IDLE_REPIN_DEADBAND
+      // _PX) still pins exactly to the new bottom on the sync-pin path — real
+      // growth moves the target a line-height away, clearing the deadband.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      expect(geom.scrollTop).toBe(400);
+      geom.contentHeight = 824;
+      geom.scrollHeight = 1024;
+      ro.fire(contentEl, 824);
+      expect(geom.scrollTop).toBe(424); // target = 1024 - 600, pinned exactly
+    });
   });
 
   describe('programmatic scroll write', () => {
