@@ -148,7 +148,6 @@ export interface PaneScrollController {
   preserveTimelineWindowAnchor?(
     operation: TimelineWindowAnchorOperation,
   ): boolean;
-  readonly isAtBottom?: boolean;
 }
 
 export interface TimelineWindowAnchorOperation {

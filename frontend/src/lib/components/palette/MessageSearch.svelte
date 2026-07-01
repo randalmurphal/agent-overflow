@@ -149,8 +149,9 @@
     onClose();
     const targetPane = await openThreadFromNavigation(thread, pane);
     // Scroll the timeline to the hit — pane.requestScrollToItem publishes
-    // a nonce the live MessageTimeline observes and handles via
-    // loadUntilItem + scrollIntoView. Title-match hits have no itemId;
+    // a nonce the live MessageTimeline observes and handles by loading the
+    // item into the window and jumping via virtua scrollToIndex under
+    // runExternalScroll. Title-match hits have no itemId;
     // those stop after the thread switch without further navigation.
     if (hit.matchType === 'item' && hit.itemId) {
       targetPane.requestScrollToItem(hit.itemId);

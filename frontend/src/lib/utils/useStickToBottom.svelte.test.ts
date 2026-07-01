@@ -91,8 +91,8 @@ class MockResizeObserver {
   }
 }
 
-// rAF frames advance performance.now in 16.67ms steps so animateScrollTo's
-// easeOutCubic interpolation and the scroll-follow spring make real
+// rAF frames advance performance.now in 16.67ms steps so the
+// scroll-follow spring makes real
 // progress per tick in the test environment (happy-dom's rAF doesn't drive
 // performance.now on its own). Tests that assert event-driven behavior
 // (sync-pin, scroll handler, gesture handlers) don't depend on this — those
@@ -880,7 +880,7 @@ describe('createUseStickToBottomController', () => {
       // BEFORE the write lands (the mark must precede the scroll event the
       // write dispatches), and it fires from more than one caller into the
       // funnel — asserted here via the first-fire snap and forceStick.
-      // Spring ticks and animateScrollTo frames route through the same
+      // Spring ticks route through the same
       // writeProgrammaticScrollTop chokepoint (the only scrollTop
       // assignment in the controller), so per-caller assertions add no
       // mechanism coverage beyond these two.
@@ -1453,131 +1453,6 @@ describe('createUseStickToBottomController', () => {
     });
   });
 
-  describe('animateScrollTo', () => {
-    it('does not break sticky-bottom state when the target is already current', async () => {
-      expect(controller.isSticky).toBe(true);
-
-      await expect(controller.animateScrollTo(400)).resolves.toBe('completed');
-
-      expect(geom.scrollTop).toBe(400);
-      expect(controller.escapedFromLock).toBe(false);
-      expect(controller.isSticky).toBe(true);
-    });
-
-    it('animates to an arbitrary target and leaves the user escaped from bottom lock', async () => {
-      geom.scrollHeight = 1600;
-      geom.clientHeight = 600;
-      geom.scrollTop = 100;
-
-      const result = controller.animateScrollTo(700, { durationMs: 80 });
-      await nextFrame();
-      await nextFrame();
-      expect(geom.scrollTop).toBeGreaterThan(100);
-      expect(geom.scrollTop).toBeLessThan(700);
-
-      for (let i = 0; i < 12; i++) await nextFrame();
-      await expect(result).resolves.toBe('completed');
-      expect(geom.scrollTop).toBe(700);
-      expect(controller.escapedFromLock).toBe(true);
-      expect(controller.isSticky).toBe(false);
-    });
-
-    it('jumps immediately when reduced motion is requested', async () => {
-      vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
-        matches: query === '(prefers-reduced-motion: reduce)',
-        media: query,
-        onchange: null,
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      } as unknown as MediaQueryList));
-      geom.scrollHeight = 1600;
-      geom.clientHeight = 600;
-      geom.scrollTop = 100;
-
-      await expect(controller.animateScrollTo(700, { durationMs: 500 })).resolves.toBe('completed');
-
-      expect(geom.scrollTop).toBe(700);
-      expect(controller.escapedFromLock).toBe(true);
-    });
-
-    it('cancels an animated target scroll on user escape intent', async () => {
-      geom.scrollHeight = 1600;
-      geom.clientHeight = 600;
-      geom.scrollTop = 100;
-
-      const result = controller.animateScrollTo(700, { durationMs: 500 });
-      fireWheel(scrollEl, -40, scrollEl);
-
-      await expect(result).resolves.toBe('cancelled');
-    });
-
-    it('cancels an animated target scroll on an untagged scroll event', async () => {
-      geom.scrollHeight = 1600;
-      geom.clientHeight = 600;
-      geom.scrollTop = 100;
-
-      const result = controller.animateScrollTo(700, { durationMs: 500 });
-      fireScroll(scrollEl);
-
-      await expect(result).resolves.toBe('cancelled');
-    });
-
-    it('cancels an animated target scroll when detached', async () => {
-      geom.scrollHeight = 1600;
-      geom.clientHeight = 600;
-      geom.scrollTop = 100;
-
-      const result = controller.animateScrollTo(700, { durationMs: 500 });
-      controller.detach();
-
-      await expect(result).resolves.toBe('cancelled');
-    });
-  });
-
-  describe('stopScroll', () => {
-    it('sets escapedFromLock=true and isSticky=false', () => {
-      controller.stopScroll();
-      expect(controller.escapedFromLock).toBe(true);
-      expect(controller.isSticky).toBe(false);
-    });
-
-    it('cancels an in-flight animateScrollTo', async () => {
-      // stopScroll must cancel the only controller-driven scroll
-      // motion: animateScrollTo (used by handleLoadOlder /
-      // scrollToItem). External virtua jumps use runExternalScroll();
-      // stopScroll stays scoped to cancelling controller-owned motion.
-      geom.scrollHeight = 4000;
-      geom.clientHeight = 600;
-      geom.scrollTop = 100;
-      const result = controller.animateScrollTo(2000, { durationMs: 500 });
-      // Let it advance one frame so the rAF chain is live.
-      await nextFrame();
-      controller.stopScroll();
-      await expect(result).resolves.toBe('cancelled');
-      expect(controller.escapedFromLock).toBe(true);
-    });
-
-    it('after stopScroll, subsequent contentRO positive deltas do not sync-pin (escape gate holds)', async () => {
-      // The contentRO sync-pin path is gated on
-      // !escapedFromLockState. stopScroll sets escape, so a layout
-      // change that would normally pin the viewport to the new
-      // bottom must NOT do so after stopScroll — otherwise the
-      // upcoming external scroll (virtua's scrollToIndex) would be
-      // fought by the controller mid-jump.
-      const ro = getRO();
-      ro.fire(contentEl, 800); // first fire — initialize previousHeight
-      controller.stopScroll();
-      geom.scrollHeight = 1200;
-      geom.contentHeight = 1000;
-      const before = geom.scrollTop;
-      ro.fire(contentEl, 1000); // positive delta — sync-pin gated off
-      expect(geom.scrollTop).toBe(before);
-    });
-  });
-
   describe('runExternalScroll', () => {
     it('tags external scroll events in a short window so near-bottom virtua jumps do not re-stick', async () => {
       controller.setEscapedFromLock(true);
@@ -1848,7 +1723,7 @@ describe('createUseStickToBottomController', () => {
     // These tests lock in the design choice that distinguishes the
     // unified controller from its predecessors: intent (escapedFromLock,
     // isAtBottomState) is mutated only by explicit signals — input events,
-    // forceStick, stopScroll, and input-backed scroll-handler paths.
+    // forceStick, setEscapedFromLock, and input-backed scroll-handler paths.
     // Pure geometry mutation does not cross the boundary. If a future
     // change reintroduces a bare "scrollTop direction" inference, these
     // tests fail.
@@ -2143,7 +2018,7 @@ describe('createUseStickToBottomController', () => {
     });
 
     it('native scrollend dispatch is ignored', () => {
-      // Programmatic writes (spring chase, sync-pin, animateScrollTo)
+      // Programmatic writes (spring chase, sync-pin)
       // can fire native scrollend per CSSOM View spec. The controller
       // has no scrollend listener, so the event is inert.
       const before = geom.scrollTop;
@@ -3708,7 +3583,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(afterEscape);
     });
 
-    it('stopScroll cancels in-flight spring', async () => {
+    it('setEscapedFromLock(true) cancels in-flight spring', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3719,7 +3594,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       await nextFrame();
       const midScrollTop = geom.scrollTop;
 
-      controller.stopScroll();
+      controller.setEscapedFromLock(true);
 
       const afterStop = geom.scrollTop;
       for (let i = 0; i < 20; i++) await nextFrame();

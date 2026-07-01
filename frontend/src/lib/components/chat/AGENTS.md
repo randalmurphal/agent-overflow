@@ -18,7 +18,7 @@ Operational rules for this directory:
 - Route programmatic scrolls through `useStickToBottom`: `forceStick`,
   `markAtBottom`, `notifyContentMaybeGrew`,
   `notifyLiveContentMaybeGrew`, `pauseAutoScroll`, `runExternalScroll`,
-  `stopScroll`, `animateScrollTo`, and `armRestoreSnap`.
+  and `armRestoreSnap`.
 - Wrap every virtua `scrollToIndex` call in
   `stick.runExternalScroll(() => listRef.scrollToIndex(...))`.
 - Never pass `smooth: true` to virtua and never call `scrollIntoView()` on

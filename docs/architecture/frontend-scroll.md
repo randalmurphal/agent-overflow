@@ -214,7 +214,6 @@ Programmatic scrolls go through the controller:
 - `armRestoreSnap()` followed by `forceStick({ reason: 'restore' })` for
   thread/channel restore.
 - `markAtBottom()` for empty-timeline restore without writing scrollTop.
-- `animateScrollTo()` for controller-owned arbitrary jumps.
 - `runExternalScroll()` for virtua `scrollToIndex` calls.
 - `pauseAutoScroll()` for drag/resize leases.
 

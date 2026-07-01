@@ -107,8 +107,6 @@ const CONTENT_REFLOW_WIDTH_EPSILON_PX = 0.5;
 // followed by renderer height settle still sync-pins.
 const CONTENT_REFLOW_SETTLE_WINDOW_MS = 250;
 const RESIZE_CLEAR_PADDING_MS = 1;
-const DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS = 420;
-const PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX = 1;
 const RECENT_DOWN_INTENT_WINDOW_MS = 250;
 const SCROLLBAR_DRAG_SESSION_FAILSAFE_MS = 30_000;
 const EXTERNAL_SCROLL_TAG_CLEAR_MS = 100;
@@ -399,8 +397,7 @@ export interface UseStickToBottomController {
    * before the restore $effect runs. Auto-clears on consume by the
    * next restore-forceStick call, on outer-scroll escape intent
    * (wheel / key / touch / pointer that can reach the chat scroller),
-   * animateScrollTo, stopScroll, and on any
-   * user-reason `forceStick()`. This is
+   * and on any user-reason `forceStick()`. This is
    * the load-bearing distinguisher between "the user is explicitly
    * escaped" and "I just defensively set escape=true while preparing
    * the new thread for restore."
@@ -412,12 +409,6 @@ export interface UseStickToBottomController {
    * or when the timeline is empty and there is no geometry to write.
    */
   markAtBottom(): void;
-  /**
-   * Controlled non-native scroll animation for arbitrary timeline jumps.
-   * This owns the scrollTop writes so programmatic scroll tagging stays
-   * in one place. Used by handleLoadOlder / scrollToItem.
-   */
-  animateScrollTo(targetTop: number, opts?: { durationMs?: number }): Promise<'completed' | 'cancelled'>;
   /**
    * Run an external programmatic scroll, such as virtua's
    * `listRef.scrollToIndex(...)`, under the controller's scroll-intent
@@ -431,17 +422,11 @@ export interface UseStickToBottomController {
    */
   runExternalScroll(action: () => void, opts?: { preserveIntent?: boolean }): void;
   /**
-   * Cancel any active controller-owned animation and mark the user as
-   * escaped. Kept for callers that need to stop motion without performing
-   * a scroll write.
-   */
-  stopScroll(): void;
-  /**
    * Set the escape flag. Public so `handleLoadOlder` / `scrollToItem`
    * can opt out of auto-restick on programmatic jumps.
    *
    * Calling with `next=true` also (a) cancels any in-flight spring
-   * chase, (b) cancels any in-flight `animateScrollTo`, and (c) clears
+   * chase and (b) clears
    * any pending `armRestoreSnap()` consent — a fresh escape
    * invalidates a yet-to-be-consumed restore-snap. The thread-switch
    * entry point that legitimately wants the restore-snap calls
@@ -536,7 +521,7 @@ export interface UseStickToBottomOptions {
   /**
    * Optional hook invoked synchronously immediately before EVERY
    * programmatic scrollTop write the controller performs (sync pins,
-   * spring ticks, forceStick snaps, animateScrollTo frames).
+   * spring ticks, forceStick snaps).
    *
    * Exists for scroll-position libraries that observe the scroll element
    * and classify scroll events as user gestures unless told otherwise.
@@ -573,7 +558,7 @@ export function createUseStickToBottomController(
   // Intent flag: "we want to be glued to the bottom". Mirrors upstream's
   // state.isAtBottom — set true on initial mount, on forceStick, and when
   // a re-stick condition fires from the scroll handler. Set false on
-  // explicit escape (outer wheel/key/touch scroll, select) and on stopScroll. Crucially
+  // explicit escape (outer wheel/key/touch scroll, select). Crucially
   // this is NOT geometry-derived; the contentRO sync-pin path relies on
   // it staying true even when content grew the bottom out from under us
   // — that's the gate that keeps the pin from running after the user
@@ -597,9 +582,6 @@ export function createUseStickToBottomController(
   let detachKeyTouch: (() => void) | undefined;
   let stickStateDevHook: (() => Record<string, unknown>) | undefined;
 
-  let targetAnimationFrame: number | null = null;
-  let targetAnimationResolve: ((result: 'completed' | 'cancelled') => void) | null = null;
-  let restoreTargetScrollBehavior: (() => void) | null = null;
   let resizeDifference = 0;
   let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
   let ignoreScrollToTop = -1;
@@ -707,7 +689,7 @@ export function createUseStickToBottomController(
   // `forceStick({reason: 'restore'})` consumes the flag and proceeds;
   // when the flag is unset, that call NO-OPs. Any outer-scroll escape
   // intent (wheel / key / touch / pointer that can reach the scroll element), plus
-  // selection, animateScrollTo, stopScroll, or explicit user-reason forceStick,
+  // selection or explicit user-reason forceStick,
   // also clears the flag, so a stale restore $effect that fires after
   // a user escape cannot clobber it. This is
   // the load-bearing distinguisher between "the user has explicitly
@@ -975,7 +957,6 @@ export function createUseStickToBottomController(
   function recordRecentDownIntent(source: 'wheel' | 'key' | 'touch'): void {
     if (!escapedFromLockState) return;
     clearProgrammaticScrollState();
-    cancelTargetAnimation();
     restoreSnapArmed = false;
     recentDownIntentUntil = nowMs() + RECENT_DOWN_INTENT_WINDOW_MS;
     recentDownIntentVersion += 1;
@@ -1007,7 +988,7 @@ export function createUseStickToBottomController(
   // ===== Programmatic scroll write =====
   // Diagnostic: `writeCaller` is set by the public-facing scrollTop
   // writer (forceStick / notifyContentMaybeGrew / contentRO /
-  // animateScrollTo / overscroll-guard) before delegating to
+  // overscroll-guard) before delegating to
   // `writeScrollTop` so the trace can attribute every write to its
   // origin. No semantic effect; production builds short-circuit at the
   // `isUiRenderTraceEnabled` check inside `trace()`.
@@ -1174,36 +1155,6 @@ export function createUseStickToBottomController(
         : null;
     }
     return reducedMotionQuery?.matches ?? false;
-  }
-
-  function maxScrollTop(): number {
-    if (!scrollEl) return 0;
-    return Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
-  }
-
-  function clampScrollTop(value: number): number {
-    return Math.max(0, Math.min(value, maxScrollTop()));
-  }
-
-  function easeOutCubic(t: number): number {
-    const remaining = 1 - t;
-    return 1 - remaining * remaining * remaining;
-  }
-
-  function finishTargetAnimation(result: 'completed' | 'cancelled'): void {
-    if (targetAnimationFrame !== null) {
-      cancelFrame(targetAnimationFrame);
-      targetAnimationFrame = null;
-    }
-    restoreTargetScrollBehavior?.();
-    restoreTargetScrollBehavior = null;
-    const resolve = targetAnimationResolve;
-    targetAnimationResolve = null;
-    if (resolve) resolve(result);
-  }
-
-  function cancelTargetAnimation(): void {
-    finishTargetAnimation('cancelled');
   }
 
   // ===== Spring chase =====
@@ -1954,7 +1905,6 @@ export function createUseStickToBottomController(
       || mouseDown
       || scrollbarDragSessionActive;
     if (!shouldRunDeferredScrollIntentCheck) return;
-    cancelTargetAnimation();
     // Defer 1ms so a concurrent RO callback can update resizeDifference
     // before we interpret direction. Mirrors upstream.
     setTimeout(() => {
@@ -2055,7 +2005,6 @@ export function createUseStickToBottomController(
     if (!next && !scrollbarDragSessionActive) clearScrollbarDragSession();
     if (next) {
       clearRecentDownIntent();
-      cancelTargetAnimation();
       // User explicitly broke from auto-follow — bail any in-flight
       // spring chase. The tick observes springStopRequested + new
       // state and clears the token on the next frame, but we also
@@ -2095,12 +2044,6 @@ export function createUseStickToBottomController(
       escapedFromLockState,
       pauseDepth,
     }));
-  }
-
-  function stopScroll(): void {
-    clearRecentDownIntent();
-    clearScrollbarDragSession();
-    setEscapedFromLock(true);
   }
 
   // Tags a non-controller scroll writer so the scroll handler does not
@@ -2165,62 +2108,6 @@ export function createUseStickToBottomController(
     }
     await actionPromise;
     if (actionError !== undefined) throw actionError;
-  }
-
-  function animateScrollTo(
-    rawTargetTop: number,
-    opts?: { durationMs?: number },
-  ): Promise<'completed' | 'cancelled'> {
-    if (!scrollEl) return Promise.resolve('cancelled');
-    const targetScrollEl = scrollEl;
-    cancelTargetAnimation();
-
-    const targetTop = clampScrollTop(rawTargetTop);
-    const startTop = targetScrollEl.scrollTop;
-    const distance = targetTop - startTop;
-    if (Math.abs(distance) <= PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX) {
-      return Promise.resolve('completed');
-    }
-    setEscapedFromLock(true);
-    const durationMs = opts?.durationMs ?? DEFAULT_PROGRAMMATIC_SCROLL_DURATION_MS;
-    if (
-      prefersReducedMotion()
-      || durationMs <= 0
-    ) {
-      writeCaller = 'animateScrollTo.instant';
-      writeScrollTop(targetTop);
-      return Promise.resolve('completed');
-    }
-
-    return new Promise((resolve) => {
-      targetAnimationResolve = resolve;
-      const startedAt = nowMs();
-      const originalInlineScrollBehavior = targetScrollEl.style.scrollBehavior;
-      if (window.getComputedStyle(targetScrollEl).scrollBehavior !== 'auto') {
-        targetScrollEl.style.scrollBehavior = 'auto';
-        restoreTargetScrollBehavior = () => {
-          targetScrollEl.style.scrollBehavior = originalInlineScrollBehavior;
-        };
-      }
-
-      const tick = (now: number): void => {
-        if (!scrollEl || targetAnimationResolve !== resolve) return;
-        const elapsed = Math.max(0, now - startedAt);
-        const progress = Math.min(1, elapsed / durationMs);
-        const eased = easeOutCubic(progress);
-        writeCaller = 'animateScrollTo.tick';
-        writeProgrammaticScrollTop(startTop + distance * eased);
-        if (progress >= 1 || Math.abs(scrollEl.scrollTop - targetTop) <= PROGRAMMATIC_SCROLL_DISTANCE_THRESHOLD_PX) {
-          writeCaller = 'animateScrollTo.finish';
-          writeProgrammaticScrollTop(targetTop);
-          finishTargetAnimation('completed');
-          return;
-        }
-        targetAnimationFrame = requestFrame(tick);
-      };
-
-      targetAnimationFrame = requestFrame(tick);
-    });
   }
 
   function forceStick(opts: { reason?: 'user' | 'restore' } = {}): void {
@@ -2816,7 +2703,6 @@ export function createUseStickToBottomController(
     clearProgrammaticScrollState();
     clearRecentDownIntent();
     clearScrollbarDragSession();
-    cancelTargetAnimation();
     cancelSpring();
     springStopRequested = false;
     lastTargetChangedAt = 0;
@@ -2835,8 +2721,8 @@ export function createUseStickToBottomController(
     // the restore $effect's forceStick({reason:'restore'}), making
     // the consent effectively unusable for the initial-mount path.
     // The flag is invalidated by outer-scroll escape intent (wheel / key /
-    // touch / pointer that can reach the scroll element), selection, animateScrollTo /
-    // stopScroll, explicit user-reason forceStick, and the
+    // touch / pointer that can reach the scroll element), selection,
+    // explicit user-reason forceStick, and the
     // consume-on-restore path itself — that's
     // enough to keep it from leaking stale consent across legitimate
     // lifecycles. True teardown also discards the entire controller
@@ -2867,9 +2753,7 @@ export function createUseStickToBottomController(
     detach,
     forceStick,
     markAtBottom,
-    animateScrollTo,
     runExternalScroll,
-    stopScroll,
     setEscapedFromLock,
     armWarmup: beginWarmup,
     skipWarmup(): void {
