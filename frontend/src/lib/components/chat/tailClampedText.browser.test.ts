@@ -4,6 +4,7 @@ import { mount, unmount, tick } from 'svelte';
 // and `whitespace-pre-wrap` resolve to the same geometry the app ships. The
 // browser project compiles tailwind against app.css (see vitest.config.ts).
 import '../../../app.css';
+import { raf } from '../../../test/helpers/browserFrames';
 import TailClampedText from './TailClampedText.svelte';
 
 // happy-dom reports zero geometry, so the tail-visibility invariant below can
@@ -28,8 +29,6 @@ import TailClampedText from './TailClampedText.svelte';
 // no text change, tail must remain visible.
 
 const mounted: Array<{ app: ReturnType<typeof mount>; host: HTMLElement }> = [];
-
-const raf = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
 
 // Rect of the final character of the body's text — the newest streamed glyph.
 // (Twin of `tailOverflowPx` in messageTimelineTrace.ts; intentionally separate

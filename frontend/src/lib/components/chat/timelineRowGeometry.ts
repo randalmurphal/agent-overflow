@@ -1,13 +1,8 @@
 import type { Action } from 'svelte/action';
-import type { Item } from '../../types/models';
 import {
   normalizeTimelineRowGeometryKey,
   type TimelineRowGeometryKey,
 } from '../../stores/threadRowUiState.svelte';
-import {
-  timelineNodeKey,
-  type TimelineNode,
-} from '../../utils/subagentGrouping';
 
 export const ROW_GEOMETRY_CONTENT_ATTR = 'data-row-geometry-content';
 
@@ -23,6 +18,49 @@ export interface TimelineRowGeometryCache {
   rememberTimelineRowHeight(key: TimelineRowGeometryKey, height: number): void;
 }
 
+// Diagnostic tap on every reservation state transition, for the ui-render
+// trace (Ctrl+Shift+B captures). The hook is optional and every emit site uses
+// `trace?.({...})`, so a build without a hook never evaluates the event
+// argument — which is why MessageTimeline passes `undefined` (not a no-op
+// hook) when the trace surface is not compiled in. That presence contract
+// matters because some taps are hot: `skip-settled` fires for the streaming
+// tail row on every streamed beat (its signature embeds updatedAt/summary
+// length, so the applyParams value-equal fast path does not absorb it) and
+// `hold` fires per ResizeObserver delivery while a remounted row settles.
+export type TimelineRowGeometryTraceAction =
+  | 'reserve'             // cold-mount floor written (cache hit)
+  | 'skip-settled'        // settled-height gate blocked a re-floor
+  | 'skip-no-cache'       // cold-mount path missed the cache; any held floor released
+  | 'hold'                // measured below the floor; reservation held
+  | 'settle'              // first committed measured height this mount (gate closes)
+  | 'release-measured'    // floor released after measuring at/above it
+  | 'release-stale'       // 750ms backstop released a floor that never re-grew
+  | 'release-null-params' // params failed normalization; reservation dropped
+  | 'rebind'              // content element swapped under a living action (gate re-opens)
+  | 'destroy';            // action destroyed (row unmounted)
+
+export interface TimelineRowGeometryTraceEvent {
+  action: TimelineRowGeometryTraceAction;
+  // Global per-action-instance sequence: a repeated key under a NEW mountSeq is
+  // a virtua remount; the same mountSeq cycling reserve/release is churn on one
+  // living row. This is the discriminator the ring buffer's contentRO deltas
+  // cannot provide.
+  mountSeq: number;
+  key: string;
+  itemId?: string;
+  signature?: string;
+  width?: number;
+  cachedHeight?: number;
+  reservedHeight?: number;
+  measuredHeight?: number;
+  releasedHeight?: number;
+  settled?: boolean;
+}
+
+export type TimelineRowGeometryTraceHook = (event: TimelineRowGeometryTraceEvent) => void;
+
+let nextRowGeometryMountSeq = 1;
+
 interface RowReservationState {
   row: HTMLElement;
   content: HTMLElement | null;
@@ -32,57 +70,19 @@ interface RowReservationState {
   lastMeasuredHeight: number;
   lastMeasuredWidth: number;
   releaseTimer: ReturnType<typeof setTimeout> | null;
-}
-
-export function timelineNodeGeometrySignature(
-  node: TimelineNode,
-  currentLeafItem: Item | null,
-  isGroupExpanded: (groupKey: string) => boolean,
-  rowShellSignature: string,
-): string {
-  const prefix = `shell:${rowShellSignature}`;
-  if (node.kind === 'leaf') {
-    return `${prefix}|leaf:${itemGeometrySignature(currentLeafItem ?? node.item)}`;
-  }
-
-  if (node.kind === 'read_group') {
-    return [
-      prefix,
-      'read',
-      node.groupKey,
-      ...node.members.map(itemGeometrySignature),
-    ].join('|');
-  }
-
-  if (node.kind === 'wait_group') {
-    return [
-      prefix,
-      'wait',
-      node.groupKey,
-      itemGeometrySignature(node.parent),
-      node.completion ? itemGeometrySignature(node.completion) : '',
-      node.descendantCount,
-      node.children.length,
-      ...node.children.slice(0, 25).map((child) =>
-        timelineNodeGeometrySignature(child, null, isGroupExpanded, 'nested-wait-child')),
-    ].join('|');
-  }
-
-  const expanded = isGroupExpanded(node.groupKey);
-  return [
-    prefix,
-    node.kind,
-    node.groupKey,
-    expanded ? 'expanded' : 'collapsed',
-    itemGeometrySignature(node.parent),
-    node.descendantCount,
-    node.loadedDescendantCount,
-    node.latestChildSummary.length,
-  ].join('|');
+  mountSeq: number;
+  // Per-mount latch, set at the rememberMeasuredHeight chokepoint once this
+  // content element has committed a height (normal settle, no-reservation
+  // measure, or stale-timer release — that last path may commit below the
+  // floor). Gates applyParams so an already-settled, still-visible row is never
+  // re-floored (the settle "twitch"; full rationale at the gate). Reset in
+  // bindContentElement when a different content element is bound.
+  hasSettledHeight: boolean;
 }
 
 export function createTimelineRowGeometryReservation(
   cache: TimelineRowGeometryCache,
+  trace?: TimelineRowGeometryTraceHook,
 ): Action<HTMLElement, TimelineRowGeometryReservationParams> {
   const statesByContent = new WeakMap<Element, RowReservationState>();
   let observer: ResizeObserver | null = null;
@@ -93,9 +93,16 @@ export function createTimelineRowGeometryReservation(
       for (const entry of entries) {
         const state = statesByContent.get(entry.target);
         if (!state) continue;
+        // Height stays fractional end-to-end: the cache stores the exact
+        // measured value so a cold-mount floor equals the row's natural
+        // height and releases with zero residue. Rounding here used to
+        // stack +0.x px per remounted row into a visible totalSize pulse
+        // (docs/architecture/settle-flicker-analysis.md). Width is only a
+        // cache KEY — it stays rounded to match the integer widths used by
+        // reserve-time lookups.
         handleMeasuredHeight(
           state,
-          Math.round(entry.contentRect.height),
+          entry.contentRect.height,
           Math.round(entry.contentRect.width),
         );
       }
@@ -113,6 +120,8 @@ export function createTimelineRowGeometryReservation(
       lastMeasuredHeight: 0,
       lastMeasuredWidth: 0,
       releaseTimer: null,
+      mountSeq: nextRowGeometryMountSeq++,
+      hasSettledHeight: false,
     };
 
     bindContentElement(state);
@@ -124,6 +133,13 @@ export function createTimelineRowGeometryReservation(
         applyParams(state, nextParams);
       },
       destroy() {
+        trace?.({
+          action: 'destroy',
+          mountSeq: state.mountSeq,
+          key: state.params?.key ?? '',
+          releasedHeight: state.reservedHeight,
+          settled: state.hasSettledHeight,
+        });
         clearReservationTimer(state);
         releaseReservation(state, false);
         if (state.content) {
@@ -140,11 +156,25 @@ export function createTimelineRowGeometryReservation(
     if (nextContent === state.content) return;
 
     if (state.content) {
+      trace?.({
+        action: 'rebind',
+        mountSeq: state.mountSeq,
+        key: state.params?.key ?? '',
+        settled: state.hasSettledHeight,
+      });
       observer?.unobserve(state.content);
       statesByContent.delete(state.content);
     }
 
     state.content = nextContent;
+    // A newly bound content element is a fresh mount surface — allow it one
+    // cold-mount floor before the settled-height gate re-engages. On the initial
+    // bind this is a redundant no-op (the constructor already inited false); its
+    // only load-bearing trigger is a content-element swap under a living action,
+    // which today's unconditional content div never produces (a true virtua
+    // remount is a fresh action instance, not this reset). Kept for a future
+    // conditional content wrapper.
+    state.hasSettledHeight = false;
     if (!nextContent) return;
     statesByContent.set(nextContent, state);
     ensureObserver()?.observe(nextContent);
@@ -177,6 +207,12 @@ export function createTimelineRowGeometryReservation(
 
     const normalized = normalizeTimelineRowGeometryKey(nextParams);
     if (!normalized) {
+      trace?.({
+        action: 'release-null-params',
+        mountSeq: state.mountSeq,
+        key: state.params?.key ?? '',
+        releasedHeight: state.reservedHeight,
+      });
       state.params = null;
       clearReservationTimer(state);
       releaseReservation(state, false);
@@ -189,20 +225,78 @@ export function createTimelineRowGeometryReservation(
     if (current && sameReservationParams(current, normalized)) return;
 
     state.params = normalized;
+    // Captured for the trace taps below; the reset wipes it before they fire.
+    const measuredBeforeReset = state.lastMeasuredHeight;
     state.lastMeasuredHeight = 0;
     state.lastMeasuredWidth = 0;
     clearReservationTimer(state);
 
+    // Cold-mount floor ONLY. Once this row has committed a real measured height
+    // this mount (hasSettledHeight), its natural size is known and must never be
+    // overridden by the stale integer cached height: re-flooring an
+    // already-settled, still-visible row is the settle "twitch". The shell
+    // signature recomputes on each timelineRevision; while pinned to the bottom
+    // the rendered window sits in that churn zone, so without this gate the
+    // visible rows re-reserved on each wave (~9 waves/turn), each write nudging a
+    // fractional-height row by the integer-vs-fractional delta — a 2-6px
+    // content-box flutter (confirmed against a trace capture). The floor's only
+    // legitimate job is bridging virtua's 56px estimate / async-render collapse
+    // on a FRESH mount (c5c79d5a), before the first measure while hasSettledHeight
+    // is false. Gate placed AFTER state.params advances above so a still-growing
+    // settled row caches its new height under the current signature; hoisting it
+    // above the normalize would cache under a stale signature — the cold-mount
+    // miss this floor exists to prevent.
+    if (state.hasSettledHeight) {
+      trace?.({
+        action: 'skip-settled',
+        mountSeq: state.mountSeq,
+        key: normalized.key,
+        itemId: normalized.ownerItemIds[0],
+        signature: normalized.signature,
+        width: normalized.width,
+        measuredHeight: measuredBeforeReset,
+      });
+      return;
+    }
+
     const cachedHeight = cache.cachedTimelineRowHeight(normalized);
     if (!cachedHeight) {
+      trace?.({
+        action: 'skip-no-cache',
+        mountSeq: state.mountSeq,
+        key: normalized.key,
+        itemId: normalized.ownerItemIds[0],
+        signature: normalized.signature,
+        width: normalized.width,
+        releasedHeight: state.reservedHeight,
+        measuredHeight: measuredBeforeReset,
+      });
       releaseReservation(state, false);
       return;
     }
 
+    trace?.({
+      action: 'reserve',
+      mountSeq: state.mountSeq,
+      key: normalized.key,
+      itemId: normalized.ownerItemIds[0],
+      signature: normalized.signature,
+      width: normalized.width,
+      cachedHeight,
+      reservedHeight: state.reservedHeight,
+      measuredHeight: measuredBeforeReset,
+    });
     state.reservedHeight = cachedHeight;
     state.row.style.minHeight = `${cachedHeight}px`;
     state.releaseTimer = setTimeout(() => {
       state.releaseTimer = null;
+      trace?.({
+        action: 'release-stale',
+        mountSeq: state.mountSeq,
+        key: state.params?.key ?? '',
+        releasedHeight: state.reservedHeight,
+        measuredHeight: state.lastMeasuredHeight,
+      });
       releaseReservation(state, true);
     }, ROW_GEOMETRY_STALE_RESERVATION_RELEASE_MS);
   }
@@ -219,13 +313,29 @@ export function createTimelineRowGeometryReservation(
 
     // Hold the reservation while the remounted row is still settling shorter
     // than what we reserved (image / markdown reflow). The applyParams timer
-    // is the backstop if it never grows back.
+    // is the backstop if it never grows back. Do NOT mark the row settled here:
+    // it has not yet reached its natural height, so the cold-mount floor must
+    // stay eligible to re-arm.
     if (state.reservedHeight > 0 && height < state.reservedHeight) {
+      trace?.({
+        action: 'hold',
+        mountSeq: state.mountSeq,
+        key: params.key,
+        measuredHeight: height,
+        reservedHeight: state.reservedHeight,
+      });
       return;
     }
 
     rememberMeasuredHeight(state);
     if (state.reservedHeight > 0) {
+      trace?.({
+        action: 'release-measured',
+        mountSeq: state.mountSeq,
+        key: params.key,
+        measuredHeight: height,
+        releasedHeight: state.reservedHeight,
+      });
       releaseReservation(state, false);
     }
   }
@@ -244,6 +354,25 @@ export function createTimelineRowGeometryReservation(
     if (!state.params || state.lastMeasuredHeight <= 0) return;
     const width = state.lastMeasuredWidth > 0 ? state.lastMeasuredWidth : state.params.width;
     cache.rememberTimelineRowHeight({ ...state.params, width }, state.lastMeasuredHeight);
+    // Trace only the gate-closing transition; steady-state growth measures are
+    // already visible as timeline.row.resize events.
+    if (!state.hasSettledHeight) {
+      trace?.({
+        action: 'settle',
+        mountSeq: state.mountSeq,
+        key: state.params.key,
+        signature: state.params.signature,
+        width,
+        measuredHeight: state.lastMeasuredHeight,
+        reservedHeight: state.reservedHeight,
+      });
+    }
+    // Committing a real measured height means the row has rendered its natural
+    // size this mount; the cold-mount floor gate (applyParams) now stays shut so
+    // later signature churn can't re-floor a still-visible row. Single
+    // chokepoint: covers normal settle, the no-reservation measure, and the
+    // stale-timer release (releaseReservation → rememberMeasuredHeight).
+    state.hasSettledHeight = true;
   }
 
   function releaseReservation(state: RowReservationState, rememberLastMeasured: boolean): void {
@@ -307,26 +436,6 @@ export function directRowGeometryContent(row: HTMLElement): HTMLElement | null {
   return null;
 }
 
-function itemGeometrySignature(item: Item): string {
-  const payloadMeta = item.payloadMeta ?? '';
-  return [
-    item.threadId,
-    item.id,
-    item.kind,
-    item.status,
-    item.turnIndex,
-    item.itemIndex,
-    item.updatedAt,
-    item.summary.length,
-    item.payloadId ?? '',
-    item.payloadKind ?? '',
-    payloadMeta.length,
-    item.completionOf ?? '',
-    item.parentId ?? '',
-    item.isBackground === true ? 'bg' : '',
-  ].join(':');
-}
-
 function sameOwnerItemIds(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   for (let index = 0; index < a.length; index += 1) {
@@ -347,34 +456,3 @@ function sameReservationParams(
   );
 }
 
-export function timelineRowGeometryKey(
-  node: TimelineNode,
-  currentLeafItem: Item | null,
-  width: number,
-  isGroupExpanded: (groupKey: string) => boolean,
-  rowShellSignature: string,
-): TimelineRowGeometryKey {
-  return {
-    key: timelineNodeKey(node),
-    signature: timelineNodeGeometrySignature(
-      node,
-      currentLeafItem,
-      isGroupExpanded,
-      rowShellSignature,
-    ),
-    width,
-    ownerItemIds: timelineNodeOwnerItemIds(node, currentLeafItem),
-  };
-}
-
-function timelineNodeOwnerItemIds(node: TimelineNode, currentLeafItem: Item | null): string[] {
-  if (node.kind === 'leaf') return [(currentLeafItem ?? node.item).id];
-  if (node.kind === 'read_group') return node.members.map((item) => item.id);
-  if (node.kind === 'wait_group') {
-    return [
-      node.parent.id,
-      ...(node.completion ? [node.completion.id] : []),
-    ];
-  }
-  return [node.parent.id];
-}

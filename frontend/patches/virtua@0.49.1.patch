@@ -1,0 +1,50 @@
+diff --git a/lib/svelte/Virtualizer.svelte b/lib/svelte/Virtualizer.svelte
+index fc0986bc3f7f03f4dbfdc847a3c0177b26a0ff11..ff6f3be5a0ccebf1527a6e2bec70f438c993d996 100644
+--- a/lib/svelte/Virtualizer.svelte
++++ b/lib/svelte/Virtualizer.svelte
+@@ -157,6 +157,27 @@
+     scroller.$scrollTo satisfies VirtualizerHandle["scrollTo"] as VirtualizerHandle["scrollTo"];
+   export const scrollBy =
+     scroller.$scrollBy satisfies VirtualizerHandle["scrollBy"] as VirtualizerHandle["scrollBy"];
++  // PATCH(agent-overflow manual-scroll-marking): sync manual-scroll
++  // marking for external scroll controllers.
++  //
++  // The store classifies any scroll event as USER scrolling unless its
++  // internal manual flag is set: ACTION_SCROLL latches a scroll direction,
++  // and while the latched direction is "forward" $getRange(bufferSize)
++  // drops the entire backward overscan, unmounting every buffered row
++  // before the viewport. The built-in scrollTo/scrollBy/scrollToIndex set
++  // the flag via ACTION_MANUAL_SCROLL before writing scrollTop, but they
++  // are async convergence loops (await + retry + settle timers) — unusable
++  // for the sync per-frame pin writes of an external stick-to-bottom
++  // controller. This exposes the same one-line marking so such a
++  // controller can tell virtua "the write that follows is not the user".
++  // The store clears the flag on scrollend (ACTION_SCROLL_END), so callers
++  // must mark before EVERY programmatic write. The literal 7 is the
++  // core's internal ACTION_MANUAL_SCROLL constant (lib/core/index.js
++  // $update case 7, minified body `_ = 1`), which the minified core does
++  // not export.
++  export const markProgrammaticScroll = (() => {
++    store.$update(7);
++  }) satisfies VirtualizerHandle["markProgrammaticScroll"] as VirtualizerHandle["markProgrammaticScroll"];
+ 
+   let containerStyle = $derived(
+     styleToString({
+diff --git a/lib/svelte/Virtualizer.type.d.ts b/lib/svelte/Virtualizer.type.d.ts
+index 5a3d242ef30bbd7ca2a5e303cb0aa2838e2f395c..ae794a6b9e6756a905f9557f472b8076883bb26e 100644
+--- a/lib/svelte/Virtualizer.type.d.ts
++++ b/lib/svelte/Virtualizer.type.d.ts
+@@ -131,4 +131,13 @@ export interface VirtualizerHandle {
+      * @param offset offset from current position
+      */
+     scrollBy(offset: number): void;
++    /**
++     * PATCH(agent-overflow manual-scroll-marking): mark scroll events as programmatic
++     * (virtua-internal "manual" scrolling) until the next scrollend, so
++     * the store does not latch a user scroll direction and drop the
++     * backward buffer. Call immediately before every direct scrollTop
++     * write from an external scroll controller. See Virtualizer.svelte
++     * for the full rationale.
++     */
++    markProgrammaticScroll(): void;
+ }

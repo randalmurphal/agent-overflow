@@ -472,7 +472,11 @@ describe('createThreadRowUiState', () => {
 
     rowUiState.rememberTimelineRowHeight(key, 123.4);
 
-    expect(rowUiState.cachedTimelineRowHeight(key)).toBe(123);
+    // Exact fractional round-trip — cached heights back the remount
+    // min-height floor, so rounding to 123 would release each floor with a
+    // 0.4px residue (the settle-flicker amplifier,
+    // docs/architecture/settle-flicker-analysis.md).
+    expect(rowUiState.cachedTimelineRowHeight(key)).toBe(123.4);
     expect(rowUiState.cachedTimelineRowHeight({
       ...key,
       signature: 'signature-b',
@@ -484,7 +488,7 @@ describe('createThreadRowUiState', () => {
 
     const widerKey = { ...key, width: 900 };
     rowUiState.rememberTimelineRowHeight(widerKey, 200);
-    expect(rowUiState.cachedTimelineRowHeight(key)).toBe(123);
+    expect(rowUiState.cachedTimelineRowHeight(key)).toBe(123.4);
     expect(rowUiState.cachedTimelineRowHeight(widerKey)).toBe(200);
 
     rowUiState.rememberTimelineRowHeight({

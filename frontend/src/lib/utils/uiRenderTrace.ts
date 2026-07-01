@@ -84,6 +84,15 @@ export function isUiRenderTraceEnabled(): boolean {
   return UI_TRACE_BUILD_GATE && enabled;
 }
 
+// Build-time gate only, ignoring the runtime toggle. For consumers that
+// decide the STRUCTURE of their instrumentation once at module/component
+// setup (e.g. whether to pass an optional trace hook at all, so `hook?.()`
+// call sites short-circuit before building event objects) while the hook
+// body still honors the runtime toggle per event.
+export function isUiRenderTraceCompiledIn(): boolean {
+  return UI_TRACE_BUILD_GATE;
+}
+
 export function setUiRenderTraceEnabled(next: boolean): void {
   if (!UI_TRACE_BUILD_GATE) return;
   enabled = next;

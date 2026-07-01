@@ -533,6 +533,35 @@ export interface UseStickToBottomOptions {
    * ChannelView is the canonical example).
    */
   quietContextSignal?: () => boolean;
+  /**
+   * Optional hook invoked synchronously immediately before EVERY
+   * programmatic scrollTop write the controller performs (sync pins,
+   * spring ticks, forceStick snaps, animateScrollTo frames).
+   *
+   * Exists for scroll-position libraries that observe the scroll element
+   * and classify scroll events as user gestures unless told otherwise.
+   * Chat's MessageTimeline wires this to the patched virtua handle's
+   * `markProgrammaticScroll()`: without the mark, virtua reads each pin
+   * write as the user scrolling down, latches that direction, and drops
+   * its entire above-viewport buffer — the row unmount/remount churn
+   * behind the streaming settle flicker (see
+   * docs/architecture/settle-flicker-analysis.md). virtua clears the
+   * mark on scrollend, which is why this fires per-write rather than
+   * per-burst.
+   *
+   * Two contract notes: the hook MUST NOT throw — it runs inside
+   * ResizeObserver callbacks and spring rAF ticks, and a throw aborts the
+   * pin write it precedes. And it fires even when the subsequent write
+   * turns out to be a no-op (value already equals scrollTop, e.g. a
+   * clamped at-max write); no scroll event follows, so a virtua manual
+   * mark can linger until the next gesture's scrollend — benign
+   * over-retention (virtua keeps the symmetric buffer, exactly what
+   * virtua's own scrollTo leaves behind).
+   *
+   * Defaults to undefined (no-op) — Discussion's ChannelView has no
+   * virtualizer and needs no marking.
+   */
+  onBeforeScrollTopWrite?: () => void;
 }
 
 export function createUseStickToBottomController(
@@ -1019,6 +1048,11 @@ export function createUseStickToBottomController(
       beforeHeight = scrollEl.scrollHeight;
       beforeClient = scrollEl.clientHeight;
     }
+    // Let the consumer mark this write as programmatic for any library
+    // observing the scroll element (virtua manual-scroll marking) BEFORE
+    // the write lands, so the scroll event it dispatches is already
+    // classified.
+    options.onBeforeScrollTopWrite?.();
     // Bypass the external-write gate for our own writes. The gate's
     // job is to filter writes from OTHER writers (virtua's
     // $fixScrollJump, browser auto-anchor); the controller is always

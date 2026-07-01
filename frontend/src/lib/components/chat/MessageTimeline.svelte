@@ -44,6 +44,7 @@
   import WaitGroup from './WaitGroup.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import {
+    rowGeometryTraceHook,
     recordTimelineRenderTrace,
     startTimelineRowResizeTrace,
     startVirtuaMarginDivergenceTrace,
@@ -77,10 +78,10 @@
   } from './timelineRowUiRetention';
   import {
     createTimelineRowGeometryReservation,
-    timelineRowGeometryKey,
     directRowGeometryContent,
     observeScrollSurfaceContentWidth,
   } from './timelineRowGeometry';
+  import { timelineRowGeometryKey } from './timelineRowGeometrySignature';
 
   // Initial item-size estimate for virtua. Real sizes come from the
   // per-item ResizeObserver virtua wraps each row in; this constant only
@@ -191,7 +192,7 @@
     rememberTimelineRowHeight(key, height) {
       pane.rememberTimelineRowHeight(key, height);
     },
-  });
+  }, rowGeometryTraceHook);
 
   // Inner scroll container. We own scrolling here; <Virtualizer> renders
   // its measured rows inside `contentEl` and reads/writes via scrollRef.
@@ -440,6 +441,14 @@
   const stick = createUseStickToBottomController({
     animationMode: animationModeForScroll,
     quietContextSignal: () => anyMarkdownSettledSinceArm,
+    // Mark every controller scrollTop write as programmatic in virtua's
+    // store (patched `markProgrammaticScroll`, see
+    // patches/virtua@0.49.1.patch) so streaming pin writes aren't
+    // classified as user scroll-downs — misclassified pins latch a
+    // "scrolling down" direction and drop the whole above-viewport
+    // buffer, remounting ~BUFFER_SIZE_PX of rows every settle
+    // (docs/architecture/settle-flicker-analysis.md).
+    onBeforeScrollTopWrite: () => listRef?.markProgrammaticScroll(),
   });
 
   function markMarkdownSettled(): void {

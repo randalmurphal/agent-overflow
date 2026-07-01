@@ -872,6 +872,46 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(false);
     });
 
+    it('onBeforeScrollTopWrite fires before every programmatic scrollTop write', () => {
+      // MessageTimeline wires this hook to the patched virtua handle's
+      // markProgrammaticScroll() so pin writes aren't classified as user
+      // scroll-downs (which drop virtua's above-viewport buffer — the
+      // settle-flicker remount churn). Two contract points: the hook runs
+      // BEFORE the write lands (the mark must precede the scroll event the
+      // write dispatches), and it fires from more than one caller into the
+      // funnel — asserted here via the first-fire snap and forceStick.
+      // Spring ticks and animateScrollTo frames route through the same
+      // writeProgrammaticScrollTop chokepoint (the only scrollTop
+      // assignment in the controller), so per-caller assertions add no
+      // mechanism coverage beyond these two.
+      const el = document.createElement('div');
+      const content = document.createElement('div');
+      el.appendChild(content);
+      document.body.appendChild(el);
+      const g: Geometry = { scrollHeight: 1000, clientHeight: 600, scrollTop: 0, contentHeight: 800 };
+      stubGeometry(el, content, g);
+      const scrollTopAtHook: number[] = [];
+      const hooked = createUseStickToBottomController({
+        onBeforeScrollTopWrite: () => scrollTopAtHook.push(g.scrollTop),
+      });
+      hooked.attach(el, content);
+      try {
+        // First-fire snap (0 → 400) goes through the write chokepoint.
+        getRO().fire(content, 800);
+        expect(g.scrollTop).toBe(400);
+        expect(scrollTopAtHook).toEqual([0]);
+
+        // forceStick is a different caller into the same chokepoint.
+        g.scrollTop = 100;
+        hooked.forceStick();
+        expect(g.scrollTop).toBe(400);
+        expect(scrollTopAtHook).toEqual([0, 100]);
+      } finally {
+        hooked.detach();
+        el.remove();
+      }
+    });
+
     it('subsequent user scroll back to the tagged scrollTop value is honored, not silently ignored', async () => {
       // Regression guard: the tag is captured-and-consumed synchronously,
       // so it suppresses exactly ONE scroll event. A regression that

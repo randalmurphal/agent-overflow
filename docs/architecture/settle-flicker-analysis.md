@@ -1,5 +1,75 @@
 # Settle-moment scroll flicker — root-cause analysis
 
+> ## 🟢 2026-07-01 (later) — the STREAMING settle flicker fully root-caused from capture `bug-report-20260701T201655Z.jsonl`; fixes applied (virtua manual-scroll patch + fractional height caching; working tree, pending in-app confirmation). Closes the "streaming stutter is a separate, still-open strand" left by the idle-vibration entry below.
+>
+> **Confirmed mechanism, every link evidence-backed.**
+>
+> 1. Every streaming beat, the stick controller writes `scrollEl.scrollTop`
+>    directly (`useStickToBottom.svelte.ts` `writeProgrammaticScrollTop`, the
+>    single chokepoint) — sync pins, spring ticks, forceStick.
+> 2. **virtua@0.49.1 classifies those writes as USER scroll-downs.** The store's
+>    `$update(ACTION_SCROLL)` latches a scroll direction unless its internal
+>    manual flag was set first, and only virtua's own `scrollTo`/`scrollBy`/
+>    `scrollToIndex` set that flag — all async convergence loops, unusable for
+>    sync per-beat pins. While the latched direction is "down",
+>    `$getRange(bufferSize)` drops the entire above-viewport overscan:
+>    ~39 rows (1800px buffer) unmount in a burst. Visible rows survive; only
+>    the buffer band cycles.
+> 3. Pin writes / spring ticks (~73ms cadence) keep resetting virtua's 150ms
+>    scrollend debounce, so the drop persists 156–811ms per beat; at scrollend
+>    the ~39 rows remount in ONE flush (capture: destroyed keys == remounted
+>    keys, 38/38).
+> 4. Each remounting row re-arms the cold-mount `min-height` floor from the
+>    row-height cache — whose heights were `Math.round`ed at two points (the
+>    reservation's RO measure entry in `timelineRowGeometry.ts` and
+>    `normalizeTimelineRowHeight` in `threadRowUiState.svelte.ts`). The
+>    round-up residues sum to **+12–13px of totalSize for one frame**; the
+>    floors release as the real RO measures each row → −12–13px → scrollTop
+>    clamp-back = the visible twitch. All 5 blips in the capture are ±12–13px.
+> 5. The pre-floor build had identical churn but no floors — invisible. The
+>    floors are the *amplifier*; the misclassified-write buffer churn is the
+>    *disease*.
+>
+> **Evidence chain:** `timeline.row.geometry` trace instrumentation (action
+> counts; mass destroy→gap→mount bursts; triggers = composer ±20 resizes,
+> revision bumps, row resize) → virtua core/adapter source analysis → real-
+> Chromium spike bisection (pin-only write reproduces the destroy burst;
+> growth-only is clean) → direct `createVirtualStore` drive (unmarked down
+> write: range [135,199]→[174,199]; manual-marked write: stays [135,199]).
+>
+> **Note on the older "Virtua remount — REFUTED" section far below:** that
+> refuted a full-`Virtualizer` remount (`listRef` rebind) — still true; the
+> capture shows zero rebinds. Buffer-row unmount/remount *inside* a mounted
+> Virtualizer is a different mechanism and is the confirmed disease.
+>
+> **Fixes (working tree).**
+>
+> - **Root:** `patches/virtua@0.49.1.patch` exposes
+>   `markProgrammaticScroll()` on the Svelte `VirtualizerHandle` — the same
+>   internal ACTION_MANUAL_SCROLL marking virtua's own scroll APIs use,
+>   callable synchronously. `useStickToBottom` gained an
+>   `onBeforeScrollTopWrite` option invoked before EVERY programmatic write
+>   (virtua clears the mark at scrollend, hence per-write); MessageTimeline
+>   wires it to the handle. Marked writes: no direction latch → no buffer
+>   drop → no remount churn. Side benefit: virtua no longer flips
+>   `pointer-events: none` on the container during streaming pins.
+> - **Amplifier:** the row-height cache stores exact fractional heights
+>   (`Math.round` removed from the RO measure entry and
+>   `normalizeTimelineRowHeight`; width keys stay integer). Any remaining
+>   remount path re-floors with zero residue.
+>
+> **Tests:** `src/test/integration/virtua-patch-buffer-retention.browser.test.ts`
+> (real Chromium: unmarked pin write drops the buffer — the patch's drop-rule
+> tripwire; marked write keeps it mounted — fail-without/pass-with for the
+> fix); `useStickToBottom.svelte.test.ts` "onBeforeScrollTopWrite fires
+> before every programmatic scrollTop write";
+> `messageTimelineVirtuaMarking.test.ts` (the component wiring seam —
+> a controller pin write must reach the bound handle's
+> `markProgrammaticScroll`); fractional round-trips in
+> `timelineRowGeometry.test.ts` + `threadRowUiState.svelte.test.ts`.
+
+---
+
 > ## 🟢 2026-07-01 — idle full-viewport VIBRATION root-caused from a real capture; fix applied (`IDLE_REPIN_DEADBAND_PX`, working tree, pending in-app confirmation). Supersedes the entire `MAX_STREAM_DETACH_PX` / `SETTLE_IDLE_MS` narrative below.
 >
 > **Scope.** This entry covers the idle **full-screen vibration** ("the entire

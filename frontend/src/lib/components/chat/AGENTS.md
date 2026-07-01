@@ -127,10 +127,12 @@ virtua `ssrCount` only under `import.meta.env.MODE === 'test'`.
 
 Layout invariants that happy-dom cannot see (margin containment, flush,
 oscillation geometry) run in the real-Chromium `browser` vitest project
-(Playwright); name those files `*.browser.test.ts`. They import the production
-`app.css` so the assertion is coupled to the real cascade — e.g.
-`rowMarginContainment.browser.test.ts` guards the settle-flicker fix
-(`[data-row-geometry-content] { display: flow-root }`). `pnpm test` runs the
+(Playwright); name those files `*.browser.test.ts`. Cascade-coupled tests
+import the production `app.css` so the assertion runs against the real
+styles — e.g. `rowMarginContainment.browser.test.ts` guards the
+settle-flicker fix (`[data-row-geometry-content] { display: flow-root }`);
+cascade-independent ones (e.g. the virtua buffer-retention tripwire in
+`src/test/integration/`) skip the import. `pnpm test` runs the
 unit project only, so the `make test` / `make verify` gate needs no browser
 binary; run the browser suite explicitly with `pnpm test:browser`, which needs a
 chromium build: `pnpm exec playwright install chromium`. See

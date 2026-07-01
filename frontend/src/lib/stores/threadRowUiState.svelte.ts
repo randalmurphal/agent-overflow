@@ -889,8 +889,13 @@ export function timelineRowGeometryCacheKey(key: TimelineRowGeometryKey): string
   return JSON.stringify([key.key, key.signature, key.width]);
 }
 
+// Deliberately does NOT round: cached heights back the remount min-height
+// floor in timelineRowGeometry.ts, and a floor must equal the row's exact
+// fractional natural height or every release shifts totalSize by the
+// rounding residue — ±0.5px per row, a visible pulse when a remount wave
+// re-floors dozens of rows at once
+// (docs/architecture/settle-flicker-analysis.md).
 function normalizeTimelineRowHeight(height: number): number | null {
   if (!Number.isFinite(height)) return null;
-  const normalized = Math.round(height);
-  return normalized > 0 ? normalized : null;
+  return height > 0 ? height : null;
 }

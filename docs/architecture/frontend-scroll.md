@@ -222,6 +222,23 @@ Never write `scrollTop` directly from feature code. Never pass
 `smooth: true` to virtua `scrollToIndex`; native smooth scrolling emits
 asynchronous scroll events that race the controller's tagging.
 
+Every controller write is preceded by virtua manual-scroll marking: the
+controller's `onBeforeScrollTopWrite` hook — wired by MessageTimeline to
+the patched `VirtualizerHandle.markProgrammaticScroll()`
+(`patches/virtua@0.49.1.patch`) — fires before each `scrollTop`
+assignment so virtua never classifies a pin write as a user scroll-down.
+Unmarked writes latch virtua's scroll direction and drop the entire
+above-viewport buffer, the remount churn behind the streaming settle
+flicker (`settle-flicker-analysis.md`, 2026-07-01 streaming
+settle-flicker entry). virtua clears the mark at scrollend, which is why
+the hook fires per write, not per burst. Controller write paths inherit
+the marking automatically as long as they route through
+`writeProgrammaticScrollTop`; a raw `scrollEl.scrollTop` assignment
+anywhere else reintroduces the churn. Regression coverage:
+`src/test/integration/virtua-patch-buffer-retention.browser.test.ts`
+(patch tripwire + marked-write guard) and
+`messageTimelineVirtuaMarking.test.ts` (component wiring seam).
+
 `prefers-reduced-motion: reduce` forces sync-pin behavior regardless of
 requested animation mode.
 
@@ -517,6 +534,11 @@ Useful trace records:
   `contentRO` transient and an `oscillationSnap`. Must stay silent; see
   [`settle-flicker-analysis.md`](settle-flicker-analysis.md) for the root cause
   and the `[data-row-geometry-content] { display: flow-root }` containment fix.
+- `timeline.row.geometry` — the row-height reservation state machine
+  (reserve / hold / settle / release-*, one event per transition).
+  `mountSeq` discriminates a virtua remount (same row key, new mountSeq)
+  from churn on one living row (same mountSeq cycling) — the distinction
+  the contentRO deltas alone cannot provide.
 
 Work backward from the visible symptom to the last relevant
 `scroll.contentRO`. If the user intended to stick and

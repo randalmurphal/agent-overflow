@@ -11,6 +11,9 @@ patchedDependencies:
   svelte@5.56.3:
     hash: a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e
     path: patches/svelte@5.56.3.patch
+  virtua@0.49.1:
+    hash: 7dd95248232f2764664007402761ba1e3d7fb27e3b925c39494ea6c6115c330e
+    path: patches/virtua@0.49.1.patch
 
 importers:
 
@@ -75,7 +78,7 @@ importers:
         version: 3.1.1(patch_hash=62eeda252e178974688d13a1fec2c1a6c60016573c78cee77256f82f64a34497)(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))
       virtua:
         specifier: 0.49.1
-        version: 0.49.1(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))
+        version: 0.49.1(patch_hash=7dd95248232f2764664007402761ba1e3d7fb27e3b925c39494ea6c6115c330e)(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e))
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
         specifier: 7.0.0
@@ -3046,7 +3049,7 @@ snapshots:
       '@types/unist': 3.0.3
       vfile-message: 4.0.3
 
-  virtua@0.49.1(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)):
+  virtua@0.49.1(patch_hash=7dd95248232f2764664007402761ba1e3d7fb27e3b925c39494ea6c6115c330e)(svelte@5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)):
     optionalDependencies:
       svelte: 5.56.3(patch_hash=a8eefbc7eb4ca683b6c8ba701ace217eaa102781e90cdd546fee5f6e321fc25e)
 

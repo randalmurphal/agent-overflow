@@ -147,6 +147,22 @@ corrupt every project on the machine. Use
      `src/lib/utils/zombieMintProbe.ts`) that fires if a future svelte
      re-introduces the hunk-1 shape. Keep while hunk 1 exists; drop
      alongside it.
+- `virtua@0.49.1.patch` — one hunk (plus its type declaration): expose
+  `markProgrammaticScroll()` on the Svelte `VirtualizerHandle`. It fires
+  the store's internal ACTION_MANUAL_SCROLL (the un-exported literal `7`),
+  the same marking virtua's own async scroll APIs apply before writing
+  scrollTop. Needed because `useStickToBottom` writes `scrollTop`
+  synchronously every streaming beat, and unmarked writes are classified
+  as user scroll-downs — virtua latches the direction and drops its
+  entire above-viewport buffer, the remount churn behind the streaming
+  settle flicker (`docs/architecture/settle-flicker-analysis.md`,
+  2026-07-01 streaming settle-flicker entry). MessageTimeline wires the
+  marker into the controller's `onBeforeScrollTopWrite`. Candidate to
+  upstream as an external-scroller marking API. Drop rule: when
+  `src/test/integration/virtua-patch-buffer-retention.browser.test.ts`'s
+  "unmarked write drops the buffer" tripwire FAILS on an unpatched
+  release (i.e. virtua stops dropping the backward buffer on unmarked
+  programmatic writes), the patch is obsolete.
 - `svelte-streamdown@3.1.1.patch` — markdown-pipeline fixes, grouped by
   concern. Behavior is held across version bumps: re-roll by
   `git apply --reject`-ing the prior patch into a clean `pnpm patch`
