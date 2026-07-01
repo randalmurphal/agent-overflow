@@ -89,9 +89,13 @@ go-test:
 test-race:
 	go test -race -timeout 600s ./internal/transport/... ./internal/triage/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... .
 
+# playwright install is idempotent and cached (~/.cache/ms-playwright);
+# the Chromium binary backs the frontend browser test project
+# (`pnpm test:browser`), which is part of `make test` and `make verify`.
 install:
 	go install tool
 	cd frontend && pnpm install --frozen-lockfile
+	cd frontend && pnpm exec playwright install chromium
 
 dev:
 	go build -o bin/agent-overflow-dev ./cmd/agent-overflow-dev
@@ -183,6 +187,7 @@ build:
 test:
 	$(MAKE) go-test
 	cd frontend && pnpm test
+	cd frontend && pnpm run test:browser
 
 check:
 	$(MAKE) go-build

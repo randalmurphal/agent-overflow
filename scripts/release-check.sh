@@ -13,6 +13,7 @@ run make -C "$ROOT_DIR" go-build
 run make -C "$ROOT_DIR" go-test
 run sh -c "cd '$ROOT_DIR/frontend' && pnpm run check"
 run sh -c "cd '$ROOT_DIR/frontend' && pnpm test"
+run sh -c "cd '$ROOT_DIR/frontend' && pnpm run test:browser"
 run make -C "$ROOT_DIR" build
 
 case "$(uname -s)" in
