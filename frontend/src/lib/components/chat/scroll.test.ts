@@ -896,7 +896,7 @@ describe('scroll integration — composer height + layout invariance', () => {
   // geometry and its stub ResizeObserver does not auto-fire on observe(), so the
   // engine cannot exist here: any component-level assertion passes identically
   // with and without the fix (verified) and would be coverage theater. The
-  // discriminating guard lives at the unit level in timelineRowGeometry.test.ts
+  // discriminating guard lives at the unit level in scrollSurfaceWidth.test.ts
   // ("reports the content-box width and never makes a synchronous layout
   // read"), which fails on the old gBCR-seeded behavior and passes on the
   // content-box-only helper. Do not re-add a happy-dom self-retrigger test.

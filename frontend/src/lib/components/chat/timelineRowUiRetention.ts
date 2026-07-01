@@ -1,8 +1,5 @@
 import type { Item } from '../../types/models';
-import {
-  timelineNodeKey,
-  type TimelineNode,
-} from '../../utils/subagentGrouping';
+import type { TimelineNode } from '../../utils/subagentGrouping';
 import type {
   PayloadExpansionRetentionKey,
   RowUiStateRetention,
@@ -12,7 +9,6 @@ interface RetentionAccumulator {
   itemIds: Set<string>;
   payloads: Map<string, PayloadExpansionRetentionKey>;
   groupKeys: Set<string>;
-  rowGeometryKeys: Set<string>;
 }
 
 export interface TimelineRowUiRetentionRange {
@@ -80,17 +76,16 @@ export function collectTimelineRowUiRetention(
     itemIds: new Set<string>(),
     payloads: new Map<string, PayloadExpansionRetentionKey>(),
     groupKeys: new Set<string>(),
-    rowGeometryKeys: new Set<string>(),
   };
   const retainStart = Math.max(0, range.first - options.nodeBuffer);
   const retainEnd = Math.min(nodes.length - 1, range.last + options.nodeBuffer);
   const tailStart = Math.max(0, nodes.length - options.tailNodeCount);
 
   for (let index = retainStart; index <= retainEnd; index += 1) {
-    retainTopLevelNode(retained, nodes[index], options);
+    retainNode(retained, nodes[index], options);
   }
   for (let index = tailStart; index < nodes.length; index += 1) {
-    retainTopLevelNode(retained, nodes[index], options);
+    retainNode(retained, nodes[index], options);
   }
 
   const activeItemIds = new Set<string>();
@@ -101,8 +96,7 @@ export function collectTimelineRowUiRetention(
   }
   if (activeItemIds.size > 0) {
     for (const node of nodes) {
-      if (!retainActiveGroupKeys(retained, node, activeItemIds)) continue;
-      retained.rowGeometryKeys.add(timelineNodeKey(node));
+      retainActiveGroupKeys(retained, node, activeItemIds);
     }
   }
 
@@ -110,7 +104,6 @@ export function collectTimelineRowUiRetention(
     itemIds: retained.itemIds,
     payloads: retained.payloads.values(),
     groupKeys: retained.groupKeys,
-    rowGeometryKeys: retained.rowGeometryKeys,
   };
 }
 
@@ -129,15 +122,6 @@ function retainItem(
     threadId: item.threadId,
     payloadId: item.payloadId,
   });
-}
-
-function retainTopLevelNode(
-  retained: RetentionAccumulator,
-  node: TimelineNode,
-  options: TimelineRowUiRetentionOptions,
-): void {
-  retained.rowGeometryKeys.add(timelineNodeKey(node));
-  retainNode(retained, node, options);
 }
 
 function retainNode(

@@ -6,9 +6,7 @@
 import type { VirtualizerHandle } from 'virtua/svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { TimelineNode } from '../../utils/subagentGrouping';
-import type { TimelineRowGeometryTraceHook } from './timelineRowGeometry';
 import {
-  isUiRenderTraceCompiledIn,
   isUiRenderTraceEnabled,
   recordUiTrace,
   scheduleDomUiTrace,
@@ -109,22 +107,6 @@ export function recordTimelineRenderTrace(
     viewportSize: listRef ? Math.round(listRef.getViewportSize()) : 0,
   }));
 }
-
-// Tap for the row-geometry reservation state machine (timeline.row.geometry).
-// `undefined` when the trace surface is not compiled in, so the reservation's
-// `trace?.({...})` call sites short-circuit BEFORE building their event
-// objects — some taps fire per streamed beat (`skip-settled` on the tail row)
-// or per ResizeObserver delivery (`hold` during a held remount), so hook
-// PRESENCE, not the hook body, is what keeps ungated builds allocation-free.
-// The body still checks the runtime toggle per event (Ctrl+Shift+B flips it
-// mid-session in gated builds).
-export const rowGeometryTraceHook: TimelineRowGeometryTraceHook | undefined =
-  isUiRenderTraceCompiledIn()
-    ? (event) => {
-        if (!isUiRenderTraceEnabled()) return;
-        recordUiTrace('timeline.row.geometry', event);
-      }
-    : undefined;
 
 export function startTimelineRowResizeTrace(root: Element): () => void {
   if (!isUiRenderTraceEnabled()) return () => {};

@@ -44,7 +44,6 @@
   import WaitGroup from './WaitGroup.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import {
-    rowGeometryTraceHook,
     recordTimelineRenderTrace,
     startTimelineRowResizeTrace,
     startVirtuaMarginDivergenceTrace,
@@ -76,12 +75,7 @@
     collectTimelineRowUiRetention,
     timelineRowUiPruneSignature,
   } from './timelineRowUiRetention';
-  import {
-    createTimelineRowGeometryReservation,
-    directRowGeometryContent,
-    observeScrollSurfaceContentWidth,
-  } from './timelineRowGeometry';
-  import { timelineRowGeometryKey } from './timelineRowGeometrySignature';
+  import { observeScrollSurfaceContentWidth } from './scrollSurfaceWidth';
 
   // Initial item-size estimate for virtua. Real sizes come from the
   // per-item ResizeObserver virtua wraps each row in; this constant only
@@ -190,15 +184,6 @@
     userMessageActions?: UserMessageActions;
   } = $props();
 
-  const rowGeometryReservation = createTimelineRowGeometryReservation({
-    cachedTimelineRowHeight(key) {
-      return pane.cachedTimelineRowHeight(key);
-    },
-    rememberTimelineRowHeight(key, height) {
-      pane.rememberTimelineRowHeight(key, height);
-    },
-  }, rowGeometryTraceHook);
-
   // Inner scroll container. We own scrolling here; <Virtualizer> renders
   // its measured rows inside `contentEl` and reads/writes via scrollRef.
   // The element is wrapped in a non-scrolling `relative flex h-full
@@ -260,18 +245,6 @@
         && !RAIL_EXEMPT_PAYLOAD_KINDS.has(leafItem.payloadKind ?? '');
     }
     return RAIL_GROUP_KINDS.has(node.kind);
-  }
-
-  function rowGeometryShellSignature(index: number, isRail: boolean): string {
-    return [
-      index === 0 ? 'first' : 'middle',
-      index === 0 && pane.hasMoreHistory ? 'load-older' : 'no-load-older',
-      index === 0 && pane.loadingOlder ? 'loading-older' : 'idle-older',
-      rowDecorations.responseDividerIndexes.has(index) ? 'response-divider' : 'no-divider',
-      rowDecorations.responsePillIndexes.has(index) ? 'response-pill' : 'no-response-pill',
-      rowDecorations.toolTextBoundaryIndexes.has(index) ? 'tool-boundary' : 'no-tool-boundary',
-      isRail ? 'rail' : 'flat',
-    ].join(':');
   }
 
   // Two-phase derivation: structuralNodes runs the expensive grouping
@@ -689,7 +662,8 @@
   });
 
   // Row-geometry width is the scroll surface's CONTENT-box width, sourced ONLY
-  // from the async ResizeObserver inside observeScrollSurfaceContentWidth. This
+  // from the async ResizeObserver inside observeScrollSurfaceContentWidth. It
+  // feeds the virtua CacheSnapshot validity key (currentVirtuaSizeKey). This
   // effect must depend on `scrollEl` alone: it never reads `rowGeometryWidth`
   // and never seeds it from a synchronous layout query. Either would
   // re-subscribe the effect to `rowGeometryWidth`, so any write — including the
@@ -702,8 +676,8 @@
   // observeScrollSurfaceContentWidth (idle CPU/heap-churn incident 2026-06-26;
   // the CPU trace caught this exact effect re-running ~33k times in 30s of
   // idle). The RO's first delivery — content-box, before paint — sets the
-  // initial width; until then it stays 0 (one frame of width-0 geometry keys,
-  // which simply miss the height cache and reserve nothing).
+  // initial width; until then it stays 0 (a width-0 size key simply never
+  // matches a stored snapshot).
   $effect(() => {
     const surface = scrollEl;
     if (!surface) {
@@ -866,10 +840,10 @@
 
   // Dev-only per-pane scroll-geometry probe for the width-reflow strand
   // (last message left floating high after a pane widens, never self-correcting).
-  // Reports virtua's cached bottom-row slot vs the real DOM row height and the
-  // min-height reservation's contribution, so a Ctrl+Shift+B capture at a stable
-  // strand names the mechanism. Reads THIS pane's controller + refs directly, so
-  // it is immune to __stickState's last-writer-wins. See utils/paneGeometryProbe.ts.
+  // Reports virtua's cached per-row slot vs the real DOM row height, so a
+  // Ctrl+Shift+B capture at a stable strand names the mechanism. Reads THIS
+  // pane's controller + refs directly, so it is immune to __stickState's
+  // last-writer-wins. See utils/paneGeometryProbe.ts.
   function captureTimelineGeometry(): PaneGeometrySnapshot {
     const snapshot: PaneGeometrySnapshot = {
       paneId: pane.paneId,
@@ -930,23 +904,12 @@
         for (const wrapper of wrappers) {
           const index = Number(wrapper.dataset.rowIndex);
           if (!Number.isInteger(index)) continue;
-          const content = directRowGeometryContent(wrapper);
           const wrapperHeight = wrapper.offsetHeight;
-          const contentHeight = content ? content.offsetHeight : null;
           const cachedSize =
             sizes && index >= 0 && index < sizes.length ? Math.round(sizes[index]) : null;
-          const inlineMinHeight = wrapper.style.minHeight;
-          const minHeightPx = inlineMinHeight.endsWith('px')
-            ? Math.round(parseFloat(inlineMinHeight))
-            : null;
           snapshot.rows.push({
             index,
-            geometryKey: wrapper.dataset.rowGeometryKey ?? null,
             wrapperHeight,
-            contentHeight,
-            reservationInflation:
-              contentHeight === null ? null : wrapperHeight - contentHeight,
-            minHeightPx,
             cachedSize,
             cacheVsWrapper: cachedSize === null ? null : cachedSize - wrapperHeight,
           });
@@ -1992,13 +1955,6 @@
           {#snippet children(node: TimelineNode, index: number)}
             {@const currentLeafItem = currentTimelineLeafItem(node)}
             {@const isRail = timelineNodeHasRail(node, currentLeafItem)}
-            {@const rowGeometry = timelineRowGeometryKey(
-              node,
-              currentLeafItem,
-              rowGeometryWidth,
-              pane.isSubagentGroupExpanded,
-              rowGeometryShellSignature(index, isRail),
-            )}
             <!-- Outer per-row wrapper. We do NOT set data-item-id here:
                  only TimelineLeaf owns that attribute on its root. Structural
                  rows stay unanchored, and tests rely on the divider rendering
@@ -2014,25 +1970,8 @@
                  renders flat and breaks the line. -->
             <div
               data-row-index={index}
-              data-row-geometry-key={rowGeometry.key}
-              use:rowGeometryReservation={rowGeometry}
               class:mt-4={rowDecorations.toolTextBoundaryIndexes.has(index)}
             >
-              <!-- Row-geometry measurement anchor for the min-height
-                   reservation in timelineRowGeometry.ts. MUST stay free of
-                   horizontal padding and border. The reservation caches each
-                   row's height keyed by width, and must RESERVE under the same
-                   width bucket it REMEMBERED: the remember path keys off this
-                   element's own ResizeObserver contentRect.width (content-box),
-                   the reserve path keys off rowGeometryWidth — the scroll
-                   surface's contentRect.width threaded in as a prop (also
-                   content-box). The two are equal only while there is zero
-                   horizontal padding/border between the surface's content box
-                   and this element. Add px-/border here and they diverge: every
-                   reserve lookup misses the bucket the remember path wrote, the
-                   reservation silently no-ops, and the post-width-reflow scroll
-                   strand returns. Keep padding on the inner wrapper below, never
-                   on this element. -->
               <!-- Style-load-bearing: app.css sets `display: flow-root` on
                    [data-row-geometry-content] to establish a BFC that CONTAINS
                    each row's trailing bottom margin in its own content box
@@ -2040,14 +1979,15 @@
                    notification / retry `mb-1.5`, …). Without it those margins
                    collapse out through this all-plain wrapper chain and are
                    trapped only by virtua's `contain: layout` item wrapper, so
-                   virtua's measured total and the per-row content-box
-                   ResizeObserver disagree and oscillate during streaming reflow
-                   → scrollTop clamp → `spring.oscillationSnap` = the settle
-                   flicker. Keyed to the attribute (not a class) so a refactor
-                   here can't drop it silently; it is display-only, so the
-                   width-bucket keying above is unaffected. Coupling + behavioral
-                   regression test + full analysis: see the rule's comment in
-                   app.css and docs/architecture/settle-flicker-analysis.md. -->
+                   virtua's measured row total (margin included) and the row's
+                   own content box (margin excluded) disagree; virtua re-measures
+                   the trapped margin inconsistently during streaming reflow
+                   → totalSize oscillates → scrollTop clamp →
+                   `spring.oscillationSnap` = the settle flicker. Keyed to the attribute (not a class) so a refactor
+                   here can't drop it silently; it is display-only. Coupling +
+                   behavioral regression test + full analysis: see the rule's
+                   comment in app.css and
+                   docs/architecture/settle-flicker-analysis.md. -->
               <div data-row-geometry-content>
                 {#if index === 0}
                   <!-- Top of timeline. Load-older button (when applicable) and

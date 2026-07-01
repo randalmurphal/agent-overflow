@@ -327,15 +327,13 @@ pre, code, kbd, samp, .ansi-body {
    error card `mb-4`, notification/retry `mb-1.5`, api-error `mb-3` — collapses
    straight out of the row and is trapped only by virtua's `contain: layout`
    item wrapper. That makes virtua's measured row total (margin included) and
-   our per-row content-box ResizeObserver (margin excluded) disagree; virtua
-   re-measures the trapped margin inconsistently while reflowing around a
-   growing streaming row, so its total oscillates → the browser clamps scrollTop
-   on the transient shrink → `spring.oscillationSnap` snaps it back = the
-   visible flicker (worse as margin-bearing rows stack near the tail).
-   `display: flow-root` makes the row its own BFC so the margin is contained in
-   the row's content box: virtua and the content-box observer now measure the
-   same, stable height. Display-only — no padding/border — so the geometry
-   reservation's width-bucket keying (see MessageTimeline.svelte) is unaffected.
+   the row's own content box (margin excluded) disagree; virtua re-measures the
+   trapped margin inconsistently while reflowing around a growing streaming
+   row, so its total oscillates → the browser clamps scrollTop on the transient
+   shrink → `spring.oscillationSnap` snaps it back = the visible flicker (worse
+   as margin-bearing rows stack near the tail). `display: flow-root` makes the
+   row its own BFC so the margin is contained in the row's content box: virtua
+   now measures a stable height. Display-only — no padding/border.
    Flush-safe for markdown only because the resets above zero the first block's
    top margin (see point 2). Behavioral regression:
    components/chat/rowMarginContainment.browser.test.ts. Full analysis:

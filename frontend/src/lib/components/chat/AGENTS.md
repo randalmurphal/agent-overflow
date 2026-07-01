@@ -66,13 +66,6 @@ Use these pane registries instead of local row state:
   diff-card expand/collapse overrides. Tri-state: an absent entry
   follows the `collapseDiffPreviews` setting default; pass `undefined`
   to clear the override.
-- `pane.cachedTimelineRowHeight(...)` /
-  `pane.rememberTimelineRowHeight(...)` for temporary remount geometry
-  reservations. These are row-key + signature + width entries pruned with
-  the visible row UI window — a per-row `min-height` reservation, distinct
-  from the per-thread virtua `CacheSnapshot` replay in
-  `utils/threadVirtuaSizeCache.ts` (which restores virtua's whole measured
-  size store on a validity-key match).
 
 Payload bytes go through `utils/payloadDataCache.ts`, keyed by
 `(threadId, payloadId, version)` and byte-bounded by its LRU. Per-pane
@@ -123,7 +116,10 @@ that pipeline go upstream-then-patch; do not duplicate parser fixes in
 ## Test Notes
 
 happy-dom reports zero geometry, so `MessageTimeline.svelte` enables
-virtua `ssrCount` only under `import.meta.env.MODE === 'test'`.
+virtua `ssrCount` (render-all) only under happy-dom test runs
+(`MODE === 'test'` AND the `window.happyDOM` marker). The Chromium
+browser project keeps real windowing — its outcome tests count row
+unmounts.
 
 Layout invariants that happy-dom cannot see (margin containment, flush,
 oscillation geometry) run in the real-Chromium `browser` vitest project

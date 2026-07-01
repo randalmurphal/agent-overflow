@@ -459,107 +459,6 @@ describe('createThreadRowUiState', () => {
     revoke.mockRestore();
   });
 
-  it('caches timeline row heights by key, signature, and width', () => {
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
-    const key = {
-      key: 'l:thread-a:item-a',
-      signature: 'signature-a',
-      width: 420,
-      ownerItemIds: ['item-a'],
-    };
-
-    expect(rowUiState.cachedTimelineRowHeight(key)).toBeUndefined();
-
-    rowUiState.rememberTimelineRowHeight(key, 123.4);
-
-    // Exact fractional round-trip — cached heights back the remount
-    // min-height floor, so rounding to 123 would release each floor with a
-    // 0.4px residue (the settle-flicker amplifier,
-    // docs/architecture/settle-flicker-analysis.md).
-    expect(rowUiState.cachedTimelineRowHeight(key)).toBe(123.4);
-    expect(rowUiState.cachedTimelineRowHeight({
-      ...key,
-      signature: 'signature-b',
-    })).toBeUndefined();
-    expect(rowUiState.cachedTimelineRowHeight({
-      ...key,
-      width: 421,
-    })).toBeUndefined();
-
-    const widerKey = { ...key, width: 900 };
-    rowUiState.rememberTimelineRowHeight(widerKey, 200);
-    expect(rowUiState.cachedTimelineRowHeight(key)).toBe(123.4);
-    expect(rowUiState.cachedTimelineRowHeight(widerKey)).toBe(200);
-
-    rowUiState.rememberTimelineRowHeight({
-      ...key,
-      signature: 'signature-c',
-    }, 300);
-    expect(rowUiState.cachedTimelineRowHeight(key)).toBeUndefined();
-    expect(rowUiState.cachedTimelineRowHeight(widerKey)).toBeUndefined();
-  });
-
-  it('drops preserved row geometry when a diff card is toggled, sparing other rows', () => {
-    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
-    const key = {
-      key: 'l:thread-a:item-a',
-      signature: 'sig-a',
-      width: 800,
-      ownerItemIds: ['item-a'],
-    };
-    const otherKey = {
-      key: 'l:thread-a:item-b',
-      signature: 'sig-b',
-      width: 800,
-      ownerItemIds: ['item-b'],
-    };
-    rowUiState.rememberTimelineRowHeight(key, 200);
-    rowUiState.rememberTimelineRowHeight(otherKey, 90);
-
-    // Collapsing the card is a deliberate height change; its stale
-    // expanded geometry must not survive to be reserved on a remount.
-    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', false);
-
-    expect(rowUiState.cachedTimelineRowHeight(key)).toBeUndefined();
-    expect(rowUiState.cachedTimelineRowHeight(otherKey)).toBe(90);
-  });
-
-  it('drops preserved row geometry when an item expansion handle collapses', async () => {
-    setBindingMock('GetPayloadPreview', async () => ({
-      data: 'body',
-      nextOffset: 4,
-      totalSize: 4,
-      isComplete: true,
-    }));
-    const item = makeItem({
-      id: 'tool:5:0',
-      kind: 'tool_call',
-      payloadId: 'payload-a',
-      threadId: 'thread-a',
-    });
-    const rowUiState = createThreadRowUiState({
-      getItemById(itemId: string): Item | undefined {
-        return itemId === item.id ? item : undefined;
-      },
-    });
-    const key = {
-      key: `l:${item.threadId}:${item.id}`,
-      signature: 'sig',
-      width: 800,
-      ownerItemIds: [item.id],
-    };
-
-    const handle = rowUiState.expansionStateFor(item);
-    await handle.expand();
-    rowUiState.rememberTimelineRowHeight(key, 200);
-    expect(rowUiState.cachedTimelineRowHeight(key)).toBe(200);
-
-    // The user collapses the row: its preserved expanded height is dropped
-    // synchronously, before any collapse-driven remount can reserve it.
-    handle.collapse();
-    expect(rowUiState.cachedTimelineRowHeight(key)).toBeUndefined();
-  });
-
   it('disposes per-item expansion and attachment state', () => {
     const item = makeItem({
       id: 'tool:5:0',
@@ -592,24 +491,14 @@ describe('createThreadRowUiState', () => {
 
     rowUiState.setDiffCardExpanded(item.id, 'src/foo.ts', true);
     rowUiState.setDiffCardExpanded('item-other', 'src/keep.ts', false);
-    const rowGeometryKey = {
-      key: `l:${item.threadId}:${item.id}`,
-      signature: 'row-signature',
-      width: 800,
-      ownerItemIds: [item.id],
-    };
-    rowUiState.rememberTimelineRowHeight(rowGeometryKey, 144);
 
     expect(rowUiState.debugStats().itemExpansionStates).toBe(1);
     expect(rowUiState.debugStats().payloadExpansionStates).toBe(1);
-    expect(rowUiState.debugStats().rowGeometryItems).toBe(1);
     rowUiState.disposeItems([item]);
 
     expect(rowUiState.debugStats().itemExpansionStates).toBe(0);
     expect(rowUiState.debugStats().payloadExpansionStates).toBe(0);
     expect(rowUiState.debugStats().attachmentItems).toBe(0);
-    expect(rowUiState.debugStats().rowGeometryItems).toBe(0);
-    expect(rowUiState.cachedTimelineRowHeight(rowGeometryKey)).toBeUndefined();
     expect(rowUiState.isSubagentGroupExpanded(item.id)).toBe(false);
     expect(rowUiState.isSubagentGroupExpanded(`wait:${item.id}`)).toBe(false);
     // Diff card overrides for the disposed item drop; others survive.
@@ -705,7 +594,6 @@ describe('createThreadRowUiState', () => {
         itemIds: [],
         payloads: [],
         groupKeys: [],
-        rowGeometryKeys: [],
       });
 
       expect(rowUiState.debugStats().expansionStates).toBe(0);
@@ -757,7 +645,6 @@ describe('createThreadRowUiState', () => {
       itemIds: [],
       payloads: [],
       groupKeys: [],
-      rowGeometryKeys: [],
     });
     rowUiState.appendLivePayloadDeltaForItem(
       item.id,
@@ -832,21 +719,6 @@ describe('createThreadRowUiState', () => {
       size: 1,
       url: 'blob:retained-attachment',
     });
-    const oldRowGeometryKey = {
-      key: `l:${oldItem.threadId}:${oldItem.id}`,
-      signature: 'old-row-signature',
-      width: 800,
-      ownerItemIds: [oldItem.id],
-    };
-    const retainedRowGeometryKey = {
-      key: `l:${retainedItem.threadId}:${retainedItem.id}`,
-      signature: 'retained-row-signature',
-      width: 800,
-      ownerItemIds: [retainedItem.id],
-    };
-    rowUiState.rememberTimelineRowHeight(oldRowGeometryKey, 111);
-    rowUiState.rememberTimelineRowHeight(retainedRowGeometryKey, 222);
-
     expect(rowUiState.debugStats()).toMatchObject({
       expansionStates: 4,
       itemExpansionStates: 2,
@@ -854,14 +726,12 @@ describe('createThreadRowUiState', () => {
       subagentGroups: 2,
       diffCardOverrideItems: 2,
       attachmentItems: 2,
-      rowGeometryItems: 2,
     });
 
     rowUiState.pruneRowUiState({
       itemIds: [retainedItem.id],
       payloads: [{ threadId: 'thread-a', payloadId: 'payload-retained' }],
       groupKeys: ['group-retained'],
-      rowGeometryKeys: [retainedRowGeometryKey.key],
     });
 
     expect(rowUiState.debugStats()).toMatchObject({
@@ -871,7 +741,6 @@ describe('createThreadRowUiState', () => {
       subagentGroups: 1,
       diffCardOverrideItems: 1,
       attachmentItems: 1,
-      rowGeometryItems: 1,
     });
     expect(revoke).toHaveBeenCalledWith('blob:old-attachment');
     expect(rowUiState.isSubagentGroupExpanded('group-old')).toBe(false);
@@ -880,8 +749,6 @@ describe('createThreadRowUiState', () => {
     expect(rowUiState.diffCardExpandedOverride(retainedItem.id, 'src/retained.ts')).toBe(false);
     expect(retainedAttachmentCache.get('retained-attachment')).toBeTruthy();
     expect(oldAttachmentCache.get('old-attachment')).toBeUndefined();
-    expect(rowUiState.cachedTimelineRowHeight(oldRowGeometryKey)).toBeUndefined();
-    expect(rowUiState.cachedTimelineRowHeight(retainedRowGeometryKey)).toBe(222);
 
     retainedAttachmentCache.set('retained-after-prune', {
       id: 'retained-after-prune',

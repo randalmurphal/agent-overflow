@@ -37,9 +37,6 @@ describe('timeline row UI retention', () => {
       { threadId: 'thread-a', payloadId: 'payload-parent' },
     ]);
     expect(new Set(result.groupKeys)).toEqual(new Set(['group:agent-parent']));
-    expect(new Set(result.rowGeometryKeys)).toEqual(new Set([
-      'g:thread-a:group:agent-parent',
-    ]));
   });
 
   it('retains expanded subagent descendants', () => {
@@ -73,9 +70,6 @@ describe('timeline row UI retention', () => {
     expect(new Set([...result.payloads].map((payload) => payload.payloadId))).toEqual(
       new Set(['payload-parent', 'payload-child']),
     );
-    expect(new Set(result.rowGeometryKeys)).toEqual(new Set([
-      'g:thread-a:group:agent-parent',
-    ]));
   });
 
   it('retains group keys for active offscreen descendants', () => {
@@ -113,10 +107,6 @@ describe('timeline row UI retention', () => {
       'visible-row',
     ]));
     expect(new Set(result.groupKeys)).toEqual(new Set(['group:agent-parent']));
-    expect(new Set(result.rowGeometryKeys)).toEqual(new Set([
-      'g:thread-a:group:agent-parent',
-      'l:thread-a:visible-row',
-    ]));
   });
 
   it('changes active signature when an active row completes', () => {

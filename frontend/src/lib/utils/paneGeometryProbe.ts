@@ -9,23 +9,19 @@
 // arbitrary pane) and it centers on `distanceFromBottom`, which reads ~0 BOTH
 // when healthy AND at this strand (you are pinned at a wrong max-scroll), so it
 // cannot tell the two apart. This probe instead dumps EVERY mounted timeline and
-// reports the per-row deltas that DO discriminate the failure:
+// reports the per-row delta that DOES discriminate the failure:
 //
-//   reservationInflation = wrapper.offsetHeight − [data-row-geometry-content].offsetHeight
-//     > 0 ⇒ the row-geometry min-height reservation (timelineRowGeometry.ts) is
-//           holding this row's wrapper TALLER than its natural content (the
-//           stale-width / shrink-while-reserved path → mechanism "a").
 //   cacheVsWrapper = virtua getCache() slot size − wrapper.offsetHeight
 //     > 0 ⇒ virtua's cached slot is taller than the real (correct) DOM row, i.e.
-//           a stale/dropped re-measure inside virtua itself (→ mechanism "b").
+//           a stale/dropped re-measure inside virtua itself.
 //
 // `scrollHeight === virtua totalSize` exactly (the virtua container is
 // `contain: size` + explicit `height: <totalSize>px`), so an inflated BOTTOM-row
 // slot is the only way to strand the last row floating high at max scroll. Read
 // the bottom rendered row (`bottomRenderedIndex`): a positive delta there names
-// the mechanism; both deltas ~0 while `scrollHeight` still exceeds the row sum
+// the mechanism; deltas ~0 while `scrollHeight` still exceeds the row sum
 // points at a spacer / elsewhere. Compare `rowGeometryWidth` to `clientWidth` to
-// catch a reservation keyed at a stale (pre-widen) width.
+// catch a virtua size-cache replay keyed at a stale (pre-widen) width.
 //
 // See docs/architecture/frontend-scroll.md and the Ctrl+Shift+B capture in
 // uiRenderTrace.ts, which folds this dump into the `user.bugReport` marker so a
@@ -60,17 +56,8 @@ const PANE_GEOMETRY_BUILD_GATE =
 export interface PaneGeometryRowSample {
   // virtua item index (the `data-row-index` on the measured wrapper).
   index: number;
-  // The row-geometry reservation key (`data-row-geometry-key`); its trailing
-  // width segment reveals which width this row was last keyed at.
-  geometryKey: string | null;
   // Height virtua measures: the [data-row-index] wrapper's border box.
   wrapperHeight: number;
-  // Natural content height: the inner [data-row-geometry-content] border box.
-  contentHeight: number | null;
-  // wrapper − content. > 0 ⇒ min-height reservation is inflating this row.
-  reservationInflation: number | null;
-  // Inline reservation min-height currently applied to the wrapper, if any.
-  minHeightPx: number | null;
   // virtua's cached slot size for this index (from getCache()).
   cachedSize: number | null;
   // cachedSize − wrapper. > 0 ⇒ virtua's slot is taller than the real DOM row.
@@ -92,8 +79,9 @@ export interface PaneGeometrySnapshot {
   clientHeight: number | null;
   clientWidth: number | null;
   distanceFromBottom: number | null;
-  // Width the row-geometry keys were last built at; compare to clientWidth to
-  // catch a stale-width reservation.
+  // Scroll surface content-box width from the async width observer (feeds the
+  // virtua CacheSnapshot validity key); compare to clientWidth to catch a
+  // stale (pre-reflow) width.
   rowGeometryWidth: number | null;
   itemsLength: number;
   // listRef.getScrollSize() — should equal scrollHeight; a mismatch is its own

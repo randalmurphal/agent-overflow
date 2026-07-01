@@ -469,19 +469,29 @@ not violate the visible-thread memory budget. This replays revisits within a
 session; a genuine first visit has no snapshot and still cascades (hidden by
 the warm-up gate, above).
 
-`MessageTimeline` may keep a per-pane row-geometry reservation for mounted
-timeline nodes. That cache is keyed by rendered row key, row content
-signature, and scroll-pane width, pruned with the row UI retention window,
-and applied only as a temporary `min-height` while a remounted row catches
-back up to its last measured height. The width is the scroll surface's
-**content-box** width, observed asynchronously through
-`observeScrollSurfaceContentWidth` (`timelineRowGeometry.ts`) — never a
-synchronous or border-box read (`getBoundingClientRect`, `clientWidth`). The
-reserve path and the per-row remember path must key on the same box; a second,
-disagreeing width source turns the width signal into a self-sustaining
-oscillation that re-renders every row at idle (CPU/heap-churn incident
-2026-06-26). It is not a persisted virtua size cache and must not drive
-`scrollTop` writes.
+There is deliberately NO per-row min-height floor system. An earlier
+per-pane row-geometry reservation (row-key + signature + width height cache
+applied as a temporary `min-height` on remount) was deleted post-`f42dc6e6`:
+with the virtua manual-scroll marking patch and fractional height caching in
+place, a capture experiment on the scroll-away/return remount path showed
+floors-OFF outcome-identical to floors-ON (zero scrollHeight dips, zero
+scrollTop reversals, identical unmount batches, clean bottom landings) — see
+[`scroll-rearchitecture-plan.md`](scroll-rearchitecture-plan.md) §3.
+Async-short remount content is bridged at the content layer (streamdown
+mermaid/math rendered-height caches, the attachment blob cache), and
+`remountReturn.browser.test.ts` pins the outcomes. Two pieces survive the
+deletion:
+
+- The scroll surface width signal: the **content-box** width, observed
+  asynchronously through `observeScrollSurfaceContentWidth`
+  (`scrollSurfaceWidth.ts`), feeds the virtua `CacheSnapshot` validity key —
+  never a synchronous or border-box read (`getBoundingClientRect`,
+  `clientWidth`). A second, disagreeing width source turns the width signal
+  into a self-sustaining oscillation that re-renders every row at idle
+  (CPU/heap-churn incident 2026-06-26, commit `a5a5d032`).
+- Margin containment: the `[data-row-geometry-content]` row wrapper and the
+  app.css `display: flow-root` rule (commit `4b3759a1`) — independent of the
+  floors; see [`settle-flicker-analysis.md`](settle-flicker-analysis.md).
 
 Rows inside the transcript should keep their shell stable after first
 render. Add details inside reserved slots; do not append completion-only
@@ -533,11 +543,6 @@ Useful trace records:
   `contentRO` transient and an `oscillationSnap`. Must stay silent; see
   [`settle-flicker-analysis.md`](settle-flicker-analysis.md) for the root cause
   and the `[data-row-geometry-content] { display: flow-root }` containment fix.
-- `timeline.row.geometry` — the row-height reservation state machine
-  (reserve / hold / settle / release-*, one event per transition).
-  `mountSeq` discriminates a virtua remount (same row key, new mountSeq)
-  from churn on one living row (same mountSeq cycling) — the distinction
-  the contentRO deltas alone cannot provide.
 
 Work backward from the visible symptom to the last relevant
 `scroll.contentRO`. If the user intended to stick and

@@ -67,6 +67,20 @@
 > a controller pin write must reach the bound handle's
 > `markProgrammaticScroll`); fractional round-trips in
 > `timelineRowGeometry.test.ts` + `threadRowUiState.svelte.test.ts`.
+>
+> **2026-07-01 (addendum) — the floors (the historical amplifier) are now
+> DELETED.** With the root fix above in place, a capture experiment on the
+> only remaining candidate scenario (scroll-away/return remounts) showed the
+> floor system doing zero real work: floors-OFF was outcome-identical to
+> floors-ON on the stock build, and every apparent "hold" was a sub-pixel
+> fractional-compare artifact. The reservation state machine
+> (`timelineRowGeometry.ts`), the row-height cache in
+> `threadRowUiState.svelte.ts`, and the `timeline.row.geometry` trace taps
+> are gone; `remountReturn.browser.test.ts` pins the remount-path outcomes.
+> Margin containment (`[data-row-geometry-content]` flow-root) and the
+> width-observer single-source invariant (`scrollSurfaceWidth.ts`) survive
+> the deletion. See
+> [`scroll-rearchitecture-plan.md`](scroll-rearchitecture-plan.md) §3.
 
 ---
 
