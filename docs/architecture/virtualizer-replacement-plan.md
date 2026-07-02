@@ -43,6 +43,53 @@ bottom-anchored streaming log with a single-writer controller).
 
 ## 2. Target architecture
 
+### Performance priorities and frame budget (project-wide, stated 2026-07-02)
+
+Priority order for this project, and how the engine binds to it:
+
+1. **Perceived performance first — high refresh.** Target displays run
+   165–244Hz; the per-frame budget for any work the engine or adapter
+   does during streaming follow, user scroll, or hot-thread switch is
+   **~4–6ms including style/layout/paint**, not the 16ms folklore
+   number. Design consequences, enforced in review at each phase:
+   - **Range-equality early-out.** Scroll events that don't change the
+     visible range must be near-free. (Today every controller pin write
+     triggers virtua's scroll handler → store version bump → the
+     adapter recomputing offset/hide for every mounted row, per event,
+     at up to 244Hz. Deleting that recompute is the engine's single
+     biggest per-frame win.)
+   - **No forced synchronous layout on hot paths.** The engine answers
+     geometry questions from its own model; DOM reads stay behind the
+     controller's existing chokepoint discipline.
+   - **Minimal per-frame DOM writes.** One container-height write when
+     totalSize changes; row style writes only for rows whose offset
+     actually changed; window recompute batched per input batch, never
+     per scroll event.
+   - **Eviction off the gesture.** Row unmounts happen at
+     scrollend/idle in bounded batches, never mid-gesture
+     (`remountReturn.browser.test.ts` already bounds batch sizes).
+   - **Hot-thread switch is a measured scenario**: with a priors hit,
+     a revisited thread must paint once at final geometry — zero
+     correction passes. V1 adds a dev-trace time-to-stable-paint
+     metric so this is verified, not vibed.
+2. **Memory second — keep only what's needed.** The DOM window (the
+   symmetric `bufferSize` overscan) is the memory budget; the
+   cost-aware retention hook defaults OFF (§8 Q3 — it trades memory
+   for scroll-back smoothness and must earn its keep by measurement).
+   Engine bookkeeping is plain number arrays (KBs); the priors LRU
+   stays at 50 snapshot entries. Payload/expansion budgets are
+   untouched by this plan.
+3. **General performance third** — algorithmic wins (prepend splice,
+   watermark-preserving invalidation) land where cheap, but never at
+   the cost of 1 or 2.
+
+One deliberate tradeoff to keep visible: virtua's
+`pointer-events: none`-while-scrolling suppresses hover style recalcs
+mid-scroll (FPS-positive) at the cost of hover death during scroll.
+The plan drops it at cutover; if V1/V2 frame-time measurement shows
+regression on hover-heavy timelines, it returns as an explicit
+controller-driven class, not an engine internal.
+
 ### Ownership model
 
 - **The engine never writes `scrollTop`. Ever.** It owns geometry
@@ -347,7 +394,10 @@ counting the deleted patch infrastructure.
    semantics, minus constructor-once). Kind-based estimates deferred.
 3. **Cost-aware retention**: land the policy *hook* in `window.ts` in
    V0 with a symmetric-buffer default; enable expensive-row pinning as
-   a follow-up experiment, not in the cutover.
+   a follow-up experiment, not in the cutover. Note the priority
+   tension: pinning trades DOM memory (priority 2) for scroll-back
+   smoothness (priority 1) — it ships only with a measurement showing
+   the re-typeset jank it removes, and a bound on what it retains.
 4. **contentRO merge** (engine events replacing the controller's
    content observation): explicitly out of scope; V4 candidate after
    soak.
