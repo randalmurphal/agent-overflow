@@ -8,7 +8,6 @@ import type {
   ItemDeltaEvent,
   ItemMetaEvent,
   ItemPatchEvent,
-  PendingInteractiveRequests,
   TodoStep,
   ProviderStatusEvent,
   SubagentNotificationEvent,
@@ -29,10 +28,7 @@ import type {
 import {
   CloseThreadTerminals,
   CreateThread,
-  GetThreadLiveState,
-  ListPendingInteractiveRequests,
   ListRecentTurns,
-  ListSubagentDescendants,
   ListThreadCheckpoints,
   MoveThreadTerminals,
   SwitchThread,
@@ -58,13 +54,7 @@ import {
 } from './rhsPanelSlot.svelte';
 import { errString } from '../utils/errors';
 import type { RevealBoundary } from '../utils/subagentGrouping';
-import {
-  isItemActive,
-  normalizePreviewText,
-  subagentLaunchKind,
-} from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
-import { createSubagentFoldRegistry } from '../utils/subagentFold';
 import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
 import {
   MAX_CACHED_SNAPSHOT_ITEMS,
@@ -76,7 +66,6 @@ import {
   applyItemUpsertsToWindow,
   itemsAreEqual,
   itemsForThread,
-  mergeMissingItemsById,
   reconcileItemWindow,
 } from './threadItems';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
@@ -92,21 +81,10 @@ import {
   beginThreadLiveStateHydration,
   finishThreadLiveStateHydration,
   getActiveTurn,
-  isThreadLiveStateHydrationCurrent,
   projectTurnCompleted,
   projectTurnStarted,
-  replaceInteractiveRequestsForThread,
-  sameActiveTurn,
   type ActiveTurn,
 } from './threadStatuses.svelte';
-import {
-  getQueueRevisionForThread,
-  queueItemFromWire,
-  replaceFlushedForThread,
-  replaceQueueForThread,
-  type FlushedItem,
-  type QueueItem as SendQueueItem,
-} from './sendQueue.svelte';
 import { createLiveTodoState } from './liveTodoState.svelte';
 import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import {
@@ -117,6 +95,8 @@ import {
 import { createThreadRowUiState } from './threadRowUiState.svelte';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
+import { createThreadSubagentMemory } from './threadSubagentMemory';
+import { createThreadLiveStateHydration } from './threadLiveStateHydration';
 import {
   normalizeContextWindowForThread,
   seedContextWindow,
@@ -126,7 +106,6 @@ import {
   type ThreadChannelStatus,
 } from './threadChannelState.svelte';
 import { createThreadDesignState } from './threadDesignState.svelte';
-import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import {
   ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
   SLICE_AROUND_ITEM_BUDGET,
@@ -138,7 +117,6 @@ import {
   type DraftThreadPlaceholder,
   type DraftPlaceholderDefaults,
   type DraftPlaceholderMode,
-  type LiveStateHydrationGuard,
   type LoadOlderResult,
   type PaneScrollController,
   type ScrollToItemRequest,
@@ -246,11 +224,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   });
   // Windowed-history / paging machinery (loaded-window cursors and flags,
   // the prune paths, and the four load methods) lives in
-  // threadTimelineWindow.svelte.ts. `scrollController` and
-  // `hydrateSubagentChildren` are declared later in this closure — the
-  // accessor arrow and the hoisted function reference below are safe to
-  // capture ahead of their textual declaration; a direct `const` capture
-  // would not be.
+  // threadTimelineWindow.svelte.ts. `scrollController` is declared later
+  // in this closure — the accessor arrow is safe to capture ahead of its
+  // textual declaration. `subagentMemory` (owns child hydration) is a
+  // `const` also declared later — wrapping its call in an arrow keeps
+  // the `subagentMemory` property read lazy (deferred until the arrow is
+  // actually invoked, well after the whole closure finishes
+  // constructing), so it never hits the TDZ; a direct
+  // `subagentMemory.hydrateChildren` reference here would throw
+  // immediately instead.
   const timelineWindow = createThreadTimelineWindow({
     getItems: () => items,
     replaceTimelineItems,
@@ -258,7 +240,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getSwitchGeneration: () => switchGeneration,
     recomputeReveal: streamingReveal.recomputeReveal,
     getScrollController: () => scrollController,
-    hydrateSubagentChildren,
+    hydrateSubagentChildren: (rootItemID) =>
+      subagentMemory.hydrateChildren(rootItemID),
   });
   const pendingInteractiveState = createThreadPendingInteractiveState();
   let contextWindow: ContextWindow | null = $state(null);
@@ -391,6 +374,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // most recent `ListRecentTurns` row whose `completedAt` is non-null.
   let latestSettledTurn: SettledTurn | null = $state(null);
   const liveTodoState = createLiveTodoState();
+  // Thread live-state hydration protocol (GetThreadLiveState +
+  // ListPendingInteractiveRequests fallback, projected onto the global
+  // active-turn/send-queue registries and onto pendingInteractiveState /
+  // liveTodoState) lives in threadLiveStateHydration.ts. Instantiated
+  // here because both dependencies above must already exist.
+  const liveStateHydration = createThreadLiveStateHydration({
+    getThread: () => thread,
+    getSwitchGeneration: () => switchGeneration,
+    pendingInteractiveState,
+    liveTodoState,
+  });
   // Subagent notification log. The backend emits
   // `provider:subagent_notification` as a pass-through; no UI consumes it
   // today, but keeping a bounded in-pane log lets future surfaces (tray,
@@ -411,28 +405,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    */
   let switchGeneration = $state(0);
 
-  /**
-   * Subagent-children hydration dedupe, keyed by launch anchor item id.
-   * `inFlight` stops a re-running expansion effect from double-fetching;
-   * `exhausted` marks anchors whose last fetch added nothing new, so a
-   * stale decorated descendant count on the anchor's meta can't loop
-   * the expansion effect against a backend with nothing more to give.
-   * Both reset on thread switch / clear.
-   */
-  const subagentHydrationInFlight = new Set<string>();
-  const subagentHydrationExhausted = new Set<string>();
-
-  /**
-   * Live-eviction fold for subagent children (see utils/subagentFold.ts).
-   * Terminal child rows leave pane memory once nothing can render them —
-   * collapsed inline cards, backgrounded launches, Codex spawns — and
-   * their count/preview fold in here so the collapsed card stays honest.
-   * SQLite keeps the rows (triage persists before emitting); expansion
-   * re-hydrates and `reclaim`s the ids. Every fold mutation rides a
-   * `replaceTimelineItems` revision bump, which is what re-runs the
-   * grouping derivation that reads these aggregates.
-   */
-  const subagentFolds = createSubagentFoldRegistry();
+  // Subagent transcript-memory domain (the live-eviction fold registry,
+  // settled-child eviction policy, and on-demand child hydration) lives
+  // in threadSubagentMemory.ts. `replaceTimelineItems` is declared later
+  // in this closure — safe to capture ahead of its textual declaration
+  // because it's a hoisted function declaration, not a `const`.
+  const subagentMemory = createThreadSubagentMemory({
+    getItems: () => items,
+    getItemIndex: (itemId) => itemIndexById.get(itemId),
+    replaceTimelineItems,
+    getThread: () => thread,
+    getSwitchGeneration: () => switchGeneration,
+    recomputeReveal: streamingReveal.recomputeReveal,
+    isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
+  });
 
   /**
    * Nonce bumped when the pane wants the active MessageTimeline to scroll
@@ -569,25 +555,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       droppedItems.push(item);
     }
     if (droppedItems.length === 0) return;
-    // Dropped rows can include hydrated subagent children. Their
-    // anchors must become hydratable again — a stale exhausted marker
-    // would otherwise suppress the next expansion fetch and wedge the
-    // card on its loading placeholder. Live-eviction callers know
-    // exactly which anchors lost rows and pass them as
-    // `exhaustedScope`; unrelated markers survive, because clearing
-    // wholesale at eviction cadence re-arms any expanded card whose
-    // loaded count persistently trails its total into a refetch per
-    // eviction. Bulk window replacements (prune, reconcile, revert)
-    // clear wholesale: mapping a dropped grandchild back to its launch
-    // root would need an ancestor walk over rows we just dropped, and
-    // the cost of breadth is one no-op refetch per re-expanded anchor.
-    if (exhaustedScope) {
-      for (const anchorId of exhaustedScope) {
-        subagentHydrationExhausted.delete(anchorId);
-      }
-    } else {
-      subagentHydrationExhausted.clear();
-    }
+    // Dropped rows can include hydrated subagent children — re-arm their
+    // anchors for hydration. See threadSubagentMemory.ts
+    // `resetHydrationExhausted` for the full rationale.
+    subagentMemory.resetHydrationExhausted(exhaustedScope);
     for (const item of droppedItems) streamingReveal.disposeSmootherFor(item.id);
     rowUiState.disposeItems(droppedItems);
   }
@@ -612,7 +583,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // fast path bypasses this function but never drops existing rows.
     // Eviction callers record their folds BEFORE replacing, with the
     // anchors still loaded, so those folds are retained.
-    subagentFolds.retainAnchors((anchorId) => itemIndexById.has(anchorId));
+    subagentMemory.retainFoldAnchors();
     if (options.disposeDropped) {
       disposeDroppedItemState(previous, items, options.exhaustedScope);
     }
@@ -620,126 +591,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     return true;
   }
 
-  /**
-   * Eviction policy for one upserted or patched row. Returns the launch
-   * anchor to fold the row under, or null when the row must stay in
-   * pane memory: still active (the delta pipeline requires streaming
-   * rows to exist), itself a launch anchor (anchors are the fold keys
-   * and the cards), a flat non-subagent row, an orphan, or a child of
-   * an inline card that is currently expanded. Retention is keyed on
-   * the direct parent's expansion only; settled rows under collapsed
-   * ancestors are swept by evictCollapsedSubagentSubtree when their own
-   * card collapses.
-   */
-  function evictableAnchorIdFor(item: Item): string | null {
-    if (isItemActive(item)) return null;
-    const parentId = item.parentId ?? '';
-    if (!parentId) return null;
-    if (subagentLaunchKind(item) !== null) return null;
-    const parentIndex = itemIndexById.get(parentId);
-    if (parentIndex === undefined) return null;
-    const parent = items[parentIndex];
-    const launchKind = subagentLaunchKind(parent);
-    if (launchKind === null) return null;
-    if (launchKind === 'inline' && rowUiState.isSubagentGroupExpanded(parent.id)) {
-      return null;
-    }
-    return parent.id;
-  }
-
-  /** One row leaving pane memory for the fold, keyed by its launch anchor. */
-  interface SubagentEviction {
-    item: Item;
-    anchorId: string;
-  }
-
-  /**
-   * Collect every settled non-launch descendant under `anchorId` into
-   * `out`. Nested launches stay loaded (they are fold keys and render
-   * as nested cards); their settled children fold under their own
-   * anchor so nested entry counters stay honest. One forward pass
-   * suffices because items are in (turnIndex, itemIndex) order — a
-   * launch precedes its rows.
-   */
-  function collectSettledSubtree(anchorId: string, out: SubagentEviction[]): void {
-    const launchIds = new Set([anchorId]);
-    for (const item of items) {
-      const parentId = item.parentId ?? '';
-      if (!parentId || !launchIds.has(parentId)) continue;
-      if (subagentLaunchKind(item) !== null) {
-        launchIds.add(item.id);
-        continue;
-      }
-      if (isItemActive(item)) continue;
-      out.push({ item, anchorId: parentId });
-    }
-  }
-
-  /**
-   * Commit evictions: record each row in the fold registry, then drop
-   * the rows through replaceTimelineItems with disposal so smoothers
-   * and row UI state are cleaned like any other dropped row, and
-   * recompute the reveal gate. Exhausted-hydration markers clear only
-   * for the anchors whose transcripts changed — see
-   * disposeDroppedItemState. Duplicate entries are harmless: the
-   * registry and the drop set both dedupe by id.
-   */
-  function commitSubagentEvictions(evictions: readonly SubagentEviction[]): void {
-    if (evictions.length === 0) return;
-    const evictedIds = new Set<string>();
-    const anchorIds = new Set<string>();
-    for (const { item, anchorId } of evictions) {
-      subagentFolds.recordEvicted(
-        anchorId,
-        item,
-        normalizePreviewText(item.summary ?? ''),
-      );
-      evictedIds.add(item.id);
-      anchorIds.add(anchorId);
-    }
-    replaceTimelineItems(
-      items.filter((it) => !evictedIds.has(it.id)),
-      { disposeDropped: true, exhaustedScope: anchorIds },
-    );
-    streamingReveal.recomputeReveal();
-  }
-
-  /**
-   * Fold-and-drop settled subagent children that nothing can render.
-   * `candidates` is the changed-row set of the upsert batch or status
-   * patch that just applied: children that arrived terminal, children
-   * whose stored row just flipped terminal, and — when a launch anchor
-   * itself changed — a sweep of its settled subtree (covers a
-   * foreground launch being backgrounded mid-run, which flips its
-   * whole transcript from expandable to suppressed).
-   */
-  function evictSettledSubagentChildren(candidates: readonly Item[]): void {
-    let evictions: SubagentEviction[] | null = null;
-    for (const candidate of candidates) {
-      if (subagentLaunchKind(candidate) === 'suppressed') {
-        collectSettledSubtree(candidate.id, (evictions ??= []));
-        continue;
-      }
-      const anchorId = evictableAnchorIdFor(candidate);
-      if (anchorId === null) continue;
-      (evictions ??= []).push({ item: candidate, anchorId });
-    }
-    if (evictions) commitSubagentEvictions(evictions);
-  }
-
-  /**
-   * Collapse-time eviction: fold every settled descendant under
-   * `anchorId` out of pane memory (counts and preview survive in the
-   * fold registry; rows re-hydrate from SQLite on the next expand).
-   */
-  function evictCollapsedSubagentSubtree(anchorId: string): void {
-    const anchorIndex = itemIndexById.get(anchorId);
-    if (anchorIndex === undefined) return;
-    if (subagentLaunchKind(items[anchorIndex]) === null) return;
-    const evictions: SubagentEviction[] = [];
-    collectSettledSubtree(anchorId, evictions);
-    commitSubagentEvictions(evictions);
-  }
+  // Subagent eviction policy (evictableAnchorIdFor, collectSettledSubtree,
+  // commitSubagentEvictions, evictSettledChildren, evictCollapsedSubtree)
+  // lives in threadSubagentMemory.ts as `subagentMemory`.
   // The per-item smoother + reveal-gate sequencer (disposeSmootherFor,
   // disposeAll, recomputeReveal, getOrCreateSmoothing, etc.) live in
   // threadStreamingReveal.svelte.ts as `streamingReveal`. Every
@@ -758,8 +612,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // emitted — so the count survives the swallow; an enriched echo's
     // new content (e.g. a completion re-persisted with an inline diff
     // upgrade) surfaces when expansion rehydrates the transcript.
-    if (incoming.some((it) => subagentFolds.isEvicted(it.id))) {
-      incoming = incoming.filter((it) => !subagentFolds.isEvicted(it.id));
+    if (incoming.some((it) => subagentMemory.isEvicted(it.id))) {
+      incoming = incoming.filter((it) => !subagentMemory.isEvicted(it.id));
       if (incoming.length === 0) return null;
     }
 
@@ -807,7 +661,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // children never count toward the prune trigger — the cap effectively
     // bounds renderable rows, matching the backend pagers' top-level-only
     // budget since 6187d039.
-    evictSettledSubagentChildren(next.changedItems);
+    subagentMemory.evictSettledChildren(next.changedItems);
     if (next.appendedItems.length > 0 && !timelineWindow.hasMoreNewer) {
       timelineWindow.pruneToRecentWindowIfNeeded();
     }
@@ -831,121 +685,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     return next;
   }
 
-  function applyPendingInteractiveSnapshot(
-    threadID: string,
-    snapshot: PendingInteractiveRequests | null | undefined,
-  ): void {
-    const registrySnapshot =
-      pendingInteractiveState.registrySnapshotFor(snapshot);
-    pendingInteractiveState.applySnapshot(snapshot);
-    replaceInteractiveRequestsForThread(threadID, registrySnapshot);
-  }
-
-  async function hydratePendingInteractiveRequests(
-    threadID: string,
-    gen: number,
-    hydrationToken?: number,
-  ): Promise<void> {
-    let snapshot: PendingInteractiveRequests;
-    try {
-      snapshot = (await ListPendingInteractiveRequests(
-        threadID,
-      )) as PendingInteractiveRequests;
-    } catch (err) {
-      if (gen === switchGeneration && thread?.id === threadID) {
-        console.error('Failed to hydrate pending interactive requests:', err);
-      }
-      return;
-    }
-    if (gen !== switchGeneration || thread?.id !== threadID) return;
-    if (
-      hydrationToken !== undefined &&
-      !isThreadLiveStateHydrationCurrent(threadID, hydrationToken)
-    )
-      return;
-
-    applyPendingInteractiveSnapshot(threadID, snapshot);
-  }
-
-  function applyThreadLiveStateSnapshot(
-    snapshot: ThreadLiveState,
-    threadID: string,
-    guard: LiveStateHydrationGuard,
-  ): void {
-    if (snapshot.threadId !== threadID) return;
-    const current = getActiveTurn(threadID);
-    if (sameActiveTurn(current, guard.activeTurnAtRequest)) {
-      const active = snapshot.activeTurn;
-      if (active && active.threadId === threadID && active.turnId) {
-        projectTurnStarted(
-          threadID,
-          active.turnId,
-          active.turnIndex,
-          active.startedAt,
-        );
-      } else if (current) {
-        projectTurnCompleted(threadID, current.turnId);
-      }
-    }
-
-    if (getQueueRevisionForThread(threadID) === guard.queueRevisionAtRequest) {
-      const queueItems: SendQueueItem[] = (snapshot.queueItems ?? [])
-        .filter((item) => item.threadId === threadID)
-        .map(queueItemFromWire);
-      replaceQueueForThread(threadID, queueItems);
-      const flushedItems: FlushedItem[] = (snapshot.flushedItems ?? [])
-        .filter((item) => item.userItemId && item.queueItemId)
-        .map((item) => ({
-          queueItemId: item.queueItemId,
-          userItemId: item.userItemId,
-          message: item.message,
-          flushedAt: Date.now(),
-        }));
-      replaceFlushedForThread(threadID, flushedItems);
-    }
-
-    applyPendingInteractiveSnapshot(
-      threadID,
-      snapshot.interactive as PendingInteractiveRequests,
-    );
-
-    liveTodoState.hydrateSnapshotIfUnchanged(
-      snapshot.todo,
-      threadID,
-      guard.liveTodoRevisionAtRequest,
-    );
-  }
-
-  async function hydrateThreadLiveState(
-    threadID: string,
-    gen: number,
-    existingHydrationToken?: number,
-  ): Promise<void> {
-    const hydrationToken =
-      existingHydrationToken ?? beginThreadLiveStateHydration(threadID);
-    const guard: LiveStateHydrationGuard = {
-      activeTurnAtRequest: getActiveTurn(threadID),
-      queueRevisionAtRequest: getQueueRevisionForThread(threadID),
-      liveTodoRevisionAtRequest: liveTodoState.revision,
-    };
-    try {
-      let snapshot: ThreadLiveState;
-      try {
-        snapshot = (await GetThreadLiveState(threadID)) as ThreadLiveState;
-      } catch (err) {
-        if (gen === switchGeneration && thread?.id === threadID) {
-          console.error('Failed to hydrate thread live state:', err);
-        }
-        await hydratePendingInteractiveRequests(threadID, gen, hydrationToken);
-        return;
-      }
-      if (gen !== switchGeneration || thread?.id !== threadID) return;
-      if (!isThreadLiveStateHydrationCurrent(threadID, hydrationToken)) return;
-      applyThreadLiveStateSnapshot(snapshot, threadID, guard);
-    } finally {
-      finishThreadLiveStateHydration(threadID, hydrationToken);
-    }
-  }
+  // Thread live-state hydration protocol (applyPendingInteractiveSnapshot,
+  // hydratePendingInteractiveRequests, applyThreadLiveStateSnapshot,
+  // hydrateThreadLiveState) lives in threadLiveStateHydration.ts as
+  // `liveStateHydration`.
 
   /**
    * Run an async leg of `switchThread`'s parallel fan-out and apply its
@@ -976,60 +719,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     })();
   }
 
-  /**
-   * Hydrate the child transcript under a subagent launch anchor.
-   * History windows deliver only top-level rows — the collapsed
-   * SubagentGroup card renders from backend-decorated aggregates, and
-   * this loads the actual rows when the card expands (or when a
-   * scroll-to-item target lives inside the subtree).
-   *
-   * Additive merge only: rows already in memory (live-streamed
-   * children) keep their references, missing rows are inserted at
-   * their (turnIndex, itemIndex) position. Child rows are never
-   * top-level, so the reveal boundary is unaffected — same exception
-   * as `loadOlder` (see the reveal-gate invariant note above).
-   *
-   * Returns true when new rows were merged in.
-   */
-  async function hydrateSubagentChildren(rootItemID: string): Promise<boolean> {
-    const currentThread = thread;
-    if (!currentThread || !rootItemID) return false;
-    if (
-      subagentHydrationInFlight.has(rootItemID) ||
-      subagentHydrationExhausted.has(rootItemID)
-    ) {
-      return false;
-    }
-
-    const gen = switchGeneration;
-    subagentHydrationInFlight.add(rootItemID);
-    try {
-      const children = (await ListSubagentDescendants(
-        currentThread.id,
-        rootItemID,
-      )) as Item[];
-      if (gen !== switchGeneration) return false;
-      const incoming = itemsForThread(children ?? [], currentThread.id);
-      // Rows coming back into memory leave the live-eviction fold first —
-      // the invariant is an id is folded XOR loaded, so the card's count
-      // (loaded + folded) stays exact through the hydration round-trip.
-      subagentFolds.reclaim(incoming.map((child) => child.id));
-      const next = mergeMissingItemsById(incoming, items);
-      if (next === items) {
-        subagentHydrationExhausted.add(rootItemID);
-        return false;
-      }
-      replaceTimelineItems(next);
-      return true;
-    } catch (err) {
-      if (gen !== switchGeneration) return false;
-      console.error('hydrateSubagentChildren failed:', err);
-      addToast('error', 'Failed to load subagent activity');
-      return false;
-    } finally {
-      subagentHydrationInFlight.delete(rootItemID);
-    }
-  }
+  // Child-transcript hydration for a subagent launch anchor
+  // (hydrateSubagentChildren) lives in threadSubagentMemory.ts as
+  // `subagentMemory.hydrateChildren`.
 
   async function refreshCheckpointsForThread(threadID: string): Promise<void> {
     const checkpoints = ((await ListThreadCheckpoints(threadID)) ??
@@ -1080,7 +772,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         // items deliberately exclude evicted rows, so without the fold a
         // warm re-entry would render collapsed cards with zeroed counts
         // until the next live event or hydration.
-        subagentFolds: subagentFolds.snapshot(),
+        subagentFolds: subagentMemory.snapshotFolds(),
       });
     }
     if (sameThreadReswitch) {
@@ -1200,12 +892,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     loading = true;
     if (cached) {
       replaceTimelineItems(cached.items);
-      subagentFolds.restore(cached.subagentFolds);
+      subagentMemory.restoreFolds(cached.subagentFolds);
+      subagentMemory.clearHydrationState();
       timelineWindow.installFromSnapshot(cached);
       latestSettledTurn = cached.latestSettledTurn;
     } else {
       replaceTimelineItems([]);
-      subagentFolds.clear();
+      subagentMemory.resetForFreshThread();
       timelineWindow.resetForFreshThread();
     }
     rowUiState.clear();
@@ -1218,8 +911,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // read 'spring' off the stale stamp and chase its settled content.
     // A streaming incoming thread re-stamps on its first reveal/delta.
     lastLiveContentAt = 0;
-    subagentHydrationInFlight.clear();
-    subagentHydrationExhausted.clear();
     return { cached, sliceAnchorId };
   }
 
@@ -1326,7 +1017,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     const liveStatePromise = (async () => {
       try {
-        await hydrateThreadLiveState(
+        await liveStateHydration.hydrateThreadLiveState(
           newThread.id,
           gen,
           liveStateHydrationToken,
@@ -1888,7 +1579,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           console.error('Failed to refresh recent turns after gap:', err);
         }
         pendingInteractiveState.prepareForLiveStateHydration();
-        await hydrateThreadLiveState(
+        await liveStateHydration.hydrateThreadLiveState(
           currentThread.id,
           gen,
           liveStateHydrationToken,
@@ -1918,7 +1609,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       thread = null;
       draftPlaceholder = null;
       replaceTimelineItems([]);
-      subagentFolds.clear();
+      subagentMemory.clearFolds();
       rowUiState.clear();
       streamingReveal.disposeAll();
       // Clearing to empty: drop the live-content stamp too (see
@@ -1958,8 +1649,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
       pastSpinnerThreshold = false;
       timelineWindow.resetForFreshThread();
-      subagentHydrationInFlight.clear();
-      subagentHydrationExhausted.clear();
+      subagentMemory.clearHydrationState();
       // See switchThread: both `timelineWindow`'s internal
       // `pagingGeneration` and `scrollToItemRequest.nonce` stay
       // monotonic for the pane's lifetime so no consumer observes a
@@ -2112,10 +1802,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * Hydrate the child transcript under a subagent launch anchor —
      * called by SubagentGroup when an expanded card's loaded children
      * trail its decorated descendant count. Deduped per anchor id;
-     * see `hydrateSubagentChildren`.
+     * see threadSubagentMemory.ts `hydrateChildren`.
      */
     ensureSubagentChildren(rootItemID: string): Promise<boolean> {
-      return hydrateSubagentChildren(rootItemID);
+      return subagentMemory.hydrateChildren(rootItemID);
     },
 
     /** Fetch the next batch of newer turns and append them to the window. See threadTimelineWindow.svelte.ts. */
@@ -2445,7 +2135,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // triage's doSettleStreamingText/Thinking emit field patches.
       // Without this hook, settled text rows under collapsed cards
       // would stay in pane memory for the rest of the turn.
-      evictSettledSubagentChildren([next]);
+      subagentMemory.evictSettledChildren([next]);
     },
 
     // ---- Per-row UI state (survives windowing remount) ----
@@ -2463,14 +2153,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     toggleSubagentGroupExpanded(groupKey: string): boolean {
       const willExpand = rowUiState.toggleSubagentGroupExpanded(groupKey);
-      if (!willExpand) evictCollapsedSubagentSubtree(groupKey);
+      if (!willExpand) subagentMemory.evictCollapsedSubtree(groupKey);
       return willExpand;
     },
     /** Live fold aggregate for a launch anchor — MessageTimeline threads
      *  this into the grouping pipeline. Reads are revision-driven: every
      *  fold mutation rides a timelineRevision bump. */
     subagentLiveAggregate(anchorId: string): SubagentFoldAggregate | undefined {
-      return subagentFolds.aggregate(anchorId);
+      return subagentMemory.aggregate(anchorId);
     },
     diffCardExpandedOverride: rowUiState.diffCardExpandedOverride,
     setDiffCardExpanded: rowUiState.setDiffCardExpanded,
