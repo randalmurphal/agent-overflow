@@ -357,8 +357,10 @@ on every wobble frame — a self-sustaining ±2px limit cycle (the whole idle
 viewport visibly vibrates). The **idle re-pin deadband** breaks it: when no
 spring is in flight and `scrollTop` is already within
 `IDLE_REPIN_DEADBAND_PX` of the target, the re-pin is skipped
-(`idlePinWithinDeadband`, folded into both `positiveWillPin` and
-`negativeWillPin`). It keys on distance-from-target, not delta magnitude,
+(`idlePinWithinDeadband`, folded into both pin predicates — since the
+Stage-2 extraction this decision lives in `utils/scroll/resolver.ts`,
+the controller's pure decision core). It keys on distance-from-target,
+not delta magnitude,
 so genuine growth moves the target ≥ a line height (gap ≫ deadband) and
 pins normally; the `springToken === 0` gate makes it idle-scoped by
 construction — during streaming the spring holds its token across
@@ -545,9 +547,12 @@ Useful trace records:
   and the `[data-row-geometry-content] { display: flow-root }` containment fix.
 
 Work backward from the visible symptom to the last relevant
-`scroll.contentRO`. If the user intended to stick and
-`negativeWillPin=false`, check whether the gate should use logical intent
-(`isAtBottomState`) as well as geometry (`isNearBottomState`).
+`scroll.contentRO`. The record carries the resolver's decision
+(`writeCaller`, `startSpring`, `bumpTargetChanged`, `oscillationRecovery`,
+`setIsAtBottom`). If the user intended to stick and a negative delta shows
+`writeCaller: null` with `setIsAtBottom: false`, check whether the gate
+should use logical intent (`isAtBottomState`) as well as geometry
+(`isNearBottomState`).
 
 Do not fix scroll regressions by adding `requestAnimationFrame`, a second
 observer, a length-watching `$effect`, or another `scrollTop` writer.

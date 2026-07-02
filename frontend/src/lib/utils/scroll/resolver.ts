@@ -29,9 +29,10 @@ export const ARRIVAL_DISTANCE_PX = 1;
 // and the re-pin is skipped, breaking the idle viewport-vibration limit cycle
 // at its source. Value: large enough to clear the observed ~2px idle flip with
 // margin, small enough to stay well below the ≥~line-height gap of genuine
-// catch-up growth; equal to AUTO_FOLLOW_BOTTOM_EPSILON_PX by design — "close
-// enough to count as at-bottom" and "close enough not to fight a wobble" are
-// the same tolerance. Full mechanism (fractional-DPR X.5-boundary height flip →
+// catch-up growth; equal to AUTO_FOLLOW_BOTTOM_EPSILON_PX
+// (useStickToBottom.svelte.ts) by design — "close enough to count as
+// at-bottom" and "close enough not to fight a wobble" are the same
+// tolerance. Full mechanism (fractional-DPR X.5-boundary height flip →
 // moving target → self-sustaining ±2px cycle) + the capture it was root-caused
 // from: docs/architecture/settle-flicker-analysis.md.
 //
@@ -41,7 +42,10 @@ export const ARRIVAL_DISTANCE_PX = 1;
 export const IDLE_REPIN_DEADBAND_PX = 4;
 
 // Overshoot magnitude at which the delivery resolver snaps scrollTop
-// instantly even while a spring chase is in flight. Small overshoots
+// instantly even while a spring chase is in flight. Second policy
+// consumer: the controller's notifyLiveContentMaybeGrew mirrors the
+// same absorb-below/snap-above split for its structural nudges — a
+// change here applies to both. Small overshoots
 // (≤ this) come from transient streamdown re-renders —
 // parseIncompleteMarkdown auto-balancing unclosed code fences /
 // backticks / lists momentarily shrinks scrollHeight by a handful of
@@ -70,7 +74,11 @@ export interface ResolverState {
   paused: boolean;
   /** Warm-up (quiescence) gate has cleared. */
   warm: boolean;
-  /** A spring chase or sentinel is in flight (springToken !== 0). */
+  /**
+   * A spring chase or sentinel is in flight (the controller's
+   * `springToken !== 0`; sampled by `resolverStateSnapshot` in
+   * useStickToBottom.svelte.ts).
+   */
   springActive: boolean;
   /** setEscapedFromLock(true) requested the spring to stop. */
   springStopRequested: boolean;
@@ -188,15 +196,21 @@ export function springGateIsOpen(s: SpringGateInputs): boolean {
 // stranded check ignores sub-pixel rounding between the browser-rounded
 // scrollTop readback and the computed target.
 //
-// One predicate, two call sites: the delivery resolver (synchronous,
-// same-frame recovery — rAF callbacks fire BEFORE ResizeObserver
-// callbacks within a frame, so RO-side recovery is the one that avoids
-// painting the stranded frame; bug-report-20260615T182227Z was the ~37px
-// one-frame jolt of the late tick-side snap) and the spring tick's
-// rAF-side check, which survives Stage 2 as the fallback for
-// strand-and-restore cycles that produce no contentRO delivery
-// (clientHeight-driven target moves, forced-layout clamps with net-zero
-// height delta). Whether the rAF side can be deleted outright is a
+// Call-site map: ONLY the delivery resolver uses this predicate
+// (synchronous, same-frame recovery — rAF callbacks fire BEFORE
+// ResizeObserver callbacks within a frame, so RO-side recovery is the
+// one that avoids painting the stranded frame;
+// bug-report-20260615T182227Z was the ~37px one-frame jolt of the late
+// tick-side snap). The spring tick's rAF-side recovery DELIBERATELY
+// keeps its own inline check with different semantics: it triggers on
+// exact inequality (`current !== target`) filtered by arrival-readback
+// acceptance, not this predicate's 1px stranded band — engines that
+// reject an exact max-scrollTop write by one CSS pixel must not
+// re-snap every sentinel tick. Do not "unify" the two without
+// reconciling that difference. The tick side survives Stage 2 as the
+// fallback for strand-and-restore cycles that produce no contentRO
+// delivery (clientHeight-driven target moves, forced-layout clamps
+// with net-zero height delta); whether it can be deleted outright is a
 // Stage-2 UNKNOWN awaiting capture evidence (plan §3).
 export function isSentinelOscillationStranded(s: {
   springActive: boolean;

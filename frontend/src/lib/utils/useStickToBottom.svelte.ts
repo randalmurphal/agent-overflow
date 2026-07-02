@@ -61,6 +61,8 @@ import {
   resolveContentDelivery,
   springGateIsOpen,
   withinArrivalBand,
+  type ContentDeltaObservation,
+  type ContentWriteCaller,
   type ResolverState,
 } from './scroll/resolver';
 
@@ -258,14 +260,10 @@ const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End'])
 // Every programmatic scrollTop write names its origin AT the single write
 // site (`writeScrollTop(caller, value)`). Trace attribution and the
 // spring-tick trace sampling both key off it; the closed union keeps a new
-// write path from landing without declaring itself here.
+// write path from landing without declaring itself here. The contentRO.*
+// members come from the resolver's decision union so the two cannot drift.
 type ScrollWriteCaller =
-  | 'contentRO.firstFire'
-  | 'contentRO.overshoot'
-  | 'contentRO.positiveDelta'
-  | 'contentRO.negativeDelta'
-  | 'contentRO.negativeDeltaReflow'
-  | 'contentRO.oscillationSnap'
+  | ContentWriteCaller
   | 'spring.tick'
   | 'spring.overshoot'
   | 'spring.arrive'
@@ -1304,6 +1302,12 @@ export function createUseStickToBottomController(
         // bypasses the property-descriptor gate), stranding scrollTop
         // below the restored target. Snap back instantly — a spring
         // chase for zero net content change is a visible artifact.
+        //
+        // This check is DELIBERATELY different from the resolver's
+        // isSentinelOscillationStranded (scroll/resolver.ts): it
+        // triggers on exact inequality filtered by arrival-readback
+        // acceptance (the outer branch condition), not the 1px stranded
+        // band — see the predicate's call-site map before unifying.
         if (sentinelEntryTarget >= 0 && withinArrivalBand(target, sentinelEntryTarget)) {
           snapOscillationToBottom('spring.oscillationSnap', target);
         } else {
@@ -1532,7 +1536,7 @@ export function createUseStickToBottomController(
       // made by the pure resolver (scroll/resolver.ts) over a sampled
       // snapshot; this callback only gathers observations and applies
       // effects. At most ONE scrollTop write leaves a delivery.
-      const decision = resolveContentDelivery(resolverStateSnapshot(), {
+      const observation: ContentDeltaObservation = {
         kind: 'delta',
         delta,
         scrollTop: scrollTopAtDelivery,
@@ -1541,7 +1545,8 @@ export function createUseStickToBottomController(
         animationMode: options.animationMode?.() === 'spring' ? 'spring' : 'instant',
         structuralAppendPending: structuralAppendSpringUntil > nowMs(),
         prefersReducedMotion: prefersReducedMotion(),
-      });
+      };
+      const decision = resolveContentDelivery(resolverStateSnapshot(), observation);
       if (isUiRenderTraceEnabled()) trace('scroll.contentRO', () => ({
         prev: Math.round(prev),
         next: Math.round(nextHeight),
@@ -1562,7 +1567,7 @@ export function createUseStickToBottomController(
         widthDelta: prevWidth === undefined ? null : roundCssPx(nextWidth - prevWidth),
         widthChanged,
         widthReflowActive,
-        structuralAppendSpringPending: structuralAppendSpringUntil > nowMs(),
+        structuralAppendSpringPending: observation.structuralAppendPending,
         scrollTop: Math.round(scrollTopAtDelivery),
         scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
         clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,

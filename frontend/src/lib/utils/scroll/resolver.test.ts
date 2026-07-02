@@ -276,6 +276,18 @@ describe('resolveContentDelivery — stranded-oscillation recovery', () => {
     expect(d.startSpring).toBe(true);
   });
 
+  it('the target-vs-sentinel comparison tolerates the 1px arrival band, not just equality', () => {
+    // Sub-pixel rounding between the browser-rounded readback and the
+    // computed target means the restored target can land 1px off the
+    // sentinel entry — that is still the same oscillation.
+    const d = resolveContentDelivery(
+      state({ springActive: true, sentinelEntryTarget: TARGET - ARRIVAL_DISTANCE_PX }),
+      delta({ delta: 37, scrollTop: TARGET - 37 }),
+    );
+    expect(d.oscillationRecovery).toBe(true);
+    expect(d.write?.caller).toBe('contentRO.oscillationSnap');
+  });
+
   it('a stranded position the overshoot guard already recovered is not re-snapped', () => {
     // scrollTop stranded ABOVE the sentinel target far enough that the
     // large-overshoot clause fires. The stranded check must see the
@@ -352,14 +364,19 @@ describe('resolveContentDelivery — positive delta', () => {
     expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
   });
 
-  it.each([
-    ['reduced motion', { prefersReducedMotion: true }],
-    ['spring stop requested', {}],
-  ] as const)('sync-pins under %s', (label, obsOverride) => {
-    const s = label === 'spring stop requested' ? state({ springStopRequested: true }) : state();
+  it('sync-pins under reduced motion', () => {
     const d = resolveContentDelivery(
-      s,
-      delta({ delta: 20, scrollTop: TARGET - 20, animationMode: 'spring', ...obsOverride }),
+      state(),
+      delta({ delta: 20, scrollTop: TARGET - 20, animationMode: 'spring', prefersReducedMotion: true }),
+    );
+    expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
+    expect(d.startSpring).toBe(false);
+  });
+
+  it('sync-pins while a spring stop is requested', () => {
+    const d = resolveContentDelivery(
+      state({ springStopRequested: true }),
+      delta({ delta: 20, scrollTop: TARGET - 20, animationMode: 'spring' }),
     );
     expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
     expect(d.startSpring).toBe(false);
@@ -492,6 +509,16 @@ describe('resolveContentDelivery — structural invariants', () => {
                       }
                       // Spring bookkeeping is exclusive: start XOR bump.
                       expect(decision.startSpring && decision.bumpTargetChanged).toBe(false);
+                      // A bump only ever comes from the suppressed
+                      // negative re-stick, which always flips intent.
+                      if (decision.bumpTargetChanged) {
+                        expect(decision.setIsAtBottom).toBe(true);
+                      }
+                      // A spring start never coexists with a pin write —
+                      // only the overshoot guard may have written first.
+                      if (decision.startSpring && decision.write) {
+                        expect(decision.write.caller).toBe('contentRO.overshoot');
+                      }
                       // A recovery always carries its snap write.
                       if (decision.oscillationRecovery) {
                         expect(decision.write?.caller).toBe('contentRO.oscillationSnap');
