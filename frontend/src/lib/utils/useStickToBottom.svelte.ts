@@ -53,10 +53,14 @@
 // out-of-content height changes; the seam is identical on both surfaces.
 
 import { tick } from 'svelte';
-import { isUiRenderTraceEnabled, recordUiTrace } from './uiRenderTrace';
+import { isUiRenderTraceEnabled } from './uiRenderTrace';
+import {
+  createScrollIntent,
+  isSelectingInside,
+  RESIZE_CLEAR_PADDING_MS,
+} from './scroll/intent';
 import {
   ARRIVAL_DISTANCE_PX,
-  AUTO_FOLLOW_BOTTOM_EPSILON_PX,
   SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX,
   resolveContentDelivery,
   resolveVirtuaCompensation,
@@ -67,6 +71,7 @@ import {
 } from './scroll/resolver';
 import { createSpringChase } from './scroll/spring';
 import { nowMs } from './scroll/time';
+import { trace } from './scroll/trace';
 import type {
   ScrollObservationKind,
   ScrollWriteCaller,
@@ -85,22 +90,9 @@ export type {
 // Re-exported for the controller test's retain-window assertions; the
 // constant lives with the spring kinematics.
 export { RETAIN_ANIMATION_DURATION_MS } from './scroll/spring';
-
-// Diagnostic trace helper — no-op in production (gated by
-// `isUiRenderTraceEnabled` which only returns true in dev with
-// `VITE_AGENT_OVERFLOW_UI_TRACE=1`, set by `make dev DEBUG=1`). The
-// thunk skips object construction when disabled. Records flow into
-// `${configDir}/ui-trace/ui-render.jsonl` via the same batched
-// `AppendUIRenderTraceBatch` binding the timeline render trace uses.
-//
-// Call sites double-gate with `if (isUiRenderTraceEnabled()) trace(…)`
-// because Rolldown inlines the gate but does not eliminate the closure
-// allocation — the outer guard prevents ~120 closures/sec during
-// spring animation in production builds.
-function trace(label: string, build: () => Record<string, unknown>): void {
-  if (!isUiRenderTraceEnabled()) return;
-  recordUiTrace(label, build());
-}
+// Re-exported for the tests that reset the intent machine's module-level
+// selection tracking between cases.
+export { resetUseStickToBottomModuleStateForTest } from './scroll/intent';
 
 // Three-band geometry — see docs/architecture/frontend-scroll.md for
 // the full rationale. Tightening any one of these affects a
@@ -125,13 +117,9 @@ const CONTENT_REFLOW_WIDTH_EPSILON_PX = 0.5;
 // the layout-correction classification alive briefly so a width-only fire
 // followed by renderer height settle still sync-pins.
 const CONTENT_REFLOW_SETTLE_WINDOW_MS = 250;
-const RESIZE_CLEAR_PADDING_MS = 1;
-const RECENT_DOWN_INTENT_WINDOW_MS = 250;
-const SCROLLBAR_DRAG_SESSION_FAILSAFE_MS = 30_000;
-const EXTERNAL_SCROLL_TAG_CLEAR_MS = 100;
-const PROGRAMMATIC_SCROLL_EVENT_TOKEN_TTL_MS = 500;
-const MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS = 128;
-const PROGRAMMATIC_SCROLL_EVENT_DUPLICATE_BUDGET = 4;
+// Intent-classification windows (down-intent, drag sessions, the
+// programmatic token ring, RESIZE_CLEAR_PADDING_MS) live in
+// scroll/intent.ts.
 
 // Spring kinematics, tuning constants, and the sentinel/structural-append
 // windows live in scroll/spring.ts. Only the trace sampling stays here,
@@ -206,47 +194,6 @@ const SETTLED_QUIET_MS = 16;
 // real multi-line chat row, comfortably clear of this floor.
 const WARMUP_SETTLE_EPSILON_PX = 8;
 
-const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
-const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
-
-let mouseDown = false;
-let listenersInstalled = false;
-
-function installModuleSelectionListeners(): void {
-  if (listenersInstalled) return;
-  if (typeof document === 'undefined') return;
-  listenersInstalled = true;
-  document.addEventListener('mousedown', () => {
-    mouseDown = true;
-  }, { capture: true });
-  document.addEventListener('mouseup', () => {
-    mouseDown = false;
-  }, { capture: true });
-  document.addEventListener('click', () => {
-    mouseDown = false;
-  }, { capture: true });
-}
-
-/** Test-only escape hatch to reset the module-global mouseDown flag. */
-export function resetUseStickToBottomModuleStateForTest(): void {
-  mouseDown = false;
-}
-
-function isSelectingInside(scrollEl: HTMLElement): boolean {
-  if (!mouseDown) return false;
-  if (typeof window === 'undefined') return false;
-  const sel = window.getSelection?.();
-  if (!sel || sel.rangeCount === 0) return false;
-  const range = sel.getRangeAt(0);
-  // Match upstream: a selection counts if it crosses the scroll element
-  // in either direction. Drag-select inside the timeline OR a selection
-  // whose anchor sits in the timeline both pause auto-scroll.
-  return (
-    range.commonAncestorContainer.contains(scrollEl) ||
-    scrollEl.contains(range.commonAncestorContainer)
-  );
-}
-
 function roundCssPx(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -254,8 +201,6 @@ function roundCssPx(value: number): number {
 export function createUseStickToBottomController(
   options: UseStickToBottomOptions = {},
 ): UseStickToBottomController {
-  installModuleSelectionListeners();
-
   // ===== Reactive state (consumed by templates / $derived) =====
   // Intent flag: "we want to be glued to the bottom". Mirrors upstream's
   // state.isAtBottom — set true on initial mount, on forceStick, and when
@@ -275,38 +220,20 @@ export function createUseStickToBottomController(
   let pauseDepth = $state(0);
 
   // ===== Internal bookkeeping (non-reactive) =====
+  // Intent state (down-intent windows, drag sessions, the programmatic
+  // token ring, restore-snap consent) lives in the scroll/intent.ts
+  // machine created below.
   let scrollEl: HTMLElement | undefined;
   let contentEl: HTMLElement | undefined;
   let contentRO: ResizeObserver | undefined;
-  let detachWheel: (() => void) | undefined;
-  let detachScroll: (() => void) | undefined;
-  let detachPointer: (() => void) | undefined;
-  let detachKeyTouch: (() => void) | undefined;
   let stickStateDevHook: (() => Record<string, unknown>) | undefined;
 
   let resizeDifference = 0;
   let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingProgrammaticScrollEventTokens: { top: number; expiresAt: number; remaining: number }[] = [];
-  let externalScrollIgnoreUntil = 0;
-  let externalScrollClearTimer: ReturnType<typeof setTimeout> | null = null;
-
-  let recentDownIntentUntil = 0;
-  let recentDownIntentVersion = 0;
-  let recentDownIntentClearTimer: ReturnType<typeof setTimeout> | null = null;
-  let scrollbarDragSessionActive = false;
-  let scrollbarDragSessionVersion = 0;
-  let scrollbarDragSessionFailsafeTimer: ReturnType<typeof setTimeout> | null = null;
-  let detachScrollbarDragEnd: (() => void) | undefined;
   let previousHeight: number | undefined;
   let previousWidth: number | undefined;
   let contentReflowSettleUntil = 0;
-  let touchStartY: number | null = null;
   let resizeCorrelatedUntaggedScrollBudget = 0;
-  // Controller-scope baseline so `scrolledDown` can be computed for the
-  // re-stick path. Re-stick requires both recent down input and a real
-  // downward scroll event landing at the bottom; this baseline keeps
-  // layout clamps from masquerading as user-driven down motion.
-  let lastObservedScrollTopForRestick = -1;
 
   // ===== Arrival-readback acceptance state =====
   // Some engines reject the exact max scrollTop by one CSS pixel. When a
@@ -317,21 +244,6 @@ export function createUseStickToBottomController(
   // chase (scroll/spring.ts) reaches it through its deps. Helpers live
   // in the Geometry section below.
   let arrivalReadbackAcceptedTarget: number | null = null;
-
-  // ===== Restore-snap consent state =====
-  // One-shot flag the thread-switch entry point arms (via
-  // `armRestoreSnap()`, which sets the defensive escape and THEN arms)
-  // immediately before the restore $effect runs.
-  // `forceStick({reason: 'restore'})` consumes the flag and proceeds;
-  // when the flag is unset, that call NO-OPs. Any outer-scroll escape
-  // intent (wheel / key / touch / pointer that can reach the scroll element), plus
-  // selection or explicit user-reason forceStick,
-  // also clears the flag, so a stale restore $effect that fires after
-  // a user escape cannot clobber it. This is
-  // the load-bearing distinguisher between "the user has explicitly
-  // escaped" and "armRestoreSnap just defensively set escape=true
-  // while preparing the new thread for restore."
-  let restoreSnapArmed = false;
 
   // ===== Warm-up (quiescence) state =====
   // `warm` flips true once the controller observes a quiet period of
@@ -539,95 +451,6 @@ export function createUseStickToBottomController(
     return dist;
   }
 
-  function clearRecentDownIntent(opts: { bumpVersion?: boolean } = {}): void {
-    recentDownIntentUntil = 0;
-    if (opts.bumpVersion ?? true) recentDownIntentVersion += 1;
-    if (recentDownIntentClearTimer) {
-      clearTimeout(recentDownIntentClearTimer);
-      recentDownIntentClearTimer = null;
-    }
-  }
-
-  function hasRecentDownIntent(): boolean {
-    return recentDownIntentUntil > nowMs();
-  }
-
-  function clearScrollbarDragSession(opts: { invalidateCapturedScrolls?: boolean } = {}): void {
-    scrollbarDragSessionActive = false;
-    if (opts.invalidateCapturedScrolls ?? true) scrollbarDragSessionVersion += 1;
-    detachScrollbarDragEnd?.();
-    detachScrollbarDragEnd = undefined;
-    if (scrollbarDragSessionFailsafeTimer) {
-      clearTimeout(scrollbarDragSessionFailsafeTimer);
-      scrollbarDragSessionFailsafeTimer = null;
-    }
-  }
-
-  function handleScrollbarDragEnd(): void {
-    clearScrollbarDragSession({ invalidateCapturedScrolls: false });
-  }
-
-  function armScrollbarDragSession(): void {
-    clearScrollbarDragSession({ invalidateCapturedScrolls: false });
-    scrollbarDragSessionActive = true;
-    scrollbarDragSessionVersion += 1;
-    document.addEventListener('pointerup', handleScrollbarDragEnd, { capture: true });
-    document.addEventListener('pointercancel', handleScrollbarDragEnd, { capture: true });
-    window.addEventListener('blur', handleScrollbarDragEnd, { capture: true });
-    detachScrollbarDragEnd = () => {
-      document.removeEventListener('pointerup', handleScrollbarDragEnd, { capture: true });
-      document.removeEventListener('pointercancel', handleScrollbarDragEnd, { capture: true });
-      window.removeEventListener('blur', handleScrollbarDragEnd, { capture: true });
-    };
-    scrollbarDragSessionFailsafeTimer = setTimeout(
-      handleScrollbarDragEnd,
-      SCROLLBAR_DRAG_SESSION_FAILSAFE_MS,
-    );
-  }
-
-  function restickFromUserInput(source: 'wheel' | 'key' | 'touch' | 'scroll'): void {
-    clearRecentDownIntent({ bumpVersion: false });
-    escapedFromLockState = false;
-    isAtBottomState = true;
-    spring.clearStopRequest();
-    if (isUiRenderTraceEnabled()) trace('scroll.restick.input', () => ({
-      source,
-      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-      distFromBottom: scrollEl ? Math.round(distanceFromBottom()) : null,
-    }));
-  }
-
-  function recordRecentDownIntent(source: 'wheel' | 'key' | 'touch'): void {
-    if (!escapedFromLockState) return;
-    clearProgrammaticScrollState();
-    restoreSnapArmed = false;
-    recentDownIntentUntil = nowMs() + RECENT_DOWN_INTENT_WINDOW_MS;
-    recentDownIntentVersion += 1;
-    if (recentDownIntentClearTimer) clearTimeout(recentDownIntentClearTimer);
-    const expiresAt = recentDownIntentUntil;
-    const version = recentDownIntentVersion;
-    recentDownIntentClearTimer = setTimeout(() => {
-      if (
-        recentDownIntentVersion === version
-        && recentDownIntentUntil === expiresAt
-      ) clearRecentDownIntent();
-    }, RECENT_DOWN_INTENT_WINDOW_MS);
-    if (isUiRenderTraceEnabled()) trace('scroll.intent.down', () => ({
-      source,
-      recentDownIntentUntil: Math.round(recentDownIntentUntil),
-      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-      distFromBottom: scrollEl ? Math.round(distanceFromBottom()) : null,
-      escapedFromLockState,
-    }));
-    if (
-      scrollEl
-      && escapedFromLockState
-      && distanceFromBottom() <= AUTO_FOLLOW_BOTTOM_EPSILON_PX
-    ) {
-      restickFromUserInput(source);
-    }
-  }
-
   // ===== Programmatic scroll write =====
   // Spring-tick writes fire at 60Hz during a chase — predictable
   // increment-by-1px from the spring solver, and each record is
@@ -686,8 +509,7 @@ export function createUseStickToBottomController(
     // Tag using the BROWSER-rounded read so the scroll handler's token
     // match sees the same value the scroll event will report.
     const taggedTop = scrollEl.scrollTop;
-    recordProgrammaticScrollEventToken(taggedTop);
-    lastObservedScrollTopForRestick = taggedTop;
+    intent.noteProgrammaticWrite(taggedTop);
     refreshIsNearBottom();
     if (shouldTrace) {
       trace('scroll.write', () => ({
@@ -709,49 +531,6 @@ export function createUseStickToBottomController(
     // after every layout read above avoids forcing an extra recalc
     // mid-sequence on the (rare) suppression path.
     if (suppressScrollBehavior) scrollEl.style.scrollBehavior = originalScrollBehavior;
-  }
-
-  function recordProgrammaticScrollEventToken(top: number): void {
-    const now = nowMs();
-    pendingProgrammaticScrollEventTokens.push({
-      top,
-      expiresAt: now + PROGRAMMATIC_SCROLL_EVENT_TOKEN_TTL_MS,
-      remaining: PROGRAMMATIC_SCROLL_EVENT_DUPLICATE_BUDGET,
-    });
-    if (pendingProgrammaticScrollEventTokens.length > MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS) {
-      pendingProgrammaticScrollEventTokens.splice(
-        0,
-        pendingProgrammaticScrollEventTokens.length - MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS,
-      );
-    }
-  }
-
-  function consumeProgrammaticScrollEventToken(top: number): boolean {
-    if (pendingProgrammaticScrollEventTokens.length === 0) return false;
-    const now = nowMs();
-    let consumed = false;
-    let writeIndex = 0;
-    for (const token of pendingProgrammaticScrollEventTokens) {
-      if (token.expiresAt < now) continue;
-      if (!consumed && token.top === top) {
-        consumed = true;
-        token.remaining -= 1;
-        if (token.remaining > 0) {
-          pendingProgrammaticScrollEventTokens[writeIndex] = token;
-          writeIndex += 1;
-        }
-        continue;
-      }
-      pendingProgrammaticScrollEventTokens[writeIndex] = token;
-      writeIndex += 1;
-    }
-    pendingProgrammaticScrollEventTokens.length = writeIndex;
-    return consumed;
-  }
-
-  function clearProgrammaticScrollState(): void {
-    pendingProgrammaticScrollEventTokens = [];
-    spring.clearStructuralAppend();
   }
 
   // Cached MediaQueryList — `matchMedia('(prefers-reduced-motion: reduce)')`
@@ -803,6 +582,34 @@ export function createUseStickToBottomController(
     animationMode: animationModeNow,
     prefersReducedMotion,
     forceNextSpringTickTrace,
+  });
+
+  // ===== Intent machine =====
+  // Escape / re-stick / restore-snap consent, down-intent and drag-session
+  // windows, and user-vs-programmatic scroll classification live in
+  // scroll/intent.ts. The reactive flags stay here (templates subscribe);
+  // the machine flips them through the accessor pair.
+  const intent = createScrollIntent({
+    getScrollEl: () => scrollEl,
+    isAtBottom: () => isAtBottomState,
+    setIsAtBottom: (next) => {
+      isAtBottomState = next;
+    },
+    escaped: () => escapedFromLockState,
+    setEscaped: (next) => {
+      escapedFromLockState = next;
+    },
+    isNearBottom: () => isNearBottomState,
+    pauseDepth: () => pauseDepth,
+    distanceFromBottom,
+    refreshIsNearBottom,
+    spring,
+    sampleResizeCorrelation: () => {
+      const correlated = resizeDifference !== 0 || resizeCorrelatedUntaggedScrollBudget > 0;
+      if (resizeCorrelatedUntaggedScrollBudget > 0) resizeCorrelatedUntaggedScrollBudget -= 1;
+      return correlated;
+    },
+    resizeDifferenceNow: () => resizeDifference,
   });
 
   // Snapshot of the flags the pure delivery resolver decides over.
@@ -1046,312 +853,7 @@ export function createUseStickToBottomController(
     contentRO = ro;
   }
 
-  // ===== Wheel handler =====
-  function targetIsInsideScrollEl(e: Event): boolean {
-    if (!scrollEl) return false;
-    let cur: Element | null = e.target instanceof Element ? e.target : null;
-    while (cur) {
-      if (cur === scrollEl) return true;
-      cur = cur.parentElement;
-    }
-    return false;
-  }
-
-  function escapeFromUserInput(source: 'wheel' | 'key' | 'touch' | 'pointer'): void {
-    if (!scrollEl) return;
-    clearProgrammaticScrollState();
-    if (source !== 'pointer') clearScrollbarDragSession();
-    const targetScrollEl = scrollEl;
-    if (!escapedFromLockState && isUiRenderTraceEnabled()) {
-      trace('scroll.intent.escape', () => ({
-        source,
-        scrollTop: Math.round(targetScrollEl.scrollTop),
-        isAtBottomState,
-        escapedFromLockState,
-      }));
-    }
-    setEscapedFromLock(true);
-  }
-
-  function handleWheel(e: WheelEvent): void {
-    if (!scrollEl) return;
-    if (e.ctrlKey) return;
-    if (e.deltaY === 0) return;
-    if (!targetIsInsideScrollEl(e)) return;
-    if (scrollEl.scrollHeight <= scrollEl.clientHeight) return;
-
-    if (e.deltaY < 0) {
-      escapeFromUserInput('wheel');
-      return;
-    }
-
-    recordRecentDownIntent('wheel');
-  }
-
-  function handlePointerDown(e: PointerEvent): void {
-    if (!scrollEl) return;
-    if (scrollEl.scrollHeight <= scrollEl.clientHeight) return;
-    if (!targetIsInsideScrollEl(e)) return;
-
-    if (e.button === 1) {
-      escapeFromUserInput('pointer');
-      return;
-    }
-
-    if (e.isPrimary === false) return;
-
-    const scrollbarWidth = scrollEl.offsetWidth - scrollEl.clientWidth;
-    if (scrollbarWidth <= 0) return;
-
-    const rect = scrollEl.getBoundingClientRect();
-    const style = window.getComputedStyle(scrollEl);
-    const inRightGutter = e.clientX >= rect.right - scrollbarWidth;
-    const inLeftGutter = style.direction === 'rtl' && e.clientX <= rect.left + scrollbarWidth;
-    if (!inRightGutter && !inLeftGutter) return;
-
-    if (isUiRenderTraceEnabled()) trace('scroll.pointer.intent', () => ({
-      clientX: Math.round(e.clientX),
-      scrollbarWidth: Math.round(scrollbarWidth),
-      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-      isAtBottomState,
-      escapedFromLockState,
-    }));
-    escapeFromUserInput('pointer');
-    armScrollbarDragSession();
-  }
-
-  // ===== Scroll handler =====
-  function handleScroll(): void {
-    if (!scrollEl) return;
-    const scrollTopAtEvent = scrollEl.scrollTop;
-    // Bug A fix (Change 1): capture distance-from-bottom synchronously
-    // at scroll-event time. The deferred re-stick check (below) must
-    // use THIS value, not re-read distanceFromBottom() from inside the
-    // 1ms timer — by the time the deferred handler runs, a concurrent
-    // contentRO fire from a streaming chunk may have grown scrollHeight
-    // and pushed the user past the re-stick epsilon, producing a false
-    // negative (the user reached the bottom but the bottom moved away
-    // in the 1ms window). This was Bug A in long Opus threads.
-    // Self-tag consumption: one write records one token; the token FIFO
-    // is TTL-bounded, so a genuine user scroll landing at the same
-    // scrollTop value long after our write is NOT swallowed, and the
-    // per-token duplicate budget absorbs browser-coalesced event
-    // duplicates for the same write.
-    const tokenTagged = consumeProgrammaticScrollEventToken(scrollTopAtEvent);
-    const externalTagged = externalScrollIgnoreUntil > nowMs();
-    const tagged = tokenTagged || externalTagged;
-    // Tagged programmatic write — bail synchronously without scheduling
-    // the deferral timer. Steady-state streaming fires a sync-pin write
-    // on every contentRO positive delta; allocating a closure + timer
-    // registration for each one just to no-op inside the callback was
-    // hundreds of throwaway allocs/sec on long assistant turns. The 1 ms
-    // RO-race deferral below isn't needed for tagged writes — the token
-    // is recorded synchronously at the write chokepoint, so we already
-    // know this event reflects our own write, not user intent. The
-    // refreshIsNearBottom call and trace allocation below are also
-    // skipped on the tagged path — the spring fires at 60Hz during a
-    // chase, and both are wasted work when we already know this is our
-    // own write.
-    if (tagged) return;
-    const distFromBottomAtEvent = refreshIsNearBottom();
-    // No tagged/externalTagged fields here: the tagged bail above means
-    // this record only ever describes untagged (user-attributed) events.
-    if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent', () => ({
-      scrollTop: Math.round(scrollTopAtEvent),
-      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
-      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-      resizeDifference: Math.round(resizeDifference),
-      isAtBottomState,
-      escapedFromLockState,
-      pauseDepth,
-      isNearBottomState,
-    }));
-    const resizeCorrelatedScroll = resizeDifference !== 0 || resizeCorrelatedUntaggedScrollBudget > 0;
-    if (resizeCorrelatedUntaggedScrollBudget > 0) resizeCorrelatedUntaggedScrollBudget -= 1;
-    const previousObserved = lastObservedScrollTopForRestick;
-    const downIntentVersionAtEvent = recentDownIntentVersion;
-    const scrollbarDragSessionAtEvent = scrollbarDragSessionActive;
-    const scrollbarDragSessionVersionAtEvent = scrollbarDragSessionVersion;
-    const scrolledDown = previousObserved < 0
-      ? false
-      : scrollTopAtEvent > previousObserved;
-    const scrolledUp = previousObserved < 0
-      ? false
-      : scrollTopAtEvent < previousObserved;
-    lastObservedScrollTopForRestick = scrollTopAtEvent;
-    const shouldRunDeferredScrollIntentCheck =
-      escapedFromLockState
-      || mouseDown
-      || scrollbarDragSessionActive;
-    if (!shouldRunDeferredScrollIntentCheck) return;
-    // Defer 1ms so a concurrent RO callback can update resizeDifference
-    // before we interpret direction. Mirrors upstream.
-    setTimeout(() => {
-      if (!scrollEl) return;
-      const eventCameFromCurrentScrollbarDrag =
-        scrollbarDragSessionAtEvent
-        && scrollbarDragSessionVersionAtEvent === scrollbarDragSessionVersion;
-      if (eventCameFromCurrentScrollbarDrag && scrolledUp) {
-        escapeFromUserInput('pointer');
-      }
-
-      // RO race — content just resized; the scroll event reflects layout,
-      // not user intent. Most importantly: virtua's $fixScrollJump can
-      // adjust scrollTop to keep above-viewport rows stable, which would
-      // otherwise look like user scroll movement. For non-virtua consumers
-      // (Discussion's ChannelView) this gate is a 1ms suppression window
-      // after each content-RO fire — vanishingly unlikely to swallow a
-      // real user gesture, since the window only opens immediately after
-      // a layout change.
-      //
-      // A recent down-intent is proof the user is actively trying to
-      // re-stick, so let that bottom-landing through even during a
-      // measurement cascade. Without recent down intent, layout wins.
-      const hasLiveRecentDownIntent =
-        hasRecentDownIntent()
-        && recentDownIntentVersion === downIntentVersionAtEvent;
-      const hasLiveScrollbarDragRestickIntent =
-        eventCameFromCurrentScrollbarDrag
-        && scrolledDown;
-      const hasLiveDownIntent = hasLiveRecentDownIntent || hasLiveScrollbarDragRestickIntent;
-      if (resizeCorrelatedScroll && !hasLiveDownIntent) {
-        if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent.deferred.bailRO', () => ({
-          resizeDifference: Math.round(resizeDifference),
-          resizeCorrelatedScroll,
-          hasLiveDownIntent,
-          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-        }));
-        return;
-      }
-
-      if (isSelectingInside(scrollEl)) {
-        if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent.deferred.escapeSelection', () => ({
-          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-        }));
-        setEscapedFromLock(true);
-        return;
-      }
-
-      const willRestick = hasLiveDownIntent
-        && scrolledDown
-        && escapedFromLockState
-        && distFromBottomAtEvent <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
-      if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent.deferred', () => ({
-        scrollTop: Math.round(scrollTopAtEvent),
-        previousObserved: Math.round(previousObserved),
-        scrolledDown,
-        hasLiveRecentDownIntent,
-        hasLiveScrollbarDragRestickIntent,
-        hasLiveDownIntent,
-        distFromBottomAtEvent: Math.round(distFromBottomAtEvent),
-        distFromBottomNow: scrollEl ? Math.round(distanceFromBottom()) : null,
-        willRestick,
-        isAtBottomState,
-        escapedFromLockState,
-      }));
-      if (willRestick) {
-        restickFromUserInput('scroll');
-      }
-    }, RESIZE_CLEAR_PADDING_MS);
-  }
-
-  // ===== Keydown / touch handlers (intent signals) =====
-  function handleKeydown(e: KeyboardEvent): void {
-    if (UP_KEYS.has(e.key)) escapeFromUserInput('key');
-    if (DOWN_KEYS.has(e.key)) recordRecentDownIntent('key');
-  }
-  function handleTouchStart(e: TouchEvent): void {
-    touchStartY = e.touches[0]?.clientY ?? null;
-  }
-  function handleTouchMove(e: TouchEvent): void {
-    if (touchStartY === null) return;
-    const y = e.touches[0]?.clientY ?? touchStartY;
-    const dy = y - touchStartY;
-    touchStartY = y;
-    // Finger moves DOWN visually → page scrolls UP (scrollTop decreases)
-    // → user wants to see content above → escape (UP intent). Finger
-    // moves UP while already escaped is the matching "scroll back toward
-    // bottom" input signal (DOWN intent).
-    if (dy > 1) escapeFromUserInput('touch');
-    if (dy < -1) recordRecentDownIntent('touch');
-  }
-  function handleTouchEnd(): void {
-    touchStartY = null;
-  }
-
   // ===== Public actions =====
-  function setEscapedFromLock(next: boolean): void {
-    if (!next && !scrollbarDragSessionActive) clearScrollbarDragSession();
-    if (next) {
-      clearRecentDownIntent();
-      // User explicitly broke from auto-follow — bail any in-flight
-      // spring chase. The tick observes the stop request + new state
-      // and clears the token on the next frame, but we also cancel
-      // here for the "no rAF before next attach" edge case.
-      spring.requestStop();
-      spring.cancel();
-      // Clear any pending restore-snap consent: a fresh user escape
-      // invalidates a yet-to-be-consumed restore-snap. armRestoreSnap
-      // runs its defensive escape through here BEFORE arming, so this
-      // clear is the right default — a stale consent left over from an
-      // earlier path can't slip through, and a legitimate arm survives
-      // because it is written after this clear.
-      restoreSnapArmed = false;
-    }
-    if (escapedFromLockState === next) return;
-    const previousIsAtBottom = isAtBottomState;
-    escapedFromLockState = next;
-    if (next) {
-      isAtBottomState = false;
-    }
-    if (isUiRenderTraceEnabled()) trace('scroll.escape.set', () => ({
-      next,
-      previousIsAtBottom,
-      isAtBottomState,
-      pauseDepth,
-      isNearBottomState,
-      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
-      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-    }));
-  }
-
-  function armRestoreSnap(): void {
-    // Defensive escape FIRST (it clears any prior arm), then arm. Folded
-    // into one call so the two consumers (thread switch, channel initial
-    // poll) cannot get the ordering wrong — see the interface doc for why
-    // arm and consume must stay separate calls.
-    setEscapedFromLock(true);
-    restoreSnapArmed = true;
-    if (isUiRenderTraceEnabled()) trace('scroll.restoreSnap.arm', () => ({
-      isAtBottomState,
-      escapedFromLockState,
-      pauseDepth,
-    }));
-  }
-
-  // Tags a non-controller scroll writer so the scroll handler does not
-  // misread it as user intent. This does not change follow/escape state;
-  // callers decide that explicitly before invoking it.
-  function tagExternalProgrammaticScroll(action: () => void): void {
-    externalScrollIgnoreUntil = nowMs() + EXTERNAL_SCROLL_TAG_CLEAR_MS;
-    if (externalScrollClearTimer) clearTimeout(externalScrollClearTimer);
-    externalScrollClearTimer = setTimeout(() => {
-      externalScrollIgnoreUntil = 0;
-      externalScrollClearTimer = null;
-    }, EXTERNAL_SCROLL_TAG_CLEAR_MS);
-    action();
-    if (scrollEl) {
-      lastObservedScrollTopForRestick = scrollEl.scrollTop;
-      refreshIsNearBottom();
-    }
-  }
-
-  function runExternalScroll(action: () => void, opts: { preserveIntent?: boolean } = {}): void {
-    if (!opts.preserveIntent) setEscapedFromLock(true);
-    tagExternalProgrammaticScroll(action);
-  }
-
   async function preserveScrollAnchor(
     anchor: HTMLElement,
     action: () => void | Promise<void>,
@@ -1405,10 +907,10 @@ export function createUseStickToBottomController(
     // User-reason calls always proceed (chip click / explicit
     // intent), and they ALSO consume any pending restore consent so
     // the next call doesn't see a stale arm.
-    if (reason === 'restore' && !restoreSnapArmed) {
+    if (reason === 'restore' && !intent.restoreConsentArmed()) {
       if (isUiRenderTraceEnabled()) trace('scroll.forceStick.skipRestore', () => ({
         reason,
-        restoreSnapArmed,
+        restoreSnapArmed: intent.restoreConsentArmed(),
         isAtBottomState,
         escapedFromLockState,
         pauseDepth,
@@ -1416,9 +918,9 @@ export function createUseStickToBottomController(
       }));
       return;
     }
-    restoreSnapArmed = false;
-    clearRecentDownIntent();
-    clearScrollbarDragSession();
+    intent.clearRestoreConsent();
+    intent.clearRecentDownIntent();
+    intent.clearScrollbarDragSession();
     if (isUiRenderTraceEnabled()) trace('scroll.forceStick.entry', () => ({
       reason,
       isAtBottomState,
@@ -1429,7 +931,7 @@ export function createUseStickToBottomController(
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
       target: scrollEl ? Math.round(targetScrollTop()) : null,
     }));
-    setEscapedFromLock(false);
+    intent.setEscapedFromLock(false);
     spring.cancel();
     // Reset the stop flag AFTER cancel — the spring tick observes the
     // stop request via the rAF guard, but the value at the current
@@ -1463,10 +965,10 @@ export function createUseStickToBottomController(
       scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
     }));
-    restoreSnapArmed = false;
-    clearRecentDownIntent();
-    clearScrollbarDragSession();
-    setEscapedFromLock(false);
+    intent.clearRestoreConsent();
+    intent.clearRecentDownIntent();
+    intent.clearScrollbarDragSession();
+    intent.setEscapedFromLock(false);
     isAtBottomState = true;
     refreshIsNearBottom();
   }
@@ -1663,25 +1165,7 @@ export function createUseStickToBottomController(
       pauseDepth,
     }));
     setupContentRO();
-    nextScrollEl.addEventListener('wheel', handleWheel, { passive: true });
-    nextScrollEl.addEventListener('scroll', handleScroll, { passive: true });
-    nextScrollEl.addEventListener('pointerdown', handlePointerDown, { passive: true });
-    nextScrollEl.addEventListener('keydown', handleKeydown);
-    nextScrollEl.addEventListener('touchstart', handleTouchStart, { passive: true });
-    nextScrollEl.addEventListener('touchmove', handleTouchMove, { passive: true });
-    nextScrollEl.addEventListener('touchend', handleTouchEnd, { passive: true });
-    nextScrollEl.addEventListener('touchcancel', handleTouchEnd, { passive: true });
-    detachWheel = () => nextScrollEl.removeEventListener('wheel', handleWheel);
-    detachScroll = () => nextScrollEl.removeEventListener('scroll', handleScroll);
-    detachPointer = () => nextScrollEl.removeEventListener('pointerdown', handlePointerDown);
-    detachKeyTouch = () => {
-      nextScrollEl.removeEventListener('keydown', handleKeydown);
-      nextScrollEl.removeEventListener('touchstart', handleTouchStart);
-      nextScrollEl.removeEventListener('touchmove', handleTouchMove);
-      nextScrollEl.removeEventListener('touchend', handleTouchEnd);
-      nextScrollEl.removeEventListener('touchcancel', handleTouchEnd);
-    };
-    lastObservedScrollTopForRestick = nextScrollEl.scrollTop;
+    intent.attach(nextScrollEl);
     refreshIsNearBottom();
     installStickStateDevHook();
   }
@@ -1710,12 +1194,9 @@ export function createUseStickToBottomController(
         warm,
         springStopRequested: spring.stopRequested(),
         springToken: spring.token(),
-        recentDownIntentActive: hasRecentDownIntent(),
-        recentDownIntentUntil: Math.round(recentDownIntentUntil),
-        scrollbarDragSessionActive,
-        scrollbarDragSessionVersion,
-        // Restore-snap consent (consumed by forceStick({reason:'restore'})).
-        restoreSnapArmed,
+        // Intent windows + restore-snap consent (consumed by
+        // forceStick({reason:'restore'})).
+        ...intent.debugState(),
         // Geometry snapshot for cross-referencing the trace.
         scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
         scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
@@ -1744,27 +1225,15 @@ export function createUseStickToBottomController(
   function detach(): void {
     contentRO?.disconnect();
     contentRO = undefined;
-    detachWheel?.();
-    detachWheel = undefined;
-    detachScroll?.();
-    detachScroll = undefined;
-    detachPointer?.();
-    detachPointer = undefined;
-    detachKeyTouch?.();
-    detachKeyTouch = undefined;
     uninstallStickStateDevHook();
     if (resizeClearTimer) {
       clearTimeout(resizeClearTimer);
       resizeClearTimer = null;
     }
-    if (externalScrollClearTimer) {
-      clearTimeout(externalScrollClearTimer);
-      externalScrollClearTimer = null;
-    }
-    externalScrollIgnoreUntil = 0;
-    clearProgrammaticScrollState();
-    clearRecentDownIntent();
-    clearScrollbarDragSession();
+    // Removes the intent machine's listeners and resets its transient
+    // state; restore-snap consent deliberately survives (see the comment
+    // in intent.detach for the first-mount arm-then-attach ordering).
+    intent.detach();
     // spring.cancel() also resets the target-change timestamp and
     // sentinel state; only the stop request needs a separate clear.
     spring.cancel();
@@ -1776,20 +1245,6 @@ export function createUseStickToBottomController(
     previousHeight = undefined;
     previousWidth = undefined;
     contentReflowSettleUntil = 0;
-    touchStartY = null;
-    lastObservedScrollTopForRestick = -1;
-    // DELIBERATELY leave `restoreSnapArmed` untouched. attach() calls
-    // detach() up-front when scrollEl / contentEl change, and on first
-    // mount that wipe ran BETWEEN the consumer's $effect.pre arm and
-    // the restore $effect's forceStick({reason:'restore'}), making
-    // the consent effectively unusable for the initial-mount path.
-    // The flag is invalidated by outer-scroll escape intent (wheel / key /
-    // touch / pointer that can reach the scroll element), selection,
-    // explicit user-reason forceStick, and the
-    // consume-on-restore path itself — that's
-    // enough to keep it from leaking stale consent across legitimate
-    // lifecycles. True teardown also discards the entire controller
-    // instance, so a residual `true` here has no observable effect.
     scrollEl = undefined;
     contentEl = undefined;
   }
@@ -1815,8 +1270,8 @@ export function createUseStickToBottomController(
     detach,
     forceStick,
     markAtBottom,
-    runExternalScroll,
-    setEscapedFromLock,
+    runExternalScroll: intent.runExternalScroll,
+    setEscapedFromLock: intent.setEscapedFromLock,
     armWarmup: beginWarmup,
     skipWarmup(): void {
       if (!warm) {
@@ -1825,7 +1280,7 @@ export function createUseStickToBottomController(
       }
     },
     notifyQuietContextSignalChanged,
-    armRestoreSnap,
+    armRestoreSnap: intent.armRestoreSnap,
     applyVirtuaScrollCompensation,
   };
 }
