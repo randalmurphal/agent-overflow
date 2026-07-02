@@ -22,7 +22,14 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     DOM: one lazy ResizeObserver for the scroller and every mounted row,
     scroll-event feed, spacer + absolute row positioning (`VirtualRow`),
     scrollend synthesis, and the imperative handle
-    (`TimelineVirtualizerHandle` in `utils/virtual/types.ts`).
+    (`TimelineVirtualizerHandle` in `utils/virtual/types.ts`). It is also
+    the controller's **content-geometry source** in chat: the spacer
+    height it writes IS the content height, so it delivers
+    `ContentGeometrySample`s (`onContentGeometry` →
+    `stick.deliverContentGeometry`) post-flush instead of the controller
+    re-observing the same element with a second ResizeObserver — same
+    observation shape, one frame earlier, no duplicate layout read on
+    the streaming hot path.
   - **The engine never writes `scrollTop`.** Geometry changes that would
     move content above the viewport surface as `EngineCompensation`
     observations; imperative scrolls (`scrollToIndex`) compute their
@@ -46,10 +53,13 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     programmatic-write tagging. Intent is never geometry-inferred.
   - `spring.ts` — chase kinematics: HOW a spring advances scrollTop
     frame to frame once the controller decides one runs.
-  - `observers.ts` — the contentEl ResizeObserver pipeline, the warm-up
-    (quiescence) gate, and resize classification. Each delivery is
-    gathered here, decided by the resolver, and applied through the
-    controller's chokepoint, so "a content delivery" reads in one place.
+  - `observers.ts` — the content-geometry delivery pipeline, the warm-up
+    (quiescence) gate, and resize classification. Two sources feed the
+    one pipeline: engine-sourced samples in chat
+    (`externalContentGeometry`), a contentEl ResizeObserver everywhere
+    else (ChannelView). Each delivery is gathered here, decided by the
+    resolver, and applied through the controller's chokepoint, so "a
+    content delivery" reads in one place.
 - `ThreadPane` owns the scroll-controller registration slot so shared
   surfaces can pause or notify scrolling without reaching into component
   internals.
@@ -224,12 +234,19 @@ landed ~160ms after reveal, longer than even `QUIET_MS`). For a
 **revisited** thread the cascade is instead *eliminated*: the engine's
 row estimate resolves each unmeasured row from the previous visit's
 persisted measurement (the priors replay — see "Row And Payload State"
-below), so the surface mounts at its final height and the gate sees ~zero
-contentRO deltas and reveals immediately. The geometry gate therefore
-guards only the **first** visit to a thread within a session — where no
-priors exist yet and the estimate→measure cascade is unavoidable — and is
-best-effort there. Both defenses coexist: priors remove the cascade when
-they can, the gate hides it when they can't.
+below), so the surface mounts at its final height. Chat's engine-sourced
+geometry samples carry the per-row settle evidence that proves it —
+every mounted row measured, all within `WARMUP_SETTLE_EPSILON_PX` of
+their estimates — and the warm gate then reveals **immediately**
+(`markWarm('settled')`), skipping the quiet wait entirely, once the
+markdown-settled signal also confirms no late typesetting wave is
+coming. A cold mount's corrections are tens-to-hundreds of px, so it can
+never fast-path; late async growth (mermaid, images) lands as a
+correction and holds the gate exactly as before. The geometry gate
+therefore guards only the **first** visit to a thread within a session —
+where no priors exist yet and the estimate→measure cascade is
+unavoidable — and is best-effort there. Both defenses coexist: priors
+remove the cascade when they can, the gate hides it when they can't.
 
 On thread switch, `MessageTimeline` must call `stick.armWarmup()` from
 `$effect.pre` so `isWarm=false` before the new DOM paints. The restore
@@ -588,7 +605,10 @@ flags, row measurement, and browser layout. Reproduce with
 
 Useful trace records:
 
-- `scroll.contentRO` — resize delta, width-reflow state, and pin decisions.
+- `scroll.contentRO` — content-geometry delta, width-reflow state, and pin
+  decisions (in chat the delivery is engine-sourced, not an RO fire; the
+  record name stays for trace continuity, and `settleEvidence` reports
+  the warm gate's per-row settle input).
 - `scroll.contentRO.widthReflow` — width-only content reflow that armed
   the short layout-correction window.
 - `scroll.escape.set` — escape state changes.

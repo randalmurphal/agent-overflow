@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import TimelineVirtualizerHarness, { type HarnessRow } from './TimelineVirtualizerHarness.svelte';
-import type { EngineCompensation } from '../../utils/virtual/types';
+import type { ContentGeometrySample, EngineCompensation, RowEstimate } from '../../utils/virtual/types';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 
 const VIEWPORT_PX = 600;
@@ -38,9 +38,11 @@ function mountHarness(
     initialRows: HarnessRow[];
     bufferSize: number;
     renderAll: boolean;
+    estimate: RowEstimate;
     onscroll: (offset: number) => void;
     onscrollend: () => void;
     onCompensation: (compensation: EngineCompensation) => void;
+    onContentGeometry: (sample: ContentGeometrySample) => void;
   }> = {},
 ) {
   const host = document.createElement('div');
@@ -271,6 +273,124 @@ describe('write timing: compensation is delivered post-flush', () => {
         `${sample.kind} compensation delivered before the spacer updated`,
       ).toBe(Math.round(sample.totalSize));
     }
+  });
+});
+
+describe('content geometry samples (engine-sourced contentRO replacement)', () => {
+  // The adapter is the scroll controller's content-geometry source under
+  // `externalContentGeometry`: `onContentGeometry` samples replace the
+  // controller's contentEl ResizeObserver. These pin the source contract:
+  // post-flush delivery (sample.height already in the DOM), change-only
+  // delivery, per-row settle evidence, and width sampling from the
+  // scroller's RO entry.
+  interface GeometryCapture {
+    sample: ContentGeometrySample;
+    spacerHeight: string;
+    scrollHeight: number;
+  }
+
+  function exactEstimate(): RowEstimate {
+    // Models a priors-hit revisit: every row's estimate matches its real
+    // rendered height, so first measurements land with zero correction.
+    return { at: () => ROW_PX, shiftBase: () => {} };
+  }
+
+  it('delivers post-flush (height already in the DOM) and only on change', async () => {
+    const captures: GeometryCapture[] = [];
+    const ctx = mountHarness({
+      onContentGeometry: (sample) => {
+        captures.push({
+          sample,
+          spacerHeight: (ctx.scrollEl.firstElementChild as HTMLElement).style.height,
+          scrollHeight: ctx.scrollEl.scrollHeight,
+        });
+      },
+    });
+    const { scrollEl } = ctx;
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom settle');
+    await waitFor(() => captures.length > 0, 'geometry samples');
+
+    // Post-flush contract: at delivery time the spacer style already
+    // carries the reported height — the same timing argument as
+    // compensation delivery (a pre-flush sample would make the controller
+    // pin against a stale bottom target).
+    for (const capture of captures) {
+      expect(
+        capture.spacerHeight,
+        'sample delivered before the spacer updated',
+      ).toBe(`${capture.sample.height}px`);
+    }
+
+    // Once the window is fully measured, the DOM's scrollHeight agrees
+    // with the reported height exactly. (Mid-cascade samples are exempt:
+    // an unmeasured row renders at its natural height and overflows its
+    // estimate-derived offset until the engine records the measurement,
+    // so scrollHeight can transiently exceed the spacer.)
+    const measured = captures.filter((capture) => capture.sample.windowMeasured);
+    expect(measured.length).toBeGreaterThan(0);
+    for (const capture of measured) {
+      expect(capture.scrollHeight).toBe(Math.round(capture.sample.height));
+    }
+
+    // Change-only contract: a scroll within the settled, fully-measured
+    // window changes no geometry and must deliver nothing (the controller
+    // would otherwise process a delta-0 sample per scroll event).
+    const settledCount = captures.length;
+    scrollEl.scrollTop -= 10;
+    await raf();
+    await raf();
+    expect(captures.length).toBe(settledCount);
+  });
+
+  it('reports zero corrections under exact estimates and the real error under flat ones', async () => {
+    // Exact estimates (priors-hit shape): the window measures fully with
+    // maxFirstMeasureCorrectionPx === 0 — the evidence the controller's
+    // warm gate fast-paths on.
+    const exact: ContentGeometrySample[] = [];
+    const exactCtx = mountHarness({
+      estimate: exactEstimate(),
+      onContentGeometry: (sample) => exact.push(sample),
+    });
+    await waitForStableGeometry(exactCtx.scrollEl, 'exact-estimate mount');
+    await waitFor(() => exact.at(-1)?.windowMeasured === true, 'exact window to measure');
+    expect(exact.at(-1)!.maxFirstMeasureCorrectionPx).toBe(0);
+
+    // Flat default estimate (cold-mount shape): rows render at ROW_PX but
+    // were placed at ESTIMATE_PX, so the evidence carries the real error
+    // and the fast-path can never fire.
+    const flat: ContentGeometrySample[] = [];
+    const flatCtx = mountHarness({
+      onContentGeometry: (sample) => flat.push(sample),
+    });
+    await waitForStableGeometry(flatCtx.scrollEl, 'flat-estimate mount');
+    await waitFor(() => flat.at(-1)?.windowMeasured === true, 'flat window to measure');
+    expect(flat.at(-1)!.maxFirstMeasureCorrectionPx).toBe(ROW_PX - ESTIMATE_PX);
+  });
+
+  it('a scroller width change delivers a width-only sample at unchanged height', async () => {
+    const captures: ContentGeometrySample[] = [];
+    const ctx = mountHarness({
+      onContentGeometry: (sample) => captures.push(sample),
+    });
+    const { host, scrollEl } = ctx;
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom settle');
+    await waitFor(() => captures.length > 0, 'geometry samples');
+
+    const before = captures.at(-1)!;
+    // Narrow the fixed host; the scroller (width: 100%) follows and its
+    // RO entry carries the new content-box width. Rows are fixed-height,
+    // so this is the width-only reflow shape the controller classifies
+    // with (delta 0 + widthChanged → width-reflow settle window).
+    (host.firstElementChild as HTMLElement).style.width = '640px';
+    await waitFor(
+      () => captures.length > 0 && captures.at(-1)!.width < before.width,
+      'width sample',
+    );
+    const after = captures.at(-1)!;
+    expect(after.height).toBe(before.height);
+    expect(after.width).toBeLessThan(before.width);
   });
 });
 

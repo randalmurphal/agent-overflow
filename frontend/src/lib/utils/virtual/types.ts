@@ -50,6 +50,31 @@ export interface RowEstimate {
   shiftBase(count: number): void;
 }
 
+/**
+ * One engine-sourced content-geometry sample, delivered by
+ * TimelineVirtualizer after the template flush (DOM consistent, still
+ * pre-paint) — the replacement for the scroll controller's contentEl
+ * ResizeObserver in chat. `height` is the engine's totalSize, which the
+ * spacer's explicit height makes identical to the content element's
+ * height; `width` is the scroller's content-box width from the adapter's
+ * own ResizeObserver (the single async width source — never a
+ * synchronous layout read). The two settle fields are per-row settle
+ * evidence for the controller's warm-up gate: everything mounted has
+ * measured, and how far those first measurements landed from their
+ * estimates (a priors-hit revisit measures ~0 correction; a cold
+ * estimate cascade measures large ones).
+ */
+export interface ContentGeometrySample {
+  /** Content height = the engine's totalSize (the spacer height just written). */
+  height: number;
+  /** Scroller content-box width (the wrap point; width-reflow classification). */
+  width: number;
+  /** Every row in the current mount window has received its first measurement. */
+  windowMeasured: boolean;
+  /** Max |measured − estimated| px over all first measurements since mount. */
+  maxFirstMeasureCorrectionPx: number;
+}
+
 export type ScrollToIndexAlign = 'start' | 'center' | 'end' | 'nearest';
 
 /**

@@ -3,6 +3,7 @@
   import { createEngine } from '../../utils/virtual/engine';
   import { createRowEstimate } from '../../utils/virtual/priors';
   import type {
+    ContentGeometrySample,
     EngineCompensation,
     EngineUpdate,
     ItemsRange,
@@ -23,7 +24,10 @@
   // controller's resolver; imperative scrolls (scrollToIndex) go through
   // `applyScrollTarget` so the controller performs and tags the write.
   // The one default: without `applyScrollTarget` (test harnesses), the
-  // target is written directly to the scroller.
+  // target is written directly to the scroller. The component is also the
+  // controller's content-geometry source (`onContentGeometry`): the
+  // spacer height it writes IS the content height, so chat runs no second
+  // ResizeObserver over the content element.
   //
   // Constructor-once by design: `estimate`, `bufferSize`, and `renderAll`
   // configure the engine at mount. The `{#key pane.threadId}` remount is
@@ -66,6 +70,11 @@
     onCompensation?: (compensation: EngineCompensation) => void;
     /** Performs an imperative scroll write (controller chokepoint). */
     applyScrollTarget?: (top: number) => void;
+    /** Engine-sourced content-geometry samples → the scroll controller's
+     * `deliverContentGeometry` (replaces its contentEl ResizeObserver).
+     * Delivered post-flush alongside compensations, and only when the
+     * (height, width, settle) tuple actually changed. */
+    onContentGeometry?: (sample: ContentGeometrySample) => void;
     children: Snippet<[item: T, index: number]>;
   }
 
@@ -81,6 +90,7 @@
     onscrollend,
     onCompensation,
     applyScrollTarget,
+    onContentGeometry,
     children,
   }: Props = $props();
 
@@ -144,13 +154,74 @@
 
   $effect(() => {
     void geometryVersion;
+    void contentGeometryTrigger;
     const compensation = pendingCompensation;
     pendingCompensation = null;
     untrack(() => {
       if (compensation) onCompensation?.(compensation);
       convergeIndexScroll();
+      maybeDeliverContentGeometry();
     });
   });
+
+  // ------------------------------------------------------------------
+  // Engine-sourced content geometry (the controller's contentRO merge)
+  // ------------------------------------------------------------------
+  // The spacer's explicit height makes the engine's totalSize identical
+  // to the content element's height, so this component IS the content-
+  // geometry source: one sample per actual change, delivered from the
+  // post-flush effect above (DOM consistent, pre-paint — the same timing
+  // argument as compensation delivery). Width comes from the scroller's
+  // RO entry (the single async content-box width source — never a
+  // synchronous layout read, per the width-oscillation contract). The
+  // settle fields are warm-gate evidence: window fully measured + how far
+  // first measurements landed from their estimates (a priors-hit revisit
+  // measures ~0; a cold estimate cascade measures large corrections).
+  //
+  // Deliveries start only once the scroller RO has reported a width —
+  // the same first-delivery timing the contentEl RO had. Samples repeat
+  // only when the tuple changes, so scroll-driven effect runs (window
+  // shifts at constant geometry) deliver nothing.
+  let contentGeometryTrigger = $state(0);
+  let scrollerContentWidth: number | undefined;
+  let maxFirstMeasureCorrectionPx = 0;
+  let lastGeometrySample: ContentGeometrySample | undefined;
+
+  function windowFullyMeasured(): boolean {
+    const [start, end] = engine.getWindow();
+    const lastIndex = Math.min(end, engine.getItemCount() - 1);
+    const firstIndex = Math.max(0, start);
+    // An empty window has measured nothing — never report settle
+    // evidence for it (the empty-timeline paths use markAtBottom /
+    // skipWarmup instead of the warm gate).
+    if (lastIndex < firstIndex) return false;
+    for (let index = firstIndex; index <= lastIndex; index++) {
+      if (!engine.isMeasuredAt(index)) return false;
+    }
+    return true;
+  }
+
+  function maybeDeliverContentGeometry(): void {
+    if (!onContentGeometry || scrollerContentWidth === undefined) return;
+    const sample: ContentGeometrySample = {
+      height: engine.getTotalSize(),
+      width: scrollerContentWidth,
+      windowMeasured: windowFullyMeasured(),
+      maxFirstMeasureCorrectionPx,
+    };
+    const prev = lastGeometrySample;
+    if (
+      prev &&
+      prev.height === sample.height &&
+      prev.width === sample.width &&
+      prev.windowMeasured === sample.windowMeasured &&
+      prev.maxFirstMeasureCorrectionPx === sample.maxFirstMeasureCorrectionPx
+    ) {
+      return;
+    }
+    lastGeometrySample = sample;
+    onContentGeometry(sample);
+  }
 
   const rows = $derived.by(() => {
     void geometryVersion;
@@ -197,6 +268,16 @@
       if (!target.offsetParent) continue;
       if (target === observedScroller) {
         viewportHeight = entry.contentRect.height;
+        const width = entry.contentRect.width;
+        if (width !== scrollerContentWidth) {
+          scrollerContentWidth = width;
+          // Bump the post-flush effect: a width-only reflow produces no
+          // engine update (rows re-wrap at unchanged heights → all
+          // measurement entries filter out), yet the controller needs the
+          // width sample to open its width-reflow settle window. The
+          // first fire is also what starts geometry deliveries.
+          contentGeometryTrigger++;
+        }
         continue;
       }
       const index = rowIndexes.get(target);
@@ -204,7 +285,20 @@
         // Content-box height: trailing row margins stay contained by the
         // [data-row-geometry-content] flow-root contract, so content-box
         // and visual extent agree (settle-flicker analysis).
-        resizes.push([index, entry.contentRect.height]);
+        const height = entry.contentRect.height;
+        if (!engine.isMeasuredAt(index)) {
+          // First measurement of this row: how far it landed from its
+          // estimate is the warm gate's settle evidence (~0 on a
+          // priors-hit revisit, large during a cold estimate cascade).
+          // No trigger bump needed — a first measurement always records
+          // in the engine (UNMEASURED → size), so the applyMeasurements
+          // below bumps geometryVersion in this same flush.
+          const correction = Math.abs(height - engine.sizeAt(index));
+          if (correction > maxFirstMeasureCorrectionPx) {
+            maxFirstMeasureCorrectionPx = correction;
+          }
+        }
+        resizes.push([index, height]);
       }
     }
     if (viewportHeight !== undefined) applyUpdate(engine.applyViewportResize(viewportHeight));

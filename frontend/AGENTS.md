@@ -77,9 +77,11 @@ virtualizer (`TimelineVirtualizer.svelte` over the pure engine in
 the scroll controller (`utils/scroll/`) owns scroll intent and every
 programmatic `scrollTop` write — inside the package the pure resolver
 decides, the controller's `writeScrollTop` chokepoint writes. The
-virtualizer's `scrollToIndex` and compensation observations route
-through the controller (`applyScrollTarget` /
-`applyEngineCompensation`); `scrollToIndex` is instant-only by design.
+virtualizer's `scrollToIndex`, compensation observations, and
+content-geometry samples all route through the controller
+(`applyScrollTarget` / `applyEngineCompensation` /
+`deliverContentGeometry` — chat runs no contentEl ResizeObserver);
+`scrollToIndex` is instant-only by design.
 
 ## Rendering
 

@@ -224,10 +224,12 @@
   // <ScrollToBottomButton> outside the scroll content (see template
   // comment for why).
   let scrollEl: HTMLDivElement | undefined = $state(undefined);
-  // Wrapper around <TimelineVirtualizer>. The controller's content RO
-  // observes this element so any size change (row growth, expand toggle,
-  // the engine's totalSize bump) fires synchronously before the same
-  // paint that displays the change.
+  // Wrapper around <TimelineVirtualizer>: the warm-up visibility gate's
+  // hide target, and the controller's registered content element. The
+  // controller does NOT observe it (`externalContentGeometry`) — content
+  // geometry arrives engine-sourced through the virtualizer's
+  // `onContentGeometry` samples, post-flush and before the paint that
+  // displays the change.
   let contentEl: HTMLDivElement | undefined = $state(undefined);
   // Imperative handle into the virtualizer. Set once it mounts.
   let listRef: TimelineVirtualizerHandle | undefined = $state(undefined);
@@ -444,6 +446,10 @@
   const stick = createUseStickToBottomController({
     animationMode: animationModeForScroll,
     quietContextSignal: () => anyMarkdownSettledSinceArm,
+    // The virtualizer is the content-geometry source (its spacer height
+    // IS the content height) — the controller creates no contentEl RO;
+    // samples arrive through `onContentGeometry` below.
+    externalContentGeometry: true,
   });
 
   function markMarkdownSettled(): void {
@@ -1825,9 +1831,9 @@
      transcript and ride up off-screen as the user scrolls or as
      auto-follow drives scrollTop downward (browser-confirmed). The
      inner div is the actual scroll container that <TimelineVirtualizer
-     scrollRef={scrollEl}> reads scroll input from, that the controller's
-     wheel/scroll/keydown/touch listeners and content ResizeObserver
-     bind to. `overflow-anchor: none` disables the browser's
+     scrollRef={scrollEl}> reads scroll input from and that the
+     controller's wheel/scroll/keydown/touch listeners bind to.
+     `overflow-anchor: none` disables the browser's
      scroll-anchor adjustment — the engine already owns row-anchor
      preservation via its compensation path, and the controller owns
      bottom-pinning via the contentRO sync-pin; leaving the browser's
@@ -1837,11 +1843,9 @@
      (= composer height + visual breathing room) keeps the last message
      clear of the absolute composer overlay without putting a synthetic
      spacer row inside the virtualized data; it lives on scrollEl
-     because contentEl's contentRO observes content-box and
-     padding-only changes neither fire the callback (W3C ResizeObserver
-     spec — default observation is content-box) nor change
-     `entry.contentRect.height`, so a contentEl padding wouldn't
-     re-pin via the contentRO seam. ChatView's composer-overlay RO
+     because the content-geometry pipeline reports the engine's
+     totalSize — padding changes don't move it, so they could never
+     re-pin through that seam. ChatView's composer-overlay RO
      calls `observe('composer-geometry')` to handle that case explicitly.
      The top `mask` fades the first TOP_FADE_PX of content as it rises
      under the header (replacing the old hard top padding), while a solid
@@ -1920,10 +1924,12 @@
         {/if}
       {/snippet}
 
-      <!-- contentEl is the controller's content-RO observation target.
-           The virtualizer's container has `contain: size; height:
-           totalSize+'px'`, so contentEl.scrollHeight reflects the
-           engine's totalSize exactly. {#key pane.threadId} forces the
+      <!-- contentEl is the warm-up gate's hide target and the
+           controller's registered content element (geometry itself is
+           engine-sourced: the virtualizer's container has `contain:
+           size; height: totalSize+'px'`, so its `onContentGeometry`
+           samples report the content height the controller would
+           otherwise have had to re-observe). {#key pane.threadId} forces the
            <TimelineVirtualizer> to remount on every thread switch so its
            engine resets with the timeline. `estimate` replays the
            previous visit's measured sizes when the priors validity key
@@ -1951,6 +1957,7 @@
           onscrollend={handleTimelineScrollEnd}
           onCompensation={stick.applyEngineCompensation}
           applyScrollTarget={stick.applyScrollTarget}
+          onContentGeometry={stick.deliverContentGeometry}
         >
           {#snippet children(node: TimelineNode, index: number)}
             {@const currentLeafItem = currentTimelineLeafItem(node)}

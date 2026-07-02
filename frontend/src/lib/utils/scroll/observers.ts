@@ -1,10 +1,25 @@
 // Content-geometry observation pipeline for the sticky-bottom
-// controller (useStickToBottom): the single ResizeObserver on
-// contentEl, the warm-up (quiescence) gate over its deliveries, and the
-// resize-classification state that lets the intent machine tell
-// layout-induced scroll events from user gestures.
+// controller (useStickToBottom): the content-geometry deliveries, the
+// warm-up (quiescence) gate over them, and the resize-classification
+// state that lets the intent machine tell layout-induced scroll events
+// from user gestures.
 //
-// Each RO delivery is gathered here, decided by the pure resolver
+// Two sources feed one pipeline (`processSample`):
+//
+// - ResizeObserver on contentEl (the default) — surfaces without a
+//   virtualizer (discussion's ChannelView) observe their content element
+//   directly.
+// - Engine-sourced samples (`externalContentGeometry` option) — chat's
+//   TimelineVirtualizer already knows every content-height change
+//   synchronously (its spacer height IS the content height), so it
+//   delivers `ContentGeometrySample`s post-flush via the controller's
+//   `deliverContentGeometry` instead of the controller re-observing the
+//   same element: same observation shape, one frame earlier, no
+//   duplicate layout read on the streaming hot path. Engine samples also
+//   carry per-row settle evidence that lets the warm gate reveal a
+//   priors-hit revisit immediately (see the settled fast-path below).
+//
+// Each delivery is gathered here, decided by the pure resolver
 // (scroll/resolver.ts), and applied here — through the controller's
 // writeScrollTop chokepoint and spring instance, both reached via the
 // deps interface — so everything about "a content delivery" reads in
@@ -24,6 +39,7 @@ import { nowMs } from './time';
 import { trace } from './trace';
 import type { ScrollWriteCaller } from './types';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
+import type { ContentGeometrySample } from '../virtual/types';
 
 // ResizeObserver width jitter below half a CSS pixel is usually rounding
 // noise. Wider changes mean the content column reflowed; any paired height
@@ -108,6 +124,9 @@ function roundCssPx(value: number): number {
 export interface ContentObserverDeps {
   getScrollEl(): HTMLElement | undefined;
   getContentEl(): HTMLElement | undefined;
+  /** True when the consumer delivers ContentGeometrySamples itself
+   * (`externalContentGeometry` option) — attach() then creates no RO. */
+  hasExternalGeometrySource(): boolean;
   /** Normalized per-fire animation mode (anything but 'spring' is 'instant'). */
   animationMode(): 'spring' | 'instant';
   /**
@@ -137,10 +156,15 @@ export interface ContentObserverDeps {
 }
 
 export interface ContentObserver {
-  /** Start observing the controller's current contentEl (no-op without RO support). */
+  /** Start observing the controller's current contentEl (no-op without RO
+   * support, and no-op under an external geometry source). */
   attach(): void;
   /** Disconnect the RO and reset all classification + warm-up state (warm → false). */
   detach(): void;
+  /** External-source entry: one engine-sourced content-geometry sample
+   * (TimelineVirtualizer post-flush) into the same pipeline an RO
+   * delivery takes. */
+  deliverSample(sample: ContentGeometrySample): void;
   /** Reset the warm-up gate: sync-pin mode until quiet/failsafe fires again. */
   beginWarmup(): void;
   /** Force warm without waiting for quiescence (already-settled surfaces). */
@@ -178,6 +202,13 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
   let failsafeTimer: ReturnType<typeof setTimeout> | null = null;
   let hasFirstContentRO = false;
+  // Engine-source settle evidence from the most recent sample: the mount
+  // window is fully measured AND every first measurement landed within
+  // WARMUP_SETTLE_EPSILON_PX of its estimate (a priors-hit revisit). Lets
+  // the warm gate reveal without waiting out a quiet window — and lets
+  // `notifyQuietContextSignalChanged` do the same when the typesetting
+  // signal is what arrives last. RO-sourced deliveries never set it.
+  let lastSettleEvidence = false;
   // Magnitude of the most recent contentRO height change, shared by both
   // quiet-timer arming sites (`bumpQuietTimer`, `notifyQuietContextSignalChanged`)
   // so the shortened window stays geometry-gated. Reset to +Infinity each
@@ -197,7 +228,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     }
   }
 
-  function markWarm(reason: 'quiet' | 'failsafe'): void {
+  function markWarm(reason: 'quiet' | 'failsafe' | 'settled'): void {
     if (deps.warm()) return;
     deps.setWarm(true);
     clearWarmupTimers();
@@ -213,6 +244,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     deps.setWarm(false);
     hasFirstContentRO = false;
     lastContentHeightDelta = Number.POSITIVE_INFINITY;
+    lastSettleEvidence = false;
     // ONLY arm the failsafe. The quiet timer is armed by `bumpQuietTimer`
     // on the FIRST contentRO event — gating the "quiet" signal on actual
     // RO evidence is what defends against the load-bearing case where
@@ -297,6 +329,14 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       warm,
     }));
     if (outcome === 'noop_warm' || outcome === 'noop_no_ro' || outcome === 'noop_signal_falsy') return;
+    // Engine-source settle evidence supersedes the quiet wait: everything
+    // mounted has measured within epsilon of its estimate (priors-hit
+    // revisit), and the typesetting signal just confirmed no late wave is
+    // coming — the two facts the quiet window exists to wait for.
+    if (lastSettleEvidence) {
+      markWarm('settled');
+      return;
+    }
     if (quietTimer) clearTimeout(quietTimer);
     // Geometry-gated like bumpQuietTimer: if the surface was still moving in
     // large steps at the last contentRO, the settle signal flipping does not
@@ -304,189 +344,230 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     quietTimer = setTimeout(() => markWarm('quiet'), quietWindowForGeometry());
   }
 
+  // One content-geometry delivery through the pipeline, whichever source
+  // produced it: (height, width) of the content, plus engine-source-only
+  // per-row settle evidence. RO-sourced deliveries pass no `settle`.
+  function processSample(
+    nextHeight: number,
+    nextWidth: number,
+    settle?: Pick<ContentGeometrySample, 'windowMeasured' | 'maxFirstMeasureCorrectionPx'>,
+  ): void {
+    const scrollEl = deps.getScrollEl();
+    if (!scrollEl) return;
+    const prev = previousHeight;
+    const prevWidth = previousWidth;
+    previousHeight = nextHeight;
+    previousWidth = nextWidth;
+    const widthChanged = prevWidth !== undefined
+      && Math.abs(nextWidth - prevWidth) > CONTENT_REFLOW_WIDTH_EPSILON_PX;
+    if (widthChanged) {
+      contentReflowSettleUntil = nowMs() + CONTENT_REFLOW_SETTLE_WINDOW_MS;
+    }
+
+    // Every RO activity counts as "still settling" — reset the quiet
+    // timer regardless of delta direction. The virtualizer's per-row
+    // remeasurement, Streamdown's typesetting backfill, and
+    // parseIncompleteMarkdown rebalance all fire multiple RO callbacks
+    // in close succession during mount; we want warm to fire only
+    // once they're done. The height delta keeps the shortened settle
+    // window gated on geometry stability (undefined on the first fire,
+    // which has no baseline — see bumpQuietTimer).
+    bumpQuietTimer(prev === undefined ? undefined : nextHeight - prev);
+
+    // Engine-source settled fast-path. The quiet window exists to wait out
+    // two unknowns: unmeasured rows still correcting, and a late async-
+    // typesetting wave. Settle evidence answers the first directly (every
+    // mounted row measured, all within WARMUP_SETTLE_EPSILON_PX of their
+    // estimates — the priors-hit revisit signature); the consumer's
+    // typesetting signal answers the second. With both in hand there is
+    // nothing left to wait for — reveal now instead of ~QUIET_MS later
+    // (the zero-delta revisit never lowers lastContentHeightDelta, so the
+    // geometry gate alone would hold the conservative window forever).
+    // A cold mount's corrections are tens-to-hundreds of px, so it can
+    // never qualify; late growth (mermaid, images) lands as a correction
+    // and holds the gate exactly as before.
+    if (settle !== undefined) {
+      lastSettleEvidence =
+        settle.windowMeasured &&
+        settle.maxFirstMeasureCorrectionPx <= WARMUP_SETTLE_EPSILON_PX;
+      if (lastSettleEvidence && !deps.warm()) {
+        const quietContextSignal = deps.getQuietContextSignal();
+        if (!quietContextSignal || quietContextSignal()) markWarm('settled');
+      }
+    }
+
+    if (prev === undefined) {
+      // First fire: snap to bottom synchronously so the initial paint
+      // lands at the right place. Matches upstream's `initial` behavior
+      // when isAtBottom starts true.
+      const decision = resolveContentDelivery(deps.resolverStateSnapshot(), {
+        kind: 'first',
+        target: deps.targetScrollTop(),
+      });
+      if (isUiRenderTraceEnabled()) trace('scroll.contentRO.firstFire', () => ({
+        nextHeight: Math.round(nextHeight),
+        willPin: decision.write !== null,
+        isAtBottomState: deps.isAtBottom(),
+        escapedFromLockState: deps.escaped(),
+        scrollTop: Math.round(scrollEl.scrollTop),
+        scrollHeight: Math.round(scrollEl.scrollHeight),
+        clientHeight: Math.round(scrollEl.clientHeight),
+      }));
+      if (decision.write) {
+        deps.writeScrollTop(decision.write.caller, decision.write.value);
+      }
+      deps.refreshIsNearBottom();
+      return;
+    }
+
+    const delta = nextHeight - prev;
+    const widthReflowActive = widthChanged || contentReflowSettleUntil > nowMs();
+    // Common case: the virtualizer re-measures a same-height row, padding-bottom
+    // CSS variable updates with identical computed value, etc. No
+    // geometry change → nothing to chase, no scroll-event tagging needed.
+    if (delta === 0) {
+      if (widthChanged && isUiRenderTraceEnabled()) trace('scroll.contentRO.widthReflow', () => ({
+        prevWidth: prevWidth === undefined ? null : roundCssPx(prevWidth),
+        nextWidth: roundCssPx(nextWidth),
+        widthDelta: prevWidth === undefined ? null : roundCssPx(nextWidth - prevWidth),
+        widthReflowActive,
+        settleWindowMs: CONTENT_REFLOW_SETTLE_WINDOW_MS,
+        scrollTop: Math.round(scrollEl.scrollTop),
+        scrollHeight: Math.round(scrollEl.scrollHeight),
+        clientHeight: Math.round(scrollEl.clientHeight),
+      }));
+      return;
+    }
+    resizeDifference = delta;
+    // A browser scroll clamp (scrollHeight shrinking below
+    // scrollTop + clientHeight, e.g. from a shrinking row measurement
+    // reducing the virtualizer's spacer height) emits one
+    // untagged scroll event correlated with this content resize. The
+    // timer/rAF `resizeDifference` guard catches the normal ordering;
+    // this one-event budget covers the clear racing ahead of the
+    // scroll handler. Pending user intent still wins. (virtua's own
+    // compensation writes used to be the main untagged producer here;
+    // the engine's are routed through the controller and token-tagged.)
+    resizeCorrelatedUntaggedScrollBudget = 1;
+
+    // Refresh the geometric near-bottom flag BEFORE resolving so the
+    // decision and its trace see the same post-resize geometry.
+    deps.refreshIsNearBottom();
+    // Cache the bottom target once per RO delivery. `targetScrollTop()`
+    // reads `scrollHeight` + `clientHeight` (forced layout), and neither
+    // changes across this synchronous callback — the only writes here
+    // are to `scrollTop`, which don't affect them — so one read serves
+    // the whole decision. Mirrors the spring tick's per-frame
+    // `const target` discipline.
+    const target = deps.targetScrollTop();
+    const scrollTopAtDelivery = scrollEl.scrollTop;
+    // Every decision about this delivery — overshoot snap, stranded-
+    // oscillation recovery, sync-pin vs spring, negative re-stick — is
+    // made by the pure resolver (scroll/resolver.ts) over a sampled
+    // snapshot; this callback only gathers observations and applies
+    // effects. At most ONE scrollTop write leaves a delivery.
+    const observation: ContentDeltaObservation = {
+      kind: 'delta',
+      delta,
+      scrollTop: scrollTopAtDelivery,
+      target,
+      widthReflowActive,
+      animationMode: deps.animationMode(),
+      structuralAppendPending: deps.spring.structuralAppendPending(),
+      prefersReducedMotion: deps.prefersReducedMotion(),
+    };
+    const decision = resolveContentDelivery(deps.resolverStateSnapshot(), observation);
+    if (isUiRenderTraceEnabled()) trace('scroll.contentRO', () => ({
+      prev: Math.round(prev),
+      next: Math.round(nextHeight),
+      delta: Math.round(delta),
+      overshootMagnitude: Math.round(Math.max(0, scrollTopAtDelivery - target)),
+      distanceFromTarget: Math.round(Math.abs(scrollTopAtDelivery - target)),
+      writeCaller: decision.write?.caller ?? null,
+      startSpring: decision.startSpring,
+      bumpTargetChanged: decision.bumpTargetChanged,
+      oscillationRecovery: decision.oscillationRecovery,
+      setIsAtBottom: decision.setIsAtBottom,
+      isAtBottomState: deps.isAtBottom(),
+      escapedFromLockState: deps.escaped(),
+      pauseDepth: deps.pauseDepth(),
+      isNearBottomState: deps.isNearBottom(),
+      prevWidth: prevWidth === undefined ? null : roundCssPx(prevWidth),
+      nextWidth: roundCssPx(nextWidth),
+      widthDelta: prevWidth === undefined ? null : roundCssPx(nextWidth - prevWidth),
+      widthChanged,
+      widthReflowActive,
+      settleEvidence: settle === undefined ? null : lastSettleEvidence,
+      structuralAppendSpringPending: observation.structuralAppendPending,
+      scrollTop: Math.round(scrollTopAtDelivery),
+      scrollHeight: Math.round(scrollEl.scrollHeight),
+      clientHeight: Math.round(scrollEl.clientHeight),
+      target: Math.round(target),
+    }));
+
+    // Apply the decision. Order preserved from the legacy inline
+    // logic: intent flip first (the write's trace payload reads it),
+    // then the single write, then spring bookkeeping.
+    if (decision.setIsAtBottom) deps.setIsAtBottom(true);
+    if (decision.oscillationRecovery && decision.write) {
+      // Route through the shared snap so this synchronous recovery and
+      // the spring tick's rAF-side recovery cannot drift on the effect
+      // body (see the FOOTGUN comment on spring.snapOscillationToBottom,
+      // scroll/spring.ts). The
+      // recovery runs here — same RO delivery as the regrow, before
+      // paint — because rAF callbacks fire BEFORE ResizeObserver
+      // callbacks within a frame, so the tick-side snap always lands
+      // one frame late (bug-report-20260615T182227Z: ~37px one-frame
+      // upward jolt on an above-viewport image row remeasure).
+      deps.spring.snapOscillationToBottom(decision.write.caller, decision.write.value);
+    } else if (decision.write) {
+      deps.writeScrollTop(decision.write.caller, decision.write.value);
+    }
+    if (decision.startSpring) {
+      deps.spring.markTargetChanged();
+      deps.spring.start();
+    } else if (decision.bumpTargetChanged) {
+      // Spring is the single writer mid-chase and the sync write was
+      // suppressed, but the target moved — without the bump the retain
+      // window could lapse between chunks and the spring would
+      // arrive-and-stop while a follow-up chunk was on its way.
+      deps.spring.markTargetChanged();
+    }
+
+    // Schedule resizeDifference clear AFTER the scroll handler's 1ms.
+    // The scroll event fired by the layout change above must observe
+    // resizeDifference !== 0 so it is treated as layout, not input.
+    if (resizeClearTimer) clearTimeout(resizeClearTimer);
+    const myDelta = delta;
+    resizeClearTimer = setTimeout(() => {
+      requestAnimationFrame(() => {
+        if (resizeDifference === myDelta) {
+          resizeDifference = 0;
+          resizeCorrelatedUntaggedScrollBudget = 0;
+        }
+      });
+    }, RESIZE_CLEAR_PADDING_MS);
+  }
+
   function attach(): void {
+    // Under an external geometry source the consumer's virtualizer
+    // delivers samples itself (deliverSample) — observing contentEl too
+    // would double-deliver every height change.
+    if (deps.hasExternalGeometrySource()) return;
     const contentEl = deps.getContentEl();
     if (!contentEl) return;
     if (typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
-      const scrollEl = deps.getScrollEl();
-      if (!entry || !deps.getContentEl() || !scrollEl) return;
-      const nextHeight = entry.contentRect.height;
-      const nextWidth = entry.contentRect.width;
-      const prev = previousHeight;
-      const prevWidth = previousWidth;
-      previousHeight = nextHeight;
-      previousWidth = nextWidth;
-      const widthChanged = prevWidth !== undefined
-        && Math.abs(nextWidth - prevWidth) > CONTENT_REFLOW_WIDTH_EPSILON_PX;
-      if (widthChanged) {
-        contentReflowSettleUntil = nowMs() + CONTENT_REFLOW_SETTLE_WINDOW_MS;
-      }
-
-      // Every RO activity counts as "still settling" — reset the quiet
-      // timer regardless of delta direction. The virtualizer's per-row
-      // remeasurement, Streamdown's typesetting backfill, and
-      // parseIncompleteMarkdown rebalance all fire multiple RO callbacks
-      // in close succession during mount; we want warm to fire only
-      // once they're done. The height delta keeps the shortened settle
-      // window gated on geometry stability (undefined on the first fire,
-      // which has no baseline — see bumpQuietTimer).
-      bumpQuietTimer(prev === undefined ? undefined : nextHeight - prev);
-
-      if (prev === undefined) {
-        // First fire: snap to bottom synchronously so the initial paint
-        // lands at the right place. Matches upstream's `initial` behavior
-        // when isAtBottom starts true.
-        const decision = resolveContentDelivery(deps.resolverStateSnapshot(), {
-          kind: 'first',
-          target: deps.targetScrollTop(),
-        });
-        if (isUiRenderTraceEnabled()) trace('scroll.contentRO.firstFire', () => ({
-          nextHeight: Math.round(nextHeight),
-          willPin: decision.write !== null,
-          isAtBottomState: deps.isAtBottom(),
-          escapedFromLockState: deps.escaped(),
-          scrollTop: Math.round(scrollEl.scrollTop),
-          scrollHeight: Math.round(scrollEl.scrollHeight),
-          clientHeight: Math.round(scrollEl.clientHeight),
-        }));
-        if (decision.write) {
-          deps.writeScrollTop(decision.write.caller, decision.write.value);
-        }
-        deps.refreshIsNearBottom();
-        return;
-      }
-
-      const delta = nextHeight - prev;
-      const widthReflowActive = widthChanged || contentReflowSettleUntil > nowMs();
-      // Common case: the virtualizer re-measures a same-height row, padding-bottom
-      // CSS variable updates with identical computed value, etc. No
-      // geometry change → nothing to chase, no scroll-event tagging needed.
-      if (delta === 0) {
-        if (widthChanged && isUiRenderTraceEnabled()) trace('scroll.contentRO.widthReflow', () => ({
-          prevWidth: prevWidth === undefined ? null : roundCssPx(prevWidth),
-          nextWidth: roundCssPx(nextWidth),
-          widthDelta: prevWidth === undefined ? null : roundCssPx(nextWidth - prevWidth),
-          widthReflowActive,
-          settleWindowMs: CONTENT_REFLOW_SETTLE_WINDOW_MS,
-          scrollTop: Math.round(scrollEl.scrollTop),
-          scrollHeight: Math.round(scrollEl.scrollHeight),
-          clientHeight: Math.round(scrollEl.clientHeight),
-        }));
-        return;
-      }
-      resizeDifference = delta;
-      // A browser scroll clamp (scrollHeight shrinking below
-      // scrollTop + clientHeight, e.g. from a shrinking row measurement
-      // reducing the virtualizer's spacer height) emits one
-      // untagged scroll event correlated with this content resize. The
-      // timer/rAF `resizeDifference` guard catches the normal ordering;
-      // this one-event budget covers the clear racing ahead of the
-      // scroll handler. Pending user intent still wins. (virtua's own
-      // compensation writes used to be the main untagged producer here;
-      // the engine's are routed through the controller and token-tagged.)
-      resizeCorrelatedUntaggedScrollBudget = 1;
-
-      // Refresh the geometric near-bottom flag BEFORE resolving so the
-      // decision and its trace see the same post-resize geometry.
-      deps.refreshIsNearBottom();
-      // Cache the bottom target once per RO delivery. `targetScrollTop()`
-      // reads `scrollHeight` + `clientHeight` (forced layout), and neither
-      // changes across this synchronous callback — the only writes here
-      // are to `scrollTop`, which don't affect them — so one read serves
-      // the whole decision. Mirrors the spring tick's per-frame
-      // `const target` discipline.
-      const target = deps.targetScrollTop();
-      const scrollTopAtDelivery = scrollEl.scrollTop;
-      // Every decision about this delivery — overshoot snap, stranded-
-      // oscillation recovery, sync-pin vs spring, negative re-stick — is
-      // made by the pure resolver (scroll/resolver.ts) over a sampled
-      // snapshot; this callback only gathers observations and applies
-      // effects. At most ONE scrollTop write leaves a delivery.
-      const observation: ContentDeltaObservation = {
-        kind: 'delta',
-        delta,
-        scrollTop: scrollTopAtDelivery,
-        target,
-        widthReflowActive,
-        animationMode: deps.animationMode(),
-        structuralAppendPending: deps.spring.structuralAppendPending(),
-        prefersReducedMotion: deps.prefersReducedMotion(),
-      };
-      const decision = resolveContentDelivery(deps.resolverStateSnapshot(), observation);
-      if (isUiRenderTraceEnabled()) trace('scroll.contentRO', () => ({
-        prev: Math.round(prev),
-        next: Math.round(nextHeight),
-        delta: Math.round(delta),
-        overshootMagnitude: Math.round(Math.max(0, scrollTopAtDelivery - target)),
-        distanceFromTarget: Math.round(Math.abs(scrollTopAtDelivery - target)),
-        writeCaller: decision.write?.caller ?? null,
-        startSpring: decision.startSpring,
-        bumpTargetChanged: decision.bumpTargetChanged,
-        oscillationRecovery: decision.oscillationRecovery,
-        setIsAtBottom: decision.setIsAtBottom,
-        isAtBottomState: deps.isAtBottom(),
-        escapedFromLockState: deps.escaped(),
-        pauseDepth: deps.pauseDepth(),
-        isNearBottomState: deps.isNearBottom(),
-        prevWidth: prevWidth === undefined ? null : roundCssPx(prevWidth),
-        nextWidth: roundCssPx(nextWidth),
-        widthDelta: prevWidth === undefined ? null : roundCssPx(nextWidth - prevWidth),
-        widthChanged,
-        widthReflowActive,
-        structuralAppendSpringPending: observation.structuralAppendPending,
-        scrollTop: Math.round(scrollTopAtDelivery),
-        scrollHeight: Math.round(scrollEl.scrollHeight),
-        clientHeight: Math.round(scrollEl.clientHeight),
-        target: Math.round(target),
-      }));
-
-      // Apply the decision. Order preserved from the legacy inline
-      // logic: intent flip first (the write's trace payload reads it),
-      // then the single write, then spring bookkeeping.
-      if (decision.setIsAtBottom) deps.setIsAtBottom(true);
-      if (decision.oscillationRecovery && decision.write) {
-        // Route through the shared snap so this synchronous recovery and
-        // the spring tick's rAF-side recovery cannot drift on the effect
-        // body (see the FOOTGUN comment on spring.snapOscillationToBottom,
-        // scroll/spring.ts). The
-        // recovery runs here — same RO delivery as the regrow, before
-        // paint — because rAF callbacks fire BEFORE ResizeObserver
-        // callbacks within a frame, so the tick-side snap always lands
-        // one frame late (bug-report-20260615T182227Z: ~37px one-frame
-        // upward jolt on an above-viewport image row remeasure).
-        deps.spring.snapOscillationToBottom(decision.write.caller, decision.write.value);
-      } else if (decision.write) {
-        deps.writeScrollTop(decision.write.caller, decision.write.value);
-      }
-      if (decision.startSpring) {
-        deps.spring.markTargetChanged();
-        deps.spring.start();
-      } else if (decision.bumpTargetChanged) {
-        // Spring is the single writer mid-chase and the sync write was
-        // suppressed, but the target moved — without the bump the retain
-        // window could lapse between chunks and the spring would
-        // arrive-and-stop while a follow-up chunk was on its way.
-        deps.spring.markTargetChanged();
-      }
-
-      // Schedule resizeDifference clear AFTER the scroll handler's 1ms.
-      // The scroll event fired by the layout change above must observe
-      // resizeDifference !== 0 so it is treated as layout, not input.
-      if (resizeClearTimer) clearTimeout(resizeClearTimer);
-      const myDelta = delta;
-      resizeClearTimer = setTimeout(() => {
-        requestAnimationFrame(() => {
-          if (resizeDifference === myDelta) {
-            resizeDifference = 0;
-            resizeCorrelatedUntaggedScrollBudget = 0;
-          }
-        });
-      }, RESIZE_CLEAR_PADDING_MS);
+      if (!entry || !deps.getContentEl()) return;
+      processSample(entry.contentRect.height, entry.contentRect.width);
     });
     ro.observe(contentEl);
     contentRO = ro;
+  }
+
+  function deliverSample(sample: ContentGeometrySample): void {
+    processSample(sample.height, sample.width, sample);
   }
 
   function detach(): void {
@@ -503,11 +584,13 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     previousHeight = undefined;
     previousWidth = undefined;
     contentReflowSettleUntil = 0;
+    lastSettleEvidence = false;
   }
 
   return {
     attach,
     detach,
+    deliverSample,
     beginWarmup,
     skipWarmup,
     notifyQuietContextSignalChanged,

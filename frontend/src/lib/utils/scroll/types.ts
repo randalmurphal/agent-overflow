@@ -6,7 +6,7 @@
 // options, the observation-kind hint, and the closed union of programmatic
 // write callers.
 
-import type { EngineCompensation } from '../virtual/types';
+import type { ContentGeometrySample, EngineCompensation } from '../virtual/types';
 import type { ContentWriteCaller, EngineWriteCaller } from './resolver';
 
 // Every programmatic scrollTop write names its origin AT the single write
@@ -228,6 +228,20 @@ export interface UseStickToBottomController {
    * `<TimelineVirtualizer applyScrollTarget={stick.applyScrollTarget}>`.
    */
   applyScrollTarget(top: number): void;
+  /**
+   * External content-geometry entry (`externalContentGeometry` option):
+   * one engine-sourced sample into the same delivery pipeline a contentEl
+   * ResizeObserver fire takes — same observation shape, delivered by the
+   * virtualizer post-flush (DOM consistent, pre-paint) so the pipeline's
+   * geometry reads are live, one frame earlier than the RO and without
+   * re-observing an element whose height the engine just wrote. The
+   * sample's settle evidence additionally lets the warm gate reveal a
+   * priors-hit revisit immediately (see observers.ts).
+   *
+   * Wired as
+   * `<TimelineVirtualizer onContentGeometry={stick.deliverContentGeometry}>`.
+   */
+  deliverContentGeometry(sample: ContentGeometrySample): void;
 }
 
 export interface UseStickToBottomOptions {
@@ -270,4 +284,14 @@ export interface UseStickToBottomOptions {
    * ChannelView is the canonical example).
    */
   quietContextSignal?: () => boolean;
+  /**
+   * When true, the controller creates NO contentEl ResizeObserver: the
+   * consumer's virtualizer is the content-geometry source and delivers
+   * `ContentGeometrySample`s through `deliverContentGeometry`. Chat's
+   * MessageTimeline sets this — the engine's spacer height IS the content
+   * height, so a second observer on the same element would just re-read
+   * layout one frame later. Surfaces without a virtualizer (ChannelView)
+   * leave it unset and keep the RO-backed source.
+   */
+  externalContentGeometry?: boolean;
 }

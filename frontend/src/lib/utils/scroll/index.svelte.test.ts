@@ -5961,3 +5961,223 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
   });
 });
+
+// External content-geometry source (`externalContentGeometry`): chat's
+// TimelineVirtualizer delivers ContentGeometrySamples through
+// `deliverContentGeometry` instead of the controller observing contentEl
+// with its own ResizeObserver. These lock (a) source parity — a sample
+// takes the same pipeline an RO fire takes, so first-fire snap, delta
+// sync-pin, escape suppression, and the width-reflow settle window all
+// behave identically — and (b) the settled warm fast-path, which only
+// this source can trigger (per-row settle evidence: window fully
+// measured, first measurements within epsilon of their estimates).
+describe('createUseStickToBottomController — external content-geometry source', () => {
+  let scrollEl: HTMLDivElement;
+  let contentEl: HTMLDivElement;
+  let geom: Geometry;
+  let controller: UseStickToBottomController;
+  let originalRO: typeof ResizeObserver | undefined;
+  let mode: 'spring' | 'instant' = 'instant';
+  // Tri-state for the quiet-context signal: undefined models a consumer
+  // that passed no option (ChannelView-shaped); boolean models chat's
+  // markdown-settled signal.
+  let signal: boolean | undefined;
+
+  async function waitMs(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function advanceUntil(predicate: () => boolean, maxFrames = 200): Promise<void> {
+    for (let i = 0; i < maxFrames; i++) {
+      if (predicate()) return;
+      await nextFrame();
+    }
+    throw new Error(`advanceUntil: predicate not satisfied within ${maxFrames} frames`);
+  }
+
+  /** Deliver one engine-sourced sample. Settle evidence defaults to
+   * "window not yet fully measured" — the pre-settle shape. */
+  function deliver(
+    height: number,
+    width = 800,
+    settle: { windowMeasured: boolean; maxFirstMeasureCorrectionPx: number } = {
+      windowMeasured: false,
+      maxFirstMeasureCorrectionPx: 0,
+    },
+  ): void {
+    controller.deliverContentGeometry({
+      height,
+      width,
+      windowMeasured: settle.windowMeasured,
+      maxFirstMeasureCorrectionPx: settle.maxFirstMeasureCorrectionPx,
+    });
+  }
+
+  beforeEach(() => {
+    resetScrollIntentModuleStateForTest();
+    MockResizeObserver.instances = [];
+    originalRO = globalThis.ResizeObserver;
+    (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver = MockResizeObserver;
+    mockNow = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => mockNow);
+
+    scrollEl = document.createElement('div');
+    contentEl = document.createElement('div');
+    scrollEl.appendChild(contentEl);
+    document.body.appendChild(scrollEl);
+
+    geom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
+    stubGeometry(scrollEl, contentEl, geom);
+
+    mode = 'instant';
+    signal = undefined;
+    controller = createUseStickToBottomController({
+      animationMode: () => mode,
+      // Live-read like production: `signal === undefined` models the
+      // option being absent (the getter itself returns undefined).
+      get quietContextSignal() {
+        const current = signal;
+        return current === undefined ? undefined : () => current;
+      },
+      externalContentGeometry: true,
+    });
+    controller.attach(scrollEl, contentEl);
+  });
+
+  afterEach(() => {
+    controller.detach();
+    scrollEl.remove();
+    if (originalRO) {
+      (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;
+    }
+    vi.restoreAllMocks();
+  });
+
+  describe('source parity', () => {
+    it('creates no contentEl ResizeObserver', () => {
+      // The RO-backed default creates exactly one on attach; the external
+      // source must create none — a second observer on the same element
+      // would double-deliver every height change.
+      expect(MockResizeObserver.instances.length).toBe(0);
+    });
+
+    it('first sample snaps scrollTop to target when sticky', () => {
+      geom.scrollTop = 0;
+      deliver(800);
+      // target = scrollHeight - clientHeight = 400 (RO first-fire parity).
+      expect(geom.scrollTop).toBe(400);
+    });
+
+    it('escape suppresses both the first-sample snap and delta sync-pins', () => {
+      controller.setEscapedFromLock(true);
+      geom.scrollTop = 0;
+      deliver(800);
+      expect(geom.scrollTop).toBe(0);
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      deliver(1000);
+      expect(geom.scrollTop).toBe(0);
+    });
+
+    it('positive delta samples sync-pin to the new bottom', () => {
+      deliver(800);
+      expect(geom.scrollTop).toBe(400);
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      deliver(1000);
+      expect(geom.scrollTop).toBe(600);
+    });
+
+    it('a width-only sample opens the width-reflow settle window', async () => {
+      // Mirrors the RO-sourced mid-chase width-reflow test: during the
+      // settle window the paired sync-pin lands, so a small mid-chase
+      // engine compensation must pass instead of hitting the decline
+      // tier. If the width sample failed to open the window, this
+      // returns false.
+      mode = 'spring';
+      deliver(800);
+      await waitMs(150); // warm via quiet timer (no signal option)
+      expect(controller.isWarm).toBe(true);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      deliver(1200);
+      await nextFrame();
+      const midChase = geom.scrollTop;
+      expect(midChase).toBeGreaterThan(400);
+      expect(midChase).toBeLessThan(800);
+
+      // Same height, new width → delta 0, reflow window opens.
+      deliver(1200, 640);
+
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 20, target: midChase + 20 })).toBe(true);
+      expect(geom.scrollTop).toBe(midChase + 20);
+      await advanceUntil(() => geom.scrollTop === 800);
+    });
+  });
+
+  describe('warm-up gate — settled fast-path', () => {
+    it('reveals immediately on settle evidence when no quietContextSignal option exists', () => {
+      deliver(800); // first sample: window not yet measured
+      expect(controller.isWarm).toBe(false);
+      deliver(800, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 0 });
+      expect(controller.isWarm).toBe(true);
+    });
+
+    it('reveals immediately on settle evidence once the typesetting signal is settled', () => {
+      signal = true;
+      deliver(800);
+      expect(controller.isWarm).toBe(false);
+      deliver(800, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 2 });
+      expect(controller.isWarm).toBe(true);
+    });
+
+    it('holds the gate while the typesetting signal is falsy, then reveals on notifyQuietContextSignalChanged', () => {
+      // The priors-hit revisit where measurements settle BEFORE the
+      // markdown-settled signal flips: settle evidence alone must not
+      // reveal (a late typesetting wave could still land), but once the
+      // signal confirms, the reveal is immediate — no quiet wait.
+      signal = false;
+      deliver(800);
+      deliver(800, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 0 });
+      expect(controller.isWarm).toBe(false);
+      signal = true;
+      controller.notifyQuietContextSignalChanged();
+      expect(controller.isWarm).toBe(true);
+    });
+
+    it('large first-measure corrections never fast-path (cold estimate cascade)', async () => {
+      // A cold mount's corrections are tens-to-hundreds of px; the fast
+      // path must stay closed and the conservative quiet window must
+      // decide, exactly as before V4.
+      signal = true;
+      deliver(800);
+      deliver(1400, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 240 });
+      expect(controller.isWarm).toBe(false);
+      // The quiet timer still closes the gate once the cascade goes
+      // quiet (delta magnitude keeps the conservative QUIET_MS window).
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+    });
+
+    it('windowMeasured=false evidence never fast-paths, even with zero corrections', () => {
+      signal = true;
+      deliver(800);
+      deliver(900, 800, { windowMeasured: false, maxFirstMeasureCorrectionPx: 0 });
+      expect(controller.isWarm).toBe(false);
+    });
+
+    it('armWarmup clears prior settle evidence', () => {
+      // Thread switch re-arms the gate; the outgoing thread's settled
+      // state must not leak into the incoming one through the
+      // notifyQuietContextSignalChanged fast-path.
+      signal = false;
+      deliver(800);
+      deliver(800, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 0 });
+      controller.armWarmup();
+      signal = true;
+      controller.notifyQuietContextSignalChanged();
+      expect(controller.isWarm).toBe(false);
+    });
+  });
+});

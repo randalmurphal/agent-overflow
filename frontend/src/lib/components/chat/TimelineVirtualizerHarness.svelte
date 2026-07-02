@@ -13,6 +13,7 @@
 <script lang="ts">
   import TimelineVirtualizer from './TimelineVirtualizer.svelte';
   import type {
+    ContentGeometrySample,
     EngineCompensation,
     RowEstimate,
     TimelineVirtualizerHandle,
@@ -27,6 +28,7 @@
     onscroll?: (offset: number) => void;
     onscrollend?: () => void;
     onCompensation?: (compensation: EngineCompensation) => void;
+    onContentGeometry?: (sample: ContentGeometrySample) => void;
   }
 
   let {
@@ -38,6 +40,7 @@
     onscroll,
     onscrollend,
     onCompensation,
+    onContentGeometry,
   }: Props = $props();
 
   // svelte-ignore state_referenced_locally -- seed copy by design; the
@@ -96,6 +99,7 @@
     {onscroll}
     {onscrollend}
     {onCompensation}
+    {onContentGeometry}
   >
     {#snippet children(row: HarnessRow, index: number)}
       <div data-row-index={index} data-row-id={row.id} style="height: {row.heightPx}px;">

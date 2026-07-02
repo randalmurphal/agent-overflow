@@ -366,13 +366,16 @@ export function createUseStickToBottomController(
   });
 
   // ===== Content observation pipeline =====
-  // The contentEl ResizeObserver, warm-up (quiescence) gate, and
-  // resize-classification state live in scroll/observers.ts. Each RO
-  // delivery is gathered there, decided by the pure resolver, and
-  // applied through this controller's write chokepoint and spring.
+  // The content-geometry deliveries (contentEl ResizeObserver by default,
+  // engine-sourced samples under `externalContentGeometry`), warm-up
+  // (quiescence) gate, and resize-classification state live in
+  // scroll/observers.ts. Each delivery is gathered there, decided by the
+  // pure resolver, and applied through this controller's write
+  // chokepoint and spring.
   const observers = createContentObserver({
     getScrollEl: () => scrollEl,
     getContentEl: () => contentEl,
+    hasExternalGeometrySource: () => options.externalContentGeometry === true,
     animationMode: animationModeNow,
     getQuietContextSignal: () => options.quietContextSignal,
     warm: () => warm,
@@ -887,5 +890,6 @@ export function createUseStickToBottomController(
     armRestoreSnap: intent.armRestoreSnap,
     applyEngineCompensation,
     applyScrollTarget,
+    deliverContentGeometry: observers.deliverSample,
   };
 }
