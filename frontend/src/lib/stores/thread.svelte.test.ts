@@ -7421,12 +7421,17 @@ describe('createThreadPane', () => {
 
   // `pane.lastLiveContentAt` is the source the chat scroll controller
   // latches on to decide spring vs sync-pin (MessageTimeline's
-  // animationModeForScroll → latchedSpringMode). It must advance ONLY on
-  // genuine smooth live timeline content arriving — text reveals,
-  // final-summary patches, text-like provider rows — and must NOT
-  // advance on thread switch, tool output growth, bulk history loads,
-  // meta-only updates, or the optimistic-send / rollback paths that drive `upsertItems`
-  // directly. Each test ticks the fake clock to a nonzero base first so a
+  // animationModeForScroll → latchedSpringMode). Through the
+  // PANE-INTERNAL paths exercised here (`upsertItems`, `applyItemDelta`,
+  // `applyItemPatch`), it must advance ONLY on genuine smooth live
+  // timeline content arriving — text reveals, final-summary patches —
+  // and must NOT advance on thread switch, non-smooth delta growth,
+  // bulk history loads, meta-only updates, or the optimistic-send /
+  // rollback paths that drive `upsertItems` directly. (The provider
+  // upsert fan-out in events.ts additionally stamps visible-field
+  // updates to mounted rows of ANY kind — tool output previews,
+  // completion chrome; those rules are covered in events.test.ts.)
+  // Each test ticks the fake clock to a nonzero base first so a
   // `=== 0` assertion genuinely means "never stamped" rather than
   // "stamped at time 0".
   describe('live-content stamp (scroll animation latch source)', () => {

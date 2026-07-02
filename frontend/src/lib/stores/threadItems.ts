@@ -69,6 +69,25 @@ export function cursorIsValid(cursor: TimelineCursorLike | null | undefined): cu
  */
 export function itemsAreEqual(a: Item, b: Item): boolean {
   return (
+    itemsRenderEqual(a, b)
+    && a.createdAt === b.createdAt
+    && a.updatedAt === b.updatedAt
+  );
+}
+
+/**
+ * `itemsAreEqual` minus the `createdAt` / `updatedAt` timestamps: value
+ * equality over every field a row renders or that positions it in the
+ * timeline. The events fan-out's spring-latch predicate
+ * (`providerUpsertAdvancesLiveContent`) uses THIS check so that an
+ * applied upsert stamps the latch exactly when something the user can
+ * see changed — a timestamp-only heartbeat bump must not hold the latch
+ * open. Keep exhaustive over `Item`: `itemsAreEqual` builds on it, so a
+ * field added here is automatically part of both the upsert dedupe and
+ * the latch decision.
+ */
+export function itemsRenderEqual(a: Item, b: Item): boolean {
+  return (
     a.id === b.id
     && a.threadId === b.threadId
     && a.turnIndex === b.turnIndex
@@ -86,8 +105,6 @@ export function itemsAreEqual(a: Item, b: Item): boolean {
     && a.toolName === b.toolName
     && a.decision === b.decision
     && a.meta === b.meta
-    && a.createdAt === b.createdAt
-    && a.updatedAt === b.updatedAt
     && a.isBackground === b.isBackground
   );
 }

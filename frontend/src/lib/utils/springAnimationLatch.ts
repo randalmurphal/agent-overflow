@@ -3,17 +3,21 @@
 // 'instant' (same-paint sync-pin, no perceptible motion). See
 // docs/architecture/frontend-scroll.md for the two behaviors.
 //
-// The latch keys on WHEN smooth live timeline content last advanced — a
-// text/reasoning reveal, direct text patch, or text-like provider row —
-// NOT on whether a provider turn is active. Keying on content (data
-// mutation) rather than turn lifecycle is what fixes the two edge bugs
-// (turn ends while the agent keeps streaming; the end-of-turn
-// word-by-word drain tail that reveals for seconds after the wire turn
-// closes) AND keeps idle async-typesetting reflow on settled content
-// sync-pinned: shiki / KaTeX / mermaid grow row height but never advance
-// content, so they never refresh `lastLiveContentAt` and the latch stays
-// 'instant'. Tool rows also stay sync-pinned because their virtual
-// estimates often remeasure immediately after insertion.
+// The latch keys on WHEN live timeline content last advanced — a
+// text/reasoning reveal, direct text patch, a new text-like provider
+// row, or a visible-field update to an already mounted row — NOT on
+// whether a provider turn is active. Keying on content (data mutation)
+// rather than turn lifecycle is what fixes the two edge bugs (turn ends
+// while the agent keeps streaming; the end-of-turn word-by-word drain
+// tail that reveals for seconds after the wire turn closes) AND keeps
+// idle async-typesetting reflow on settled content sync-pinned: shiki /
+// KaTeX / mermaid grow row height but never advance content, so they
+// never refresh `lastLiveContentAt` and the latch stays 'instant'. Tool
+// row INSERTS also do not stamp — their virtual estimates often
+// remeasure immediately after insertion — but updates to a mounted tool
+// row (streaming output preview, running→completed result chrome) do:
+// that growth is real content, and sync-pinning it lands whole-viewport
+// teleports between spring glides (bug-report-20260702T184236Z).
 //
 // `lastLiveContentAt` is stamped on the owning ThreadPane (see
 // `stores/thread.svelte.ts`); MessageTimeline reads it per-contentRO-fire

@@ -312,7 +312,11 @@ describe('setupEventListeners', () => {
     expect(pane.lastLiveContentAt).toBe(0);
   });
 
-  it('does not stamp lastLiveContentAt for same-row Bash completion chrome', async () => {
+  it('stamps lastLiveContentAt when same-row Bash completion lands result chrome', async () => {
+    // running→completed on an already mounted row grows it (result chrome,
+    // output preview). That growth must spring like text — sync-pinning it
+    // landed a whole-viewport teleport between spring glides
+    // (bug-report-20260702T184236Z).
     const item = makeItem({
       id: 'bash-1',
       threadId: 'thread-a',
@@ -348,10 +352,13 @@ describe('setupEventListeners', () => {
 
     expect(pane.items[0].status).toBe('completed');
     expect(pane.items[0].payloadKind).toBe('command_output');
-    expect(pane.lastLiveContentAt).toBe(0);
+    expect(pane.lastLiveContentAt).toBeGreaterThan(0);
   });
 
-  it('does not stamp lastLiveContentAt when same-row Bash completion adds failure chrome', async () => {
+  it('stamps lastLiveContentAt when a running Bash row grows its output preview', async () => {
+    // Streaming command output has no wire delta channel — each flush
+    // window re-upserts the row with fresh payloadMeta (preview/stats)
+    // while status stays 'running'. That is the row visibly growing.
     const item = makeItem({
       id: 'bash-1',
       threadId: 'thread-a',
@@ -359,8 +366,11 @@ describe('setupEventListeners', () => {
       role: 'assistant',
       status: 'running',
       toolName: 'Bash',
-      summary: 'Bash: false',
-      meta: JSON.stringify({ input: { command: 'false' } }),
+      summary: 'Bash: make build',
+      meta: JSON.stringify({ input: { command: 'make build' } }),
+      payloadId: 'payload-bash-1',
+      payloadKind: 'command_output',
+      payloadMeta: JSON.stringify({ command: 'make build', lineCount: 2, preview: 'compiling…' }),
     });
     const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
     getAllPanes().set('a', pane);
@@ -371,26 +381,164 @@ describe('setupEventListeners', () => {
       threadId: 'thread-a',
       item: {
         ...item,
+        payloadMeta: JSON.stringify({ command: 'make build', lineCount: 9, preview: 'linking…' }),
+        updatedAt: item.updatedAt + 1,
+      },
+    });
+    await nextFrame();
+
+    expect(pane.items[0].status).toBe('running');
+    expect(pane.lastLiveContentAt).toBeGreaterThan(0);
+  });
+
+  it('does not stamp lastLiveContentAt for an updatedAt-only tool row bump', async () => {
+    // A re-upsert whose only change is the timestamp renders nothing new;
+    // it must not hold the spring latch open.
+    const item = makeItem({
+      id: 'bash-1',
+      threadId: 'thread-a',
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      toolName: 'Bash',
+      summary: 'Bash: sleep 30',
+      meta: JSON.stringify({ input: { command: 'sleep 30' } }),
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    getAllPanes().set('a', pane);
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: { ...item, updatedAt: item.updatedAt + 1 },
+    });
+    await nextFrame();
+
+    // The bump must actually APPLY (itemsAreEqual includes updatedAt, so
+    // this upsert passes the changed-items gate) — otherwise the no-stamp
+    // assertion below would be vacuous.
+    expect(pane.items[0].updatedAt).toBe(item.updatedAt + 1);
+    expect(pane.lastLiveContentAt).toBe(0);
+  });
+
+  it('stamps lastLiveContentAt when a running tool row is flagged background', async () => {
+    // Both backgrounding paths persist an upsert whose only rendered
+    // change is the isBackground flip (Claude: tool_lifecycle.go launch-row
+    // refresh; Codex: stampCodexItemBackgrounded). The flip swaps mounted
+    // row chrome (spinner → backgrounded-launch), so it must spring like
+    // any other visible-field update.
+    const item = makeItem({
+      id: 'bash-1',
+      threadId: 'thread-a',
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      toolName: 'Bash',
+      summary: 'Bash: npm run watch',
+      meta: JSON.stringify({ input: { command: 'npm run watch' } }),
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    getAllPanes().set('a', pane);
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: { ...item, isBackground: true, updatedAt: item.updatedAt + 1 },
+    });
+    await nextFrame();
+
+    expect(pane.items[0].isBackground).toBe(true);
+    expect(pane.lastLiveContentAt).toBeGreaterThan(0);
+  });
+
+  it('stamps lastLiveContentAt when an approval decision lands on a mounted row', async () => {
+    // Approval resolution persists only the decision (plus updatedAt) when
+    // summary/toolName are already set (approvals.go) — decision chips are
+    // rendered chrome, so the standalone flip must stamp.
+    const item = makeItem({
+      id: 'tool-1',
+      threadId: 'thread-a',
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      toolName: 'Edit',
+      summary: 'Edit: src/app.ts',
+      decision: '',
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    getAllPanes().set('a', pane);
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: { ...item, decision: 'approved', updatedAt: item.updatedAt + 1 },
+    });
+    await nextFrame();
+
+    expect(pane.items[0].decision).toBe('approved');
+    expect(pane.lastLiveContentAt).toBeGreaterThan(0);
+  });
+
+  it('does not stamp lastLiveContentAt for a same-batch tool row insert plus completion', async () => {
+    // Both upserts compare against the pre-batch snapshot, so the
+    // completion still resolves down the insert path — correct, because a
+    // row that mounted this flush is in its estimate phase for the whole
+    // flush. Pins the once-per-batch snapshot: a refactor to per-upsert
+    // lookup would silently start stamping these bursts.
+    //
+    // No `getAllPanes().set('a', pane)` here: buildPane already registers
+    // the pane (key 'main'), and a second key makes iterPanes() apply the
+    // batch to the SAME pane twice — the re-application of this
+    // value-different sequence against post-apply state would stamp
+    // spuriously. Single-upsert tests tolerate the duplicate because
+    // their re-application dedupes to a no-op.
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    const item = makeItem({
+      id: 'bash-1',
+      threadId: 'thread-a',
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      toolName: 'Bash',
+      summary: 'Bash: true',
+      meta: JSON.stringify({ input: { command: 'true' } }),
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item,
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: {
+        ...item,
         status: 'completed',
         payloadId: 'payload-bash-1',
         payloadKind: 'command_output',
-        payloadMeta: JSON.stringify({
-          command: 'false',
-          exitCode: 1,
-          lineCount: 0,
-          preview: '',
-        }),
+        payloadMeta: JSON.stringify({ command: 'true', exitCode: 0, lineCount: 0, preview: '' }),
         updatedAt: item.updatedAt + 1,
       },
     });
     await nextFrame();
 
     expect(pane.items[0].status).toBe('completed');
-    expect(pane.items[0].payloadKind).toBe('command_output');
     expect(pane.lastLiveContentAt).toBe(0);
   });
 
-  it('does not let off-window new rows stamp over visible same-row Bash success chrome', async () => {
+  it('does not let off-window new rows stamp over a visible no-op bump', async () => {
+    // The stamp decision is based on rows actually APPLIED to the visible
+    // pane window. The batch pairs a visible updatedAt-only bump (applied,
+    // so the changed-items gate is open, but renders nothing new) with a
+    // new text-like row below the loaded floor (dropped by the window
+    // guard). Neither may keep spring mode alive — an implementation that
+    // stamped from the incoming batch instead of the applied rows would
+    // fail here.
     const item = makeItem({
       id: 'bash-1',
       threadId: 'thread-a',
@@ -411,19 +559,7 @@ describe('setupEventListeners', () => {
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
       threadId: 'thread-a',
-      item: {
-        ...item,
-        status: 'completed',
-        payloadId: 'payload-bash-1',
-        payloadKind: 'command_output',
-        payloadMeta: JSON.stringify({
-          command: 'sleep 1',
-          exitCode: 0,
-          lineCount: 1,
-          preview: 'done',
-        }),
-        updatedAt: item.updatedAt + 1,
-      },
+      item: { ...item, updatedAt: item.updatedAt + 1 },
     });
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
@@ -440,7 +576,7 @@ describe('setupEventListeners', () => {
     await nextFrame();
 
     expect(pane.items.map((item) => item.id)).toEqual(['bash-1']);
-    expect(pane.items[0].status).toBe('completed');
+    expect(pane.items[0].updatedAt).toBe(item.updatedAt + 1);
     expect(pane.lastLiveContentAt).toBe(0);
   });
 

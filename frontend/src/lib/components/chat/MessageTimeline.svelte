@@ -433,11 +433,13 @@
 
   // Spring while live content advanced within SPRING_MODE_HOLD_MS, else
   // sync-pin. The pane stamps `lastLiveContentAt` on prose/reasoning
-  // reveals, direct text patches, and text-like provider rows, so during a
-  // stream the latch reads 'spring' continuously and falls to 'instant'
-  // ~SPRING_MODE_HOLD_MS after the last advance. Tool rows deliberately do
-  // not stamp; their virtual estimates often remeasure almost immediately,
-  // and sync-pinning those corrections is smoother than spring-chasing them.
+  // reveals, direct text patches, new text-like provider rows, and
+  // visible-field updates to already mounted rows (tool output previews,
+  // running→completed result chrome), so during a stream the latch reads
+  // 'spring' continuously and falls to 'instant' ~SPRING_MODE_HOLD_MS
+  // after the last advance. New tool rows deliberately do not stamp;
+  // their virtual estimates often remeasure almost immediately, and
+  // sync-pinning those corrections is smoother than spring-chasing them.
   // The 500ms hold is pure tuning; see springAnimationLatch.ts.
   function animationModeForScroll(): 'spring' | 'instant' {
     return latchedSpringMode(performance.now(), pane.lastLiveContentAt, SPRING_MODE_HOLD_MS);

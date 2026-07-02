@@ -364,15 +364,22 @@ adapter seam (delivery timing, windowing, measurement) in
 ## Live Content Animation
 
 Chat chooses animation mode with a content-keyed latch. `ThreadPane`
-stamps `lastLiveContentAt` whenever smooth text-like live timeline content
-advances: assistant prose, thinking, compaction reasoning, and direct text
-patches. `MessageTimeline` returns `spring` for `SPRING_MODE_HOLD_MS` after
-that stamp and `instant` otherwise.
+stamps `lastLiveContentAt` whenever live timeline content advances:
+assistant prose, thinking, compaction reasoning, direct text patches, and
+visible-field updates to already mounted rows — a running tool row growing
+its output preview per flush window, or running→completed result chrome
+landing. `MessageTimeline` returns `spring` for `SPRING_MODE_HOLD_MS`
+after that stamp and `instant` otherwise.
 
 The spring is keyed on content arrival, not provider turn state. It
 therefore covers end-of-turn smoother drains and text-stream gaps, while
-tool rows and late Streamdown typesetting on settled content sync-pin
-invisibly by default. The 500ms hold is pure tuning — the historical
+tool row INSERTS (whose estimate→remeasure churn would spring-chase
+transient targets) and late Streamdown typesetting on settled content
+sync-pin invisibly by default. The stamp is window-wide, not
+viewport-local: a rendered-field change anywhere in the loaded window
+opens the hold, so an unrelated bottom reflow landing within it springs
+instead of pinning — accepted bleed, since the window is short and keyed
+to real content changes. The 500ms hold is pure tuning — the historical
 requirement that it outlast the spring sentinel retain duration died with
 the descriptor gate (see Engine Compensation Routing).
 

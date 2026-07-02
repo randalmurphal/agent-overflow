@@ -40,6 +40,7 @@ import {
 } from './sendQueue.svelte';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
 import { closePanesShowingThread, findPaneShowingThread, iterPanes, panesShowingThread, syncThread } from './panes.svelte';
+import { itemsRenderEqual } from './threadItems';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { setProviderRateLimits } from './rateLimitsInfo.svelte';
@@ -269,6 +270,8 @@ function isValidItemForThread(item: Item | null | undefined, threadId: string): 
   if (item.parentId !== undefined && !isBoundedString(item.parentId, 512)) return false;
   if (item.completionOf !== undefined && !isBoundedString(item.completionOf, 512)) return false;
   if (item.toolName !== undefined && !isBoundedString(item.toolName, 256)) return false;
+  if (item.decision !== undefined && !isBoundedString(item.decision, 128)) return false;
+  if (item.inputPayloadId !== undefined && !isBoundedString(item.inputPayloadId, 512)) return false;
   if (item.meta !== undefined && !isBoundedString(item.meta)) return false;
   if (!isFiniteNumber(item.createdAt) || !isFiniteNumber(item.updatedAt)) return false;
   return true;
@@ -636,24 +639,29 @@ function itemUpsertCountsAsActivity(upsert: PendingItemUpsert): boolean {
   return userTextCountsAsActivity(upsert.item);
 }
 
-function providerUpsertCanUseSpringLatch(item: Item): boolean {
-  return isSmoothLiveContentKind(item.kind);
-}
-
 function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming: Item): boolean {
-  if (!providerUpsertCanUseSpringLatch(incoming)) return false;
-  if (!existing) return true;
-  if (existing.summary !== incoming.summary) return true;
-  if (
-    existing.kind !== incoming.kind
-    || existing.turnIndex !== incoming.turnIndex
-    || existing.itemIndex !== incoming.itemIndex
-    || existing.parentId !== incoming.parentId
-    || existing.completionOf !== incoming.completionOf
-  ) return true;
-  return existing.payloadId !== incoming.payloadId
-    || existing.payloadKind !== incoming.payloadKind
-    || existing.payloadMeta !== incoming.payloadMeta;
+  // A brand-new row opens the spring latch only for text-like kinds: tool
+  // rows enter the timeline at a virtual size estimate and remeasure a few
+  // milliseconds later, and spring-chasing those transient targets is
+  // visible WebKit stutter (the structural-append one-shot covers genuine
+  // tail appends instead — see markStructuralContentPending).
+  //
+  // `existing` comes from a snapshot taken BEFORE the batch applies, so a
+  // same-batch insert+update burst for one row resolves both upserts down
+  // this insert path — correct, because that row is still in its estimate
+  // phase for the whole flush.
+  if (!existing) return isSmoothLiveContentKind(incoming.kind);
+  // An update to an existing row has no estimate phase — the row is
+  // mounted and measured, so a change to any rendered field (status dot,
+  // summary, tool input in meta, output preview in payloadMeta, approval
+  // decision, backgrounded-launch chrome) is genuine content advancing
+  // the bottom, whatever the kind. Sync-pinning those growths lands
+  // whole-viewport teleports between spring glides: running Bash rows
+  // growing their output preview per flush window and running→completed
+  // result chrome both jumped (bug-report-20260702T184236Z). Render
+  // equality deliberately ignores `createdAt`/`updatedAt` — a bump with
+  // no rendered field change must not hold the latch open.
+  return !itemsRenderEqual(existing, incoming);
 }
 
 function applyItemUpserts(upserts: PendingItemUpsert[]): void {
@@ -703,11 +711,12 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
       const hasLiveContentAdvance = applied.changedItems.some((item) =>
         providerUpsertAdvancesLiveContent(previousItemsById.get(item.id), item),
       );
-      // A provider upsert that advances text-like live content marks the
-      // scroll-animation latch so the controller spring-chases. Tool rows
-      // deliberately do not stamp: command batches often enter with a
-      // virtual size estimate and remeasure a few milliseconds later, and
-      // spring-chasing those transient targets is visible WebKit stutter.
+      // A provider upsert that advances live content marks the
+      // scroll-animation latch so the controller spring-chases. New
+      // text-like rows and visible-field updates to any mounted row
+      // stamp; new tool rows (estimate→remeasure churn) and
+      // timestamp-only bumps deliberately do not — see
+      // providerUpsertAdvancesLiveContent.
       if (hasLiveContentAdvance) pane.markLiveContentAdvanced();
     }
   }

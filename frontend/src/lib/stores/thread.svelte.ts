@@ -246,7 +246,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // changes shape or identity; `applyItemDelta` intentionally does not bump.
   let timelineRevision = $state(0);
   // Non-reactive timestamp of the last LIVE timeline content advance — a
-  // smoother reveal, an overwrite patch, or a text-like provider row.
+  // smoother reveal, an overwrite patch, a text-like provider row, or a
+  // visible-field update to an already mounted row (tool output preview,
+  // running→completed result chrome; see events.ts
+  // providerUpsertAdvancesLiveContent).
   // Read imperatively by the scroll controller
   // (MessageTimeline's `animationMode` getter) to choose spring vs
   // sync-pin; see utils/springAnimationLatch.ts. Deliberately NOT
@@ -3351,10 +3354,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // word-aligned reveal. Replace the entry rather than mutating in
       // place so the virtualizer's per-row ResizeObserver stays quiet on
       // unchanged rows; the streaming row is genuinely growing, so a
-      // fresh reference is the correct signal. These rows also bypass the
-      // spring latch: command output and tool chrome can remeasure quickly
-      // under WebKit, so sticky follow should sync-pin while their geometry
-      // stabilizes instead of animating toward transient estimates.
+      // fresh reference is the correct signal. Defensive branch: triage
+      // emits `action=delta` only for smooth kinds today
+      // (stream_items.go / compaction_reasoning.go), so this never runs.
+      // If a non-smooth delta producer ever appears, mounted-row growth
+      // should stamp the spring latch here for parity with the upsert
+      // path (events.ts providerUpsertAdvancesLiveContent).
       if (!isSmoothLiveContentKind(current.kind)) {
         items[index] = {
           ...current,
