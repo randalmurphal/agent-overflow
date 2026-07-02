@@ -33,11 +33,11 @@
     "katex": "0.16.45",
     "lucide-svelte": "1.0.1",
     "marked": "16.4.2",
-    "mermaid": "11.14.0",
+    "mermaid": "11.16.0",
     "modern-screenshot": "4.7.0",
     "shiki": "4.0.2",
     "svelte": "5.56.3",
-    "svelte-streamdown": "3.1.1"
+    "svelte-streamdown": "3.1.2"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.0.0",

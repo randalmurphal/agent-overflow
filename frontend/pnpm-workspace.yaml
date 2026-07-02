@@ -1,3 +1,3 @@
 patchedDependencies:
-  svelte-streamdown@3.1.1: patches/svelte-streamdown@3.1.1.patch
+  svelte-streamdown@3.1.2: patches/svelte-streamdown@3.1.2.patch
   svelte@5.56.3: patches/svelte@5.56.3.patch

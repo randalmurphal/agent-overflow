@@ -619,47 +619,10 @@ index 44ad02dae663a9666a57e514f0d235482041b3bd..ff190a15393b475b2bd00e0acbb117a0
      }
      static create(languages = bundledLanguagesInfo, additionalThemes, additionalLanguages) {
 diff --git a/dist/utils/parse-incomplete-markdown.js b/dist/utils/parse-incomplete-markdown.js
-index 3ea67e6ea3b6805339846252d1a3cd85914e2dd6..35a45770a21638256afe44b461f34caa0a4567be 100644
+index 3ea67e6ea3b6805339846252d1a3cd85914e2dd6..755b057352f32d1f763da45f53f477632b54d5df 100644
 --- a/dist/utils/parse-incomplete-markdown.js
 +++ b/dist/utils/parse-incomplete-markdown.js
-@@ -298,6 +298,8 @@ export class IncompleteMarkdownParser {
-                     let singleAsterisks = 0;
-                     for (let i = 0; i < line.length; i++) {
-                         if (line[i] === '*') {
-+                            if (isWithinInlineCode(line, i))
-+                                continue;
-                             const prevChar = i > 0 ? line[i - 1] : '';
-                             const nextChar = i < line.length - 1 ? line[i + 1] : '';
-                             let lineStartIndex = i;
-@@ -325,6 +327,8 @@ export class IncompleteMarkdownParser {
-                         let firstSingleAsteriskIndex = -1;
-                         for (let i = 0; i < line.length; i++) {
-                             if (line[i] === '*' && line[i - 1] !== '*' && line[i + 1] !== '*') {
-+                                if (isWithinInlineCode(line, i))
-+                                    continue;
-                                 const prevChar = i > 0 ? line[i - 1] : '';
-                                 const nextChar = i < line.length - 1 ? line[i + 1] : '';
-                                 if (/\w/.test(prevChar) && /\w/.test(nextChar))
-@@ -391,6 +395,8 @@ export class IncompleteMarkdownParser {
-                                 continue;
-                             if (isWithinMathBlock(line, i))
-                                 continue;
-+                            if (isWithinInlineCode(line, i))
-+                                continue;
-                             if (prevChar &&
-                                 nextChar &&
-                                 /[\p{L}\p{N}_]/u.test(prevChar) &&
-@@ -410,7 +416,8 @@ export class IncompleteMarkdownParser {
-                                 line[i - 1] !== '_' &&
-                                 line[i + 1] !== '_' &&
-                                 line[i - 1] !== '\\' &&
--                                !isWithinMathBlock(line, i)) {
-+                                !isWithinMathBlock(line, i) &&
-+                                !isWithinInlineCode(line, i)) {
-                                 const prevChar = i > 0 ? line[i - 1] : '';
-                                 const nextChar = i < line.length - 1 ? line[i + 1] : '';
-                                 if (prevChar &&
-@@ -853,17 +860,54 @@ export class IncompleteMarkdownParser {
+@@ -853,17 +853,54 @@ export class IncompleteMarkdownParser {
                      return text;
                  }
              }
@@ -716,36 +679,3 @@ index 3ea67e6ea3b6805339846252d1a3cd85914e2dd6..35a45770a21638256afe44b461f34caa
  };
  // Utility functions
  const findEndOfCellOrLineContaining = (text, position) => {
-@@ -894,6 +938,32 @@ const isWithinMathBlock = (text, position) => {
-     }
-     return inInlineMath || inBlockMath;
- };
-+const isWithinInlineCode = (text, position) => {
-+    let inSpan = false;
-+    let openRunLen = 0;
-+    let i = 0;
-+    while (i < text.length && i < position) {
-+        if (text[i] !== '`') {
-+            i++;
-+            continue;
-+        }
-+        let j = i;
-+        while (j < text.length && text[j] === '`') {
-+            j++;
-+        }
-+        const runLen = j - i;
-+        if (!inSpan) {
-+            inSpan = true;
-+            openRunLen = runLen;
-+        }
-+        else if (runLen === openRunLen) {
-+            inSpan = false;
-+            openRunLen = 0;
-+        }
-+        i = j;
-+    }
-+    return inSpan;
-+};
- const isWithinFootnoteRef = (text, position) => {
-     let openBracketPos = -1;
-     let caretPos = -1;

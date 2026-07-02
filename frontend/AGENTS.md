@@ -156,7 +156,7 @@ corrupt every project on the machine. Use
      `src/lib/utils/zombieMintProbe.ts`) that fires if a future svelte
      re-introduces the hunk-1 shape. Keep while hunk 1 exists; drop
      alongside it.
-- `svelte-streamdown@3.1.1.patch` — markdown-pipeline fixes, grouped by
+- `svelte-streamdown@3.1.2.patch` — markdown-pipeline fixes, grouped by
   concern. Behavior is held across version bumps: re-roll by
   `git apply --reject`-ing the prior patch into a clean `pnpm patch`
   edit-dir, hand-merging only the rejected hunks, then diffing the
@@ -173,8 +173,8 @@ corrupt every project on the machine. Use
      split the GFM text rule's leading ``[`~]+`` run so a `~` cannot
      swallow an adjacent backtick. Composes with upstream's
      bottom-of-file options cache + incremental `parseBlocks`.
-  3. **deferred-typesetting hosts** (`Block`, `Elements/{Code,Math,
-     Mermaid}`, `context`, `Streamdown`) — `registerAsyncResource` /
+  3. **deferred-typesetting hosts** (`Elements/{Code,Math,Mermaid}`,
+     `context`, `Streamdown`) — `registerAsyncResource` /
      `pendingAsyncCount` / `onsettled` let a Streamdown signal when its
      async work (shiki, katex, mermaid) has settled, so the
      committed-prefix vs volatile-tail two-instance split in
@@ -185,7 +185,11 @@ corrupt every project on the machine. Use
      speculative completers (they mis-close on lone delimiters
      mid-stream); the structural completers (links, citations,
      footnotes, fences, MDX) keep upstream's behavior. Re-enabling the
-     safe ones (bold/italic/strike) is a separate follow-up.
+     safe ones (bold/italic/strike) is a separate follow-up. The
+     isWithinInlineCode guards that used to patch the dropped
+     completers were removed as dead code when the patch was re-rolled
+     onto 3.1.2; recover both from git history if the re-enable
+     follow-up happens.
   5. **subscript range-guard** (`marked/marked-subsup.js`) — `subRule`'s
      closing `~` carries a `(?!\d)` lookahead so approximate-range prose
      like `~5~10` / `~50~100` no longer tokenizes its low bound as
@@ -193,7 +197,10 @@ corrupt every project on the machine. Use
      letter) is unaffected. `supRule` (`^N^M`) is deliberately left
      unguarded — carets are rare in agent prose and none was reported;
      revisit if `^5^10`-style superscript false-positives surface.
-     Regression: `AssistantMessage.test.ts`.
+     Regression: `AssistantMessage.test.ts`. Both sub/sup rules also
+     exclude backticks from their content (code spans bind tighter, so
+     a delimiter inside an inline code span can no longer open sub/sup
+     across it).
   6. **setext-dash-guard** (`utils/parse-incomplete-markdown.js`,
      `stripDanglingSetextUnderline`) — mid-stream a nested bullet's marker
      arrives a chunk before its text, so the volatile tail momentarily ends
@@ -210,6 +217,31 @@ corrupt every project on the machine. Use
      a general svelte-streamdown streaming bug, candidate to upstream. Full
      rationale + the blank-above safety net are in the source comment.
      Regression: `AssistantMessage.test.ts`.
+  7. **split-instance parse bypass** (`Block.svelte`) — honors
+     `parseIncompleteMarkdown === false` from props; upstream types the
+     prop but never reads it in Block, so the committed-prefix and
+     settled instances in `ChatMarkdown.svelte` couldn't opt out of
+     speculative completion without this. Trivial upstream-PR candidate;
+     drop when upstream honors the prop.
+  8. **block-math flexible form** (`marked/marked-math.js`, `blockRule`
+     alt 3) — accepts `$$ CONTENT $$` where the content opens with a
+     space (not a newline) and contains internal newlines, e.g.
+     LLM-emitted matrices (`$$ \begin{pmatrix}…`). Without it those
+     blocks fell through to paragraph rendering mid-stream ("math
+     starts to render then turns back into raw markdown"). Closing `$$`
+     must be followed by newline/end-of-string so adjacent same-line
+     inline `$$X$$` pairs still take the single-line alternative.
+  9. **typeset/highlight caches** (`Elements/Math.svelte`,
+     `Elements/Mermaid.svelte`, `utils/hightlighter.svelte.js`) —
+     module-level KaTeX HTML cache (deterministic output, LRU cap 500);
+     Mermaid SVG cache keyed on `(theme, sanitized source)` with a
+     per-insertion uniqueId rewrite so two in-DOM instances of the same
+     diagram can't collide on document-scoped `url(#…)`/`xlink:href`
+     ids (LRU cap 100); Shiki per-line token cache so streaming code
+     blocks only tokenize new/changed lines. All three exist because
+     the committed-prefix/volatile-tail split remounts each settled
+     block once — the caches make that migration free. Perf-only: each
+     can be dropped independently if upstream grows an equivalent.
 
 ## References
 
