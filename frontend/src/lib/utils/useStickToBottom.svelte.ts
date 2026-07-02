@@ -1193,8 +1193,9 @@ export function createUseStickToBottomController(
   // here: some other code is driving a per-frame content-height oscillation that
   // keeps re-arming the snap. The classic cause is a forced synchronous layout
   // read (getBoundingClientRect / offsetHeight) in a ResizeObserver or Svelte
-  // `use:` action hot path — see timelineRowGeometry.ts `applyParams`, where
-  // exactly this once happened. Do NOT "fix" the vibration by adding a
+  // `use:` action hot path — the deleted timelineRowGeometry.ts `applyParams`
+  // did exactly this once (git history, incident commit a5a5d032). Do NOT
+  // "fix" the vibration by adding a
   // stop-after-N break here: this snap exists to rescue scrollTop from a browser
   // max-scroll clamp, and a break would instead STRAND it there — the
   // post-width-reflow floating-message bug it recovers from. Fix the driver.

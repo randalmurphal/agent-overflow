@@ -25,7 +25,7 @@ function stubSnapshot(
     clientHeight: 0,
     clientWidth: 0,
     distanceFromBottom: 0,
-    rowGeometryWidth: 0,
+    scrollSurfaceContentWidth: 0,
     itemsLength: 0,
     virtuaScrollSize: 0,
     cachedSizeSum: 0,

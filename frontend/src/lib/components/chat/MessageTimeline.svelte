@@ -197,7 +197,7 @@
   let contentEl: HTMLDivElement | undefined = $state(undefined);
   // Imperative handle into virtua. Set once Virtualizer mounts.
   let listRef: VirtualizerHandle | undefined = $state(undefined);
-  let rowGeometryWidth = $state(0);
+  let scrollSurfaceContentWidth = $state(0);
 
   // virtua measured-size snapshot to replay into the next {#key pane.threadId}
   // mount, so a revisited thread skips the estimate→measure cascade (the
@@ -661,15 +661,16 @@
     };
   });
 
-  // Row-geometry width is the scroll surface's CONTENT-box width, sourced ONLY
-  // from the async ResizeObserver inside observeScrollSurfaceContentWidth. It
-  // feeds the virtua CacheSnapshot validity key (currentVirtuaSizeKey). This
-  // effect must depend on `scrollEl` alone: it never reads `rowGeometryWidth`
-  // and never seeds it from a synchronous layout query. Either would
-  // re-subscribe the effect to `rowGeometryWidth`, so any write — including the
-  // surface RO's own async delivery — re-triggers it; the re-run disconnects and
-  // re-creates the observer, and a fresh observe() always schedules an initial
-  // delivery (per spec). With a border-box gBCR seed disagreeing with that
+  // The scroll surface's CONTENT-box width, sourced ONLY from the async
+  // ResizeObserver inside observeScrollSurfaceContentWidth. It feeds the
+  // virtua CacheSnapshot validity key (currentVirtuaSizeKey). This effect
+  // must depend on `scrollEl` alone: it never reads
+  // `scrollSurfaceContentWidth` and never seeds it from a synchronous layout
+  // query. Either would re-subscribe the effect to the width state, so any
+  // write — including the surface RO's own async delivery — re-triggers it;
+  // the re-run disconnects and re-creates the observer, and a fresh
+  // observe() always schedules an initial delivery (per spec). With a
+  // border-box gBCR seed disagreeing with that
   // content-box delivery, the two values never converge, so the effect re-fires
   // forever at literal idle — re-rendering every visible row each time. That is
   // the width-oscillation feedback loop documented on
@@ -681,11 +682,11 @@
   $effect(() => {
     const surface = scrollEl;
     if (!surface) {
-      rowGeometryWidth = 0;
+      scrollSurfaceContentWidth = 0;
       return;
     }
     return observeScrollSurfaceContentWidth(surface, (width) => {
-      rowGeometryWidth = width;
+      scrollSurfaceContentWidth = width;
     });
   });
 
@@ -857,7 +858,7 @@
       clientHeight: null,
       clientWidth: null,
       distanceFromBottom: null,
-      rowGeometryWidth,
+      scrollSurfaceContentWidth,
       itemsLength: pane.items.length,
       virtuaScrollSize: null,
       cachedSizeSum: null,
@@ -1248,7 +1249,7 @@
   // replays when all three still match — otherwise virtua falls back to the
   // flat estimate. (Display settings — fontSize, fonts, collapseDiffPreviews —
   // also affect height but are a deliberately-unkeyed benign residual; see the
-  // header of utils/threadVirtuaSizeCache.ts.) `rowGeometryWidth` persists
+  // header of utils/threadVirtuaSizeCache.ts.) `scrollSurfaceContentWidth` persists
   // across switches (MessageTimeline is not keyed on threadId), so it carries
   // the correct width into the next mount. structureSig is computed from
   // `revealedNodes` — the exact array virtua receives as `data` — so capture and
@@ -1258,7 +1259,7 @@
   // (the field itself remains, as the timeline-derivation trigger).
   function currentVirtuaSizeKey(): VirtuaSizeCacheKey {
     return {
-      width: Math.round(rowGeometryWidth),
+      width: Math.round(scrollSurfaceContentWidth),
       structureSig: timelineStructureSignature(revealedNodes),
       expansionSig: pane.expansionSignature(),
     };
@@ -1983,8 +1984,9 @@
                    own content box (margin excluded) disagree; virtua re-measures
                    the trapped margin inconsistently during streaming reflow
                    → totalSize oscillates → scrollTop clamp →
-                   `spring.oscillationSnap` = the settle flicker. Keyed to the attribute (not a class) so a refactor
-                   here can't drop it silently; it is display-only. Coupling +
+                   `spring.oscillationSnap` = the settle flicker. Keyed to the
+                   attribute (not a class) so a refactor here can't drop it
+                   silently; it is display-only. Coupling +
                    behavioral regression test + full analysis: see the rule's
                    comment in app.css and
                    docs/architecture/settle-flicker-analysis.md. -->

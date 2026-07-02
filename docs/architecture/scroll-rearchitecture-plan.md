@@ -129,7 +129,7 @@ Verdicts by lifecycle stage. "Gate-dependent" = deletable only at Stage 3.
 | `stopScroll` | `useStickToBottom.svelte.ts:2100-2104` | zero production callers |
 | `PaneScrollController.isAtBottom?` | `threadPaneShared.ts:151` | declared, never read through the pane |
 | `lastEffectPreAt` diagnostic | MessageTimeline | write-only diagnostic |
-| Floor rebind/content-swap re-arm | `timelineRowGeometry.ts:154-181` | comment admits trigger is unreachable today |
+| Floor rebind/content-swap re-arm — **DONE: deleted** (subsumed by the floor-system deletion, `b3bf9d55`) | `timelineRowGeometry.ts:154-181` (file deleted) | comment admitted trigger was unreachable today |
 | Stale comments/docstrings | `MessageSearch.svelte:153`, controller `:418`, chat AGENTS.md method list | reference deleted/renamed mechanisms |
 
 ### Delete pending one capture experiment each (Stage 1)
@@ -137,12 +137,12 @@ Verdicts by lifecycle stage. "Gate-dependent" = deletable only at Stage 3.
 | Item | Experiment | Expected outcome |
 |---|---|---|
 | **Per-row min-height floors** — Layer A state machine + Layer B height cache + `timelineRowGeometrySignature.ts` + retention/invalidation plumbing + HOLD path + 750ms timer + `hasSettledHeight` gate + `rowSettleFloor.browser.test.ts` + `timeline.row.geometry` taps — **DONE: deleted.** Capture experiment (mermaid-bearing scroll-away/return, floors on/off × content caches intact/defeated) showed floors-OFF outcome-identical to floors-ON on the stock build; all 9 stock-build "holds" were 0.23px fractional-compare artifacts. Width observer survives as `scrollSurfaceWidth.ts`; outcomes pinned by `remountReturn.browser.test.ts`. | Count `hold` trace events scrolling back over an image/mermaid-bearing thread on the patched build | Thread switch: floors provably contribute nothing (`rowUiState.clear()` at `thread.svelte.ts:1918` wipes the cache before the incoming thread renders — verified). Streaming: inert post-fix (skip-settled no-ops). Only residual duty is async-short remounts; fix those at the **content layer** (intrinsic dimensions on attachment `<img>`, min-height placeholder on mermaid hosts) — row-local, and covers first-ever mounts no cache can. Floors' 2 shipped bugs (`4a4f07ed`, `a5a5d032`) already exceed their documented saves; pre-floor churn was "invisible" per the analysis doc. |
-| Oscillation snaps (spring-tick + contentRO twins) | Count `spring.oscillationSnap` in a post-fix streaming capture | The "virtua row remount" dip source was plausibly the fixed buffer churn; streamdown-oscillation and browser-clamp legs may keep a *single* (resolver-phase) recovery |
-| `IDLE_REPIN_DEADBAND_PX` | Idle-thread capture on fractional-DPR display | Fractional height caching may have removed the flip driver; deadband may be a second belt on a fixed suspender |
-| Scroll-token duplicate budget (4) | Streaming capture of token consumption | Plausibly tuned during churn era; 1-2 may suffice — fully moot under one-write-per-frame |
+| Oscillation snaps (spring-tick + contentRO twins) — **MOVED to Stage 2**: the resolver's single post-RO resolve structurally collapses the twins to one recovery branch; whether that branch can then be deleted outright gets decided there, where it's an isolated reducer case | Count `spring.oscillationSnap` in a post-fix streaming capture | The "virtua row remount" dip source was plausibly the fixed buffer churn; streamdown-oscillation and browser-clamp legs may keep a *single* (resolver-phase) recovery |
+| `IDLE_REPIN_DEADBAND_PX` — **MOVED to Stage 2** (carried as an explicit reducer branch; trivially removable later with an idle fractional-DPR capture) | Idle-thread capture on fractional-DPR display | Fractional height caching may have removed the flip driver; deadband may be a second belt on a fixed suspender |
+| Scroll-token duplicate budget (4) — **MOVED to Stage 2** (one write/frame makes the multi-token case structural, not tuned) | Streaming capture of token consumption | Plausibly tuned during churn era; 1-2 may suffice — fully moot under one-write-per-frame |
 
 Deletion traps (must survive floor removal): `observeScrollSurfaceContentWidth`
-+ `rowGeometryWidth` also feed the CacheSnapshot validity key — **keep**, and
++ `scrollSurfaceContentWidth` also feed the CacheSnapshot validity key — **keep**, and
 keep the `a5a5d032` one-box/one-async-source invariant. The
 `[data-row-geometry-content]` attribute + `flow-root` rule is margin
 containment (`4b3759a1`), independent of the floors — keep or re-anchor

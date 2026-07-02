@@ -60,7 +60,7 @@ describe('observeScrollSurfaceContentWidth', () => {
     FireableResizeObserver.instances = [];
   });
 
-  it('reports the content-box width and never makes a synchronous layout read', () => {
+  it('reports the content-box width and never seeds from a layout query', async () => {
     const surface = document.createElement('div');
     document.body.append(surface);
     // Border-box (getBoundingClientRect) deliberately disagrees with the
@@ -78,6 +78,15 @@ describe('observeScrollSurfaceContentWidth', () => {
     const stop = observeScrollSurfaceContentWidth(surface, (width) => widths.push(width));
 
     // Nothing is reported synchronously, and no layout query is made.
+    expect(widths).toEqual([]);
+    expect(getRect).not.toHaveBeenCalled();
+
+    // Nor asynchronously: a deferred seed (a queueMicrotask/setTimeout/rAF
+    // gBCR read) would evade the synchronous asserts above but still
+    // re-introduce the second width source.
+    await Promise.resolve();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await new Promise((resolve) => setTimeout(resolve));
     expect(widths).toEqual([]);
     expect(getRect).not.toHaveBeenCalled();
 

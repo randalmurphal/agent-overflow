@@ -20,7 +20,7 @@
 // slot is the only way to strand the last row floating high at max scroll. Read
 // the bottom rendered row (`bottomRenderedIndex`): a positive delta there names
 // the mechanism; deltas ~0 while `scrollHeight` still exceeds the row sum
-// points at a spacer / elsewhere. Compare `rowGeometryWidth` to `clientWidth` to
+// points at a spacer / elsewhere. Compare `scrollSurfaceContentWidth` to `clientWidth` to
 // catch a virtua size-cache replay keyed at a stale (pre-widen) width.
 //
 // See docs/architecture/frontend-scroll.md and the Ctrl+Shift+B capture in
@@ -82,7 +82,7 @@ export interface PaneGeometrySnapshot {
   // Scroll surface content-box width from the async width observer (feeds the
   // virtua CacheSnapshot validity key); compare to clientWidth to catch a
   // stale (pre-reflow) width.
-  rowGeometryWidth: number | null;
+  scrollSurfaceContentWidth: number | null;
   itemsLength: number;
   // listRef.getScrollSize() — should equal scrollHeight; a mismatch is its own
   // signal that virtua's container height and its cached total have diverged.
