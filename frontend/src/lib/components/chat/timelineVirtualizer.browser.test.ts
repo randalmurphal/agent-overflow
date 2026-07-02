@@ -227,6 +227,53 @@ describe('ownership: the adapter never writes scrollTop', () => {
   });
 });
 
+describe('write timing: compensation is delivered post-flush', () => {
+  // The scroll controller's resolver reads live DOM geometry (bottom
+  // target = scrollHeight − clientHeight) and may write a target beyond
+  // the PRE-update scrollHeight. Delivered before the template flush,
+  // that write clamps against the stale spacer and the pinned tail
+  // visibly shifts by the growth delta (the compensationOutcome failure
+  // shapes). Pin the contract at the adapter level: at onCompensation
+  // time the DOM must already reflect the engine's new totalSize.
+  it('the DOM reflects the new totalSize at onCompensation time', async () => {
+    const samples: { kind: string; scrollHeight: number; totalSize: number }[] = [];
+    const ctx = mountHarness({
+      onCompensation: (c) => {
+        samples.push({
+          kind: c.kind,
+          scrollHeight: ctx.scrollEl.scrollHeight,
+          totalSize: ctx.harness.handle()!.getTotalSize(),
+        });
+      },
+    });
+    const { harness, scrollEl } = ctx;
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom settle');
+
+    // Above-viewport remeasure.
+    const grownIndex = mountedRowIndexes(scrollEl)[0];
+    harness.resizeRow(`row-${grownIndex}`, ROW_PX + 200);
+    await waitFor(() => samples.some((s) => s.kind === 'remeasure-above'), 'remeasure delivery');
+
+    // Head splice observed from the top.
+    scrollEl.scrollTop = 0;
+    await waitFor(() => rowEl(scrollEl, 'row-0') !== null, 'top rows to mount');
+    await waitForStableGeometry(scrollEl, 'top settle');
+    harness.setRows(
+      [{ id: 'prepended-timing', heightPx: ROW_PX, label: 'Prepended' }, ...harness.getRows()],
+      { shift: true },
+    );
+    await waitFor(() => samples.some((s) => s.kind === 'head-splice'), 'head-splice delivery');
+
+    for (const sample of samples) {
+      expect(
+        sample.scrollHeight,
+        `${sample.kind} compensation delivered before the spacer updated`,
+      ).toBe(Math.round(sample.totalSize));
+    }
+  });
+});
+
 describe('scrollToIndex', () => {
   it('converges onto an unmeasured destination', async () => {
     const { harness, scrollEl } = mountHarness();

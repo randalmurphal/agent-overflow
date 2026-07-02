@@ -38,11 +38,10 @@ import {
 } from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import {
-  clearThreadVirtuaSizeCacheForTest,
-  peekThreadVirtuaSizeCacheForTest,
-  setThreadVirtuaSizeCache,
-  type VirtuaCacheSnapshot,
-} from '../utils/threadVirtuaSizeCache';
+  clearAllThreadSizePriorsForTest,
+  peekThreadSizePriorsForTest,
+  setThreadSizePriors,
+} from '../utils/virtual/priors';
 import {
   resetLayoutMetricsForTest,
   setPaneWidth,
@@ -7713,7 +7712,7 @@ describe('createThreadPane', () => {
   });
 });
 
-describe('virtua size cache eviction on item mutation', () => {
+describe('size-priors eviction on item mutation', () => {
   // With the self-validating structureSig key these evictions are memory
   // housekeeping (a stale snapshot is refused on the key mismatch anyway), but
   // they free the entry immediately instead of waiting for the LRU. Guard each
@@ -7722,34 +7721,34 @@ describe('virtua size cache eviction on item mutation', () => {
     width: 0,
     structureSig: 'seed',
     expansionSig: '',
-    snapshot: { tag: 'seed' } as unknown as VirtuaCacheSnapshot,
+    sizes: [42],
   };
 
   beforeEach(() => {
-    clearThreadVirtuaSizeCacheForTest();
+    clearAllThreadSizePriorsForTest();
   });
 
-  it('evicts the size cache when an item is removed by id', async () => {
+  it('evicts the priors when an item is removed by id', async () => {
     const pane = await buildPane(makeThread({ id: 't' }), [makeItem({ id: 'x', threadId: 't' })]);
-    setThreadVirtuaSizeCache('t', { ...seedEntry });
-    expect(peekThreadVirtuaSizeCacheForTest('t')).toBeTruthy();
+    setThreadSizePriors('t', { ...seedEntry });
+    expect(peekThreadSizePriorsForTest('t')).toBeTruthy();
     pane.removeItemById('x');
-    expect(peekThreadVirtuaSizeCacheForTest('t')).toBeUndefined();
+    expect(peekThreadSizePriorsForTest('t')).toBeUndefined();
   });
 
-  it('evicts the size cache when a turn is truncated', async () => {
+  it('evicts the priors when a turn is truncated', async () => {
     const pane = await buildPane(makeThread({ id: 't' }), [
       makeItem({ id: 'x', threadId: 't', turnIndex: 1 }),
     ]);
-    setThreadVirtuaSizeCache('t', { ...seedEntry });
+    setThreadSizePriors('t', { ...seedEntry });
     pane.removeItemsFromTurn(1);
-    expect(peekThreadVirtuaSizeCacheForTest('t')).toBeUndefined();
+    expect(peekThreadSizePriorsForTest('t')).toBeUndefined();
   });
 
-  it('evicts the size cache on a same-thread reswitch', async () => {
+  it('evicts the priors on a same-thread reswitch', async () => {
     const pane = await buildPane(makeThread({ id: 't' }));
-    setThreadVirtuaSizeCache('t', { ...seedEntry });
+    setThreadSizePriors('t', { ...seedEntry });
     await pane.switchThread(makeThread({ id: 't' }));
-    expect(peekThreadVirtuaSizeCacheForTest('t')).toBeUndefined();
+    expect(peekThreadSizePriorsForTest('t')).toBeUndefined();
   });
 });

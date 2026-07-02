@@ -42,9 +42,9 @@ export const IDLE_REPIN_DEADBAND_PX = 4;
 
 // Auto-follow re-stick band: a DOWN-direction scroll that lands within
 // this many pixels of the bottom flips the user back to sticky, and the
-// same tolerance decides "the DOM is already pinned" for the virtua
+// same tolerance decides "the DOM is already pinned" for the engine
 // compensation resolver's anchor-redirect. Matches react-virtuoso's
-// `atBottomThreshold` default — tolerates virtua row-height estimation +
+// `atBottomThreshold` default — tolerates row-height estimation +
 // browser scrollTop rounding that routinely lands 1-3px short during
 // streaming. Deliberately equal to IDLE_REPIN_DEADBAND_PX — "close
 // enough to count as at-bottom" and "close enough not to fight a
@@ -62,7 +62,7 @@ export const AUTO_FOLLOW_BOTTOM_EPSILON_PX = 4;
 // backticks / lists momentarily shrinks scrollHeight by a handful of
 // pixels — and snapping for them produced the user-visible "viewport
 // jumps upward then springs back" regression on plain-text streams.
-// Large overshoots (virtua applyJump-style mis-corrections, content
+// Large overshoots (virtualizer measurement mis-corrections, content
 // collapse) still snap instantly so the user doesn't watch the viewport
 // drift down across many frames.
 export const SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX = 50;
@@ -407,43 +407,42 @@ export function resolveContentDelivery(
   return { write, startSpring, bumpTargetChanged, oscillationRecovery, setIsAtBottom };
 }
 
-// ===== virtua scroll-jump compensation (Stage 3: routed single writer) =====
+// ===== engine scroll-jump compensation (routed single writer) =====
 //
-// virtua compensates for above-viewport / viewport-spanning row
-// remeasurements by writing scrollTop from inside its scroller observer
-// ($fixScrollJump). The patched applier seam (patches/virtua@0.49.1.patch)
-// routes that write here instead: the controller receives the absolute
-// target plus the raw (jump, shift) pair and this resolver decides what to
-// do with it. Replaces the scrollTop descriptor gate's tier cascade — with
-// the write routed, the decision keys on what virtua MEANS (a compensation
-// of `jump` px, `shift` for head mutations) instead of inferring it from
-// controller state and write magnitude.
+// The bespoke timeline engine (utils/virtual/) compensates for
+// above-viewport row remeasurements and head splices by REPORTING an
+// absolute scroll target instead of writing scrollTop itself
+// (TimelineVirtualizer `onCompensation` → the controller's
+// `applyEngineCompensation`): this resolver decides what to do with each
+// observation, keeping the controller the single scrollTop writer during
+// follow by construction. The tiers carry their provenance from the
+// virtua era they were built in — same failure shapes, same outcomes —
+// with one structural simplification: a decline needs no model re-sync.
+// The engine's scroll offset follows real scroll events, so an unapplied
+// compensation cannot desync anything; the content simply shifts under
+// the stationary viewport.
 //
 // Decision order (each tier's provenance):
-// - `shift` verbatim: head mutations (load-older prepend, paged head-drop
-//   prune) — virtua's offset math is exact and the anchor must hold.
+// - head-splice verbatim: head mutations (load-older prepend, paged
+//   head-drop prune) — the engine's offset math is exact and the anchor
+//   must hold.
 // - reading / paused / pre-warm: above-viewport visual stability is the
 //   whole point of the compensation; it must land (mount-cascade +
-//   revert-to-top histories — suppressing these desynced virtua's model
-//   from the DOM because the swallowed write fired no scroll event; under
-//   routing a decline pokes the store, so even a wrong decision here can
-//   no longer desync, but the anchor would still visibly shift).
-// - anchor-redirect: DOM already pinned at bottom && virtua requests a
-//   target meaningfully above it — its jump only compensates above-viewport
-//   remeasures, not the at/below-fold growth that moved the bottom. Landing
-//   it paints one frame a few hundred px short (the cold-thread-switch
-//   flicker, 8bf8b97f); redirect to the controller's own bottom target so
-//   the two writers cannot disagree on where the bottom is.
+//   revert-to-top histories — suppressing these visibly shifts the
+//   reading anchor).
+// - anchor-redirect: DOM already pinned at bottom && the engine requests
+//   a target meaningfully above it — its delta only compensates
+//   above-viewport remeasures, not the at/below-fold growth that moved
+//   the bottom. Landing it paints one frame a few hundred px short (the
+//   cold-thread-switch flicker, 8bf8b97f); redirect to the controller's
+//   own bottom target so the two writers cannot disagree on where the
+//   bottom is.
 // - width-reflow window: the paired contentRO delivery sync-pins rather
 //   than spring-chases, so the compensation lands in the same paint.
-// - spring chase in flight, small jump: decline — the spring is the single
-//   writer mid-chase; a 1-2 line compensation snap pre-empts its
-//   interpolation (the original settle-flicker mid-stream snap). The
-//   decline is safe by construction: the patched core pokes its store with
-//   the current DOM offset (manual-mark + ACTION_SCROLL, clearing the
-//   flushed jump), so virtua's model re-syncs instead of diverging (what
-//   the legacy gate's silent drop could not guarantee).
-// - spring chase in flight, jump larger than the viewport: a fresh-mount
+// - spring chase in flight, small delta: decline — the spring is the
+//   single writer mid-chase; a 1-2 line compensation snap pre-empts its
+//   interpolation (the original settle-flicker mid-stream snap).
+// - spring chase in flight, delta larger than the viewport: a fresh-mount
 //   estimate→measure pass or late async-typesetting reflow, not streamed
 //   content — write it so it snaps in one paint instead of leaving the
 //   spring to chase the whole delta (bug-report-20260622T041049Z's +2276px
@@ -463,15 +462,13 @@ export function resolveContentDelivery(
 // active chase protects its small-jump window regardless of mode (the
 // structural-append-in-instant-mode chase falls out for free).
 
-export type VirtuaWriteCaller = 'virtua.jump' | 'virtua.anchorRedirect';
+export type EngineWriteCaller = 'engine.compensation' | 'engine.anchorRedirect';
 
-export interface VirtuaCompensationObservation {
-  /** Absolute rounded target offset virtua computed (model offset + jump). */
+export interface EngineCompensationObservation {
+  /** What moved: an above-viewport remeasure or a head splice. */
+  kind: 'remeasure-above' | 'head-splice';
+  /** Absolute target offset the engine computed (current offset + delta). */
   target: number;
-  /** The raw accumulated jump delta being flushed (signed px). */
-  jump: number;
-  /** True for head mutations (prepend / head-drop prune). */
-  shift: boolean;
   /** Live DOM scrollTop at delivery. */
   scrollTop: number;
   /** The controller's own bottom pin target (scrollHeight - clientHeight). */
@@ -481,37 +478,38 @@ export interface VirtuaCompensationObservation {
   widthReflowActive: boolean;
 }
 
-export interface VirtuaCompensationDecision {
+export interface EngineCompensationDecision {
   /**
    * The one write this delivery makes, through the controller chokepoint
-   * (tagged + marked like every controller write); null declines, and the
-   * patched core pokes its store with the current DOM offset.
+   * (tagged like every controller write); null declines — safe without
+   * follow-up, because the engine re-reads the DOM offset from the next
+   * scroll event.
    */
-  write: { caller: VirtuaWriteCaller; value: number } | null;
+  write: { caller: EngineWriteCaller; value: number } | null;
 }
 
-export function resolveVirtuaCompensation(
+export function resolveEngineCompensation(
   state: ResolverState,
-  obs: VirtuaCompensationObservation,
-): VirtuaCompensationDecision {
-  if (obs.shift) {
-    return { write: { caller: 'virtua.jump', value: obs.target } };
+  obs: EngineCompensationObservation,
+): EngineCompensationDecision {
+  if (obs.kind === 'head-splice') {
+    return { write: { caller: 'engine.compensation', value: obs.target } };
   }
   if (!state.warm || !state.isAtBottom || state.escaped || state.paused) {
-    return { write: { caller: 'virtua.jump', value: obs.target } };
+    return { write: { caller: 'engine.compensation', value: obs.target } };
   }
   const domAlreadyPinned =
     obs.bottomTarget - obs.scrollTop <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
   const movesAwayFromBottom =
     obs.bottomTarget - obs.target > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
   if (domAlreadyPinned && movesAwayFromBottom) {
-    return { write: { caller: 'virtua.anchorRedirect', value: obs.bottomTarget } };
+    return { write: { caller: 'engine.anchorRedirect', value: obs.bottomTarget } };
   }
   if (obs.widthReflowActive) {
-    return { write: { caller: 'virtua.jump', value: obs.target } };
+    return { write: { caller: 'engine.compensation', value: obs.target } };
   }
   if (state.springActive && Math.abs(obs.target - obs.scrollTop) <= obs.clientHeight) {
     return { write: null };
   }
-  return { write: { caller: 'virtua.jump', value: obs.target } };
+  return { write: { caller: 'engine.compensation', value: obs.target } };
 }

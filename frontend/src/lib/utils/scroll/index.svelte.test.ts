@@ -907,45 +907,6 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(false);
     });
 
-    it('onBeforeScrollTopWrite fires before every programmatic scrollTop write', () => {
-      // MessageTimeline wires this hook to the patched virtua handle's
-      // markProgrammaticScroll() so pin writes aren't classified as user
-      // scroll-downs (which drop virtua's above-viewport buffer — the
-      // settle-flicker remount churn). Two contract points: the hook runs
-      // BEFORE the write lands (the mark must precede the scroll event the
-      // write dispatches), and it fires from more than one caller into the
-      // funnel — asserted here via the first-fire snap and forceStick.
-      // Spring ticks route through the same writeScrollTop chokepoint
-      // (the only scrollTop assignment in the controller), so per-caller
-      // assertions add no mechanism coverage beyond these two.
-      const el = document.createElement('div');
-      const content = document.createElement('div');
-      el.appendChild(content);
-      document.body.appendChild(el);
-      const g: Geometry = { scrollHeight: 1000, clientHeight: 600, scrollTop: 0, contentHeight: 800 };
-      stubGeometry(el, content, g);
-      const scrollTopAtHook: number[] = [];
-      const hooked = createUseStickToBottomController({
-        onBeforeScrollTopWrite: () => scrollTopAtHook.push(g.scrollTop),
-      });
-      hooked.attach(el, content);
-      try {
-        // First-fire snap (0 → 400) goes through the write chokepoint.
-        getRO().fire(content, 800);
-        expect(g.scrollTop).toBe(400);
-        expect(scrollTopAtHook).toEqual([0]);
-
-        // forceStick is a different caller into the same chokepoint.
-        g.scrollTop = 100;
-        hooked.forceStick();
-        expect(g.scrollTop).toBe(400);
-        expect(scrollTopAtHook).toEqual([0, 100]);
-      } finally {
-        hooked.detach();
-        el.remove();
-      }
-    });
-
     it('user scroll back to a previously token-tagged value is honored, not silently ignored', async () => {
       // Regression guard: a token's suppression is bounded — TTL plus a
       // small per-token duplicate budget for browser-coalesced re-fires
@@ -2187,14 +2148,14 @@ describe('createUseStickToBottomController — spring chase', () => {
   });
 
   // The cold-thread-switch flicker: after the controller has pinned the DOM
-  // to true bottom, virtua's `$fixScrollJump` requests an anchor-preserving
-  // offset BELOW bottom (its delta only compensates above-viewport remeasure,
+  // to true bottom, the engine reports an anchor-preserving compensation
+  // BELOW bottom (its delta only compensates above-viewport remeasure,
   // not at/below-fold growth). The routed compensation must be redirected to
   // true bottom instead of painting one frame short. These lock the resolver
   // DECISION as exercised through the controller's applier entry point; the
   // actual no-flicker is only observable in the real app (happy-dom has no
   // layout), so the assertions are on where the redirected write lands.
-  describe('virtua $fixScrollJump anchor redirect (routed)', () => {
+  describe('engine compensation anchor redirect (routed)', () => {
     it('redirects a stale below-bottom compensation to true bottom (instant mode, dormant)', async () => {
       // Idle cold-switch thread is animationMode==='instant' with no spring
       // in flight; without the redirect the compensation resolves through
@@ -2209,8 +2170,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
       expect(geom.scrollTop).toBe(600); // DOM at true bottom → domAlreadyPinned
-      // virtua's $fixScrollJump now requests a stale anchor 390px short.
-      expect(controller.applyVirtuaScrollCompensation(210, -390, false)).toBe(true);
+      // The engine now reports a stale anchor 390px short.
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -390, target: 210 })).toBe(true);
       // Redirected to true bottom, not left at the stale 210.
       expect(geom.scrollTop).toBe(600);
     });
@@ -2225,14 +2186,14 @@ describe('createUseStickToBottomController — spring chase', () => {
       await waitMs(150);
       expect(controller.isWarm).toBe(true);
       expect(geom.scrollTop).toBe(400); // at bottom, no spring engaged
-      // virtua stale anchor, 350px short.
-      expect(controller.applyVirtuaScrollCompensation(50, -350, false)).toBe(true);
+      // Engine stale anchor, 350px short.
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -350, target: 50 })).toBe(true);
       expect(geom.scrollTop).toBe(400); // redirected to bottom
     });
 
     it('does NOT redirect when the DOM is not yet pinned to bottom (legit compensation passes)', async () => {
       // Mid-cascade: the controller has not pinned yet, so the DOM sits below
-      // bottom. virtua's compensation here is legitimate above-viewport
+      // bottom. The engine's compensation here is legitimate above-viewport
       // anchoring and must land untouched — the redirect is narrow to
       // domAlreadyPinned.
       mode = 'instant';
@@ -2243,8 +2204,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
       geom.scrollTop = 300; // position DOM below bottom (600) directly
-      expect(controller.applyVirtuaScrollCompensation(350, 50, false)).toBe(true);
-      expect(geom.scrollTop).toBe(350); // not redirected — lands as virtua asked
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 50, target: 350 })).toBe(true);
+      expect(geom.scrollTop).toBe(350); // not redirected — lands as the engine asked
     });
 
     it('does NOT redirect a compensation that stops just short of the epsilon band', async () => {
@@ -2261,7 +2222,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 1000);
       expect(geom.scrollTop).toBe(600); // pinned at true bottom
       // 4px short — exactly the epsilon boundary.
-      expect(controller.applyVirtuaScrollCompensation(596, -4, false)).toBe(true);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -4, target: 596 })).toBe(true);
       expect(geom.scrollTop).toBe(596); // passes through, not redirected to 600
     });
   });
@@ -3098,7 +3059,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Spring canceled (instant mode never enters the sentinel), so a
       // routed compensation resolves through the pass tier and lands.
       geom.scrollHeight = 1300;
-      expect(controller.applyVirtuaScrollCompensation(650, 50, false)).toBe(true);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 50, target: 650 })).toBe(true);
 
       expect(geom.scrollTop).toBe(650);
     });
@@ -3883,7 +3844,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Compensation passes — the resolver sees paused and steps aside
       // even though the spring token is still live for one more tick.
       geom.scrollHeight = 1500;
-      expect(controller.applyVirtuaScrollCompensation(700, 100, false)).toBe(true);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 100, target: 700 })).toBe(true);
       expect(geom.scrollTop).toBe(700);
 
       release();
@@ -3971,7 +3932,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Escaped: the user is reading mid-thread, so a routed compensation
       // passes (above-viewport visual stability wins).
       geom.scrollHeight = 1500;
-      expect(controller.applyVirtuaScrollCompensation(300, -100, false)).toBe(true);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -100, target: 300 })).toBe(true);
       expect(geom.scrollTop).toBe(300);
     });
 
@@ -3996,7 +3957,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // land, so the resolver passes them through. (The resolver ignores
       // `jump`; it is passed sign-consistent for documentation only.)
       geom.scrollHeight = 1500;
-      expect(controller.applyVirtuaScrollCompensation(500, -300, false)).toBe(true);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -300, target: 500 })).toBe(true);
       expect(geom.scrollTop).toBe(500);
     });
 
@@ -4075,7 +4036,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Spring canceled (springToken=0): a routed compensation resolves
       // through the pass tier instead of the mid-chase decline.
       geom.scrollHeight = 1500;
-      expect(controller.applyVirtuaScrollCompensation(850, 50, false)).toBe(true);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 50, target: 850 })).toBe(true);
       expect(geom.scrollTop).toBe(850);
     });
   });
@@ -5491,7 +5452,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // The inter-chunk dead-zone bug: spring arrives, 350ms pass with
       // no new content (async shiki load, parseIncompleteMarkdown
       // rebalance, slow model cadence), cancelSpring sets springToken=0.
-      // In that window a routed virtua compensation resolves through the
+      // In that window a routed engine compensation resolves through the
       // pass tier and negative contentRO deltas sync-pin — both produce
       // a user-visible instant snap mid-stream where the spring should
       // have smoothly chased. Code blocks exacerbate this because shiki
@@ -5529,11 +5490,11 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.scrollHeight = 1200;
       // contentHeight unchanged — no contentRO fire.
 
-      // virtua compensates for an above-viewport row remeasure while the
+      // The engine compensates for an above-viewport row remeasure while the
       // model is between chunks. The sentinel keeps springActive true, so
       // the resolver declines — without the sentinel this would resolve
       // through the pass tier and snap (the regression).
-      expect(controller.applyVirtuaScrollCompensation(510, 10, false)).toBe(false);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 10, target: 510 })).toBe(false);
       expect(geom.scrollTop).toBe(500);
 
       // Similarly, a small negative contentRO delta (parseIncomplete
@@ -5582,7 +5543,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       // A routed compensation now passes (springToken should be 0 after
       // the instant-mode cancel, so the decline tier can't fire).
-      expect(controller.applyVirtuaScrollCompensation(510, 10, false)).toBe(true);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 10, target: 510 })).toBe(true);
       expect(geom.scrollTop).toBe(510);
     });
 
@@ -5663,33 +5624,32 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
   });
 
-  describe('virtua compensation applier (routed $fixScrollJump)', () => {
-    // Stage 3: the patched setScrollApplier seam hands virtua's
-    // compensation writes to applyVirtuaScrollCompensation. Decision
-    // policy is exhaustively covered in scroll/resolver.test.ts
-    // (resolveVirtuaCompensation); these tests pin the controller-side
-    // choreography — chokepoint routing, attribution, self-tagging,
-    // marking, and the decline/detach return contract the patched core
-    // relies on for its ACTION_SCROLL poke.
+  describe('engine compensation applier (routed compensation writes)', () => {
+    // The virtualizer's onCompensation observations land in
+    // applyEngineCompensation. Decision policy is exhaustively covered
+    // in scroll/resolver.test.ts (resolveEngineCompensation); these
+    // tests pin the controller-side choreography — chokepoint routing,
+    // attribution, self-tagging, and the decline/detach return
+    // contract.
 
     it('applies a dormant compensation through the write chokepoint (attributed + self-tagged)', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150); // warm
 
-      // Above-viewport growth: virtua flushes a +100 jump, absolute
-      // target 500 (model offset 400 + 100). No chase in flight.
+      // Above-viewport growth: the engine reports a +100 delta, absolute
+      // target 500 (offset 400 + 100). No chase in flight.
       geom.scrollHeight = 1100;
       geom.contentHeight = 900;
       setUiRenderTraceEnabled(true);
       clearUiRenderTrace();
-      const handled = controller.applyVirtuaScrollCompensation(500, 100, false);
+      const handled = controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 100, target: 500 });
 
       expect(handled).toBe(true);
       expect(geom.scrollTop).toBe(500);
       const writes = getUiRenderTraceRecords().filter((r) => r.label.startsWith('scroll.write'));
       expect(writes).toHaveLength(1);
-      expect((writes[0].data as { caller: string }).caller).toBe('virtua.jump');
+      expect((writes[0].data as { caller: string }).caller).toBe('engine.compensation');
 
       // Routed writes are controller writes: the scroll event they
       // dispatch is token-tagged and consumed, never read as user intent.
@@ -5702,31 +5662,33 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.escapedFromLock).toBe(false);
     });
 
-    it('fires onBeforeScrollTopWrite (virtua manual-scroll marking) for routed writes', async () => {
-      const el = document.createElement('div');
-      const content = document.createElement('div');
-      el.appendChild(content);
-      document.body.appendChild(el);
-      const g: Geometry = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
-      stubGeometry(el, content, g);
-      let markCalls = 0;
-      const hooked = createUseStickToBottomController({
-        animationMode: () => mode,
-        onBeforeScrollTopWrite: () => { markCalls += 1; },
-      });
-      hooked.attach(el, content);
-      try {
-        getRO().fire(content, 800);
-        await waitMs(150);
-        const callsBefore = markCalls;
-        g.scrollHeight = 1100;
-        g.contentHeight = 900;
-        expect(hooked.applyVirtuaScrollCompensation(500, 100, false)).toBe(true);
-        expect(markCalls).toBe(callsBefore + 1);
-      } finally {
-        hooked.detach();
-        el.remove();
-      }
+    it('applyScrollTarget writes through the chokepoint: attributed, self-tagged, intent preserved', async () => {
+      // The virtualizer's scrollToIndex convergence passes route every
+      // write here instead of assigning scrollTop themselves, so the
+      // resulting scroll event is token-tagged (never read as user
+      // intent) and trace-attributed. Intent stays with the caller —
+      // the write itself must not flip escape or re-stick.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      setUiRenderTraceEnabled(true);
+      clearUiRenderTrace();
+      controller.applyScrollTarget(120);
+
+      expect(geom.scrollTop).toBe(120);
+      const writes = getUiRenderTraceRecords().filter((r) => r.label.startsWith('scroll.write'));
+      expect(writes).toHaveLength(1);
+      expect((writes[0].data as { caller: string }).caller).toBe('virtualizer.scrollTarget');
+      expect(controller.escapedFromLock).toBe(false);
+
+      clearUiRenderTrace();
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(
+        getUiRenderTraceRecords().filter((r) => r.label.startsWith('scroll.scrollEvent')),
+      ).toEqual([]);
+      expect(controller.escapedFromLock).toBe(false);
     });
 
     it('declines a small compensation mid-chase (no write; spring stays the single writer)', async () => {
@@ -5744,8 +5706,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(springStart).toBeLessThan(800);
 
       // Small mid-chase compensation: declined, nothing written; the
-      // patched core pokes its own store (not observable here).
-      const handled = controller.applyVirtuaScrollCompensation(springStart + 10, 10, false);
+      // engine re-syncs from the next real scroll event on its own.
+      const handled = controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 10, target: springStart + 10 });
       expect(handled).toBe(false);
       expect(geom.scrollTop).toBe(springStart);
 
@@ -5761,21 +5723,21 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       setUiRenderTraceEnabled(true);
       clearUiRenderTrace();
-      // Above-viewport shrink compensation: virtua wants 300, meaningfully
-      // above the pinned bottom.
-      const handled = controller.applyVirtuaScrollCompensation(300, -100, false);
+      // Above-viewport shrink compensation: the engine wants 300,
+      // meaningfully above the pinned bottom.
+      const handled = controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -100, target: 300 });
 
       expect(handled).toBe(true);
       expect(geom.scrollTop).toBe(400); // stayed at the bottom
       const writes = getUiRenderTraceRecords().filter((r) => r.label.startsWith('scroll.write'));
       expect(writes).toHaveLength(1);
-      expect((writes[0].data as { caller: string; requested: number }).caller).toBe('virtua.anchorRedirect');
+      expect((writes[0].data as { caller: string; requested: number }).caller).toBe('engine.anchorRedirect');
       expect((writes[0].data as { caller: string; requested: number }).requested).toBe(400);
     });
 
-    it('returns false when detached (patched core falls back to its store poke)', () => {
+    it('returns false when detached (nothing to write; the engine needs no re-sync)', () => {
       controller.detach();
-      expect(controller.applyVirtuaScrollCompensation(500, 100, false)).toBe(false);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 100, target: 500 })).toBe(false);
     });
 
     it('post-restore warm settle re-arms the mid-chase decline (restore does not permanently disarm)', async () => {
@@ -5803,7 +5765,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(midChase).toBeGreaterThan(400);
       expect(midChase).toBeLessThan(800);
 
-      expect(controller.applyVirtuaScrollCompensation(midChase + 20, 20, false)).toBe(false);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 20, target: midChase + 20 })).toBe(false);
       expect(geom.scrollTop).toBe(midChase);
     });
 
@@ -5812,7 +5774,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // (a tool round-trip, the end-of-turn drain) the pane stops
       // stamping lastLiveContentAt; the content-keyed latch holds
       // 'spring' for SPRING_MODE_HOLD_MS so the sentinel survives the
-      // gap and springActive stays true. A virtua compensation arriving
+      // gap and springActive stays true. An engine compensation arriving
       // in the gap that would move a pinned viewport away from the
       // bottom is redirected — and because the resolver's redirect tier
       // outranks both decline and pass, the no-displacement outcome
@@ -5849,20 +5811,20 @@ describe('createUseStickToBottomController — spring chase', () => {
       // clamped). With a broken latch the sentinel cancels on its next
       // tick and this would resolve through the pass tier instead.
       geom.scrollHeight = 1200;
-      expect(controller.applyVirtuaScrollCompensation(510, 10, false)).toBe(false);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 10, target: 510 })).toBe(false);
       expect(geom.scrollTop).toBe(500);
       geom.scrollHeight = 1100; // pinned again (bottomTarget back to 500)
 
-      // virtua requests a stale anchor 60px above the pinned bottom.
+      // The engine requests a stale anchor 60px above the pinned bottom.
       // Redirect outranks decline, so this holds with or without the
       // sentinel — it pins the no-displacement outcome itself.
-      expect(controller.applyVirtuaScrollCompensation(440, -60, false)).toBe(true);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -60, target: 440 })).toBe(true);
       expect(geom.scrollTop).toBe(500); // redirected to the bottom target
     });
 
     it('passes a mid-chase compensation during a width-reflow settle window', async () => {
       // Pins the controller-side `widthReflowActive` sampling
-      // (contentReflowSettleUntil > nowMs()) on the virtua path: during a
+      // (contentReflowSettleUntil > nowMs()) on the engine path: during a
       // width reflow the paired contentRO sync-pins, so the compensation
       // must land in the same paint instead of hitting the mid-chase
       // decline. If the sampling regressed (dropped / wrong clock /
@@ -5886,7 +5848,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 1200, 640);
 
       // Small jump that the decline tier would otherwise suppress.
-      expect(controller.applyVirtuaScrollCompensation(midChase + 20, 20, false)).toBe(true);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 20, target: midChase + 20 })).toBe(true);
       expect(geom.scrollTop).toBe(midChase + 20);
     });
   });

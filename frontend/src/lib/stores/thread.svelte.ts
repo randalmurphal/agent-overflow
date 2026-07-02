@@ -90,7 +90,7 @@ import {
   type TimelineCursorLike,
 } from './threadItems';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
-import { clearThreadVirtuaSizeCache } from '../utils/threadVirtuaSizeCache';
+import { clearThreadSizePriors } from '../utils/virtual/priors';
 import { ListThreadSliceAround } from './bindings';
 import { sameNormalizedPath } from '../utils/path';
 import {
@@ -1745,12 +1745,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       items.length > 0 &&
       items.length <= MAX_CACHED_SNAPSHOT_ITEMS
     ) {
-      // Virtua's row-size cache is snapshotted, but NOT here: it lives in
-      // MessageTimeline (`utils/threadVirtuaSizeCache.ts`), keyed by the
+      // The timeline's row-size priors are snapshotted, but NOT here: they
+      // live in MessageTimeline (`utils/virtual/priors.ts`), keyed by the
       // scroll-pane width + structure signature + expansion signature that make
-      // the sizes valid — all component state the store can't see. The store has
-      // no `listRef` to call `getCache()` on anyway. That keyed replay is
-      // what lets a re-entry skip the estimate→measure cascade safely; here
+      // the sizes valid — all component state the store can't see. The store
+      // has no `listRef` to call `takeSnapshot()` on anyway. That keyed replay
+      // is what lets a re-entry skip the estimate→measure cascade safely; here
       // we cache only the items.
       threadItemCache.set(outgoingThreadId, {
         items,
@@ -1771,9 +1771,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (sameThreadReswitch) {
       threadItemCache.evict(incomingThreadId);
       // Revert-to-checkpoint mutates this thread's items in place; its
-      // measured-size snapshot is now stale (the structure/content key would
-      // also refuse it, but evict to free it promptly — same as the item cache).
-      clearThreadVirtuaSizeCache(incomingThreadId);
+      // measured-size priors are now stale (the structure/content key would
+      // also refuse them, but evict to free them promptly — same as the item cache).
+      clearThreadSizePriors(incomingThreadId);
     }
     if (outgoingThreadId) {
       rhsPanelSlot.snapshotForThread(outgoingThreadId);
@@ -3257,7 +3257,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       recomputeReveal();
       if (thread) {
         threadItemCache.evict(thread.id);
-        clearThreadVirtuaSizeCache(thread.id);
+        clearThreadSizePriors(thread.id);
       }
       return removed;
     },
@@ -3291,7 +3291,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       recomputeReveal();
       if (thread) {
         threadItemCache.evict(thread.id);
-        clearThreadVirtuaSizeCache(thread.id);
+        clearThreadSizePriors(thread.id);
       }
       return removed;
     },
@@ -3551,8 +3551,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     diffCardExpandedOverride: rowUiState.diffCardExpandedOverride,
     setDiffCardExpanded: rowUiState.setDiffCardExpanded,
-    /** Validity stamp for replaying a virtua measured-size snapshot across a
-     *  thread switch — see utils/threadVirtuaSizeCache.ts. */
+    /** Validity stamp for replaying a measured-size priors snapshot across a
+     *  thread switch — see utils/virtual/priors.ts. */
     expansionSignature: rowUiState.expansionSignature,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
     pruneRowUiState: rowUiState.pruneRowUiState,

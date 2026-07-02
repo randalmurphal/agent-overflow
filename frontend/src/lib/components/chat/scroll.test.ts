@@ -1,20 +1,19 @@
-// Integration tests for the chat scroll system after the virtua/svelte
-// rebuild. These tests cover the seams between MessageTimeline,
-// useStickToBottom, the per-thread snapshot store, and the layout
-// surrounding the timeline (absolute composer, banner overlays).
+// Integration tests for the chat scroll system. These tests cover the
+// seams between MessageTimeline, useStickToBottom, the per-thread
+// snapshot store, and the layout surrounding the timeline (absolute
+// composer, banner overlays).
 //
 // What is NOT tested here:
-//   - virtua's per-row anchor-preservation algorithm. That's owned by the
-//     library (see /inokawa/virtua tests upstream); duplicating those
-//     assertions in a happy-dom env that lacks real layout would be
-//     fiction.
+//   - The windowing engine's geometry math (size store, window
+//     computation, compensation) — covered exhaustively in
+//     `utils/virtual/*.test.ts` and the browser suite.
 //   - Pure controller behavior (sync-pin, content RO, input-intent
 //     handlers, pause-lease semantics) — covered exhaustively in
 //     `utils/scroll/index.svelte.test.ts`.
 //
 // What IS tested here:
-//   - Per-thread snapshot save/restore round-trip through a real virtua
-//     mount.
+//   - Per-thread snapshot save/restore round-trip through a real
+//     TimelineVirtualizer mount.
 //   - Load-older flow: anchor capture before, scrollToIndex after.
 //   - scrollToItem: pane.loadUntilItem then scrollToIndex.
 //   - Composer-height CSS variable propagation through the chat column.
@@ -34,11 +33,11 @@ import {
   setThreadScrollSnapshot,
 } from '../../utils/threadScrollSnapshots';
 import {
-  clearThreadVirtuaSizeCacheForTest,
-  getReplayableVirtuaCache,
-  peekThreadVirtuaSizeCacheForTest,
-} from '../../utils/threadVirtuaSizeCache';
-import * as virtuaSizeCacheModule from '../../utils/threadVirtuaSizeCache';
+  clearAllThreadSizePriorsForTest,
+  getReplayableSizePriors,
+  peekThreadSizePriorsForTest,
+} from '../../utils/virtual/priors';
+import * as sizePriorsModule from '../../utils/virtual/priors';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import MessageTimeline from './MessageTimeline.svelte';
 import ChatView from './ChatView.svelte';
@@ -161,20 +160,20 @@ beforeEach(async () => {
   createdStickControllers.length = 0;
   resetBindingMocks();
   clearThreadScrollSnapshotsForTest();
-  clearThreadVirtuaSizeCacheForTest();
+  clearAllThreadSizePriorsForTest();
   setBindingMock('GetSettings', async () => null);
   await loadSettings();
 });
 
 afterEach(() => {
   clearThreadScrollSnapshotsForTest();
-  clearThreadVirtuaSizeCacheForTest();
+  clearAllThreadSizePriorsForTest();
 });
 
 describe('scroll integration — per-thread snapshot save/restore', () => {
   // Real browser geometry: viewport > 0, scrollOffset=0, scrollSize<=viewport
   //   → stick.isAtBottom() returns true, snapshot persists as {kind:'bottom'}.
-  // happy-dom returns 0 for clientHeight/clientWidth, so virtua's
+  // happy-dom returns 0 for clientHeight/clientWidth, so the engine's
   // getViewportSize() returns 0 too — isAtBottom() is then false (size > 0
   // is not within `threshold` of zero) and the saved snapshot ends up as
   // {kind:'anchor'} regardless of where the user actually was.
@@ -200,13 +199,13 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     }
   });
 
-  // The virtua measured-size cache is what lets a revisited thread skip the
+  // The measured-size priors are what let a revisited thread skip the
   // estimate→measure cascade (the thread-switch flicker). This proves the
   // wiring: a mount that settles persists a replayable entry stamped with the
-  // thread's validity key. virtua's actual replay-at-final-height behavior is
-  // proven separately against the installed core (it can't be observed in
-  // happy-dom, which reports zero geometry).
-  it('persists a replayable virtua size cache for a thread after mount settles', async () => {
+  // thread's validity key. The actual replay-at-final-height behavior is
+  // proven against the engine in utils/virtual/engine.test.ts (it can't be
+  // observed in happy-dom, which reports zero geometry).
+  it('persists replayable size priors for a thread after mount settles', async () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'a', summary: 'first' }),
       makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
@@ -220,8 +219,10 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
     // Persist fired once warm-up settled AND restoration completed (the
     // effect depends on both — see the ordering note in MessageTimeline).
-    const entry = peekThreadVirtuaSizeCacheForTest('thread-size-cache');
+    const entry = peekThreadSizePriorsForTest('thread-size-cache');
     expect(entry).toBeTruthy();
+    // One slot per rendered row (measured or not).
+    expect(entry?.sizes).toHaveLength(2);
     // The structure signature encodes both leaves (the reproducible key that
     // replaced the inert monotonic revision counter).
     expect(entry?.structureSig).toContain('L:a:');
@@ -230,17 +231,17 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
     // It round-trips through the validity gate with its captured key…
     expect(
-      getReplayableVirtuaCache('thread-size-cache', {
+      getReplayableSizePriors('thread-size-cache', {
         width: entry!.width,
         structureSig: entry!.structureSig,
         expansionSig: entry!.expansionSig,
       }),
-    ).toBe(entry!.snapshot);
+    ).toBe(entry!.sizes);
 
     // …and a stale key (items changed → different structure) refuses the
-    // replay → estimate fallback.
+    // replay → per-row estimate fallback.
     expect(
-      getReplayableVirtuaCache('thread-size-cache', {
+      getReplayableSizePriors('thread-size-cache', {
         width: entry!.width,
         structureSig: entry!.structureSig + '\nL:c:completed:1:0',
         expansionSig: entry!.expansionSig,
@@ -249,16 +250,16 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
   });
 
   // The decisive regression: actually switch away and back, and prove the
-  // replay resolves on return. The cache was previously stamped with
+  // replay resolves on return. The predecessor cache was once stamped with
   // `pane.timelineRevision`, a monotonic per-pane counter never restored on a
   // cache-hit re-entry — so every revisit computed a strictly-greater revision
-  // than capture and `getReplayableVirtuaCache` always returned undefined (the
-  // architecture trace saw revision 2→4→5 across A→B→A; severing the replay arm
-  // left the whole scroll suite green). The structure signature is reproducible
+  // than capture and the resolver always returned undefined (the architecture
+  // trace saw revision 2→4→5 across A→B→A; severing the replay arm left the
+  // whole scroll suite green). The structure signature is reproducible
   // for A's unchanged rows, so the settled sizes replay on return instead of
   // re-running the estimate→measure cascade. RED on the old key, GREEN now.
-  it('resolves the replay snapshot when switching away and back (A→B→A)', async () => {
-    const resolveSpy = vi.spyOn(virtuaSizeCacheModule, 'getReplayableVirtuaCache');
+  it('resolves the replay priors when switching away and back (A→B→A)', async () => {
+    const resolveSpy = vi.spyOn(sizePriorsModule, 'getReplayableSizePriors');
     // Restore via onTestFinished so a failed assertion below can't leak the spy
     // (which calls through) into sibling tests — the suite has no global mock restore.
     onTestFinished(() => resolveSpy.mockRestore());
@@ -272,8 +273,8 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await waitForAnimationFrame();
 
-    // First visit captured A's settled size cache.
-    const firstEntry = peekThreadVirtuaSizeCacheForTest('thread-aba-a');
+    // First visit captured A's settled size priors.
+    const firstEntry = peekThreadSizePriorsForTest('thread-aba-a');
     expect(firstEntry).toBeTruthy();
     const firstSig = firstEntry!.structureSig;
 
@@ -322,7 +323,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
     // And the key itself reproduced: the return-visit signature equals the
     // first-visit signature (the property the monotonic revision counter lacked).
-    expect(peekThreadVirtuaSizeCacheForTest('thread-aba-a')?.structureSig).toBe(firstSig);
+    expect(peekThreadSizePriorsForTest('thread-aba-a')?.structureSig).toBe(firstSig);
   });
 
   it('saves an anchor snapshot after escape even inside the near-bottom band', async () => {
@@ -1723,11 +1724,11 @@ describe('scroll integration — useStickToBottom wiring', () => {
       makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
     ]);
     let ctrl: PaneScrollController | null = null;
-    let runExternalScroll: ReturnType<typeof vi.spyOn> | null = null;
+    let applyScrollTarget: ReturnType<typeof vi.spyOn> | null = null;
     const origAttach = pane.attachScrollController.bind(pane);
     pane.attachScrollController = (controller) => {
       ctrl = controller;
-      runExternalScroll = vi.spyOn(lastStick(), 'runExternalScroll');
+      applyScrollTarget = vi.spyOn(lastStick(), 'applyScrollTarget');
       origAttach(controller);
     };
 
@@ -1755,7 +1756,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(keepsItem).toHaveBeenCalledWith('a');
     expect(run).toHaveBeenCalledTimes(1);
     await waitFor(() => {
-      expect(runExternalScroll).toHaveBeenCalledTimes(1);
+      expect(applyScrollTarget).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1767,14 +1768,14 @@ describe('scroll integration — useStickToBottom wiring', () => {
     let ctrl: PaneScrollController | null = null;
     let forceStick: ReturnType<typeof vi.spyOn> | null = null;
     let markAtBottom: ReturnType<typeof vi.spyOn> | null = null;
-    let runExternalScroll: ReturnType<typeof vi.spyOn> | null = null;
+    let applyScrollTarget: ReturnType<typeof vi.spyOn> | null = null;
     const origAttach = pane.attachScrollController.bind(pane);
     pane.attachScrollController = (controller) => {
       ctrl = controller;
       const stick = lastStick();
       forceStick = vi.spyOn(stick, 'forceStick');
       markAtBottom = vi.spyOn(stick, 'markAtBottom');
-      runExternalScroll = vi.spyOn(stick, 'runExternalScroll');
+      applyScrollTarget = vi.spyOn(stick, 'applyScrollTarget');
       origAttach(controller);
     };
 
@@ -1794,7 +1795,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     lastStick().forceStick({ reason: 'restore' });
     forceStick?.mockClear();
     markAtBottom?.mockClear();
-    runExternalScroll?.mockClear();
+    applyScrollTarget?.mockClear();
     const run = vi.fn();
 
     const result = controller.preserveTimelineWindowAnchor({
@@ -1805,7 +1806,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(result).toBe(true);
     expect(run).toHaveBeenCalledTimes(1);
     await waitFor(() => {
-      expect(runExternalScroll).toHaveBeenCalledTimes(1);
+      expect(applyScrollTarget).toHaveBeenCalledTimes(1);
       expect(markAtBottom).toHaveBeenCalledTimes(1);
       expect(forceStick).not.toHaveBeenCalled();
     });

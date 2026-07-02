@@ -106,9 +106,51 @@
     windowRange = update.window;
     totalSize = update.totalSize;
     geometryVersion++;
-    if (update.compensation) onCompensation?.(update.compensation);
-    convergeIndexScroll();
+    if (update.compensation) queueCompensation(update.compensation);
   }
+
+  // ------------------------------------------------------------------
+  // Post-flush write timing
+  // ------------------------------------------------------------------
+  // applyUpdate lands engine geometry in Svelte state; the DOM (spacer
+  // height, row offsets) reflects it only after the template flush.
+  // Compensation delivery and index-scroll convergence both end in a
+  // scrollTop write against live DOM geometry: delivered pre-flush, a
+  // target beyond the STALE scrollHeight clamps (the pinned tail visibly
+  // shifts by the growth delta, or the spring inherits the whole
+  // correction as a multi-frame chase), and the resolver samples a stale
+  // bottom target. This effect delivers both after the DOM is
+  // consistent, still before paint — the same timing virtua's patched
+  // applier seam had, which the resolver tiers were calibrated against.
+  let pendingCompensation: EngineCompensation | null = null;
+
+  function queueCompensation(next: EngineCompensation): void {
+    const prior = pendingCompensation;
+    if (!prior) {
+      pendingCompensation = next;
+      return;
+    }
+    // Two engine updates in one flush (e.g. a head splice and a
+    // measurement batch). Both targets are absolute offsets computed from
+    // the SAME engine scroll offset (no scroll event lands mid-flush), so
+    // the combined target is the later target advanced by the earlier
+    // delta.
+    pendingCompensation = {
+      kind: prior.kind === 'head-splice' || next.kind === 'head-splice' ? 'head-splice' : next.kind,
+      delta: prior.delta + next.delta,
+      target: Math.max(0, next.target + prior.delta),
+    };
+  }
+
+  $effect(() => {
+    void geometryVersion;
+    const compensation = pendingCompensation;
+    pendingCompensation = null;
+    untrack(() => {
+      if (compensation) onCompensation?.(compensation);
+      convergeIndexScroll();
+    });
+  });
 
   const rows = $derived.by(() => {
     void geometryVersion;

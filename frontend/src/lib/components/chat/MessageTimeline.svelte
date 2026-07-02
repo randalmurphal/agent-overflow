@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy, setContext, tick, untrack } from 'svelte';
-  import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import type {
     PaneScrollController,
     ThreadPane,
@@ -18,11 +17,13 @@
     type ScrollSnapshot,
   } from '../../utils/threadScrollSnapshots';
   import {
-    getReplayableVirtuaCache,
-    setThreadVirtuaSizeCache,
-    type VirtuaCacheSnapshot,
-    type VirtuaSizeCacheKey,
-  } from '../../utils/threadVirtuaSizeCache';
+    createRowEstimate,
+    getReplayableSizePriors,
+    setThreadSizePriors,
+    type SizePriorsKey,
+  } from '../../utils/virtual/priors';
+  import type { RowEstimate, TimelineVirtualizerHandle } from '../../utils/virtual/types';
+  import TimelineVirtualizer from './TimelineVirtualizer.svelte';
   import {
     groupItemsBySubagent,
     sliceRevealedNodes,
@@ -78,10 +79,40 @@
   } from './timelineRowUiRetention';
   import { observeScrollSurfaceContentWidth } from './scrollSurfaceWidth';
 
-  // Initial item-size estimate for virtua. Real sizes come from the
-  // per-item ResizeObserver virtua wraps each row in; this constant only
-  // matters for the first render before measurements stabilise.
-  const ESTIMATED_ROW_SIZE = 56;
+  // Flat fallback row estimate for the windowing engine. Real sizes come
+  // from the virtualizer's per-row ResizeObserver; estimates only place
+  // unmeasured rows before their first measurement lands (priors → kind
+  // table → this default; see utils/virtual/priors.ts). A floor like the
+  // kind table below, for the same asymmetry.
+  const ESTIMATED_ROW_SIZE = 40;
+  // Cold-thread (priors-miss) placement estimates keyed by rendered node
+  // kind — leaf rows use their item kind, structural rows their node
+  // kind (timelineRowEstimateKind below). Estimates never decide what a
+  // row renders, only where unmeasured rows sit until measured — and the
+  // two error directions cost differently. OVERSHOOT shrinks totalSize
+  // when the real measurement lands: the scrollbar dips, and while
+  // pinned at the exact bottom the browser synchronously clamps
+  // scrollTop down (the remount-collapse class
+  // remountReturn.browser.test.ts polices). UNDERSHOOT only grows
+  // totalSize, which the engine's remeasure-above compensation absorbs
+  // invisibly; its cost is a few extra transiently mounted rows on a
+  // cold thread switch. So these are FLOORS, not averages: the measured
+  // 1-line rendered height per kind (real-Chromium probe, default
+  // settings, 800px pane), derated ~20% so smaller font settings stay
+  // under. Warm switches replay exact priors and never touch this table.
+  const ROW_KIND_ESTIMATE_PX: Readonly<Record<string, number>> = {
+    user_text: 72,
+    assistant_text: 44,
+    thinking: 30,
+    tool_call: 20,
+    tool_completion: 20,
+    error: 42,
+    notification: 24,
+    api_retry: 24,
+    read_group: 20,
+    group: 36,
+    wait_group: 36,
+  };
   // Extra buffer rendered above + below the viewport. Sized for two viewports
   // worth of rows on each side so fast scrolls (trackpad fling, scrollbar
   // drag) don't outrun the rendered window — that was the source of the
@@ -91,7 +122,7 @@
   // ever measured to hurt mount-time on first-open.
   const BUFFER_SIZE_PX = 1800;
   // Expansion handles keep loaded payload bytes and Svelte effect roots so
-  // rows can survive normal virtua remounts. Keep that cache near the
+  // rows can survive normal windowing remounts. Keep that cache near the
   // viewport and tail only; old offscreen rows remount collapsed instead of
   // retaining detached DOM through stale component contexts.
   const ROW_UI_RETAIN_NODE_BUFFER = 96;
@@ -163,15 +194,16 @@
   // alongside any future card-style payload kind.
   const RAIL_EXEMPT_PAYLOAD_KINDS = new Set<string>(['proposed_plan']);
   const EMPTY_RECEIVER_LABELS = new Map<string, string>();
-  // happy-dom returns 0 for clientHeight/clientWidth, which makes virtua
-  // mount zero rows. In happy-dom test runs we ask virtua to mount
-  // everything via ssrCount so test assertions can find the rendered DOM.
-  // The real-Chromium `browser` vitest project also runs with MODE==='test'
-  // but has real geometry and MUST keep real windowing (streaming outcome
-  // tests count row unmounts; a 100k-row flat render then unmount wave
-  // would poison those counters), so the gate keys on happy-dom's window
-  // marker, not MODE alone. Production (vite dev/build) always sees the
-  // default `undefined`, leaving virtua free to virtualize.
+  // happy-dom returns 0 for clientHeight/clientWidth, which makes the
+  // windowing engine mount zero rows. In happy-dom test runs we mount
+  // everything via the virtualizer's renderAll seam so test assertions
+  // can find the rendered DOM. The real-Chromium `browser` vitest
+  // project also runs with MODE==='test' but has real geometry and MUST
+  // keep real windowing (streaming outcome tests count row unmounts; a
+  // flat render-all then unmount wave would poison those counters), so
+  // the gate keys on happy-dom's window marker, not MODE alone.
+  // Production (vite dev/build) always sees `false`, keeping real
+  // windowing.
   const IS_TEST = import.meta.env.MODE === 'test'
     && typeof window !== 'undefined' && 'happyDOM' in window;
 
@@ -185,29 +217,30 @@
     userMessageActions?: UserMessageActions;
   } = $props();
 
-  // Inner scroll container. We own scrolling here; <Virtualizer> renders
-  // its measured rows inside `contentEl` and reads/writes via scrollRef.
-  // The element is wrapped in a non-scrolling `relative flex h-full
-  // flex-col` shell that anchors the floating <ScrollToBottomButton>
-  // outside the scroll content (see template comment for why).
+  // Inner scroll container. We own scrolling here; <TimelineVirtualizer>
+  // renders its measured rows inside `contentEl` and reads scroll input
+  // via scrollRef. The element is wrapped in a non-scrolling `relative
+  // flex h-full flex-col` shell that anchors the floating
+  // <ScrollToBottomButton> outside the scroll content (see template
+  // comment for why).
   let scrollEl: HTMLDivElement | undefined = $state(undefined);
-  // Wrapper around <Virtualizer>. The controller's content RO observes
-  // this element so any size change (row growth, expand toggle, virtua's
-  // totalSize bump) fires synchronously before the same paint that
-  // displays the change.
+  // Wrapper around <TimelineVirtualizer>. The controller's content RO
+  // observes this element so any size change (row growth, expand toggle,
+  // the engine's totalSize bump) fires synchronously before the same
+  // paint that displays the change.
   let contentEl: HTMLDivElement | undefined = $state(undefined);
-  // Imperative handle into virtua. Set once Virtualizer mounts.
-  let listRef: VirtualizerHandle | undefined = $state(undefined);
+  // Imperative handle into the virtualizer. Set once it mounts.
+  let listRef: TimelineVirtualizerHandle | undefined = $state(undefined);
   let scrollSurfaceContentWidth = $state(0);
 
-  // virtua measured-size snapshot to replay into the next {#key pane.threadId}
-  // mount, so a revisited thread skips the estimate→measure cascade (the
-  // thread-switch flicker). Computed on the threadId edge in $effect.pre
-  // below — BEFORE the remount — because virtua reads `cache` once at
-  // construction. `undefined` falls back to the flat itemSize estimate (the
-  // pre-cache behavior). See utils/threadVirtuaSizeCache.ts.
-  let virtuaReplayCache = $state<VirtuaCacheSnapshot | undefined>(undefined);
-  let virtuaReplayCacheThreadId: string | null = null;
+  // Per-thread row estimate for the incoming {#key pane.threadId} mount:
+  // replayable measured-size priors (validity-keyed — see
+  // utils/virtual/priors.ts) with the kind-table fallback for rows the
+  // priors don't cover. Resolved on the threadId edge in $effect.pre
+  // below — BEFORE the remount — because the virtualizer configures its
+  // engine once at construction.
+  let rowEstimate = $state<RowEstimate | undefined>(undefined);
+  let rowEstimateThreadId: string | null = null;
 
   let restoredThreadId: string | null = $state(null);
   // Tracks which thread we last persisted into the snapshot store via
@@ -288,9 +321,9 @@
   // (`pane.revealBoundary`). `sliceRevealedNodes` returns the SAME array
   // reference when nothing is withheld (boundary null, or the frontier is the
   // tail node), so this is zero-cost outside the brief withhold windows.
-  // Everything index-based downstream (virtua data, decorations, the
+  // Everything index-based downstream (virtualizer data, decorations, the
   // live-follow nudge, scroll-to-index) must read THIS, not `groupedNodes`,
-  // so the indices line up with what virtua actually renders.
+  // so the indices line up with what the virtualizer actually renders.
   let revealedNodes = $derived(sliceRevealedNodes(groupedNodes, pane.revealBoundary));
   let timelineWindowPruneShiftAtHead = $state(false);
   let timelineWindowPruneShiftResetToken = 0;
@@ -381,7 +414,7 @@
   // typesetting grows row height but never advances content (it never
   // stamps `lastLiveContentAt`). The controller's warm gate (quiescence-
   // based, with a 2.5s failsafe) independently defends against the
-  // e00723f regression where mount-time virtua remeasurement + Streamdown
+  // e00723f regression where mount-time row remeasurement + Streamdown
   // typesetting would spring-chase a thread restore visibly.
   // Warm-gate aggregation: rising-edge-once boolean that flips true the
   // first time ANY ChatMarkdown rendered inside the timeline tree fires
@@ -411,14 +444,6 @@
   const stick = createUseStickToBottomController({
     animationMode: animationModeForScroll,
     quietContextSignal: () => anyMarkdownSettledSinceArm,
-    // Mark every controller scrollTop write as programmatic in virtua's
-    // store (patched `markProgrammaticScroll`, see
-    // patches/virtua@0.49.1.patch) so streaming pin writes aren't
-    // classified as user scroll-downs — misclassified pins latch a
-    // "scrolling down" direction and drop the whole above-viewport
-    // buffer, remounting ~BUFFER_SIZE_PX of rows every settle
-    // (docs/architecture/settle-flicker-analysis.md).
-    onBeforeScrollTopWrite: () => listRef?.markProgrammaticScroll(),
   });
 
   function markMarkdownSettled(): void {
@@ -433,40 +458,29 @@
     stick.armWarmup();
   }
 
-  let hostLayoutRetryToken = 0;
-
-  function retryHostLayoutSettled(retryCount: number): void {
-    const token = ++hostLayoutRetryToken;
-    void nextAnimationFrame().then(() => {
-      if (token !== hostLayoutRetryToken) return;
-      notifyHostLayoutSettled(retryCount);
-    });
-  }
-
-  function notifyHostLayoutSettled(retryCount = 0): void {
+  // Pane-move reconciliation ('host-layout' observations from PaneHost):
+  // insertBefore can leave the scroller with transiently bad geometry, so
+  // the virtualizer re-reads viewport + offset (revalidate) and sticky
+  // panes re-pin to the bottom. The scrollToIndex write goes through the
+  // controller chokepoint (applyScrollTarget), so it is tagged
+  // programmatic and preserves intent without a runExternalScroll wrap.
+  function notifyHostLayoutSettled(): void {
     const lastIndex = revealedNodes.length - 1;
     const shouldStickToBottom = !stick.escapedFromLock;
-    if (!listRef && lastIndex >= 0) {
-      if (retryCount < 2) retryHostLayoutSettled(retryCount + 1);
+    if (lastIndex < 0) {
+      if (shouldStickToBottom) {
+        stick.markAtBottom();
+      } else {
+        stick.observe('content');
+      }
       return;
     }
-    hostLayoutRetryToken += 1;
-    stick.runExternalScroll(() => {
-      if (lastIndex < 0) {
-        if (shouldStickToBottom) {
-          stick.markAtBottom();
-        } else {
-          stick.observe('content');
-        }
-        return;
-      }
-      if (shouldStickToBottom) {
-        listRef?.scrollToIndex(lastIndex, { align: 'end' });
-        stick.markAtBottom();
-        return;
-      }
-      listRef?.scrollTo(listRef.getScrollOffset());
-    }, { preserveIntent: true });
+    if (!listRef) return;
+    listRef.revalidate();
+    if (shouldStickToBottom) {
+      listRef.scrollToIndex(lastIndex, { align: 'end' });
+      stick.markAtBottom();
+    }
   }
 
   interface TimelineWindowAnchorIntent {
@@ -521,14 +535,15 @@
     timelineWindowPruneShiftAtHead = false;
   }
 
+  // Both prune restores preserve intent: scrollToIndex writes are tagged
+  // programmatic at the controller chokepoint, so no escape flip and no
+  // external-scroll wrap is needed.
   function restoreBottomAfterTimelineWindowPrune(): void {
     const lastIndex = revealedNodes.length - 1;
-    stick.runExternalScroll(() => {
-      if (lastIndex >= 0) {
-        listRef?.scrollToIndex(lastIndex, { align: 'end' });
-      }
-      stick.markAtBottom();
-    }, { preserveIntent: true });
+    if (lastIndex >= 0) {
+      listRef?.scrollToIndex(lastIndex, { align: 'end' });
+    }
+    stick.markAtBottom();
     saveScrollSnapshot();
   }
 
@@ -537,12 +552,10 @@
   ): void {
     const idx = findTimelineNodeIndex(anchor.itemId);
     if (idx < 0) return;
-    stick.runExternalScroll(() => {
-      listRef?.scrollToIndex(idx, {
-        align: 'start',
-        offset: -anchor.offsetTop,
-      });
-    }, { preserveIntent: true });
+    listRef?.scrollToIndex(idx, {
+      align: 'start',
+      offset: -anchor.offsetTop,
+    });
     saveScrollSnapshot();
   }
 
@@ -599,7 +612,7 @@
   }
 
   // Explicit adapter, not the raw controller: 'host-layout' observations
-  // route through the listRef-aware retry ladder above instead of the
+  // route through the revalidate + re-pin handler above instead of the
   // controller's plain content path, and the timeline-window anchor
   // transaction only exists at this layer.
   const paneScrollController: PaneScrollController = {
@@ -622,9 +635,9 @@
     pane.retryDeferredRecentWindowPrune();
   });
 
-  // Hide contentEl while virtua and async row content settle. Fresh
-  // virtua mounts start from `ESTIMATED_ROW_SIZE × N`; per-row
-  // ResizeObservers then correct actual heights. The controller keeps
+  // Hide contentEl while the virtualizer and async row content settle.
+  // Priors-miss mounts start from kind-table/flat estimates; the per-row
+  // ResizeObserver then corrects actual heights. The controller keeps
   // scrollTop pinned, but rows can still shift between paints. The
   // warmup gate reveals content after QUIET_MS=100ms of contentRO
   // silence or the FAILSAFE_MS=2500ms ceiling.
@@ -636,7 +649,7 @@
   // during gestures. The effect's return function detaches symmetrically
   // when the `pane` reference changes and on component teardown, so a stale
   // pointer to a torn-down controller can't leak. (A thread switch remounts
-  // only the inner {#key pane.threadId} Virtualizer — this component and its
+  // only the inner {#key pane.threadId} virtualizer — this component and its
   // scrollEl persist — so detach here is driven by a `pane` prop swap, not a
   // remount.)
   $effect(() => {
@@ -676,7 +689,7 @@
 
   // The scroll surface's CONTENT-box width, sourced ONLY from the async
   // ResizeObserver inside observeScrollSurfaceContentWidth. It feeds the
-  // virtua CacheSnapshot validity key (currentVirtuaSizeKey). This effect
+  // size-priors validity key (currentSizePriorsKey). This effect
   // must depend on `scrollEl` alone: it never reads
   // `scrollSurfaceContentWidth` and never seeds it from a synchronous layout
   // query. Either would re-subscribe the effect to the width state, so any
@@ -743,7 +756,7 @@
   }
 
   // Thinking rows stream by internally tail-pinning a 3-line clipped body,
-  // so their visible movement often does not grow the outer virtua row.
+  // so their visible movement often does not grow the outer timeline row.
   // When the next top-level row arrives (assistant text/tool call), relying
   // only on contentRO timing can miss the first bottom target, especially
   // because assistant text then grows through Streamdown's async markdown
@@ -768,7 +781,7 @@
     // marking. `activeTurnStructuralSignature` embeds the thread id, so a
     // switch flips it old→new, a reload (revert-to-checkpoint) rebuilds it in
     // place, and the initial slice load then grows the tail as items arrive.
-    // All cross into a freshly mounted timeline whose virtua rows are still
+    // All cross into a freshly mounted timeline whose rows are still
     // estimate→measure settling — they are a restore, not an in-turn append.
     // Calling `markStructuralContentPending()` here makes the post-restore
     // measurement growth spring-chase the new bottom (a visible multi-hundred-
@@ -854,7 +867,7 @@
 
   // Dev-only per-pane scroll-geometry probe for the width-reflow strand
   // (last message left floating high after a pane widens, never self-correcting).
-  // Reports virtua's cached per-row slot vs the real DOM row height, so a
+  // Reports the engine's per-row slot size vs the real DOM row height, so a
   // Ctrl+Shift+B capture at a stable strand names the mechanism. Reads THIS
   // pane's controller + refs directly, so it is immune to __stickState's
   // last-writer-wins. See utils/paneGeometryProbe.ts.
@@ -873,8 +886,7 @@
       distanceFromBottom: null,
       scrollSurfaceContentWidth,
       itemsLength: pane.items.length,
-      virtuaScrollSize: null,
-      cachedSizeSum: null,
+      engineTotalSize: null,
       bottomRenderedIndex: null,
       rows: [],
     };
@@ -890,42 +902,28 @@
         );
       }
 
-      // virtua's per-index cached sizes. getCache() returns an opaque snapshot
-      // whose runtime shape is [sizes[], estimate] (threadVirtuaSizeCache.ts /
-      // virtuaShiftCache.test.ts). Read defensively — the inner ref can null
-      // mid-teardown and both calls throw a TypeError then.
-      let sizes: number[] | null = null;
       const list = listRef;
       if (list) {
-        try {
-          snapshot.virtuaScrollSize = Math.round(list.getScrollSize());
-          const cache = list.getCache() as unknown;
-          if (Array.isArray(cache) && Array.isArray(cache[0])) {
-            sizes = (cache[0] as number[]).map((value) =>
-              (Number.isFinite(value) ? value : 0));
-            snapshot.cachedSizeSum = Math.round(
-              sizes.reduce((sum, value) => sum + value, 0),
-            );
-          }
-        } catch (err) {
-          if (!(err instanceof TypeError)) throw err;
-        }
+        snapshot.engineTotalSize = Math.round(list.getTotalSize());
       }
 
       if (contentEl) {
+        const itemCount = revealedNodes.length;
         const wrappers = contentEl.querySelectorAll<HTMLElement>('[data-row-index]');
         let bottomIndex = -1;
         for (const wrapper of wrappers) {
           const index = Number(wrapper.dataset.rowIndex);
           if (!Number.isInteger(index)) continue;
           const wrapperHeight = wrapper.offsetHeight;
-          const cachedSize =
-            sizes && index >= 0 && index < sizes.length ? Math.round(sizes[index]) : null;
+          // The engine's slot for this index: measured size, or the
+          // estimate the row is currently placed at.
+          const slotSize =
+            list && index >= 0 && index < itemCount ? Math.round(list.sizeAt(index)) : null;
           snapshot.rows.push({
             index,
             wrapperHeight,
-            cachedSize,
-            cacheVsWrapper: cachedSize === null ? null : cachedSize - wrapperHeight,
+            slotSize,
+            slotVsWrapper: slotSize === null ? null : slotSize - wrapperHeight,
           });
           if (index > bottomIndex) bottomIndex = index;
         }
@@ -940,23 +938,10 @@
 
   $effect(() => installPaneGeometryProbe(pane.paneId, captureTimelineGeometry));
 
-  // Route virtua's scroll-jump compensation writes ($fixScrollJump)
-  // through the controller (patched `setScrollApplier` seam,
-  // patches/virtua@0.49.1.patch). With the applier registered, virtua no
-  // longer writes scrollTop itself: the controller's compensation
-  // resolver decides (apply / redirect-to-bottom / decline+poke), and
-  // every landed write goes through the same chokepoint as the
-  // controller's own pins — tagged, marked, single-writer. Re-runs when
-  // the {#key pane.threadId} block remounts the Virtualizer.
-  $effect(() => {
-    listRef?.setScrollApplier(stick.applyVirtuaScrollCompensation);
-  });
-
-  // Trace virtua remount transitions: listRef goes undefined → defined
-  // when the {#key pane.threadId} block remounts the Virtualizer. This
-  // is the seam where virtua's deferred scroller attach
-  // (`tick().then(observe)` in Virtualizer.svelte) fires; a stale
-  // scrollTop from the outgoing thread can be visible here.
+  // Trace virtualizer remount transitions: listRef goes undefined →
+  // defined when the {#key pane.threadId} block remounts the
+  // virtualizer. A stale scrollTop from the outgoing thread can be
+  // visible here until the restore effect lands.
   $effect(() => {
     if (!isUiRenderTraceEnabled()) return;
     const bound = listRef !== undefined;
@@ -981,7 +966,7 @@
     return startTimelineRowResizeTrace(contentEl);
   });
 
-  // Settle-flicker regression oracle. Observes virtua's `contain: layout` item
+  // Settle-flicker regression oracle. Observes the `contain: layout` VirtualRow
   // wrappers AND their inner [data-row-index] rows, and emits
   // `timeline.margin.diverge` only when a frame moves the wrapper by a
   // different amount than the row — the escaped-margin signature the
@@ -1026,24 +1011,19 @@
 
   function currentVisibleTimelineRange(): { first: number; last: number } | null {
     if (!listRef || revealedNodes.length === 0) return null;
-    try {
-      // Virtua's cached geometry only — a clientHeight read here would
-      // force layout, and the prune used to run behind scroll frames
-      // interleaved with streaming DOM writes. A zero viewport means
-      // virtua hasn't measured yet; pruning against it would treat
-      // every row as offscreen and drop leased expansion state that's
-      // about to be visible.
-      const viewport = listRef.getViewportSize();
-      if (viewport <= 0) return null;
-      const offset = Math.max(0, listRef.getScrollOffset());
-      const first = clampTimelineIndex(listRef.findItemIndex(offset));
-      const last = clampTimelineIndex(listRef.findItemIndex(offset + viewport));
-      if (first < 0 || last < 0) return null;
-      return first <= last ? { first, last } : { first: last, last: first };
-    } catch (err) {
-      if (err instanceof TypeError) return null;
-      throw err;
-    }
+    // The engine's cached geometry only — a clientHeight read here would
+    // force layout, and the prune used to run behind scroll frames
+    // interleaved with streaming DOM writes. A zero viewport means the
+    // scroller hasn't measured yet; pruning against it would treat
+    // every row as offscreen and drop leased expansion state that's
+    // about to be visible.
+    const viewport = listRef.getViewportSize();
+    if (viewport <= 0) return null;
+    const offset = Math.max(0, listRef.getScrollOffset());
+    const first = clampTimelineIndex(listRef.findItemIndex(offset));
+    const last = clampTimelineIndex(listRef.findItemIndex(offset + viewport));
+    if (first < 0 || last < 0) return null;
+    return first <= last ? { first, last } : { first: last, last: first };
   }
 
   let lastRowUiPruneSignature = '';
@@ -1117,7 +1097,7 @@
   // Virtualizer's callbacks here are only for snapshot persistence so
   // back-button / thread-switch returns to the same place.
 
-  function handleVirtuaScroll(offset: number): void {
+  function handleTimelineScroll(offset: number): void {
     saveScrollSnapshot();
     // Older and newer zones are geometrically exclusive in a normal window
     // (you can't be near both edges at once), but a degenerate window that
@@ -1130,7 +1110,7 @@
     // Scroll-end + structural effects cover it.
   }
 
-  function handleVirtuaScrollEnd(): void {
+  function handleTimelineScrollEnd(): void {
     saveScrollSnapshot();
     scheduleRowUiStatePrune();
   }
@@ -1220,13 +1200,13 @@
     const threadId = snapshotThreadId();
     if (!threadId) return;
     saveScrollSnapshotForThread(threadId);
-    // Refresh the measured-size cache on the same triggers as the scroll
+    // Refresh the size priors on the same triggers as the scroll
     // position snapshot — restore, scroll, load-older settle. Size-gated, so
     // it only re-slices when the cascade actually grew the surface; every
     // other call is a cheap O(1) no-op. This co-location is why the outgoing
-    // thread's size cache is fresh at switch time (its most recent
+    // thread's priors are fresh at switch time (its most recent
     // saveScrollSnapshot IS the capture), mirroring the position snapshot.
-    maybePersistVirtuaSizeCache();
+    maybePersistSizePriors();
   }
 
   function saveScrollSnapshotForThread(threadId: string): void {
@@ -1236,53 +1216,39 @@
     // items, including the cache-hit fast path), saves are allowed.
     // No separate loading check is needed.
     if (!listRef || restoredThreadId !== threadId) return;
-    // virtua's internal ref can be in a teardown state where any geometry
-    // read throws (the inner ref is null while our outer handle is still
-    // bound). The TypeError is the documented teardown shape — swallow
-    // exactly that and re-throw anything else so a real regression in a
-    // future virtua version doesn't disappear silently.
-    try {
-      if (stick.isAtBottom) {
-        setThreadScrollSnapshot(threadId, { kind: 'bottom' });
-        return;
-      }
-      const offset = listRef.getScrollOffset();
-      // Negative when the anchor row's top has scrolled above the viewport
-      // top by `-offsetTop` pixels. Restoration recreates exactly this
-      // relationship via scrollToIndex({ align:'start', offset: -offsetTop }).
-      const anchor = captureTimelineAnchor(revealedNodes, listRef, offset, { clampIndex: true });
-      if (!anchor) return;
-      setThreadScrollSnapshot(threadId, { kind: 'anchor', ...anchor });
-    } catch (err) {
-      if (err instanceof TypeError) {
-        // Expected during teardown when virtua's inner ref is nulled
-        // while our outer handle is still bound. Skip this save; the
-        // next scroll will refresh the snapshot.
-        return;
-      }
-      throw err;
+    if (stick.isAtBottom) {
+      setThreadScrollSnapshot(threadId, { kind: 'bottom' });
+      return;
     }
+    const offset = listRef.getScrollOffset();
+    // Negative when the anchor row's top has scrolled above the viewport
+    // top by `-offsetTop` pixels. Restoration recreates exactly this
+    // relationship via scrollToIndex({ align:'start', offset: -offsetTop }).
+    const anchor = captureTimelineAnchor(revealedNodes, listRef, offset, { clampIndex: true });
+    if (!anchor) return;
+    setThreadScrollSnapshot(threadId, { kind: 'anchor', ...anchor });
   }
 
   // ============================================================
-  // virtua measured-size cache (per-thread, replays across switches)
+  // Row-size priors (per-thread, replay across switches)
   // ============================================================
 
   // The validity stamp for a measured-size snapshot: row height is keyed on
   // pane width (wrap point), the rendered node sequence + per-leaf content
   // (structureSig), and non-default expansion (taller rows). A snapshot only
-  // replays when all three still match — otherwise virtua falls back to the
-  // flat estimate. (Display settings — fontSize, fonts, collapseDiffPreviews —
-  // also affect height but are a deliberately-unkeyed benign residual; see the
-  // header of utils/threadVirtuaSizeCache.ts.) `scrollSurfaceContentWidth` persists
-  // across switches (MessageTimeline is not keyed on threadId), so it carries
-  // the correct width into the next mount. structureSig is computed from
-  // `revealedNodes` — the exact array virtua receives as `data` — so capture and
-  // the next mount's lookup sign the same thing; it superseded an earlier
-  // version of this key that read `pane.timelineRevision`, a monotonic counter
-  // that was never restored on re-entry and so could never match on a revisit
-  // (the field itself remains, as the timeline-derivation trigger).
-  function currentVirtuaSizeKey(): VirtuaSizeCacheKey {
+  // replays when all three still match — otherwise every row falls back to
+  // its kind estimate. (Display settings — fontSize, fonts,
+  // collapseDiffPreviews — also affect height but are a deliberately-unkeyed
+  // benign residual; see the header of utils/virtual/priors.ts.)
+  // `scrollSurfaceContentWidth` persists across switches (MessageTimeline is
+  // not keyed on threadId), so it carries the correct width into the next
+  // mount. structureSig is computed from `revealedNodes` — the exact array
+  // the virtualizer receives as `data` — so capture and the next mount's
+  // lookup sign the same thing; it superseded an earlier version of this key
+  // that read `pane.timelineRevision`, a monotonic counter that was never
+  // restored on re-entry and so could never match on a revisit (the field
+  // itself remains, as the timeline-derivation trigger).
+  function currentSizePriorsKey(): SizePriorsKey {
     return {
       width: Math.round(scrollSurfaceContentWidth),
       structureSig: timelineStructureSignature(revealedNodes),
@@ -1290,15 +1256,25 @@
     };
   }
 
-  // Total scroll size at the last capture. The estimate→measure cascade only
-  // moves this when rows actually measure, so it gates the capture: we re-snap
-  // exactly when (and only when) virtua's geometry changed, never per scroll
-  // frame. Reset on the threadId edge so the incoming thread's first measured
-  // size is never mistaken for "unchanged" against the outgoing thread's.
-  let lastPersistedScrollSize = -1;
+  // Kind resolver for the estimate fallback. Reads live `revealedNodes`,
+  // so it needs no remap across head splices (unlike the positional
+  // priors snapshot, which the engine re-bases via RowEstimate.shiftBase).
+  function timelineRowEstimateKind(index: number): string | undefined {
+    const node = revealedNodes[index];
+    if (!node) return undefined;
+    return node.kind === 'leaf' ? node.item.kind : node.kind;
+  }
 
-  // Capture virtua's current measured sizes for the active thread, but only
-  // when the total scroll size changed since the last capture — so a 60Hz
+  // Total size at the last capture. The estimate→measure cascade only
+  // moves this when rows actually measure, so it gates the capture: we
+  // re-snap exactly when (and only when) the engine's geometry changed,
+  // never per scroll frame. Reset on the threadId edge so the incoming
+  // thread's first measured size is never mistaken for "unchanged"
+  // against the outgoing thread's.
+  let lastPersistedTotalSize = -1;
+
+  // Capture the engine's current measured sizes for the active thread, but
+  // only when the total size changed since the last capture — so a 60Hz
   // spring chase doesn't re-slice the size array every frame. The most recent
   // capture before a switch is what the return replays; mirroring the
   // scroll-snapshot strategy, we never capture in the switch effect.pre
@@ -1306,67 +1282,62 @@
   //
   // Mid-stream cost is known and tolerated: on an actively-streaming thread the
   // size-gate passes once per geometry change (each append grows the total), so
-  // getCache() + the O(N) structureSig rebuild in currentVirtuaSizeKey() run
-  // ~5–20×/sec — bounded by the gate (never per-frame) and only while the
+  // takeSnapshot() + the O(N) structureSig rebuild in currentSizePriorsKey()
+  // run ~5–20×/sec — bounded by the gate (never per-frame) and only while the
   // visible thread streams. Only the settle capture (isWarm rising) matters for
   // replay; the interim ones are overwritten. Deliberately NOT gated on
   // spring-chase state: that would risk dropping the settle capture on an
   // already-warm streaming thread (isWarm does not re-arm), regressing replay.
-  function maybePersistVirtuaSizeCache(): void {
+  function maybePersistSizePriors(): void {
     const threadId = snapshotThreadId();
     if (!threadId || !listRef || restoredThreadId !== threadId) return;
-    const list = listRef;
-    // ONLY the virtua geometry reads are guarded: the inner ref can be nulled
-    // while our outer handle is still bound (teardown), and both calls throw a
-    // TypeError then. Key construction (currentVirtuaSizeKey → structureSig /
-    // expansionSig) stays OUTSIDE the guard so a real bug there fails loudly
-    // instead of masquerading as teardown and silently disabling the cache.
-    let scrollSize: number;
-    let snapshot: VirtuaCacheSnapshot;
-    try {
-      // O(1) read (virtua's cached total) — the cheap change-gate. Skip the
-      // getCache() slice entirely when geometry hasn't moved (60Hz spring).
-      scrollSize = list.getScrollSize();
-      if (scrollSize === lastPersistedScrollSize) return;
-      snapshot = list.getCache();
-    } catch (err) {
-      // Skip this capture; the next change refreshes it. `lastPersistedScrollSize`
-      // is intentionally NOT advanced here, so a teardown-throw doesn't gate out
-      // the retry. Re-throw anything that isn't the documented teardown shape.
-      if (err instanceof TypeError) return;
-      throw err;
-    }
-    lastPersistedScrollSize = scrollSize;
-    setThreadVirtuaSizeCache(threadId, { snapshot, ...currentVirtuaSizeKey() });
+    // O(1) read (the engine's prefix-sum total) — the cheap change-gate.
+    // Skip the takeSnapshot() slice entirely when geometry hasn't moved
+    // (60Hz spring).
+    const totalSize = listRef.getTotalSize();
+    if (totalSize === lastPersistedTotalSize) return;
+    lastPersistedTotalSize = totalSize;
+    setThreadSizePriors(threadId, {
+      sizes: listRef.takeSnapshot(),
+      ...currentSizePriorsKey(),
+    });
   }
 
-  // Resolve the replay snapshot for the INCOMING thread before the
-  // {#key pane.threadId} block remounts the <Virtualizer>. virtua consumes
-  // `cache` once at construction, and $effect.pre runs before DOM flush, so
-  // `virtuaReplayCache` is settled by the time the remount reads it. Gated on
-  // the threadId edge: mid-thread revision/width churn must not recompute it
-  // (the mounted Virtualizer ignores a changed `cache` anyway), and the
-  // same-thread revert flow keeps threadId constant so it never remounts.
+  // Resolve the row estimate for the INCOMING thread before the
+  // {#key pane.threadId} block remounts the <TimelineVirtualizer>. The
+  // virtualizer configures its engine once at construction, and
+  // $effect.pre runs before DOM flush, so `rowEstimate` is settled by the
+  // time the remount reads it. Gated on the threadId edge: mid-thread
+  // revision/width churn must not recompute it (the mounted virtualizer
+  // ignores a changed `estimate` anyway), and the same-thread revert flow
+  // keeps threadId constant so it never remounts.
   $effect.pre(() => {
     const threadId = pane.threadId;
-    if (threadId === virtuaReplayCacheThreadId) return;
-    virtuaReplayCacheThreadId = threadId;
-    lastPersistedScrollSize = -1;
-    virtuaReplayCache = threadId
-      ? untrack(() => getReplayableVirtuaCache(threadId, currentVirtuaSizeKey()))
+    if (threadId === rowEstimateThreadId) return;
+    rowEstimateThreadId = threadId;
+    lastPersistedTotalSize = -1;
+    rowEstimate = threadId
+      ? untrack(() =>
+          createRowEstimate({
+            snapshot: getReplayableSizePriors(threadId, currentSizePriorsKey()),
+            kindOf: timelineRowEstimateKind,
+            kindHeights: ROW_KIND_ESTIMATE_PX,
+            defaultSize: ESTIMATED_ROW_SIZE,
+          }),
+        )
       : undefined;
   });
 
   // Guarantee a post-settle capture. The scroll-driven captures
-  // (handleVirtuaScroll/ScrollEnd → saveScrollSnapshot) only store settled
-  // sizes if the cascade's bottom-pin re-pins reach virtua's onscroll — which
+  // (handleTimelineScroll/ScrollEnd → saveScrollSnapshot) only store settled
+  // sizes if the cascade's bottom-pin re-pins fire scroll events — which
   // an idle, bottom-pinned thread the user never scrolls cannot rely on, so the
   // only stored snapshot would be the pre-settle estimate and the NEXT visit
   // would replay it and still cascade. `stick.isWarm` is the controller's
   // existing "measurement cascade has settled" signal (QUIET_MS of geometry
   // stillness); on its rising edge the sizes are final. Capture is `untrack`ed
   // so this effect depends ONLY on isWarm — not on the geometry/content
-  // maybePersistVirtuaSizeCache reads — keeping it a settle-edge trigger, not a
+  // maybePersistSizePriors reads — keeping it a settle-edge trigger, not a
   // content watcher. Size-gated downstream, so if a scroll capture already
   // stored the settled total this is a no-op; cascade-interim warm flickers
   // store interim sizes the final settle overwrites.
@@ -1375,7 +1346,7 @@
     const warm = stick.isWarm;
     const rising = warm && !lastWarmForCapture;
     lastWarmForCapture = warm;
-    if (rising) untrack(() => maybePersistVirtuaSizeCache());
+    if (rising) untrack(() => maybePersistSizePriors());
   });
 
   // Reset restoration tracking on thread change BEFORE the new thread's
@@ -1385,11 +1356,11 @@
   //
   // We do NOT call saveScrollSnapshotForThread for the outgoing thread
   // here. By the time this effect runs, switchThread has already mutated
-  // pane.items to the incoming thread's cached items — so virtua's
+  // pane.items to the incoming thread's cached items — so
   // listRef.findItemIndex would return an index in the WRONG thread's
   // array, and the saved anchor would carry the incoming thread's item
   // id under the outgoing thread's snapshot key. The continuous
-  // scroll-event-driven saves (handleVirtuaScroll, handleVirtuaScrollEnd)
+  // scroll-event-driven saves (handleTimelineScroll, handleTimelineScrollEnd)
   // already keep the outgoing thread's snapshot fresh — the most recent
   // user scroll IS the snapshot.
   $effect.pre(() => {
@@ -1492,12 +1463,11 @@
     // needs scrollEl (forceStick) — running it inline keeps the
     // controller's pauseAutoScroll lease and the `await tick()`
     // microtask boundary out of the critical "switch in → land at
-    // bottom" path. Awaiting tick gates the contentRO sync-pin off
-    // (pauseDepth>0) for an extra microtask while virtua's deferred
-    // scroller attach (Virtualizer.svelte's `tick().then(observe)`)
-    // races to read scrollEl.scrollTop — the visible flash on long
-    // threads was virtua reading the carry-over scrollTop from the
-    // outgoing thread before our forceStick landed.
+    // bottom" path, so the incoming thread's first paint already sits
+    // at the bottom. (Under virtua this also defused a deferred
+    // scroller-attach race reading the outgoing thread's carry-over
+    // scrollTop; the bespoke virtualizer attaches synchronously, but
+    // the paint-ordering reason stands.)
     const snap = getThreadScrollSnapshot(threadId);
     if (isUiRenderTraceEnabled()) {
       recordUiTrace('timeline.restore.effect', {
@@ -1532,20 +1502,20 @@
   //   target in a single write. Any subsequent contentEl growth from
   //   svelte-streamdown's
   //   async typesetting (shiki / KaTeX / mermaid /
-  //   parseIncompleteMarkdown rebalance) and from virtua's per-row
-  //   ResizeObservers refining row heights gets handled invisibly by
-  //   the controller's contentRO sync-pin path: each positive delta
+  //   parseIncompleteMarkdown rebalance) and from the virtualizer's
+  //   per-row measurements refining row heights gets handled invisibly
+  //   by the controller's contentRO sync-pin path: each positive delta
   //   re-pins to the new bottom inside the RO callback, before paint.
   //
   // Don't pair `scrollToIndex(last, 'end')` with `markAtBottom()` here
-  // — they create two writers (virtua's measurement loop + our
+  // — they create two writers (the index-scroll convergence + our
   // sync-pin) targeting slightly different scrollTop values for the
   // same content-grow trigger, and they oscillate. forceStick() alone
   // is the single writer.
   //
   // The trailing rAF `observe('content')` is a defensive late-settling
   // re-pin: composer-height RO updates flowing into scrollEl's
-  // padding-bottom, virtua's per-row ResizeObservers firing a frame
+  // padding-bottom, per-row measurements firing a frame
   // after mount, and the first burst of Streamdown async typesetting
   // can all change geometry one frame after the initial forceStick.
   // Padding-only changes don't re-fire contentRO (W3C ResizeObserver
@@ -1554,10 +1524,10 @@
   // bottom. The content observation is escape-aware (bails if the user
   // gestured up between frames) so it can't yank them.
   function restoreToBottom(): void {
-    // Last RENDERED row (virtua's `data` is `revealedNodes`). If a stream
-    // event set the reveal gate between switch and restore, the true last
-    // index is the revealed one — scrolling to a withheld index would land
-    // out of virtua's range.
+    // Last RENDERED row (the virtualizer's `data` is `revealedNodes`). If a
+    // stream event set the reveal gate between switch and restore, the true
+    // last index is the revealed one — scrolling to a withheld index would
+    // land out of the engine's range.
     const lastIndex = revealedNodes.length - 1;
     if (isUiRenderTraceEnabled()) {
       recordUiTrace('timeline.restore.bottom.entry', {
@@ -1695,9 +1665,11 @@
         restoreToBottom();
         return;
       }
-      stick.runExternalScroll(() => {
-        listRef?.scrollToIndex(idx, { align: 'start', offset: -snap.offsetTop });
-      });
+      // The anchor restore is a mid-thread position: escape bottom
+      // follow (as any explicit navigation does), then jump. The write
+      // itself is chokepoint-tagged via applyScrollTarget.
+      stick.setEscapedFromLock(true);
+      listRef?.scrollToIndex(idx, { align: 'start', offset: -snap.offsetTop });
       saveScrollSnapshot();
     } finally {
       release();
@@ -1707,10 +1679,11 @@
   // ============================================================
   // Load older
   // ============================================================
-  // The prepend holds the reading position via virtua's native `shift`:
-  // pane.loadOlder sets pane.pendingTimelineShiftAtHead for the head-grow
-  // flush, so virtua keeps its size cache aligned and compensates scrollTop
-  // in one step. There is deliberately NO explicit re-anchor here — a
+  // The prepend holds the reading position via the engine's head-splice
+  // handling: pane.loadOlder sets pane.pendingTimelineShiftAtHead for the
+  // head-grow flush, so the engine re-bases its size store and reports the
+  // scrollTop compensation in one step. There is deliberately NO explicit
+  // re-anchor here — a
   // re-anchor captured before the await would yank the user back if they
   // kept scrolling while the page loaded. The pause lease keeps the
   // prepend's scrollHeight growth from re-sticking; `escaped` marks the
@@ -1748,9 +1721,10 @@
       if (myToken !== restoreToken || !listRef || result.status !== 'loaded') return;
       const lastIndex = revealedNodes.length - 1;
       if (lastIndex < 0) return;
-      stick.runExternalScroll(() => {
-        listRef?.scrollToIndex(lastIndex, { align: 'end' });
-      });
+      // Explicit navigation into the middle of history (more-newer may
+      // remain below): escape bottom follow, then jump.
+      stick.setEscapedFromLock(true);
+      listRef.scrollToIndex(lastIndex, { align: 'end' });
       saveScrollSnapshot();
     } finally {
       release();
@@ -1765,8 +1739,8 @@
   // Auto-load-newer path. Unlike the manual button it must NOT scroll:
   // newer rows append below the viewport (tail-grow, no shift) so the
   // reading position is unchanged, and loadNewer's head-prune holds position
-  // via virtua's native `shift`. The pause lease guards the transient
-  // scrollHeight growth from a restick.
+  // via the engine's head-splice handling. The pause lease guards the
+  // transient scrollHeight growth from a restick.
   async function handleLoadNewerAuto(): Promise<void> {
     if (!listRef) return;
     const release = stick.pauseAutoScroll();
@@ -1816,9 +1790,10 @@
     if (idx < 0) return;
     const targetNode = revealedNodes[idx];
     const targetItemId = targetNode?.kind === 'leaf' ? targetNode.item.id : id;
-    stick.runExternalScroll(() => {
-      listRef?.scrollToIndex(idx, { align: 'center' });
-    });
+    // Explicit navigation: escape bottom follow, then jump (the write is
+    // chokepoint-tagged via applyScrollTarget).
+    stick.setEscapedFromLock(true);
+    listRef.scrollToIndex(idx, { align: 'center' });
     if (options.flash) targetFlash.flash(targetItemId);
   }
 
@@ -1832,7 +1807,6 @@
   });
 
   onDestroy(() => {
-    hostLayoutRetryToken += 1;
     rowUiPruneToken += 1;
     restoreToken += 1;
     if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId);
@@ -1850,12 +1824,12 @@
      viewport space, so the chip would otherwise scroll with the
      transcript and ride up off-screen as the user scrolls or as
      auto-follow drives scrollTop downward (browser-confirmed). The
-     inner div is the actual scroll container that <Virtualizer
-     scrollRef={scrollEl}> reads/writes via, that the controller's
+     inner div is the actual scroll container that <TimelineVirtualizer
+     scrollRef={scrollEl}> reads scroll input from, that the controller's
      wheel/scroll/keydown/touch listeners and content ResizeObserver
      bind to. `overflow-anchor: none` disables the browser's
-     scroll-anchor adjustment — virtua already owns row-anchor
-     preservation via its measurement loop, and the controller owns
+     scroll-anchor adjustment — the engine already owns row-anchor
+     preservation via its compensation path, and the controller owns
      bottom-pinning via the contentRO sync-pin; leaving the browser's
      anchor heuristic ON makes it fight both, producing visible
      scrollTop oscillation as Streamdown's async typesetting (shiki /
@@ -1947,34 +1921,36 @@
       {/snippet}
 
       <!-- contentEl is the controller's content-RO observation target.
-           Virtua's container has `contain: size; height: totalSize+'px'`,
-           so contentEl.scrollHeight reflects virtua's totalSize exactly.
-           {#key pane.threadId} forces the <Virtualizer> to remount on
-           every thread switch so its internal row-size store resets with
-           the timeline. `cache` replays the previous visit's measured sizes
-           when the validity key still matches (width + structure + expansion),
-           so a revisited thread mounts at its final height instead of
-           re-running the estimate→measure cascade — the thread-switch
-           flicker. On any mismatch `virtuaReplayCache` is undefined and
-           virtua falls back to the flat itemSize estimate. See
-           utils/threadVirtuaSizeCache.ts and docs/architecture/frontend-scroll.md. -->
+           The virtualizer's container has `contain: size; height:
+           totalSize+'px'`, so contentEl.scrollHeight reflects the
+           engine's totalSize exactly. {#key pane.threadId} forces the
+           <TimelineVirtualizer> to remount on every thread switch so its
+           engine resets with the timeline. `estimate` replays the
+           previous visit's measured sizes when the priors validity key
+           still matches (width + structure + expansion), so a revisited
+           thread mounts at its final height instead of re-running the
+           estimate→measure cascade — the thread-switch flicker. On any
+           mismatch the estimate degrades per-row to the kind table /
+           flat default. See utils/virtual/priors.ts and
+           docs/architecture/frontend-scroll.md. -->
       <div
         bind:this={contentEl}
         style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}
       >
         {#key pane.threadId}
-        <Virtualizer
+        <TimelineVirtualizer
           bind:this={listRef}
           scrollRef={scrollEl}
           data={revealedNodes}
-          cache={virtuaReplayCache}
+          estimate={rowEstimate}
           shift={virtualizerShiftAtHead}
           getKey={(node) => timelineNodeKey(node)}
-          itemSize={ESTIMATED_ROW_SIZE}
           bufferSize={BUFFER_SIZE_PX}
-          ssrCount={IS_TEST ? 100_000 : undefined}
-          onscroll={handleVirtuaScroll}
-          onscrollend={handleVirtuaScrollEnd}
+          renderAll={IS_TEST}
+          onscroll={handleTimelineScroll}
+          onscrollend={handleTimelineScrollEnd}
+          onCompensation={stick.applyEngineCompensation}
+          applyScrollTarget={stick.applyScrollTarget}
         >
           {#snippet children(node: TimelineNode, index: number)}
             {@const currentLeafItem = currentTimelineLeafItem(node)}
@@ -2002,11 +1978,11 @@
                    (UserMessage's `.group mb-5`, the error card `mb-4`,
                    notification / retry `mb-1.5`, …). Without it those margins
                    collapse out through this all-plain wrapper chain and are
-                   trapped only by virtua's `contain: layout` item wrapper, so
-                   virtua's measured row total (margin included) and the row's
-                   own content box (margin excluded) disagree; virtua re-measures
-                   the trapped margin inconsistently during streaming reflow
-                   → totalSize oscillates → scrollTop clamp →
+                   trapped only by the `contain: layout style` VirtualRow
+                   wrapper, so the measured row total (margin included) and the
+                   row's own content box (margin excluded) disagree; the
+                   trapped margin re-measures inconsistently during streaming
+                   reflow → totalSize oscillates → scrollTop clamp →
                    `spring.oscillationSnap` = the settle flicker. Keyed to the
                    attribute (not a class) so a refactor here can't drop it
                    silently; it is display-only. Coupling +
@@ -2091,7 +2067,7 @@
             </div>
             </div>
           {/snippet}
-        </Virtualizer>
+        </TimelineVirtualizer>
         {#if pane.hasMoreNewer}
           <div class="mx-auto flex w-full max-w-[62rem] justify-center px-6 pb-6 pt-2">
             <div class="flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/80 px-2 py-1.5 shadow-sm">

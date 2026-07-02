@@ -90,10 +90,11 @@ const SETTLED_QUIET_MS = 16;
 // cannot show a perceptible bottom-shift. Anything larger is treated as
 // virtua's estimate→measure cascade still in flight. Absolute px, not
 // viewport-relative: the threshold is human-perceptible scroll
-// displacement, which does not scale with viewport height. virtua mounts
-// rows at ESTIMATED_ROW_SIZE (56px, see MessageTimeline.svelte), so each
-// per-row correction is |measured − 56| — tens-to-hundreds of px for any
-// real multi-line chat row, comfortably clear of this floor.
+// displacement, which does not scale with viewport height. The engine
+// places unmeasured rows at floor-biased kind estimates
+// (ROW_KIND_ESTIMATE_PX / ESTIMATED_ROW_SIZE, see MessageTimeline.svelte),
+// so each per-row correction is |measured − floor| — tens-to-hundreds of
+// px for any real multi-line chat row, comfortably clear of this floor.
 const WARMUP_SETTLE_EPSILON_PX = 8;
 
 function roundCssPx(value: number): number {

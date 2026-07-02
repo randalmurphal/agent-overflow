@@ -1,7 +1,7 @@
 import type { Thread } from '../types/models';
 import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
 import { clearThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
-import { clearThreadVirtuaSizeCache } from '../utils/threadVirtuaSizeCache';
+import { clearThreadSizePriors } from '../utils/virtual/priors';
 import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
 import { ListThreads } from './bindings';
 import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './thread.svelte';
@@ -50,7 +50,7 @@ export function removeThread(id: string): void {
   // pattern can't surface stale items if a generated id ever recurs.
   threadItemCache.evict(id);
   clearThreadScrollSnapshot(id);
-  clearThreadVirtuaSizeCache(id);
+  clearThreadSizePriors(id);
   clearTokensForThread(id);
   clearPayloadCacheForThread(id);
   releaseThreadTerminalState(id);

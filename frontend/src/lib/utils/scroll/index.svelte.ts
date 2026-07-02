@@ -12,7 +12,7 @@
 //     user sees content arriving at the bottom with no perceptible
 //     scroll motion. Used by Discussion's ChannelView and by chat
 //     whenever no live content has advanced recently — late Streamdown
-//     typesetting on settled content, virtua row remeasurement on a
+//     typesetting on settled content, row remeasurement on a
 //     freshly-mounted thread, etc.
 //
 //   - 'spring': velocity-spring chase. The viewport interpolates toward
@@ -28,7 +28,7 @@
 //     animationMode is 'instant'; that path cancels after arrival and does
 //     not enter the streaming sentinel. The warm gate defends against the
 //     original 80LoC-spring-delete regression (commit e00723f) where
-//     mount-time virtua remeasurement and async Streamdown typesetting
+//     mount-time row remeasurement and async Streamdown typesetting
 //     would spring-chase a thread restore visibly.
 //
 // User-initiated snaps (the scroll-to-bottom chip) and thread restores
@@ -38,11 +38,12 @@
 // content visible.
 //
 // Unlike the previous controller, this owns the scroll element directly.
-// MessageTimeline pairs it with virtua's <Virtualizer scrollRef={scrollEl}>
-// so virtua does its measurement work without owning the scroll container.
-// ChannelView is virtua-free — the contentEl is just a `<div>` wrapping
-// the `{#each}` over channel messages — and the same controller works
-// because the algorithm is agnostic to what's inside contentEl.
+// MessageTimeline pairs it with <TimelineVirtualizer scrollRef={scrollEl}>
+// so the windowing engine does its measurement work without owning the
+// scroll container. ChannelView has no virtualizer — the contentEl is
+// just a `<div>` wrapping the `{#each}` over channel messages — and the
+// same controller works because the algorithm is agnostic to what's
+// inside contentEl.
 //
 // External consumers (sidebar resizers, ChatView composer-height
 // publication, scrollLeaseDuringTransition helper) speak to this through
@@ -56,13 +57,14 @@ import { tick } from 'svelte';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import { createScrollIntent, isSelectingInside } from './intent';
 import { createContentObserver } from './observers';
+import type { EngineCompensation } from '../virtual/types';
 import {
   ARRIVAL_DISTANCE_PX,
   SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX,
-  resolveVirtuaCompensation,
+  resolveEngineCompensation,
   withinArrivalBand,
+  type EngineCompensationObservation,
   type ResolverState,
-  type VirtuaCompensationObservation,
 } from './resolver';
 import { createSpringChase, type ArrivalReadback } from './spring';
 import { trace } from './trace';
@@ -160,8 +162,8 @@ export function createUseStickToBottomController(
   // restore-reason forceStick. Backed by $state so consumers can
   // subscribe to the transition — chat's MessageTimeline hides contentEl
   // while warm is false, which is the canonical
-  // "virtua's measurement cascade has settled" signal. Without this,
-  // an uncached thread's first paint renders rows at virtua's
+  // "the measurement cascade has settled" signal. Without this,
+  // an uncached thread's first paint renders rows at estimated
   // ESTIMATED_ROW_SIZE × N offsets; the RO-correction pass then shifts
   // every row by a fraction-of-a-page (the larger the thread, the
   // bigger the shift) producing the visible "lands wrong, then jumps"
@@ -289,11 +291,6 @@ export function createUseStickToBottomController(
       beforeHeight = scrollEl.scrollHeight;
       beforeClient = scrollEl.clientHeight;
     }
-    // Let the consumer mark this write as programmatic for any library
-    // observing the scroll element (virtua manual-scroll marking) BEFORE
-    // the write lands, so the scroll event it dispatches is already
-    // classified.
-    options.onBeforeScrollTopWrite?.();
     scrollEl.scrollTop = value;
     // Tag using the BROWSER-rounded read so the scroll handler's token
     // match sees the same value the scroll event will report.
@@ -435,34 +432,34 @@ export function createUseStickToBottomController(
     };
   }
 
-  // virtua scroll-applier entry point (see the interface doc). virtua's
-  // `$fixScrollJump` compensation — the one internal scrollTop write our
-  // virtua config produces — no longer reaches the DOM directly: the
-  // patched scroll-applier seam (patches/virtua@0.49.1.patch) hands it
-  // here, making the controller the single scrollTop writer during
-  // follow by construction (the property-descriptor gate that used to
-  // arbitrate virtua's direct writes died with this routing; its
-  // tier-by-tier regression history lives in the resolver's provenance
-  // notes and scroll-contracts.md C10). Gathers the observation,
-  // delegates the decision to the pure resolver, applies the one write
-  // through the chokepoint. Detached: decline — the poke keeps virtua's
-  // model synced to the DOM we are no longer arbitrating.
-  function applyVirtuaScrollCompensation(target: number, jump: number, shift: boolean): boolean {
+  // Engine compensation entry point (see the interface doc). The bespoke
+  // timeline engine (utils/virtual/) reports above-viewport remeasures
+  // and head splices as {kind, delta, target} observations instead of
+  // writing scrollTop itself (TimelineVirtualizer `onCompensation`),
+  // making the controller the single scrollTop writer during follow by
+  // construction (the property-descriptor gate that used to arbitrate
+  // virtua's direct writes died with the routing this seam grew out of;
+  // its tier-by-tier regression history lives in the resolver's
+  // provenance notes and scroll-contracts.md C10). Gathers the
+  // observation, delegates the decision to the pure resolver, applies
+  // the one write through the chokepoint. Detached: decline — a
+  // declined compensation cannot desync the engine (its offset follows
+  // real scroll events).
+  function applyEngineCompensation(compensation: EngineCompensation): boolean {
     if (!scrollEl) return false;
-    const observation: VirtuaCompensationObservation = {
-      target,
-      jump,
-      shift,
+    const observation: EngineCompensationObservation = {
+      kind: compensation.kind,
+      target: compensation.target,
       scrollTop: scrollEl.scrollTop,
       bottomTarget: targetScrollTop(),
       clientHeight: scrollEl.clientHeight,
       widthReflowActive: observers.widthReflowActive(),
     };
-    const decision = resolveVirtuaCompensation(resolverStateSnapshot(), observation);
-    if (isUiRenderTraceEnabled()) trace('scroll.virtuaJump', () => ({
-      target: Math.round(target),
-      jump: Math.round(jump),
-      shift,
+    const decision = resolveEngineCompensation(resolverStateSnapshot(), observation);
+    if (isUiRenderTraceEnabled()) trace('scroll.engineCompensation', () => ({
+      kind: compensation.kind,
+      target: Math.round(compensation.target),
+      delta: Math.round(compensation.delta),
       scrollTop: Math.round(observation.scrollTop),
       bottomTarget: Math.round(observation.bottomTarget),
       writeCaller: decision.write?.caller ?? null,
@@ -476,6 +473,14 @@ export function createUseStickToBottomController(
     if (decision.write === null) return false;
     writeScrollTop(decision.write.caller, decision.write.value);
     return true;
+  }
+
+  // Virtualizer-requested imperative scrolls (the scrollToIndex
+  // convergence passes) — performed here so every write is
+  // chokepoint-tagged; intent semantics (escape vs preserve) stay with
+  // the navigation call sites.
+  function applyScrollTarget(top: number): void {
+    writeScrollTop('virtualizer.scrollTarget', top);
   }
 
 
@@ -881,6 +886,7 @@ export function createUseStickToBottomController(
     skipWarmup: observers.skipWarmup,
     notifyQuietContextSignalChanged: observers.notifyQuietContextSignalChanged,
     armRestoreSnap: intent.armRestoreSnap,
-    applyVirtuaScrollCompensation,
+    applyEngineCompensation,
+    applyScrollTarget,
   };
 }

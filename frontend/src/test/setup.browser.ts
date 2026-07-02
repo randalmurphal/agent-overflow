@@ -17,7 +17,7 @@ import { resetBindingMocks, setBindingMock } from './mocks/bindings-app';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { clearThreadScrollSnapshotsForTest } from '../lib/utils/threadScrollSnapshots';
-import { clearThreadVirtuaSizeCacheForTest } from '../lib/utils/threadVirtuaSizeCache';
+import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
 
 // Chromium emits this when a ResizeObserver callback itself changes layout so
 // notifications remain for the next frame — the scroll controller's sync-pin
@@ -62,10 +62,10 @@ afterEach(() => {
   // turn makes the next test's timeline believe a stream is in flight.
   resetThreadStatusesForTest();
   // Per-thread caches that survive switchThread by design: items snapshot
-  // LRU, scroll position snapshots, and virtua's measured-size replay
-  // cache. Stale entries let a later test skip its mocked load or replay
-  // another test's row geometry.
+  // LRU, scroll position snapshots, and the measured-size priors. Stale
+  // entries let a later test skip its mocked load or replay another
+  // test's row geometry.
   clearThreadItemCacheForTest();
   clearThreadScrollSnapshotsForTest();
-  clearThreadVirtuaSizeCacheForTest();
+  clearAllThreadSizePriorsForTest();
 });

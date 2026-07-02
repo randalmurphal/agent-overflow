@@ -6,16 +6,19 @@
 // options, the observation-kind hint, and the closed union of programmatic
 // write callers.
 
-import type { ContentWriteCaller, VirtuaWriteCaller } from './resolver';
+import type { EngineCompensation } from '../virtual/types';
+import type { ContentWriteCaller, EngineWriteCaller } from './resolver';
 
 // Every programmatic scrollTop write names its origin AT the single write
 // site (`writeScrollTop(caller, value)`). Trace attribution and the
 // spring-tick trace sampling both key off it; the closed union keeps a new
 // write path from landing without declaring itself here. The contentRO.*
-// members come from the resolver's decision union so the two cannot drift.
+// and engine.* members come from the resolver's decision unions so the
+// two cannot drift.
 export type ScrollWriteCaller =
   | ContentWriteCaller
-  | VirtuaWriteCaller
+  | EngineWriteCaller
+  | 'virtualizer.scrollTarget'
   | 'spring.tick'
   | 'spring.overshoot'
   | 'spring.arrive'
@@ -39,9 +42,9 @@ export type ScrollWriteCaller =
  *   output can spring through the change instead of snapping (falls
  *   back to the same instant re-pin when no spring is warranted).
  *
- * MessageTimeline's pane-facing adapter overrides `'host-layout'` to run
- * its listRef-aware retry ladder; the raw controller mapping is the
- * correct fallback for surfaces without one (ChannelView).
+ * MessageTimeline's pane-facing adapter overrides `'host-layout'` to
+ * re-pin and revalidate its virtualizer geometry; the raw controller
+ * mapping is the correct fallback for surfaces without one (ChannelView).
  */
 export type ScrollObservationKind =
   | 'content'
@@ -63,7 +66,7 @@ export interface UseStickToBottomController {
   /**
    * True once the warm-up gate has cleared — either QUIET_MS of
    * contentRO silence, or FAILSAFE_MS elapsed (whichever first). Use
-   * as a "virtua's measurement cascade has settled" signal: consumers
+   * as a "the measurement cascade has settled" signal: consumers
    * can hide content during the cascade and reveal here to avoid
    * showing the user a brief estimated-size paint before the
    * measured-size correction lands. Reset to false on attach,
@@ -146,15 +149,15 @@ export interface UseStickToBottomController {
    */
   markAtBottom(): void;
   /**
-   * Run an external programmatic scroll, such as virtua's
-   * `listRef.scrollToIndex(...)`, under the controller's scroll-intent
-   * tag. This is the escape hatch for scroll writers the controller
-   * cannot perform itself.
+   * Run an external programmatic scroll under the controller's
+   * scroll-intent tag. This is the escape hatch for scroll writers the
+   * controller cannot perform itself — chat's virtualizer no longer
+   * needs it (its imperative scrolls go through `applyScrollTarget`),
+   * but the seam stays for genuinely external writers.
    *
    * Most external jumps are explicit navigation and should escape bottom
-   * follow. Host-layout reconciliation is different: it rewrites the
-   * virtualizer's current offset after a pane move without changing user
-   * intent, so it passes `preserveIntent`.
+   * follow; a writer that merely re-establishes the current position
+   * passes `preserveIntent`.
    */
   runExternalScroll(action: () => void, opts?: { preserveIntent?: boolean }): void;
   /**
@@ -211,20 +214,32 @@ export interface UseStickToBottomController {
    */
   notifyQuietContextSignalChanged(): void;
   /**
-   * The virtua scroll-applier entry point (patched `setScrollApplier`
-   * seam, patches/virtua@0.49.1.patch). virtua calls this synchronously
-   * from its post-flush $fixScrollJump with the absolute target it wants
-   * scrollTop set to plus the raw (jump, shift) pair; the resolver's
-   * `resolveVirtuaCompensation` decides and any write goes through the
-   * controller chokepoint (tagged + marked like every controller write).
-   * Returns true if a write landed; false declines, and the patched core
-   * pokes its store with the current DOM offset so a declined
-   * compensation can never desync virtua's model.
+   * The timeline engine's compensation entry point. The engine never
+   * writes scrollTop itself: TimelineVirtualizer forwards each
+   * `EngineCompensation` observation here synchronously (same task as
+   * the geometry change it compensates), the resolver's
+   * `resolveEngineCompensation` decides, and any write goes through the
+   * controller chokepoint (tagged like every controller write). Returns
+   * true if a write landed; a decline needs no follow-up — the engine
+   * re-reads the DOM offset from the next scroll event, so an unapplied
+   * compensation cannot desync it.
    *
    * The consumer wires this directly:
-   * `listRef.setScrollApplier(stick.applyVirtuaScrollCompensation)`.
+   * `<TimelineVirtualizer onCompensation={stick.applyEngineCompensation}>`.
    */
-  applyVirtuaScrollCompensation(target: number, jump: number, shift: boolean): boolean;
+  applyEngineCompensation(compensation: EngineCompensation): boolean;
+  /**
+   * Perform a virtualizer-requested imperative scroll (the scrollToIndex
+   * convergence passes) through the controller chokepoint, so the write
+   * is tagged programmatic and can never be classified as user scroll
+   * intent. Intent semantics stay with the caller: flip
+   * `setEscapedFromLock` / `markAtBottom` alongside the navigation this
+   * write serves.
+   *
+   * Wired as
+   * `<TimelineVirtualizer applyScrollTarget={stick.applyScrollTarget}>`.
+   */
+  applyScrollTarget(top: number): void;
 }
 
 export interface UseStickToBottomOptions {
@@ -267,33 +282,4 @@ export interface UseStickToBottomOptions {
    * ChannelView is the canonical example).
    */
   quietContextSignal?: () => boolean;
-  /**
-   * Optional hook invoked synchronously immediately before EVERY
-   * programmatic scrollTop write the controller performs (sync pins,
-   * spring ticks, forceStick snaps).
-   *
-   * Exists for scroll-position libraries that observe the scroll element
-   * and classify scroll events as user gestures unless told otherwise.
-   * Chat's MessageTimeline wires this to the patched virtua handle's
-   * `markProgrammaticScroll()`: without the mark, virtua reads each pin
-   * write as the user scrolling down, latches that direction, and drops
-   * its entire above-viewport buffer — the row unmount/remount churn
-   * behind the streaming settle flicker (see
-   * docs/architecture/settle-flicker-analysis.md). virtua clears the
-   * mark on scrollend, which is why this fires per-write rather than
-   * per-burst.
-   *
-   * Two contract notes: the hook MUST NOT throw — it runs inside
-   * ResizeObserver callbacks and spring rAF ticks, and a throw aborts the
-   * pin write it precedes. And it fires even when the subsequent write
-   * turns out to be a no-op (value already equals scrollTop, e.g. a
-   * clamped at-max write); no scroll event follows, so a virtua manual
-   * mark can linger until the next gesture's scrollend — benign
-   * over-retention (virtua keeps the symmetric buffer, exactly what
-   * virtua's own scrollTo leaves behind).
-   *
-   * Defaults to undefined (no-op) — Discussion's ChannelView has no
-   * virtualizer and needs no marking.
-   */
-  onBeforeScrollTopWrite?: () => void;
 }

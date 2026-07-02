@@ -6,12 +6,12 @@ import {
   SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX,
   isSentinelOscillationStranded,
   resolveContentDelivery,
-  resolveVirtuaCompensation,
+  resolveEngineCompensation,
   springGateIsOpen,
   withinArrivalBand,
   type ContentDeltaObservation,
   type ResolverState,
-  type VirtuaCompensationObservation,
+  type EngineCompensationObservation,
 } from './resolver';
 
 // Baseline: a warm, bottom-following, idle controller pinned exactly at a
@@ -546,18 +546,17 @@ describe('resolveContentDelivery — structural invariants', () => {
   });
 });
 
-// ===== resolveVirtuaCompensation (Stage 3: routed $fixScrollJump) =====
+// ===== resolveEngineCompensation (routed engine compensation) =====
 
 const CLIENT_HEIGHT = 600;
 
-// Baseline: warm, bottom-following, pinned exactly at the bottom, virtua
+// Baseline: warm, bottom-following, pinned exactly at the bottom, the engine
 // requesting a small same-place compensation. Tests override exactly the
 // inputs their tier decides over.
-function comp(overrides: Partial<VirtuaCompensationObservation> = {}): VirtuaCompensationObservation {
+function comp(overrides: Partial<EngineCompensationObservation> = {}): EngineCompensationObservation {
   return {
+    kind: 'remeasure-above',
     target: TARGET,
-    jump: 24,
-    shift: false,
     scrollTop: TARGET,
     bottomTarget: TARGET,
     clientHeight: CLIENT_HEIGHT,
@@ -566,90 +565,90 @@ function comp(overrides: Partial<VirtuaCompensationObservation> = {}): VirtuaCom
   };
 }
 
-describe('resolveVirtuaCompensation — shift (head mutations)', () => {
-  it('honors shift verbatim even mid-chase while escaped', () => {
-    const decision = resolveVirtuaCompensation(
+describe('resolveEngineCompensation — head splices', () => {
+  it('honors a head-splice verbatim even mid-chase while escaped', () => {
+    const decision = resolveEngineCompensation(
       state({ escaped: true, springActive: true }),
-      comp({ shift: true, target: 420 }),
+      comp({ kind: 'head-splice', target: 420 }),
     );
-    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 420 });
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 420 });
   });
 });
 
-describe('resolveVirtuaCompensation — reading / paused / pre-warm pass', () => {
+describe('resolveEngineCompensation — reading / paused / pre-warm pass', () => {
   it.each([
     ['pre-warm', { warm: false }],
     ['escaped', { escaped: true }],
     ['paused', { paused: true }],
     ['not at bottom', { isAtBottom: false }],
   ] as const)('writes the requested target when %s, even mid-chase with a small jump', (_label, override) => {
-    const decision = resolveVirtuaCompensation(
+    const decision = resolveEngineCompensation(
       state({ springActive: true, ...override }),
       comp({ target: 700, scrollTop: 690 }),
     );
-    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 700 });
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 700 });
   });
 });
 
-describe('resolveVirtuaCompensation — anchor redirect', () => {
+describe('resolveEngineCompensation — anchor redirect', () => {
   it('redirects to the bottom target when the DOM is pinned and the request moves meaningfully away', () => {
-    const decision = resolveVirtuaCompensation(
+    const decision = resolveEngineCompensation(
       state(),
       comp({ target: 600 }),
     );
-    expect(decision.write).toEqual({ caller: 'virtua.anchorRedirect', value: TARGET });
+    expect(decision.write).toEqual({ caller: 'engine.anchorRedirect', value: TARGET });
   });
 
   it('redirect outranks the mid-chase decline: a sentinel-gap shrink compensation never snaps up', () => {
     // The wire-round-gap failure shape: pinned at the bottom between
-    // chunks (sentinel alive), an above-viewport row shrinks, virtua
+    // chunks (sentinel alive), an above-viewport row shrinks, the engine
     // requests an offset above the bottom. Legacy needed the mode latch +
     // HOLD_MS invariant to keep the gate closed here; the resolver
     // redirects on the pinned-DOM evidence alone.
-    const decision = resolveVirtuaCompensation(
+    const decision = resolveEngineCompensation(
       state({ springActive: true }),
       comp({ target: 600 }),
     );
-    expect(decision.write).toEqual({ caller: 'virtua.anchorRedirect', value: TARGET });
+    expect(decision.write).toEqual({ caller: 'engine.anchorRedirect', value: TARGET });
   });
 
   it('does not redirect when the DOM is not pinned (legitimate compensation while short of the bottom)', () => {
-    const decision = resolveVirtuaCompensation(
+    const decision = resolveEngineCompensation(
       state(),
       comp({ target: 600, scrollTop: 700 }),
     );
-    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 600 });
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 600 });
   });
 
   it('does not redirect a request within the epsilon band of the bottom', () => {
-    const decision = resolveVirtuaCompensation(
+    const decision = resolveEngineCompensation(
       state(),
       comp({ target: TARGET - AUTO_FOLLOW_BOTTOM_EPSILON_PX }),
     );
-    expect(decision.write).toEqual({ caller: 'virtua.jump', value: TARGET - AUTO_FOLLOW_BOTTOM_EPSILON_PX });
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: TARGET - AUTO_FOLLOW_BOTTOM_EPSILON_PX });
   });
 });
 
-describe('resolveVirtuaCompensation — mid-chase arbitration', () => {
+describe('resolveEngineCompensation — mid-chase arbitration', () => {
   it('declines a small compensation while a spring chase is in flight (spring stays the single writer)', () => {
-    const decision = resolveVirtuaCompensation(
+    const decision = resolveEngineCompensation(
       state({ springActive: true }),
-      // Mid-chase: DOM is short of the bottom target, virtua nudges near it.
+      // Mid-chase: DOM is short of the bottom target, the engine nudges near it.
       comp({ target: 990, scrollTop: 700, bottomTarget: 1000 }),
     );
     expect(decision.write).toBeNull();
   });
 
   it('writes a correction larger than the viewport even mid-chase (20260622T041049Z)', () => {
-    const decision = resolveVirtuaCompensation(
+    const decision = resolveEngineCompensation(
       state({ springActive: true }),
-      comp({ target: 700 + CLIENT_HEIGHT + 1, scrollTop: 700, bottomTarget: 2000, jump: 2276 }),
+      comp({ target: 700 + CLIENT_HEIGHT + 1, scrollTop: 700, bottomTarget: 2000 }),
     );
-    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 700 + CLIENT_HEIGHT + 1 });
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 700 + CLIENT_HEIGHT + 1 });
   });
 
   it('the viewport threshold is inclusive: exactly clientHeight still declines', () => {
-    const decision = resolveVirtuaCompensation(
+    const decision = resolveEngineCompensation(
       state({ springActive: true }),
       comp({ target: 700 + CLIENT_HEIGHT, scrollTop: 700, bottomTarget: 2000 }),
     );
@@ -657,23 +656,23 @@ describe('resolveVirtuaCompensation — mid-chase arbitration', () => {
   });
 
   it('a width-reflow window overrides the mid-chase decline (paired contentRO sync-pins)', () => {
-    const decision = resolveVirtuaCompensation(
+    const decision = resolveEngineCompensation(
       state({ springActive: true }),
       comp({ target: 990, scrollTop: 700, bottomTarget: 1000, widthReflowActive: true }),
     );
-    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 990 });
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 990 });
   });
 
   it('writes when no chase is in flight (20260524T200233Z: nothing to protect)', () => {
-    const decision = resolveVirtuaCompensation(
+    const decision = resolveEngineCompensation(
       state({ springActive: false }),
       comp({ target: 990, scrollTop: 700, bottomTarget: 1000 }),
     );
-    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 990 });
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 990 });
   });
 });
 
-describe('resolveVirtuaCompensation — structural invariants', () => {
+describe('resolveEngineCompensation — structural invariants', () => {
   it('holds across the full state/geometry product', () => {
     const bools = [false, true];
     const geometries = [
@@ -685,8 +684,9 @@ describe('resolveVirtuaCompensation — structural invariants', () => {
       [600, 700, TARGET],                             // short of bottom, small
       [TARGET - AUTO_FOLLOW_BOTTOM_EPSILON_PX, TARGET, TARGET], // epsilon band
     ] as const;
+    const kinds = ['remeasure-above', 'head-splice'] as const;
     let checked = 0;
-    for (const shift of bools) {
+    for (const kind of kinds) {
       for (const warm of bools) {
         for (const isAtBottom of bools) {
           for (const escaped of bools) {
@@ -694,19 +694,20 @@ describe('resolveVirtuaCompensation — structural invariants', () => {
               for (const springActive of bools) {
                 for (const widthReflowActive of bools) {
                   for (const [target, scrollTop, bottomTarget] of geometries) {
-                    const decision = resolveVirtuaCompensation(
+                    const decision = resolveEngineCompensation(
                       state({ warm, isAtBottom, escaped, paused, springActive }),
-                      comp({ shift, target, scrollTop, bottomTarget, widthReflowActive }),
+                      comp({ kind, target, scrollTop, bottomTarget, widthReflowActive }),
                     );
                     checked += 1;
-                    const engaged = warm && isAtBottom && !escaped && !paused && !shift;
+                    const engaged = warm && isAtBottom && !escaped && !paused
+                      && kind !== 'head-splice';
                     const pinned = bottomTarget - scrollTop <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
                     const movesAway = bottomTarget - target > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
                     const smallJump = Math.abs(target - scrollTop) <= CLIENT_HEIGHT;
                     // Every write is either the requested target or the
                     // controller's bottom target — never a third value.
                     if (decision.write) {
-                      if (decision.write.caller === 'virtua.anchorRedirect') {
+                      if (decision.write.caller === 'engine.anchorRedirect') {
                         expect(decision.write.value).toBe(bottomTarget);
                       } else {
                         expect(decision.write.value).toBe(target);
@@ -714,7 +715,7 @@ describe('resolveVirtuaCompensation — structural invariants', () => {
                     }
                     // A redirect happens ONLY on pinned-DOM + moves-away
                     // while fully engaged.
-                    if (decision.write?.caller === 'virtua.anchorRedirect') {
+                    if (decision.write?.caller === 'engine.anchorRedirect') {
                       expect(engaged && pinned && movesAway).toBe(true);
                     }
                     // Declines happen ONLY in the one protected window:

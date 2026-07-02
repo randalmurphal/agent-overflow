@@ -11,17 +11,17 @@
 // cannot tell the two apart. This probe instead dumps EVERY mounted timeline and
 // reports the per-row delta that DOES discriminate the failure:
 //
-//   cacheVsWrapper = virtua getCache() slot size − wrapper.offsetHeight
-//     > 0 ⇒ virtua's cached slot is taller than the real (correct) DOM row, i.e.
-//           a stale/dropped re-measure inside virtua itself.
+//   slotVsWrapper = engine slot size (sizeAt) − wrapper.offsetHeight
+//     > 0 ⇒ the engine's slot is taller than the real (correct) DOM row, i.e.
+//           a stale/dropped re-measure inside the size store.
 //
-// `scrollHeight === virtua totalSize` exactly (the virtua container is
+// `scrollHeight === engine totalSize` exactly (the virtualizer container is
 // `contain: size` + explicit `height: <totalSize>px`), so an inflated BOTTOM-row
 // slot is the only way to strand the last row floating high at max scroll. Read
 // the bottom rendered row (`bottomRenderedIndex`): a positive delta there names
 // the mechanism; deltas ~0 while `scrollHeight` still exceeds the row sum
 // points at a spacer / elsewhere. Compare `scrollSurfaceContentWidth` to `clientWidth` to
-// catch a virtua size-cache replay keyed at a stale (pre-widen) width.
+// catch a size-priors replay keyed at a stale (pre-widen) width.
 //
 // See docs/architecture/frontend-scroll.md and the Ctrl+Shift+B capture in
 // uiRenderTrace.ts, which folds this dump into the `user.bugReport` marker so a
@@ -54,14 +54,14 @@ const PANE_GEOMETRY_BUILD_GATE =
   import.meta.env.VITE_AGENT_OVERFLOW_UI_TRACE === '1';
 
 export interface PaneGeometryRowSample {
-  // virtua item index (the `data-row-index` on the measured wrapper).
+  // Engine item index (the `data-row-index` on the measured wrapper).
   index: number;
-  // Height virtua measures: the [data-row-index] wrapper's border box.
+  // The [data-row-index] wrapper's border-box height.
   wrapperHeight: number;
-  // virtua's cached slot size for this index (from getCache()).
-  cachedSize: number | null;
-  // cachedSize − wrapper. > 0 ⇒ virtua's slot is taller than the real DOM row.
-  cacheVsWrapper: number | null;
+  // The engine's slot size for this index (sizeAt: measured or estimate).
+  slotSize: number | null;
+  // slotSize − wrapper. > 0 ⇒ the engine's slot is taller than the real DOM row.
+  slotVsWrapper: number | null;
 }
 
 export interface PaneGeometrySnapshot {
@@ -73,22 +73,20 @@ export interface PaneGeometrySnapshot {
   isSticky: boolean;
   escapedFromLock: boolean;
   isWarm: boolean;
-  // Scroll-container geometry. scrollHeight === virtua totalSize.
+  // Scroll-container geometry. scrollHeight === engine totalSize.
   scrollTop: number | null;
   scrollHeight: number | null;
   clientHeight: number | null;
   clientWidth: number | null;
   distanceFromBottom: number | null;
   // Scroll surface content-box width from the async width observer (feeds the
-  // virtua CacheSnapshot validity key); compare to clientWidth to catch a
+  // size-priors validity key); compare to clientWidth to catch a
   // stale (pre-reflow) width.
   scrollSurfaceContentWidth: number | null;
   itemsLength: number;
-  // listRef.getScrollSize() — should equal scrollHeight; a mismatch is its own
-  // signal that virtua's container height and its cached total have diverged.
-  virtuaScrollSize: number | null;
-  // Sum of getCache() sizes — sanity-check against scrollHeight.
-  cachedSizeSum: number | null;
+  // listRef.getTotalSize() — should equal scrollHeight (the container height
+  // IS this value); a mismatch means the height write didn't land.
+  engineTotalSize: number | null;
   bottomRenderedIndex: number | null;
   // Every currently-rendered row, ordered top → bottom by index.
   rows: PaneGeometryRowSample[];
