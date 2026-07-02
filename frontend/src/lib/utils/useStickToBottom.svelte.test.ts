@@ -840,13 +840,47 @@ describe('createUseStickToBottomController', () => {
       expect(getComputedStyleSpy).not.toHaveBeenCalled();
     });
 
-    it('scroll event with scrollTop === ignoreScrollToTop is ignored', async () => {
+    it('scroll event matching a recorded programmatic-write token is ignored', async () => {
       const ro = getRO();
-      ro.fire(contentEl, 800); // writes scrollTop=400, tags ignoreScrollToTop=400
+      ro.fire(contentEl, 800); // writes scrollTop=400, records a token for top=400
+      setUiRenderTraceEnabled(true);
+      clearUiRenderTrace();
       // Fire a scroll event reading the same value.
       fireScroll(scrollEl);
       await nextTimer();
-      // Tagged programmatic write: should not flip escape or anything.
+      // Tagged programmatic write: bails before the scroll.scrollEvent
+      // trace, so zero records is the observable proof of suppression
+      // (escapedFromLock alone would also hold on the untagged path).
+      const scrollEvents = getUiRenderTraceRecords().filter((record) =>
+        record.label.startsWith('scroll.scrollEvent'),
+      );
+      expect(scrollEvents).toEqual([]);
+      expect(controller.escapedFromLock).toBe(false);
+    });
+
+    it('user scroll at a previously written value after token TTL expiry is processed, not swallowed', async () => {
+      // Regression guard for the deleted `ignoreScrollToTop` exact tag:
+      // it had no TTL, so a write whose scroll event never fired left a
+      // tag armed indefinitely, silently swallowing a later genuine
+      // user scroll (e.g. browser find-in-page / focus scroll, which
+      // bypasses the wheel/pointer handlers that clear scroll state)
+      // that happened to land at the same scrollTop value. Tokens
+      // expire after PROGRAMMATIC_SCROLL_EVENT_TOKEN_TTL_MS, so the
+      // late event must reach the untagged path. Fails on the legacy
+      // exact-tag code (tag stays armed, event bailed → zero records).
+      const ro = getRO();
+      ro.fire(contentEl, 800); // writes scrollTop=400, records a token for top=400
+      // No scroll event consumes the token; let it expire (TTL 500ms).
+      mockNow += 600;
+      setUiRenderTraceEnabled(true);
+      clearUiRenderTrace();
+      fireScroll(scrollEl); // genuine scroll landing at the same 400
+      await nextTimer();
+      const scrollEvents = getUiRenderTraceRecords().filter((record) =>
+        record.label.startsWith('scroll.scrollEvent'),
+      );
+      expect(scrollEvents).toHaveLength(1);
+      // Position is still at bottom, so processing it changes no intent.
       expect(controller.escapedFromLock).toBe(false);
     });
 
@@ -912,28 +946,29 @@ describe('createUseStickToBottomController', () => {
       }
     });
 
-    it('subsequent user scroll back to the tagged scrollTop value is honored, not silently ignored', async () => {
-      // Regression guard: the tag is captured-and-consumed synchronously,
-      // so it suppresses exactly ONE scroll event. A regression that
-      // moved the consume to inside the setTimeout callback would
-      // silently swallow a later genuine user scroll back to the same
-      // scrollTop value — the very scenario the synchronous consume
-      // defends against.
+    it('user scroll back to a previously token-tagged value is honored, not silently ignored', async () => {
+      // Regression guard: a token's suppression is bounded — TTL plus a
+      // small per-token duplicate budget for browser-coalesced re-fires
+      // — and, critically, genuine user input clears it early: the
+      // wheel-down below runs recordRecentDownIntent →
+      // clearProgrammaticScrollState(), wiping the token FIFO. If a
+      // regression kept tokens alive across explicit user gestures, the
+      // back-scroll to the previously written value would be swallowed
+      // and re-stick would never fire.
       const ro = getRO();
-      ro.fire(contentEl, 800); // initial RO write tags scrollTop=400
-      // First scroll event consumes the tag.
+      ro.fire(contentEl, 800); // initial RO write records a token for scrollTop=400
+      // First scroll event consumes one duplicate-budget unit.
       fireScroll(scrollEl);
       await nextTimer();
       expect(controller.escapedFromLock).toBe(false);
 
       // User explicitly escapes, then genuinely moves AWAY and then
-      // BACK to the tagged value by hand. The direction gate on the
-      // re-stick path requires DOWN motion (scrollTop increasing) for
-      // re-stick to fire, so we simulate a real away-then-back gesture
-      // rather than a same-position re-fire. With the tag properly
-      // consumed by the first event, the back-scroll must re-stick. If
-      // the tag were still set, the back-scroll would be ignored and
-      // re-stick would never fire.
+      // BACK to the previously written value by hand. The direction
+      // gate on the re-stick path requires DOWN motion (scrollTop
+      // increasing) for re-stick to fire, so we simulate a real
+      // away-then-back gesture rather than a same-position re-fire.
+      // The wheel-down while escaped clears the token FIFO, so the
+      // back-scroll must re-stick.
       controller.setEscapedFromLock(true);
       expect(controller.escapedFromLock).toBe(true);
       geom.scrollTop = 100;

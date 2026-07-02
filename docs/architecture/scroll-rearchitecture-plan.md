@@ -168,7 +168,13 @@ deliberately.
   Stage 4 alongside the API change.)
 - Redundant self-tag pair: `ignoreScrollToTop` exact tag + token FIFO
   (`exactTagged || tokenTagged` at `:1911`) → one expected-value check under
-  a single write site.
+  a single write site. **Stage-2 verdict: DONE — `ignoreScrollToTop`
+  deleted; the token FIFO (TTL 500ms, duplicate budget, cap 128) is the sole
+  self-tag mechanism. The exact tag had no TTL, so a stale tag could swallow
+  a real user scroll landing at the same value arbitrarily later — the
+  tokens-only form is simpler and strictly more correct. The duplicate
+  budget stays at 4 unchanged: event-side duplication (browser re-firing
+  scroll for one write) is independent of how many writes we make.**
 - `lastTargetChangedAt` bumped at 4 sites → resolver-internal.
 - (Optional, low priority) DiffSidebarBody's private snapshot/restore is a
   second scroll-persistence system; panel-local, so acceptable — note only.
@@ -236,16 +242,22 @@ No stage begins until the previous is merged and observed in real use.
 3. **Commit the contract list.** The 27 must-survive behavioral contracts
    (§5) land as `docs/architecture/scroll-contracts.md` so every stage
    reviews against the same checklist.
-4. **Runtime invariant oracles (dev-only)** — MOVED to Stage 2. The naive
-   versions false-positive on legitimate behavior:
-   `preserveScrollAnchor` intentionally writes during its own lease, user
-   `forceStick` writes during a drag lease, and (pre-2b) two writes per
-   RO delivery was documented behavior — the overshoot-snap-then-pin
-   pair, collapsed to one by the Stage-2b resolver. The remaining
-   precision gap is cross-phase: a spring rAF-tick write and an RO
-   delivery write can legitimately share a frame. The oracles become
-   precise once auto-vs-explicit is first-class and the per-phase write
-   budget is the actual invariant.
+4. **Runtime invariant oracles (dev-only)** — MOVED to Stage 2, then
+   **CLOSED at Stage 2 with verdict: subsumed, no runtime oracle
+   shipped.** What the oracle was meant to catch is now enforced
+   structurally: the resolver's `ContentDecision` carries at most one
+   write by type (≤1 write per RO delivery is unrepresentable to
+   violate), `writeScrollTop(caller, value)` makes attribution a
+   required parameter instead of mutable ambient state, and the
+   resolver test's invariant sweep asserts the write budget and effect
+   exclusivity over the full state × observation product at test time.
+   The one thing a runtime oracle could still add — per-*frame* write
+   budgets — stays imprecise for the reason above: a spring rAF-tick
+   write and an RO delivery write can legitimately share a frame, so a
+   naive per-frame check false-positives. Shipping that would be
+   ceremony. Re-evaluate only if Stage 4's spring extraction makes
+   phases first-class and a per-phase budget becomes the real
+   invariant.
 
 ### Stage 1 — Prune and consolidate (no architecture change)
 
@@ -268,6 +280,14 @@ existing frame-ordering facts are the spec:
   implementation-level and rewritten).
 - One write → one token; version counters around the 1ms deferral go, but
   the resolver keeps a layout-correlation input for untagged scroll events.
+  **Stage-2 verdict on the version counters: RECLASSIFIED KEEP — git
+  provenance shows both are genuine race guards, not churn-era scaffolding.
+  `recentDownIntentVersion` (afce64c0) invalidates a down-intent captured
+  before an escape so it can't re-stick after the user escapes inside the
+  1ms deferral window. `scrollbarDragSessionVersion` (48d81531) implements
+  keep-captured-events-across-pointer-release for scrollbar drags. Neither
+  is tied to write multiplicity, so one-write-per-delivery doesn't obsolete
+  them.**
 - `writeCaller` attribution folds into the single write site.
 
 Exhaustive unit tests over the reducer (every state × observation product
@@ -287,6 +307,14 @@ pre-paint); may write a different value (model re-syncs from the scroll
 event); if it declines to write it must poke ACTION_SCROLL with the current
 DOM offset (mirroring core's clamped-shift fallback) so suppression can't
 desync; `shift` honored verbatim (head-anchor preservation).
+
+Routing raises write volume through the chokepoint, and every routed write
+records a self-tag token — check the token FIFO's cap-128 headroom in the
+token-consumption capture (live tokens ≈ refresh-rate × 0.5s TTL ×
+(writers-per-frame − 1); fine at 60-120Hz, brushes the cap at 240Hz with
+three same-frame writers). Eviction blast radius is small (oldest/stalest
+tokens go first), and the concern is moot once the resolver enforces one
+write per frame.
 
 Then delete the descriptor gate and everything in the "dies with routing"
 table. **This deletion inherits five regression histories** (bug-reports

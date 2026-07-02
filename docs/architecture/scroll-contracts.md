@@ -36,10 +36,13 @@ C1..C27.
 
 ## Programmatic writes / virtualizer arbitration
 
-- **C9.** Controller writes are invisible to the intent model; suppress
-  exactly one scroll event each; and are announced to the virtualizer
-  before landing (else buffer-drop remount churn — the streaming settle
-  flicker, `settle-flicker-analysis.md` 2026-07-01).
+- **C9.** Controller writes are invisible to the intent model; each
+  write records one self-tag token whose suppression is bounded (TTL +
+  a small duplicate budget for browser-coalesced re-fires, so a genuine
+  user scroll landing at the same value later is never swallowed); and
+  writes are announced to the virtualizer before landing (else
+  buffer-drop remount churn — the streaming settle flicker,
+  `settle-flicker-analysis.md` 2026-07-01).
 - **C10.** During active animated follow the controller is the sole
   scrollTop writer; escaped / paused / mount-cascade / post-restore /
   dormant / instant / viewport-scale corrections pass through untouched;

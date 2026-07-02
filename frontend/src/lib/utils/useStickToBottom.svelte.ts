@@ -593,7 +593,6 @@ export function createUseStickToBottomController(
 
   let resizeDifference = 0;
   let resizeClearTimer: ReturnType<typeof setTimeout> | null = null;
-  let ignoreScrollToTop = -1;
   let pendingProgrammaticScrollEventTokens: { top: number; expiresAt: number; remaining: number }[] = [];
   let externalScrollIgnoreUntil = 0;
   let externalScrollClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1039,11 +1038,11 @@ export function createUseStickToBottomController(
     } finally {
       controllerOwnsScrollTopWrite = false;
     }
-    // Tag using the BROWSER-rounded read so the scroll handler's
-    // `scrollTop === ignoreScrollToTop` check matches.
-    ignoreScrollToTop = scrollEl.scrollTop;
-    recordProgrammaticScrollEventToken(ignoreScrollToTop);
-    lastObservedScrollTopForRestick = scrollEl.scrollTop;
+    // Tag using the BROWSER-rounded read so the scroll handler's token
+    // match sees the same value the scroll event will report.
+    const taggedTop = scrollEl.scrollTop;
+    recordProgrammaticScrollEventToken(taggedTop);
+    lastObservedScrollTopForRestick = taggedTop;
     refreshIsNearBottom();
     if (shouldTrace) {
       trace('scroll.write', () => ({
@@ -1054,7 +1053,7 @@ export function createUseStickToBottomController(
         scrollHeight: Math.round(beforeHeight),
         clientHeight: Math.round(beforeClient),
         maxTarget: Math.round(Math.max(0, beforeHeight - beforeClient)),
-        ignoreScrollToTop,
+        taggedTop,
         isAtBottomState,
         escapedFromLockState,
         pauseDepth,
@@ -1114,7 +1113,6 @@ export function createUseStickToBottomController(
 
   function clearProgrammaticScrollState(): void {
     pendingProgrammaticScrollEventTokens = [];
-    ignoreScrollToTop = -1;
     structuralAppendSpringUntil = 0;
     springStartedFromStructuralAppend = false;
   }
@@ -1706,34 +1704,32 @@ export function createUseStickToBottomController(
     // and pushed the user past the re-stick epsilon, producing a false
     // negative (the user reached the bottom but the bottom moved away
     // in the 1ms window). This was Bug A in long Opus threads.
-    // Capture and consume the programmatic-write tag synchronously so
-    // it only suppresses ONE scroll event. Otherwise a later genuine
-    // user scroll back to the same scrollTop value would be ignored.
-    const tag = ignoreScrollToTop;
-    ignoreScrollToTop = -1;
-    const externalTagged = externalScrollIgnoreUntil > nowMs();
-    const exactTagged = scrollTopAtEvent === tag;
+    // Self-tag consumption: one write records one token; the token FIFO
+    // is TTL-bounded, so a genuine user scroll landing at the same
+    // scrollTop value long after our write is NOT swallowed, and the
+    // per-token duplicate budget absorbs browser-coalesced event
+    // duplicates for the same write.
     const tokenTagged = consumeProgrammaticScrollEventToken(scrollTopAtEvent);
-    const controllerTagged = exactTagged || tokenTagged;
-    const tagged = controllerTagged || externalTagged;
+    const externalTagged = externalScrollIgnoreUntil > nowMs();
+    const tagged = tokenTagged || externalTagged;
     // Tagged programmatic write — bail synchronously without scheduling
     // the deferral timer. Steady-state streaming fires a sync-pin write
     // on every contentRO positive delta; allocating a closure + timer
     // registration for each one just to no-op inside the callback was
     // hundreds of throwaway allocs/sec on long assistant turns. The 1 ms
-    // RO-race deferral below isn't needed for tagged writes — the tag is
-    // set synchronously by writeScrollTop, so we already know this event
-    // reflects our own write, not user intent. The refreshIsNearBottom
-    // call and trace allocation below are also skipped on the tagged
-    // path — the spring fires at 60Hz during a chase, and both are
-    // wasted work when we already know this is our own write.
+    // RO-race deferral below isn't needed for tagged writes — the token
+    // is recorded synchronously at the write chokepoint, so we already
+    // know this event reflects our own write, not user intent. The
+    // refreshIsNearBottom call and trace allocation below are also
+    // skipped on the tagged path — the spring fires at 60Hz during a
+    // chase, and both are wasted work when we already know this is our
+    // own write.
     if (tagged) return;
     const distFromBottomAtEvent = refreshIsNearBottom();
+    // No tagged/externalTagged fields here: the tagged bail above means
+    // this record only ever describes untagged (user-attributed) events.
     if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent', () => ({
       scrollTop: Math.round(scrollTopAtEvent),
-      tag: Math.round(tag),
-      externalTagged,
-      tagged,
       scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
       resizeDifference: Math.round(resizeDifference),
