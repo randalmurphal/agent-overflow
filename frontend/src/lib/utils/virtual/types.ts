@@ -51,3 +51,26 @@ export interface RowEstimate {
 }
 
 export type ScrollToIndexAlign = 'start' | 'center' | 'end' | 'nearest';
+
+/**
+ * Imperative surface of components/chat/TimelineVirtualizer.svelte
+ * (structurally satisfied by its component instance). `scrollToIndex`
+ * computes the target in the engine and performs the write through the
+ * scroll controller chokepoint (`applyScrollTarget` prop); `revalidate`
+ * is the explicit host-layout geometry recheck; the rest are read-only
+ * geometry queries.
+ */
+export interface TimelineVirtualizerHandle {
+  scrollToIndex(index: number, opts?: { align?: ScrollToIndexAlign; offset?: number }): void;
+  revalidate(): void;
+  getScrollOffset(): number;
+  getViewportSize(): number;
+  getScrollSize(): number;
+  getTotalSize(): number;
+  findItemIndex(offset: number): number;
+  getItemOffset(index: number): number;
+  sizeAt(index: number): number;
+  isMeasuredAt(index: number): boolean;
+  /** Measured sizes for priors persistence (UNMEASURED where unmeasured). */
+  takeSnapshot(): number[];
+}
