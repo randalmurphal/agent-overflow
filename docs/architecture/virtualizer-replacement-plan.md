@@ -32,10 +32,10 @@ Why now rather than after a longer soak:
   `rowMarginContainment` `.browser.test.ts`) were written
   engine-agnostic and are the acceptance gate.
 - **The wins are policy-level and unpatchable upstream**: one-pass
-  streaming hot path (no double observation + reaction loop),
-  cost-aware row retention, live per-item height priors (deleting the
-  constructor-once cache-replay dance), and per-row settle knowledge
-  (path to shrinking the warm gate).
+  streaming hot path (no double observation + reaction loop), a
+  range-equality early-out on the scroll path, live per-item height
+  priors (deleting the constructor-once cache-replay dance), and
+  per-row settle knowledge (re-sources the warm gate in V4).
 
 virtua was the right v1 dependency; the mismatch is architectural
 (top-anchored estimate→measure with internal compensation writes vs a
@@ -73,12 +73,12 @@ Priority order for this project, and how the engine binds to it:
      correction passes. V1 adds a dev-trace time-to-stable-paint
      metric so this is verified, not vibed.
 2. **Memory second — keep only what's needed.** The DOM window (the
-   symmetric `bufferSize` overscan) is the memory budget; the
-   cost-aware retention hook defaults OFF (§8 Q3 — it trades memory
-   for scroll-back smoothness and must earn its keep by measurement).
-   Engine bookkeeping is plain number arrays (KBs); the priors LRU
-   stays at 50 snapshot entries. Payload/expansion budgets are
-   untouched by this plan.
+   symmetric `bufferSize` overscan) is the memory budget; cost-aware
+   row retention was considered and cut entirely (§8 D3) — measured
+   sizes survive eviction in the size store, so scroll-back stability
+   does not require keeping DOM alive. Engine bookkeeping is plain
+   number arrays (KBs); the priors LRU stays at 50 snapshot entries.
+   Payload/expansion budgets are untouched by this plan.
 3. **General performance third** — algorithmic wins (prepend splice,
    watermark-preserving invalidation) land where cheap, but never at
    the cost of 1 or 2.
@@ -86,9 +86,10 @@ Priority order for this project, and how the engine binds to it:
 One deliberate tradeoff to keep visible: virtua's
 `pointer-events: none`-while-scrolling suppresses hover style recalcs
 mid-scroll (FPS-positive) at the cost of hover death during scroll.
-The plan drops it at cutover; if V1/V2 frame-time measurement shows
-regression on hover-heavy timelines, it returns as an explicit
-controller-driven class, not an engine internal.
+The plan drops it at cutover; the V2 soak includes a frame-time check
+on hover-heavy timelines, and if that shows a regression the explicit
+controller-driven class ships in this branch — the decision resolves
+inside V2, not as a follow-up (§8 D4).
 
 ### Ownership model
 
@@ -133,7 +134,7 @@ controller-driven class, not an engine internal.
 frontend/src/lib/utils/virtual/
   sizes.ts             ported virtua cache: prefix-sum size store (attributed)
   sizes.test.ts        ported cache.spec.ts, adapted
-  window.ts            visible-range + symmetric buffer + retention policy (pure)
+  window.ts            visible-range + symmetric buffer policy (pure)
   engine.ts            reducer: length changes / measurements / viewport in →
                        window + compensation observations out (pure)
   priors.ts            per-item height priors: persistence (LRU, keyed by
@@ -230,8 +231,17 @@ all-or-nothing. The `{#key}` remount stays (it's the per-thread state
 reset), but the pre-resolve dance, the `virtuaReplayCacheThreadId`
 dedupe, and the constructor-once footgun comments all die.
 
-Follow-up (not in this branch's scope): kind-based estimates and
-partial-key reuse — the seam (`getPrior`) is designed for it.
+Scope (§8 D2): **kind-based fallback estimates ship in V0** — when
+priors miss, the estimate comes from a small static per-kind table
+(tool row, prose block, diff card, …; tuned during the V2 soak)
+instead of one flat 56px, so cold threads predict closer to reality.
+Partial-key reuse (consuming measured sizes under a mismatched
+width/structure key) stays **rejected**: it is the only variant that
+could place rows at knowably-wrong offsets. Estimate quality is the
+safe place to be aggressive because priors only ever predict
+*placement* — they never decide what a row renders. Measured sizes
+always win, mount-time correction hides behind the warm gate, and
+scroll-time correction rides the compensation path.
 
 ### Streaming hot path (the headline optimization)
 
@@ -244,11 +254,11 @@ accumulation, no frozen-range unfreeze protocol. Tail-row remeasure
 (watermark math, inventories validation note 1) — O(changed rows), not
 O(window).
 
-Deliberately NOT in this branch: merging the controller's contentEl RO
-into engine events. The contentRO drives the warm gate and width-reflow
-classification; collapsing observation sources during the engine swap
-would change two variables at once. It is the natural V4 follow-up once
-the engine has soaked.
+The second observation layer — the controller's contentEl RO — merges
+into engine events **in this branch, as V4** (§4). It runs after the
+cutover and deletion phases have their own green gates, so the engine
+swap and the observation-source swap stay separately bisectable, but
+nothing is deferred past the branch merge (§8 D4).
 
 ## 3. What we take from upstream (MIT, attributed)
 
@@ -285,10 +295,11 @@ Roughly 1.5–2.5k lines of new code + tests; each phase leaves
 `sizes.ts` (+ ported spec), `window.ts`, `engine.ts`, `priors.ts`,
 `types.ts`, with exhaustive unit tests: size-store matrix (ported),
 window computation over synthetic geometries (seeding from tail,
-symmetric buffer, retention hook), engine reducer matrix
+symmetric buffer), engine reducer matrix
 (append/prepend/remeasure/viewport × pinned/reading × measured/prior/
 estimate → window + compensation), priors lifecycle (hit, mismatch
-degrade, invalidation). Gate: unit suite green. No DOM, no component.
+degrade, kind-estimate fallback, invalidation). Gate: unit suite
+green. No DOM, no component.
 
 ### V1 — adapter component
 
@@ -334,12 +345,33 @@ patch key; both patch fixtures + both patch browser tests +
 simplify: chat's `runExternalScroll` wraps (die with
 controller-performed scrollToIndex), `widthReflowActive` export,
 resolver virtua-branch comments, stale comment mentions (~35 files,
-listed in inventories §B8). Warm gate: STAYS this branch (priors make
-it near-idle on revisits; shrinking it is the V4/contentRO-merge
-follow-up). Docs: frontend-scroll.md owners + virtua sections,
+listed in inventories §B8). Warm gate: untouched through V3 (priors
+make it near-idle on revisits); V4 re-sources it from engine
+settlement. Docs: frontend-scroll.md owners + virtua sections,
 frontend/AGENTS.md vendor-patches entry, chat AGENTS.md operational
 rules, scroll-rearchitecture-plan.md Stage-5 verdict. Gate:
 `make verify` + `scripts/release-check.sh`.
+
+### V4 — observation-source unification (contentRO merge)
+
+Chat stops running a second ResizeObserver over `contentEl`. The
+adapter already knows every content-height change synchronously —
+data-length change, remeasure batch, width-driven reflow — at the
+moment it writes the container height, so it feeds the controller's
+content-observation seam directly: same observation shape, one frame
+earlier, no duplicate layout read on the streaming hot path. The
+controller's observation *source* becomes pluggable at the
+`observers.ts` attach seam; ChannelView (no virtualizer) keeps the
+RO-backed source unchanged. Width-reflow classification re-sources
+from the engine's viewport input. Warm gate: the content-quiet input
+re-sources from engine measurement traffic, and per-row settle
+knowledge (all mounted rows measured, priors resolved, no pending
+remeasures) lets a priors-hit revisit reveal immediately instead of
+waiting out the quiet timer — async late growth (mermaid, images)
+still holds the gate exactly as today. Gate: full unit + browser
+suites (four outcome files still unchanged), `make verify`, and a
+repeat of the V2 manual soak — this phase rewires the streaming hot
+path's observation plumbing, so the soak is not optional.
 
 ## 5. What dies (net effect)
 
@@ -348,7 +380,8 @@ option/wiring; the applier seam-as-patch; the cache-replay
 choreography (~6 files touched); the host-layout retry ladder's
 self-rewrite; two TypeError teardown guards; the directional
 buffer-drop failure class; chat's external-scroll wrapping; the
-version-coupled `virtuaShiftCache` tripwire; the `ssrCount` shim; ~35
+version-coupled `virtuaShiftCache` tripwire; the `ssrCount` shim;
+chat's second content-observation layer (the contentEl RO, V4); ~35
 stale comments. Expected net LOC across the repo: negative, before
 counting the deleted patch infrastructure.
 
@@ -373,7 +406,8 @@ counting the deleted patch infrastructure.
   session logic is engine-agnostic and untouched.
 - **One-shot scope risk**: phases are independently green and
   independently revertable; V2 is a single commit that can be reverted
-  to leave V0/V1 (pure additions) in place.
+  to leave V0/V1 (pure additions) in place, and V4 is a single commit
+  on top of a fully-cut-over V3 state.
 
 ## 7. Test strategy
 
@@ -386,18 +420,26 @@ counting the deleted patch infrastructure.
   tripwire, cache-replay tests — each replaced by a bespoke-side
   equivalent listed above, not silently dropped.
 
-## 8. Open questions (recommendations inline — veto before V0)
+## 8. Decisions (open questions resolved 2026-07-02)
 
-1. **Naming**: package `utils/virtual/`, component
-   `TimelineVirtualizer.svelte`, handle `TimelineVirtualizerHandle`.
-2. **Priors v1 scope**: exact-key reuse only (same as today's cache
-   semantics, minus constructor-once). Kind-based estimates deferred.
-3. **Cost-aware retention**: land the policy *hook* in `window.ts` in
-   V0 with a symmetric-buffer default; enable expensive-row pinning as
-   a follow-up experiment, not in the cutover. Note the priority
-   tension: pinning trades DOM memory (priority 2) for scroll-back
-   smoothness (priority 1) — it ships only with a measurement showing
-   the re-typeset jank it removes, and a bound on what it retains.
-4. **contentRO merge** (engine events replacing the controller's
-   content observation): explicitly out of scope; V4 candidate after
-   soak.
+1. **D1 — Naming**: as recommended — package `utils/virtual/`,
+   component `TimelineVirtualizer.svelte`, handle
+   `TimelineVirtualizerHandle`.
+2. **D2 — Priors scope**: exact-key reuse (today's cache semantics,
+   minus constructor-once) **plus kind-based fallback estimates**,
+   both in V0. Aggressive on estimate quality, never on reuse under a
+   mismatched key — priors predict placement, they never decide render
+   content, and width or structure/leaf-content changes are key
+   *misses* by construction, not wrong hits (see §2 Priors).
+3. **D3 — Cost-aware retention**: cut entirely — no hook. Off-screen
+   DOM is not worth optimizing for (user call). Measured sizes survive
+   eviction in the size store, so scroll-back through previously-seen
+   rows keeps stable geometry without retained DOM; residual shift
+   (never-measured regions, async re-typeset transients) rides the
+   compensation path. A policy hook with no consumer is speculative
+   configurability — `window.ts` ships symmetric-buffer only.
+4. **D4 — No follow-ups; full cutover**: the contentRO merge moves
+   in-branch as V4, and the pointer-events question resolves inside
+   the V2 soak. Nothing on this plan's surface is deferred past the
+   branch merge. Internal phase commits with independent green gates
+   stay — that is bisectability, not deferral.
