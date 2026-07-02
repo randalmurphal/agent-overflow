@@ -18,13 +18,13 @@
   // engine's range computation; engine updates come back as one window +
   // container height application per input batch.
   //
-  // Ownership contract (plan §2): this component NEVER writes scrollTop
-  // on its own behalf. Geometry changes that would move content above the
-  // viewport surface as `onCompensation` observations for the scroll
-  // controller's resolver; imperative scrolls (scrollToIndex) go through
-  // `applyScrollTarget` so the controller performs and tags the write.
-  // The one default: without `applyScrollTarget` (test harnesses), the
-  // target is written directly to the scroller. The component is also the
+  // Ownership contract (plan §2): this component NEVER writes scrollTop.
+  // Geometry changes that would move content above the viewport surface
+  // as `onCompensation` observations for the scroll controller's
+  // resolver; imperative scrolls (scrollToIndex) go through the REQUIRED
+  // `applyScrollTarget` prop so the controller performs and tags the
+  // write — test harnesses pass a direct writer, so the exception lives
+  // in test code, not here. The component is also the
   // controller's content-geometry source (`onContentGeometry`): the
   // spacer height it writes IS the content height, so chat runs no second
   // ResizeObserver over the content element.
@@ -68,8 +68,10 @@
     onscrollend?: () => void;
     /** Engine compensation observations → scroll controller resolver. */
     onCompensation?: (compensation: EngineCompensation) => void;
-    /** Performs an imperative scroll write (controller chokepoint). */
-    applyScrollTarget?: (top: number) => void;
+    /** Performs an imperative scroll write (controller chokepoint).
+     * Required — the adapter can never write scrollTop itself; test
+     * harnesses pass a direct writer. */
+    applyScrollTarget: (top: number) => void;
     /** Engine-sourced content-geometry samples → the scroll controller's
      * `deliverContentGeometry` (replaces its contentEl ResizeObserver).
      * Delivered post-flush alongside compensations, and only when the
@@ -222,6 +224,13 @@
     onContentGeometry(sample);
   }
 
+  // Recomputes on EVERY data identity change (each streaming beat passes
+  // a fresh items array), even when the window and offsets held still.
+  // That reactivity is load-bearing — a mounted row's item reference must
+  // stay live for its content to update mid-stream — so gating this on
+  // engine versions alone cannot work. The rebuild is O(window)
+  // descriptors with matching keys; the keyed diff writes no DOM when
+  // geometry is unchanged.
   const rows = $derived.by(() => {
     void geometryVersion;
     const [start, end] = windowRange;
@@ -315,13 +324,22 @@
     return (resizeObserver ??= new ResizeObserver(handleResizeEntries));
   }
 
-  function observeRow(element: HTMLElement, index: number): () => void {
-    rowIndexes.set(element, index);
+  // Registration is split from index bookkeeping so a head splice (which
+  // re-indexes every mounted row) updates the WeakMap without an
+  // unobserve/observe round trip per row — each observe() schedules a
+  // fresh RO delivery, so re-registering would cost a spurious
+  // O(window) delivery burst on every load-older prepend. Both are
+  // stable references by design (see VirtualRow's Props doc).
+  function registerRow(element: HTMLElement): () => void {
     ensureResizeObserver().observe(element);
     return () => {
       rowIndexes.delete(element);
       resizeObserver?.unobserve(element);
     };
+  }
+
+  function setRowIndex(element: HTMLElement, index: number): void {
+    rowIndexes.set(element, index);
   }
 
   // ------------------------------------------------------------------
@@ -409,14 +427,6 @@
   // ------------------------------------------------------------------
   // Imperative scrolls (handle)
   // ------------------------------------------------------------------
-  function writeScrollTarget(top: number): void {
-    if (applyScrollTarget) {
-      applyScrollTarget(top);
-      return;
-    }
-    if (scrollRef) scrollRef.scrollTop = top;
-  }
-
   interface PendingIndexScroll {
     index: number;
     align: ScrollToIndexAlign;
@@ -450,7 +460,7 @@
     pending.lastTarget = target;
     if (pending.settleTimer !== undefined) clearTimeout(pending.settleTimer);
     pending.settleTimer = setTimeout(clearIndexScroll, INDEX_SCROLL_SETTLE_MS);
-    writeScrollTarget(target);
+    applyScrollTarget(target);
   }
 
   export function scrollToIndex(
@@ -542,7 +552,8 @@
       index={row.index}
       offset={row.offset}
       measured={row.measured}
-      observe={observeRow}
+      register={registerRow}
+      {setRowIndex}
       {children}
     />
   {/each}

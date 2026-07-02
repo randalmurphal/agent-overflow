@@ -413,6 +413,43 @@ describe('content geometry samples (engine-sourced contentRO replacement)', () =
   });
 });
 
+describe('row registration across head splices', () => {
+  it('re-indexes mounted rows without re-observing them', async () => {
+    const { harness, scrollEl } = mountHarness();
+    await waitForStableGeometry(scrollEl, 'mount');
+    const handle = harness.handle()!;
+
+    const observeSpy = vi.spyOn(ResizeObserver.prototype, 'observe');
+    const unobserveSpy = vi.spyOn(ResizeObserver.prototype, 'unobserve');
+    try {
+      // Prepend 3 rows far above the mounted tail window: every mounted
+      // row's index shifts (+3) under identical item keys, so no row
+      // remounts — and none may be re-observed, because per spec each
+      // observe() schedules a fresh delivery and re-registering the
+      // window would buy a spurious O(window) RO burst per prepend.
+      const prepended: HarnessRow[] = Array.from({ length: 3 }, (_, i) => ({
+        id: `older-${i}`,
+        heightPx: ROW_PX,
+        label: `Older ${i}`,
+      }));
+      harness.setRows([...prepended, ...harness.getRows()], { shift: true });
+      await waitForStableGeometry(scrollEl, 'splice settle');
+      expect(observeSpy).not.toHaveBeenCalled();
+      expect(unobserveSpy).not.toHaveBeenCalled();
+    } finally {
+      observeSpy.mockRestore();
+      unobserveSpy.mockRestore();
+    }
+
+    // Measurement bookkeeping follows the live index: the row that
+    // mounted as index 50 is index 53 now, and its resize must record
+    // there (a stale WeakMap entry would leave sizeAt(53) unchanged).
+    harness.resizeRow('row-50', 150);
+    await waitFor(() => handle.sizeAt(53) === 150, 'measured under live index');
+    expect(handle.getItemOffset(54) - handle.getItemOffset(53)).toBe(150);
+  });
+});
+
 describe('scrollToIndex', () => {
   it('converges onto an unmeasured destination', async () => {
     const { harness, scrollEl } = mountHarness();

@@ -73,6 +73,13 @@
   export function scroller(): HTMLElement | undefined {
     return scrollEl;
   }
+
+  // The suites exercise the adapter without a scroll controller, so the
+  // harness is the "chokepoint" for the required applyScrollTarget prop
+  // and writes directly.
+  function applyScrollTarget(top: number): void {
+    if (scrollEl) scrollEl.scrollTop = top;
+  }
 </script>
 
 <!-- The fixed viewport lives on the HOST, not the scroller: a
@@ -100,6 +107,7 @@
     {onscrollend}
     {onCompensation}
     {onContentGeometry}
+    {applyScrollTarget}
   >
     {#snippet children(row: HarnessRow, index: number)}
       <div data-row-index={index} data-row-id={row.id} style="height: {row.heightPx}px;">
