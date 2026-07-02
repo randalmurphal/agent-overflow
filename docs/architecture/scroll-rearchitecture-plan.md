@@ -352,6 +352,50 @@ Docs (`frontend-scroll.md`, AGENTS.md files) rewritten to the new ownership
 map — the current doc's "do not add another owner" rule becomes "the
 resolver is the owner."
 
+**Stage-4 verdict: DONE**, shipped as three sub-stages — 4a API shrink
+(`f207552e`), 4b file split (`416a9c4d`, `395d02b4`, `9ee748db`,
+`7e5a05b1`, `b147d730`) plus its post-task-review pair (`d2a6df7f`
+behavioral fix, `644aa6dd` seam tightening), 4c this docs pass.
+Divergences from the §2 target, each deliberate:
+
+| §2 target | Shipped | Why |
+|---|---|---|
+| `lease()` | `pauseAutoScroll()` keeps its name | Same depth-counted contract (release-at-depth-0 re-pins synchronously, test-pinned); the existing name says what it does and every consumer already used it — renaming was churn without information. |
+| Restore triple → one idempotent `restoreToBottom()` | Partial fold only: `armRestoreSnap()` absorbed the defensive escape both consumers always paired with it; arm and consume remain separate calls | The arm must run in `$effect.pre` before DOM flush and the snap after, and a user gesture between the two must be able to invalidate the consent (the seq-509 gesture-invalidation window). A single call cannot hold that window open. |
+| `observe(kind)` merging the four notifies | Shipped as specced (`content`, `live-content`, `composer-geometry`, `host-layout`; exhaustive switch) | MessageTimeline's pane adapter intercepts `host-layout` into its listRef retry ladder; ChannelView's composer RO reports `composer-geometry` (was the instant notify) — behaviorally identical on a no-animation surface. |
+| `observers.ts` = "RO/scroll/pointer plumbing → observation events" | `observers.ts` owns the contentRO pipeline only (gather → resolve → apply, in one place); the scroll/pointer/wheel/key/touch handlers live in `intent.ts` | The plan drew the line at event kind; the shipped cut draws it at ownership. The DOM handlers ARE the intent machine's inputs, and a delivery's gather/decide/apply reads as one unit (mirroring the spring owning a chase). A thin observation-events-only layer would split single concerns across files. |
+| Each file <500 lines | `index.svelte.ts` 886, `intent.ts` 699, `observers.ts` 538, `spring.ts` 521, `resolver.ts` 517 | Overages are comment mass (~40% of the controller is load-bearing prose) plus irreducible wiring. The post-task review judged the remaining clean seams (arrival-readback cluster + dev-hook extraction, ~−150 lines from the controller; the token ring, ~−55 from intent) not worth taking now; they are the path back under target if the files grow. |
+
+Also under Stage 4: the shipped layout adds three files beyond the §2
+five — `types.ts` (the consumer contract, re-exported through the
+controller), `trace.ts` (shared dev-trace helper), `time.ts` (`nowMs`) —
+and the controller file is `index.svelte.ts` imported as
+`utils/scroll/index.svelte` (runes require the `.svelte.ts` suffix, which
+directory-index resolution does not find). `writeProgrammaticScrollTop`
+merged into the single `writeScrollTop` chokepoint; the module-state test
+reset hook moved with its state to `scroll/intent.ts` as
+`resetScrollIntentModuleStateForTest`.
+The 4b post-task review (six lenses over the full split) found one
+genuine behavioral drift — `quietContextSignal` snapshotted at
+construction instead of read live per call, latent because no consumer
+mutates its options object — fixed with a fails-without regression test
+(`d2a6df7f`).
+
+The two §3 rows marked "re-evaluate at Stage 4/5" were re-evaluated here
+and both roll to the Stage-5 gate: H1/H2+M1 compensate for non-write-path
+problems (deliveries that never happen; `listRef` unbound during pane
+reorder) — the split changes nothing about either, and they die only *by
+construction* with a bespoke virtualizer. `runExternalScroll`'s 100ms
+window still classifies scheduled-scroll events because scheduled scrolls
+(`scrollToIndex`) still write inside virtua; routing them is the optional
+patch extension bundled into the Stage-5 decision.
+
+Cleanup candidates carried out of Stage 4 (not commitments — evaluate
+opportunistically or at the Stage-5 gate): folding the controller's
+notify*/pause-release inline decisions into resolver-shaped decision
+values; expressing the resolver's decision shapes as shared types;
+deduplicating ChannelView's thread-switch dance with MessageTimeline's.
+
 ### Stage 5 — Decision gate: bespoke bottom-anchored virtualizer
 
 Not scheduled — a decision point after 1-4 have soaked. Evidence from the

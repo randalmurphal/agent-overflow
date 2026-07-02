@@ -71,8 +71,10 @@ Read that before touching:
 - `src/lib/utils/threadVirtuaSizeCache.ts`
 
 Short version: `MessageTimeline` owns the scroll container, `virtua`
-owns row geometry, and `useStickToBottom` owns scroll intent and every
-allowed `scrollTop` write outside virtua internals. Programmatic virtua
+owns row geometry, and the scroll controller (`utils/scroll/`) owns
+scroll intent and every allowed `scrollTop` write outside virtua
+internals — inside the package the pure resolver decides, the
+controller's `writeScrollTop` chokepoint writes. Programmatic virtua
 scrolls must be wrapped in `stick.runExternalScroll(...)`; never pass
 `smooth: true`.
 
@@ -154,7 +156,7 @@ corrupt every project on the machine. Use
      `markProgrammaticScroll()` on the Svelte `VirtualizerHandle`. It fires
      the store's internal ACTION_MANUAL_SCROLL (the un-exported literal `7`),
      the same marking virtua's own async scroll APIs apply before writing
-     scrollTop. Needed because `useStickToBottom` writes `scrollTop`
+     scrollTop. Needed because the scroll controller writes `scrollTop`
      synchronously every streaming beat, and unmarked writes are classified
      as user scroll-downs — virtua latches the direction and drops its
      entire above-viewport buffer, the remount churn behind the streaming

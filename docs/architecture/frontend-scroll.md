@@ -3,21 +3,42 @@
 This is the durable contract for chat and discussion scrolling. It keeps
 the operational rules out of `AGENTS.md` while preserving the invariants
 that matter when changing `ThreadPane`, `MessageTimeline`, `ChannelView`,
-or `useStickToBottom`.
+or the scroll controller (`utils/scroll/`).
 
 ## Owners
 
 - `MessageTimeline.svelte` owns the outer chat scroll container.
 - `virtua/svelte` owns virtual row geometry and per-row measurement.
-- `utils/scroll/` (controller `index.svelte.ts`) owns user scroll intent and every allowed
-  `scrollTop` write outside virtua internals.
+- `utils/scroll/` owns user scroll intent and every allowed `scrollTop`
+  write outside virtua internals. Inside the package:
+  - `resolver.ts` — the pure per-delivery reducer. Every contentRO
+    delivery and every routed virtua compensation becomes an observation;
+    **the resolver's decision is the only authority on what, if anything,
+    gets written**. Adding a scroll behavior means adding a decision
+    branch here, not a write site somewhere else.
+  - `index.svelte.ts` — the controller: the reactive flags templates
+    subscribe to, geometry reads, the single `writeScrollTop` chokepoint
+    every programmatic write routes through, wiring for the three
+    machines below, and the public API. `types.ts` holds the consumer
+    contract; consumers import from `utils/scroll/index.svelte`.
+  - `intent.ts` — the event-sourced intent machine: wheel/scroll/pointer/
+    key/touch listeners, escape and re-stick, restore-snap consent, and
+    programmatic-write tagging. Intent is never geometry-inferred.
+  - `spring.ts` — chase kinematics: HOW a spring advances scrollTop
+    frame to frame once the controller decides one runs.
+  - `observers.ts` — the contentEl ResizeObserver pipeline, the warm-up
+    (quiescence) gate, and resize classification. Each delivery is
+    gathered here, decided by the resolver, and applied through the
+    controller's chokepoint, so "a content delivery" reads in one place.
 - `ThreadPane` owns the scroll-controller registration slot so shared
   surfaces can pause or notify scrolling without reaching into component
   internals.
 - `threadScrollSnapshots.ts` owns semantic per-thread scroll snapshots:
   `{ kind: 'bottom' }` or `{ kind: 'anchor', itemId, offsetTop }`.
 
-Do not add another owner for any of those responsibilities.
+Do not add another owner for any of those responsibilities. In
+particular, a new programmatic write path either goes through a resolver
+decision and the `writeScrollTop` chokepoint, or it doesn't go in.
 
 ## Thread Switch
 
@@ -520,7 +541,8 @@ the containing `SubagentGroup` card.
 
 ## Discussion Mode
 
-`ChannelView.svelte` shares `useStickToBottom` without a virtualizer. Its
+`ChannelView.svelte` shares the scroll controller (`utils/scroll/`)
+without a virtualizer. Its
 content element wraps the channel-message list so the same ResizeObserver
 path handles message growth and async Streamdown layout. Composer-section
 resize must also notify the controller because discussion's composer is a
