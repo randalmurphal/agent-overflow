@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createUseStickToBottomController,
   type UseStickToBottomController,
+  type UseStickToBottomOptions,
 } from './index.svelte';
 import { resetScrollIntentModuleStateForTest } from './intent';
 import { RETAIN_ANIMATION_DURATION_MS } from './spring';
@@ -2525,18 +2526,25 @@ describe('createUseStickToBottomController — spring chase', () => {
       return ro;
     }
 
-    function buildLocalController(opts: { signal: (() => boolean) | undefined }): void {
+    // Returns the options object the controller was constructed with so
+    // tests can pin the live-read contract (assigning quietContextSignal
+    // after construction must be honored).
+    function buildLocalController(
+      opts: { signal: (() => boolean) | undefined },
+    ): UseStickToBottomOptions {
       localScrollEl = document.createElement('div');
       localContentEl = document.createElement('div');
       localScrollEl.appendChild(localContentEl);
       document.body.appendChild(localScrollEl);
       localGeom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
       stubGeometry(localScrollEl, localContentEl, localGeom);
-      localController = createUseStickToBottomController({
+      const options: UseStickToBottomOptions = {
         animationMode: () => 'instant',
         quietContextSignal: opts.signal,
-      });
+      };
+      localController = createUseStickToBottomController(options);
       localController.attach(localScrollEl, localContentEl);
+      return options;
     }
 
     beforeEach(() => {
@@ -2566,6 +2574,28 @@ describe('createUseStickToBottomController — spring chase', () => {
       // 45ms clears SETTLED_QUIET_MS (16ms) with real-timer slack, still
       // well under QUIET_MS (100ms) so a conservative-window regression fails.
       await waitMs(45);
+      expect(localController.isWarm).toBe(true);
+    });
+
+    it('reads quietContextSignal live off the options object, not a construction-time snapshot', async () => {
+      // Pre-split behavior pin: bumpQuietTimer / notifyQuietContextSignalChanged
+      // read `options.quietContextSignal` at call time, so a consumer that
+      // assigns the option after constructing the controller is honored. A
+      // construction-time snapshot would treat the late-assigned signal as
+      // absent and warm on the unconditional QUIET_MS path even while the
+      // consumer reports "not settled".
+      const options = buildLocalController({ signal: undefined });
+      options.quietContextSignal = () => false;
+      getLocalRO().fire(localContentEl, 800);
+      // Past QUIET_MS (100ms): the not-settled signal must hold warm-up
+      // open (only the FAILSAFE_MS ceiling may warm it now).
+      await waitMs(130);
+      expect(localController.isWarm).toBe(false);
+      // Flip the same late-assigned option to settled: the notify path
+      // must also read it live and arm the quiet window.
+      options.quietContextSignal = () => true;
+      localController.notifyQuietContextSignalChanged();
+      await waitMs(130);
       expect(localController.isWarm).toBe(true);
     });
 

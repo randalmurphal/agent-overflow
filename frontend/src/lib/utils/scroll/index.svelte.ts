@@ -381,7 +381,7 @@ export function createUseStickToBottomController(
     getScrollEl: () => scrollEl,
     getContentEl: () => contentEl,
     animationMode: animationModeNow,
-    quietContextSignal: options.quietContextSignal,
+    getQuietContextSignal: () => options.quietContextSignal,
     warm: () => warm,
     setWarm: (next) => {
       warm = next;

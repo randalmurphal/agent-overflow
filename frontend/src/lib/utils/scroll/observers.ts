@@ -109,8 +109,14 @@ export interface ContentObserverHost {
   getContentEl(): HTMLElement | undefined;
   /** Normalized per-fire animation mode (anything but 'spring' is 'instant'). */
   animationMode(): 'spring' | 'instant';
-  /** Consumer's typesetting-settled signal (options.quietContextSignal). */
-  quietContextSignal?: () => boolean;
+  /**
+   * Consumer's typesetting-settled signal, read live off the options
+   * object per call (like the sibling options — a consumer that assigns
+   * `options.quietContextSignal` after construction is honored). "Option
+   * absent" and "signal falsy" are distinct states for the quiet-window
+   * gate: absent always arms the conservative window, falsy arms nothing.
+   */
+  getQuietContextSignal(): (() => boolean) | undefined;
   /** Reactive warm flag (controller-owned $state; consumers read isWarm). */
   warm(): boolean;
   setWarm(next: boolean): void;
@@ -258,11 +264,12 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
       lastContentHeightDelta = Math.abs(heightDelta);
     }
     if (quietTimer) clearTimeout(quietTimer);
-    if (!host.quietContextSignal) {
+    const quietContextSignal = host.getQuietContextSignal();
+    if (!quietContextSignal) {
       quietTimer = setTimeout(() => markWarm('quiet'), QUIET_MS);
       return;
     }
-    const settled = host.quietContextSignal();
+    const settled = quietContextSignal();
     if (!settled) {
       quietTimer = null;
       return;
@@ -271,7 +278,7 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
   }
 
   function notifyQuietContextSignalChanged(): void {
-    const settled = host.quietContextSignal?.() ?? false;
+    const settled = host.getQuietContextSignal()?.() ?? false;
     const haveTimer = quietTimer !== null;
     const warm = host.warm();
     let outcome: 'armed' | 'rearmed' | 'noop_warm' | 'noop_no_ro' | 'noop_signal_falsy';
