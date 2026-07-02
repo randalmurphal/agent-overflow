@@ -188,7 +188,7 @@ removes the cascade when it can, the gate hides it when it can't.
 On thread switch, `MessageTimeline` must call `stick.armWarmup()` from
 `$effect.pre` so `isWarm=false` before the new DOM paints. The restore
 effect then calls `stick.forceStick({ reason: 'restore' })` and schedules
-one rAF `notifyContentMaybeGrew()` settle pass for late composer padding,
+one rAF `observe('content')` settle pass for late composer padding,
 virtua measurement, or Streamdown layout changes. The rAF pass is
 escape-aware.
 
@@ -211,9 +211,12 @@ invalidate what the user actually saw.
 Programmatic scrolls go through the controller:
 
 - `forceStick({ reason: 'user' })` for explicit bottom-follow.
-- `armRestoreSnap()` followed by `forceStick({ reason: 'restore' })` for
-  thread/channel restore.
+- `armRestoreSnap()` (sets the defensive escape, then arms consent)
+  followed by `forceStick({ reason: 'restore' })` for thread/channel
+  restore.
 - `markAtBottom()` for empty-timeline restore without writing scrollTop.
+- `observe(kind)` for out-of-content geometry changes ('content',
+  'live-content', 'composer-geometry', 'host-layout').
 - `runExternalScroll()` for virtua `scrollToIndex` calls.
 - `pauseAutoScroll()` for drag/resize leases.
 
@@ -232,7 +235,7 @@ flicker (`settle-flicker-analysis.md`, 2026-07-01 streaming
 settle-flicker entry). virtua clears the mark at scrollend, which is why
 the hook fires per write, not per burst. Controller write paths inherit
 the marking automatically as long as they route through
-`writeProgrammaticScrollTop`; a raw `scrollEl.scrollTop` assignment
+`writeScrollTop`; a raw `scrollEl.scrollTop` assignment
 anywhere else reintroduces the churn. Regression coverage:
 `src/test/integration/virtua-patch-buffer-retention.browser.test.ts`
 (patch tripwire + marked-write guard) and
@@ -376,11 +379,12 @@ overlay. A `--composer-height` CSS variable drives `scrollEl`
 surface's `clientHeight`.
 
 The composer ResizeObserver writes `--composer-height` directly before
-notifying the scroll controller. Waiting for Svelte's microtask flush
-would pin against stale layout. Idle composer geometry resolves to the
-same same-paint pin as `notifyContentMaybeGrew()`; when live content is
-inside the spring hold window, the live-capable hook keeps following the
-moving bottom instead of sync-pinning mid-chase.
+observing `'composer-geometry'` on the scroll controller. Waiting for
+Svelte's microtask flush would pin against stale layout. Idle composer
+geometry resolves to the same same-paint pin as a `'content'`
+observation; when live content is inside the spring hold window, the
+live-capable path keeps following the moving bottom instead of
+sync-pinning mid-chase.
 
 `overflow-anchor: none` belongs on the outer scroll container. Browser
 scroll anchoring otherwise fights both virtua's jump correction and the

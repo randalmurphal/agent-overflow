@@ -16,9 +16,8 @@ Operational rules for this directory:
   and `listRef.scrollToIndex(...)` for timeline position. Do not query
   DOM rows for first-visible-item math.
 - Route programmatic scrolls through `useStickToBottom`: `forceStick`,
-  `markAtBottom`, `notifyContentMaybeGrew`,
-  `notifyLiveContentMaybeGrew`, `pauseAutoScroll`, `runExternalScroll`,
-  and `armRestoreSnap`.
+  `markAtBottom`, `observe(kind)`, `pauseAutoScroll`,
+  `runExternalScroll`, and `armRestoreSnap`.
 - Wrap every virtua `scrollToIndex` call in
   `stick.runExternalScroll(() => listRef.scrollToIndex(...))`.
 - Never pass `smooth: true` to virtua and never call `scrollIntoView()` on
@@ -26,14 +25,16 @@ Operational rules for this directory:
 - Keep `overflow-anchor: none` on the outer scroll container.
 - Keep composer-clearance padding on `scrollEl`, not `contentEl`, and keep
   `ChatView`'s composer `ResizeObserver` notifying the scroll controller
-  after writing `--composer-height`. Use the live-capable notification path
-  so active output can spring through activity-rail height changes; idle
-  composer geometry must still sync-pin.
+  after writing `--composer-height`. Observe as `'composer-geometry'`
+  (the live-capable path) so active output can spring through
+  activity-rail height changes; idle composer geometry must still
+  sync-pin.
 
 Thread-switch restore is intentionally split: `$effect.pre` arms warm-up
-and restore consent before DOM flush; the restore `$effect` calls
+and restore consent before DOM flush (`armRestoreSnap` carries the
+defensive escape); the restore `$effect` calls
 `forceStick({ reason: 'restore' })` and schedules one rAF
-`notifyContentMaybeGrew()` settle pass. Same-thread reloads must watch
+`observe('content')` settle pass. Same-thread reloads must watch
 `pane.switchGeneration`, not only `pane.threadId`.
 
 ## Row Contract

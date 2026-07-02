@@ -291,19 +291,17 @@ describe('PaneHost', () => {
       { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
     ]);
 
-    const leftNotify = vi.fn();
-    const rightNotify = vi.fn();
+    const leftObserve = vi.fn();
+    const rightObserve = vi.fn();
     leftPane.attachScrollController({
       pauseAutoScroll: () => () => {},
-      notifyContentMaybeGrew: vi.fn(),
-      notifyLiveContentMaybeGrew: vi.fn(),
-      notifyHostLayoutSettled: leftNotify,
+      observe: leftObserve,
+      preserveScrollAnchor: () => Promise.resolve(),
     });
     rightPane.attachScrollController({
       pauseAutoScroll: () => () => {},
-      notifyContentMaybeGrew: vi.fn(),
-      notifyLiveContentMaybeGrew: vi.fn(),
-      notifyHostLayoutSettled: rightNotify,
+      observe: rightObserve,
+      preserveScrollAnchor: () => Promise.resolve(),
     });
 
     let nextFrameId = 1;
@@ -331,20 +329,20 @@ describe('PaneHost', () => {
     expect(requestFrame).toHaveBeenCalled();
     flushPendingFrames();
     flushPendingFrames();
-    leftNotify.mockClear();
-    rightNotify.mockClear();
+    leftObserve.mockClear();
+    rightObserve.mockClear();
 
     movePaneLayoutItem('left', 1);
     await tick();
     expect(pendingFrames.size).toBeGreaterThan(0);
     flushPendingFrames();
-    expect(leftNotify).not.toHaveBeenCalled();
-    expect(rightNotify).not.toHaveBeenCalled();
+    expect(leftObserve).not.toHaveBeenCalled();
+    expect(rightObserve).not.toHaveBeenCalled();
     expect(pendingFrames.size).toBeGreaterThan(0);
     flushPendingFrames();
 
-    expect(leftNotify).toHaveBeenCalled();
-    expect(rightNotify).toHaveBeenCalled();
+    expect(leftObserve).toHaveBeenCalledWith('host-layout');
+    expect(rightObserve).toHaveBeenCalledWith('host-layout');
   });
 
   it('auto-scrolls near the row edge during thread drag and cancels on drag end', async () => {

@@ -59,26 +59,20 @@
     if (!channelId) return;
     untrack(() => {
       // Suspend auto-follow until the initial poll lands and we
-      // explicitly forceStick. Without this, mergeChannelMessages
-      // grows contentEl on the next frame while the controller is
-      // still in its default isAtBottom state — the contentRO would
-      // sync-pin to the eventual bottom of the seeded batch, but the
-      // user perceives the snap because contentEl jumped from empty
-      // to populated under their cursor. Setting the escape flag here
-      // makes the post-poll forceStick() the single, intentional
-      // commitment to the bottom. Mirrors the
-      // chat surface's MessageTimeline.$effect.pre escape guard on
-      // threadId change.
-      stick.setEscapedFromLock(true);
-      // Arm the one-shot restore-snap consent for the post-poll
-      // `forceStick({reason:'restore'})` below. The defensive
-      // `setEscapedFromLock(true)` above clears any prior arm and
-      // suspends auto-follow until the initial batch lands; arming
-      // restore-snap right after gives the post-poll commit the
-      // consent it needs to clear escape and snap to bottom. If the
-      // user scrolls between now and the poll completing (rare —
-      // typically <100ms), their gesture re-clears the arm via the
-      // user-escape paths and the post-poll forceStick NO-OPs.
+      // explicitly forceStick: armRestoreSnap sets the defensive
+      // escape (without it, mergeChannelMessages grows contentEl on
+      // the next frame while the controller is still in its default
+      // isAtBottom state — the contentRO would sync-pin to the
+      // eventual bottom of the seeded batch, and the user perceives
+      // the snap because contentEl jumped from empty to populated
+      // under their cursor) and arms the one-shot restore-snap
+      // consent for the post-poll `forceStick({reason:'restore'})`
+      // below, making that the single, intentional commitment to the
+      // bottom. If the user scrolls between now and the poll
+      // completing (rare — typically <100ms), their gesture re-clears
+      // the arm via the user-escape paths and the post-poll
+      // forceStick NO-OPs. Mirrors the chat surface's
+      // MessageTimeline.$effect.pre guard on threadId change.
       stick.armRestoreSnap();
       // Only wipe the channel buffer when we're switching to a different
       // channel — re-entry of the same channel preserves whatever status
@@ -195,16 +189,17 @@
   // so a height change there (e.g. the concluded-toggle swapping the
   // textarea+button for a "Discussion has concluded" paragraph)
   // shrinks/grows the scrollEl's clientHeight without firing the
-  // content RO. notifyContentMaybeGrew re-pins scrollTop to the new
-  // target so a sticky user doesn't drift away from the last message.
-  // The textarea itself is `rows={1}` with no autosize, so the more
-  // dramatic Shift+Enter case doesn't actually change height — but the
-  // RO costs nothing per-event and future-proofs against a textarea
-  // that grows.
+  // content RO. The composer-geometry observation re-pins scrollTop to
+  // the new target so a sticky user doesn't drift away from the last
+  // message (this surface has no animation mode, so it lands on the
+  // instant sync-pin path). The textarea itself is `rows={1}` with no
+  // autosize, so the more dramatic Shift+Enter case doesn't actually
+  // change height — but the RO costs nothing per-event and
+  // future-proofs against a textarea that grows.
   $effect(() => {
     if (!composerEl) return;
     const observed = composerEl;
-    const ro = new ResizeObserver(() => stick.notifyContentMaybeGrew());
+    const ro = new ResizeObserver(() => stick.observe('composer-geometry'));
     ro.observe(observed);
     return () => ro.disconnect();
   });

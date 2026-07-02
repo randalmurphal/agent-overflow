@@ -1,4 +1,5 @@
 import type { ItemKind, Thread } from '../types/models';
+import type { ScrollObservationKind } from '../utils/useStickToBottom.svelte';
 import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
 import type { RhsPanel } from './rhsPanelSlot.svelte';
 import type { ActiveTurn } from './threadStatuses.svelte';
@@ -135,13 +136,16 @@ export type LoadOlderResult = {
 
 /**
  * Minimal surface a registered scroll controller exposes to the pane.
+ * MessageTimeline registers an explicit adapter (its `observe` routes
+ * `'host-layout'` through the listRef-aware retry ladder and it adds the
+ * timeline-window anchor transaction); ChannelView registers its raw
+ * `useStickToBottom` controller, which satisfies the required members
+ * directly.
  */
 export interface PaneScrollController {
   pauseAutoScroll(): () => void;
-  notifyContentMaybeGrew(): void;
-  notifyLiveContentMaybeGrew(): void;
-  notifyHostLayoutSettled?(): void;
-  preserveScrollAnchor?(
+  observe(kind: ScrollObservationKind): void;
+  preserveScrollAnchor(
     anchor: HTMLElement,
     action: () => void | Promise<void>,
   ): Promise<void>;

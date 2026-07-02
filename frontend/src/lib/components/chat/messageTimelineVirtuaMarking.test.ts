@@ -69,10 +69,10 @@ describe('MessageTimeline virtua manual-scroll marking', () => {
     });
 
     const marksBefore = virtuaMarkCalls();
-    // Composer-height path: geometry changed outside the content element;
+    // Out-of-content geometry change (the 'content' observation kind):
     // fresh mount is sticky and unescaped, so the controller sync-pins to
     // the bottom target — and must mark virtua first.
-    pane.scrollController?.notifyContentMaybeGrew();
+    pane.scrollController?.observe('content');
 
     expect(scrollTop).toBe(400);
     expect(virtuaMarkCalls()).toBeGreaterThan(marksBefore);

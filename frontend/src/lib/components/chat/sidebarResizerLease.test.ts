@@ -5,8 +5,8 @@
 // Without this lease, a streaming chat turn that grows content mid-drag
 // would fire the controller's content-RO sync-pin, writing scrollTop
 // underneath the user as they're trying to resize. The lease bumps
-// `pauseDepth` so both `notifyContentMaybeGrew()` calls and the
-// content-RO sync-pin path no-op until the drag completes.
+// `pauseDepth` so both `observe('content')` calls and the content-RO
+// sync-pin path no-op until the drag completes.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
@@ -52,8 +52,8 @@ describe('SidebarResizer pause-lease wiring', () => {
     const { pauseAutoScroll, pauseCalls, releases } = makeMockController();
     pane.attachScrollController({
       pauseAutoScroll,
-      notifyContentMaybeGrew: () => {},
-      notifyLiveContentMaybeGrew: () => {},
+      observe: () => {},
+      preserveScrollAnchor: () => Promise.resolve(),
     });
 
     const { getByTestId } = render(SidebarResizer, {
@@ -81,8 +81,8 @@ describe('SidebarResizer pause-lease wiring', () => {
     const { pauseAutoScroll, releases } = makeMockController();
     pane.attachScrollController({
       pauseAutoScroll,
-      notifyContentMaybeGrew: () => {},
-      notifyLiveContentMaybeGrew: () => {},
+      observe: () => {},
+      preserveScrollAnchor: () => Promise.resolve(),
     });
 
     const { getByTestId } = render(SidebarResizer, {
@@ -142,8 +142,8 @@ describe('RhsSidebarResizer pause-lease wiring', () => {
     const { pauseAutoScroll, pauseCalls, releases } = makeMockController();
     pane.attachScrollController({
       pauseAutoScroll,
-      notifyContentMaybeGrew: () => {},
-      notifyLiveContentMaybeGrew: () => {},
+      observe: () => {},
+      preserveScrollAnchor: () => Promise.resolve(),
     });
 
     const { getByTestId } = render(RhsSidebarResizer, {
@@ -174,8 +174,8 @@ describe('RhsSidebarResizer pause-lease wiring', () => {
     const { pauseAutoScroll, releases } = makeMockController();
     pane.attachScrollController({
       pauseAutoScroll,
-      notifyContentMaybeGrew: () => {},
-      notifyLiveContentMaybeGrew: () => {},
+      observe: () => {},
+      preserveScrollAnchor: () => Promise.resolve(),
     });
 
     const { getByTestId } = render(RhsSidebarResizer, {
@@ -227,13 +227,13 @@ describe('PaneDivider pause-lease wiring', () => {
     const rightController = makeMockController();
     left.attachScrollController({
       pauseAutoScroll: leftController.pauseAutoScroll,
-      notifyContentMaybeGrew: () => {},
-      notifyLiveContentMaybeGrew: () => {},
+      observe: () => {},
+      preserveScrollAnchor: () => Promise.resolve(),
     });
     right.attachScrollController({
       pauseAutoScroll: rightController.pauseAutoScroll,
-      notifyContentMaybeGrew: () => {},
-      notifyLiveContentMaybeGrew: () => {},
+      observe: () => {},
+      preserveScrollAnchor: () => Promise.resolve(),
     });
     setPaneLayoutItemsForTest([
       { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
@@ -259,7 +259,7 @@ describe('PaneDivider pause-lease wiring', () => {
 
 describe('Pause-lease integration with the real controller', () => {
   // Uses the actual useStickToBottom controller via the pane's
-  // attachScrollController seam. The controller's notifyContentMaybeGrew
+  // attachScrollController seam. The controller's observe('content')
   // is a no-op while the lease is held; releasing resumes the writes.
   it('blocks the contentRO sync-pin from ChannelView via SidebarResizer drag', async () => {
     // Discussion-mode integration: mounting ChannelView registers a
@@ -395,7 +395,7 @@ describe('Pause-lease integration with the real controller', () => {
     }
   });
 
-  it('blocks notifyContentMaybeGrew while the lease is held', async () => {
+  it('blocks content observations while the lease is held', async () => {
     const { createUseStickToBottomController } = await import('../../utils/useStickToBottom.svelte');
     const pane = await buildPane(makeThread(), []);
 
@@ -423,14 +423,14 @@ describe('Pause-lease integration with the real controller', () => {
     try {
       // Baseline: composer-height-style nudge writes scrollTop = target.
       geom.scrollHeight = 1100;
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
       expect(geom.scrollTop).toBe(500); // target = 1100 - 600
 
-      // Acquire the lease. Notifications during the drag are no-ops.
+      // Acquire the lease. Observations during the drag are no-ops.
       const release = pane.scrollController!.pauseAutoScroll();
       geom.scrollHeight = 1300;
-      controller.notifyContentMaybeGrew();
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
+      controller.observe('content');
       expect(geom.scrollTop).toBe(500); // unchanged during lease
 
       // Releasing resumes auto-follow and re-pins to the new bottom.

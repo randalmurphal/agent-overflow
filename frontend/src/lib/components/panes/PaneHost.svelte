@@ -143,12 +143,7 @@
     for (const item of layoutItems) {
       const pane = getPane(item.paneId);
       if (!pane) continue;
-      const controller = pane.scrollController;
-      if (controller?.notifyHostLayoutSettled) {
-        controller.notifyHostLayoutSettled();
-      } else {
-        controller?.notifyContentMaybeGrew();
-      }
+      pane.scrollController?.observe('host-layout');
     }
   }
 

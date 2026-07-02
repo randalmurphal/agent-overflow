@@ -2,6 +2,7 @@
   import { onDestroy, setContext, tick, untrack } from 'svelte';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import type {
+    PaneScrollController,
     ThreadPane,
     TimelineWindowAnchorOperation,
   } from '../../stores/thread.svelte';
@@ -455,7 +456,7 @@
         if (shouldStickToBottom) {
           stick.markAtBottom();
         } else {
-          stick.notifyContentMaybeGrew();
+          stick.observe('content');
         }
         return;
       }
@@ -597,10 +598,23 @@
     return true;
   }
 
-  const paneScrollController = Object.assign(stick, {
-    notifyHostLayoutSettled,
+  // Explicit adapter, not the raw controller: 'host-layout' observations
+  // route through the listRef-aware retry ladder above instead of the
+  // controller's plain content path, and the timeline-window anchor
+  // transaction only exists at this layer.
+  const paneScrollController: PaneScrollController = {
+    pauseAutoScroll: () => stick.pauseAutoScroll(),
+    observe: (kind) => {
+      if (kind === 'host-layout') {
+        notifyHostLayoutSettled();
+        return;
+      }
+      stick.observe(kind);
+    },
+    preserveScrollAnchor: (anchor, action) =>
+      stick.preserveScrollAnchor(anchor, action),
     preserveTimelineWindowAnchor,
-  });
+  };
 
   $effect(() => {
     if (!pane.hasDeferredRecentWindowPrune) return;
@@ -725,7 +739,7 @@
     if (activeTurnStructuralSignature !== signature) return;
     if (!getActiveTurn(threadId)) return;
 
-    stick.notifyLiveContentMaybeGrew();
+    stick.observe('live-content');
   }
 
   // Thinking rows stream by internally tail-pinning a 3-line clipped body,
@@ -740,10 +754,10 @@
   // It keys off tail row identity and order (id, kind, turnIndex,
   // itemIndex), not status transitions or summary deltas, so normal
   // streaming chunks and tool-call lifecycle status changes use the
-  // contentRO path. The delayed nudge uses the live-content controller hook,
-  // which honors spring mode or the just-marked structural-append window.
-  // Sidebar/host layout nudges keep using the instant notifyContentMaybeGrew
-  // path; ChatView composer-height changes use the live-capable hook so
+  // contentRO path. The delayed nudge observes as 'live-content', which
+  // honors spring mode or the just-marked structural-append window.
+  // Sidebar/host layout nudges keep using the instant 'content'/'host-layout'
+  // paths; ChatView composer geometry observes as 'composer-geometry' so
   // activity-rail changes during streaming can continue the spring.
   $effect(() => {
     const signature = activeTurnStructuralSignature;
@@ -1411,7 +1425,6 @@
       autoLoadNewerGate.reset();
       clearTimelineWindowPruneShift();
       if (nextThreadId && scrollSnapshotThreadId) {
-        stick.setEscapedFromLock(true);
         // Re-arm the warm-up gate BEFORE the DOM update flushes. The
         // restore $effect calls forceStick() (which also arms the gate),
         // but that runs AFTER DOM update — so without this $effect.pre
@@ -1426,18 +1439,17 @@
         // sequence; cache-miss switches off an unsettled prior thread
         // (warm=false coincidentally) hid the cascade and looked fine.
         armWarmupWithReset();
-        // Arm the one-shot restore-snap consent AFTER the defensive
-        // setEscapedFromLock — which itself clears any prior arm — so the
-        // upcoming `restoreToBottom() → stick.forceStick({reason:
-        // 'restore'})` is honored. Any outer-scroll intent between this
-        // point and the restore $effect (extremely rare; both run inside
-        // the same flush) re-clears the arm, causing the restore to NO-OP
-        // and preserving the user's intent. This is the load-bearing
-        // distinguisher between "the
-        // user has explicitly escaped" and "the $effect.pre just
-        // defensively set escape=true while preparing the new thread for
-        // restore." See useStickToBottom.svelte.ts § Restore-snap
-        // consent state.
+        // Sets the defensive escape (freezing auto-follow against the
+        // outgoing thread's geometry) and arms the one-shot restore-snap
+        // consent for the upcoming `restoreToBottom() →
+        // stick.forceStick({reason: 'restore'})`. Any outer-scroll intent
+        // between this point and the restore $effect (extremely rare;
+        // both run inside the same flush) re-clears the arm, causing the
+        // restore to NO-OP and preserving the user's intent — the
+        // load-bearing distinguisher between "the user has explicitly
+        // escaped" and "this $effect.pre just defensively set escape=true
+        // while preparing the new thread for restore." See
+        // useStickToBottom.svelte.ts § Restore-snap consent state.
         stick.armRestoreSnap();
       } else if (nextThreadId) {
         // Placeholder → materialized transition: the timeline was empty
@@ -1531,15 +1543,15 @@
   // same content-grow trigger, and they oscillate. forceStick() alone
   // is the single writer.
   //
-  // The trailing rAF `notifyContentMaybeGrew()` is a defensive late-
-  // settling re-pin: composer-height RO updates flowing into scrollEl's
+  // The trailing rAF `observe('content')` is a defensive late-settling
+  // re-pin: composer-height RO updates flowing into scrollEl's
   // padding-bottom, virtua's per-row ResizeObservers firing a frame
   // after mount, and the first burst of Streamdown async typesetting
   // can all change geometry one frame after the initial forceStick.
   // Padding-only changes don't re-fire contentRO (W3C ResizeObserver
   // observes content-box) so a paint-time settle that nudges the bottom
   // by a few px would otherwise leave the user "half a tick" above
-  // bottom. notifyContentMaybeGrew is escape-aware (bails if the user
+  // bottom. The content observation is escape-aware (bails if the user
   // gestured up between frames) so it can't yank them.
   function restoreToBottom(): void {
     // Last RENDERED row (virtua's `data` is `revealedNodes`). If a stream
@@ -1583,7 +1595,7 @@
     saveScrollSnapshot();
     // Capture the thread the rAF was scheduled for so a thread switch
     // between forceStick and the next frame doesn't run the late re-pin
-    // against the new thread's geometry. notifyContentMaybeGrew also
+    // against the new thread's geometry. The content observation also
     // bails on escape/pause as a second-line defense.
     const expectedThreadId = restoredThreadId;
     if (isUiRenderTraceEnabled()) {
@@ -1607,7 +1619,7 @@
         });
       }
       if (!stillSameThread) return;
-      stick.notifyContentMaybeGrew();
+      stick.observe('content');
     });
   }
 
@@ -1856,7 +1868,7 @@
      spec — default observation is content-box) nor change
      `entry.contentRect.height`, so a contentEl padding wouldn't
      re-pin via the contentRO seam. ChatView's composer-overlay RO
-     calls `notifyContentMaybeGrew()` to handle that case explicitly.
+     calls `observe('composer-geometry')` to handle that case explicitly.
      The top `mask` fades the first TOP_FADE_PX of content as it rises
      under the header (replacing the old hard top padding), while a solid
      mask layer over the right SCROLLBAR_SAFE_PX keeps the scrollbar from

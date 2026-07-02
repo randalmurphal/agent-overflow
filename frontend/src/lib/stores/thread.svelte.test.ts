@@ -4401,8 +4401,8 @@ describe('createThreadPane', () => {
       });
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
-        notifyContentMaybeGrew: () => {},
-        notifyLiveContentMaybeGrew: () => {},
+        observe: () => {},
+        preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor,
       } satisfies PaneScrollController);
 
@@ -4457,8 +4457,8 @@ describe('createThreadPane', () => {
       const preserveTimelineWindowAnchor = vi.fn(() => false);
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
-        notifyContentMaybeGrew: () => {},
-        notifyLiveContentMaybeGrew: () => {},
+        observe: () => {},
+        preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor,
       } satisfies PaneScrollController);
 
@@ -4488,8 +4488,8 @@ describe('createThreadPane', () => {
       });
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
-        notifyContentMaybeGrew: () => {},
-        notifyLiveContentMaybeGrew: () => {},
+        observe: () => {},
+        preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor: retryPreserve,
       } satisfies PaneScrollController);
 
@@ -4534,8 +4534,8 @@ describe('createThreadPane', () => {
       const preserveTimelineWindowAnchor = vi.fn(() => true);
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
-        notifyContentMaybeGrew: () => {},
-        notifyLiveContentMaybeGrew: () => {},
+        observe: () => {},
+        preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor,
       } satisfies PaneScrollController);
 
@@ -4625,8 +4625,8 @@ describe('createThreadPane', () => {
       const preserveTimelineWindowAnchor = vi.fn(() => false);
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
-        notifyContentMaybeGrew: () => {},
-        notifyLiveContentMaybeGrew: () => {},
+        observe: () => {},
+        preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor,
       } satisfies PaneScrollController);
 
@@ -4692,8 +4692,8 @@ describe('createThreadPane', () => {
       const preserveTimelineWindowAnchor = vi.fn(() => false);
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
-        notifyContentMaybeGrew: () => {},
-        notifyLiveContentMaybeGrew: () => {},
+        observe: () => {},
+        preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor,
       } satisfies PaneScrollController);
 

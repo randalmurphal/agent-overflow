@@ -39,8 +39,50 @@ import {
   peekThreadVirtuaSizeCacheForTest,
 } from '../../utils/threadVirtuaSizeCache';
 import * as virtuaSizeCacheModule from '../../utils/threadVirtuaSizeCache';
+import type { UseStickToBottomController } from '../../utils/useStickToBottom.svelte';
 import MessageTimeline from './MessageTimeline.svelte';
 import ChatView from './ChatView.svelte';
+
+// The pane-facing controller is a narrow adapter (MessageTimeline's
+// `paneScrollController` literal): it exposes only pauseAutoScroll /
+// observe / preserveScrollAnchor / preserveTimelineWindowAnchor, and the
+// timeline's internal nudges call the underlying stick controller
+// directly. Tests that need to read controller state (isSticky,
+// escapedFromLock, …) or spy on internal calls capture the stick at
+// creation time via this factory wrap.
+const { createdStickControllers } = vi.hoisted(() => ({
+  // Type annotations are erased at runtime, so referencing the imported
+  // type inside the hoisted factory is safe.
+  createdStickControllers: [] as import('../../utils/useStickToBottom.svelte').UseStickToBottomController[],
+}));
+vi.mock('../../utils/useStickToBottom.svelte', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../utils/useStickToBottom.svelte')>();
+  const wrappedCreate: typeof mod.createUseStickToBottomController = (options) => {
+    const controller = mod.createUseStickToBottomController(options);
+    createdStickControllers.push(controller);
+    return controller;
+  };
+  return { ...mod, createUseStickToBottomController: wrappedCreate };
+});
+
+// The single stick controller created by the mounted timeline.
+// MessageTimeline creates its stick during component init, before any
+// effect attaches the pane adapter, so by the time a test (or an
+// attachScrollController intercept) runs, the capture is already
+// populated. Deliberately throws on more than one capture: every
+// current test mounts exactly one timeline, and a future multi-pane
+// test that trips this must index the capture array explicitly rather
+// than inherit a silent "most recent wins" ambiguity.
+function lastStick(): UseStickToBottomController {
+  if (createdStickControllers.length > 1) {
+    throw new Error(
+      `lastStick() is ambiguous: ${createdStickControllers.length} controllers were created this test — index createdStickControllers explicitly`,
+    );
+  }
+  const controller = createdStickControllers[0];
+  if (!controller) throw new Error('no useStickToBottom controller has been created yet');
+  return controller;
+}
 
 function waitForScrollIntent(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 5));
@@ -90,35 +132,33 @@ function watchStickNotifications(pane: ThreadPane): {
   structuralMarks(): number;
   reset(): void;
 } {
-  let instantSpy: ReturnType<typeof vi.spyOn> | null = null;
-  let liveSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let observeSpy: ReturnType<typeof vi.spyOn> | null = null;
   let structuralSpy: ReturnType<typeof vi.spyOn> | null = null;
   const originalAttach = pane.attachScrollController.bind(pane);
   pane.attachScrollController = (controller) => {
-    instantSpy = vi.spyOn(controller, 'notifyContentMaybeGrew');
-    liveSpy = vi.spyOn(
-      controller as PaneScrollController & { notifyLiveContentMaybeGrew(): void },
-      'notifyLiveContentMaybeGrew',
-    );
-    structuralSpy = vi.spyOn(
-      controller as PaneScrollController & { markStructuralContentPending(): void },
-      'markStructuralContentPending',
-    );
+    // Spy on the stick, not the attached adapter: the timeline's internal
+    // nudges (structural live-content effect, restore settle pass) call
+    // stick.observe(...) directly and never cross the adapter.
+    const stick = lastStick();
+    observeSpy = vi.spyOn(stick, 'observe');
+    structuralSpy = vi.spyOn(stick, 'markStructuralContentPending');
     originalAttach(controller);
   };
+  const observeCalls = (kind: string): number =>
+    observeSpy?.mock.calls.filter((call: unknown[]) => call[0] === kind).length ?? 0;
   return {
-    instantCalls: () => instantSpy?.mock.calls.length ?? 0,
-    liveCalls: () => liveSpy?.mock.calls.length ?? 0,
+    instantCalls: () => observeCalls('content'),
+    liveCalls: () => observeCalls('live-content'),
     structuralMarks: () => structuralSpy?.mock.calls.length ?? 0,
     reset: () => {
-      instantSpy?.mockClear();
-      liveSpy?.mockClear();
+      observeSpy?.mockClear();
       structuralSpy?.mockClear();
     },
   };
 }
 
 beforeEach(async () => {
+  createdStickControllers.length = 0;
   resetBindingMocks();
   clearThreadScrollSnapshotsForTest();
   clearThreadVirtuaSizeCacheForTest();
@@ -307,14 +347,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
       set: (next: number) => { scrollTop = next; },
     });
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & {
-        setEscapedFromLock(next: boolean): void;
-        isAtBottom: boolean;
-      })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const ctrl = lastStick();
 
     clearThreadScrollSnapshotsForTest();
     ctrl.setEscapedFromLock(true);
@@ -380,11 +413,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const ctrl = lastStick();
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isSticky).toBe(true);
   });
@@ -402,11 +431,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const ctrl = lastStick();
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isSticky).toBe(true);
     expect(getThreadScrollSnapshot('new-blank-thread')).toEqual({ kind: 'bottom' });
@@ -470,10 +495,8 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
     let forceStickSpy: ReturnType<typeof vi.spyOn> | null = null;
     const origAttach = pane.attachScrollController.bind(pane);
-    pane.attachScrollController = (
-      ctrl: PaneScrollController & { forceStick(): void },
-    ) => {
-      forceStickSpy = vi.spyOn(ctrl, 'forceStick');
+    pane.attachScrollController = (ctrl: PaneScrollController) => {
+      forceStickSpy = vi.spyOn(lastStick(), 'forceStick');
       origAttach(ctrl);
     };
 
@@ -490,7 +513,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(forceStickSpy!).toHaveBeenCalledTimes(1);
   });
 
-  it('bottom-snapshot restore schedules a rAF notifyContentMaybeGrew settle pass', async () => {
+  it('bottom-snapshot restore schedules a rAF content-observation settle pass', async () => {
     // The synchronous forceStick at restore time lands scrollTop against
     // the geometry virtua reports at frame 0 from its initial estimates.
     // Late layout settling — composer-height RO updating scrollEl's
@@ -500,8 +523,8 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     // can shift the bottom by a few pixels one frame after forceStick.
     // The user-visible symptom of dropping the trailing rAF was landing
     // "half a scroll tick from the bottom" intermittently. Pin the
-    // contract by spying on notifyContentMaybeGrew and asserting it
-    // fires after one rAF tick.
+    // contract by spying on the stick's observe() and asserting a
+    // 'content' observation fires after one rAF tick.
     setThreadScrollSnapshot('thread-bottom-settle', { kind: 'bottom' });
     const pane = await buildPane(undefined, [
       makeItem({ id: 'a', summary: 'first' }),
@@ -509,12 +532,10 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     ]);
     pane.thread!.id = 'thread-bottom-settle';
 
-    let notifySpy: ReturnType<typeof vi.spyOn> | null = null;
+    let observeSpy: ReturnType<typeof vi.spyOn> | null = null;
     const origAttach = pane.attachScrollController.bind(pane);
-    pane.attachScrollController = (
-      ctrl: PaneScrollController & { notifyContentMaybeGrew(): void },
-    ) => {
-      notifySpy = vi.spyOn(ctrl, 'notifyContentMaybeGrew');
+    pane.attachScrollController = (ctrl: PaneScrollController) => {
+      observeSpy = vi.spyOn(lastStick(), 'observe');
       origAttach(ctrl);
     };
 
@@ -523,11 +544,13 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    expect(notifySpy).not.toBeNull();
-    const callsBeforeRaf = notifySpy!.mock.calls.length;
+    expect(observeSpy).not.toBeNull();
+    const contentCalls = (): number =>
+      observeSpy!.mock.calls.filter((call: unknown[]) => call[0] === 'content').length;
+    const callsBeforeRaf = contentCalls();
     // Drive one animation frame so the trailing settle pass fires.
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    expect(notifySpy!.mock.calls.length).toBeGreaterThan(callsBeforeRaf);
+    expect(contentCalls()).toBeGreaterThan(callsBeforeRaf);
   });
 
   it('still calls pane.loadUntilItem when a saved anchor item no longer exists', async () => {
@@ -574,11 +597,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const ctrl = lastStick();
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isSticky).toBe(true);
   });
@@ -610,11 +629,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const ctrl = lastStick();
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isSticky).toBe(true);
   });
@@ -844,10 +859,10 @@ describe('scroll integration — composer height + layout invariance', () => {
         makeItem({ id: 'tail', summary: 'tail' }),
       ]);
 
-      let liveNotifySpy: ReturnType<typeof vi.spyOn> | null = null;
+      let observeSpy: ReturnType<typeof vi.spyOn> | null = null;
       const origAttach = pane.attachScrollController.bind(pane);
       pane.attachScrollController = (ctrl: PaneScrollController) => {
-        liveNotifySpy = vi.spyOn(ctrl, 'notifyLiveContentMaybeGrew');
+        observeSpy = vi.spyOn(ctrl, 'observe');
         origAttach(ctrl);
       };
 
@@ -857,8 +872,10 @@ describe('scroll integration — composer height + layout invariance', () => {
       // settling so it doesn't pollute the baseline call count.
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-      expect(liveNotifySpy).not.toBeNull();
-      const callsBeforeFire = liveNotifySpy!.mock.calls.length;
+      expect(observeSpy).not.toBeNull();
+      const composerCalls = (): number =>
+        observeSpy!.mock.calls.filter((call: unknown[]) => call[0] === 'composer-geometry').length;
+      const callsBeforeFire = composerCalls();
 
       // Find the composer overlay and its registered callback. The
       // composer-RO is the one that observes `composerOverlay` in
@@ -878,11 +895,11 @@ describe('scroll integration — composer height + layout invariance', () => {
       } as ResizeObserverEntry;
       composerCallback([fakeEntry], {} as ResizeObserver);
 
-      // The synchronous notification must have happened before this
+      // The synchronous observation must have happened before this
       // assertion runs (no rAF awaited). Previously the call was queued
       // inside a `requestAnimationFrame` and the assertion would fail
       // until a frame elapsed.
-      expect(liveNotifySpy!.mock.calls.length).toBeGreaterThan(callsBeforeFire);
+      expect(composerCalls()).toBeGreaterThan(callsBeforeFire);
     } finally {
       roCapture.restore();
     }
@@ -901,7 +918,14 @@ describe('scroll integration — composer height + layout invariance', () => {
   // read"), which fails on the old gBCR-seeded behavior and passes on the
   // content-box-only helper. Do not re-add a happy-dom self-retrigger test.
 
-  it('composer-height growth uses the live-capable notification path during live output', async () => {
+  it('composer-height growth observes as composer-geometry (live-capable path)', async () => {
+    // The 'composer-geometry' kind routes to the controller's
+    // live-capable path, so active live output can spring through an
+    // activity-rail height change instead of snapping. The kind→path
+    // mapping itself is pinned by the controller-level
+    // "observe('composer-geometry') spring-chases / sync-pins" pair in
+    // useStickToBottom.svelte.test.ts; what ChatView owns is reporting
+    // the right observation kind.
     const roCapture = installResizeObserverCapture();
 
     try {
@@ -909,12 +933,10 @@ describe('scroll integration — composer height + layout invariance', () => {
         makeItem({ id: 'tail', summary: 'tail' }),
       ]);
 
-      let notifySpy: ReturnType<typeof vi.spyOn> | null = null;
-      let liveNotifySpy: ReturnType<typeof vi.spyOn> | null = null;
+      let observeSpy: ReturnType<typeof vi.spyOn> | null = null;
       const origAttach = pane.attachScrollController.bind(pane);
       pane.attachScrollController = (ctrl: PaneScrollController) => {
-        notifySpy = vi.spyOn(ctrl, 'notifyContentMaybeGrew');
-        liveNotifySpy = vi.spyOn(ctrl, 'notifyLiveContentMaybeGrew');
+        observeSpy = vi.spyOn(ctrl, 'observe');
         origAttach(ctrl);
       };
 
@@ -922,10 +944,8 @@ describe('scroll integration — composer height + layout invariance', () => {
       await tick();
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-      expect(notifySpy).not.toBeNull();
-      expect(liveNotifySpy).not.toBeNull();
-      notifySpy!.mockClear();
-      liveNotifySpy!.mockClear();
+      expect(observeSpy).not.toBeNull();
+      observeSpy!.mockClear();
 
       const composerOverlay = getByTestId('composer-overlay');
       const composerCallback = roCapture.callbacksByTarget.get(composerOverlay);
@@ -938,15 +958,14 @@ describe('scroll integration — composer height + layout invariance', () => {
       } as ResizeObserverEntry;
       composerCallback([fakeEntry], {} as ResizeObserver);
 
-      expect(liveNotifySpy!.mock.calls.length).toBe(1);
-      expect(notifySpy!.mock.calls.length).toBe(0);
+      expect(observeSpy!.mock.calls).toEqual([['composer-geometry']]);
     } finally {
       roCapture.restore();
     }
   });
 
   it('composer-height growth writes --composer-height directly on chatColumn so layout reads see the new value', async () => {
-    // Companion to the "synchronous notifyContentMaybeGrew" test. The
+    // Companion to the synchronous composer-observation test above. The
     // direct CSS-variable write is what makes the synchronous re-pin
     // correct — without it, `targetScrollTop()` would force layout with
     // the old --composer-height and pin to the pre-grow bottom. This
@@ -1122,11 +1141,9 @@ describe('scroll integration — auto-follow + button', () => {
     // After the input the chip's button is in the DOM (it may still
     // be in a fade-in transition; what matters is presence as a
     // signal that the user is no longer at-or-near the bottom).
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { escapedFromLock: boolean; isAtBottom: boolean })
-      | null;
-    expect(ctrl?.escapedFromLock).toBe(true);
-    expect(ctrl?.isAtBottom).toBe(false);
+    const ctrl = lastStick();
+    expect(ctrl.escapedFromLock).toBe(true);
+    expect(ctrl.isAtBottom).toBe(false);
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull();
   });
 
@@ -1161,18 +1178,16 @@ describe('scroll integration — auto-follow + button', () => {
     scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
     await waitForScrollIntent();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { escapedFromLock: boolean; isSticky: boolean; isAtBottom: boolean })
-      | null;
-    expect(ctrl?.escapedFromLock).toBe(true);
-    expect(ctrl?.isSticky).toBe(false);
+    const ctrl = lastStick();
+    expect(ctrl.escapedFromLock).toBe(true);
+    expect(ctrl.isSticky).toBe(false);
     // Escape wins over the visual near-bottom band, so the chip appears
     // and auto-follow stays broken.
-    expect(ctrl?.isAtBottom).toBe(false);
+    expect(ctrl.isAtBottom).toBe(false);
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull();
 
     Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1200 });
-    pane.scrollController?.notifyContentMaybeGrew();
+    pane.scrollController?.observe('content');
     expect(scrollTop).toBe(399);
   });
 
@@ -1207,14 +1222,12 @@ describe('scroll integration — auto-follow + button', () => {
     scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
     await waitForScrollIntent();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { escapedFromLock: boolean; isSticky: boolean })
-      | null;
-    expect(ctrl?.escapedFromLock).toBe(true);
-    expect(ctrl?.isSticky).toBe(false);
+    const ctrl = lastStick();
+    expect(ctrl.escapedFromLock).toBe(true);
+    expect(ctrl.isSticky).toBe(false);
 
     Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1200 });
-    pane.scrollController?.notifyContentMaybeGrew();
+    pane.scrollController?.observe('content');
     expect(scrollTop).toBe(399);
   });
 
@@ -1248,14 +1261,12 @@ describe('scroll integration — auto-follow + button', () => {
     scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
     await waitForScrollIntent();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { escapedFromLock: boolean; isSticky: boolean })
-      | null;
-    expect(ctrl?.escapedFromLock).toBe(false);
-    expect(ctrl?.isSticky).toBe(true);
+    const ctrl = lastStick();
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isSticky).toBe(true);
 
     Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1200 });
-    pane.scrollController?.notifyContentMaybeGrew();
+    pane.scrollController?.observe('content');
     expect(scrollTop).toBe(600);
   });
 
@@ -1360,10 +1371,8 @@ describe('scroll integration — auto-follow + button', () => {
     scrollTop = 100;
     scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
     await waitForScrollIntent();
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { escapedFromLock: boolean; isSticky: boolean })
-      | null;
-    expect(ctrl?.escapedFromLock).toBe(true);
+    const ctrl = lastStick();
+    expect(ctrl.escapedFromLock).toBe(true);
 
     // 2. User wheel-down — DOWN intent, browser scrolls to 397 (3 px
     //    above the actual bottom = 400 because scrollHeight=1000,
@@ -1381,11 +1390,11 @@ describe('scroll integration — auto-follow + button', () => {
     //    sync-captured distFromBottomAtEvent=3 still lets re-stick
     //    succeed.
     scrollHeight = 1060;
-    pane.scrollController?.notifyContentMaybeGrew();
+    pane.scrollController?.observe('content');
     await waitForScrollIntent();
 
-    expect(ctrl?.escapedFromLock).toBe(false);
-    expect(ctrl?.isSticky).toBe(true);
+    expect(ctrl.escapedFromLock).toBe(false);
+    expect(ctrl.isSticky).toBe(true);
   });
 });
 
@@ -1673,9 +1682,8 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // depth-counted lease + geometry notifications — that sidebar resizers,
     // resizable drawers, and ChatView's composer-height publication depend on.
     expect(typeof pane.scrollController?.pauseAutoScroll).toBe('function');
-    expect(typeof pane.scrollController?.notifyContentMaybeGrew).toBe('function');
-    expect(typeof pane.scrollController?.notifyLiveContentMaybeGrew).toBe('function');
-    expect(typeof pane.scrollController?.notifyHostLayoutSettled).toBe('function');
+    expect(typeof pane.scrollController?.observe).toBe('function');
+    expect(typeof pane.scrollController?.preserveScrollAnchor).toBe('function');
     expect(typeof pane.scrollController?.preserveTimelineWindowAnchor).toBe('function');
   });
 
@@ -1694,15 +1702,11 @@ describe('scroll integration — useStickToBottom wiring', () => {
     });
     expect(container.querySelector('[data-item-id="a"]')).not.toBeNull();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & {
-        setEscapedFromLock(value: boolean): void;
-      })
-      | null;
+    const ctrl = pane.scrollController;
     expect(ctrl?.preserveTimelineWindowAnchor).toBeTypeOf('function');
     if (!ctrl?.preserveTimelineWindowAnchor) return;
 
-    ctrl.setEscapedFromLock(true);
+    lastStick().setEscapedFromLock(true);
     const run = vi.fn();
     const keepsItem = vi.fn(() => false);
 
@@ -1718,15 +1722,12 @@ describe('scroll integration — useStickToBottom wiring', () => {
       makeItem({ id: 'a', summary: 'a' }),
       makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
     ]);
-    let ctrl: (PaneScrollController & {
-      runExternalScroll(action: () => void, options?: unknown): void;
-      setEscapedFromLock(value: boolean): void;
-    }) | null = null;
+    let ctrl: PaneScrollController | null = null;
     let runExternalScroll: ReturnType<typeof vi.spyOn> | null = null;
     const origAttach = pane.attachScrollController.bind(pane);
     pane.attachScrollController = (controller) => {
-      ctrl = controller as typeof ctrl;
-      runExternalScroll = vi.spyOn(ctrl!, 'runExternalScroll');
+      ctrl = controller;
+      runExternalScroll = vi.spyOn(lastStick(), 'runExternalScroll');
       origAttach(controller);
     };
 
@@ -1744,7 +1745,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(controller.preserveTimelineWindowAnchor).toBeTypeOf('function');
     if (!controller.preserveTimelineWindowAnchor) return;
 
-    controller.setEscapedFromLock(true);
+    lastStick().setEscapedFromLock(true);
     const run = vi.fn();
     const keepsItem = vi.fn((itemId: string) => itemId === 'a');
 
@@ -1763,20 +1764,17 @@ describe('scroll integration — useStickToBottom wiring', () => {
       makeItem({ id: 'a', summary: 'a' }),
       makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
     ]);
-    let ctrl: (PaneScrollController & {
-      forceStick(options?: unknown): void;
-      markAtBottom(): void;
-      runExternalScroll(action: () => void, options?: unknown): void;
-    }) | null = null;
+    let ctrl: PaneScrollController | null = null;
     let forceStick: ReturnType<typeof vi.spyOn> | null = null;
     let markAtBottom: ReturnType<typeof vi.spyOn> | null = null;
     let runExternalScroll: ReturnType<typeof vi.spyOn> | null = null;
     const origAttach = pane.attachScrollController.bind(pane);
     pane.attachScrollController = (controller) => {
-      ctrl = controller as typeof ctrl;
-      forceStick = vi.spyOn(ctrl!, 'forceStick');
-      markAtBottom = vi.spyOn(ctrl!, 'markAtBottom');
-      runExternalScroll = vi.spyOn(ctrl!, 'runExternalScroll');
+      ctrl = controller;
+      const stick = lastStick();
+      forceStick = vi.spyOn(stick, 'forceStick');
+      markAtBottom = vi.spyOn(stick, 'markAtBottom');
+      runExternalScroll = vi.spyOn(stick, 'runExternalScroll');
       origAttach(controller);
     };
 
@@ -1793,7 +1791,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(controller.preserveTimelineWindowAnchor).toBeTypeOf('function');
     if (!controller.preserveTimelineWindowAnchor) return;
 
-    controller.forceStick({ reason: 'restore' });
+    lastStick().forceStick({ reason: 'restore' });
     forceStick?.mockClear();
     markAtBottom?.mockClear();
     runExternalScroll?.mockClear();
@@ -1818,14 +1816,12 @@ describe('scroll integration — useStickToBottom wiring', () => {
       makeItem({ id: 'a', summary: 'a' }),
       makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
     ]);
-    let ctrl: (PaneScrollController & {
-      markAtBottom(): void;
-    }) | null = null;
+    let ctrl: PaneScrollController | null = null;
     let markAtBottom: ReturnType<typeof vi.spyOn> | null = null;
     const origAttach = pane.attachScrollController.bind(pane);
     pane.attachScrollController = (controller) => {
-      ctrl = controller as typeof ctrl;
-      markAtBottom = vi.spyOn(ctrl!, 'markAtBottom');
+      ctrl = controller;
+      markAtBottom = vi.spyOn(lastStick(), 'markAtBottom');
       origAttach(controller);
     };
 
@@ -1842,7 +1838,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(controller.preserveTimelineWindowAnchor).toBeTypeOf('function');
     if (!controller.preserveTimelineWindowAnchor) return;
 
-    controller.markAtBottom();
+    lastStick().markAtBottom();
     markAtBottom?.mockClear();
     const run = vi.fn();
 
@@ -1868,26 +1864,18 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
     await tick();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & {
-        escapedFromLock: boolean;
-        isSticky: boolean;
-        setEscapedFromLock(value: boolean): void;
-      })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const stick = lastStick();
 
-    expect(ctrl.isSticky).toBe(true);
-    ctrl.notifyHostLayoutSettled?.();
-    expect(ctrl.escapedFromLock).toBe(false);
-    expect(ctrl.isSticky).toBe(true);
+    expect(stick.isSticky).toBe(true);
+    pane.scrollController?.observe('host-layout');
+    expect(stick.escapedFromLock).toBe(false);
+    expect(stick.isSticky).toBe(true);
 
-    ctrl.setEscapedFromLock(true);
-    expect(ctrl.isSticky).toBe(false);
-    ctrl.notifyHostLayoutSettled?.();
-    expect(ctrl.escapedFromLock).toBe(true);
-    expect(ctrl.isSticky).toBe(false);
+    stick.setEscapedFromLock(true);
+    expect(stick.isSticky).toBe(false);
+    pane.scrollController?.observe('host-layout');
+    expect(stick.escapedFromLock).toBe(true);
+    expect(stick.isSticky).toBe(false);
   });
 
   it('host-layout reconciliation restores bottom intent when sticky state was stale but not escaped', async () => {
@@ -1900,26 +1888,18 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
     await tick();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & {
-        escapedFromLock: boolean;
-        isSticky: boolean;
-        setEscapedFromLock(value: boolean): void;
-      })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const stick = lastStick();
 
-    ctrl.setEscapedFromLock(true);
-    ctrl.setEscapedFromLock(false);
-    expect(ctrl.escapedFromLock).toBe(false);
-    expect(ctrl.isSticky).toBe(false);
+    stick.setEscapedFromLock(true);
+    stick.setEscapedFromLock(false);
+    expect(stick.escapedFromLock).toBe(false);
+    expect(stick.isSticky).toBe(false);
 
-    ctrl.notifyHostLayoutSettled?.();
+    pane.scrollController?.observe('host-layout');
 
     await waitFor(() => {
-      expect(ctrl.escapedFromLock).toBe(false);
-      expect(ctrl.isSticky).toBe(true);
+      expect(stick.escapedFromLock).toBe(false);
+      expect(stick.isSticky).toBe(true);
     });
   });
 
@@ -1940,9 +1920,9 @@ describe('scroll integration — useStickToBottom wiring', () => {
     release1();
     release1();
     release2();
-    // notifyContentMaybeGrew after release should not throw even when
+    // A content observation after release should not throw even when
     // the controller's geometry is unmeasured (happy-dom).
-    expect(() => ctrl.notifyContentMaybeGrew()).not.toThrow();
+    expect(() => ctrl.observe('content')).not.toThrow();
   });
 
   it('mid-stream upsertItem leaves the controller sticky (no scrollTop-direction inference)', async () => {
@@ -1963,11 +1943,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // PaneScrollController is narrow by design — see thread.svelte.ts.
     // Peek at the underlying controller's intent state to verify stickiness
     // survives the upsert without inferring up intent from scrollTop direction.
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const ctrl = lastStick();
     // Baseline: no explicit escape was triggered, no leases held.
     expect(ctrl.isSticky).toBe(true);
     expect(ctrl.escapedFromLock).toBe(false);
@@ -1999,11 +1975,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
     await tick();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { isSticky: boolean; escapedFromLock: boolean })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const ctrl = lastStick();
     expect(ctrl.isSticky).toBe(true);
     expect(ctrl.escapedFromLock).toBe(false);
 
@@ -2354,11 +2326,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
     await tick();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { isWarm: boolean })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const ctrl = lastStick();
 
     // Switch to a different uncached thread.
     const threadB = makeThread({ id: 'thread-b-cross' });
@@ -2432,9 +2400,10 @@ describe('scroll integration — useStickToBottom wiring', () => {
 });
 
 describe('scroll integration — draft placeholder transitions', () => {
-  // The defensive `setEscapedFromLock(true)` + `armWarmup()` +
-  // `armRestoreSnap()` block in MessageTimeline.svelte's `$effect.pre`
-  // is meant to suspend auto-follow until the restore $effect runs.
+  // The `armWarmupWithReset()` + `armRestoreSnap()` block in
+  // MessageTimeline.svelte's `$effect.pre` (armRestoreSnap carries the
+  // defensive escape) is meant to suspend auto-follow until the restore
+  // $effect runs.
   // But the restore $effect short-circuits on `!threadId`, and
   // `pane.threadId` returns null while `pane.draftPlaceholder` is set
   // (see thread.svelte.ts threadId getter). Without a draft-specific
@@ -2453,11 +2422,7 @@ describe('scroll integration — draft placeholder transitions', () => {
     await tick();
     await tick();
 
-    const ctrl = pane.scrollController as
-      | (PaneScrollController & { isAtBottom: boolean; escapedFromLock: boolean })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const ctrl = lastStick();
     // Sanity: post-restore, the real thread is sticky-bottom.
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isAtBottom).toBe(true);
@@ -2497,7 +2462,7 @@ describe('scroll integration — draft placeholder transitions', () => {
 
   it('draft → real transition still gates restore the normal way', async () => {
     // Inverse guard: the draft branch must NOT swallow the
-    // setEscapedFromLock + armWarmup + armRestoreSnap cycle for real
+    // armWarmup + armRestoreSnap (escape + consent) cycle for real
     // threads. If a future cleanup collapses both branches into
     // markAtBottom, this test fails — the new thread's restore would
     // never run because there is no escape to clear.
@@ -2543,11 +2508,7 @@ describe('scroll integration — draft placeholder transitions', () => {
     await tick();
     await tick();
 
-    const ctrl = draftPane.scrollController as
-      | (PaneScrollController & { isAtBottom: boolean; escapedFromLock: boolean })
-      | null;
-    expect(ctrl).not.toBeNull();
-    if (!ctrl) return;
+    const ctrl = lastStick();
     // After the real thread's restore runs, the controller is back
     // to sticky-bottom and the chip is hidden.
     expect(ctrl.escapedFromLock).toBe(false);

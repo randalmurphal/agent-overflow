@@ -54,8 +54,9 @@ export const AUTO_FOLLOW_BOTTOM_EPSILON_PX = 4;
 
 // Overshoot magnitude at which the delivery resolver snaps scrollTop
 // instantly even while a spring chase is in flight. Second policy
-// consumer: the controller's notifyLiveContentMaybeGrew mirrors the
-// same absorb-below/snap-above split for its structural nudges — a
+// consumer: the controller's live-content observation path (internal
+// notifyLiveContentMaybeGrew) mirrors the same absorb-below/snap-above
+// split for its structural nudges — a
 // change here applies to both. Small overshoots
 // (≤ this) come from transient streamdown re-renders —
 // parseIncompleteMarkdown auto-balancing unclosed code fences /
@@ -168,8 +169,8 @@ export interface ContentDecision {
 
 // Gate conditions for a spring chase. One predicate shared by the
 // delivery resolver, the controller's startSpringIfNeeded, and the
-// notifyLiveContentMaybeGrew path so the sites cannot drift on which
-// conditions allow the spring. The `warm` check is deliberately NOT part
+// live-content observation path (internal notifyLiveContentMaybeGrew)
+// so the sites cannot drift on which conditions allow the spring. The `warm` check is deliberately NOT part
 // of this predicate — warmth gates whether a positive delta may spring
 // at all, and the callers that need it check it explicitly.
 export interface SpringGateInputs {

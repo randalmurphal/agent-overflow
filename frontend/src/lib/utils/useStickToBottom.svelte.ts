@@ -47,11 +47,10 @@
 // External consumers (sidebar resizers, ChatView composer-height
 // publication, scrollLeaseDuringTransition helper) speak to this through
 // the PaneScrollController interface — pauseAutoScroll() returns a
-// depth-counted lease, notifyContentMaybeGrew() handles geometry changes
-// outside the content element. Both ChatView (composer overlay RO) and
-// ChannelView (composer flex-section RO) call notifyContentMaybeGrew
-// when their out-of-content height changes; the seam is identical on
-// both surfaces.
+// depth-counted lease, observe(kind) reports geometry changes outside
+// the content element. Both ChatView and ChannelView observe
+// 'composer-geometry' from their composer ResizeObservers when
+// out-of-content height changes; the seam is identical on both surfaces.
 
 import { tick } from 'svelte';
 import { isUiRenderTraceEnabled, recordUiTrace } from './uiRenderTrace';
@@ -324,6 +323,28 @@ function roundCssPx(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+/**
+ * Source hint for `observe(kind)` — what kind of geometry/content event
+ * the caller witnessed. The controller maps kinds onto its two internal
+ * notify paths:
+ *
+ * - `'content'` / `'host-layout'` → escape-aware instant re-pin
+ *   (composer padding, pane reorder, sidebar/terminal layout settles).
+ * - `'live-content'` / `'composer-geometry'` → the live-capable path
+ *   that honors animationMode and structural-append marks, so active
+ *   output can spring through the change instead of snapping (falls
+ *   back to the same instant re-pin when no spring is warranted).
+ *
+ * MessageTimeline's pane-facing adapter overrides `'host-layout'` to run
+ * its listRef-aware retry ladder; the raw controller mapping is the
+ * correct fallback for surfaces without one (ChannelView).
+ */
+export type ScrollObservationKind =
+  | 'content'
+  | 'live-content'
+  | 'composer-geometry'
+  | 'host-layout';
+
 export interface UseStickToBottomController {
   /** True when sticky AND no lease is held. Drives auto-follow gating. */
   readonly isSticky: boolean;
@@ -352,20 +373,14 @@ export interface UseStickToBottomController {
   /** Depth-counted lease that suspends auto-scroll until released. */
   pauseAutoScroll(): () => void;
   /**
-   * Notify the controller that the geometry around the content might
-   * have changed without contentEl resizing — composer height growth/
-   * shrink is the canonical case. Re-pins to the new target if sticky.
+   * Notify the controller that geometry or content may have changed in a
+   * way its own observers cannot see (composer padding, pane reorder,
+   * live content advancing without a usable contentRO delta). The kind
+   * is a source hint that picks the response path — see
+   * `ScrollObservationKind`. Escape/pause/user-intent aware: never
+   * yanks a user who scrolled away.
    */
-  notifyContentMaybeGrew(): void;
-  /**
-   * Notify the controller that live transcript content may have advanced
-   * without the content ResizeObserver producing a usable positive delta.
-   * Uses the same escape/pause/user-intent gates as notifyContentMaybeGrew,
-   * but honors animationMode and structural-append marks: active chat turns
-   * and just-appended command/tool row batches spring-chase instead of
-   * sync-pinning.
-   */
-  notifyLiveContentMaybeGrew(): void;
+  observe(kind: ScrollObservationKind): void;
   /**
    * Mark the next near-term content growth as append-like structural
    * transcript growth. This lets command/tool row batches spring-follow
@@ -403,16 +418,21 @@ export interface UseStickToBottomController {
    */
   forceStick(opts?: { reason?: 'user' | 'restore' }): void;
   /**
-   * Arm a one-shot consent for the next `forceStick({reason:'restore'})`
-   * call. Set by the thread-switch entry point (MessageTimeline's
-   * `$effect.pre`, ChannelView's initial-poll path) immediately
-   * before the restore $effect runs. Auto-clears on consume by the
-   * next restore-forceStick call, on outer-scroll escape intent
-   * (wheel / key / touch / pointer that can reach the chat scroller),
-   * and on any user-reason `forceStick()`. This is
-   * the load-bearing distinguisher between "the user is explicitly
-   * escaped" and "I just defensively set escape=true while preparing
-   * the new thread for restore."
+   * Begin a thread-restore transaction: defensively escape (cancel any
+   * spring, drop stale consent, flip to escaped so nothing auto-follows
+   * the outgoing thread's geometry during the DOM flush), then arm a
+   * one-shot consent for the next `forceStick({reason:'restore'})`.
+   * Called by the thread-switch entry point (MessageTimeline's
+   * `$effect.pre`, ChannelView's initial-poll path) BEFORE the DOM
+   * update flushes; the restore $effect consumes the consent after.
+   * The consent auto-clears on outer-scroll escape intent (wheel / key /
+   * touch / pointer that can reach the chat scroller) and on any
+   * user-reason `forceStick()` — the load-bearing distinguisher between
+   * "the user is explicitly escaped" and "the entry point defensively
+   * escaped while preparing the new thread for restore." The arm and the
+   * consume are deliberately separate calls: the consent's whole job is
+   * to span the flush window where a user gesture can land, so a single
+   * merged restore call could not provide this protection.
    */
   armRestoreSnap(): void;
   /**
@@ -438,13 +458,11 @@ export interface UseStickToBottomController {
    * can opt out of auto-restick on programmatic jumps.
    *
    * Calling with `next=true` also (a) cancels any in-flight spring
-   * chase and (b) clears
-   * any pending `armRestoreSnap()` consent — a fresh escape
-   * invalidates a yet-to-be-consumed restore-snap. The thread-switch
-   * entry point that legitimately wants the restore-snap calls
-   * `armRestoreSnap()` AFTER its defensive `setEscapedFromLock(true)`
-   * so the clear-then-set order still leaves the arm valid when the
-   * restore `$effect` runs.
+   * chase and (b) clears any pending `armRestoreSnap()` consent — a
+   * fresh escape invalidates a yet-to-be-consumed restore-snap.
+   * `armRestoreSnap()` itself runs its defensive escape through here
+   * BEFORE arming, so its arm survives this clear while any stale
+   * consent from an earlier path does not.
    *
    * Calling with `next=false` flips intent only — it does not consume
    * the restore-snap consent (that's `forceStick({reason:'restore'})`
@@ -664,8 +682,9 @@ export function createUseStickToBottomController(
   let sentinelEntryTarget = -1;
 
   // ===== Restore-snap consent state =====
-  // One-shot flag the thread-switch entry point arms immediately before
-  // the restore $effect runs (after the defensive `setEscapedFromLock`).
+  // One-shot flag the thread-switch entry point arms (via
+  // `armRestoreSnap()`, which sets the defensive escape and THEN arms)
+  // immediately before the restore $effect runs.
   // `forceStick({reason: 'restore'})` consumes the flag and proceeds;
   // when the flag is unset, that call NO-OPs. Any outer-scroll escape
   // intent (wheel / key / touch / pointer that can reach the scroll element), plus
@@ -673,7 +692,7 @@ export function createUseStickToBottomController(
   // also clears the flag, so a stale restore $effect that fires after
   // a user escape cannot clobber it. This is
   // the load-bearing distinguisher between "the user has explicitly
-  // escaped" and "the $effect.pre just defensively set escape=true
+  // escaped" and "armRestoreSnap just defensively set escape=true
   // while preparing the new thread for restore."
   let restoreSnapArmed = false;
 
@@ -968,8 +987,15 @@ export function createUseStickToBottomController(
   // is recorded (the gating predicate is `<`, so equal-or-greater
   // values record and reset).
   let springTickSinceLastTrace = SPRING_TICK_TRACE_SAMPLE - 1;
-  function writeProgrammaticScrollTop(caller: ScrollWriteCaller, value: number): void {
+  function writeScrollTop(caller: ScrollWriteCaller, value: number): void {
     if (!scrollEl) return;
+    // Hot path: spring follow can call this every frame. The app contract is
+    // that controller-owned scrollers do not get CSS-authored smooth scroll;
+    // only inline values need temporary suppression around the write.
+    const originalScrollBehavior = scrollEl.style.scrollBehavior;
+    const suppressScrollBehavior =
+      originalScrollBehavior !== '' && originalScrollBehavior !== 'auto';
+    if (suppressScrollBehavior) scrollEl.style.scrollBehavior = 'auto';
     // Determine whether this write will be traced BEFORE reading any
     // pre-write geometry. The sampling decision and the
     // isUiRenderTraceEnabled gate are both pure reads with no side
@@ -1021,17 +1047,10 @@ export function createUseStickToBottomController(
         isNearBottomState,
       }));
     }
-  }
-
-  function writeScrollTop(caller: ScrollWriteCaller, value: number): void {
-    if (!scrollEl) return;
-    // Hot path: spring follow can call this every frame. The app contract is
-    // that controller-owned scrollers do not get CSS-authored smooth scroll;
-    // only inline values need temporary suppression here.
-    const original = scrollEl.style.scrollBehavior;
-    if (original && original !== 'auto') scrollEl.style.scrollBehavior = 'auto';
-    writeProgrammaticScrollTop(caller, value);
-    if (original && original !== 'auto') scrollEl.style.scrollBehavior = original;
+    // Restore LAST: the style write dirties style state, so keeping it
+    // after every layout read above avoids forcing an extra recalc
+    // mid-sequence on the (rare) suppression path.
+    if (suppressScrollBehavior) scrollEl.style.scrollBehavior = originalScrollBehavior;
   }
 
   function recordProgrammaticScrollEventToken(top: number): void {
@@ -1874,11 +1893,11 @@ export function createUseStickToBottomController(
       springStopRequested = true;
       cancelSpring();
       // Clear any pending restore-snap consent: a fresh user escape
-      // invalidates a yet-to-be-consumed restore-snap. The thread-
-      // switch entry point that legitimately wants a restore-snap
-      // calls `armRestoreSnap()` AFTER its defensive setEscape, so
-      // this clear is the right default — a stale consent left over
-      // from an earlier path can't slip through.
+      // invalidates a yet-to-be-consumed restore-snap. armRestoreSnap
+      // runs its defensive escape through here BEFORE arming, so this
+      // clear is the right default — a stale consent left over from an
+      // earlier path can't slip through, and a legitimate arm survives
+      // because it is written after this clear.
       restoreSnapArmed = false;
     }
     if (escapedFromLockState === next) return;
@@ -1900,6 +1919,11 @@ export function createUseStickToBottomController(
   }
 
   function armRestoreSnap(): void {
+    // Defensive escape FIRST (it clears any prior arm), then arm. Folded
+    // into one call so the two consumers (thread switch, channel initial
+    // poll) cannot get the ordering wrong — see the interface doc for why
+    // arm and consume must stay separate calls.
+    setEscapedFromLock(true);
     restoreSnapArmed = true;
     if (isUiRenderTraceEnabled()) trace('scroll.restoreSnap.arm', () => ({
       isAtBottomState,
@@ -2172,6 +2196,27 @@ export function createUseStickToBottomController(
     structuralAppendSpringUntil = nowMs() + STRUCTURAL_APPEND_SPRING_WINDOW_MS;
   }
 
+  // Public observation entry point — maps the source hint onto the two
+  // internal notify paths (see ScrollObservationKind). 'host-layout'
+  // takes the instant path here; MessageTimeline's pane adapter
+  // intercepts that kind before it reaches the controller. Exhaustive
+  // switch so adding a kind forces a deliberate routing decision
+  // instead of silently falling through to the instant path.
+  function observe(kind: ScrollObservationKind): void {
+    switch (kind) {
+      case 'live-content':
+      case 'composer-geometry':
+        notifyLiveContentMaybeGrew();
+        return;
+      case 'content':
+      case 'host-layout':
+        notifyContentMaybeGrew();
+        return;
+      default:
+        kind satisfies never;
+    }
+  }
+
   function pauseAutoScroll(): () => void {
     pauseDepth += 1;
     if (isUiRenderTraceEnabled()) trace('scroll.pause.acquire', () => ({
@@ -2368,8 +2413,7 @@ export function createUseStickToBottomController(
       return warm;
     },
     pauseAutoScroll,
-    notifyContentMaybeGrew,
-    notifyLiveContentMaybeGrew,
+    observe,
     markStructuralContentPending,
     preserveScrollAnchor,
     attach,

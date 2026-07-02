@@ -153,13 +153,14 @@
         if (chatColumn) {
           chatColumn.style.setProperty('--composer-height', `${next}px`);
         }
-        // The notification is escape-aware (bails on escapedFromLockState /
+        // The observation is escape-aware (bails on escapedFromLockState /
         // pauseDepth>0 / !isAtBottomState) so a user who scrolled up between
         // thread switches isn't yanked back to the bottom by composer growth.
-        // The live-capable hook owns the spring-vs-instant decision: idle
-        // geometry still sync-pins, while active live output can keep
-        // spring-chasing through a working/todo rail height change.
-        pane.scrollController?.notifyLiveContentMaybeGrew();
+        // 'composer-geometry' routes to the live-capable path, which owns
+        // the spring-vs-instant decision: idle geometry still sync-pins,
+        // while active live output can keep spring-chasing through a
+        // working/todo rail height change.
+        pane.scrollController?.observe('composer-geometry');
       }
     });
     obs.observe(observed);

@@ -914,10 +914,9 @@ describe('createUseStickToBottomController', () => {
       // BEFORE the write lands (the mark must precede the scroll event the
       // write dispatches), and it fires from more than one caller into the
       // funnel — asserted here via the first-fire snap and forceStick.
-      // Spring ticks route through the same
-      // writeProgrammaticScrollTop chokepoint (the only scrollTop
-      // assignment in the controller), so per-caller assertions add no
-      // mechanism coverage beyond these two.
+      // Spring ticks route through the same writeScrollTop chokepoint
+      // (the only scrollTop assignment in the controller), so per-caller
+      // assertions add no mechanism coverage beyond these two.
       const el = document.createElement('div');
       const content = document.createElement('div');
       el.appendChild(content);
@@ -1432,6 +1431,34 @@ describe('createUseStickToBottomController', () => {
       controller.forceStick({ reason: 'restore' });
       expect(geom.scrollTop).toBe(100);
     });
+
+    it('armRestoreSnap sets the defensive escape (suspends auto-follow until the restore commits)', () => {
+      // Both consumers (MessageTimeline's thread-switch $effect.pre,
+      // ChannelView's initial-poll setup) always paired a defensive
+      // setEscapedFromLock(true) with armRestoreSnap(), in that exact
+      // order — the escape clears any prior arm, so arming must come
+      // second. The escape is folded into armRestoreSnap so the
+      // ordering cannot be gotten wrong. Without it, content growth
+      // between arm and restore would sync-pin against the outgoing
+      // surface's geometry (the perceived "snap under the cursor").
+      // This test also pins the internal order: escape-then-arm. If a
+      // regression flipped it, the escape would clear the fresh arm
+      // and the restore below would NO-OP.
+      expect(controller.escapedFromLock).toBe(false);
+      controller.armRestoreSnap();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // Auto-follow is suspended: a content-growth nudge does not pin.
+      geom.scrollTop = 100;
+      geom.scrollHeight = 1100;
+      controller.observe('content');
+      expect(geom.scrollTop).toBe(100);
+
+      // The armed restore is the single intentional commitment.
+      controller.forceStick({ reason: 'restore' });
+      expect(controller.escapedFromLock).toBe(false);
+      expect(geom.scrollTop).toBe(500); // 1100 - 600
+    });
   });
 
   describe('markAtBottom', () => {
@@ -1653,16 +1680,16 @@ describe('createUseStickToBottomController', () => {
     });
   });
 
-  describe('notifyContentMaybeGrew (composer-height path)', () => {
+  describe("observe('content') (composer-height path)", () => {
     it('writes scrollTop=target when sticky', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800); // initial
 
       // Composer grew → scrollHeight grew but contentEl.scrollHeight
       // didn't, so the content RO won't fire. Caller must invoke
-      // notifyContentMaybeGrew explicitly.
+      // observe('content') explicitly.
       geom.scrollHeight = 1100;
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
       // target = 1100 - 600 = 500.
       expect(geom.scrollTop).toBe(500);
     });
@@ -1671,7 +1698,7 @@ describe('createUseStickToBottomController', () => {
       controller.setEscapedFromLock(true);
       geom.scrollTop = 100;
       geom.scrollHeight = 1100;
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
       expect(geom.scrollTop).toBe(100);
     });
 
@@ -1679,7 +1706,7 @@ describe('createUseStickToBottomController', () => {
       const release = controller.pauseAutoScroll();
       geom.scrollHeight = 1100;
       const before = geom.scrollTop;
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
       expect(geom.scrollTop).toBe(before);
       release();
     });
@@ -1688,7 +1715,7 @@ describe('createUseStickToBottomController', () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       geom.scrollHeight = 1100;
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
       // Simulate a scroll event firing from the resulting layout flush.
       fireScroll(scrollEl);
       await nextTimer();
@@ -1976,7 +2003,7 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBe(400);
     });
 
-    it('notifyContentMaybeGrew does not pin after scrollbar pointer escape', async () => {
+    it("observe('content') does not pin after scrollbar pointer escape", async () => {
       stubScrollbarGutter(scrollEl);
 
       const ro = getRO();
@@ -1987,7 +2014,7 @@ describe('createUseStickToBottomController', () => {
       );
 
       geom.scrollHeight = 1100;
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
       expect(controller.escapedFromLock).toBe(true);
       expect(geom.scrollTop).toBe(400);
     });
@@ -2936,14 +2963,14 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(600);
     });
 
-    it('notifyLiveContentMaybeGrew spring-chases when warm AND mode=spring', async () => {
+    it("observe('live-content') spring-chases when warm AND mode=spring", async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
 
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
-      controller.notifyLiveContentMaybeGrew();
+      controller.observe('live-content');
 
       // Live-content nudge should not sync-pin to the new target. It uses
       // the same spring policy as contentRO positive deltas.
@@ -2954,7 +2981,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBeLessThan(800);
     });
 
-    it('notifyLiveContentMaybeGrew sync-pins when animation mode is instant', async () => {
+    it("observe('live-content') sync-pins when animation mode is instant", async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -2962,7 +2989,45 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
-      controller.notifyLiveContentMaybeGrew();
+      controller.observe('live-content');
+
+      expect(geom.scrollTop).toBe(800);
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(800);
+    });
+
+    // The two 'composer-geometry' tests pin the observe() kind→path
+    // mapping itself: ChatView reports composer growth with this kind
+    // precisely so active output can spring through an activity-rail
+    // height change (chat AGENTS.md operational rule). Remapping the
+    // kind to the instant path would pass every component-level test
+    // (they assert only the kind string at the pane adapter) but break
+    // that behavior — these fail instead.
+    it("observe('composer-geometry') spring-chases when warm AND mode=spring", async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      controller.observe('composer-geometry');
+
+      expect(geom.scrollTop).toBe(400);
+
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(800);
+    });
+
+    it("observe('composer-geometry') sync-pins when animation mode is instant", async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      mode = 'instant';
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      controller.observe('composer-geometry');
 
       expect(geom.scrollTop).toBe(800);
       for (let i = 0; i < 3; i++) await nextFrame();
@@ -3034,7 +3099,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       await advanceUntil(() => Math.abs(geom.scrollTop - 580) <= 1);
     });
 
-    it('notifyLiveContentMaybeGrew clamps instead of springing when already past target', async () => {
+    it("observe('live-content') clamps instead of springing when already past target", async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3045,14 +3110,14 @@ describe('createUseStickToBottomController — spring chase', () => {
       // instant clamp path.
       geom.scrollHeight = 950;
       geom.contentHeight = 750;
-      controller.notifyLiveContentMaybeGrew();
+      controller.observe('live-content');
 
       expect(geom.scrollTop).toBe(350);
       for (let i = 0; i < 3; i++) await nextFrame();
       expect(geom.scrollTop).toBe(350);
     });
 
-    it('notifyLiveContentMaybeGrew does nothing while escaped', async () => {
+    it("observe('live-content') does nothing while escaped", async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3060,14 +3125,14 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
-      controller.notifyLiveContentMaybeGrew();
+      controller.observe('live-content');
 
       expect(geom.scrollTop).toBe(400);
       for (let i = 0; i < 3; i++) await nextFrame();
       expect(geom.scrollTop).toBe(400);
     });
 
-    it('notifyLiveContentMaybeGrew does nothing while auto-scroll is paused', async () => {
+    it("observe('live-content') does nothing while auto-scroll is paused", async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3075,7 +3140,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
-      controller.notifyLiveContentMaybeGrew();
+      controller.observe('live-content');
 
       expect(geom.scrollTop).toBe(400);
       for (let i = 0; i < 3; i++) await nextFrame();
@@ -3083,7 +3148,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       release();
     });
 
-    it('notifyLiveContentMaybeGrew does nothing while user scroll intent is pending', async () => {
+    it("observe('live-content') does nothing while user scroll intent is pending", async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3091,21 +3156,39 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
-      controller.notifyLiveContentMaybeGrew();
+      controller.observe('live-content');
 
       expect(geom.scrollTop).toBe(400);
       for (let i = 0; i < 3; i++) await nextFrame();
       expect(geom.scrollTop).toBe(400);
     });
 
-    it('notifyContentMaybeGrew remains an instant layout nudge even in spring mode', async () => {
+    it("observe('content') remains an instant layout nudge even in spring mode", async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
 
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
+
+      expect(geom.scrollTop).toBe(800);
+      for (let i = 0; i < 3; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(800);
+    });
+
+    it("observe('host-layout') sync-pins even in spring mode (raw-controller mapping)", async () => {
+      // MessageTimeline's pane adapter intercepts 'host-layout' before
+      // it reaches the controller, but ChannelView registers the raw
+      // controller and PaneHost sends 'host-layout' to every pane —
+      // this pins that terminal mapping (instant path, not the spring).
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      controller.observe('host-layout');
 
       expect(geom.scrollTop).toBe(800);
       for (let i = 0; i < 3; i++) await nextFrame();
@@ -3113,7 +3196,7 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
 
     describe('stuck spring from instant pin during active chase', () => {
-      // When notifyContentMaybeGrew (composer-height RO) fires during an
+      // When observe('content') (composer-height RO) fires during an
       // active spring chase, instantPinAfterExternalGeometryChange writes
       // scrollTop = target. On the next tick: diff = 0, the velocity
       // update block is skipped, velocity stays frozen at its mid-chase
@@ -3146,7 +3229,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop).toBeLessThan(800);
 
         // Composer height change fires instant pin to target.
-        controller.notifyContentMaybeGrew();
+        controller.observe('content');
         expect(geom.scrollTop).toBe(800);
 
         // In production, the composer RO and content RO fire in
@@ -3207,7 +3290,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop).toBeLessThan(nearTarget + 3);
       });
 
-      it('notifyContentMaybeGrew during spring followed by small growth starts clean chase', async () => {
+      it("observe('content') during spring followed by small growth starts clean chase", async () => {
         const ro = getRO();
         ro.fire(contentEl, 800);
         await waitMs(150);
@@ -3220,7 +3303,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop).toBeGreaterThan(400);
 
         // Instant pin kills the active chase.
-        controller.notifyContentMaybeGrew();
+        controller.observe('content');
         expect(geom.scrollTop).toBe(600);
 
         // Advance frames with diff=0. Without the fix, velocity stays
@@ -3479,7 +3562,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop - posBeforeRow2).toBe(40);
       });
 
-      it('notifyLiveContentMaybeGrew during sentinel does not add phantom distance', async () => {
+      it("observe('live-content') during sentinel does not add phantom distance", async () => {
         const ro = getRO();
         ro.fire(contentEl, 800);
         await waitMs(150);
@@ -3493,7 +3576,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         const posBeforeNudge = geom.scrollTop;
 
         // Structural nudge fires but nothing actually grew.
-        controller.notifyLiveContentMaybeGrew();
+        controller.observe('live-content');
         for (let i = 0; i < 5; i++) await nextFrame();
 
         // scrollTop must not have moved — no geometry change.
@@ -3937,7 +4020,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(afterEscape);
     });
 
-    it('notifyContentMaybeGrew during spring does not leave the spring token stuck live', async () => {
+    it("observe('content') during spring does not leave the spring token stuck live", async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3949,7 +4032,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBeGreaterThan(400);
 
       // Instant pin to target.
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
       expect(geom.scrollTop).toBe(800);
 
       // Advance to let the spring arrive (velocity zeroed by the fix).
@@ -4001,15 +4084,15 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.isWarm).toBe(true);
 
       // 1. Composer grows during typing — ChatView's composer-RO calls
-      //    notifyContentMaybeGrew with scrollEl padding-bottom larger.
+      //    observe('content') with scrollEl padding-bottom larger.
       geom.scrollHeight = 1050;
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
       expect(geom.scrollTop).toBe(450); // pinned to new bottom
 
       // 2. User hits Enter. Composer text clears (shrinks); composer-RO
       //    fires again with smaller height.
       geom.scrollHeight = 1000;
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
 
       // 3. User message added — virtua mounts the row, contentRO fires
       //    positive delta. Spring mode is now active.
@@ -4263,7 +4346,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       );
 
       geom.scrollHeight = 1100;
-      controller.notifyContentMaybeGrew();
+      controller.observe('content');
       expect(controller.escapedFromLock).toBe(true);
       expect(geom.scrollTop).toBe(400);
     });
@@ -5778,7 +5861,7 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
   });
 
-  describe('notifyLiveContentMaybeGrew during sentinel — structural signature nudges', () => {
+  describe("observe('live-content') during sentinel — structural signature nudges", () => {
     it('does not restart spring when scrollTop equals target', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
@@ -5792,7 +5875,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       // Sentinel running. scrollTop === target === 500.
       const scrollTopBefore = geom.scrollTop;
-      controller.notifyLiveContentMaybeGrew();
+      controller.observe('live-content');
 
       // Should not move scrollTop — already at bottom, nothing grew.
       expect(geom.scrollTop).toBe(scrollTopBefore);
@@ -5800,7 +5883,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(scrollTopBefore);
     });
 
-    it('multiple notifyLiveContentMaybeGrew calls during sentinel do not cause visible scroll motion', async () => {
+    it("multiple observe('live-content') calls during sentinel do not cause visible scroll motion", async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -5815,7 +5898,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Simulate 4 structural signature changes (tool call lifecycle:
       // running → streaming → success → tool_completion).
       for (let i = 0; i < 4; i++) {
-        controller.notifyLiveContentMaybeGrew();
+        controller.observe('live-content');
         await nextFrame();
         await nextFrame();
       }
@@ -5824,7 +5907,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(scrollTopBefore);
     });
 
-    it('notifyLiveContentMaybeGrew with scrollTop 1px below target bumps retain but does not restart spring', async () => {
+    it("observe('live-content') with scrollTop 1px below target bumps retain but does not restart spring", async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -5837,7 +5920,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       // Simulate sub-pixel rounding leaving scrollTop 1px short.
       geom.scrollTop = 499;
-      controller.notifyLiveContentMaybeGrew();
+      controller.observe('live-content');
 
       // Should NOT start a visible spring animation for 1px.
       // The nudge bumps lastTargetChangedAt and calls
@@ -5913,7 +5996,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // MessageTimeline's structural-signature nudge runs after
       // tick+rAF. It must not bypass the contentRO overshoot policy
       // and instantly clamp the same small overshoot.
-      controller.notifyLiveContentMaybeGrew();
+      controller.observe('live-content');
       expect(geom.scrollTop).toBe(beforeCorrection);
 
       await advanceUntil(() => Math.abs(geom.scrollTop - 440) <= 1);

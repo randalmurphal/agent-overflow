@@ -482,7 +482,7 @@ describe('<ChannelView>', () => {
     // concluded" paragraph), the scroll container's clientHeight
     // changes — but useStickToBottom's content RO doesn't fire because
     // contentEl didn't change. ChannelView installs a second RO on the
-    // composer section that calls notifyContentMaybeGrew(), and the
+    // composer section that calls observe('composer-geometry'), and the
     // controller writes scrollTop = max(0, scrollHeight - clientHeight)
     // so the user stays pinned to the last message.
     const pane = await buildPane();
@@ -538,8 +538,8 @@ describe('<ChannelView>', () => {
     clientHeightValue = 640;
     composerRO.fire(composerEl, 28);
 
-    // notifyContentMaybeGrew runs synchronously inside the RO callback,
-    // so the re-pin is observable on the next microtask.
+    // The observation pins synchronously inside the RO callback, so the
+    // re-pin is observable on the next microtask.
     for (let i = 0; i < 3; i++) await Promise.resolve();
 
     // New target = 1000 - 640 = 360. Controller wrote scrollTop to
