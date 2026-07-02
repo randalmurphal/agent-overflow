@@ -1,39 +1,41 @@
 // Streaming outcome harness — Stage 0 of
 // docs/architecture/scroll-rearchitecture-plan.md. Mounts the REAL
 // MessageTimeline with a REAL pane in Chromium (real virtua windowing, real
-// ResizeObserver timing, real fonts/layout) and drives synthetic streaming
-// beats through the same seams production uses (pane.upsertItem /
-// pane.applyItemDelta + turn lifecycle). Asserts user-visible OUTCOMES only —
-// no controller internals, no mechanism spies — so the suite survives every
-// stage of the scroll rewrite. Guards contracts C1 (at-bottom auto-follow),
-// C9 (no buffer-drop remount churn from pin writes), and C16 (follow reads
-// as continuous motion, never moving away from the bottom); see
+// ResizeObserver timing, real fonts/layout) via the shared
+// timelineBrowserHarness and drives synthetic streaming beats through the
+// same seams production uses (pane.upsertItem / pane.applyItemDelta + turn
+// lifecycle). Asserts user-visible OUTCOMES only — no controller internals,
+// no mechanism spies — so the suite survives every stage of the scroll
+// rewrite. Guards contracts C1 (at-bottom auto-follow), C9 (no buffer-drop
+// remount churn from pin writes), and C16 (follow reads as continuous
+// motion, never moving away from the bottom); see
 // docs/architecture/scroll-contracts.md.
 //
 // Every threshold is relative (drops, deltas-to-bottom, unmount counts) —
 // never an absolute pixel position — because glyph metrics differ across
 // machines and the seed content is markdown whose rendered height is
 // font-dependent.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { describe, expect, it } from 'vitest';
 // Real production cascade: row margins, markdown typography, and the
 // [data-row-geometry-content] flow-root rule all participate in the
 // geometry under test (same coupling as rowMarginContainment.browser.test.ts).
 import '../../../app.css';
-import { loadSettings } from '../../stores/settings.svelte';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { raf, wait, waitFor } from '../../../test/helpers/browserFrames';
+import { makeItem } from '../../../test/helpers/chat';
+import { raf, wait } from '../../../test/helpers/browserFrames';
+import {
+  SEED_COUNT,
+  distanceToBottom,
+  mountTimeline,
+  observeRemovedRows,
+  seedTimelineItems,
+  setupTimelineHarness,
+  waitForQuietBottom,
+  type MountedTimeline,
+  type QuietBottomOptions,
+  type SeedProse,
+} from '../../../test/helpers/timelineBrowserHarness';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import type { Item } from '../../types/models';
-import MessageTimeline from './MessageTimeline.svelte';
 
-// ~44 seeded rows at 100-200px rendered height each ≈ 6-8k px of scrollback —
-// comfortably past viewport (600px) + virtua's 2×1800px buffers, so real
-// windowing is active and an above-viewport buffer drop has rows to drop.
-const SEED_COUNT = 44;
-const VIEWPORT_W_PX = 800;
-const VIEWPORT_H_PX = 600;
 // Real-timer beat cadence in the 30-60ms band the task targets; ~60 chars per
 // beat lands near the pane smoother's ~840cps reveal ceiling, so the harness
 // exercises both live reveal and the post-turn backlog drain.
@@ -62,139 +64,24 @@ const MAX_FRAME_DROP_PX = 1;
 const MAX_REMOVED_ROWS_PER_BATCH = 2;
 const MAX_REMOVED_ROWS_TOTAL = 6;
 
-interface Mounted {
-  app: object;
-  host: HTMLElement;
-  stop?: () => Promise<void>;
-}
-const mounted: Mounted[] = [];
+// Settle policy for this suite's quiet-point waits.
+const QUIET_BOTTOM: QuietBottomOptions = {
+  epsilonPx: QUIET_BOTTOM_EPSILON_PX,
+  stableFrames: 24,
+  frameBudget: 480,
+};
 
-beforeEach(async () => {
-  setBindingMock('GetSettings', async () => null);
-  await loadSettings();
-});
+// Streaming-flavored prose over the harness's shared seed shape.
+const SEED_PROSE: SeedProse = {
+  question: (i) => `Question ${i}: how should the scroll controller behave when row ${i} grows while the user is pinned at the bottom of the timeline?`,
+  replyLead: (i) => `Reply ${i}: the timeline keeps following because growth below the viewport extends the scrollable range, and the controller pins the new bottom in the same frame the content paints — wrapping across several visual lines at timeline width.`,
+  replyList: `- growth pins same-frame with **no lag**\n- pin writes are announced via \`markProgrammaticScroll\`\n- quiet points land within a couple of px of the bottom`,
+};
 
-afterEach(async () => {
-  for (const { app, host, stop } of mounted.splice(0)) {
-    await stop?.();
-    unmount(app);
-    host.remove();
-  }
-});
+setupTimelineHarness();
 
-function distanceToBottom(el: HTMLElement): number {
-  return el.scrollHeight - el.clientHeight - el.scrollTop;
-}
-
-// Markdown-ish transcript: alternating user asks and multi-paragraph
-// assistant replies with lists/bold/inline code, so rendered row heights vary
-// realistically and the markdown pipeline (streamdown) is genuinely in play.
-function seedItems(threadId: string): Item[] {
-  const items: Item[] = [];
-  for (let i = 0; i < SEED_COUNT; i++) {
-    const isUser = i % 2 === 0;
-    let summary: string;
-    if (isUser) {
-      summary = `Question ${i}: how should the scroll controller behave when row ${i} grows while the user is pinned at the bottom of the timeline?`;
-    } else {
-      const parts = [
-        `Reply ${i}: the timeline keeps following because growth below the viewport extends the scrollable range, and the controller pins the new bottom in the same frame the content paints — wrapping across several visual lines at timeline width.`,
-      ];
-      if (i % 3 === 0) {
-        parts.push(`- growth pins same-frame with **no lag**\n- pin writes are announced via \`markProgrammaticScroll\`\n- quiet points land within a couple of px of the bottom`);
-      }
-      if (i % 4 === 1) {
-        parts.push(`A second paragraph for reply ${i} so consecutive assistant rows do not all share one height bucket and virtua's estimate-to-measure corrections have real work to do.`);
-      }
-      summary = parts.join('\n\n');
-    }
-    items.push(makeItem({
-      id: `seed-${i}`,
-      threadId,
-      turnIndex: i,
-      itemIndex: 0,
-      kind: isUser ? 'user_text' : 'assistant_text',
-      role: isUser ? 'user' : 'assistant',
-      status: 'completed',
-      summary,
-      createdAt: i,
-      updatedAt: i,
-    }));
-  }
-  return items;
-}
-
-interface Harness {
-  pane: ThreadPane;
-  scrollEl: HTMLElement;
-  host: HTMLElement;
-  // afterEach entry — tests hang their monitor teardown on `entry.stop` so a
-  // failed assertion can't leak a running rAF sampler into the next test.
-  entry: Mounted;
-}
-
-// Geometry-quiet AND at-bottom for `stableFrames` consecutive frames. Covers
-// virtua's 150ms scrollend debounce, the smoother's backlog drain, and late
-// measure corrections without a fixed sleep.
-async function waitForQuietBottom(
-  scrollEl: HTMLElement,
-  label: string,
-  stableFrames = 24,
-  frameBudget = 480,
-): Promise<void> {
-  let stable = 0;
-  let lastHeight = -1;
-  for (let i = 0; i < frameBudget; i++) {
-    const height = scrollEl.scrollHeight;
-    if (height === lastHeight && distanceToBottom(scrollEl) <= QUIET_BOTTOM_EPSILON_PX) {
-      stable += 1;
-      if (stable >= stableFrames) return;
-    } else {
-      stable = 0;
-      lastHeight = height;
-    }
-    await raf();
-  }
-  throw new Error(`timed out waiting for quiet bottom: ${label}`);
-}
-
-async function mountTimeline(threadId: string): Promise<Harness> {
-  const pane = await buildPane(makeThread({ id: threadId }), seedItems(threadId));
-  const host = document.createElement('div');
-  // Fixed, definite size: MessageTimeline's root is `h-full`, so the host is
-  // the viewport. position:fixed keeps document scrollbars out of the test.
-  host.style.cssText = `position: fixed; top: 0; left: 0; width: ${VIEWPORT_W_PX}px; height: ${VIEWPORT_H_PX}px; background: #111;`;
-  document.body.appendChild(host);
-  const app = mount(MessageTimeline, { target: host, props: { pane } });
-  const entry: Mounted = { app, host };
-  mounted.push(entry);
-
-  const scrollEl = await (async () => {
-    await waitFor(
-      () => host.querySelector('[data-testid="message-timeline-scroll"]') !== null,
-      'scroll container to mount',
-    );
-    return host.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
-  })();
-  // Real windowing sanity: the whole point of the ssrCount seam is that this
-  // project does NOT flat-render every row. If this trips, the seam regressed
-  // and every outcome counter below is meaningless.
-  await waitFor(
-    () => scrollEl.querySelectorAll('[data-row-index]').length > 0,
-    'virtua to render rows',
-  );
-  expect(
-    scrollEl.querySelectorAll('[data-row-index]').length,
-    'browser project must run real virtua windowing (ssrCount seam)',
-  ).toBeLessThan(SEED_COUNT);
-  // Warm-up gate: content stays visibility:hidden until the measurement
-  // cascade settles; monitors must only start on the visible steady state.
-  await waitFor(() => {
-    const row = scrollEl.querySelector('[data-row-index]');
-    return row !== null && getComputedStyle(row).visibility === 'visible';
-  }, 'warm-up reveal');
-  await waitForQuietBottom(scrollEl, 'initial mount settle');
-  return { pane, scrollEl, host, entry };
+function mountStreamingTimeline(threadId: string): Promise<MountedTimeline> {
+  return mountTimeline(threadId, seedTimelineItems(threadId, SEED_PROSE), QUIET_BOTTOM);
 }
 
 interface OutcomeStats {
@@ -212,8 +99,8 @@ interface OutcomeMonitors {
 }
 
 // The outcome instruments: an rAF sampler (scrollTop reversals + chip
-// sightings) and a MutationObserver counting removed [data-row-index] rows —
-// the user-visible signature of the virtua buffer-drop remount churn.
+// sightings) and the harness's removed-row counter — the user-visible
+// signature of the virtua buffer-drop remount churn.
 function startOutcomeMonitors(scrollEl: HTMLElement, host: HTMLElement): OutcomeMonitors {
   const stats: OutcomeStats = {
     frames: 0,
@@ -222,21 +109,10 @@ function startOutcomeMonitors(scrollEl: HTMLElement, host: HTMLElement): Outcome
     removedRowsTotal: 0,
     maxRemovedRowsBatch: 0,
   };
-  const observer = new MutationObserver((records) => {
-    let batch = 0;
-    for (const record of records) {
-      for (const node of record.removedNodes) {
-        if (!(node instanceof Element)) continue;
-        batch += node.matches('[data-row-index]')
-          ? 1
-          : node.querySelectorAll('[data-row-index]').length;
-      }
-    }
-    if (batch === 0) return;
+  const removedRows = observeRemovedRows(scrollEl, (batch) => {
     stats.removedRowsTotal += batch;
     if (batch > stats.maxRemovedRowsBatch) stats.maxRemovedRowsBatch = batch;
   });
-  observer.observe(scrollEl, { childList: true, subtree: true });
 
   let running = true;
   let prevTop = scrollEl.scrollTop;
@@ -258,7 +134,7 @@ function startOutcomeMonitors(scrollEl: HTMLElement, host: HTMLElement): Outcome
   return {
     stats,
     resetCounters() {
-      observer.takeRecords();
+      removedRows.discardPending();
       prevTop = scrollEl.scrollTop;
       stats.frames = 0;
       stats.maxFrameDropPx = 0;
@@ -268,8 +144,7 @@ function startOutcomeMonitors(scrollEl: HTMLElement, host: HTMLElement): Outcome
     },
     async stop() {
       running = false;
-      observer.takeRecords();
-      observer.disconnect();
+      removedRows.end();
       await samplerDone;
     },
   };
@@ -344,7 +219,7 @@ function assertStreamOutcomes(stats: OutcomeStats, scrollEl: HTMLElement, label:
 describe('streaming outcome harness (real MessageTimeline × real virtua × Chromium)', () => {
   it('follows a pinned streaming tail without reversals, unmount bursts, or the chip', async () => {
     const threadId = 'thread-stream-follow';
-    const { pane, scrollEl, host, entry } = await mountTimeline(threadId);
+    const { pane, scrollEl, host, entry } = await mountStreamingTimeline(threadId);
     const monitors = startOutcomeMonitors(scrollEl, host);
     entry.stop = monitors.stop;
 
@@ -366,7 +241,7 @@ describe('streaming outcome harness (real MessageTimeline × real virtua × Chro
     await raf();
     await streamDeltaBeats(pane, threadId, 'live-tail', 24, SEED_COUNT + 1);
     finishTurn(pane, 'turn-live', SEED_COUNT);
-    await waitForQuietBottom(scrollEl, 'post-stream settle');
+    await waitForQuietBottom(scrollEl, 'post-stream settle', QUIET_BOTTOM);
     await monitors.stop();
 
     // The stream really produced motion — otherwise the invariants above
@@ -378,7 +253,7 @@ describe('streaming outcome harness (real MessageTimeline × real virtua × Chro
 
   it('stays pinned through structural appends (new rows) during an active turn', async () => {
     const threadId = 'thread-stream-structural';
-    const { pane, scrollEl, host, entry } = await mountTimeline(threadId);
+    const { pane, scrollEl, host, entry } = await mountStreamingTimeline(threadId);
     const monitors = startOutcomeMonitors(scrollEl, host);
     entry.stop = monitors.stop;
 
@@ -401,7 +276,7 @@ describe('streaming outcome harness (real MessageTimeline × real virtua × Chro
       await wait(2 * BEAT_MS);
     }
     finishTurn(pane, 'turn-struct', SEED_COUNT);
-    await waitForQuietBottom(scrollEl, 'post-append settle');
+    await waitForQuietBottom(scrollEl, 'post-append settle', QUIET_BOTTOM);
     await monitors.stop();
 
     expect(scrollEl.scrollHeight, 'appends must grow the timeline').toBeGreaterThan(heightBefore + 100);
@@ -417,7 +292,7 @@ describe('streaming outcome harness (real MessageTimeline × real virtua × Chro
 
   it('holds the bottom through a >400ms inter-beat gap and resumes following', async () => {
     const threadId = 'thread-stream-gap';
-    const { pane, scrollEl, host, entry } = await mountTimeline(threadId);
+    const { pane, scrollEl, host, entry } = await mountStreamingTimeline(threadId);
     const monitors = startOutcomeMonitors(scrollEl, host);
     entry.stop = monitors.stop;
 
@@ -438,7 +313,7 @@ describe('streaming outcome harness (real MessageTimeline × real virtua × Chro
     await streamDeltaBeats(pane, threadId, 'gap-tail', 8, SEED_COUNT + 1);
     // Let the reveal backlog drain so the gap segment measures a genuinely
     // quiet stall, then isolate the gap in its own counter window.
-    await waitForQuietBottom(scrollEl, 'pre-gap settle');
+    await waitForQuietBottom(scrollEl, 'pre-gap settle', QUIET_BOTTOM);
     monitors.resetCounters();
     await wait(500);
     expect(
@@ -453,7 +328,7 @@ describe('streaming outcome harness (real MessageTimeline × real virtua × Chro
     const topAtGapEnd = scrollEl.scrollTop;
     await streamDeltaBeats(pane, threadId, 'gap-tail', 8, SEED_COUNT + 20);
     finishTurn(pane, 'turn-gap', SEED_COUNT);
-    await waitForQuietBottom(scrollEl, 'post-resume settle');
+    await waitForQuietBottom(scrollEl, 'post-resume settle', QUIET_BOTTOM);
     await monitors.stop();
 
     expect(

@@ -8,11 +8,11 @@
 // landing. The floor system was deleted on that evidence; this test pins
 // those outcomes through the remaining rewrite stages.
 //
-// Built on the streamingOutcome browser-harness pattern: real MessageTimeline,
-// real pane, real virtua windowing, real Chromium layout. Markdown-only seed —
-// deliberately NO mermaid, so vite's dep optimizer never discovers a lazy
-// `import('mermaid')` mid-run (the cold-cache re-optimize reload documented by
-// the experiment).
+// Built on the shared timelineBrowserHarness (src/test/helpers/): real
+// MessageTimeline, real pane, real virtua windowing, real Chromium layout.
+// Markdown-only seed — deliberately NO mermaid, so vite's dep optimizer never
+// discovers a lazy `import('mermaid')` mid-run (the cold-cache re-optimize
+// reload documented by the experiment).
 //
 // "User scroll" = a direction-matched wheel event followed by stepped, direct
 // scrollEl.scrollTop writes. The wheel event is load-bearing: it is the
@@ -25,24 +25,25 @@
 // Thresholds are calibrated from healthy runs with ~2x headroom (same method
 // as streamingOutcome.browser.test.ts); the healthy-run numbers are recorded
 // next to each constant.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { describe, expect, it } from 'vitest';
 // Real production cascade: row margins and the [data-row-geometry-content]
 // flow-root rule participate in the geometry under test.
 import '../../../app.css';
-import { loadSettings } from '../../stores/settings.svelte';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { raf, waitFor } from '../../../test/helpers/browserFrames';
-import type { Item } from '../../types/models';
-import MessageTimeline from './MessageTimeline.svelte';
+import { raf } from '../../../test/helpers/browserFrames';
+import {
+  SEED_COUNT,
+  distanceToBottom,
+  mountTimeline,
+  observeRemovedRows,
+  seedTimelineItems,
+  setupTimelineHarness,
+  waitForQuietBottom,
+  waitForQuietTop,
+  type FrameSettleOptions,
+  type QuietBottomOptions,
+  type SeedProse,
+} from '../../../test/helpers/timelineBrowserHarness';
 
-const VIEWPORT_W_PX = 800;
-const VIEWPORT_H_PX = 600;
-// ~44 markdown rows at 100-200px rendered height ≈ 6-8k px of scrollback —
-// far past viewport + virtua's 2×1800px buffers, so windowing is active and
-// scroll-away genuinely unmounts the tail.
-const SEED_COUNT = 44;
 const AWAY_RETURN_CYCLES = 2;
 // Post-landing observation window while just-remounted above-viewport rows
 // finish settling — the shrink-perturbs-the-pin window.
@@ -72,71 +73,22 @@ const MAX_REMOVED_ROWS_PER_PHASE = 80;
 // 2 tolerates a late single-row window adjust without admitting a burst.
 const MAX_PARKED_REMOVED_ROWS = 2;
 
-interface Mounted {
-  app: object;
-  host: HTMLElement;
-  stop?: () => Promise<void>;
-}
-const mounted: Mounted[] = [];
+// Settle policy for this suite's quiet-point waits (bottom and top share it).
+const SETTLE: FrameSettleOptions = { stableFrames: 18, frameBudget: 600 };
+const QUIET_BOTTOM: QuietBottomOptions = { ...SETTLE, epsilonPx: QUIET_BOTTOM_EPSILON_PX };
 
-beforeEach(async () => {
-  setBindingMock('GetSettings', async () => null);
-  await loadSettings();
-});
+// Remount-flavored prose over the harness's shared seed shape.
+const SEED_PROSE: SeedProse = {
+  question: (i) => `Question ${i}: how should the scroll controller behave when row ${i} remounts while the user is scrolling back to the bottom of the timeline?`,
+  replyLead: (i) => `Reply ${i}: a remounted row must come back at its measured height, so the return leg reads as continuous motion — wrapping across several visual lines at timeline width.`,
+  replyList: `- remounts land at measured size\n- no totalSize dip while returning\n- the landing rests within a couple of px of the bottom`,
+};
 
-afterEach(async () => {
-  for (const { app, host, stop } of mounted.splice(0)) {
-    await stop?.();
-    unmount(app);
-    host.remove();
-  }
-});
-
-function distanceToBottom(el: HTMLElement): number {
-  return el.scrollHeight - el.clientHeight - el.scrollTop;
-}
-
-// Markdown-ish transcript (mirrors streamingOutcome's seed): alternating user
-// asks and multi-paragraph assistant replies so rendered row heights vary and
-// the markdown pipeline is genuinely in play.
-function seedItems(threadId: string): Item[] {
-  const items: Item[] = [];
-  for (let i = 0; i < SEED_COUNT; i++) {
-    const isUser = i % 2 === 0;
-    let summary: string;
-    if (isUser) {
-      summary = `Question ${i}: how should the scroll controller behave when row ${i} remounts while the user is scrolling back to the bottom of the timeline?`;
-    } else {
-      const parts = [
-        `Reply ${i}: a remounted row must come back at its measured height, so the return leg reads as continuous motion — wrapping across several visual lines at timeline width.`,
-      ];
-      if (i % 3 === 0) {
-        parts.push(`- remounts land at measured size\n- no totalSize dip while returning\n- the landing rests within a couple of px of the bottom`);
-      }
-      if (i % 4 === 1) {
-        parts.push(`A second paragraph for reply ${i} so consecutive assistant rows do not all share one height bucket and virtua's estimate-to-measure corrections have real work to do.`);
-      }
-      summary = parts.join('\n\n');
-    }
-    items.push(makeItem({
-      id: `seed-${i}`,
-      threadId,
-      turnIndex: i,
-      itemIndex: 0,
-      kind: isUser ? 'user_text' : 'assistant_text',
-      role: isUser ? 'user' : 'assistant',
-      status: 'completed',
-      summary,
-      createdAt: i,
-      updatedAt: i,
-    }));
-  }
-  return items;
-}
+setupTimelineHarness();
 
 // ---------------------------------------------------------------------------
-// Phase monitor: one rAF sampler + one MutationObserver for the whole test,
-// sliced into labeled phases (away / return / parked per cycle).
+// Phase monitor: one rAF sampler + one removed-row counter for the whole
+// test, sliced into labeled phases (away / return / parked per cycle).
 // ---------------------------------------------------------------------------
 interface DipEvent {
   magnitudePx: number;
@@ -173,23 +125,11 @@ function createPhaseMonitor(scrollEl: HTMLElement): PhaseMonitor {
   }
   let phase: ActivePhase | null = null;
 
-  const observer = new MutationObserver((records) => {
+  const removedRows = observeRemovedRows(scrollEl, (batch) => {
     if (!phase) return;
-    let removed = 0;
-    for (const record of records) {
-      for (const node of record.removedNodes) {
-        if (!(node instanceof Element)) continue;
-        removed += node.matches('[data-row-index]')
-          ? 1
-          : node.querySelectorAll('[data-row-index]').length;
-      }
-    }
-    if (removed > 0) {
-      phase.removedRowsTotal += removed;
-      if (removed > phase.maxRemovedBatch) phase.maxRemovedBatch = removed;
-    }
+    phase.removedRowsTotal += batch;
+    if (batch > phase.maxRemovedBatch) phase.maxRemovedBatch = batch;
   });
-  observer.observe(scrollEl, { childList: true, subtree: true });
 
   let running = true;
   // Named function, not an IIFE: TS control-flow analysis flows INTO an IIFE
@@ -237,7 +177,7 @@ function createPhaseMonitor(scrollEl: HTMLElement): PhaseMonitor {
   return {
     begin(label) {
       if (phase) throw new Error(`phase ${phase.label} still open when beginning ${label}`);
-      observer.takeRecords();
+      removedRows.discardPending();
       phase = {
         label,
         frames: 0,
@@ -252,6 +192,10 @@ function createPhaseMonitor(scrollEl: HTMLElement): PhaseMonitor {
     },
     end(): PhaseStats {
       if (!phase) throw new Error('no phase open');
+      // Drain queued-but-undelivered removal records into THIS phase before
+      // closing it — after `phase = null` the counter callback would drop
+      // them on its null-phase guard.
+      removedRows.flush();
       const p = phase;
       phase = null;
       if (p.openDip) {
@@ -272,8 +216,7 @@ function createPhaseMonitor(scrollEl: HTMLElement): PhaseMonitor {
     },
     async stop() {
       running = false;
-      observer.takeRecords();
-      observer.disconnect();
+      removedRows.end();
       await samplerDone;
     },
   };
@@ -282,56 +225,6 @@ function createPhaseMonitor(scrollEl: HTMLElement): PhaseMonitor {
 // ---------------------------------------------------------------------------
 // Scroll choreography
 // ---------------------------------------------------------------------------
-async function waitForQuietBottom(
-  scrollEl: HTMLElement,
-  label: string,
-  stableFrames = 18,
-  frameBudget = 600,
-): Promise<void> {
-  let stable = 0;
-  let lastHeight = -1;
-  for (let i = 0; i < frameBudget; i++) {
-    const height = scrollEl.scrollHeight;
-    if (height === lastHeight && distanceToBottom(scrollEl) <= QUIET_BOTTOM_EPSILON_PX) {
-      stable += 1;
-      if (stable >= stableFrames) return;
-    } else {
-      stable = 0;
-      lastHeight = height;
-    }
-    await raf();
-  }
-  throw new Error(`timed out waiting for quiet bottom: ${label}`);
-}
-
-// Quiet at the very top AND the tail row genuinely unmounted — the
-// precondition for the return leg to be a real remount wave. Throws on
-// timeout so a vacuous run (windowing regressed, nothing unmounted) cannot
-// masquerade as a passing outcome.
-async function waitForQuietTop(
-  scrollEl: HTMLElement,
-  tailRowIndex: number,
-  label: string,
-  stableFrames = 18,
-  frameBudget = 600,
-): Promise<void> {
-  let stable = 0;
-  let lastHeight = -1;
-  for (let i = 0; i < frameBudget; i++) {
-    const tailGone = scrollEl.querySelector(`[data-row-index="${tailRowIndex}"]`) === null;
-    const height = scrollEl.scrollHeight;
-    if (scrollEl.scrollTop <= 1 && height === lastHeight && tailGone) {
-      stable += 1;
-      if (stable >= stableFrames) return;
-    } else {
-      stable = 0;
-      lastHeight = height;
-    }
-    await raf();
-  }
-  throw new Error(`timed out waiting for quiet top (tail row must unmount): ${label}`);
-}
-
 // Emulated user scroll: a direction-matched wheel event (the controller's
 // escape/return-intent signal) followed by stepped, unmarked scrollTop writes
 // (Chromium fires real scroll events for each). See the header for why both
@@ -350,34 +243,11 @@ async function userScrollTo(scrollEl: HTMLElement, targetTop: number, steps = 8)
 describe('scroll-away/return remount outcomes (real MessageTimeline × Chromium)', () => {
   it('returns to the bottom with no dips, no reversals, and bounded unmount batches', { timeout: 60_000 }, async () => {
     const threadId = 'thread-remount-return';
-    const pane = await buildPane(makeThread({ id: threadId }), seedItems(threadId));
-    const host = document.createElement('div');
-    host.style.cssText = `position: fixed; top: 0; left: 0; width: ${VIEWPORT_W_PX}px; height: ${VIEWPORT_H_PX}px; background: #111;`;
-    document.body.appendChild(host);
-    const app = mount(MessageTimeline, { target: host, props: { pane } });
-    const entry: Mounted = { app, host };
-    mounted.push(entry);
-
-    await waitFor(
-      () => host.querySelector('[data-testid="message-timeline-scroll"]') !== null,
-      'scroll container to mount',
+    const { scrollEl, entry } = await mountTimeline(
+      threadId,
+      seedTimelineItems(threadId, SEED_PROSE),
+      QUIET_BOTTOM,
     );
-    const scrollEl = host.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
-    await waitFor(
-      () => scrollEl.querySelectorAll('[data-row-index]').length > 0,
-      'virtua to render rows',
-    );
-    // Real windowing sanity: without it, scroll-away unmounts nothing and
-    // every outcome below passes vacuously.
-    expect(
-      scrollEl.querySelectorAll('[data-row-index]').length,
-      'browser project must run real virtua windowing',
-    ).toBeLessThan(SEED_COUNT);
-    await waitFor(() => {
-      const row = scrollEl.querySelector('[data-row-index]');
-      return row !== null && getComputedStyle(row).visibility === 'visible';
-    }, 'warm-up reveal');
-    await waitForQuietBottom(scrollEl, 'initial mount settle');
 
     const monitor = createPhaseMonitor(scrollEl);
     entry.stop = monitor.stop;
@@ -387,7 +257,7 @@ describe('scroll-away/return remount outcomes (real MessageTimeline × Chromium)
     for (let cycle = 1; cycle <= AWAY_RETURN_CYCLES; cycle++) {
       monitor.begin(`c${cycle}-away`);
       await userScrollTo(scrollEl, 0);
-      await waitForQuietTop(scrollEl, tailRowIndex, `cycle ${cycle} away`);
+      await waitForQuietTop(scrollEl, tailRowIndex, `cycle ${cycle} away`, SETTLE);
       phases.push(monitor.end());
 
       monitor.begin(`c${cycle}-return`);
@@ -401,7 +271,7 @@ describe('scroll-away/return remount outcomes (real MessageTimeline × Chromium)
           scrollEl.scrollTop = scrollEl.scrollHeight;
         }
       }
-      await waitForQuietBottom(scrollEl, `cycle ${cycle} return`);
+      await waitForQuietBottom(scrollEl, `cycle ${cycle} return`, QUIET_BOTTOM);
       phases.push(monitor.end());
 
       monitor.begin(`c${cycle}-parked`);
