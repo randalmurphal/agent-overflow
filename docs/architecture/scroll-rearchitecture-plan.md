@@ -17,6 +17,10 @@ Load-bearing claims were spot-verified against the code before inclusion.
 
 ## 1. Why this system is fragile (root causes, evidence-backed)
 
+*(Root causes and line citations describe the pre-Stage-3 baseline; the
+descriptor gate and the HOLD > RETAIN coupling below were deleted in
+Stage 3c — see the Stage-3 verdict table.)*
+
 1. **One shared mutable scalar, four writers, no ownership protocol.**
    `scrollTop` is written by the controller, virtua's `$fixScrollJump`, the
    browser (clamping), and the user. Every writer must guess what the others
@@ -181,15 +185,15 @@ deliberately.
 
 ### Delete at Stage 3 (dies with single-writer routing)
 
-| Item | Lines | Why it exists today |
-|---|---|---|
-| scrollTop descriptor gate: install/uninstall + 9-tier setter + anchor-redirect + magnitude carve-outs | ~290 | Sole purpose is filtering virtua's direct `$fixScrollJump` writes; every tier is a drop-vs-pass regression. Suppression desyncs virtua's model (it re-syncs *from scroll events*) — under routing, "decline to write" pokes ACTION_SCROLL instead, safe by construction |
-| Sentinel gate-holding rAF loop (zombie rAF keeping `springToken` nonzero) | ~40 | Keeps the gate closed across >350ms inter-chunk gaps |
-| `SPRING_MODE_HOLD_MS > RETAIN_ANIMATION_DURATION_MS` cross-file invariant + its test | — | Only keeps the gate closed for the sentinel's lifetime |
-| `resizeCorrelatedUntaggedScrollBudget` | ~15 | "virtua emits one untagged scroll jump per measurement correction" — routed writes are tagged by construction |
-| Negative-delta re-pin's mid-chase spring carve-out | ~20 | Two racing responses (RO pin vs spring) to virtua's estimate/correction pair |
-| H1/H2 structural nudge machine + M1 rAF retry ladder (MessageTimeline) | — | Compensations for unobservable virtua timing; resolver absorbs |
-| `runExternalScroll`'s 100ms time-window heuristic | — | Navigation becomes an owned write; the wrapper API stays |
+| Item | Lines | Why it exists today | Stage-3c verdict |
+|---|---|---|---|
+| scrollTop descriptor gate: install/uninstall + 9-tier setter + anchor-redirect + magnitude carve-outs | ~290 | Sole purpose is filtering virtua's direct `$fixScrollJump` writes; every tier is a drop-vs-pass regression. Suppression desyncs virtua's model (it re-syncs *from scroll events*) — under routing, "decline to write" pokes ACTION_SCROLL instead, safe by construction | **DELETED.** Implementation-level gate tests deleted; decision-level coverage moved to `resolver.test.ts` + the applier describe; outcome coverage in `compensationOutcome.browser.test.ts` |
+| Sentinel gate-holding rAF loop (zombie rAF keeping `springToken` nonzero) | ~40 | Keeps the gate closed across >350ms inter-chunk gaps | **KEPT (divergence).** The loop was never gate-only: it (a) keeps `springActive` true for the compensation resolver's decline tier — the routed replacement for "keep the gate closed across gaps"; (b) keeps the negative-delta carve-out engaged; (c) owns `sentinelEntryTarget`, the oscillation-recovery state both snap sites consume. Only its gate-referencing comments died |
+| `SPRING_MODE_HOLD_MS > RETAIN_ANIMATION_DURATION_MS` cross-file invariant + its test | — | Only keeps the gate closed for the sentinel's lifetime | **DELETED** (the invariant + its test + the wire-round-gap describe). The compensation resolver is mode-free; a compensation after sentinel death resolves through pass/redirect, both safe. Constants remain as independent tuning values; a wire-round-gap redirect test at the applier seam (real latch) replaces the describe |
+| `resizeCorrelatedUntaggedScrollBudget` | ~15 | "virtua emits one untagged scroll jump per measurement correction" — routed writes are tagged by construction | **KEPT (divergence).** Routing removed virtua's untagged jump, but browser clamp scrolls (scrollHeight shrinking under `scrollTop + clientHeight` from virtua's row-RO style mutations) are still untagged, resize-correlated, and race the same 1ms+rAF clear. Comment updated to name the remaining producer |
+| Negative-delta re-pin's mid-chase spring carve-out | ~20 | Two racing responses (RO pin vs spring) to virtua's estimate/correction pair | **KEPT (divergence).** The race is controller-vs-controller (sync pin vs in-flight spring over contentRO deltas); routing virtua's *scrollTop writes* removes neither racer. Also the sentinel's reason-to-exist (b) |
+| H1/H2 structural nudge machine + M1 rAF retry ladder (MessageTimeline) | — | Compensations for unobservable virtua timing; resolver absorbs | **DEFERRED (divergence).** "Resolver absorbs" assumed a per-frame resolver; the shipped Stage-2 resolver is delivery-driven. H1/H2 compensates for deliveries that never happen (thinking rows tail-pin internally → no outer RO delta), M1 for `listRef` being unbound during pane reorder — neither is a virtua write-path problem. Re-evaluate at Stage 4/5 |
+| `runExternalScroll`'s 100ms time-window heuristic | — | Navigation becomes an owned write; the wrapper API stays | **KEPT (divergence).** Only the compensation write was routed; scheduled scrolls (`scrollToIndex`) still write the DOM inside virtua, and the window is what classifies their scroll *events* as non-user. Its gate tier died with the gate. Routing scheduled scrolls (the optional patch extension) would retire it — Stage 4/5 candidate |
 
 ### Keep (independent of virtua and the churn)
 
@@ -323,6 +327,15 @@ seq-509 family) — each gets an outcome-level regression test against the
 resolver before the gate is removed, plus a paired browser tripwire
 ("applier receives the delta / default write no longer fires") as the new
 patch drop-rule.
+
+**Stage-3c executed:** the gate (~290 lines incl. rationale + tests'
+implementation tier) and the HOLD > RETAIN invariant are gone; per-item
+verdicts — including the four table rows that did NOT die and why — are
+recorded in the table's verdict column above. Gate-flavored tests were
+rewritten at the `applyVirtuaScrollCompensation` seam (redirect quartet,
+pause/escape/restore/mode-flip passes, sentinel decline/pass pair, plus a
+new post-restore decline-re-arm test and a wire-round-gap redirect test
+driven by the real production latch).
 
 Cost acknowledged: the core hunk lands in minified, name-mangled code —
 re-rolls on version bumps are more brittle than the current adapter-only

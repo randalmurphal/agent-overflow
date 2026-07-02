@@ -142,18 +142,19 @@ const SPRING_MAX_CATCHUP_STEPS = 3;
 // chunks and stop, then have to spin up again on the next chunk —
 // visibly jittery at chunk boundaries. Once this window expires AND
 // animationMode is still 'spring', the spring enters sentinel mode
-// (re-rAFs without writing, keeping springToken non-zero) so the
-// external write gate and negative-delta carve-out stay engaged
-// across gaps > 350ms (async shiki loads, parseIncompleteMarkdown
-// rebalances). The sentinel cancels on the next tick where
-// animationMode flips to 'instant' (no live content advanced within the
-// consumer's hold window — see MessageTimeline's content-keyed latch).
-//
-// Exported so the colocated test can assert the load-bearing relationship
-// SPRING_MODE_HOLD_MS > RETAIN_ANIMATION_DURATION_MS against the LIVE
-// constant: the latch must keep reporting 'spring' for at least the full
-// sentinel lifetime after the last content stamp, or the gate opens
-// mid-sentinel and virtua's $fixScrollJump snaps scrollTop.
+// (re-rAFs without writing, keeping springToken non-zero) so
+// `springActive` stays true across gaps > 350ms (async shiki loads,
+// parseIncompleteMarkdown rebalances) for the two resolver decisions
+// that key on it: the virtua-compensation decline tier
+// (resolveVirtuaCompensation) and the negative-delta mid-chase spring
+// carve-out (resolveContentDelivery). The sentinel cancels on the next
+// tick where animationMode flips to 'instant' (no live content advanced
+// within the consumer's hold window — see MessageTimeline's
+// content-keyed latch). No ordering between that hold window and this
+// constant is required for correctness: a compensation arriving after
+// the sentinel died resolves through the pass/redirect tiers, both safe
+// (the historical HOLD > RETAIN cross-file invariant died with the
+// descriptor gate — see resolveVirtuaCompensation's provenance notes).
 export const RETAIN_ANIMATION_DURATION_MS = 350;
 // Spring arrival: within the shared ARRIVAL_DISTANCE_PX band
 // (scroll/resolver.ts) AND velocity below 0.5 px-per-60fps-frame means
@@ -614,52 +615,6 @@ export function createUseStickToBottomController(
   let externalScrollIgnoreUntil = 0;
   let externalScrollClearTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // ===== External scrollTop write gate =====
-  // virtua's `$fixScrollJump` writes `scrollTop` DIRECTLY when a row's
-  // ResizeObserver fires for an above-viewport / viewport-spanning row
-  // (virtua@0.49.1 core/index.js:259-266, called from the J:m hook).
-  // That's an entirely separate writer from `listRef.scrollToIndex(...)`
-  // — it fires during streaming when the assistant row grows past the
-  // viewport top, with no `runExternalScroll` wrapper to tag it. The
-  // resulting `scrollTop` jump (typically one line) pre-empts the
-  // spring chase: the next spring tick reads the bumped `scrollTop`
-  // as `current`, sees `diff === 0`, and arrives without animating —
-  // user sees a 1–2 line snap mid-stream where the spring should have
-  // chased smoothly. Captured live in a bookmarked trace (24 untagged
-  // jumps in a single long-stream session; the spring.arrive at 29360
-  // → untagged scroll at 29387 sequence is the canonical reproducer).
-  //
-  // Defense: own the scrollTop property descriptor on `scrollEl` while
-  // attached. The controller's writes route through `writeProgrammatic
-  // ScrollTop` which flips `controllerOwnsScrollTopWrite` to bypass the
-  // gate. External writes (virtua, future libs, browser auto-anchor)
-  // are evaluated against the controller's intent: when the user is
-  // sticking-and-engaged AND the warm gate has cleared AND a spring
-  // chase is currently in flight (`springToken !== 0`), drop them so
-  // the spring stays the single writer for the duration of the chase.
-  // Otherwise pass through:
-  //   - user is reading mid-thread (escaped), auto-follow is paused, or
-  //     the warm-up cascade is still running (attach + restore both
-  //     reset `warm`) — above-viewport visual stability matters and
-  //     virtua's mount-cascade `$fixScrollJump` compensation must land;
-  //   - `animationMode === 'instant'` — the controller would sync-pin
-  //     to the same target virtua is writing, so racing them produces a
-  //     mis-pinned frame; letting virtua's write land first arrives at
-  //     the right place in the same paint;
-  //   - no spring is in flight (`springToken === 0`) — the gate's sole
-  //     purpose is keeping the spring as single writer during a chase;
-  //     with no chase, suppression has nothing to protect and just
-  //     desynchronizes virtua's internal scrollOffset from DOM
-  //     scrollTop (bug-report-20260524T200233Z: thread-switch flicker
-  //     on actively-streaming threads — 15/15 suppressions at
-  //     springToken=0 produced the visible mis-pinned frame).
-  // `externalScrollIgnoreUntil` (set by `runExternalScroll`) also
-  // passes through so explicit programmatic scrolls — load-older anchor
-  // restore, search-hit scrollToIndex — are honored even while sticking.
-  let savedScrollTopDescriptor: PropertyDescriptor | undefined;
-  let savedScrollTopWasOwn = false;
-  let externalScrollTopGateInstalled = false;
-  let controllerOwnsScrollTopWrite = false;
   let recentDownIntentUntil = 0;
   let recentDownIntentVersion = 0;
   let recentDownIntentClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1043,18 +998,7 @@ export function createUseStickToBottomController(
     // the write lands, so the scroll event it dispatches is already
     // classified.
     options.onBeforeScrollTopWrite?.();
-    // Bypass the external-write gate for our own writes. The gate's
-    // job is to filter writes from OTHER writers (virtua's
-    // $fixScrollJump, browser auto-anchor); the controller is always
-    // allowed to write through. Try/finally rather than a guard at
-    // top of the gate's setter so the flag is cleared even if the
-    // browser throws on a clamped write.
-    controllerOwnsScrollTopWrite = true;
-    try {
-      scrollEl.scrollTop = value;
-    } finally {
-      controllerOwnsScrollTopWrite = false;
-    }
+    scrollEl.scrollTop = value;
     // Tag using the BROWSER-rounded read so the scroll handler's token
     // match sees the same value the scroll event will report.
     const taggedTop = scrollEl.scrollTop;
@@ -1192,8 +1136,9 @@ export function createUseStickToBottomController(
   // velocity/accumulated so the arrival check stays settled, and consume
   // `sentinelEntryTarget` so the OTHER site's snap no-ops for this same
   // oscillation. `springToken` is intentionally left untouched: the spring
-  // stays sentinel-alive so the external-write gate stays engaged. Extracted
-  // so the two sites can't drift — the same reason `springGateOpen()` is shared.
+  // stays sentinel-alive so `springActive` keeps engaging the resolver's
+  // decline tier and negative-delta carve-out. Extracted so the two sites
+  // can't drift — the same reason `springGateOpen()` is shared.
   //
   // FOOTGUN — this is a one-shot CLAMP RECOVERY, not an oscillation source. If
   // you ever catch it firing every frame in a sustained ±N px limit cycle (text
@@ -1248,10 +1193,18 @@ export function createUseStickToBottomController(
     };
   }
 
-  // virtua scroll-applier entry point (see the interface doc). Gathers the
-  // observation, delegates the decision to the pure resolver, applies the
-  // one write through the chokepoint. Detached: decline — the poke keeps
-  // virtua's model synced to the DOM we are no longer arbitrating.
+  // virtua scroll-applier entry point (see the interface doc). virtua's
+  // `$fixScrollJump` compensation — the one internal scrollTop write our
+  // virtua config produces — no longer reaches the DOM directly: the
+  // patched scroll-applier seam (patches/virtua@0.49.1.patch) hands it
+  // here, making the controller the single scrollTop writer during
+  // follow by construction (the property-descriptor gate that used to
+  // arbitrate virtua's direct writes died with this routing; its
+  // tier-by-tier regression history lives in the resolver's provenance
+  // notes and scroll-contracts.md C10). Gathers the observation,
+  // delegates the decision to the pure resolver, applies the one write
+  // through the chokepoint. Detached: decline — the poke keeps virtua's
+  // model synced to the DOM we are no longer arbitrating.
   function applyVirtuaScrollCompensation(target: number, jump: number, shift: boolean): boolean {
     if (!scrollEl) return false;
     const observation: VirtuaCompensationObservation = {
@@ -1348,9 +1301,9 @@ export function createUseStickToBottomController(
         // sentinel entry value, the content layer oscillated in
         // height (-N then +N from async Streamdown typesetting /
         // virtua row remount). The browser auto-clamped scrollTop
-        // during the low point (native engine operation that
-        // bypasses the property-descriptor gate), stranding scrollTop
-        // below the restored target. Snap back instantly — a spring
+        // during the low point (a native engine operation — not a
+        // scrollTop write the controller could arbitrate), stranding
+        // scrollTop below the restored target. Snap back instantly — a spring
         // chase for zero net content change is a visible artifact.
         //
         // This check is DELIBERATELY different from the resolver's
@@ -1451,14 +1404,16 @@ export function createUseStickToBottomController(
         if (wantsStreamingSpringNow) {
           // Streaming active but no target change within the retain
           // window (async shiki load, inter-chunk gap, parseIncomplete
-          // Markdown rebalance). Keep the spring sentinel-alive so the
-          // external write gate (springToken !== 0 suppression) and the
-          // negative-delta carve-out stay engaged. Without this,
-          // cancelSpring sets springToken=0 and the dead window lets
-          // virtua $fixScrollJump or a negative contentRO sync-pin snap
-          // scrollTop — visible as 1-2 lines of instant jump mid-stream.
-          // The next positive contentRO delta bumps lastTargetChangedAt
-          // and the chase resumes on the following tick.
+          // Markdown rebalance). Keep the spring sentinel-alive so
+          // `springActive` stays true for the resolver decisions that
+          // key on it: resolveVirtuaCompensation's decline tier and
+          // resolveContentDelivery's negative-delta carve-out. Without
+          // this, cancelSpring sets springToken=0 and the dead window
+          // lets a routed virtua compensation or a negative contentRO
+          // sync-pin land instantly — visible as 1-2 lines of instant
+          // jump mid-stream. The next positive contentRO delta bumps
+          // lastTargetChangedAt and the chase resumes on the following
+          // tick.
           //
           // Snap pixel-perfect on sentinel entry only when the browser readback
           // is outside the accepted arrival band. Some engines reject the exact
@@ -1563,11 +1518,15 @@ export function createUseStickToBottomController(
         return;
       }
       resizeDifference = delta;
-      // Virtua can emit one untagged scroll jump as part of the same
-      // measurement correction that produced this content resize. The
+      // A browser scroll clamp (scrollHeight shrinking below
+      // scrollTop + clientHeight, e.g. from virtua's row-height
+      // corrections mutating styles in its own RO callbacks) emits one
+      // untagged scroll event correlated with this content resize. The
       // timer/rAF `resizeDifference` guard catches the normal ordering;
-      // this one-event budget covers environments where the clear races
-      // ahead of the scroll handler. Pending user intent still wins.
+      // this one-event budget covers the clear racing ahead of the
+      // scroll handler. Pending user intent still wins. (virtua's own
+      // compensation writes used to be the main untagged producer here;
+      // those are now routed through the controller and token-tagged.)
       resizeCorrelatedUntaggedScrollBudget = 1;
 
       // Refresh the geometric near-bottom flag BEFORE resolving so the
@@ -2247,242 +2206,12 @@ export function createUseStickToBottomController(
     };
   }
 
-  // ===== External scrollTop write gate (install / uninstall) =====
-  // See the state block earlier in the file for the motivating
-  // regression. The gate is installed as a property descriptor on the
-  // scroll element's `scrollTop` accessor; that captures BOTH the
-  // production case (inherited from Element.prototype) and the test
-  // case (where stubGeometry installs an own-property accessor to back
-  // a plain Geometry object). The captured accessor is the "real"
-  // setter; the gate's setter only decides whether to delegate.
-  function installExternalScrollTopGate(el: HTMLElement): void {
-    if (externalScrollTopGateInstalled) return;
-    const own = Object.getOwnPropertyDescriptor(el, 'scrollTop');
-    const inherited = own ? undefined : Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
-    const captured = own ?? inherited;
-    if (!captured || typeof captured.get !== 'function' || typeof captured.set !== 'function') {
-      // Environments without an accessor (very old browsers, exotic
-      // mocks) skip the gate. The controller still functions; it just
-      // can't filter external writes.
-      return;
-    }
-    savedScrollTopDescriptor = own;
-    savedScrollTopWasOwn = own !== undefined;
-    const origGet = captured.get;
-    const origSet = captured.set;
-    Object.defineProperty(el, 'scrollTop', {
-      configurable: true,
-      enumerable: captured.enumerable ?? true,
-      get(): number {
-        return origGet.call(el) as number;
-      },
-      set(value: number): void {
-        // Controller-owned writes always pass through. The flag is set
-        // by `writeProgrammaticScrollTop` around the actual assignment
-        // and cleared in its finally block.
-        if (controllerOwnsScrollTopWrite) {
-          origSet.call(el, value);
-          return;
-        }
-        // Explicit programmatic scrolls via `runExternalScroll` (load-
-        // older anchor restore, search-hit `scrollToIndex`) tag a
-        // short ignore window before the write fires. Pass through so
-        // the user's intentional jump lands even while sticking.
-        if (externalScrollIgnoreUntil > nowMs()) {
-          origSet.call(el, value);
-          return;
-        }
-        // Pre-warm: attach() and `forceStick({reason:'restore'})` both
-        // call `beginWarmup()` so `warm===false` covers the mount-
-        // cascade window (per-row ROs firing as virtua first mounts a
-        // slice, and the post-restore measurement settle). virtua's
-        // `$fixScrollJump` writes during that window are legitimate
-        // compensation for above-viewport remeasurements — suppressing
-        // them desynchronizes virtua's internal scrollOffset from the
-        // DOM, which manifested as the revert-puts-you-at-top
-        // regression and the thread-switch flicker (right→wrong→right
-        // settle). The consumer hides the surface while `!isWarm`
-        // (MessageTimeline cascade-hide), so any pre-warm $fixScrollJump
-        // isn't user-visible. Once warm, the surface is shown and the
-        // gate becomes the single writer arbiter again.
-        //
-        // The user is reading mid-thread (escaped) or another surface
-        // has paused auto-follow. Above-viewport visual stability
-        // matters here — virtua's `$fixScrollJump` is keeping the
-        // visible row anchored against a remeasure above the viewport.
-        // Pass through.
-        if (!warm || !isAtBottomState || escapedFromLockState || pauseDepth !== 0) {
-          origSet.call(el, value);
-          return;
-        }
-        // Genuinely bottom-locked (warm, isAtBottomState, not escaped, not
-        // paused) AND the DOM is already pinned to true bottom — the
-        // controller's contentRO/spring pin already landed there this
-        // cascade. virtua's `$fixScrollJump` is now requesting an
-        // anchor-preserving offset BELOW true bottom: its `delta` only
-        // compensates above-viewport remeasures, not the at/below-fold row
-        // growth that pushed the bottom down. Letting it land paints one
-        // frame a few hundred px short of bottom, then the next controller
-        // pin snaps back — the cold-thread-switch flicker (correct →
-        // up-jump → correct). Redirect the write to true bottom instead of
-        // dropping it. Dropping is what the branch above documents as the
-        // revert-to-top / right→wrong→right regression: a swallowed write
-        // fires no "scroll" event, and virtua re-syncs its internal offset
-        // model from the DOM through that listener (virtua core: the jump
-        // path writes the DOM and relies on the resulting scroll event to
-        // feed the model), so suppression diverges virtua's model from the DOM.
-        // Redirecting keeps the DOM at the bottom the controller already
-        // pinned, so virtua's DOM-derived model — last synced by that landed
-        // pin — stays correct and the stale-anchor frame is never painted.
-        // Narrow by construction: it fires ONLY when the DOM is already at
-        // bottom (`domAlreadyPinned`) and virtua tries to move meaningfully
-        // away from it, so virtua's legitimate above-viewport compensation
-        // (DOM not yet pinned, or the user scrolled up — already passed
-        // through above) is untouched, and an in-flight spring chase (DOM
-        // intentionally below target → not `domAlreadyPinned`) falls through
-        // to the spring-protection branches unchanged. The redirect target
-        // is `targetScrollTop()`, the exact value the controller's own pin
-        // writes, so the two writers can never disagree on the bottom.
-        const bottomTarget = targetScrollTop();
-        const currentScrollTop = origGet.call(el) as number;
-        const domAlreadyPinned =
-          bottomTarget - currentScrollTop <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
-        const requestedMovesAwayFromBottom =
-          bottomTarget - value > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
-        if (domAlreadyPinned && requestedMovesAwayFromBottom) {
-          if (isUiRenderTraceEnabled()) trace('scroll.virtuaAnchorRedirect', () => ({
-            requested: Math.round(value),
-            bottomTarget: Math.round(bottomTarget),
-            current: Math.round(currentScrollTop),
-            springToken,
-            scrollHeight: Math.round(scrollEl?.scrollHeight ?? 0),
-            clientHeight: Math.round(scrollEl?.clientHeight ?? 0),
-          }));
-          origSet.call(el, bottomTarget);
-          return;
-        }
-        // Active content-width reflow: the paired contentRO is going to
-        // sync-pin, not spring-chase. Let virtua's anchor-preserving
-        // compensation land in the same paint instead of suppressing it
-        // and waiting for the later contentRO delivery.
-        if (contentReflowSettleUntil > nowMs()) {
-          origSet.call(el, value);
-          return;
-        }
-        // Plain animationMode === 'instant': the controller's contentRO
-        // would respond to this growth with a synchronous sync-pin, not a
-        // spring chase. virtua's `$fixScrollJump` and the controller's pin
-        // would BOTH write the same target (the new bottom), so let virtua's
-        // write land in the same paint. Structural-append springs are the
-        // exception: they intentionally animate command/tool row batches even
-        // though the prose latch is instant, so keep the spring as the single
-        // writer while that chase is in flight.
-        if (options.animationMode?.() === 'instant' && !springStartedFromStructuralAppend) {
-          origSet.call(el, value);
-          return;
-        }
-        // No spring is in flight (`springToken === 0`). The gate's
-        // sole purpose is to keep the spring as the single writer
-        // during a chase — when no chase exists, suppression has no
-        // target to protect and only blocks legitimate virtua
-        // `$fixScrollJump` anchor preservation. The original sync-pin
-        // path that would otherwise race virtua only runs while
-        // `mode === 'instant'` (handled above); in spring mode without
-        // an active chase the controller is dormant, so virtua's write
-        // is the only writer and must land. Regression evidence:
-        // bug-report-20260524T200233Z had 15/15 externalWriteSuppressed
-        // events at springToken=0 producing the thread-switch flicker
-        // on actively-streaming threads (mode=spring, warm cleared
-        // between chunks, no chase running when virtua compensated).
-        if (springToken === 0) {
-          origSet.call(el, value);
-          return;
-        }
-        // Large measurement-correction carve-out. The suppression below
-        // exists to keep the spring the single writer for virtua's SMALL
-        // (1–2 line) `$fixScrollJump` anchor compensations during a chase.
-        // But a fresh-mount estimate→measure pass or a late async-typesetting
-        // reflow (shiki/katex/mermaid) lands as ONE jump larger than the
-        // viewport. Suppressing virtua's instant correction there leaves the
-        // spring to chase the entire delta — the visible multi-hundred-px
-        // "spring scroll" on a thread switch into an actively-streaming thread
-        // (bug-report-20260622T041049Z: a single +2276px / ~1.7-viewport
-        // virtua write suppressed, then a ~1s 2300px spring chase). A jump
-        // that large is a layout correction, not streamed content: let
-        // virtua's write land in the same paint (invisible) and the spring
-        // resolves from the corrected position on its next tick (current ==
-        // target → arrives → cancels). Symmetric with the positive contentRO
-        // pin and the negative overshoot snap — incremental content springs,
-        // bulk corrections snap. Viewport-relative so it self-scales and
-        // cannot fire on real per-chunk streaming growth.
-        //
-        // Safety invariant: this branch is reached ONLY by non-controller
-        // writes (virtua `$fixScrollJump`, browser auto-anchor). Every
-        // streamed-content follow write — the contentRO positive pin and
-        // every spring tick — is controller-owned and already passed through
-        // at the `controllerOwnsScrollTopWrite` guard at the top of this
-        // setter. So the threshold discriminates among virtua's anchor
-        // corrections; it never sees streamed content and cannot snap it.
-        // `currentScrollTop` is the same DOM read captured above for the
-        // anchor-redirect check; no scrollTop write lands between there and
-        // here (every interceding branch returns), so it is still current.
-        const requestedScrollJump = Math.abs(value - currentScrollTop);
-        if (requestedScrollJump > el.clientHeight) {
-          origSet.call(el, value);
-          return;
-        }
-        // Warm + sticking-and-engaged + spring chase in flight. Drop
-        // the write so the spring in the contentRO callback is the
-        // single writer responding to content growth. virtua's
-        // `$fixScrollJump` would otherwise snap scrollTop to the
-        // new bottom in one paint, pre-empting the spring's
-        // interpolation and producing a user-visible 1–2 line snap.
-        // The contentRO fire that follows the row remeasure will
-        // see `scrollTop` still at the spring's current position,
-        // compute a positive delta, and continue the chase smoothly.
-        if (isUiRenderTraceEnabled()) trace('scroll.externalWriteSuppressed', () => ({
-          requested: Math.round(value),
-          current: Math.round(currentScrollTop),
-          springToken,
-          warm,
-          isAtBottomState,
-          escapedFromLockState,
-          pauseDepth,
-          scrollHeight: Math.round((scrollEl?.scrollHeight ?? 0)),
-          clientHeight: Math.round((scrollEl?.clientHeight ?? 0)),
-        }));
-      },
-    });
-    externalScrollTopGateInstalled = true;
-  }
-
-  function uninstallExternalScrollTopGate(el: HTMLElement): void {
-    if (!externalScrollTopGateInstalled) return;
-    if (savedScrollTopWasOwn && savedScrollTopDescriptor) {
-      // Restore the prior own-property accessor (test stubGeometry,
-      // or anything else that owned it before us).
-      Object.defineProperty(el, 'scrollTop', savedScrollTopDescriptor);
-    } else {
-      // We installed an own-property where there was only an inherited
-      // one (production). Removing it lets the prototype accessor
-      // resume answering reads / writes.
-      delete (el as unknown as { scrollTop?: number }).scrollTop;
-    }
-    savedScrollTopDescriptor = undefined;
-    savedScrollTopWasOwn = false;
-    externalScrollTopGateInstalled = false;
-  }
-
   // ===== Lifecycle =====
   function attach(nextScrollEl: HTMLElement, nextContentEl: HTMLElement): void {
     if (scrollEl === nextScrollEl && contentEl === nextContentEl) return;
     detach();
     scrollEl = nextScrollEl;
     contentEl = nextContentEl;
-    // Install the external-write gate BEFORE anything else can fire
-    // an RO or touch scrollTop, so virtua's per-row ResizeObservers
-    // (which fire on mount) hit the gate from frame zero.
-    installExternalScrollTopGate(nextScrollEl);
     beginWarmup();
     if (isUiRenderTraceEnabled()) trace('scroll.attach', () => ({
       surface: nextScrollEl.dataset?.testid ?? '',
@@ -2574,11 +2303,6 @@ export function createUseStickToBottomController(
   }
 
   function detach(): void {
-    // Restore the original scrollTop descriptor BEFORE tearing down
-    // the rest. Once uninstalled, virtua's writes (if any) flow
-    // through unchanged — the symmetric case of attach() installing
-    // before any RO can fire.
-    if (scrollEl) uninstallExternalScrollTopGate(scrollEl);
     contentRO?.disconnect();
     contentRO = undefined;
     detachWheel?.();

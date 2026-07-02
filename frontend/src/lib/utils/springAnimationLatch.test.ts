@@ -28,10 +28,8 @@ describe('latchedSpringMode', () => {
   });
 
   it('pins SPRING_MODE_HOLD_MS to 500ms', () => {
-    // The load-bearing HOLD > RETAIN_ANIMATION_DURATION_MS invariant is a
-    // relationship between two MODULE constants, so it's guarded where both
-    // are live: see the `HOLD > RETAIN` test in useStickToBottom.svelte.test.ts.
-    // This pure-fn module only pins its own constant's value.
+    // Pure tuning value (see the constant's comment for the retired
+    // HOLD > RETAIN history); pinned so a drive-by change is deliberate.
     expect(SPRING_MODE_HOLD_MS).toBe(500);
   });
 });

@@ -23,17 +23,18 @@
 export type SpringAnimationMode = 'spring' | 'instant';
 
 // Hold window after the last live-content advance during which the
-// controller keeps spring-chasing. Must stay GREATER than the
-// controller's spring sentinel lifetime
-// (`RETAIN_ANIMATION_DURATION_MS = 350` in `useStickToBottom.svelte.ts`):
-// the sentinel keeps the external-write gate closed against virtua's
-// `$fixScrollJump` only while `animationMode() === 'spring'`, so the
-// latch must report 'spring' for at least as long as a sentinel can be
-// alive after the last stamp. Because the sentinel's own survival
-// condition IS `animationMode === 'spring'`, the relationship is
-// self-enforcing as long as HOLD > RETAIN. The `HOLD > RETAIN` test in
-// `useStickToBottom.svelte.test.ts` pins it against the live RETAIN
-// constant (both sides imported, so a bump to either side trips it).
+// controller keeps spring-chasing. Pure UX tuning: long enough to ride
+// out inter-chunk wire gaps (tool round-trips, the end-of-turn drain)
+// without the spring settling and re-accelerating per chunk, short
+// enough that idle typesetting reflow after a turn sync-pins instead of
+// animating. Historically this ALSO had to stay greater than the
+// controller's sentinel lifetime (`RETAIN_ANIMATION_DURATION_MS`) so
+// the property-descriptor write gate stayed closed against virtua's
+// direct `$fixScrollJump` writes across gaps; that cross-file invariant
+// died when those writes were routed through the controller's resolver
+// (`resolveVirtuaCompensation`), whose decision order is mode-free — a
+// compensation arriving after the sentinel dies resolves through the
+// pass/redirect tiers, both safe.
 export const SPRING_MODE_HOLD_MS = 500;
 
 /**

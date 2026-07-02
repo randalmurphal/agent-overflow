@@ -402,8 +402,7 @@
   // ~SPRING_MODE_HOLD_MS after the last advance. Tool rows deliberately do
   // not stamp; their virtual estimates often remeasure almost immediately,
   // and sync-pinning those corrections is smoother than spring-chasing them.
-  // The hold (500ms) stays > the controller's spring sentinel lifetime
-  // (RETAIN_ANIMATION_DURATION_MS = 350ms); see springAnimationLatch.ts.
+  // The 500ms hold is pure tuning; see springAnimationLatch.ts.
   function animationModeForScroll(): 'spring' | 'instant' {
     return latchedSpringMode(performance.now(), pane.lastLiveContentAt, SPRING_MODE_HOLD_MS);
   }

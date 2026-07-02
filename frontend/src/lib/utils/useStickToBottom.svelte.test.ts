@@ -2161,16 +2161,16 @@ describe('createUseStickToBottomController — spring chase', () => {
   // The cold-thread-switch flicker: after the controller has pinned the DOM
   // to true bottom, virtua's `$fixScrollJump` requests an anchor-preserving
   // offset BELOW bottom (its delta only compensates above-viewport remeasure,
-  // not at/below-fold growth). The external-write gate must redirect that
-  // bottom-locked stale-anchor write to true bottom instead of letting it
-  // paint one frame short. These lock the gate DECISION; the actual no-flicker
-  // is only observable in the real app (happy-dom has no layout), so the
-  // assertions are on where the redirected write lands.
-  describe('virtua $fixScrollJump anchor redirect', () => {
-    it('redirects a stale below-bottom virtua write to true bottom (instant-mode exit)', async () => {
-      // Idle cold-switch thread is animationMode==='instant'; without the
-      // redirect, virtua's write exits through the instant pass-through and
-      // the short frame lands.
+  // not at/below-fold growth). The routed compensation must be redirected to
+  // true bottom instead of painting one frame short. These lock the resolver
+  // DECISION as exercised through the controller's applier entry point; the
+  // actual no-flicker is only observable in the real app (happy-dom has no
+  // layout), so the assertions are on where the redirected write lands.
+  describe('virtua $fixScrollJump anchor redirect (routed)', () => {
+    it('redirects a stale below-bottom compensation to true bottom (instant mode, dormant)', async () => {
+      // Idle cold-switch thread is animationMode==='instant' with no spring
+      // in flight; without the redirect the compensation resolves through
+      // the dormant pass tier and the short frame lands.
       mode = 'instant';
       const ro = getRO();
       ro.fire(contentEl, 800); // initial; warm still false
@@ -2182,29 +2182,31 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 1000);
       expect(geom.scrollTop).toBe(600); // DOM at true bottom → domAlreadyPinned
       // virtua's $fixScrollJump now requests a stale anchor 390px short.
-      scrollEl.scrollTop = 210;
+      expect(controller.applyVirtuaScrollCompensation(210, -390, false)).toBe(true);
       // Redirected to true bottom, not left at the stale 210.
       expect(geom.scrollTop).toBe(600);
     });
 
-    it('redirects a stale below-bottom virtua write to true bottom (spring mode, no chase)', async () => {
-      // mode='spring' with no chase in flight (springToken===0) exits through
-      // the springToken===0 pass-through — the second exit the redirect must
-      // also cover.
+    it('redirects a stale below-bottom compensation to true bottom (spring mode, no chase)', async () => {
+      // mode='spring' with no chase in flight (springToken===0) would exit
+      // through the resolver's final pass tier — the second exit the
+      // redirect must also cover.
       mode = 'spring';
       const ro = getRO();
       ro.fire(contentEl, 800); // initial; DOM already at bottom (400)
       await waitMs(150);
       expect(controller.isWarm).toBe(true);
       expect(geom.scrollTop).toBe(400); // at bottom, no spring engaged
-      scrollEl.scrollTop = 50; // virtua stale anchor, 350px short
+      // virtua stale anchor, 350px short.
+      expect(controller.applyVirtuaScrollCompensation(50, -350, false)).toBe(true);
       expect(geom.scrollTop).toBe(400); // redirected to bottom
     });
 
     it('does NOT redirect when the DOM is not yet pinned to bottom (legit compensation passes)', async () => {
       // Mid-cascade: the controller has not pinned yet, so the DOM sits below
-      // bottom. virtua's write here is legitimate above-viewport compensation
-      // and must land untouched — the redirect is narrow to domAlreadyPinned.
+      // bottom. virtua's compensation here is legitimate above-viewport
+      // anchoring and must land untouched — the redirect is narrow to
+      // domAlreadyPinned.
       mode = 'instant';
       const ro = getRO();
       ro.fire(contentEl, 800);
@@ -2212,14 +2214,14 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.isWarm).toBe(true);
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
-      geom.scrollTop = 300; // position DOM below bottom (600) without the gate
-      scrollEl.scrollTop = 350; // virtua compensation through the gate
+      geom.scrollTop = 300; // position DOM below bottom (600) directly
+      expect(controller.applyVirtuaScrollCompensation(350, 50, false)).toBe(true);
       expect(geom.scrollTop).toBe(350); // not redirected — lands as virtua asked
     });
 
-    it('does NOT redirect a virtua write that stops just short of the epsilon band', async () => {
-      // Boundary: a write exactly AUTO_FOLLOW_BOTTOM_EPSILON_PX (4px) short of
-      // bottom is NOT "moving away" (requestedMovesAwayFromBottom is strict
+    it('does NOT redirect a compensation that stops just short of the epsilon band', async () => {
+      // Boundary: a target exactly AUTO_FOLLOW_BOTTOM_EPSILON_PX (4px) short
+      // of bottom is NOT "moving away" (movesAwayFromBottom is strict
       // `> epsilon`), so it must pass through, not snap to bottom. Pins that
       // threshold — without it a predicate mutation to always-true survives.
       mode = 'instant';
@@ -2230,7 +2232,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
       expect(geom.scrollTop).toBe(600); // pinned at true bottom
-      scrollEl.scrollTop = 596; // 4px short — exactly the epsilon boundary
+      // 4px short — exactly the epsilon boundary.
+      expect(controller.applyVirtuaScrollCompensation(596, -4, false)).toBe(true);
       expect(geom.scrollTop).toBe(596); // passes through, not redirected to 600
     });
   });
@@ -2997,8 +3000,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       await advanceUntil(() => Math.abs(geom.scrollTop - 600) <= 1);
       while (mockNow < 360) await nextFrame();
 
+      // Spring canceled (instant mode never enters the sentinel), so a
+      // routed compensation resolves through the pass tier and lands.
       geom.scrollHeight = 1300;
-      scrollEl.scrollTop = 650;
+      expect(controller.applyVirtuaScrollCompensation(650, 50, false)).toBe(true);
 
       expect(geom.scrollTop).toBe(650);
     });
@@ -3741,12 +3746,13 @@ describe('createUseStickToBottomController — spring chase', () => {
   });
 
   describe('pauseDepth during active spring — disclosure toggle contract', () => {
-    // pauseDepth is the ONLY gate condition that can flip independently
-    // during streaming without canceling the spring. These tests lock
-    // the current contract: preserveScrollAnchor opens the gate via
-    // pauseAutoScroll(); the spring self-cancels on the next rAF tick.
+    // pauseDepth is the ONLY engagement condition that can flip
+    // independently during streaming without canceling the spring. These
+    // tests lock the current contract: preserveScrollAnchor disengages
+    // arbitration via pauseAutoScroll(); the spring self-cancels on the
+    // next rAF tick.
 
-    it('external write passes through gate during pauseDepth > 0 even with springToken !== 0', async () => {
+    it('a routed compensation passes during pauseDepth > 0 even with springToken !== 0', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3761,9 +3767,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Pause lease (simulates disclosure toggle starting).
       const release = controller.pauseAutoScroll();
 
-      // External write passes through — gate sees pauseDepth !== 0.
+      // Compensation passes — the resolver sees paused and steps aside
+      // even though the spring token is still live for one more tick.
       geom.scrollHeight = 1500;
-      scrollEl.scrollTop = 700;
+      expect(controller.applyVirtuaScrollCompensation(700, 100, false)).toBe(true);
       expect(geom.scrollTop).toBe(700);
 
       release();
@@ -3822,8 +3829,8 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
   });
 
-  describe('gate condition coupling invariants — spring cancellation', () => {
-    // Each LOW-fragility gate condition (isAtBottomState,
+  describe('engagement condition coupling invariants — spring cancellation', () => {
+    // Each LOW-fragility engagement condition (isAtBottomState,
     // escapedFromLockState, warm) couples its transitions with
     // cancelSpring(). These tests prove the coupling holds.
 
@@ -3848,13 +3855,14 @@ describe('createUseStickToBottomController — spring chase', () => {
       for (let i = 0; i < 10; i++) await nextFrame();
       expect(geom.scrollTop).toBe(afterEscape);
 
-      // Gate is open via escape (external writes pass through).
+      // Escaped: the user is reading mid-thread, so a routed compensation
+      // passes (above-viewport visual stability wins).
       geom.scrollHeight = 1500;
-      scrollEl.scrollTop = 300;
+      expect(controller.applyVirtuaScrollCompensation(300, -100, false)).toBe(true);
       expect(geom.scrollTop).toBe(300);
     });
 
-    it('forceStick(restore) re-arms warmup and cancels spring — gate opens via warm=false', async () => {
+    it('forceStick(restore) re-arms warmup and cancels spring — compensations pass while warm=false', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3871,13 +3879,15 @@ describe('createUseStickToBottomController — spring chase', () => {
       controller.forceStick({ reason: 'restore' });
       expect(controller.isWarm).toBe(false);
 
-      // Gate open via !warm — external writes pass through.
+      // !warm: virtua's post-restore mount-cascade compensations must
+      // land, so the resolver passes them through. (The resolver ignores
+      // `jump`; it is passed sign-consistent for documentation only.)
       geom.scrollHeight = 1500;
-      scrollEl.scrollTop = 500;
+      expect(controller.applyVirtuaScrollCompensation(500, -300, false)).toBe(true);
       expect(geom.scrollTop).toBe(500);
     });
 
-    it('setEscapedFromLock(true) cancels spring and flips isAtBottomState — gate opens via escape', async () => {
+    it('setEscapedFromLock(true) cancels spring and flips isAtBottomState', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3927,7 +3937,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(afterEscape);
     });
 
-    it('notifyContentMaybeGrew during spring does not leave gate stuck closed', async () => {
+    it('notifyContentMaybeGrew during spring does not leave the spring token stuck live', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -3949,9 +3959,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       mode = 'instant';
       for (let i = 0; i < 10; i++) await nextFrame();
 
-      // Gate should be open (mode=instant pass-through + spring canceled).
+      // Spring canceled (springToken=0): a routed compensation resolves
+      // through the pass tier instead of the mid-chase decline.
       geom.scrollHeight = 1500;
-      scrollEl.scrollTop = 850;
+      expect(controller.applyVirtuaScrollCompensation(850, 50, false)).toBe(true);
       expect(geom.scrollTop).toBe(850);
     });
   });
@@ -5176,8 +5187,9 @@ describe('createUseStickToBottomController — spring chase', () => {
     describe('content height oscillation during sentinel — browser auto-clamp', () => {
       // When contentEl oscillates (-Npx then +Npx from async
       // Streamdown typesetting), the browser auto-clamps scrollTop
-      // during the low point. The gate can't prevent this (native
-      // engine operation). When contentEl height restores, scrollTop
+      // during the low point (a native engine operation — not a
+      // scrollTop write the controller could arbitrate). When
+      // contentEl height restores, scrollTop
       // is stranded at the clamped position and the sentinel sees
       // diff > 0. Current behavior: the sentinel enters spring physics
       // and visibly chases back to the original target — a 105px
@@ -5362,22 +5374,22 @@ describe('createUseStickToBottomController — spring chase', () => {
       });
     });
 
-    it('spring stays sentinel-alive during streaming when arrived past the retain window — external writes suppressed', async () => {
+    it('spring stays sentinel-alive during streaming when arrived past the retain window — compensations stay declined', async () => {
       // The inter-chunk dead-zone bug: spring arrives, 350ms pass with
       // no new content (async shiki load, parseIncompleteMarkdown
       // rebalance, slow model cadence), cancelSpring sets springToken=0.
-      // In that window virtua's $fixScrollJump passes through the
-      // external write gate (springToken===0 pass-through at line 1955)
-      // and negative contentRO deltas sync-pin (springToken===0 at
-      // line 1206) — both produce a user-visible instant snap mid-stream
-      // where the spring should have smoothly chased. Code blocks
-      // exacerbate this because shiki language loads are async and
-      // parseIncompleteMarkdown rebalances create timing gaps > 350ms.
+      // In that window a routed virtua compensation resolves through the
+      // pass tier and negative contentRO deltas sync-pin — both produce
+      // a user-visible instant snap mid-stream where the spring should
+      // have smoothly chased. Code blocks exacerbate this because shiki
+      // language loads are async and parseIncompleteMarkdown rebalances
+      // create timing gaps > 350ms.
       //
       // Fix: when arrived but animationMode is still 'spring', the
       // spring re-rAFs as a sentinel (springToken stays non-zero) so the
-      // gate and carve-out remain engaged. The next chunk's positive
-      // contentRO delta bumps lastTargetChangedAt and the chase resumes.
+      // resolver's decline tier and negative-delta carve-out remain
+      // engaged. The next chunk's positive contentRO delta bumps
+      // lastTargetChangedAt and the chase resumes.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150); // warm
@@ -5397,16 +5409,18 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Ensure we're past the retain window.
       while (mockNow < 360) await nextFrame();
 
-      // Widen the scroll range so writes above the current target
-      // aren't clamped by the stub geometry (maxTarget = scrollHeight
-      // - clientHeight). This isolates gate suppression from clamping.
+      // Widen the scroll range so the compensation target sits above the
+      // current position without being clamped by the stub geometry
+      // (maxTarget = scrollHeight - clientHeight). This isolates the
+      // decline decision from clamping.
       geom.scrollHeight = 1200;
       // contentHeight unchanged — no contentRO fire.
 
-      // Simulate virtua $fixScrollJump writing scrollTop (above-viewport
-      // row remeasured while the model is between chunks). Before the
-      // fix, this passes through the gate and snaps — the regression.
-      scrollEl.scrollTop = 510;
+      // virtua compensates for an above-viewport row remeasure while the
+      // model is between chunks. The sentinel keeps springActive true, so
+      // the resolver declines — without the sentinel this would resolve
+      // through the pass tier and snap (the regression).
+      expect(controller.applyVirtuaScrollCompensation(510, 10, false)).toBe(false);
       expect(geom.scrollTop).toBe(500);
 
       // Similarly, a small negative contentRO delta (parseIncomplete
@@ -5448,14 +5462,14 @@ describe('createUseStickToBottomController — spring chase', () => {
       mode = 'instant';
       for (let i = 0; i < 10; i++) await nextFrame();
 
-      // Widen scrollHeight so the write value isn't clamped by the
-      // stub geometry (maxTarget = scrollHeight - clientHeight must
+      // Widen scrollHeight so the compensation value isn't clamped by
+      // the stub geometry (maxTarget = scrollHeight - clientHeight must
       // exceed the write value).
       geom.scrollHeight = 1200;
 
-      // External write now passes through (springToken should be 0
-      // after the instant-mode cancel).
-      scrollEl.scrollTop = 510;
+      // A routed compensation now passes (springToken should be 0 after
+      // the instant-mode cancel, so the decline tier can't fire).
+      expect(controller.applyVirtuaScrollCompensation(510, 10, false)).toBe(true);
       expect(geom.scrollTop).toBe(510);
     });
 
@@ -5536,15 +5550,6 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
   });
 
-  // virtua's `$fixScrollJump` writes `scrollTop` directly on the scroll
-  // element when an above-viewport / viewport-spanning row remeasures.
-  // During pure-text streaming on a long thread, that fires repeatedly
-  // — each one pre-empts the in-flight spring with an instant jump,
-  // visible to the user as a 1–2 line snap. The external-write gate
-  // captures the scrollTop property descriptor on attach and filters
-  // writes from outside the controller against intent. These tests
-  // simulate virtua's untagged write by assigning `scrollEl.scrollTop`
-  // directly (no controller call), the same way virtua's writer does.
   describe('virtua compensation applier (routed $fixScrollJump)', () => {
     // Stage 3: the patched setScrollApplier seam hands virtua's
     // compensation writes to applyVirtuaScrollCompensation. Decision
@@ -5659,162 +5664,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       controller.detach();
       expect(controller.applyVirtuaScrollCompensation(500, 100, false)).toBe(false);
     });
-  });
 
-  describe('external scrollTop write gate (virtua $fixScrollJump defense)', () => {
-    it('drops an external scrollTop write while sticking-and-engaged', async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150); // warm
-
-      // Start a spring chase so the gate has something to protect.
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      ro.fire(contentEl, 1200);
-      await nextFrame();
-      const springStart = geom.scrollTop;
-      expect(springStart).toBeGreaterThan(400);
-      expect(springStart).toBeLessThan(800);
-
-      // virtua-style untagged write: assigning `scrollEl.scrollTop`
-      // directly. Under the old behaviour this would land instantly
-      // (the spring would then read the new value as `current` on its
-      // next tick and arrive without animating).
-      scrollEl.scrollTop = 800;
-
-      // Gate suppressed it: geometry unchanged.
-      expect(geom.scrollTop).toBe(springStart);
-
-      // Spring continues chasing across subsequent frames.
-      await advanceUntil(() => geom.scrollTop === 800);
-    });
-
-    it('passes an external scrollTop write through when the user has escaped', async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      controller.setEscapedFromLock(true);
-
-      // External writer (virtua compensating for an above-viewport row
-      // remeasure to keep visible content stable). The user is reading
-      // mid-thread, so visual stability matters — let it through.
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      scrollEl.scrollTop = 500;
-
-      expect(geom.scrollTop).toBe(500);
-    });
-
-    it('passes an external scrollTop write through while auto-scroll is paused', async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-      const release = controller.pauseAutoScroll();
-
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      scrollEl.scrollTop = 500;
-
-      expect(geom.scrollTop).toBe(500);
-      release();
-    });
-
-    it('passes an external scrollTop write through inside runExternalScroll', async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      // Simulate `listRef.scrollToIndex(...)` style call wrapped in
-      // the controller's external-scroll tag. preserveIntent keeps
-      // isAtBottomState true so the only thing letting the write
-      // through is the externalScrollIgnoreUntil window.
-      controller.runExternalScroll(
-        () => {
-          scrollEl.scrollTop = 600;
-        },
-        { preserveIntent: true },
-      );
-
-      expect(geom.scrollTop).toBe(600);
-    });
-
-    it('controller-owned writes (forceStick / contentRO sync-pin) bypass the gate', async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      // forceStick goes through writeScrollTop → writeProgrammaticScrollTop
-      // which flips the controllerOwnsScrollTopWrite bypass flag. Even
-      // though the controller is sticking-and-engaged (the same gate
-      // state that suppresses external writes), our own write lands.
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      controller.forceStick();
-
-      expect(geom.scrollTop).toBe(800);
-    });
-
-    it('passes an external scrollTop write through during the mount cascade (warm===false)', async () => {
-      // Regression for the thread-switch flicker / revert-puts-you-at-top
-      // regressions. Pre-warm, virtua's per-row ROs fire as it mounts the
-      // slice; some of those ROs report heights that differ from virtua's
-      // ESTIMATED_ROW_SIZE, and virtua compensates via $fixScrollJump to
-      // keep the visible row anchored. If the gate suppresses those
-      // writes, virtua's internal scrollOffset diverges from DOM
-      // scrollTop and the user sees the wrong viewport for a frame
-      // before contentRO eventually fires and instant-pins to bottom.
-      //
-      // attach() in beforeEach already called beginWarmup() so warm
-      // starts false. We do NOT fire any contentRO event yet so the
-      // QUIET_MS timer never starts and warm stays false.
-      expect(controller.isWarm).toBe(false);
-      expect(controller.isAtBottom).toBe(true);
-      expect(controller.escapedFromLock).toBe(false);
-
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      // virtua $fixScrollJump-style write while sticking-and-engaged
-      // but pre-warm: must pass through so virtua's mount compensation
-      // lands.
-      scrollEl.scrollTop = 500;
-      expect(geom.scrollTop).toBe(500);
-    });
-
-    it('passes an external scrollTop write through after forceStick({reason:"restore"}) re-arms the warm gate', async () => {
-      // Regression for revert-puts-you-at-top: the same-thread re-switch
-      // path calls forceStick({reason:'restore'}) which resets warm to
-      // false to give virtua's mount cascade a clean measurement window.
-      // The gate must honor that re-armed pre-warm state — otherwise
-      // virtua's $fixScrollJump for the freshly mounted slice gets
-      // dropped and the user lands on the wrong row.
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150); // warm settles via QUIET_MS
-      expect(controller.isWarm).toBe(true);
-
-      // Simulate the restore-snap consent + restore call that runs
-      // during a thread switch / revert.
-      controller.armRestoreSnap();
-      controller.forceStick({ reason: 'restore' });
-      // forceStick({reason:'restore'}) re-armed the warm gate.
-      expect(controller.isWarm).toBe(false);
-
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      // virtua $fixScrollJump-style write during the post-restore mount
-      // cascade: must pass through.
-      scrollEl.scrollTop = 500;
-      expect(geom.scrollTop).toBe(500);
-    });
-
-    it('resumes suppression once the post-restore warm gate clears', async () => {
-      // Companion to the previous test: after the restore-armed warm
-      // gate settles, the original streaming-snap defense must come
-      // back online. Otherwise we'd have permanently disarmed the gate
-      // on every restore.
+    it('post-restore warm settle re-arms the mid-chase decline (restore does not permanently disarm)', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -5829,583 +5680,243 @@ describe('createUseStickToBottomController — spring chase', () => {
       await waitMs(150);
       expect(controller.isWarm).toBe(true);
 
-      // Now start a spring chase and verify the gate suppresses again.
+      // Start a spring chase and verify the decline tier suppresses
+      // small compensations again.
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
       ro.fire(contentEl, 1200);
       await nextFrame();
-      const springStart = geom.scrollTop;
-      expect(springStart).toBeGreaterThan(400);
-      expect(springStart).toBeLessThan(800);
+      const midChase = geom.scrollTop;
+      expect(midChase).toBeGreaterThan(400);
+      expect(midChase).toBeLessThan(800);
 
-      scrollEl.scrollTop = 800;
-      // Gate suppressed it again (the post-restore warm settled).
-      expect(geom.scrollTop).toBe(springStart);
+      expect(controller.applyVirtuaScrollCompensation(midChase + 20, 20, false)).toBe(false);
+      expect(geom.scrollTop).toBe(midChase);
     });
 
-    it('passes an external scrollTop write through when animationMode is instant (the controller would sync-pin, not spring-chase)', async () => {
-      // Regression for the thread-switch flicker on idle threads
-      // (bug-report-20260524T183128Z): on a switch into a non-streaming
-      // thread (no live content advanced recently → animationMode='instant'), a late
-      // ResizeObserver fire after warm causes virtua's $fixScrollJump
-      // and the controller's contentRO to both want to pin scrollTop
-      // to the new bottom. They fire in DIFFERENT RO delivery loops
-      // (virtua's per-row ROs vs the controller's contentEl RO), so
-      // there's a ~3ms gap where the DOM has the new scrollHeight but
-      // the old scrollTop — visible as the bottom of a row being cut
-      // off, then snapping into view. When the controller would
-      // sync-pin (instant mode), virtua's write lands at the same
-      // target as the controller's pin and arrives in the same paint
-      // as the layout change. Suppressing it just delays the correct
-      // write by one RO delivery loop.
-      mode = 'instant';
-
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150); // warm settles via QUIET_MS
-      expect(controller.isWarm).toBe(true);
-
-      // contentEl grows (e.g. a row in the viewport completes async
-      // typesetting). virtua's per-row RO fires first and writes
-      // scrollTop to compensate. Under the old gate this was dropped
-      // (warm + sticking-and-engaged) and the user saw a brief
-      // mis-pinned frame. With the instant-mode pass-through, the
-      // write lands immediately.
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      scrollEl.scrollTop = 800;
-
-      expect(geom.scrollTop).toBe(800);
-    });
-
-    it('still suppresses external writes when animationMode is spring (gate stays load-bearing during streaming)', async () => {
-      // Counterpart to the previous test: when animationMode='spring'
-      // (live content is arriving and the controller wants to smoothly chase
-      // the moving bottom), virtua's $fixScrollJump landing in one
-      // paint would pre-empt the spring's interpolation. The gate
-      // must still drop in that case. This is the original
-      // streaming-snap defense; the explicit test belongs next to the
-      // instant-mode pass-through so the discriminator can't drift.
-      mode = 'spring';
-
+    it('sentinel + content-latch hold cover a wire-round gap — pinned moves-away compensation is redirected', async () => {
+      // The historical "snap up, spring down" cycle: between wire rounds
+      // (a tool round-trip, the end-of-turn drain) the pane stops
+      // stamping lastLiveContentAt; the content-keyed latch holds
+      // 'spring' for SPRING_MODE_HOLD_MS so the sentinel survives the
+      // gap and springActive stays true. A virtua compensation arriving
+      // in the gap that would move a pinned viewport away from the
+      // bottom is redirected — and because the resolver's redirect tier
+      // outranks both decline and pass, the no-displacement outcome
+      // holds even if the sentinel has already died (the reason the
+      // HOLD > RETAIN cross-file invariant could be retired). Uses the
+      // REAL production latch so this can't drift from MessageTimeline.
+      let contentAdvancing = true;
+      let lastContentAt = 0;
+      controller.detach();
+      controller = createUseStickToBottomController({
+        animationMode: () => {
+          if (contentAdvancing) lastContentAt = mockNow;
+          return latchedSpringMode(mockNow, lastContentAt, SPRING_MODE_HOLD_MS);
+        },
+      });
+      controller.attach(scrollEl, contentEl);
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
 
-      // Start a spring chase.
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      ro.fire(contentEl, 1200);
-      await nextFrame();
-      const springStart = geom.scrollTop;
-      expect(springStart).toBeGreaterThan(400);
-      expect(springStart).toBeLessThan(800);
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      await advanceUntil(() => geom.scrollTop === 500); // pinned at bottom
+      while (mockNow < 360) await nextFrame(); // retain expired → sentinel
 
-      // virtua-style untagged write while spring is in flight.
-      scrollEl.scrollTop = 800;
+      // Wire-round gap: content stops advancing, well within the hold.
+      contentAdvancing = false;
+      for (let i = 0; i < 5; i++) await nextFrame();
 
-      // Gate suppressed it: scrollTop did not jump to 800; the spring
-      // is still the single writer.
-      expect(geom.scrollTop).toBe(springStart);
-    });
-
-    it('passes a LARGE external write through during a spring chase (measurement correction, not a 1-2 line snap)', async () => {
-      // Regression for bug-report-20260622T041049Z: switching into an
-      // actively-streaming thread armed a spring (structural-append mark or
-      // prose spring-mode), then virtua's fresh-mount estimate→measure pass
-      // landed a single +2276px (~1.7-viewport) $fixScrollJump write. The
-      // previous gate suppressed it because a chase was in flight, so the
-      // spring chased the entire delta — a visible ~1s multi-hundred-px
-      // "spring scroll". A jump larger than the viewport is a layout
-      // correction, not streamed content: it must pass through so virtua
-      // snaps it in one paint (invisible) and the spring resolves from the
-      // corrected position. Counterpart to the small-jump suppression above.
-      mode = 'spring';
-
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      // Start a spring chase (springStart ends up between 400 and 800).
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      ro.fire(contentEl, 1200);
-      await nextFrame();
-      const springStart = geom.scrollTop;
-      expect(springStart).toBeGreaterThan(400);
-      expect(springStart).toBeLessThan(800);
-
-      // Fresh-mount remeasure: content height jumps far past the viewport
-      // and virtua writes scrollTop to the new bottom in one shot. With
-      // clientHeight 600, the jump from the spring position exceeds a
-      // viewport, so the gate must let it land.
-      geom.scrollHeight = 2400; // max scrollTop = 2400 - 600 = 1800
-      geom.contentHeight = 2200;
-      const bigCorrection = 1700;
-      expect(bigCorrection - springStart).toBeGreaterThan(geom.clientHeight);
-      scrollEl.scrollTop = bigCorrection;
-
-      // Large correction landed in the same paint instead of being
-      // suppressed in favor of a visible spring chase.
-      expect(geom.scrollTop).toBe(bigCorrection);
-    });
-
-    it('passes an external scrollTop write through during a width-reflow settle window', async () => {
-      mode = 'spring';
-
-      const ro = getRO();
-      ro.fire(contentEl, 800, 900);
-      await waitMs(150);
-
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      ro.fire(contentEl, 1200, 900);
-      await nextFrame();
-      const springStart = geom.scrollTop;
-      expect(springStart).toBeGreaterThan(400);
-      expect(springStart).toBeLessThan(800);
-
-      ro.fire(contentEl, 1200, 640);
-      scrollEl.scrollTop = 800;
-
-      expect(geom.scrollTop).toBe(800);
-    });
-
-    it('passes an external scrollTop write through when no spring is in flight (mode=spring, dormant chase)', async () => {
-      // Regression for bug-report-20260524T200233Z: the thread-switch
-      // flicker reproduced on actively-streaming threads. After warm
-      // cleared but before/between spring chases, virtua's
-      // $fixScrollJump kept compensating for above-viewport row
-      // remeasurements. The old gate (warm + sticking + spring-mode)
-      // dropped those writes even though no chase was running to
-      // protect, leaving virtua's internal scrollOffset out of sync
-      // with DOM scrollTop and producing a visible mis-pinned frame.
-      // The gate's purpose is to keep the spring as the sole writer
-      // during a chase; with `springToken === 0` there's no chase to
-      // protect, so the write must pass through.
-      mode = 'spring';
-
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150); // warm settles via QUIET_MS
-      expect(controller.isWarm).toBe(true);
-
-      // No positive-delta contentRO since warm cleared — no spring is
-      // in flight. virtua now writes scrollTop to compensate for an
-      // above-viewport row that remeasured.
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      scrollEl.scrollTop = 500;
-
+      // The latch-held sentinel is what keeps springActive true through
+      // the gap: a small non-moves-away compensation is DECLINED (widen
+      // the range so the DOM is not pinned and the target isn't
+      // clamped). With a broken latch the sentinel cancels on its next
+      // tick and this would resolve through the pass tier instead.
+      geom.scrollHeight = 1200;
+      expect(controller.applyVirtuaScrollCompensation(510, 10, false)).toBe(false);
       expect(geom.scrollTop).toBe(500);
+      geom.scrollHeight = 1100; // pinned again (bottomTarget back to 500)
+
+      // virtua requests a stale anchor 60px above the pinned bottom.
+      // Redirect outranks decline, so this holds with or without the
+      // sentinel — it pins the no-displacement outcome itself.
+      expect(controller.applyVirtuaScrollCompensation(440, -60, false)).toBe(true);
+      expect(geom.scrollTop).toBe(500); // redirected to the bottom target
     });
 
-    describe('wire-round gap regression — brief animationMode flip during sentinel', () => {
-      // The controller-level invariant: animationMode must NOT flip to
-      // 'instant' while a spring sentinel is alive, or the external write
-      // gate opens and virtua's $fixScrollJump snaps scrollTop — visible
-      // as a "snap up, spring down" that repeats per gap boundary.
-      //
-      // In production the mode getter is the CONTENT-KEYED latch in
-      // MessageTimeline (animationModeForScroll → latchedSpringMode):
-      // every live timeline advance stamps `pane.lastLiveContentAt`, and
-      // the latch reports 'spring' for SPRING_MODE_HOLD_MS after the last
-      // stamp. Between live chunks (a tool round-trip, the inter-round gap,
-      // the end-of-turn smoother drain) the stamp simply stops advancing
-      // for a beat; the hold window keeps the mode 'spring' so the sentinel
-      // and gate survive the gap. These tests exercise the controller with
-      // that exact latch — `latchedSpringMode` and the real
-      // `SPRING_MODE_HOLD_MS` — so the controller assertions can't drift
-      // from the production source.
-      const HOLD_MS = SPRING_MODE_HOLD_MS;
+    it('passes a mid-chase compensation during a width-reflow settle window', async () => {
+      // Pins the controller-side `widthReflowActive` sampling
+      // (contentReflowSettleUntil > nowMs()) on the virtua path: during a
+      // width reflow the paired contentRO sync-pins, so the compensation
+      // must land in the same paint instead of hitting the mid-chase
+      // decline. If the sampling regressed (dropped / wrong clock /
+      // wrong window), the decline tier would fire and this returns
+      // false.
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
 
-      // Mirrors MessageTimeline: while live content is advancing, stamp
-      // lastContentAt = now (mode is 'spring'); once it stops, the real
-      // latch holds 'spring' for HOLD_MS past the last stamp, then flips.
-      function createHysteresisMode() {
-        let contentAdvancing = true;
-        let lastContentAt = 0;
-        return {
-          get getter(): () => 'spring' | 'instant' {
-            return () => {
-              if (contentAdvancing) lastContentAt = mockNow;
-              return latchedSpringMode(mockNow, lastContentAt, HOLD_MS);
-            };
-          },
-          set contentAdvancing(v: boolean) { contentAdvancing = v; },
-          get contentAdvancing() { return contentAdvancing; },
-        };
+      // Start a chase (height-only growth, no width change).
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const midChase = geom.scrollTop;
+      expect(midChase).toBeGreaterThan(400);
+      expect(midChase).toBeLessThan(800);
+
+      // Width change mid-chase (same height → delta 0, but the reflow
+      // settle window opens before the early return).
+      ro.fire(contentEl, 1200, 640);
+
+      // Small jump that the decline tier would otherwise suppress.
+      expect(controller.applyVirtuaScrollCompensation(midChase + 20, 20, false)).toBe(true);
+      expect(geom.scrollTop).toBe(midChase + 20);
+    });
+  });
+
+  describe('notifyLiveContentMaybeGrew during sentinel — structural signature nudges', () => {
+    it('does not restart spring when scrollTop equals target', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      await advanceUntil(() => geom.scrollTop === 500);
+      while (mockNow < 360) await nextFrame();
+
+      // Sentinel running. scrollTop === target === 500.
+      const scrollTopBefore = geom.scrollTop;
+      controller.notifyLiveContentMaybeGrew();
+
+      // Should not move scrollTop — already at bottom, nothing grew.
+      expect(geom.scrollTop).toBe(scrollTopBefore);
+      for (let i = 0; i < 10; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(scrollTopBefore);
+    });
+
+    it('multiple notifyLiveContentMaybeGrew calls during sentinel do not cause visible scroll motion', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      await advanceUntil(() => geom.scrollTop === 500);
+      while (mockNow < 360) await nextFrame();
+
+      const scrollTopBefore = geom.scrollTop;
+      // Simulate 4 structural signature changes (tool call lifecycle:
+      // running → streaming → success → tool_completion).
+      for (let i = 0; i < 4; i++) {
+        controller.notifyLiveContentMaybeGrew();
+        await nextFrame();
+        await nextFrame();
       }
 
-      it('hysteresis holds spring mode during brief wire-round gap — gate blocks external writes', async () => {
-        const hmode = createHysteresisMode();
-        controller.detach();
-        controller = createUseStickToBottomController({ animationMode: hmode.getter });
-        controller.attach(scrollEl, contentEl);
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150);
-
-        geom.scrollHeight = 1100;
-        geom.contentHeight = 900;
-        ro.fire(contentEl, 900);
-        await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
-
-        // Wire-round gap: turn signal clears.
-        hmode.contentAdvancing = false;
-        // Advance a few frames — well within the hold window.
-        for (let i = 0; i < 5; i++) await nextFrame();
-        // mockNow is ~443ms. lastContentAt was ~360ms. Gap = ~83ms < 500ms.
-
-        geom.scrollHeight = 1200;
-        scrollEl.scrollTop = 450;
-        // Hysteresis keeps mode='spring', sentinel alive, gate closed.
-        expect(geom.scrollTop).toBe(500);
-      });
-
-      it('hysteresis prevents scrollTop displacement across full wire-round gap cycle', async () => {
-        const hmode = createHysteresisMode();
-        controller.detach();
-        controller = createUseStickToBottomController({ animationMode: hmode.getter });
-        controller.attach(scrollEl, contentEl);
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150);
-
-        geom.scrollHeight = 1100;
-        geom.contentHeight = 900;
-        ro.fire(contentEl, 900);
-        await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
-
-        // Wire-round gap.
-        hmode.contentAdvancing = false;
-        for (let i = 0; i < 3; i++) await nextFrame();
-
-        // Virtua $fixScrollJump — blocked by hysteresis-backed gate.
-        geom.scrollHeight = 1200;
-        scrollEl.scrollTop = 420;
-        expect(geom.scrollTop).toBe(500);
-
-        // Round resumes.
-        hmode.contentAdvancing = true;
-
-        // New content. Spring starts from 500 (correct), not 420.
-        geom.scrollHeight = 1300;
-        geom.contentHeight = 1100;
-        ro.fire(contentEl, 1100);
-        await nextFrame();
-        expect(geom.scrollTop).toBeGreaterThanOrEqual(500);
-        await advanceUntil(() => geom.scrollTop === 700);
-      });
-
-      it('repeated wire-round gaps do not cause repeated snap-up / spring-down cycles', async () => {
-        const hmode = createHysteresisMode();
-        controller.detach();
-        controller = createUseStickToBottomController({ animationMode: hmode.getter });
-        controller.attach(scrollEl, contentEl);
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150);
-
-        geom.scrollHeight = 1100;
-        geom.contentHeight = 900;
-        ro.fire(contentEl, 900);
-        await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
-
-        for (let cycle = 0; cycle < 3; cycle++) {
-          const before = geom.scrollTop;
-
-          hmode.contentAdvancing = false;
-          for (let i = 0; i < 3; i++) await nextFrame();
-
-          // Virtua writes — blocked by hysteresis.
-          geom.scrollHeight += 50;
-          scrollEl.scrollTop = before - 40;
-          expect(geom.scrollTop).toBe(before);
-
-          // Round resumes.
-          hmode.contentAdvancing = true;
-          geom.scrollHeight += 50;
-          geom.contentHeight += 50;
-          ro.fire(contentEl, geom.contentHeight);
-
-          const target = geom.scrollHeight - 600;
-          await advanceUntil(() => Math.abs(geom.scrollTop - target) <= 1);
-        }
-      });
-
-      it('hysteresis expires after hold window — sentinel cancels and gate opens for real end-of-content', async () => {
-        const hmode = createHysteresisMode();
-        controller.detach();
-        controller = createUseStickToBottomController({ animationMode: hmode.getter });
-        controller.attach(scrollEl, contentEl);
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150);
-
-        geom.scrollHeight = 1100;
-        geom.contentHeight = 900;
-        ro.fire(contentEl, 900);
-        await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
-
-        // Live content stops for real (no more reveals/deltas).
-        hmode.contentAdvancing = false;
-        // Advance well past HOLD_MS (500ms from lastContentAt). Need
-        // enough frames for (a) mockNow to pass the hold window AND
-        // (b) the sentinel tick to fire and see wantsSpringNow=false.
-        // 60 frames ≈ 1000ms from current position, safely past 500ms.
-        for (let i = 0; i < 60; i++) await nextFrame();
-
-        // Hysteresis expired — mode is now 'instant'. Sentinel should
-        // have cancelled and the gate should be open.
-        geom.scrollHeight = 1200;
-        scrollEl.scrollTop = 510;
-        expect(geom.scrollTop).toBe(510);
-      });
-
-      it('hysteresis re-latches when content resumes within hold window', async () => {
-        const hmode = createHysteresisMode();
-        controller.detach();
-        controller = createUseStickToBottomController({ animationMode: hmode.getter });
-        controller.attach(scrollEl, contentEl);
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150);
-
-        geom.scrollHeight = 1100;
-        geom.contentHeight = 900;
-        ro.fire(contentEl, 900);
-        await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
-
-        // First gap.
-        hmode.contentAdvancing = false;
-        for (let i = 0; i < 3; i++) await nextFrame();
-
-        // Content resumes (next chunk arrives) — refreshes the latch stamp.
-        hmode.contentAdvancing = true;
-        geom.scrollHeight = 1200;
-        geom.contentHeight = 1000;
-        ro.fire(contentEl, 1000);
-        await advanceUntil(() => geom.scrollTop === 600);
-        while (mockNow - 360 < 360) await nextFrame();
-
-        // Second gap — hysteresis still protects because lastContentAt
-        // was refreshed during the resumed round.
-        hmode.contentAdvancing = false;
-        for (let i = 0; i < 3; i++) await nextFrame();
-
-        geom.scrollHeight = 1300;
-        scrollEl.scrollTop = 550;
-        // Gate still closed — the re-latched hysteresis covers this gap.
-        expect(geom.scrollTop).toBe(600);
-      });
-
-      it('without hysteresis, raw mode flip during sentinel opens the gate (documents the underlying bug)', async () => {
-        // This test uses the raw `mode` variable (no hysteresis) to
-        // document the controller-level behavior that the content-keyed
-        // latch guards against.
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150);
-
-        geom.scrollHeight = 1100;
-        geom.contentHeight = 900;
-        ro.fire(contentEl, 900);
-        await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
-
-        mode = 'instant';
-        for (let i = 0; i < 5; i++) await nextFrame();
-
-        geom.scrollHeight = 1200;
-        scrollEl.scrollTop = 450;
-        // Without hysteresis, the gate opens and the write passes.
-        expect(geom.scrollTop).toBe(450);
-      });
-
-      it('keeps the content-latch hold window longer than the spring sentinel lifetime', () => {
-        // Load-bearing invariant, asserted against the LIVE controller
-        // constant (not a hardcoded mirror): the spring sentinel keeps the
-        // external-write gate closed only while animationMode === 'spring',
-        // and it can stay alive up to RETAIN_ANIMATION_DURATION_MS after the
-        // last target change. The content-keyed latch therefore MUST report
-        // 'spring' for at least that long after the last content stamp, or
-        // the gate opens mid-sentinel and virtua's $fixScrollJump snaps
-        // scrollTop — the very wire-round-gap regression this block covers.
-        // Bumping RETAIN in the controller past SPRING_MODE_HOLD_MS would
-        // reintroduce that bug; this guard fails the moment it does.
-        expect(SPRING_MODE_HOLD_MS).toBeGreaterThan(RETAIN_ANIMATION_DURATION_MS);
-      });
+      // scrollTop must not have moved — no content grew.
+      expect(geom.scrollTop).toBe(scrollTopBefore);
     });
 
-    describe('notifyLiveContentMaybeGrew during sentinel — structural signature nudges', () => {
-      it('does not restart spring when scrollTop equals target', async () => {
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150);
-
-        geom.scrollHeight = 1100;
-        geom.contentHeight = 900;
-        ro.fire(contentEl, 900);
-        await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
-
-        // Sentinel running. scrollTop === target === 500.
-        const scrollTopBefore = geom.scrollTop;
-        controller.notifyLiveContentMaybeGrew();
-
-        // Should not move scrollTop — already at bottom, nothing grew.
-        expect(geom.scrollTop).toBe(scrollTopBefore);
-        for (let i = 0; i < 10; i++) await nextFrame();
-        expect(geom.scrollTop).toBe(scrollTopBefore);
-      });
-
-      it('multiple notifyLiveContentMaybeGrew calls during sentinel do not cause visible scroll motion', async () => {
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150);
-
-        geom.scrollHeight = 1100;
-        geom.contentHeight = 900;
-        ro.fire(contentEl, 900);
-        await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
-
-        const scrollTopBefore = geom.scrollTop;
-        // Simulate 4 structural signature changes (tool call lifecycle:
-        // running → streaming → success → tool_completion).
-        for (let i = 0; i < 4; i++) {
-          controller.notifyLiveContentMaybeGrew();
-          await nextFrame();
-          await nextFrame();
-        }
-
-        // scrollTop must not have moved — no content grew.
-        expect(geom.scrollTop).toBe(scrollTopBefore);
-      });
-
-      it('notifyLiveContentMaybeGrew with scrollTop 1px below target bumps retain but does not restart spring', async () => {
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150);
-
-        geom.scrollHeight = 1100;
-        geom.contentHeight = 900;
-        ro.fire(contentEl, 900);
-        await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
-
-        // Simulate sub-pixel rounding leaving scrollTop 1px short.
-        geom.scrollTop = 499;
-        controller.notifyLiveContentMaybeGrew();
-
-        // Should NOT start a visible spring animation for 1px.
-        // The nudge bumps lastTargetChangedAt and calls
-        // startSpringIfNeeded which returns (spring still in sentinel).
-        await nextFrame();
-        await nextFrame();
-        // Spring sentinel absorbs the 1px and lands at 500.
-        await advanceUntil(() => geom.scrollTop === 500);
-      });
-
-      it('does not keep writing when browser readback stays one pixel short of target', async () => {
-        controller.detach();
-        const writes: number[] = [];
-        stubGeometry(scrollEl, contentEl, geom, {
-          setScrollTop: (value, g) => {
-            writes.push(value);
-            const max = Math.max(0, g.scrollHeight - g.clientHeight);
-            const clamped = Math.max(0, Math.min(value, max));
-            g.scrollTop = clamped >= max ? Math.max(0, max - 1) : clamped;
-          },
-        });
-        controller = createUseStickToBottomController({ animationMode: () => mode });
-        controller.attach(scrollEl, contentEl);
-
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150);
-        writes.length = 0;
-
-        geom.scrollHeight = 1100;
-        geom.contentHeight = 900;
-        ro.fire(contentEl, 900);
-
-        await advanceUntil(() => Math.abs(geom.scrollTop - 500) <= 1);
-        while (mockNow < 360) await nextFrame();
-
-        const writesAfterSettling = writes.length;
-        for (let i = 0; i < 20; i++) await nextFrame();
-
-        expect(geom.scrollTop).toBe(499);
-        expect(writes.length).toBe(writesAfterSettling);
-      });
-
-      it('delayed structural nudge does not snap a small corrected-target overshoot mid-spring', async () => {
-        const ro = getRO();
-        ro.fire(contentEl, 800);
-        await waitMs(150);
-
-        // Row identity changed at the tail (for example Read ->
-        // read_group). Virtua first publishes the 90px estimate, which
-        // starts a spring chase toward target 490.
-        geom.scrollHeight = 1090;
-        geom.contentHeight = 890;
-        ro.fire(contentEl, 890);
-
-        // Let the spring chase far enough that the later measured
-        // correction leaves scrollTop slightly above the true target.
-        // This is the exact case contentRO's small-overshoot threshold
-        // is meant to damp instead of snapping.
-        await advanceUntil(() => geom.scrollTop > 445);
-        const beforeCorrection = geom.scrollTop;
-
-        // The row measures at 40px. Corrected target = 1040 - 600 =
-        // 440. contentRO must not snap the small overshoot; the spring
-        // remains the single writer and will damp down naturally.
-        geom.scrollHeight = 1040;
-        geom.contentHeight = 840;
-        ro.fire(contentEl, 840);
-        expect(geom.scrollTop).toBe(beforeCorrection);
-        expect(geom.scrollTop - 440).toBeGreaterThan(0);
-        expect(geom.scrollTop - 440).toBeLessThan(50);
-
-        // MessageTimeline's structural-signature nudge runs after
-        // tick+rAF. It must not bypass the contentRO overshoot policy
-        // and instantly clamp the same small overshoot.
-        controller.notifyLiveContentMaybeGrew();
-        expect(geom.scrollTop).toBe(beforeCorrection);
-
-        await advanceUntil(() => Math.abs(geom.scrollTop - 440) <= 1);
-      });
-    });
-
-    it('restores the original scrollTop descriptor on detach', async () => {
+    it('notifyLiveContentMaybeGrew with scrollTop 1px below target bumps retain but does not restart spring', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
 
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+      await advanceUntil(() => geom.scrollTop === 500);
+      while (mockNow < 360) await nextFrame();
+
+      // Simulate sub-pixel rounding leaving scrollTop 1px short.
+      geom.scrollTop = 499;
+      controller.notifyLiveContentMaybeGrew();
+
+      // Should NOT start a visible spring animation for 1px.
+      // The nudge bumps lastTargetChangedAt and calls
+      // startSpringIfNeeded which returns (spring still in sentinel).
+      await nextFrame();
+      await nextFrame();
+      // Spring sentinel absorbs the 1px and lands at 500.
+      await advanceUntil(() => geom.scrollTop === 500);
+    });
+
+    it('does not keep writing when browser readback stays one pixel short of target', async () => {
       controller.detach();
-
-      // After detach the test's stubGeometry accessor is back in
-      // charge — direct writes hit the geometry object unmodified
-      // (subject to its own clamp at maxTarget). geom.scrollHeight
-      // is 1000 and clientHeight 600, so maxTarget is 400 and a write
-      // of 300 lands as 300. This is what attach() captured before
-      // installing the gate; if uninstall left the gate in place,
-      // the write would have been suppressed (the controller's
-      // sticking-and-engaged flags survive detach) and we'd still
-      // read whatever value was there at detach time.
-      scrollEl.scrollTop = 300;
-      expect(geom.scrollTop).toBe(300);
-
-      // Re-attach so afterEach's detach() doesn't double-fire.
+      const writes: number[] = [];
+      stubGeometry(scrollEl, contentEl, geom, {
+        setScrollTop: (value, g) => {
+          writes.push(value);
+          const max = Math.max(0, g.scrollHeight - g.clientHeight);
+          const clamped = Math.max(0, Math.min(value, max));
+          g.scrollTop = clamped >= max ? Math.max(0, max - 1) : clamped;
+        },
+      });
+      controller = createUseStickToBottomController({ animationMode: () => mode });
       controller.attach(scrollEl, contentEl);
+
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      writes.length = 0;
+
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      ro.fire(contentEl, 900);
+
+      await advanceUntil(() => Math.abs(geom.scrollTop - 500) <= 1);
+      while (mockNow < 360) await nextFrame();
+
+      const writesAfterSettling = writes.length;
+      for (let i = 0; i < 20; i++) await nextFrame();
+
+      expect(geom.scrollTop).toBe(499);
+      expect(writes.length).toBe(writesAfterSettling);
+    });
+
+    it('delayed structural nudge does not snap a small corrected-target overshoot mid-spring', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Row identity changed at the tail (for example Read ->
+      // read_group). Virtua first publishes the 90px estimate, which
+      // starts a spring chase toward target 490.
+      geom.scrollHeight = 1090;
+      geom.contentHeight = 890;
+      ro.fire(contentEl, 890);
+
+      // Let the spring chase far enough that the later measured
+      // correction leaves scrollTop slightly above the true target.
+      // This is the exact case contentRO's small-overshoot threshold
+      // is meant to damp instead of snapping.
+      await advanceUntil(() => geom.scrollTop > 445);
+      const beforeCorrection = geom.scrollTop;
+
+      // The row measures at 40px. Corrected target = 1040 - 600 =
+      // 440. contentRO must not snap the small overshoot; the spring
+      // remains the single writer and will damp down naturally.
+      geom.scrollHeight = 1040;
+      geom.contentHeight = 840;
+      ro.fire(contentEl, 840);
+      expect(geom.scrollTop).toBe(beforeCorrection);
+      expect(geom.scrollTop - 440).toBeGreaterThan(0);
+      expect(geom.scrollTop - 440).toBeLessThan(50);
+
+      // MessageTimeline's structural-signature nudge runs after
+      // tick+rAF. It must not bypass the contentRO overshoot policy
+      // and instantly clamp the same small overshoot.
+      controller.notifyLiveContentMaybeGrew();
+      expect(geom.scrollTop).toBe(beforeCorrection);
+
+      await advanceUntil(() => Math.abs(geom.scrollTop - 440) <= 1);
     });
   });
 });

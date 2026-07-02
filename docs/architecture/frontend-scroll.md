@@ -241,63 +241,62 @@ anywhere else reintroduces the churn. Regression coverage:
 `prefers-reduced-motion: reduce` forces sync-pin behavior regardless of
 requested animation mode.
 
-## Virtua Write Gate
+## Virtua Compensation Routing
 
-Virtua's internal `$fixScrollJump` can write `scrollTop` while row
-measurements settle. The controller installs a descriptor gate on
-`scrollEl.scrollTop` so controller-owned writes pass through and external
-writes are evaluated against intent.
+Virtua's internal `$fixScrollJump` compensates for above-viewport row
+remeasures while measurements settle — the one internal `scrollTop` write
+our virtua configuration produces. It no longer writes the DOM directly:
+the patched scroll-applier seam (`patches/virtua@0.49.1.patch`, wired in
+`MessageTimeline` via `listRef.setScrollApplier`) hands each compensation
+to the controller's `applyVirtuaScrollCompensation`, which delegates the
+decision to the pure `resolveVirtuaCompensation`
+(`utils/scroll/resolver.ts`) and applies at most one write through the
+controller's chokepoint. The controller is the single `scrollTop` writer
+during follow by construction (scheduled navigations still write inside
+virtua under `runExternalScroll` tagging, and browser clamps are native);
+the old property-descriptor gate on `scrollEl.scrollTop` is gone.
 
-The gate drops virtua writes only when all of these are true:
+The resolver's decision order (each tier's regression provenance is
+documented at the function):
 
-- warm-up is complete,
-- the controller is logically at bottom,
-- the user has not escaped,
-- no pause lease is active,
-- animation mode is `spring`, or a one-shot structural append spring is in
-  flight,
-- a spring chase is in flight.
+- **shift pass** — `shift: true` compensations (head prepends from load
+  paging) apply verbatim.
+- **reading pass** — not warm, not at bottom, escaped, or paused: virtua's
+  anchor preservation lands unchanged (mount cascades, mid-thread
+  reading).
+- **anchor-redirect** — DOM already pinned to true bottom (within
+  `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) and the compensation requests a target
+  meaningfully *below* it: the write is rewritten to `targetScrollTop()`.
+  virtua's `delta` only compensates above-viewport remeasures, not the
+  at/below-fold growth that pushed the bottom down, so letting the
+  requested value land paints one frame short of bottom — the cold
+  thread-switch flicker.
+- **width-reflow pass** — during the width-reflow settle window the paired
+  contentRO sync-pins, so the compensation lands in the same paint.
+- **mid-chase decline** — a spring is in flight (or sentinel-alive) and
+  the jump is within one viewport: decline. The patched core responds to a
+  decline by poking its own store at the current DOM offset
+  (manual-mark + `ACTION_SCROLL`), so virtua's internal offset model can
+  never desync from the DOM — the failure mode that made the old gate's
+  silent drops regression-prone. Larger jumps are bulk layout corrections
+  (fresh-mount estimate→measure, late shiki/katex/mermaid typesetting) and
+  fall through to the final pass so they snap in one paint instead of
+  becoming a multi-hundred-px spring chase.
+- **pass** — anything else applies verbatim.
 
-This is intentionally narrow. Pre-warm writes are hidden, instant-mode
-writes target the same sync-pin destination, and no-spring writes have
-nothing to protect. If code changes any gate condition, run the
-`useStickToBottom.svelte.test.ts` blocks for external write gates,
-spring sentinel lifetime, pause-depth races, and gate coupling.
+There is deliberately no `animationMode` tier: keying the decline on
+`springActive` alone makes mode-latch timing irrelevant to compensation
+handling, which is what retired the `SPRING_MODE_HOLD_MS >
+RETAIN_ANIMATION_DURATION_MS` cross-file invariant.
 
-Two carve-outs sit inside the drop conditions, evaluated in ladder order
-before the suppression below.
-
-The first is an **anchor-redirect**, not a pass-through. When the DOM is
-already pinned to true bottom (within `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) and
-virtua's `$fixScrollJump` requests a `scrollTop` meaningfully *below* it, the
-write is rewritten to `targetScrollTop()` — the exact value the controller's
-own pin writes — instead of being dropped. virtua's anchor `delta` only
-compensates above-viewport remeasures, not the at/below-fold row growth that
-pushed the bottom down, so letting the requested value land paints one frame a
-few hundred px short of bottom before the next controller pin snaps back: the
-cold thread-switch flicker (correct → up-jump → correct). *Dropping* the write
-instead is what the pre-warm and escaped pass-throughs above exist to avoid — a
-swallowed write fires no `scroll` event, and virtua re-derives its internal
-offset from the DOM through that event, so suppression desyncs virtua's model
-(the revert-to-top regression). Redirecting keeps the DOM at the bottom the
-controller already pinned, so virtua's DOM-derived model stays correct and the
-stale-anchor frame never paints. It fires only when the DOM is already pinned
-and virtua moves away from it; an in-flight spring chase (DOM intentionally
-below target) is not already-pinned and falls through unchanged.
-
-The second is a magnitude pass-through: even when all drop conditions hold, a
-write whose magnitude exceeds one viewport (`clientHeight`) passes through.
-The suppression exists to keep the spring the single writer for virtua's
-small (1–2 line) `$fixScrollJump` anchor compensations during a chase. A
-fresh-mount estimate→measure pass or a late async-typesetting reflow
-(shiki/katex/mermaid) instead lands as one above-viewport jump; suppressing
-that leaves the spring to chase the whole delta — the visible multi-hundred-px
-"spring scroll" on switch into an actively-streaming thread. A jump that
-large is a bulk layout correction, not streamed content (which is
-controller-owned and already passed through at the top of the gate), so it
-snaps in the same paint and the spring resolves from the corrected position.
-The threshold only ever discriminates among virtua's anchor corrections; it
-never sees content.
+Routed writes are controller writes: attributed (`virtua.jump` /
+`virtua.anchorRedirect` in the `scroll.write` trace), self-tagged for the
+scroll handler, and preceded by the virtua manual-scroll marking hook like
+every other programmatic write. Decision-level coverage lives in
+`resolver.test.ts`; the applier wiring in `useStickToBottom.svelte.test.ts`
+("virtua compensation applier"); the patch seam itself in
+`virtua-patch-scroll-applier.browser.test.ts`; and the user-visible
+outcomes in `compensationOutcome.browser.test.ts`.
 
 ## Live Content Animation
 
@@ -310,17 +309,16 @@ that stamp and `instant` otherwise.
 The spring is keyed on content arrival, not provider turn state. It
 therefore covers end-of-turn smoother drains and text-stream gaps, while
 tool rows and late Streamdown typesetting on settled content sync-pin
-invisibly by default.
-`SPRING_MODE_HOLD_MS` must remain greater than the spring sentinel
-retain duration.
+invisibly by default. The 500ms hold is pure tuning — the historical
+requirement that it outlast the spring sentinel retain duration died with
+the descriptor gate (see Virtua Compensation Routing).
 
 Structural transcript appends have a narrower override:
 `markStructuralContentPending()` makes the next near-term command/tool row
 growth spring-eligible even when the content latch currently returns
 `instant`. This is intentionally one-shot. After the structural append
 spring arrives it cancels instead of entering the streaming sentinel, so
-virtua/browser `scrollTop` corrections are not suppressed after the append
-settles.
+routed virtua compensations are not declined after the append settles.
 
 The effect that calls `markStructuralContentPending()` re-baselines its
 active-turn tail signature — recording it without marking — across a thread
@@ -338,8 +336,8 @@ width-reflow settle window and sync-pins paired height corrections. This
 keeps pane, sidebar, and window reflows — including Mermaid `useMaxWidth`
 height changes in virtua's rendered buffer — from producing a visible
 half-viewport spring chase just because live content advanced recently.
-During that window, virtua's anchor-preserving `scrollTop` writes pass
-through the external-write gate for the same reason.
+During that window, the compensation resolver passes virtua's
+anchor-preserving writes for the same reason.
 
 Negative content deltas usually sync-pin when the user intends to stick,
 but a small negative correction during an active spring is absorbed by
@@ -550,9 +548,9 @@ Work backward from the visible symptom to the last relevant
 `scroll.contentRO`. The record carries the resolver's decision
 (`writeCaller`, `startSpring`, `bumpTargetChanged`, `oscillationRecovery`,
 `setIsAtBottom`). If the user intended to stick and a negative delta shows
-`writeCaller: null` with `setIsAtBottom: false`, check whether the gate
-should use logical intent (`isAtBottomState`) as well as geometry
-(`isNearBottomState`).
+`writeCaller: null` with `setIsAtBottom: false`, check whether the
+resolver's pin predicate should use logical intent (`isAtBottomState`) as
+well as geometry (`isNearBottomState`).
 
 Do not fix scroll regressions by adding `requestAnimationFrame`, a second
 observer, a length-watching `$effect`, or another `scrollTop` writer.

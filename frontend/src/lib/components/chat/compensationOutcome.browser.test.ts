@@ -1,15 +1,15 @@
 // Above-viewport compensation outcome regression — Stage 3 of
 // docs/architecture/scroll-rearchitecture-plan.md.
 //
-// virtua compensates for above-viewport row remeasurements by writing
-// scrollTop directly ($fixScrollJump). Today those writes are arbitrated by
-// the controller's scrollTop descriptor gate; Stage 3 routes them through a
-// patched applier seam and deletes the gate. The gate's decision tiers encode
-// five shipped regression histories (bug-reports 20260524T200233Z,
+// virtua compensates for above-viewport row remeasurements via
+// $fixScrollJump. Those writes were arbitrated by the controller's scrollTop
+// descriptor gate until Stage 3 routed them through the patched applier seam
+// (resolveVirtuaCompensation) and deleted the gate. The gate's decision tiers
+// encoded five shipped regression histories (bug-reports 20260524T200233Z,
 // 20260524T183128Z, 20260622T041049Z, revert-to-top, seq-509 — see
 // scroll-contracts.md C10). This suite pins those histories at the OUTCOME
 // level — what the user sees on screen — with no controller internals and no
-// mechanism spies, so the same assertions hold before the applier patch,
+// mechanism spies, so the same assertions held before the applier patch,
 // after it, and after the gate deletion:
 //
 //  1. pinned + above-viewport growth → the visible tail never moves
