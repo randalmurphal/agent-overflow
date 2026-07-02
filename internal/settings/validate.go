@@ -192,6 +192,21 @@ func validateSettings(current Settings) (Settings, error) {
 		)
 	}
 	current.CollapsedProjects = sanitizeCollapsedProjects(current.CollapsedProjects)
+
+	if len(current.ClaudeHiddenModels) > MaxHiddenModels {
+		return Settings{}, fmt.Errorf(
+			"claudeHiddenModels has %d entries, max is %d",
+			len(current.ClaudeHiddenModels), MaxHiddenModels,
+		)
+	}
+	if len(current.CodexHiddenModels) > MaxHiddenModels {
+		return Settings{}, fmt.Errorf(
+			"codexHiddenModels has %d entries, max is %d",
+			len(current.CodexHiddenModels), MaxHiddenModels,
+		)
+	}
+	current.ClaudeHiddenModels = dedupeTrimmed(current.ClaudeHiddenModels, MaxHiddenModels)
+	current.CodexHiddenModels = dedupeTrimmed(current.CodexHiddenModels, MaxHiddenModels)
 	current.PaneLayout = sanitizePaneLayout(current.PaneLayout)
 
 	return current, nil
@@ -229,6 +244,8 @@ func sanitizeLoadedSettings(current Settings) Settings {
 	)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
 	current.GitLabSelfHostedHosts = sanitizeGitLabHosts(current.GitLabSelfHostedHosts)
+	current.ClaudeHiddenModels = dedupeTrimmed(current.ClaudeHiddenModels, MaxHiddenModels)
+	current.CodexHiddenModels = dedupeTrimmed(current.CodexHiddenModels, MaxHiddenModels)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
 
 	current.DefaultThreadEnvMode = sanitizeOption(
@@ -646,14 +663,26 @@ func normalizeRecentWorkspaces(paths []string) []string {
 
 const MaxCollapsedProjects = 500
 
+// MaxHiddenModels caps the per-provider hidden-model lists. Catalogs
+// hold well under a hundred models; anything beyond this is a corrupt
+// or hand-mangled file.
+const MaxHiddenModels = 100
+
 func sanitizeCollapsedProjects(ids []string) []string {
-	if len(ids) == 0 {
+	return dedupeTrimmed(ids, MaxCollapsedProjects)
+}
+
+// dedupeTrimmed trims each entry, drops empties and duplicates, and
+// caps the result at limit entries. Returns nil when nothing survives
+// so sparse serialization omits the field.
+func dedupeTrimmed(values []string, limit int) []string {
+	if len(values) == 0 {
 		return nil
 	}
-	seen := make(map[string]struct{}, len(ids))
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		trimmed := strings.TrimSpace(id)
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
 			continue
 		}
@@ -662,7 +691,7 @@ func sanitizeCollapsedProjects(ids []string) []string {
 		}
 		seen[trimmed] = struct{}{}
 		out = append(out, trimmed)
-		if len(out) >= MaxCollapsedProjects {
+		if len(out) >= limit {
 			break
 		}
 	}

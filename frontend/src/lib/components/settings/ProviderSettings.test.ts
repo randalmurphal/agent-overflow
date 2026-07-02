@@ -2,6 +2,8 @@ import { describe, expect, it, beforeEach } from "vitest";
 import { render, fireEvent } from "@testing-library/svelte";
 import ProviderSettings from "./ProviderSettings.svelte";
 import { loadSettings } from "../../stores/settings.svelte";
+import { getToasts } from "../../stores/toast.svelte";
+import type { ModelInfo } from "../../types/settings";
 import {
   setBindingMock,
   getBindingMock,
@@ -23,6 +25,58 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   await loadSettings();
   return merged;
 }
+
+const CLAUDE_CATALOG: ModelInfo[] = [
+  { slug: "claude-fable-5", name: "Claude Fable 5", provider: "claude" },
+  { slug: "claude-opus-4-8", name: "Claude Opus 4.8", provider: "claude" },
+];
+
+describe("<ProviderSettings> — model visibility toggles", () => {
+  it("dispatches a hide patch when clicking a visible model chip", async () => {
+    await seed();
+    setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
+    const { findByTestId } = render(ProviderSettings);
+
+    const chip = await findByTestId("settings-model-toggle-claude-claude-opus-4-8");
+    expect(chip.getAttribute("data-hidden")).toBe("false");
+    await fireEvent.click(chip);
+
+    const mock = getBindingMock("UpdateSettings");
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls.at(-1)![0]).toEqual({
+      claudeHiddenModels: ["claude-opus-4-8"],
+    });
+  });
+
+  it("marks hidden models and dispatches an unhide patch on click", async () => {
+    await seed({ claudeHiddenModels: ["claude-opus-4-8"] });
+    setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
+    const { findByTestId } = render(ProviderSettings);
+
+    const chip = await findByTestId("settings-model-toggle-claude-claude-opus-4-8");
+    expect(chip.getAttribute("data-hidden")).toBe("true");
+    await fireEvent.click(chip);
+
+    const mock = getBindingMock("UpdateSettings");
+    expect(mock!.mock.calls.at(-1)![0]).toEqual({ claudeHiddenModels: [] });
+  });
+
+  it("refuses to hide the last visible model", async () => {
+    await seed({ claudeHiddenModels: ["claude-opus-4-8"] });
+    setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
+    const { findByTestId } = render(ProviderSettings);
+
+    const chip = await findByTestId("settings-model-toggle-claude-claude-fable-5");
+    await fireEvent.click(chip);
+
+    const mock = getBindingMock("UpdateSettings");
+    expect(mock!.mock.calls.length).toBe(0);
+    // The refusal must be visible, not a silent no-op.
+    expect(
+      getToasts().some((toast) => toast.message.includes("At least one model must stay visible")),
+    ).toBe(true);
+  });
+});
 
 describe("<ProviderSettings> — Text generation section", () => {
   beforeEach(async () => {

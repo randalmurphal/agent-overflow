@@ -80,11 +80,85 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 	case "task_started":
 		taskID := readRawString(raw["task_id"])
 		toolUseID := firstNonEmpty(readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
-		p.rememberTaskToolUse(taskID, toolUseID)
-		taskRef := p.taskToolUseRef(taskID)
 		if taskID == "" || toolUseID == "" {
 			return nil, nil
 		}
+		taskType := readRawString(raw["task_type"])
+
+		// Resume-rebind detection (local_agent only). Claude's harness
+		// lets the model resume an idle async agent via a follow-up
+		// tool call (observed: SendMessage, `input.to: <agentId>`). On
+		// resume the CLI re-fires task_started with the SAME task_id
+		// but a DIFFERENT tool_use_id — the resuming tool's own call —
+		// carrying the ORIGINAL agent's description/subagent_type. See
+		// claude-wire.md §E6 and local_agent_async_resume.ndjson
+		// (captured from AO thread 9941d40f, 2026-07-02).
+		//
+		// Two detection paths, both scoped to task_type=="local_agent"
+		// (Bash's "local_bash" task_type never rebinds like this):
+		//  1. In-memory: taskID is already bound to a DIFFERENT
+		//     tool_use_id than this envelope carries.
+		//  2. Reconnect: taskID has NO binding at all (a parser restart
+		//     lost it), but toolUseID was never observed as an
+		//     Agent-launch tool_use either (see isAgentLaunchTool) — the
+		//     only way a "local_agent" task_started binds to a
+		//     non-launch tool is a resume whose original launch
+		//     predates this parser instance.
+		var resumesToolUseID string
+		var isResume bool
+		if taskType == "local_agent" {
+			existingRef := p.taskToolUseRef(taskID)
+			switch {
+			case existingRef.ToolUseID != "" && existingRef.ToolUseID != toolUseID:
+				resumesToolUseID = existingRef.ToolUseID
+				isResume = true
+			case existingRef.ToolUseID == "" && !p.isAgentLaunchTool(toolUseID):
+				// No binding at all: the original launch predates this
+				// parser instance. Real trigger: a fresh process
+				// resumed the session and the model re-resumed an
+				// agent from its transcript (SendMessage to a dead
+				// agent replies "resumed from transcript" — observed
+				// live, thread 9941d40f). Mark the carrier below, but
+				// resumesToolUseID stays "" since there is no original
+				// tool_use_id to point triage at.
+				//
+				// Inferring "resume" from ABSENT state is sound here
+				// because a fresh launch cannot reach this branch:
+				// parser lifetime == CLI process lifetime (stdio), the
+				// CLI emits task_started only AFTER the assistant
+				// envelope carrying the tool_use, and ParseLine is
+				// sequential — so any launch tool_use whose
+				// task_started this process sees is already in
+				// agentLaunchToolUses. local_agent tasks die with
+				// their CLI process, so no pre-restart in-flight agent
+				// can re-emit task_started on the new process either.
+				// The only in-process loss window is the bounded-map
+				// wholesale reset at parserTaskMapCap (1024 live
+				// launches between a tool_use and its ~ms-later
+				// task_started — practically unreachable).
+				isResume = true
+			}
+		}
+
+		p.rememberTaskToolUse(taskID, toolUseID)
+		taskRef := p.taskToolUseRef(taskID)
+
+		if isResume {
+			// Route this tool_use through the SAME is_background
+			// mechanism run_in_background launches use (parser.go
+			// markBackground/isBackground). Fix B's async-ack path then
+			// naturally emits this tool_use's EventToolComplete with
+			// is_background:true, and triage's keep-running flip
+			// (tool_lifecycle.go) makes it the resumed round's
+			// background carrier — the row that keeps
+			// ListRunningBackgroundToolCalls non-empty (reaper
+			// protection) while the resumed agent runs quiet. Wire
+			// order guarantees this works: assistant tool_use ->
+			// task_started (here) -> tool_result ack. See
+			// claude-wire.md §E6.
+			p.markBackground(toolUseID)
+		}
+
 		// Re-emit an EventToolStart carrying task_id so triage can
 		// persist the task_id ↔ tool_use_id mapping into items.meta.
 		// On reconnect with a fresh in-memory parser, a later
@@ -95,11 +169,25 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		metaFields := map[string]any{
 			"task_id": taskID,
 		}
-		if taskType := readRawString(raw["task_type"]); taskType != "" {
+		if taskType != "" {
 			metaFields["task_type"] = taskType
 		}
 		if taskRef.ParentToolUseID != "" {
 			metaFields["parent_tool_use_id"] = taskRef.ParentToolUseID
+		}
+		if isResume {
+			// resumes_tool_use_id + description tie the carrier back to
+			// the agent it's resuming — triage's keep-running flip uses
+			// them to rewrite the carrier's Summary to the agent-centric
+			// form ("Agent: <description>") instead of "SendMessage: …".
+			// Only stamped on the resume path so a normal launch's
+			// meta-update never gains an unrelated description field.
+			if resumesToolUseID != "" {
+				metaFields["resumes_tool_use_id"] = resumesToolUseID
+			}
+			if desc := readRawString(raw["description"]); desc != "" {
+				metaFields["description"] = desc
+			}
 		}
 		meta, _ := json.Marshal(metaFields)
 		return []provider.ProviderEvent{{

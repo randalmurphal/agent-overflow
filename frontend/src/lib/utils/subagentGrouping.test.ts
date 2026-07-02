@@ -342,6 +342,252 @@ describe('groupItemsBySubagent', () => {
     }
   });
 
+  it('suppresses a grandchild under a non-background launch nested inside a background subagent (transitive suppression)', () => {
+    // Regression for the tool-call flash leak: a bg running Agent launch has
+    // a NESTED launch child that is itself foreground (not background) — a
+    // real Claude shape (an inline agent launched from within a backgrounded
+    // one). The old filter only dropped items whose DIRECT parentId matched
+    // a suppressed anchor, so the nested launch was dropped (level 1) but
+    // its own child fell through to the orphan branch and rendered at the
+    // TOP LEVEL. The suppression walk must be transitive over the whole
+    // subtree, not one level deep.
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'bg-agent',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        status: 'running',
+        summary: 'Agent: investigate',
+        meta: toolMeta({ toolName: 'Agent', input: { description: 'investigate' } }),
+      }),
+      mkItem({
+        id: 'nested-launch',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: false,
+        status: 'completed',
+        parentId: 'bg-agent',
+        summary: 'Agent: nested',
+        meta: toolMeta({ toolName: 'Agent', input: { description: 'nested' } }),
+      }),
+      mkItem({
+        id: 'grandchild-read',
+        itemIndex: 2,
+        kind: 'tool_call',
+        toolName: 'Read',
+        status: 'running',
+        parentId: 'nested-launch',
+        summary: 'Read: file.ts',
+      }),
+    ]);
+
+    // Only the bg launch itself survives as a root.
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['bg-agent']);
+    // The grandchild must appear NOWHERE: not as an orphan leaf, not inside
+    // a read_group, not nested in any group's children.
+    for (const node of nodes) {
+      expect(nodeContainsItem(node, 'nested-launch')).toBe(false);
+      expect(nodeContainsItem(node, 'grandchild-read')).toBe(false);
+    }
+    expect(nodes.some((node) => node.kind === 'read_group')).toBe(false);
+  });
+
+  it('suppresses a depth-3 mixed subtree (launches and plain tools) under a background anchor', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'bg-agent',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        status: 'running',
+        summary: 'Agent: investigate',
+        meta: toolMeta({ toolName: 'Agent' }),
+      }),
+      mkItem({
+        id: 'depth1-launch',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Task',
+        isBackground: false,
+        status: 'completed',
+        parentId: 'bg-agent',
+        summary: 'Task: depth1',
+        meta: toolMeta({ toolName: 'Task' }),
+      }),
+      mkItem({
+        id: 'depth2-tool',
+        itemIndex: 2,
+        kind: 'tool_call',
+        toolName: 'Bash',
+        status: 'completed',
+        parentId: 'depth1-launch',
+        summary: 'Bash: depth2',
+      }),
+      mkItem({
+        id: 'depth3-launch',
+        itemIndex: 3,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: false,
+        status: 'completed',
+        parentId: 'depth2-tool',
+        summary: 'Agent: depth3',
+        meta: toolMeta({ toolName: 'Agent' }),
+      }),
+      mkItem({
+        id: 'depth4-tool',
+        itemIndex: 4,
+        kind: 'tool_call',
+        toolName: 'Read',
+        status: 'running',
+        parentId: 'depth3-launch',
+        summary: 'Read: depth4',
+      }),
+    ]);
+
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['bg-agent']);
+    for (const id of ['depth1-launch', 'depth2-tool', 'depth3-launch', 'depth4-tool']) {
+      expect(nodes.some((node) => nodeContainsItem(node, id))).toBe(false);
+    }
+  });
+
+  it('keeps a true orphan (missing parent) top-level even alongside a suppressed background subtree', () => {
+    // Guards the suppression walk against over-reaching: it must only
+    // suppress items reachable by parent->child edges from an actual
+    // suppressed anchor, never rows whose declared parent simply does not
+    // exist in the input.
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'bg-agent',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        summary: 'Agent: investigate',
+        meta: toolMeta({ toolName: 'Agent' }),
+      }),
+      mkItem({ id: 'bg-child', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'bg-agent', summary: 'Bash: bg' }),
+      mkItem({ id: 'orphan', itemIndex: 2, parentId: 'missing-parent', summary: 'lost child' }),
+    ]);
+
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['bg-agent', 'orphan']);
+    const orphan = expectLeaf(nodes[1]);
+    expect(orphan.orphan).toBe(true);
+    expect(nodes.some((node) => nodeContainsItem(node, 'bg-child'))).toBe(false);
+  });
+
+  it('keeps a top-level background completion sibling rendering while suppressing one nested a level deeper', () => {
+    // Two completion siblings in the same tree: the OUTER bg launch's
+    // completion has parentId "" (empty) and must always render top-level.
+    // The INNER bg launch's completion has parentId = the OUTER anchor (the
+    // real wire shape for a nested backgrounded launch) — the transitive
+    // walk correctly suppresses it along with the rest of the inner subtree.
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'outer-bg',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        status: 'running',
+        summary: 'Agent: outer',
+        meta: toolMeta({ toolName: 'Agent' }),
+      }),
+      mkItem({
+        id: 'inner-bg',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        status: 'completed',
+        parentId: 'outer-bg',
+        summary: 'Agent: inner',
+        meta: toolMeta({ toolName: 'Agent' }),
+      }),
+      mkItem({
+        id: 'inner-child',
+        itemIndex: 2,
+        kind: 'tool_call',
+        toolName: 'Bash',
+        parentId: 'inner-bg',
+        summary: 'Bash: inner work',
+      }),
+      mkItem({
+        id: 'complete:inner-bg',
+        itemIndex: 3,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'inner-bg',
+        parentId: 'outer-bg',
+        summary: 'Agent: inner -> done',
+      }),
+      mkItem({
+        id: 'complete:outer-bg',
+        itemIndex: 4,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'outer-bg',
+        summary: 'Agent: outer -> done',
+      }),
+    ]);
+
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual([
+      'outer-bg',
+      'complete:outer-bg',
+    ]);
+    for (const id of ['inner-bg', 'inner-child', 'complete:inner-bg']) {
+      expect(nodes.some((node) => nodeContainsItem(node, id))).toBe(false);
+    }
+  });
+
+  it('terminates on malformed cyclic parentId data without swallowing the top-level anchor', () => {
+    // Defensive guard for the suppression pass: parentId cycles cannot occur
+    // in persisted data (the store enforces acyclic parent chains), but a
+    // grouping walk over untrusted input must still terminate and must not
+    // let a cycle swallow legitimate rows. The single forward pass visits
+    // each item exactly once, so termination is structural. A top-level
+    // anchor has parentId '' and therefore can never enter the suppression
+    // set itself. Items trapped in a cycle are unreachable from any
+    // suppressed anchor, so they degrade to flat top-level leaves (their
+    // declared parents exist in the item set, so they are not
+    // orphan-flagged) rather than crashing or vanishing.
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'bg-agent',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        summary: 'Agent: investigate',
+        meta: toolMeta({ toolName: 'Agent' }),
+      }),
+      mkItem({ id: 'bg-child', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'bg-agent', summary: 'Bash: bg' }),
+      // Mutual cycle: each names the other as parent.
+      mkItem({ id: 'cycle-x', itemIndex: 2, kind: 'tool_call', toolName: 'Bash', parentId: 'cycle-y', summary: 'Bash: x' }),
+      mkItem({ id: 'cycle-y', itemIndex: 3, kind: 'tool_call', toolName: 'Bash', parentId: 'cycle-x', summary: 'Bash: y' }),
+      // Self-referential parentId.
+      mkItem({ id: 'self-ref', itemIndex: 4, kind: 'tool_call', toolName: 'Bash', parentId: 'self-ref', summary: 'Bash: self' }),
+    ]);
+
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual([
+      'bg-agent',
+      'cycle-x',
+      'cycle-y',
+      'self-ref',
+    ]);
+    expect(nodes.some((node) => nodeContainsItem(node, 'bg-child'))).toBe(false);
+    // Cycle members are not orphan-flagged: their declared parents exist.
+    for (const node of nodes) {
+      expect(expectLeaf(node).orphan).toBeUndefined();
+    }
+  });
+
   it('keeps Codex spawn rows flat when spawn metadata lives in meta', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
@@ -427,6 +673,45 @@ describe('groupItemsBySubagent', () => {
 
     expect(nodes).toHaveLength(1);
     expect(expectLeaf(nodes[0]).item.id).toBe('codex-agent');
+  });
+
+  it('suppresses a transitive descendant subtree under a Codex spawn anchor', () => {
+    // Same transitive-suppression walk as the background-Claude case: a
+    // grandchild whose parent is not itself the spawn anchor must not leak
+    // to the top level.
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'codex-agent',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'collab_agent',
+        isBackground: true,
+        summary: 'collab_agent: review',
+        meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
+      }),
+      mkItem({
+        id: 'child-tool',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'command_execution',
+        parentId: 'codex-agent',
+        summary: 'Bash: sleep 20',
+      }),
+      mkItem({
+        id: 'grandchild-tool',
+        itemIndex: 2,
+        kind: 'tool_call',
+        toolName: 'Read',
+        status: 'running',
+        parentId: 'child-tool',
+        summary: 'Read: nested.ts',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    expect(expectLeaf(nodes[0]).item.id).toBe('codex-agent');
+    expect(nodes.some((node) => nodeContainsItem(node, 'child-tool'))).toBe(false);
+    expect(nodes.some((node) => nodeContainsItem(node, 'grandchild-tool'))).toBe(false);
   });
 
   it('maps hidden Codex child transcript rows back to their visible spawn row', () => {

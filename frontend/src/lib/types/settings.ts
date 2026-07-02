@@ -80,6 +80,15 @@ export interface Settings {
   codexBinaryPath: string;
   claudeEnabled: boolean;
   codexEnabled: boolean;
+  /**
+   * Model slugs hidden from model pickers (hide-list: absent slugs —
+   * including newly added catalog models — stay visible). Display-only:
+   * existing threads on a hidden model keep working. The Claude list
+   * covers both `claude` and `claude-tui`. Go persists with
+   * `omitempty`, so treat undefined as [].
+   */
+  claudeHiddenModels?: string[];
+  codexHiddenModels?: string[];
   /** Seeds whether new draft threads start on the current checkout or a new worktree. */
   defaultThreadEnvMode: ThreadEnvMode;
   /** Prefix used for auto-generated worktree branch names. */

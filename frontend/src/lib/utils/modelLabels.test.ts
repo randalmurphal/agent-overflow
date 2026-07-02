@@ -5,6 +5,7 @@ import { displayModelLabel } from './modelLabels';
 describe('displayModelLabel', () => {
   it('formats Claude slugs as provider-free display names', () => {
     expect(displayModelLabel('claude', 'claude-opus-4-7')).toBe('Opus 4.7');
+    expect(displayModelLabel('claude', 'claude-sonnet-5')).toBe('Sonnet 5');
     expect(displayModelLabel('claude', 'claude-sonnet-4-6')).toBe('Sonnet 4.6');
     expect(displayModelLabel('claude', 'claude-haiku-4-5')).toBe('Haiku 4.5');
   });

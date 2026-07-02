@@ -25,6 +25,15 @@ var KnownPricing = map[string]ModelPricing{
 		CacheCreationPerMToken: 6.25,
 		CacheReadPerMToken:     0.50,
 	},
+	// Introductory Sonnet 5 pricing, in effect through 2026-08-31; from
+	// 2026-09-01 it moves to the claude-sonnet family rates below —
+	// delete this entry then.
+	"claude-sonnet-5": {
+		InputPerMToken:         2.00,
+		OutputPerMToken:        10.00,
+		CacheCreationPerMToken: 2.50,
+		CacheReadPerMToken:     0.20,
+	},
 	"claude-sonnet": {
 		InputPerMToken:         3.00,
 		OutputPerMToken:        15.00,
@@ -95,6 +104,14 @@ func CalculateCost(model string, usage TokenUsage) float64 {
 // both hyphen families (claude-sonnet-4-6 -> claude-sonnet) and dotted GPT
 // versions (gpt-5.6 -> gpt-5) resolve to their family pricing.
 func matchPricing(model string) (ModelPricing, bool) {
+	// Drop a trailing context-tier marker ("claude-sonnet-5[1m]" ->
+	// "claude-sonnet-5") — the wire slug carries it for 1M-context
+	// sessions, but long context bills at standard per-token rates, and
+	// leaving it on would skip exact per-version entries.
+	if open := strings.IndexByte(model, '['); open > 0 && strings.HasSuffix(model, "]") {
+		model = model[:open]
+	}
+
 	// Try exact match first.
 	if p, ok := KnownPricing[model]; ok {
 		return p, true

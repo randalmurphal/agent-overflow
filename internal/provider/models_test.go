@@ -130,6 +130,7 @@ func TestClaudeFastModeAndContextCapabilities(t *testing.T) {
 		{"claude-opus-4-7", true, 2},
 		{"claude-opus-4-6", true, 2},
 		{"claude-opus-4-5", false, 2},
+		{"claude-sonnet-5", false, 2},
 		{"claude-sonnet-4-6", false, 2},
 		{"claude-haiku-4-5", false, 1},
 	}
@@ -150,6 +151,72 @@ func TestClaudeFastModeAndContextCapabilities(t *testing.T) {
 				t.Fatalf("default ContextWindow = %d, want %d", model.ContextWindows[0].Tokens, ClaudeStandardContextWindow)
 			}
 		})
+	}
+}
+
+func TestClaudeSonnetEffortTiersMatchAPICapabilities(t *testing.T) {
+	// Pins the effort tiers documented on the claude-sonnet-5 and
+	// claude-sonnet-4-6 catalog entries in models.go (4.6 deliberately
+	// lacks xhigh — see the comment there).
+	cases := []struct {
+		model   string
+		efforts []string
+		def     string
+	}{
+		{"claude-sonnet-5", []string{"low", "medium", "high", "xhigh", "max"}, "high"},
+		{"claude-sonnet-4-6", []string{"low", "medium", "high", "max"}, "high"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			model, found := FindModel("claude", tc.model)
+			if !found {
+				t.Fatalf("FindModel(%q) not found", tc.model)
+			}
+			slugs := make([]string, len(model.ReasoningEfforts))
+			for i, option := range model.ReasoningEfforts {
+				slugs[i] = option.Slug
+			}
+			if !slices.Equal(slugs, tc.efforts) {
+				t.Fatalf("effort slugs = %v, want %v", slugs, tc.efforts)
+			}
+			if got := string(DefaultReasoningEffortForModel("claude", tc.model, DefaultReasoningEffort)); got != tc.def {
+				t.Fatalf("default effort = %q, want %q", got, tc.def)
+			}
+		})
+	}
+
+	// A stale persisted xhigh on 4.6 must coerce to the default, while
+	// the tiers each model genuinely supports pass through untouched.
+	coercions := []struct {
+		model  string
+		effort ReasoningEffort
+		want   ReasoningEffort
+	}{
+		{"claude-sonnet-4-6", EffortXHigh, EffortHigh},
+		{"claude-sonnet-4-6", EffortMax, EffortMax},
+		{"claude-sonnet-5", EffortXHigh, EffortXHigh},
+		{"claude-sonnet-5", EffortMax, EffortMax},
+	}
+	for _, tc := range coercions {
+		if got := CoerceReasoningEffortForModel("claude", tc.model, tc.effort); got != tc.want {
+			t.Errorf("CoerceReasoningEffortForModel(%q, %q) = %q, want %q", tc.model, tc.effort, got, tc.want)
+		}
+	}
+}
+
+func TestSonnetAliasResolvesToSonnet5(t *testing.T) {
+	// The bare "sonnet" alias must resolve to the Sonnet 5 catalog entry
+	// (with its capabilities), not just normalize at the string level.
+	model, found := FindModel("claude", "sonnet")
+	if !found {
+		t.Fatal(`FindModel("claude", "sonnet") not found`)
+	}
+	if model.Slug != "claude-sonnet-5" {
+		t.Fatalf(`FindModel("claude", "sonnet").Slug = %q, want claude-sonnet-5`, model.Slug)
+	}
+	if !ReasoningEffortSupportedForModel("claude", "sonnet", "xhigh") {
+		t.Error(`effort "xhigh" should be supported via the "sonnet" alias (Sonnet 5)`)
 	}
 }
 
@@ -218,7 +285,10 @@ func TestNormalizeModelSlugClaudeAliases(t *testing.T) {
 		"opus-4.7":                   "claude-opus-4-7",
 		"claude-opus-4.7":            "claude-opus-4-7",
 		"claude-opus-4.6":            "claude-opus-4-6",
-		"sonnet":                     "claude-sonnet-4-6",
+		"sonnet":                     "claude-sonnet-5",
+		"sonnet-5":                   "claude-sonnet-5",
+		"claude-sonnet-5":            "claude-sonnet-5",
+		"sonnet-4.6":                 "claude-sonnet-4-6",
 		"claude-sonnet-4.6":          "claude-sonnet-4-6",
 		"haiku":                      "claude-haiku-4-5",
 		"claude-haiku-4-5-20251001":  "claude-haiku-4-5",

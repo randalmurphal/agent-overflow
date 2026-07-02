@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -943,6 +944,108 @@ func TestCollapsedProjectsSanitization(t *testing.T) {
 		loaded.CollapsedProjects[0] != "x" ||
 		loaded.CollapsedProjects[1] != "y" {
 		t.Errorf("load-path sanitize: CollapsedProjects = %v, want [x y]", loaded.CollapsedProjects)
+	}
+}
+
+func TestHiddenModelsRoundTripAndSanitization(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	// Write path: dedup, trim, drop empty; both provider lists persist.
+	updated, err := svc.Update(map[string]any{
+		"claudeHiddenModels": []any{"", " claude-opus-4-5 ", "claude-opus-4-5", "claude-haiku-4-5"},
+		"codexHiddenModels":  []any{"gpt-5.2"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(updated.ClaudeHiddenModels) != 2 ||
+		updated.ClaudeHiddenModels[0] != "claude-opus-4-5" ||
+		updated.ClaudeHiddenModels[1] != "claude-haiku-4-5" {
+		t.Errorf("write-path sanitize: ClaudeHiddenModels = %v, want [claude-opus-4-5 claude-haiku-4-5]", updated.ClaudeHiddenModels)
+	}
+	if len(updated.CodexHiddenModels) != 1 || updated.CodexHiddenModels[0] != "gpt-5.2" {
+		t.Errorf("CodexHiddenModels = %v, want [gpt-5.2]", updated.CodexHiddenModels)
+	}
+
+	reloaded := NewService(dir).Get()
+	if len(reloaded.ClaudeHiddenModels) != 2 || len(reloaded.CodexHiddenModels) != 1 {
+		t.Errorf("reloaded hidden models = %v / %v, want 2 / 1 entries",
+			reloaded.ClaudeHiddenModels, reloaded.CodexHiddenModels)
+	}
+
+	// Load path: dirty JSON sanitizes on Get().
+	raw := `{"claudeHiddenModels":["","  claude-opus-4-5  ","claude-opus-4-5"]}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	loaded := NewService(dir).Get()
+	if len(loaded.ClaudeHiddenModels) != 1 || loaded.ClaudeHiddenModels[0] != "claude-opus-4-5" {
+		t.Errorf("load-path sanitize: ClaudeHiddenModels = %v, want [claude-opus-4-5]", loaded.ClaudeHiddenModels)
+	}
+
+	// Emptying the lists sparse-omits the keys.
+	if _, err := svc.Update(map[string]any{
+		"claudeHiddenModels": []any{},
+		"codexHiddenModels":  []any{},
+	}); err != nil {
+		t.Fatalf("Update(reset) error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := fileMap["claudeHiddenModels"]; ok {
+		t.Errorf("file still contains claudeHiddenModels when empty; contents: %s", string(data))
+	}
+	if _, ok := fileMap["codexHiddenModels"]; ok {
+		t.Errorf("file still contains codexHiddenModels when empty; contents: %s", string(data))
+	}
+}
+
+func TestHiddenModelsRejectsOversizedList(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	oversized := make([]any, MaxHiddenModels+1)
+	for i := range oversized {
+		oversized[i] = "model-" + strconv.Itoa(i)
+	}
+	// The write path must reject rather than silently truncate — only
+	// the load path caps quietly (a mangled file shouldn't brick Get).
+	_, err := svc.Update(map[string]any{"claudeHiddenModels": oversized})
+	if err == nil {
+		t.Fatal("expected error for oversized claudeHiddenModels, got nil")
+	}
+	if !strings.Contains(err.Error(), "claudeHiddenModels") {
+		t.Fatalf("error = %v, want mention of claudeHiddenModels", err)
+	}
+	if got := NewService(dir).Get().ClaudeHiddenModels; got != nil {
+		t.Fatalf("ClaudeHiddenModels = %v, want nil after rejected update", got)
+	}
+}
+
+func TestHiddenModelsForProvider(t *testing.T) {
+	s := Settings{
+		ClaudeHiddenModels: []string{"claude-opus-4-5"},
+		CodexHiddenModels:  []string{"gpt-5.2"},
+	}
+	// claude-tui shares the claude list — one binary, one catalog.
+	for _, providerName := range []string{"claude", "claude-tui"} {
+		got := s.HiddenModelsForProvider(providerName)
+		if len(got) != 1 || got[0] != "claude-opus-4-5" {
+			t.Errorf("HiddenModelsForProvider(%q) = %v, want [claude-opus-4-5]", providerName, got)
+		}
+	}
+	if got := s.HiddenModelsForProvider("codex"); len(got) != 1 || got[0] != "gpt-5.2" {
+		t.Errorf("HiddenModelsForProvider(codex) = %v, want [gpt-5.2]", got)
+	}
+	if got := s.HiddenModelsForProvider("unknown"); got != nil {
+		t.Errorf("HiddenModelsForProvider(unknown) = %v, want nil", got)
 	}
 }
 

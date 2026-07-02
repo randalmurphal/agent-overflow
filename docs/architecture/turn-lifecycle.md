@@ -136,6 +136,74 @@ lifecycle.
   task completion state. See
   [claude-wire.md §task_notification](../references/claude-wire.md#systemtask_notification).
 
+### Inline `local_agent` launches emit this lifecycle too
+
+`system/task_started` fires for EVERY Bash/Task invocation — foreground
+(awaited) and backgrounded alike. Consequently a `local_agent`
+(Task/Agent tool) launch that completes INLINE via its own real
+`tool_result` (no `is_background` on the launch) still gets a later
+`system/task_updated` terminal and `system/task_notification` for the
+same `task_id`. Those signals reach `writeBackgroundCompletionSibling`
+exactly as a real backgrounded launch's would; the function's
+`!launch.IsBackground` early return is what keeps an inline launch from
+getting a redundant `tool_completion` sibling alongside its
+already-completed launch row. See
+[claude-wire.md §E5 "Async local_agent launch (bare ack)"](../references/claude-wire.md#user-message--tool_result-blocks)
+for the additional async-ack launch shape this applies to.
+
+### Resuming an idle async agent — the SendMessage rebind carrier
+
+An async `local_agent` launch (previous section) goes idle once it
+finishes and can be resumed by the model calling the harness's resume
+tool (observed: `SendMessage`, `input.to: <agentId>`). The CLI reacts
+by re-firing `system/task_started` with the SAME `task_id` but the
+resuming tool's OWN `tool_use_id`, carrying the ORIGINAL agent's
+`description`/`subagent_type`. See
+[claude-wire.md §E6 "Resuming an idle async agent"](../references/claude-wire.md#user-message--tool_result-blocks)
+for the full wire shapes.
+
+AO embraces the rebind instead of routing the resumed lifecycle back
+to the original launch: the resuming tool_use becomes the resumed
+round's **background carrier**.
+
+- The parser lets `rememberTaskToolUse` rebind normally (no
+  first-binding-wins) and marks the resuming tool_use backgrounded via
+  the same mechanism `run_in_background` launches use, so its own
+  `tool_result` ack — which carries no async marker of its own —
+  still emits `EventToolComplete{is_background:true}`.
+- Triage's keep-running flip (§1 above, the `!launch.IsBackground` →
+  `IsBackground` transition) additionally rewrites the carrier's
+  `Summary` to the resumed agent's identity (`"Agent: <description>"`,
+  preferring the original launch row's own Summary when it's still
+  around) whenever the launch row's meta carries
+  `resumes_tool_use_id` — stamped by the parser's enriched
+  meta-only `EventToolStart` for the rebind `task_started`. Without
+  this the carrier would read "SendMessage -> done" instead of
+  identifying the agent it's resuming.
+- Round 2's `task_updated`/`task_notification` then write a NEW
+  `tool_completion` sibling under the carrier
+  (`"complete:"+carrierID`, distinct from round 1's
+  `"complete:"+originalLaunchID`) through the SAME `writeBackgroundCompletionSibling`
+  path — no special-casing needed there.
+
+Why: the idle-session reaper (`app_session_reaper.go`) keeps a quiet
+session alive only while `ListRunningBackgroundToolCalls` is
+non-empty. The ORIGINAL launch already has its round-1 sibling once
+round 1 completes, so it can never satisfy that predicate again — if
+nothing else is backgrounded, a quiet resumed agent would get its
+whole session reaped mid-run without the carrier. The original launch
+row and its round-1 sibling are untouched by round 2; the original
+stays hidden from the tray (its own sibling excludes it), and the
+CARRIER is what surfaces there during round 2, with the agent-centric
+summary.
+
+**Known edge**: if the parser restarts and loses BOTH the
+`taskToolUses` binding AND the `agentLaunchToolUses` launch-tool
+marker for the resuming tool (a double restart mid-stream), the resume
+is undetectable from that instance's state alone and the round is
+reaper-unprotected. Not engineered around — see the parser's
+`task_started` case comment.
+
 ### Merge rule
 
 `task_updated` and TaskOutput can arrive for the same `task_id`.
@@ -173,10 +241,16 @@ Implementation:
 2. **Agent observation** — `system/task_notification` (the model
    sees the queued attachment on the next iteration) or a
    `TaskOutput` `tool_result` (the model explicitly polled) — drains
-   the stash via `TakePendingBackgroundTerminal` and writes the
-   `tool_completion` sibling at the current write head. Triage emits
-   `provider:background_task_state{state:"drained"}`. After this
-   point the tray surfaces both rows joined together until they age
+   the stash via `TakePendingBackgroundTerminal` and, **only when the
+   launch is actually backgrounded** (`launch.IsBackground`), writes
+   the `tool_completion` sibling at the current write head and emits
+   `provider:background_task_state{state:"drained"}`. An INLINE launch
+   (see above) still drains the stash — the drain is the load-bearing
+   side effect keeping `pending_background_task_terminals` from
+   leaking — but writes no sibling and emits no `"drained"` event; that
+   is safe because `ListLiveBackgroundTasks` never surfaces a
+   foreground launch in the first place. After a real backgrounded
+   drain, the tray surfaces both rows joined together until they age
    out via retention.
 3. **`task_updated` with `status="killed"`** is a deliberate carve-out:
    the `killed` status is only reached via the user's explicit

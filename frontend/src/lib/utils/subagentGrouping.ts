@@ -16,16 +16,19 @@
 //   - Normal rows always stay leaves.
 //   - Claude foreground Agent/Task launch rows are groups from first render,
 //     even before any child activity arrives.
-//   - Claude backgrounded Agent/Task launch rows stay leaves; their inner
-//     transcript (rows whose parentId is the launch id) is withheld from the
-//     main timeline. The launch's live status shows in the background tray,
-//     and the subagent's result surfaces on the completion sibling row
-//     (expandable) when it finishes — not in the tray, which only carries
-//     launch/completion status. This is the same child-suppression Codex
-//     spawn rows get (next rule).
-//   - Codex spawn_agent launch rows stay leaves. Their child transcript is
-//     provider-internal detail represented by the background tray while live
-//     and explicit completion rows after wait/notification signals.
+//   - Claude backgrounded Agent/Task launch rows stay leaves; their entire
+//     descendant subtree (every row transitively parented under the launch —
+//     not just direct children, so a non-background launch nested inside a
+//     backgrounded one is withheld along with its own children in turn) is
+//     withheld from the main timeline. The launch's live status shows in the
+//     background tray, and the subagent's result surfaces on the completion
+//     sibling row (expandable) when it finishes — not in the tray, which
+//     only carries launch/completion status. This is the same transitive
+//     child-suppression Codex spawn rows get (next rule).
+//   - Codex spawn_agent launch rows stay leaves. Their descendant transcript
+//     (transitively, same as above) is provider-internal detail represented
+//     by the background tray while live and explicit completion rows after
+//     wait/notification signals.
 //   - Wait carriers use a stable structural wrapper from first render; Codex
 //     subagent target completions render beneath them when linked by
 //     `wait_carrier_id` or shared wait payload correlation.
@@ -82,13 +85,14 @@ function isSubagentLaunch(item: Item): boolean {
 
 // Backgrounded Claude Agent/Task launches are deliberately NOT inline group
 // anchors — an expanding card would crowd the main thread with live subagent
-// churn (the exact "tool calls jumping around" symptom). Their inner
-// transcript (rows whose parentId is the launch id) is suppressed from the
-// main timeline the same way Codex spawn-agent children are; the outcome —
-// success or failure alike — surfaces on the completion sibling row (whose
-// parentId is empty, so this suppression never swallows it), and live status
-// shows in the background tray. The launch row stays a leaf so the thread
-// records where it began.
+// churn (the exact "tool calls jumping around" symptom). Their entire
+// descendant subtree (every row transitively parented under the launch, not
+// just direct children — see the suppressedDescendantIDs pass in
+// groupItemsBySubagent) is suppressed from the main timeline the same way
+// Codex spawn-agent descendants are; the outcome — success or failure alike —
+// surfaces on the completion sibling row (whose parentId is empty, so this
+// suppression never swallows it), and live status shows in the background
+// tray. The launch row stays a leaf so the thread records where it began.
 function isBackgroundSubagentLaunch(item: Item): boolean {
   return isAgentOrTaskLaunch(item) && item.isBackground === true;
 }
@@ -100,8 +104,9 @@ function isBackgroundSubagentLaunch(item: Item): boolean {
  *     card when expanded, so terminal children are evictable only while
  *     the card is collapsed.
  *   - 'suppressed': backgrounded Claude launches and Codex spawns — the
- *     grouping walk drops their children from the timeline entirely, so
- *     terminal children are always evictable.
+ *     grouping walk drops their entire descendant subtree from the timeline
+ *     entirely (transitively, not just direct children), so terminal
+ *     children are always evictable.
  *   - null: not a launch anchor. Items whose parentId points at a
  *     non-launch row render as flat top-level leaves and must never be
  *     evicted.
@@ -736,6 +741,27 @@ export function groupItemsBySubagent(
     return carrier !== undefined && isCodexWaitAgentCarrier(carrier);
   }
 
+  // Suppression is transitive over a suppressed anchor's ENTIRE descendant
+  // subtree, not just its direct children. A backgrounded/spawned launch can
+  // have a non-suppressed launch nested inside it (e.g. a foreground Agent
+  // launched from within a backgrounded one — occurs in real Claude
+  // sessions); if only direct children were dropped, that nested launch's
+  // own children would keep a parentId the filter doesn't recognize, fall
+  // through to the orphan branch, and render at the TOP LEVEL of the
+  // timeline — briefly, until they settle and the eviction sweep in
+  // thread.svelte.ts resolves the chain against raw pane.items and folds
+  // them. Running rows can't be evicted, so that's the flash this set
+  // exists to prevent.
+  //
+  // One forward pass over the sorted items suffices: a launch always
+  // precedes its descendants after the canonical sort, because descendants
+  // inherit the launch's turn_index and item_index is assigned in
+  // intended-appearance order (docs/architecture/invariants.md #10/#11 —
+  // the same ordering collectSettledSubtree in thread.svelte.ts relies on).
+  // So by the time an item is visited, its parent's anchor/suppressed
+  // status is already recorded. When no suppressed anchors exist this
+  // costs only empty-set lookups on items that carry a parentId.
+  const suppressedDescendantIDs = new Set<string>();
   for (const item of sortedWithCarriers) {
     itemByID.set(item.id, item);
     if (isCodexSubagentLaunchItem(item)) {
@@ -743,6 +769,15 @@ export function groupItemsBySubagent(
     }
     if (isBackgroundSubagentLaunch(item)) {
       backgroundSubagentIDs.add(item.id);
+    }
+    const parentID = item.parentId ?? '';
+    if (
+      parentID
+      && (codexSpawnIDs.has(parentID)
+        || backgroundSubagentIDs.has(parentID)
+        || suppressedDescendantIDs.has(parentID))
+    ) {
+      suppressedDescendantIDs.add(item.id);
     }
   }
 
@@ -778,10 +813,7 @@ export function groupItemsBySubagent(
     }
   }
   const sorted = sortedWithCarriers.filter((item) => {
-    const parentID = item.parentId ?? '';
-    if (parentID && (codexSpawnIDs.has(parentID) || backgroundSubagentIDs.has(parentID))) {
-      return false;
-    }
+    if (suppressedDescendantIDs.has(item.id)) return false;
     if (waitChildIDs.has(item.id)) return false;
     if (item.kind === 'tool_completion' && item.toolName === 'wait_agent' && item.completionOf) {
       // Drop the standalone wait_agent completion when its Codex carrier is

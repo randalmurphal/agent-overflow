@@ -73,6 +73,24 @@ type Parser struct {
 	// tool_use id and parent so we can target and group the right
 	// timeline row.
 	taskToolUses map[string]taskToolUseRef
+	// agentLaunchToolUses flags tool_use IDs whose block.Name is
+	// Claude's subagent-launching tool (see isAgentLaunchToolName in
+	// parse_assistant.go — "Agent" on current CLIs, "Task" on older
+	// builds; task_type:"local_agent" on system/task_started is a
+	// conceptual classification, not a tool name). system/task_started's resume
+	// detection (parse_system.go) uses this to recognize a task_id
+	// rebind to a NON-launch tool_use — the harness's resume call (e.g.
+	// SendMessage) — even when taskToolUses has no prior binding for
+	// the task_id at all (a parser restart mid-life lost it). See
+	// claude-wire.md §E6 and local_agent_async_resume.ndjson.
+	//
+	// Unlike backgroundToolUses this is NOT one-shot: a resume can
+	// arrive minutes or hours after the launch (the captured fixture
+	// has a ~20min gap), so entries are never explicitly released —
+	// only bounded by parserTaskMapCap with wholesale reset on
+	// overflow, matching the other session-lifetime correlation maps
+	// (taskToolUses, toolUseParents).
+	agentLaunchToolUses map[string]bool
 	// subagentModelStamped dedupes per-parent_tool_use_id meta-update
 	// emissions of `subagent_model`. Subagent assistant messages all
 	// carry the same `message.model`, so we only emit the meta merge
@@ -220,6 +238,7 @@ func (p *Parser) Close() {
 	p.advisorToolUses = nil
 	p.toolUseParents = nil
 	p.taskToolUses = nil
+	p.agentLaunchToolUses = nil
 	p.subagentModelStamped = nil
 	p.streamBlockTypes = nil
 	p.streamedMessageIDs = nil
@@ -542,6 +561,31 @@ func (p *Parser) taskToolUseRef(taskID string) taskToolUseRef {
 		return taskToolUseRef{}
 	}
 	return p.taskToolUses[taskID]
+}
+
+// markAgentLaunchTool records that toolUseID's tool_use block was
+// Claude's subagent-launching tool. See the agentLaunchToolUses field
+// doc for why this map exists and why it is never explicitly released.
+func (p *Parser) markAgentLaunchTool(toolUseID string) {
+	if p == nil || toolUseID == "" {
+		return
+	}
+	if p.agentLaunchToolUses == nil {
+		p.agentLaunchToolUses = make(map[string]bool)
+	}
+	if len(p.agentLaunchToolUses) >= parserTaskMapCap {
+		p.agentLaunchToolUses = make(map[string]bool)
+	}
+	p.agentLaunchToolUses[toolUseID] = true
+}
+
+// isAgentLaunchTool reports whether toolUseID was observed as an
+// Agent-launch tool_use. Read-only (has*/is* convention).
+func (p *Parser) isAgentLaunchTool(toolUseID string) bool {
+	if p == nil || toolUseID == "" || p.agentLaunchToolUses == nil {
+		return false
+	}
+	return p.agentLaunchToolUses[toolUseID]
 }
 
 // setLastAssistantMessageID remembers the id of the most recent

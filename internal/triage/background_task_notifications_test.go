@@ -559,7 +559,706 @@ func TestBackgroundTaskNotification_ForegroundToolSkipsNotificationRow(t *testin
 		if len(notifications) != 0 {
 			t.Fatalf("foreground notification must NOT write a notification row even with stash drain, got %d", len(notifications))
 		}
+		// Fix C: this exact drain path (foreground launch + a drained
+		// task_updated stash) is bug 2's reproduction — see
+		// TestBackgroundTaskNotification_InlineAgentSkipsSiblingRow for
+		// the full production-shaped scenario. Assert it here too since
+		// this subtest already exercises the same drain call.
+		if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 0 {
+			t.Fatalf("foreground notification must NOT write a tool_completion sibling even with stash drain, got %d: %+v", len(dones), dones)
+		}
 	})
+}
+
+// TestBackgroundTaskNotification_InlineAgentSkipsSiblingRow pins Fix C:
+// Claude emits the FULL task lifecycle (task_started/task_updated/
+// task_notification) for `local_agent` (Task/Agent) launches regardless
+// of whether they ran inline (awaited) or backgrounded — task_started
+// fires for every Bash/Task (see provider/claude/CLAUDE.md
+// §task_started). An inline launch already completes in place via its
+// own real `tool_result` (EventToolComplete with no is_background); the
+// task_updated -> task_notification signal reaching
+// writeBackgroundCompletionSibling for that same launch must NOT
+// produce a redundant "-> done" tool_completion sibling row. Without
+// the `!launch.IsBackground` gate in writeBackgroundCompletionSibling,
+// drainTaskNotificationStash still finds the task_updated stash and
+// writes the sibling anyway (the case-2 bug: six inline launches in
+// production each grew a spurious `status_source:"task_notification"`
+// sibling). FAILS pre-Fix-C.
+func TestBackgroundTaskNotification_InlineAgentSkipsSiblingRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	// Foreground/inline Agent launch — no run_in_background anywhere in
+	// the input, so the launch never carries is_background.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Agent",
+		"input":    map[string]any{"description": "Review 4b: perf/memory lens"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "inline-agent",
+		ItemType:  "Agent",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// system/task_started meta-update — fires for EVERY Task launch,
+	// inline or backgrounded.
+	taskStartedMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-inline-1",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "inline-agent",
+		Meta:      taskStartedMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_started meta-update: %v", err)
+	}
+
+	// The real, awaited tool_result completes the launch in place —
+	// no is_background anywhere on this event.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  "t1",
+		ItemID:    "inline-agent",
+		Content:   "the agent's real result text",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("inline complete: %v", err)
+	}
+
+	launch, ok, err := st.GetThreadItem("t1", "inline-agent")
+	if err != nil || !ok {
+		t.Fatalf("lookup launch: ok=%v err=%v", ok, err)
+	}
+	if launch.Status != statusCompleted {
+		t.Fatalf("launch status = %q, want completed (inline result already landed)", launch.Status)
+	}
+	if launch.IsBackground {
+		t.Fatal("inline launch must not carry is_background")
+	}
+
+	// Claude still emits the task lifecycle terminal for this inline
+	// launch — task_updated stashes it (Tray-A contract, unconditional).
+	stashMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-inline-1",
+		"tool_use_id": "inline-agent",
+		"status":      "completed",
+		"source":      "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskTerminal,
+		ThreadID:  "t1",
+		Meta:      stashMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_updated stash: %v", err)
+	}
+	if _, found, err := st.GetPendingBackgroundTerminal("t1", "task-inline-1"); err != nil {
+		t.Fatalf("read stash: %v", err)
+	} else if !found {
+		t.Fatal("expected stash entry after task_updated{completed}")
+	}
+
+	// ...then task_notification arrives and must drain the stash
+	// without writing a sibling row.
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-inline-1",
+		"tool_use_id": "inline-agent",
+		"status":      "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskNotification,
+		ThreadID:  "t1",
+		ItemID:    "inline-agent",
+		Meta:      notificationMeta,
+		Content:   `Agent "Review 4b: perf/memory lens" completed`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_notification: %v", err)
+	}
+
+	if _, found, err := st.GetPendingBackgroundTerminal("t1", "task-inline-1"); err != nil {
+		t.Fatalf("read drained stash: %v", err)
+	} else if found {
+		t.Fatal("stash must still be drained even though no sibling is written")
+	}
+
+	siblingID := backgroundCompletionID(launch.ID, "task-inline-1")
+	if _, found, err := st.GetThreadItem("t1", siblingID); err != nil {
+		t.Fatalf("sibling lookup %s: %v", siblingID, err)
+	} else if found {
+		t.Fatalf("Fix C regression: inline launch %q got a redundant tool_completion sibling row %q", launch.ID, siblingID)
+	}
+	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 0 {
+		t.Fatalf("expected 0 tool_completion sibling rows for an inline launch, got %d: %+v", len(dones), dones)
+	}
+	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 0 {
+		t.Fatalf("expected 0 notification rows for an inline launch, got %d", len(notifications))
+	}
+
+	final, ok, err := st.GetThreadItem("t1", "inline-agent")
+	if err != nil || !ok {
+		t.Fatalf("final launch lookup: ok=%v err=%v", ok, err)
+	}
+	if final.Status != statusCompleted {
+		t.Fatalf("launch status after task_notification = %q, want completed (unchanged by the drain)", final.Status)
+	}
+	if final.Summary == "" {
+		t.Fatal("launch must keep its real summary, not get overwritten by the drained task lifecycle")
+	}
+}
+
+// TestBackgroundTaskNotification_InlineAgentKilledTerminalSkipsSibling
+// pins Fix C on the OTHER route into writeBackgroundCompletionSibling:
+// `task_updated{status:"killed"}` bypasses the stash entirely and goes
+// through observeBackgroundTaskTerminal directly (the user-stop
+// carve-out in handleBackgroundTaskTerminal), so the sibling write is
+// attempted immediately — no notification drain involved. An INLINE
+// launch that already completed via its own tool_result must not grow
+// a sibling from that direct path either. FAILS pre-Fix-C (the direct
+// observe path wrote a killed sibling for the completed inline launch).
+func TestBackgroundTaskNotification_InlineAgentKilledTerminalSkipsSibling(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Agent",
+		"input":    map[string]any{"description": "Inline agent later killed"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "inline-agent-killed",
+		ItemType:  "Agent",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	taskStartedMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-inline-killed-1",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "inline-agent-killed",
+		Meta:      taskStartedMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_started meta-update: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  "t1",
+		ItemID:    "inline-agent-killed",
+		Content:   "the agent's real result text",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("inline complete: %v", err)
+	}
+
+	// task_updated{killed} routes through observeBackgroundTaskTerminal
+	// directly — no stash step, so the gate inside
+	// writeBackgroundCompletionSibling is the ONLY thing between this
+	// event and a spurious killed sibling on the completed inline row.
+	killMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-inline-killed-1",
+		"tool_use_id": "inline-agent-killed",
+		"status":      "killed",
+		"is_error":    true,
+		"source":      "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskTerminal,
+		ThreadID:  "t1",
+		ItemID:    "inline-agent-killed",
+		Meta:      killMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_updated{killed}: %v", err)
+	}
+
+	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 0 {
+		t.Fatalf("inline launch must not grow a killed sibling from the direct observe path, got %d: %+v", len(dones), dones)
+	}
+	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 0 {
+		t.Fatalf("expected 0 notification rows, got %d", len(notifications))
+	}
+	launch, ok, err := st.GetThreadItem("t1", "inline-agent-killed")
+	if err != nil || !ok {
+		t.Fatalf("lookup launch: ok=%v err=%v", ok, err)
+	}
+	if launch.Status != statusCompleted {
+		t.Fatalf("launch status = %q, want completed (unchanged by the killed terminal)", launch.Status)
+	}
+}
+
+// TestBackgroundTaskNotification_AsyncAgentLaunchStillGetsSibling is
+// the regression pin for the backgrounded flow alongside Fix C's new
+// gate: an async `local_agent` launch (Shape 2 in claude-wire.md —
+// the tool_use input carries NO run_in_background, so is_background is
+// only known once the "Async agent launched successfully." ack's
+// EventToolComplete arrives, per Fix B's toolResultAsyncLaunch) must
+// still get its tool_completion sibling once the task lifecycle
+// drains. Passes both before and after Fix C — pins that the new
+// `!launch.IsBackground` gate does not regress the real backgrounded
+// path.
+func TestBackgroundTaskNotification_AsyncAgentLaunchStillGetsSibling(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	// The launch's own tool_use carries no run_in_background — unlike
+	// classic backgrounding, is_background is unknown at EventToolStart
+	// time for an async local_agent launch.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Agent",
+		"input":    map[string]any{"description": "Review 4b: perf/memory lens"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "async-agent",
+		ItemType:  "Agent",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	taskStartedMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-async-1",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "async-agent",
+		Meta:      taskStartedMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_started meta-update: %v", err)
+	}
+
+	// The bare async ack — is_background arrives on the COMPLETE event,
+	// not the start event, matching what the fixed parser
+	// (toolResultAsyncLaunch) emits for Shape 2.
+	completeMeta, _ := json.Marshal(map[string]any{
+		"is_background": true,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  "t1",
+		ItemID:    "async-agent",
+		Content:   "Async agent launched successfully.",
+		Meta:      completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("async ack complete: %v", err)
+	}
+
+	launch, ok, err := st.GetThreadItem("t1", "async-agent")
+	if err != nil || !ok {
+		t.Fatalf("lookup launch: ok=%v err=%v", ok, err)
+	}
+	if launch.Status != statusRunning {
+		t.Fatalf("launch status = %q, want running (async ack is a placeholder, not the real result)", launch.Status)
+	}
+	if !launch.IsBackground {
+		t.Fatal("launch must carry is_background after the async ack")
+	}
+
+	stashMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-async-1",
+		"tool_use_id": "async-agent",
+		"status":      "completed",
+		"source":      "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskTerminal,
+		ThreadID:  "t1",
+		Meta:      stashMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_updated stash: %v", err)
+	}
+
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-async-1",
+		"tool_use_id": "async-agent",
+		"status":      "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskNotification,
+		ThreadID:  "t1",
+		ItemID:    "async-agent",
+		Meta:      notificationMeta,
+		Content:   `Agent "Review 4b: perf/memory lens" completed`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_notification: %v", err)
+	}
+
+	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 1 {
+		t.Fatalf("expected 1 notification row for the backgrounded launch, got %d", len(notifications))
+	}
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 tool_completion sibling for the backgrounded launch, got %d", len(dones))
+	}
+	done := dones[0]
+	if done.CompletionOf != "async-agent" {
+		t.Fatalf("sibling.completionOf = %q, want async-agent", done.CompletionOf)
+	}
+	if !done.IsBackground {
+		t.Fatal("sibling.isBackground = false, want true (inherited from launch)")
+	}
+	if done.Status != statusCompleted {
+		t.Fatalf("sibling.status = %q, want completed", done.Status)
+	}
+}
+
+// TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier
+// pins the resume-carrier design (claude-wire.md §E6): when Claude
+// resumes an idle async agent via the harness's SendMessage tool, the
+// parser rebinds `system/task_started` onto SendMessage's own
+// tool_use_id (parse_system.go) and marks it backgrounded. This test
+// drives the exact router.Handle sequence that rebind produces —
+// EventToolStart (normal launch) -> EventToolStart (meta-only rebind
+// carrying task_id/resumes_tool_use_id/description) -> EventToolComplete
+// (ack, is_background:true) — and asserts the SendMessage row becomes
+// the resumed round's background carrier: bg=1, running, Summary
+// rewritten to the agent-centric form, and visible to the reaper's
+// ListRunningBackgroundToolCalls predicate. Round 2's terminal +
+// notification then produce a NEW sibling under the carrier while the
+// original launch keeps exactly its round-1 sibling untouched.
+func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	const (
+		originalLaunchID = "original-agent"
+		carrierID        = "sendmessage-carrier"
+		taskID           = "task-resume-1"
+		description      = "Frontend transitive suppression fix"
+		// The launch INPUT description deliberately differs from the
+		// rebind envelope's `description` so resumeCarrierSummary's two
+		// branches are distinguishable: the prefer-original branch
+		// yields "Agent: "+launchInputDescription (the original row's
+		// own Summary), the fallback would yield "Agent: "+description.
+		// With identical strings the prefer-original behavior would be
+		// unpinned — the test would pass with that branch deleted.
+		launchInputDescription = "Frontend transitive suppression fix (round-1 input)"
+	)
+
+	// --- Round 1: original async launch, backgrounded via its ack,
+	// completes through the normal task lifecycle.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Agent",
+		"input":    map[string]any{"description": launchInputDescription},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    originalLaunchID,
+		ItemType:  "Agent",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("original launch start: %v", err)
+	}
+	taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": taskID})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    originalLaunchID,
+		Meta:      taskStartedMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("original launch task_started: %v", err)
+	}
+	ackMeta, _ := json.Marshal(map[string]any{"is_background": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  "t1",
+		ItemID:    originalLaunchID,
+		Content:   "Async agent launched successfully.",
+		Meta:      ackMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("original launch ack: %v", err)
+	}
+	round1StashMeta, _ := json.Marshal(map[string]any{
+		"task_id": taskID, "tool_use_id": originalLaunchID,
+		"status": "completed", "source": "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1",
+		Meta: round1StashMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("round-1 task_updated stash: %v", err)
+	}
+	round1NotificationMeta, _ := json.Marshal(map[string]any{
+		"task_id": taskID, "tool_use_id": originalLaunchID, "status": "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1",
+		ItemID: originalLaunchID, Meta: round1NotificationMeta,
+		Content: `Agent "` + description + `" finished`, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("round-1 task_notification: %v", err)
+	}
+
+	round1Sibling := backgroundCompletionID(originalLaunchID, taskID)
+	if _, found, err := st.GetThreadItem("t1", round1Sibling); err != nil || !found {
+		t.Fatalf("round-1 sibling %s: found=%v err=%v", round1Sibling, found, err)
+	}
+	originalLaunch, ok, err := st.GetThreadItem("t1", originalLaunchID)
+	if err != nil || !ok {
+		t.Fatalf("lookup original launch: ok=%v err=%v", ok, err)
+	}
+	if originalLaunch.Summary != "Agent: "+launchInputDescription {
+		t.Fatalf("original launch summary = %q, want %q", originalLaunch.Summary, "Agent: "+launchInputDescription)
+	}
+
+	// --- Round 2: resume via SendMessage. The parser's rebind emits a
+	// normal launch EventToolStart for SendMessage's own tool_use, then
+	// an enriched meta-only EventToolStart from the rebind
+	// task_started, then the ack's EventToolComplete with
+	// is_background:true (SendMessage's own ack carries no async
+	// marker — is_background can only come from the rebind).
+	carrierStartMeta, _ := json.Marshal(map[string]any{
+		"toolName": "SendMessage",
+		"input":    map[string]any{"to": "a464e54e96a45cd0c", "summary": "resume"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    carrierID,
+		ItemType:  "SendMessage",
+		Meta:      carrierStartMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("carrier launch start: %v", err)
+	}
+	rebindMeta, _ := json.Marshal(map[string]any{
+		"task_id":             taskID,
+		"task_type":           "local_agent",
+		"resumes_tool_use_id": originalLaunchID,
+		"description":         description,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    carrierID,
+		Meta:      rebindMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("carrier rebind meta-update: %v", err)
+	}
+	carrierAckMeta, _ := json.Marshal(map[string]any{"is_background": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  "t1",
+		ItemID:    carrierID,
+		Content:   `Agent "a464e54e96a45cd0c" had no active task; resumed from transcript in the background with your message.`,
+		Meta:      carrierAckMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("carrier ack: %v", err)
+	}
+
+	carrier, ok, err := st.GetThreadItem("t1", carrierID)
+	if err != nil || !ok {
+		t.Fatalf("lookup carrier: ok=%v err=%v", ok, err)
+	}
+	if !carrier.IsBackground {
+		t.Fatal("carrier must carry is_background=true (FAILS pre-fix: SendMessage's own ack carries no async marker)")
+	}
+	if carrier.Status != statusRunning {
+		t.Fatalf("carrier status = %q, want running", carrier.Status)
+	}
+	// Must be the ORIGINAL launch row's own Summary (prefer-original
+	// branch), not "Agent: "+description (the fallback) and not
+	// "SendMessage: ..." (pre-fix, no rewrite at all).
+	if carrier.Summary != "Agent: "+launchInputDescription {
+		t.Fatalf("carrier summary = %q, want %q (prefer-original rewrite)", carrier.Summary, "Agent: "+launchInputDescription)
+	}
+
+	// Reaper-protection pin: the carrier must be the row that keeps
+	// ListRunningBackgroundToolCalls non-empty while the resumed agent
+	// runs quiet. FAILS pre-fix: the carrier would be foreground
+	// (is_background=false) and excluded from this query entirely.
+	running, err := st.ListRunningBackgroundToolCalls("t1")
+	if err != nil {
+		t.Fatalf("ListRunningBackgroundToolCalls: %v", err)
+	}
+	foundCarrier := false
+	for _, item := range running {
+		if item.ID == carrierID {
+			foundCarrier = true
+		}
+	}
+	if !foundCarrier {
+		t.Fatalf("ListRunningBackgroundToolCalls must include the carrier %s, got %+v", carrierID, running)
+	}
+
+	// --- Round 2 terminal + notification: a NEW sibling under the
+	// carrier, distinct from round 1's sibling under the original
+	// launch. The task_id is the SAME across both rounds (Claude
+	// rebinds, it doesn't mint a new task), so the notification row is
+	// upserted in place rather than duplicated.
+	round2StashMeta, _ := json.Marshal(map[string]any{
+		"task_id": taskID, "tool_use_id": carrierID,
+		"status": "completed", "source": "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1",
+		Meta: round2StashMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("round-2 task_updated stash: %v", err)
+	}
+	round2NotificationMeta, _ := json.Marshal(map[string]any{
+		"task_id": taskID, "tool_use_id": carrierID, "status": "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1",
+		ItemID: carrierID, Meta: round2NotificationMeta,
+		Content: `Agent "` + description + `" finished`, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("round-2 task_notification: %v", err)
+	}
+
+	round2Sibling := backgroundCompletionID(carrierID, taskID)
+	if round2Sibling == round1Sibling {
+		t.Fatalf("round-2 sibling id must differ from round-1's, both are %q", round2Sibling)
+	}
+	round2Item, found, err := st.GetThreadItem("t1", round2Sibling)
+	if err != nil || !found {
+		t.Fatalf("round-2 sibling %s: found=%v err=%v", round2Sibling, found, err)
+	}
+	wantSummary := "Agent: " + launchInputDescription + " -> done"
+	if round2Item.Summary != wantSummary {
+		t.Fatalf("round-2 sibling summary = %q, want %q", round2Item.Summary, wantSummary)
+	}
+	if round2Item.CompletionOf != carrierID {
+		t.Fatalf("round-2 sibling.completionOf = %q, want %s", round2Item.CompletionOf, carrierID)
+	}
+
+	// Original launch must still have exactly its ONE round-1 sibling
+	// — round 2 must not touch it.
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	originalSiblingCount := 0
+	for _, item := range dones {
+		if item.CompletionOf == originalLaunchID {
+			originalSiblingCount++
+		}
+	}
+	if originalSiblingCount != 1 {
+		t.Fatalf("original launch must have exactly 1 sibling after round 2, got %d", originalSiblingCount)
+	}
+	if len(dones) != 2 {
+		t.Fatalf("expected exactly 2 tool_completion siblings total (one per round), got %d: %+v", len(dones), dones)
+	}
+
+	// The task_id-keyed notification row is upserted, not duplicated.
+	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 1 {
+		t.Fatalf("expected 1 notification row (task_id-keyed, upserted across rounds), got %d", len(notifications))
+	}
+
+	// The original launch ROW itself is untouched by round 2 — same
+	// Status and Summary it settled into after round 1.
+	launchAfterRound2, ok, err := st.GetThreadItem("t1", originalLaunchID)
+	if err != nil || !ok {
+		t.Fatalf("re-lookup original launch: ok=%v err=%v", ok, err)
+	}
+	if launchAfterRound2.Status != originalLaunch.Status || launchAfterRound2.Summary != originalLaunch.Summary {
+		t.Fatalf("original launch mutated by round 2: status %q -> %q, summary %q -> %q",
+			originalLaunch.Status, launchAfterRound2.Status, originalLaunch.Summary, launchAfterRound2.Summary)
+	}
+}
+
+// TestBackgroundTaskNotification_ResumeCarrierFallbackDescription pins
+// resumeCarrierSummary's description fallback: when the original launch
+// row referenced by resumes_tool_use_id no longer exists (retention
+// pruned it), the carrier Summary derives from the rebind envelope's
+// description — bounded exactly like every other tool summary
+// (truncatePreview: newlines stripped, 80-rune cap). FAILS without the
+// truncatePreview bound: the raw multi-line description would land
+// verbatim in items.summary.
+func TestBackgroundTaskNotification_ResumeCarrierFallbackDescription(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	const carrierID = "sendmessage-carrier-fallback"
+	longDescription := "Line one of an adversarially long description\n" + strings.Repeat("x", 120)
+
+	carrierStartMeta, _ := json.Marshal(map[string]any{
+		"toolName": "SendMessage",
+		"input":    map[string]any{"to": "a464e54e96a45cd0c", "summary": "resume"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    carrierID,
+		ItemType:  "SendMessage",
+		Meta:      carrierStartMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("carrier launch start: %v", err)
+	}
+	rebindMeta, _ := json.Marshal(map[string]any{
+		"task_id":             "task-fallback-1",
+		"task_type":           "local_agent",
+		"resumes_tool_use_id": "pruned-original-launch",
+		"description":         longDescription,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    carrierID,
+		Meta:      rebindMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("carrier rebind meta-update: %v", err)
+	}
+	ackMeta, _ := json.Marshal(map[string]any{"is_background": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  "t1",
+		ItemID:    carrierID,
+		Content:   "resumed from transcript",
+		Meta:      ackMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("carrier ack: %v", err)
+	}
+
+	carrier, ok, err := st.GetThreadItem("t1", carrierID)
+	if err != nil || !ok {
+		t.Fatalf("lookup carrier: ok=%v err=%v", ok, err)
+	}
+	want := "Agent: " + truncatePreview(longDescription, 80)
+	if carrier.Summary != want {
+		t.Fatalf("carrier summary = %q, want %q (bounded description fallback)", carrier.Summary, want)
+	}
+	if strings.Contains(carrier.Summary, "\n") {
+		t.Fatalf("carrier summary contains a raw newline: %q", carrier.Summary)
+	}
+	if strings.Contains(carrier.Summary, longDescription) {
+		t.Fatalf("carrier summary carries the unbounded description verbatim: %q", carrier.Summary)
+	}
 }
 
 func TestBackgroundTaskNotification_OutputFileFeedsLaterTerminal(t *testing.T) {

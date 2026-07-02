@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/chatmodel"
@@ -61,18 +62,18 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 		if a.store != nil {
 			profile, err := a.store.LatestChatModelProfile()
 			if err == nil {
-				return chatmodel.SanitizeProfile(profile)
+				return a.visibleSeedProfile(chatmodel.SanitizeProfile(profile))
 			}
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				log.Printf("chat profile: load latest: %v", err)
 			}
 		}
-		return chatmodel.FallbackProfile("", "", available...)
+		return a.visibleSeedProfile(chatmodel.FallbackProfile("", "", available...))
 	case providerName != "" && model == "":
 		if a.store != nil {
 			profile, err := a.store.LatestChatModelProfileForProvider(providerName)
 			if err == nil {
-				return chatmodel.SanitizeProfile(profile)
+				return a.visibleSeedProfile(chatmodel.SanitizeProfile(profile))
 			}
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				log.Printf("chat profile: load latest for provider %s: %v", providerName, err)
@@ -80,7 +81,7 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 		}
 		// providerName is explicit here, so FallbackProvider is never
 		// consulted — omit the availability arg.
-		return chatmodel.FallbackProfile(providerName, "")
+		return a.visibleSeedProfile(chatmodel.FallbackProfile(providerName, ""))
 	case providerName == "" && model != "":
 		providerName = chatmodel.FallbackProvider(available...)
 	}
@@ -96,6 +97,41 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 		}
 	}
 	return chatmodel.FallbackProfile(providerName, model)
+}
+
+// visibleSeedProfile guards the "seed the composer from history" paths
+// against hidden models: when the remembered profile's model is hidden
+// from pickers, seed the provider's first visible catalog model with
+// fresh defaults instead. Explicitly requested models bypass this —
+// hiding is a picker-display preference, not a hard ban, and existing
+// threads keep whatever model they carry. Settings are snapshotted
+// once so the hidden check and the visible scan agree.
+func (a *App) visibleSeedProfile(profile store.ChatModelProfile) store.ChatModelProfile {
+	hidden := a.currentSettings().HiddenModelsForProvider(profile.Provider)
+	if !slices.Contains(hidden, profile.Model) {
+		return profile
+	}
+	return chatmodel.FallbackProfile(profile.Provider, firstVisibleModel(profile.Provider, hidden))
+}
+
+// firstVisibleModel returns the first static-catalog model not in the
+// hidden list, falling back to the catalog head when everything is
+// hidden — the settings UI prevents that state, but a hand-mangled
+// file must not strand the composer without a model.
+//
+// Codex caveat, accepted: pickers and the hide-list operate on the
+// live app-server catalog, but this seed-path scan deliberately reads
+// the static registry — spawning the codex binary just to seed a
+// draft would be worse than occasionally seeding a slug the live
+// catalog has since dropped (the composer surfaces that immediately
+// and the user re-picks).
+func firstVisibleModel(providerName string, hidden []string) string {
+	for _, model := range provider.ModelsForProvider(providerName) {
+		if !slices.Contains(hidden, model.Slug) {
+			return model.Slug
+		}
+	}
+	return chatmodel.FallbackModelForProvider(providerName)
 }
 
 func (a *App) ListChatBarFavorites() ([]store.ChatBarFavorite, error) {
