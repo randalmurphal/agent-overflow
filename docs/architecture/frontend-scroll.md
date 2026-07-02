@@ -390,15 +390,31 @@ growth spring-eligible even when the content latch currently returns
 spring arrives it cancels instead of entering the streaming sentinel, so
 routed engine compensations are not declined after the append settles.
 
-The effect that calls `markStructuralContentPending()` re-baselines its
-active-turn tail signature — recording it without marking — across a thread
-switch, a same-thread reload (`pane.switchGeneration` bump), and the initial
-slice load (while `pane.loading` is true, which on a cache miss outlives the
-generation bump). That signature embeds the thread id and tail row identity,
-so a switch into an actively-streaming thread, and its async first slice,
-both change it; treating either as an append would arm the structural-append
-spring and make the post-restore measurement backlog a visible scroll. Only a
-genuine append to the settled, mounted timeline reaches the mark.
+Two sites arm it. The PRIMARY arm is the pane's
+`applyProviderItemUpserts` (gated on `!pane.loading`): a wire append arms
+synchronously with the data change, strictly before the Svelte flush in
+which the virtualizer measures the new row and delivers its geometry
+sample. An effect-based arm loses that ordering race — the append's own
+growth resolves instant and only the follow-up remeasure springs — and a
+turn-keyed effect is blind to appends landing after turn end (interrupt
+echo, force-closed tool rows), which sync-pinned as whole-viewport
+teleports (bug-report-20260702T193212Z). MessageTimeline's live-follow
+effect is the SECONDARY arm, kept for reveal-boundary advances: rows
+already in `pane.items` released by the reveal gate mount without any
+upsert in that flush. The arm is a TTL refresh (250ms), so double-arming
+is harmless.
+
+The live-follow effect re-baselines its active-turn tail signature —
+recording it without marking — across a thread switch, a same-thread
+reload (`pane.switchGeneration` bump), and the initial slice load (while
+`pane.loading` is true, which on a cache miss outlives the generation
+bump). That signature embeds the thread id and tail row identity, so a
+switch into an actively-streaming thread, and its async first slice, both
+change it; treating either as an append would arm the structural-append
+spring and make the post-restore measurement backlog a visible scroll
+(the pane arm's `!loading` gate is the same defense, and the controller's
+warm gate independently pins the post-restore settle). Only a genuine
+append to the settled, mounted timeline reaches the mark.
 
 `spring` is an eligibility signal, not an unconditional animation. If
 `contentRO` observes a content-width change, the controller opens a short

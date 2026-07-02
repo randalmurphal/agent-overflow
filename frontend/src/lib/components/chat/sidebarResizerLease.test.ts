@@ -53,6 +53,7 @@ describe('SidebarResizer pause-lease wiring', () => {
     pane.attachScrollController({
       pauseAutoScroll,
       observe: () => {},
+      markStructuralContentPending: () => {},
       preserveScrollAnchor: () => Promise.resolve(),
     });
 
@@ -82,6 +83,7 @@ describe('SidebarResizer pause-lease wiring', () => {
     pane.attachScrollController({
       pauseAutoScroll,
       observe: () => {},
+      markStructuralContentPending: () => {},
       preserveScrollAnchor: () => Promise.resolve(),
     });
 
@@ -143,6 +145,7 @@ describe('RhsSidebarResizer pause-lease wiring', () => {
     pane.attachScrollController({
       pauseAutoScroll,
       observe: () => {},
+      markStructuralContentPending: () => {},
       preserveScrollAnchor: () => Promise.resolve(),
     });
 
@@ -175,6 +178,7 @@ describe('RhsSidebarResizer pause-lease wiring', () => {
     pane.attachScrollController({
       pauseAutoScroll,
       observe: () => {},
+      markStructuralContentPending: () => {},
       preserveScrollAnchor: () => Promise.resolve(),
     });
 
@@ -228,11 +232,13 @@ describe('PaneDivider pause-lease wiring', () => {
     left.attachScrollController({
       pauseAutoScroll: leftController.pauseAutoScroll,
       observe: () => {},
+      markStructuralContentPending: () => {},
       preserveScrollAnchor: () => Promise.resolve(),
     });
     right.attachScrollController({
       pauseAutoScroll: rightController.pauseAutoScroll,
       observe: () => {},
+      markStructuralContentPending: () => {},
       preserveScrollAnchor: () => Promise.resolve(),
     });
     setPaneLayoutItemsForTest([

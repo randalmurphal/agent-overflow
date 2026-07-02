@@ -634,6 +634,7 @@
     },
     preserveScrollAnchor: (anchor, action) =>
       stick.preserveScrollAnchor(anchor, action),
+    markStructuralContentPending: () => stick.markStructuralContentPending(),
     preserveTimelineWindowAnchor,
   };
 
@@ -772,6 +773,17 @@
   // growth as append-like, so command/tool row batches can spring-follow
   // instead of snapping, then asks the sticky controller to re-check the
   // bottom after Svelte and the virtualizer have had a frame to publish the new row.
+  //
+  // The PRIMARY arm for wire appends lives in the pane
+  // (applyProviderItemUpserts → markStructuralContentPending): it runs
+  // synchronously with the data change, so it cannot lose the ordering
+  // race against the virtualizer's same-flush geometry delivery, and it
+  // covers appends outside an active turn (interrupt echo, force-closed
+  // tool rows) that this effect's turn-keyed signature never sees
+  // (bug-report-20260702T193212Z). This effect's arm remains for
+  // reveal-boundary advances — rows already in pane.items released by
+  // the reveal gate, where no upsert lands in the mounting flush — and
+  // the arm is a TTL refresh, so double-arming is harmless.
   // It keys off tail row identity and order (id, kind, turnIndex,
   // itemIndex), not status transitions or summary deltas, so normal
   // streaming chunks and tool-call lifecycle status changes use the

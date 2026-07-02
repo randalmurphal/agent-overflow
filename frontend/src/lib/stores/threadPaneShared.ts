@@ -145,6 +145,17 @@ export type LoadOlderResult = {
 export interface PaneScrollController {
   pauseAutoScroll(): () => void;
   observe(kind: ScrollObservationKind): void;
+  /**
+   * One-shot structural-append spring arm (250ms TTL in the controller).
+   * The pane calls this synchronously while applying provider upserts
+   * that APPEND in-window rows, so the arm is ordered strictly before
+   * the flush in which the virtualizer delivers the resulting
+   * content-geometry sample. A component-effect arm loses that race —
+   * and is blind to appends outside an active turn (interrupt echo,
+   * force-closed tool rows) — so the append's own growth sync-pins as a
+   * visible teleport (bug-report-20260702T193212Z).
+   */
+  markStructuralContentPending(): void;
   preserveScrollAnchor(
     anchor: HTMLElement,
     action: () => void | Promise<void>,

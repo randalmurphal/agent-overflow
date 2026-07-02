@@ -4401,6 +4401,7 @@ describe('createThreadPane', () => {
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
         observe: () => {},
+        markStructuralContentPending: () => {},
         preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor,
       } satisfies PaneScrollController);
@@ -4457,6 +4458,7 @@ describe('createThreadPane', () => {
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
         observe: () => {},
+        markStructuralContentPending: () => {},
         preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor,
       } satisfies PaneScrollController);
@@ -4488,6 +4490,7 @@ describe('createThreadPane', () => {
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
         observe: () => {},
+        markStructuralContentPending: () => {},
         preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor: retryPreserve,
       } satisfies PaneScrollController);
@@ -4534,6 +4537,7 @@ describe('createThreadPane', () => {
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
         observe: () => {},
+        markStructuralContentPending: () => {},
         preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor,
       } satisfies PaneScrollController);
@@ -4625,6 +4629,7 @@ describe('createThreadPane', () => {
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
         observe: () => {},
+        markStructuralContentPending: () => {},
         preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor,
       } satisfies PaneScrollController);
@@ -4692,6 +4697,7 @@ describe('createThreadPane', () => {
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
         observe: () => {},
+        markStructuralContentPending: () => {},
         preserveScrollAnchor: () => Promise.resolve(),
         preserveTimelineWindowAnchor,
       } satisfies PaneScrollController);
@@ -7416,6 +7422,151 @@ describe('createThreadPane', () => {
       } finally {
         __setSmoothingClockForTest(undefined);
       }
+    });
+  });
+
+  // A wire append must arm the controller's one-shot structural-append
+  // spring SYNCHRONOUSLY with the data change
+  // (bug-report-20260702T193212Z): an effect-based arm runs after the
+  // virtualizer's same-flush geometry delivery, so the append's own
+  // growth resolved as an instant sync-pin; and the effect's turn-keyed
+  // signature is blind to appends landing after turn end (interrupt
+  // echo, force-closed tool rows).
+  describe('structural-append arm (pane data layer)', () => {
+    function attachMockScrollController(pane: ReturnType<typeof createThreadPane>) {
+      const markStructuralContentPending = vi.fn();
+      pane.attachScrollController({
+        pauseAutoScroll: () => () => {},
+        observe: () => {},
+        markStructuralContentPending,
+        preserveScrollAnchor: () => Promise.resolve(),
+      });
+      return { markStructuralContentPending };
+    }
+
+    it('arms synchronously when a provider upsert appends in-window', async () => {
+      const thread = makeThread({ id: 'thread-arm' });
+      const pane = await buildPane(thread, [
+        makeItem({ id: 'seed', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
+      ]);
+      const { markStructuralContentPending } = attachMockScrollController(pane);
+
+      pane.applyProviderItemUpserts([
+        makeItem({
+          id: 'bash-1',
+          threadId: thread.id,
+          turnIndex: 0,
+          itemIndex: 1,
+          kind: 'tool_call',
+          role: 'assistant',
+          status: 'running',
+          toolName: 'Bash',
+          summary: 'Bash: ls',
+        }),
+      ]);
+
+      // No tick/flush before the assertion: the arm must be ordered
+      // before the flush in which the virtualizer measures the new row
+      // and delivers its geometry sample.
+      expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not arm for update-only batches', async () => {
+      const thread = makeThread({ id: 'thread-arm-upd' });
+      const seed = makeItem({
+        id: 'bash-1',
+        threadId: thread.id,
+        kind: 'tool_call',
+        role: 'assistant',
+        status: 'running',
+        toolName: 'Bash',
+        summary: 'Bash: ls',
+      });
+      const pane = await buildPane(thread, [seed]);
+      const { markStructuralContentPending } = attachMockScrollController(pane);
+
+      pane.applyProviderItemUpserts([
+        { ...seed, status: 'completed', updatedAt: seed.updatedAt + 1 },
+      ]);
+
+      // Mounted-row updates ride the live-content latch
+      // (providerUpsertAdvancesLiveContent), not the one-shot.
+      expect(markStructuralContentPending).not.toHaveBeenCalled();
+    });
+
+    it('does not arm for below-floor history rows', async () => {
+      const thread = makeThread({ id: 'thread-arm-floor' });
+      const pane = await buildPane(thread, [
+        makeItem({ id: 'tail', threadId: thread.id, turnIndex: 5, itemIndex: 0 }),
+      ]);
+      const { markStructuralContentPending } = attachMockScrollController(pane);
+
+      pane.applyProviderItemUpserts([
+        makeItem({ id: 'old', threadId: thread.id, turnIndex: 2, itemIndex: 0 }),
+      ]);
+
+      // Dropped by the window floor guard — never applied, never armed.
+      expect(markStructuralContentPending).not.toHaveBeenCalled();
+    });
+
+    it('does not arm while the switch slice is still loading', async () => {
+      const threadA = makeThread({ id: 'thread-arm-load-a' });
+      const pane = await buildPane(threadA, [
+        makeItem({ id: 'a-tail', threadId: threadA.id }),
+      ]);
+      const { markStructuralContentPending } = attachMockScrollController(pane);
+
+      const threadB = makeThread({ id: 'thread-arm-load-b' });
+      const bItem = makeItem({
+        id: 'b-0',
+        threadId: threadB.id,
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'assistant_text',
+        status: 'streaming',
+        summary: 'thread B first',
+      });
+      setBindingMock('SwitchThread', async () => threadB);
+      let releaseSlice!: (v: {
+        items: Item[];
+        oldestTurnIndex: number;
+        hasMore: boolean;
+      }) => void;
+      setBindingMock(
+        'ListThreadSliceAround',
+        () => new Promise((resolve) => { releaseSlice = resolve; }),
+      );
+
+      const switching = pane.switchThread(threadB);
+      // Let switchThread reach its awaits; the deferred slice keeps
+      // `loading` true (cache miss).
+      await Promise.resolve();
+      expect(pane.loading).toBe(true);
+
+      // A streaming upsert arriving mid-load must not arm: the whole
+      // switch+load settle is a restore, not an in-turn append
+      // (bug-report-20260622T041049Z class).
+      pane.applyProviderItemUpserts([bItem]);
+      expect(markStructuralContentPending).not.toHaveBeenCalled();
+
+      releaseSlice({ items: [bItem], oldestTurnIndex: 0, hasMore: false });
+      await switching;
+
+      // A genuine append to the settled window arms again.
+      pane.applyProviderItemUpserts([
+        makeItem({
+          id: 'b-1',
+          threadId: threadB.id,
+          turnIndex: 0,
+          itemIndex: 1,
+          kind: 'tool_call',
+          role: 'assistant',
+          status: 'running',
+          toolName: 'Bash',
+          summary: 'Bash: pwd',
+        }),
+      ]);
+      expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
     });
   });
 

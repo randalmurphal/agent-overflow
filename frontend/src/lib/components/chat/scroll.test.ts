@@ -2134,6 +2134,57 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(notifyWatch.structuralMarks()).toBeGreaterThan(0);
   });
 
+  it('arms the structural-append spring for provider appends landing after turn end', async () => {
+    // Regression for bug-report-20260702T193212Z. An interrupt settles the
+    // turn (activeTurn → null) BEFORE the aftermath rows land (eager flush
+    // echo, force-closed tool rows). `activeTurnStructuralSignature` is ''
+    // without an active turn, so the live-follow effect never marks — and
+    // the appends' growth sync-pinned as a 40-50px whole-viewport teleport.
+    // The pane now arms the one-shot synchronously inside
+    // applyProviderItemUpserts: turn-state-independent, and ordered before
+    // the flush in which the virtualizer delivers the append's geometry.
+    const thread = makeThread({ id: 'thread-post-turn-append' });
+    const pane = await buildPane(thread, [
+      makeItem({
+        id: 'tail-text',
+        threadId: thread.id,
+        kind: 'assistant_text',
+        status: 'completed',
+        summary: 'settled tail',
+      }),
+    ]);
+    projectTurnStarted(thread.id, 'turn-x', 0, 1);
+
+    const notifyWatch = watchStickNotifications(pane);
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    await waitForAnimationFrame();
+
+    // Interrupt: the turn settles before the aftermath rows arrive.
+    projectTurnCompleted(thread.id, 'turn-x');
+    await tick();
+    notifyWatch.reset();
+
+    pane.applyProviderItemUpserts([
+      makeItem({
+        id: 'killed-bash',
+        threadId: thread.id,
+        turnIndex: 0,
+        itemIndex: 1,
+        kind: 'tool_call',
+        role: 'assistant',
+        status: 'killed',
+        toolName: 'Bash',
+        summary: 'Bash: sleep 100',
+      }),
+    ]);
+
+    // Synchronous — no tick: the arm must already be pending when the
+    // append's same-flush geometry sample reaches the resolver.
+    expect(notifyWatch.structuralMarks()).toBeGreaterThan(0);
+  });
+
   it('does not nudge sticky follow for ordinary streaming text deltas', async () => {
     const thread = makeThread({ id: 'thread-stream-delta-follow' });
     const pane = await buildPane(thread, [

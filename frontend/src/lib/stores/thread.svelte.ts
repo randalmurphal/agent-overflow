@@ -3243,7 +3243,25 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     applyProviderItemUpserts(
       incoming: Item[],
     ): ApplyItemUpsertsToWindowResult | null {
-      return upsertItemsBatch(incoming);
+      const applied = upsertItemsBatch(incoming);
+      // A wire append to the loaded tail arms the structural-append
+      // spring HERE — synchronously, before the Svelte flush in which the
+      // virtualizer measures the new row and delivers its geometry — so
+      // the append's own growth is spring-eligible, not just the
+      // remeasure that follows it. MessageTimeline's signature effect
+      // also arms, but it (a) runs as an effect and can lose the race
+      // against same-flush geometry delivery, and (b) is gated on an
+      // active turn, so appends after turn end (interrupt echo,
+      // force-closed tool rows) never armed and landed as instant
+      // whole-viewport teleports (bug-report-20260702T193212Z).
+      // `!loading` mirrors that effect's restore gating: mid-switch
+      // slice loads must not arm (the warm gate independently pins the
+      // post-restore settle). Optimistic-send rows route through
+      // `upsertItems` above, deliberately outside this arm.
+      if (applied && applied.appendedItems.length > 0 && !loading) {
+        scrollController?.markStructuralContentPending();
+      }
+      return applied;
     },
 
     /**

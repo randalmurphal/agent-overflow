@@ -296,11 +296,13 @@ describe('PaneHost', () => {
     leftPane.attachScrollController({
       pauseAutoScroll: () => () => {},
       observe: leftObserve,
+      markStructuralContentPending: () => {},
       preserveScrollAnchor: () => Promise.resolve(),
     });
     rightPane.attachScrollController({
       pauseAutoScroll: () => () => {},
       observe: rightObserve,
+      markStructuralContentPending: () => {},
       preserveScrollAnchor: () => Promise.resolve(),
     });
 
