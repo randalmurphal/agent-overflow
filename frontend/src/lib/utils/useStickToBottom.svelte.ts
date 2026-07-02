@@ -57,13 +57,17 @@ import { tick } from 'svelte';
 import { isUiRenderTraceEnabled, recordUiTrace } from './uiRenderTrace';
 import {
   ARRIVAL_DISTANCE_PX,
+  AUTO_FOLLOW_BOTTOM_EPSILON_PX,
   SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX,
   resolveContentDelivery,
+  resolveVirtuaCompensation,
   springGateIsOpen,
   withinArrivalBand,
   type ContentDeltaObservation,
   type ContentWriteCaller,
   type ResolverState,
+  type VirtuaCompensationObservation,
+  type VirtuaWriteCaller,
 } from './scroll/resolver';
 
 // Diagnostic trace helper — no-op in production (gated by
@@ -90,12 +94,9 @@ function trace(label: string, build: () => Record<string, unknown>): void {
 // negative-delta repin's geometric branch. Loose so a user within 70px
 // doesn't see the chip flicker.
 const STICK_TO_BOTTOM_OFFSET_PX = 70;
-// Auto-follow re-stick band: a DOWN-direction scroll that lands within
-// this many pixels of the bottom flips the user back to sticky. Matches
-// react-virtuoso's `atBottomThreshold` default — tolerates virtua row-
-// height estimation + browser scrollTop rounding that routinely lands
-// 1-3px short during streaming.
-const AUTO_FOLLOW_BOTTOM_EPSILON_PX = 4;
+// AUTO_FOLLOW_BOTTOM_EPSILON_PX (the down-scroll re-stick band) lives in
+// scroll/resolver.ts — the virtua compensation resolver shares it for the
+// anchor-redirect "already pinned" tolerance.
 // The idle re-pin deadband (IDLE_REPIN_DEADBAND_PX, scroll/resolver.ts)
 // deliberately equals AUTO_FOLLOW_BOTTOM_EPSILON_PX — "close enough to
 // count as at-bottom" and "close enough not to fight a fractional-DPR
@@ -264,6 +265,7 @@ const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End'])
 // members come from the resolver's decision union so the two cannot drift.
 type ScrollWriteCaller =
   | ContentWriteCaller
+  | VirtuaWriteCaller
   | 'spring.tick'
   | 'spring.overshoot'
   | 'spring.arrive'
@@ -485,6 +487,21 @@ export interface UseStickToBottomController {
    * cascade said we could lift in 16ms.
    */
   notifyQuietContextSignalChanged(): void;
+  /**
+   * The virtua scroll-applier entry point (patched `setScrollApplier`
+   * seam, patches/virtua@0.49.1.patch). virtua calls this synchronously
+   * from its post-flush $fixScrollJump with the absolute target it wants
+   * scrollTop set to plus the raw (jump, shift) pair; the resolver's
+   * `resolveVirtuaCompensation` decides and any write goes through the
+   * controller chokepoint (tagged + marked like every controller write).
+   * Returns true if a write landed; false declines, and the patched core
+   * pokes its store with the current DOM offset so a declined
+   * compensation can never desync virtua's model.
+   *
+   * The consumer wires this directly:
+   * `listRef.setScrollApplier(stick.applyVirtuaScrollCompensation)`.
+   */
+  applyVirtuaScrollCompensation(target: number, jump: number, shift: boolean): boolean;
 }
 
 export interface UseStickToBottomOptions {
@@ -1229,6 +1246,41 @@ export function createUseStickToBottomController(
       springStopRequested,
       sentinelEntryTarget,
     };
+  }
+
+  // virtua scroll-applier entry point (see the interface doc). Gathers the
+  // observation, delegates the decision to the pure resolver, applies the
+  // one write through the chokepoint. Detached: decline — the poke keeps
+  // virtua's model synced to the DOM we are no longer arbitrating.
+  function applyVirtuaScrollCompensation(target: number, jump: number, shift: boolean): boolean {
+    if (!scrollEl) return false;
+    const observation: VirtuaCompensationObservation = {
+      target,
+      jump,
+      shift,
+      scrollTop: scrollEl.scrollTop,
+      bottomTarget: targetScrollTop(),
+      clientHeight: scrollEl.clientHeight,
+      widthReflowActive: contentReflowSettleUntil > nowMs(),
+    };
+    const decision = resolveVirtuaCompensation(resolverStateSnapshot(), observation);
+    if (isUiRenderTraceEnabled()) trace('scroll.virtuaJump', () => ({
+      target: Math.round(target),
+      jump: Math.round(jump),
+      shift,
+      scrollTop: Math.round(observation.scrollTop),
+      bottomTarget: Math.round(observation.bottomTarget),
+      writeCaller: decision.write?.caller ?? null,
+      writeValue: decision.write ? Math.round(decision.write.value) : null,
+      springToken,
+      warm,
+      isAtBottomState,
+      escapedFromLockState,
+      pauseDepth,
+    }));
+    if (decision.write === null) return false;
+    writeScrollTop(decision.write.caller, decision.write.value);
+    return true;
   }
 
   function startSpringIfNeeded(): void {
@@ -2611,5 +2663,6 @@ export function createUseStickToBottomController(
     },
     notifyQuietContextSignalChanged,
     armRestoreSnap,
+    applyVirtuaScrollCompensation,
   };
 }

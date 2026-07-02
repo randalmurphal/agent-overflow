@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
   ARRIVAL_DISTANCE_PX,
+  AUTO_FOLLOW_BOTTOM_EPSILON_PX,
   IDLE_REPIN_DEADBAND_PX,
   SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX,
   isSentinelOscillationStranded,
   resolveContentDelivery,
+  resolveVirtuaCompensation,
   springGateIsOpen,
   withinArrivalBand,
   type ContentDeltaObservation,
   type ResolverState,
+  type VirtuaCompensationObservation,
 } from './resolver';
 
 // Baseline: a warm, bottom-following, idle controller pinned exactly at a
@@ -540,5 +543,197 @@ describe('resolveContentDelivery — structural invariants', () => {
       }
     }
     expect(checked).toBe(2 * 2 * 2 * 2 * 2 * 2 * 2 * 5 * 2);
+  });
+});
+
+// ===== resolveVirtuaCompensation (Stage 3: routed $fixScrollJump) =====
+
+const CLIENT_HEIGHT = 600;
+
+// Baseline: warm, bottom-following, pinned exactly at the bottom, virtua
+// requesting a small same-place compensation. Tests override exactly the
+// inputs their tier decides over.
+function comp(overrides: Partial<VirtuaCompensationObservation> = {}): VirtuaCompensationObservation {
+  return {
+    target: TARGET,
+    jump: 24,
+    shift: false,
+    scrollTop: TARGET,
+    bottomTarget: TARGET,
+    clientHeight: CLIENT_HEIGHT,
+    widthReflowActive: false,
+    ...overrides,
+  };
+}
+
+describe('resolveVirtuaCompensation — shift (head mutations)', () => {
+  it('honors shift verbatim even mid-chase while escaped', () => {
+    const decision = resolveVirtuaCompensation(
+      state({ escaped: true, springActive: true }),
+      comp({ shift: true, target: 420 }),
+    );
+    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 420 });
+  });
+});
+
+describe('resolveVirtuaCompensation — reading / paused / pre-warm pass', () => {
+  it.each([
+    ['pre-warm', { warm: false }],
+    ['escaped', { escaped: true }],
+    ['paused', { paused: true }],
+    ['not at bottom', { isAtBottom: false }],
+  ] as const)('writes the requested target when %s, even mid-chase with a small jump', (_label, override) => {
+    const decision = resolveVirtuaCompensation(
+      state({ springActive: true, ...override }),
+      comp({ target: 700, scrollTop: 690 }),
+    );
+    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 700 });
+  });
+});
+
+describe('resolveVirtuaCompensation — anchor redirect', () => {
+  it('redirects to the bottom target when the DOM is pinned and the request moves meaningfully away', () => {
+    const decision = resolveVirtuaCompensation(
+      state(),
+      comp({ target: 600 }),
+    );
+    expect(decision.write).toEqual({ caller: 'virtua.anchorRedirect', value: TARGET });
+  });
+
+  it('redirect outranks the mid-chase decline: a sentinel-gap shrink compensation never snaps up', () => {
+    // The wire-round-gap failure shape: pinned at the bottom between
+    // chunks (sentinel alive), an above-viewport row shrinks, virtua
+    // requests an offset above the bottom. Legacy needed the mode latch +
+    // HOLD_MS invariant to keep the gate closed here; the resolver
+    // redirects on the pinned-DOM evidence alone.
+    const decision = resolveVirtuaCompensation(
+      state({ springActive: true }),
+      comp({ target: 600 }),
+    );
+    expect(decision.write).toEqual({ caller: 'virtua.anchorRedirect', value: TARGET });
+  });
+
+  it('does not redirect when the DOM is not pinned (legitimate compensation while short of the bottom)', () => {
+    const decision = resolveVirtuaCompensation(
+      state(),
+      comp({ target: 600, scrollTop: 700 }),
+    );
+    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 600 });
+  });
+
+  it('does not redirect a request within the epsilon band of the bottom', () => {
+    const decision = resolveVirtuaCompensation(
+      state(),
+      comp({ target: TARGET - AUTO_FOLLOW_BOTTOM_EPSILON_PX }),
+    );
+    expect(decision.write).toEqual({ caller: 'virtua.jump', value: TARGET - AUTO_FOLLOW_BOTTOM_EPSILON_PX });
+  });
+});
+
+describe('resolveVirtuaCompensation — mid-chase arbitration', () => {
+  it('declines a small compensation while a spring chase is in flight (spring stays the single writer)', () => {
+    const decision = resolveVirtuaCompensation(
+      state({ springActive: true }),
+      // Mid-chase: DOM is short of the bottom target, virtua nudges near it.
+      comp({ target: 990, scrollTop: 700, bottomTarget: 1000 }),
+    );
+    expect(decision.write).toBeNull();
+  });
+
+  it('writes a correction larger than the viewport even mid-chase (20260622T041049Z)', () => {
+    const decision = resolveVirtuaCompensation(
+      state({ springActive: true }),
+      comp({ target: 700 + CLIENT_HEIGHT + 1, scrollTop: 700, bottomTarget: 2000, jump: 2276 }),
+    );
+    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 700 + CLIENT_HEIGHT + 1 });
+  });
+
+  it('the viewport threshold is inclusive: exactly clientHeight still declines', () => {
+    const decision = resolveVirtuaCompensation(
+      state({ springActive: true }),
+      comp({ target: 700 + CLIENT_HEIGHT, scrollTop: 700, bottomTarget: 2000 }),
+    );
+    expect(decision.write).toBeNull();
+  });
+
+  it('a width-reflow window overrides the mid-chase decline (paired contentRO sync-pins)', () => {
+    const decision = resolveVirtuaCompensation(
+      state({ springActive: true }),
+      comp({ target: 990, scrollTop: 700, bottomTarget: 1000, widthReflowActive: true }),
+    );
+    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 990 });
+  });
+
+  it('writes when no chase is in flight (20260524T200233Z: nothing to protect)', () => {
+    const decision = resolveVirtuaCompensation(
+      state({ springActive: false }),
+      comp({ target: 990, scrollTop: 700, bottomTarget: 1000 }),
+    );
+    expect(decision.write).toEqual({ caller: 'virtua.jump', value: 990 });
+  });
+});
+
+describe('resolveVirtuaCompensation — structural invariants', () => {
+  it('holds across the full state/geometry product', () => {
+    const bools = [false, true];
+    const geometries = [
+      // [target, scrollTop, bottomTarget]
+      [TARGET, TARGET, TARGET],                       // pinned no-op
+      [600, TARGET, TARGET],                          // pinned, moves away
+      [990, 700, TARGET],                             // mid-chase small
+      [700 + CLIENT_HEIGHT + 50, 700, 2000],          // mid-chase big
+      [600, 700, TARGET],                             // short of bottom, small
+      [TARGET - AUTO_FOLLOW_BOTTOM_EPSILON_PX, TARGET, TARGET], // epsilon band
+    ] as const;
+    let checked = 0;
+    for (const shift of bools) {
+      for (const warm of bools) {
+        for (const isAtBottom of bools) {
+          for (const escaped of bools) {
+            for (const paused of bools) {
+              for (const springActive of bools) {
+                for (const widthReflowActive of bools) {
+                  for (const [target, scrollTop, bottomTarget] of geometries) {
+                    const decision = resolveVirtuaCompensation(
+                      state({ warm, isAtBottom, escaped, paused, springActive }),
+                      comp({ shift, target, scrollTop, bottomTarget, widthReflowActive }),
+                    );
+                    checked += 1;
+                    const engaged = warm && isAtBottom && !escaped && !paused && !shift;
+                    const pinned = bottomTarget - scrollTop <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+                    const movesAway = bottomTarget - target > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+                    const smallJump = Math.abs(target - scrollTop) <= CLIENT_HEIGHT;
+                    // Every write is either the requested target or the
+                    // controller's bottom target — never a third value.
+                    if (decision.write) {
+                      if (decision.write.caller === 'virtua.anchorRedirect') {
+                        expect(decision.write.value).toBe(bottomTarget);
+                      } else {
+                        expect(decision.write.value).toBe(target);
+                      }
+                    }
+                    // A redirect happens ONLY on pinned-DOM + moves-away
+                    // while fully engaged.
+                    if (decision.write?.caller === 'virtua.anchorRedirect') {
+                      expect(engaged && pinned && movesAway).toBe(true);
+                    }
+                    // Declines happen ONLY in the one protected window:
+                    // engaged, chase in flight, no reflow, small jump, and
+                    // not the pinned/moves-away redirect case.
+                    const expectDecline = engaged
+                      && springActive
+                      && !widthReflowActive
+                      && smallJump
+                      && !(pinned && movesAway);
+                    expect(decision.write === null).toBe(expectDecline);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(checked).toBe(2 * 2 * 2 * 2 * 2 * 2 * 2 * 6);
   });
 });

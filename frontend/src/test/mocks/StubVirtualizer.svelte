@@ -32,6 +32,9 @@
   export const markProgrammaticScroll = (): void => {
     recordVirtuaMark();
   };
+  // Second patched method (scroll-applier seam). The stub accepts the
+  // registration and drops it — no compensation writes exist here.
+  export const setScrollApplier = (): void => {};
 </script>
 
 {#each data as node, index}

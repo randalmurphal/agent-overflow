@@ -927,6 +927,18 @@
 
   $effect(() => installPaneGeometryProbe(pane.paneId, captureTimelineGeometry));
 
+  // Route virtua's scroll-jump compensation writes ($fixScrollJump)
+  // through the controller (patched `setScrollApplier` seam,
+  // patches/virtua@0.49.1.patch). With the applier registered, virtua no
+  // longer writes scrollTop itself: the controller's compensation
+  // resolver decides (apply / redirect-to-bottom / decline+poke), and
+  // every landed write goes through the same chokepoint as the
+  // controller's own pins — tagged, marked, single-writer. Re-runs when
+  // the {#key pane.threadId} block remounts the Virtualizer.
+  $effect(() => {
+    listRef?.setScrollApplier(stick.applyVirtuaScrollCompensation);
+  });
+
   // Trace virtua remount transitions: listRef goes undefined → defined
   // when the {#key pane.threadId} block remounts the Virtualizer. This
   // is the seam where virtua's deferred scroller attach

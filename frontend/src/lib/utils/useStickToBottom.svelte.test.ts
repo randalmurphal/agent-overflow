@@ -5545,6 +5545,122 @@ describe('createUseStickToBottomController — spring chase', () => {
   // writes from outside the controller against intent. These tests
   // simulate virtua's untagged write by assigning `scrollEl.scrollTop`
   // directly (no controller call), the same way virtua's writer does.
+  describe('virtua compensation applier (routed $fixScrollJump)', () => {
+    // Stage 3: the patched setScrollApplier seam hands virtua's
+    // compensation writes to applyVirtuaScrollCompensation. Decision
+    // policy is exhaustively covered in scroll/resolver.test.ts
+    // (resolveVirtuaCompensation); these tests pin the controller-side
+    // choreography — chokepoint routing, attribution, self-tagging,
+    // marking, and the decline/detach return contract the patched core
+    // relies on for its ACTION_SCROLL poke.
+
+    it('applies a dormant compensation through the write chokepoint (attributed + self-tagged)', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      // Above-viewport growth: virtua flushes a +100 jump, absolute
+      // target 500 (model offset 400 + 100). No chase in flight.
+      geom.scrollHeight = 1100;
+      geom.contentHeight = 900;
+      setUiRenderTraceEnabled(true);
+      clearUiRenderTrace();
+      const handled = controller.applyVirtuaScrollCompensation(500, 100, false);
+
+      expect(handled).toBe(true);
+      expect(geom.scrollTop).toBe(500);
+      const writes = getUiRenderTraceRecords().filter((r) => r.label.startsWith('scroll.write'));
+      expect(writes).toHaveLength(1);
+      expect((writes[0].data as { caller: string }).caller).toBe('virtua.jump');
+
+      // Routed writes are controller writes: the scroll event they
+      // dispatch is token-tagged and consumed, never read as user intent.
+      clearUiRenderTrace();
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(
+        getUiRenderTraceRecords().filter((r) => r.label.startsWith('scroll.scrollEvent')),
+      ).toEqual([]);
+      expect(controller.escapedFromLock).toBe(false);
+    });
+
+    it('fires onBeforeScrollTopWrite (virtua manual-scroll marking) for routed writes', async () => {
+      const el = document.createElement('div');
+      const content = document.createElement('div');
+      el.appendChild(content);
+      document.body.appendChild(el);
+      const g: Geometry = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
+      stubGeometry(el, content, g);
+      let markCalls = 0;
+      const hooked = createUseStickToBottomController({
+        animationMode: () => mode,
+        onBeforeScrollTopWrite: () => { markCalls += 1; },
+      });
+      hooked.attach(el, content);
+      try {
+        getRO().fire(content, 800);
+        await waitMs(150);
+        const callsBefore = markCalls;
+        g.scrollHeight = 1100;
+        g.contentHeight = 900;
+        expect(hooked.applyVirtuaScrollCompensation(500, 100, false)).toBe(true);
+        expect(markCalls).toBe(callsBefore + 1);
+      } finally {
+        hooked.detach();
+        el.remove();
+      }
+    });
+
+    it('declines a small compensation mid-chase (no write; spring stays the single writer)', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // Start a spring chase.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const springStart = geom.scrollTop;
+      expect(springStart).toBeGreaterThan(400);
+      expect(springStart).toBeLessThan(800);
+
+      // Small mid-chase compensation: declined, nothing written; the
+      // patched core pokes its own store (not observable here).
+      const handled = controller.applyVirtuaScrollCompensation(springStart + 10, 10, false);
+      expect(handled).toBe(false);
+      expect(geom.scrollTop).toBe(springStart);
+
+      // The chase still completes.
+      await advanceUntil(() => geom.scrollTop === 800);
+    });
+
+    it('redirects a pinned moves-away compensation to the bottom target', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(geom.scrollTop).toBe(400); // pinned at bottom (target 400)
+
+      setUiRenderTraceEnabled(true);
+      clearUiRenderTrace();
+      // Above-viewport shrink compensation: virtua wants 300, meaningfully
+      // above the pinned bottom.
+      const handled = controller.applyVirtuaScrollCompensation(300, -100, false);
+
+      expect(handled).toBe(true);
+      expect(geom.scrollTop).toBe(400); // stayed at the bottom
+      const writes = getUiRenderTraceRecords().filter((r) => r.label.startsWith('scroll.write'));
+      expect(writes).toHaveLength(1);
+      expect((writes[0].data as { caller: string; requested: number }).caller).toBe('virtua.anchorRedirect');
+      expect((writes[0].data as { caller: string; requested: number }).requested).toBe(400);
+    });
+
+    it('returns false when detached (patched core falls back to its store poke)', () => {
+      controller.detach();
+      expect(controller.applyVirtuaScrollCompensation(500, 100, false)).toBe(false);
+    });
+  });
+
   describe('external scrollTop write gate (virtua $fixScrollJump defense)', () => {
     it('drops an external scrollTop write while sticking-and-engaged', async () => {
       const ro = getRO();

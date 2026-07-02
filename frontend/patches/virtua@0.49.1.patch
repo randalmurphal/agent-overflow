@@ -1,8 +1,104 @@
+diff --git a/lib/core/index.cjs b/lib/core/index.cjs
+index 274399da8a832791c00531d868375e59449d9f8c..6a0cfcf69fc1d2fbf5022ed0db63193f9d7c7963 100644
+--- a/lib/core/index.cjs
++++ b/lib/core/index.cjs
+@@ -120,7 +120,7 @@ const e = null, {min: t, max: o, abs: r, floor: s} = Math, n = (e, r, s) => t(s,
+         r && r();
+     } ];
+ }, _ = (e, t) => {
+-    let o, r, s = l(), i = !1;
++    let d, o, r, s = l(), i = !1;
+     const c = t ? "scrollLeft" : "scrollTop", f = t ? "overflowX" : "overflowY", [a, u] = y(e, () => s[0], (e, r) => {
+         e = k(e, i), r ? o.scrollTo({
+             [t ? "left" : "top"]: e,
+@@ -136,13 +136,33 @@ const e = null, {min: t, max: o, abs: r, floor: s} = Math, n = (e, r, s) => t(s,
+                         e[f] = t;
+                     });
+                 }
+-                l[c] = k(e.$getScrollOffset() + t, i), o && u();
++                // PATCH(agent-overflow scroll-applier): route the internal
++                // scroll-jump compensation write through an external applier
++                // when one is registered. The applier receives the absolute
++                // rounded target plus (jump, shift) and must act
++                // synchronously: return true after writing scrollTop itself
++                // (any value - the store re-syncs from the resulting scroll
++                // event), or false to decline, in which case the store is
++                // poked with the current DOM offset (ACTION_SCROLL = 1,
++                // mirroring _fixScrollJump's own clamped-shift fallback) so a
++                // declined write can never desync the model. The poke marks
++                // manual first (ACTION_MANUAL_SCROLL = 7, exactly like the
++                // scheduled-scroll path) because ACTION_SCROLL early-breaks
++                // on an unchanged offset in native mode - without the mark
++                // the poke would no-op and leave _flushedJump set, freezing
++                // $getRange until some unrelated scroll event.
++                const g = k(e.$getScrollOffset() + t, i);
++                d ? d(g, t, o) || (e.$update(7), e.$update(1, k(l[c], i))) : l[c] = g;
++                o && u();
+             }), s[1](!0);
+         },
+         $dispose() {
+             r && r.$(), s[1](!1), s = l();
+         },
+         $isNegative: () => i,
++        $setScrollApplier(e) {
++            d = e;
++        },
+         $scrollTo(e) {
+             a(() => e);
+         },
+diff --git a/lib/core/index.js b/lib/core/index.js
+index d95ebbd5e4ad9eeabc5a474c367dbae6a4fb515c..28aa08830a2d0769afce12d466c8f1a0f85f73af 100644
+--- a/lib/core/index.js
++++ b/lib/core/index.js
+@@ -247,7 +247,7 @@ const e = null, {min: t, max: o, abs: r, floor: s} = Math, n = (e, r, s) => t(s,
+         r && r();
+     } ];
+ }, W = (e, t) => {
+-    let o, r, s = l(), i = !1;
++    let d, o, r, s = l(), i = !1;
+     const c = t ? "scrollLeft" : "scrollTop", f = t ? "overflowX" : "overflowY", [a, u] = C(e, () => s[0], (e, r) => {
+         e = R(e, i), r ? o.scrollTo({
+             [t ? "left" : "top"]: e,
+@@ -263,13 +263,33 @@ const e = null, {min: t, max: o, abs: r, floor: s} = Math, n = (e, r, s) => t(s,
+                         e[f] = t;
+                     });
+                 }
+-                l[c] = R(e.$getScrollOffset() + t, i), o && u();
++                // PATCH(agent-overflow scroll-applier): route the internal
++                // scroll-jump compensation write through an external applier
++                // when one is registered. The applier receives the absolute
++                // rounded target plus (jump, shift) and must act
++                // synchronously: return true after writing scrollTop itself
++                // (any value - the store re-syncs from the resulting scroll
++                // event), or false to decline, in which case the store is
++                // poked with the current DOM offset (ACTION_SCROLL = 1,
++                // mirroring _fixScrollJump's own clamped-shift fallback) so a
++                // declined write can never desync the model. The poke marks
++                // manual first (ACTION_MANUAL_SCROLL = 7, exactly like the
++                // scheduled-scroll path) because ACTION_SCROLL early-breaks
++                // on an unchanged offset in native mode - without the mark
++                // the poke would no-op and leave _flushedJump set, freezing
++                // $getRange until some unrelated scroll event.
++                const g = R(e.$getScrollOffset() + t, i);
++                d ? d(g, t, o) || (e.$update(7), e.$update(1, R(l[c], i))) : l[c] = g;
++                o && u();
+             }), s[1](!0);
+         },
+         $dispose() {
+             r && r.h(), s[1](!1), s = l();
+         },
+         $isNegative: () => i,
++        $setScrollApplier(e) {
++            d = e;
++        },
+         $scrollTo(e) {
+             a(() => e);
+         },
 diff --git a/lib/svelte/Virtualizer.svelte b/lib/svelte/Virtualizer.svelte
-index fc0986bc3f7f03f4dbfdc847a3c0177b26a0ff11..ff6f3be5a0ccebf1527a6e2bec70f438c993d996 100644
+index fc0986bc3f7f03f4dbfdc847a3c0177b26a0ff11..ec44d5c0e9f1b6f1d1ad2fb99d3fdba0e4d14f7a 100644
 --- a/lib/svelte/Virtualizer.svelte
 +++ b/lib/svelte/Virtualizer.svelte
-@@ -157,6 +157,27 @@
+@@ -157,6 +157,50 @@
      scroller.$scrollTo satisfies VirtualizerHandle["scrollTo"] as VirtualizerHandle["scrollTo"];
    export const scrollBy =
      scroller.$scrollBy satisfies VirtualizerHandle["scrollBy"] as VirtualizerHandle["scrollBy"];
@@ -27,14 +123,37 @@ index fc0986bc3f7f03f4dbfdc847a3c0177b26a0ff11..ff6f3be5a0ccebf1527a6e2bec70f438
 +  export const markProgrammaticScroll = (() => {
 +    store.$update(7);
 +  }) satisfies VirtualizerHandle["markProgrammaticScroll"] as VirtualizerHandle["markProgrammaticScroll"];
++  // PATCH(agent-overflow scroll-applier): route the internal scroll-jump
++  // compensation write ($fixScrollJump) through an external applier.
++  //
++  // When an above-viewport (or viewport-spanning) row remeasures, virtua
++  // compensates by writing scrollTop DIRECTLY from inside createScroller's
++  // observer callback - a second scrollTop writer that an external scroll
++  // controller cannot see semantically (it observes only the resulting
++  // anonymous scroll event). Registering an applier hands that write to the
++  // controller instead: the applier receives the absolute rounded target
++  // plus the raw (jump, shift) pair, synchronously in the same call (it runs
++  // post-flush pre-paint; deferring would paint one uncompensated frame).
++  // Contract: return true after writing scrollTop itself - any value is safe
++  // because the store re-syncs from the resulting scroll event; return false
++  // to decline, and the core pokes its store with the current DOM offset
++  // (ACTION_MANUAL_SCROLL then ACTION_SCROLL, exactly like the
++  // scheduled-scroll path - the manual mark defeats the same-offset native
++  // early-break so the poke always clears the flushed jump) so a declined
++  // write can never desync the store (unlike external suppression of the
++  // direct write, which swallows the scroll event the model relies on).
++  // Pass null to restore the default internal write.
++  export const setScrollApplier = ((applier) => {
++    scroller.$setScrollApplier(applier);
++  }) satisfies VirtualizerHandle["setScrollApplier"] as VirtualizerHandle["setScrollApplier"];
  
    let containerStyle = $derived(
      styleToString({
 diff --git a/lib/svelte/Virtualizer.type.d.ts b/lib/svelte/Virtualizer.type.d.ts
-index 5a3d242ef30bbd7ca2a5e303cb0aa2838e2f395c..ae794a6b9e6756a905f9557f472b8076883bb26e 100644
+index 5a3d242ef30bbd7ca2a5e303cb0aa2838e2f395c..a870d604c6871480ab80ff2446818b8657afe707 100644
 --- a/lib/svelte/Virtualizer.type.d.ts
 +++ b/lib/svelte/Virtualizer.type.d.ts
-@@ -131,4 +131,13 @@ export interface VirtualizerHandle {
+@@ -131,4 +131,26 @@ export interface VirtualizerHandle {
       * @param offset offset from current position
       */
      scrollBy(offset: number): void;
@@ -47,4 +166,17 @@ index 5a3d242ef30bbd7ca2a5e303cb0aa2838e2f395c..ae794a6b9e6756a905f9557f472b8076
 +     * for the full rationale.
 +     */
 +    markProgrammaticScroll(): void;
++    /**
++     * PATCH(agent-overflow scroll-applier): route the internal scroll-jump
++     * compensation write ($fixScrollJump) through an external applier. The
++     * applier runs synchronously in the same call with the absolute rounded
++     * target offset plus the raw (jump, shift) pair; it must either write
++     * scrollTop itself (any value) and return true, or return false to
++     * decline - the core then pokes its store with the current DOM offset so
++     * a declined write cannot desync the model. Pass null to restore the
++     * default internal write. See Virtualizer.svelte for the full rationale.
++     */
++    setScrollApplier(
++        applier: ((targetScrollOffset: number, jump: number, shift: boolean) => boolean) | null,
++    ): void;
  }
