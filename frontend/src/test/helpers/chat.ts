@@ -121,6 +121,7 @@ export function installPaneMocks(items: Item[] = []): void {
 export async function buildPane(
   thread: Thread = makeThread(),
   items: Item[] = [],
+  paneKey = 'main',
 ): Promise<ThreadPane> {
   installPaneMocks(items);
   setBindingMock('SwitchThread', async () => thread);
@@ -129,7 +130,12 @@ export async function buildPane(
   // Register so syncThread (and any other panes-iterating helper) can
   // reach this pane. Production code goes through ensureMainPane() which
   // already registers; tests instantiating createThreadPane directly
-  // need this explicit step.
-  registerPaneForTest('main', pane);
+  // need this explicit step. Do NOT `getAllPanes().set(...)` the same
+  // pane under a second key in tests: `iterPanes()` walks Map values
+  // with no identity dedupe, so every event batch would apply twice —
+  // value-identical re-applies dedupe silently, but value-different
+  // bursts (insert + completion in one batch) mis-resolve against
+  // post-apply state. Multi-pane tests pass distinct `paneKey`s instead.
+  registerPaneForTest(paneKey, pane);
   return pane;
 }

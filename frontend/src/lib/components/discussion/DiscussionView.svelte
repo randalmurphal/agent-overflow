@@ -1,12 +1,13 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { threadUsesDiscussionSurface } from '../../stores/threadPaneShared';
   import ChannelView from './ChannelView.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
   let thread = $derived(pane.thread);
   let channelId = $derived(thread?.discussionId ?? '');
-  let isDiscussion = $derived(!!thread && thread.mode === 'discussion' && !!channelId);
+  let isDiscussion = $derived(threadUsesDiscussionSurface(thread));
 </script>
 
 {#if isDiscussion}

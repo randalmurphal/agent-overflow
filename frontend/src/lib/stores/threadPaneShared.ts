@@ -117,6 +117,19 @@ export function trimToTailRunes(text: string, maxRunes: number): string {
   return text;
 }
 
+/**
+ * Whether a thread renders the discussion surface (ChannelView) instead
+ * of the chat timeline. Shared by ChatView's surface swap,
+ * DiscussionView's render gate, and the pane's structural-spring arm
+ * skip — the three must agree, or the pane arms a controller that
+ * watches channel messages rather than timeline rows.
+ */
+export function threadUsesDiscussionSurface(
+  thread: Pick<Thread, 'mode' | 'discussionId'> | null | undefined,
+): boolean {
+  return !!thread && thread.mode === 'discussion' && !!thread.discussionId;
+}
+
 export function sameRhsPanel(
   left: RhsPanel | null,
   right: RhsPanel | null,
@@ -147,13 +160,15 @@ export interface PaneScrollController {
   observe(kind: ScrollObservationKind): void;
   /**
    * One-shot structural-append spring arm (250ms TTL in the controller).
-   * The pane calls this synchronously while applying provider upserts
-   * that APPEND in-window rows, so the arm is ordered strictly before
-   * the flush in which the virtualizer delivers the resulting
-   * content-geometry sample. A component-effect arm loses that race —
-   * and is blind to appends outside an active turn (interrupt echo,
-   * force-closed tool rows) — so the append's own growth sync-pins as a
-   * visible teleport (bug-report-20260702T193212Z).
+   * The pane data layer is the sole caller (`armStructuralSpring` in
+   * thread.svelte.ts): synchronously while applying provider upserts that
+   * APPEND in-window rows, and when the reveal gate releases withheld
+   * rows — both ordered strictly before the flush in which the
+   * virtualizer delivers the resulting content-geometry sample. A
+   * component-effect arm loses that race — and is blind to appends
+   * outside an active turn (interrupt echo, force-closed tool rows) — so
+   * the append's own growth sync-pins as a visible teleport
+   * (bug-report-20260702T193212Z).
    */
   markStructuralContentPending(): void;
   preserveScrollAnchor(

@@ -2015,7 +2015,10 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await waitForAnimationFrame();
     notifyWatch.reset();
 
-    pane.upsertItem(makeItem({
+    // The production wire path: provider appends land through
+    // applyProviderItemUpserts, which arms the structural spring and
+    // schedules the post-flush 'live-content' nudge.
+    pane.applyProviderItemUpserts([makeItem({
       id: 'text-1',
       threadId: thread.id,
       itemIndex: 1,
@@ -2023,7 +2026,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
       role: 'assistant',
       status: 'streaming',
       summary: 'Here is the next response.',
-    }));
+    })]);
     await tick();
     expect(notifyWatch.liveCalls()).toBe(0);
     expect(notifyWatch.instantCalls()).toBe(0);
@@ -2034,17 +2037,14 @@ describe('scroll integration — useStickToBottom wiring', () => {
 
   it('does not arm the structural-append spring when switching into a streaming thread (cache miss)', async () => {
     // Regression for bug-report-20260622T041049Z. Switching INTO a thread
-    // whose turn is live transitions `activeTurnStructuralSignature`
-    // old-thread → new-thread, and on a cache MISS the slice loads
-    // asynchronously AFTER the switch-generation bump — while pane.loading is
-    // still true. Neither the switch nor the initial load is an in-turn
-    // append, so the live-follow effect must NOT call
-    // markStructuralContentPending() across the switch+load+settle. If it
-    // does, the structural-append spring chases the post-restore
-    // measurement backlog and the user sees a multi-hundred-px scroll on
-    // switch. The fix re-baselines (without marking) while switchGeneration
-    // changed OR pane.loading is true OR loading just toggled — covering the
-    // async cache-miss slice that lands in a later flush than the bump.
+    // whose turn is live must NOT call markStructuralContentPending()
+    // across the switch+load+settle — the structural-append spring would
+    // chase the post-restore measurement backlog and the user sees a
+    // multi-hundred-px scroll on switch. The pane's arm sites hold this:
+    // the cache-MISS slice lands through the load path (not
+    // applyProviderItemUpserts, whose arm is additionally gated on
+    // `!loading`), and the reveal-gate arm can't fire because
+    // disposeAllSmoothers nulls the boundary at switch start.
     const threadA = makeThread({ id: 'thread-switch-spring-a' });
     const pane = await buildPane(threadA, [
       makeItem({
@@ -2117,11 +2117,11 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // structural-append spring.
     expect(notifyWatch.structuralMarks()).toBe(0);
 
-    // ...but a genuine append to the now-settled, mounted thread B tail still
-    // marks. The fix re-baselines on switch/load only — it does not disable
-    // live-follow for real in-turn growth.
+    // ...but a genuine wire append to the now-settled, mounted thread B
+    // tail still arms. The loading gate blocks the switch+load window
+    // only — it does not block arming for real in-turn growth.
     notifyWatch.reset();
-    pane.upsertItem(makeItem({
+    pane.applyProviderItemUpserts([makeItem({
       id: 'b-text-1',
       threadId: threadB.id,
       turnIndex: 0,
@@ -2129,7 +2129,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
       kind: 'assistant_text',
       status: 'streaming',
       summary: 'thread B second',
-    }));
+    })]);
     await tick();
     expect(notifyWatch.structuralMarks()).toBeGreaterThan(0);
   });
@@ -2137,11 +2137,11 @@ describe('scroll integration — useStickToBottom wiring', () => {
   it('arms the structural-append spring for provider appends landing after turn end', async () => {
     // Regression for bug-report-20260702T193212Z. An interrupt settles the
     // turn (activeTurn → null) BEFORE the aftermath rows land (eager flush
-    // echo, force-closed tool rows). `activeTurnStructuralSignature` is ''
-    // without an active turn, so the live-follow effect never marks — and
-    // the appends' growth sync-pinned as a 40-50px whole-viewport teleport.
-    // The pane now arms the one-shot synchronously inside
-    // applyProviderItemUpserts: turn-state-independent, and ordered before
+    // echo, force-closed tool rows). The old arm — a MessageTimeline effect
+    // keyed on an active-turn tail signature — never marked without an
+    // active turn, and the appends' growth sync-pinned as a 40-50px
+    // whole-viewport teleport. The pane arms the one-shot synchronously
+    // inside applyProviderItemUpserts: turn-state-independent, and ordered before
     // the flush in which the virtualizer delivers the append's geometry.
     const thread = makeThread({ id: 'thread-post-turn-append' });
     const pane = await buildPane(thread, [
@@ -2242,6 +2242,9 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await waitForAnimationFrame();
     notifyWatch.reset();
 
+    // Internal upsert path (load merges, rollback restore): inserts land
+    // without arming or nudging regardless of position. The provider wire
+    // path routes through applyProviderItemUpserts instead.
     pane.upsertItem(makeItem({
       id: 'older-same-turn',
       threadId: thread.id,
@@ -2282,7 +2285,9 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await waitForAnimationFrame();
     notifyWatch.reset();
 
-    pane.upsertItem(makeItem({
+    // Production path: an update-only provider batch (no appended rows)
+    // must not arm or nudge — the latch may stamp, but no observe fires.
+    pane.applyProviderItemUpserts([makeItem({
       id: 'text-1',
       threadId: thread.id,
       kind: 'assistant_text',
@@ -2291,7 +2296,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
       summary: 'first',
       updatedAt: 2,
       meta: '{"pathRefs":[]}',
-    }));
+    })]);
     await tick();
     await waitForAnimationFrame();
     await waitForScrollIntent();
@@ -2324,7 +2329,10 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await waitForAnimationFrame();
     notifyWatch.reset();
 
-    pane.upsertItem(makeItem({
+    // Production path: a same-row completion is an update, not an append —
+    // it stamps the spring latch (fix for tool-row growth snapping) but
+    // must not arm the structural spring or fire the post-flush nudge.
+    pane.applyProviderItemUpserts([makeItem({
       id: 'bash-1',
       threadId: thread.id,
       kind: 'tool_call',
@@ -2342,7 +2350,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
       }),
       meta: JSON.stringify({ input: { command: 'sleep 1' } }),
       updatedAt: 2,
-    }));
+    })]);
     await tick();
     await waitForAnimationFrame();
     await waitForScrollIntent();

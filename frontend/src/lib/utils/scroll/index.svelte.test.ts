@@ -5834,7 +5834,7 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
   });
 
-  describe("observe('live-content') during sentinel — structural signature nudges", () => {
+  describe("observe('live-content') during sentinel — pane structural nudges", () => {
     it('does not restart spring when scrollTop equals target', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
@@ -5868,8 +5868,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       while (mockNow < 360) await nextFrame();
 
       const scrollTopBefore = geom.scrollTop;
-      // Simulate 4 structural signature changes (tool call lifecycle:
-      // running → streaming → success → tool_completion).
+      // Simulate 4 back-to-back pane structural nudges (armStructuralSpring
+      // post-flush observes for an append-heavy burst).
       for (let i = 0; i < 4; i++) {
         controller.observe('live-content');
         await nextFrame();

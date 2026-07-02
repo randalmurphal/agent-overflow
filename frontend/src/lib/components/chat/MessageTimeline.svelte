@@ -164,12 +164,6 @@
     offsetThreshold: AUTO_LOAD_OFFSET_PX,
     indexThreshold: AUTO_LOAD_INDEX_THRESHOLD,
   };
-  // Keep the live-follow nudge scoped to the tail. A structural change
-  // outside the tail can happen during load-older / search-window loads,
-  // where bottom-follow is either paused or irrelevant. Active turn
-  // streaming only appends/replaces near the tail.
-  const LIVE_FOLLOW_TAIL_NODE_COUNT = 5;
-  const LIVE_FOLLOW_TAIL_ITEM_COUNT = 5;
   // Leaf item kinds that participate in the continuous left-border
   // rail. Subagent / wait group containers also participate so the
   // rail stays continuous through nested cards and the agent card's
@@ -323,9 +317,9 @@
   // (`pane.revealBoundary`). `sliceRevealedNodes` returns the SAME array
   // reference when nothing is withheld (boundary null, or the frontier is the
   // tail node), so this is zero-cost outside the brief withhold windows.
-  // Everything index-based downstream (virtualizer data, decorations, the
-  // live-follow nudge, scroll-to-index) must read THIS, not `groupedNodes`,
-  // so the indices line up with what the virtualizer actually renders.
+  // Everything index-based downstream (virtualizer data, decorations,
+  // scroll-to-index) must read THIS, not `groupedNodes`, so the indices
+  // line up with what the virtualizer actually renders.
   let revealedNodes = $derived(sliceRevealedNodes(groupedNodes, pane.revealBoundary));
   let timelineWindowPruneShiftAtHead = $state(false);
   let timelineWindowPruneShiftResetToken = 0;
@@ -356,52 +350,6 @@
     pane.revealBoundary;
 
     return untrack(() => timelineRowDecorations(revealedNodes, activeTurnIndex));
-  });
-
-  let activeTurnStructuralSignature = $derived.by(() => {
-    const threadId = pane.threadId;
-    const activeTurn = getActiveTurn(threadId);
-    if (!threadId || !activeTurn) return '';
-
-    // The signature must change only when the active turn's tail row
-    // identity changes — a new row appearing (item-window structural
-    // change) or the reveal gate advancing — NOT on every streaming
-    // summary delta. Track `timelineRevision` (bumps only on structural
-    // item-window change) and `revealBoundary` (the reveal gate), then
-    // read `revealedNodes` / `pane.items` inside `untrack`: item refs can
-    // change without changing the tail IDENTITY keys below, so tracking the
-    // arrays rebuilt these slice/map/join strings for work the downstream
-    // effect would compare-equal and ignore. The tracked deps above flip
-    // exactly when the output can change.
-    // Mirrors the `rowDecorations` derived above.
-    pane.timelineRevision;
-    pane.revealBoundary;
-
-    return untrack(() => {
-      // Tail of the REVEALED set so the nudge fires when a row actually
-      // appears (reveal advances), not when a still-withheld item arrives.
-      const tailNodeKeys = revealedNodes
-        .slice(-LIVE_FOLLOW_TAIL_NODE_COUNT)
-        .map((node) => timelineNodeKey(node))
-        .join(',');
-      const tailItemKeys = pane.items
-        .slice(-LIVE_FOLLOW_TAIL_ITEM_COUNT)
-        .map((item) => [
-          item.id,
-          item.kind,
-          item.turnIndex,
-          item.itemIndex,
-        ].join(':'))
-        .join(',');
-
-      return [
-        threadId,
-        activeTurn.turnId,
-        activeTurn.turnIndex,
-        tailNodeKeys,
-        tailItemKeys,
-      ].join('|');
-    });
   });
 
   // Animation mode is keyed on whether LIVE timeline content advanced
@@ -725,137 +673,19 @@
     });
   });
 
-  let liveFollowSignatureInitialized = false;
-  let lastLiveFollowSignature = '';
-  let liveFollowNudgeToken = 0;
-  // Switch-generation + loading state the live-follow tracker last
-  // baselined against. A thread switch / same-thread reload bumps the
-  // generation, and the initial slice load (which lands AFTER the bump on a
-  // cache miss — `loading` stays true until `runParallelLoad` settles)
-  // grows the tail. Both change `activeTurnStructuralSignature` but neither
-  // is an in-turn append, so we must NOT arm the structural-append spring
-  // across them (see the effect below). Sentinels re-baseline on first run.
-  let liveFollowSwitchGeneration = -1;
-  let liveFollowLoading = false;
-
-  function nextAnimationFrame(): Promise<void> {
-    return new Promise((resolve) => {
-      if (typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(() => resolve());
-        return;
-      }
-      setTimeout(resolve, 0);
-    });
-  }
-
-  async function notifyAfterActiveTurnStructuralChange(
-    signature: string,
-    token: number,
-    threadId: string,
-  ): Promise<void> {
-    await tick();
-    await nextAnimationFrame();
-
-    if (token !== liveFollowNudgeToken) return;
-    if (pane.threadId !== threadId) return;
-    if (activeTurnStructuralSignature !== signature) return;
-    if (!getActiveTurn(threadId)) return;
-
-    stick.observe('live-content');
-  }
-
-  // Thinking rows stream by internally tail-pinning a 3-line clipped body,
-  // so their visible movement often does not grow the outer timeline row.
-  // When the next top-level row arrives (assistant text/tool call), relying
-  // only on contentRO timing can miss the first bottom target, especially
-  // because assistant text then grows through Streamdown's async markdown
-  // layout. This structural path first marks the upcoming ResizeObserver
-  // growth as append-like, so command/tool row batches can spring-follow
-  // instead of snapping, then asks the sticky controller to re-check the
-  // bottom after Svelte and the virtualizer have had a frame to publish the new row.
-  //
-  // The PRIMARY arm for wire appends lives in the pane
-  // (applyProviderItemUpserts → markStructuralContentPending): it runs
-  // synchronously with the data change, so it cannot lose the ordering
-  // race against the virtualizer's same-flush geometry delivery, and it
-  // covers appends outside an active turn (interrupt echo, force-closed
-  // tool rows) that this effect's turn-keyed signature never sees
-  // (bug-report-20260702T193212Z). This effect's arm remains for
-  // reveal-boundary advances — rows already in pane.items released by
-  // the reveal gate, where no upsert lands in the mounting flush — and
-  // the arm is a TTL refresh, so double-arming is harmless.
-  // It keys off tail row identity and order (id, kind, turnIndex,
-  // itemIndex), not status transitions or summary deltas, so normal
-  // streaming chunks and tool-call lifecycle status changes use the
-  // contentRO path. The delayed nudge observes as 'live-content', which
-  // honors spring mode or the just-marked structural-append window.
-  // Sidebar/host layout nudges keep using the instant 'content'/'host-layout'
-  // paths; ChatView composer geometry observes as 'composer-geometry' so
-  // activity-rail changes during streaming can continue the spring.
-  $effect(() => {
-    const signature = activeTurnStructuralSignature;
-    const switchGeneration = pane.switchGeneration;
-    const loading = pane.loading;
-
-    // Thread switch / same-thread reload / initial load: re-baseline WITHOUT
-    // marking. `activeTurnStructuralSignature` embeds the thread id, so a
-    // switch flips it old→new, a reload (revert-to-checkpoint) rebuilds it in
-    // place, and the initial slice load then grows the tail as items arrive.
-    // All cross into a freshly mounted timeline whose rows are still
-    // estimate→measure settling — they are a restore, not an in-turn append.
-    // Calling `markStructuralContentPending()` here makes the post-restore
-    // measurement growth spring-chase the new bottom (a visible multi-hundred-
-    // px scroll on switch into an actively-streaming thread —
-    // bug-report-20260622T041049Z). Re-baseline like a fresh mount instead.
-    //
-    // Gated on switchGeneration (not threadId) so same-thread reloads count
-    // too (mirrors `scrollSnapshotSwitchGeneration` in the restore path), AND
-    // on `pane.loading` because a cache MISS loads the slice asynchronously
-    // AFTER the generation bump — `loading` stays true across the whole
-    // switch+load (set true at switchThread start, false only after
-    // `runParallelLoad` settles), so its transitions bracket the settle even
-    // when the final signature lands in a later flush than the bump. Only a
-    // genuine append to the settled, mounted timeline reaches the mark below.
-    //
-    // All three disjuncts below are load-bearing — none is redundant:
-    //   - `loading`         : true across the whole switch+load window.
-    //   - `loadingChanged`  : the cache-MISS closing edge — the slice lands
-    //                         as `loading` flips false, a flush where
-    //                         `loading` itself already reads false.
-    //   - `generationChanged`: the cache-HIT case, where the slice is
-    //                         synchronous and this effect never observes
-    //                         `loading === true` at all.
-    const generationChanged = switchGeneration !== liveFollowSwitchGeneration;
-    const loadingChanged = loading !== liveFollowLoading;
-    if (generationChanged || loading || loadingChanged) {
-      liveFollowSwitchGeneration = switchGeneration;
-      liveFollowLoading = loading;
-      liveFollowSignatureInitialized = signature !== '';
-      lastLiveFollowSignature = signature;
-      liveFollowNudgeToken += 1;
-      return;
-    }
-
-    if (!signature) {
-      liveFollowSignatureInitialized = false;
-      lastLiveFollowSignature = '';
-      liveFollowNudgeToken += 1;
-      return;
-    }
-    if (!liveFollowSignatureInitialized) {
-      liveFollowSignatureInitialized = true;
-      lastLiveFollowSignature = signature;
-      return;
-    }
-    if (signature === lastLiveFollowSignature) return;
-
-    lastLiveFollowSignature = signature;
-    const threadId = pane.threadId;
-    if (!threadId) return;
-    stick.markStructuralContentPending();
-    const token = ++liveFollowNudgeToken;
-    void notifyAfterActiveTurnStructuralChange(signature, token, threadId);
-  });
+  // Structural-append spring arming and the post-flush 'live-content'
+  // nudge are owned entirely by the pane data layer
+  // (thread.svelte.ts `armStructuralSpring`): `applyProviderItemUpserts`
+  // arms for wire appends and `recomputeRevealPass` arms when the reveal
+  // gate releases withheld rows. Both run synchronously with the data
+  // change, so they cannot lose the ordering race an effect here had
+  // against the virtualizer's same-flush geometry delivery
+  // (bug-report-20260702T193212Z), and neither is keyed on an active
+  // turn, so post-turn appends (interrupt echo, force-closed tool rows)
+  // arm too. Sidebar/host layout nudges keep using the instant
+  // 'content'/'host-layout' paths; ChatView composer geometry observes as
+  // 'composer-geometry' so activity-rail changes during streaming can
+  // continue the spring.
 
   // Diagnostic UI render trace — extracted to messageTimelineTrace.ts.
   // Production builds short-circuit at isUiRenderTraceEnabled() inside

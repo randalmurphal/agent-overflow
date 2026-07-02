@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupEventListeners } from './events';
 import { createThreadPane } from './thread.svelte';
-import { getAllPanes } from './panes.svelte';
+import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import {
   getActiveTurn,
   getThreadStatus,
@@ -71,7 +71,7 @@ describe('setupEventListeners', () => {
     resetRateLimitsInfo();
     resetProviderStatuses();
     setBindingMock('AutoResumeThread', async () => {});
-    getAllPanes().clear();
+    resetPanesForTest();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
     cleanup = setupEventListeners();
@@ -79,7 +79,7 @@ describe('setupEventListeners', () => {
 
   afterEach(() => {
     cleanup();
-    getAllPanes().clear();
+    resetPanesForTest();
     resetThreadStatuses();
     resetSendQueue();
   });
@@ -109,10 +109,8 @@ describe('setupEventListeners', () => {
   });
 
   it('routes item_event upserts only to the matching pane', async () => {
-    const paneA = await buildPane(makeThread({ id: 'thread-a' }));
-    const paneB = await buildPane(makeThread({ id: 'thread-b' }));
-    getAllPanes().set('a', paneA);
-    getAllPanes().set('b', paneB);
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }), [], 'a');
+    const paneB = await buildPane(makeThread({ id: 'thread-b' }), [], 'b');
 
     const item = makeItem({
       id: 'tool-1',
@@ -132,10 +130,8 @@ describe('setupEventListeners', () => {
   });
 
   it('routes provider:todo_update to the matching pane and clears on empty/null steps', async () => {
-    const paneA = await buildPane(makeThread({ id: 'thread-a' }));
-    const paneB = await buildPane(makeThread({ id: 'thread-b' }));
-    getAllPanes().set('a', paneA);
-    getAllPanes().set('b', paneB);
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }), [], 'a');
+    const paneB = await buildPane(makeThread({ id: 'thread-b' }), [], 'b');
 
     // A non-empty update populates only the matching pane.
     emitWailsEvent('provider:todo_update', {
@@ -184,7 +180,6 @@ describe('setupEventListeners', () => {
     expect(cacheModule.threadItemCache.size).toBe(2);
 
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    getAllPanes().set('a', pane);
 
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
@@ -213,7 +208,6 @@ describe('setupEventListeners', () => {
       summary: 'same',
     });
     const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
-    getAllPanes().set('a', pane);
     cacheModule.threadItemCache.set('thread-a', {
       items: [item],
       oldestLoadedTurnIndex: 0,
@@ -240,7 +234,6 @@ describe('setupEventListeners', () => {
     // (content-keyed animation latch). lastLiveContentAt is 0 until
     // something streams, then carries a real performance.now() reading.
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    getAllPanes().set('a', pane);
     expect(pane.lastLiveContentAt).toBe(0);
 
     const before = performance.now();
@@ -265,7 +258,6 @@ describe('setupEventListeners', () => {
 
   it('does not stamp lastLiveContentAt for new Bash rows', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    getAllPanes().set('a', pane);
     expect(pane.lastLiveContentAt).toBe(0);
 
     emitWailsEvent('provider:item_event', {
@@ -299,7 +291,6 @@ describe('setupEventListeners', () => {
       summary: 'same',
     });
     const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
-    getAllPanes().set('a', pane);
     expect(pane.lastLiveContentAt).toBe(0);
 
     emitWailsEvent('provider:item_event', {
@@ -328,7 +319,6 @@ describe('setupEventListeners', () => {
       meta: JSON.stringify({ input: { command: 'sleep 1' } }),
     });
     const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
-    getAllPanes().set('a', pane);
     expect(pane.lastLiveContentAt).toBe(0);
 
     emitWailsEvent('provider:item_event', {
@@ -373,7 +363,6 @@ describe('setupEventListeners', () => {
       payloadMeta: JSON.stringify({ command: 'make build', lineCount: 2, preview: 'compiling…' }),
     });
     const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
-    getAllPanes().set('a', pane);
     expect(pane.lastLiveContentAt).toBe(0);
 
     emitWailsEvent('provider:item_event', {
@@ -405,7 +394,6 @@ describe('setupEventListeners', () => {
       meta: JSON.stringify({ input: { command: 'sleep 30' } }),
     });
     const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
-    getAllPanes().set('a', pane);
     expect(pane.lastLiveContentAt).toBe(0);
 
     emitWailsEvent('provider:item_event', {
@@ -439,7 +427,6 @@ describe('setupEventListeners', () => {
       meta: JSON.stringify({ input: { command: 'npm run watch' } }),
     });
     const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
-    getAllPanes().set('a', pane);
     expect(pane.lastLiveContentAt).toBe(0);
 
     emitWailsEvent('provider:item_event', {
@@ -468,7 +455,6 @@ describe('setupEventListeners', () => {
       decision: '',
     });
     const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
-    getAllPanes().set('a', pane);
     expect(pane.lastLiveContentAt).toBe(0);
 
     emitWailsEvent('provider:item_event', {
@@ -487,14 +473,10 @@ describe('setupEventListeners', () => {
     // completion still resolves down the insert path — correct, because a
     // row that mounted this flush is in its estimate phase for the whole
     // flush. Pins the once-per-batch snapshot: a refactor to per-upsert
-    // lookup would silently start stamping these bursts.
-    //
-    // No `getAllPanes().set('a', pane)` here: buildPane already registers
-    // the pane (key 'main'), and a second key makes iterPanes() apply the
-    // batch to the SAME pane twice — the re-application of this
-    // value-different sequence against post-apply state would stamp
-    // spuriously. Single-upsert tests tolerate the duplicate because
-    // their re-application dedupes to a no-op.
+    // lookup would silently start stamping these bursts. (This test is
+    // also why buildPane owns pane registration: registering the same
+    // pane under a second key made iterPanes() apply value-different
+    // batches twice, and the re-application stamped spuriously.)
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
     expect(pane.lastLiveContentAt).toBe(0);
 
@@ -552,7 +534,6 @@ describe('setupEventListeners', () => {
       meta: JSON.stringify({ input: { command: 'sleep 1' } }),
     });
     const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
-    getAllPanes().set('a', pane);
     expect(pane.oldestLoadedTurnIndex).toBe(5);
     expect(pane.lastLiveContentAt).toBe(0);
 
@@ -581,10 +562,8 @@ describe('setupEventListeners', () => {
   });
 
   it('drops item_event upserts whose item thread does not match the event envelope', async () => {
-    const paneA = await buildPane(makeThread({ id: 'thread-a' }));
-    const paneB = await buildPane(makeThread({ id: 'thread-b' }));
-    getAllPanes().set('a', paneA);
-    getAllPanes().set('b', paneB);
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }), [], 'a');
+    const paneB = await buildPane(makeThread({ id: 'thread-b' }), [], 'b');
 
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
@@ -606,7 +585,6 @@ describe('setupEventListeners', () => {
 
   it('drops item_event upserts without a stable item id', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    getAllPanes().set('a', pane);
 
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
@@ -625,8 +603,8 @@ describe('setupEventListeners', () => {
   });
 
   it('routes item_event deltas only to the matching pane', async () => {
-    const paneA = await buildPane(makeThread({ id: 'thread-a' }));
-    const paneB = await buildPane(makeThread({ id: 'thread-b' }));
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }), [], 'a');
+    const paneB = await buildPane(makeThread({ id: 'thread-b' }), [], 'b');
     paneA.upsertItem(makeItem({
       id: 'text:0:0',
       threadId: 'thread-a',
@@ -641,8 +619,6 @@ describe('setupEventListeners', () => {
       status: 'streaming',
       summary: 'hello',
     }));
-    getAllPanes().set('a', paneA);
-    getAllPanes().set('b', paneB);
 
     emitWailsEvent('provider:item_event', {
       action: 'delta',
@@ -664,7 +640,6 @@ describe('setupEventListeners', () => {
 
   it('adds and resolves pending approvals through provider:approval', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:approval', {
       action: 'request',
@@ -709,7 +684,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreadCheckpoints', async () => []);
 
     const pane = createThreadPane();
-    getAllPanes().set('main', pane);
+    registerPaneForTest('main', pane);
     const switching = pane.switchThread(makeThread({ id: 'thread-1' }));
     for (let i = 0; i < 5 && !releaseSnapshot; i++) {
       await Promise.resolve();
@@ -757,7 +732,6 @@ describe('setupEventListeners', () => {
 
   it('sets thread error status from an error item upsert', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     const item = makeItem({
       id: 'error-1',
@@ -779,7 +753,6 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [cached]);
     await refreshThreads();
     const pane = await buildPane(cached);
-    getAllPanes().set('main', pane);
 
     const item = makeItem({
       id: 'plan-1',
@@ -821,7 +794,6 @@ describe('setupEventListeners', () => {
 
   it('does not project thread running from ordered item_event upserts', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     const streamingItem = makeItem({
       id: 'text-1',
@@ -852,7 +824,6 @@ describe('setupEventListeners', () => {
 
   it('does not derive status from item rows while timeline upserts wait for the frame batch', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     const streamingItem = makeItem({
       id: 'text-1',
@@ -880,7 +851,6 @@ describe('setupEventListeners', () => {
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
     try {
       const pane = await buildPane();
-      getAllPanes().set('main', pane);
 
       const item = makeItem({ id: 'timeout-flush', kind: 'terminal_interaction' });
       emitWailsEvent('provider:item_event', {
@@ -902,7 +872,6 @@ describe('setupEventListeners', () => {
 
   it('flushes a Codex spawn/wait completion burst into the active pane before refresh', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-a', provider: 'codex' }));
-    getAllPanes().set('main', pane);
     const items = [
       makeItem({
         id: 'assistant-before-review',
@@ -988,7 +957,6 @@ describe('setupEventListeners', () => {
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
     try {
       const pane = await buildPane();
-      getAllPanes().set('main', pane);
 
       const item = makeItem({ id: 'cancelled-flush', kind: 'terminal_interaction' });
       emitWailsEvent('provider:item_event', {
@@ -1011,7 +979,6 @@ describe('setupEventListeners', () => {
 
   it('applies same-frame upsert bursts as one timeline revision', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
     const revisionBeforeBurst = pane.timelineRevision;
 
     const first = makeItem({ id: 'wait-1', kind: 'terminal_interaction', itemIndex: 2 });
@@ -1028,7 +995,6 @@ describe('setupEventListeners', () => {
 
   it('ignores stale item_event deltas after the item has completed', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     const streamingItem = makeItem({
       id: 'text-1',
@@ -1079,7 +1045,6 @@ describe('setupEventListeners', () => {
 
   it('coalesces contiguous deltas without crossing upsert boundaries', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:item_event', {
       action: 'delta',
@@ -1140,7 +1105,6 @@ describe('setupEventListeners', () => {
       meta: '',
     });
     pane.upsertItem(base);
-    getAllPanes().set('main', pane);
     const before = pane.items.find((item) => item.id === 'text-1');
     expect(before).toBeDefined();
 
@@ -1178,7 +1142,6 @@ describe('setupEventListeners', () => {
       summary: 'see src/foo.ts',
       meta: '',
     }));
-    getAllPanes().set('main', pane);
 
     // Same-batch delta + meta. The meta must land against the appended
     // text the user has already seen, so deltas have to flush FIRST.
@@ -1226,7 +1189,6 @@ describe('setupEventListeners', () => {
 
   it('flushes pending upserts in the same batch before applying meta', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     // No prior upsert via pane.upsertItem — the row is created by the
     // queued upsert in the same batch as the meta. Both arrive in one
@@ -1268,7 +1230,6 @@ describe('setupEventListeners', () => {
       summary: 'stable',
       meta: '',
     }));
-    getAllPanes().set('a', pane);
 
     emitWailsEvent('provider:item_event', {
       action: 'meta',
@@ -1292,7 +1253,6 @@ describe('setupEventListeners', () => {
       summary: 'stable',
       meta: '',
     }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:item_event', {
       action: 'meta',
@@ -1316,7 +1276,6 @@ describe('setupEventListeners', () => {
       status: 'streaming',
       summary: 'stable',
     }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:item_event', {
       action: 'mystery',
@@ -1350,7 +1309,6 @@ describe('setupEventListeners', () => {
       lastReadAt: 200,
       latestTurnCompletedAt: 200,
     }));
-    getAllPanes().set('main', pane);
     await refreshThreads();
 
     emitWailsEvent('thread:updated', {
@@ -1390,7 +1348,6 @@ describe('setupEventListeners', () => {
       projectId: 'project-stale',
       updatedAt: 100,
     }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
@@ -1455,7 +1412,6 @@ describe('setupEventListeners', () => {
       projectId: 'project-stale',
       updatedAt: 100,
     }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
@@ -1640,7 +1596,6 @@ describe('setupEventListeners', () => {
       projectId: 'project-stale',
       updatedAt: 100,
     }));
-    getAllPanes().set('main', pane);
 
     const requestedAt = Date.now();
     emitWailsEvent('provider:approval', {
@@ -1679,7 +1634,6 @@ describe('setupEventListeners', () => {
       projectId: 'project-stale',
       updatedAt: 100,
     }));
-    getAllPanes().set('main', pane);
 
     const requestedAt = Date.now();
     emitWailsEvent('provider:user_input', {
@@ -1861,7 +1815,6 @@ describe('setupEventListeners', () => {
 
   it('updates global provider status from app-wide provider:status', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude' }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:status', providerStatusEvent({
       status: 'unauthenticated',
@@ -1926,7 +1879,6 @@ describe('setupEventListeners', () => {
 
   it('updates and clears the context meter through provider:usage', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:usage', {
       action: 'usage',
@@ -1957,7 +1909,6 @@ describe('setupEventListeners', () => {
   // (`rateLimitsInfo.svelte.ts`).
   it('routes EventRateLimits to the provider-global store without clobbering the context ring', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     // Seed a real context window first; the rate-limits event must not
     // wipe this state.
@@ -1999,7 +1950,6 @@ describe('setupEventListeners', () => {
   // the harder Claude case here because it's the merge-correctness pin.
   it('merges Claude single-window updates without clobbering the other window', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:usage', {
       action: 'rate_limits',
@@ -2036,7 +1986,6 @@ describe('setupEventListeners', () => {
   // stray 0 entry would let an unrenderable window fill memory forever.
   it('filters out windowMins=0 entries so unknown rate-limit types do not pollute the store', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:usage', {
       action: 'rate_limits',
@@ -2140,7 +2089,6 @@ describe('setupEventListeners', () => {
   // pane.generalError instead.
   it('routes persistent EventSessionStatus to provider:status; drops unknown kinds', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:status', {
       kind: 'unauthenticated',
@@ -2183,7 +2131,6 @@ describe('setupEventListeners', () => {
 
   it('session death clears pending-send bridge state before turn start', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
-    getAllPanes().set('main', pane);
     projectSendStarted('thread-1');
 
     emitWailsEvent('provider:session_died', {
@@ -2205,7 +2152,6 @@ describe('setupEventListeners', () => {
     // a wire-level turn-start is unambiguous proof the session is
     // alive again.
     const pane = await buildPane(makeThread({ id: 'thread-recovery', provider: 'claude' }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:session_died', {
       threadId: 'thread-recovery',
@@ -2233,7 +2179,6 @@ describe('setupEventListeners', () => {
     // NOT invalidate those — a rename that failed is still a failure
     // even after the next prompt produces a turn.
     const pane = await buildPane(makeThread({ id: 'thread-other-err', provider: 'claude' }));
-    getAllPanes().set('main', pane);
 
     pane.setGeneralError('Failed to rename thread');
     expect(pane.generalErrorKind).toBeNull();
@@ -2250,10 +2195,8 @@ describe('setupEventListeners', () => {
   });
 
   it('turn_started for thread A does not clear a session-death banner on thread B', async () => {
-    const paneA = await buildPane(makeThread({ id: 'thread-aa', provider: 'claude' }));
-    const paneB = await buildPane(makeThread({ id: 'thread-bb', provider: 'claude' }));
-    getAllPanes().set('a', paneA);
-    getAllPanes().set('b', paneB);
+    const paneA = await buildPane(makeThread({ id: 'thread-aa', provider: 'claude' }), [], 'a');
+    const paneB = await buildPane(makeThread({ id: 'thread-bb', provider: 'claude' }), [], 'b');
 
     emitWailsEvent('provider:session_died', {
       threadId: 'thread-bb',
@@ -2276,10 +2219,8 @@ describe('setupEventListeners', () => {
   // --- Turn lifecycle routing (Wave 2) ---------------------------------------
 
   it('routes provider:turn_started to pane.setActiveTurn for the matching thread only', async () => {
-    const paneA = await buildPane(makeThread({ id: 'thread-a' }));
-    const paneB = await buildPane(makeThread({ id: 'thread-b' }));
-    getAllPanes().set('a', paneA);
-    getAllPanes().set('b', paneB);
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }), [], 'a');
+    const paneB = await buildPane(makeThread({ id: 'thread-b' }), [], 'b');
 
     emitWailsEvent('provider:turn_started', {
       threadId: 'thread-a',
@@ -2298,7 +2239,6 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1' })]);
     await refreshThreads();
     const pane = await buildPane(makeThread({ id: 'thread-1' }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:turn_started', {
       threadId: 'thread-1',
@@ -2355,7 +2295,6 @@ describe('setupEventListeners', () => {
 
   it('parses tokenUsage JSON from provider:turn_completed into a typed summary', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1' }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:turn_completed', {
       threadId: 'thread-1',
@@ -2385,7 +2324,6 @@ describe('setupEventListeners', () => {
 
   it('tolerates malformed tokenUsage without crashing — tokenUsage becomes null', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1' }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:turn_completed', {
       threadId: 'thread-1',
@@ -2403,7 +2341,6 @@ describe('setupEventListeners', () => {
 
   it('routes provider:turn_completed.aborted into the settled projection', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1' }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:turn_completed', {
       threadId: 'thread-1',
@@ -2423,7 +2360,6 @@ describe('setupEventListeners', () => {
 
   it('routes provider:subagent_notification to the matching pane', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1' }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:subagent_notification', {
       threadId: 'thread-1',
@@ -2437,7 +2373,6 @@ describe('setupEventListeners', () => {
 
   it('drops provider:turn_started for non-matching threadIds', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1' }));
-    getAllPanes().set('main', pane);
 
     emitWailsEvent('provider:turn_started', {
       threadId: 'thread-other',
@@ -2457,7 +2392,6 @@ describe('setupEventListeners', () => {
   // item at the reverted turn — not just the user_text.
   it('removes every item at the reverted turn on user_message:reverted', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    getAllPanes().set('a', pane);
     pane.upsertItems([
       makeItem({ id: 'u:0', threadId: 'thread-a', turnIndex: 0, kind: 'user_text', role: 'user' }),
       makeItem({ id: 'think:0:0', threadId: 'thread-a', turnIndex: 0, kind: 'thinking', role: 'assistant', status: 'streaming' }),
@@ -2476,7 +2410,6 @@ describe('setupEventListeners', () => {
 
   it('does not disturb earlier turns when handling user_message:reverted', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    getAllPanes().set('a', pane);
     pane.upsertItems([
       makeItem({ id: 'u:0', threadId: 'thread-a', turnIndex: 0, kind: 'user_text', role: 'user' }),
       makeItem({ id: 'a:0', threadId: 'thread-a', turnIndex: 0, kind: 'assistant_text', role: 'assistant' }),
@@ -2502,10 +2435,8 @@ describe('setupEventListeners', () => {
   // match would ship silently without this coverage. (e.g. two panes
   // viewing the same thread side-by-side.)
   it('mirrors the truncate to every pane viewing the reverted thread', async () => {
-    const paneA = await buildPane(makeThread({ id: 'thread-x' }));
-    const paneB = await buildPane(makeThread({ id: 'thread-x' }));
-    getAllPanes().set('a', paneA);
-    getAllPanes().set('b', paneB);
+    const paneA = await buildPane(makeThread({ id: 'thread-x' }), [], 'a');
+    const paneB = await buildPane(makeThread({ id: 'thread-x' }), [], 'b');
     const seed = (pane: typeof paneA): void => {
       pane.upsertItems([
         makeItem({ id: 'u:0', threadId: 'thread-x', turnIndex: 0, kind: 'user_text', role: 'user' }),
@@ -2533,7 +2464,6 @@ describe('setupEventListeners', () => {
   // contract.
   it('rejects user_message:reverted events with non-number turnIndex', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    getAllPanes().set('a', pane);
     pane.upsertItem(makeItem({ id: 'u:0', threadId: 'thread-a', turnIndex: 0, kind: 'user_text', role: 'user' }));
 
     // Missing turnIndex — wire would not include the field.
@@ -2563,7 +2493,6 @@ describe('setupEventListeners', () => {
   // rows stutter (2026-06-12 streaming-jank investigation).
   it('applies an interleaved cross-item tool burst as a single upsert batch', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     // Seed two rows so the patch and delta below target existing items.
     const seededTool = makeItem({
@@ -2601,7 +2530,6 @@ describe('setupEventListeners', () => {
 
   it('batches successive same-item upserts without fragmentation (last wins)', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
     const applySpy = vi.spyOn(pane, 'applyProviderItemUpserts');
 
     // Codex foreground exec emits a full-item upsert per output chunk;
@@ -2620,7 +2548,6 @@ describe('setupEventListeners', () => {
 
   it('preserves per-item apply order when upserts and deltas interleave on one row', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     const u1 = makeItem({ id: 'out-1', kind: 'tool_call', status: 'streaming', summary: 'A' });
     const u2 = makeItem({ id: 'out-1', kind: 'tool_call', status: 'streaming', summary: 'B' });
@@ -2643,7 +2570,6 @@ describe('setupEventListeners', () => {
 
   it('defers thread-status projection to the frame batch', async () => {
     const pane = await buildPane();
-    getAllPanes().set('main', pane);
 
     const item = makeItem({ id: 'err-1', kind: 'error', role: 'system', summary: 'boom' });
     emitWailsEvent('provider:item_event', { action: 'upsert', threadId: item.threadId, item });

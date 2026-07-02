@@ -7425,23 +7425,27 @@ describe('createThreadPane', () => {
     });
   });
 
-  // A wire append must arm the controller's one-shot structural-append
-  // spring SYNCHRONOUSLY with the data change
+  // The pane data layer is the sole owner of structural-append spring
+  // arming (`armStructuralSpring`): a wire append and a reveal-gate
+  // release both arm SYNCHRONOUSLY with the data change
   // (bug-report-20260702T193212Z): an effect-based arm runs after the
   // virtualizer's same-flush geometry delivery, so the append's own
   // growth resolved as an instant sync-pin; and the effect's turn-keyed
   // signature is blind to appends landing after turn end (interrupt
-  // echo, force-closed tool rows).
+  // echo, force-closed tool rows). Each arm also schedules a post-flush
+  // 'live-content' observe so growth that never fires a content-geometry
+  // delta still gets a bottom re-check.
   describe('structural-append arm (pane data layer)', () => {
     function attachMockScrollController(pane: ReturnType<typeof createThreadPane>) {
       const markStructuralContentPending = vi.fn();
+      const observe = vi.fn();
       pane.attachScrollController({
         pauseAutoScroll: () => () => {},
-        observe: () => {},
+        observe,
         markStructuralContentPending,
         preserveScrollAnchor: () => Promise.resolve(),
       });
-      return { markStructuralContentPending };
+      return { markStructuralContentPending, observe };
     }
 
     it('arms synchronously when a provider upsert appends in-window', async () => {
@@ -7567,6 +7571,312 @@ describe('createThreadPane', () => {
         }),
       ]);
       expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
+    });
+
+    it("schedules the post-flush 'live-content' nudge alongside the arm", async () => {
+      const thread = makeThread({ id: 'thread-arm-nudge' });
+      const pane = await buildPane(thread, [
+        makeItem({ id: 'seed', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
+      ]);
+      const { observe } = attachMockScrollController(pane);
+
+      pane.applyProviderItemUpserts([
+        makeItem({
+          id: 'row-1',
+          threadId: thread.id,
+          turnIndex: 0,
+          itemIndex: 1,
+          kind: 'tool_call',
+          role: 'assistant',
+          status: 'running',
+          toolName: 'Bash',
+          summary: 'Bash: ls',
+        }),
+      ]);
+
+      // Never synchronous: the nudge waits for the Svelte flush plus one
+      // frame so the virtualizer has published the new row before the
+      // controller re-checks the bottom.
+      expect(observe).not.toHaveBeenCalled();
+      await vi.waitFor(() => {
+        expect(observe).toHaveBeenCalledWith('live-content');
+      });
+    });
+
+    it('arms when the reveal gate releases a withheld successor', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const thread = makeThread({ id: 'thread-arm-reveal' });
+        const pane = await buildPane(thread, [
+          makeItem({
+            id: 'front',
+            threadId: thread.id,
+            turnIndex: 0,
+            itemIndex: 0,
+            kind: 'assistant_text',
+            status: 'streaming',
+            summary: '',
+          }),
+        ]);
+        const { markStructuralContentPending } = attachMockScrollController(pane);
+
+        // Short delta: enough lag to engage the gate, small enough that
+        // the successor's fast-drain finishes it via clock ticks instead
+        // of the oversized-backlog snap.
+        pane.applyItemDelta({
+          threadId: thread.id,
+          itemId: 'front',
+          kind: 'assistant_text',
+          delta: 'streamed words arriving',
+          updatedAt: 2,
+        });
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+
+        // The successor arms once through the wire-append path and is
+        // withheld behind the frontier.
+        pane.applyProviderItemUpserts([
+          makeItem({
+            id: 'tool-1',
+            threadId: thread.id,
+            turnIndex: 0,
+            itemIndex: 1,
+            kind: 'tool_call',
+            role: 'assistant',
+            status: 'running',
+            toolName: 'Bash',
+            summary: 'Bash: ls',
+          }),
+        ]);
+        markStructuralContentPending.mockClear();
+
+        // Drain the frontier. The boundary drop that RELEASES the tool
+        // row mounts it with no wire upsert in that flush, so only the
+        // reveal-site arm can make its growth spring-eligible.
+        for (let frame = 0; frame < 500 && pane.revealBoundary !== null; frame++) {
+          clock.tickFrame(16);
+        }
+        expect(pane.revealBoundary).toBeNull();
+        expect(markStructuralContentPending).toHaveBeenCalled();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('does not arm when the gate drops because the lone streaming row drained', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const thread = makeThread({ id: 'thread-arm-lone-drain' });
+        const pane = await buildPane(thread, [
+          makeItem({
+            id: 'front',
+            threadId: thread.id,
+            turnIndex: 0,
+            itemIndex: 0,
+            kind: 'assistant_text',
+            status: 'streaming',
+            summary: '',
+          }),
+        ]);
+        const { markStructuralContentPending } = attachMockScrollController(pane);
+
+        pane.applyItemDelta({
+          threadId: thread.id,
+          itemId: 'front',
+          kind: 'assistant_text',
+          delta: 'streamed words arriving',
+          updatedAt: 2,
+        });
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+
+        // Nothing is waiting behind the frontier: when it drains and the
+        // gate drops, no rows mount — arming would open a pointless
+        // spring window on whatever grows next.
+        for (let frame = 0; frame < 500 && pane.revealBoundary !== null; frame++) {
+          clock.tickFrame(16);
+        }
+        expect(pane.revealBoundary).toBeNull();
+        expect(markStructuralContentPending).not.toHaveBeenCalled();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('does not arm on discussion-mode panes, whose controller belongs to ChannelView', async () => {
+      const thread = makeThread({
+        id: 'thread-arm-disc',
+        mode: 'discussion',
+        discussionId: 'disc-1',
+      });
+      const pane = await buildPane(thread, [
+        makeItem({ id: 'seed', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
+      ]);
+      const { markStructuralContentPending, observe } = attachMockScrollController(pane);
+
+      pane.applyProviderItemUpserts([
+        makeItem({ id: 'row-1', threadId: thread.id, turnIndex: 0, itemIndex: 1 }),
+      ]);
+
+      // The chat timeline is swapped out for ChannelView in discussion
+      // mode, so the registered controller watches channel messages —
+      // arming it would spring unrelated channel growth for 250ms.
+      expect(markStructuralContentPending).not.toHaveBeenCalled();
+      // Outwait the nudge's flush + frame (and its hidden-window timeout
+      // fallback) so a skipped mark that still scheduled the observe
+      // would be caught.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(observe).not.toHaveBeenCalled();
+    });
+
+    it('cancels a scheduled nudge when the thread switches before it fires', async () => {
+      const threadA = makeThread({ id: 'thread-nudge-cancel-a' });
+      const pane = await buildPane(threadA, [
+        makeItem({ id: 'seed', threadId: threadA.id, turnIndex: 0, itemIndex: 0 }),
+      ]);
+      const { observe } = attachMockScrollController(pane);
+
+      pane.applyProviderItemUpserts([
+        makeItem({
+          id: 'row-1',
+          threadId: threadA.id,
+          turnIndex: 0,
+          itemIndex: 1,
+          kind: 'tool_call',
+          role: 'assistant',
+          status: 'running',
+          toolName: 'Bash',
+          summary: 'Bash: ls',
+        }),
+      ]);
+
+      // Switch before the nudge's flush + frame elapses. The nudge's
+      // switchGeneration capture must cancel it — a post-switch
+      // observe('live-content') would re-check the bottom of a freshly
+      // restored, unrelated timeline.
+      const threadB = makeThread({ id: 'thread-nudge-cancel-b' });
+      setBindingMock('SwitchThread', async () => threadB);
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [],
+        oldestTurnIndex: 0,
+        hasMore: false,
+      }));
+      await pane.switchThread(threadB);
+
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(observe).not.toHaveBeenCalled();
+    });
+
+    it('does not arm when a revert removes the frontier and its withheld successor', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const thread = makeThread({ id: 'thread-arm-revert' });
+        const pane = await buildPane(thread, [
+          makeItem({
+            id: 'front',
+            threadId: thread.id,
+            turnIndex: 1,
+            itemIndex: 0,
+            kind: 'assistant_text',
+            status: 'streaming',
+            summary: '',
+          }),
+        ]);
+        const { markStructuralContentPending } = attachMockScrollController(pane);
+
+        pane.applyItemDelta({
+          threadId: thread.id,
+          itemId: 'front',
+          kind: 'assistant_text',
+          delta: 'streamed words arriving',
+          updatedAt: 2,
+        });
+        pane.applyProviderItemUpserts([
+          makeItem({
+            id: 'tool-1',
+            threadId: thread.id,
+            turnIndex: 1,
+            itemIndex: 1,
+            kind: 'tool_call',
+            role: 'assistant',
+            status: 'running',
+            toolName: 'Bash',
+            summary: 'Bash: ls',
+          }),
+        ]);
+        expect(pane.revealBoundary).toEqual({ turnIndex: 1, itemIndex: 0 });
+        markStructuralContentPending.mockClear();
+
+        // Revert-on-interrupt truncates the tail: frontier AND withheld
+        // successor go in one call. The boundary drops, but nothing
+        // mounts — the timeline SHRANK — so arming would open a phantom
+        // spring window over the revert settle.
+        pane.removeItemsFromTurn(1);
+        expect(pane.revealBoundary).toBeNull();
+        expect(markStructuralContentPending).not.toHaveBeenCalled();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('does not arm across a switch away from an engaged reveal gate', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const threadA = makeThread({ id: 'thread-arm-switch-a' });
+        const pane = await buildPane(threadA, [
+          makeItem({
+            id: 'front',
+            threadId: threadA.id,
+            turnIndex: 0,
+            itemIndex: 0,
+            kind: 'assistant_text',
+            status: 'streaming',
+            summary: '',
+          }),
+        ]);
+        const { markStructuralContentPending } = attachMockScrollController(pane);
+
+        pane.applyItemDelta({
+          threadId: threadA.id,
+          itemId: 'front',
+          kind: 'assistant_text',
+          delta: 'streamed words arriving',
+          updatedAt: 2,
+        });
+        pane.applyProviderItemUpserts([
+          makeItem({
+            id: 'tool-1',
+            threadId: threadA.id,
+            turnIndex: 0,
+            itemIndex: 1,
+            kind: 'tool_call',
+            role: 'assistant',
+            status: 'running',
+            toolName: 'Bash',
+            summary: 'Bash: ls',
+          }),
+        ]);
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        markStructuralContentPending.mockClear();
+
+        // disposeAllSmoothers nulls the boundary directly at switch
+        // start (no publish through the reveal pass), and the loading
+        // gate covers the slice load — the whole switch must not arm.
+        const threadB = makeThread({ id: 'thread-arm-switch-b' });
+        setBindingMock('SwitchThread', async () => threadB);
+        setBindingMock('ListThreadSliceAround', async () => ({
+          items: [],
+          oldestTurnIndex: 0,
+          hasMore: false,
+        }));
+        await pane.switchThread(threadB);
+        expect(pane.revealBoundary).toBeNull();
+        expect(markStructuralContentPending).not.toHaveBeenCalled();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
     });
   });
 

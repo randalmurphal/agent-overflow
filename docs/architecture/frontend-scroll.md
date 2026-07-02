@@ -390,31 +390,40 @@ growth spring-eligible even when the content latch currently returns
 spring arrives it cancels instead of entering the streaming sentinel, so
 routed engine compensations are not declined after the append settles.
 
-Two sites arm it. The PRIMARY arm is the pane's
-`applyProviderItemUpserts` (gated on `!pane.loading`): a wire append arms
+The pane data layer is the sole owner of the arm
+(`armStructuralSpring` in `thread.svelte.ts`), with two call sites:
+`applyProviderItemUpserts` (a wire append to the loaded tail) and
+`recomputeRevealPass` (the reveal gate releasing withheld rows — rows
+already in `pane.items` mount without any upsert in that flush). Both run
 synchronously with the data change, strictly before the Svelte flush in
-which the virtualizer measures the new row and delivers its geometry
-sample. An effect-based arm loses that ordering race — the append's own
+which the virtualizer measures the new/released rows and delivers their
+geometry sample. An effect-based arm (MessageTimeline's former
+live-follow signature effect) loses that ordering race — the append's own
 growth resolves instant and only the follow-up remeasure springs — and a
 turn-keyed effect is blind to appends landing after turn end (interrupt
 echo, force-closed tool rows), which sync-pinned as whole-viewport
-teleports (bug-report-20260702T193212Z). MessageTimeline's live-follow
-effect is the SECONDARY arm, kept for reveal-boundary advances: rows
-already in `pane.items` released by the reveal gate mount without any
-upsert in that flush. The arm is a TTL refresh (250ms), so double-arming
-is harmless.
+teleports (bug-report-20260702T193212Z). The arm is a TTL refresh
+(250ms), so double-arming (an upsert whose recompute also releases rows)
+is harmless. Each arm also schedules a one-frame-after-flush
+`observe('live-content')` nudge, so growth that never fires a
+content-geometry delta (a thinking row tail-pins its clipped body
+internally while the next top-level row mounts) still gets a bottom
+re-check; a monotonic token cancels superseded nudges and a
+`switchGeneration` capture cancels stale ones across switch/reload/clear.
 
-The live-follow effect re-baselines its active-turn tail signature —
-recording it without marking — across a thread switch, a same-thread
-reload (`pane.switchGeneration` bump), and the initial slice load (while
-`pane.loading` is true, which on a cache miss outlives the generation
-bump). That signature embeds the thread id and tail row identity, so a
-switch into an actively-streaming thread, and its async first slice, both
-change it; treating either as an append would arm the structural-append
-spring and make the post-restore measurement backlog a visible scroll
-(the pane arm's `!loading` gate is the same defense, and the controller's
-warm gate independently pins the post-restore settle). Only a genuine
-append to the settled, mounted timeline reaches the mark.
+Restore safety is layered: `armStructuralSpring` itself gates on
+`pane.loading` (the whole switch+load settle is a restore, not an
+in-turn append — bug-report-20260622T041049Z), the reveal arm
+additionally requires that the boundary change actually releases rows
+that still exist (`boundaryChangeReleasesRows` — a gate dropping because
+the lone streaming row drained, or because a revert removed the tail,
+mounts nothing) and never fires across a switch because
+`disposeAllSmoothers` nulls the boundary first, and the controller's
+warm gate independently pins the post-restore settle. Discussion-surface
+panes are skipped entirely (`threadUsesDiscussionSurface`, shared with
+ChatView's surface swap): their registered controller belongs to
+ChannelView, so arming would open a spring window on unrelated
+channel-message growth.
 
 `spring` is an eligibility signal, not an unconditional animation. If
 `contentRO` observes a content-width change, the controller opens a short

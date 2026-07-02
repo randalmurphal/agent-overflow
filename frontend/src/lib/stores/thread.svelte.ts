@@ -161,6 +161,7 @@ import {
   loadOlderResult,
   nowForLiveContent,
   sameRhsPanel,
+  threadUsesDiscussionSurface,
   trimToTailRunes,
   type DraftThreadPlaceholder,
   type DraftPlaceholderDefaults,
@@ -569,6 +570,91 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * controller's full type, so the contract stays cheap to honour.
    */
   let scrollController: PaneScrollController | null = $state(null);
+
+  // Monotonic token that cancels superseded structural nudges: bumped by
+  // every armStructuralSpring() call so only the latest scheduled nudge
+  // fires. Switch/reload/clear staleness is covered by the
+  // `switchGeneration` capture in the nudge itself, matching the store's
+  // universal post-await staleness idiom.
+  let structuralNudgeToken = 0;
+
+  // WebKit suspends rAF for hidden/minimized windows while wire batches
+  // keep flushing on timeouts, so a bare rAF await would park one nudge
+  // chain per append-bearing flush until the window is restored. Race a
+  // short timeout against the frame: the nudge is a cheap escape-aware
+  // re-check, so firing it on the timeout path while hidden is harmless,
+  // and each chain's lifetime stays bounded either way.
+  const HIDDEN_FRAME_FALLBACK_MS = 32;
+  function nextAnimationFrame(): Promise<void> {
+    return new Promise((resolve) => {
+      if (typeof requestAnimationFrame !== 'function') {
+        setTimeout(resolve, 0);
+        return;
+      }
+      let settled = false;
+      const settle = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutHandle);
+        cancelAnimationFrame(rafHandle);
+        resolve();
+      };
+      const rafHandle = requestAnimationFrame(settle);
+      const timeoutHandle = setTimeout(settle, HIDDEN_FRAME_FALLBACK_MS);
+    });
+  }
+
+  /**
+   * Arm the structural-append spring and schedule its follow-up nudge.
+   * The pane data layer is the sole owner of this decision; the two call
+   * sites are `applyProviderItemUpserts` (a wire append to the loaded
+   * tail) and `recomputeRevealPass` (the reveal gate releasing withheld
+   * rows). Scroll writes still belong to the controller — the pane only
+   * talks to the registered `PaneScrollController` surface, the same
+   * seam the `scrollToItemRequest` intent publishes through when a
+   * scroll needs virtualizer index resolution.
+   *
+   * The arm runs synchronously with the data change — strictly before the
+   * Svelte flush in which the virtualizer measures the new/released rows
+   * and delivers their geometry — so the growth itself is spring-eligible,
+   * not just the remeasure that follows it. An effect-based arm loses that
+   * ordering race (bug-report-20260702T193212Z).
+   *
+   * The nudge (observe('live-content') after flush + one frame) re-checks
+   * the bottom once the DOM has settled. A thinking row tail-pins its
+   * clipped body internally, so its visible movement often does not grow
+   * the outer timeline row; when the next top-level row mounts, contentRO
+   * timing alone can miss the first bottom target, especially with
+   * Streamdown's async markdown layout still growing the row.
+   * 'live-content' honors spring mode / the just-armed structural window
+   * and is escape-aware, so a user scrolled away is never yanked.
+   *
+   * Gates, shared by every caller:
+   * - `loading`: the whole switch+load settle is a restore, not an
+   *   in-turn append (bug-report-20260622T041049Z class); the warm gate
+   *   independently pins the post-restore settle.
+   * - discussion surface: those panes swap the chat timeline for
+   *   ChannelView, which attaches ITS OWN controller here; timeline item
+   *   changes render nothing, and arming would open a 250ms spring
+   *   window on unrelated channel-message growth.
+   */
+  function armStructuralSpring(): void {
+    const controller = scrollController;
+    if (!controller) return;
+    if (loading) return;
+    if (threadUsesDiscussionSurface(thread)) return;
+    controller.markStructuralContentPending();
+    const token = ++structuralNudgeToken;
+    const generation = switchGeneration;
+    void (async () => {
+      await tick();
+      await nextAnimationFrame();
+      if (token !== structuralNudgeToken) return;
+      if (generation !== switchGeneration) return;
+      if (scrollController !== controller) return;
+      controller.observe('live-content');
+    })();
+  }
 
   function rebuildItemIndexes(nextItems: Item[]): void {
     itemIndexById.clear();
@@ -1165,6 +1251,38 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     return a.turnIndex === b.turnIndex && a.itemIndex === b.itemIndex;
   }
 
+  // A boundary change RELEASES rows only when it moves forward past rows
+  // that still exist. An advance to a later frontier always newly reveals
+  // that frontier row. A gate drop releases whatever top-level rows sit
+  // after the old frontier — nothing, when the drop came from the lone
+  // streaming row draining, or from a removal that truncated the tail
+  // (revert-on-interrupt drops both frontier and withheld successor in
+  // one call), where arming would open a phantom spring window over a
+  // SHRINKING timeline. A retreat (a replay delta re-creating a smoother
+  // for an earlier row) only withholds and never releases. Evaluated
+  // against CURRENT items, not previous-pass state, so removal-driven
+  // recomputes can't arm off a stale successor observation.
+  function boundaryChangeReleasesRows(
+    prev: RevealBoundary,
+    next: RevealBoundary | null,
+  ): boolean {
+    if (next !== null) {
+      return next.turnIndex > prev.turnIndex
+        || (next.turnIndex === prev.turnIndex && next.itemIndex > prev.itemIndex);
+    }
+    // Gate dropped: released rows exist iff a top-level row sits after the
+    // old frontier. `items` is sorted by (turnIndex, itemIndex) and the
+    // tail row is usually top-level, so the backward scan is O(1) in
+    // practice.
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i];
+      if (item.parentId) continue;
+      return item.turnIndex > prev.turnIndex
+        || (item.turnIndex === prev.turnIndex && item.itemIndex > prev.itemIndex);
+    }
+    return false;
+  }
+
   /**
    * Reveal sequencer. Recomputes the reveal frontier from current smoother
    * state and (turnIndex, itemIndex) order, then:
@@ -1273,7 +1391,23 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     const next: RevealBoundary | null = frontier
       ? { turnIndex: frontier.turnIndex, itemIndex: frontier.itemIndex }
       : null;
-    if (!sameBoundary(revealBoundary, next)) revealBoundary = next;
+    const prev = revealBoundary;
+    if (!sameBoundary(prev, next)) {
+      revealBoundary = next;
+      // A boundary change that releases withheld rows mounts them via
+      // MessageTimeline's reveal slice — rows already in `pane.items`, so
+      // no wire upsert lands in that flush and `applyProviderItemUpserts`'s
+      // arm never sees it. Arm the structural-append spring here,
+      // synchronously with the release. `prev !== null` skips the gate
+      // ENGAGING (which only withholds); `boundaryChangeReleasesRows`
+      // skips drops that mount nothing (lone row drained, tail removed).
+      // In practice the latch is usually spring-fresh here (onReveal
+      // stamps every revealed frame), so this mostly matters for releases
+      // landing after a >500ms reveal gap.
+      if (prev !== null && boundaryChangeReleasesRows(prev, next)) {
+        armStructuralSpring();
+      }
+    }
   }
 
   // The payload-expansion namespace a reasoning-tail row reads from, matched by
@@ -2641,7 +2775,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       disposeAllSmoothers();
       // Clearing to empty: drop the live-content stamp too (see
       // installCacheOrFreshState — keeps a stale stamp from springing the
-      // next thread's settled content).
+      // next thread's settled content). The switchGeneration bump below
+      // also cancels any in-flight structural nudge.
       lastLiveContentAt = 0;
       pendingInteractiveState.clear();
       contextWindow = null;
@@ -3245,21 +3380,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     ): ApplyItemUpsertsToWindowResult | null {
       const applied = upsertItemsBatch(incoming);
       // A wire append to the loaded tail arms the structural-append
-      // spring HERE — synchronously, before the Svelte flush in which the
-      // virtualizer measures the new row and delivers its geometry — so
-      // the append's own growth is spring-eligible, not just the
-      // remeasure that follows it. MessageTimeline's signature effect
-      // also arms, but it (a) runs as an effect and can lose the race
-      // against same-flush geometry delivery, and (b) is gated on an
-      // active turn, so appends after turn end (interrupt echo,
-      // force-closed tool rows) never armed and landed as instant
-      // whole-viewport teleports (bug-report-20260702T193212Z).
-      // `!loading` mirrors that effect's restore gating: mid-switch
-      // slice loads must not arm (the warm gate independently pins the
-      // post-restore settle). Optimistic-send rows route through
-      // `upsertItems` above, deliberately outside this arm.
-      if (applied && applied.appendedItems.length > 0 && !loading) {
-        scrollController?.markStructuralContentPending();
+      // spring and its follow-up nudge (see `armStructuralSpring`, which
+      // also owns the loading/discussion gates). Turn-state-independent,
+      // so appends after turn end (interrupt echo, force-closed tool
+      // rows) arm too — an effect keyed on the active turn never saw
+      // those and they landed as instant whole-viewport teleports
+      // (bug-report-20260702T193212Z). Optimistic-send and
+      // rollback-restore rows route through `upsertItems` above,
+      // deliberately outside this arm.
+      if (applied && applied.appendedItems.length > 0) {
+        armStructuralSpring();
       }
       return applied;
     },

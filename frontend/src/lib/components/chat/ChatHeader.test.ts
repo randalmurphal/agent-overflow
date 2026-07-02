@@ -89,7 +89,7 @@ async function buildPane(thread: Thread = makeThread()) {
   }));
   const pane = createThreadPane();
   await pane.switchThread(thread);
-  getAllPanes().set('main', pane);
+  registerPaneForTest('main', pane);
   return pane;
 }
 

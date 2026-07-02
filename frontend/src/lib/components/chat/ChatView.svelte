@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { threadUsesDiscussionSurface } from '../../stores/threadPaneShared';
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
@@ -323,9 +324,7 @@
     scheduleDomUiTrace('chat', 'chat.dom', () => snapshotChatDomForTrace(chatRoot));
   });
 
-  let inDiscussionMode = $derived(
-    !!pane.thread && pane.thread.mode === 'discussion' && !!pane.thread.discussionId,
-  );
+  let inDiscussionMode = $derived(threadUsesDiscussionSurface(pane.thread));
   let inDesignMode = $derived(
     !!pane.thread && pane.thread.mode === 'design',
   );
