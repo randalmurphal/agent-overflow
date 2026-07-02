@@ -3,12 +3,12 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ShipChangesDrawer from './ShipChangesDrawer.svelte';
 import { createShipChangesState } from '../../stores/shipChanges.svelte';
-import { createThreadPane } from '../../stores/thread.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import type { GitActionResult, GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 // Element.animate shim for jsdom — Svelte transitions poke at it on mount.
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -41,24 +41,13 @@ function status(overrides: Partial<GitStatus> = {}): GitStatus {
 }
 
 async function buildPane() {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
-  const pane = createThreadPane();
-  // Seed threadId via the internal switchThread fake.
-  await pane.switchThread({
+  return buildRegisteredPane(makeBaseThread({
     id: 't-1',
     title: 't',
-    provider: 'claude',
     workspacePath: '',
     projectPath: '',
     model: 'm',
-    mode: 'chat',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
-  });
-  return pane;
+  }));
 }
 
 async function flush(n = 6): Promise<void> {

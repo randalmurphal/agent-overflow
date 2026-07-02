@@ -1,12 +1,11 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import DiscussionStartFlow from './DiscussionStartFlow.svelte';
-import { createThreadPane } from '../../stores/thread.svelte';
-import { registerPaneForTest } from '../../stores/panes.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import type { Thread } from '../../types/models';
 import type { DiscussionDefinition } from '../../types/discussion';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 // Stub Element.animate so Svelte transitions in the modal don't throw.
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -21,19 +20,13 @@ if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
 }
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
+  return makeBaseThread({
     id: 'parent',
     title: 'Candidate thread',
-    provider: 'claude',
     workspacePath: '/workspace',
     projectPath: '/project',
-    mode: 'chat',
-    model: 'claude-sonnet-4-6',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 function makeDef(overrides: Partial<DiscussionDefinition> = {}): DiscussionDefinition {
@@ -55,13 +48,7 @@ function makeDef(overrides: Partial<DiscussionDefinition> = {}): DiscussionDefin
 }
 
 async function buildPane(thread = makeThread()) {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
-  const pane = createThreadPane();
-  await pane.switchThread(thread);
-  registerPaneForTest('main', pane);
-  return pane;
+  return buildRegisteredPane(thread);
 }
 
 describe('<DiscussionStartFlow>', () => {

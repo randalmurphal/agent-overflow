@@ -1,11 +1,11 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import DesignPreviewPanel from './DesignPreviewPanel.svelte';
-import { createThreadPane } from '../../stores/thread.svelte';
 import { makePanelContext } from '../../stores/rhsPanelSlot.svelte';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { DESIGN_RELOAD_MAIN_EVENT } from '../../stores/events';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 // Mock the iframe-capture round-trip so tests don't need a real layout
 // engine. Only one helper is involved now: requestIframeCapture returns
@@ -30,30 +30,19 @@ if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
 }
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: 'thread-1',
+  return makeBaseThread({
     title: 'Design thread',
-    provider: 'claude',
     workspacePath: '/tmp',
     projectPath: '/tmp',
     projectId: 'proj-design',
     mode: 'design',
-    model: 'claude-sonnet-4-6',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 async function buildPane() {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   setBindingMock('EnsureDesignWorkdir', async () => {});
-  const pane = createThreadPane();
-  await pane.switchThread(makeThread());
-  return pane;
+  return buildRegisteredPane(makeThread());
 }
 
 // Wait for the EnsureDesignWorkdir effect to resolve and the iframe

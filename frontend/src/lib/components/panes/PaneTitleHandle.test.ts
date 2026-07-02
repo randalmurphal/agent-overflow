@@ -10,36 +10,24 @@ import { tick } from 'svelte';
 import PaneTitleHandle from './PaneTitleHandle.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { resetProjectsForTest } from '../../stores/projects.svelte';
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: 'thread-1',
+  return makeBaseThread({
     title: 'Title',
-    provider: 'claude',
     workspacePath: '/tmp/ws',
     projectPath: '/tmp/proj',
     projectId: 'project-1',
-    mode: 'chat',
-    model: 'claude-sonnet-4-6',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 async function buildPane(thread: Thread = makeThread(), paneId = 'main') {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
-  const pane = createThreadPane({ paneId });
-  await pane.switchThread(thread);
-  registerPaneForTest(paneId, pane);
-  return pane;
+  return buildRegisteredPane(thread, [], paneId);
 }
 
 describe('<PaneTitleHandle>', () => {

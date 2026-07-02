@@ -28,6 +28,7 @@ import {
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { openTerminalThread } from '../../stores/threadCreation.svelte';
 import type { Project, Thread } from '../../types/models';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 // The terminal button's ctrl/cmd-click opens a fresh terminal pane via
 // openTerminalThread; stub it so the gesture can be asserted without standing
@@ -53,26 +54,16 @@ beforeAll(() => {
 });
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: 'thread-1',
+  return makeBaseThread({
     title: 'My awesome thread',
-    provider: 'claude',
     workspacePath: '/tmp/ws',
     projectPath: '/tmp/proj',
     projectId: 'project-1',
-    mode: 'chat',
-    model: 'claude-sonnet-4-6',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 async function buildPane(thread: Thread = makeThread()) {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   // GitActionsControl calls GetGitStatus on mount; keep it a no-repo
   // so that component renders nothing and doesn't distract the tests.
   setBindingMock('GetGitStatus', async () => ({
@@ -87,10 +78,7 @@ async function buildPane(thread: Thread = makeThread()) {
     dirty: false,
     files: [],
   }));
-  const pane = createThreadPane();
-  await pane.switchThread(thread);
-  registerPaneForTest('main', pane);
-  return pane;
+  return buildRegisteredPane(thread);
 }
 
 describe('<ChatHeader>', () => {

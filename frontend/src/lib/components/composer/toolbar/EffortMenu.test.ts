@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/svelte";
 
 import EffortMenu from "./EffortMenu.svelte";
-import { createThreadPane } from "../../../stores/thread.svelte";
 import type { Thread } from "../../../types/models";
 import {
   getBindingMock,
@@ -14,38 +13,24 @@ import {
   invalidateProviderModels,
   resetProviderModelsForTest,
 } from "../../../stores/providerModels.svelte";
+import {
+  buildPane as buildRegisteredPane,
+  makeThread as makeBaseThread,
+} from "../../../../test/helpers/chat";
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: "thread-1",
-    title: "Test",
-    provider: "claude",
+  return makeBaseThread({
     workspacePath: "/tmp",
     projectPath: "/tmp",
-    mode: "chat",
-    model: "claude-sonnet-4-6",
     reasoningEffort: "high",
     fastMode: false,
     contextWindow: 1000000,
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 async function buildPane(thread: Thread) {
-  setBindingMock("SwitchThread", async () => thread);
-  setBindingMock("ListRecentThreadItems", async () => ({
-    items: [],
-    oldestTurnIndex: -1,
-    hasMore: false,
-  }));
-  setBindingMock("ListRecentTurns", async () => []);
-  setBindingMock("ListPayloadMetas", async () => []);
-  const pane = createThreadPane();
-  await pane.switchThread(thread);
-  return pane;
+  return buildRegisteredPane(thread);
 }
 
 function triggerText(getByTestId: (id: string) => HTMLElement): string {

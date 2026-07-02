@@ -13,6 +13,7 @@ import {
   resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -28,46 +29,16 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 }
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: 'thread-1',
-    title: 'Test',
-    provider: 'claude',
+  return makeBaseThread({
     workspacePath: '/repo',
     projectPath: '/repo',
     projectId: 'project-1',
-    mode: 'chat',
-    model: 'claude-sonnet-4-6',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 async function buildPane(thread: Thread) {
-  setBindingMock('SwitchThread', async () => thread);
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  setBindingMock('ListThreadSliceAround', async () => ({
-    items: [],
-    oldestTurnIndex: -1,
-    hasMore: false,
-  }));
-  setBindingMock('ListPendingInteractiveRequests', async () => ({
-    approvals: [],
-    userInputs: [],
-  }));
-  setBindingMock('GetThreadLiveState', async (threadId: string) => ({
-    threadId,
-    activeTurn: null,
-    queueItems: [],
-    interactive: { approvals: [], userInputs: [] },
-    todo: null,
-  }));
-  setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListThreadCheckpoints', async () => []);
-  setBindingMock('AutoResumeThread', async () => null);
   // ThreadModePicker fetches fresh defaults via GetThreadDefaults
   // before swapping the placeholder so the new mode picks up the
   // seeded model / branch / effort. Tests mock a stable payload so
@@ -82,9 +53,7 @@ async function buildPane(thread: Thread) {
     branch: 'main',
     workspacePath: '/repo',
   }));
-  const pane = createThreadPane();
-  await pane.switchThread(thread);
-  return pane;
+  return buildRegisteredPane(thread);
 }
 
 describe('<ThreadModePicker>', () => {

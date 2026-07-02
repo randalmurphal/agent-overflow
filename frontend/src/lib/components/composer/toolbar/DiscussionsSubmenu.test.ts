@@ -8,8 +8,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import DiscussionsSubmenu from './DiscussionsSubmenu.svelte';
-import { createThreadPane } from '../../../stores/thread.svelte';
-import { registerPaneForTest } from '../../../stores/panes.svelte';
 import type { Thread } from '../../../types/models';
 import type { DiscussionDefinition } from '../../../types/discussion';
 import {
@@ -17,31 +15,18 @@ import {
   resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: 'thread-1',
-    title: 'Test',
-    provider: 'claude',
+  return makeBaseThread({
     workspacePath: '/tmp',
     projectPath: '/tmp',
-    mode: 'chat',
-    model: 'claude-sonnet-4-6',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 async function buildPane(thread: Thread) {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
-  const pane = createThreadPane();
-  await pane.switchThread(thread);
-  registerPaneForTest('main', pane);
-  return pane;
+  return buildRegisteredPane(thread);
 }
 
 // Minimal stub; only id/name/scope are read by the component under test.

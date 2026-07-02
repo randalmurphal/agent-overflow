@@ -16,22 +16,16 @@ import {
   setThreadEnvMode,
   worktreeIntentForThread,
 } from '../../../stores/worktreeIntent.svelte';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 
 function makeThread(branch: string, overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: 'thread-1',
-    title: 'Test',
-    provider: 'claude',
+  return makeBaseThread({
     workspacePath: '/repo',
     projectPath: '/repo',
-    mode: 'chat',
     model: 'm',
     branch,
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 function makeProject(overrides: Partial<Project> = {}): Project {
@@ -48,13 +42,8 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 }
 
 async function buildPane(branch: string, overrides: Partial<Thread> = {}) {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  const pane = createThreadPane();
-  await pane.switchThread(makeThread(branch, overrides));
-  return pane;
+  return buildRegisteredPane(makeThread(branch, overrides));
 }
 
 function buildPlaceholderPane(branch = 'main') {

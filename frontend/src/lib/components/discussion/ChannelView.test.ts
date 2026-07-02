@@ -2,12 +2,12 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChannelView from './ChannelView.svelte';
-import { createThreadPane } from '../../stores/thread.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import type { ChannelMessage } from '../../types/discussion';
 import type { Thread } from '../../types/models';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 // Stub Element.animate for Svelte transitions (reused by Markdown's nested components).
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -60,19 +60,14 @@ class FireableResizeObserver {
 }
 
 function makeThread(): Thread {
-  return {
+  return makeBaseThread({
     id: 'parent-thread',
     title: 'Deliberation',
-    provider: 'claude',
     workspacePath: '/tmp',
     projectPath: '/tmp',
     mode: 'discussion',
     discussionId: 'channel-1',
-    model: 'claude-sonnet-4-6',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
-  };
+  });
 }
 
 function makeMsg(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
@@ -90,12 +85,7 @@ function makeMsg(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
 }
 
 async function buildPane(thread = makeThread()) {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
-  const pane = createThreadPane();
-  await pane.switchThread(thread);
-  return pane;
+  return buildRegisteredPane(thread);
 }
 
 describe('<ChannelView>', () => {

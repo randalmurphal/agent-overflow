@@ -287,29 +287,17 @@ describe('Pause-lease integration with the real controller', () => {
     // fires.
     resetScrollIntentModuleStateForTest();
 
-    // Seed every binding switchThread fans out to. Without these,
-    // switchThread's catch-and-console.error paths would noisily pollute
-    // the test output and mask real regressions.
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
-    setBindingMock('SwitchThread', async () => {});
-    setBindingMock('ListItems', async () => []);
-    setBindingMock('ListPayloadMetas', async () => []);
-    setBindingMock('ListRecentThreadItems', async () => ({
-      items: [], oldestTurnIndex: -1, hasMore: false,
-    }));
-    setBindingMock('ListRecentTurns', async () => []);
-    setBindingMock('MarkThreadRead', async () => {});
-    setBindingMock('MarkThreadUnread', async () => {});
+    // installPaneMocks (via buildPane) seeds every binding switchThread
+    // fans out to. Without these, switchThread's catch-and-console.error
+    // paths would noisily pollute the test output and mask real regressions.
     setBindingMock('GetChannelMessages', async () => []);
 
-    const { createThreadPane } = await import('../../stores/thread.svelte');
-    const pane = createThreadPane();
-    await pane.switchThread({
-      id: 'parent', title: 't', provider: 'claude', workspacePath: '/', projectPath: '/',
-      mode: 'discussion', discussionId: 'channel-1', model: 'claude-sonnet-4-6',
-      createdAt: 0, updatedAt: 0, archived: false,
-    });
+    const pane = await buildPane(makeThread({
+      id: 'parent', title: 't', workspacePath: '/', projectPath: '/',
+      mode: 'discussion', discussionId: 'channel-1',
+    }));
 
     // Capture every RO so we can fire the controller's content RO
     // explicitly. happy-dom's native RO doesn't fire on stub geometry.

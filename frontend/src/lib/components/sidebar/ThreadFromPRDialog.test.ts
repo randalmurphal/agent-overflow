@@ -6,6 +6,7 @@ import { createThreadPane } from '../../stores/thread.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { installPaneMocks } from '../../../test/helpers/chat';
 
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
   (Element.prototype as unknown as { animate: unknown }).animate = function () {
@@ -18,10 +19,13 @@ if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
   };
 }
 
+// Deliberately does NOT switch the pane to a thread — several tests below
+// assert `pane.thread` stays null until CreateThreadFromPR's success path
+// calls openThreadInPane. installPaneMocks still installs the full binding
+// set so any code path this dialog reaches (openThreadInPane -> switchThread)
+// has mocks in place, without pre-seeding pane.thread here.
 async function buildPane() {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
+  installPaneMocks([]);
   const pane = createThreadPane();
   return pane;
 }

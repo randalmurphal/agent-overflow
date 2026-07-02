@@ -25,7 +25,7 @@ import {
 } from '../../stores/paneLayout.svelte';
 import { setPaneDensityMode } from '../../stores/paneDensity.svelte';
 import { resetSettingsForTest } from '../../stores/settings.svelte';
-import { makeThread } from '../../../test/helpers/chat';
+import { installThreadSwitchMocks, makeThread } from '../../../test/helpers/chat';
 import { prependThread } from '../../stores/threads.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
@@ -101,21 +101,6 @@ describe('PaneHost', () => {
     resetPaneLayoutForTest();
     resetSettingsForTest();
   });
-
-  function installThreadSwitchMocks(thread = makeThread()): void {
-    setBindingMock('SwitchThread', async () => thread);
-    setBindingMock('ListRecentThreadItems', async () => ({
-      items: [], oldestTurnIndex: -1, hasMore: false,
-    }));
-    setBindingMock('ListThreadSliceAround', async () => ({
-      items: [], oldestTurnIndex: -1, hasMore: false,
-    }));
-    setBindingMock('ListRecentTurns', async () => []);
-    setBindingMock('ListThreadCheckpoints', async () => []);
-    setBindingMock('GetThreadLiveState', async () => null);
-    setBindingMock('ListPendingInteractiveRequests', async () => null);
-    setBindingMock('AutoResumeThread', async () => {});
-  }
 
   function threadDataTransfer(threadId: string, title = 'Dragged'): DataTransfer {
     return {

@@ -1,34 +1,24 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import DesignOptionsPanel from './DesignOptionsPanel.svelte';
-import { createThreadPane } from '../../stores/thread.svelte';
 import { makePanelContext } from '../../stores/rhsPanelSlot.svelte';
 import type { Thread } from '../../types/models';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: 'thread-1',
+  return makeBaseThread({
     title: 'Design thread',
-    provider: 'claude',
     workspacePath: '/tmp',
     projectPath: '/tmp',
     projectId: 'proj-design',
     mode: 'design',
-    model: 'claude-sonnet-4-6',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 async function buildPane() {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
-  const pane = createThreadPane();
-  await pane.switchThread(makeThread());
+  const pane = await buildRegisteredPane(makeThread());
   pane.setActiveOptionSet({
     setId: 'set-1',
     optionPaths: ['options/set-1/alpha', 'options/set-1/beta/'],

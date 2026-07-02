@@ -118,6 +118,16 @@ export function installPaneMocks(items: Item[] = []): void {
   }
 }
 
+// For tests that call `pane.switchThread(...)` mid-test (as opposed to the
+// initial load that `buildPane` performs) and today hand-roll the
+// switch-leg mocks inline. Installs the full binding-mock set via
+// `installPaneMocks`, then overrides `SwitchThread` to resolve `thread` so
+// the mid-test switch lands on it.
+export function installThreadSwitchMocks(thread: Thread, items: Item[] = []): void {
+  installPaneMocks(items);
+  setBindingMock('SwitchThread', async () => thread);
+}
+
 export async function buildPane(
   thread: Thread = makeThread(),
   items: Item[] = [],

@@ -2,12 +2,12 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import GitActionsControl from './GitActionsControl.svelte';
-import { createThreadPane } from '../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { resetPanesForTest } from '../../stores/panes.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 // GitActionsControl is now a pure consumer of the pane-owned gitStatus slot —
 // it owns no subscription. The slot's subscribe / retry / branch-persist /
@@ -36,19 +36,12 @@ if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
 }
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: 'thread-1',
+  return makeBaseThread({
     title: 'Example',
-    provider: 'claude',
     workspacePath: '/workspace',
     projectPath: '/workspace',
-    model: 'claude-sonnet-4-6',
-    mode: 'chat',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 function status(overrides: Partial<GitStatus> = {}): GitStatus {
@@ -70,15 +63,7 @@ function status(overrides: Partial<GitStatus> = {}): GitStatus {
 }
 
 async function buildPane(thread = makeThread()) {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
-  setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListThreadCheckpoints', async () => []);
-  const pane = createThreadPane();
-  await pane.switchThread(thread);
-  registerPaneForTest(pane.paneId, pane);
-  return pane;
+  return buildRegisteredPane(thread);
 }
 
 async function flush(n = 8): Promise<void> {

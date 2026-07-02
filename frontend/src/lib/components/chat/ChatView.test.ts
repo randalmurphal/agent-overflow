@@ -23,7 +23,7 @@ import {
 } from '../../stores/threadStatuses.svelte';
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { makeItem } from '../../../test/helpers/chat';
+import { installPaneMocks, makeItem } from '../../../test/helpers/chat';
 import { resetLayoutMetricsForTest, setPaneWidth } from '../../stores/layoutMetrics.svelte';
 
 beforeAll(() => {
@@ -101,27 +101,14 @@ async function buildPane(
   items: Item[] = [],
   paneId = 'pane',
 ): Promise<ReturnType<typeof createThreadPane>> {
+  installPaneMocks(items);
+  // Shared installPaneMocks defaults SwitchThread to echo the passed-in
+  // id with a synthetic thread; ChatView's tests need the exact `thread`
+  // object (including caller overrides) back on switch.
   setBindingMock('SwitchThread', async () => thread);
-  // ChatView's auto-mark-read $effect fires on every pane.thread change.
-  setBindingMock('MarkThreadRead', async () => {});
-  setBindingMock('MarkThreadUnread', async () => {});
-  setBindingMock('ListItems', async () => items);
-  setBindingMock('ListThreadSliceAround', async () => ({
-    items,
-    oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
-    hasMore: false,
-  }));
-  setBindingMock('ListRecentThreadItems', async () => ({
-    items,
-    oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
-    hasMore: false,
-  }));
-  setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   // Thread-wide aggregate bindings — PlanSidebar / ActivityRail fetch
   // these on mount. Default to empty; tests that need a populated rail
   // override these before rendering.
-  setBindingMock('ListThreadProposedPlans', async () => []);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('CountRunningBackgroundTasks', async () => 0);
   // GitActionsControl calls GetGitStatus on mount; return "not a repo"
@@ -143,7 +130,6 @@ async function buildPane(
   mockDrafts(new Map([[thread.id, '']]));
   setBindingMock('SaveDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);
-  setBindingMock('ListThreadCheckpoints', async () => []);
 
   const pane = createThreadPane({ paneId });
   // ChatView's read-mark + attention-clear effects are now gated on

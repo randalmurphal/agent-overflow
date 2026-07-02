@@ -11,21 +11,15 @@ import {
 } from '../../../../test/mocks/bindings-app';
 import { resetForTest as resetWorktreeIntent } from '../../../stores/worktreeIntent.svelte';
 import type { WorkspaceChangeLockState } from '../../../stores/workspaceChangeLock.svelte';
+import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: 'thread-1',
-    title: 'Test',
-    provider: 'claude',
+  return makeBaseThread({
     workspacePath: '/repo',
     projectPath: '/repo',
-    mode: 'chat',
     model: 'm',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 function makeProject(overrides: Partial<Project> = {}): Project {
@@ -42,13 +36,8 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 }
 
 async function buildPane(thread: Thread) {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
-  const pane = createThreadPane();
-  await pane.switchThread(thread);
-  return pane;
+  return buildRegisteredPane(thread);
 }
 
 function buildPlaceholderPane() {

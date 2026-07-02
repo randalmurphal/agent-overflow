@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import ModelProviderMenu from './ModelProviderMenu.svelte';
-import { createThreadPane } from '../../../stores/thread.svelte';
 import { loadSettings, resetSettingsForTest } from '../../../stores/settings.svelte';
 import type { Item, Thread } from '../../../types/models';
 import {
@@ -11,54 +10,31 @@ import {
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../../test/helpers/settings';
+import {
+  buildPane as buildRegisteredPane,
+  makeItem as makeBaseItem,
+  makeThread as makeBaseThread,
+} from '../../../../test/helpers/chat';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: 'thread-1',
-    title: 'Test',
-    provider: 'claude',
+  return makeBaseThread({
     workspacePath: '/tmp',
     projectPath: '/tmp',
-    mode: 'chat',
-    model: 'claude-sonnet-4-6',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 function makeItem(overrides: Partial<Item> = {}): Item {
-  return {
-    id: 'item-1',
-    threadId: 'thread-1',
+  return makeBaseItem({
     turnIndex: 1,
-    itemIndex: 0,
     kind: 'user_text',
     role: 'user',
-    status: 'completed',
-    summary: 'hello',
-    createdAt: 0,
-    updatedAt: 0,
     ...overrides,
-  };
+  });
 }
 
 async function buildPane(thread: Thread, items: Item[] = []) {
-  setBindingMock('SwitchThread', async () => thread);
-  // ListThreadSliceAround is the binding switchThread actually calls;
-  // returning a populated `items` array is how we simulate a "used" thread
-  // (one with persisted history) without spinning a backend.
-  setBindingMock('ListThreadSliceAround', async () => ({
-    items,
-    oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
-    hasMore: false,
-  }));
-  setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
-  const pane = createThreadPane();
-  await pane.switchThread(thread);
-  return pane;
+  return buildRegisteredPane(thread, items);
 }
 
 describe('<ModelProviderMenu>', () => {
