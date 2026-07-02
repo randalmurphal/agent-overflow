@@ -89,11 +89,22 @@ var ClaudeModels = []ModelInfo{
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
 	},
 	{
+		Slug:             "claude-sonnet-5",
+		Name:             "Claude Sonnet 5",
+		Provider:         "claude",
+		ContextWindows:   claudeExtendedContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
+	},
+	{
+		// The claude binary's picker offers xhigh for Sonnet 4.6, but the
+		// API capability table lacks xhigh_effort for it — selecting xhigh
+		// silently downgrades to high. Expose only efforts the API honors:
+		// low→high plus max.
 		Slug:             "claude-sonnet-4-6",
 		Name:             "Claude Sonnet 4.6",
 		Provider:         "claude",
 		ContextWindows:   claudeExtendedContextOptions(),
-		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh),
+		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
 	},
 	{
 		Slug:             "claude-haiku-4-5",
@@ -224,7 +235,9 @@ func NormalizeModelSlug(providerName, model string) string {
 			return "claude-opus-4-7"
 		case "opus-4.6", "claude-opus-4.6":
 			return "claude-opus-4-6"
-		case "sonnet", "sonnet-4.6", "claude-sonnet-4.6":
+		case "sonnet", "sonnet-5":
+			return "claude-sonnet-5"
+		case "sonnet-4.6", "claude-sonnet-4.6":
 			return "claude-sonnet-4-6"
 		case "haiku", "haiku-4.5", "claude-haiku-4.5", "claude-haiku-4-5-20251001":
 			return "claude-haiku-4-5"

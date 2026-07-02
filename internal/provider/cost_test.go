@@ -24,6 +24,23 @@ func TestCalculateCost_ClaudeSonnet(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_ClaudeSonnet5IntroPricing(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:              1_000_000,
+		OutputTokens:             500_000,
+		CacheCreationInputTokens: 1_000_000,
+		CacheReadInputTokens:     1_000_000,
+	}
+	// claude-sonnet-5 has an exact-match introductory entry (through
+	// 2026-08-31) that must win over the claude-sonnet family price:
+	// 1M * $2.00 + 0.5M * $10.00 + 1M * $2.50 + 1M * $0.20 = 9.70.
+	want := 9.70
+	got := CalculateCost("claude-sonnet-5", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(claude-sonnet-5) = %f, want %f", got, want)
+	}
+}
+
 func TestCalculateCost_ClaudeFable(t *testing.T) {
 	usage := TokenUsage{
 		InputTokens:              1_000_000,
@@ -225,6 +242,19 @@ func TestMatchPricing_DottedVersionFallback(t *testing.T) {
 	}
 	if p.InputPerMToken != 1.25 {
 		t.Errorf("InputPerMToken = %f, want 1.25", p.InputPerMToken)
+	}
+}
+
+func TestMatchPricing_StripsContextTierMarker(t *testing.T) {
+	// 1M-context sessions carry a "[1m]" wire suffix; it must be dropped
+	// so exact per-version entries still match (long context bills at
+	// standard per-token rates).
+	p, ok := matchPricing("claude-sonnet-5[1m]")
+	if !ok {
+		t.Fatal("expected match for claude-sonnet-5[1m]")
+	}
+	if p.InputPerMToken != 2.00 {
+		t.Errorf("InputPerMToken = %f, want 2.00 (exact claude-sonnet-5 entry)", p.InputPerMToken)
 	}
 }
 
