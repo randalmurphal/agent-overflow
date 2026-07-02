@@ -2,11 +2,11 @@
 // thread switches, and the live per-row estimate resolver the engine uses
 // for unmeasured rows.
 //
-// Persistence carries the proven design of utils/threadVirtuaSizeCache.ts
-// (which phase V3 deletes): an LRU of measured-size snapshots keyed by
-// {width, structureSig, expansionSig}, where a mismatch on ANY dimension
-// refuses the snapshot. The key is why priors can never mis-place rows
-// from stale data:
+// Persistence carries the proven design of the virtua-era
+// threadVirtuaSizeCache (deleted with virtua in V3): an LRU of
+// measured-size snapshots keyed by {width, structureSig, expansionSig},
+// where a mismatch on ANY dimension refuses the snapshot. The key is why
+// priors can never mis-place rows from stale data:
 //
 //   - width        : the wrap point — a narrower/wider pane changes every
 //                    multi-line row's height, so it is a key miss.
@@ -23,13 +23,25 @@
 // degrades per-row to the kind estimate or flat default — and measured
 // sizes always win over any prior (plan §2 Priors, §8 D2).
 //
-// The known residual is inherited unchanged: display settings (fontSize,
-// sansFont, monoFont, collapseDiffPreviews) are deliberately NOT keyed —
-// a stale replay degrades to the measure-and-correct path that the warm
-// gate already masks, exactly like a cold first visit. If keying them
-// ever becomes necessary, add ONE display-settings dimension covering all
-// four, not a subset (see the threadVirtuaSizeCache.ts header for the
-// full rationale until V3 folds it in here).
+// KNOWN RESIDUAL — display settings are NOT keyed. Four global settings
+// change a timeline row's height at constant width/structure/expansion:
+// `fontSize` (a root font-scale on <html>, so it rescales every row),
+// `sansFont` and `monoFont` (typeface metrics shift line heights at a
+// fixed width), and `collapseDiffPreviews` (the default expand/collapse
+// of an un-overridden inline diff card — DiffFileBlock). Toggling one
+// mid-session and then revisiting a thread can replay sizes measured
+// under the old setting. This is deliberately tolerated rather than
+// keyed, because it is benign and self-correcting: a stale replay feeds
+// the engine wrong start heights, the per-row ResizeObserver corrects
+// them, and MessageTimeline's warm-up visibility gate hides that
+// cascade exactly as it hides a cold first visit — so the worst case
+// degrades to first-visit behavior, never a crash or a stuck viewport.
+// The benefit of keying them is therefore invisible (same masked
+// cascade either way), while a partial display-settings key would
+// silently regress the day a new height-affecting setting is added and
+// not threaded through it. If it must become airtight, add ONE
+// display-settings dimension — covering all four — here AND in
+// MessageTimeline's currentSizePriorsKey, not a subset.
 
 import { UNMEASURED } from './sizes';
 import type { RowEstimate } from './types';

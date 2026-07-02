@@ -528,7 +528,7 @@ describe('groupItemsBySubagent', () => {
       // Invariant: in the [a, b] frame (b) is folded into the wait_group as its
       // `completion` (NOT a top-level leaf), and the top-level key SET is
       // identical to the settled [a, b, c] frame — no row appears-then-vanishes,
-      // so virtua never drops/remounts a top-level row and there is no flash.
+      // so the virtualizer never drops/remounts a top-level row and there is no flash.
       const carrier = mkItem({
         id: 'wait-1', itemIndex: 0, kind: 'tool_call',
         toolName: 'wait_agent', status: 'completed', meta: codexWaitAgentMeta(),
@@ -566,8 +566,8 @@ describe('groupItemsBySubagent', () => {
       expect(settledGroup.completion?.id).toBe('complete-wait-1');
 
       // The anti-flash invariant: the top-level key SET is unchanged between the
-      // [a, b] and [a, b, c] frames — no key is inserted then removed, so virtua
-      // never drops/remounts a top-level row.
+      // [a, b] and [a, b, c] frames — no key is inserted then removed, so the
+      // virtualizer never drops/remounts a top-level row.
       const transientKeys = new Set(transient.map(timelineNodeKey));
       const settledKeys = new Set(settled.map(timelineNodeKey));
       expect(settledKeys).toEqual(transientKeys);

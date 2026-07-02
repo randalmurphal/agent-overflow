@@ -25,7 +25,7 @@ function snapshotsEqual(a: ScrollSnapshot | undefined, b: ScrollSnapshot): boole
 
 export function setThreadScrollSnapshot(threadId: string, snapshot: ScrollSnapshot): void {
   // No-op when the new value is identical to the existing record.
-  // Streaming writes one snapshot per virtua onscroll event during
+  // Streaming writes one snapshot per virtualizer onscroll event during
   // auto-follow at the bottom; without this guard, the LRU dance
   // (delete + set + size check) churns dozens of times per second
   // for no information gain.

@@ -75,11 +75,12 @@ describe('threadItemCache', () => {
     expect(got?.items[0].summary).toBe('a');
   });
 
-  it('returns the stored reference on get so virtua sees stable identity', () => {
+  it('returns the stored reference on get so the timeline sees stable identity', () => {
     // Contract: callers (the pane) treat the snapshot as immutable —
     // they reassign `items =` rather than mutating in place. Reusing
-    // the stored reference avoids a per-get O(n) clone and lets virtua
-    // skip per-row remeasurement when the same snapshot is read twice.
+    // the stored reference avoids a per-get O(n) clone and lets the
+    // virtualizer skip per-row remeasurement when the same snapshot is
+    // read twice.
     const cache = createThreadItemCache();
     cache.set('t1', makeSnapshot([makeItem('a')]));
 

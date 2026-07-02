@@ -798,11 +798,11 @@ describe('<MessageTimeline>', () => {
   });
 
   it('renders one wrapper per timeline node', async () => {
-    // Virtualization is owned by virtua/svelte (`<Virtualizer>`); in production,
-    // virtua mounts only the rows that fit the viewport plus an overscan
+    // Virtualization is owned by TimelineVirtualizer; in production, the
+    // engine mounts only the rows that fit the viewport plus an overscan
     // buffer. The test environment runs in happy-dom where all dimensions
-    // are 0, so virtua's bufferSize-based windowing would render zero
-    // rows; MessageTimeline switches virtua into ssrCount mode under
+    // are 0, so bufferSize-based windowing would render zero rows;
+    // MessageTimeline passes `renderAll` under
     // `import.meta.env.MODE === 'test'` so tests can assert on rendered
     // DOM. The contract verified here: every grouped node produces
     // exactly one `[data-testid="message-timeline-node"]` wrapper.
@@ -1198,7 +1198,7 @@ describe('<MessageTimeline>', () => {
       expect(dividers[1].querySelectorAll('span.h-px')).toHaveLength(2);
 
       // Pin the geometry contract: both branches share the same
-      // wrapper height class. Without this, virtua re-measures to a
+      // wrapper height class. Without this, the engine re-measures to a
       // different height when an intermediate divider promotes to
       // "final" on settle — exactly the bug the row contract forbids.
       for (const divider of dividers) {

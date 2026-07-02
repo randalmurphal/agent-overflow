@@ -21,7 +21,7 @@ export interface TimelineGeometry {
  * Lazy geometry predicate. Returns true when the viewport sits inside the
  * prefetch zone at the loading edge — near the top for an older-gate, near
  * the bottom for a newer-gate. The gate calls this LAST, only after the
- * cheap state gates pass, so the per-scroll-frame virtua index lookup it
+ * cheap state gates pass, so the per-scroll-frame engine index lookup it
  * performs stays off the hot path while the gate is disarmed, mid-load, or
  * already-attempted at the current floor.
  */
@@ -142,7 +142,7 @@ export function isPureKeyedHeadDrop(
  * Older edge: viewport within `offsetThreshold` px of the top AND the
  * topmost rendered row within the first `indexThreshold` nodes. The
  * `firstVisibleIndex` thunk is invoked only after the cheap offset
- * pre-check passes, keeping the virtua lookup off the hot path.
+ * pre-check passes, keeping the engine lookup off the hot path.
  */
 export function isWithinTopTriggerZone(
   offset: number,
@@ -181,7 +181,7 @@ export interface BottomEdgeGeometry {
  * function so the (sign-error-prone) arithmetic is unit-testable without a
  * live DOM — happy-dom reports zero geometry. `bottomProbeOffset` lands in
  * the composer padding past the last row at max scroll, which clamps the
- * virtua lookup to the final index (intended).
+ * engine lookup to the final index (intended).
  */
 export function bottomEdgeGeometry(
   scrollHeight: number,
@@ -265,7 +265,7 @@ export function createAutoLoadGate(): AutoLoadGate {
       // Progress guard: don't hammer the same query while the user lingers
       // at the edge if the previous attempt didn't move the floor cursor.
       if (!madeProgressSince(state.floorCursor)) return false;
-      // Expensive virtua geometry — deferred until the cheap gates pass.
+      // Expensive engine geometry — deferred until the cheap gates pass.
       if (!state.inTriggerZone()) return false;
       attemptedAtFloor = {
         turnIndex: state.floorCursor.turnIndex,

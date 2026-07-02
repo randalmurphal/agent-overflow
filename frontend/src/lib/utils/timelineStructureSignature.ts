@@ -5,8 +5,8 @@ import type { TimelineNode } from './subagentGrouping';
 // or row-UI expansion state — i.e. the STRUCTURE (which nodes, in what order,
 // how many) or a leaf's CONTENT (text length, status, last-write stamp).
 //
-// This is the structure/content dimension of the virtua measured-size cache's
-// validity key (see utils/threadVirtuaSizeCache.ts). It superseded an earlier
+// This is the structure/content dimension of the size-priors validity key
+// (see utils/virtual/priors.ts). It superseded an earlier
 // version of that key that read `pane.timelineRevision`, a monotonic per-pane
 // mutation counter that is never restored on a cache-hit re-entry — so a revisit
 // always computed a strictly-greater revision than capture and the replay never
@@ -17,7 +17,7 @@ import type { TimelineNode } from './subagentGrouping';
 // cached sizes replay and the estimate→measure cascade is skipped; a background
 // content change (streaming text grew, a tool result filled in) bumps
 // `updatedAt`/`summary`/`status`, yielding a different string, so the now-stale
-// sizes are refused and virtua falls back to the flat estimate.
+// sizes are refused and the engine falls back to the kind/flat estimate.
 //
 // SELF-VALIDATING. Because the signature encodes content, a stale snapshot is
 // refused on the key alone — eviction (thread.svelte.ts removal/reswitch,
@@ -26,8 +26,8 @@ import type { TimelineNode } from './subagentGrouping';
 // content change but never touched this cache; without content in the key, a
 // backgrounded thread that changed and got reloaded would replay stale sizes.
 //
-// Each node is encoded POSITIONALLY because virtua's size cache is indexed by
-// position. Leaves carry their content-height inputs: `summary.length` (text
+// Each node is encoded POSITIONALLY because the engine's size store is indexed
+// by position. Leaves carry their content-height inputs: `summary.length` (text
 // height at a fixed width), `status` (a streaming/spinner row differs from its
 // settled form), and `updatedAt` (Go bumps it on every streaming append —
 // items_write.go — so it tracks growth that `summary.length` alone might miss,

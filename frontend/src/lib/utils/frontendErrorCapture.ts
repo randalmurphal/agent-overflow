@@ -38,7 +38,7 @@ const MAX_MESSAGE_CHARS = 2 * 1024;
 const MAX_SOURCE_CHARS = 2 * 1024;
 const FLUSH_DELAY_MS = 1_000;
 const MAX_PENDING_LINES = 100;
-// Per-signature report cap. A throw inside a row that virtua remounts on
+// Per-signature report cap. A throw inside a row that windowing remounts on
 // every scroll repeats thousands of times per session; the first few
 // occurrences carry all the signal. After the cap, only every 100th
 // occurrence is recorded so sustained recurrence stays visible without

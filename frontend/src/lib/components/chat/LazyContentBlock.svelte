@@ -16,7 +16,7 @@
     /** Pane for the per-payload expansion registry. When omitted, falls
      * back to local state — fine for unit tests, but in chat surfaces
      * the registry preserves expand state and loaded chunks across
-     * virtua's overscan eviction. */
+     * the window's overscan eviction. */
     pane?: ThreadPane;
     threadId?: string;
     /**

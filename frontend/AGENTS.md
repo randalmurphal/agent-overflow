@@ -57,7 +57,7 @@ expansion; see "Live Window Bounds" in
 ## Thread Switch And Scroll
 
 The durable contracts for cache restore, tail-only initial load, lazy
-older paging, scroll intent, virtua integration, and scroll-regression
+older paging, scroll intent, the windowing engine, and scroll-regression
 diagnostics live in
 [`docs/architecture/frontend-scroll.md`](../docs/architecture/frontend-scroll.md).
 Read that before touching:
@@ -66,17 +66,20 @@ Read that before touching:
 - `src/lib/stores/threadItemCache.ts`
 - `src/lib/stores/threadScrollSnapshots.ts`
 - `src/lib/components/chat/MessageTimeline.svelte`
+- `src/lib/components/chat/TimelineVirtualizer.svelte`
 - `src/lib/components/discussion/ChannelView.svelte`
 - `src/lib/utils/scroll/` (`index.svelte.ts` controller + resolver/intent/spring/observers)
-- `src/lib/utils/threadVirtuaSizeCache.ts`
+- `src/lib/utils/virtual/` (windowing engine + per-thread size priors)
 
-Short version: `MessageTimeline` owns the scroll container, `virtua`
-owns row geometry, and the scroll controller (`utils/scroll/`) owns
-scroll intent and every allowed `scrollTop` write outside virtua
-internals — inside the package the pure resolver decides, the
-controller's `writeScrollTop` chokepoint writes. Programmatic virtua
-scrolls must be wrapped in `stick.runExternalScroll(...)`; never pass
-`smooth: true`.
+Short version: `MessageTimeline` owns the scroll container, the bespoke
+virtualizer (`TimelineVirtualizer.svelte` over the pure engine in
+`utils/virtual/`) owns row geometry and never writes `scrollTop`, and
+the scroll controller (`utils/scroll/`) owns scroll intent and every
+programmatic `scrollTop` write — inside the package the pure resolver
+decides, the controller's `writeScrollTop` chokepoint writes. The
+virtualizer's `scrollToIndex` and compensation observations route
+through the controller (`applyScrollTarget` /
+`applyEngineCompensation`); `scrollToIndex` is instant-only by design.
 
 ## Rendering
 
@@ -151,48 +154,6 @@ corrupt every project on the machine. Use
      `src/lib/utils/zombieMintProbe.ts`) that fires if a future svelte
      re-introduces the hunk-1 shape. Keep while hunk 1 exists; drop
      alongside it.
-- `virtua@0.49.1.patch` — two hunks, each with its own drop rule:
-  1. **manual-scroll marking** (adapter + type only) — expose
-     `markProgrammaticScroll()` on the Svelte `VirtualizerHandle`. It fires
-     the store's internal ACTION_MANUAL_SCROLL (the un-exported literal `7`),
-     the same marking virtua's own async scroll APIs apply before writing
-     scrollTop. Needed because the scroll controller writes `scrollTop`
-     synchronously every streaming beat, and unmarked writes are classified
-     as user scroll-downs — virtua latches the direction and drops its
-     entire above-viewport buffer, the remount churn behind the streaming
-     settle flicker (`docs/architecture/settle-flicker-analysis.md`,
-     2026-07-01 streaming settle-flicker entry). MessageTimeline wires the
-     marker into the controller's `onBeforeScrollTopWrite`. Drop rule: when
-     `src/test/integration/virtua-patch-buffer-retention.browser.test.ts`'s
-     "unmarked write drops the buffer" tripwire FAILS on an unpatched
-     release (i.e. virtua stops dropping the backward buffer on unmarked
-     programmatic writes), the hunk is obsolete.
-  2. **scroll-applier seam** (core `lib/core/index.js` + `.cjs` mirror +
-     adapter + type) — `setScrollApplier(fn)` on the handle routes the
-     internal scroll-jump compensation write (`$fixScrollJump`'s direct
-     scrollTop assignment for above-viewport row remeasures) through an
-     external applier: absolute rounded target + raw `(jump, shift)`,
-     synchronous in the same call; return true after writing scrollTop
-     yourself (any value — the store re-syncs from the scroll event), or
-     false to decline, in which case the core pokes its store
-     (manual-mark + ACTION_SCROLL at the current DOM offset — the mark
-     defeats the same-offset native early-break) so a declined write can
-     never desync the model. MessageTimeline wires it to the controller's
-     `applyVirtuaScrollCompensation` (decision logic:
-     `resolveVirtuaCompensation` in `utils/scroll/resolver.ts`), making
-     the controller the single scrollTop writer during follow. The core
-     hunk lands in minified name-mangled code — re-rolls on version bumps
-     must re-locate the write site inside `createScroller.$observe`
-     (`docs/architecture/scroll-rearchitecture-inventories.md` §A4 maps
-     the mangled names). Drop rule: the hunk is load-bearing for as long
-     as we ship virtua — delete only if virtua grows a native external
-     scroll-applier API; a bad re-roll fails
-     `src/test/integration/virtua-patch-scroll-applier.browser.test.ts`
-     loudly (applier not called / default write landing / decline
-     desyncing).
-  Both hunks are candidates to upstream as one external-scroll-controller
-  API proposal (no existing issue requests either; everything touched is
-  `@internal`).
 - `svelte-streamdown@3.1.1.patch` — markdown-pipeline fixes, grouped by
   concern. Behavior is held across version bumps: re-roll by
   `git apply --reject`-ing the prior patch into a clean `pnpm patch`

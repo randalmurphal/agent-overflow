@@ -1,10 +1,10 @@
 import { boundedPayloadVersionString } from './payloadVersion';
 
 // Module-level LRU cache for fetched payload chunks. Survives both
-// virtua row remount AND switchThread, so re-entering a thread that
+// windowing row remount AND switchThread, so re-entering a thread that
 // already loaded a payload renders synchronously from cache instead of
-// replaying the empty-then-loaded paint cycle that whipsaws virtua's
-// per-row size cache and triggers visible scroll-anchoring jumps.
+// replaying the empty-then-loaded paint cycle that whipsaws the
+// engine's measured row sizes and triggers visible scroll-anchoring jumps.
 //
 // Keyed by JSON-encoded (threadId, payloadId, version) tuples so item
 // updates that bump `updatedAt` invalidate cleanly without delimiter

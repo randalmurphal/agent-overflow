@@ -4,12 +4,12 @@
 // build (virtua marking patch + fractional heights, NO per-row min-height
 // floors) an emulated user scrolling away from the bottom and back gets:
 // zero scrollHeight dips, zero scrollTop reversals on the return/parked legs,
-// bounded unmount batches (plain virtua windowing), and a clean bottom
+// bounded unmount batches (plain windowing), and a clean bottom
 // landing. The floor system was deleted on that evidence; this test pins
 // those outcomes through the remaining rewrite stages.
 //
 // Built on the shared timelineBrowserHarness (src/test/helpers/): real
-// MessageTimeline, real pane, real virtua windowing, real Chromium layout.
+// MessageTimeline, real pane, real engine windowing, real Chromium layout.
 // Markdown-only seed — deliberately NO mermaid, so vite's dep optimizer never
 // discovers a lazy `import('mermaid')` mid-run (the cold-cache re-optimize
 // reload documented by the experiment).
@@ -18,9 +18,9 @@
 // scrollEl.scrollTop writes. The wheel event is load-bearing: it is the
 // controller's ONLY escape-intent signal (bare scroll events never set
 // escapedFromLock — without it the controller re-pins the viewport to the
-// bottom mid-away). The writes are deliberately UNMARKED so the patched virtua
+// bottom mid-away). The writes are deliberately UNTAGGED so the controller
 // classifies them as user scrolls, which is the scenario under test; a
-// stick.runExternalScroll jump would keep "programmatic" intent.
+// controller-routed jump would keep "programmatic" intent.
 //
 // Thresholds are calibrated from healthy runs with ~2x headroom (same method
 // as streamingOutcome.browser.test.ts); the healthy-run numbers are recorded
@@ -62,7 +62,7 @@ const MAX_DIP_PX = 8;
 // bottom. Healthy runs measure 0 on both legs; 2px absorbs DPR readback
 // rounding. (The away leg is the user scrolling up — not asserted.)
 const MAX_FRAME_DROP_PX = 2;
-// Unmount-batch bounds: plain virtua windowing sheds the off-window band as
+// Unmount-batch bounds: plain windowing sheds the off-window band as
 // the viewport moves. Healthy runs (3×, identical) measure max batch 5 /
 // total 39 (away) and max batch 6 / total 39 (return) per leg; 2x headroom on
 // the batch bound also keeps it below the ~13-row buffer-drop failure band
@@ -145,8 +145,8 @@ function createPhaseMonitor(scrollEl: HTMLElement): PhaseMonitor {
       if (drop > p.maxFrameDropPx) p.maxFrameDropPx = drop;
       p.prevTop = top;
 
-      // scrollHeight dip tracking against the running peak: a dip is virtua's
-      // totalSize shrinking (short remount measure) and closes when the peak
+      // scrollHeight dip tracking against the running peak: a dip is the
+      // engine's totalSize shrinking (short remount measure) and closes when the peak
       // is regained (regrow) or the phase ends.
       if (height > p.heightPeak) {
         if (p.openDip) {

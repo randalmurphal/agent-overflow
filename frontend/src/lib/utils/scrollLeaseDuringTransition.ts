@@ -7,7 +7,7 @@
  * viewport from yanking mid-transition.
  *
  * - Default settle window: two `requestAnimationFrame` ticks. Long enough
- *   for layout + virtua's per-row ResizeObserver to fire after the
+ *   for layout + the virtualizer's per-row ResizeObserver to fire after the
  *   reflow, short enough that auto-scroll resumes before the next item
  *   arrives (~16ms in steady state).
  * - When `transitionMs` is supplied, the lease is held for that

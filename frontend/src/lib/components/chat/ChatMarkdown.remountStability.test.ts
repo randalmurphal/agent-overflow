@@ -22,8 +22,8 @@ import {
 //
 // The source-text fallback alone only protects the FIRST mount: it
 // sizes the wrapper to the source length, KaTeX inserts, the wrapper
-// grows once. virtua remounts a row whenever it scrolls in or out of
-// its rendered window, and each remount repeats the same "fallback
+// grows once. Windowing remounts a row whenever it scrolls in or out of
+// the rendered window, and each remount repeats the same "fallback
 // height first, then rendered height" transient. To the scroll
 // controller's contentRO it looks like a fresh negative-then-positive
 // content delta.

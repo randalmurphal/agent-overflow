@@ -222,7 +222,7 @@ describe('createUseStickToBottomController', () => {
     it('escape suppresses both first-fire snap AND positive-delta sync-pin', async () => {
       // Regression for the open-thread scroll animation: MessageTimeline's
       // $effect.pre calls setEscapedFromLock(true) on every threadId
-      // change so virtua's incremental row remeasurement (positive-delta
+      // change so the engine's incremental row remeasurement (positive-delta
       // RO fires) doesn't sync-pin the viewport to the bottom from
       // scrollTop=0. This test locks that contract at the controller
       // level: while escaped, neither the first RO fire nor any
@@ -236,7 +236,7 @@ describe('createUseStickToBottomController', () => {
       ro.fire(contentEl, 800);
       expect(geom.scrollTop).toBe(0);
 
-      // Subsequent positive-delta fire (virtua finishes measuring more
+      // Subsequent positive-delta fire (the engine finishes measuring more
       // rows). Sync-pin would write scrollTop if escape were false.
       ro.fire(contentEl, 1000);
       // Allow rAF + tick for any pin that wrongly fired.
@@ -612,7 +612,7 @@ describe('createUseStickToBottomController', () => {
     });
 
     it('negative delta with isAtBottomState=true but scrollTop bumped outside the near-bottom band still re-pins', async () => {
-      // Regression for the layout-measurement-cascade jump: virtua's
+      // Regression for the layout-measurement-cascade jump: the virtualizer's
       // applyJump can shift scrollTop hundreds of pixels away from
       // bottom during row remeasurement, flipping the geometric
       // near-bottom check to false. Before the fix, the negative-
@@ -624,7 +624,7 @@ describe('createUseStickToBottomController', () => {
       ro.fire(contentEl, 800); // initial; isAtBottomState=true, scrollTop=400 (at bottom)
       expect(controller.isAtBottom).toBe(true);
 
-      // Simulate virtua's jump correction moving scrollTop away from
+      // Simulate a virtualizer compensation moving scrollTop away from
       // bottom AND the content shrinking at the same layout pass.
       // distance = 900 - 200 - 600 = 100, outside the 70px band.
       geom.scrollTop = 200;
@@ -692,7 +692,7 @@ describe('createUseStickToBottomController', () => {
     it('overscroll guard clamps scrollTop > target', () => {
       const ro = getRO();
       ro.fire(contentEl, 800); // initial
-      // Force scrollTop above target externally (e.g. virtua mis-correction).
+      // Force scrollTop above target externally (e.g. a compensation mis-landing).
       geom.scrollTop = 500; // target = 400
       geom.scrollHeight = 900; // shrink
       geom.contentHeight = 700;
@@ -703,17 +703,17 @@ describe('createUseStickToBottomController', () => {
 
     it('overscroll guard does NOT clamp when escaped (preserves user mid-history position)', () => {
       // The overshoot guard's purpose is to fix invalid scrollTop
-      // states from virtua mis-correction or browser auto-clamping,
+      // states from compensation mis-landings or browser auto-clamping,
       // but when the user has explicitly escaped, the browser's own
       // clamp will fix any out-of-range scrollTop on the next paint
       // and we must NOT yank the user to the bottom. Without this
-      // gate, a virtua applyJump that nudges scrollTop past a freshly
+      // gate, a compensation write that nudges scrollTop past a freshly
       // shrunk target could snap the user from mid-history to bottom
       // as a side-effect of an above-viewport row remeasure.
       const ro = getRO();
       ro.fire(contentEl, 800); // initial — sets previousHeight=800
       controller.setEscapedFromLock(true);
-      // Simulate the virtua-shift-then-shrink scenario: scrollTop now
+      // Simulate the shift-then-shrink scenario: scrollTop now
       // sits past the new target.
       geom.scrollTop = 500;
       geom.scrollHeight = 900;
@@ -1005,10 +1005,10 @@ describe('createUseStickToBottomController', () => {
 
     it('user wheel-down to bottom during a content-RO cascade clears escape', async () => {
       // Regression for "auto-follow stops on a thread until refresh".
-      // On heavy threads the contentRO seam fires continuously (virtua
+      // On heavy threads the contentRO seam fires continuously (the engine
       // row remeasurement, Streamdown async typesetting completing in
       // rows above the viewport). The deferred scroll handler's
-      // `resizeCorrelatedScroll` bail defends against virtua's
+      // `resizeCorrelatedScroll` bail defends against the virtualizer's
       // applyJump producing an untagged scroll event mid-cascade, but
       // it was too broad — it also blocked input-backed scroll events
       // that happened to land while the cascade was active, leaving
@@ -1428,7 +1428,7 @@ describe('createUseStickToBottomController', () => {
       // Caller (MessageTimeline bottom-restore) has just landed the user
       // at the geometric bottom via listRef.scrollToIndex(last, 'end').
       // markAtBottom must flip the intent flag WITHOUT also issuing a
-      // redundant scrollTop write that would fight virtua's measurement
+      // redundant scrollTop write that would fight the virtualizer's measurement
       // loop still in progress.
       controller.setEscapedFromLock(true);
       geom.scrollTop = 250;
@@ -1459,12 +1459,12 @@ describe('createUseStickToBottomController', () => {
     });
 
     it('first contentRO fire BEFORE markAtBottom does not advance scrollTop while escaped', () => {
-      // Bottom-restore sequence: $effect.pre sets escape=true, virtua
+      // Bottom-restore sequence: $effect.pre sets escape=true, the engine
       // mounts, contentRO observes initial height. The first fire's
       // first-fire branch must NOT snap to target (escape gate). Only
       // then does restoreToBottom call scrollToIndex(last,'end') and
       // markAtBottom. If the first-fire branch leaked through escape,
-      // it would snap to a stale target before virtua's measurement
+      // it would snap to a stale target before the engine's measurement
       // loop ran — exactly the bug the new path avoids.
       controller.setEscapedFromLock(true);
       geom.scrollTop = 250;
@@ -1474,40 +1474,6 @@ describe('createUseStickToBottomController', () => {
       controller.markAtBottom();
       expect(controller.escapedFromLock).toBe(false);
       expect(geom.scrollTop).toBe(250); // markAtBottom doesn't write either
-    });
-  });
-
-  describe('runExternalScroll', () => {
-    it('tags external scroll events in a short window so near-bottom virtua jumps do not re-stick', async () => {
-      controller.setEscapedFromLock(true);
-      geom.scrollTop = 300;
-      fireScroll(scrollEl);
-      await nextTimer();
-      expect(controller.escapedFromLock).toBe(true);
-
-      controller.runExternalScroll(() => {
-        geom.scrollTop = 350;
-      });
-      fireScroll(scrollEl);
-      geom.scrollTop = 399.75;
-      fireScroll(scrollEl);
-      await nextTimer();
-
-      expect(controller.escapedFromLock).toBe(true);
-      expect(controller.isSticky).toBe(false);
-    });
-
-    it('can tag external scroll events without changing sticky intent', async () => {
-      expect(controller.isSticky).toBe(true);
-
-      controller.runExternalScroll(() => {
-        geom.scrollTop = 350;
-      }, { preserveIntent: true });
-      fireScroll(scrollEl);
-      await nextTimer();
-
-      expect(controller.escapedFromLock).toBe(false);
-      expect(controller.isSticky).toBe(true);
     });
   });
 
@@ -1875,7 +1841,7 @@ describe('createUseStickToBottomController', () => {
 
     it('re-stick succeeds when scrollTop lands within the 4 px auto-follow epsilon', async () => {
       // The new AUTO_FOLLOW_BOTTOM_EPSILON_PX is 4 (was 0.5). A user
-      // who lands 3 px short of the actual bottom (common with virtua
+      // who lands 3 px short of the actual bottom (common with estimated
       // row-height estimation + browser scrollTop rounding) re-sticks.
       const ro = getRO();
       ro.fire(contentEl, 800);
@@ -2436,7 +2402,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
     it('negative delta while !warm sync-pins via negative-delta branch (Bug A defense)', async () => {
       // Bug A's cascade defense relies on the negative-delta sync-pin
-      // running synchronously when virtua's row-remeasurement shifts
+      // running synchronously when the engine's row-remeasurement shifts
       // scrollTop off the bottom. The spring carve-out (suppress
       // writeScrollTop while springToken !== 0) must NOT weaken this
       // defense. Warm-gate-ordering invariant: cascade fires while
@@ -2452,9 +2418,9 @@ describe('createUseStickToBottomController — spring chase', () => {
       const ro = getRO();
       ro.fire(contentEl, 800); // initial; warm is still false. isAtBottomState=true from attach.
 
-      // Simulate virtua's applyJump shifting scrollTop off the bottom
+      // Simulate a routed compensation shifting scrollTop off the bottom
       // (the cascade pattern: a row above the viewport remeasured
-      // larger, virtua scrolled the visible row's offset down to
+      // larger, the compensation moved the visible row's offset down to
       // preserve it). No scroll event fires — isAtBottomState stays
       // true even though we're now 100 px above the geometric bottom.
       geom.scrollTop = 300;
@@ -2560,8 +2526,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(localController.isWarm).toBe(true);
     });
 
-    it('keeps warm false through a virtua estimate→measure cascade even with the settle signal on', async () => {
-      // Idle-thread flicker regression: virtua mounts rows at the flat
+    it('keeps warm false through an estimate→measure cascade even with the settle signal on', async () => {
+      // Idle-thread flicker regression: the engine mounts rows at the
       // ESTIMATED_ROW_SIZE then corrects to measured heights over a series
       // of contentRO fires spaced wider than SETTLED_QUIET_MS. With the
       // settle signal already on (svelte-streamdown idle for an
@@ -2878,7 +2844,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
     it('sync-pins a positive delta caused by content width reflow instead of spring-chasing it', async () => {
       // Mermaid diagrams rendered with useMaxWidth can change height when
-      // the pane width changes. If that row is still mounted in virtua's
+      // the pane width changes. If that row is still mounted in the engine's
       // overscan window while live content recently advanced, the spring
       // latch still reports "spring" even though the resize is layout
       // correction, not new assistant output. That must land instantly;
@@ -3423,7 +3389,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
     describe('spring chase distance invariants', () => {
       // The spring's total visual distance must equal the actual
-      // geometry change (scrollHeight delta), not the virtua estimate.
+      // geometry change (scrollHeight delta), not the engine estimate.
       // These tests verify the distance invariant under timing
       // variations that could produce wrong starting positions.
 
@@ -3434,7 +3400,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
         const startScrollTop = geom.scrollTop; // 400
 
-        // +90 estimate (mimics virtua provisionally rendering a row).
+        // +90 estimate (mimics the engine provisionally placing a row).
         geom.scrollHeight = 1090;
         geom.contentHeight = 890;
         ro.fire(contentEl, 890); // estimate target = 490
@@ -3652,7 +3618,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
 
-      // Tail-clamping or virtua remeasurement can shrink the row while a
+      // Tail-clamping or a row remeasurement can shrink the row while a
       // spring is active. This must still be treated as layout, not user
       // escape.
       geom.scrollHeight = 1160;
@@ -3953,7 +3919,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       controller.forceStick({ reason: 'restore' });
       expect(controller.isWarm).toBe(false);
 
-      // !warm: virtua's post-restore mount-cascade compensations must
+      // !warm: the engine's post-restore mount-cascade compensations must
       // land, so the resolver passes them through. (The resolver ignores
       // `jump`; it is passed sign-consistent for documentation only.)
       geom.scrollHeight = 1500;
@@ -4085,7 +4051,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.scrollHeight = 1000;
       controller.observe('content');
 
-      // 3. User message added — virtua mounts the row, contentRO fires
+      // 3. User message added — the engine mounts the row, contentRO fires
       //    positive delta. Spring mode is now active.
       geom.scrollHeight = 1100;
       geom.contentHeight = 900;
@@ -5208,7 +5174,7 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
 
     it('estimate-correct pair during spring leaves spring as single writer (no sync-pin race)', async () => {
-      // Bug B: virtua's row-append cycle fires contentRO twice within
+      // Bug B: the engine's row-append cycle fires contentRO twice within
       // ~5ms — first at ESTIMATED_ROW_SIZE (e.g., +90 for chat's
       // estimate), then at the measured size (correction, e.g., -56).
       // Pre-fix, the +90 started a spring and the -56 ran the
@@ -5223,7 +5189,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 800);
       await waitMs(150); // warm
 
-      // +90 estimate-grow (mimics virtua provisionally rendering a new
+      // +90 estimate-grow (mimics the engine provisionally placing a new
       // row at ESTIMATED_ROW_SIZE). Spring engages.
       geom.scrollHeight = 1090;
       geom.contentHeight = 890;
@@ -5238,7 +5204,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(midScrollTop).toBeGreaterThan(400);
       expect(midScrollTop).toBeLessThan(490);
 
-      // -56 correction within the same RO burst (virtua measured the
+      // -56 correction within the same RO burst (the engine measured the
       // actual row size, totalSize -= 56). negativeWillPin would be
       // true; the spring carve-out must SUPPRESS the sync write.
       // Corrected target = 1034 - 600 = 434.
@@ -5314,7 +5280,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       it('oscillation recovery snaps SYNCHRONOUSLY in the contentRO callback (no rAF gap)', async () => {
         // Regression: bug-report-20260615T182227Z. An above-viewport row
-        // remeasure (an image user-message row remounted by virtua)
+        // remeasure (an image user-message row remounted by windowing)
         // transiently dips contentEl, the browser auto-clamps scrollTop
         // during the dip, then the row regrows and strands scrollTop below
         // the restored bottom. The spring-tick oscillationSnap recovers it

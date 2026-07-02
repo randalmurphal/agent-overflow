@@ -2,8 +2,9 @@
 // (useStickToBottom): escape / re-stick / restore-snap consent, the
 // recent-down-intent window, scrollbar-drag sessions, selection
 // tracking, and the classification machinery that separates user
-// scrolls from programmatic ones (the token ring for controller writes,
-// the time-window tag for external writers like virtua scrollToIndex).
+// scrolls from programmatic ones (the token ring for controller writes —
+// the chokepoint the controller performs EVERY programmatic scroll
+// through, including the virtualizer's routed scrollToIndex targets).
 //
 // Intent is event-sourced, never geometry-inferred: every transition
 // here is driven by a wheel/key/touch/pointer/scroll event, not by
@@ -22,7 +23,6 @@ import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 
 const RECENT_DOWN_INTENT_WINDOW_MS = 250;
 const SCROLLBAR_DRAG_SESSION_FAILSAFE_MS = 30_000;
-const EXTERNAL_SCROLL_TAG_CLEAR_MS = 100;
 const PROGRAMMATIC_SCROLL_EVENT_TOKEN_TTL_MS = 500;
 const MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS = 128;
 const PROGRAMMATIC_SCROLL_EVENT_DUPLICATE_BUDGET = 4;
@@ -120,7 +120,6 @@ export interface ScrollIntent {
    * via the token ring and updates the re-stick direction baseline.
    */
   noteProgrammaticWrite(top: number): void;
-  runExternalScroll(action: () => void, opts?: { preserveIntent?: boolean }): void;
   /** Snapshot of the machine's windows/consent for the dev-hook dump. */
   debugState(): {
     recentDownIntentActive: boolean;
@@ -135,8 +134,6 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   installModuleSelectionListeners();
 
   let pendingProgrammaticScrollEventTokens: { top: number; expiresAt: number; remaining: number }[] = [];
-  let externalScrollIgnoreUntil = 0;
-  let externalScrollClearTimer: ReturnType<typeof setTimeout> | null = null;
 
   let recentDownIntentUntil = 0;
   let recentDownIntentVersion = 0;
@@ -367,29 +364,6 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     }));
   }
 
-  // Tags a non-controller scroll writer so the scroll handler does not
-  // misread it as user intent. This does not change follow/escape state;
-  // callers decide that explicitly before invoking it.
-  function tagExternalProgrammaticScroll(action: () => void): void {
-    externalScrollIgnoreUntil = nowMs() + EXTERNAL_SCROLL_TAG_CLEAR_MS;
-    if (externalScrollClearTimer) clearTimeout(externalScrollClearTimer);
-    externalScrollClearTimer = setTimeout(() => {
-      externalScrollIgnoreUntil = 0;
-      externalScrollClearTimer = null;
-    }, EXTERNAL_SCROLL_TAG_CLEAR_MS);
-    action();
-    const el = deps.getScrollEl();
-    if (el) {
-      lastObservedScrollTopForRestick = el.scrollTop;
-      deps.refreshIsNearBottom();
-    }
-  }
-
-  function runExternalScroll(action: () => void, opts: { preserveIntent?: boolean } = {}): void {
-    if (!opts.preserveIntent) setEscapedFromLock(true);
-    tagExternalProgrammaticScroll(action);
-  }
-
   // ===== DOM handlers =====
   function targetIsInsideScrollEl(e: Event): boolean {
     const scrollEl = deps.getScrollEl();
@@ -484,9 +458,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     // scrollTop value long after our write is NOT swallowed, and the
     // per-token duplicate budget absorbs browser-coalesced event
     // duplicates for the same write.
-    const tokenTagged = consumeProgrammaticScrollEventToken(scrollTopAtEvent);
-    const externalTagged = externalScrollIgnoreUntil > nowMs();
-    const tagged = tokenTagged || externalTagged;
+    const tagged = consumeProgrammaticScrollEventToken(scrollTopAtEvent);
     // Tagged programmatic write — bail synchronously without scheduling
     // the deferral timer. Steady-state streaming fires a sync-pin write
     // on every contentRO positive delta; allocating a closure + timer
@@ -501,8 +473,8 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     // own write.
     if (tagged) return;
     const distFromBottomAtEvent = deps.refreshIsNearBottom();
-    // No tagged/externalTagged fields here: the tagged bail above means
-    // this record only ever describes untagged (user-attributed) events.
+    // No tagged field here: the tagged bail above means this record only
+    // ever describes untagged (user-attributed) events.
     if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent', () => ({
       scrollTop: Math.round(scrollTopAtEvent),
       scrollHeight: Math.round(scrollEl.scrollHeight),
@@ -543,9 +515,10 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       }
 
       // RO race — content just resized; the scroll event reflects layout,
-      // not user intent. Most importantly: virtua's $fixScrollJump can
-      // adjust scrollTop to keep above-viewport rows stable, which would
-      // otherwise look like user scroll movement. For non-virtua consumers
+      // not user intent. (Historically this also covered virtua's direct
+      // $fixScrollJump scrollTop writes; the engine's compensations are
+      // controller-routed and token-tagged, so layout clamps are the
+      // remaining producer.) For non-virtualized consumers
       // (Discussion's ChannelView) this gate is a 1ms suppression window
       // after each content-RO fire — vanishingly unlikely to swallow a
       // real user gesture, since the window only opens immediately after
@@ -651,11 +624,6 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   function detach(): void {
     detachListeners?.();
     detachListeners = undefined;
-    if (externalScrollClearTimer) {
-      clearTimeout(externalScrollClearTimer);
-      externalScrollClearTimer = null;
-    }
-    externalScrollIgnoreUntil = 0;
     clearProgrammaticScrollState();
     clearRecentDownIntent();
     clearScrollbarDragSession();
@@ -687,7 +655,6 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     clearRecentDownIntent: () => clearRecentDownIntent(),
     clearScrollbarDragSession: () => clearScrollbarDragSession(),
     noteProgrammaticWrite,
-    runExternalScroll,
     debugState: () => ({
       recentDownIntentActive: hasRecentDownIntent(),
       recentDownIntentUntil: Math.round(recentDownIntentUntil),

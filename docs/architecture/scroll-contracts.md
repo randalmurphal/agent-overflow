@@ -27,8 +27,9 @@ C1..C27.
   including in a deferred-processing window; judged by distance seen at
   event time (Bug A — the bottom moves mid-window during streaming).
 - **C6.** Intent mutates only on explicit signals — never inferred from
-  geometry or untagged scrollTop direction (R4; applies to virtua
-  `$fixScrollJump` and per-row resizes).
+  geometry or untagged scrollTop direction (R4; applies to engine
+  compensation observations and per-row resizes; virtua-era mechanism:
+  `$fixScrollJump`).
 - **C7.** Scrollend is inert; pinch-zoom (wheel+ctrl) is not intent;
   nested-scroller wheel-up escapes the outer follow.
 - **C8.** After re-stick/chip-click, every subsequent chunk follows — no
@@ -40,9 +41,12 @@ C1..C27.
   write records one self-tag token whose suppression is bounded (TTL +
   a small duplicate budget for browser-coalesced re-fires, so a genuine
   user scroll landing at the same value later is never swallowed); and
-  writes are announced to the virtualizer before landing (else
-  buffer-drop remount churn — the streaming settle flicker,
-  `settle-flicker-analysis.md` 2026-07-01).
+  a programmatic write must never trigger windowing buffer-drop remount
+  churn — the streaming settle flicker, `settle-flicker-analysis.md`
+  2026-07-01 (under virtua this required announcing writes to the
+  virtualizer before landing; the bespoke engine has no scroll-direction
+  latch to mis-classify them — `streamingOutcome.browser.test.ts` pins
+  the outcome).
 - **C10.** During active animated follow the controller is the sole
   scrollTop writer; escaped / paused / mount-cascade / post-restore /
   dormant / instant / viewport-scale corrections pass through untouched;

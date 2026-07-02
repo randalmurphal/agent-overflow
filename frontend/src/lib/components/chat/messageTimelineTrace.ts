@@ -186,14 +186,15 @@ export function startTimelineRowResizeTrace(root: Element): () => void {
   };
 }
 
-// --- Virtua margin-divergence probe (settle-flicker regression oracle) ----
+// --- Row margin-divergence probe (settle-flicker regression oracle) ----
 //
-// STANDING MONITOR for the settle-flicker bug class, now root-caused and FIXED.
+// STANDING MONITOR for the settle-flicker bug class, root-caused and FIXED in
+// the virtua era; the physics is identical under the bespoke virtualizer.
 // The bug: a row's trailing bottom margin collapsed OUT of its `[data-row-index]`
 // content box (every ancestor was plain — `.px-6` adds no vertical padding,
-// nothing formed a BFC) and was trapped only by virtua's `contain: layout style`
-// item wrapper (its own formatting context — see virtua/lib/index.cjs item style
-// object). virtua counted the escaped margin in its measured total while the
+// nothing formed a BFC) and was trapped only by the row wrapper's
+// `contain: layout style` (its own formatting context — VirtualRow.svelte).
+// The wrapper counted the escaped margin in its measured total while the
 // row's content-box ResizeObserver did not, so the two disagreed during
 // streaming reflow → oscillation → scrollTop clamp → `spring.oscillationSnap`
 // (the visible flicker). The fix makes each row its own BFC so the margin is

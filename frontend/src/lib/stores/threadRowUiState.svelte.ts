@@ -49,8 +49,8 @@ export interface ThreadRowUiState {
   setDiffCardExpanded(itemId: string, filePath: string, expanded: boolean | undefined): void;
   /**
    * A stable string of the thread's non-default row-UI expansion state —
-   * the validity stamp for replaying a virtua measured-size snapshot across
-   * a thread switch (see utils/threadVirtuaSizeCache.ts). Empty when every
+   * the validity stamp for replaying a measured-size priors snapshot across
+   * a thread switch (see utils/virtual/priors.ts). Empty when every
    * row is at its default expansion, which is the state `clear()` resets to
    * on switch-in, so a snapshot captured with anything expanded (taller
    * rows) cannot match a freshly-mounted timeline and is correctly refused.
@@ -192,7 +192,7 @@ type ExpansionRegistryOwner =
     };
 
 /**
- * Per-row UI registries live outside row components so virtua remounts
+ * Per-row UI registries live outside row components so windowing remounts
  * do not drop loaded payload chunks, attachment thumbnails, or group
  * expansion state while the user scrolls around a thread.
  */

@@ -1027,8 +1027,8 @@ describe('setupEventListeners', () => {
     // the next upsert.
     expect(after).not.toBe(before);
     // The producer (UpdateItemMeta) intentionally does not bump
-    // updated_at; the frontend must preserve it so virtua + thread cache
-    // don't treat this re-render as a content change.
+    // updated_at; the frontend must preserve it so the size priors + thread
+    // cache don't treat this re-render as a content change.
     expect(after?.updatedAt).toBe(before?.updatedAt);
     expect(after?.summary).toBe(before?.summary);
   });

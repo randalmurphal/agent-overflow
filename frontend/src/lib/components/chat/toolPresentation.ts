@@ -296,7 +296,7 @@ function parseCommandOutputMeta(item: Item): CommandOutputMeta | null {
 
 function patchFileFromDiffMeta(diffMeta: DiffMeta): PatchFile {
   // Cached parse: this runs inside every ToolCallCard's presentation
-  // $derived, so it re-executes on each virtua remount and item churn.
+  // $derived, so it re-executes on each windowing remount and item churn.
   const parsed = parsePatchFilesCached(diffMeta.preview);
   if (parsed.length > 0 && parsed[0]) {
     return parsed[0];

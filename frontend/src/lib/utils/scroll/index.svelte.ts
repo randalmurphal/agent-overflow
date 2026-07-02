@@ -92,7 +92,7 @@ export type {
 // doesn't see the chip flicker.
 const STICK_TO_BOTTOM_OFFSET_PX = 70;
 // AUTO_FOLLOW_BOTTOM_EPSILON_PX (the down-scroll re-stick band) lives in
-// scroll/resolver.ts — the virtua compensation resolver shares it for the
+// scroll/resolver.ts — the engine compensation resolver shares it for the
 // anchor-redirect "already pinned" tolerance.
 // The idle re-pin deadband (IDLE_REPIN_DEADBAND_PX, scroll/resolver.ts)
 // deliberately equals AUTO_FOLLOW_BOTTOM_EPSILON_PX — "close enough to
@@ -880,7 +880,6 @@ export function createUseStickToBottomController(
     detach,
     forceStick,
     markAtBottom,
-    runExternalScroll: intent.runExternalScroll,
     setEscapedFromLock: intent.setEscapedFromLock,
     armWarmup: observers.beginWarmup,
     skipWarmup: observers.skipWarmup,

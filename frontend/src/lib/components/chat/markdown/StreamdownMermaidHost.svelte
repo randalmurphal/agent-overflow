@@ -46,7 +46,7 @@
 
   // Per-source rendered-height cache. Same story as
   // StreamdownMathHost: the source-text fallback only covers the
-  // first mount. virtua remounts the row every time it scrolls in or
+  // first mount. Windowing remounts the row every time it scrolls in or
   // out of the rendered window; without a cached min-height the
   // wrapper collapses from the rendered SVG height back to the much
   // shorter fallback height on every remount, looking to the scroll

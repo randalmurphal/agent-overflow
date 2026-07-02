@@ -463,7 +463,7 @@
   // the virtualizer re-reads viewport + offset (revalidate) and sticky
   // panes re-pin to the bottom. The scrollToIndex write goes through the
   // controller chokepoint (applyScrollTarget), so it is tagged
-  // programmatic and preserves intent without a runExternalScroll wrap.
+  // programmatic and preserves intent.
   function notifyHostLayoutSettled(): void {
     const lastIndex = revealedNodes.length - 1;
     const shouldStickToBottom = !stick.escapedFromLock;
@@ -763,7 +763,7 @@
   // layout. This structural path first marks the upcoming ResizeObserver
   // growth as append-like, so command/tool row batches can spring-follow
   // instead of snapping, then asks the sticky controller to re-check the
-  // bottom after Svelte and virtua have had a frame to publish the new row.
+  // bottom after Svelte and the virtualizer have had a frame to publish the new row.
   // It keys off tail row identity and order (id, kind, turnIndex,
   // itemIndex), not status transitions or summary deltas, so normal
   // streaming chunks and tool-call lifecycle status changes use the

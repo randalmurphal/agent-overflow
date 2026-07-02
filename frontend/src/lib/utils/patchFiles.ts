@@ -92,7 +92,7 @@ export function parsePatchFiles(patch: string): PatchFile[] {
 }
 
 // Content-keyed memo over parsePatchFiles for render-hot preview
-// paths: inline diff rows re-parse their preview patch on every virtua
+// paths: inline diff rows re-parse their preview patch on every windowing
 // remount and every item-churn re-derive, and returning the SAME
 // parsed array for the same patch string gives downstream
 // identity-keyed memos (buildInlineDiffRowsCached's WeakMap) a stable

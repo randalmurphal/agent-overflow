@@ -36,8 +36,8 @@
 
   // Per-source rendered-height cache. The source-text fallback alone
   // only protects the FIRST mount: it sizes the wrapper to the
-  // source length, KaTeX inserts, the wrapper grows once. virtua
-  // remounts the row whenever it scrolls in/out of its rendered
+  // source length, KaTeX inserts, the wrapper grows once. Windowing
+  // remounts the row whenever it scrolls in/out of the rendered
   // window, and each remount repeats the same transient — fallback
   // height first, then KaTeX-rendered height — even though the
   // rendered height has already been observed at least once. That

@@ -14,12 +14,12 @@ import '../../../app.css';
 const mounted: HTMLElement[] = [];
 
 // A faithful slice of the timeline row chain:
-//   item   -- virtua's item wrapper stand-in. `contain: layout` makes it its
+//   item   -- the virtualizer's row wrapper stand-in. `contain: layout` makes it its
 //             own BFC; that is what TRAPS a margin which escapes the row below,
-//             producing the virtua-vs-content-box divergence that drives the snap.
+//             producing the wrapper-vs-content-box divergence that drives the snap.
 //   row    -- [data-row-index]: the element the per-row ResizeObserver measures
 //             (content-box). The fix's job is to keep this in agreement with
-//             what virtua's wrapper measures.
+//             what the row wrapper measures.
 //   geo    -- [data-row-geometry-content]: the wrapper app.css turns into a BFC.
 //   child  -- the row content carrying the trailing margin.
 function mountRow(child: HTMLElement) {
@@ -50,7 +50,7 @@ describe('timeline row margin containment (settle-flicker fix)', () => {
     // With `display: flow-root`, geo is a BFC: the 20px bottom margin is part of
     // geo's box and propagates to [data-row-index]'s content box. Without the
     // rule the margin collapses OUT (geo/row measure only the 100px child) and
-    // is trapped by virtua's wrapper instead -- the divergence that oscillates.
+    // is trapped by the row wrapper instead -- the divergence that oscillates.
     expect(child.offsetHeight).toBe(100);
     expect(geo.offsetHeight).toBe(child.offsetHeight + 20);
     expect(row.clientHeight).toBe(geo.offsetHeight);

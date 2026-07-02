@@ -1,7 +1,7 @@
 // Shared real-Chromium harness for the MessageTimeline outcome suites:
 // streamingOutcome.browser.test.ts and remountReturn.browser.test.ts
 // (src/lib/components/chat/). Both mount the REAL MessageTimeline over a real
-// pane (real virtua windowing, real ResizeObserver timing, real fonts/layout)
+// pane (real engine windowing, real ResizeObserver timing, real fonts/layout)
 // and assert user-visible outcomes; this module owns the plumbing they must
 // keep behaviorally aligned — the mount ritual + teardown registry, the
 // seeded-transcript shape, the quiet-point wait loops, and the removed-row
@@ -21,9 +21,9 @@ import { buildPane, makeItem, makeThread } from './chat';
 import { raf, waitFor } from './browserFrames';
 
 // ~44 markdown rows at 100-200px rendered height each ≈ 6-8k px of scrollback
-// — comfortably past the 600px viewport + virtua's 2×1800px buffers, so real
-// windowing is active: a streaming above-viewport buffer drop has rows to
-// drop, and a scroll-away genuinely unmounts the tail.
+// — comfortably past the 600px viewport + the virtualizer's 2×1800px buffers,
+// so real windowing is active: a streaming above-viewport buffer drop has rows
+// to drop, and a scroll-away genuinely unmounts the tail.
 export const SEED_COUNT = 44;
 const VIEWPORT_W_PX = 800;
 const VIEWPORT_H_PX = 600;
@@ -66,7 +66,7 @@ export function setupTimelineHarness(): void {
 // ---------------------------------------------------------------------------
 // Per-suite flavor text for the shared seed shape. Only the prose differs
 // between suites; the structural rhythm (user/assistant alternation, list
-// rows, double-paragraph rows) is what gives virtua realistic height variance
+// rows, double-paragraph rows) is what gives the virtualizer realistic height variance
 // and must stay identical so both suites exercise the same geometry.
 export interface SeedProse {
   question(i: number): string;
@@ -90,7 +90,7 @@ export function seedTimelineItems(threadId: string, prose: SeedProse): Item[] {
         parts.push(prose.replyList);
       }
       if (i % 4 === 1) {
-        parts.push(`A second paragraph for reply ${i} so consecutive assistant rows do not all share one height bucket and virtua's estimate-to-measure corrections have real work to do.`);
+        parts.push(`A second paragraph for reply ${i} so consecutive assistant rows do not all share one height bucket and the engine's estimate-to-measure corrections have real work to do.`);
       }
       summary = parts.join('\n\n');
     }
@@ -125,8 +125,8 @@ export interface QuietBottomOptions extends FrameSettleOptions {
 }
 
 // Geometry-quiet AND at-bottom for `stableFrames` consecutive frames. Covers
-// virtua's 150ms scrollend debounce, the smoother's backlog drain, and late
-// measure corrections without a fixed sleep.
+// the virtualizer's 150ms scrollend debounce, the smoother's backlog drain,
+// and late measure corrections without a fixed sleep.
 export async function waitForQuietBottom(
   scrollEl: HTMLElement,
   label: string,
@@ -192,7 +192,7 @@ export interface RemovedRowCounter {
 }
 
 // Counts removed [data-row-index] rows under `scrollEl` — the user-visible
-// signature of virtua remount churn. Each non-zero removal batch is reported
+// signature of windowing remount churn. Each non-zero removal batch is reported
 // through `onBatch`; window slicing (per-phase tallies, cumulative stats,
 // batch maxima) stays with the caller.
 export function observeRemovedRows(
@@ -262,15 +262,15 @@ export async function mountTimeline(
   const scrollEl = host.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
   await waitFor(
     () => scrollEl.querySelectorAll('[data-row-index]').length > 0,
-    'virtua to render rows',
+    'virtualizer to render rows',
   );
-  // Real windowing sanity: the whole point of the ssrCount seam is that the
-  // browser project does NOT flat-render every row. Without windowing,
-  // streams have no buffer to drop, scroll-away unmounts nothing, and every
-  // removed-row outcome passes vacuously.
+  // Real windowing sanity: the whole point of the renderAll test seam is
+  // that the browser project does NOT flat-render every row. Without
+  // windowing, streams have no buffer to drop, scroll-away unmounts nothing,
+  // and every removed-row outcome passes vacuously.
   expect(
     scrollEl.querySelectorAll('[data-row-index]').length,
-    'browser project must run real virtua windowing (ssrCount seam)',
+    'browser project must run real windowing (renderAll seam)',
   ).toBeLessThan(items.length);
   // Warm-up gate: content stays visibility:hidden until the measurement
   // cascade settles; monitors must only start on the visible steady state.

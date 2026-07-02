@@ -17,7 +17,7 @@ export interface InlineDiffRows {
 }
 
 // Identity-keyed memo for the default-cap build. `file.lines` identity
-// is stable across virtua remounts when the patch was parsed through
+// is stable across windowing remounts when the patch was parsed through
 // parsePatchFilesCached, so remounting a diff row (or re-deriving its
 // presentation on item churn) reuses the built rows instead of
 // re-walking the patch. WeakMap keying keeps eviction tied to the

@@ -32,8 +32,8 @@ export type SpringAnimationMode = 'spring' | 'instant';
 // the property-descriptor write gate stayed closed against virtua's
 // direct `$fixScrollJump` writes across gaps; that cross-file invariant
 // died when those writes were routed through the controller's resolver
-// (`resolveVirtuaCompensation`), whose decision order is mode-free — a
-// compensation arriving after the sentinel dies resolves through the
+// (now `resolveEngineCompensation`), whose decision order is mode-free —
+// a compensation arriving after the sentinel dies resolves through the
 // pass/redirect tiers, both safe.
 export const SPRING_MODE_HOLD_MS = 500;
 

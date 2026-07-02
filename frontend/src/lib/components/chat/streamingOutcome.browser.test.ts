@@ -1,6 +1,6 @@
 // Streaming outcome harness — Stage 0 of
 // docs/architecture/scroll-rearchitecture-plan.md. Mounts the REAL
-// MessageTimeline with a REAL pane in Chromium (real virtua windowing, real
+// MessageTimeline with a REAL pane in Chromium (real engine windowing, real
 // ResizeObserver timing, real fonts/layout) via the shared
 // timelineBrowserHarness and drives synthetic streaming beats through the
 // same seams production uses (pane.upsertItem / pane.applyItemDelta + turn
@@ -204,7 +204,7 @@ function assertStreamOutcomes(stats: OutcomeStats, scrollEl: HTMLElement, label:
   ).toBe(0);
   expect(
     stats.maxRemovedRowsBatch,
-    `${label}: row unmount burst — virtua dropped buffered rows (C9) — ${detail}`,
+    `${label}: row unmount burst — the window dropped buffered rows (C9) — ${detail}`,
   ).toBeLessThanOrEqual(MAX_REMOVED_ROWS_PER_BATCH);
   expect(
     stats.removedRowsTotal,
@@ -216,7 +216,7 @@ function assertStreamOutcomes(stats: OutcomeStats, scrollEl: HTMLElement, label:
   ).toBeLessThanOrEqual(QUIET_BOTTOM_EPSILON_PX);
 }
 
-describe('streaming outcome harness (real MessageTimeline × real virtua × Chromium)', () => {
+describe('streaming outcome harness (real MessageTimeline × real windowing × Chromium)', () => {
   it('follows a pinned streaming tail without reversals, unmount bursts, or the chip', async () => {
     const threadId = 'thread-stream-follow';
     const { pane, scrollEl, host, entry } = await mountStreamingTimeline(threadId);

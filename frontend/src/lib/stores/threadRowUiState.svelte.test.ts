@@ -799,9 +799,9 @@ describe('createThreadRowUiState', () => {
     expect(rowUiState.diffCardExpandedOverride(item.id, 'src/foo.ts')).toBeUndefined();
   });
 
-  // expansionSignature stamps a virtua measured-size snapshot so it only
+  // expansionSignature stamps a measured-size priors snapshot so it only
   // replays into a remount whose rows will render at the same heights — see
-  // utils/threadVirtuaSizeCache.ts. The contract: empty for a thread at
+  // utils/virtual/priors.ts. The contract: empty for a thread at
   // default expansion (the state clear() restores on every switch), non-empty
   // the moment any row is expanded taller than default, and deterministic so
   // capture and restore compare equal.

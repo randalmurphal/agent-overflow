@@ -95,8 +95,8 @@ export function buildExpandedImagePreview(images: ImagePreviewItem[], selectedId
  *   - writes loaded previews back via `cache.set(id, preview)`,
  *   - delegates blob-URL revocation to the cache owner (does NOT revoke
  *     on component destroy).
- * In chat surfaces, the pane owns the cache so blob URLs survive virtua
- * remount and only get revoked on thread switch or pane disposal.
+ * In chat surfaces, the pane owns the cache so blob URLs survive
+ * windowing remount and only get revoked on thread switch or pane disposal.
  */
 export interface AttachmentPreviewCache {
   get(attachmentId: string): ImagePreviewItem | undefined;

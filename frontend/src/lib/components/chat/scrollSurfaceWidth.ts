@@ -1,8 +1,8 @@
 // Observe a scroll surface's CONTENT-box width and report each integer change
 // through `onWidth`. Returns a cleanup that disconnects the observer.
 //
-// The reported width keys the per-thread virtua CacheSnapshot replay
-// (utils/threadVirtuaSizeCache.ts): row heights depend on the wrap point, so a
+// The reported width keys the per-thread size-priors replay
+// (utils/virtual/priors.ts): row heights depend on the wrap point, so a
 // measured-size snapshot only replays when the surface width still matches.
 //
 // Content-box (ResizeObserver `contentRect.width`) is the ONLY width this

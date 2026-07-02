@@ -70,7 +70,7 @@ This redesign:
   (`TranscriptDisclosureHeader`, `ToolHeaderMeta`, `ToolKindIcon`,
   `CompletionBadge` removal).
 - The rail layout in `MessageTimeline.svelte` (per-row outer wrapper
-  only — no virtua / scroll / row-contract changes).
+  only — no virtualizer / scroll / row-contract changes).
 - Tokens for per-tool-kind icon colors.
 
 ## What's explicitly out of scope
@@ -79,7 +79,7 @@ This redesign:
   Streamdown wiring).
 - Composer, sidebar, activity rail, settings, palette, terminal.
 - Wire shapes (`Item` type, payload meta, provider parsers).
-- Scroll architecture (virtua, `useStickToBottom`, the row contract;
+- Scroll architecture (the timeline virtualizer, `useStickToBottom`, the row contract;
   see `docs/architecture/frontend-scroll.md`).
 - TodoWrite remains in the activity rail
   (`ActivityRailTodosBody`), not the timeline.
@@ -102,7 +102,7 @@ through one timeline.
 
 ```
 ChatView.svelte
- └─ MessageTimeline.svelte                  (virtua scroll surface, turn dividers)
+ └─ MessageTimeline.svelte                  (virtualized scroll surface, turn dividers)
      └─ TimelineLeaf.svelte                 (kind-based discrimination)
          ├─ AssistantMessage / UserMessage  (prose; out of scope)
          ├─ ThinkingBlock                   (think rows)
@@ -250,7 +250,7 @@ relitigate.
 | Subagent transcript opens in side panel / new thread view | Loses the at-a-glance "what is the subagent doing right now" affordance. Keep inline "latest tool" preview, restyled. |
 | Multi-file edits as one row with stacked diff | Each file deserves its own row + diff for individual inspection; current `DiffFileStack` already does this. |
 | Group consecutive tool rows in `MessageTimeline.svelte`'s `groupedNodes` to draw the rail | Adds a new `TimelineNode` variant, complicates row-index math + auto-load-older trigger, risks the row-contract stability rule. Per-row `border-l` with tight spacing yields the same visual outcome. |
-| Render full diff inline (no cap) | Conflicts with the compact aesthetic and produces long virtua rows that fight `bufferSize`. Cap at 15 + side-panel CTA. |
+| Render full diff inline (no cap) | Conflicts with the compact aesthetic and produces long timeline rows that fight the virtualizer's `bufferSize`. Cap at 15 + side-panel CTA. |
 | Phase labels on stamps (`planning · 9:42 PM`, `implementing`, `testing`) | No wire signal exists for phase; inferring from prose is fragile. Out of scope for this redesign. |
 | Adopt JetBrains Mono | Geist Mono is already shipping and looks comparable. Avoids a web-font swap that ripples across composer / sidebar / settings. |
 | Narrow to 880px | 992px gives long bash commands and paths room without aggressive truncation. The compactness goal is met by row density, not container width. |
@@ -342,8 +342,8 @@ keep passing.
    `design-mockup.html`.
 
 **Risk to flag during implementation:** rail-border continuity needs
-to play well with virtua row geometry. Each tool row is a separate
-virtua row; the border-left paints per row. As long as we drop `mb-`
+to play well with virtualized row geometry. Each tool row is a separate
+virtualized row; the border-left paints per row. As long as we drop `mb-`
 and use internal `py-` for breathing room, the line is continuous.
 Verify in dev with multiple consecutive bash / read / edit rows —
 both light and dark themes.

@@ -16,12 +16,13 @@ Operational rules for this directory:
   and `listRef.scrollToIndex(...)` for timeline position. Do not query
   DOM rows for first-visible-item math.
 - Route programmatic scrolls through `useStickToBottom`: `forceStick`,
-  `markAtBottom`, `observe(kind)`, `pauseAutoScroll`,
-  `runExternalScroll`, and `armRestoreSnap`.
-- Wrap every virtua `scrollToIndex` call in
-  `stick.runExternalScroll(() => listRef.scrollToIndex(...))`.
-- Never pass `smooth: true` to virtua and never call `scrollIntoView()` on
-  a virtualized row.
+  `markAtBottom`, `observe(kind)`, `pauseAutoScroll`, and
+  `armRestoreSnap`. `listRef.scrollToIndex(...)` needs no wrapper — the
+  virtualizer performs the write through the controller chokepoint
+  (`applyScrollTarget`), so it arrives tagged.
+- `scrollToIndex` is instant-only by design (native smooth scrolling
+  races the controller's tagging); never call `scrollIntoView()` on a
+  virtualized row.
 - Keep `overflow-anchor: none` on the outer scroll container.
 - Keep composer-clearance padding on `scrollEl`, not `contentEl`, and keep
   `ChatView`'s composer `ResizeObserver` notifying the scroll controller
@@ -39,7 +40,7 @@ defensive escape); the restore `$effect` calls
 
 ## Row Contract
 
-Every row rendered inside `<Virtualizer>`:
+Every row rendered inside `<TimelineVirtualizer>`:
 
 - Lives inside a `[data-row-index]` wrapper. Only `TimelineLeaf` emits
   `data-item-id` on its root; structural nodes such as `SubagentGroup`
@@ -49,8 +50,8 @@ Every row rendered inside `<Virtualizer>`:
   scroll surface, or append completion-only history rows.
 - Uses `TranscriptDisclosureHeader.svelte` for disclosure headers unless
   there is a specific reason not to.
-- Survives virtua remount. Row-local state disappears when scrolled out of
-  the rendered window, so remembered state belongs in per-pane registries
+- Survives windowing remount. Row-local state disappears when scrolled out
+  of the rendered window, so remembered state belongs in per-pane registries
   keyed by `item.id`, `payloadId`, or `groupKey`.
 
 Use these pane registries instead of local row state:
@@ -116,11 +117,11 @@ that pipeline go upstream-then-patch; do not duplicate parser fixes in
 
 ## Test Notes
 
-happy-dom reports zero geometry, so `MessageTimeline.svelte` enables
-virtua `ssrCount` (render-all) only under happy-dom test runs
-(`MODE === 'test'` AND the `window.happyDOM` marker). The Chromium
-browser project keeps real windowing — its outcome tests count row
-unmounts.
+happy-dom reports zero geometry, so `MessageTimeline.svelte` enables the
+virtualizer's `renderAll` (mount-every-row) seam only under happy-dom
+test runs (`MODE === 'test'` AND the `window.happyDOM` marker). The
+Chromium browser project keeps real windowing — its outcome tests count
+row unmounts.
 
 Layout invariants that happy-dom cannot see (margin containment, flush,
 oscillation geometry) run in the real-Chromium `browser` vitest project
@@ -128,8 +129,8 @@ oscillation geometry) run in the real-Chromium `browser` vitest project
 import the production `app.css` so the assertion runs against the real
 styles — e.g. `rowMarginContainment.browser.test.ts` guards the
 settle-flicker fix (`[data-row-geometry-content] { display: flow-root }`);
-cascade-independent ones (e.g. the virtua buffer-retention tripwire in
-`src/test/integration/`) skip the import. `pnpm test` runs the
+cascade-independent ones (e.g. `timelineVirtualizer.browser.test.ts`, the
+adapter-seam suite) skip the import. `pnpm test` runs the
 unit project only, so the `make test` / `make verify` gate needs no browser
 binary; run the browser suite explicitly with `pnpm test:browser`, which needs a
 chromium build: `pnpm exec playwright install chromium`. See

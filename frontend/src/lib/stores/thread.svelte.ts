@@ -488,15 +488,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   let loadingNewer: boolean = $state(false);
 
   /**
-   * Direction hint for virtua's native `shift` on the NEXT timeline length
+   * Direction hint for the virtualizer's `shift` on the NEXT timeline length
    * change: `true` when the change happens at the HEAD (older rows prepended
    * by `loadOlder`, or the head dropped by `loadNewer`'s prune), `false` for
-   * tail changes. MessageTimeline binds this to `<Virtualizer shift={...}>`.
+   * tail changes. MessageTimeline binds this to
+   * `<TimelineVirtualizer shift={...}>`.
    *
-   * Without it virtua assumes every length change is at the tail and
-   * misindexes its entire size cache on a prepend — forcing a re-measure of
+   * Without it the engine treats every length change as tail growth and
+   * misindexes its entire size store on a prepend — forcing a re-measure of
    * every visible row (the "scrollbar jumps around" load jank). Set
-   * synchronously immediately before the `items` mutation so virtua reads
+   * synchronously immediately before the `items` mutation so the engine reads
    * the right value in the same flush, and reset in the paging method's
    * `finally`. Only `loadOlder` / `loadNewer` touch it; the streaming-prune
    * path keeps its own anchor-restore (preserveTimelineWindowAnchor) and
@@ -561,7 +562,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * the chat column) can acquire a `pauseAutoScroll()` lease while a
    * gesture is in flight, preventing auto-follow from yanking the view
    * mid-drag. The factory only knows about the minimal surface
-   * (`PaneScrollController`) — it never depends on virtua or the DOM
+   * (`PaneScrollController`) — it never depends on the virtualizer or the DOM
    * controller's full type, so the contract stays cheap to honour.
    */
   let scrollController: PaneScrollController | null = $state(null);
@@ -863,7 +864,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       hasMoreNewerAfterPrune?: boolean;
       /**
        * 'shift' is used by `loadNewer` (a paging op): the head-drop holds
-       * position via virtua's native shift. 'preserve' (default) is the
+       * position via the virtualizer's `shift` head-splice. 'preserve' (default) is the
        * streaming/settle path, which keeps the explicit anchor-restore
        * transaction (preserveTimelineWindowAnchor) and its active-turn defer.
        */
@@ -876,7 +877,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       items.length > ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS;
     // A head-drop on a visible, bottom-pinned timeline repaints the whole
     // viewport: the content height collapses by the dropped rows, the
-    // browser clamps scrollTop, and virtua re-measures — seen as a blank
+    // browser clamps scrollTop, and the virtualizer re-measures — seen as a blank
     // flash mid-stream (incident 2026-06-10). Defer the prune to turn
     // settle (settleTurn calls back in here), holding the hard ceiling
     // as the memory backstop against a runaway turn.
@@ -891,8 +892,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       items,
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
     );
-    // loadNewer paging: the dropped head sits above the viewport, so virtua's
-    // native shift holds the reading position — no anchor transaction, no veto.
+    // loadNewer paging: the dropped head sits above the viewport, so the
+    // virtualizer's `shift` head-splice holds the reading position — no
+    // anchor transaction, no veto.
     if (options.positionMode === 'shift') {
       applyPagedPrune(next, {
         shiftAtHead: true,
@@ -918,7 +920,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
     );
     // loadOlder paging: the dropped tail sits below the viewport (tail change,
-    // no shift, no jump), so virtua leaves the reading position alone.
+    // no shift, no jump), so the virtualizer leaves the reading position alone.
     applyPagedPrune(next, { shiftAtHead: false, hasMoreNewerAfterPrune: true });
   }
 
@@ -945,10 +947,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
   // Paging prune (loadOlder tail-drop / loadNewer head-drop). The dropped end
   // is always opposite the reading viewport, so there is nothing to veto and
-  // no anchor to restore — virtua's native `shift` holds position. Set the
-  // shift direction at the mutation point so virtua reads it in the same flush
-  // as this length change (head-drop → splice the cache from the front;
-  // tail-drop → no shift).
+  // no anchor to restore — the virtualizer's `shift` head-splice holds
+  // position. Set the shift direction at the mutation point so the engine
+  // reads it in the same flush as this length change (head-drop → splice the
+  // size store from the front; tail-drop → no shift).
   function applyPagedPrune(
     next: PrunedWindow,
     options: {
@@ -967,7 +969,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // bottom-pinned, mid-turn viewport, and it can be vetoed/deferred when the
   // prune would drop the visible anchor (vetoPolicy). Leaves the shift flag
   // false — MessageTimeline owns the rendered-node head-shift hint because
-  // virtua receives grouped/revealed nodes, not raw pane items.
+  // the virtualizer receives grouped/revealed nodes, not raw pane items.
   function applyPrunedWindow(
     next: PrunedWindow,
     options: {
@@ -2860,9 +2862,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
                   !currentIds.has(item.id) &&
                   compareItemsByTimelinePosition(item, currentFirst) < 0,
               );
-        // Head-grow: virtua unshifts its size cache and compensates
-        // scrollTop in one step so the reading position holds. Set before
-        // the mutation so virtua reads it in the same flush.
+        // Head-grow: the engine unshifts its size store and reports a
+        // head-splice compensation so the reading position holds. Set
+        // before the mutation so the engine reads it in the same flush.
         pendingTimelineShiftAtHead = true;
         const next = mergeItemsById(prepend, items);
         replaceTimelineItems(next, { disposeDropped: true });
@@ -2882,10 +2884,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         } else {
           hasMoreHistory = pagedHasMoreOlder(paged);
         }
-        // Let virtua process the head-grow (shift=true) before the prune.
-        // The two MUST be separate flushes: coalesced, the net length change
-        // can't represent "prepend at head + drop at tail" and the cache
-        // scrambles (spike-verified — see frontend-scroll.md).
+        // Let the engine process the head-grow (shift=true) before the
+        // prune. The two MUST be separate flushes: coalesced, the net length
+        // change can't represent "prepend at head + drop at tail" and the
+        // size store scrambles (spike-verified — see frontend-scroll.md).
         await tick();
         if (gen !== switchGeneration || pageGen !== pagingGeneration)
           return loadOlderResult('stale');
@@ -3074,7 +3076,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
                   !currentIds.has(item.id) &&
                   compareItemsByTimelinePosition(item, currentLast) > 0,
               );
-        // Tail-grow: shift stays false (virtua appends cache slots at the
+        // Tail-grow: shift stays false (the engine appends size slots at the
         // end, no scroll compensation — rows arrive below the viewport).
         pendingTimelineShiftAtHead = false;
         const next = mergeItemsById(append, items);
@@ -3089,15 +3091,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
             ? false
             : pagedHasMoreNewer(paged);
         hasMoreNewer = nextHasMoreNewer;
-        // Flush 1: virtua processes the tail-grow before the head-prune.
+        // Flush 1: the engine processes the tail-grow before the head-prune.
         // Separate flushes (see loadOlder): a coalesced tail-grow +
         // head-shrink can't be expressed by one `shift`.
         await tick();
         if (gen !== switchGeneration || pageGen !== pagingGeneration)
           return loadOlderResult('stale');
-        // Flush 2: head-prune (shift=true) — virtua splices its cache from
-        // the front and shifts scrollTop up by the dropped height, holding
-        // the reading position. No explicit anchor restore needed.
+        // Flush 2: head-prune (shift=true) — the engine splices its size
+        // store from the front and compensates scrollTop by the dropped
+        // height, holding the reading position. No explicit anchor restore
+        // needed.
         pruneToRecentWindowIfNeeded({
           hasMoreNewerAfterPrune: nextHasMoreNewer,
           positionMode: 'shift',
@@ -3346,7 +3349,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // Tool calls, errors, notifications, etc. bypass the smoother —
       // they have their own renderers and don't benefit from
       // word-aligned reveal. Replace the entry rather than mutating in
-      // place so virtua's per-row ResizeObserver stays quiet on
+      // place so the virtualizer's per-row ResizeObserver stays quiet on
       // unchanged rows; the streaming row is genuinely growing, so a
       // fresh reference is the correct signal. These rows also bypass the
       // spring latch: command output and tool chrome can remeasure quickly
@@ -3391,7 +3394,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // reference is the reactive signal that re-runs the extension
       // build. updatedAt is preserved — triage's UpdateItemMeta does
       // not bump updated_at, and we don't want this re-render to look
-      // like a content change to virtua / threadItemCache.
+      // like a content change to the size priors / threadItemCache.
       items[index] = { ...current, meta: evt.meta };
     },
 
@@ -3525,7 +3528,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       evictSettledSubagentChildren([next]);
     },
 
-    // ---- Per-row UI state (survives virtua remount) ----
+    // ---- Per-row UI state (survives windowing remount) ----
     expansionStateFor: rowUiState.expansionStateFor,
     retainExpansionStateFor: rowUiState.retainExpansionStateFor,
     expansionStateForPayload: rowUiState.expansionStateForPayload,

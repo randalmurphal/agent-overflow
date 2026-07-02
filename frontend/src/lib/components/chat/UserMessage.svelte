@@ -89,10 +89,10 @@
   const attachments = $derived<AttachmentPreviewSource[]>(
     parseUserMessageAttachments(item.meta, item.threadId),
   );
-  // Pane-owned blob cache: blob URLs survive virtua's overscan eviction,
+  // Pane-owned blob cache: blob URLs survive the window's overscan eviction,
   // so back-scrolling to a previously-mounted UserMessage doesn't refetch
   // attachments from Go or re-allocate object URLs. The IntersectionObserver
-  // gate has been dropped — virtua's bufferSize=900 already bounds which
+  // gate has been dropped — the virtualizer's buffer already bounds which
   // rows are mounted to "near the visible viewport"; loading on mount
   // costs at most a small read-ahead and the cache de-dupes across remounts.
   // pane + item.id stable per row instance; capture the cache once via untrack.

@@ -51,11 +51,11 @@ export function cursorIsValid(cursor: TimelineCursorLike | null | undefined): cu
  * upserts on durable-status flag updates, etc.). Each such redundant
  * upsert otherwise replaces the row in `pane.items` with a new object
  * reference, which forces `groupedNodes` to rebuild, which forces
- * `<Virtualizer data={groupedNodes}>` to re-iterate, which can land as
- * a remount of the affected row's DOM. A row with async render work
- * (DiffFileBlock token dispatch, Streamdown typesetting, etc.) then
- * settles at its measured height again — and virtua applies a scrollTop
- * jump for the size delta. Observed in plan-ready threads as a row
+ * `<TimelineVirtualizer data={revealedNodes}>` to re-iterate, which can
+ * land as a remount of the affected row's DOM. A row with async render
+ * work (DiffFileBlock token dispatch, Streamdown typesetting, etc.) then
+ * settles at its measured height again — and the engine compensates
+ * scrollTop for the size delta. Observed in plan-ready threads as a row
  * oscillating ±103 px every ~115 ms while the user is trying to scroll.
  *
  * Compare-by-value covers the fields the row renderers actually read.

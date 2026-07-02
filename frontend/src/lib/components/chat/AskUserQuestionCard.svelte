@@ -54,7 +54,7 @@
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
   // Expansion state lives on the per-pane registry so it survives
-  // virtua remount when the row scrolls past `bufferSize=900` and back
+  // windowing remount when the row scrolls out of the buffer and back
   // (per the row contract documented in components/chat/AGENTS.md).
   // The handle's payload-fetching codepath is a no-op for AskUserQuestion
   // rows — they have no `payloadId` (questions + answers live on

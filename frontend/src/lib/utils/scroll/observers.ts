@@ -38,7 +38,7 @@ const CONTENT_REFLOW_SETTLE_WINDOW_MS = 250;
 // After attach() or forceStick(), the controller stays in sync-pin mode
 // until contentRO has been quiet for QUIET_MS or the FAILSAFE_MS
 // deadline trips. This defends against the mount-time spring-chase
-// regression: virtua's per-row ResizeObservers and svelte-streamdown's
+// regression: the virtualizer's per-row ResizeObserver and svelte-streamdown's
 // async typesetting (shiki/KaTeX/mermaid) fire many positive deltas
 // while content is settling, and we don't want those to look like
 // "real" content arrival.
@@ -51,7 +51,7 @@ const CONTENT_REFLOW_SETTLE_WINDOW_MS = 250;
 // already mid-stream produces continuous contentRO fires, so the
 // quiet window never closes. Without the failsafe we'd be stuck in
 // sync-pin for the rest of the turn. 2500ms covers slow machines
-// where shiki/mermaid worker startup + virtua first-paint can
+// where shiki/mermaid worker startup + virtualizer first-paint can
 // genuinely take >1s, while still letting the spring engage for the
 // bulk of a typical multi-second response.
 const QUIET_MS = 100;
@@ -66,7 +66,7 @@ const FAILSAFE_MS = 2500;
 //
 // CRITICAL: the shortened window is only sound once the SURFACE has
 // stopped moving. `quietContextSignal` reports svelte-streamdown's async
-// state — it is blind to virtua's estimate→measure cascade, which mounts
+// state — it is blind to the engine's estimate→measure cascade, which mounts
 // rows at ESTIMATED_ROW_SIZE and grows scrollHeight over a sequence of
 // contentRO fires spaced WIDER than SETTLED_QUIET_MS. If we shorten the
 // window while that cascade is in flight, the timer fires in the gap
@@ -88,7 +88,7 @@ const SETTLED_QUIET_MS = 16;
 // A contentRO height delta at or below this counts as "the surface has
 // effectively settled" — small enough that revealing on SETTLED_QUIET_MS
 // cannot show a perceptible bottom-shift. Anything larger is treated as
-// virtua's estimate→measure cascade still in flight. Absolute px, not
+// the engine's estimate→measure cascade still in flight. Absolute px, not
 // viewport-relative: the threshold is human-perceptible scroll
 // displacement, which does not scale with viewport height. The engine
 // places unmeasured rows at floor-biased kind estimates
@@ -156,7 +156,7 @@ export interface ContentObserver {
   sampleResizeCorrelation(): boolean;
   /** Raw resizeDifference read for trace payloads only. */
   resizeDifferenceNow(): number;
-  /** True while the width-reflow settle window is open (virtua compensation input). */
+  /** True while the width-reflow settle window is open (engine-compensation input). */
   widthReflowActive(): boolean;
   /**
    * Stamp a synthetic RO-correlation before an out-of-content instant
@@ -237,7 +237,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
 
   // Pick the quiet window for an arm. The shortened SETTLED_QUIET_MS is
   // only sound once the surface has stopped moving in large steps; while
-  // virtua's estimate→measure cascade is still growing scrollHeight we use
+  // the engine's estimate→measure cascade is still growing scrollHeight we use
   // the conservative QUIET_MS window, which each cascade fire resets so it
   // closes only after the cascade goes quiet. See WARMUP_SETTLE_EPSILON_PX.
   function quietWindowForGeometry(): number {
@@ -325,7 +325,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       }
 
       // Every RO activity counts as "still settling" — reset the quiet
-      // timer regardless of delta direction. virtua's per-row
+      // timer regardless of delta direction. The virtualizer's per-row
       // remeasurement, Streamdown's typesetting backfill, and
       // parseIncompleteMarkdown rebalance all fire multiple RO callbacks
       // in close succession during mount; we want warm to fire only
@@ -360,7 +360,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
 
       const delta = nextHeight - prev;
       const widthReflowActive = widthChanged || contentReflowSettleUntil > nowMs();
-      // Common case: virtua re-measures a same-height row, padding-bottom
+      // Common case: the virtualizer re-measures a same-height row, padding-bottom
       // CSS variable updates with identical computed value, etc. No
       // geometry change → nothing to chase, no scroll-event tagging needed.
       if (delta === 0) {
@@ -378,14 +378,14 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       }
       resizeDifference = delta;
       // A browser scroll clamp (scrollHeight shrinking below
-      // scrollTop + clientHeight, e.g. from virtua's row-height
-      // corrections mutating styles in its own RO callbacks) emits one
+      // scrollTop + clientHeight, e.g. from a shrinking row measurement
+      // reducing the virtualizer's spacer height) emits one
       // untagged scroll event correlated with this content resize. The
       // timer/rAF `resizeDifference` guard catches the normal ordering;
       // this one-event budget covers the clear racing ahead of the
       // scroll handler. Pending user intent still wins. (virtua's own
       // compensation writes used to be the main untagged producer here;
-      // those are now routed through the controller and token-tagged.)
+      // the engine's are routed through the controller and token-tagged.)
       resizeCorrelatedUntaggedScrollBudget = 1;
 
       // Refresh the geometric near-bottom flag BEFORE resolving so the

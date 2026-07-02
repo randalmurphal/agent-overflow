@@ -419,9 +419,9 @@ describe('<UserMessage>', () => {
     expect(onImageExpand.mock.calls[0]?.[0].images[0]?.url).toMatch(/^(blob:|data:image\/png;base64,)/);
   });
 
-  it('loads history attachment thumbnails on mount (virtua bufferSize bounds the mount window)', async () => {
+  it('loads history attachment thumbnails on mount (windowing bufferSize bounds the mount window)', async () => {
     // Pre-rebuild this was gated by an IntersectionObserver inside the
-    // row. After the rebuild, virtua's `bufferSize=900` already restricts
+    // row. After the rebuild, the virtualizer's buffer already restricts
     // mount to rows near the viewport, and the per-pane attachment cache
     // de-dupes across remounts — so a separate IO observer was redundant
     // and got removed. Loading happens immediately on mount, and goes

@@ -127,7 +127,7 @@ export function createPayloadExpansion(
   // first paint after mount sees `chunks` populated, and the row that
   // hosts this expansion renders at its full height from frame 0
   // instead of the empty-then-loaded oscillation that breaks
-  // virtua's per-row size cache on thread re-entry. The corresponding
+  // the virtualizer's measured row sizes on thread re-entry. The corresponding
   // write happens after a successful fetch in `loadPreview` /
   // `showFull`.
   //

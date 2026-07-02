@@ -133,7 +133,7 @@
   // After a layout-order change (alt+shift+h/l, drag-and-drop reorder),
   // the moved pane's <section> is repositioned via insertBefore. The
   // browser can transiently report bad scroll geometry for inactive
-  // timelines, leaving virtua's rendered range out of sync with the
+  // timelines, leaving the engine's rendered range out of sync with the
   // pane's scrollTop. Wait for layout to settle, then ask each timeline
   // to reconcile its virtualizer against the host layout. This is not a
   // content-growth path: the transcript did not change.

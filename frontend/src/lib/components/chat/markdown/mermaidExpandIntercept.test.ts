@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 /**
  * Verifies the capture-phase intercept that routes the panzoom "Toggle
  * expand" button to DiagramModal instead of the library's broken
- * position:fixed overlay (which lands off-screen inside virtua's
- * transform-containing rows).
+ * position:fixed overlay (which lands off-screen inside the
+ * virtualizer's containment-scoped rows).
  *
  * These are pure DOM tests — they don't mount the full Svelte component
  * because that requires the mermaid library. The handler logic under

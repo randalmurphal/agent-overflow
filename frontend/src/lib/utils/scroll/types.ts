@@ -149,18 +149,6 @@ export interface UseStickToBottomController {
    */
   markAtBottom(): void;
   /**
-   * Run an external programmatic scroll under the controller's
-   * scroll-intent tag. This is the escape hatch for scroll writers the
-   * controller cannot perform itself — chat's virtualizer no longer
-   * needs it (its imperative scrolls go through `applyScrollTarget`),
-   * but the seam stays for genuinely external writers.
-   *
-   * Most external jumps are explicit navigation and should escape bottom
-   * follow; a writer that merely re-establishes the current position
-   * passes `preserveIntent`.
-   */
-  runExternalScroll(action: () => void, opts?: { preserveIntent?: boolean }): void;
-  /**
    * Set the escape flag. Public so `handleLoadOlder` / `scrollToItem`
    * can opt out of auto-restick on programmatic jumps.
    *

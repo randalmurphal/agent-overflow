@@ -24,7 +24,7 @@
     meta: ProposedPlanMeta;
   } = $props();
 
-  // Plan rows live under virtua, so row-local async state is the wrong
+  // Plan rows live under the virtualizer, so row-local async state is the wrong
   // lifetime: recycling the DOM used to reset this expansion and bounce
   // the row between preview height and full height. Keep the handle in
   // the pane row registry instead; the DOM can remount without throwing

@@ -387,7 +387,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     // scrollTop write against the current target. Subsequent
     // svelte-streamdown async typesetting
     // (shiki / KaTeX / mermaid / parseIncompleteMarkdown rebalance)
-    // and virtua's per-row remeasurement get handled invisibly by the
+    // and the engine's per-row remeasurement get handled invisibly by the
     // controller's contentRO sync-pin path.
     //
     // We can't assert the absence of a scroll preamble directly in
@@ -472,14 +472,14 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(getThreadScrollSnapshot(thread.id)).not.toEqual({ kind: 'bottom' });
   });
 
-  it('bottom-snapshot restore writes scrollTop exactly once via forceStick (no virtua-scroll fight)', async () => {
+  it('bottom-snapshot restore writes scrollTop exactly once via forceStick (no virtualizer-scroll fight)', async () => {
     // Regression: an earlier iteration of restoreToBottom paired
     // `listRef.scrollToIndex(last, 'end')` with `stick.markAtBottom()`.
-    // virtua's measurement loop kept writing scrollTop on every
-    // ACTION_ITEM_RESIZE tick for ~150ms, while the controller's
+    // virtua's measurement loop (this predates the bespoke engine) kept
+    // writing scrollTop on every resize tick for ~150ms, while the controller's
     // contentRO sync-pin (enabled by markAtBottom) ALSO wrote scrollTop
     // on every positive contentEl delta. They targeted slightly
-    // different values (virtua: itemOffset+itemSize-clientHeight;
+    // different values (virtualizer: itemOffset+itemSize-clientHeight;
     // controller: scrollHeight-clientHeight) and oscillated visibly
     // on every Streamdown async typesetting tick. The single-writer
     // contract closes that hole: forceStick() lands scrollTop once,
@@ -516,10 +516,10 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
   it('bottom-snapshot restore schedules a rAF content-observation settle pass', async () => {
     // The synchronous forceStick at restore time lands scrollTop against
-    // the geometry virtua reports at frame 0 from its initial estimates.
+    // the geometry the engine reports at frame 0 from its initial estimates.
     // Late layout settling — composer-height RO updating scrollEl's
     // padding-bottom (padding-only growth doesn't refire the contentRO),
-    // virtua's per-row remeasurement on the next frame, and the first
+    // the engine's per-row remeasurement on the next frame, and the first
     // burst of Streamdown async typesetting (shiki / KaTeX / mermaid) —
     // can shift the bottom by a few pixels one frame after forceStick.
     // The user-visible symptom of dropping the trailing rAF was landing
@@ -605,8 +605,8 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
   it('falls back to restoreToBottom when the anchor item resolves but findTimelineNodeIndex returns -1', async () => {
     // After loadUntilItem returns true, restoreAnchor awaits a
-    // tick and then calls findTimelineNodeIndex(snap.itemId). If virtua
-    // hasn't yet rendered the row (race) or the item id was pruned in
+    // tick and then calls findTimelineNodeIndex(snap.itemId). If the
+    // virtualizer hasn't yet rendered the row (race) or the item id was pruned in
     // a different code path, idx < 0 → fall back to restoreToBottom.
     // We force the branch by claiming the item exists (loadUntilItem
     // returns true) but populating the pane with items that have
@@ -1027,8 +1027,8 @@ describe('scroll integration — composer height + layout invariance', () => {
     // Regression guard: the browser's default `overflow-anchor: auto`
     // adjusts scrollTop to keep the topmost-visible element fixed when
     // content above the viewport changes size — well-intentioned for
-    // static documents, but it actively fights virtua's measurement-loop
-    // jump correction AND the controller's contentRO sync-pin. Streamdown
+    // static documents, but it actively fights the engine's remeasure
+    // compensation AND the controller's contentRO sync-pin. Streamdown
     // async typesetting (shiki / KaTeX / mermaid) growing rows above the
     // viewport on a sticky session would produce visible scrollTop
     // oscillation between the browser's anchor adjustment and our re-pin
@@ -1086,7 +1086,7 @@ describe('scroll integration — banner overlay (no reserved height)', () => {
 });
 
 describe('scroll integration — auto-follow + button', () => {
-  // virtua-internal scroll math isn't testable in happy-dom (zero
+  // Engine scroll math isn't observable in happy-dom (zero
   // viewport geometry). We verify integration seams: the input-intent path
   // surfaces the scroll-to-bottom chip, and clicking it flips intent
   // back to sticky.
@@ -1409,9 +1409,9 @@ describe('scroll integration — mid-list inserts re-sort and re-index', () => {
   // resolves to the wrong row and the auto-follow `getLastIndex()`
   // points at the second-to-last item.
   //
-  // happy-dom can't measure layout, so we don't assert on virtua
-  // remount counts here. We assert on the data contract that virtua's
-  // `getKey` consumes: items array order + index map consistency.
+  // happy-dom can't measure layout, so we don't assert on windowing
+  // remount counts here. We assert on the data contract that the
+  // virtualizer's `getKey` consumes: items array order + index map consistency.
 
   it('upserting an out-of-order item lands it in chronological position and rebuilds itemIndexById', async () => {
     const pane = await buildPane(makeThread(), [
@@ -1503,9 +1503,9 @@ describe('scroll integration — load older noop / error paths', () => {
 });
 
 describe('scroll integration — auto-load-older trigger', () => {
-  // The auto-load trigger fires from the Virtualizer's `onscroll` prop
-  // (handleVirtuaScroll → maybeAutoLoadOlder → handleLoadOlder). Under
-  // happy-dom + ssrCount, virtua's onscroll callback fires synchronously
+  // The auto-load trigger fires from TimelineVirtualizer's `onscroll` prop
+  // (handleTimelineScroll → maybeAutoLoadOlder → handleLoadOlder). Under
+  // happy-dom + renderAll, the adapter's onscroll callback fires synchronously
   // when scrollEl dispatches a `scroll` event; that's the seam these
   // tests use to drive the trigger end-to-end.
   function dispatchScroll(container: HTMLElement): HTMLElement {
@@ -1931,7 +1931,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // a child to a running inline subagent doesn't flicker. Under the new
     // architecture there is no mask — the guarantee is structural: the
     // controller does NOT infer up intent from scrollTop direction
-    // (R4 mitigation), so virtua's $fixScrollJump or any per-row resize
+    // (R4 mitigation), so an engine compensation or any per-row resize
     // that nudges scrollTop cannot flip escapedFromLock. Mid-stream
     // upserts therefore leave intent/stickiness untouched.
     const pane = await buildPane(undefined, [
@@ -1956,7 +1956,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
 
     // The upsert path must not have flipped escape or torn the lease.
-    // If a future regression infers up intent from a virtua jump-correction
+    // If a future regression infers up intent from a compensation
     // write, this assertion fails.
     expect(ctrl.isSticky).toBe(true);
     expect(ctrl.escapedFromLock).toBe(false);
@@ -2040,7 +2040,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // still true. Neither the switch nor the initial load is an in-turn
     // append, so the live-follow effect must NOT call
     // markStructuralContentPending() across the switch+load+settle. If it
-    // does, the structural-append spring chases the post-restore virtua
+    // does, the structural-append spring chases the post-restore
     // measurement backlog and the user sees a multi-hundred-px scroll on
     // switch. The fix re-baselines (without marking) while switchGeneration
     // changed OR pane.loading is true OR loading just toggled — covering the
@@ -2366,8 +2366,8 @@ describe('scroll integration — useStickToBottom wiring', () => {
   });
 
   it('hides contentEl during the measurement cascade on uncached loads (cache miss)', async () => {
-    // Regression: on cache-miss thread loads, virtua's lazy mount-time
-    // measurement underestimates totalSize at ESTIMATED_ROW_SIZE × N.
+    // Regression: on cache-miss thread loads, the engine's lazy mount-time
+    // measurement underestimates totalSize at the estimate × N.
     // The per-row ResizeObserver cascade then shrinks totalSize across
     // a few rAFs; for long threads this clamps scrollTop by a fraction
     // of a page (216-item sample: 461px) AND shifts every row's

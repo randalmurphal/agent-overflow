@@ -240,7 +240,7 @@ async function captureBugReport(): Promise<void> {
   const stickState = window.__stickState?.() ?? null;
   // Per-pane geometry dump (utils/paneGeometryProbe.ts). Unlike stickState
   // (last-writer-wins, single pane, distanceFromBottom-centric), this reports
-  // EVERY mounted timeline with virtua's cached bottom-row slot vs the real DOM
+  // EVERY mounted timeline with the engine's bottom-row slot vs the real DOM
   // row height — the deltas that discriminate the width-reflow strand, where a
   // healthy bottom and the strand both read distanceFromBottom ~0.
   const paneGeometry = window.__paneGeometry?.() ?? null;

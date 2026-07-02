@@ -1,7 +1,7 @@
 // Above-viewport compensation outcome regression — Stage 3 of
 // docs/architecture/scroll-rearchitecture-plan.md.
 //
-// virtua compensates for above-viewport row remeasurements via
+// virtua compensated for above-viewport row remeasurements via
 // $fixScrollJump. Those writes were arbitrated by the controller's scrollTop
 // descriptor gate until Stage 3 routed them through the patched applier seam
 // (resolveVirtuaCompensation) and deleted the gate. The gate's decision tiers
@@ -22,7 +22,7 @@
 //     of a visible ~1s spring chase (20260622T041049Z's +2276px write).
 //
 // (seq-509 — restore-consent — is pane/controller choreography with no
-// virtua writer involved; it stays covered by the forceStick consent-gate
+// virtualizer writer involved; it stays covered by the forceStick consent-gate
 // unit tests in utils/scroll/index.svelte.test.ts. Every mount here also
 // exercises the mount-cascade compensation window: mountTimeline fails
 // unless the post-cascade settle lands at the bottom.)
@@ -103,9 +103,9 @@ function seedItems(threadId: string): Item[] {
   return seedTimelineItems(threadId, SEED_PROSE);
 }
 
-// Find a mounted seed row lying entirely above the viewport top (virtua's
+// Find a mounted seed row lying entirely above the viewport top (the
 // above-viewport buffer band) — the rows whose remeasurement triggers
-// $fixScrollJump compensation. Throws if none is mounted: the scenario would
+// remeasure-above compensation. Throws if none is mounted: the scenario would
 // be vacuous without real windowing.
 function findAboveViewportSeedId(scrollEl: HTMLElement): string {
   const viewportTop = scrollEl.getBoundingClientRect().top;
@@ -182,7 +182,7 @@ function finishTurn(pane: ThreadPane, turnId: string, turnIndex: number): void {
   });
 }
 
-describe('above-viewport compensation outcomes (real MessageTimeline × real virtua × Chromium)', () => {
+describe('above-viewport compensation outcomes (real MessageTimeline × real windowing × Chromium)', () => {
   it('pinned: an above-viewport row growing never moves the visible tail', async () => {
     const threadId = 'thread-comp-pinned';
     const { pane, scrollEl, entry } = await mountTimeline(threadId, seedItems(threadId), QUIET_BOTTOM);
@@ -242,7 +242,7 @@ describe('above-viewport compensation outcomes (real MessageTimeline × real vir
     // unmistakable, far enough from the top that an above-viewport buffer
     // band exists.
     await userScrollTo(scrollEl, Math.floor(scrollEl.scrollHeight / 2));
-    // Let virtua's scrollend debounce clear so the growth window starts from
+    // Let the virtualizer's scrollend debounce clear so the growth window starts from
     // a neutral store.
     await wait(400);
 

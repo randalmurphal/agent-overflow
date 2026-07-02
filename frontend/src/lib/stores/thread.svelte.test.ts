@@ -1810,7 +1810,7 @@ describe('createThreadPane', () => {
   });
 
   it('expansionStateFor returns the same handle across calls (survives row remount)', () => {
-    // Why: virtua's overscan eviction unmounts a row component when it
+    // Why: the window's overscan eviction unmounts a row component when it
     // scrolls past the buffer; remounting reconstructs the snippet's
     // closure-scoped $state from scratch. The pane registry returns
     // the SAME handle reference for the same itemId, so toggle state
@@ -1884,7 +1884,7 @@ describe('createThreadPane', () => {
 
   it('attachmentCacheFor returns a stable view per itemId; survives lookup', () => {
     // Why: pre-rebuild, UserMessage.svelte allocated blob URLs in its
-    // own onDestroy-revoking factory. virtua's overscan eviction would
+    // own onDestroy-revoking factory. The window's overscan eviction would
     // unmount + remount the row on a back-scroll, refetching every
     // attachment from Go. The pane-owned cache survives remount; the
     // factory seeds from it and writes loaded previews back.
@@ -3641,11 +3641,11 @@ describe('createThreadPane', () => {
       expect(pane.hasMoreNewer).toBe(true);
     });
 
-    // === virtua `shift` signal (pendingTimelineShiftAtHead) ===
+    // === virtualizer `shift` signal (pendingTimelineShiftAtHead) ===
     // The prepend/append and the window prune must land in SEPARATE flushes
-    // so virtua's `shift` can be correct for each end. Coalesced, a
+    // so the `shift` hint can be correct for each end. Coalesced, a
     // head-grow + tail-shrink collapse into one net length change that no
-    // single `shift` boolean can represent, and virtua's size cache
+    // single `shift` boolean can represent, and the engine's size store
     // scrambles (the load jank). See the spike notes in
     // docs/architecture/frontend-scroll.md.
     it('loadOlder prepends (head-shift) and prunes the tail in a later flush', async () => {
@@ -3778,7 +3778,7 @@ describe('createThreadPane', () => {
         shift: false,
       });
       // Head-prune flush: a SEPARATE flush at the target length carrying
-      // shift=true (virtua splices its cache from the front).
+      // shift=true (the engine splices its size store from the front).
       expect(snapshots).toContainEqual({
         len: ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
         shift: true,

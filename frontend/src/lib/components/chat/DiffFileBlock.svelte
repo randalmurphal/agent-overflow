@@ -10,7 +10,7 @@
    * The header is a real disclosure: default expansion follows
    * settings.collapseDiffPreviews (off → expanded), and a per-card
    * toggle overrides it, persisted on the pane keyed by
-   * (itemId, file.path) so it survives virtua remounts. Toggling a
+   * (itemId, file.path) so it survives windowing remounts. Toggling a
    * card back to the current default clears its override, so it keeps
    * following future setting flips. Files over the inline preview cap
    * render only the capped rows with a fade-out gradient + a "Show
@@ -102,7 +102,7 @@
 
   // Default expansion follows the global setting; a per-card user
   // toggle overrides it. Overrides live on the pane so they survive
-  // virtua remounts; the local fallback covers pane-less renders.
+  // windowing remounts; the local fallback covers pane-less renders.
   let collapsePref = $derived(getSettings().collapseDiffPreviews);
   let localOverride = $state<boolean | undefined>(undefined);
   let userOverride = $derived(

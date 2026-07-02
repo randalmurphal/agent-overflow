@@ -45,8 +45,8 @@ const SPRING_MAX_CATCHUP_STEPS = 3;
 // (re-rAFs without writing, keeping springToken non-zero) so
 // `springActive` stays true across gaps > 350ms (async shiki loads,
 // parseIncompleteMarkdown rebalances) for the two resolver decisions
-// that key on it: the virtua-compensation decline tier
-// (resolveVirtuaCompensation) and the negative-delta mid-chase spring
+// that key on it: the engine-compensation decline tier
+// (resolveEngineCompensation) and the negative-delta mid-chase spring
 // carve-out (resolveContentDelivery). The sentinel cancels on the next
 // tick where animationMode flips to 'instant' (no live content advanced
 // within the consumer's hold window — see MessageTimeline's
@@ -345,7 +345,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         // (sentinelEntryTarget set) and the target returned to the
         // sentinel entry value, the content layer oscillated in
         // height (-N then +N from async Streamdown typesetting /
-        // virtua row remount). The browser auto-clamped scrollTop
+        // a windowing row remount). The browser auto-clamped scrollTop
         // during the low point (a native engine operation — not a
         // scrollTop write the controller could arbitrate), stranding
         // scrollTop below the restored target. Snap back instantly — a spring
@@ -451,10 +451,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           // window (async shiki load, inter-chunk gap, parseIncomplete
           // Markdown rebalance). Keep the spring sentinel-alive so
           // `springActive` stays true for the resolver decisions that
-          // key on it: resolveVirtuaCompensation's decline tier and
+          // key on it: resolveEngineCompensation's decline tier and
           // resolveContentDelivery's negative-delta carve-out. Without
           // this, cancel() sets springToken=0 and the dead window
-          // lets a routed virtua compensation or a negative contentRO
+          // lets a routed engine compensation or a negative contentRO
           // sync-pin land instantly — visible as 1-2 lines of instant
           // jump mid-stream. The next positive contentRO delta bumps
           // lastTargetChangedAt and the chase resumes on the following

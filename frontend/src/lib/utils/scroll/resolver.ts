@@ -193,10 +193,11 @@ export function springGateIsOpen(s: SpringGateInputs): boolean {
 
 // Stranded-at-bottom oscillation: a row ABOVE the viewport transiently
 // shrank and regrew while the spring sat sentinel-idle at the bottom —
-// virtua remounting/remeasuring a replaced element, e.g. an image
-// user-message row scrolled out of the live window. virtua sizes its
-// container explicitly (`contain: size` + `height: <totalSize>px`), so
-// the dip is the contentEl height the controller observes. While pinned
+// a windowing remount/remeasure of a replaced element, e.g. an image
+// user-message row scrolled out of the live window. The virtualizer
+// sizes its container explicitly (`contain: size` + `height:
+// <totalSize>px`), so the dip is the contentEl height the controller
+// observes. While pinned
 // at the exact bottom, the browser SYNCHRONOUSLY clamps scrollTop down
 // during the dip (a native operation no write gate can see); the regrow
 // restores the target to exactly the sentinel-entry value, leaving
@@ -288,15 +289,15 @@ export function resolveContentDelivery(
   let oscillationRecovery = false;
   let setIsAtBottom = false;
 
-  // Overshoot guard: browser auto-clamping or virtua corrections pushed
-  // scrollTop past the target — snap back. Two clauses past the
+  // Overshoot guard: browser auto-clamping or virtualizer corrections
+  // pushed scrollTop past the target — snap back. Two clauses past the
   // escape / pause gates:
   //
   // 1. No spring in flight: any overshoot snaps. There is no other
-  //    writer that will absorb it (the original Bug-A defense for
-  //    virtua applyJump landing past the bottom mid-cascade — the warm
-  //    gate keeps the spring suppressed there, so this clause is always
-  //    the one reached during the cascade).
+  //    writer that will absorb it (the original Bug-A defense for the
+  //    virtua-era applyJump landing past the bottom mid-cascade — the
+  //    warm gate keeps the spring suppressed there, so this clause is
+  //    always the one reached during the cascade).
   // 2. Spring in flight AND magnitude exceeds the instant-snap
   //    threshold: a large overshoot absorbed by the spring is fatal to
   //    follow UX (the viewport visibly drifts down 100+px across many
@@ -373,13 +374,13 @@ export function resolveContentDelivery(
     // Negative delta: re-stick when EITHER the intent flag or the
     // geometric near-bottom band says "stay at bottom". The geometric
     // branch matches upstream's negative-resize re-stick; the intent
-    // branch defends against virtua's jump correction flipping
-    // isNearBottom=false purely as a downstream effect of an
+    // branch defends against the virtualizer's compensation write
+    // flipping isNearBottom=false purely as a downstream effect of an
     // above-viewport remeasure cascade (the "half-screen jump to
     // bottom" on heavy uncached threads — see frontend-scroll.md).
     setIsAtBottom = true;
     // Spring carve-out: suppress the sync write while a spring is
-    // chasing so virtua's +ESTIMATE/-CORRECTION pair on row-append
+    // chasing so the engine's +ESTIMATE/-CORRECTION pair on row-append
     // (e.g. +90 then -56 within ~5ms) doesn't race the spring. Without
     // it, the negative write lands scrollTop at the corrected target
     // before the spring's first paint and the spring ticks against

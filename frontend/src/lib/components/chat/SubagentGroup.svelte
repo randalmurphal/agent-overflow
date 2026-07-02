@@ -52,7 +52,7 @@
     renderNode,
   }: {
     /** Pane for the per-groupKey subagent expansion registry. When omitted,
-     * falls back to local state — expand state then resets on virtua remount.
+     * falls back to local state — expand state then resets on windowing remount.
      * Real chat surfaces always pass `pane`. */
     pane?: ThreadPane;
     group: SubagentGroupNode;
@@ -90,7 +90,7 @@
 
   // Collapsed by default so large subagents don't dominate the
   // initial view. Persisted on the pane (keyed by group.groupKey) so the
-  // user's expand state survives virtua's overscan eviction. Local
+  // user's expand state survives the window's overscan eviction. Local
   // fallback used only when `pane` is omitted (unit tests).
   let localExpanded = $state(false);
   const expanded = $derived(
