@@ -1,0 +1,72 @@
+// Transport-gap recovery event domain: coarse-grained resync when
+// wsClient.ts detects a missed seq on a channel — re-fetches sidebar
+// projections and the affected panes' loaded windows so SQLite (the
+// authoritative history cache) backfills whatever was lost. Fan-in
+// target of events.ts's setupEventListeners.
+import type { Thread } from '../types/models';
+import { iterPanes } from './panes.svelte';
+import { GetThread } from './bindings';
+import { refreshSidebarProjections } from './eventsThreadRows';
+
+// The handler matches on the channel name we lost rather than each
+// payload kind because a single gap on `provider:item_event` can
+// straddle upserts AND deltas; refreshing the whole pane is the
+// simplest correct response. (Channel semantics are documented at the
+// wiring site in events.ts.)
+export function applyTransportGap(gap: { channel: string; seq: number }): void {
+  if (!gap || typeof gap.channel !== 'string') return;
+  switch (gap.channel) {
+    case 'provider:item_event':
+    case 'provider:turn_started':
+    case 'provider:turn_completed':
+    case 'thread:updated': {
+      refreshSidebarProjections();
+      // Per-pane on purpose: refreshFromBackend refetches THAT
+      // pane's loaded window (two panes on one thread can hold
+      // different slices), so this cannot dedupe by threadId the
+      // way the usage branch below does.
+      for (const pane of iterPanes()) {
+        if (!pane.threadId) continue;
+        void pane.refreshFromBackend();
+      }
+      return;
+    }
+    case 'provider:usage': {
+      // refreshFromBackend doesn't pull `lastTokenUsage` from the
+      // store, so a missed usage event would leave the meter stale
+      // forever. Re-read each affected thread's row so
+      // `seedContextWindow` rebuilds the meter from the persisted
+      // snapshot. (`replaceThread` re-runs the seed via
+      // thread.svelte.ts.) Dedupe by threadId so two panes mounting
+      // the same thread don't issue two RPCs for the same refresh.
+      const seen = new Set<string>();
+      for (const pane of iterPanes()) {
+        if (!pane.threadId || seen.has(pane.threadId)) continue;
+        const threadId = pane.threadId;
+        seen.add(threadId);
+        void GetThread(threadId).then((thread) => {
+          const t = thread as Thread | null;
+          if (!t) return;
+          for (const p of iterPanes()) {
+            if (p.threadId === threadId) p.replaceThread(t);
+          }
+        }).catch((err: unknown) => {
+          console.warn(`events: refresh thread ${threadId} after provider:usage gap: ${err}`);
+        });
+      }
+      return;
+    }
+    default:
+      // Unknown channel: log a breadcrumb and refresh active panes
+      // anyway. Refreshing is cheap; missing a refresh on a future
+      // channel that needs one would be silent data drift.
+      console.warn(
+        `events: transport gap on unknown channel "${gap.channel}" — refreshing active panes`,
+      );
+      refreshSidebarProjections();
+      for (const pane of iterPanes()) {
+        if (!pane.threadId) continue;
+        void pane.refreshFromBackend();
+      }
+  }
+}

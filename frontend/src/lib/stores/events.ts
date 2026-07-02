@@ -1,6 +1,20 @@
+// Composition root for backend event wiring. `setupEventListeners()` is the
+// single place that subscribes to every Wails channel and fans events out
+// into the domain modules that actually own the reaction:
+//
+//   - eventsThreadRows.ts    — cached Thread row projections (shared leaf)
+//   - eventsItemStream.ts    — provider:item_event batching/upsert dispatch
+//   - eventsProvider.ts      — approvals, usage, turn/session lifecycle
+//   - eventsDesign.ts        — design preview/options throttled reload
+//   - eventsTerminal.ts      — backgrounded-terminal output/exit
+//   - eventsQueue.ts         — send-queue mirror (state/flushed/restored)
+//   - eventsCheckpoint.ts    — checkpoint capture/revert + message revert
+//   - eventsTransportGap.ts  — missed-seq resync
+//
+// This file itself stays a thin fan-in: channel names, generics, and the
+// teardown order live here; the reaction logic lives in the domain modules.
 import type {
   ApprovalEvent,
-  ItemDeltaEvent,
   ItemStreamEvent,
   ProviderAccountEvent,
   SystemStatsEvent,
@@ -13,12 +27,10 @@ import type {
   UsageEvent,
   UserInputEvent,
 } from '../types/events';
-import type { Item, Thread } from '../types/models';
 import type {
   TerminalExitEventPayload,
   TerminalOutputEventPayload,
 } from '../types/terminal';
-import { decodeTerminalOutput } from '../types/terminal';
 import type {
   CheckpointCapturedEvent,
   CheckpointErrorEvent,
@@ -26,75 +38,69 @@ import type {
   CheckpointUnavailableEvent,
   UserMessageRevertedEvent,
 } from '../types/checkpoint';
-import { setProviderAccount } from './accountInfo.svelte';
 import { setSystemStats } from './systemStats.svelte';
-import { asProviderID } from '../types/providers';
-import { invalidateProviderModels } from './providerModels.svelte';
 import { transportGapChannel } from '../transport/wsClient';
-import {
-  confirmFlushedByUserItemId,
-  markItemsFlushed,
-  queueItemFromWire,
-  removeRestoredQueueItems,
-  replaceQueueForThread,
-} from './sendQueue.svelte';
-import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
-import { closePanesShowingThread, findPaneShowingThread, iterPanes, panesShowingThread, syncThread } from './panes.svelte';
-import { itemsRenderEqual } from './threadItems';
-import { refreshProjects, touchProjectActivity } from './projects.svelte';
-import { recordProviderStatus } from './providerStatus.svelte';
-import { setProviderRateLimits } from './rateLimitsInfo.svelte';
-import { addToast } from './toast.svelte';
-import { getThreadById, getThreads, refreshThreads, removeThread, replaceThread, touchThreadActivity } from './threads.svelte';
-import { parseJsonObject } from '../utils/parseJsonObject';
-import { errString } from '../utils/errors';
-import {
-  projectApprovalRequest,
-  projectApprovalResolution,
-  projectSendResolved,
-  projectThreadItem,
-  projectTurnCompleted,
-  projectTurnStarted,
-  projectUserInputRequest,
-  projectUserInputResolution,
-} from './threadStatuses.svelte';
-// Import parseTokenUsage from its leaf home, not via the thread.svelte barrel,
-// so this module no longer depends on the 2800-line thread store at all.
-import { parseTokenUsage } from './threadTurnProjection';
 // wailsEventOn lives in a leaf module so low-level stores can subscribe to
 // backend events without importing this handler module; imported here for
 // setupEventListeners() use and re-exported below for existing import sites.
 import { wailsEventOn } from './wailsEvents';
-import { threadItemCache } from './threadItemCache';
-import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
-import {
-  getTerminalFocused,
-  getThreadTerminalStateForTerminalEvent,
-} from '../components/terminal/terminalStore.svelte';
-import { DeleteThread, GetThread } from './bindings';
 import {
   DESIGN_RELOAD_MAIN_EVENT,
   DESIGN_OPTIONS_UPDATE_EVENT,
 } from './eventNames';
-import { isSmoothLiveContentKind } from './threadPaneShared';
+import {
+  onItemUpsert,
+  applyItemStreamEvent,
+  flushItemEventQueue,
+  resetItemEventQueue,
+} from './eventsItemStream';
+import {
+  applyThreadUpdated,
+  type ThreadUpdateEvent,
+  applyModeChanged,
+  type ModeChangedPayload,
+  applyRuntimeModeChanged,
+  type RuntimeModeChangedPayload,
+} from './eventsThreadRows';
+import {
+  applyApprovalEvent,
+  applyUserInputEvent,
+  applyUsageEvent,
+  applyProviderStatus,
+  applyProviderAccount,
+  applyTurnStarted,
+  applyTurnCompleted,
+  applySessionDied,
+  applySubagentNotification,
+  applyTodoUpdate,
+  applyDefaultSwapped,
+  type DefaultSwappedPayload,
+} from './eventsProvider';
+import {
+  handleDesignReloadMain,
+  type DesignReloadMainPayload,
+  applyDesignOptionsUpdate,
+  type DesignOptionsUpdatePayload,
+  clearAllDesignThrottles,
+} from './eventsDesign';
+import { applyTerminalOutput, applyTerminalExit } from './eventsTerminal';
+import {
+  applyQueueStateChanged,
+  applyQueueFlushed,
+  applyQueueRestored,
+  type QueueStateChangedPayload,
+  type QueueFlushedPayload,
+  type QueueRestoredPayload,
+} from './eventsQueue';
+import {
+  applyCheckpointCaptured,
+  applyCheckpointUnavailable,
+  applyCheckpointError,
+  applyCheckpointReverted,
+  applyUserMessageReverted,
+} from './eventsCheckpoint';
+import { applyTransportGap } from './eventsTransportGap';
 
-/**
- * Min interval between consecutive `design:reload-main` cache-bust
- * fires per thread. Watcher events on a hot save loop can land in
- * tight bursts; throttling keeps the iframe from re-creating its
- * document tree more than twice a second.
- */
-const DESIGN_RELOAD_THROTTLE_MS = 500;
-const designReloadLastFireAt: Map<string, number> = new Map();
-const designReloadPending: Map<string, ReturnType<typeof setTimeout>> = new Map();
-
-interface DesignReloadMainPayload {
-  threadId: string;
-}
-interface DesignOptionsUpdatePayload {
-  threadId: string;
-  setId: string;
-}
 /**
  * Frontend custom DOM event names live in `./eventNames` so consumers
  * that this file depends on transitively (notably panes.svelte.ts) can
@@ -112,1131 +118,16 @@ export {
   REVEAL_PANE_EVENT,
 } from './eventNames';
 
-function dispatchDomEvent(name: string, detail: unknown): void {
-  if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent(name, { detail }));
-}
-
-function fireReloadMain(threadId: string): void {
-  designReloadLastFireAt.set(threadId, Date.now());
-  dispatchDomEvent(DESIGN_RELOAD_MAIN_EVENT, { threadId });
-}
-
-function handleDesignReloadMain(payload: DesignReloadMainPayload | undefined): void {
-  if (!payload?.threadId) return;
-  const threadId = payload.threadId;
-  const lastFire = designReloadLastFireAt.get(threadId) ?? 0;
-  const elapsed = Date.now() - lastFire;
-  if (elapsed >= DESIGN_RELOAD_THROTTLE_MS) {
-    const pending = designReloadPending.get(threadId);
-    if (pending !== undefined) {
-      clearTimeout(pending);
-      designReloadPending.delete(threadId);
-    }
-    fireReloadMain(threadId);
-    return;
-  }
-  // A fire is already pending — coalesce with it.
-  if (designReloadPending.has(threadId)) return;
-  const delay = DESIGN_RELOAD_THROTTLE_MS - elapsed;
-  const handle = setTimeout(() => {
-    designReloadPending.delete(threadId);
-    fireReloadMain(threadId);
-  }, delay);
-  designReloadPending.set(threadId, handle);
-}
-
-// Same throttle pattern, applied to options-update. Without throttling
-// the options panel re-fetches once per file written into options/.
-const DESIGN_OTHER_THROTTLE_MS = 250;
-type DesignThrottleMaps = {
-  lastFire: Map<string, number>;
-  pending: Map<string, ReturnType<typeof setTimeout>>;
-};
-const designOptionsThrottle: DesignThrottleMaps = {
-  lastFire: new Map(),
-  pending: new Map(),
-};
-
-function fireThrottled(
-  state: DesignThrottleMaps,
-  threadId: string,
-  intervalMs: number,
-  fire: () => void,
-): void {
-  const lastFire = state.lastFire.get(threadId) ?? 0;
-  const elapsed = Date.now() - lastFire;
-  if (elapsed >= intervalMs) {
-    const pending = state.pending.get(threadId);
-    if (pending !== undefined) {
-      clearTimeout(pending);
-      state.pending.delete(threadId);
-    }
-    state.lastFire.set(threadId, Date.now());
-    fire();
-    return;
-  }
-  if (state.pending.has(threadId)) return;
-  const delay = intervalMs - elapsed;
-  const handle = setTimeout(() => {
-    state.pending.delete(threadId);
-    state.lastFire.set(threadId, Date.now());
-    fire();
-  }, delay);
-  state.pending.set(threadId, handle);
-}
-
-function clearDesignThrottle(state: DesignThrottleMaps): void {
-  for (const handle of state.pending.values()) {
-    clearTimeout(handle);
-  }
-  state.pending.clear();
-  state.lastFire.clear();
-}
-
-const itemUpsertSubscribers: Set<(item: Item) => void> = new Set();
-const ITEM_EVENT_FLUSH_MAX_DELAY_MS = 50;
-const ITEM_EVENT_FLUSH_MAX_EVENTS = 500;
-const ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS = 2_000;
-const ITEM_EVENT_TEXT_FIELD_MAX_CHARS = 2_000_000;
-let itemEventQueue: ItemStreamEvent[] = [];
-let itemEventQueueStart = 0;
-let itemEventFlushFrame: number | null = null;
-let itemEventFlushTimeout: number | null = null;
-
-interface PendingItemUpsert {
-  item: Item;
-  countsAsActivity?: boolean;
-}
-
-function requestFrame(callback: () => void): number {
-  if (typeof requestAnimationFrame === 'function') {
-    return requestAnimationFrame(callback);
-  }
-  return window.setTimeout(callback, 0);
-}
-
-function cancelFrame(handle: number): void {
-  if (typeof cancelAnimationFrame === 'function') {
-    cancelAnimationFrame(handle);
-  } else {
-    window.clearTimeout(handle);
-  }
-}
-
-function cancelItemEventFlushSchedule(): void {
-  if (itemEventFlushFrame !== null) {
-    cancelFrame(itemEventFlushFrame);
-    itemEventFlushFrame = null;
-  }
-  if (itemEventFlushTimeout !== null) {
-    window.clearTimeout(itemEventFlushTimeout);
-    itemEventFlushTimeout = null;
-  }
-}
-
-function scheduleItemEventFlush(): void {
-  if (itemEventFlushFrame !== null || itemEventFlushTimeout !== null) return;
-  itemEventFlushFrame = requestFrame(flushItemEventQueue);
-  itemEventFlushTimeout = window.setTimeout(flushItemEventQueue, ITEM_EVENT_FLUSH_MAX_DELAY_MS);
-}
-
-function resetItemEventQueue(): void {
-  cancelItemEventFlushSchedule();
-  itemEventQueue = [];
-  itemEventQueueStart = 0;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function isBoundedString(value: unknown, maxChars = ITEM_EVENT_TEXT_FIELD_MAX_CHARS): value is string {
-  return typeof value === 'string' && value.length <= maxChars;
-}
-
-function isValidItemForThread(item: Item | null | undefined, threadId: string): item is Item {
-  if (!item || item.threadId !== threadId) return false;
-  if (!isBoundedString(item.id, 512) || item.id.trim() === '') return false;
-  if (!isBoundedString(item.threadId, 512) || item.threadId.trim() === '') return false;
-  if (!isFiniteNumber(item.turnIndex) || !isFiniteNumber(item.itemIndex)) return false;
-  if (!isBoundedString(item.kind, 128)) return false;
-  if (!isBoundedString(item.role, 128)) return false;
-  if (!isBoundedString(item.status, 128)) return false;
-  if (!isBoundedString(item.summary)) return false;
-  if (item.payloadId !== undefined && !isBoundedString(item.payloadId, 512)) return false;
-  if (item.payloadKind !== undefined && !isBoundedString(item.payloadKind, 128)) return false;
-  if (item.payloadMeta !== undefined && !isBoundedString(item.payloadMeta)) return false;
-  if (item.parentId !== undefined && !isBoundedString(item.parentId, 512)) return false;
-  if (item.completionOf !== undefined && !isBoundedString(item.completionOf, 512)) return false;
-  if (item.toolName !== undefined && !isBoundedString(item.toolName, 256)) return false;
-  if (item.decision !== undefined && !isBoundedString(item.decision, 128)) return false;
-  if (item.inputPayloadId !== undefined && !isBoundedString(item.inputPayloadId, 512)) return false;
-  if (item.meta !== undefined && !isBoundedString(item.meta)) return false;
-  if (!isFiniteNumber(item.createdAt) || !isFiniteNumber(item.updatedAt)) return false;
-  return true;
-}
-
-export function onItemUpsert(handler: (item: Item) => void): () => void {
-  itemUpsertSubscribers.add(handler);
-  return () => {
-    itemUpsertSubscribers.delete(handler);
-  };
-}
-
-function notifyItemUpserts(items: Item[]): void {
-  if (items.length === 0 || itemUpsertSubscribers.size === 0) return;
-  const subscribers = [...itemUpsertSubscribers];
-  for (const item of items) {
-    for (const handler of subscribers) {
-      handler(item);
-    }
-  }
-}
-
 // wailsEventOn is defined in ./wailsEvents (a leaf module) and re-exported here
 // so existing subscribers (terminal drawer, diff panel, mcpServers, …) keep
 // importing it from './events'. It lives in a leaf so low-level stores can
 // subscribe without importing this handler module — see wailsEvents.ts.
 export { wailsEventOn };
 
-/**
- * Payload for the backend-emitted thread:mode_changed event. Mirrors
- * ThreadModeChangedEvent in app_thread_interaction_mode.go.
- */
-interface ModeChangedPayload {
-  threadId: string;
-  mode: NonNullable<Thread['mode']>;
-  needsReconnect: boolean;
-}
-
-/**
- * Payload for thread:runtime_mode_changed — emitted whenever
- * UpdateThreadRuntimeMode persists a change. Runtime-mode changes restart
- * active sessions synchronously, so needsReconnect is false on success and
- * kept only for compatibility with the older event shape.
- */
-interface RuntimeModeChangedPayload {
-  threadId: string;
-  runtimeMode: Thread['runtimeMode'];
-  needsReconnect: boolean;
-}
-
-function syncThreadRow(updated: Thread): Thread {
-  const readMarkers = [updated.lastReadAt];
-  const latestCompletions = [updated.latestTurnCompletedAt];
-  const activityMarkers = [updated.updatedAt];
-  const cachedThread = getThreadById(updated.id);
-  if (cachedThread?.lastReadAt !== undefined) {
-    readMarkers.push(cachedThread.lastReadAt);
-  }
-  if (cachedThread?.latestTurnCompletedAt !== undefined) {
-    latestCompletions.push(cachedThread.latestTurnCompletedAt);
-  }
-  if (cachedThread && Number.isFinite(cachedThread.updatedAt)) {
-    activityMarkers.push(cachedThread.updatedAt);
-  }
-
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== updated.id || !pane.thread) continue;
-    if (pane.thread.lastReadAt !== undefined) {
-      readMarkers.push(pane.thread.lastReadAt);
-    }
-    if (pane.thread.latestTurnCompletedAt !== undefined) {
-      latestCompletions.push(pane.thread.latestTurnCompletedAt);
-    }
-    if (Number.isFinite(pane.thread.updatedAt)) {
-      activityMarkers.push(pane.thread.updatedAt);
-    }
-  }
-
-  const lastReadAt = mergeReadMarkersPreservingUnread(readMarkers);
-  const latestTurnCompletedAt = mergeLatestTurnCompletedAt(latestCompletions);
-  const updatedAt = mergeLatestActivityAt(activityMarkers);
-  const merged = { ...updated, updatedAt, lastReadAt, latestTurnCompletedAt };
-  syncThread(merged);
-  return merged;
-}
-
-function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
-  const cachedThread = getThreadById(evt.threadId)
-    ?? findPaneShowingThread(evt.threadId)?.thread;
-  if (!cachedThread) {
-    return;
-  }
-  const latestTurnCompletedAt = Math.max(
-    cachedThread.latestTurnCompletedAt ?? Number.NEGATIVE_INFINITY,
-    evt.completedAt,
-  );
-  syncThreadRow({
-    ...cachedThread,
-    latestTurnCompletedAt,
-  });
-}
-
-function syncThreadActivity(threadId: string, updatedAt: number): void {
-  if (!threadId || !Number.isFinite(updatedAt)) return;
-  const thread = touchThreadActivity(threadId, updatedAt);
-  let projectId = thread?.projectId;
-  let latestUpdatedAt = thread?.updatedAt ?? updatedAt;
-
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== threadId || !pane.thread) continue;
-    projectId = projectId ?? pane.thread.projectId;
-    const paneUpdatedAt = Math.max(pane.thread.updatedAt ?? 0, updatedAt);
-    latestUpdatedAt = Math.max(latestUpdatedAt, paneUpdatedAt);
-    if (pane.thread.updatedAt === paneUpdatedAt) continue;
-    pane.replaceThread({ ...pane.thread, updatedAt: paneUpdatedAt });
-  }
-
-  touchProjectActivity(projectId, latestUpdatedAt);
-}
-
-function userTextCountsAsActivity(item: Item): boolean {
-  if (item.kind !== 'user_text') return false;
-  if (item.parentId) return false;
-  const meta = parseJsonObject(item.meta);
-  if (meta?.wire_only === true) return false;
-  return true;
-}
-
-function refreshSidebarProjections(): void {
-  void refreshThreads();
-  void refreshProjects();
-}
-
-function mergeReadMarkersPreservingUnread(readMarkers: Array<number | undefined>): number | undefined {
-  const definedReadMarkers = readMarkers.filter((value): value is number => value !== undefined);
-  if (definedReadMarkers.length === 0) {
-    return undefined;
-  }
-  if (definedReadMarkers.includes(0)) {
-    return 0;
-  }
-  return Math.max(...definedReadMarkers);
-}
-
-function mergeLatestTurnCompletedAt(completions: Array<number | undefined>): number | undefined {
-  const definedCompletions = completions.filter((value): value is number => value !== undefined);
-  if (definedCompletions.length === 0) {
-    return undefined;
-  }
-  return Math.max(...definedCompletions);
-}
-
-function mergeLatestActivityAt(activityMarkers: Array<number | undefined>): number {
-  const definedActivity = activityMarkers.filter((value): value is number =>
-    value !== undefined && Number.isFinite(value));
-  if (definedActivity.length === 0) return 0;
-  return Math.max(...definedActivity);
-}
-
-function updateThreadUsageCache(threadId: string, raw: string): void {
-  const existing = getThreads().find((thread) => thread.id === threadId);
-  if (existing) {
-    replaceThread({ ...existing, lastTokenUsage: raw });
-  }
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== threadId || !pane.thread) continue;
-    pane.replaceThread({ ...pane.thread, lastTokenUsage: raw });
-  }
-}
-
-function patchThreadDurableStatus(
-  threadId: string,
-  patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn'>,
-): void {
-  // No-op dedupe: skip the replace when none of the patch fields actually
-  // change the thread. This is the cooperating half of the item-upsert
-  // dedupe in `applyItemUpsertsToWindow` — `syncProposedPlanStatus` fires
-  // this on every proposed-plan upsert, and without the dedupe a repeated
-  // upsert that doesn't move the durable status STILL replaces
-  // `pane.thread` with a new reference, triggering the same reactive
-  // cascade through any component that reads `pane.thread` directly.
-  const existing = getThreads().find((thread) => thread.id === threadId);
-  if (existing && !patchMatchesThread(existing, patch)) {
-    replaceThread({ ...existing, ...patch });
-  }
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== threadId || !pane.thread) continue;
-    if (patchMatchesThread(pane.thread, patch)) continue;
-    pane.replaceThread({ ...pane.thread, ...patch });
-  }
-}
-
-function patchMatchesThread(
-  thread: Thread,
-  patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn'>,
-): boolean {
-  if (
-    patch.hasActionableProposedPlan !== undefined
-    && thread.hasActionableProposedPlan !== patch.hasActionableProposedPlan
-  ) {
-    return false;
-  }
-  if (
-    patch.hasIncompleteTurn !== undefined
-    && thread.hasIncompleteTurn !== patch.hasIncompleteTurn
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function isImplementedProposedPlan(item: Item): boolean {
-  if (item.payloadKind !== 'proposed_plan' || item.role !== 'assistant' || item.status !== 'completed') {
-    return false;
-  }
-  if (!item.meta) return false;
-  try {
-    const parsed = JSON.parse(item.meta) as { planImplementedAt?: number };
-    return Number(parsed.planImplementedAt ?? 0) > 0;
-  } catch {
-    return false;
-  }
-}
-
-function syncProposedPlanStatus(item: Item): void {
-  if (item.payloadKind !== 'proposed_plan' || item.role !== 'assistant' || item.status !== 'completed') {
-    return;
-  }
-  patchThreadDurableStatus(item.threadId, {
-    hasActionableProposedPlan: !isImplementedProposedPlan(item),
-  });
-}
-
-function applyApprovalEvent(evt: ApprovalEvent): void {
-  if (!evt) return;
-
-  if (evt.action === 'request' && evt.request?.threadId) {
-    projectApprovalRequest(
-      evt.request.threadId,
-      evt.request.requestId,
-      evt.request.kind,
-    );
-    for (const pane of iterPanes()) {
-      if (pane.threadId === evt.request.threadId) {
-        pane.addApproval(evt.request);
-      }
-    }
-    // Approval requests are a sidebar-bump boundary: the agent is
-    // paused waiting on the user. Resolutions ride on the user's
-    // reply — no separate bump there. Use the wire-event timestamp
-    // (matches the value MarkThreadActivity wrote on the backend) so
-    // the cached activity doesn't drift on local clock skew.
-    syncThreadActivity(evt.request.threadId, evt.requestedAt ?? Date.now());
-    return;
-  }
-
-  if ((evt.action === 'resolve' || evt.action === 'fail') && evt.requestId) {
-    projectApprovalResolution(evt.threadId, evt.requestId);
-    for (const pane of iterPanes()) {
-      if (evt.threadId && pane.threadId !== evt.threadId) continue;
-      const hadApproval = pane.pendingApprovals.some((approval) => approval.requestId === evt.requestId);
-      pane.removeApproval(evt.requestId);
-      if (hadApproval && evt.action === 'fail' && evt.detail) {
-        pane.setGeneralError(`Failed to respond to approval: ${evt.detail}`);
-      }
-    }
-  }
-}
-
-function applyUserInputEvent(evt: UserInputEvent): void {
-  if (!evt) return;
-
-  if (evt.action === 'request' && evt.request?.threadId) {
-    projectUserInputRequest(evt.request.threadId, evt.request.requestId);
-    for (const pane of iterPanes()) {
-      if (pane.threadId === evt.request.threadId) {
-        pane.addUserInput(evt.request);
-      }
-    }
-    // User-input requests are a sidebar-bump boundary alongside
-    // approvals and turn complete. The user's submitted answer
-    // arrives via a separate user_text path that bumps on its own.
-    // Use the wire-event timestamp so the cached activity stays in
-    // lockstep with the persisted threads.updated_at.
-    syncThreadActivity(evt.request.threadId, evt.requestedAt ?? Date.now());
-    return;
-  }
-
-  if ((evt.action === 'resolve' || evt.action === 'fail') && evt.requestId) {
-    projectUserInputResolution(evt.threadId, evt.requestId);
-    for (const pane of iterPanes()) {
-      if (evt.threadId && pane.threadId !== evt.threadId) continue;
-      const hadRequest = pane.pendingUserInputs.some((request) => request.requestId === evt.requestId);
-      pane.removeUserInput(evt.requestId);
-      if (hadRequest && evt.action === 'fail' && evt.detail) {
-        pane.setGeneralError(`Failed to submit input: ${evt.detail}`);
-      }
-    }
-  }
-}
-
-function applyUsageEvent(evt: UsageEvent): void {
-  if (!evt) return;
-
-  // `rate_limits` piggybacks on the same channel but doesn't touch the
-  // context-window ring. Route to the provider-global store and bail
-  // before the context-window update path so a rate-limit refresh
-  // never clobbers the last known token-window snapshot.
-  //
-  // Rate limits are an account property, not a thread property — every
-  // pane on the same provider sees the same value. The global store
-  // also makes the rings persist across thread switches and turn
-  // completions until the next non-empty event arrives. The Go-side
-  // Claude probe (internal/provider/claude/ratelimits_probe.go) emits
-  // these events with no threadId because the probe is account-wide;
-  // wire-driven envelopes from a live session still carry one but the
-  // rate-limits branch doesn't read it.
-  if (evt.action === 'rate_limits') {
-    if (!evt.rateLimits) return;
-    setProviderRateLimits(evt.rateLimits);
-    return;
-  }
-
-  // Context-window updates require a threadId because they target a
-  // specific pane's ring.
-  if (!evt.threadId) return;
-
-  const payload = evt.action === 'usage'
-    ? {
-        usedTokens: evt.usedTokens ?? 0,
-        maxTokens: evt.maxTokens,
-        usedPercentage: evt.contextPercent,
-        ...(evt.autoCompactPercent ? { autoCompactPercent: evt.autoCompactPercent } : {}),
-        ...(evt.autoCompactTokenLimit ? { autoCompactTokenLimit: evt.autoCompactTokenLimit } : {}),
-        ...(evt.exceeded ? { exceeded: true } : {}),
-      }
-    : null;
-
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== evt.threadId) continue;
-    if (payload) {
-      pane.setContextWindow(payload);
-    } else {
-      pane.clearContextWindow();
-    }
-  }
-
-  updateThreadUsageCache(
-    evt.threadId,
-    payload
-      ? JSON.stringify({
-          usedTokens: payload.usedTokens,
-          maxTokens: payload.maxTokens,
-          contextPercent: payload.usedPercentage,
-          autoCompactPercent: payload.autoCompactPercent,
-          autoCompactTokenLimit: payload.autoCompactTokenLimit,
-          ...(payload.exceeded ? { exceeded: true } : {}),
-        })
-      : '',
-  );
-}
-
-function itemUpsertCountsAsActivity(upsert: PendingItemUpsert): boolean {
-  if (upsert.countsAsActivity !== undefined) return upsert.countsAsActivity;
-  return userTextCountsAsActivity(upsert.item);
-}
-
-function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming: Item): boolean {
-  // A brand-new row opens the spring latch only for text-like kinds: tool
-  // rows enter the timeline at a virtual size estimate and remeasure a few
-  // milliseconds later, and spring-chasing those transient targets is
-  // visible WebKit stutter (the structural-append one-shot covers genuine
-  // tail appends instead — see markStructuralContentPending).
-  //
-  // `existing` comes from a snapshot taken BEFORE the batch applies, so a
-  // same-batch insert+update burst for one row resolves both upserts down
-  // this insert path — correct, because that row is still in its estimate
-  // phase for the whole flush.
-  if (!existing) return isSmoothLiveContentKind(incoming.kind);
-  // An update to an existing row has no estimate phase — the row is
-  // mounted and measured, so a change to any rendered field (status dot,
-  // summary, tool input in meta, output preview in payloadMeta, approval
-  // decision, backgrounded-launch chrome) is genuine content advancing
-  // the bottom, whatever the kind. Sync-pinning those growths lands
-  // whole-viewport teleports between spring glides: running Bash rows
-  // growing their output preview per flush window and running→completed
-  // result chrome both jumped (bug-report-20260702T184236Z). Render
-  // equality deliberately ignores `createdAt`/`updatedAt` — a bump with
-  // no rendered field change must not hold the latch open.
-  return !itemsRenderEqual(existing, incoming);
-}
-
-function applyItemUpserts(upserts: PendingItemUpsert[]): void {
-  if (upserts.length === 0) return;
-  const itemsByThread = new Map<string, Item[]>();
-  const userTextActivityByThread = new Map<string, number>();
-  for (const upsert of upserts) {
-    const { item } = upsert;
-    const list = itemsByThread.get(item.threadId);
-    if (list) {
-      list.push(item);
-    } else {
-      itemsByThread.set(item.threadId, [item]);
-    }
-    // Zone 2 clears when a flush user_text row arrives in the
-    // timeline — either via the normal deferred echo path (which
-    // carries provider_item_id) or via the eager persist on
-    // interrupt (which appears before the echo).
-    if (item.kind === 'user_text' && item.id.includes(':flush:')) {
-      confirmFlushedByUserItemId(item.threadId, item.id);
-    }
-    // user_text upserts are one of three sidebar-bump boundaries —
-    // alongside provider:turn_completed and approval / user-input
-    // request creation. assistant_text / thinking / tool_call / etc.
-    // upserts deliberately do NOT advance the sidebar timestamp.
-    if (itemUpsertCountsAsActivity(upsert) && Number.isFinite(item.updatedAt)) {
-      const existing = userTextActivityByThread.get(item.threadId) ?? Number.NEGATIVE_INFINITY;
-      if (item.updatedAt > existing) {
-        userTextActivityByThread.set(item.threadId, item.updatedAt);
-      }
-    }
-  }
-  const changedThreadIds = new Set<string>();
-  const activeThreadIds = new Set<string>();
-  for (const pane of iterPanes()) {
-    const threadId = pane.threadId;
-    if (!threadId) continue;
-    const threadItems = itemsByThread.get(threadId);
-    if (!threadItems) continue;
-    activeThreadIds.add(threadId);
-    const previousItemsById = new Map(
-      threadItems.map((item) => [item.id, pane.getItemById(item.id)] as const),
-    );
-    const applied = pane.applyProviderItemUpserts(threadItems);
-    if (applied) {
-      changedThreadIds.add(threadId);
-      const hasLiveContentAdvance = applied.changedItems.some((item) =>
-        providerUpsertAdvancesLiveContent(previousItemsById.get(item.id), item),
-      );
-      // A provider upsert that advances live content marks the
-      // scroll-animation latch so the controller spring-chases. New
-      // text-like rows and visible-field updates to any mounted row
-      // stamp; new tool rows (estimate→remeasure churn) and
-      // timestamp-only bumps deliberately do not — see
-      // providerUpsertAdvancesLiveContent.
-      if (hasLiveContentAdvance) pane.markLiveContentAdvanced();
-    }
-  }
-  // Evict cached snapshots only when this batch produced an observable
-  // active-pane change. Inactive threads still evict defensively because
-  // we do not have their current item window available for value dedupe.
-  // This keeps redundant active-thread echoes from invalidating the warm
-  // re-entry cache and rebuilding rows for no visible data change.
-  for (const threadId of itemsByThread.keys()) {
-    if (changedThreadIds.has(threadId) || !activeThreadIds.has(threadId)) {
-      threadItemCache.evict(threadId);
-    }
-  }
-  for (const [threadId, updatedAt] of userTextActivityByThread) {
-    syncThreadActivity(threadId, updatedAt);
-  }
-}
-
-function applyItemDelta(evt: ItemDeltaEvent): void {
-  if (!evt || !evt.threadId || !evt.itemId || !evt.delta) return;
-  if (!isBoundedString(evt.threadId, 512) || !isBoundedString(evt.itemId, 512)) return;
-  if (!isBoundedString(evt.kind, 128) || !isBoundedString(evt.delta)) return;
-  if (!isFiniteNumber(evt.updatedAt)) return;
-
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== evt.threadId) continue;
-    pane.applyItemDelta(evt);
-  }
-}
-
-function applyItemStreamEvent(evt: ItemStreamEvent): void {
-  if (!evt || !evt.threadId) return;
-  if (evt.action === 'upsert' && evt.item) {
-    // Boundary validation only. Thread-status projection and
-    // proposed-plan sync happen at flush time alongside the pane
-    // apply — running them here gave every upsert WS message its own
-    // global-store write + effect flush outside the rAF batch.
-    if (!isValidItemForThread(evt.item, evt.threadId)) return;
-  } else if (evt.action === 'delta') {
-    if (!isBoundedString(evt.threadId, 512)) return;
-    if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
-    if (!isBoundedString(evt.kind, 128)) return;
-    if (!isBoundedString(evt.delta) || evt.delta === '') return;
-    if (!isFiniteNumber(evt.updatedAt)) return;
-  } else if (evt.action === 'meta') {
-    if (!isBoundedString(evt.threadId, 512)) return;
-    if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
-    if (!isBoundedString(evt.kind, 128)) return;
-    if (!isBoundedString(evt.meta)) return;
-    if (!isFiniteNumber(evt.updatedAt)) return;
-  } else if (evt.action === 'patch') {
-    if (!isBoundedString(evt.threadId, 512)) return;
-    if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
-    if (!evt.patch || typeof evt.patch !== 'object') return;
-    if (evt.patch.status !== undefined && !isBoundedString(evt.patch.status, 128)) return;
-    if (evt.patch.summary !== undefined && !isBoundedString(evt.patch.summary)) return;
-    if (evt.patch.meta !== undefined && !isBoundedString(evt.patch.meta)) return;
-    if (evt.patch.decision !== undefined && !isBoundedString(evt.patch.decision, 128)) return;
-    if (evt.patch.updatedAt !== undefined && !isFiniteNumber(evt.patch.updatedAt)) return;
-  } else {
-    return;
-  }
-  if (itemEventQueue.length - itemEventQueueStart >= ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS) {
-    flushItemEventQueue();
-  }
-  itemEventQueue.push(evt);
-  scheduleItemEventFlush();
-}
-
-function flushItemEventQueue(): void {
-  cancelItemEventFlushSchedule();
-  if (itemEventQueueStart >= itemEventQueue.length) {
-    itemEventQueue = [];
-    itemEventQueueStart = 0;
-    return;
-  }
-
-  const itemEventQueueEnd = Math.min(
-    itemEventQueueStart + ITEM_EVENT_FLUSH_MAX_EVENTS,
-    itemEventQueue.length,
-  );
-  const events = itemEventQueue.slice(itemEventQueueStart, itemEventQueueEnd);
-  if (itemEventQueueEnd >= itemEventQueue.length) {
-    itemEventQueue = [];
-    itemEventQueueStart = 0;
-  } else {
-    itemEventQueueStart = itemEventQueueEnd;
-    if (itemEventQueueStart > ITEM_EVENT_FLUSH_MAX_EVENTS * 4) {
-      itemEventQueue = itemEventQueue.slice(itemEventQueueStart);
-      itemEventQueueStart = 0;
-    }
-  }
-  const pendingUpserts: PendingItemUpsert[] = [];
-  const pendingUpsertItemKeys = new Set<string>();
-  const notifiedUpserts: Item[] = [];
-  const pendingDeltas = new Map<string, ItemDeltaEvent & { chunks: string[] }>();
-  const pendingDeltaItemKeys = new Set<string>();
-
-  const itemConflictKey = (threadId: string, itemId: string): string =>
-    `${threadId}\u0000${itemId}`;
-
-  const flushPendingUpserts = () => {
-    if (pendingUpserts.length === 0) return;
-    const semanticUpserts = pendingUpserts.map((upsert) => upsert.item);
-    applyItemUpserts(pendingUpserts);
-    notifiedUpserts.push(...semanticUpserts);
-    pendingUpserts.length = 0;
-    pendingUpsertItemKeys.clear();
-  };
-
-  const queueDelta = (evt: ItemDeltaEvent) => {
-    // Coalescing key includes kind (a row's text and thinking streams
-    // coalesce separately); the per-item conflict key does not.
-    const key = `${evt.threadId}\u0000${evt.itemId}\u0000${evt.kind}`;
-    const existing = pendingDeltas.get(key);
-    if (existing) {
-      existing.chunks.push(evt.delta);
-      existing.updatedAt = Math.max(existing.updatedAt, evt.updatedAt);
-      return;
-    }
-    pendingDeltas.set(key, { ...evt, delta: '', chunks: [evt.delta] });
-    pendingDeltaItemKeys.add(itemConflictKey(evt.threadId, evt.itemId));
-  };
-
-  const flushPendingDeltas = () => {
-    if (pendingDeltas.size === 0) return;
-    for (const delta of pendingDeltas.values()) {
-      const coalesced: ItemDeltaEvent = {
-        threadId: delta.threadId,
-        itemId: delta.itemId,
-        kind: delta.kind,
-        delta: delta.chunks.join(''),
-        updatedAt: delta.updatedAt,
-      };
-      applyItemDelta(coalesced);
-    }
-    pendingDeltas.clear();
-    pendingDeltaItemKeys.clear();
-  };
-
-  // Apply order is preserved PER ITEM, not globally: a pending buffer
-  // only flushes early when the incoming event targets an item that
-  // buffer already holds. Items are independent in pane state, so
-  // cross-item reordering inside one rAF flush is safe — and it is what
-  // keeps a tool burst (upserts, patches, and deltas of many different
-  // rows interleaved on the wire) applying as one upsert batch -> one
-  // items-array swap -> one structural re-derive, instead of
-  // fragmenting into per-transition micro-batches that each paid an
-  // O(window) array copy and a full timeline regroup.
-  for (const evt of events) {
-    if (!evt || !evt.threadId) continue;
-    if (evt.action === 'upsert') {
-      if (!isValidItemForThread(evt.item, evt.threadId)) continue;
-      const itemKey = itemConflictKey(evt.threadId, evt.item.id);
-      // A queued delta for this row must land before the upsert
-      // replaces the row's summary wholesale.
-      if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
-      // Global projections ride the batched flush (one macrotask, one
-      // effect flush) instead of the per-message WS handler.
-      projectThreadItem(evt.item);
-      syncProposedPlanStatus(evt.item);
-      pendingUpserts.push({ item: evt.item, countsAsActivity: evt.countsAsActivity });
-      pendingUpsertItemKeys.add(itemKey);
-      continue;
-    }
-    if (evt.action === 'meta') {
-      // Re-validated meta blob (e.g. live path-link allowlist for an
-      // in-flight assistant_text row). Pending deltas for the same row
-      // must apply FIRST so the new meta lands against text the user
-      // has already seen; a pending upsert for the same row must apply
-      // too so the row exists by the time we set its meta.
-      const itemKey = itemConflictKey(evt.threadId, evt.itemId);
-      if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
-      if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
-      for (const pane of iterPanes()) {
-        if (pane.threadId !== evt.threadId) continue;
-        pane.applyItemMeta(evt);
-      }
-      continue;
-    }
-    if (evt.action === 'patch') {
-      const itemKey = itemConflictKey(evt.threadId, evt.itemId);
-      if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
-      if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
-      for (const pane of iterPanes()) {
-        if (pane.threadId !== evt.threadId) continue;
-        pane.applyItemPatch(evt);
-      }
-      continue;
-    }
-    if (evt.action !== 'delta') continue;
-
-    // A pending upsert for this row carries the full summary; the
-    // delta extends it, so the upsert must land first.
-    if (pendingUpsertItemKeys.has(itemConflictKey(evt.threadId, evt.itemId))) {
-      flushPendingUpserts();
-    }
-    queueDelta(evt);
-  }
-
-  // Tail order is safe: no item can be pending in BOTH buffers here.
-  // Queuing a delta flushes that row's pending upsert first, and
-  // buffering an upsert flushes that row's pending delta first (the
-  // per-item conflict checks above), so the two pending sets are always
-  // disjoint per item by the time we reach the tail. Draining deltas
-  // then upserts therefore can't reorder any single row's events.
-  flushPendingDeltas();
-  flushPendingUpserts();
-  // Sidebar activity is bumped only at meaningful interaction
-  // boundaries: user_text upsert (handled in applyItemUpserts),
-  // provider:turn_completed (applyTurnCompleted), and approval /
-  // user-input request creation (applyApprovalEvent /
-  // applyUserInputEvent). Streaming deltas and assistant / tool /
-  // thinking upserts deliberately do NOT advance the timestamp —
-  // that used to make the sidebar reshuffle every chunk.
-  notifyItemUpserts(notifiedUpserts);
-  if (itemEventQueueStart < itemEventQueue.length) {
-    scheduleItemEventFlush();
-  }
-}
-
-// kindToLegacyStatus maps the chat-rewrite closed kind enum onto the legacy
-// `status` vocabulary the ProviderStatusBanner already renders. Keeps the
-// banner component untouched while the router adopts the new vocabulary —
-// the two pipelines converge here rather than in the view.
-//
-// Retry vocabulary lives on `provider:item_event` (`api_retry` row) now,
-// not on this banner channel; session-death drives `pane.generalError`
-// via `provider:session_died`. So the legacy mapping only needs to cover
-// the boot-time provider-presence states.
-const KIND_TO_LEGACY_STATUS: Record<NonNullable<ProviderStatusEvent['kind']>, ProviderStatusEvent['status']> = {
-  binary_missing: 'not_found',
-  unauthenticated: 'unauthenticated',
-  version_incompatible: 'version_too_old',
-};
-
-function applyProviderStatus(evt: ProviderStatusEvent): void {
-  if (!evt) return;
-
-  // Chat-rewrite emissions carry `kind` and optionally `threadId`. The
-  // legacy binary-detect emissions carry `provider + status`. Derive a
-  // unified shape before fanning out so downstream consumers don't have
-  // to branch.
-  let effectiveStatus = evt.status;
-  if (evt.kind) {
-    const mapped = KIND_TO_LEGACY_STATUS[evt.kind];
-    if (!mapped) {
-      // An unknown kind leaks the banner to the console so the gap is
-      // visible in dev — the spec calls this out as "require updating the
-      // frontend banner component in the same PR". Drop without rendering.
-      console.warn(`provider:status: unknown kind "${evt.kind}" — dropped`);
-      return;
-    }
-    effectiveStatus = mapped;
-  }
-
-  const provider = asProviderID(evt.provider);
-  if (!provider || !effectiveStatus) return;
-
-  if (!evt.threadId) {
-    invalidateProviderModels(provider);
-  }
-
-  const normalized: ProviderStatusEvent = { ...evt, provider, status: effectiveStatus };
-
-  // Thread-scoped status belongs to matching panes only. Writing it into
-  // the provider-global cache leaks one pane's auth/session failure into
-  // every other pane using the same provider.
-  if (!evt.threadId) {
-    recordProviderStatus(normalized);
-  }
-
-  const banner = effectiveStatus === 'ready' ? null : normalized;
-  for (const pane of iterPanes()) {
-    if (pane.thread?.provider !== provider) continue;
-    // Kind-bearing events can carry a threadId for per-pane scoping; when
-    // present, only update the matching pane. Without a threadId the event
-    // is provider-global (legacy behavior) and fans out to every matching
-    // pane as before.
-    if (evt.threadId && pane.threadId !== evt.threadId) continue;
-    pane.setProviderBanner(evt.threadId ? banner : undefined);
-  }
-}
-
-interface ThreadUpdateEvent {
-  action: string;
-  thread?: Thread;
-  id?: string;
-  title?: string;
-  model?: string;
-}
-
-function applyThreadUpdated(evt: ThreadUpdateEvent): void {
-  if (!evt) return;
-  if (evt.action === 'patch' && evt.id) {
-    const cached = getThreadById(evt.id)
-      ?? findPaneShowingThread(evt.id)?.thread;
-    if (!cached) return;
-    const merged = { ...cached };
-    if (evt.title !== undefined) merged.title = evt.title;
-    if (evt.model !== undefined) merged.model = evt.model;
-    syncThreadRow(merged);
-    return;
-  }
-  if (evt.thread?.id) {
-    syncThreadRow(evt.thread);
-  }
-}
-
-/**
- * Route `provider:turn_started` to the global active-turn registry
- * (single source of truth — see threadStatuses.svelte.ts). Both the
- * sidebar pill and the chat working indicator read from there. This
- * is one of two live backend sources that can record a turn; the other
- * is `GetThreadLiveState` hydration after refresh. Neither path derives
- * turn activity from durable item history.
- */
-function applyTurnStarted(evt: TurnStartedEvent): void {
-  if (!evt?.threadId || !evt.turnId) return;
-  // Pass the full {turnIndex, startedAt} into the global registry so
-  // the chat working indicator's self-ticking timer and the timeline
-  // boundary projection can read both without a separate write path.
-  projectTurnStarted(evt.threadId, evt.turnId, evt.turnIndex, evt.startedAt);
-  patchThreadDurableStatus(evt.threadId, {
-    hasActionableProposedPlan: false,
-    hasIncompleteTurn: false,
-  });
-  // A wire turn-start is proof the provider session is alive and
-  // serving — any stale session_died banner for this thread is now
-  // contradicted by visible streaming. Scoped to session-kind so this
-  // doesn't clobber an orthogonal error sharing the slot.
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== evt.threadId) continue;
-    pane.clearSessionError();
-  }
-}
-
-/**
- * Route `provider:turn_completed` to the matching pane. Clears the
- * global active-turn registry entry (threadStatuses) and writes the
- * settled projection for read-state and trace/debug consumers.
- *
- * `tokenUsage` arrives as a JSON-encoded string on the wire because
- * triage round-trips it through the DB's `token_usage_json` column. We
- * parse it here via `parseTokenUsage` — the same helper the pane uses on
- * thread-switch rehydration — so malformed JSON degrades gracefully to
- * `tokenUsage: null` rather than crashing the listener.
- */
-function applyTurnCompleted(evt: TurnCompletedEvent): void {
-  if (!evt?.threadId || !evt.turnId) return;
-  const rawAssistantId = evt.assistantMessageId ?? '';
-  const settled = {
-    turnId: evt.turnId,
-    turnIndex: evt.turnIndex,
-    startedAt: evt.startedAt,
-    completedAt: evt.completedAt,
-    stopReason: evt.stopReason ?? '',
-    assistantMessageId: rawAssistantId === '' ? null : rawAssistantId,
-    tokenUsage: parseTokenUsage(evt.tokenUsage),
-    aborted: Boolean(evt.aborted),
-    errorMessage: evt.errorMessage ?? '',
-  };
-  // Clear the turn from the sidebar projection. Errored turns flip the
-  // pill to Failed; clean aborts flip it to Interrupted UNLESS the
-  // backend marked this as a revert-on-interrupt, in which case the
-  // pill stays clean (nothing happened, so don't paint it like it did).
-  projectTurnCompleted(evt.threadId, evt.turnId, {
-    aborted: settled.aborted,
-    errorMessage: settled.errorMessage,
-    revertedUserMessage: Boolean(evt.revertedUserMessage),
-  });
-  patchThreadDurableStatus(evt.threadId, { hasIncompleteTurn: false });
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== evt.threadId) continue;
-    pane.settleTurn(settled);
-  }
-  // Top-level turn complete (clean, errored, or synthesized for
-  // session_died) is a sidebar-bump boundary. The backend marks
-  // nested/internal completions with countsAsActivity=false so subagent
-  // turns update live turn state without changing read/sidebar state.
-  if (evt.countsAsActivity !== false && Number.isFinite(evt.completedAt)) {
-    syncLatestTurnCompleted(evt);
-    syncThreadActivity(evt.threadId, evt.completedAt);
-  }
-  // Send-queue drain is owned by the backend. Triage flushes queued
-  // messages at safe provider boundaries and the frontend mirrors that
-  // state via `provider:queue_state_changed` / `provider:queue_flushed`.
-  // Zone 2 clears only when a matching `provider:item_event` upsert
-  // carries `provider_item_id`, proving the provider echo arrived.
-}
-
-/**
- * Route `provider:session_died` to the matching pane's banner slot.
- * The wire-side row in the timeline (kind `notification` with
- * `meta.kind = "session_died"`) provides the historical trace; this
- * listener flips `pane.generalError` so the existing
- * `ProviderStatusBanner` Reconnect-button banner fires. If the process
- * dies before `provider:turn_started`, this listener also clears the
- * optimistic pending-send bridge; the triage router still owns active
- * turn cleanup by synthesizing the truncated `provider:turn_completed`.
- */
-function applySessionDied(evt: SessionDiedEvent): void {
-  if (!evt?.threadId) return;
-  projectSendResolved(evt.threadId, { error: true });
-  const message = sessionDiedBannerMessage(evt);
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== evt.threadId) continue;
-    pane.setSessionError(message);
-  }
-}
-
-function sessionDiedBannerMessage(evt: SessionDiedEvent): string {
-  const reason = (evt.reason ?? '').trim();
-  const signal = (evt.signal ?? '').trim();
-  if (reason) return reason;
-  if (signal) return `Provider session terminated by signal ${signal}`;
-  if (evt.exitCode) return `Provider session exited with code ${evt.exitCode}`;
-  return 'Provider session exited unexpectedly';
-}
-
-/**
- * Route `provider:subagent_notification` to the matching pane. No UI
- * consumes this today; the pane records it in a bounded log so a future
- * tray / toast surface can subscribe without re-wiring the channel.
- */
-function applySubagentNotification(evt: SubagentNotificationEvent): void {
-  if (!evt?.threadId) return;
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== evt.threadId) continue;
-    pane.appendSubagentNotification(evt);
-  }
-}
-
-/**
- * Route `provider:todo_update` to the matching pane. Updates the
- * Todos segment of the activity rail. Empty step arrays clear the
- * snapshot; an all-completed snapshot starts the auto-hide timer
- * inside `setLiveTodo`. Todo updates do NOT add a timeline row — the
- * snapshot lives only in pane state.
- */
-function applyTodoUpdate(evt: TodoUpdateEvent): void {
-  if (!evt?.threadId) return;
-  const steps = Array.isArray(evt.steps) ? evt.steps : [];
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== evt.threadId) continue;
-    pane.setLiveTodo(steps);
-  }
-}
-
-function applyTerminalOutput(payload: TerminalOutputEventPayload): void {
-  if (!payload?.threadID || !payload.terminalID) return;
-  const decoded = decodeTerminalOutput(payload.data);
-  getThreadTerminalStateForTerminalEvent(payload.threadID, payload.terminalID).appendOutput(
-    payload.terminalID,
-    decoded,
-    payload.sequence,
-  );
-}
-
-async function applyTerminalExit(payload: TerminalExitEventPayload): Promise<void> {
-  if (!payload?.threadID || !payload.terminalID) return;
-  const handle = getThreadTerminalStateForTerminalEvent(payload.threadID, payload.terminalID);
-
-  // Removing the ACTIVE tab promotes a sibling, changing activeTerminalID and
-  // remounting TerminalBody (keyed on that id) — which blurs the dying xterm.
-  // Capture, BEFORE the mutation, which panes had the user actually focused IN
-  // this terminal, so focus can follow into the promoted sibling — parity with
-  // the close paths (the ✕ button latches pendingFocus directly; Ctrl+Shift+W
-  // uses the same pane.requestTerminalFocus channel this handler does). The
-  // focus check is the load-bearing guard: a backgrounded shell (`sleep 5; exit`)
-  // that exits while the user types in the composer leaves getTerminalFocused()
-  // false for that pane, so the cursor is NOT yanked away.
-  const exitingActiveTab = handle.activeTerminalID === payload.terminalID;
-  const panesToRefocus = exitingActiveTab
-    ? panesShowingThread(payload.threadID).filter((pane) => getTerminalFocused(pane.paneId))
-    : [];
-
-  handle.removeTab(payload.terminalID);
-
-  // A terminal thread exists only while it has a live shell. When its last
-  // session ends — ctrl+D, or the × on the last tab — the terminal is done:
-  // tear down any pane showing it and drop it from the sidebar + store. This
-  // is the single seam for issue #2 (the pane must close) and #3 (the sidebar
-  // must clear). Closing just the *pane* never kills the shell, so no exit
-  // fires and the terminal stays backgrounded — exactly the desired split.
-  //
-  // Guards:
-  //  - mode === 'terminal' — a chat thread's bottom-drawer terminal exiting
-  //    (ctrl+D) must NOT delete the chat thread; only its tab is removed.
-  //  - thread still present — an explicit context-menu delete already removed
-  //    it from the store (and emits an exit via CloseThread); the lookup
-  //    returns undefined, so the redundant re-delete is skipped.
-  //  - app shutdown never reaches here — Go suppresses terminal:exit while
-  //    shuttingDown, so backgrounded terminals persist across restart.
-  //
-  // The shell is already dead, so close any pane showing it immediately (#2).
-  // The sidebar row, by contrast, is dropped only once the backend DeleteThread
-  // resolves — mirroring the canonical deleteThreadAction order. Removing it
-  // first would resurrect a shell-less ghost on the next thread-list refresh if
-  // the RPC failed; instead we keep the row and surface the failure, since
-  // "errors are user-facing state, not log entries."
-  if (handle.tabs.length > 0) {
-    // A sibling was promoted to active: follow the cursor into it for the panes
-    // where the user was focused in the terminal that just exited.
-    // requestTerminalFocus latches the pane's intent; the surface's consume
-    // effect lands it on the remounted body within this same flush.
-    for (const pane of panesToRefocus) pane.requestTerminalFocus();
-    return;
-  }
-  const thread = getThreadById(payload.threadID);
-  if (thread?.mode !== 'terminal') return;
-  closePanesShowingThread(payload.threadID);
-  try {
-    await DeleteThread(payload.threadID);
-    removeThread(payload.threadID);
-  } catch (err) {
-    console.error('terminal: delete thread after last exit failed', err);
-    addToast('error', `Could not remove terminal: ${errString(err)}`);
-  }
-}
+// onItemUpsert is defined in ./eventsItemStream (the item-batching leaf) and
+// re-exported here so existing subscribers (activityRailBackground,
+// workspaceChangeLock, proposedPlans) keep importing it from './events'.
+export { onItemUpsert };
 
 /**
  * Set up the app's Wails event listeners.
@@ -1257,12 +148,7 @@ export function setupEventListeners(): () => void {
   // reads it for the "Plan: <planType>" line.
   const cancelProviderAccount = wailsEventOn<ProviderAccountEvent>(
     'provider:account',
-    (evt) => {
-      if (!evt || typeof evt.account !== 'object' || evt.account === null) return;
-      const provider = asProviderID(evt.provider);
-      if (!provider) return;
-      setProviderAccount(provider, evt.account);
-    },
+    applyProviderAccount,
   );
 
   // system:stats — periodic host CPU + memory snapshot (~2s cadence)
@@ -1275,11 +161,11 @@ export function setupEventListeners(): () => void {
     'system:stats',
     (evt) => {
       if (
-        !evt ||
-        typeof evt.isWsl !== 'boolean' ||
-        typeof evt.cpuPercent !== 'number' ||
-        typeof evt.memUsedBytes !== 'number' ||
-        typeof evt.memTotalBytes !== 'number'
+        !evt
+        || typeof evt.isWsl !== 'boolean'
+        || typeof evt.cpuPercent !== 'number'
+        || typeof evt.memUsedBytes !== 'number'
+        || typeof evt.memTotalBytes !== 'number'
       ) {
         return;
       }
@@ -1348,66 +234,23 @@ export function setupEventListeners(): () => void {
 
   const cancelCheckpointCaptured = wailsEventOn<CheckpointCapturedEvent | null>(
     'checkpoint:captured',
-    (payload) => {
-      for (const pane of iterPanes()) {
-        pane.applyCheckpointCaptured(payload);
-      }
-    },
+    applyCheckpointCaptured,
   );
   const cancelCheckpointUnavailable = wailsEventOn<CheckpointUnavailableEvent | null>(
     'checkpoint:unavailable',
-    (payload) => {
-      for (const pane of iterPanes()) {
-        pane.applyCheckpointUnavailable(payload);
-      }
-    },
+    applyCheckpointUnavailable,
   );
   const cancelCheckpointError = wailsEventOn<CheckpointErrorEvent | null>(
     'checkpoint:error',
-    (payload) => {
-      for (const pane of iterPanes()) {
-        pane.applyCheckpointError(payload);
-      }
-    },
+    applyCheckpointError,
   );
   const cancelCheckpointReverted = wailsEventOn<CheckpointRevertedEvent | null>(
     'checkpoint:reverted',
-    (payload) => {
-      for (const pane of iterPanes()) {
-        pane.applyCheckpointReverted(payload);
-      }
-    },
+    applyCheckpointReverted,
   );
-  // `user_message:reverted` fires after InterruptAndRevertIfClean rolls
-  // back the most-recent user message. Backend truncates SQLite via
-  // `DeleteConversationFromTurn(threadId, turnIndex)` — inclusive — so
-  // synthetic siblings on the same turn (thinking, api_retry, error,
-  // notification, terminal_interaction waits) all go with the user row.
-  // This handler mirrors that truncate on the frontend: removing only
-  // the user item would strand orphans in `pane.items` that no longer
-  // back any SQLite row, surviving until thread switch / cache evict.
-  //
-  // Responsibilities: (1) idempotently remove every pane item at
-  // `>= turnIndex` for any pane viewing the thread (matches backend
-  // truncate; defends against a stale optimistic miss / cross-pane
-  // reflection); (2) refresh the composer draft from disk so the
-  // user's typed text reappears in the input. `reloadFromBackend` is
-  // a no-op when the draft store is not pointed at this thread, so we
-  // just fire it for every active draft.
   const cancelUserMessageReverted = wailsEventOn<UserMessageRevertedEvent | null>(
     'user_message:reverted',
-    (payload) => {
-      if (!payload?.threadId || !payload.userItemId) return;
-      if (typeof payload.turnIndex !== 'number') return;
-      for (const pane of iterPanes()) {
-        if (pane.threadId !== payload.threadId) continue;
-        pane.removeItemsFromTurn(payload.turnIndex);
-        const draft = getComposerDraftForPane(pane.paneId);
-        if (draft) {
-          void draft.reloadFromBackend(payload.threadId);
-        }
-      }
-    },
+    applyUserMessageReverted,
   );
 
   const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', applyThreadUpdated);
@@ -1417,24 +260,9 @@ export function setupEventListeners(): () => void {
   // ready. Surface a toast so the user notices the change before they
   // wonder why the next thread routed to a different CLI; the value
   // can still be reverted manually in Settings.
-  interface DefaultSwappedPayload {
-    from?: string;
-    to?: string;
-    fromCli?: string;
-    otherCli?: string;
-    reason?: string;
-  }
   const cancelDefaultSwapped = wailsEventOn<DefaultSwappedPayload>(
     'provider:default_swapped',
-    (payload) => {
-      if (!payload || !payload.to) return;
-      const next = payload.otherCli || payload.to;
-      const prev = payload.fromCli || payload.from || 'previous default';
-      addToast(
-        'info',
-        `Default provider switched to ${next} — ${prev} CLI not detected.`,
-      );
-    },
+    applyDefaultSwapped,
   );
 
   // transport:gap — synthetic event fired by wsClient.ts when the
@@ -1449,63 +277,7 @@ export function setupEventListeners(): () => void {
   // simplest correct response.
   const cancelTransportGap = wailsEventOn<{ channel: string; seq: number }>(
     transportGapChannel,
-    (gap) => {
-      if (!gap || typeof gap.channel !== 'string') return;
-      switch (gap.channel) {
-        case 'provider:item_event':
-        case 'provider:turn_started':
-        case 'provider:turn_completed':
-        case 'thread:updated': {
-          refreshSidebarProjections();
-          // Per-pane on purpose: refreshFromBackend refetches THAT
-          // pane's loaded window (two panes on one thread can hold
-          // different slices), so this cannot dedupe by threadId the
-          // way the usage branch below does.
-          for (const pane of iterPanes()) {
-            if (!pane.threadId) continue;
-            void pane.refreshFromBackend();
-          }
-          return;
-        }
-        case 'provider:usage': {
-          // refreshFromBackend doesn't pull `lastTokenUsage` from the
-          // store, so a missed usage event would leave the meter stale
-          // forever. Re-read each affected thread's row so
-          // `seedContextWindow` rebuilds the meter from the persisted
-          // snapshot. (`replaceThread` re-runs the seed via
-          // thread.svelte.ts.) Dedupe by threadId so two panes mounting
-          // the same thread don't issue two RPCs for the same refresh.
-          const seen = new Set<string>();
-          for (const pane of iterPanes()) {
-            if (!pane.threadId || seen.has(pane.threadId)) continue;
-            const threadId = pane.threadId;
-            seen.add(threadId);
-            void GetThread(threadId).then((thread) => {
-              const t = thread as Thread | null;
-              if (!t) return;
-              for (const p of iterPanes()) {
-                if (p.threadId === threadId) p.replaceThread(t);
-              }
-            }).catch((err: unknown) => {
-              console.warn(`events: refresh thread ${threadId} after provider:usage gap: ${err}`);
-            });
-          }
-          return;
-        }
-        default:
-          // Unknown channel: log a breadcrumb and refresh active panes
-          // anyway. Refreshing is cheap; missing a refresh on a future
-          // channel that needs one would be silent data drift.
-          console.warn(
-            `events: transport gap on unknown channel "${gap.channel}" — refreshing active panes`,
-          );
-          refreshSidebarProjections();
-          for (const pane of iterPanes()) {
-            if (!pane.threadId) continue;
-            void pane.refreshFromBackend();
-          }
-      }
-    },
+    applyTransportGap,
   );
 
   // design:reload-main — file watcher fired in the thread's main/
@@ -1525,18 +297,7 @@ export function setupEventListeners(): () => void {
   // burst of file writes doesn't fan out a list-options RPC for each.
   const cancelDesignOptionsUpdate = wailsEventOn<DesignOptionsUpdatePayload>(
     'design:options-update',
-    (payload) => {
-      if (!payload?.threadId) return;
-      const detail = payload;
-      fireThrottled(designOptionsThrottle, payload.threadId, DESIGN_OTHER_THROTTLE_MS, () => {
-        for (const pane of iterPanes()) {
-          if (pane.threadId === detail.threadId) {
-            void pane.applyDesignOptionsUpdate(detail.threadId, detail.setId ?? '');
-          }
-        }
-        dispatchDomEvent(DESIGN_OPTIONS_UPDATE_EVENT, detail);
-      });
-    },
+    applyDesignOptionsUpdate,
   );
 
   // thread:runtime_mode_changed — backend persisted a new three-tier
@@ -1545,19 +306,7 @@ export function setupEventListeners(): () => void {
   // returned Thread is what makes persisted runtime state visible.
   const cancelRuntimeModeChanged = wailsEventOn<RuntimeModeChangedPayload>(
     'thread:runtime_mode_changed',
-    (payload) => {
-      if (!payload || !payload.threadId || !payload.runtimeMode) return;
-      const existing = getThreads().find((t) => t.id === payload.threadId);
-      if (existing) {
-        replaceThread({ ...existing, runtimeMode: payload.runtimeMode });
-      }
-      for (const pane of iterPanes()) {
-        if (pane.threadId !== payload.threadId) continue;
-        if (pane.thread) {
-          pane.replaceThread({ ...pane.thread, runtimeMode: payload.runtimeMode });
-        }
-      }
-    },
+    applyRuntimeModeChanged,
   );
 
   // thread:mode_changed — the backend persisted a new mode. We update the
@@ -1566,25 +315,7 @@ export function setupEventListeners(): () => void {
   // reconnect so the session can pick up the new mode's config.
   const cancelModeChanged = wailsEventOn<ModeChangedPayload>(
     'thread:mode_changed',
-    (payload) => {
-      if (!payload || !payload.threadId) return;
-      const existing = getThreads().find((t) => t.id === payload.threadId);
-      if (existing) {
-        replaceThread({ ...existing, mode: payload.mode });
-      }
-      for (const pane of iterPanes()) {
-        if (pane.threadId !== payload.threadId) continue;
-        if (pane.thread) {
-          pane.replaceThread({ ...pane.thread, mode: payload.mode });
-        }
-      }
-      if (payload.needsReconnect) {
-        addToast(
-          'warning',
-          `Mode set to ${payload.mode}. Reconnect the session to apply.`,
-        );
-      }
-    },
+    applyModeChanged,
   );
 
   return () => {
@@ -1618,56 +349,6 @@ export function setupEventListeners(): () => void {
     cancelDesignOptionsUpdate();
     cancelModeChanged();
     cancelRuntimeModeChanged();
-    // Drop any pending throttled reloads + per-thread last-fire
-    // bookkeeping so a re-attached listener starts from a clean state.
-    for (const handle of designReloadPending.values()) {
-      clearTimeout(handle);
-    }
-    designReloadPending.clear();
-    designReloadLastFireAt.clear();
-    clearDesignThrottle(designOptionsThrottle);
+    clearAllDesignThrottles();
   };
-}
-
-interface QueueStateChangedPayload {
-  threadId: string;
-  items: WireQueuedItem[];
-}
-
-interface QueueFlushedPayload {
-  threadId: string;
-  items: Array<{ queueItemId: string; userItemId: string; message: string }>;
-}
-
-interface QueueRestoredPayload {
-  threadId: string;
-  reason: string;
-  queueItemIds?: string[];
-  userItemIds?: string[];
-}
-
-function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined): void {
-  if (!evt || !evt.threadId) return;
-  const items = (evt.items ?? []).map(queueItemFromWire);
-  replaceQueueForThread(evt.threadId, items);
-}
-
-function applyQueueFlushed(evt: QueueFlushedPayload | undefined): void {
-  if (!evt || !evt.threadId || !evt.items || evt.items.length === 0) return;
-  markItemsFlushed(evt.threadId, evt.items);
-}
-
-function applyQueueRestored(evt: QueueRestoredPayload | undefined): void {
-  if (!evt || !evt.threadId) return;
-  removeRestoredQueueItems(evt.threadId, {
-    queueItemIds: evt.queueItemIds ?? [],
-    userItemIds: evt.userItemIds ?? [],
-  });
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== evt.threadId) continue;
-    const draft = getComposerDraftForPane(pane.paneId);
-    if (draft) {
-      void draft.reloadFromBackend(evt.threadId);
-    }
-  }
 }
