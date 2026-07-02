@@ -1,5 +1,5 @@
 import type { ItemKind, Thread } from '../types/models';
-import type { ScrollObservationKind } from '../utils/useStickToBottom.svelte';
+import type { ScrollObservationKind } from '../utils/scroll/types';
 import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
 import type { RhsPanel } from './rhsPanelSlot.svelte';
 import type { ActiveTurn } from './threadStatuses.svelte';

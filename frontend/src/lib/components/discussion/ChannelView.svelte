@@ -6,7 +6,7 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { createUseStickToBottomController } from '../../utils/useStickToBottom.svelte';
+  import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import { relativeTime } from '../../utils/format';
   import Button from '../primitives/Button.svelte';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';

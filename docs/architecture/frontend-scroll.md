@@ -9,7 +9,7 @@ or `useStickToBottom`.
 
 - `MessageTimeline.svelte` owns the outer chat scroll container.
 - `virtua/svelte` owns virtual row geometry and per-row measurement.
-- `useStickToBottom.svelte.ts` owns user scroll intent and every allowed
+- `utils/scroll/` (controller `index.svelte.ts`) owns user scroll intent and every allowed
   `scrollTop` write outside virtua internals.
 - `ThreadPane` owns the scroll-controller registration slot so shared
   surfaces can pause or notify scrolling without reaching into component
@@ -296,7 +296,7 @@ Routed writes are controller writes: attributed (`virtua.jump` /
 `virtua.anchorRedirect` in the `scroll.write` trace), self-tagged for the
 scroll handler, and preceded by the virtua manual-scroll marking hook like
 every other programmatic write. Decision-level coverage lives in
-`resolver.test.ts`; the applier wiring in `useStickToBottom.svelte.test.ts`
+`resolver.test.ts`; the applier wiring in `scroll/index.svelte.test.ts`
 ("virtua compensation applier"); the patch seam itself in
 `virtua-patch-scroll-applier.browser.test.ts`; and the user-visible
 outcomes in `compensationOutcome.browser.test.ts`.
@@ -559,7 +559,7 @@ well as geometry (`isNearBottomState`).
 Do not fix scroll regressions by adding `requestAnimationFrame`, a second
 observer, a length-watching `$effect`, or another `scrollTop` writer.
 Encode the failing ResizeObserver/geometry sequence in
-`useStickToBottom.svelte.test.ts` or `scroll.test.ts`, then fix the
+`scroll/index.svelte.test.ts` or `scroll.test.ts`, then fix the
 controller path.
 
 ## Accepted Tradeoffs

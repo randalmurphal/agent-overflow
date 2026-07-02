@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createUseStickToBottomController,
-  resetUseStickToBottomModuleStateForTest,
-  RETAIN_ANIMATION_DURATION_MS,
   type UseStickToBottomController,
-} from './useStickToBottom.svelte';
-import { latchedSpringMode, SPRING_MODE_HOLD_MS } from './springAnimationLatch';
-import { clearUiRenderTrace, getUiRenderTraceRecords, setUiRenderTraceEnabled } from './uiRenderTrace';
+} from './index.svelte';
+import { resetScrollIntentModuleStateForTest } from './intent';
+import { RETAIN_ANIMATION_DURATION_MS } from './spring';
+import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../springAnimationLatch';
+import { clearUiRenderTrace, getUiRenderTraceRecords, setUiRenderTraceEnabled } from '../uiRenderTrace';
 
 // happy-dom doesn't measure layout, so tests stub scrollHeight /
 // clientHeight / scrollTop on the scroll element via Object.defineProperty.
@@ -153,7 +153,7 @@ describe('createUseStickToBottomController', () => {
   let originalRO: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
-    resetUseStickToBottomModuleStateForTest();
+    resetScrollIntentModuleStateForTest();
     setUiRenderTraceEnabled(false);
     clearUiRenderTrace();
     MockResizeObserver.instances = [];
@@ -2152,7 +2152,7 @@ describe('createUseStickToBottomController — spring chase', () => {
   }
 
   beforeEach(() => {
-    resetUseStickToBottomModuleStateForTest();
+    resetScrollIntentModuleStateForTest();
     MockResizeObserver.instances = [];
     originalRO = globalThis.ResizeObserver;
     (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver = MockResizeObserver;
@@ -2805,7 +2805,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       // Fresh controller + geometry for the dropped-frames run.
       controller.detach();
-      resetUseStickToBottomModuleStateForTest();
+      resetScrollIntentModuleStateForTest();
       MockResizeObserver.instances = [];
       controller = createUseStickToBottomController({ animationMode: () => mode });
       geom.scrollHeight = 1000;

@@ -5,7 +5,7 @@
 // buffer — the streaming settle-flicker churn
 // (docs/architecture/settle-flicker-analysis.md). The controller side (hook
 // precedes every programmatic write) is proven in
-// useStickToBottom.svelte.test.ts, and the virtua side (marking prevents the
+// utils/scroll/index.svelte.test.ts, and the virtua side (marking prevents the
 // buffer drop) in src/test/integration/virtua-patch-buffer-retention
 // .browser.test.ts. This test closes the seam between them: delete
 // MessageTimeline's onBeforeScrollTopWrite wiring and only this fails.

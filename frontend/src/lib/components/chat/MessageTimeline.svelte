@@ -9,7 +9,7 @@
   import type { Item } from '../../types/models';
   import { addToast } from '../../stores/toast.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
-  import { createUseStickToBottomController } from '../../utils/useStickToBottom.svelte';
+  import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../../utils/springAnimationLatch';
   import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
   import {
@@ -1449,7 +1449,7 @@
         // load-bearing distinguisher between "the user has explicitly
         // escaped" and "this $effect.pre just defensively set escape=true
         // while preparing the new thread for restore." See
-        // useStickToBottom.svelte.ts § Restore-snap consent state.
+        // utils/scroll/intent.ts § Restore-snap consent.
         stick.armRestoreSnap();
       } else if (nextThreadId) {
         // Placeholder → materialized transition: the timeline was empty

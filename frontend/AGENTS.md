@@ -67,8 +67,7 @@ Read that before touching:
 - `src/lib/stores/threadScrollSnapshots.ts`
 - `src/lib/components/chat/MessageTimeline.svelte`
 - `src/lib/components/discussion/ChannelView.svelte`
-- `src/lib/utils/useStickToBottom.svelte.ts`
-- `src/lib/utils/scroll/resolver.ts`
+- `src/lib/utils/scroll/` (`index.svelte.ts` controller + resolver/intent/spring/observers)
 - `src/lib/utils/threadVirtuaSizeCache.ts`
 
 Short version: `MessageTimeline` owns the scroll container, `virtua`
@@ -117,7 +116,7 @@ stable `<pre>` with Idiomorph so selection survives streaming updates.
 Store logic: unit-test with Vitest under `src/lib/stores/*.test.ts`.
 Component behavior: add a component test when changing rendering or
 interaction. Scroll behavior has dedicated coverage in
-`src/lib/utils/useStickToBottom.svelte.test.ts` (controller
+`src/lib/utils/scroll/index.svelte.test.ts` (controller
 choreography), `src/lib/utils/scroll/resolver.test.ts` (the pure
 decision core, exhaustive over its state × observation matrix), and
 `src/lib/components/chat/scroll.test.ts`.

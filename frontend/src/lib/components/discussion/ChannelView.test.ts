@@ -7,7 +7,7 @@ import { loadSettings } from '../../stores/settings.svelte';
 import type { ChannelMessage } from '../../types/discussion';
 import type { Thread } from '../../types/models';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
-import { resetUseStickToBottomModuleStateForTest } from '../../utils/useStickToBottom.svelte';
+import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 
 // Stub Element.animate for Svelte transitions (reused by Markdown's nested components).
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -105,12 +105,12 @@ describe('<ChannelView>', () => {
     vi.useFakeTimers();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
-    // Reset the useStickToBottom module-global mouseDown flag. Without
+    // Reset the intent machine module-global mouseDown flag. Without
     // this, a prior test (or a prior file in the same Vitest worker)
     // that fired mousedown without a matching mouseup/click would leak
     // mouseDown=true into this file, where the controller's
     // isSelectingInside() would silently suppress sync-pin writes.
-    resetUseStickToBottomModuleStateForTest();
+    resetScrollIntentModuleStateForTest();
     // Install the controllable RO. Tests that don't need to fire it
     // (the existing six cases) just don't call .fire() — observe is
     // a no-op so they're undisturbed.

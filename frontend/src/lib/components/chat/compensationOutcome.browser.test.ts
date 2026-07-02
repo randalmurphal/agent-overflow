@@ -23,7 +23,7 @@
 //
 // (seq-509 — restore-consent — is pane/controller choreography with no
 // virtua writer involved; it stays covered by the forceStick consent-gate
-// unit tests in useStickToBottom.svelte.test.ts. Every mount here also
+// unit tests in utils/scroll/index.svelte.test.ts. Every mount here also
 // exercises the mount-cascade compensation window: mountTimeline fails
 // unless the post-cascade settle lands at the bottom.)
 //

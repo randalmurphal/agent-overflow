@@ -54,7 +54,7 @@ function installModuleSelectionListeners(): void {
 }
 
 /** Test-only escape hatch to reset the module-global mouseDown flag. */
-export function resetUseStickToBottomModuleStateForTest(): void {
+export function resetScrollIntentModuleStateForTest(): void {
   mouseDown = false;
 }
 

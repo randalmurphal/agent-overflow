@@ -1,5 +1,5 @@
 // Pure decision core for the sticky-bottom scroll controller
-// (utils/useStickToBottom.svelte.ts). Stage 2 of the scroll
+// (scroll/index.svelte.ts). Stage 2 of the scroll
 // re-architecture (docs/architecture/scroll-rearchitecture-plan.md):
 // the controller gathers observations (DOM reads, sampled options,
 // clocks) and applies effects (scrollTop writes, spring lifecycle,
@@ -30,7 +30,7 @@ export const ARRIVAL_DISTANCE_PX = 1;
 // at its source. Value: large enough to clear the observed ~2px idle flip with
 // margin, small enough to stay well below the ≥~line-height gap of genuine
 // catch-up growth; equal to AUTO_FOLLOW_BOTTOM_EPSILON_PX
-// (useStickToBottom.svelte.ts) by design — "close enough to count as
+// (scroll/index.svelte.ts) by design — "close enough to count as
 // at-bottom" and "close enough not to fight a wobble" are the same
 // tolerance. Full mechanism (fractional-DPR X.5-boundary height flip →
 // moving target → self-sustaining ±2px cycle) + the capture it was root-caused
@@ -89,7 +89,7 @@ export interface ResolverState {
   /**
    * A spring chase or sentinel is in flight (the controller's
    * `springToken !== 0`; sampled by `resolverStateSnapshot` in
-   * useStickToBottom.svelte.ts).
+   * scroll/index.svelte.ts).
    */
   springActive: boolean;
   /** setEscapedFromLock(true) requested the spring to stop. */

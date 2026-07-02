@@ -271,15 +271,15 @@ describe('Pause-lease integration with the real controller', () => {
     const { default: ChannelView } = await import('../discussion/ChannelView.svelte');
     const { setBindingMock } = await import('../../../test/mocks/bindings-app');
     const { loadSettings } = await import('../../stores/settings.svelte');
-    const { resetUseStickToBottomModuleStateForTest } = await import(
-      '../../utils/useStickToBottom.svelte'
+    const { resetScrollIntentModuleStateForTest } = await import(
+      '../../utils/scroll/intent'
     );
 
     // Module-global mouseDown reset — prevents a prior test's mousedown
     // (without matching mouseup) from leaking into isSelectingInside()
     // and silently suppressing sync-pin writes during this test's RO
     // fires.
-    resetUseStickToBottomModuleStateForTest();
+    resetScrollIntentModuleStateForTest();
 
     // Seed every binding switchThread fans out to. Without these,
     // switchThread's catch-and-console.error paths would noisily pollute
@@ -396,7 +396,7 @@ describe('Pause-lease integration with the real controller', () => {
   });
 
   it('blocks content observations while the lease is held', async () => {
-    const { createUseStickToBottomController } = await import('../../utils/useStickToBottom.svelte');
+    const { createUseStickToBottomController } = await import('../../utils/scroll/index.svelte');
     const pane = await buildPane(makeThread(), []);
 
     const scrollEl = document.createElement('div');

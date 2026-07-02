@@ -10,7 +10,7 @@
 //     fiction.
 //   - Pure controller behavior (sync-pin, content RO, input-intent
 //     handlers, pause-lease semantics) — covered exhaustively in
-//     `useStickToBottom.svelte.test.ts`.
+//     `utils/scroll/index.svelte.test.ts`.
 //
 // What IS tested here:
 //   - Per-thread snapshot save/restore round-trip through a real virtua
@@ -39,7 +39,7 @@ import {
   peekThreadVirtuaSizeCacheForTest,
 } from '../../utils/threadVirtuaSizeCache';
 import * as virtuaSizeCacheModule from '../../utils/threadVirtuaSizeCache';
-import type { UseStickToBottomController } from '../../utils/useStickToBottom.svelte';
+import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import MessageTimeline from './MessageTimeline.svelte';
 import ChatView from './ChatView.svelte';
 
@@ -53,10 +53,10 @@ import ChatView from './ChatView.svelte';
 const { createdStickControllers } = vi.hoisted(() => ({
   // Type annotations are erased at runtime, so referencing the imported
   // type inside the hoisted factory is safe.
-  createdStickControllers: [] as import('../../utils/useStickToBottom.svelte').UseStickToBottomController[],
+  createdStickControllers: [] as import('../../utils/scroll/index.svelte').UseStickToBottomController[],
 }));
-vi.mock('../../utils/useStickToBottom.svelte', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('../../utils/useStickToBottom.svelte')>();
+vi.mock('../../utils/scroll/index.svelte', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../utils/scroll/index.svelte')>();
   const wrappedCreate: typeof mod.createUseStickToBottomController = (options) => {
     const controller = mod.createUseStickToBottomController(options);
     createdStickControllers.push(controller);
@@ -1658,7 +1658,7 @@ describe('scroll integration — auto-load-newer trigger', () => {
 describe('scroll integration — useStickToBottom wiring', () => {
   // Controller-internal behavior (sync-pin, content-RO, input-intent
   // handlers, pause-lease semantics, programmatic-write tagging) is
-  // covered exhaustively in `useStickToBottom.svelte.test.ts` against
+  // covered exhaustively in `utils/scroll/index.svelte.test.ts` against
   // raw scrollEl/contentEl divs with stubbed geometry.
   //
   // What we assert HERE is that MessageTimeline actually wires the

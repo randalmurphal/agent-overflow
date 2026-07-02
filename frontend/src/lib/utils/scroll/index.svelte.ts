@@ -53,9 +53,9 @@
 // out-of-content height changes; the seam is identical on both surfaces.
 
 import { tick } from 'svelte';
-import { isUiRenderTraceEnabled } from './uiRenderTrace';
-import { createScrollIntent, isSelectingInside } from './scroll/intent';
-import { createContentObserver } from './scroll/observers';
+import { isUiRenderTraceEnabled } from '../uiRenderTrace';
+import { createScrollIntent, isSelectingInside } from './intent';
+import { createContentObserver } from './observers';
 import {
   ARRIVAL_DISTANCE_PX,
   SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX,
@@ -63,30 +63,23 @@ import {
   withinArrivalBand,
   type ResolverState,
   type VirtuaCompensationObservation,
-} from './scroll/resolver';
-import { createSpringChase } from './scroll/spring';
-import { trace } from './scroll/trace';
+} from './resolver';
+import { createSpringChase } from './spring';
+import { trace } from './trace';
 import type {
   ScrollObservationKind,
   ScrollWriteCaller,
   UseStickToBottomController,
   UseStickToBottomOptions,
-} from './scroll/types';
+} from './types';
 
-// Public types re-exported so this module remains the single import
-// surface for consumers until the Stage-4 rename to scroll/index.svelte.ts
-// updates their import paths.
+// Public types re-exported so consumers import the controller and its
+// contract from one place; the definitions live in ./types.
 export type {
   ScrollObservationKind,
   UseStickToBottomController,
   UseStickToBottomOptions,
-} from './scroll/types';
-// Re-exported for the controller test's retain-window assertions; the
-// constant lives with the spring kinematics.
-export { RETAIN_ANIMATION_DURATION_MS } from './scroll/spring';
-// Re-exported for the tests that reset the intent machine's module-level
-// selection tracking between cases.
-export { resetUseStickToBottomModuleStateForTest } from './scroll/intent';
+} from './types';
 
 // Three-band geometry — see docs/architecture/frontend-scroll.md for
 // the full rationale. Tightening any one of these affects a
