@@ -3,26 +3,13 @@
   import type {
     PaneScrollController,
     ThreadPane,
-    TimelineWindowAnchorOperation,
   } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
-  import { addToast } from '../../stores/toast.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../../utils/springAnimationLatch';
   import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
-  import {
-    getThreadScrollSnapshot,
-    setThreadScrollSnapshot,
-    type ScrollSnapshot,
-  } from '../../utils/threadScrollSnapshots';
-  import {
-    createRowEstimate,
-    getReplayableSizePriors,
-    setThreadSizePriors,
-    type SizePriorsKey,
-  } from '../../utils/virtual/priors';
-  import type { RowEstimate, TimelineVirtualizerHandle } from '../../utils/virtual/types';
+  import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
   import TimelineVirtualizer from './TimelineVirtualizer.svelte';
   import {
     groupItemsBySubagent,
@@ -30,7 +17,6 @@
     timelineNodeKey,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
-  import { timelineStructureSignature } from '../../utils/timelineStructureSignature';
   import { groupConsecutiveReads } from '../../utils/readGrouping';
   import { timelineRowDecorations } from './timelineRows';
   import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
@@ -61,58 +47,18 @@
     type PaneGeometrySnapshot,
   } from '../../utils/paneGeometryProbe';
   import type { UserMessageActions } from './userMessageActions';
-  import {
-    bottomEdgeGeometry,
-    captureTimelineAnchor,
-    createAutoLoadGate,
-    isPureKeyedHeadDrop,
-    isWithinBottomTriggerZone,
-    isWithinTopTriggerZone,
-    resolveVisibleTimelineNodeIndex,
-    type AutoLoadZoneThresholds,
-    type TimelineAnchor,
-  } from './timelineScroll';
+  import { resolveVisibleTimelineNodeIndex } from './timelineScroll';
   import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
   import {
     collectTimelineRowUiRetention,
     timelineRowUiPruneSignature,
   } from './timelineRowUiRetention';
   import { observeScrollSurfaceContentWidth } from './scrollSurfaceWidth';
+  import { createTimelineRestore } from './timelineRestore.svelte';
+  import { createTimelineSizePriors } from './timelineSizePriors.svelte';
+  import { createTimelinePaging } from './timelinePaging';
+  import { createTimelineWindowAnchor } from './timelineWindowAnchor.svelte';
 
-  // Flat fallback row estimate for the windowing engine. Real sizes come
-  // from the virtualizer's per-row ResizeObserver; estimates only place
-  // unmeasured rows before their first measurement lands (priors → kind
-  // table → this default; see utils/virtual/priors.ts). A floor like the
-  // kind table below, for the same asymmetry.
-  const ESTIMATED_ROW_SIZE = 40;
-  // Cold-thread (priors-miss) placement estimates keyed by rendered node
-  // kind — leaf rows use their item kind, structural rows their node
-  // kind (timelineRowEstimateKind below). Estimates never decide what a
-  // row renders, only where unmeasured rows sit until measured — and the
-  // two error directions cost differently. OVERSHOOT shrinks totalSize
-  // when the real measurement lands: the scrollbar dips, and while
-  // pinned at the exact bottom the browser synchronously clamps
-  // scrollTop down (the remount-collapse class
-  // remountReturn.browser.test.ts polices). UNDERSHOOT only grows
-  // totalSize, which the engine's remeasure-above compensation absorbs
-  // invisibly; its cost is a few extra transiently mounted rows on a
-  // cold thread switch. So these are FLOORS, not averages: the measured
-  // 1-line rendered height per kind (real-Chromium probe, default
-  // settings, 800px pane), derated ~20% so smaller font settings stay
-  // under. Warm switches replay exact priors and never touch this table.
-  const ROW_KIND_ESTIMATE_PX: Readonly<Record<string, number>> = {
-    user_text: 72,
-    assistant_text: 44,
-    thinking: 30,
-    tool_call: 20,
-    tool_completion: 20,
-    error: 42,
-    notification: 24,
-    api_retry: 24,
-    read_group: 20,
-    group: 36,
-    wait_group: 36,
-  };
   // Extra buffer rendered above + below the viewport. Sized for two viewports
   // worth of rows on each side so fast scrolls (trackpad fling, scrollbar
   // drag) don't outrun the rendered window — that was the source of the
@@ -151,19 +97,6 @@
     `left top / calc(100% - ${SCROLLBAR_SAFE_PX}px) 100% no-repeat, ` +
     `linear-gradient(#000, #000) right top / ${SCROLLBAR_SAFE_PX}px 100% no-repeat`;
   const TARGET_FLASH_MS = 900;
-  // Auto-load trigger thresholds, shared by both edges. Older: when the
-  // user scrolls within AUTO_LOAD_OFFSET_PX of the TOP and the topmost
-  // rendered row is one of the first AUTO_LOAD_INDEX_THRESHOLD nodes, fire
-  // `pane.loadOlder()`. Newer: the mirror at the BOTTOM fires
-  // `pane.loadNewer()`. Either way the next batch slots in before the user
-  // runs out of buffer. The index gate keeps an idle small-thread render
-  // from auto-loading just because the whole thing fits in viewport.
-  const AUTO_LOAD_OFFSET_PX = 800;
-  const AUTO_LOAD_INDEX_THRESHOLD = 5;
-  const AUTO_LOAD_ZONE: AutoLoadZoneThresholds = {
-    offsetThreshold: AUTO_LOAD_OFFSET_PX,
-    indexThreshold: AUTO_LOAD_INDEX_THRESHOLD,
-  };
   // Leaf item kinds that participate in the continuous left-border
   // rail. Subagent / wait group containers also participate so the
   // rail stays continuous through nested cards and the agent card's
@@ -229,39 +162,6 @@
   let listRef: TimelineVirtualizerHandle | undefined = $state(undefined);
   let scrollSurfaceContentWidth = $state(0);
 
-  // Per-thread row estimate for the incoming {#key pane.threadId} mount:
-  // replayable measured-size priors (validity-keyed — see
-  // utils/virtual/priors.ts) with the kind-table fallback for rows the
-  // priors don't cover. Resolved on the threadId edge in $effect.pre
-  // below — BEFORE the remount — because the virtualizer configures its
-  // engine once at construction.
-  let rowEstimate = $state<RowEstimate | undefined>(undefined);
-  let rowEstimateThreadId: string | null = null;
-
-  let restoredThreadId: string | null = $state(null);
-  // Tracks which thread we last persisted into the snapshot store via
-  // the thread-switch effect — separate from `restoredThreadId` so a
-  // thread switch can dispose the previous snapshot before the next
-  // restore completes.
-  let scrollSnapshotThreadId: string | null = $state(null);
-  // Last observed `pane.switchGeneration`. Paired with
-  // `scrollSnapshotThreadId` so the restore-effect.pre reset path fires
-  // on same-thread re-switch (the revert-to-checkpoint flow calls
-  // `pane.switchThread(currentThread)` to reload items in place; the
-  // thread id doesn't change but the generation counter bumps). Without
-  // this discriminator, revert leaves `restoredThreadId === threadId`
-  // and the restore $effect early-returns — the viewport sticks at
-  // scrollTop=0 with the "Load older messages" banner visible. The
-  // sentinel `-1` makes the first effect run a no-op for the
-  // `if (scrollSnapshotThreadId)` branch (since scrollSnapshotThreadId
-  // is null on mount, no restoredThreadId reset is needed).
-  let scrollSnapshotSwitchGeneration = -1;
-  // Token bumped on every external "interrupt" — thread switch, user
-  // scroll, programmatic scrollToItem — so async restore work can detect
-  // staleness and bail.
-  let restoreToken = 0;
-  const autoLoadOlderGate = createAutoLoadGate();
-  const autoLoadNewerGate = createAutoLoadGate();
   const targetFlash = createTimelineTargetFlash(TARGET_FLASH_MS);
 
   function currentTimelineLeafItem(node: TimelineNode): Item | null {
@@ -321,11 +221,6 @@
   // scroll-to-index) must read THIS, not `groupedNodes`, so the indices
   // line up with what the virtualizer actually renders.
   let revealedNodes = $derived(sliceRevealedNodes(groupedNodes, pane.revealBoundary));
-  let timelineWindowPruneShiftAtHead = $state(false);
-  let timelineWindowPruneShiftResetToken = 0;
-  let virtualizerShiftAtHead = $derived(
-    pane.pendingTimelineShiftAtHead || timelineWindowPruneShiftAtHead,
-  );
   let codexReceiverLabels = $derived.by(() => {
     const provider = pane.thread?.provider;
     // Receiver labels come from spawn-row metadata. Summary-only streaming
@@ -439,133 +334,74 @@
     }
   }
 
-  interface TimelineWindowAnchorIntent {
-    switchGeneration: number;
-    shouldStickToBottom: boolean;
-    anchor: TimelineAnchor | null;
-  }
+  // ============================================================
+  // Extracted timeline sessions
+  // ============================================================
+  // (`findTimelineNodeIndex`, referenced below, is declared with the
+  // rest of the Helpers section further down — `function` declarations
+  // are hoisted, so the forward reference is safe.)
+  // Restore session (timelineRestore.svelte.ts), row-size priors
+  // (timelineSizePriors.svelte.ts), load-older/newer paging
+  // (timelinePaging.ts), and the timeline-window prune anchor
+  // transaction (timelineWindowAnchor.svelte.ts) cross-reference each
+  // other's methods. Every cross-reference below is arrow-wrapped so it
+  // isn't evaluated until the wrapping closure is actually CALLED — by
+  // then every factory in this block has finished constructing, so
+  // construction order doesn't matter (TDZ-protection; mirrors
+  // thread.svelte.ts's `getScrollController: () => scrollController`
+  // pattern for the same reason).
+  const sizePriors = createTimelineSizePriors({
+    getPane: () => pane,
+    getListRef: () => listRef,
+    getRevealedNodes: () => revealedNodes,
+    getScrollSurfaceContentWidth: () => scrollSurfaceContentWidth,
+    getRestoredThreadId: () => restore.restoredThreadId,
+  });
 
-  function captureTimelineWindowAnchorIntent(): TimelineWindowAnchorIntent {
-    const shouldStickToBottom =
-      stick.isSticky || (!stick.escapedFromLock && stick.isAtBottom);
-    const currentListRef = listRef;
-    return {
-      switchGeneration: pane.switchGeneration,
-      shouldStickToBottom,
-      anchor: shouldStickToBottom || !currentListRef
-        ? null
-        : captureTimelineAnchor(
-            revealedNodes,
-            currentListRef,
-            currentListRef.getScrollOffset(),
-            { clampIndex: true },
-          ),
-    };
-  }
+  const paging = createTimelinePaging({
+    getPane: () => pane,
+    stick,
+    getListRef: () => listRef,
+    getScrollEl: () => scrollEl,
+    getRevealedNodes: () => revealedNodes,
+    getRestoredThreadId: () => restore.restoredThreadId,
+    nextRestoreToken: () => restore.nextRestoreToken(),
+    isRestoreTokenCurrent: (token) => restore.isRestoreTokenCurrent(token),
+    saveScrollSnapshot: () => restore.saveScrollSnapshot(),
+  });
 
-  function canApplyPruneWithoutDroppingAnchor(
-    intent: TimelineWindowAnchorIntent,
-    operation: TimelineWindowAnchorOperation,
-  ): boolean {
-    if (intent.shouldStickToBottom || revealedNodes.length === 0) {
-      return true;
-    }
-    return intent.anchor !== null && operation.keepsItem(intent.anchor.itemId);
-  }
+  const windowAnchor = createTimelineWindowAnchor({
+    getPane: () => pane,
+    stick,
+    getListRef: () => listRef,
+    getScrollEl: () => scrollEl,
+    getRevealedNodes: () => revealedNodes,
+    findTimelineNodeIndex,
+    saveScrollSnapshot: () => restore.saveScrollSnapshot(),
+    nextRestoreToken: () => restore.nextRestoreToken(),
+    isRestoreTokenCurrent: (token) => restore.isRestoreTokenCurrent(token),
+  });
 
-  function timelineNodeKeys(): string[] {
-    return revealedNodes.map((node) => timelineNodeKey(node));
-  }
+  const restore = createTimelineRestore({
+    getPane: () => pane,
+    stick,
+    getListRef: () => listRef,
+    getScrollEl: () => scrollEl,
+    getRevealedNodes: () => revealedNodes,
+    getGroupedNodes: () => groupedNodes,
+    findTimelineNodeIndex,
+    persistSizePriors: () => sizePriors.maybePersistSizePriors(),
+    armWarmupWithReset,
+    resetAutoLoadGates: () => paging.resetGates(),
+    clearTimelineWindowPruneShift: () => windowAnchor.clearTimelineWindowPruneShift(),
+    targetFlash,
+  });
 
-  function markTimelineWindowPruneShiftForOneFlush(): void {
-    timelineWindowPruneShiftAtHead = true;
-    const resetToken = ++timelineWindowPruneShiftResetToken;
-    void tick().then(() => {
-      if (timelineWindowPruneShiftResetToken !== resetToken) return;
-      timelineWindowPruneShiftAtHead = false;
-    });
-  }
-
-  function clearTimelineWindowPruneShift(): void {
-    timelineWindowPruneShiftResetToken += 1;
-    timelineWindowPruneShiftAtHead = false;
-  }
-
-  // Both prune restores preserve intent: scrollToIndex writes are tagged
-  // programmatic at the controller chokepoint, so no escape flip and no
-  // external-scroll wrap is needed.
-  function restoreBottomAfterTimelineWindowPrune(): void {
-    const lastIndex = revealedNodes.length - 1;
-    if (lastIndex >= 0) {
-      listRef?.scrollToIndex(lastIndex, { align: 'end' });
-    }
-    stick.markAtBottom();
-    saveScrollSnapshot();
-  }
-
-  function restoreAnchorAfterTimelineWindowPrune(
-    anchor: TimelineAnchor,
-  ): void {
-    const idx = findTimelineNodeIndex(anchor.itemId);
-    if (idx < 0) return;
-    listRef?.scrollToIndex(idx, {
-      align: 'start',
-      offset: -anchor.offsetTop,
-    });
-    saveScrollSnapshot();
-  }
-
-  async function restoreTimelineWindowAnchorAfterPrune(
-    intent: TimelineWindowAnchorIntent,
-    token: number,
-    release: () => void,
-  ): Promise<void> {
-    try {
-      await tick();
-      if (token !== restoreToken) return;
-      if (pane.switchGeneration !== intent.switchGeneration) return;
-
-      if (intent.shouldStickToBottom) {
-        restoreBottomAfterTimelineWindowPrune();
-        return;
-      }
-
-      if (!listRef || !intent.anchor) return;
-      restoreAnchorAfterTimelineWindowPrune(intent.anchor);
-    } finally {
-      release();
-    }
-  }
-
-  function preserveTimelineWindowAnchor(
-    operation: TimelineWindowAnchorOperation,
-  ): boolean {
-    if (!listRef || !scrollEl) {
-      operation.run();
-      return true;
-    }
-
-    const intent = captureTimelineWindowAnchorIntent();
-    if (!canApplyPruneWithoutDroppingAnchor(intent, operation)) {
-      return false;
-    }
-
-    const release = stick.pauseAutoScroll();
-    const token = ++restoreToken;
-    const beforeNodeKeys = timelineNodeKeys();
-    try {
-      operation.run();
-      const afterNodeKeys = timelineNodeKeys();
-      if (isPureKeyedHeadDrop(beforeNodeKeys, afterNodeKeys)) {
-        markTimelineWindowPruneShiftForOneFlush();
-      }
-    } catch (err) {
-      release();
-      throw err;
-    }
-    void restoreTimelineWindowAnchorAfterPrune(intent, token, release);
-    return true;
-  }
+  // Depends on windowAnchor (module 4), so declared here rather than
+  // alongside the rest of the node-derivation pipeline above.
+  let virtualizerShiftAtHead = $derived(
+    pane.pendingTimelineShiftAtHead || windowAnchor.pruneShiftAtHead,
+  );
 
   // Explicit adapter, not the raw controller: 'host-layout' observations
   // route through the revalidate + re-pin handler above instead of the
@@ -583,7 +419,7 @@
     preserveScrollAnchor: (anchor, action) =>
       stick.preserveScrollAnchor(anchor, action),
     markStructuralContentPending: () => stick.markStructuralContentPending(),
-    preserveTimelineWindowAnchor,
+    preserveTimelineWindowAnchor: windowAnchor.preserveTimelineWindowAnchor,
   };
 
   $effect(() => {
@@ -631,8 +467,7 @@
     // The 350ms cooldown in the gate itself is a fallback for devices
     // where gesture detection misses an event.
     const onUserGesture = (): void => {
-      autoLoadOlderGate.armOnGesture();
-      autoLoadNewerGate.armOnGesture();
+      paging.armGatesOnUserGesture();
     };
     surface.addEventListener('wheel', onUserGesture, { passive: true });
     surface.addEventListener('touchmove', onUserGesture, { passive: true });
@@ -798,7 +633,7 @@
     recordUiTrace('timeline.listRef.bind', {
       bound,
       threadId: pane.threadId,
-      restoredThreadId,
+      restoredThreadId: restore.restoredThreadId,
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
       scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
@@ -948,85 +783,21 @@
   // back-button / thread-switch returns to the same place.
 
   function handleTimelineScroll(offset: number): void {
-    saveScrollSnapshot();
+    restore.saveScrollSnapshot();
     // Older and newer zones are geometrically exclusive in a normal window
     // (you can't be near both edges at once), but a degenerate window that
     // fits in the viewport could satisfy both; firing one direction per
     // frame avoids two concurrent loads racing the shared pagingGeneration.
-    if (maybeAutoLoadOlder(offset)) return;
-    maybeAutoLoadNewer(offset);
+    if (paging.maybeAutoLoadOlder(offset)) return;
+    paging.maybeAutoLoadNewer(offset);
     // No prune here: this fires every scroll frame (60Hz under the
     // spring), and pruning is a memory bound, not a render input.
     // Scroll-end + structural effects cover it.
   }
 
   function handleTimelineScrollEnd(): void {
-    saveScrollSnapshot();
+    restore.saveScrollSnapshot();
     scheduleRowUiStatePrune();
-  }
-
-  // Auto-load-older trigger. Fires `pane.loadOlder()` when the user is
-  // reading near the top of the loaded window, so older items page in
-  // before they hit a wall. The "Load older messages" button at the top of
-  // the timeline is the explicit fallback when auto-load is bypassed (no
-  // progress, fast-skip past the threshold, etc.). Returns whether it fired.
-  function maybeAutoLoadOlder(offset: number): boolean {
-    // Cheap pre-check before building the gate-state object + zone closure
-    // on every scroll frame. `shouldLoad`'s own `!hasMore` check remains the
-    // authoritative gate; this just keeps the allocation off the hot path.
-    if (!listRef || !pane.hasMoreHistory) return false;
-    const list = listRef;
-    if (!autoLoadOlderGate.shouldLoad({
-      hasMore: pane.hasMoreHistory,
-      loading: pane.loadingOlder,
-      floorCursor: pane.oldestLoadedCursor,
-      restoredThreadId,
-      threadId: pane.threadId,
-      inTriggerZone: () => isWithinTopTriggerZone(
-        offset,
-        AUTO_LOAD_ZONE,
-        () => list.findItemIndex(offset),
-      ),
-    })) return false;
-    void handleLoadOlder();
-    return true;
-  }
-
-  // Auto-load-newer trigger — mirror of older at the bottom edge. Fires
-  // `pane.loadNewer()` when the user scrolls within the prefetch zone of
-  // the loaded window's bottom while more recent history is unloaded
-  // (`hasMoreNewer`, set after an older-paging prune dropped the tail, or
-  // after a search jump into the middle). Returns whether it fired.
-  function maybeAutoLoadNewer(offset: number): boolean {
-    // Cheap pre-check (mirror of maybeAutoLoadOlder): `hasMoreNewer` is false
-    // for most of a thread's life, so this keeps the gate-state object + zone
-    // closure off the per-frame path until the user has actually paged away
-    // from the tail. `shouldLoad`'s `!hasMore` check stays authoritative.
-    if (!listRef || !scrollEl || !pane.hasMoreNewer) return false;
-    const list = listRef;
-    const viewport = scrollEl;
-    if (!autoLoadNewerGate.shouldLoad({
-      hasMore: pane.hasMoreNewer,
-      loading: pane.loadingNewer,
-      floorCursor: pane.newestLoadedCursor,
-      restoredThreadId,
-      threadId: pane.threadId,
-      inTriggerZone: () => {
-        const edge = bottomEdgeGeometry(
-          viewport.scrollHeight,
-          viewport.clientHeight,
-          offset,
-        );
-        return isWithinBottomTriggerZone(
-          edge.distanceFromBottom,
-          revealedNodes.length,
-          AUTO_LOAD_ZONE,
-          () => list.findItemIndex(edge.bottomProbeOffset),
-        );
-      },
-    })) return false;
-    void handleLoadNewerAuto();
-    return true;
   }
 
   function responsePillDuration(node: TimelineNode): string {
@@ -1038,614 +809,21 @@
     return formatElapsedSeconds(Math.floor(elapsedMs / 1_000));
   }
 
-  // ============================================================
-  // Snapshot save/restore (per-thread)
-  // ============================================================
-
-  function snapshotThreadId(): string | null {
-    return pane.threadId || null;
-  }
-
-  function saveScrollSnapshot(): void {
-    const threadId = snapshotThreadId();
-    if (!threadId) return;
-    saveScrollSnapshotForThread(threadId);
-    // Refresh the size priors on the same triggers as the scroll
-    // position snapshot — restore, scroll, load-older settle. Size-gated, so
-    // it only re-slices when the cascade actually grew the surface; every
-    // other call is a cheap O(1) no-op. This co-location is why the outgoing
-    // thread's priors are fresh at switch time (its most recent
-    // saveScrollSnapshot IS the capture), mirroring the position snapshot.
-    maybePersistSizePriors();
-  }
-
-  function saveScrollSnapshotForThread(threadId: string): void {
-    // The `restoredThreadId !== threadId` guard already covers the
-    // "ignore scroll events fired before restoration" case — once
-    // restoration runs (which happens as soon as the timeline has
-    // items, including the cache-hit fast path), saves are allowed.
-    // No separate loading check is needed.
-    if (!listRef || restoredThreadId !== threadId) return;
-    if (stick.isAtBottom) {
-      setThreadScrollSnapshot(threadId, { kind: 'bottom' });
-      return;
-    }
-    const offset = listRef.getScrollOffset();
-    // Negative when the anchor row's top has scrolled above the viewport
-    // top by `-offsetTop` pixels. Restoration recreates exactly this
-    // relationship via scrollToIndex({ align:'start', offset: -offsetTop }).
-    const anchor = captureTimelineAnchor(revealedNodes, listRef, offset, { clampIndex: true });
-    if (!anchor) return;
-    setThreadScrollSnapshot(threadId, { kind: 'anchor', ...anchor });
-  }
-
-  // ============================================================
-  // Row-size priors (per-thread, replay across switches)
-  // ============================================================
-
-  // The validity stamp for a measured-size snapshot: row height is keyed on
-  // pane width (wrap point), the rendered node sequence + per-leaf content
-  // (structureSig), and non-default expansion (taller rows). A snapshot only
-  // replays when all three still match — otherwise every row falls back to
-  // its kind estimate. (Display settings — fontSize, fonts,
-  // collapseDiffPreviews — also affect height but are a deliberately-unkeyed
-  // benign residual; see the header of utils/virtual/priors.ts.)
-  // `scrollSurfaceContentWidth` persists across switches (MessageTimeline is
-  // not keyed on threadId), so it carries the correct width into the next
-  // mount. structureSig is computed from `revealedNodes` — the exact array
-  // the virtualizer receives as `data` — so capture and the next mount's
-  // lookup sign the same thing; it superseded an earlier version of this key
-  // that read `pane.timelineRevision`, a monotonic counter that was never
-  // restored on re-entry and so could never match on a revisit (the field
-  // itself remains, as the timeline-derivation trigger).
-  function currentSizePriorsKey(): SizePriorsKey {
-    return {
-      width: Math.round(scrollSurfaceContentWidth),
-      structureSig: timelineStructureSignature(revealedNodes),
-      expansionSig: pane.expansionSignature(),
-    };
-  }
-
-  // Kind resolver for the estimate fallback. Reads live `revealedNodes`,
-  // so it needs no remap across head splices (unlike the positional
-  // priors snapshot, which the engine re-bases via RowEstimate.shiftBase).
-  function timelineRowEstimateKind(index: number): string | undefined {
-    const node = revealedNodes[index];
-    if (!node) return undefined;
-    return node.kind === 'leaf' ? node.item.kind : node.kind;
-  }
-
-  // Total size at the last capture. The estimate→measure cascade only
-  // moves this when rows actually measure, so it gates the capture: we
-  // re-snap exactly when (and only when) the engine's geometry changed,
-  // never per scroll frame. Reset on the threadId edge so the incoming
-  // thread's first measured size is never mistaken for "unchanged"
-  // against the outgoing thread's.
-  let lastPersistedTotalSize = -1;
-
-  // Capture the engine's current measured sizes for the active thread, but
-  // only when the total size changed since the last capture — so a 60Hz
-  // spring chase doesn't re-slice the size array every frame. The most recent
-  // capture before a switch is what the return replays; mirroring the
-  // scroll-snapshot strategy, we never capture in the switch effect.pre
-  // because `pane` has already mutated to the incoming thread by then.
-  //
-  // Mid-stream cost is known and tolerated: on an actively-streaming thread the
-  // size-gate passes once per geometry change (each append grows the total), so
-  // takeSnapshot() + the O(N) structureSig rebuild in currentSizePriorsKey()
-  // run ~5–20×/sec — bounded by the gate (never per-frame) and only while the
-  // visible thread streams. Only the settle capture (isWarm rising) matters for
-  // replay; the interim ones are overwritten. Deliberately NOT gated on
-  // spring-chase state: that would risk dropping the settle capture on an
-  // already-warm streaming thread (isWarm does not re-arm), regressing replay.
-  function maybePersistSizePriors(): void {
-    const threadId = snapshotThreadId();
-    if (!threadId || !listRef || restoredThreadId !== threadId) return;
-    // O(1) read (the engine's prefix-sum total) — the cheap change-gate.
-    // Skip the takeSnapshot() slice entirely when geometry hasn't moved
-    // (60Hz spring).
-    const totalSize = listRef.getTotalSize();
-    if (totalSize === lastPersistedTotalSize) return;
-    lastPersistedTotalSize = totalSize;
-    setThreadSizePriors(threadId, {
-      sizes: listRef.takeSnapshot(),
-      ...currentSizePriorsKey(),
-    });
-  }
-
-  // Resolve the row estimate for the INCOMING thread before the
-  // {#key pane.threadId} block remounts the <TimelineVirtualizer>. The
-  // virtualizer configures its engine once at construction, and
-  // $effect.pre runs before DOM flush, so `rowEstimate` is settled by the
-  // time the remount reads it. Gated on the threadId edge: mid-thread
-  // revision/width churn must not recompute it (the mounted virtualizer
-  // ignores a changed `estimate` anyway), and the same-thread revert flow
-  // keeps threadId constant so it never remounts.
   $effect.pre(() => {
-    const threadId = pane.threadId;
-    if (threadId === rowEstimateThreadId) return;
-    rowEstimateThreadId = threadId;
-    lastPersistedTotalSize = -1;
-    rowEstimate = threadId
-      ? untrack(() =>
-          createRowEstimate({
-            snapshot: getReplayableSizePriors(threadId, currentSizePriorsKey()),
-            kindOf: timelineRowEstimateKind,
-            kindHeights: ROW_KIND_ESTIMATE_PX,
-            defaultSize: ESTIMATED_ROW_SIZE,
-          }),
-        )
-      : undefined;
-  });
-
-  // Guarantee a post-settle capture. The scroll-driven captures
-  // (handleTimelineScroll/ScrollEnd → saveScrollSnapshot) only store settled
-  // sizes if the cascade's bottom-pin re-pins fire scroll events — which
-  // an idle, bottom-pinned thread the user never scrolls cannot rely on, so the
-  // only stored snapshot would be the pre-settle estimate and the NEXT visit
-  // would replay it and still cascade. `stick.isWarm` is the controller's
-  // existing "measurement cascade has settled" signal (QUIET_MS of geometry
-  // stillness); on its rising edge the sizes are final. Capture is `untrack`ed
-  // so this effect depends ONLY on isWarm — not on the geometry/content
-  // maybePersistSizePriors reads — keeping it a settle-edge trigger, not a
-  // content watcher. Size-gated downstream, so if a scroll capture already
-  // stored the settled total this is a no-op; cascade-interim warm flickers
-  // store interim sizes the final settle overwrites.
-  let lastWarmForCapture = false;
-  $effect(() => {
-    const warm = stick.isWarm;
-    const rising = warm && !lastWarmForCapture;
-    lastWarmForCapture = warm;
-    if (rising) untrack(() => maybePersistSizePriors());
-  });
-
-  // Reset restoration tracking on thread change BEFORE the new thread's
-  // effects run, AND suspend auto-follow until restoreToBottom (or
-  // restoreAnchor) takes over. Setting escapedFromLockState=true synchronously here
-  // freezes the controller until the new thread's restoration runs.
-  //
-  // We do NOT call saveScrollSnapshotForThread for the outgoing thread
-  // here. By the time this effect runs, switchThread has already mutated
-  // pane.items to the incoming thread's cached items — so
-  // listRef.findItemIndex would return an index in the WRONG thread's
-  // array, and the saved anchor would carry the incoming thread's item
-  // id under the outgoing thread's snapshot key. The continuous
-  // scroll-event-driven saves (handleTimelineScroll, handleTimelineScrollEnd)
-  // already keep the outgoing thread's snapshot fresh — the most recent
-  // user scroll IS the snapshot.
-  $effect.pre(() => {
-    const nextThreadId = pane.threadId;
-    // Same-thread re-switch (revert-to-checkpoint flow) keeps
-    // `pane.threadId` constant but bumps `pane.switchGeneration`. We
-    // need the reset path to run in that case too — otherwise
-    // `restoredThreadId` stays equal to `threadId`, the restore
-    // $effect early-returns, and the viewport sticks at scrollTop=0.
-    const nextSwitchGeneration = pane.switchGeneration;
-    const threadIdChanged = scrollSnapshotThreadId !== nextThreadId;
-    const switchGenerationChanged = scrollSnapshotSwitchGeneration !== nextSwitchGeneration;
-    if (threadIdChanged || switchGenerationChanged) {
-      if (isUiRenderTraceEnabled()) {
-        recordUiTrace('timeline.restore.effectPre', {
-          oldThreadId: scrollSnapshotThreadId,
-          newThreadId: nextThreadId,
-          oldSwitchGeneration: scrollSnapshotSwitchGeneration,
-          newSwitchGeneration: nextSwitchGeneration,
-          sameThreadReswitch: !threadIdChanged && switchGenerationChanged,
-          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-          scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
-          clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-          paneItems: pane.items.length,
-          paneLoading: pane.loading,
-        });
-      }
-      if (scrollSnapshotThreadId) {
-        restoredThreadId = null;
-        restoreToken += 1;
-      }
-      autoLoadOlderGate.reset();
-      autoLoadNewerGate.reset();
-      clearTimelineWindowPruneShift();
-      if (nextThreadId && scrollSnapshotThreadId) {
-        // Re-arm the warm-up gate BEFORE the DOM update flushes. The
-        // restore $effect calls forceStick() (which also arms the gate),
-        // but that runs AFTER DOM update — so without this $effect.pre
-        // reset, the first paint of the new thread would inherit the
-        // outgoing thread's settled `isWarm=true`, making
-        // hideContentForWarmup=false during the new thread's measurement
-        // cascade. attach() can't carry this load: scrollEl/contentEl
-        // don't change across switches (MessageTimeline isn't keyed on
-        // threadId), so the attach $effect early-returns. This was the
-        // flaky-fix bug: cache-miss switches off a long-settled prior
-        // thread reproduced the visible "lands wrong, jumps to correct"
-        // sequence; cache-miss switches off an unsettled prior thread
-        // (warm=false coincidentally) hid the cascade and looked fine.
-        armWarmupWithReset();
-        // Sets the defensive escape (freezing auto-follow against the
-        // outgoing thread's geometry) and arms the one-shot restore-snap
-        // consent for the upcoming `restoreToBottom() →
-        // stick.forceStick({reason: 'restore'})`. Any outer-scroll intent
-        // between this point and the restore $effect (extremely rare;
-        // both run inside the same flush) re-clears the arm, causing the
-        // restore to NO-OP and preserving the user's intent — the
-        // load-bearing distinguisher between "the user has explicitly
-        // escaped" and "this $effect.pre just defensively set escape=true
-        // while preparing the new thread for restore." See
-        // utils/scroll/intent.ts § Restore-snap consent.
-        stick.armRestoreSnap();
-      } else if (nextThreadId) {
-        // Placeholder → materialized transition: the timeline was empty
-        // so there is no measurement cascade to hide. Skip the warm-up
-        // gate so the optimistic user message renders immediately.
-        stick.skipWarmup();
-        stick.markAtBottom();
-      } else {
-        // Draft / placeholder transition (pane.threadId === null when a
-        // draft placeholder is active or the pane has no thread): the
-        // restore $effect short-circuits on `!threadId`, so the
-        // defensive escape would never be cleared and the
-        // scroll-to-bottom chip would appear over the empty "No messages
-        // yet" placeholder. There is no content to anchor against, no
-        // measurement cascade to hide, and no restore to gate — flip the
-        // controller directly back to sticky-bottom.
-        stick.markAtBottom();
-      }
-    }
-    scrollSnapshotThreadId = nextThreadId;
-    scrollSnapshotSwitchGeneration = nextSwitchGeneration;
+    sizePriors.resolveRowEstimateOnThreadEdge(pane.threadId);
   });
 
   $effect(() => {
-    const threadId = pane.threadId;
-    const itemsLength = pane.items.length;
-    const loading = pane.loading;
-    if (!threadId) return;
-    if (restoredThreadId === threadId) return;
-    // Restore as soon as we have items to anchor against — that's the
-    // cache-hit fast path. For the cache-miss case where the thread
-    // turned out to be genuinely empty, fall through when loading
-    // flips false so the bottom-snapshot branch can still call
-    // markAtBottom for streaming arrival.
-    if (itemsLength === 0 && loading) return;
-    const hasTimelineRows = groupedNodes.length > 0;
-    if (hasTimelineRows && !listRef) return;
-    restoredThreadId = threadId;
-    // Branch synchronously on snapshot kind. The bottom branch only
-    // needs scrollEl (forceStick) — running it inline keeps the
-    // controller's pauseAutoScroll lease and the `await tick()`
-    // microtask boundary out of the critical "switch in → land at
-    // bottom" path, so the incoming thread's first paint already sits
-    // at the bottom. (Under virtua this also defused a deferred
-    // scroller-attach race reading the outgoing thread's carry-over
-    // scrollTop; the bespoke virtualizer attaches synchronously, but
-    // the paint-ordering reason stands.)
-    const snap = getThreadScrollSnapshot(threadId);
-    if (isUiRenderTraceEnabled()) {
-      recordUiTrace('timeline.restore.effect', {
-        threadId,
-        snapKind: snap?.kind ?? null,
-        snapItemId: snap?.kind === 'anchor' ? snap.itemId : null,
-        snapOffsetTop: snap?.kind === 'anchor' ? snap.offsetTop : null,
-        itemsLength,
-        loading,
-        groupedNodesLength: groupedNodes.length,
-        hasListRef: listRef !== undefined,
-        hasScrollEl: scrollEl !== undefined,
-        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-        scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
-        clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-      });
-    }
-    if (!snap || snap.kind === 'bottom') {
-      restoreToBottom();
-      return;
-    }
-    void restoreAnchor(threadId, snap, ++restoreToken);
+    sizePriors.captureOnWarmRisingEdge(stick.isWarm);
   });
 
-  // Bottom restore. Two cases:
-  //
-  // - Empty timeline (no rows yet): just flip the controller's intent
-  //   flag so the first streamed row's contentRO sync-pin lands at the
-  //   bottom. There's no scrollTop to write yet.
-  //
-  // - Non-empty timeline: forceStick() lands scrollTop at the current
-  //   target in a single write. Any subsequent contentEl growth from
-  //   svelte-streamdown's
-  //   async typesetting (shiki / KaTeX / mermaid /
-  //   parseIncompleteMarkdown rebalance) and from the virtualizer's
-  //   per-row measurements refining row heights gets handled invisibly
-  //   by the controller's contentRO sync-pin path: each positive delta
-  //   re-pins to the new bottom inside the RO callback, before paint.
-  //
-  // Don't pair `scrollToIndex(last, 'end')` with `markAtBottom()` here
-  // — they create two writers (the index-scroll convergence + our
-  // sync-pin) targeting slightly different scrollTop values for the
-  // same content-grow trigger, and they oscillate. forceStick() alone
-  // is the single writer.
-  //
-  // The trailing rAF `observe('content')` is a defensive late-settling
-  // re-pin: composer-height RO updates flowing into scrollEl's
-  // padding-bottom, per-row measurements firing a frame
-  // after mount, and the first burst of Streamdown async typesetting
-  // can all change geometry one frame after the initial forceStick.
-  // Padding-only changes don't re-fire contentRO (W3C ResizeObserver
-  // observes content-box) so a paint-time settle that nudges the bottom
-  // by a few px would otherwise leave the user "half a tick" above
-  // bottom. The content observation is escape-aware (bails if the user
-  // gestured up between frames) so it can't yank them.
-  function restoreToBottom(): void {
-    // Last RENDERED row (the virtualizer's `data` is `revealedNodes`). If a
-    // stream event set the reveal gate between switch and restore, the true
-    // last index is the revealed one — scrolling to a withheld index would
-    // land out of the engine's range.
-    const lastIndex = revealedNodes.length - 1;
-    if (isUiRenderTraceEnabled()) {
-      recordUiTrace('timeline.restore.bottom.entry', {
-        threadId: restoredThreadId,
-        lastIndex,
-        groupedNodesLength: revealedNodes.length,
-        hasListRef: listRef !== undefined,
-        hasScrollEl: scrollEl !== undefined,
-        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-        scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
-        clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-      });
-    }
-    if (lastIndex < 0) {
-      stick.markAtBottom();
-      const threadId = snapshotThreadId();
-      if (threadId) setThreadScrollSnapshot(threadId, { kind: 'bottom' });
-      if (isUiRenderTraceEnabled()) {
-        recordUiTrace('timeline.restore.bottom.exit', {
-          threadId: restoredThreadId,
-          branch: 'empty',
-        });
-      }
-      return;
-    }
-    // reason:'restore' so the controller's consent gate filters this
-    // call. The matching `armRestoreSnap()` runs from `$effect.pre`
-    // above; if anything cleared the consent between then and now
-    // (outer-scroll intent, selection, or programmatic escape), this
-    // NO-OPs and the user's scroll position is preserved. This is what defends
-    // against the seq-509 stale-restore bug — a `restoreToBottom()`
-    // mistakenly firing without a real thread switch can no longer
-    // slam the user to the bottom and wipe their escape.
-    stick.forceStick({ reason: 'restore' });
-    saveScrollSnapshot();
-    // Capture the thread the rAF was scheduled for so a thread switch
-    // between forceStick and the next frame doesn't run the late re-pin
-    // against the new thread's geometry. The content observation also
-    // bails on escape/pause as a second-line defense.
-    const expectedThreadId = restoredThreadId;
-    if (isUiRenderTraceEnabled()) {
-      recordUiTrace('timeline.restore.bottom.exit', {
-        threadId: restoredThreadId,
-        branch: 'forceStick',
-        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-        scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
-      });
-    }
-    requestAnimationFrame(() => {
-      const stillSameThread = restoredThreadId === expectedThreadId;
-      if (isUiRenderTraceEnabled()) {
-        recordUiTrace('timeline.restore.bottom.raf', {
-          threadId: restoredThreadId,
-          expectedThreadId,
-          stillSameThread,
-          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-          scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
-          clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-        });
-      }
-      if (!stillSameThread) return;
-      stick.observe('content');
-    });
-  }
+  $effect.pre(() => {
+    restore.handleSwitchEdgePre(pane.threadId, pane.switchGeneration);
+  });
 
-  async function restoreAnchor(
-    threadId: string,
-    snap: Extract<ScrollSnapshot, { kind: 'anchor' }>,
-    token: number,
-  ): Promise<void> {
-    if (isUiRenderTraceEnabled()) {
-      recordUiTrace('timeline.restore.anchor.entry', {
-        threadId,
-        token,
-        itemId: snap.itemId,
-        offsetTop: snap.offsetTop,
-      });
-    }
-    const release = stick.pauseAutoScroll();
-    try {
-      await tick();
-      if (token !== restoreToken || pane.threadId !== threadId) {
-        if (isUiRenderTraceEnabled()) {
-          recordUiTrace('timeline.restore.anchor.bail', {
-            threadId,
-            token,
-            currentRestoreToken: restoreToken,
-            currentPaneThreadId: pane.threadId,
-            stage: 'after-tick',
-          });
-        }
-        return;
-      }
-      if (groupedNodes.length > 0 && !listRef) {
-        if (isUiRenderTraceEnabled()) {
-          recordUiTrace('timeline.restore.anchor.bail', {
-            threadId,
-            token,
-            stage: 'no-listref',
-            groupedNodesLength: groupedNodes.length,
-          });
-        }
-        return;
-      }
-
-      const found = await pane.loadUntilItem(snap.itemId);
-      if (isUiRenderTraceEnabled()) {
-        recordUiTrace('timeline.restore.anchor.loaded', {
-          threadId,
-          token,
-          found,
-          itemId: snap.itemId,
-        });
-      }
-      if (token !== restoreToken || pane.threadId !== threadId) return;
-      if (!found) {
-        restoreToBottom();
-        return;
-      }
-      await tick();
-      if (token !== restoreToken || pane.threadId !== threadId || !listRef) return;
-      const idx = findTimelineNodeIndex(snap.itemId);
-      if (isUiRenderTraceEnabled()) {
-        recordUiTrace('timeline.restore.anchor.scrollToIndex', {
-          threadId,
-          token,
-          idx,
-          offsetTop: snap.offsetTop,
-          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-          scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
-          clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-        });
-      }
-      if (idx < 0) {
-        restoreToBottom();
-        return;
-      }
-      // The anchor restore is a mid-thread position: escape bottom
-      // follow (as any explicit navigation does), then jump. The write
-      // itself is chokepoint-tagged via applyScrollTarget.
-      stick.setEscapedFromLock(true);
-      listRef?.scrollToIndex(idx, { align: 'start', offset: -snap.offsetTop });
-      saveScrollSnapshot();
-    } finally {
-      release();
-    }
-  }
-
-  // ============================================================
-  // Load older
-  // ============================================================
-  // The prepend holds the reading position via the engine's head-splice
-  // handling: pane.loadOlder sets pane.pendingTimelineShiftAtHead for the
-  // head-grow flush, so the engine re-bases its size store and reports the
-  // scrollTop compensation in one step. There is deliberately NO explicit
-  // re-anchor here — a
-  // re-anchor captured before the await would yank the user back if they
-  // kept scrolling while the page loaded. The pause lease keeps the
-  // prepend's scrollHeight growth from re-sticking; `escaped` marks the
-  // user as reading older.
-  async function handleLoadOlder(): Promise<void> {
-    if (!listRef) return;
-    const release = stick.pauseAutoScroll();
-    stick.setEscapedFromLock(true);
-    const switchGenAtStart = pane.switchGeneration;
-    try {
-      await pane.loadOlder();
-      await tick();
-      saveScrollSnapshot();
-    } finally {
-      release();
-      // Disarm so the prepend's shift compensation (a programmatic scrollTop
-      // write, not a user gesture) can't re-fire the gate into a cascade. A
-      // real wheel/touch/keydown re-arms; the 350ms cooldown is the
-      // fallback. Guard on switchGeneration so a thread switch mid-load
-      // (which already reset the new pane's gate) is not disarmed.
-      if (pane.switchGeneration === switchGenAtStart) autoLoadOlderGate.disarm();
-    }
-  }
-
-  // Manual "Load newer messages" button. Jumps to the end of the freshly
-  // loaded page (align:'end') so the click visibly reveals newer content.
-  async function handleLoadNewer(): Promise<void> {
-    if (!listRef) return;
-    const release = stick.pauseAutoScroll();
-    const myToken = ++restoreToken;
-    const switchGenAtStart = pane.switchGeneration;
-    try {
-      const result = await pane.loadNewer();
-      await tick();
-      if (myToken !== restoreToken || !listRef || result.status !== 'loaded') return;
-      const lastIndex = revealedNodes.length - 1;
-      if (lastIndex < 0) return;
-      // Explicit navigation into the middle of history (more-newer may
-      // remain below): escape bottom follow, then jump.
-      stick.setEscapedFromLock(true);
-      listRef.scrollToIndex(lastIndex, { align: 'end' });
-      saveScrollSnapshot();
-    } finally {
-      release();
-      // The scrollToIndex(end) above can land in the bottom trigger zone;
-      // disarm so that programmatic scroll can't auto-fire another load.
-      // Guard on switchGeneration (a thread switch mid-load already reset the
-      // new pane's gate).
-      if (pane.switchGeneration === switchGenAtStart) autoLoadNewerGate.disarm();
-    }
-  }
-
-  // Auto-load-newer path. Unlike the manual button it must NOT scroll:
-  // newer rows append below the viewport (tail-grow, no shift) so the
-  // reading position is unchanged, and loadNewer's head-prune holds position
-  // via the engine's head-splice handling. The pause lease guards the
-  // transient scrollHeight growth from a restick.
-  async function handleLoadNewerAuto(): Promise<void> {
-    if (!listRef) return;
-    const release = stick.pauseAutoScroll();
-    const switchGenAtStart = pane.switchGeneration;
-    try {
-      await pane.loadNewer();
-      await tick();
-      saveScrollSnapshot();
-    } finally {
-      release();
-      // Disarm so the head-prune's shift compensation (programmatic, not a
-      // user gesture) can't re-fire the gate into a cascade. Guard on
-      // switchGeneration so a thread switch mid-load (which already reset the
-      // new pane's gate) is not disarmed. See handleLoadOlder.
-      if (pane.switchGeneration === switchGenAtStart) autoLoadNewerGate.disarm();
-    }
-  }
-
-  async function jumpToLatest(): Promise<void> {
-    const myToken = ++restoreToken;
-    const loaded = pane.hasMoreNewer ? await pane.loadRecentTail() : true;
-    await tick();
-    if (myToken !== restoreToken || !loaded) return;
-    stick.forceStick({ reason: 'user' });
-    saveScrollSnapshot();
-  }
-
-  // ============================================================
-  // Scroll-to-item (search hits, plan rows, tray rows)
-  // ============================================================
-
-  async function scrollToItem(
-    id: string,
-    options: { flash: boolean },
-  ): Promise<void> {
-    if (!listRef || !id) return;
-    const myToken = ++restoreToken;
-    const found = await pane.loadUntilItem(id);
-    if (myToken !== restoreToken || !listRef) return;
-    if (!found) {
-      addToast('warning', 'Message is no longer in this thread');
-      return;
-    }
-    await tick();
-    if (myToken !== restoreToken || !listRef) return;
-    const idx = findTimelineNodeIndex(id);
-    if (idx < 0) return;
-    const targetNode = revealedNodes[idx];
-    const targetItemId = targetNode?.kind === 'leaf' ? targetNode.item.id : id;
-    // Explicit navigation: escape bottom follow, then jump (the write is
-    // chokepoint-tagged via applyScrollTarget).
-    stick.setEscapedFromLock(true);
-    listRef.scrollToIndex(idx, { align: 'center' });
-    if (options.flash) targetFlash.flash(targetItemId);
-  }
+  $effect(() => {
+    restore.maybeRestoreAfterFlush();
+  });
 
   let lastHandledScrollNonce = 0;
   $effect(() => {
@@ -1653,16 +831,15 @@
     if (req.nonce === 0) return;
     if (req.nonce === lastHandledScrollNonce) return;
     lastHandledScrollNonce = req.nonce;
-    void scrollToItem(req.itemId, { flash: req.flash });
+    void restore.scrollToItem(req.itemId, { flash: req.flash });
   });
 
   onDestroy(() => {
     rowUiPruneToken += 1;
-    restoreToken += 1;
-    if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId);
+    restore.invalidateRestore();
+    restore.saveSnapshotOnDestroy();
     targetFlash.clear();
-    autoLoadOlderGate.reset();
-    autoLoadNewerGate.reset();
+    paging.resetGates();
     stick.detach();
   });
 </script>
@@ -1792,7 +969,7 @@
           bind:this={listRef}
           scrollRef={scrollEl}
           data={revealedNodes}
-          estimate={rowEstimate}
+          estimate={sizePriors.rowEstimate}
           shift={virtualizerShiftAtHead}
           getKey={(node) => timelineNodeKey(node)}
           bufferSize={BUFFER_SIZE_PX}
@@ -1854,7 +1031,7 @@
                         <Button
                           variant="secondary"
                           size="xs"
-                          onclick={handleLoadOlder}
+                          onclick={paging.handleLoadOlder}
                           loading={pane.loadingOlder}
                           testId="load-older-messages"
                         >
@@ -1925,7 +1102,7 @@
               <Button
                 variant="secondary"
                 size="xs"
-                onclick={handleLoadNewer}
+                onclick={paging.handleLoadNewer}
                 loading={pane.loadingNewer}
                 testId="load-newer-messages"
               >
@@ -1936,7 +1113,7 @@
               <Button
                 variant="ghost"
                 size="xs"
-                onclick={() => { void jumpToLatest(); }}
+                onclick={() => { void paging.jumpToLatest(); }}
                 loading={pane.loadingNewer}
                 testId="jump-to-latest-messages"
               >
@@ -1956,5 +1133,5 @@
        geometrically glued to the bottom. Anchored to the outer wrapper
        (which does not scroll), so the chip stays fixed in the visible
        area regardless of transcript scrollTop. -->
-  <ScrollToBottomButton visible={!stick.isAtBottom || pane.hasMoreNewer} onClick={() => { void jumpToLatest(); }} />
+  <ScrollToBottomButton visible={!stick.isAtBottom || pane.hasMoreNewer} onClick={() => { void paging.jumpToLatest(); }} />
 </div>
