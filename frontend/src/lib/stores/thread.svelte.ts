@@ -29,11 +29,8 @@ import type {
 import {
   CloseThreadTerminals,
   CreateThread,
-  GetThreadItem,
   GetThreadLiveState,
   ListPendingInteractiveRequests,
-  ListItemsBeforeCursor,
-  ListItemsAfterCursor,
   ListRecentTurns,
   ListSubagentDescendants,
   ListThreadCheckpoints,
@@ -77,17 +74,10 @@ import {
 import {
   type ApplyItemUpsertsToWindowResult,
   applyItemUpsertsToWindow,
-  compareCursors,
-  compareItemToCursor,
-  compareItemsByTimelinePosition,
-  cursorFromItem,
-  cursorIsValid,
   itemsAreEqual,
   itemsForThread,
-  mergeItemsById,
   mergeMissingItemsById,
   reconcileItemWindow,
-  type TimelineCursorLike,
 } from './threadItems';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { clearThreadSizePriors } from '../utils/virtual/priors';
@@ -126,6 +116,7 @@ import {
 } from './threadTurnProjection';
 import { createThreadRowUiState } from './threadRowUiState.svelte';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
+import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import {
   normalizeContextWindowForThread,
   seedContextWindow,
@@ -136,16 +127,11 @@ import {
 } from './threadChannelState.svelte';
 import { createThreadDesignState } from './threadDesignState.svelte';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
-import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import {
-  LOAD_OLDER_ITEM_BUDGET,
-  ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
-  ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
   ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
   SLICE_AROUND_ITEM_BUDGET,
   SPINNER_THRESHOLD_MS,
   isSmoothLiveContentKind,
-  loadOlderResult,
   nowForLiveContent,
   sameRhsPanel,
   threadUsesDiscussionSurface,
@@ -196,15 +182,6 @@ export type { LiveTodo } from './liveTodoState.svelte';
 // Re-exported here so callers that import from this module
 // continue to find them at the same path.
 export type { DiffSidebarUIState, RhsPanel } from './rhsPanelSlot.svelte';
-
-interface PrunedWindow {
-  items: Item[];
-  oldestCursor: TimelineCursorLike | null;
-  newestCursor: TimelineCursorLike | null;
-}
-
-type PrunedWindowApplyResult = 'applied' | 'deferred';
-type PrunedWindowVetoPolicy = 'defer' | 'force';
 
 /**
  * Creates a self-contained thread pane state instance.
@@ -266,6 +243,22 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     stampLiveContent,
     armStructuralSpring,
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
+  });
+  // Windowed-history / paging machinery (loaded-window cursors and flags,
+  // the prune paths, and the four load methods) lives in
+  // threadTimelineWindow.svelte.ts. `scrollController` and
+  // `hydrateSubagentChildren` are declared later in this closure — the
+  // accessor arrow and the hoisted function reference below are safe to
+  // capture ahead of their textual declaration; a direct `const` capture
+  // would not be.
+  const timelineWindow = createThreadTimelineWindow({
+    getItems: () => items,
+    replaceTimelineItems,
+    getThread: () => thread,
+    getSwitchGeneration: () => switchGeneration,
+    recomputeReveal: streamingReveal.recomputeReveal,
+    getScrollController: () => scrollController,
+    hydrateSubagentChildren,
   });
   const pendingInteractiveState = createThreadPendingInteractiveState();
   let contextWindow: ContextWindow | null = $state(null);
@@ -417,62 +410,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * must be `$state` for that effect dependency to track.
    */
   let switchGeneration = $state(0);
-
-  /**
-   * Windowed-history state. The pane holds a contiguous tail of the
-   * thread's items (~50 items on initial load); older history loads
-   * on demand via `loadOlder()` or `loadUntilItem()`.
-   *
-   *  - `oldestLoadedCursor` / `newestLoadedCursor` are the inclusive
-   *    item-coordinate bounds of the single contiguous logical window.
-   *    The turn-index fields are compatibility projections for tests and
-   *    existing consumers; they are not used as memory boundaries.
-   *  - `hasMoreHistory` drives the "Load older" button's visibility.
-   *  - `hasMoreNewer` drives the bottom "newer messages" gap.
-   *  - loading flags disable the matching controls while a fetch is in flight.
-   *
-   * Upsert events whose item coordinates fall below the window floor
-   * are silently dropped — the canonical copy lives in SQLite and will
-   * be pulled in the next time the user loads older history. See
-   * `upsertItem` below.
-   */
-  let oldestLoadedCursor: TimelineCursorLike | null = $state(null);
-  let newestLoadedCursor: TimelineCursorLike | null = $state(null);
-  let oldestLoadedTurnIndex: number | null = $state(null);
-  let newestLoadedTurnIndex: number | null = $state(null);
-  let hasMoreHistory: boolean = $state(false);
-  let hasMoreNewer: boolean = $state(false);
-  let recentWindowPrunePending: boolean = $state(false);
-  let loadingOlder: boolean = $state(false);
-  let loadingNewer: boolean = $state(false);
-
-  /**
-   * Direction hint for the virtualizer's `shift` on the NEXT timeline length
-   * change: `true` when the change happens at the HEAD (older rows prepended
-   * by `loadOlder`, or the head dropped by `loadNewer`'s prune), `false` for
-   * tail changes. MessageTimeline binds this to
-   * `<TimelineVirtualizer shift={...}>`.
-   *
-   * Without it the engine treats every length change as tail growth and
-   * misindexes its entire size store on a prepend — forcing a re-measure of
-   * every visible row (the "scrollbar jumps around" load jank). Set
-   * synchronously immediately before the `items` mutation so the engine reads
-   * the right value in the same flush, and reset in the paging method's
-   * `finally`. Only `loadOlder` / `loadNewer` touch it; the streaming-prune
-   * path keeps its own anchor-restore (preserveTimelineWindowAnchor) and
-   * leaves this `false`. The prepend/append and the prune are deliberately
-   * split across two flushes so a coalesced head-grow + tail-shrink can't
-   * collapse into one net length change a single `shift` can't represent.
-   */
-  let pendingTimelineShiftAtHead: boolean = $state(false);
-
-  /**
-   * Separate generation counter for `loadOlder` / `loadUntilItem` so a
-   * second click doesn't race with a slow first fetch. `switchGeneration`
-   * covers thread swaps; this guards against same-thread concurrent
-   * paging fetches (double-click, keyboard repeat).
-   */
-  let pagingGeneration = 0;
 
   /**
    * Subagent-children hydration dedupe, keyed by launch anchor item id.
@@ -683,368 +620,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     return true;
   }
 
-  function cloneCursor(
-    cursor: TimelineCursorLike | null | undefined,
-  ): TimelineCursorLike | null {
-    return cursorIsValid(cursor)
-      ? {
-          turnIndex: cursor.turnIndex,
-          itemIndex: cursor.itemIndex,
-          itemId: cursor.itemId ?? '',
-        }
-      : null;
-  }
-
-  function cursorForBinding(cursor: TimelineCursorLike): {
-    turnIndex: number;
-    itemIndex: number;
-    itemId: string;
-  } {
-    return {
-      turnIndex: cursor.turnIndex,
-      itemIndex: cursor.itemIndex,
-      itemId: cursor.itemId ?? '',
-    };
-  }
-
-  function oldestCursorFromItems(
-    nextItems: readonly Item[],
-  ): TimelineCursorLike | null {
-    return nextItems.length === 0 ? null : cursorFromItem(nextItems[0]);
-  }
-
-  function newestCursorFromItems(
-    nextItems: readonly Item[],
-  ): TimelineCursorLike | null {
-    return nextItems.length === 0
-      ? null
-      : cursorFromItem(nextItems[nextItems.length - 1]);
-  }
-
-  function firstCursorAtTurn(
-    nextItems: readonly Item[],
-    turnIndex: number,
-  ): TimelineCursorLike | null {
-    const item = nextItems.find(
-      (candidate) => candidate.turnIndex === turnIndex,
-    );
-    return item ? cursorFromItem(item) : null;
-  }
-
-  function lastCursorAtTurn(
-    nextItems: readonly Item[],
-    turnIndex: number,
-  ): TimelineCursorLike | null {
-    for (let index = nextItems.length - 1; index >= 0; index -= 1) {
-      const item = nextItems[index];
-      if (item.turnIndex === turnIndex) return cursorFromItem(item);
-    }
-    return null;
-  }
-
-  function pagedOldestCursor(
-    paged: PagedItems,
-    fallbackItems: readonly Item[],
-  ): TimelineCursorLike | null {
-    const explicit = (
-      paged as PagedItems & { oldestCursor?: TimelineCursorLike }
-    ).oldestCursor;
-    const cloned = cloneCursor(explicit);
-    if (cloned) return cloned;
-    const turnIndex = (paged as PagedItems & { oldestTurnIndex?: number })
-      .oldestTurnIndex;
-    if (turnIndex !== undefined && turnIndex >= 0) {
-      return (
-        firstCursorAtTurn(fallbackItems, turnIndex) ?? {
-          turnIndex,
-          itemIndex: 0,
-          itemId: '',
-        }
-      );
-    }
-    return oldestCursorFromItems(fallbackItems);
-  }
-
-  function pagedNewestCursor(
-    paged: PagedItems,
-    fallbackItems: readonly Item[],
-  ): TimelineCursorLike | null {
-    const explicit = (
-      paged as PagedItems & { newestCursor?: TimelineCursorLike }
-    ).newestCursor;
-    const cloned = cloneCursor(explicit);
-    if (cloned) return cloned;
-    const turnIndex = (paged as PagedItems & { newestTurnIndex?: number })
-      .newestTurnIndex;
-    if (turnIndex !== undefined && turnIndex >= 0) {
-      return (
-        lastCursorAtTurn(fallbackItems, turnIndex) ?? {
-          turnIndex,
-          itemIndex: Number.MAX_SAFE_INTEGER,
-          itemId: '',
-        }
-      );
-    }
-    return newestCursorFromItems(fallbackItems);
-  }
-
-  function pagedHasMoreOlder(paged: PagedItems): boolean {
-    return (
-      (paged as PagedItems & { hasMoreOlder?: boolean }).hasMoreOlder ??
-      paged.hasMore ??
-      false
-    );
-  }
-
-  function pagedHasMoreNewer(paged: PagedItems): boolean {
-    return (
-      (paged as PagedItems & { hasMoreNewer?: boolean }).hasMoreNewer ?? false
-    );
-  }
-
-  function setLoadedCursors(
-    oldest: TimelineCursorLike | null,
-    newest: TimelineCursorLike | null,
-  ): void {
-    oldestLoadedCursor = cloneCursor(oldest);
-    newestLoadedCursor = cloneCursor(newest);
-    oldestLoadedTurnIndex = oldestLoadedCursor?.turnIndex ?? null;
-    newestLoadedTurnIndex = newestLoadedCursor?.turnIndex ?? null;
-  }
-
-  function setLoadedCursorsFromItems(nextItems: readonly Item[]): void {
-    setLoadedCursors(
-      oldestCursorFromItems(nextItems),
-      newestCursorFromItems(nextItems),
-    );
-  }
-
-  function applyWindowMetadataFromPaged(
-    paged: PagedItems,
-    nextItems: readonly Item[],
-  ): void {
-    setLoadedCursors(
-      pagedOldestCursor(paged, nextItems),
-      pagedNewestCursor(paged, nextItems),
-    );
-    hasMoreHistory = pagedHasMoreOlder(paged);
-    hasMoreNewer = pagedHasMoreNewer(paged);
-  }
-
-  function includeAncestorClosure(
-    keepIds: Set<string>,
-    sourceItems: readonly Item[],
-  ): void {
-    const byId = new Map(sourceItems.map((item) => [item.id, item]));
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const item of sourceItems) {
-        if (!keepIds.has(item.id)) continue;
-        if (!item.parentId || keepIds.has(item.parentId)) continue;
-        if (!byId.has(item.parentId)) continue;
-        keepIds.add(item.parentId);
-        changed = true;
-      }
-    }
-  }
-
-  function keepRecentWindowItems(
-    sourceItems: readonly Item[],
-    targetCount: number,
-  ): PrunedWindow {
-    if (sourceItems.length <= targetCount) {
-      return {
-        items: sourceItems as Item[],
-        oldestCursor: oldestCursorFromItems(sourceItems),
-        newestCursor: newestCursorFromItems(sourceItems),
-      };
-    }
-    const cutoffIndex = Math.max(0, sourceItems.length - targetCount);
-    const cutoffItem = sourceItems[cutoffIndex] ?? sourceItems[0];
-    const cutoffCursor = cursorFromItem(cutoffItem);
-    const keepIds = new Set(
-      sourceItems
-        .filter((item) => compareItemToCursor(item, cutoffCursor) >= 0)
-        .map((item) => item.id),
-    );
-    includeAncestorClosure(keepIds, sourceItems);
-    return {
-      items: sourceItems.filter((item) => keepIds.has(item.id)),
-      oldestCursor: cutoffCursor,
-      newestCursor: newestCursorFromItems(sourceItems),
-    };
-  }
-
-  function keepHeadWindowItems(
-    sourceItems: readonly Item[],
-    targetCount: number,
-  ): PrunedWindow {
-    if (sourceItems.length <= targetCount) {
-      return {
-        items: sourceItems as Item[],
-        oldestCursor: oldestCursorFromItems(sourceItems),
-        newestCursor: newestCursorFromItems(sourceItems),
-      };
-    }
-    const cutoffItem =
-      sourceItems[Math.min(sourceItems.length - 1, targetCount - 1)];
-    const cutoffCursor = cursorFromItem(cutoffItem);
-    const keepIds = new Set(
-      sourceItems
-        .filter((item) => compareItemToCursor(item, cutoffCursor) <= 0)
-        .map((item) => item.id),
-    );
-    includeAncestorClosure(keepIds, sourceItems);
-    return {
-      items: sourceItems.filter((item) => keepIds.has(item.id)),
-      oldestCursor: oldestCursorFromItems(sourceItems),
-      newestCursor: cutoffCursor,
-    };
-  }
-
-  function pruneToRecentWindowIfNeeded(
-    options: {
-      hasMoreNewerAfterPrune?: boolean;
-      /**
-       * 'shift' is used by `loadNewer` (a paging op): the head-drop holds
-       * position via the virtualizer's `shift` head-splice. 'preserve' (default) is the
-       * streaming/settle path, which keeps the explicit anchor-restore
-       * transaction (preserveTimelineWindowAnchor) and its active-turn defer.
-       */
-      positionMode?: 'shift' | 'preserve';
-    } = {},
-  ): void {
-    if (items.length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
-    const activeTurn = thread !== null ? getActiveTurn(thread.id) : null;
-    const exceedsHardCeiling =
-      items.length > ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS;
-    // A head-drop on a visible, bottom-pinned timeline repaints the whole
-    // viewport: the content height collapses by the dropped rows, the
-    // browser clamps scrollTop, and the virtualizer re-measures — seen as a blank
-    // flash mid-stream (incident 2026-06-10). Defer the prune to turn
-    // settle (settleTurn calls back in here), holding the hard ceiling
-    // as the memory backstop against a runaway turn.
-    if (
-      !exceedsHardCeiling
-      && activeTurn
-    ) {
-      return;
-    }
-    if (recentWindowPrunePending && !exceedsHardCeiling) return;
-    const next = keepRecentWindowItems(
-      items,
-      ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
-    );
-    // loadNewer paging: the dropped head sits above the viewport, so the
-    // virtualizer's `shift` head-splice holds the reading position — no
-    // anchor transaction, no veto.
-    if (options.positionMode === 'shift') {
-      applyPagedPrune(next, {
-        shiftAtHead: true,
-        hasMoreHistoryAfterPrune: true,
-        hasMoreNewerAfterPrune: options.hasMoreNewerAfterPrune ?? false,
-      });
-      recentWindowPrunePending = false;
-      return;
-    }
-    const vetoPolicy = exceedsHardCeiling ? 'force' : 'defer';
-    const result = applyPrunedWindow(next, {
-      hasMoreHistoryAfterPrune: true,
-      hasMoreNewerAfterPrune: options.hasMoreNewerAfterPrune ?? false,
-      vetoPolicy,
-    });
-    recentWindowPrunePending = result === 'deferred';
-  }
-
-  function pruneToHeadWindowIfNeeded(): void {
-    if (items.length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
-    const next = keepHeadWindowItems(
-      items,
-      ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
-    );
-    // loadOlder paging: the dropped tail sits below the viewport (tail change,
-    // no shift, no jump), so the virtualizer leaves the reading position alone.
-    applyPagedPrune(next, { shiftAtHead: false, hasMoreNewerAfterPrune: true });
-  }
-
-  // Shared window swap used by both prune paths: replace items + cursors +
-  // history flags, then recompute reveal. Funnelling the mutation through one
-  // place keeps the paged and preserve paths from drifting.
-  function commitWindow(
-    next: PrunedWindow,
-    flags: {
-      hasMoreHistoryAfterPrune?: boolean;
-      hasMoreNewerAfterPrune?: boolean;
-    },
-  ): void {
-    replaceTimelineItems(next.items, { disposeDropped: true });
-    setLoadedCursors(next.oldestCursor, next.newestCursor);
-    if (flags.hasMoreHistoryAfterPrune !== undefined) {
-      hasMoreHistory = flags.hasMoreHistoryAfterPrune;
-    }
-    if (flags.hasMoreNewerAfterPrune !== undefined) {
-      hasMoreNewer = flags.hasMoreNewerAfterPrune;
-    }
-    streamingReveal.recomputeReveal();
-  }
-
-  // Paging prune (loadOlder tail-drop / loadNewer head-drop). The dropped end
-  // is always opposite the reading viewport, so there is nothing to veto and
-  // no anchor to restore — the virtualizer's `shift` head-splice holds
-  // position. Set the shift direction at the mutation point so the engine
-  // reads it in the same flush as this length change (head-drop → splice the
-  // size store from the front; tail-drop → no shift).
-  function applyPagedPrune(
-    next: PrunedWindow,
-    options: {
-      shiftAtHead: boolean;
-      hasMoreHistoryAfterPrune?: boolean;
-      hasMoreNewerAfterPrune?: boolean;
-    },
-  ): void {
-    if (next.items.length === items.length) return;
-    pendingTimelineShiftAtHead = options.shiftAtHead;
-    commitWindow(next, options);
-  }
-
-  // Streaming / settle prune. Holds position via the explicit anchor
-  // transaction (preserveTimelineWindowAnchor) because it can fire under a
-  // bottom-pinned, mid-turn viewport, and it can be vetoed/deferred when the
-  // prune would drop the visible anchor (vetoPolicy). Leaves the shift flag
-  // false — MessageTimeline owns the rendered-node head-shift hint because
-  // the virtualizer receives grouped/revealed nodes, not raw pane items.
-  function applyPrunedWindow(
-    next: PrunedWindow,
-    options: {
-      hasMoreHistoryAfterPrune?: boolean;
-      hasMoreNewerAfterPrune?: boolean;
-      vetoPolicy: PrunedWindowVetoPolicy;
-    },
-  ): PrunedWindowApplyResult {
-    if (next.items.length === items.length) return 'applied';
-    let operationApplied = false;
-    const apply = (): void => {
-      if (operationApplied) return;
-      operationApplied = true;
-      commitWindow(next, options);
-    };
-    const preserve = scrollController?.preserveTimelineWindowAnchor;
-    if (!preserve) {
-      apply();
-      return 'applied';
-    }
-    const keptItemIds = new Set(next.items.map((item) => item.id));
-    preserve({
-      keepsItem: (itemId) => keptItemIds.has(itemId),
-      run: apply,
-    });
-    if (operationApplied) return 'applied';
-    if (options.vetoPolicy === 'defer') return 'deferred';
-    apply();
-    return 'applied';
-  }
-
   /**
    * Eviction policy for one upserted or patched row. Returns the launch
    * anchor to fold the row under, or null when the row must stay in
@@ -1193,16 +768,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       incoming,
       itemIndexById,
       currentThreadId: thread?.id ?? null,
-      oldestLoadedCursor,
-      newestLoadedCursor,
-      oldestLoadedTurnIndex,
-      newestLoadedTurnIndex,
-      hasMoreHistory,
-      hasMoreNewer,
+      oldestLoadedCursor: timelineWindow.oldestLoadedCursor,
+      newestLoadedCursor: timelineWindow.newestLoadedCursor,
+      oldestLoadedTurnIndex: timelineWindow.oldestLoadedTurnIndex,
+      newestLoadedTurnIndex: timelineWindow.newestLoadedTurnIndex,
+      hasMoreHistory: timelineWindow.hasMoreHistory,
+      hasMoreNewer: timelineWindow.hasMoreNewer,
     });
     if (!next) return null;
     if (next.droppedNewerItems) {
-      hasMoreNewer = true;
+      timelineWindow.noteDroppedNewerItems();
     }
     if (!next.structureChanged && next.changedItems.length === 0) {
       return next;
@@ -1226,22 +801,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     }
     if (next.structureChanged) timelineRevision++;
     if (next.appendedItems.length > 0) {
-      if (thread && !hasMoreHistory) {
-        oldestLoadedCursor = oldestCursorFromItems(items);
-        oldestLoadedTurnIndex = oldestLoadedCursor?.turnIndex ?? null;
-      }
-      if (thread) {
-        newestLoadedCursor = newestCursorFromItems(items);
-        newestLoadedTurnIndex = newestLoadedCursor?.turnIndex ?? null;
-      }
+      timelineWindow.refreshCursorsAfterTailAppend();
     }
     // Live eviction runs before the window-cap check so settled subagent
     // children never count toward the prune trigger — the cap effectively
     // bounds renderable rows, matching the backend pagers' top-level-only
     // budget since 6187d039.
     evictSettledSubagentChildren(next.changedItems);
-    if (next.appendedItems.length > 0 && !hasMoreNewer) {
-      pruneToRecentWindowIfNeeded();
+    if (next.appendedItems.length > 0 && !timelineWindow.hasMoreNewer) {
+      timelineWindow.pruneToRecentWindowIfNeeded();
     }
 
     streamingReveal.reconcileUpsertedItems(next.changedItems);
@@ -1409,23 +977,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   }
 
   /**
-   * Apply a paged-load result to pane state. Used by `switchThread`'s
-   * single initial load. Items merge additively — anything already
-   * present (from cache or streamed events that landed mid-load)
-   * keeps its current reference; missing rows are added and the
-   * array is re-sorted by (turnIndex, itemIndex). Cursors
-   * (`oldestLoadedTurnIndex` / `hasMoreHistory`) are taken straight
-   * from the load — there is no second phase whose wider window
-   * would need to be preserved.
-   */
-  function applyPagedItems(paged: PagedItems, threadID: string): void {
-    const incoming = itemsForThread((paged.items ?? []) as Item[], threadID);
-    const nextItems = mergeMissingItemsById(incoming, items);
-    replaceTimelineItems(nextItems, { disposeDropped: true });
-    applyWindowMetadataFromPaged(paged, items);
-  }
-
-  /**
    * Hydrate the child transcript under a subagent launch anchor.
    * History windows deliver only top-level rows — the collapsed
    * SubagentGroup card renders from backend-decorated aggregates, and
@@ -1518,12 +1069,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // we cache only the items.
       threadItemCache.set(outgoingThreadId, {
         items,
-        oldestLoadedCursor,
-        newestLoadedCursor,
-        oldestLoadedTurnIndex,
-        newestLoadedTurnIndex,
-        hasMoreHistory,
-        hasMoreNewer,
+        oldestLoadedCursor: timelineWindow.oldestLoadedCursor,
+        newestLoadedCursor: timelineWindow.newestLoadedCursor,
+        oldestLoadedTurnIndex: timelineWindow.oldestLoadedTurnIndex,
+        newestLoadedTurnIndex: timelineWindow.newestLoadedTurnIndex,
+        hasMoreHistory: timelineWindow.hasMoreHistory,
+        hasMoreNewer: timelineWindow.hasMoreNewer,
         latestSettledTurn,
         // Folded subagent children travel with the snapshot: the cached
         // items deliberately exclude evicted rows, so without the fold a
@@ -1650,34 +1201,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (cached) {
       replaceTimelineItems(cached.items);
       subagentFolds.restore(cached.subagentFolds);
-      setLoadedCursors(
-        cached.oldestLoadedCursor ?? oldestCursorFromItems(cached.items),
-        cached.newestLoadedCursor ?? newestCursorFromItems(cached.items),
-      );
-      if (!oldestLoadedCursor && cached.oldestLoadedTurnIndex != null) {
-        oldestLoadedTurnIndex = cached.oldestLoadedTurnIndex;
-      }
-      if (!newestLoadedCursor && cached.newestLoadedTurnIndex != null) {
-        newestLoadedTurnIndex = cached.newestLoadedTurnIndex;
-      }
-      hasMoreHistory = cached.hasMoreHistory;
-      hasMoreNewer = cached.hasMoreNewer;
+      timelineWindow.installFromSnapshot(cached);
       latestSettledTurn = cached.latestSettledTurn;
-      recentWindowPrunePending = false;
     } else {
       replaceTimelineItems([]);
       subagentFolds.clear();
-      // Windowed-history reset. A null floor disables the upsert floor
-      // check until the backend tells us otherwise — between thread
-      // clear and the initial-slice response any streamed upserts are
-      // already ours to append normally.
-      oldestLoadedCursor = null;
-      newestLoadedCursor = null;
-      oldestLoadedTurnIndex = null;
-      newestLoadedTurnIndex = null;
-      hasMoreHistory = false;
-      hasMoreNewer = false;
-      recentWindowPrunePending = false;
+      timelineWindow.resetForFreshThread();
     }
     rowUiState.clear();
     streamingReveal.disposeAll();
@@ -1689,8 +1218,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // read 'spring' off the stale stamp and chase its settled content.
     // A streaming incoming thread re-stamps on its first reveal/delta.
     lastLiveContentAt = 0;
-    loadingOlder = false;
-    loadingNewer = false;
     subagentHydrationInFlight.clear();
     subagentHydrationExhausted.clear();
     return { cached, sliceAnchorId };
@@ -1833,19 +1360,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
               SLICE_AROUND_ITEM_BUDGET,
             ),
           (paged) => {
-            applyPagedItems(paged, newThread.id);
+            timelineWindow.applyInitialSlice(paged, newThread.id);
           },
           (err) => {
             // Cache miss + load failure leaves the timeline blank and
             // raises a hard error. (Cache hits skip the load entirely
             // so they can't reach this branch.)
             replaceTimelineItems([]);
-            oldestLoadedCursor = null;
-            newestLoadedCursor = null;
-            oldestLoadedTurnIndex = null;
-            newestLoadedTurnIndex = null;
-            hasMoreHistory = false;
-            hasMoreNewer = false;
+            timelineWindow.resetAfterLoadError();
             generalError = `Failed to load thread items: ${errString(err)}`;
             generalErrorKind = null;
             addToast('error', 'Failed to load thread items');
@@ -2143,39 +1665,37 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * decide whether a target coordinate is already in view.
      */
     get oldestLoadedCursor() {
-      return oldestLoadedCursor;
+      return timelineWindow.oldestLoadedCursor;
     },
     get newestLoadedCursor() {
-      return newestLoadedCursor;
+      return timelineWindow.newestLoadedCursor;
     },
     get oldestLoadedTurnIndex() {
-      return oldestLoadedTurnIndex;
+      return timelineWindow.oldestLoadedTurnIndex;
     },
     get newestLoadedTurnIndex() {
-      return newestLoadedTurnIndex;
+      return timelineWindow.newestLoadedTurnIndex;
     },
     get pendingTimelineShiftAtHead() {
-      return pendingTimelineShiftAtHead;
+      return timelineWindow.pendingTimelineShiftAtHead;
     },
     get hasMoreHistory() {
-      return hasMoreHistory;
+      return timelineWindow.hasMoreHistory;
     },
     get hasMoreNewer() {
-      return hasMoreNewer;
+      return timelineWindow.hasMoreNewer;
     },
     get hasDeferredRecentWindowPrune() {
-      return recentWindowPrunePending;
+      return timelineWindow.hasDeferredRecentWindowPrune;
     },
     retryDeferredRecentWindowPrune(): void {
-      if (!recentWindowPrunePending) return;
-      recentWindowPrunePending = false;
-      pruneToRecentWindowIfNeeded();
+      timelineWindow.retryDeferredRecentWindowPrune();
     },
     get loadingOlder() {
-      return loadingOlder;
+      return timelineWindow.loadingOlder;
     },
     get loadingNewer() {
-      return loadingNewer;
+      return timelineWindow.loadingNewer;
     },
     debugMemoryStats() {
       const streamingStats = streamingReveal.debugStats();
@@ -2185,8 +1705,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         itemSmoothers: streamingStats.itemSmoothers,
         liveThinkingTails: streamingStats.liveThinkingTails,
         optimisticItems: optimisticItemIds.size,
-        oldestLoadedCursor,
-        newestLoadedCursor,
+        oldestLoadedCursor: timelineWindow.oldestLoadedCursor,
+        newestLoadedCursor: timelineWindow.newestLoadedCursor,
       };
     },
     /**
@@ -2329,7 +1849,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       );
       try {
         try {
-          const anchorItemId = hasMoreNewer ? (items.at(-1)?.id ?? '') : '';
+          const anchorItemId = timelineWindow.hasMoreNewer
+            ? (items.at(-1)?.id ?? '')
+            : '';
           const paged = await ListThreadSliceAround(
             currentThread.id,
             anchorItemId,
@@ -2341,7 +1863,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
             items,
           );
           replaceTimelineItems(nextItems, { disposeDropped: true });
-          applyWindowMetadataFromPaged(paged, items);
+          timelineWindow.applyWindowMetadataFromPaged(paged);
         } catch (err) {
           if (gen !== switchGeneration) return;
           console.error('Failed to refresh thread items after gap:', err);
@@ -2435,20 +1957,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         spinnerThresholdTimer = null;
       }
       pastSpinnerThreshold = false;
-      oldestLoadedCursor = null;
-      newestLoadedCursor = null;
-      oldestLoadedTurnIndex = null;
-      newestLoadedTurnIndex = null;
-      hasMoreHistory = false;
-      hasMoreNewer = false;
-      recentWindowPrunePending = false;
-      loadingOlder = false;
-      loadingNewer = false;
+      timelineWindow.resetForFreshThread();
       subagentHydrationInFlight.clear();
       subagentHydrationExhausted.clear();
-      // See switchThread: both `pagingGeneration` and
-      // `scrollToItemRequest.nonce` stay monotonic for the pane's
-      // lifetime so no consumer observes a regressed counter.
+      // See switchThread: both `timelineWindow`'s internal
+      // `pagingGeneration` and `scrollToItemRequest.nonce` stay
+      // monotonic for the pane's lifetime so no consumer observes a
+      // regressed counter.
       diffPanel.clearForThread();
       gitStatus.reset();
       // Invalidate any in-flight switchThread so its late resolutions can't
@@ -2583,217 +2098,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return materializingThreadPromise;
     },
 
-    /**
-     * Fetch the next batch of older turns and prepend them to the window.
-     * Respects both the switch generation (thread swapped mid-flight) and
-     * a paging-specific generation (concurrent invocations from double-
-     * clicks or keyboard repeats). The return value is for scroll
-     * anchoring: `insertedBeforeWindow` means at least one new row sorted
-     * before the current in-memory first row. Components that know the
-     * actual visible anchor still restore that anchor directly.
-     */
-    async loadOlder(): Promise<LoadOlderResult> {
-      const currentThread = thread;
-      if (!currentThread) return loadOlderResult('noop');
-      if (!hasMoreHistory || loadingOlder) return loadOlderResult('noop');
-      const floor = cloneCursor(oldestLoadedCursor);
-      if (!floor) return loadOlderResult('noop');
-
-      const gen = switchGeneration;
-      const pageGen = ++pagingGeneration;
-      loadingOlder = true;
-      try {
-        const previousNewest = cloneCursor(newestLoadedCursor);
-        const paged = await ListItemsBeforeCursor(
-          currentThread.id,
-          cursorForBinding(floor),
-          LOAD_OLDER_ITEM_BUDGET,
-        );
-        if (gen !== switchGeneration || pageGen !== pagingGeneration)
-          return loadOlderResult('stale');
-        const prepend = itemsForThread(
-          (paged.items ?? []) as Item[],
-          currentThread.id,
-        );
-        const currentIds = new Set(items.map((item) => item.id));
-        const insertedRows = prepend.some((item) => !currentIds.has(item.id));
-        const currentFirst = items[0] ?? null;
-        const insertedBeforeWindow =
-          currentFirst === null
-            ? insertedRows
-            : prepend.some(
-                (item) =>
-                  !currentIds.has(item.id) &&
-                  compareItemsByTimelinePosition(item, currentFirst) < 0,
-              );
-        // Head-grow: the engine unshifts its size store and reports a
-        // head-splice compensation so the reading position holds. Set
-        // before the mutation so the engine reads it in the same flush.
-        pendingTimelineShiftAtHead = true;
-        const next = mergeItemsById(prepend, items);
-        replaceTimelineItems(next, { disposeDropped: true });
-        const nextFloor = pagedOldestCursor(paged, prepend) ?? floor;
-        setLoadedCursors(
-          nextFloor,
-          previousNewest ?? newestCursorFromItems(items),
-        );
-        // Progress guard. If the backend returned no items AND the floor
-        // didn't decrease, another click would fire the same query for
-        // the same range. Force hasMore=false so the UI stops offering a
-        // button that can't actually load anything. A later in-flight
-        // upsert that lands an older item will re-enable paging through
-        // the normal streaming path.
-        if (prepend.length === 0 && compareCursors(nextFloor, floor) >= 0) {
-          hasMoreHistory = false;
-        } else {
-          hasMoreHistory = pagedHasMoreOlder(paged);
-        }
-        // Let the engine process the head-grow (shift=true) before the
-        // prune. The two MUST be separate flushes: coalesced, the net length
-        // change can't represent "prepend at head + drop at tail" and the
-        // size store scrambles (spike-verified — see frontend-scroll.md).
-        await tick();
-        if (gen !== switchGeneration || pageGen !== pagingGeneration)
-          return loadOlderResult('stale');
-        // Flush 2: tail-prune (shift=false). Dropped rows are below the
-        // viewport, so this is transparent to the reading position.
-        pruneToHeadWindowIfNeeded();
-        await tick();
-        return loadOlderResult('loaded', insertedBeforeWindow, insertedRows);
-      } catch (err) {
-        if (gen !== switchGeneration || pageGen !== pagingGeneration)
-          return loadOlderResult('stale');
-        console.error('loadOlder failed:', err);
-        addToast('error', 'Failed to load older messages');
-        return loadOlderResult('error');
-      } finally {
-        // Always clear the button's busy flag. The generation guard on
-        // the happy path protects state mutation from late resolutions,
-        // but `loadingOlder` is a UI-only flag — leaving it stuck true
-        // after a pagingGeneration bump (e.g. a concurrent
-        // loadUntilItem) would greys out the Load Older button
-        // indefinitely. The worst outcome of clearing unconditionally
-        // is a brief flash of the non-busy state while another pager
-        // is still in-flight; the concurrent call will re-raise the
-        // flag on its next write.
-        loadingOlder = false;
-        // Both flushes have run by now; clear the one-shot shift hint so a
-        // later streaming length change isn't misread as a head mutation.
-        pendingTimelineShiftAtHead = false;
-      }
+    /** Fetch the next batch of older turns and prepend them to the window. See threadTimelineWindow.svelte.ts. */
+    loadOlder(): Promise<LoadOlderResult> {
+      return timelineWindow.loadOlder();
     },
 
-    /**
-     * Ensure the item with `itemID` is present in the loaded window.
-     * Used by scroll-to-item callers (search hits, plan sidebar, tray)
-     * before they dispatch the scroll intent. When the item is already
-     * in the window this is a cheap `Array.some` and no backend call.
-     * When the item lives below the floor the pane loads every turn
-     * from the item's turn_index up to the existing tail in one
-     * replacement — the window grows to cover the hit, no cumulative
-     * multi-page ratchet.
-     *
-     * Returns `true` when the item is (now) loaded and scrollable,
-     * `false` when the backend reports the item doesn't exist on this
-     * thread (scroll callers show a toast and abandon the request).
-     */
-    async loadUntilItem(itemID: string): Promise<boolean> {
-      const currentThread = thread;
-      if (!currentThread || !itemID) return false;
-      if (items.some((it) => it.id === itemID)) return true;
-
-      const gen = switchGeneration;
-      const pageGen = ++pagingGeneration;
-      let fetched: Item;
-      try {
-        fetched = (await GetThreadItem(currentThread.id, itemID)) as Item;
-      } catch (err) {
-        if (gen !== switchGeneration) return false;
-        console.error('loadUntilItem GetThreadItem failed:', err);
-        return false;
-      }
-      if (gen !== switchGeneration || pageGen !== pagingGeneration)
-        return false;
-      if (!fetched || !fetched.id) return false;
-      // Defense-in-depth: the backend already filters by threadId, but a
-      // mislayered binding or a future cache that returns stale rows
-      // shouldn't cross-pollute between panes.
-      if (fetched.threadId !== currentThread.id) return false;
-
-      // Race: another upsert or loadOlder might have pulled the item in
-      // between our check and the backend round-trip. Re-check before
-      // paging in a whole turn window we don't need.
-      if (items.some((it) => it.id === itemID)) return true;
-
-      // Subagent children never appear in history windows. Walk the
-      // parent chain to the top-level launch root so the slice anchors
-      // on a row the window will actually contain, then hydrate the
-      // root's subtree so the scroll can resolve to the containing
-      // group card. The visited set bounds corrupt parent cycles; a
-      // broken chain falls back to anchoring on the child's own
-      // coordinates (the slice still positions correctly — only the
-      // subtree hydration is skipped, and the trailing containment
-      // check reports the miss).
-      let sliceAnchorID = itemID;
-      let subagentRootID = '';
-      if ((fetched.parentId ?? '') !== '') {
-        let walker = fetched;
-        const visited = new Set<string>([walker.id]);
-        while ((walker.parentId ?? '') !== '' && !visited.has(walker.parentId ?? '')) {
-          let parentItem: Item;
-          try {
-            parentItem = (await GetThreadItem(
-              currentThread.id,
-              walker.parentId ?? '',
-            )) as Item;
-          } catch (err) {
-            console.error('loadUntilItem parent walk failed:', err);
-            break;
-          }
-          if (gen !== switchGeneration || pageGen !== pagingGeneration)
-            return false;
-          if (!parentItem?.id || parentItem.threadId !== currentThread.id)
-            break;
-          visited.add(parentItem.id);
-          walker = parentItem;
-        }
-        if ((walker.parentId ?? '') === '') {
-          sliceAnchorID = walker.id;
-          subagentRootID = walker.id;
-        }
-      }
-
-      loadingOlder = true;
-      try {
-        const paged = await ListThreadSliceAround(
-          currentThread.id,
-          sliceAnchorID,
-          ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
-        );
-        if (gen !== switchGeneration || pageGen !== pagingGeneration)
-          return false;
-        const next = reconcileItemWindow(
-          itemsForThread((paged.items ?? []) as Item[], currentThread.id),
-          items,
-        );
-        replaceTimelineItems(next, { disposeDropped: true });
-        applyWindowMetadataFromPaged(paged, items);
-        if (subagentRootID) {
-          await hydrateSubagentChildren(subagentRootID);
-          if (gen !== switchGeneration || pageGen !== pagingGeneration)
-            return false;
-        }
-      } catch (err) {
-        if (gen !== switchGeneration || pageGen !== pagingGeneration)
-          return false;
-        console.error('loadUntilItem ListThreadSliceAround failed:', err);
-        addToast('error', 'Failed to load message');
-        return false;
-      } finally {
-        // Match loadOlder's unconditional reset — see comment there.
-        loadingOlder = false;
-      }
-      return items.some((it) => it.id === itemID);
+    /** Ensure `itemID` is present in the loaded window. See threadTimelineWindow.svelte.ts. */
+    loadUntilItem(itemID: string): Promise<boolean> {
+      return timelineWindow.loadUntilItem(itemID);
     },
 
     /**
@@ -2806,113 +2118,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return hydrateSubagentChildren(rootItemID);
     },
 
-    async loadNewer(): Promise<LoadOlderResult> {
-      const currentThread = thread;
-      if (!currentThread) return loadOlderResult('noop');
-      if (!hasMoreNewer || loadingNewer) return loadOlderResult('noop');
-      const ceiling = cloneCursor(newestLoadedCursor);
-      if (!ceiling) return loadOlderResult('noop');
-
-      const gen = switchGeneration;
-      const pageGen = ++pagingGeneration;
-      loadingNewer = true;
-      try {
-        const previousOldest = cloneCursor(oldestLoadedCursor);
-        const paged = await ListItemsAfterCursor(
-          currentThread.id,
-          cursorForBinding(ceiling),
-          LOAD_OLDER_ITEM_BUDGET,
-        );
-        if (gen !== switchGeneration || pageGen !== pagingGeneration)
-          return loadOlderResult('stale');
-        const append = itemsForThread(
-          (paged.items ?? []) as Item[],
-          currentThread.id,
-        );
-        const currentIds = new Set(items.map((item) => item.id));
-        const insertedRows = append.some((item) => !currentIds.has(item.id));
-        const currentLast = items.at(-1) ?? null;
-        const insertedAfterWindow =
-          currentLast === null
-            ? insertedRows
-            : append.some(
-                (item) =>
-                  !currentIds.has(item.id) &&
-                  compareItemsByTimelinePosition(item, currentLast) > 0,
-              );
-        // Tail-grow: shift stays false (the engine appends size slots at the
-        // end, no scroll compensation — rows arrive below the viewport).
-        pendingTimelineShiftAtHead = false;
-        const next = mergeItemsById(append, items);
-        replaceTimelineItems(next, { disposeDropped: true });
-        const nextCeiling = pagedNewestCursor(paged, append) ?? ceiling;
-        setLoadedCursors(
-          previousOldest ?? oldestCursorFromItems(items),
-          nextCeiling,
-        );
-        const nextHasMoreNewer =
-          append.length === 0 && compareCursors(nextCeiling, ceiling) <= 0
-            ? false
-            : pagedHasMoreNewer(paged);
-        hasMoreNewer = nextHasMoreNewer;
-        // Flush 1: the engine processes the tail-grow before the head-prune.
-        // Separate flushes (see loadOlder): a coalesced tail-grow +
-        // head-shrink can't be expressed by one `shift`.
-        await tick();
-        if (gen !== switchGeneration || pageGen !== pagingGeneration)
-          return loadOlderResult('stale');
-        // Flush 2: head-prune (shift=true) — the engine splices its size
-        // store from the front and compensates scrollTop by the dropped
-        // height, holding the reading position. No explicit anchor restore
-        // needed.
-        pruneToRecentWindowIfNeeded({
-          hasMoreNewerAfterPrune: nextHasMoreNewer,
-          positionMode: 'shift',
-        });
-        await tick();
-        return loadOlderResult('loaded', insertedAfterWindow, insertedRows);
-      } catch (err) {
-        if (gen !== switchGeneration || pageGen !== pagingGeneration)
-          return loadOlderResult('stale');
-        console.error('loadNewer failed:', err);
-        addToast('error', 'Failed to load newer messages');
-        return loadOlderResult('error');
-      } finally {
-        loadingNewer = false;
-        pendingTimelineShiftAtHead = false;
-      }
+    /** Fetch the next batch of newer turns and append them to the window. See threadTimelineWindow.svelte.ts. */
+    loadNewer(): Promise<LoadOlderResult> {
+      return timelineWindow.loadNewer();
     },
 
-    async loadRecentTail(): Promise<boolean> {
-      const currentThread = thread;
-      if (!currentThread) return false;
-      const gen = switchGeneration;
-      const pageGen = ++pagingGeneration;
-      loadingNewer = true;
-      try {
-        const paged = await ListThreadSliceAround(
-          currentThread.id,
-          '',
-          ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
-        );
-        if (gen !== switchGeneration || pageGen !== pagingGeneration)
-          return false;
-        const next = reconcileItemWindow(
-          itemsForThread((paged.items ?? []) as Item[], currentThread.id),
-          items,
-        );
-        replaceTimelineItems(next, { disposeDropped: true });
-        applyWindowMetadataFromPaged(paged, items);
-        return true;
-      } catch (err) {
-        if (gen !== switchGeneration || pageGen !== pagingGeneration)
-          return false;
-        console.error('loadRecentTail failed:', err);
-        addToast('error', 'Failed to load latest messages');
-        return false;
-      } finally {
-        loadingNewer = false;
-      }
+    /** Reload the tail slice around the thread's most recent item. See threadTimelineWindow.svelte.ts. */
+    loadRecentTail(): Promise<boolean> {
+      return timelineWindow.loadRecentTail();
     },
 
     /**
@@ -3396,8 +2609,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // Run the deferred window prune now that the turn is quiet — the
       // streaming-append path skips it while a turn is active so the
       // head-drop repaint never lands mid-stream.
-      if (!hasMoreNewer) {
-        pruneToRecentWindowIfNeeded();
+      if (!timelineWindow.hasMoreNewer) {
+        timelineWindow.pruneToRecentWindowIfNeeded();
       }
     },
 
