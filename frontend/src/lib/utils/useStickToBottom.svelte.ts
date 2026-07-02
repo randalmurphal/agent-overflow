@@ -55,6 +55,14 @@
 
 import { tick } from 'svelte';
 import { isUiRenderTraceEnabled, recordUiTrace } from './uiRenderTrace';
+import {
+  ARRIVAL_DISTANCE_PX,
+  SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX,
+  resolveContentDelivery,
+  springGateIsOpen,
+  withinArrivalBand,
+  type ResolverState,
+} from './scroll/resolver';
 
 // Diagnostic trace helper — no-op in production (gated by
 // `isUiRenderTraceEnabled` which only returns true in dev with
@@ -86,18 +94,10 @@ const STICK_TO_BOTTOM_OFFSET_PX = 70;
 // height estimation + browser scrollTop rounding that routinely lands
 // 1-3px short during streaming.
 const AUTO_FOLLOW_BOTTOM_EPSILON_PX = 4;
-// Idle re-pin deadband. Once the spring has settled (springToken === 0) and
-// scrollTop is already within this many px of the bottom target, a nonzero
-// content-height delta is treated as fractional-DPR wobble — not real growth —
-// and the re-pin is skipped, breaking the idle viewport-vibration limit cycle
-// at its source. Value: large enough to clear the observed ~2px idle flip with
-// margin, small enough to stay well below the ≥~line-height gap of genuine
-// catch-up growth; equal to AUTO_FOLLOW_BOTTOM_EPSILON_PX by design — "close
-// enough to count as at-bottom" and "close enough not to fight a wobble" are
-// the same tolerance. Full mechanism (fractional-DPR X.5-boundary height flip →
-// moving target → self-sustaining ±2px cycle) + the capture it was root-caused
-// from: docs/architecture/settle-flicker-analysis.md.
-const IDLE_REPIN_DEADBAND_PX = 4;
+// The idle re-pin deadband (IDLE_REPIN_DEADBAND_PX, scroll/resolver.ts)
+// deliberately equals AUTO_FOLLOW_BOTTOM_EPSILON_PX — "close enough to
+// count as at-bottom" and "close enough not to fight a fractional-DPR
+// wobble" are the same tolerance.
 // ResizeObserver width jitter below half a CSS pixel is usually rounding
 // noise. Wider changes mean the content column reflowed; any paired height
 // delta is layout correction, not new live transcript content.
@@ -152,9 +152,9 @@ const SPRING_MAX_CATCHUP_STEPS = 3;
 // sentinel lifetime after the last content stamp, or the gate opens
 // mid-sentinel and virtua's $fixScrollJump snaps scrollTop.
 export const RETAIN_ANIMATION_DURATION_MS = 350;
-// Spring arrival thresholds: distance ≤1px from target AND velocity
-// below 0.5 px-per-60fps-frame means we've effectively settled.
-const ARRIVAL_DISTANCE_PX = 1;
+// Spring arrival: within the shared ARRIVAL_DISTANCE_PX band
+// (scroll/resolver.ts) AND velocity below 0.5 px-per-60fps-frame means
+// we've effectively settled.
 const ARRIVAL_VELOCITY_THRESHOLD = 0.5;
 // Velocity (px per 60fps frame) at or below which the spring KEEPS its
 // upward follow momentum when it catches up to the bottom mid-stream,
@@ -189,17 +189,6 @@ const SPRING_CARRY_VELOCITY_CEILING = 4;
 // regressions. First and last ticks of every chase are always
 // recorded via the springTickSinceLastTrace reset at chase boundaries.
 const SPRING_TICK_TRACE_SAMPLE = 12;
-// Overshoot magnitude at which the contentRO overshoot guard snaps
-// scrollTop instantly instead of letting the symmetric spring chase
-// the lower target. Small overshoots (≤ this) come from transient
-// streamdown re-renders — parseIncompleteMarkdown auto-balancing
-// unclosed code fences / backticks / lists momentarily shrinks
-// scrollHeight by a handful of pixels — and snapping for them produced
-// the user-visible "viewport jumps upward then springs back" regression
-// on plain-text streams. Large overshoots (virtua applyJump-style
-// mis-corrections, content collapse) still snap instantly so the user
-// doesn't watch the viewport drift down across many frames.
-const SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX = 50;
 
 // ===== Warm-up (quiescence) gate =====
 // After attach() or forceStick(), the controller stays in sync-pin mode
@@ -868,21 +857,13 @@ export function createUseStickToBottomController(
     return Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
   }
 
-  function isWithinArrivalDistance(current: number, target: number): boolean {
-    return Math.abs(current - target) <= ARRIVAL_DISTANCE_PX;
-  }
-
   function scrollTopIsAtTarget(target: number): boolean {
-    return !scrollEl || isWithinArrivalDistance(scrollEl.scrollTop, target);
-  }
-
-  function scrollTargetsMatch(a: number, b: number): boolean {
-    return isWithinArrivalDistance(a, b);
+    return !scrollEl || withinArrivalBand(scrollEl.scrollTop, target);
   }
 
   function acceptedReadbackMatchesTarget(target: number): boolean {
     return arrivalReadbackAcceptedTarget !== null
-      && scrollTargetsMatch(arrivalReadbackAcceptedTarget, target)
+      && withinArrivalBand(arrivalReadbackAcceptedTarget, target)
       && scrollTopIsAtTarget(target);
   }
 
@@ -1220,19 +1201,38 @@ export function createUseStickToBottomController(
     sentinelEntryTarget = -1;
   }
 
-  // Shared gate predicate. Used by both `startSpringIfNeeded` and the
-  // contentRO positive-delta branch so the two sites can't drift on
-  // which conditions allow the spring. The `warm` check is intentionally
-  // omitted here — startSpringIfNeeded is called from inside the
-  // already-warm branch of contentRO; warm-checking inside it would
+  // Impure sampling wrapper over the shared pure predicate
+  // (scroll/resolver.ts springGateIsOpen). Used by `startSpringIfNeeded`,
+  // the delivery resolver (via its sampled observation), and
+  // notifyLiveContentMaybeGrew so the sites can't drift on which
+  // conditions allow the spring. The `warm` check is intentionally
+  // omitted from the predicate — startSpringIfNeeded is called from
+  // inside already-warm branches; warm-checking inside it would
   // double-gate and confuse the read.
   function springGateOpen(): boolean {
-    return !springStopRequested
-      && pauseDepth === 0
-      && isAtBottomState
-      && !escapedFromLockState
-      && !prefersReducedMotion()
-      && (options.animationMode?.() === 'spring' || structuralAppendSpringUntil > nowMs());
+    return springGateIsOpen({
+      springStopRequested,
+      paused: pauseDepth > 0,
+      isAtBottom: isAtBottomState,
+      escaped: escapedFromLockState,
+      prefersReducedMotion: prefersReducedMotion(),
+      animationMode: options.animationMode?.() === 'spring' ? 'spring' : 'instant',
+      structuralAppendPending: structuralAppendSpringUntil > nowMs(),
+    });
+  }
+
+  // Snapshot of the flags the pure delivery resolver decides over.
+  function resolverStateSnapshot(): ResolverState {
+    return {
+      isAtBottom: isAtBottomState,
+      isNearBottom: isNearBottomState,
+      escaped: escapedFromLockState,
+      paused: pauseDepth > 0,
+      warm,
+      springActive: springToken !== 0,
+      springStopRequested,
+      sentinelEntryTarget,
+    };
   }
 
   function startSpringIfNeeded(): void {
@@ -1279,7 +1279,7 @@ export function createUseStickToBottomController(
       const current = scrollEl.scrollTop;
       if (
         arrivalReadbackAcceptedTarget !== null
-        && !scrollTargetsMatch(arrivalReadbackAcceptedTarget, target)
+        && !withinArrivalBand(arrivalReadbackAcceptedTarget, target)
       ) {
         arrivalReadbackAcceptedTarget = null;
       }
@@ -1304,7 +1304,7 @@ export function createUseStickToBottomController(
         // bypasses the property-descriptor gate), stranding scrollTop
         // below the restored target. Snap back instantly — a spring
         // chase for zero net content change is a visible artifact.
-        if (sentinelEntryTarget >= 0 && scrollTargetsMatch(target, sentinelEntryTarget)) {
+        if (sentinelEntryTarget >= 0 && withinArrivalBand(target, sentinelEntryTarget)) {
           snapOscillationToBottom('spring.oscillationSnap', target);
         } else {
           arrivalReadbackAcceptedTarget = null;
@@ -1470,18 +1470,21 @@ export function createUseStickToBottomController(
         // First fire: snap to bottom synchronously so the initial paint
         // lands at the right place. Matches upstream's `initial` behavior
         // when isAtBottom starts true.
-        const willPin = isAtBottomState && !escapedFromLockState;
+        const decision = resolveContentDelivery(resolverStateSnapshot(), {
+          kind: 'first',
+          target: targetScrollTop(),
+        });
         if (isUiRenderTraceEnabled()) trace('scroll.contentRO.firstFire', () => ({
           nextHeight: Math.round(nextHeight),
-          willPin,
+          willPin: decision.write !== null,
           isAtBottomState,
           escapedFromLockState,
           scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
           scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
           clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
         }));
-        if (willPin) {
-          writeScrollTop('contentRO.firstFire', targetScrollTop());
+        if (decision.write) {
+          writeScrollTop(decision.write.caller, decision.write.value);
         }
         refreshIsNearBottom();
         return;
@@ -1513,53 +1516,43 @@ export function createUseStickToBottomController(
       // ahead of the scroll handler. Pending user intent still wins.
       resizeCorrelatedUntaggedScrollBudget = 1;
 
-      // Refresh the geometric near-bottom flag BEFORE computing any
-      // pin predicate so the trace and the gate both see the same
-      // post-resize geometry. Without the lift, the negative branch
-      // had to mirror the geometric check via an IIFE to avoid the
-      // refresh side effect; with the lift, the trace and gate read
-      // the same `isNearBottomState` and the IIFE disappears.
+      // Refresh the geometric near-bottom flag BEFORE resolving so the
+      // decision and its trace see the same post-resize geometry.
       refreshIsNearBottom();
       // Cache the bottom target once per RO delivery. `targetScrollTop()`
       // reads `scrollHeight` + `clientHeight` (forced layout), and neither
-      // changes across this synchronous callback — the only writes here are to
-      // `scrollTop`, which don't affect them — so the overshoot guard, the
-      // oscillation snap, and the delta-branch pins can all reuse one read.
-      // Mirrors the spring tick's per-frame `const target` discipline.
+      // changes across this synchronous callback — the only writes here
+      // are to `scrollTop`, which don't affect them — so one read serves
+      // the whole decision. Mirrors the spring tick's per-frame
+      // `const target` discipline.
       const target = targetScrollTop();
-      const overshootMagnitude = Math.max(0, scrollEl.scrollTop - target);
-      const overshoot = overshootMagnitude > ARRIVAL_DISTANCE_PX;
-      // Idle re-pin deadband gate. Only while no spring is in flight
-      // (springToken === 0 — the spring holds its token across inter-chunk
-      // gaps during streaming, so this never trips mid-chase) AND scrollTop is
-      // already within IDLE_REPIN_DEADBAND_PX of the bottom: a nonzero height
-      // delta here is the fractional-DPR content-box wobble, and re-pinning
-      // chases a target that never stops moving → the idle viewport-vibration
-      // limit cycle. Suppress the pin; real growth moves the target ≥ a line
-      // height away (gap ≫ deadband) and pins normally on the next delivery.
-      const distanceFromTarget = Math.abs(scrollEl.scrollTop - target);
-      const idlePinWithinDeadband =
-        springToken === 0 && distanceFromTarget <= IDLE_REPIN_DEADBAND_PX;
-      const positiveWillPin = delta > 0
-        && isAtBottomState
-        && !escapedFromLockState
-        && pauseDepth === 0
-        && !idlePinWithinDeadband;
-      const negativeWillPin = delta < 0
-        && (isAtBottomState || isNearBottomState)
-        && !escapedFromLockState
-        && pauseDepth === 0
-        && !idlePinWithinDeadband;
+      const scrollTopAtDelivery = scrollEl.scrollTop;
+      // Every decision about this delivery — overshoot snap, stranded-
+      // oscillation recovery, sync-pin vs spring, negative re-stick — is
+      // made by the pure resolver (scroll/resolver.ts) over a sampled
+      // snapshot; this callback only gathers observations and applies
+      // effects. At most ONE scrollTop write leaves a delivery.
+      const decision = resolveContentDelivery(resolverStateSnapshot(), {
+        kind: 'delta',
+        delta,
+        scrollTop: scrollTopAtDelivery,
+        target,
+        widthReflowActive,
+        animationMode: options.animationMode?.() === 'spring' ? 'spring' : 'instant',
+        structuralAppendPending: structuralAppendSpringUntil > nowMs(),
+        prefersReducedMotion: prefersReducedMotion(),
+      });
       if (isUiRenderTraceEnabled()) trace('scroll.contentRO', () => ({
         prev: Math.round(prev),
         next: Math.round(nextHeight),
         delta: Math.round(delta),
-        overshoot,
-        overshootMagnitude: Math.round(overshootMagnitude),
-        distanceFromTarget: Math.round(distanceFromTarget),
-        idlePinWithinDeadband,
-        positiveWillPin,
-        negativeWillPin,
+        overshootMagnitude: Math.round(Math.max(0, scrollTopAtDelivery - target)),
+        distanceFromTarget: Math.round(Math.abs(scrollTopAtDelivery - target)),
+        writeCaller: decision.write?.caller ?? null,
+        startSpring: decision.startSpring,
+        bumpTargetChanged: decision.bumpTargetChanged,
+        oscillationRecovery: decision.oscillationRecovery,
+        setIsAtBottom: decision.setIsAtBottom,
         isAtBottomState,
         escapedFromLockState,
         pauseDepth,
@@ -1570,191 +1563,38 @@ export function createUseStickToBottomController(
         widthChanged,
         widthReflowActive,
         structuralAppendSpringPending: structuralAppendSpringUntil > nowMs(),
-        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        scrollTop: Math.round(scrollTopAtDelivery),
         scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
         clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-        target: scrollEl ? Math.round(target) : null,
+        target: Math.round(target),
       }));
 
-      // Overscroll guard: if browser auto-clamping or virtua corrections
-      // pushed us past the target, snap back. Two clauses past the
-      // escape / pause / overshoot gates:
-      //
-      // 1. No spring is in flight (`springToken === 0`): any overshoot
-      //    snaps. There is no other writer that will absorb it. This is
-      //    the original Bug-A defense for virtua applyJump landing past
-      //    the bottom while the cascade is still settling — the warm
-      //    gate keeps the spring suppressed, so this branch is always
-      //    the one reached during the cascade.
-      // 2. Spring is in flight AND magnitude exceeds the threshold:
-      //    snap. A large overshoot absorbed by the spring is fatal to
-      //    follow UX (the user watches the viewport drift down 100+ px
-      //    across many frames). Snapping keeps the existing "negative
-      //    delta mid-spring lets the spring converge" contract.
-      //
-      // Small overshoots during a spring chase (≤ threshold) fall
-      // through both clauses and are absorbed by the symmetric spring:
-      // it sees `diff < 0` and damps `current` down to `target` across
-      // rAF ticks. This is what fixes the parseIncompleteMarkdown
-      // jitter — token-close-then-reopen rebalances shrink scrollHeight
-      // by a handful of pixels, the old unconditional guard snapped
-      // scrollTop down inside the RO callback, the spring re-extended
-      // back up on the very next tick, and the user saw a few-pixel
-      // up-down oscillation per chunk.
-      //
-      // Escape and pause gates remain unchanged — the threshold is an
-      // additional relaxation, not a replacement.
-      // prefers-reduced-motion users still get the snap on small
-      // overshoots: `springGateOpen()` returns false for them so
-      // `springToken === 0` and clause 1 fires.
-      if (
-        overshoot
-        && !escapedFromLockState
-        && pauseDepth === 0
-        && (springToken === 0 || overshootMagnitude > SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX)
-      ) {
-        writeScrollTop('contentRO.overshoot', target);
+      // Apply the decision. Order preserved from the legacy inline
+      // logic: intent flip first (the write's trace payload reads it),
+      // then the single write, then spring bookkeeping.
+      if (decision.setIsAtBottom) isAtBottomState = true;
+      if (decision.oscillationRecovery && decision.write) {
+        // Route through the shared snap so this synchronous recovery and
+        // the spring tick's rAF-side recovery cannot drift on the effect
+        // body (see snapOscillationToBottom's FOOTGUN comment). The
+        // recovery runs here — same RO delivery as the regrow, before
+        // paint — because rAF callbacks fire BEFORE ResizeObserver
+        // callbacks within a frame, so the tick-side snap always lands
+        // one frame late (bug-report-20260615T182227Z: ~37px one-frame
+        // upward jolt on an above-viewport image row remeasure).
+        snapOscillationToBottom(decision.write.caller, decision.write.value);
+      } else if (decision.write) {
+        writeScrollTop(decision.write.caller, decision.write.value);
       }
-
-      // ===== Synchronous sentinel oscillation recovery =====
-      // A row ABOVE the viewport that transiently shrinks-then-regrows —
-      // virtua remounting/remeasuring a replaced element, e.g. an image
-      // user-message row scrolled out of the live window — momentarily drops
-      // virtua's total size. Because virtua sizes its container explicitly
-      // (`contain: size` + `height: <totalSize>px`), that drop is the
-      // contentEl height we observe here. While pinned at the exact bottom,
-      // the browser SYNCHRONOUSLY clamps scrollTop down during the dip (a
-      // native operation that bypasses the property-descriptor write gate).
-      // When the row regrows, total returns to the pre-dip value but
-      // scrollTop is stranded below the restored bottom.
-      //
-      // The spring tick's `spring.oscillationSnap` already recovers this, but
-      // it runs in a rAF — and per the HTML "update the rendering" order, rAF
-      // callbacks fire BEFORE ResizeObserver callbacks within a frame, so a
-      // snap reacting to THIS regrow RO delivery always lands one frame late.
-      // That stranded frame paints as a one-frame jump
-      // (bug-report-20260615T182227Z: codex thread, above-viewport image row
-      // remeasure, ~37px upward jolt). Recovering synchronously here — in the
-      // same RO delivery as the regrow, before paint — closes the gap.
-      //
-      // Gated identically to the spring-tick snap: only while a spring is
-      // sentinel-idle (`springToken !== 0 && sentinelEntryTarget >= 0`) and
-      // the new target has returned to exactly the sentinel-entry value, so
-      // genuine new growth (target beyond the entry) still spring-chases and
-      // active chases are untouched. The >=1px stranded check ignores
-      // sub-pixel rounding between the browser-rounded scrollTop readback and
-      // the computed target. The shared snap (`snapOscillationToBottom`)
-      // consumes `sentinelEntryTarget`, making the later spring-tick snap a
-      // no-op for this same oscillation.
-      const sentinelOscillationStranded =
-        springToken !== 0
-        && sentinelEntryTarget >= 0
-        && isAtBottomState
-        && !escapedFromLockState
-        && pauseDepth === 0
-        && scrollTargetsMatch(target, sentinelEntryTarget)
-        && !isWithinArrivalDistance(scrollEl.scrollTop, sentinelEntryTarget);
-
-      if (sentinelOscillationStranded) {
-        snapOscillationToBottom('contentRO.oscillationSnap', target);
-      } else if (delta > 0) {
-        // Positive delta: choose between sync-pin (default) and spring
-        // chase (when the consumer signals "real content streaming and
-        // the controller has warmed past mount settle").
-        //
-        // Sync-pin path: writes scrollTop in the same paint frame as
-        // contentEl growth — no perceptible scroll motion, just content
-        // arriving at the bottom. Used when animationMode is 'instant',
-        // when we haven't warmed yet (mount-time virtua remeasurement +
-        // Streamdown typesetting still settling), or when the user has
-        // requested reduced motion.
-        //
-        // Spring path: starts a velocity-spring chase that interpolates
-        // toward the moving bottom across rAF frames. The user sees the
-        // viewport smoothly follow streaming content. Each subsequent
-        // positive delta during the chase bumps `lastTargetChangedAt` so
-        // the spring keeps chasing across chunk boundaries instead of
-        // arriving-then-restarting (visibly jittery).
-        //
-        // Width reflow carve-out: Mermaid, KaTeX, Shiki, images, and
-        // normal prose can all change height when the content column width
-        // changes. If live content advanced in the last few hundred ms,
-        // the animation latch still reports "spring", but this resize is
-        // layout correction for already-rendered content. Width and height
-        // can arrive in separate ResizeObserver deliveries, so the reflow
-        // classification is held briefly after a width change. Sync-pin it
-        // so a pane/sidebar/window reflow cannot produce a half-viewport
-        // spring chase from a stale bottom.
-        if (positiveWillPin) {
-          if (warm && springGateOpen() && !widthReflowActive) {
-            lastTargetChangedAt = nowMs();
-            startSpringIfNeeded();
-          } else {
-            writeScrollTop('contentRO.positiveDelta', target);
-          }
-        }
-      } else if (delta < 0) {
-        // Negative delta: re-stick when the controller's intent is
-        // "stay at bottom" — EITHER the logical flag (isAtBottomState)
-        // OR the geometric near-bottom band (isNearBottomState) says
-        // so. The geometric branch matches upstream's negative-resize
-        // re-stick. The intent branch defends against virtua's jump
-        // correction during the layout-measurement cascade: when
-        // rows above the viewport remeasure, virtua may shift
-        // scrollTop hundreds of pixels off the bottom and flip
-        // isNearBottomState=false purely as a downstream effect of
-        // layout — not user intent. Without the isAtBottomState
-        // disjunct, the controller abandoned the pin in that case
-        // and left the viewport stuck mid-cascade until the next
-        // shrink happened to land scrollTop at the new bottom by
-        // coincidence. User-visible as a "half-screen jump to
-        // bottom" on heavy uncached threads — see
-        // docs/architecture/frontend-scroll.md for the cascade pattern
-        // this defends.
-        if (negativeWillPin) {
-          isAtBottomState = true;
-          // Spring carve-out: suppress this sync write while a spring
-          // is chasing (springToken !== 0) so virtua's +ESTIMATE /
-          // -CORRECTION pair on row-append (e.g. +90 then -56 within
-          // ~5ms) doesn't race the spring. Without it, the negative
-          // write lands scrollTop at the corrected target before the
-          // spring's first paint and the spring ticks against
-          // current==target with no perceptible motion. The spring
-          // reads targetScrollTop() each tick and absorbs the
-          // corrected target naturally. Note: the overshoot guard
-          // above is threshold-gated on the spring (`springToken === 0
-          // OR overshootMagnitude > SPRING_OVERSHOOT_INSTANT_SNAP_
-          // THRESHOLD_PX`). Large overshoots (e.g. the existing
-          // "negative delta mid-spring lets the spring converge"
-          // test's 200+px shrink) still snap inside the RO callback;
-          // small overshoots (the parseIncompleteMarkdown token-
-          // close-then-reopen regression — a few-pixel shrink) are
-          // absorbed by the symmetric spring instead. For the +90 /
-          // -56 estimate-correct pair the spring has barely moved by
-          // the time the correction arrives, so overshoot is false
-          // and the negative-delta gate is the only path that needed
-          // suppression. Bug A defense (sync-pin running during the
-          // !warm cascade) is preserved by warm-gate ordering: the
-          // cascade fires while `!warm`, springGateOpen requires
-          // `warm`, so springToken stays 0 during the cascade and
-          // the sync-pin runs as before. See
-          // docs/architecture/frontend-scroll.md.
-          if (springToken === 0 || widthReflowActive) {
-            writeScrollTop(
-              widthReflowActive ? 'contentRO.negativeDeltaReflow' : 'contentRO.negativeDelta',
-              target,
-            );
-          } else {
-            // Spring is the single writer mid-chase; sync write is
-            // suppressed above. The target nonetheless moved (downward),
-            // so bump the retain timestamp — otherwise a small negative
-            // correction between chunks could let
-            // `withinTargetChangeRetainWindow` lapse and the spring
-            // would arrive-and-stop while a follow-up chunk was on its
-            // way.
-            lastTargetChangedAt = nowMs();
-          }
-        }
+      if (decision.startSpring) {
+        lastTargetChangedAt = nowMs();
+        startSpringIfNeeded();
+      } else if (decision.bumpTargetChanged) {
+        // Spring is the single writer mid-chase and the sync write was
+        // suppressed, but the target moved — without the bump the retain
+        // window could lapse between chunks and the spring would
+        // arrive-and-stop while a follow-up chunk was on its way.
+        lastTargetChangedAt = nowMs();
       }
 
       // Schedule resizeDifference clear AFTER the scroll handler's 1ms.
