@@ -770,6 +770,228 @@ A `tool_result` block whose `tool_use_id` has no corresponding
 fabricate a ghost tool_call row. In practice this only happens in
 malformed replays.
 
+### E5 — Async `local_agent` launch (bare ack)
+
+A THIRD launch shape for `local_agent` (Task/Agent subagent), distinct
+from both E2 (backgrounded Bash placeholder) and an ordinary inline
+completion. Fires when the `Agent`/`Task` tool_use's `input` carries NO
+`run_in_background` flag AND the CLI still chooses to run the subagent
+asynchronously — the tool_result arrives almost immediately (~ms) as a
+bare acknowledgment rather than the subagent's actual result:
+
+```json
+{"type": "user",
+ "message": {"role": "user", "content": [{
+   "tool_use_id": "toolu_01DND5fS6nX3LnefKJuJeBzQ",
+   "type": "tool_result",
+   "content": [{"type": "text", "text": "Async agent launched successfully.\nagentId: a32408c956466d32c ..."}]
+ }]},
+ "tool_use_result": {
+   "isAsync": true,
+   "status": "async_launched",
+   "agentId": "a32408c956466d32c",
+   "description": "Review 4b: perf/memory lens",
+   "resolvedModel": "claude-fable-5",
+   "prompt": "...",
+   "outputFile": "/tmp/.../tasks/a32408c956466d32c.output",
+   "canReadOutputFile": true
+ }}
+```
+
+**Marker: `isAsync: true` and/or `status: "async_launched"`.** No
+`backgroundTaskId` anywhere on this shape — `agentId` is the id the
+later task lifecycle addresses as `task_id`.
+
+### ⚠ Discriminator subtlety — inline completions ALSO carry `agentId`
+
+An INLINE (awaited) `local_agent` result — the normal case where the
+subagent's real output arrives as the `tool_result` — carries the SAME
+`agentId` field, plus `status: "completed"` and richer totals
+(`totalDurationMs`, `totalTokens`, `totalToolUseCount`, `toolStats`,
+`usage`):
+
+```json
+{"agentId": "a0e27f56d74e34245", "agentType": "general-purpose",
+ "content": [{"type": "text", "text": "…result text…"}],
+ "resolvedModel": "claude-fable-5", "status": "completed",
+ "totalDurationMs": 431917, "totalTokens": 129893,
+ "totalToolUseCount": 29, "usage": {"...": "..."}}
+```
+
+`agentId` (or the mere presence of a `status` field) is **NOT** a valid
+async discriminator by itself — every inline agent's terminal result
+also carries both. Key exclusively on `isAsync: true` /
+`status: "async_launched"`; see `toolResultAsyncLaunch` in
+`parse_user.go`.
+
+### Terminal delivery — same task lifecycle as E2/E3
+
+The async ack's `agentId` equals the `task_id` the later
+`system/task_updated` + `system/task_notification` pair addresses —
+identical correlation to E2's `backgroundTaskId`. `system/task_started`
+normally seeds the `task_id ↔ tool_use_id` map ~4ms before the ack
+arrives, but the ack's own `tool_use_id` + `agentId` are enough for a
+parser that reconnected and missed `task_started` to re-seed the same
+mapping (see `rememberTaskToolUse` call inside `appendToolResultBlock`).
+
+### ⚠ Inline agents emit the full task lifecycle too
+
+`system/task_started` fires for EVERY `local_agent` launch, inline or
+async (see §`system/task_started` above — it is not a
+backgrounded-only signal). Consequently an INLINE agent also gets a
+`system/task_updated` terminal and a `system/task_notification` for the
+SAME launch that already completed via its own real `tool_result`.
+Triage must not treat that lifecycle signal as authorization to write a
+second completion row for an already-completed inline launch — see
+`internal/triage/tool_lifecycle.go`'s `writeBackgroundCompletionSibling`
+foreground gate (`!launch.IsBackground`) and
+[`turn-lifecycle.md §Task lifecycle`](../architecture/turn-lifecycle.md#2-task-lifecycle-claude-only).
+
+### Parser behavior
+
+1. **Always** emit `EventToolComplete` for the launch's own
+   `tool_use_id` (universal invariant), with `is_background: true`
+   whenever `isAsync`/`status: "async_launched"` is present — same
+   `is_background` meta shape E2 uses, so triage's existing
+   "keep `status=running`, wait for the sibling" handling applies
+   unchanged.
+2. Re-seed `task_id ↔ tool_use_id` correlation from the ack (see
+   above) so the terminal resolves even across a reconnect that missed
+   `task_started`.
+
+See
+[`local_agent_async_launch.ndjson`](fixtures/claude/local_agent_async_launch.ndjson)
+for the full captured 7-line sequence (content_block_start,
+assistant tool_use, task_started, the ack, one task_progress sample,
+task_updated terminal, task_notification).
+
+### E6 — Resuming an idle async agent (`task_started` rebind)
+
+An E5 async agent goes idle once it finishes and can be RESUMED — the
+model calls the harness's resume tool (observed: `SendMessage`,
+`input.to: <agentId>`) to send it a follow-up message. Verified from a
+live capture (AO thread `9941d40f`, 2026-07-02; fixture
+[`local_agent_async_resume.ndjson`](fixtures/claude/local_agent_async_resume.ndjson)).
+
+On resume the CLI emits a FRESH `system/task_started` with the SAME
+`task_id` (the agentId) but `tool_use_id` = the resuming tool's OWN
+call, carrying the ORIGINAL agent's `description` + `subagent_type` +
+`task_type:"local_agent"` — not the resuming tool's own description:
+
+```json
+{"type": "system", "subtype": "task_started",
+ "task_id": "a464e54e96a45cd0c",
+ "tool_use_id": "toolu_01HNzp6MQbMMcTmoY7Yy1wdw",
+ "description": "Frontend transitive suppression fix",
+ "subagent_type": "general-purpose", "task_type": "local_agent",
+ "prompt": "Apply the reviewer-synthesized single-forward-pass rework..."}
+```
+
+The resuming tool's own `tool_result` arrives right after with no
+async markers at all — no `isAsync`, no `status`, no
+`backgroundTaskId`:
+
+```json
+{"tool_use_result": {
+   "success": true,
+   "message": "Agent \"a464e54e96a45cd0c\" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: /tmp/.../a464e54e96a45cd0c.output",
+   "resumedAgentId": "a464e54e96a45cd0c"
+ }}
+```
+
+**Marker: `task_started` with `task_type:"local_agent"` binding a
+task_id to a DIFFERENT `tool_use_id` than the one already on file for
+it.** This is the resume signal — there is no marker on the ack itself
+(`resumedAgentId` is present but arrives too late to gate on; the
+rebind on `task_started` is the earlier, authoritative signal).
+
+The resumed round's child envelopes (the agent's own tool calls)
+observed on the wire stay parented to the ORIGINAL Agent launch's
+`tool_use_id` via `parent_tool_use_id` — DB-verified (271 + 142
+children across the two rounds, zero parented under the resuming
+tool). Only the task LIFECYCLE (`task_started`/`task_updated`/
+`task_notification`) rebinds; the agent's actual conversation tree
+does not move.
+
+Round-2 `task_updated` carries no `tool_use_id` on the wire at all
+(matching `task_updated`'s general behavior — see
+[§task_updated](#systemtask_updated)); round-2 `task_notification`
+DOES carry the resuming tool's `tool_use_id` inline, matching whichever
+tool_use is currently bound.
+
+#### AO's carrier normalization
+
+AO embraces the rebind rather than fighting it: the resuming tool's
+own `tool_use_id` becomes the resumed round's **background carrier**.
+`rememberTaskToolUse` lets the map move to the new id (no
+first-binding-wins) — that IS what correctly routes round-2's
+`task_updated`/`task_notification` through the map-first resolution
+both handlers already use. The parser additionally:
+
+1. Marks the resuming tool_use backgrounded via the same mechanism
+   `run_in_background` launches use, so its `EventToolComplete` (the
+   ack above) carries `is_background:true` even though the ack itself
+   has no async marker.
+2. Enriches the meta-only `EventToolStart` the rebind `task_started`
+   emits with `resumes_tool_use_id` (the previously-bound tool_use —
+   the original launch) and the wire's `description`. The envelope
+   also carries `subagent_type`, but nothing downstream consumes it,
+   so the parser deliberately does not stamp it.
+
+Triage's keep-running flip then marks the carrier row backgrounded +
+running, and — because its meta carries `resumes_tool_use_id` —
+rewrites its Summary to the original launch's own Summary (or
+`"Agent: " + description` as a fallback), so the carrier reads
+"Agent: Frontend transitive suppression fix" instead of "SendMessage:
+…". Round 2's `task_updated`/`task_notification` then write a NEW
+`tool_completion` sibling under the carrier (`complete:<carrierID>`,
+distinct from round 1's `complete:<originalLaunchID>`), which
+`buildBackgroundTerminalSummary` renders as "Agent: Frontend
+transitive suppression fix -> done" — indistinguishable from any other
+backgrounded agent completion. See
+[`turn-lifecycle.md §Task lifecycle`](../architecture/turn-lifecycle.md#2-task-lifecycle-claude-only)
+and `internal/triage/tool_lifecycle.go`'s `resumeCarrierSummary`.
+
+Why this matters operationally: AO's idle-session reaper closes a
+quiet session unless `ListRunningBackgroundToolCalls` is non-empty.
+Without the carrier, the ORIGINAL launch already has its round-1
+sibling (`NOT EXISTS` completion predicate fails), so nothing keeps
+the predicate satisfied during round 2 — a quiet resumed agent would
+get the whole session reaped mid-run. The carrier (backgrounded,
+running, no sibling until round-2 terminal) is what keeps the
+predicate true.
+
+**Reconnect edge**: if the parser restarts between the original
+launch and its resume (a fresh process `--resume`d the session and
+the model re-resumed the agent from its transcript), `taskToolUses`
+has no binding for the task_id at all. The parser falls back to a
+name-agnostic rule: a `local_agent` `task_started` binding to a
+tool_use that was never observed as the launch tool (`Agent`, or
+`Task` on older builds — see `isAgentLaunchToolName` in
+`parse_assistant.go`) is still classified as a resume, so the carrier
+marking survives the restart even though `resumes_tool_use_id` is
+unknown (omitted) and the Summary rewrite has no anchor row to look
+up. A fresh launch cannot false-positive into this rule: parser
+lifetime == CLI process lifetime (stdio), and the assistant envelope
+carrying the launch tool_use always precedes its `task_started` on
+the same sequentially-parsed stream, so the launch-tool marker is
+already in place when the rule runs — and `local_agent` tasks die
+with their CLI process, so no pre-restart in-flight agent can re-emit
+`task_started` on the new process. The one unprotected window is
+losing the carrier's background flag between the rebind
+`task_started` and the resume ack — only possible via the parser's
+bounded-map wholesale reset (`parserTaskMapCap`, 1024 live entries
+accumulating inside a ~ms window; practically unreachable). A lost
+flag degrades to pre-fix behavior: the carrier lands foreground and
+that resumed round is reaper-unprotected.
+
+See
+[`local_agent_async_resume.ndjson`](fixtures/claude/local_agent_async_resume.ndjson)
+for the full captured 10-line two-round sequence (assistant tool_use /
+task_started / ack / task_updated / task_notification, twice — the
+second round's `task_started` and `tool_use_id`s are the resuming
+tool's own).
+
 ---
 
 ## `assistant` envelope
@@ -1505,6 +1727,38 @@ retrieval.
 **Shapes covered**: `system/task_started` with `task_type: "local_agent"`
 and `prompt`, `user` TaskOutput tool_result (E3),
 `assistant` streams with `parent_tool_use_id` for the subagent.
+
+### `docs/references/fixtures/claude/local_agent_async_launch.ndjson`
+**Scenario**: a `local_agent` (`Agent` tool) launch whose input carries
+NO `run_in_background`, launched asynchronously anyway — the bare
+"Async agent launched successfully." ack (E5), then the real terminal
+via `system/task_updated` + `system/task_notification`.
+
+**Shapes covered**: `stream_event` content_block_start for the launch
+tool_use, `assistant` tool_use, `system/task_started`, the async ack
+`user` tool_result (E5), `system/task_progress`, `system/task_updated`
+terminal, `system/task_notification`. 7 real wire lines; the three long
+`prompt` values (assistant `input.prompt`, `task_started.prompt`, ack
+`tool_use_result.prompt`) are truncated to a placeholder sentence —
+every other key/value is byte-identical to the capture.
+
+### `docs/references/fixtures/claude/local_agent_async_resume.ndjson`
+**Scenario**: an E5 async agent resumed via the harness's SendMessage
+tool (E6) — the CLI rebinds `system/task_started` onto SendMessage's
+own `tool_use_id` carrying the ORIGINAL agent's description, and the
+SendMessage `tool_result` ack has no async markers at all.
+
+**Shapes covered**: two full rounds back to back — round 1 is an
+ordinary E5 async launch + terminal + notification (assistant tool_use
+/ `task_started` / ack / `task_updated` / `task_notification`); round 2
+is the SendMessage resume with the same 5-envelope shape, `task_id`
+unchanged, `tool_use_id` rebound to the SendMessage call. 10 real wire
+lines; only the long free-text values (assistant `input.prompt`,
+`task_started.prompt`, SendMessage `input.message`/`input.content`)
+are truncated to placeholders — every other key/value, including the
+`description`/`subagent_type` echoed on the round-2 `task_started` and
+the ack's `resumedAgentId`, is byte-identical to the capture (AO
+thread `9941d40f`, 2026-07-02).
 
 ### `docs/references/fixtures/claude/ndjson_outlives.log` + `ndjson_outlives_turn2.log`
 **Scenario**: backgrounded Bash that outlives its launching turn —

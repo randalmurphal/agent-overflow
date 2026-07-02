@@ -61,6 +61,17 @@ type toolStartMeta struct {
 	TaskID          string          `json:"task_id"`
 	SubagentModel   string          `json:"subagent_model"`
 	ParentToolUseID string          `json:"parent_tool_use_id"`
+	// ResumesToolUseID and Description carry Claude's resume-rebind
+	// linkage: system/task_started rebinding an idle async agent's
+	// task_id onto a NEW tool_use (e.g. the harness's SendMessage call)
+	// — see claude-wire.md §E6. ResumesToolUseID is the tool_use_id of
+	// the ORIGINAL launch this tool_use is resuming; Description is the
+	// original agent's description straight off the rebind
+	// task_started envelope. Both are only populated by the parser's
+	// resume path (parse_system.go); a normal launch's meta-only
+	// task_started update never sets them.
+	ResumesToolUseID string `json:"resumes_tool_use_id"`
+	Description      string `json:"description"`
 }
 
 // isMetaUpdateOnly reports whether this EventToolStart only annotates an
@@ -362,6 +373,7 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 		if meta.IsBackground && !launch.IsBackground {
 			launch.IsBackground = true
 			launch.UpdatedAt = now
+			launch.Summary = r.resumeCarrierSummary(evt.ThreadID, launch.Summary, launch.Meta)
 			return r.persistItem(launch, nil)
 		}
 		// Launch row already correctly flagged; the placeholder
@@ -822,6 +834,10 @@ func (r *Router) observeBackgroundTaskTerminal(evt provider.ProviderEvent, meta 
 // task lifecycle signals for background work owned by a subagent whose
 // private transcript was never projected into the parent thread. Those
 // signals are real, but they are not parent-level tool rows.
+//
+// No-ops (no sibling row, no drained emit) when the resolved launch is
+// not backgrounded — inline/awaited launches complete in place via
+// their own tool_result. See the IsBackground gate below.
 func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, meta backgroundTaskTerminalMeta, stashWasDrained bool) error {
 	launch, launchFound, err := r.resolveBackgroundTaskLaunch(evt.ThreadID, evt.ItemID, meta.ToolUseID, meta.TaskID)
 	if err != nil {
@@ -834,6 +850,31 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 		launch = store.Item{}
 	}
 	if !launchFound {
+		return nil
+	}
+	if !launch.IsBackground {
+		// Inline/awaited launches (including local_agent subagents
+		// launched WITHOUT run_in_background) complete in place via
+		// their own tool_result — the launch row itself flips to
+		// completed with the agent's real result text. Claude still
+		// emits the full task lifecycle (task_started/task_updated/
+		// task_notification) for these launches too (task_started
+		// fires for every Bash/Task, foreground and background — see
+		// provider/claude/CLAUDE.md §task_started), which is how this
+		// signal reaches here at all. Writing a sibling for a
+		// foreground launch would produce a redundant "-> done" row
+		// alongside the already-completed launch. The caller already
+		// drained any stash before reaching this point (the desired
+		// side effect for the foreground case), so returning here only
+		// skips the row write, not the drain.
+		//
+		// This also skips the `provider:background_task_state{drained}`
+		// emit below, but that is safe: the event is a pure UI nudge
+		// (BackgroundTaskStateEvent doc comment, turn_events.go) and
+		// Store.ListLiveBackgroundTasks — the tray's source of truth —
+		// filters on `is_background = 1` in every branch, so a
+		// foreground launch was never tray-visible and has no stale
+		// tray state to refresh.
 		return nil
 	}
 
@@ -1015,6 +1056,47 @@ func backgroundTerminalStatus(meta backgroundTaskTerminalMeta) string {
 		// non-completed state never renders as a successful badge.
 		return statusErrored
 	}
+}
+
+// resumeCarrierSummary rewrites a resume carrier's Summary to the
+// agent-centric form ("Agent: <description>") so the row — and the
+// "-> done" completion sibling buildBackgroundTerminalSummary derives
+// from it — reads as the resumed agent's own completion instead of
+// "SendMessage -> done". Only triggers when metaJSON carries
+// resumes_tool_use_id (stamped by the parser's task_started resume
+// path — see toolStartMeta.ResumesToolUseID); a carrier whose original
+// launch predates this parser instance (the reconnect edge in
+// parse_system.go's task_started case) has no resumes_tool_use_id and
+// keeps its default launch Summary, since there is no anchor id to
+// resolve and using bare description alone risks mislabeling a
+// non-resume edge case that happened to hit the same detection path.
+//
+// Prefers the original launch row's own Summary (it already reads
+// "Agent: <description>" from its own launch) so any later
+// normalization of that format stays in one place; falls back to
+// "Agent: " + description when the original row lookup misses (e.g.
+// retention already pruned it).
+func (r *Router) resumeCarrierSummary(threadID, currentSummary, metaJSON string) string {
+	resumeMeta := decodeToolStartMeta(json.RawMessage(metaJSON))
+	if resumeMeta.ResumesToolUseID == "" {
+		return currentSummary
+	}
+	if original, found, err := r.store.GetThreadItem(threadID, resumeMeta.ResumesToolUseID); err != nil {
+		log.Printf("triage: resume carrier original-launch lookup %s: %v", resumeMeta.ResumesToolUseID, err)
+	} else if found && strings.TrimSpace(original.Summary) != "" {
+		return original.Summary
+	}
+	if resumeMeta.Description != "" {
+		// Intentional duplication of the "Agent: <preview>" shape the
+		// launch path derives via buildToolCallSummary+toolInputPreview
+		// — there is no input JSON here to feed that pipeline, only the
+		// bare description string off the rebind task_started. Bound it
+		// the same way toolInputPreview bounds every other summary
+		// (80 runes, newlines stripped) so a model-chosen description
+		// can't write an unbounded items.summary.
+		return "Agent: " + truncatePreview(resumeMeta.Description, 80)
+	}
+	return currentSummary
 }
 
 // buildBackgroundTerminalSummary produces the sibling row's summary.

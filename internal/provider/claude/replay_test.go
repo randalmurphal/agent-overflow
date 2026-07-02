@@ -18,6 +18,8 @@ const (
 	fixtureLocalAgentOutlives     = "../../../docs/references/fixtures/claude/local_agent_outlives.ndjson"
 	fixtureLocalAgentUserInputMid = "../../../docs/references/fixtures/claude/local_agent_user_input_during_wait.ndjson"
 	fixtureLocalAgentPlusBgBash   = "../../../docs/references/fixtures/claude/local_agent_plus_bg_bash.ndjson"
+	fixtureLocalAgentAsyncLaunch  = "../../../docs/references/fixtures/claude/local_agent_async_launch.ndjson"
+	fixtureLocalAgentAsyncResume  = "../../../docs/references/fixtures/claude/local_agent_async_resume.ndjson"
 )
 
 // These replay tests load captured Claude CLI NDJSON from the repo's
@@ -898,5 +900,397 @@ func TestReplay_LocalAgentPlusBgBash(t *testing.T) {
 	}
 	if resultCount != 1 {
 		t.Errorf("expected exactly 1 result-driven EventTurnComplete, got %d", resultCount)
+	}
+}
+
+// TestReplay_LocalAgentAsyncLaunch validates Shape 2 from
+// docs/references/claude-wire.md §E5 "Async local_agent launch (bare
+// ack)": a `local_agent` (Agent tool) launch whose input carries NO
+// `run_in_background` gets an IMMEDIATE bare
+// "Async agent launched successfully." ack
+// (`isAsync:true`/`status:"async_launched"`, `agentId`, no
+// `backgroundTaskId`), then the real terminal arrives later via
+// `system/task_updated` + `system/task_notification` keyed by
+// `agentId` == `task_id`.
+//
+// Regression coverage (FAILS pre-Fix-B — before `toolResultAsyncLaunch`
+// existed, the ack's EventToolComplete carried no `is_background`, so
+// the launch row flipped to completed at ack time with the ack text as
+// its "result" instead of staying `running` until the real terminal):
+//  1. the ack's EventToolComplete carries `is_background:true`.
+//  2. `system/task_updated`'s EventBackgroundTaskTerminal resolves
+//     ItemID back to the launch tool_use_id via the task_id ↔
+//     tool_use_id correlation the ack itself seeded.
+//  3. `system/task_notification` emits EventBackgroundTaskNotification.
+func TestReplay_LocalAgentAsyncLaunch(t *testing.T) {
+	events := replayFixture(t, fixtureLocalAgentAsyncLaunch)
+
+	const (
+		launchToolUseID = "toolu_01DND5fS6nX3LnefKJuJeBzQ"
+		taskID          = "a32408c956466d32c"
+	)
+
+	completes := filterKinds(events, provider.EventToolComplete)
+	if len(completes) != 1 {
+		t.Fatalf("expected 1 EventToolComplete (the ack), got %d: %+v", len(completes), completes)
+	}
+	if completes[0].ItemID != launchToolUseID {
+		t.Fatalf("ack EventToolComplete.ItemID = %q, want %q", completes[0].ItemID, launchToolUseID)
+	}
+	var completeMeta map[string]any
+	if err := json.Unmarshal(completes[0].Meta, &completeMeta); err != nil {
+		t.Fatalf("ack meta unmarshal: %v", err)
+	}
+	if completeMeta["is_background"] != true {
+		t.Fatalf("ack meta is_background = %v, want true", completeMeta["is_background"])
+	}
+
+	terminals := filterKinds(events, provider.EventBackgroundTaskTerminal)
+	if len(terminals) != 1 {
+		t.Fatalf("expected 1 EventBackgroundTaskTerminal, got %d: %+v", len(terminals), terminals)
+	}
+	if terminals[0].ItemID != launchToolUseID {
+		t.Fatalf("terminal.ItemID = %q, want %q (task_id -> tool_use_id resolution seeded by the async ack)", terminals[0].ItemID, launchToolUseID)
+	}
+	var terminalMeta map[string]any
+	if err := json.Unmarshal(terminals[0].Meta, &terminalMeta); err != nil {
+		t.Fatalf("terminal meta unmarshal: %v", err)
+	}
+	if terminalMeta["task_id"] != taskID {
+		t.Fatalf("terminal.meta.task_id = %v, want %s", terminalMeta["task_id"], taskID)
+	}
+	if terminalMeta["status"] != "completed" {
+		t.Fatalf("terminal.meta.status = %v, want completed", terminalMeta["status"])
+	}
+
+	notifications := filterKinds(events, provider.EventBackgroundTaskNotification)
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 EventBackgroundTaskNotification, got %d: %+v", len(notifications), notifications)
+	}
+	if notifications[0].ItemID != launchToolUseID {
+		t.Fatalf("notification.ItemID = %q, want %q", notifications[0].ItemID, launchToolUseID)
+	}
+}
+
+// TestReplay_LocalAgentAsyncLaunch_ReconnectResolvesWithoutTaskStarted
+// pins the `rememberTaskToolUse` call inside `toolResultAsyncLaunch`'s
+// caller: a parser that reconnected mid-launch and never saw
+// `system/task_started` (line 2 of the fixture) must still resolve the
+// later `task_updated` terminal back to the launch tool_use_id, because
+// the async ack line itself (line 3) carries both `agentId` and the
+// tool_use_id and re-seeds the correlation. FAILS without the
+// `rememberTaskToolUse` call: the terminal's ItemID would resolve
+// empty (nothing in `taskToolUses` to look up `task_id` against).
+//
+// The ack always precedes the task lifecycle terminal on the wire —
+// the ack IS the launch acknowledgment; the terminal reports that
+// launched agent finishing — so an ack-after-terminal ordering is not
+// a real scenario and gets no test.
+func TestReplay_LocalAgentAsyncLaunch_ReconnectResolvesWithoutTaskStarted(t *testing.T) {
+	lines := loadNDJSONFixture(t, fixtureLocalAgentAsyncLaunch)
+	if len(lines) != 7 {
+		t.Fatalf("fixture line count = %d, want 7 (assistant, task_started, ack, task_progress, task_updated, task_notification + leading stream_event)", len(lines))
+	}
+
+	const (
+		launchToolUseID = "toolu_01DND5fS6nX3LnefKJuJeBzQ"
+	)
+
+	parser := NewParser()
+	var events []provider.ProviderEvent
+	for i, line := range lines {
+		if i == 2 {
+			// Skip system/task_started (line index 2) — simulates a
+			// fresh parser after reconnect that missed the original
+			// task_started envelope.
+			continue
+		}
+		got, err := parser.ParseLine(testThread, line)
+		if err != nil {
+			t.Fatalf("line %d: parse error: %v", i, err)
+		}
+		events = append(events, got...)
+	}
+
+	terminals := filterKinds(events, provider.EventBackgroundTaskTerminal)
+	if len(terminals) != 1 {
+		t.Fatalf("expected 1 EventBackgroundTaskTerminal, got %d: %+v", len(terminals), terminals)
+	}
+	if terminals[0].ItemID != launchToolUseID {
+		t.Fatalf("terminal.ItemID = %q, want %q — reconnect resolution via the ack's rememberTaskToolUse failed", terminals[0].ItemID, launchToolUseID)
+	}
+}
+
+// TestAppendToolResultBlock_InlineAgentCompletionNoFalsePositive pins
+// the discriminator's negative case: an INLINE (awaited) local_agent's
+// real completion `tool_use_result` carries `agentId` +
+// `status:"completed"` + usage/tool-stat totals — the SAME `agentId`
+// key the async ack uses — but NO `isAsync` and NO
+// `status:"async_launched"`. `toolResultAsyncLaunch` must not
+// misclassify this as an async launch. FAILS without the fix reverted
+// to keying on `agentId` presence alone: every inline subagent
+// completion would wrongly carry `is_background:true` and never
+// render its real result.
+func TestAppendToolResultBlock_InlineAgentCompletionNoFalsePositive(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-agent-inline","name":"Agent","input":{"description":"Review lens","subagent_type":"general-purpose"}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+
+	line := []byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tool-agent-inline","type":"tool_result","content":[{"type":"text","text":"result text"}]}]},"tool_use_result":{"agentId":"a0e27f56d74e34245","agentType":"general-purpose","content":[{"type":"text","text":"result text"}],"resolvedModel":"claude-fable-5","status":"completed","totalDurationMs":431917,"totalTokens":129893,"totalToolUseCount":29}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventToolComplete {
+		t.Fatalf("Kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+	}
+	if events[0].ItemID != "tool-agent-inline" {
+		t.Fatalf("ItemID: got %q, want tool-agent-inline", events[0].ItemID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if v, ok := meta["is_background"]; ok && v != false {
+		t.Fatalf("inline agent completion should not carry is_background=true, got %v", v)
+	}
+}
+
+// TestParseTaskStarted_FreshLocalAgentLaunchIsNotAResume pins the
+// resume-detection negative case for BOTH observed launch-tool names:
+// a fresh local_agent launch whose assistant tool_use THIS parser
+// observed must (a) emit a meta-only EventToolStart with NO
+// resumes_tool_use_id / description resume linkage and (b) keep its
+// inline completion foreground. The "Task" subtest FAILS if
+// isAgentLaunchToolName matches only "Agent": the launch-tool marker
+// is never set for the older wire name, the reconnect fallback
+// (parse_system.go task_started case 2) misclassifies the ordinary
+// launch as a resume, and the inline ack wrongly lands
+// is_background:true.
+func TestParseTaskStarted_FreshLocalAgentLaunchIsNotAResume(t *testing.T) {
+	for _, toolName := range []string{"Agent", "Task"} {
+		t.Run(toolName, func(t *testing.T) {
+			parser := NewParser()
+
+			if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-agent-fresh","name":"`+toolName+`","input":{"description":"Inline review","subagent_type":"general-purpose"}}]}}`)); err != nil {
+				t.Fatalf("assistant tool_use: %v", err)
+			}
+
+			startEvents, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"agent-fresh-1","tool_use_id":"tool-agent-fresh","task_type":"local_agent","description":"Inline review","subagent_type":"general-purpose"}`))
+			if err != nil {
+				t.Fatalf("task_started: %v", err)
+			}
+			if len(startEvents) != 1 {
+				t.Fatalf("expected 1 meta-only EventToolStart, got %d: %+v", len(startEvents), startEvents)
+			}
+			var startMeta map[string]any
+			if err := json.Unmarshal(startEvents[0].Meta, &startMeta); err != nil {
+				t.Fatalf("start meta unmarshal: %v", err)
+			}
+			if v, ok := startMeta["resumes_tool_use_id"]; ok {
+				t.Fatalf("fresh %s launch stamped resumes_tool_use_id = %v", toolName, v)
+			}
+			if v, ok := startMeta["description"]; ok {
+				t.Fatalf("fresh %s launch stamped resume description = %v", toolName, v)
+			}
+
+			completeEvents, err := parser.ParseLine(testThread, []byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tool-agent-fresh","type":"tool_result","content":[{"type":"text","text":"result text"}]}]},"tool_use_result":{"agentId":"a1b2c3d4e5f60718","agentType":"general-purpose","status":"completed"}}`))
+			if err != nil {
+				t.Fatalf("tool_result: %v", err)
+			}
+			if len(completeEvents) != 1 {
+				t.Fatalf("expected 1 EventToolComplete, got %d: %+v", len(completeEvents), completeEvents)
+			}
+			var ackMeta map[string]any
+			if err := json.Unmarshal(completeEvents[0].Meta, &ackMeta); err != nil {
+				t.Fatalf("ack meta unmarshal: %v", err)
+			}
+			if v, ok := ackMeta["is_background"]; ok && v != false {
+				t.Fatalf("fresh %s launch misclassified as a resume carrier: is_background = %v", toolName, v)
+			}
+		})
+	}
+}
+
+// TestReplay_LocalAgentAsyncResume validates the resume-rebind carrier
+// scenario in docs/references/fixtures/claude/local_agent_async_resume.ndjson
+// (claude-wire.md §E6): an idle async agent resumed via the harness's
+// SendMessage tool gets a FRESH `system/task_started` with the SAME
+// task_id but SendMessage's tool_use_id, carrying the original agent's
+// description. Per the design (see the parser AGENTS.md task-lifecycle
+// section), the SendMessage tool_use becomes the resumed round's
+// background carrier: `rememberTaskToolUse` rebinds normally (no
+// first-binding-wins) and the carrier is marked backgrounded so
+// triage's reaper-protection predicate (ListRunningBackgroundToolCalls)
+// stays satisfied through round 2.
+func TestReplay_LocalAgentAsyncResume(t *testing.T) {
+	events := replayFixture(t, fixtureLocalAgentAsyncResume)
+
+	const (
+		originalLaunchID = "toolu_01EHRwHNH98jqRKdFVcpmLtH"
+		sendMessageID    = "toolu_01HNzp6MQbMMcTmoY7Yy1wdw"
+		taskID           = "a464e54e96a45cd0c"
+	)
+
+	// Round-1 terminal + notification resolve to the ORIGINAL launch id
+	// — pins pre-existing behavior so the resume-detection change can't
+	// have perturbed round 1.
+	terminals := filterKinds(events, provider.EventBackgroundTaskTerminal)
+	if len(terminals) != 2 {
+		t.Fatalf("expected 2 EventBackgroundTaskTerminal (one per round), got %d: %+v", len(terminals), terminals)
+	}
+	if terminals[0].ItemID != originalLaunchID {
+		t.Fatalf("round-1 terminal.ItemID = %q, want %q (original launch)", terminals[0].ItemID, originalLaunchID)
+	}
+	// Round-2 terminal must resolve to the SendMessage tool_use — the
+	// carrier — via the map rebind. FAILS pre-fix (first-binding-wins
+	// design): would still resolve to originalLaunchID.
+	if terminals[1].ItemID != sendMessageID {
+		t.Fatalf("round-2 terminal.ItemID = %q, want %q (resume carrier)", terminals[1].ItemID, sendMessageID)
+	}
+
+	notifications := filterKinds(events, provider.EventBackgroundTaskNotification)
+	if len(notifications) != 2 {
+		t.Fatalf("expected 2 EventBackgroundTaskNotification (one per round), got %d: %+v", len(notifications), notifications)
+	}
+	if notifications[0].ItemID != originalLaunchID {
+		t.Fatalf("round-1 notification.ItemID = %q, want %q (original launch)", notifications[0].ItemID, originalLaunchID)
+	}
+	if notifications[1].ItemID != sendMessageID {
+		t.Fatalf("round-2 notification.ItemID = %q, want %q (resume carrier)", notifications[1].ItemID, sendMessageID)
+	}
+
+	// The rebind task_started (fixture line 7) must emit a meta-only
+	// EventToolStart for the SendMessage tool_use carrying the resume
+	// linkage: task_id, resumes_tool_use_id (the original launch), and
+	// description. FAILS pre-fix: the reverted task_started handler
+	// never stamps resumes_tool_use_id/description, so this meta is
+	// entirely absent.
+	starts := filterKinds(events, provider.EventToolStart)
+	var rebindStart *provider.ProviderEvent
+	for i := range starts {
+		if starts[i].ItemID == sendMessageID && starts[i].ItemType == "" {
+			rebindStart = &starts[i]
+		}
+	}
+	if rebindStart == nil {
+		t.Fatalf("expected a meta-only EventToolStart for the SendMessage rebind, got starts: %+v", starts)
+	}
+	var rebindMeta map[string]any
+	if err := json.Unmarshal(rebindStart.Meta, &rebindMeta); err != nil {
+		t.Fatalf("rebind meta unmarshal: %v", err)
+	}
+	if rebindMeta["task_id"] != taskID {
+		t.Fatalf("rebind meta.task_id = %v, want %s", rebindMeta["task_id"], taskID)
+	}
+	if rebindMeta["resumes_tool_use_id"] != originalLaunchID {
+		t.Fatalf("rebind meta.resumes_tool_use_id = %v, want %s", rebindMeta["resumes_tool_use_id"], originalLaunchID)
+	}
+	if rebindMeta["description"] != "Frontend transitive suppression fix" {
+		t.Fatalf("rebind meta.description = %v, want %q", rebindMeta["description"], "Frontend transitive suppression fix")
+	}
+
+	// The SendMessage ack (fixture line 8) carries no isAsync/
+	// async_launched marker of its own — {"success":true,"message":...,
+	// "resumedAgentId":...} — so is_background can ONLY come from the
+	// resume-detection markBackground call at task_started time. FAILS
+	// pre-fix: the ack's EventToolComplete carries no is_background,
+	// so triage would flip the carrier straight to `completed` with
+	// the resume ack text as its result instead of keeping it running
+	// as a background carrier.
+	completes := filterKinds(events, provider.EventToolComplete)
+	if len(completes) != 2 {
+		t.Fatalf("expected 2 EventToolComplete (one ack per round), got %d: %+v", len(completes), completes)
+	}
+	if completes[1].ItemID != sendMessageID {
+		t.Fatalf("round-2 ack.ItemID = %q, want %q", completes[1].ItemID, sendMessageID)
+	}
+	var ackMeta map[string]any
+	if err := json.Unmarshal(completes[1].Meta, &ackMeta); err != nil {
+		t.Fatalf("ack meta unmarshal: %v", err)
+	}
+	if ackMeta["is_background"] != true {
+		t.Fatalf("resume ack meta is_background = %v, want true", ackMeta["is_background"])
+	}
+}
+
+// TestReplay_LocalAgentAsyncResume_ReconnectWithoutBinding pins the
+// reconnect-robustness rule from parse_system.go's task_started case:
+// a parser that never observed the original launch (fixture lines 1-5
+// dropped, simulating a process restart mid-resume) has NEITHER a
+// taskToolUses binding for the task_id NOR an agentLaunchToolUses
+// marker for the SendMessage tool_use. The "local_agent task_started
+// bound to a non-launch tool_use" rule must still classify this as a
+// resume and mark the carrier backgrounded — name-agnostic, keyed only
+// on SendMessage never having been observed as an Agent tool_use.
+// FAILS without that rule: with no prior taskToolUses entry, the
+// in-memory rebind check never fires, so the ack's EventToolComplete
+// carries no is_background and the reaper loses its protection signal
+// for the entire resumed round.
+func TestReplay_LocalAgentAsyncResume_ReconnectWithoutBinding(t *testing.T) {
+	lines := loadNDJSONFixture(t, fixtureLocalAgentAsyncResume)
+	if len(lines) != 10 {
+		t.Fatalf("fixture line count = %d, want 10", len(lines))
+	}
+
+	const sendMessageID = "toolu_01HNzp6MQbMMcTmoY7Yy1wdw"
+
+	parser := NewParser()
+	var events []provider.ProviderEvent
+	for i := 5; i < len(lines); i++ {
+		// Lines 6-10 (0-indexed 5-9): the resume round only. Lines 1-5
+		// (the original launch + round-1 lifecycle) are never fed to
+		// this parser instance, simulating a reconnect that lost all
+		// prior in-memory state.
+		got, err := parser.ParseLine(testThread, lines[i])
+		if err != nil {
+			t.Fatalf("line %d: parse error: %v", i+1, err)
+		}
+		events = append(events, got...)
+	}
+
+	completes := filterKinds(events, provider.EventToolComplete)
+	if len(completes) != 1 {
+		t.Fatalf("expected 1 EventToolComplete, got %d: %+v", len(completes), completes)
+	}
+	if completes[0].ItemID != sendMessageID {
+		t.Fatalf("ack.ItemID = %q, want %q", completes[0].ItemID, sendMessageID)
+	}
+	var ackMeta map[string]any
+	if err := json.Unmarshal(completes[0].Meta, &ackMeta); err != nil {
+		t.Fatalf("ack meta unmarshal: %v", err)
+	}
+	if ackMeta["is_background"] != true {
+		t.Fatalf("reconnect resume ack meta is_background = %v, want true", ackMeta["is_background"])
+	}
+
+	starts := filterKinds(events, provider.EventToolStart)
+	var rebindStart *provider.ProviderEvent
+	for i := range starts {
+		if starts[i].ItemID == sendMessageID && starts[i].ItemType == "" {
+			rebindStart = &starts[i]
+		}
+	}
+	if rebindStart == nil {
+		t.Fatalf("expected a meta-only EventToolStart for the SendMessage rebind, got starts: %+v", starts)
+	}
+	var rebindMeta map[string]any
+	if err := json.Unmarshal(rebindStart.Meta, &rebindMeta); err != nil {
+		t.Fatalf("rebind meta unmarshal: %v", err)
+	}
+	// The original launch's tool_use_id is unknown to this parser
+	// instance — resumes_tool_use_id must stay omitted rather than
+	// guess. description is still available straight off the wire
+	// envelope, independent of any in-memory binding.
+	if _, ok := rebindMeta["resumes_tool_use_id"]; ok {
+		t.Fatalf("reconnect rebind meta should omit resumes_tool_use_id (original unknown), got %v", rebindMeta["resumes_tool_use_id"])
+	}
+	if rebindMeta["description"] != "Frontend transitive suppression fix" {
+		t.Fatalf("reconnect rebind meta.description = %v, want %q", rebindMeta["description"], "Frontend transitive suppression fix")
 	}
 }

@@ -8,6 +8,21 @@ behavior. These back parser replay tests and the reference docs in
 
 - `ndjson_bash.log` — backgrounded Bash, foreground Bash, Read
 - `ndjson_task.log` — Task subagent plus TaskOutput retrieval
+- `local_agent_async_launch.ndjson` — `local_agent` (Agent tool)
+  launched with NO `run_in_background`, run asynchronously anyway: the
+  bare "Async agent launched successfully." ack (claude-wire.md §E5),
+  then `system/task_updated` + `system/task_notification`. `prompt`
+  fields truncated; every other key/value byte-identical to the
+  capture.
+- `local_agent_async_resume.ndjson` — an E5 async agent resumed via the
+  harness's SendMessage tool (claude-wire.md §E6): the CLI rebinds
+  `system/task_started` onto SendMessage's own `tool_use_id` carrying
+  the ORIGINAL agent's `description`, and the SendMessage ack has no
+  async markers at all (`{success, message, resumedAgentId}`). Two
+  full rounds back to back, same `task_id` throughout. Long free-text
+  fields (prompts, SendMessage `input.message`/`input.content`)
+  truncated to placeholders; every other key/value byte-identical to
+  the capture.
 - `ndjson_outlives.log` — backgrounded Bash outliving its launching turn
   (the wire `result` envelope arrives BEFORE the task's `task_updated`)
 - `ndjson_outlives_turn2.log` — follow-up turn on the same session

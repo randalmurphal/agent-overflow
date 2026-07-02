@@ -150,9 +150,9 @@ func (p *Parser) appendToolResultBlock(
 	// decision keyed off `is_background` in meta, not a parser-level
 	// drop of the event.
 	//
-	// Two INDEPENDENT signals mark a tool_result as a backgrounded
+	// Three INDEPENDENT signals mark a tool_result as a backgrounded
 	// placeholder (the real terminal arrives later via the task
-	// lifecycle), and either one is sufficient:
+	// lifecycle), and any one is sufficient:
 	//
 	//   1. flaggedAtLaunch — the tool_use carried `run_in_background:true`,
 	//      recorded at assistant-parse time in `backgroundToolUses`.
@@ -161,13 +161,44 @@ func (p *Parser) appendToolResultBlock(
 	//      when the CLI auto-backgrounds a foreground command that exceeds
 	//      its Bash timeout: that input has no `run_in_background` flag, so
 	//      (1) is empty. See claude-wire.md §E2.
+	//   3. asyncLaunched — the `local_agent` (Task/Agent) launch got the
+	//      bare "Async agent launched successfully." ack
+	//      (`isAsync:true` / `status:"async_launched"`, no
+	//      `run_in_background` in the input and no `backgroundTaskId` on
+	//      the wire). Distinct from (2) because it carries no
+	//      `backgroundTaskId` at all — its own `agentId` IS the task_id
+	//      the later `task_updated`/`task_notification` pair uses. See
+	//      claude-wire.md §E5 "Async local_agent launch (bare ack)".
+	//
+	// ⚠ An INLINE (awaited) agent's real completion also carries
+	// `agentId` + `status:"completed"` in its `tool_use_result`, so
+	// `toolResultAsyncLaunch` keys ONLY on `isAsync`/`status:"async_launched"`
+	// — never on mere `agentId` presence — or every inline agent
+	// completion would misclassify as backgrounded.
+	//
+	// Signals (2) and (3) are decoded from `tool_use_result` in a
+	// single pass — the sibling can be megabytes of Bash stdout, so
+	// per-signal re-decodes are not acceptable on this path.
 	flaggedAtLaunch := p.isBackground(toolUseID)
-	isBackground := flaggedAtLaunch || toolResultBackgrounded(toolUseResultRaw)
+	backgroundSignals := readToolResultBackgroundSignals(toolUseResultRaw)
+	markedOnWire := toolResultBackgrounded(backgroundSignals)
+	asyncAgentID, asyncLaunched := toolResultAsyncLaunch(backgroundSignals)
+	isBackground := flaggedAtLaunch || markedOnWire || asyncLaunched
 	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,
 		isBackground,
 		block, content, toolUseResultRaw,
 	)
+	// The async ack IS the task lifecycle's task_id ↔ tool_use_id
+	// correlation (normally learned ~4ms earlier from
+	// `system/task_started`). Recording it here too means a parser that
+	// reconnected and missed task_started can still resolve the later
+	// `task_updated`/`task_notification` terminal back to this launch.
+	// rememberTaskToolUse is idempotent, so re-deriving an already-known
+	// mapping from task_started is a harmless no-op.
+	if asyncLaunched && asyncAgentID != "" {
+		p.rememberTaskToolUse(asyncAgentID, toolUseID)
+	}
 	// The tool_use_id → is_background correlation is a one-shot: once the
 	// placeholder tool_result echoes, the launch-time flag has served its
 	// purpose. Release it so backgroundToolUses doesn't leak across a long
@@ -462,10 +493,93 @@ func extractToolResultText(content json.RawMessage) string {
 	return string(builder)
 }
 
-// toolResultBackgrounded reports whether a tool_result's structured
-// `tool_use_result` sibling carries a non-empty `backgroundTaskId` —
-// Claude's authoritative wire marker that the command is now running in the
-// background. It is set for EVERY backgrounding trigger:
+// toolResultBackgroundSignals is the single-pass decode of the
+// `tool_use_result` fields that classify a tool_result as a backgrounded
+// placeholder (claude-wire.md §E2) or an async local_agent launch ack
+// (§E5). It exists so appendToolResultBlock decodes the raw sibling
+// exactly ONCE per tool_result: `tool_use_result` can be megabytes for
+// Bash stdout / Read payloads, and each `map[string]json.RawMessage`
+// decode copies value bytes per key — the per-signal readXAtAnyKey
+// calls this replaces cost three full decodes on every tool result.
+//
+// The *Set fields track presence so the defensive array-of-objects
+// fallback keeps the readXAtAnyKey family's first-successful-hit
+// semantics: a later entry must not overwrite a value an earlier entry
+// already decoded.
+type toolResultBackgroundSignals struct {
+	backgroundTaskID string
+	isAsync          bool
+	status           string
+	agentID          string
+
+	backgroundTaskIDSet bool
+	isAsyncSet          bool
+	statusSet           bool
+	agentIDSet          bool
+}
+
+// readToolResultBackgroundSignals decodes the background-classification
+// signals out of a raw `tool_use_result`. Mirrors the readXAtAnyKey
+// helpers' shape handling (json_helpers.go): a plain object, or —
+// defensively — an array of objects where the first successfully-decoded
+// hit per field wins. Malformed input yields the zero value, which
+// classifies as "not backgrounded, not async".
+func readToolResultBackgroundSignals(toolUseResult json.RawMessage) toolResultBackgroundSignals {
+	var signals toolResultBackgroundSignals
+	if len(toolUseResult) == 0 {
+		return signals
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(toolUseResult, &obj) == nil {
+		signals.fill(obj)
+		return signals
+	}
+	var arr []map[string]json.RawMessage
+	if json.Unmarshal(toolUseResult, &arr) == nil {
+		for _, entry := range arr {
+			signals.fill(entry)
+		}
+	}
+	return signals
+}
+
+func (s *toolResultBackgroundSignals) fill(obj map[string]json.RawMessage) {
+	fillSignalString(obj, "backgroundTaskId", &s.backgroundTaskID, &s.backgroundTaskIDSet)
+	fillSignalString(obj, "status", &s.status, &s.statusSet)
+	fillSignalString(obj, "agentId", &s.agentID, &s.agentIDSet)
+	if !s.isAsyncSet {
+		if raw, ok := obj["isAsync"]; ok {
+			var v bool
+			if json.Unmarshal(raw, &v) == nil {
+				s.isAsync = v
+				s.isAsyncSet = true
+			}
+		}
+	}
+}
+
+// fillSignalString copies obj[key] into dst on the first successful
+// string decode, leaving already-set fields alone (first-hit-wins across
+// repeated fill calls for the array-of-objects fallback).
+func fillSignalString(obj map[string]json.RawMessage, key string, dst *string, set *bool) {
+	if *set {
+		return
+	}
+	raw, ok := obj[key]
+	if !ok {
+		return
+	}
+	var v string
+	if json.Unmarshal(raw, &v) == nil {
+		*dst = v
+		*set = true
+	}
+}
+
+// toolResultBackgrounded reports whether the decoded `tool_use_result`
+// signals carry a non-empty `backgroundTaskId` — Claude's authoritative
+// wire marker that the command is now running in the background. It is
+// set for EVERY backgrounding trigger:
 //
 //   - `input.run_in_background: true` (model/user asked for it),
 //   - assistant-initiated mid-run backgrounding
@@ -478,9 +592,37 @@ func extractToolResultText(content json.RawMessage) string {
 // The id equals the `task_id` carried by the `system/task_started` +
 // `system/task_updated` lifecycle, so the later terminal still writes the
 // sibling completion row unchanged. See claude-wire.md §E2.
-func toolResultBackgrounded(toolUseResult json.RawMessage) bool {
-	id, _ := readStringAtAnyKey(toolUseResult, "backgroundTaskId")
-	return strings.TrimSpace(id) != ""
+func toolResultBackgrounded(signals toolResultBackgroundSignals) bool {
+	return strings.TrimSpace(signals.backgroundTaskID) != ""
+}
+
+// toolResultAsyncLaunch reports whether the decoded `tool_use_result`
+// signals are the async-agent-launch ack — the bare "Async agent launched
+// successfully." acknowledgment Claude returns IMMEDIATELY for a
+// `local_agent` (Task/Agent) launch whose input carries no
+// `run_in_background` flag. The real terminal arrives later via
+// `system/task_updated` + `system/task_notification`, correlated by
+// `agentId` == the task lifecycle's `task_id`. See claude-wire.md §E5
+// "Async local_agent launch (bare ack)" and the
+// local_agent_async_launch.ndjson fixture.
+//
+// ⚠ Discriminator subtlety: the shape is
+// `{isAsync:true, status:"async_launched", agentId, ...}` and carries NO
+// `backgroundTaskId`. An INLINE (awaited) agent's real completion
+// `tool_use_result` ALSO carries `agentId` and `status:"completed"` —
+// so `agentId`/`status` presence alone is NOT a valid discriminator.
+// Only `isAsync:true` or `status == "async_launched"` mark the async
+// path; either one observed on the wire today is sufficient, and we
+// accept either alone so a future CLI that drops one of the two
+// redundant markers still classifies correctly. An ABSENT `isAsync` is
+// indistinguishable from `isAsync:false` here — that is safe because
+// `status:"async_launched"` is the redundant second discriminator, and
+// no shape where both are absent/false can mean async.
+func toolResultAsyncLaunch(signals toolResultBackgroundSignals) (agentID string, ok bool) {
+	if !signals.isAsync && signals.status != "async_launched" {
+		return "", false
+	}
+	return strings.TrimSpace(signals.agentID), true
 }
 
 // extractExitCode pulls `exit_code` from either the tool_result block's

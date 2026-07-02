@@ -93,9 +93,10 @@ Parser state method names are part of the contract:
 - `take*` / `consume*` methods read and clear parser state. Use them
   only when there is exactly one lifecycle owner for that value, and
   document that owner on the method.
-- `peek*`, `has*`, and `lookup*` methods are read-only. If a second
-  same-boundary reader appears for a `take*` value, add a `peek*`
-  companion rather than smuggling reads through the consuming method.
+- `peek*`, `has*`, `is*`, and `lookup*` methods are read-only. If a
+  second same-boundary reader appears for a `take*` value, add a
+  `peek*` companion rather than smuggling reads through the consuming
+  method.
 - State that may span multiple future wire envelopes needs an explicit
   cleanup point (`parseResult`, `Close`, or bounded map eviction).
 
@@ -141,8 +142,13 @@ Summary of what `ParseLine` dispatches:
 - `assistant` — text deltas, tool_use, thinking, exit_plan_mode,
   usage. Subagent messages identified by top-level
   `parent_tool_use_id`.
-- `user` — `tool_result` blocks. Three variants: standard inline,
-  backgrounded placeholder, TaskOutput. All emit `EventToolComplete`
+- `user` — `tool_result` blocks. Four variants: standard inline,
+  backgrounded placeholder, TaskOutput, async `local_agent` launch ack
+  (claude-wire.md §E5 — bare "Async agent launched successfully.",
+  `isAsync`/`status:"async_launched"`, no `run_in_background` at
+  launch and no `backgroundTaskId` on the wire; discriminated from an
+  ordinary inline agent completion, which also carries `agentId` but
+  never `isAsync`/`async_launched`). All emit `EventToolComplete`
   for their own `tool_use_id` (universal tool-lifecycle invariant);
   TaskOutput ADDITIONALLY emits `EventBackgroundTaskTerminal`.
 - `stream_event` — streaming deltas (requires
@@ -188,7 +194,12 @@ back to the parent tool call.
   `stop_task` control_request (see `claude-wire.md §stop_task`); the
   CLI replies with `control_response{subtype:success}` and fires
   `task_updated` with `patch.status:"killed"` — the same terminal
-  channel normal completion uses, routed by task_id.
+  channel normal completion uses, routed by task_id. Resuming an idle
+  async agent (the harness's SendMessage tool) rebinds `task_started`
+  onto the resuming tool_use — AO makes that tool_use the resumed
+  round's background carrier (marked backgrounded, Summary rewritten
+  to the agent's identity) rather than fighting the rebind; see
+  claude-wire.md §E6.
 - **Turn lifecycle** — `result` envelope remains authoritative for
   cumulative turn payload (token usage, cost, and raw
   `terminal_reason` for wire reference). The final
@@ -239,6 +250,23 @@ start and complete. These are load-bearing rules enforced by
 - `docs/references/fixtures/claude/local_agent_plus_bg_bash.ndjson` —
   bg Bash + bg local_agent combined: the result-delay is keyed on
   `local_agent` specifically.
+- `docs/references/fixtures/claude/local_agent_async_launch.ndjson` —
+  `local_agent` (Agent tool) launched with NO `run_in_background`,
+  run asynchronously anyway: the bare "Async agent launched
+  successfully." ack (claude-wire.md §E5), then `system/task_updated`
+  + `system/task_notification`. Authoritative for the
+  `toolResultAsyncLaunch` discriminator (`isAsync`/
+  `status:"async_launched"`, never mere `agentId` presence — an
+  inline agent's real completion also carries `agentId`) and the
+  `rememberTaskToolUse` re-seed on reconnect.
+- `docs/references/fixtures/claude/local_agent_async_resume.ndjson` —
+  an E5 async agent resumed via the harness's SendMessage tool
+  (claude-wire.md §E6): the CLI rebinds `system/task_started` onto
+  SendMessage's own `tool_use_id` carrying the ORIGINAL agent's
+  `description`, and the SendMessage ack has no async markers at all.
+  Two full rounds back to back. Authoritative for the resume-rebind
+  detection in `parse_system.go`'s `task_started` case and the
+  `isAgentLaunchToolName` reconnect fallback.
 - `docs/references/fixtures/claude/advisor_context_usage_20260522.summary.json`
   — sanitized summary across three captures (no advisor, one advisor,
   two advisors). Documents the `message_delta.usage.iterations[]` shape
