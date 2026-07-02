@@ -924,7 +924,7 @@ describe('scroll integration — composer height + layout invariance', () => {
     // activity-rail height change instead of snapping. The kind→path
     // mapping itself is pinned by the controller-level
     // "observe('composer-geometry') spring-chases / sync-pins" pair in
-    // useStickToBottom.svelte.test.ts; what ChatView owns is reporting
+    // utils/scroll/index.svelte.test.ts; what ChatView owns is reporting
     // the right observation kind.
     const roCapture = installResizeObserverCapture();
 

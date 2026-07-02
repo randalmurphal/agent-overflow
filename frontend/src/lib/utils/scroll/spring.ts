@@ -15,8 +15,8 @@
 // deps.
 
 import { springGateIsOpen, withinArrivalBand } from './resolver';
-import type { ScrollWriteCaller } from './types';
 import { nowMs } from './time';
+import type { ScrollWriteCaller } from './types';
 
 // ===== Spring chase tuning =====
 // Tuned from upstream stackblitz-labs/use-stick-to-bottom defaults
@@ -105,6 +105,24 @@ function cancelFrame(handle: number): void {
   }
 }
 
+// Arrival-readback acceptance bookkeeping, reached through deps as one
+// unit. The underlying state (one nullable accepted target) is
+// controller-owned because notifyLiveContentMaybeGrew shares it; see the
+// cluster in scroll/index.svelte.ts.
+export interface ArrivalReadback {
+  /** Accepted readback matches `target` and scrollTop is still at it. */
+  matches(target: number): boolean;
+  /** Record acceptance after a write that landed in-band but off-target. */
+  record(target: number): void;
+  /** An exact write toward `target` is still warranted. */
+  shouldWriteExact(target: number): boolean;
+  /** Write exactly `target` through the chokepoint, then record. */
+  writeExact(caller: ScrollWriteCaller, target: number): void;
+  clear(): void;
+  /** Drop an accepted readback whose target moved out of the arrival band. */
+  invalidateStale(target: number): void;
+}
+
 // Everything the spring needs from the controller. Geometry and the
 // scrollTop chokepoint come straight through; the arrival-readback
 // group reaches the controller-owned acceptance state shared with
@@ -113,6 +131,7 @@ export interface SpringChaseDeps {
   /** Current scroll element; undefined between attach cycles. */
   getScrollEl(): HTMLElement | undefined;
   isPaused(): boolean;
+  /** Intent flag: "we want to be glued to the bottom" (isAtBottomState). */
   isAtBottom(): boolean;
   isEscaped(): boolean;
   /**
@@ -121,14 +140,9 @@ export interface SpringChaseDeps {
    */
   selectionActive(): boolean;
   targetScrollTop(): number;
+  /** scrollTop is within the arrival band of `target` (geometry read). */
   scrollTopIsAtTarget(target: number): boolean;
-  acceptedReadbackMatchesTarget(target: number): boolean;
-  recordArrivalReadbackAcceptance(target: number): void;
-  shouldWriteExactArrivalTarget(target: number): boolean;
-  writeExactArrivalTarget(caller: ScrollWriteCaller, target: number): void;
-  clearArrivalReadback(): void;
-  /** Drop an accepted readback whose target moved out of the arrival band. */
-  invalidateStaleArrivalReadback(target: number): void;
+  arrival: ArrivalReadback;
   writeScrollTop(caller: ScrollWriteCaller, value: number): void;
   /** Normalized per-fire animation mode (anything but 'spring' is 'instant'). */
   animationMode(): 'spring' | 'instant';
@@ -213,7 +227,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     velocity = 0;
     accumulated = 0;
     lastTickAt = null;
-    deps.clearArrivalReadback();
+    deps.arrival.clear();
     springStartedFromStructuralAppend = false;
     // Reset the target-change timestamp so a stale value can't trick a
     // fresh chase into thinking it's within the retain window right out
@@ -314,7 +328,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // `clientHeight` — both force layout. Compute once per frame.
       const target = deps.targetScrollTop();
       const current = el.scrollTop;
-      deps.invalidateStaleArrivalReadback(target);
+      deps.arrival.invalidateStale(target);
 
       // Whether the consumer still wants spring follow, and whether a
       // target change landed recently enough that more content is probably
@@ -326,7 +340,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const withinTargetChangeRetainWindow =
         wantsSpringNow && now - lastTargetChangedAt < RETAIN_ANIMATION_DURATION_MS;
 
-      if (current !== target && !deps.acceptedReadbackMatchesTarget(target)) {
+      if (current !== target && !deps.arrival.matches(target)) {
         // Content oscillation guard: if the sentinel was idle
         // (sentinelEntryTarget set) and the target returned to the
         // sentinel entry value, the content layer oscillated in
@@ -345,7 +359,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         if (sentinelEntryTarget >= 0 && withinArrivalBand(target, sentinelEntryTarget)) {
           snapOscillationToBottom('spring.oscillationSnap', target);
         } else {
-          deps.clearArrivalReadback();
+          deps.arrival.clear();
           sentinelEntryTarget = -1;
           if (integrationFrames > 0) {
             let remainingFrames = integrationFrames;
@@ -381,7 +395,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
             const clamped = crossedTarget ? target : next;
             deps.writeScrollTop(crossedTarget ? 'spring.overshoot' : 'spring.tick', clamped);
             if (clamped === target) {
-              deps.recordArrivalReadbackAcceptance(target);
+              deps.arrival.record(target);
             }
             if (el.scrollTop !== current) accumulated = 0;
           }
@@ -452,8 +466,8 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           // target is pure jank and creates needless ResizeObserver pressure.
           // Zeroing velocity/accumulated keeps the arrival check stable across
           // sentinel ticks.
-          if (deps.shouldWriteExactArrivalTarget(target)) {
-            deps.writeExactArrivalTarget('spring.arrive', target);
+          if (deps.arrival.shouldWriteExact(target)) {
+            deps.arrival.writeExact('spring.arrive', target);
           }
           velocity = 0;
           accumulated = 0;
@@ -466,8 +480,8 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         // Snap to the exact target on arrival so the final paint lands
         // pixel-perfect rather than 0.5px above the bottom, unless the browser
         // already accepted a value inside the arrival band.
-        if (deps.shouldWriteExactArrivalTarget(target)) {
-          deps.writeExactArrivalTarget('spring.arrive', target);
+        if (deps.arrival.shouldWriteExact(target)) {
+          deps.arrival.writeExact('spring.arrive', target);
         }
         cancel();
         return;

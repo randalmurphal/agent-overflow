@@ -64,7 +64,7 @@ import {
   type ResolverState,
   type VirtuaCompensationObservation,
 } from './resolver';
-import { createSpringChase } from './spring';
+import { createSpringChase, type ArrivalReadback } from './spring';
 import { trace } from './trace';
 import type {
   ScrollObservationKind,
@@ -148,8 +148,8 @@ export function createUseStickToBottomController(
   // accepted readback is recorded so arrival checks stop re-writing a
   // target the browser will keep rejecting. Owned here — not by the
   // spring — because notifyLiveContentMaybeGrew shares it; the spring
-  // chase (scroll/spring.ts) reaches it through its deps. Helpers live
-  // in the Geometry section below.
+  // chase (scroll/spring.ts) reaches it through deps.arrival. The
+  // helper group (`arrivalReadback`) lives in the Geometry section below.
   let arrivalReadbackAcceptedTarget: number | null = null;
 
   // ===== Warm-up (quiescence) state =====
@@ -186,47 +186,48 @@ export function createUseStickToBottomController(
     return !scrollEl || withinArrivalBand(scrollEl.scrollTop, target);
   }
 
-  function acceptedReadbackMatchesTarget(target: number): boolean {
-    return arrivalReadbackAcceptedTarget !== null
-      && withinArrivalBand(arrivalReadbackAcceptedTarget, target)
-      && scrollTopIsAtTarget(target);
-  }
-
-  function shouldWriteExactArrivalTarget(target: number): boolean {
-    if (!scrollEl) return false;
-    if (scrollEl.scrollTop === target) return false;
-    if (!scrollTopIsAtTarget(target)) return true;
-    return !acceptedReadbackMatchesTarget(target);
-  }
-
-  function recordArrivalReadbackAcceptance(target: number): void {
-    if (scrollEl && scrollEl.scrollTop !== target && scrollTopIsAtTarget(target)) {
-      arrivalReadbackAcceptedTarget = target;
-      return;
-    }
-    arrivalReadbackAcceptedTarget = null;
-  }
-
-  function writeExactArrivalTarget(caller: ScrollWriteCaller, target: number): void {
-    writeScrollTop(caller, target);
-    recordArrivalReadbackAcceptance(target);
-  }
-
-  function clearArrivalReadback(): void {
-    arrivalReadbackAcceptedTarget = null;
-  }
-
-  // Drop an accepted readback whose target has since moved out of the
-  // arrival band — the acceptance only excuses re-writes for the target
-  // it was recorded against.
-  function invalidateStaleArrivalReadback(target: number): void {
-    if (
-      arrivalReadbackAcceptedTarget !== null
-      && !withinArrivalBand(arrivalReadbackAcceptedTarget, target)
-    ) {
+  // Arrival-readback acceptance helpers over the state above, grouped as
+  // one unit (ArrivalReadback in scroll/spring.ts): the spring chase
+  // reaches them via deps.arrival; notifyLiveContentMaybeGrew calls them
+  // directly.
+  const arrivalReadback: ArrivalReadback = {
+    matches(target: number): boolean {
+      return arrivalReadbackAcceptedTarget !== null
+        && withinArrivalBand(arrivalReadbackAcceptedTarget, target)
+        && scrollTopIsAtTarget(target);
+    },
+    record(target: number): void {
+      if (scrollEl && scrollEl.scrollTop !== target && scrollTopIsAtTarget(target)) {
+        arrivalReadbackAcceptedTarget = target;
+        return;
+      }
       arrivalReadbackAcceptedTarget = null;
-    }
-  }
+    },
+    shouldWriteExact(target: number): boolean {
+      if (!scrollEl) return false;
+      if (scrollEl.scrollTop === target) return false;
+      if (!scrollTopIsAtTarget(target)) return true;
+      return !arrivalReadback.matches(target);
+    },
+    writeExact(caller: ScrollWriteCaller, target: number): void {
+      writeScrollTop(caller, target);
+      arrivalReadback.record(target);
+    },
+    clear(): void {
+      arrivalReadbackAcceptedTarget = null;
+    },
+    // Drop an accepted readback whose target has since moved out of the
+    // arrival band — the acceptance only excuses re-writes for the target
+    // it was recorded against.
+    invalidateStale(target: number): void {
+      if (
+        arrivalReadbackAcceptedTarget !== null
+        && !withinArrivalBand(arrivalReadbackAcceptedTarget, target)
+      ) {
+        arrivalReadbackAcceptedTarget = null;
+      }
+    },
+  };
 
   function distanceFromBottom(): number {
     if (!scrollEl) return 0;
@@ -360,12 +361,7 @@ export function createUseStickToBottomController(
     selectionActive: () => (scrollEl ? isSelectingInside(scrollEl) : false),
     targetScrollTop,
     scrollTopIsAtTarget,
-    acceptedReadbackMatchesTarget,
-    recordArrivalReadbackAcceptance,
-    shouldWriteExactArrivalTarget,
-    writeExactArrivalTarget,
-    clearArrivalReadback,
-    invalidateStaleArrivalReadback,
+    arrival: arrivalReadback,
     writeScrollTop,
     animationMode: animationModeNow,
     prefersReducedMotion,
@@ -677,8 +673,8 @@ export function createUseStickToBottomController(
 
     const target = targetScrollTop();
     if (scrollEl && scrollTopIsAtTarget(target)) {
-      if (shouldWriteExactArrivalTarget(target)) {
-        writeExactArrivalTarget('notifyLiveContentMaybeGrew.arrive', target);
+      if (arrivalReadback.shouldWriteExact(target)) {
+        arrivalReadback.writeExact('notifyLiveContentMaybeGrew.arrive', target);
       }
       refreshIsNearBottom();
       return;
@@ -783,7 +779,7 @@ export function createUseStickToBottomController(
       escapedFromLockState,
       pauseDepth,
     }));
-    observers.observeContent();
+    observers.attach();
     intent.attach(nextScrollEl);
     refreshIsNearBottom();
     installStickStateDevHook();

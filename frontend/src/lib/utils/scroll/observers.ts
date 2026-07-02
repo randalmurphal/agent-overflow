@@ -7,7 +7,7 @@
 // Each RO delivery is gathered here, decided by the pure resolver
 // (scroll/resolver.ts), and applied here — through the controller's
 // writeScrollTop chokepoint and spring instance, both reached via the
-// host interface — so everything about "a content delivery" reads in
+// deps interface — so everything about "a content delivery" reads in
 // one place. The reactive `warm` flag stays controller-owned (consumers
 // subscribe to `isWarm`); this module drives it through accessors.
 
@@ -104,7 +104,7 @@ function roundCssPx(value: number): number {
 // elements, the reactive flags it drives or traces, the geometry reads,
 // the resolver snapshot, and the two effect surfaces a delivery may
 // touch (the writeScrollTop chokepoint and the spring instance).
-export interface ContentObserverHost {
+export interface ContentObserverDeps {
   getScrollEl(): HTMLElement | undefined;
   getContentEl(): HTMLElement | undefined;
   /** Normalized per-fire animation mode (anything but 'spring' is 'instant'). */
@@ -120,6 +120,7 @@ export interface ContentObserverHost {
   /** Reactive warm flag (controller-owned $state; consumers read isWarm). */
   warm(): boolean;
   setWarm(next: boolean): void;
+  /** Intent flag: "we want to be glued to the bottom" (isAtBottomState). */
   isAtBottom(): boolean;
   setIsAtBottom(next: boolean): void;
   escaped(): boolean;
@@ -130,12 +131,13 @@ export interface ContentObserverHost {
   writeScrollTop(caller: ScrollWriteCaller, value: number): void;
   resolverStateSnapshot(): ResolverState;
   prefersReducedMotion(): boolean;
-  spring: SpringChase;
+  /** Narrowed to what a delivery decision may drive on the spring. */
+  spring: Pick<SpringChase, 'structuralAppendPending' | 'snapOscillationToBottom' | 'markTargetChanged' | 'start'>;
 }
 
 export interface ContentObserver {
-  /** Start observing the host's current contentEl (no-op without RO support). */
-  observeContent(): void;
+  /** Start observing the controller's current contentEl (no-op without RO support). */
+  attach(): void;
   /** Disconnect the RO and reset all classification + warm-up state (warm → false). */
   detach(): void;
   /** Reset the warm-up gate: sync-pin mode until quiet/failsafe fires again. */
@@ -163,7 +165,7 @@ export interface ContentObserver {
   stampSyntheticResizeCorrelation(): void;
 }
 
-export function createContentObserver(host: ContentObserverHost): ContentObserver {
+export function createContentObserver(deps: ContentObserverDeps): ContentObserver {
   let contentRO: ResizeObserver | undefined;
   let previousHeight: number | undefined;
   let previousWidth: number | undefined;
@@ -195,19 +197,19 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
   }
 
   function markWarm(reason: 'quiet' | 'failsafe'): void {
-    if (host.warm()) return;
-    host.setWarm(true);
+    if (deps.warm()) return;
+    deps.setWarm(true);
     clearWarmupTimers();
     if (isUiRenderTraceEnabled()) trace(`scroll.warmup.${reason}`, () => ({
-      isAtBottomState: host.isAtBottom(),
-      escapedFromLockState: host.escaped(),
-      pauseDepth: host.pauseDepth(),
+      isAtBottomState: deps.isAtBottom(),
+      escapedFromLockState: deps.escaped(),
+      pauseDepth: deps.pauseDepth(),
     }));
   }
 
   function beginWarmup(): void {
     clearWarmupTimers();
-    host.setWarm(false);
+    deps.setWarm(false);
     hasFirstContentRO = false;
     lastContentHeightDelta = Number.POSITIVE_INFINITY;
     // ONLY arm the failsafe. The quiet timer is armed by `bumpQuietTimer`
@@ -226,8 +228,8 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
   }
 
   function skipWarmup(): void {
-    if (!host.warm()) {
-      host.setWarm(true);
+    if (!deps.warm()) {
+      deps.setWarm(true);
       clearWarmupTimers();
     }
   }
@@ -248,7 +250,7 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
   // window geometry-gated: until we have observed the surface hold still,
   // a thread's mount cascade cannot trip an early reveal.
   function bumpQuietTimer(heightDelta?: number): void {
-    if (host.warm()) return;
+    if (deps.warm()) return;
     hasFirstContentRO = true;
     // First fire (undefined) has no baseline → treat as still-moving. A
     // height delta of exactly 0 is a spurious / width-only / padding-var
@@ -264,7 +266,7 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
       lastContentHeightDelta = Math.abs(heightDelta);
     }
     if (quietTimer) clearTimeout(quietTimer);
-    const quietContextSignal = host.getQuietContextSignal();
+    const quietContextSignal = deps.getQuietContextSignal();
     if (!quietContextSignal) {
       quietTimer = setTimeout(() => markWarm('quiet'), QUIET_MS);
       return;
@@ -278,9 +280,9 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
   }
 
   function notifyQuietContextSignalChanged(): void {
-    const settled = host.getQuietContextSignal()?.() ?? false;
+    const settled = deps.getQuietContextSignal()?.() ?? false;
     const haveTimer = quietTimer !== null;
-    const warm = host.warm();
+    const warm = deps.warm();
     let outcome: 'armed' | 'rearmed' | 'noop_warm' | 'noop_no_ro' | 'noop_signal_falsy';
     if (warm) outcome = 'noop_warm';
     else if (!settled) outcome = 'noop_signal_falsy';
@@ -301,14 +303,14 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
     quietTimer = setTimeout(() => markWarm('quiet'), quietWindowForGeometry());
   }
 
-  function observeContent(): void {
-    const contentEl = host.getContentEl();
+  function attach(): void {
+    const contentEl = deps.getContentEl();
     if (!contentEl) return;
     if (typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
-      const scrollEl = host.getScrollEl();
-      if (!entry || !host.getContentEl() || !scrollEl) return;
+      const scrollEl = deps.getScrollEl();
+      if (!entry || !deps.getContentEl() || !scrollEl) return;
       const nextHeight = entry.contentRect.height;
       const nextWidth = entry.contentRect.width;
       const prev = previousHeight;
@@ -335,23 +337,23 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
         // First fire: snap to bottom synchronously so the initial paint
         // lands at the right place. Matches upstream's `initial` behavior
         // when isAtBottom starts true.
-        const decision = resolveContentDelivery(host.resolverStateSnapshot(), {
+        const decision = resolveContentDelivery(deps.resolverStateSnapshot(), {
           kind: 'first',
-          target: host.targetScrollTop(),
+          target: deps.targetScrollTop(),
         });
         if (isUiRenderTraceEnabled()) trace('scroll.contentRO.firstFire', () => ({
           nextHeight: Math.round(nextHeight),
           willPin: decision.write !== null,
-          isAtBottomState: host.isAtBottom(),
-          escapedFromLockState: host.escaped(),
+          isAtBottomState: deps.isAtBottom(),
+          escapedFromLockState: deps.escaped(),
           scrollTop: Math.round(scrollEl.scrollTop),
           scrollHeight: Math.round(scrollEl.scrollHeight),
           clientHeight: Math.round(scrollEl.clientHeight),
         }));
         if (decision.write) {
-          host.writeScrollTop(decision.write.caller, decision.write.value);
+          deps.writeScrollTop(decision.write.caller, decision.write.value);
         }
-        host.refreshIsNearBottom();
+        deps.refreshIsNearBottom();
         return;
       }
 
@@ -387,14 +389,14 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
 
       // Refresh the geometric near-bottom flag BEFORE resolving so the
       // decision and its trace see the same post-resize geometry.
-      host.refreshIsNearBottom();
+      deps.refreshIsNearBottom();
       // Cache the bottom target once per RO delivery. `targetScrollTop()`
       // reads `scrollHeight` + `clientHeight` (forced layout), and neither
       // changes across this synchronous callback — the only writes here
       // are to `scrollTop`, which don't affect them — so one read serves
       // the whole decision. Mirrors the spring tick's per-frame
       // `const target` discipline.
-      const target = host.targetScrollTop();
+      const target = deps.targetScrollTop();
       const scrollTopAtDelivery = scrollEl.scrollTop;
       // Every decision about this delivery — overshoot snap, stranded-
       // oscillation recovery, sync-pin vs spring, negative re-stick — is
@@ -407,11 +409,11 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
         scrollTop: scrollTopAtDelivery,
         target,
         widthReflowActive,
-        animationMode: host.animationMode(),
-        structuralAppendPending: host.spring.structuralAppendPending(),
-        prefersReducedMotion: host.prefersReducedMotion(),
+        animationMode: deps.animationMode(),
+        structuralAppendPending: deps.spring.structuralAppendPending(),
+        prefersReducedMotion: deps.prefersReducedMotion(),
       };
-      const decision = resolveContentDelivery(host.resolverStateSnapshot(), observation);
+      const decision = resolveContentDelivery(deps.resolverStateSnapshot(), observation);
       if (isUiRenderTraceEnabled()) trace('scroll.contentRO', () => ({
         prev: Math.round(prev),
         next: Math.round(nextHeight),
@@ -423,10 +425,10 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
         bumpTargetChanged: decision.bumpTargetChanged,
         oscillationRecovery: decision.oscillationRecovery,
         setIsAtBottom: decision.setIsAtBottom,
-        isAtBottomState: host.isAtBottom(),
-        escapedFromLockState: host.escaped(),
-        pauseDepth: host.pauseDepth(),
-        isNearBottomState: host.isNearBottom(),
+        isAtBottomState: deps.isAtBottom(),
+        escapedFromLockState: deps.escaped(),
+        pauseDepth: deps.pauseDepth(),
+        isNearBottomState: deps.isNearBottom(),
         prevWidth: prevWidth === undefined ? null : roundCssPx(prevWidth),
         nextWidth: roundCssPx(nextWidth),
         widthDelta: prevWidth === undefined ? null : roundCssPx(nextWidth - prevWidth),
@@ -442,7 +444,7 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
       // Apply the decision. Order preserved from the legacy inline
       // logic: intent flip first (the write's trace payload reads it),
       // then the single write, then spring bookkeeping.
-      if (decision.setIsAtBottom) host.setIsAtBottom(true);
+      if (decision.setIsAtBottom) deps.setIsAtBottom(true);
       if (decision.oscillationRecovery && decision.write) {
         // Route through the shared snap so this synchronous recovery and
         // the spring tick's rAF-side recovery cannot drift on the effect
@@ -453,19 +455,19 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
         // callbacks within a frame, so the tick-side snap always lands
         // one frame late (bug-report-20260615T182227Z: ~37px one-frame
         // upward jolt on an above-viewport image row remeasure).
-        host.spring.snapOscillationToBottom(decision.write.caller, decision.write.value);
+        deps.spring.snapOscillationToBottom(decision.write.caller, decision.write.value);
       } else if (decision.write) {
-        host.writeScrollTop(decision.write.caller, decision.write.value);
+        deps.writeScrollTop(decision.write.caller, decision.write.value);
       }
       if (decision.startSpring) {
-        host.spring.markTargetChanged();
-        host.spring.start();
+        deps.spring.markTargetChanged();
+        deps.spring.start();
       } else if (decision.bumpTargetChanged) {
         // Spring is the single writer mid-chase and the sync write was
         // suppressed, but the target moved — without the bump the retain
         // window could lapse between chunks and the spring would
         // arrive-and-stop while a follow-up chunk was on its way.
-        host.spring.markTargetChanged();
+        deps.spring.markTargetChanged();
       }
 
       // Schedule resizeDifference clear AFTER the scroll handler's 1ms.
@@ -494,7 +496,7 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
       resizeClearTimer = null;
     }
     clearWarmupTimers();
-    host.setWarm(false);
+    deps.setWarm(false);
     resizeDifference = 0;
     resizeCorrelatedUntaggedScrollBudget = 0;
     previousHeight = undefined;
@@ -503,7 +505,7 @@ export function createContentObserver(host: ContentObserverHost): ContentObserve
   }
 
   return {
-    observeContent,
+    attach,
     detach,
     beginWarmup,
     skipWarmup,

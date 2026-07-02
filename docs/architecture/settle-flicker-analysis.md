@@ -696,7 +696,8 @@ environmental (software-rendered WebKitGTK under WSLg throttling rAF) theory.
 
 It is an artifact of trace sampling. `spring.tick` is traced **1 in
 `SPRING_TICK_TRACE_SAMPLE` (= 12)** writes
-(`useStickToBottom.svelte.ts:181`). On the user's **165Hz** display,
+(`useStickToBottom.svelte.ts:181` at capture time; now
+`utils/scroll/index.svelte.ts`). On the user's **165Hz** display,
 `165 / 12 = 13.75Hz = 73ms` between *traced* ticks — exactly the observed
 cadence. A bare `requestAnimationFrame` fps probe in the same WebKitGTK/WSLg
 measured **165fps idle AND during active streaming** (worst frame gap 12ms),

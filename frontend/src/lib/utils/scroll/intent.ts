@@ -79,16 +79,20 @@ export function isSelectingInside(scrollEl: HTMLElement): boolean {
 // (escape bails the chase, re-stick clears the stop request).
 export interface ScrollIntentDeps {
   getScrollEl(): HTMLElement | undefined;
+  /** Intent flag: "we want to be glued to the bottom" (isAtBottomState). */
   isAtBottom(): boolean;
   setIsAtBottom(next: boolean): void;
   escaped(): boolean;
   setEscaped(next: boolean): void;
-  /** Trace-payload reads. */
+  /** Trace-payload reads only. */
   isNearBottom(): boolean;
   pauseDepth(): number;
+  /** Feeds the down-scroll re-stick condition (and trace payloads). */
   distanceFromBottom(): number;
+  /** Behavioral refresh of the geometric near-bottom flag; returns the distance. */
   refreshIsNearBottom(): number;
-  spring: SpringChase;
+  /** Narrowed to what intent may drive: escape bails the chase, re-stick clears the stop request. */
+  spring: Pick<SpringChase, 'requestStop' | 'cancel' | 'clearStopRequest' | 'clearStructuralAppend'>;
   /**
    * One-shot sample of "this scroll event is correlated with a content
    * resize" (observer-owned resizeDifference plus the one-event untagged
@@ -111,8 +115,6 @@ export interface ScrollIntent {
   clearRestoreConsent(): void;
   clearRecentDownIntent(): void;
   clearScrollbarDragSession(): void;
-  /** Wipe the programmatic-write token ring and the structural-append window. */
-  clearProgrammaticScrollState(): void;
   /**
    * Record a controller scrollTop write: tags the resulting scroll event
    * via the token ring and updates the re-stick direction baseline.
@@ -299,6 +301,9 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     return consumed;
   }
 
+  // Wipe the programmatic-write token ring and the structural-append
+  // window. Internal-only: every caller is an intent transition (escape,
+  // fresh down-intent, detach).
   function clearProgrammaticScrollState(): void {
     pendingProgrammaticScrollEventTokens = [];
     deps.spring.clearStructuralAppend();
@@ -681,7 +686,6 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     },
     clearRecentDownIntent: () => clearRecentDownIntent(),
     clearScrollbarDragSession: () => clearScrollbarDragSession(),
-    clearProgrammaticScrollState,
     noteProgrammaticWrite,
     runExternalScroll,
     debugState: () => ({

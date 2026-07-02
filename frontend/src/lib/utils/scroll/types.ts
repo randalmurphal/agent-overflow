@@ -1,7 +1,6 @@
 // Public types for the stick-to-bottom scroll controller.
 //
-// The controller implementation lives in ./index.svelte.ts
-// (moving to ./index.svelte.ts as the Stage-4 file split completes); the
+// The controller implementation lives in ./index.svelte.ts; the
 // pure per-delivery decision logic lives in ./resolver.ts. This file owns
 // the shapes consumers program against: the controller surface, its
 // options, the observation-kind hint, and the closed union of programmatic

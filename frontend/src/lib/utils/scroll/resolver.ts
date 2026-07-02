@@ -29,10 +29,9 @@ export const ARRIVAL_DISTANCE_PX = 1;
 // and the re-pin is skipped, breaking the idle viewport-vibration limit cycle
 // at its source. Value: large enough to clear the observed ~2px idle flip with
 // margin, small enough to stay well below the ≥~line-height gap of genuine
-// catch-up growth; equal to AUTO_FOLLOW_BOTTOM_EPSILON_PX
-// (scroll/index.svelte.ts) by design — "close enough to count as
-// at-bottom" and "close enough not to fight a wobble" are the same
-// tolerance. Full mechanism (fractional-DPR X.5-boundary height flip →
+// catch-up growth; equal to AUTO_FOLLOW_BOTTOM_EPSILON_PX (defined below
+// in this file) by design — "close enough to count as at-bottom" and
+// "close enough not to fight a wobble" are the same tolerance. Full mechanism (fractional-DPR X.5-boundary height flip →
 // moving target → self-sustaining ±2px cycle) + the capture it was root-caused
 // from: docs/architecture/settle-flicker-analysis.md.
 //
