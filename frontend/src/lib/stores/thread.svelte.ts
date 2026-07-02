@@ -1,5 +1,5 @@
 import { tick } from 'svelte';
-import type { Item, ItemKind, Project, Thread } from '../types/models';
+import type { Item, Project, Thread } from '../types/models';
 import { asProviderID } from '../types/providers';
 import type { Checkpoint, DiffPanelTab } from '../types/checkpoint';
 import type {
@@ -99,11 +99,6 @@ import {
   migrateThreadTerminalState,
 } from '../components/terminal/terminalStore.svelte';
 import {
-  COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY,
-  THINKING_PAYLOAD_EXPANSION_STATE_KEY,
-  thinkingPayloadVersionForItem,
-} from '../utils/payloadVersion';
-import {
   beginThreadLiveStateHydration,
   finishThreadLiveStateHydration,
   getActiveTurn,
@@ -130,6 +125,7 @@ import {
   type TurnRow,
 } from './threadTurnProjection';
 import { createThreadRowUiState } from './threadRowUiState.svelte';
+import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import {
   normalizeContextWindowForThread,
   seedContextWindow,
@@ -141,12 +137,6 @@ import {
 import { createThreadDesignState } from './threadDesignState.svelte';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
-import { SvelteMap } from 'svelte/reactivity';
-import {
-  END_OF_TURN_DRAIN_MS,
-  FAST_DRAIN_SNAP_LAG_CHARS,
-  PerItemSmoother,
-} from '../markdown/smoothing/PerItemSmoother';
 import {
   LOAD_OLDER_ITEM_BUDGET,
   ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
@@ -154,15 +144,11 @@ import {
   ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
   SLICE_AROUND_ITEM_BUDGET,
   SPINNER_THRESHOLD_MS,
-  THINKING_TAIL_RUNES,
-  getSmoothingClockForTest,
-  isReasoningTailKind,
   isSmoothLiveContentKind,
   loadOlderResult,
   nowForLiveContent,
   sameRhsPanel,
   threadUsesDiscussionSurface,
-  trimToTailRunes,
   type DraftThreadPlaceholder,
   type DraftPlaceholderDefaults,
   type DraftPlaceholderMode,
@@ -210,17 +196,6 @@ export type { LiveTodo } from './liveTodoState.svelte';
 // Re-exported here so callers that import from this module
 // continue to find them at the same path.
 export type { DiffSidebarUIState, RhsPanel } from './rhsPanelSlot.svelte';
-
-/**
- * Per-item smoothing handle stored in the pane's `itemSmoothers` map.
- * Holds the PerItemSmoother plus a closure setter that lets
- * `applyItemDelta` push the latest wire `updatedAt` into the
- * smoother's reveal callback without re-creating the closure.
- */
-interface ItemSmoothing {
-  smoother: PerItemSmoother;
-  setLatestUpdatedAt(at: number): void;
-}
 
 interface PrunedWindow {
   items: Item[];
@@ -277,41 +252,21 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getItemById,
     isPayloadReferenced,
   });
-  // Per-item streaming smoothers keyed by item id. Created lazily on
-  // the first streaming delta for a smoothable row (assistant_text /
-  // thinking); disposed on row removal, status snap, or pane clear.
-  // Sibling to itemIndexById / rowUiState so all three life-cycle
-  // ride the same clear paths.
-  const itemSmoothers: Map<string, ItemSmoothing> = new Map();
-  // Live full revealed text for streaming thinking rows, keyed by item
-  // id. Sibling to `itemSmoothers`: written from every onReveal and
-  // deleted on every smoother dispose path. Decouples the collapsed
-  // ThinkingBlock render from `items[].summary` (which is trimmed to
-  // THINKING_TAIL_RUNES for memory and persistence). The trimmed summary
-  // sliding-window forces the collapsed `<span>{bodyText}</span>` to
-  // re-wrap its full string on every reveal — `whitespace-pre-wrap`
-  // + `max-h-[3lh] overflow-hidden` + `scrollTop = scrollHeight` then
-  // shifts the visible 3 lines wholesale whenever a char drop near the
-  // start lets a word cross a wrap boundary, producing the user-visible
-  // "5 words appear at once past 400 runes" symptom. Reading the live
-  // tail instead gives the span monotonically-growing content so wrap
-  // layout never reshuffles older text — only the bottom 3 lines scroll
-  // up as content arrives. SvelteMap so Map.get inside a $derived
-  // re-runs on Map.set. Cleared in the same paths that clear
-  // itemSmoothers.
-  const itemLiveThinkingTail: SvelteMap<string, string> = new SvelteMap();
-  // Reveal gate. While a turn streams, the timeline reveals one top-level
-  // item at a time: the next row is withheld until the current item's
-  // smoother drains. `revealBoundary` is the position of the item currently
-  // being revealed (the "frontier"); MessageTimeline renders nodes up to and
-  // including it and withholds anything after via `sliceRevealedNodes`. `null`
-  // means no gate — render everything — the steady state outside live
-  // streaming. The sequencer (`recomputeReveal`) is the sole writer; it keys
-  // purely off smoother liveness + (turnIndex, itemIndex) order, never off
-  // `getActiveTurn`, so a between-rounds activeturn flicker can't drop the
-  // gate. Subagent children (`parentId` set) never become the frontier, so
-  // parallel subagent branches are never serialized behind one another.
-  let revealBoundary: RevealBoundary | null = $state(null);
+  // Per-item smoother + reveal-gate machinery lives in
+  // threadStreamingReveal.svelte.ts. Every items-mutation path that can
+  // change which top-level rows exist relative to a live smoother must
+  // call `streamingReveal.recomputeReveal()` (or `.disposeAll()`).
+  const streamingReveal = createThreadStreamingReveal({
+    getItemById,
+    getItemIndex: (itemId) => itemIndexById.get(itemId),
+    getItems: () => items,
+    setItemAt: (index, item) => {
+      items[index] = item;
+    },
+    stampLiveContent,
+    armStructuralSpring,
+    appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
+  });
   const pendingInteractiveState = createThreadPendingInteractiveState();
   let contextWindow: ContextWindow | null = $state(null);
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`
@@ -696,7 +651,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     } else {
       subagentHydrationExhausted.clear();
     }
-    for (const item of droppedItems) disposeSmootherFor(item.id);
+    for (const item of droppedItems) streamingReveal.disposeSmootherFor(item.id);
     rowUiState.disposeItems(droppedItems);
   }
 
@@ -1031,7 +986,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (flags.hasMoreNewerAfterPrune !== undefined) {
       hasMoreNewer = flags.hasMoreNewerAfterPrune;
     }
-    recomputeReveal();
+    streamingReveal.recomputeReveal();
   }
 
   // Paging prune (loadOlder tail-drop / loadNewer head-drop). The dropped end
@@ -1171,7 +1126,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       items.filter((it) => !evictedIds.has(it.id)),
       { disposeDropped: true, exhaustedScope: anchorIds },
     );
-    recomputeReveal();
+    streamingReveal.recomputeReveal();
   }
 
   /**
@@ -1210,310 +1165,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     collectSettledSubtree(anchorId, evictions);
     commitSubagentEvictions(evictions);
   }
-  // Reveal-gate invariant: any wholesale `items` replacement that can
-  // change which top-level rows exist relative to a live smoother must
-  // pair with `recomputeReveal()` (or `disposeAllSmoothers()`, which
-  // clears the boundary). Current callers all hold this: switchThread /
-  // clear → disposeAllSmoothers; removeItem / removeItemsForTurns →
-  // recomputeReveal. The `loadOlder` merge is the deliberate exception —
-  // it only prepends OLDER rows (before any streaming frontier by
-  // (turnIndex, itemIndex)), which can be neither the frontier nor a
-  // gated successor, so the boundary is unaffected and no recompute is
-  // needed. A new mutation path that can append rows during a turn MUST
-  // call recomputeReveal — there is no reactive backstop (a parallel
-  // $effect over the timeline is forbidden; see frontend/AGENTS.md).
-
-  function disposeSmootherFor(itemId: string): void {
-    const entry = itemSmoothers.get(itemId);
-    if (!entry) return;
-    entry.smoother.dispose();
-    itemSmoothers.delete(itemId);
-    itemLiveThinkingTail.delete(itemId);
-  }
-
-  function disposeAllSmoothers(): void {
-    for (const entry of itemSmoothers.values()) entry.smoother.dispose();
-    itemSmoothers.clear();
-    itemLiveThinkingTail.clear();
-    revealBoundary = null;
-  }
-
-  // Two reveal boundaries are equal when both are null or share a position.
-  // Mirrors the `sameActiveTurn` / `sameRhsPanel` equality helpers; the
-  // change-guard in `recomputeReveal` uses it so `revealBoundary` is only
-  // reassigned when the gate actually moves, not on every streaming chunk
-  // (MessageTimeline's `rowDecorations` relies on that via `untrack`).
-  function sameBoundary(
-    a: RevealBoundary | null,
-    b: RevealBoundary | null,
-  ): boolean {
-    if (a === null || b === null) return a === b;
-    return a.turnIndex === b.turnIndex && a.itemIndex === b.itemIndex;
-  }
-
-  // A boundary change RELEASES rows only when it moves forward past rows
-  // that still exist. An advance to a later frontier always newly reveals
-  // that frontier row. A gate drop releases whatever top-level rows sit
-  // after the old frontier — nothing, when the drop came from the lone
-  // streaming row draining, or from a removal that truncated the tail
-  // (revert-on-interrupt drops both frontier and withheld successor in
-  // one call), where arming would open a phantom spring window over a
-  // SHRINKING timeline. A retreat (a replay delta re-creating a smoother
-  // for an earlier row) only withholds and never releases. Evaluated
-  // against CURRENT items, not previous-pass state, so removal-driven
-  // recomputes can't arm off a stale successor observation.
-  function boundaryChangeReleasesRows(
-    prev: RevealBoundary,
-    next: RevealBoundary | null,
-  ): boolean {
-    if (next !== null) {
-      return next.turnIndex > prev.turnIndex
-        || (next.turnIndex === prev.turnIndex && next.itemIndex > prev.itemIndex);
-    }
-    // Gate dropped: released rows exist iff a top-level row sits after the
-    // old frontier. `items` is sorted by (turnIndex, itemIndex) and the
-    // tail row is usually top-level, so the backward scan is O(1) in
-    // practice.
-    for (let i = items.length - 1; i >= 0; i--) {
-      const item = items[i];
-      if (item.parentId) continue;
-      return item.turnIndex > prev.turnIndex
-        || (item.turnIndex === prev.turnIndex && item.itemIndex > prev.itemIndex);
-    }
-    return false;
-  }
-
-  /**
-   * Reveal sequencer. Recomputes the reveal frontier from current smoother
-   * state and (turnIndex, itemIndex) order, then:
-   *   - publishes `revealBoundary` (the frontier's position, or null when no
-   *     top-level smoother is mid-reveal — render everything),
-   *   - pauses smoothers for withheld successors so they animate from their
-   *     start when their turn comes rather than snapping in text that streamed
-   *     while hidden, and resumes the frontier,
-   *   - fast-drains the frontier when any later top-level row is already
-   *     waiting, so the next row appears within ~200ms instead of stalling
-   *     behind a long (often collapsed) thinking block.
-   *
-   * The frontier is the earliest top-level (`!parentId`) item whose smoother
-   * is still revealing. Subagent children are excluded so a streaming child
-   * never gates a sibling branch or a top-level row.
-   *
-   * INVARIANT: every path that mutates `items` or a smoother's liveness must
-   * call this. There is deliberately NO reactive `$effect` watching `items`
-   * (frontend/AGENTS.md forbids a parallel watcher over the timeline), so the
-   * gate is kept in sync by explicit calls from `applyItemDelta`,
-   * `applyItemPatch`, `upsertItemsBatch`, `onReveal` (on catch-up), and the
-   * item-removal paths; `disposeAllSmoothers` clears the boundary directly.
-   *
-   * Reentrancy: the oversized-backlog snap below fires `onReveal`
-   * synchronously, whose catch-up branch calls back into this function.
-   * The guard collapses the nested call into a re-run after the current
-   * pass — without it, the outer pass would overwrite the boundary and
-   * pause/resume decisions the nested pass just computed from fresher
-   * state.
-   */
-  let recomputingReveal = false;
-  let recomputeRevealAgain = false;
-  function recomputeReveal(): void {
-    if (recomputingReveal) {
-      recomputeRevealAgain = true;
-      return;
-    }
-    recomputingReveal = true;
-    try {
-      do {
-        recomputeRevealAgain = false;
-        recomputeRevealPass();
-      } while (recomputeRevealAgain);
-    } finally {
-      recomputingReveal = false;
-    }
-  }
-
-  function recomputeRevealPass(): void {
-    let frontier: Item | null = null;
-    for (const [id, entry] of itemSmoothers) {
-      const item = getItemById(id);
-      if (!item || item.parentId) continue;
-      if (entry.smoother.isCaughtUp()) continue;
-      // Earliest position wins (<= 0 ⇒ item is at or before the frontier).
-      if (
-        frontier === null ||
-        compareItemsByTimelinePosition(item, frontier) <= 0
-      ) {
-        frontier = item;
-      }
-    }
-
-    if (frontier) {
-      const f = frontier;
-      // A successor is any later TOP-LEVEL row. `items` is sorted by
-      // (turnIndex, itemIndex), so scan FORWARD from the frontier's index
-      // instead of the whole array — the common case (streaming the tail
-      // row with nothing after it yet) then costs O(1), not O(items), on
-      // the per-chunk hot path.
-      let hasSuccessor = false;
-      const frontierIdx = itemIndexById.get(f.id) ?? -1;
-      for (let i = frontierIdx + 1; i < items.length; i++) {
-        if (!items[i].parentId) {
-          hasSuccessor = true;
-          break;
-        }
-      }
-      for (const [id, entry] of itemSmoothers) {
-        const item = getItemById(id);
-        if (!item || item.parentId) continue;
-        // Withheld successors pause; the frontier (and any earlier top-level
-        // smoother, though none should outrank it) resumes.
-        if (compareItemsByTimelinePosition(item, f) > 0) entry.smoother.pause();
-        else entry.smoother.resume();
-      }
-      if (hasSuccessor) {
-        const frontierSmoother = itemSmoothers.get(f.id)?.smoother;
-        // A backlog too large to rush through at the drain cap would
-        // hold the waiting successor for whole seconds — snap it in one
-        // deliberate burst instead. Below the threshold, drain at the
-        // elevated (finite) per-tick cap so the finish reads as motion
-        // without a single-frame mega re-parse.
-        if (frontierSmoother && frontierSmoother.getLag() > FAST_DRAIN_SNAP_LAG_CHARS) {
-          frontierSmoother.snap();
-        } else {
-          frontierSmoother?.requestFastDrain();
-        }
-      }
-    } else {
-      // Nothing is gating — make sure no smoother is left paused (the
-      // frontier may have drained between recomputes).
-      for (const entry of itemSmoothers.values()) entry.smoother.resume();
-    }
-
-    const next: RevealBoundary | null = frontier
-      ? { turnIndex: frontier.turnIndex, itemIndex: frontier.itemIndex }
-      : null;
-    const prev = revealBoundary;
-    if (!sameBoundary(prev, next)) {
-      revealBoundary = next;
-      // A boundary change that releases withheld rows mounts them via
-      // MessageTimeline's reveal slice — rows already in `pane.items`, so
-      // no wire upsert lands in that flush and `applyProviderItemUpserts`'s
-      // arm never sees it. Arm the structural-append spring here,
-      // synchronously with the release. `prev !== null` skips the gate
-      // ENGAGING (which only withholds); `boundaryChangeReleasesRows`
-      // skips drops that mount nothing (lone row drained, tail removed).
-      // In practice the latch is usually spring-fresh here (onReveal
-      // stamps every revealed frame), so this mostly matters for releases
-      // landing after a >500ms reveal gap.
-      if (prev !== null && boundaryChangeReleasesRows(prev, next)) {
-        armStructuralSpring();
-      }
-    }
-  }
-
-  // The payload-expansion namespace a reasoning-tail row reads from, matched by
-  // the row component so a mid-stream live delta lands where an expand will
-  // read it.
-  function reasoningExpansionStateKey(kind: ItemKind | string): string {
-    return kind === 'compaction_reasoning'
-      ? COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY
-      : THINKING_PAYLOAD_EXPANSION_STATE_KEY;
-  }
-
-  function getOrCreateSmoothing(
-    itemId: string,
-    initialReceived: string,
-  ): ItemSmoothing {
-    const existing = itemSmoothers.get(itemId);
-    if (existing) return existing;
-
-    // Closure state for this item's smoother. Updated by each delta
-    // and read inside `onReveal` so the row's `updatedAt` stays close
-    // to wire time even as the smoother lags.
-    let latestUpdatedAt = 0;
-    // Previous revealed text — passed as `previousLiveTail` when a
-    // thinking row's live-payload expansion is active so the live tail
-    // stays in sync with the smoothed cursor.
-    let previousRevealed = initialReceived;
-
-    const smoother = new PerItemSmoother({
-      initialReceived,
-      // Seed revealed = received so a mid-flight feature deploy or
-      // turn-resume sees no visible snap.
-      initialRevealed: initialReceived,
-      clock: getSmoothingClockForTest(),
-      onReveal: (revealed, delta) => {
-        const idx = itemIndexById.get(itemId);
-        if (idx === undefined) {
-          smoother.dispose();
-          itemSmoothers.delete(itemId);
-          itemLiveThinkingTail.delete(itemId);
-          return;
-        }
-        // A reveal is genuine live content advancing the bottom — stamp
-        // so the controller spring-chases it. Runs every revealed frame,
-        // INCLUDING the multi-second drain tail after the wire turn ends
-        // (the smoother keeps revealing until caught up), which is what
-        // makes the end-of-turn tail spring instead of jump.
-        stampLiveContent();
-        const current = items[idx];
-        const prevRevealed = previousRevealed;
-        previousRevealed = revealed;
-        // Reasoning-tail rows (thinking + compaction_reasoning) keep the
-        // summary tail-trimmed for memory; assistant_text keeps the full
-        // revealed text.
-        const isReasoningTail = isReasoningTailKind(current.kind);
-        const nextSummary = isReasoningTail
-          ? trimToTailRunes(revealed, THINKING_TAIL_RUNES)
-          : revealed;
-        // Keep the row's `updatedAt` monotonic. A status-only patch
-        // (e.g. bare `{status: 'completed', updatedAt: T}`) can land
-        // between deltas and bump `current.updatedAt` past the
-        // smoother's last-known wire delta; the older value must not
-        // overwrite it when the next rAF reveal lands.
-        const nextItem = {
-          ...current,
-          summary: nextSummary,
-          updatedAt: Math.max(latestUpdatedAt, current.updatedAt),
-        };
-        items[idx] = nextItem;
-        if (isReasoningTail) {
-          itemLiveThinkingTail.set(itemId, revealed);
-          rowUiState.appendLivePayloadDeltaForItem(
-            nextItem.id,
-            reasoningExpansionStateKey(nextItem.kind),
-            delta,
-            thinkingPayloadVersionForItem(nextItem),
-            prevRevealed,
-          );
-        }
-        // Auto-cleanup once the stream has settled AND the smoother has
-        // caught up. After that point no more deltas will arrive and
-        // the smoother is dormant; holding the map slot would just
-        // wait for the next thread switch. Terminal-status paths
-        // (upsert reconcile and `applyItemPatch`'s snap branch) both
-        // dispose synchronously before any further rAF fires, so this
-        // never tramples an authoritative summary.
-        if (current.status !== 'streaming' && smoother.isCaughtUp()) {
-          smoother.dispose();
-          itemSmoothers.delete(itemId);
-          itemLiveThinkingTail.delete(itemId);
-        }
-        // Advance the reveal gate the moment the frontier catches up so the
-        // withheld successor reveals in the same frame, without waiting on an
-        // unrelated wire event.
-        if (smoother.isCaughtUp()) recomputeReveal();
-      },
-    });
-
-    const entry: ItemSmoothing = {
-      smoother,
-      setLatestUpdatedAt(at) {
-        latestUpdatedAt = at;
-      },
-    };
-    itemSmoothers.set(itemId, entry);
-    return entry;
-  }
+  // The per-item smoother + reveal-gate sequencer (disposeSmootherFor,
+  // disposeAll, recomputeReveal, getOrCreateSmoothing, etc.) live in
+  // threadStreamingReveal.svelte.ts as `streamingReveal`. Every
+  // items-mutation path that can change which top-level rows exist
+  // relative to a live smoother must call `streamingReveal.recomputeReveal()`
+  // (or `.disposeAll()`, which clears the boundary).
 
   function upsertItemsBatch(
     incoming: Item[],
@@ -1587,39 +1244,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       pruneToRecentWindowIfNeeded();
     }
 
-    // Reconcile per-item smoothers with the upsert state. A completion /
-    // failure upsert replaces items[index] entirely, so a still-running
-    // smoother would write stale partial reveals back over the new
-    // summary on its next tick. Dispose on any terminal-status upsert.
-    // For streaming upserts whose summary extends what the smoother has
-    // already received, append the suffix so the smoother continues
-    // toward the new target; on a non-extending mismatch, dispose so
-    // the next delta seeds a fresh smoother from the new summary.
-    if (itemSmoothers.size > 0) {
-      for (const it of next.changedItems) {
-        const entry = itemSmoothers.get(it.id);
-        if (!entry) continue;
-        if (it.status !== 'streaming') {
-          entry.smoother.dispose();
-          itemSmoothers.delete(it.id);
-          itemLiveThinkingTail.delete(it.id);
-          continue;
-        }
-        if (!isSmoothLiveContentKind(it.kind)) continue;
-        const received = entry.smoother.getReceived();
-        if (it.summary === received) continue;
-        if (
-          it.summary.length > received.length &&
-          it.summary.startsWith(received)
-        ) {
-          entry.smoother.appendDelta(it.summary.slice(received.length));
-        } else {
-          entry.smoother.dispose();
-          itemSmoothers.delete(it.id);
-          itemLiveThinkingTail.delete(it.id);
-        }
-      }
-    }
+    streamingReveal.reconcileUpsertedItems(next.changedItems);
 
     // Design-mode side-channel: scan assistant text for structured
     // `aoflow-design` payloads and project them onto pane state. Cheap
@@ -1634,7 +1259,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // A newly-appended successor row should withhold behind the streaming
     // frontier and trigger its fast-drain; a terminal upsert that disposed
     // the frontier should drop the gate. Recompute once per batch.
-    recomputeReveal();
+    streamingReveal.recomputeReveal();
     return next;
   }
 
@@ -2055,7 +1680,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       recentWindowPrunePending = false;
     }
     rowUiState.clear();
-    disposeAllSmoothers();
+    streamingReveal.disposeAll();
     // Reset the live-content stamp so a recent stamp from the OUTGOING
     // thread can't bleed into the incoming one. Without this, switching
     // away from an actively-streaming thread leaves `lastLiveContentAt`
@@ -2553,11 +2178,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return loadingNewer;
     },
     debugMemoryStats() {
+      const streamingStats = streamingReveal.debugStats();
       return {
         itemIndexEntries: itemIndexById.size,
         rowUiState: rowUiState.debugStats(),
-        itemSmoothers: itemSmoothers.size,
-        liveThinkingTails: itemLiveThinkingTail.size,
+        itemSmoothers: streamingStats.itemSmoothers,
+        liveThinkingTails: streamingStats.liveThinkingTails,
         optimisticItems: optimisticItemIds.size,
         oldestLoadedCursor,
         newestLoadedCursor,
@@ -2772,7 +2398,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       replaceTimelineItems([]);
       subagentFolds.clear();
       rowUiState.clear();
-      disposeAllSmoothers();
+      streamingReveal.disposeAll();
       // Clearing to empty: drop the live-content stamp too (see
       // installCacheOrFreshState — keeps a stale stamp from springing the
       // next thread's settled content). The switchGeneration bump below
@@ -3406,9 +3032,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (idx === undefined) return null;
       const removed = items[idx];
       replaceTimelineItems(items.filter((it) => it.id !== itemId));
-      disposeSmootherFor(itemId);
+      streamingReveal.disposeSmootherFor(itemId);
       rowUiState.disposeItems([removed]);
-      recomputeReveal();
+      streamingReveal.recomputeReveal();
       if (thread) {
         threadItemCache.evict(thread.id);
         clearThreadSizePriors(thread.id);
@@ -3440,9 +3066,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
       if (removed.length === 0) return removed;
       replaceTimelineItems(kept);
-      for (const r of removed) disposeSmootherFor(r.id);
+      for (const r of removed) streamingReveal.disposeSmootherFor(r.id);
       rowUiState.disposeItems(removed);
-      recomputeReveal();
+      streamingReveal.recomputeReveal();
       if (thread) {
         threadItemCache.evict(thread.id);
         clearThreadSizePriors(thread.id);
@@ -3459,12 +3085,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * Not part of the production surface.
      */
     __flushItemSmoothersForTest(): void {
-      for (const [id, entry] of itemSmoothers) {
-        entry.smoother.snap();
-        entry.smoother.dispose();
-        itemSmoothers.delete(id);
-        itemLiveThinkingTail.delete(id);
-      }
+      streamingReveal.__flushForTest();
     },
 
     /**
@@ -3474,7 +3095,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * part of the production surface.
      */
     __itemSmootherCountForTest(): number {
-      return itemSmoothers.size;
+      return streamingReveal.__smootherCountForTest();
     },
 
     applyItemDelta(evt: ItemDeltaEvent): void {
@@ -3521,12 +3142,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // thinking and compaction_reasoning): route the wire delta through
       // the per-item smoother. The smoother's onReveal callback owns all
       // subsequent writes to items[index].summary and to the live payload tail.
-      const entry = getOrCreateSmoothing(evt.itemId, current.summary);
-      entry.setLatestUpdatedAt(evt.updatedAt);
-      entry.smoother.appendDelta(evt.delta);
-      // A new smoothed row (or fresh lag on the frontier) may move the gate;
-      // recompute so a withheld successor pauses and the frontier fast-drains.
-      recomputeReveal();
+      streamingReveal.appendStreamingDelta(
+        evt.itemId,
+        current.summary,
+        evt.delta,
+        evt.updatedAt,
+      );
     },
 
     applyItemMeta(evt: ItemMetaEvent): void {
@@ -3558,85 +3179,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (index === undefined) {
         // Patch arrived for a row we no longer track (race after
         // removal). Make sure any orphaned smoother is cleaned up.
-        disposeSmootherFor(evt.itemId);
+        streamingReveal.disposeSmootherFor(evt.itemId);
         return;
       }
       const current = items[index];
-      const smoothing = itemSmoothers.get(evt.itemId);
-      const nextStatus = evt.patch.status;
-      // `errored`, `killed`, and `declined` all represent terminal
-      // states where the user has either explicitly stopped the
-      // stream or the provider failed it. In all three, we want the
-      // already-streamed text to be fully visible before the patch's
-      // summary (which may include an "[interrupted] " prefix or
-      // similar) takes over — so snap synchronously and dispose.
-      const isSnapStatus =
-        nextStatus === 'errored' ||
-        nextStatus === 'killed' ||
-        nextStatus === 'declined';
-
-      // Cancel / interrupt / error: synchronously reveal everything in
-      // the smoother before applying the patch, then dispose. The
-      // patch's own summary (e.g. "[interrupted] …") then lands as
-      // the final visible text without being overwritten by a trailing
-      // rAF tick.
-      if (smoothing && isSnapStatus) {
-        smoothing.smoother.snap();
-        disposeSmootherFor(evt.itemId);
-      } else if (smoothing && evt.patch.summary !== undefined) {
-        // Status flipping to completed (or any non-snap patch) may
-        // carry a final summary. If it extends what the smoother has
-        // already received, push the suffix as a delta so the smoother
-        // finishes the reveal naturally. If it doesn't extend (an
-        // overwrite or a backwards correction), snap and dispose so
-        // the patch's summary wins cleanly.
-        const received = smoothing.smoother.getReceived();
-        const patchSummary = evt.patch.summary;
-        if (patchSummary !== received && patchSummary.startsWith(received)) {
-          if (evt.patch.updatedAt !== undefined) {
-            smoothing.setLatestUpdatedAt(evt.patch.updatedAt);
-          }
-          smoothing.smoother.appendDelta(patchSummary.slice(received.length));
-        } else if (patchSummary !== received) {
-          smoothing.smoother.snap();
-          disposeSmootherFor(evt.itemId);
-        } else if (
-          nextStatus !== undefined &&
-          nextStatus !== 'streaming' &&
-          smoothing.smoother.isCaughtUp()
-        ) {
-          // patchSummary === received AND a terminal status AND nothing
-          // left to reveal. No further rAF tick will fire, so the
-          // onReveal auto-cleanup can't dispose — do it here or the
-          // smoother (and its itemLiveThinkingTail entry) leaks until the
-          // next thread switch. This is the Codex completion shape:
-          // content-block-stop carries ContentPresent=true, so
-          // doSettleStreamingText re-asserts the full summary (== what the
-          // smoother received). The bare-status branch below only covers
-          // the case where that equal summary is OMITTED from the patch.
-          disposeSmootherFor(evt.itemId);
-        }
-      } else if (
-        smoothing &&
-        nextStatus !== undefined &&
-        nextStatus !== 'streaming' &&
-        smoothing.smoother.isCaughtUp()
-      ) {
-        // Bare status patch transitioning out of streaming with no
-        // summary (e.g. `{status: 'completed', updatedAt: T}`). The
-        // `onReveal` auto-cleanup only fires on a subsequent rAF tick;
-        // if the smoother is already caught up, no further ticks will
-        // arrive and the `itemSmoothers` + `itemLiveThinkingTail`
-        // entries would leak until the next thread switch. Non-caught-
-        // up smoothers keep streaming text and dispose via `onReveal`
-        // once they catch up (the status check at line 732).
-        disposeSmootherFor(evt.itemId);
-      }
-
-      // Snap/dispose above may have cleared the frontier (interrupt, error,
-      // completion); recompute so the gate drops and any withheld tail rows
-      // reveal. Runs before the early `itemsAreEqual` return below.
-      recomputeReveal();
+      // Smoother decision tree (snap statuses, extend-vs-overwrite,
+      // caught-up terminal dispose, bare-status dispose) plus the
+      // UNCONDITIONAL recompute that follows it — see
+      // threadStreamingReveal.svelte.ts `applyPatch`. Snap/dispose there
+      // may have cleared the frontier (interrupt, error, completion);
+      // the recompute drops the gate and reveals any withheld tail rows
+      // before the early `itemsAreEqual` return below.
+      streamingReveal.applyPatch(evt.itemId, evt.patch);
 
       // Spread from items[index], NOT the pre-snap `current` capture: a
       // snap above rewrote items[index].summary to the full revealed text
@@ -3657,7 +3211,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         // already contains the full revealed text; the patch summary
         // then replaces it with the final wire shape (e.g. interrupted
         // prefix).
-        const stillSmoothing = itemSmoothers.has(evt.itemId);
+        const stillSmoothing = streamingReveal.isSmoothing(evt.itemId);
         if (!stillSmoothing) {
           next.summary = evt.patch.summary;
           // Final/overwrite summary written directly (no smoother to own
@@ -3715,39 +3269,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // Live smoother-revealed text for a streaming thinking row.
     // Returns null when no smoother is active (settled rows, non-thinking
     // rows, pre-stream cache hits) — callers fall back to `item.summary`.
-    // See `itemLiveThinkingTail` for why ThinkingBlock prefers this over
-    // the trimmed-summary sliding window.
+    // See threadStreamingReveal.svelte.ts `itemLiveThinkingTail` for why
+    // ThinkingBlock prefers this over the trimmed-summary sliding window.
     liveThinkingTailForItem(itemId: string): string | null {
-      return itemLiveThinkingTail.get(itemId) ?? null;
+      return streamingReveal.liveThinkingTailFor(itemId);
     },
 
-    /**
-     * Snap every behind smoother straight to its full received text.
-     *
-     * Wired to `visibilitychange → visible` (App.svelte). `requestAnimationFrame`
-     * is suspended while the tab is hidden, but the WebSocket keeps delivering
-     * deltas into each smoother's `received` buffer. A turn that streamed — or
-     * fully completed — in the background therefore leaves smoothers with a
-     * large unrevealed backlog that, on return, would otherwise crawl in at the
-     * per-tick cap (~840 cps): a multi-KB response typing itself out for
-     * seconds even though it is already done. Before the per-item smoother this
-     * never happened — `applyItemDelta` wrote `summary += delta` directly, so a
-     * hidden tab showed the full text the instant it regained focus; the rAF
-     * reveal gate reintroduced the lag, so this restores the prior behavior on
-     * resume without giving up the live-streaming animation.
-     *
-     * Snapping catches the visible text up to the wire in one frame. Still-
-     * streaming rows resume live animation from there (snap leaves the smoother
-     * usable); terminal rows dispose through the same onReveal cleanup any
-     * caught-up smoother uses. `snap()` no-ops on a caught-up smoother, so this
-     * is safe to call unconditionally and costs nothing when nothing is behind.
-     */
+    // Snap every behind smoother straight to its full received text on
+    // visibilitychange → visible. See threadStreamingReveal.svelte.ts
+    // `snapAllToReceived` for the full rationale.
     snapSmoothersToReceived(): void {
-      if (itemSmoothers.size === 0) return;
-      // snap() → onReveal can dispose+delete entries (terminal rows), so
-      // iterate a snapshot rather than the live map.
-      for (const entry of [...itemSmoothers.values()]) entry.smoother.snap();
-      recomputeReveal();
+      streamingReveal.snapAllToReceived();
     },
 
     /**
@@ -3755,10 +3287,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * (turnIndex, itemIndex) of the top-level item currently revealing;
      * MessageTimeline withholds nodes after it via `sliceRevealedNodes` so
      * the next row waits for the current item's reveal to drain. `null`
-     * outside live streaming — render everything. See `recomputeReveal`.
+     * outside live streaming — render everything. See
+     * threadStreamingReveal.svelte.ts `recomputeReveal`.
      */
     get revealBoundary(): RevealBoundary | null {
-      return revealBoundary;
+      return streamingReveal.revealBoundary;
     },
 
     setGeneralError(message: string | null): void {
@@ -3856,14 +3389,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         });
       }
       latestSettledTurn = settled;
-      // The wire is done; any smoother still behind is pure backlog. At
-      // the adaptive ceiling (~840 cps) a multi-KB reasoning backlog
-      // keeps animating for many seconds after the turn settled — drain
-      // it within ~END_OF_TURN_DRAIN_MS instead. First-drain-wins
-      // semantics keep an earlier sequencer drain's tighter deadline.
-      for (const entry of itemSmoothers.values()) {
-        entry.smoother.requestFastDrain(END_OF_TURN_DRAIN_MS);
-      }
+      // The wire is done; drain any still-behind smoother within
+      // ~END_OF_TURN_DRAIN_MS. See threadStreamingReveal.svelte.ts
+      // `requestEndOfTurnFastDrain`.
+      streamingReveal.requestEndOfTurnFastDrain();
       // Run the deferred window prune now that the turn is quiet — the
       // streaming-append path skips it while a turn is active so the
       // head-drop repaint never lands mid-stream.
