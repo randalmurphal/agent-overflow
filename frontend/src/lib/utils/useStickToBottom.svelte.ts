@@ -63,11 +63,24 @@ import {
   springGateIsOpen,
   withinArrivalBand,
   type ContentDeltaObservation,
-  type ContentWriteCaller,
   type ResolverState,
   type VirtuaCompensationObservation,
-  type VirtuaWriteCaller,
 } from './scroll/resolver';
+import type {
+  ScrollObservationKind,
+  ScrollWriteCaller,
+  UseStickToBottomController,
+  UseStickToBottomOptions,
+} from './scroll/types';
+
+// Public types re-exported so this module remains the single import
+// surface for consumers until the Stage-4 rename to scroll/index.svelte.ts
+// updates their import paths.
+export type {
+  ScrollObservationKind,
+  UseStickToBottomController,
+  UseStickToBottomOptions,
+} from './scroll/types';
 
 // Diagnostic trace helper — no-op in production (gated by
 // `isUiRenderTraceEnabled` which only returns true in dev with
@@ -258,25 +271,6 @@ const WARMUP_SETTLE_EPSILON_PX = 8;
 const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
 const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
 
-// Every programmatic scrollTop write names its origin AT the single write
-// site (`writeScrollTop(caller, value)`). Trace attribution and the
-// spring-tick trace sampling both key off it; the closed union keeps a new
-// write path from landing without declaring itself here. The contentRO.*
-// members come from the resolver's decision union so the two cannot drift.
-type ScrollWriteCaller =
-  | ContentWriteCaller
-  | VirtuaWriteCaller
-  | 'spring.tick'
-  | 'spring.overshoot'
-  | 'spring.arrive'
-  | 'spring.oscillationSnap'
-  | 'notifyContentMaybeGrew'
-  | 'notifyLiveContentMaybeGrew'
-  | 'notifyLiveContentMaybeGrew.arrive'
-  | 'forceStick'
-  | 'preserveScrollAnchor'
-  | 'pauseAutoScroll.release';
-
 let mouseDown = false;
 let listenersInstalled = false;
 
@@ -321,277 +315,6 @@ function nowMs(): number {
 
 function roundCssPx(value: number): number {
   return Math.round(value * 100) / 100;
-}
-
-/**
- * Source hint for `observe(kind)` — what kind of geometry/content event
- * the caller witnessed. The controller maps kinds onto its two internal
- * notify paths:
- *
- * - `'content'` / `'host-layout'` → escape-aware instant re-pin
- *   (composer padding, pane reorder, sidebar/terminal layout settles).
- * - `'live-content'` / `'composer-geometry'` → the live-capable path
- *   that honors animationMode and structural-append marks, so active
- *   output can spring through the change instead of snapping (falls
- *   back to the same instant re-pin when no spring is warranted).
- *
- * MessageTimeline's pane-facing adapter overrides `'host-layout'` to run
- * its listRef-aware retry ladder; the raw controller mapping is the
- * correct fallback for surfaces without one (ChannelView).
- */
-export type ScrollObservationKind =
-  | 'content'
-  | 'live-content'
-  | 'composer-geometry'
-  | 'host-layout';
-
-export interface UseStickToBottomController {
-  /** True when sticky AND no lease is held. Drives auto-follow gating. */
-  readonly isSticky: boolean;
-  /**
-   * True when the timeline should hide the ScrollToBottomButton: sticky
-   * by intent, or geometrically near bottom while not explicitly escaped.
-   * User escape wins over the near-bottom band.
-   */
-  readonly isAtBottom: boolean;
-  /** True when the user has explicitly moved the outer scroller away from bottom. */
-  readonly escapedFromLock: boolean;
-  /**
-   * True once the warm-up gate has cleared — either QUIET_MS of
-   * contentRO silence, or FAILSAFE_MS elapsed (whichever first). Use
-   * as a "virtua's measurement cascade has settled" signal: consumers
-   * can hide content during the cascade and reveal here to avoid
-   * showing the user a brief estimated-size paint before the
-   * measured-size correction lands. Reset to false on attach,
-   * restore-reason forceStick, and explicit armWarmup() — the latter
-   * is the seam for "I'm about to render fundamentally different
-   * content (e.g. thread switch) and the DOM update will happen BEFORE
-   * my next forceStick / attach call, so reset the gate now."
-   */
-  readonly isWarm: boolean;
-
-  /** Depth-counted lease that suspends auto-scroll until released. */
-  pauseAutoScroll(): () => void;
-  /**
-   * Notify the controller that geometry or content may have changed in a
-   * way its own observers cannot see (composer padding, pane reorder,
-   * live content advancing without a usable contentRO delta). The kind
-   * is a source hint that picks the response path — see
-   * `ScrollObservationKind`. Escape/pause/user-intent aware: never
-   * yanks a user who scrolled away.
-   */
-  observe(kind: ScrollObservationKind): void;
-  /**
-   * Mark the next near-term content growth as append-like structural
-   * transcript growth. This lets command/tool row batches spring-follow
-   * instead of snapping, without making unrelated idle layout reflows
-   * spring-eligible.
-   */
-  markStructuralContentPending(): void;
-  /**
-   * Run an explicit user disclosure action while preserving the user's
-   * current follow intent. Sticky users stay pinned to bottom; escaped
-   * users keep the clicked anchor at the same viewport position.
-   */
-  preserveScrollAnchor(anchor: HTMLElement, action: () => void | Promise<void>): Promise<void>;
-
-  attach(scrollEl: HTMLElement, contentEl: HTMLElement): void;
-  detach(): void;
-
-  /**
-   * Snap to the bottom and resume auto-follow. Two reasons:
-   *
-   * - `'user'` (default): an explicit bottom-follow action such as the
-   *   scroll-to-bottom chip. Always clears `escapedFromLock` and lands
-   *   scrollTop at the target.
-   * - `'restore'`: a thread-restore-style snap. Honored ONLY if
-   *   `armRestoreSnap()` was called since the last user-initiated
-   *   escape; otherwise NO-OP. This prevents a stale or duplicated
-   *   restore $effect from clobbering an existing user escape with a
-   *   snap-to-bottom they didn't ask for (the seq-509 trace bug).
-   *
-   * Callers writing "user clicked to go to bottom" should pass `'user'`
-   * (or nothing). Callers writing "I just landed on this thread and
-   * the saved snapshot says bottom" should pass `'restore'` AND have
-   * paired their call with an `armRestoreSnap()` from the same
-   * thread-switch entry point.
-   */
-  forceStick(opts?: { reason?: 'user' | 'restore' }): void;
-  /**
-   * Begin a thread-restore transaction: defensively escape (cancel any
-   * spring, drop stale consent, flip to escaped so nothing auto-follows
-   * the outgoing thread's geometry during the DOM flush), then arm a
-   * one-shot consent for the next `forceStick({reason:'restore'})`.
-   * Called by the thread-switch entry point (MessageTimeline's
-   * `$effect.pre`, ChannelView's initial-poll path) BEFORE the DOM
-   * update flushes; the restore $effect consumes the consent after.
-   * The consent auto-clears on outer-scroll escape intent (wheel / key /
-   * touch / pointer that can reach the chat scroller) and on any
-   * user-reason `forceStick()` — the load-bearing distinguisher between
-   * "the user is explicitly escaped" and "the entry point defensively
-   * escaped while preparing the new thread for restore." The arm and the
-   * consume are deliberately separate calls: the consent's whole job is
-   * to span the flush window where a user gesture can land, so a single
-   * merged restore call could not provide this protection.
-   */
-  armRestoreSnap(): void;
-  /**
-   * Flip intent flags to sticky-bottom WITHOUT writing scrollTop.
-   * Use only when the caller has already established bottom geometry
-   * or when the timeline is empty and there is no geometry to write.
-   */
-  markAtBottom(): void;
-  /**
-   * Run an external programmatic scroll, such as virtua's
-   * `listRef.scrollToIndex(...)`, under the controller's scroll-intent
-   * tag. This is the escape hatch for scroll writers the controller
-   * cannot perform itself.
-   *
-   * Most external jumps are explicit navigation and should escape bottom
-   * follow. Host-layout reconciliation is different: it rewrites the
-   * virtualizer's current offset after a pane move without changing user
-   * intent, so it passes `preserveIntent`.
-   */
-  runExternalScroll(action: () => void, opts?: { preserveIntent?: boolean }): void;
-  /**
-   * Set the escape flag. Public so `handleLoadOlder` / `scrollToItem`
-   * can opt out of auto-restick on programmatic jumps.
-   *
-   * Calling with `next=true` also (a) cancels any in-flight spring
-   * chase and (b) clears any pending `armRestoreSnap()` consent — a
-   * fresh escape invalidates a yet-to-be-consumed restore-snap.
-   * `armRestoreSnap()` itself runs its defensive escape through here
-   * BEFORE arming, so its arm survives this clear while any stale
-   * consent from an earlier path does not.
-   *
-   * Calling with `next=false` flips intent only — it does not consume
-   * the restore-snap consent (that's `forceStick({reason:'restore'})`
-   * or `markAtBottom()`'s job).
-   */
-  setEscapedFromLock(next: boolean): void;
-  /**
-   * Re-arm the warm-up gate WITHOUT writing scrollTop or changing
-   * intent / escape flags. Sets `isWarm` to false and restarts the
-   * QUIET_MS / FAILSAFE_MS timers, exactly as `attach()` and
-   * restore-reason `forceStick()` do.
-   *
-   * The use case is a consumer that needs `isWarm` to be false BEFORE
-   * the next DOM flush, where calling `forceStick()` would be wrong
-   * because it has unwanted side effects (writes scrollTop, clears
-   * escape). Chat's MessageTimeline calls this from `$effect.pre` on
-   * thread switch: contentEl and scrollEl don't change across switches
-   * (so `attach()` early-returns), and the restore-effect `forceStick()`
-   * runs in `$effect` which fires AFTER the DOM update — meaning the
-   * first paint of the new thread would otherwise inherit the previous
-   * thread's settled `isWarm=true`, defeating the cascade-hide gate.
-   */
-  armWarmup(): void;
-  /**
-   * Force the warm-up gate open immediately. Use when the caller knows
-   * there is no measurement cascade to hide — e.g. the placeholder →
-   * materialized transition where the timeline was empty.
-   */
-  skipWarmup(): void;
-  /**
-   * Notify the controller that the consumer's `quietContextSignal`
-   * flipped truthy. If the warm gate is still pending and a quiet
-   * timer is currently armed, re-arm with SETTLED_QUIET_MS instead of
-   * letting the original (longer) timer run to completion. No-op if
-   * already warm, no quiet timer is in flight, or the signal is still
-   * falsy at notify time.
-   *
-   * This is the seam for "I just learned async typesetting finished
-   * mid-cascade, please shorten the wait." Without it, a 100ms bump
-   * would run to completion even though our visibility into the
-   * cascade said we could lift in 16ms.
-   */
-  notifyQuietContextSignalChanged(): void;
-  /**
-   * The virtua scroll-applier entry point (patched `setScrollApplier`
-   * seam, patches/virtua@0.49.1.patch). virtua calls this synchronously
-   * from its post-flush $fixScrollJump with the absolute target it wants
-   * scrollTop set to plus the raw (jump, shift) pair; the resolver's
-   * `resolveVirtuaCompensation` decides and any write goes through the
-   * controller chokepoint (tagged + marked like every controller write).
-   * Returns true if a write landed; false declines, and the patched core
-   * pokes its store with the current DOM offset so a declined
-   * compensation can never desync virtua's model.
-   *
-   * The consumer wires this directly:
-   * `listRef.setScrollApplier(stick.applyVirtuaScrollCompensation)`.
-   */
-  applyVirtuaScrollCompensation(target: number, jump: number, shift: boolean): boolean;
-}
-
-export interface UseStickToBottomOptions {
-  /**
-   * Picks animation behavior for autonomous content growth (contentRO
-   * positive deltas). Called per-fire — return 'spring' to make the
-   * delta spring-eligible, 'instant' to sync-pin. A one-shot
-   * markStructuralContentPending() call can make the next near-term
-   * structural append spring-eligible even while this returns 'instant'.
-   * Width-driven layout correction still sync-pins even when this returns
-   * 'spring'.
-   * Defaults to () => 'instant' (sync-pin everywhere) so existing
-   * callers behave identically to the pre-spring-restoration controller.
-   *
-   * Chat's MessageTimeline wires this to a content-keyed latch
-   * (`latchedSpringMode(performance.now(), pane.lastLiveContentAt,
-   * SPRING_MODE_HOLD_MS)`) so streaming chunks — and the end-of-turn
-   * drain after the turn signal clears — animate; idle/settled threads,
-   * width reflow corrections, and Discussion's polled channel surface
-   * stay on sync-pin.
-   */
-  animationMode?: () => 'spring' | 'instant';
-  /**
-   * Optional consumer-supplied signal that the visible
-   * async-typesetting context has settled (e.g. all currently-mounted
-   * svelte-streamdown instances have signaled `onsettled` since the
-   * warm gate was last armed). When truthy at the moment
-   * `bumpQuietTimer` fires, the warm-gate quiet window is shortened
-   * from QUIET_MS to SETTLED_QUIET_MS — we trust there is no late
-   * typesetting wave still in flight that could land an RO event after
-   * the gate lifts and produce a one-frame flicker. When falsy, the
-   * conservative QUIET_MS is preserved.
-   *
-   * Read per-fire — this is not a subscription. To shorten an existing
-   * timer mid-flight (signal flipped truthy AFTER a 100ms bump), the
-   * consumer should call `notifyQuietContextSignalChanged()`.
-   *
-   * Defaults to undefined (preserves existing QUIET_MS behavior for
-   * surfaces that have no async-typesetting signal — Discussion's
-   * ChannelView is the canonical example).
-   */
-  quietContextSignal?: () => boolean;
-  /**
-   * Optional hook invoked synchronously immediately before EVERY
-   * programmatic scrollTop write the controller performs (sync pins,
-   * spring ticks, forceStick snaps).
-   *
-   * Exists for scroll-position libraries that observe the scroll element
-   * and classify scroll events as user gestures unless told otherwise.
-   * Chat's MessageTimeline wires this to the patched virtua handle's
-   * `markProgrammaticScroll()`: without the mark, virtua reads each pin
-   * write as the user scrolling down, latches that direction, and drops
-   * its entire above-viewport buffer — the row unmount/remount churn
-   * behind the streaming settle flicker (see
-   * docs/architecture/settle-flicker-analysis.md). virtua clears the
-   * mark on scrollend, which is why this fires per-write rather than
-   * per-burst.
-   *
-   * Two contract notes: the hook MUST NOT throw — it runs inside
-   * ResizeObserver callbacks and spring rAF ticks, and a throw aborts the
-   * pin write it precedes. And it fires even when the subsequent write
-   * turns out to be a no-op (value already equals scrollTop, e.g. a
-   * clamped at-max write); no scroll event follows, so a virtua manual
-   * mark can linger until the next gesture's scrollend — benign
-   * over-retention (virtua keeps the symmetric buffer, exactly what
-   * virtua's own scrollTo leaves behind).
-   *
-   * Defaults to undefined (no-op) — Discussion's ChannelView has no
-   * virtualizer and needs no marking.
-   */
-  onBeforeScrollTopWrite?: () => void;
 }
 
 export function createUseStickToBottomController(
