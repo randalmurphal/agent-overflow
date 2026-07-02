@@ -26,6 +26,7 @@
   } from '../../stores/providerModels.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import ProviderContextSettings from './ProviderContextSettings.svelte';
+  import ProviderModelChips from './ProviderModelChips.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
@@ -194,26 +195,11 @@
 
         <SettingsField
           label="Available models"
-          hint="Models exposed by the provider's catalog."
+          hint="Click a model to show or hide it in model pickers."
           align="start"
           stacked={models.length > 3}
         >
-          {#if models.length > 0}
-            <div
-              class="flex flex-wrap gap-1.5"
-              data-testid="settings-provider-models"
-            >
-              {#each models as model (model.slug)}
-                <span
-                  class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-0.5 text-[0.6875rem] text-fg-muted"
-                >
-                  {model.name || model.slug}
-                </span>
-              {/each}
-            </div>
-          {:else}
-            <span class="text-[0.75rem] text-fg-muted">No models available.</span>
-          {/if}
+          <ProviderModelChips provider={provider.id} {models} />
         </SettingsField>
       </div>
 

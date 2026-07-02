@@ -18,6 +18,8 @@ const DEFAULT_SETTINGS: Settings = {
   codexBinaryPath: "codex",
   claudeEnabled: true,
   codexEnabled: true,
+  claudeHiddenModels: [],
+  codexHiddenModels: [],
   defaultThreadEnvMode: "local",
   worktreeBranchPrefix: "ao-",
   paneDensity: "compact",
@@ -58,6 +60,8 @@ function defaultSettings(): Settings {
     network: { ...DEFAULT_SETTINGS.network },
     retention: { ...DEFAULT_SETTINGS.retention },
     gitlabSelfHostedHosts: [...DEFAULT_SETTINGS.gitlabSelfHostedHosts],
+    claudeHiddenModels: [...(DEFAULT_SETTINGS.claudeHiddenModels ?? [])],
+    codexHiddenModels: [...(DEFAULT_SETTINGS.codexHiddenModels ?? [])],
     collapsedProjects: [...(DEFAULT_SETTINGS.collapsedProjects ?? [])],
     paneLayout: {
       ...DEFAULT_SETTINGS.paneLayout,
@@ -85,6 +89,12 @@ function mergeSettingsWithDefaults(result: Partial<Settings>): Settings {
     gitlabSelfHostedHosts: result.gitlabSelfHostedHosts
       ? [...result.gitlabSelfHostedHosts]
       : defaults.gitlabSelfHostedHosts,
+    claudeHiddenModels: result.claudeHiddenModels
+      ? [...result.claudeHiddenModels]
+      : defaults.claudeHiddenModels,
+    codexHiddenModels: result.codexHiddenModels
+      ? [...result.codexHiddenModels]
+      : defaults.codexHiddenModels,
     collapsedProjects: result.collapsedProjects
       ? [...result.collapsedProjects]
       : defaults.collapsedProjects,

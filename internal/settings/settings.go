@@ -111,6 +111,18 @@ type Settings struct {
 	ClaudeEnabled        bool   `json:"claudeEnabled"`
 	CodexEnabled         bool   `json:"codexEnabled"`
 
+	// ClaudeHiddenModels / CodexHiddenModels list catalog model slugs
+	// the user has hidden from model pickers. Hide-list semantics:
+	// slugs absent from the list — including models a later app update
+	// adds to the catalog — stay visible. Hiding is display-only:
+	// existing threads on a hidden model keep working, and slug /
+	// cost / capability resolution still sees the full catalog. The
+	// Claude list applies to both the claude and claude-tui providers
+	// (one binary, one catalog). Unknown slugs are kept as-is so a
+	// hidden Codex model survives the live catalog being offline.
+	ClaudeHiddenModels []string `json:"claudeHiddenModels,omitempty"`
+	CodexHiddenModels  []string `json:"codexHiddenModels,omitempty"`
+
 	// DefaultThreadEnvMode seeds the workspace mode for new draft threads.
 	// Accepts "local" or "worktree"; unknown values fall back to "local"
 	// when settings are loaded.
@@ -293,6 +305,20 @@ var DefaultSettings = Settings{
 	Retention:       RetentionSettings{Days: 30},
 	ProjectSortMode: "lastActivity",
 	PaneLayout:      PaneLayoutSettings{Version: 1},
+}
+
+// HiddenModelsForProvider returns the hidden-model slug list for the
+// given provider name. claude-tui shares the claude list (same binary,
+// same catalog). Unknown providers hide nothing.
+func (s Settings) HiddenModelsForProvider(provider string) []string {
+	switch provider {
+	case "claude", "claude-tui":
+		return s.ClaudeHiddenModels
+	case "codex":
+		return s.CodexHiddenModels
+	default:
+		return nil
+	}
 }
 
 // AutoCompactPercents returns the per-tier compact thresholds for the

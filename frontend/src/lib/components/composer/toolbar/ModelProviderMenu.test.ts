@@ -3,12 +3,14 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import ModelProviderMenu from './ModelProviderMenu.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
+import { loadSettings, resetSettingsForTest } from '../../../stores/settings.svelte';
 import type { Item, Thread } from '../../../types/models';
 import {
   getBindingMock,
   resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
+import { makeSettings } from '../../../../test/helpers/settings';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -62,6 +64,7 @@ async function buildPane(thread: Thread, items: Item[] = []) {
 describe('<ModelProviderMenu>', () => {
   beforeEach(() => {
     resetBindingMocks();
+    resetSettingsForTest();
     setBindingMock('ListDiscussions', async () => []);
     setBindingMock('ListDiscussionsForThread', async () => []);
     setBindingMock('ListChatBarFavorites', async () => []);
@@ -157,6 +160,73 @@ describe('<ModelProviderMenu>', () => {
     expect(favorite.querySelector('svg.lucide-claude')).not.toBeNull();
     expect(favorite.textContent ?? '').not.toMatch(/\bClaude\b/);
     await findByRole('menuitem', { name: /Architects/i });
+  });
+
+  it('filters favorites whose model is hidden in settings (star survives for re-show)', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }));
+    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetSettings', async () =>
+      makeSettings({ claudeHiddenModels: ['claude-opus-4-7'] }));
+    await loadSettings();
+    setBindingMock('ListChatBarFavorites', async () => [
+      { kind: 'model', provider: 'claude', value: 'claude-opus-4-7', label: 'Claude Opus 4.7', createdAt: 1 },
+      { kind: 'model', provider: 'claude', value: 'claude-opus-4-8', label: 'Claude Opus 4.8', createdAt: 2 },
+    ]);
+
+    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, { props: { pane } });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+
+    await findByRole('menuitem', { name: /Opus 4\.8/i });
+    expect(queryByRole('menuitem', { name: /Opus 4\.7/i })).toBeNull();
+
+    // Re-showing the model in settings brings the star back — the
+    // favorite row was filtered, never deleted.
+    setBindingMock('GetSettings', async () => makeSettings({ claudeHiddenModels: [] }));
+    await loadSettings();
+    await findByRole('menuitem', { name: /Opus 4\.7/i });
+  });
+
+  it('claude-tui submenu shares the claude hide-list', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }));
+    setBindingMock('GetSettings', async () =>
+      makeSettings({ claudeHiddenModels: ['claude-opus-4-7'] }));
+    await loadSettings();
+    setBindingMock('GetModelsForProvider', async () => [
+      { slug: 'claude-opus-4-8', name: 'Claude Opus 4.8', provider: 'claude-tui', capabilities: [] },
+      { slug: 'claude-opus-4-7', name: 'Claude Opus 4.7', provider: 'claude-tui', capabilities: [] },
+    ]);
+
+    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, { props: { pane } });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+    const tuiRow = await findByRole('menuitem', { name: /^Claude TUI$/ });
+    await fireEvent.click(tuiRow);
+
+    await findByRole('menuitem', { name: /Opus 4\.8/i });
+    expect(queryByRole('menuitem', { name: /Opus 4\.7/i })).toBeNull();
+  });
+
+  it('drops hidden models from the provider submenu but keeps the active model row', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-5' }));
+    setBindingMock('GetSettings', async () =>
+      makeSettings({ claudeHiddenModels: ['claude-opus-4-5', 'claude-opus-4-7'] }));
+    await loadSettings();
+    setBindingMock('GetModelsForProvider', async () => [
+      { slug: 'claude-opus-4-8', name: 'Claude Opus 4.8', provider: 'claude', capabilities: [] },
+      { slug: 'claude-opus-4-7', name: 'Claude Opus 4.7', provider: 'claude', capabilities: [] },
+      { slug: 'claude-opus-4-5', name: 'Claude Opus 4.5', provider: 'claude', capabilities: [] },
+    ]);
+
+    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, { props: { pane } });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+    const claudeRow = await findByRole('menuitem', { name: /^Claude$/ });
+    await fireEvent.click(claudeRow);
+
+    await findByRole('menuitem', { name: /Opus 4\.8/i });
+    // Active model stays listed even though it's hidden — the picker
+    // must never show "nothing selected".
+    await findByRole('menuitem', { name: /Opus 4\.5/i });
+    // Hidden non-active model is gone.
+    expect(queryByRole('menuitem', { name: /Opus 4\.7/i })).toBeNull();
   });
 
   it('renders provider model rows with the favorite star before the label', async () => {

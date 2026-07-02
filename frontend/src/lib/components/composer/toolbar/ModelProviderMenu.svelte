@@ -22,8 +22,10 @@
   } from '../../../stores/providerModels.svelte';
   import ProviderIcon from '../../shared/ProviderIcon.svelte';
   import { syncThread } from '../../../stores/panes.svelte';
+  import { getSettings } from '../../../stores/settings.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
+  import { hiddenModelSlugs } from '../../../utils/hiddenModels';
   import { displayModelLabel } from '../../../utils/modelLabels';
   import MessagesSquare from 'lucide-svelte/icons/messages-square';
   import Popover from '../../primitives/Popover.svelte';
@@ -213,12 +215,26 @@
   let isDiscussion = $derived(pane.thread?.mode === 'discussion');
   let activeProvider = $derived(asProviderID(pane.thread?.provider));
   let showDiscussions = $derived(!isDiscussion && !isLocked);
-  let visibleFavorites = $derived(favorites.filter((fav) => {
-    if (fav.kind === 'discussion') return showDiscussions;
-    const provider = asProviderID(fav.provider);
-    if (!provider) return false;
-    return !isDiscussion && (!isLocked || activeProvider === provider);
-  }));
+  let visibleFavorites = $derived.by(() => {
+    const settings = getSettings();
+    // Hidden sets built once per provider per recompute, not per
+    // favorite (the list holds up to 30 entries).
+    const hiddenByProvider = new Map<ProviderID, ReadonlySet<string>>();
+    return favorites.filter((fav) => {
+      if (fav.kind === 'discussion') return showDiscussions;
+      const provider = asProviderID(fav.provider);
+      if (!provider) return false;
+      // Favorites for hidden models are filtered, not deleted — the
+      // star reappears as-is when the model is re-shown in settings.
+      let hidden = hiddenByProvider.get(provider);
+      if (!hidden) {
+        hidden = hiddenModelSlugs(settings, provider);
+        hiddenByProvider.set(provider, hidden);
+      }
+      if (hidden.has(fav.value)) return false;
+      return !isDiscussion && (!isLocked || activeProvider === provider);
+    });
+  });
 
   function showProviderSubmenu(provider: ProviderID): boolean {
     return !isDiscussion && (!isLocked || activeProvider === provider);
