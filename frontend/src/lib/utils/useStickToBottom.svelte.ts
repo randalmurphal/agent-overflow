@@ -266,6 +266,28 @@ const WARMUP_SETTLE_EPSILON_PX = 8;
 const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
 const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
 
+// Every programmatic scrollTop write names its origin AT the single write
+// site (`writeScrollTop(caller, value)`). Trace attribution and the
+// spring-tick trace sampling both key off it; the closed union keeps a new
+// write path from landing without declaring itself here.
+type ScrollWriteCaller =
+  | 'contentRO.firstFire'
+  | 'contentRO.overshoot'
+  | 'contentRO.positiveDelta'
+  | 'contentRO.negativeDelta'
+  | 'contentRO.negativeDeltaReflow'
+  | 'contentRO.oscillationSnap'
+  | 'spring.tick'
+  | 'spring.overshoot'
+  | 'spring.arrive'
+  | 'spring.oscillationSnap'
+  | 'notifyContentMaybeGrew'
+  | 'notifyLiveContentMaybeGrew'
+  | 'notifyLiveContentMaybeGrew.arrive'
+  | 'forceStick'
+  | 'preserveScrollAnchor'
+  | 'pauseAutoScroll.release';
+
 let mouseDown = false;
 let listenersInstalled = false;
 
@@ -879,9 +901,8 @@ export function createUseStickToBottomController(
     arrivalReadbackAcceptedTarget = null;
   }
 
-  function writeExactArrivalTarget(caller: string, target: number): void {
-    writeCaller = caller;
-    writeScrollTop(target);
+  function writeExactArrivalTarget(caller: ScrollWriteCaller, target: number): void {
+    writeScrollTop(caller, target);
     recordArrivalReadbackAcceptance(target);
   }
 
@@ -986,13 +1007,6 @@ export function createUseStickToBottomController(
   }
 
   // ===== Programmatic scroll write =====
-  // Diagnostic: `writeCaller` is set by the public-facing scrollTop
-  // writer (forceStick / notifyContentMaybeGrew / contentRO /
-  // overscroll-guard) before delegating to
-  // `writeScrollTop` so the trace can attribute every write to its
-  // origin. No semantic effect; production builds short-circuit at the
-  // `isUiRenderTraceEnabled` check inside `trace()`.
-  let writeCaller: string = 'unknown';
   // Spring-tick writes fire at 60Hz during a chase — predictable
   // increment-by-1px from the spring solver, and each record is
   // ~300 bytes. Without sampling, they were 5% of the 10 MB rotation
@@ -1004,7 +1018,7 @@ export function createUseStickToBottomController(
   // is recorded (the gating predicate is `<`, so equal-or-greater
   // values record and reset).
   let springTickSinceLastTrace = SPRING_TICK_TRACE_SAMPLE - 1;
-  function writeProgrammaticScrollTop(value: number): void {
+  function writeProgrammaticScrollTop(caller: ScrollWriteCaller, value: number): void {
     if (!scrollEl) return;
     // Determine whether this write will be traced BEFORE reading any
     // pre-write geometry. The sampling decision and the
@@ -1014,7 +1028,7 @@ export function createUseStickToBottomController(
     // on the hot path — spring ticks fire at 60Hz and the trace is
     // sampled to ~5Hz, so ~92% of ticks skip the reads entirely.
     let recordTrace = true;
-    if (writeCaller === 'spring.tick') {
+    if (caller === 'spring.tick') {
       if (springTickSinceLastTrace < SPRING_TICK_TRACE_SAMPLE - 1) {
         springTickSinceLastTrace += 1;
         recordTrace = false;
@@ -1054,7 +1068,7 @@ export function createUseStickToBottomController(
     refreshIsNearBottom();
     if (shouldTrace) {
       trace('scroll.write', () => ({
-        caller: writeCaller,
+        caller,
         requested: Math.round(value),
         beforeTop: Math.round(beforeTop),
         afterTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
@@ -1070,14 +1084,14 @@ export function createUseStickToBottomController(
     }
   }
 
-  function writeScrollTop(value: number): void {
+  function writeScrollTop(caller: ScrollWriteCaller, value: number): void {
     if (!scrollEl) return;
     // Hot path: spring follow can call this every frame. The app contract is
     // that controller-owned scrollers do not get CSS-authored smooth scroll;
     // only inline values need temporary suppression here.
     const original = scrollEl.style.scrollBehavior;
     if (original && original !== 'auto') scrollEl.style.scrollBehavior = 'auto';
-    writeProgrammaticScrollTop(value);
+    writeProgrammaticScrollTop(caller, value);
     if (original && original !== 'auto') scrollEl.style.scrollBehavior = original;
   }
 
@@ -1199,9 +1213,8 @@ export function createUseStickToBottomController(
   // stop-after-N break here: this snap exists to rescue scrollTop from a browser
   // max-scroll clamp, and a break would instead STRAND it there — the
   // post-width-reflow floating-message bug it recovers from. Fix the driver.
-  function snapOscillationToBottom(caller: string, top: number): void {
-    writeCaller = caller;
-    writeScrollTop(top);
+  function snapOscillationToBottom(caller: ScrollWriteCaller, top: number): void {
+    writeScrollTop(caller, top);
     velocity = 0;
     accumulated = 0;
     sentinelEntryTarget = -1;
@@ -1328,8 +1341,7 @@ export function createUseStickToBottomController(
               (current < target && next > target)
               || (current > target && next < target);
             const clamped = crossedTarget ? target : next;
-            writeCaller = crossedTarget ? 'spring.overshoot' : 'spring.tick';
-            writeScrollTop(clamped);
+            writeScrollTop(crossedTarget ? 'spring.overshoot' : 'spring.tick', clamped);
             if (clamped === target) {
               recordArrivalReadbackAcceptance(target);
             }
@@ -1469,8 +1481,7 @@ export function createUseStickToBottomController(
           clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
         }));
         if (willPin) {
-          writeCaller = 'contentRO.firstFire';
-          writeScrollTop(targetScrollTop());
+          writeScrollTop('contentRO.firstFire', targetScrollTop());
         }
         refreshIsNearBottom();
         return;
@@ -1602,8 +1613,7 @@ export function createUseStickToBottomController(
         && pauseDepth === 0
         && (springToken === 0 || overshootMagnitude > SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX)
       ) {
-        writeCaller = 'contentRO.overshoot';
-        writeScrollTop(target);
+        writeScrollTop('contentRO.overshoot', target);
       }
 
       // ===== Synchronous sentinel oscillation recovery =====
@@ -1680,8 +1690,7 @@ export function createUseStickToBottomController(
             lastTargetChangedAt = nowMs();
             startSpringIfNeeded();
           } else {
-            writeCaller = 'contentRO.positiveDelta';
-            writeScrollTop(target);
+            writeScrollTop('contentRO.positiveDelta', target);
           }
         }
       } else if (delta < 0) {
@@ -1731,10 +1740,10 @@ export function createUseStickToBottomController(
           // the sync-pin runs as before. See
           // docs/architecture/frontend-scroll.md.
           if (springToken === 0 || widthReflowActive) {
-            writeCaller = widthReflowActive
-              ? 'contentRO.negativeDeltaReflow'
-              : 'contentRO.negativeDelta';
-            writeScrollTop(target);
+            writeScrollTop(
+              widthReflowActive ? 'contentRO.negativeDeltaReflow' : 'contentRO.negativeDelta',
+              target,
+            );
           } else {
             // Spring is the single writer mid-chase; sync write is
             // suppressed above. The target nonetheless moved (downward),
@@ -2100,8 +2109,7 @@ export function createUseStickToBottomController(
         const afterTop = anchor.getBoundingClientRect().top;
         const delta = afterTop - beforeTop;
         if (Number.isFinite(delta) && Math.abs(delta) >= 0.5) {
-          writeCaller = 'preserveScrollAnchor';
-          writeScrollTop(targetScrollEl.scrollTop + delta);
+          writeScrollTop('preserveScrollAnchor', targetScrollEl.scrollTop + delta);
         }
       }
     } finally {
@@ -2163,8 +2171,7 @@ export function createUseStickToBottomController(
     if (reason === 'restore') beginWarmup();
     if (!scrollEl) return;
     isAtBottomState = true;
-    writeCaller = 'forceStick';
-    writeScrollTop(targetScrollTop());
+    writeScrollTop('forceStick', targetScrollTop());
   }
 
   function markAtBottom(): void {
@@ -2215,7 +2222,7 @@ export function createUseStickToBottomController(
     };
   }
 
-  function instantPinAfterExternalGeometryChange(caller: string): void {
+  function instantPinAfterExternalGeometryChange(caller: ScrollWriteCaller): void {
     // Stamp resizeDifference BEFORE writing scrollTop so the resulting
     // scroll event is treated as RO-correlated, not user-driven. Without
     // this, a textarea-shrink could cause the scroll handler's re-stick
@@ -2230,8 +2237,7 @@ export function createUseStickToBottomController(
         }
       });
     }, RESIZE_CLEAR_PADDING_MS);
-    writeCaller = caller;
-    writeScrollTop(targetScrollTop());
+    writeScrollTop(caller, targetScrollTop());
   }
 
   function notifyContentMaybeGrew(): void {
@@ -2343,8 +2349,7 @@ export function createUseStickToBottomController(
         // Re-pin on lease release: layout-changing surfaces (sidebar
         // resize, terminal toggle) shrink/grow the chat column during
         // the lease; without this re-pin, sticky users drift.
-        writeCaller = 'pauseAutoScroll.release';
-        writeScrollTop(targetScrollTop());
+        writeScrollTop('pauseAutoScroll.release', targetScrollTop());
       }
     };
   }
