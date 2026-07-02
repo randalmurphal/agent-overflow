@@ -394,6 +394,9 @@ func (p *Parser) appendToolUseEvent(
 	if isBackground {
 		p.markBackground(block.ID)
 	}
+	if isAgentLaunchToolName(block.Name) {
+		p.markAgentLaunchTool(block.ID)
+	}
 
 	meta := marshalToolMeta(block.Name, block.Input, isBackground, assistantMessageID)
 	return append(events, provider.ProviderEvent{
@@ -754,6 +757,22 @@ func contextWindowFromClaudeUsage(usage assistantUsage) (provider.ContextWindow,
 		return provider.ContextWindow{}, false
 	}
 	return provider.ContextWindow{UsedTokens: used}, true
+}
+
+// isAgentLaunchToolName reports whether toolName is Claude's
+// subagent-launching tool: "Agent" on current CLIs (2.1.170+, every
+// captured local_agent fixture) and "Task" on older builds — the same
+// two-name set claudetui/reconstruct.go (agentLaunches) and triage's
+// tool_meta_rules match, kept in sync so a CLI version change degrades
+// gracefully. Matching only "Agent" would leave a "Task"-named launch
+// unmarked, and the resume-detection reconnect fallback
+// (parse_system.go task_started case 2) would then misclassify that
+// ordinary launch as a resume and wrongly background it.
+// task_type:"local_agent" on system/task_started is a conceptual
+// classification, not a tool name (see claude-wire.md
+// §system/task_started).
+func isAgentLaunchToolName(name string) bool {
+	return name == "Agent" || name == "Task"
 }
 
 // hasRunInBackground returns true when the tool input JSON contains
