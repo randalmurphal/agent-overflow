@@ -1,6 +1,6 @@
 <script lang="ts" generics="T">
   import { onDestroy, untrack, type Snippet } from 'svelte';
-  import { createEngine } from '../../utils/virtual/engine';
+  import { createEngine, mergeCompensations } from '../../utils/virtual/engine';
   import { createRowEstimate } from '../../utils/virtual/priors';
   import type {
     ContentGeometrySample,
@@ -141,15 +141,10 @@
       return;
     }
     // Two engine updates in one flush (e.g. a head splice and a
-    // measurement batch). Both targets are absolute offsets computed from
-    // the SAME engine scroll offset (no scroll event lands mid-flush), so
-    // the combined target is the later target advanced by the earlier
-    // delta.
-    pendingCompensation = {
-      kind: prior.kind === 'head-splice' || next.kind === 'head-splice' ? 'head-splice' : next.kind,
-      delta: prior.delta + next.delta,
-      target: Math.max(0, next.target + prior.delta),
-    };
+    // measurement batch). Both targets derive from the same engine scroll
+    // offset, so the merge recomputes the exact combined target from the
+    // summed deltas (see mergeCompensations).
+    pendingCompensation = mergeCompensations(prior, next, engine.getScrollOffset());
   }
 
   $effect(() => {
@@ -210,6 +205,10 @@
       maxFirstMeasureCorrectionPx,
     };
     const prev = lastGeometrySample;
+    // Field-by-field on purpose — but TypeScript will NOT flag a field
+    // added to ContentGeometrySample and missed here; a missed field
+    // silently swallows deliveries that differ only in it. Update this
+    // compare alongside the type.
     if (
       prev &&
       prev.height === sample.height &&
@@ -268,6 +267,13 @@
       if (!target.offsetParent) continue;
       if (target === observedScroller) {
         viewportHeight = entry.contentRect.height;
+        // Sibling width observer: MessageTimeline's
+        // observeScrollSurfaceContentWidth watches this same scroller for
+        // the size-priors validity key. It must outlive the `{#key}`
+        // remount that recreates this component (and report before this
+        // component mounts), so the two observations stay separate. Both
+        // are async RO content-box reads; neither may become a sync
+        // layout read (width-oscillation incident 2026-06-26).
         const width = entry.contentRect.width;
         if (width !== scrollerContentWidth) {
           scrollerContentWidth = width;
@@ -364,6 +370,9 @@
     touching = true;
   }
 
+  // Also handles touchcancel: a system gesture / context menu can end a
+  // touch without ever firing touchend, and a stuck `touching` flag would
+  // re-arm the scrollend timer forever and never deliver onscrollend.
   function handleTouchEnd(): void {
     touching = false;
   }
@@ -377,11 +386,13 @@
     scroller.addEventListener('wheel', handleWheel, { passive: true });
     scroller.addEventListener('touchstart', handleTouchStart, { passive: true });
     scroller.addEventListener('touchend', handleTouchEnd, { passive: true });
+    scroller.addEventListener('touchcancel', handleTouchEnd, { passive: true });
     return () => {
       scroller.removeEventListener('scroll', handleScroll);
       scroller.removeEventListener('wheel', handleWheel);
       scroller.removeEventListener('touchstart', handleTouchStart);
       scroller.removeEventListener('touchend', handleTouchEnd);
+      scroller.removeEventListener('touchcancel', handleTouchEnd);
       resizeObserver?.unobserve(scroller);
       observedScroller = undefined;
       clearTimeout(scrollEndTimer);
@@ -465,7 +476,17 @@
   export function revalidate(): void {
     const scroller = scrollRef;
     if (!scroller) return;
-    applyUpdate(engine.applyViewportResize(scroller.clientHeight));
+    // Content-box height, matching the RO path's contentRect unit.
+    // clientHeight is the PADDING box, and chat's scroller carries
+    // composer-clearance padding-bottom — feeding it here would inflate
+    // the engine's viewport by the padding and land align-end targets
+    // (scroll-to-bottom after a pane reorder) short by that amount.
+    const style = getComputedStyle(scroller);
+    // `|| 0` guards happy-dom's empty computed strings (NaN paddings
+    // would poison the engine's viewport).
+    const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+    const paddingBottom = Number.parseFloat(style.paddingBottom) || 0;
+    applyUpdate(engine.applyViewportResize(scroller.clientHeight - paddingTop - paddingBottom));
     applyUpdate(engine.applyScroll(scroller.scrollTop));
   }
 

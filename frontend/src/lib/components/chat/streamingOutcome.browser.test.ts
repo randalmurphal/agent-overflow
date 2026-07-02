@@ -55,12 +55,16 @@ const QUIET_BOTTOM_EPSILON_PX = 2;
 // (C16). 1px absorbs DPR rounding on readback; the settle-flicker family
 // measured 2-6px+ single-frame reversals.
 const MAX_FRAME_DROP_PX = 1;
-// Unmount-burst detector (C9). Healthy streaming with the virtua marking
-// patch sheds at most a few rows one-at-a-time (rows leaving the back
-// buffer as the window's absolute offset grows with the content). The
-// broken build (unmarked pin writes → virtua drops its above-viewport
-// buffer) removes a ~13-row band at once, repeatedly. 2/batch and 6/total
-// sit at ~2× the measured healthy ceiling and ~5× under the failure mode.
+// Unmount-burst detector (C9). Thresholds calibrated in the virtua era:
+// the healthy build (marking patch) shed at most a few rows one-at-a-time
+// (rows leaving the back buffer as the window's absolute offset grows with
+// the content), while the deliberately-broken build (unmarked pin writes →
+// virtua dropping its above-viewport buffer) removed a ~13-row band at
+// once, repeatedly. The bespoke engine's symmetric buffer
+// (utils/virtual/window.ts) removes that failure class by construction and
+// sheds rows the same one-at-a-time way — kept as a regression oracle.
+// 2/batch and 6/total sit at ~2× the measured healthy ceiling and ~5×
+// under the historical failure mode.
 const MAX_REMOVED_ROWS_PER_BATCH = 2;
 const MAX_REMOVED_ROWS_TOTAL = 6;
 

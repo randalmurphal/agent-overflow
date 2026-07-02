@@ -116,6 +116,14 @@ describe('createRowEstimate', () => {
     expect(estimate.at(0)).toBe(0);
   });
 
+  it('rejects a negative snapshot value (corrupt prior) and falls back', () => {
+    // UNMEASURED (-1) means "no prior"; any other negative is corrupt
+    // data and must degrade to the estimate chain, never become a
+    // negative offset.
+    const estimate = createRowEstimate({ snapshot: [-5], defaultSize: 56 });
+    expect(estimate.at(0)).toBe(56);
+  });
+
   it('falls back to kind heights without any snapshot', () => {
     const estimate = createRowEstimate({
       kindOf: () => 'prose',

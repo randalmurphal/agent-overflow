@@ -329,7 +329,8 @@ documented at the function):
   visibly shifts the reading anchor.
 - **anchor-redirect** — DOM already pinned to true bottom (within
   `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) and the compensation requests a target
-  meaningfully *below* it: the write is rewritten to `targetScrollTop()`.
+  meaningfully *above* it (numerically smaller than the bottom target):
+  the write is rewritten to `targetScrollTop()`.
   The engine's `delta` only compensates above-viewport remeasures, not
   the at/below-fold growth that pushed the bottom down, so letting the
   requested value land paints one frame short of bottom — the cold

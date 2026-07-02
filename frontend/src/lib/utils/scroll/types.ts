@@ -64,11 +64,14 @@ export interface UseStickToBottomController {
   /** True when the user has explicitly moved the outer scroller away from bottom. */
   readonly escapedFromLock: boolean;
   /**
-   * True once the warm-up gate has cleared — either QUIET_MS of
-   * contentRO silence, or FAILSAFE_MS elapsed (whichever first). Use
-   * as a "the measurement cascade has settled" signal: consumers
-   * can hide content during the cascade and reveal here to avoid
-   * showing the user a brief estimated-size paint before the
+   * True once the warm-up gate has cleared — a quiet window of content
+   * silence elapsed, FAILSAFE_MS tripped, or an engine-sourced sample
+   * carried settle evidence (window fully measured within epsilon of its
+   * estimates — the priors-hit revisit) with the typesetting signal
+   * settled or absent (the 'settled' fast-path, external geometry source
+   * only). Use as a "the measurement cascade has settled" signal:
+   * consumers can hide content during the cascade and reveal here to
+   * avoid showing the user a brief estimated-size paint before the
    * measured-size correction lands. Reset to false on attach,
    * restore-reason forceStick, and explicit armWarmup() — the latter
    * is the seam for "I'm about to render fundamentally different
@@ -189,16 +192,19 @@ export interface UseStickToBottomController {
   skipWarmup(): void;
   /**
    * Notify the controller that the consumer's `quietContextSignal`
-   * flipped truthy. If the warm gate is still pending and a quiet
-   * timer is currently armed, re-arm with SETTLED_QUIET_MS instead of
-   * letting the original (longer) timer run to completion. No-op if
-   * already warm, no quiet timer is in flight, or the signal is still
-   * falsy at notify time.
+   * flipped truthy. No-op if already warm, if the signal is still falsy
+   * at notify time, or if no content delivery has been seen since the
+   * gate was armed. Otherwise: when engine-sourced settle evidence is
+   * already held (window measured within epsilon — the priors-hit
+   * revisit), the gate opens immediately ('settled'); when it isn't,
+   * the quiet timer is (re)armed with the geometry-gated window —
+   * SETTLED_QUIET_MS once the surface has held still, the conservative
+   * QUIET_MS while it is still moving in large steps.
    *
    * This is the seam for "I just learned async typesetting finished
-   * mid-cascade, please shorten the wait." Without it, a 100ms bump
-   * would run to completion even though our visibility into the
-   * cascade said we could lift in 16ms.
+   * mid-cascade" — the measurements-settle-first / signal-flips-later
+   * ordering, where waiting out the original conservative window would
+   * delay the reveal for no reason.
    */
   notifyQuietContextSignalChanged(): void;
   /**
@@ -292,6 +298,10 @@ export interface UseStickToBottomOptions {
    * height, so a second observer on the same element would just re-read
    * layout one frame later. Surfaces without a virtualizer (ChannelView)
    * leave it unset and keep the RO-backed source.
+   *
+   * The option and `deliverContentGeometry` come as a pair:
+   * delivering a sample without the option throws (the RO would
+   * double-report every height change).
    */
   externalContentGeometry?: boolean;
 }

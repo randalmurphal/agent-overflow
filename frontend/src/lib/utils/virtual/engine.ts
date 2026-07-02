@@ -12,6 +12,7 @@
 // machine, which arbitrates what the engine reports.
 
 import {
+  clamp,
   findIndex,
   getItemOffset as storeItemOffset,
   getItemSize as storeItemSize,
@@ -73,8 +74,27 @@ export interface VirtualEngine {
   targetOffsetFor(index: number, align?: ScrollToIndexAlign, extraOffset?: number): number;
 }
 
-const clamp = (value: number, minValue: number, maxValue: number): number =>
-  Math.min(maxValue, Math.max(minValue, value));
+/**
+ * Combine two compensations that landed in the same adapter flush (e.g. a
+ * head splice and a measurement batch). Both targets were computed by
+ * `compensationFor` from the SAME engine scroll offset — no scroll event
+ * lands mid-flush — so the exact combined target is recomputed from the
+ * summed deltas. Deriving it from `next.target + prior.delta` instead
+ * would inflate the result whenever `next.target` was already clamped at
+ * 0 (an above-viewport shrink larger than the current offset, near the
+ * top of the thread).
+ */
+export function mergeCompensations(
+  prior: EngineCompensation,
+  next: EngineCompensation,
+  scrollOffset: number,
+): EngineCompensation {
+  return {
+    kind: prior.kind === 'head-splice' || next.kind === 'head-splice' ? 'head-splice' : next.kind,
+    delta: prior.delta + next.delta,
+    target: Math.max(0, scrollOffset + prior.delta + next.delta),
+  };
+}
 
 export function createEngine(options: EngineOptions): VirtualEngine {
   const estimate = options.estimate;

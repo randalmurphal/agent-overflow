@@ -54,7 +54,7 @@ const SPRING_MAX_CATCHUP_STEPS = 3;
 // constant is required for correctness: a compensation arriving after
 // the sentinel died resolves through the pass/redirect tiers, both safe
 // (the historical HOLD > RETAIN cross-file invariant died with the
-// descriptor gate — see resolveVirtuaCompensation's provenance notes).
+// descriptor gate — see resolveEngineCompensation's provenance notes).
 export const RETAIN_ANIMATION_DURATION_MS = 350;
 // Spring arrival: within the shared ARRIVAL_DISTANCE_PX band
 // (scroll/resolver.ts) AND velocity below 0.5 px-per-60fps-frame means

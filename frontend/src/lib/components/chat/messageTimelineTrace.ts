@@ -239,7 +239,7 @@ function edgeChain(el: Element, edge: 'first' | 'last'): Array<Record<string, un
   return chain;
 }
 
-export function startVirtuaMarginDivergenceTrace(root: Element): () => void {
+export function startRowMarginDivergenceTrace(root: Element): () => void {
   if (!isUiRenderTraceEnabled()) return () => {};
   if (typeof ResizeObserver === 'undefined') return () => {};
 

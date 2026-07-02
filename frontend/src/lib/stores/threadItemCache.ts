@@ -15,13 +15,13 @@ import type { SettledTurn } from './threadTurnProjection';
  * `items =` rather than mutating in place), so snapshots store
  * references to the same string heap the live pane already holds.
  *
- * Row-size snapshots stay out of THIS cache — they live in a separate
- * session store (`utils/threadVirtuaSizeCache.ts`) because their validity
- * key (scroll-pane width + structure signature + expansion signature) is
- * MessageTimeline state, not store state. Virtua's measured sizes are only
- * valid with the row UI state that produced them, so that store replays a
- * snapshot only when the key still matches and otherwise falls back to fresh
- * measurement behind MessageTimeline's warm-up visibility gate.
+ * Row-size snapshots stay out of THIS cache — they live in the size-priors
+ * store (`utils/virtual/priors.ts`) because their validity key (scroll-pane
+ * width + structure signature + expansion signature) is MessageTimeline
+ * state, not store state. Measured sizes are only valid with the row UI
+ * state that produced them, so the engine consumes a snapshot lazily per
+ * row only when the key still matches and otherwise falls back to kind /
+ * default estimates behind MessageTimeline's warm-up visibility gate.
  */
 export interface ThreadItemSnapshot {
   items: Item[];

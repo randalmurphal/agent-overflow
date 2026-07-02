@@ -25,6 +25,10 @@ afterEach(() => {
   }
 });
 
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function makeRows(count: number, heightPx = ROW_PX): HarnessRow[] {
   return Array.from({ length: count }, (_, i) => ({
     id: `row-${i}`,
@@ -366,6 +370,21 @@ describe('content geometry samples (engine-sourced contentRO replacement)', () =
     await waitForStableGeometry(flatCtx.scrollEl, 'flat-estimate mount');
     await waitFor(() => flat.at(-1)?.windowMeasured === true, 'flat window to measure');
     expect(flat.at(-1)!.maxFirstMeasureCorrectionPx).toBe(ROW_PX - ESTIMATE_PX);
+
+    // Mount-lifetime max: a later first measurement landing exactly on
+    // its estimate (correction 0) must not lower the recorded max — a
+    // mid-mount warm re-arm would otherwise fast-path off evidence that
+    // predates the cascade.
+    const heightBefore = flat.at(-1)!.height;
+    flatCtx.harness.setRows([
+      ...flatCtx.harness.getRows(),
+      { id: 'row-extra', heightPx: ESTIMATE_PX, label: 'Row extra' },
+    ]);
+    await waitFor(
+      () => flat.at(-1)!.height > heightBefore && flat.at(-1)!.windowMeasured,
+      'appended row to measure',
+    );
+    expect(flat.at(-1)!.maxFirstMeasureCorrectionPx).toBe(ROW_PX - ESTIMATE_PX);
   });
 
   it('a scroller width change delivers a width-only sample at unchanged height', async () => {
@@ -438,6 +457,137 @@ describe('scrollend synthesis', () => {
     expect(onscrollend).not.toHaveBeenCalled();
     await waitFor(() => onscrollend.mock.calls.length > 0, 'synthetic scrollend');
     expect(onscrollend).toHaveBeenCalledTimes(1);
+  });
+
+  it('a cancelled touch still releases the synthetic scrollend', async () => {
+    // A system gesture / context menu ends a touch with touchcancel and
+    // no touchend. A stuck `touching` flag would re-arm the debounce
+    // forever: scrollend (snapshot save, row-UI-state prune) never fires.
+    const onscrollend = vi.fn();
+    const { scrollEl } = mountHarness({ onscrollend });
+    await waitForStableGeometry(scrollEl, 'mount');
+    onscrollend.mockClear();
+
+    scrollEl.dispatchEvent(new TouchEvent('touchstart'));
+    scrollEl.scrollTop = 1000;
+    // Well past the 150ms debounce: the open touch holds scrollend.
+    await waitMs(250);
+    expect(onscrollend).not.toHaveBeenCalled();
+
+    scrollEl.dispatchEvent(new TouchEvent('touchcancel'));
+    await waitFor(() => onscrollend.mock.calls.length > 0, 'scrollend after touchcancel');
+    expect(onscrollend).toHaveBeenCalledTimes(1);
+  });
+
+  it('a wheel event inside the continuation window holds the synthetic scrollend', async () => {
+    // Wheel events landing 50–150ms after the last scroll event mean the
+    // gesture is still alive through dropped frames; the debounce must
+    // renew once instead of firing mid-gesture.
+    const onscrollend = vi.fn();
+    let scrolledAt = 0;
+    const { scrollEl } = mountHarness({
+      onscrollend,
+      onscroll: () => {
+        scrolledAt = performance.now();
+      },
+    });
+    await waitForStableGeometry(scrollEl, 'mount');
+    onscrollend.mockClear();
+
+    scrolledAt = 0;
+    scrollEl.scrollTop = 1000;
+    await waitFor(() => scrolledAt > 0, 'scroll event');
+    await waitFor(() => performance.now() - scrolledAt > 55, 'continuation window open');
+    // Precondition, not an assertion of the code under test: the wheel
+    // must land inside the 50–150ms window for this test to mean anything.
+    expect(performance.now() - scrolledAt).toBeLessThan(150);
+    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: 10 }));
+
+    // Not delivered on the original 150ms schedule (the renewed window
+    // cannot deliver before ~300ms after the scroll event)...
+    await waitMs(120);
+    expect(onscrollend).not.toHaveBeenCalled();
+    // ...but the renewed window drains and delivers exactly once.
+    await waitFor(() => onscrollend.mock.calls.length > 0, 'held scrollend');
+    expect(onscrollend).toHaveBeenCalledTimes(1);
+  });
+
+  it('ctrl-wheel (pinch zoom) does not hold the synthetic scrollend', async () => {
+    const onscrollend = vi.fn();
+    let scrolledAt = 0;
+    const { scrollEl } = mountHarness({
+      onscrollend,
+      onscroll: () => {
+        scrolledAt = performance.now();
+      },
+    });
+    await waitForStableGeometry(scrollEl, 'mount');
+    onscrollend.mockClear();
+
+    scrolledAt = 0;
+    scrollEl.scrollTop = 1000;
+    await waitFor(() => scrolledAt > 0, 'scroll event');
+    await waitFor(() => performance.now() - scrolledAt > 55, 'continuation window open');
+    expect(performance.now() - scrolledAt).toBeLessThan(150);
+    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: 10, ctrlKey: true }));
+
+    await waitFor(() => onscrollend.mock.calls.length > 0, 'scrollend on schedule');
+    // Fired on the ORIGINAL 150ms schedule: a held scrollend could not
+    // have arrived before ~300ms after the scroll event.
+    expect(performance.now() - scrolledAt).toBeLessThan(280);
+    expect(onscrollend).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('revalidate', () => {
+  it('feeds the engine the content-box viewport (unit parity with the RO path)', async () => {
+    const { harness, scrollEl } = mountHarness();
+    await waitForStableGeometry(scrollEl, 'mount');
+    const handle = harness.handle()!;
+    expect(handle.getViewportSize()).toBe(VIEWPORT_PX);
+
+    // Composer-clearance shape: padding-bottom on the scroller. The
+    // content box is unchanged so the scroller RO stays silent —
+    // revalidate()'s cold-path read is the only sampler, and it must
+    // report the RO's unit (content-box), not clientHeight's padding box.
+    scrollEl.style.paddingBottom = '160px';
+    harness.handle()!.revalidate();
+    expect(handle.getViewportSize()).toBe(VIEWPORT_PX);
+
+    // Outcome: an align-end scroll after revalidate lands on the true
+    // bottom (an inflated viewport lands short by the padding).
+    handle.scrollToIndex(ROW_COUNT - 1, { align: 'end' });
+    await waitForStableGeometry(scrollEl, 'align-end settle');
+    expect(
+      Math.abs(scrollEl.scrollTop - (scrollEl.scrollHeight - scrollEl.clientHeight)),
+    ).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('hidden pane guard (display:none RO deliveries)', () => {
+  it('zero-size deliveries from a hidden subtree never record', async () => {
+    const { harness, host, scrollEl } = mountHarness();
+    await waitForStableGeometry(scrollEl, 'mount');
+    const handle = harness.handle()!;
+    const totalBefore = handle.getTotalSize();
+    const snapshotBefore = handle.takeSnapshot();
+    expect(snapshotBefore.some((size) => size === 0)).toBe(false);
+
+    // Hiding the pane makes the RO deliver 0×0 for the scroller and every
+    // mounted row; without the offsetParent guard those would collapse
+    // totalSize and poison the priors snapshot persisted for the thread.
+    host.style.display = 'none';
+    await raf();
+    await raf();
+    await raf();
+    expect(handle.getTotalSize()).toBe(totalBefore);
+    expect(handle.getViewportSize()).toBe(VIEWPORT_PX);
+    expect(handle.takeSnapshot()).toEqual(snapshotBefore);
+
+    host.style.display = '';
+    await raf();
+    await raf();
+    expect(handle.getTotalSize()).toBe(totalBefore);
   });
 });
 

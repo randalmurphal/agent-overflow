@@ -48,7 +48,7 @@
   import {
     recordTimelineRenderTrace,
     startTimelineRowResizeTrace,
-    startVirtuaMarginDivergenceTrace,
+    startRowMarginDivergenceTrace,
     startReasoningTailJumpTrace,
   } from './messageTimelineTrace';
   import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
@@ -982,7 +982,7 @@
   // it entirely.
   $effect(() => {
     if (!isUiRenderTraceEnabled() || !contentEl) return;
-    return startVirtuaMarginDivergenceTrace(contentEl);
+    return startRowMarginDivergenceTrace(contentEl);
   });
 
   // Streaming-thinking flicker regression oracle. Tracks each reasoning-tail

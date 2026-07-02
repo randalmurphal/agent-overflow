@@ -23,33 +23,32 @@
 // the exact-arrival write suppression in the controller.
 export const ARRIVAL_DISTANCE_PX = 1;
 
-// Idle re-pin deadband. Once the spring has settled (no spring active) and
-// scrollTop is already within this many px of the bottom target, a nonzero
-// content-height delta is treated as fractional-DPR wobble — not real growth —
-// and the re-pin is skipped, breaking the idle viewport-vibration limit cycle
-// at its source. Value: large enough to clear the observed ~2px idle flip with
-// margin, small enough to stay well below the ≥~line-height gap of genuine
-// catch-up growth; equal to AUTO_FOLLOW_BOTTOM_EPSILON_PX (defined below
-// in this file) by design — "close enough to count as at-bottom" and
-// "close enough not to fight a wobble" are the same tolerance. Full mechanism (fractional-DPR X.5-boundary height flip →
-// moving target → self-sustaining ±2px cycle) + the capture it was root-caused
-// from: docs/architecture/settle-flicker-analysis.md.
-//
-// Carried as an explicit reducer branch per the Stage-2 plan; deletable
-// later only with a fresh idle fractional-DPR capture proving the flip
-// driver is gone.
-export const IDLE_REPIN_DEADBAND_PX = 4;
-
 // Auto-follow re-stick band: a DOWN-direction scroll that lands within
 // this many pixels of the bottom flips the user back to sticky, and the
 // same tolerance decides "the DOM is already pinned" for the engine
 // compensation resolver's anchor-redirect. Matches react-virtuoso's
 // `atBottomThreshold` default — tolerates row-height estimation +
 // browser scrollTop rounding that routinely lands 1-3px short during
-// streaming. Deliberately equal to IDLE_REPIN_DEADBAND_PX — "close
-// enough to count as at-bottom" and "close enough not to fight a
-// fractional-DPR wobble" are the same tolerance.
+// streaming.
 export const AUTO_FOLLOW_BOTTOM_EPSILON_PX = 4;
+
+// Idle re-pin deadband. Once the spring has settled (no spring active) and
+// scrollTop is already within this many px of the bottom target, a nonzero
+// content-height delta is treated as fractional-DPR wobble — not real growth —
+// and the re-pin is skipped, breaking the idle viewport-vibration limit cycle
+// at its source. Value: large enough to clear the observed ~2px idle flip with
+// margin, small enough to stay well below the ≥~line-height gap of genuine
+// catch-up growth. Defined AS AUTO_FOLLOW_BOTTOM_EPSILON_PX — "close enough
+// to count as at-bottom" and "close enough not to fight a wobble" are the
+// same tolerance, and the alias keeps them from drifting apart. Full
+// mechanism (fractional-DPR X.5-boundary height flip → moving target →
+// self-sustaining ±2px cycle) + the capture it was root-caused from:
+// docs/architecture/settle-flicker-analysis.md.
+//
+// Carried as an explicit reducer branch per the Stage-2 plan; deletable
+// later only with a fresh idle fractional-DPR capture proving the flip
+// driver is gone.
+export const IDLE_REPIN_DEADBAND_PX = AUTO_FOLLOW_BOTTOM_EPSILON_PX;
 
 // Overshoot magnitude at which the delivery resolver snaps scrollTop
 // instantly even while a spring chase is in flight. Second policy

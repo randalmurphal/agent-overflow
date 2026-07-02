@@ -2,10 +2,13 @@
 // Discussion ChannelView.
 //
 // Port of stackblitz-labs/use-stick-to-bottom adapted to Svelte 5. Owns
-// the user's intent ("glued to bottom" or "free") and a single
-// ResizeObserver on the content element. Two animation behaviors for
-// autonomous content growth, selected per-fire by the consumer via the
-// `animationMode` option:
+// the user's intent ("glued to bottom" or "free") and the content-
+// geometry pipeline, fed by one of two sources: a single ResizeObserver
+// on the content element (the default — ChannelView), or engine-sourced
+// samples via `deliverContentGeometry` when the consumer sets
+// `externalContentGeometry` (chat — see observers.ts). Two animation
+// behaviors for autonomous content growth, selected per-fire by the
+// consumer via the `animationMode` option:
 //
 //   - 'instant' (default): sync-pin. The same paint frame where
 //     contentEl grows also lands scrollTop at the new target, so the

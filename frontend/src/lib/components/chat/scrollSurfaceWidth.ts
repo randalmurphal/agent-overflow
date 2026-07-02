@@ -13,6 +13,13 @@
 // width signal into a self-sustaining oscillation that re-renders every
 // visible row forever (idle CPU/heap-churn incident 2026-06-26, commit
 // a5a5d032). One box, one source, asynchronous only.
+//
+// Sibling observer: TimelineVirtualizer's scroller RO reads the same
+// content-box width for `ContentGeometrySample.width`. The two stay
+// separate because this one must outlive the `{#key}` remount that
+// recreates the virtualizer (the priors key is read before it mounts).
+// Both follow the same rule above; neither may consolidate onto a sync
+// layout read.
 export function observeScrollSurfaceContentWidth(
   surface: Element,
   onWidth: (width: number) => void,

@@ -46,7 +46,7 @@ export interface SizeStore {
   estimate: (index: number) => number;
 }
 
-const clamp = (value: number, minValue: number, maxValue: number): number =>
+export const clamp = (value: number, minValue: number, maxValue: number): number =>
   Math.min(maxValue, Math.max(minValue, value));
 
 export function initSizeStore(length: number, estimate: (index: number) => number): SizeStore {

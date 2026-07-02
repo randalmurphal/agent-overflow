@@ -2504,6 +2504,21 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(localController.isWarm).toBe(true);
     });
 
+    it('detach drops the warm-up baseline: a post-detach signal flip cannot arm the gate', async () => {
+      // detach() documents "reset all classification + warm-up state". A
+      // stale hasFirstContentRO baseline would let this notify arm a
+      // quiet timer and flip warm on a detached controller.
+      settled = false;
+      buildLocalController({ signal: () => settled });
+      const ro = getLocalRO();
+      ro.fire(localContentEl, 800); // a content delivery was seen
+      localController.detach();
+      settled = true;
+      localController.notifyQuietContextSignalChanged();
+      await waitMs(150); // past QUIET_MS — a stale baseline would have fired by now
+      expect(localController.isWarm).toBe(false);
+    });
+
     it('reads quietContextSignal live off the options object, not a construction-time snapshot', async () => {
       // Pre-split behavior pin: bumpQuietTimer / notifyQuietContextSignalChanged
       // read `options.quietContextSignal` at call time, so a consumer that
@@ -5928,8 +5943,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       await waitMs(150);
 
       // Row identity changed at the tail (for example Read ->
-      // read_group). Virtua first publishes the 90px estimate, which
-      // starts a spring chase toward target 490.
+      // read_group). The virtualizer first publishes the 90px estimate,
+      // which starts a spring chase toward target 490.
       geom.scrollHeight = 1090;
       geom.contentHeight = 890;
       ro.fire(contentEl, 890);
@@ -6061,6 +6076,24 @@ describe('createUseStickToBottomController — external content-geometry source'
       expect(MockResizeObserver.instances.length).toBe(0);
     });
 
+    it('throws when delivering a sample without the externalContentGeometry option', () => {
+      // The option and deliverContentGeometry are two halves of one
+      // contract: without the option the controller also observes
+      // contentEl, and the two sources feed conflicting heights into one
+      // pipeline. The seam is self-enforcing, not convention-enforced.
+      const misconfigured = createUseStickToBottomController({
+        animationMode: () => 'instant',
+      });
+      expect(() =>
+        misconfigured.deliverContentGeometry({
+          height: 800,
+          width: 800,
+          windowMeasured: false,
+          maxFirstMeasureCorrectionPx: 0,
+        }),
+      ).toThrow(/externalContentGeometry/);
+    });
+
     it('first sample snaps scrollTop to target when sticky', () => {
       geom.scrollTop = 0;
       deliver(800);
@@ -6178,6 +6211,24 @@ describe('createUseStickToBottomController — external content-geometry source'
       signal = true;
       controller.notifyQuietContextSignalChanged();
       expect(controller.isWarm).toBe(false);
+    });
+
+    it('a later unmeasured-window sample revokes settle evidence before the signal flips', async () => {
+      // Evidence is per-sample, not sticky. Measurements settled while
+      // the typesetting signal was still falsy, then unmeasured rows
+      // entered the window (restore scroll / load-older during warm-up).
+      // The signal flipping afterwards must NOT fast-path off the stale
+      // evidence — the geometry-gated quiet timer decides instead.
+      signal = false;
+      deliver(800, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 0 });
+      deliver(810, 800, { windowMeasured: false, maxFirstMeasureCorrectionPx: 0 });
+      signal = true;
+      controller.notifyQuietContextSignalChanged();
+      expect(controller.isWarm).toBe(false);
+      // The re-armed quiet window (conservative — the surface moved 10px,
+      // past WARMUP_SETTLE_EPSILON_PX) still closes the gate on its own.
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
     });
   });
 });

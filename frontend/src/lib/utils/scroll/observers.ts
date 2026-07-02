@@ -217,6 +217,23 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   // large correction both hold us on the conservative window.
   let lastContentHeightDelta = Number.POSITIVE_INFINITY;
 
+  // Shared by processSample and stampSyntheticResizeCorrelation: clear
+  // resizeDifference (and the untagged-scroll budget) one timer + one rAF
+  // after the write, but only if no newer stamp replaced the sentinel in
+  // the meantime. The delay lets the scroll event fired by the paired
+  // layout change observe resizeDifference !== 0 and classify as layout.
+  function scheduleResizeDifferenceClear(sentinel: number): void {
+    if (resizeClearTimer) clearTimeout(resizeClearTimer);
+    resizeClearTimer = setTimeout(() => {
+      requestAnimationFrame(() => {
+        if (resizeDifference === sentinel) {
+          resizeDifference = 0;
+          resizeCorrelatedUntaggedScrollBudget = 0;
+        }
+      });
+    }, RESIZE_CLEAR_PADDING_MS);
+  }
+
   function clearWarmupTimers(): void {
     if (quietTimer) {
       clearTimeout(quietTimer);
@@ -534,19 +551,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       deps.spring.markTargetChanged();
     }
 
-    // Schedule resizeDifference clear AFTER the scroll handler's 1ms.
-    // The scroll event fired by the layout change above must observe
-    // resizeDifference !== 0 so it is treated as layout, not input.
-    if (resizeClearTimer) clearTimeout(resizeClearTimer);
-    const myDelta = delta;
-    resizeClearTimer = setTimeout(() => {
-      requestAnimationFrame(() => {
-        if (resizeDifference === myDelta) {
-          resizeDifference = 0;
-          resizeCorrelatedUntaggedScrollBudget = 0;
-        }
-      });
-    }, RESIZE_CLEAR_PADDING_MS);
+    scheduleResizeDifferenceClear(delta);
   }
 
   function attach(): void {
@@ -567,6 +572,17 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   }
 
   function deliverSample(sample: ContentGeometrySample): void {
+    // The option and this entry point are two halves of one contract:
+    // without `externalContentGeometry`, attach() also observes contentEl,
+    // and the two sources feed conflicting heights (contentEl wraps more
+    // than the virtualizer's spacer) into one pipeline — oscillating
+    // deltas and spurious resolver writes at idle. Fail loudly instead.
+    if (!deps.hasExternalGeometrySource()) {
+      throw new Error(
+        'deliverContentGeometry requires the externalContentGeometry option — ' +
+          'without it the controller also observes contentEl and the two sources conflict',
+      );
+    }
     processSample(sample.height, sample.width, sample);
   }
 
@@ -585,6 +601,11 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     previousWidth = undefined;
     contentReflowSettleUntil = 0;
     lastSettleEvidence = false;
+    // Also drop the warm-up baseline: a stale hasFirstContentRO would let
+    // a post-detach notifyQuietContextSignalChanged arm a quiet timer and
+    // flip warm on a detached controller.
+    hasFirstContentRO = false;
+    lastContentHeightDelta = Number.POSITIVE_INFINITY;
   }
 
   return {
@@ -608,15 +629,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       // scroll handler's re-stick path to flip isAtBottom in a way that
       // surprises the user.
       resizeDifference = 1;
-      if (resizeClearTimer) clearTimeout(resizeClearTimer);
-      resizeClearTimer = setTimeout(() => {
-        requestAnimationFrame(() => {
-          if (resizeDifference === 1) {
-            resizeDifference = 0;
-            resizeCorrelatedUntaggedScrollBudget = 0;
-          }
-        });
-      }, RESIZE_CLEAR_PADDING_MS);
+      scheduleResizeDifferenceClear(1);
     },
   };
 }

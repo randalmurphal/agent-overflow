@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createEngine, type EngineOptions } from './engine';
+import { createEngine, mergeCompensations, type EngineOptions } from './engine';
 import { createRowEstimate } from './priors';
 import { UNMEASURED } from './sizes';
 import type { RowEstimate } from './types';
@@ -260,6 +260,74 @@ describe('applyLength', () => {
     expect(update?.totalSize).toBe(1100);
     expect(update?.compensation).toEqual({ kind: 'head-splice', delta: 200, target: 500 });
   });
+
+  it('handles a head removal and tail growth in one batch', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(300);
+    // 10 → 12 rows where 2 left the head: 4 rows of tail growth.
+    const update = engine.applyLength(12, -2);
+    expect(update?.totalSize).toBe(1200);
+    expect(update?.compensation).toEqual({ kind: 'head-splice', delta: -200, target: 100 });
+  });
+
+  it('handles the net-zero shape: head removal offset by equal tail growth', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(300);
+    // Length stays 10, but 2 rows left the head and 2 arrived at the
+    // tail — the first-line guard deliberately admits it because
+    // headSplice is nonzero.
+    const update = engine.applyLength(10, -2);
+    expect(update?.totalSize).toBe(1000);
+    expect(update?.compensation).toEqual({ kind: 'head-splice', delta: -200, target: 100 });
+  });
+
+  it('shrinks to empty and regrows from estimates', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(300);
+    const emptied = engine.applyLength(0);
+    expect(emptied?.window).toEqual([0, -1]);
+    expect(emptied?.totalSize).toBe(0);
+    expect(emptied?.compensation).toBeUndefined();
+    const regrown = engine.applyLength(5);
+    expect(regrown?.totalSize).toBe(500);
+  });
+});
+
+describe('mergeCompensations (same-flush adapter merge)', () => {
+  it('recomputes the combined target from summed deltas', () => {
+    // Both targets derive from the same scrollOffset (100).
+    const prior = { kind: 'remeasure-above' as const, delta: 50, target: 150 };
+    const next = { kind: 'remeasure-above' as const, delta: 30, target: 130 };
+    expect(mergeCompensations(prior, next, 100)).toEqual({
+      kind: 'remeasure-above',
+      delta: 80,
+      target: 180,
+    });
+  });
+
+  it('a clamped next-target cannot inflate the merge', () => {
+    // Near the top of the thread: prior grows +100, next shrinks −100.
+    // next.target clamped at 0 (50 − 100 < 0); deriving the merge from
+    // `next.target + prior.delta` would say 100 — the true combined
+    // target is the unchanged 50.
+    const prior = { kind: 'remeasure-above' as const, delta: 100, target: 150 };
+    const next = { kind: 'remeasure-above' as const, delta: -100, target: 0 };
+    expect(mergeCompensations(prior, next, 50)).toEqual({
+      kind: 'remeasure-above',
+      delta: 0,
+      target: 50,
+    });
+  });
+
+  it('clamps the merged target at 0 and keeps head-splice precedence', () => {
+    const prior = { kind: 'head-splice' as const, delta: -300, target: 0 };
+    const next = { kind: 'remeasure-above' as const, delta: 20, target: 120 };
+    expect(mergeCompensations(prior, next, 100)).toEqual({
+      kind: 'head-splice',
+      delta: -280,
+      target: 0,
+    });
+  });
 });
 
 describe('priors integration (hot revisit)', () => {
@@ -350,5 +418,22 @@ describe('queries', () => {
       const engine = createEngine({ itemCount: 0, estimate: flatEstimate(100), bufferSize: 200 });
       expect(engine.targetOffsetFor(0)).toBe(0);
     });
+
+    it('clamps every align to 0 when content is shorter than the viewport', () => {
+      // 2×100px rows in a 300px viewport: maxOffset is 0 — the align-end
+      // and center math would otherwise go negative (short threads hit
+      // this via scroll-to-item).
+      const engine = createEngine({ itemCount: 2, estimate: flatEstimate(100), bufferSize: 200 });
+      engine.applyViewportResize(300);
+      expect(engine.targetOffsetFor(1, 'start')).toBe(0);
+      expect(engine.targetOffsetFor(1, 'end')).toBe(0);
+      expect(engine.targetOffsetFor(1, 'center')).toBe(0);
+      expect(engine.targetOffsetFor(1, 'nearest')).toBe(0);
+    });
+  });
+
+  it('findItemIndex returns -1 on an empty store (a sentinel callers clamp)', () => {
+    const engine = createEngine({ itemCount: 0, estimate: flatEstimate(100), bufferSize: 200 });
+    expect(engine.findItemIndex(0)).toBe(-1);
   });
 });
