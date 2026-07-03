@@ -29,8 +29,8 @@ importers:
         specifier: 4.0.2
         version: 4.0.2
       '@wailsio/runtime':
-        specifier: 3.0.0-alpha.79
-        version: 3.0.0-alpha.79
+        specifier: 3.0.0-alpha.95
+        version: 3.0.0-alpha.95
       '@xterm/addon-fit':
         specifier: 0.11.0
         version: 0.11.0
@@ -685,8 +685,8 @@ packages:
   '@vitest/utils@4.1.4':
     resolution: {integrity: sha512-13QMT+eysM5uVGa1rG4kegGYNp6cnQcsTc67ELFbhNLQO+vgsygtYJx2khvdt4gVQqSSpC/KT5FZZxUpP3Oatw==}
 
-  '@wailsio/runtime@3.0.0-alpha.79':
-    resolution: {integrity: sha512-NITzxKmJsMEruc39L166lbPJVECxzcbdqpHVqOOF7Cu/7Zqk/e3B/gNpkUjhNyo5rVb3V1wpS8oEgLUmpu1cwA==}
+  '@wailsio/runtime@3.0.0-alpha.95':
+    resolution: {integrity: sha512-ODhaZYRrtRvwi6cfGEj4L+Ut9od9zTd7GH1BrAaONxlBYM4d31d3YG982HSZiktmIE2SqvyhTciY4sV5FbIfqA==}
 
   '@xterm/addon-fit@0.11.0':
     resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
@@ -2162,7 +2162,7 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.0
 
-  '@wailsio/runtime@3.0.0-alpha.79': {}
+  '@wailsio/runtime@3.0.0-alpha.95': {}
 
   '@xterm/addon-fit@0.11.0': {}
 

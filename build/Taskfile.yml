@@ -76,6 +76,15 @@ tasks:
     generates:
       - frontend/bindings/**/*
     cmds:
+      # -time-type is deliberately left at its default (Go time.Time → TS
+      # `string`, RFC3339 on the wire). The `Date` mode emits
+      # $Create.DateFromTime, a runtime helper that would have to exist in
+      # three places we maintain in parallel: the @wailsio/runtime npm types
+      # (pinned pre-.95, the version that introduced it), the production
+      # transport shim (frontend/src/lib/transport/runtime.ts Create.*), and
+      # the vitest mock (frontend/src/test/mocks/wailsio-runtime.ts). No
+      # frontend consumer needs Date semantics today; if one does, prefer
+      # `new Date(field)` at the consumer over switching the generator.
       - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true -ts
 
   generate:icons:
