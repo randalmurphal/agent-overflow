@@ -29,6 +29,22 @@ func (a *App) syncDiscussionTurn(threadID string) error {
 		return nil
 	}
 
+	// Resolve the deliberation BEFORE mirroring the post into the
+	// channel — the ordering is load-bearing. On a cold a.deliberations
+	// map (process restart) deliberationForChannel reconstructs
+	// TurnCount from CountChannelMessagesByType(FromTypeAgent); if this
+	// turn's row were already committed, the rebuilt count would
+	// include it and RecordPost would then increment it AGAIN — N prior
+	// turns becoming N+2 instead of N+1, concluding the discussion a
+	// turn early. The channel is confirmed "open" above, so a
+	// resolution failure here is a genuine store error — it propagates
+	// like any other syncDiscussionTurn error (logged and surfaced via
+	// emitWireErrorToThread).
+	deliberation, err := a.deliberationForChannel(thread.DiscussionID)
+	if err != nil {
+		return err
+	}
+
 	item, found, err := a.latestAssistantTurn(thread.ID)
 	if err != nil {
 		return err
@@ -41,7 +57,7 @@ func (a *App) syncDiscussionTurn(threadID string) error {
 	if found {
 		msg, postErr := a.channels.PostMessage(discussion.PostMessageInput{
 			ChannelID: thread.DiscussionID,
-			FromType:  "agent",
+			FromType:  discussion.FromTypeAgent,
 			FromID:    thread.ID,
 			FromRole:  discussion.RoleFromThreadTitle(thread.Title),
 			Content:   item.Summary,
@@ -52,7 +68,7 @@ func (a *App) syncDiscussionTurn(threadID string) error {
 		a.emitDiscussionMessage(thread.DiscussionID, msg)
 	}
 
-	return a.recordDiscussionPost(thread.DiscussionID, thread.ID)
+	return a.recordDiscussionPost(thread.DiscussionID, thread.ID, deliberation)
 }
 
 func (a *App) latestAssistantTurn(threadID string) (store.Item, bool, error) {
@@ -73,36 +89,36 @@ func (a *App) latestAssistantTurn(threadID string) (store.Item, bool, error) {
 
 // recordDiscussionPost advances the deliberation FSM for the post that
 // just landed, then either concludes the channel or hands off to the
-// next speaker. discussion:state is emitted after every call — both
-// the advance and the conclude branch change turn-facing state the
-// frontend needs to reflect immediately.
+// next speaker. Exactly one discussion:state lands per call: the
+// conclude branch emits after the channel row flips; the advance
+// branch delegates the emission to claimAndPromptNextSpeaker when the
+// claim succeeds (its post-claim snapshot carries the new
+// CurrentSpeaker + AwaitingResponse and would supersede an earlier one
+// anyway) and emits directly only when no claim happened.
 //
-// Resolves via deliberationForChannel (not the plain in-memory
-// a.deliberation lookup) so a participant's turn still advances the
-// FSM after a process restart — e.g. a provider session that was
-// mid-turn when the app restarted and only now emits its
-// turn-complete. syncDiscussionTurn has already confirmed the channel
-// is "open" before calling this, so a resolution failure here is a
-// genuine store error, not the ordinary "no deliberation for this
-// channel" case — it propagates like any other syncDiscussionTurn
-// error (logged and surfaced via emitWireErrorToThread).
-func (a *App) recordDiscussionPost(channelID, participantThreadID string) error {
-	deliberation, err := a.deliberationForChannel(channelID)
-	if err != nil {
-		return err
-	}
-
+// The deliberation is resolved by the caller (syncDiscussionTurn) via
+// deliberationForChannel BEFORE the agent's channel row is committed —
+// see the ordering comment there for why resolving after the post
+// would double-count the triggering turn on a restart rebuild.
+func (a *App) recordDiscussionPost(channelID, participantThreadID string, deliberation *discussion.Deliberation) error {
 	_, shouldConclude := deliberation.RecordPost(participantThreadID)
 	if shouldConclude {
 		if err := a.concludeDiscussionChannel(channelID, deliberation.State().MaxTurns); err != nil {
 			return err
 		}
+		// A concluded channel has nothing left to coordinate — drop the
+		// FSM so a.deliberations doesn't retain it until thread
+		// deletion. Removal must precede the emission: buildChannelState
+		// then serves the concluded snapshot from its SQLite fallback
+		// branch (deliberationForChannel refuses non-open channels).
+		a.removeDeliberationByID(channelID)
 		a.emitDiscussionState(channelID)
 		return nil
 	}
 
-	a.emitDiscussionState(channelID)
-	a.claimAndPromptNextSpeaker(channelID, deliberation)
+	if claimed := a.claimAndPromptNextSpeaker(channelID, deliberation); !claimed {
+		a.emitDiscussionState(channelID)
+	}
 	return nil
 }
 
@@ -113,7 +129,7 @@ func (a *App) recordDiscussionPost(channelID, participantThreadID string) error 
 func (a *App) concludeDiscussionChannel(channelID string, maxTurns int) error {
 	msg, err := a.channels.PostMessage(discussion.PostMessageInput{
 		ChannelID: channelID,
-		FromType:  "system",
+		FromType:  discussion.FromTypeSystem,
 		FromID:    "deliberation",
 		FromRole:  "moderator",
 		Content:   fmt.Sprintf("Discussion concluded: reached the %d-turn limit.", maxTurns),

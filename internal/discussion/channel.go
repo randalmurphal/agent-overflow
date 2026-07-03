@@ -12,6 +12,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// Channel message author types — the values persisted in
+// channel_messages.from_type and carried as fromType on the
+// discussion:message wire payload. These are wire/DB literals; the
+// string values must never change.
+const (
+	FromTypeAgent  = "agent"
+	FromTypeHuman  = "human"
+	FromTypeSystem = "system"
+)
+
 // ChannelService manages discussion channels and ordered channel messages.
 type ChannelService struct {
 	store *store.Store

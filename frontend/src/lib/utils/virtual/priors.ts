@@ -41,7 +41,7 @@
 // silently regress the day a new height-affecting setting is added and
 // not threaded through it. If it must become airtight, add ONE
 // display-settings dimension — covering all four — here AND in
-// MessageTimeline's currentSizePriorsKey, not a subset.
+// timelineSizePriors.svelte.ts's currentSizePriorsKey, not a subset.
 
 import { UNMEASURED } from './sizes';
 import type { RowEstimate } from './types';

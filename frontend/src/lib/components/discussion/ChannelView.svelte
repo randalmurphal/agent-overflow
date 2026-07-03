@@ -73,8 +73,10 @@
       // frame while the controller is still in its default isAtBottom
       // state would sync-pin to the eventual bottom mid-flight) and arms
       // the one-shot restore-snap consent for the post-load
-      // forceStick({reason:'restore'}) below. Mirrors MessageTimeline's
-      // `$effect.pre` guard on threadId change.
+      // forceStick({reason:'restore'}) below. Simplified mirror of the
+      // switch-edge choreography MessageTimeline runs through
+      // components/chat/timelineRestore.svelte.ts (handleSwitchEdgePre →
+      // restore effect) — no snapshots here, just the consent arming.
       stick.armRestoreSnap();
       // Only wipe the channel buffer when switching to a different
       // channel — re-entry of the same channel keeps whatever the last
@@ -131,7 +133,11 @@
   }
 
   function retryInitialLoad(): void {
-    void loadInitial(loadGeneration);
+    // Bump the generation exactly like the mount effect: reusing the
+    // current one would let two rapid retries run two un-cancellable
+    // concurrent loads with the slower resolver winning.
+    const generation = ++loadGeneration;
+    void loadInitial(generation);
   }
 
   // Publish the controller on the pane so external surfaces (sidebar

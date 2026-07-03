@@ -5,7 +5,7 @@ import AssistantMessage from './AssistantMessage.svelte';
 
 describe('<AssistantMessage>', () => {
   it('renders an unterminated inline marker as literal text during stream', async () => {
-    // `patches/svelte-streamdown@3.1.1.patch` strips Streamdown's
+    // `patches/svelte-streamdown@3.1.2.patch` strips Streamdown's
     // inline-emphasis plugins from `IncompleteMarkdownParser.createDefaultPlugins`,
     // so unterminated `**`, `~~`, backtick, `_`, etc. are no longer
     // speculatively closed mid-stream. The user sees literal `**markdown`
@@ -379,7 +379,7 @@ describe('<AssistantMessage>', () => {
   // between them and rendering it in math mode (serif font, collapsed
   // whitespace — visibly corrupt; the reported `` `$ref` … `$ref` ``
   // paragraph). The `singleDollarLooksLikeProse` guard in
-  // `patches/svelte-streamdown@3.1.1.patch` rejects a single-`$` span when
+  // `patches/svelte-streamdown@3.1.2.patch` rejects a single-`$` span when
   // EITHER its closing `$` abuts an identifier char (it closed on a bare
   // `$ref`/`$PATH`) OR its captured content holds a backtick — the closing
   // `$` landed inside a `` `$` `` code span, so the content ran up to that
@@ -462,7 +462,7 @@ describe('<AssistantMessage>', () => {
   // symptom (a `~~partial` mid-stream synthesised `~~partial~~` →
   // `<del>partial</del>`, and the closer migrated outward on each chunk).
   // The `IncompleteMarkdownParser.createDefaultPlugins` `.filter` we
-  // ship in `patches/svelte-streamdown@3.1.1.patch` drops those plugins,
+  // ship in `patches/svelte-streamdown@3.1.2.patch` drops those plugins,
   // so partial tokens stay literal until the real closer arrives. Each
   // delimiter that was previously in the filtered plugin list gets an
   // independent regression case: a future Streamdown update putting any
@@ -557,7 +557,7 @@ describe('<AssistantMessage>', () => {
   // bullet text streams in — it collapses back to a paragraph + nested <ul>.
   // That up-then-down relayout is the visible jank. The
   // `stripDanglingSetextUnderline` hunk in
-  // `patches/svelte-streamdown@3.1.1.patch` drops a trailing lone `-`/`=` line
+  // `patches/svelte-streamdown@3.1.2.patch` drops a trailing lone `-`/`=` line
   // (when the line above is non-blank) from `parseIncompleteMarkdown`'s output,
   // so the underline never promotes the line above while it is the last thing
   // streamed. It runs only on the volatile tail; settled messages and the

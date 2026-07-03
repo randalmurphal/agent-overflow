@@ -38,6 +38,15 @@ defensive escape); the restore `$effect` calls
 `observe('content')` settle pass. Same-thread reloads must watch
 `pane.switchGeneration`, not only `pane.threadId`.
 
+The scroll-session machinery extracted from `MessageTimeline.svelte`
+lives in four sibling modules: `timelineRestore.svelte.ts` (thread-switch
+restore sessions and scroll snapshots), `timelineSizePriors.svelte.ts`
+(per-thread row size priors, incl. `ROW_KIND_ESTIMATE_PX`),
+`timelinePaging.ts` (load-older/newer gates and handlers), and
+`timelineWindowAnchor.svelte.ts` (prune-shift anchoring).
+`MessageTimeline` keeps only the thin `$effect` bodies that call into
+them.
+
 ## Row Contract
 
 Every row rendered inside `<TimelineVirtualizer>`:
@@ -110,7 +119,7 @@ Path linkification runs inside marked parsing from the server-validated
 per-page-load nonce and is the only `agent-overflow:open` form admitted
 by Streamdown's `transformUrl`.
 
-The `svelte-streamdown@3.1.1` pnpm patch is intentional. Parser bugs in
+The `svelte-streamdown@3.1.2` pnpm patch is intentional. Parser bugs in
 that pipeline go upstream-then-patch; do not duplicate parser fixes in
 `markdownEnhance.ts` or the host wrappers. Regression coverage lives in
 `AssistantMessage.test.ts`.

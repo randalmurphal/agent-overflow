@@ -520,7 +520,13 @@ CREATE INDEX idx_payload_chunks_payload_start
 	{
 		Version: 12,
 		Name:    "channel_max_turns",
-		SQL:     `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
+		// The DEFAULT 8 literal mirrors discussion.DefaultMaxTurns (and
+		// the frontend's DEFAULT_MAX_TURNS in
+		// frontend/src/lib/types/discussion.ts), but is frozen by
+		// migration semantics — shipped migrations never change. If the
+		// shared default ever moves, this SQL stays 8 and a new
+		// migration carries the new value.
+		SQL: `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
 	},
 }
 

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"agent-overflow/internal/discussion"
@@ -125,7 +126,7 @@ func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessag
 	}
 	msg, err := a.channels.PostMessage(discussion.PostMessageInput{
 		ChannelID: channelID,
-		FromType:  "human",
+		FromType:  discussion.FromTypeHuman,
 		FromID:    "user",
 		FromRole:  "human",
 		Content:   content,
@@ -141,20 +142,41 @@ func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessag
 // maybePromptNextDiscussionSpeaker prompts the current speaker after a
 // human post lands, unless the channel is closed/concluded or a
 // participant turn is already in flight (AwaitingResponse).
-// Resolution failures (channel isn't open, or isn't a
-// live/rebuildable deliberation) are not surfaced as errors here:
-// PostChannelMessage's own persistence already succeeded, and a
-// channel with nothing left to coordinate simply has nothing further
-// to do. The claim itself goes through claimAndPromptNextSpeaker so a
-// human post racing a participant's in-flight turn-complete can't
-// double-prompt the same speaker.
+// Resolution failures don't fail the post — PostChannelMessage's own
+// persistence already succeeded — but they are logged rather than
+// swallowed; only the ordinary "channel not open, nothing to
+// coordinate" case stays quiet. The claim itself goes through
+// claimAndPromptNextSpeaker so a human post racing a participant's
+// in-flight turn-complete can't double-prompt the same speaker.
 func (a *App) maybePromptNextDiscussionSpeaker(channelID string) {
 	channel, err := a.store.GetChannel(channelID)
-	if err != nil || channel.Status != "open" {
+	if err != nil {
+		log.Printf("discussion: resolve channel for next-speaker prompt %s: %v", channelID, err)
+		return
+	}
+	if channel.Status != "open" {
 		return
 	}
 	deliberation, err := a.deliberationForChannel(channelID)
 	if err != nil {
+		log.Printf("discussion: resolve deliberation for next-speaker prompt %s: %v", channelID, err)
+		return
+	}
+	// Self-heal seam: RecordPost flips Concluded BEFORE the conclusion
+	// persists, so a concludeDiscussionChannel failure strands a
+	// concluded FSM against a channel row still "open" —
+	// TryClaimCurrentSpeaker then refuses every claim and the
+	// discussion wedges forever. A concluded FSM here means exactly
+	// that shape (a live conclude removes the FSM on success); retry
+	// the conclusion instead of claiming, using this human post as the
+	// retry trigger.
+	if state := deliberation.State(); state.Concluded {
+		if concludeErr := a.concludeDiscussionChannel(channelID, state.MaxTurns); concludeErr != nil {
+			log.Printf("discussion: re-conclude wedged channel %s: %v", channelID, concludeErr)
+		} else {
+			a.removeDeliberationByID(channelID)
+		}
+		a.emitDiscussionState(channelID)
 		return
 	}
 	a.claimAndPromptNextSpeaker(channelID, deliberation)

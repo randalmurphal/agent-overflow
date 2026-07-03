@@ -19,7 +19,7 @@ import type {
   CheckpointRevertedEvent,
   CheckpointUnavailableEvent,
 } from '../types/checkpoint';
-import type { ChannelMessage, ChannelParticipantState, ChannelStatePayload } from '../types/discussion';
+import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
 import type {
   ActiveOptionSet,
   ClarificationRequest,
@@ -1422,14 +1422,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get channelAwaitingResponse() {
       return channelState.awaitingResponse;
     },
-    get channelCurrentSpeakerThreadId() {
-      return channelState.currentSpeakerThreadId;
-    },
     get channelCurrentSpeakerRole() {
       return channelState.currentSpeakerRole;
-    },
-    get channelParticipants() {
-      return channelState.participants;
     },
     get channelLiveTail() {
       return channelState.liveTail;
@@ -2059,7 +2053,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // (stream_items.go / compaction_reasoning.go), so this never runs.
       // If a non-smooth delta producer ever appears, mounted-row growth
       // should stamp the spring latch here for parity with the upsert
-      // path (events.ts providerUpsertAdvancesLiveContent).
+      // path (eventsItemStream.ts providerUpsertAdvancesLiveContent).
       if (!isSmoothLiveContentKind(current.kind)) {
         items[index] = {
           ...current,
@@ -2297,8 +2291,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     /**
      * Pane facade for `provider:turn_started`. Production goes through
-     * the wire-push handler in events.ts → projectTurnStarted directly;
-     * this method is the test-and-explicit-control entry point.
+     * the wire-push handler in eventsProvider.ts → projectTurnStarted
+     * directly; this method is the test-and-explicit-control entry point.
      */
     setActiveTurn(turn: ActiveTurn): void {
       const tid = thread?.id ?? '';
@@ -2392,9 +2386,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * the todo list briefly disappearing and reappearing within a thread.
      */
     setLiveTodo(steps: TodoStep[]): void {
-      // The provider:todo_update listener (events.ts:applyTodoUpdate) is
-      // the wire boundary and validates `steps` is an array before
-      // calling here; trust the input from that point on.
+      // The provider:todo_update listener (eventsProvider.ts:
+      // applyTodoUpdate) is the wire boundary and validates `steps` is
+      // an array before calling here; trust the input from that point on.
       // Subtract steps that the previous all-completed cycle already
       // cleared so the agent's full-list re-emission doesn't repaint
       // those rows under a new logical todo cycle.

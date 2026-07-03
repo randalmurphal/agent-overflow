@@ -1,8 +1,12 @@
 // Item-stream event batching: the provider:item_event ordered mutation
 // queue (upsert/delta/meta/patch actions sharing one wire channel), its
-// rAF-scheduled flush, per-item upsert validation, and the item-upsert
+// rAF-scheduled flush, per-item upsert validation, the item-upsert
 // subscriber fan-out consumed by activityRailBackground and
-// workspaceChangeLock. Fan-in target of events.ts's setupEventListeners.
+// workspaceChangeLock, and the discussion live-tail side-channel feed
+// (assistant_text upserts/deltas from unmounted participant child
+// threads routed through discussionLiveTail.ts — see
+// feedDiscussionLiveTailUpserts). Fan-in target of events.ts's
+// setupEventListeners.
 import type { ItemDeltaEvent, ItemStreamEvent } from '../types/events';
 import type { Item } from '../types/models';
 import { iterPanes } from './panes.svelte';
@@ -13,12 +17,12 @@ import { isSmoothLiveContentKind } from './threadPaneShared';
 import { projectThreadItem } from './threadStatuses.svelte';
 import { syncProposedPlanStatus, syncThreadActivity, userTextCountsAsActivity } from './eventsThreadRows';
 import { lookupDiscussionLiveTail } from './discussionLiveTail';
+import { isBoundedString, isFiniteNumber } from './eventsGuards';
 
 const itemUpsertSubscribers: Set<(item: Item) => void> = new Set();
 const ITEM_EVENT_FLUSH_MAX_DELAY_MS = 50;
 const ITEM_EVENT_FLUSH_MAX_EVENTS = 500;
 const ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS = 2_000;
-const ITEM_EVENT_TEXT_FIELD_MAX_CHARS = 2_000_000;
 let itemEventQueue: ItemStreamEvent[] = [];
 let itemEventQueueStart = 0;
 let itemEventFlushFrame: number | null = null;
@@ -65,14 +69,6 @@ export function resetItemEventQueue(): void {
   cancelItemEventFlushSchedule();
   itemEventQueue = [];
   itemEventQueueStart = 0;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function isBoundedString(value: unknown, maxChars = ITEM_EVENT_TEXT_FIELD_MAX_CHARS): value is string {
-  return typeof value === 'string' && value.length <= maxChars;
 }
 
 function isValidItemForThread(item: Item | null | undefined, threadId: string): item is Item {

@@ -65,6 +65,11 @@ func (a *App) promptDiscussionSpeaker(channelID, speakerThreadID string) error {
 		if deliberation, dErr := a.deliberationForChannel(channelID); dErr == nil {
 			deliberation.ClearAwaitingResponse()
 			a.emitDiscussionState(channelID)
+		} else {
+			// The un-claim was skipped — the deliberation stays
+			// AwaitingResponse until some later trigger resolves it, so
+			// this must not vanish silently.
+			log.Printf("discussion: resolve deliberation to un-claim after failed dispatch %s: %v", channelID, dErr)
 		}
 		return fmt.Errorf("dispatch discussion turn prompt to %s: %w", speakerThreadID, err)
 	}
@@ -98,17 +103,23 @@ func (a *App) promptDiscussionSpeakerAsync(channelID, speakerThreadID string) {
 // deliberation concluded, or there is no current speaker (a
 // single-participant roster never re-prompts itself).
 //
+// Returns whether the claim succeeded. On success the post-claim
+// emission here is the one discussion:state snapshot for this advance
+// — callers must not emit their own on top of it (it would be an
+// immediately superseded duplicate; see recordDiscussionPost).
+//
 // Shared by both turn-driving triggers — a human post
 // (maybePromptNextDiscussionSpeaker) and a participant's completed
 // turn (recordDiscussionPost) — so the claim-then-dispatch sequence
 // has exactly one implementation to keep correct.
-func (a *App) claimAndPromptNextSpeaker(channelID string, deliberation *discussion.Deliberation) {
+func (a *App) claimAndPromptNextSpeaker(channelID string, deliberation *discussion.Deliberation) bool {
 	speaker, ok := deliberation.TryClaimCurrentSpeaker()
 	if !ok {
-		return
+		return false
 	}
 	a.emitDiscussionState(channelID)
 	a.promptDiscussionSpeakerAsync(channelID, speaker)
+	return true
 }
 
 // deliberationForChannel resolves the live in-memory FSM for a channel,
@@ -134,11 +145,15 @@ func (a *App) deliberationForChannel(channelID string) (*discussion.Deliberation
 		return nil, fmt.Errorf("no active deliberation for channel %s", channelID)
 	}
 
-	participants, err := a.discussionRoster(channel)
+	roster, err := a.discussionRoster(channel)
 	if err != nil {
 		return nil, err
 	}
-	turnCount, err := a.store.CountChannelMessagesByType(channelID, "agent")
+	participants := make([]string, 0, len(roster))
+	for _, child := range roster {
+		participants = append(participants, child.ID)
+	}
+	turnCount, err := a.store.CountChannelMessagesByType(channelID, discussion.FromTypeAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -166,20 +181,26 @@ func (a *App) deliberationForChannel(channelID string) (*discussion.Deliberation
 	return rebuilt, nil
 }
 
-// discussionRoster returns a channel's participant thread IDs in
+// discussionRoster returns a channel's participant threads in
 // round-robin (definition) order: the parent thread's child threads,
 // filtered to the ones actually linked to this channel. ListChildThreads
 // orders by (created_at, rowid) so the roster is deterministic even
 // though every participant thread is created in the same millisecond.
-func (a *App) discussionRoster(channel store.Channel) ([]string, error) {
+//
+// Returns full Thread rows rather than bare IDs: buildChannelState
+// needs title/provider/model for every participant on each
+// discussion:state emission, so one ListChildThreads query serves both
+// the ID roster (deliberationForChannel) and the participant metadata
+// without a per-participant GetThread fan-out.
+func (a *App) discussionRoster(channel store.Channel) ([]store.Thread, error) {
 	children, err := a.store.ListChildThreads(channel.ThreadID)
 	if err != nil {
 		return nil, err
 	}
-	participants := make([]string, 0, len(children))
+	participants := make([]store.Thread, 0, len(children))
 	for _, child := range children {
 		if child.DiscussionID == channel.ID {
-			participants = append(participants, child.ID)
+			participants = append(participants, child)
 		}
 	}
 	return participants, nil
@@ -203,7 +224,7 @@ func (a *App) rebuildCurrentSpeaker(channelID string, participants []string) (st
 	}
 	var lastAgentPoster string
 	for _, msg := range messages {
-		if msg.FromType == "agent" {
+		if msg.FromType == discussion.FromTypeAgent {
 			lastAgentPoster = msg.FromID
 		}
 	}

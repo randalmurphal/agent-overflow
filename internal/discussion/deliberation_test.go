@@ -146,6 +146,34 @@ func TestDeliberationTryClaimCurrentSpeakerFailsWhenConcluded(t *testing.T) {
 	}
 }
 
+// TestDeliberationRecordPostAfterConclusionIsANoOp documents the
+// terminal-state contract: once concluded, further posts (e.g. a
+// participant turn that was already in flight when the limit hit)
+// must return ("", true) without advancing the turn count or growing
+// the roster.
+func TestDeliberationRecordPostAfterConclusionIsANoOp(t *testing.T) {
+	d := NewDeliberation("channel-1", 2, []string{"thread-a", "thread-b"})
+	d.RecordPost("thread-a")
+	d.RecordPost("thread-b")
+	if !d.State().Concluded {
+		t.Fatal("expected deliberation to be concluded at max turns — test setup bug")
+	}
+
+	next, conclude := d.RecordPost("thread-c")
+	if next != "" || !conclude {
+		t.Fatalf("post after conclusion = (%q,%v), want (\"\",true)", next, conclude)
+	}
+
+	state := d.State()
+	if state.TurnCount != 2 {
+		t.Fatalf("TurnCount after post-conclusion post = %d, want unchanged 2", state.TurnCount)
+	}
+	roster := d.Participants()
+	if len(roster) != 2 || roster[0] != "thread-a" || roster[1] != "thread-b" {
+		t.Fatalf("Participants() after post-conclusion post = %v, want unchanged [thread-a thread-b]", roster)
+	}
+}
+
 // TestDeliberationRecordPostFromNonPromptedParticipantStillAdvances
 // documents the "any participant" semantics: a post from a participant
 // the FSM wasn't currently awaiting (e.g. a human manually drove a

@@ -135,11 +135,25 @@ export function createThreadChannelState(): ThreadChannelState {
   }
 
   const tailHandler: DiscussionLiveTailHandler = {
+    // Both handlers drop traffic for any thread that is not the
+    // awaited current speaker. provider:item_event deltas batch up to
+    // 50ms (eventsItemStream.ts) while discussion:message/state apply
+    // instantly, so a queued delta/upsert for a participant whose turn
+    // already posted can land AFTER applyState's stale-tail cleanup —
+    // without this gate it would resurrect the cleared tail and
+    // ChannelView would render the OLD speaker's fragment under the
+    // NEW speaker's role label. Ordering makes the gate safe for the
+    // next speaker: Go emits the claim's discussion:state (naming the
+    // new currentSpeaker) BEFORE dispatching the turn prompt, so a
+    // speaker's tail traffic always arrives after the state that
+    // names them.
     applyTailUpsert(threadId, itemId, fullText) {
+      if (threadId !== currentSpeakerThreadId) return;
       liveTail = { threadId, itemId, text: fullText };
       stampLiveContent();
     },
     applyTailDelta(threadId, itemId, chunk) {
+      if (threadId !== currentSpeakerThreadId) return;
       if (!liveTail || liveTail.threadId !== threadId || liveTail.itemId !== itemId) {
         // No tail yet, or a new assistant_text item supersedes the
         // previous one — start fresh rather than append cross-item.

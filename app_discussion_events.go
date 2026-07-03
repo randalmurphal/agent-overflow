@@ -109,33 +109,48 @@ func (a *App) buildChannelState(channelID string) (ChannelStatePayload, error) {
 		MaxTurns:  channel.MaxTurns,
 	}
 
-	var participantIDs []string
+	// One ListChildThreads query serves the participant metadata for
+	// both branches below — discussion:state fires on every turn
+	// advance, so a per-participant GetThread fan-out here would be an
+	// N+1 on a hot-ish path.
+	roster, err := a.discussionRoster(channel)
+	if err != nil {
+		return ChannelStatePayload{}, err
+	}
+
+	participantRows := roster
 	if d, dErr := a.deliberationForChannel(channelID); dErr == nil {
 		state := d.State()
 		payload.TurnCount = state.TurnCount
 		payload.MaxTurns = state.MaxTurns
 		payload.AwaitingResponse = state.AwaitingResponse
 		payload.CurrentSpeakerThreadID = state.CurrentSpeaker
-		participantIDs = d.Participants()
+		// The live FSM's roster order is authoritative — order (and
+		// filter) the fetched rows by it. The two orders only diverge
+		// when the FSM lazily learned a poster that isn't a linked
+		// child thread (Deliberation.rememberParticipant); such an ID
+		// has no thread row to describe, so it is skipped.
+		rowsByID := make(map[string]store.Thread, len(roster))
+		for _, child := range roster {
+			rowsByID[child.ID] = child
+		}
+		fsmOrder := d.Participants()
+		participantRows = make([]store.Thread, 0, len(fsmOrder))
+		for _, threadID := range fsmOrder {
+			if child, ok := rowsByID[threadID]; ok {
+				participantRows = append(participantRows, child)
+			}
+		}
 	} else {
-		turnCount, countErr := a.store.CountChannelMessagesByType(channelID, "agent")
+		turnCount, countErr := a.store.CountChannelMessagesByType(channelID, discussion.FromTypeAgent)
 		if countErr != nil {
 			return ChannelStatePayload{}, countErr
 		}
 		payload.TurnCount = turnCount
-
-		participantIDs, err = a.discussionRoster(channel)
-		if err != nil {
-			return ChannelStatePayload{}, err
-		}
 	}
 
-	participants := make([]ChannelParticipantState, 0, len(participantIDs))
-	for _, threadID := range participantIDs {
-		child, err := a.store.GetThread(threadID)
-		if err != nil {
-			return ChannelStatePayload{}, err
-		}
+	participants := make([]ChannelParticipantState, 0, len(participantRows))
+	for _, child := range participantRows {
 		role := discussion.RoleFromThreadTitle(child.Title)
 		participants = append(participants, ChannelParticipantState{
 			ThreadID: child.ID,

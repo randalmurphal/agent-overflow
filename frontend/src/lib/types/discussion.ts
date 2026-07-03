@@ -38,21 +38,7 @@ export interface DiscussionDefinition {
   updatedAt: number;
 }
 
-/**
- * Discussion channel. The backend sets status to `open` at creation,
- * flips to `concluded` when the deliberation engine decides to stop,
- * and `closed` if explicitly closed.
- */
-export interface Channel {
-  id: string;
-  threadId: string;
-  type: string;
-  status: 'open' | 'concluded' | 'closed' | string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export type ChannelFromType = 'agent' | 'human' | string;
+export type ChannelFromType = 'agent' | 'human' | 'system' | string;
 
 /**
  * One ordered message in a channel. `sequence` is the monotonic ordering
@@ -105,6 +91,14 @@ export interface ChannelStatePayload {
   participants: ChannelParticipantState[];
 }
 
+/**
+ * Mirrors Go's discussion.DefaultMaxTurns (internal/discussion/
+ * deliberation.go) — the shared circuit-breaker turn count. A third
+ * copy exists as the frozen `DEFAULT 8` SQL literal in the v12
+ * migration (internal/store/migrate.go); that one never changes even
+ * if this default moves, per migration semantics. Keep this constant
+ * in lockstep with the Go constant.
+ */
 export const DEFAULT_MAX_TURNS = 8;
 
 /**

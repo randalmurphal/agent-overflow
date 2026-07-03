@@ -420,6 +420,49 @@ func TestListChildThreadsReturnsOnlyDirectChildren(t *testing.T) {
 	}
 }
 
+// TestListChildThreadsBreaksCreatedAtTiesByInsertionOrder guards the
+// rowid tiebreak in ListChildThreads' ORDER BY: discussion participant
+// threads are all stamped with one shared created_at millisecond
+// (BuildParticipantPlans), so without `rowid ASC` SQL semantics would
+// let ties come back in any order and destabilize the deliberation
+// roster's round-robin sequence across reads.
+func TestListChildThreadsBreaksCreatedAtTiesByInsertionOrder(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-tiebreak", "/tmp/tiebreak")
+
+	parent := makeThread("tiebreak-parent", "claude")
+	parent.ProjectID = proj.ID
+	if err := s.CreateThread(parent); err != nil {
+		t.Fatalf("CreateThread(parent): %v", err)
+	}
+
+	sharedCreatedAt := parent.CreatedAt + 1
+	ids := []string{"tiebreak-child-1", "tiebreak-child-2", "tiebreak-child-3"}
+	for _, id := range ids {
+		child := makeThread(id, "claude")
+		child.ProjectID = proj.ID
+		child.ParentThreadID = parent.ID
+		child.CreatedAt = sharedCreatedAt
+		child.UpdatedAt = sharedCreatedAt
+		if err := s.CreateThread(child); err != nil {
+			t.Fatalf("CreateThread(%s): %v", id, err)
+		}
+	}
+
+	children, err := s.ListChildThreads(parent.ID)
+	if err != nil {
+		t.Fatalf("ListChildThreads(): %v", err)
+	}
+	if len(children) != len(ids) {
+		t.Fatalf("len(children) = %d, want %d", len(children), len(ids))
+	}
+	for i, id := range ids {
+		if children[i].ID != id {
+			t.Fatalf("children[%d].ID = %q, want %q (insertion order under identical created_at)", i, children[i].ID, id)
+		}
+	}
+}
+
 func TestUpdateModePersists(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-mode", "/tmp/mode")

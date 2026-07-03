@@ -35,7 +35,7 @@ export interface RuntimeModeChangedPayload {
   needsReconnect: boolean;
 }
 
-export function syncThreadRow(updated: Thread): Thread {
+function syncThreadRow(updated: Thread): Thread {
   const readMarkers = [updated.lastReadAt];
   const latestCompletions = [updated.latestTurnCompletedAt];
   const activityMarkers = [updated.updatedAt];
@@ -204,7 +204,14 @@ function isImplementedProposedPlan(item: Item): boolean {
   try {
     const parsed = JSON.parse(item.meta) as { planImplementedAt?: number };
     return Number(parsed.planImplementedAt ?? 0) > 0;
-  } catch {
+  } catch (err) {
+    // Treat unparseable meta as not-implemented (the plan stays
+    // actionable), but don't lose the signal that a proposed_plan row
+    // carried malformed JSON.
+    console.warn(
+      `isImplementedProposedPlan: unparseable proposed_plan meta for thread ${item.threadId}, item ${item.id}:`,
+      err,
+    );
     return false;
   }
 }

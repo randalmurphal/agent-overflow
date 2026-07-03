@@ -42,9 +42,9 @@ func BuildTurnPrompt(selfRole string, messages []store.ChannelMessage) string {
 // BuildTurnPrompt renders above its content.
 func turnPromptSpeakerLabel(msg store.ChannelMessage) string {
 	switch msg.FromType {
-	case "human":
+	case FromTypeHuman:
 		return "Human"
-	case "system":
+	case FromTypeSystem:
 		return "Moderator"
 	default:
 		role := strings.TrimSpace(msg.FromRole)

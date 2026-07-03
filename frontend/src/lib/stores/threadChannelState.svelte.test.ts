@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
+import type { ChannelMessage } from '../types/discussion';
 import { createThreadChannelState } from './threadChannelState.svelte';
 import {
   clearAllDiscussionLiveTail,
   lookupDiscussionLiveTail,
 } from './discussionLiveTail';
+import { makeChannelMessage, makeChannelStatePayload } from '../../test/helpers/discussion';
 
 afterEach(() => {
   // Every test in this file that calls applyState() registers roster ids
@@ -13,37 +14,12 @@ afterEach(() => {
   clearAllDiscussionLiveTail();
 });
 
-function makeMessage(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
-  return {
-    id: 'message-' + (overrides.sequence ?? 1),
-    channelId: 'channel-1',
-    sequence: 1,
-    fromType: 'agent',
-    fromId: 'agent-1',
-    fromRole: 'advocate',
-    content: 'hello',
-    createdAt: 0,
-    ...overrides,
-  };
-}
+// This suite's historical default fromId is a non-roster id so
+// tail-clearing tests opt IN to a roster fromId explicitly.
+const makeMessage = (overrides: Partial<ChannelMessage> = {}): ChannelMessage =>
+  makeChannelMessage({ fromId: 'agent-1', ...overrides });
 
-function makeStatePayload(overrides: Partial<ChannelStatePayload> = {}): ChannelStatePayload {
-  return {
-    channelId: 'channel-1',
-    threadId: 'parent-thread',
-    status: 'open',
-    turnCount: 0,
-    maxTurns: 8,
-    awaitingResponse: false,
-    currentSpeakerThreadId: 'advocate-thread',
-    currentSpeakerRole: 'advocate',
-    participants: [
-      { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6' },
-      { threadId: 'critic-thread', role: 'critic', provider: 'claude', model: 'claude-sonnet-4-6' },
-    ],
-    ...overrides,
-  };
-}
+const makeStatePayload = makeChannelStatePayload;
 
 describe('createThreadChannelState', () => {
   it('merges messages by sequence while preserving timeline order', () => {
@@ -220,6 +196,54 @@ describe('createThreadChannelState', () => {
       state.applyState(makeStatePayload({ currentSpeakerThreadId: 'critic-thread' }));
 
       expect(state.liveTail).toBeNull();
+    });
+
+    it('drops a late tail delta for a thread that is no longer the current speaker', () => {
+      // provider:item_event deltas batch up to 50ms while
+      // discussion:message/state apply instantly, so a queued delta for
+      // a participant whose turn already posted can arrive AFTER the
+      // state that moved currentSpeaker on. It must not resurrect the
+      // cleared tail (ChannelView would render the OLD speaker's
+      // fragment under the NEW speaker's role label).
+      const state = createThreadChannelState();
+      state.applyState(makeStatePayload({ currentSpeakerThreadId: 'advocate-thread' }));
+      const handler = [...(lookupDiscussionLiveTail('advocate-thread') ?? [])][0];
+      handler.applyTailDelta('advocate-thread', 'item-1', 'partial, turn already over');
+
+      state.applyState(makeStatePayload({ currentSpeakerThreadId: 'critic-thread' }));
+      expect(state.liveTail).toBeNull();
+
+      handler.applyTailDelta('advocate-thread', 'item-1', 'late flushed chunk');
+
+      expect(state.liveTail).toBeNull();
+    });
+
+    it('drops a late tail upsert for a thread that is no longer the current speaker', () => {
+      const state = createThreadChannelState();
+      state.applyState(makeStatePayload({ currentSpeakerThreadId: 'advocate-thread' }));
+      const handler = [...(lookupDiscussionLiveTail('advocate-thread') ?? [])][0];
+
+      state.applyState(makeStatePayload({ currentSpeakerThreadId: 'critic-thread' }));
+
+      handler.applyTailUpsert('advocate-thread', 'item-1', 'late full text');
+
+      expect(state.liveTail).toBeNull();
+    });
+
+    it('applies tail deltas and upserts for the CURRENT speaker', () => {
+      const state = createThreadChannelState();
+      state.applyState(makeStatePayload({ currentSpeakerThreadId: 'critic-thread', currentSpeakerRole: 'critic' }));
+      const handler = [...(lookupDiscussionLiveTail('critic-thread') ?? [])][0];
+
+      handler.applyTailDelta('critic-thread', 'item-9', 'critic streaming');
+      expect(state.liveTail).toEqual({
+        threadId: 'critic-thread',
+        itemId: 'item-9',
+        text: 'critic streaming',
+      });
+
+      handler.applyTailUpsert('critic-thread', 'item-9', 'critic streaming, full snapshot');
+      expect(state.liveTail?.text).toBe('critic streaming, full snapshot');
     });
 
     it('applyState keeps a live tail that still matches the current speaker', () => {

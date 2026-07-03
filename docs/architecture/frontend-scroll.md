@@ -60,6 +60,18 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     else (ChannelView). Each delivery is gathered here, decided by the
     resolver, and applied through the controller's chokepoint, so "a
     content delivery" reads in one place.
+- The MessageTimeline scroll-session modules (extracted siblings in
+  `components/chat/`; MessageTimeline keeps the thin `$effect` bodies
+  that call into them):
+  - `timelineRestore.svelte.ts` — thread-switch restore sessions:
+    switch-edge bookkeeping, scroll-snapshot save/restore, and the
+    scroll-to-item flow.
+  - `timelineSizePriors.svelte.ts` — per-thread row size priors,
+    including the `ROW_KIND_ESTIMATE_PX` floor-biased kind estimates
+    and the priors snapshot/persist cadence.
+  - `timelinePaging.ts` — load-older/load-newer gates and handlers.
+  - `timelineWindowAnchor.svelte.ts` — prune-shift anchoring when the
+    live window drops rows off the top.
 - `ThreadPane` owns the scroll-controller registration slot so shared
   surfaces can pause or notify scrolling without reaching into component
   internals.
@@ -563,7 +575,8 @@ thread) — it does not persist to SQLite and does not violate the
 visible-thread memory budget. This replays revisits within a session; a
 genuine first visit has no priors and still cascades (hidden by the
 warm-up gate, above). Kind estimates for priors-miss rows are **floors,
-not averages** (`ROW_KIND_ESTIMATE_PX` in `MessageTimeline`): an estimate
+not averages** (`ROW_KIND_ESTIMATE_PX` in
+`components/chat/timelineSizePriors.svelte.ts`): an estimate
 above a row's real height shrinks `totalSize` on first measurement — a
 scrollbar dip plus a synchronous browser `scrollTop` clamp at exact
 bottom — while an undershoot only grows `totalSize`, absorbed invisibly

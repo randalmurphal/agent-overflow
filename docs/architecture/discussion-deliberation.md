@@ -104,22 +104,33 @@ claim-then-dispatch sequence has exactly one implementation:
    turn is already in flight or the channel isn't a live/rebuildable
    deliberation.
 2. **A participant's turn completes** (`syncDiscussionTurn`, driven off
-   `EventTurnComplete` in `app_provider_events.go`). Reads the latest
-   `assistant_text` item from that participant's timeline. If found,
-   mirrors it into the channel as a `from_type="agent"` message and
+   `EventTurnComplete` in `app_provider_events.go`). Resolves the
+   channel's deliberation via `deliberationForChannel` **before**
+   touching the channel — the ordering is load-bearing for restart
+   correctness: the rebuild path reconstructs `TurnCount` by counting
+   existing agent channel messages, so mirroring the post first would
+   let a cold rebuild count the triggering turn and then `RecordPost`
+   increment it again (N prior turns becoming N+2 instead of N+1,
+   concluding a turn early). Only then does it read the latest
+   `assistant_text` item from that participant's timeline; if found,
+   it mirrors it into the channel as a `from_type="agent"` message and
    emits `discussion:message`. Either way — found or not —
-   `recordDiscussionPost` always runs `RecordPost` and then attempts to
-   claim the next speaker. The "either way" part is the stall fix: a
-   **tool-only turn** (the participant only ran tools, no assistant
-   text) still has to advance the FSM, or the deliberation would sit
-   awaiting a reply that will never arrive.
+   `recordDiscussionPost` always runs `RecordPost` against the
+   already-resolved FSM and then attempts to claim the next speaker.
+   The "either way" part is the stall fix: a **tool-only turn** (the
+   participant only ran tools, no assistant text) still has to advance
+   the FSM, or the deliberation would sit awaiting a reply that will
+   never arrive.
 
-A successful claim synchronously emits `discussion:state` (so the
-frontend sees "awaiting X" immediately) and then dispatches
-`promptDiscussionSpeaker` on a background goroutine
-(`promptDiscussionSpeakerAsync`) so the hot path (a wire RPC call, or
-the provider event read loop) never blocks on a provider round-trip.
-`promptDiscussionSpeaker` itself:
+Exactly one `discussion:state` lands per turn advance: a successful
+claim synchronously emits the post-claim snapshot (so the frontend sees
+"awaiting X" immediately — this one emission carries both the recorded
+post and the new speaker), and `recordDiscussionPost` emits directly
+only when no claim happened (single-participant roster, or a
+conclusion). The claim then dispatches `promptDiscussionSpeaker` on a
+background goroutine (`promptDiscussionSpeakerAsync`) so the hot path
+(a wire RPC call, or the provider event read loop) never blocks on a
+provider round-trip. `promptDiscussionSpeaker` itself:
 
 1. Reads the speaker's own last-posted sequence
    (`store.LastChannelMessageSeqFrom`) — the cursor for "what has this
@@ -156,6 +167,25 @@ flipping `channels.status` to `"concluded"` (`ChannelService.PostMessage`
 requires the channel still be `"open"`, so this ordering is load-bearing).
 `PostChannelMessage` on a concluded channel returns an error.
 
+A **successful** conclusion also removes the FSM from `a.deliberations`
+(`removeDeliberationByID`) — a concluded channel has nothing left to
+coordinate, and retaining the entry would leak it until thread
+deletion. `buildChannelState`'s SQLite fallback branch serves concluded
+channels from then on, so the post-conclusion `discussion:state` and
+any later `GetChannelState` still return a coherent snapshot.
+
+If the conclusion **fails to persist** (RecordPost flips the FSM's
+`Concluded` before `concludeDiscussionChannel` runs), the channel row
+stays `"open"` while the FSM refuses every claim — a shape that would
+otherwise wedge the discussion forever. `maybePromptNextDiscussionSpeaker`
+is the self-heal seam: on the next human post it detects the concluded
+FSM against an open row, re-attempts `concludeDiscussionChannel`
+(removing the FSM only on success, so a still-failing conclusion stays
+resolvable for the next retry), emits `discussion:state`, and never
+claims/prompts. The same seam covers the restart-shaped variant, where
+`deliberationForChannel`'s rebuild comes back concluded because the
+agent-message count already reached `max_turns`.
+
 ## Restart Recovery
 
 `a.deliberations` is in-memory only per root `CLAUDE.md` principle 3 —
@@ -170,9 +200,14 @@ since the channel was opened:
   `rowid` tiebreak is what keeps roster order deterministic) filtered
   to the ones linked to this channel.
 - **TurnCount** (`store.CountChannelMessagesByType(channelID, "agent")`)
-  — the FSM's turn counter tracks agent posts only, matching
-  `RecordPost`'s sole caller (`syncDiscussionTurn`, invoked exactly
-  once per participant turn).
+  — the FSM's turn counter tracks agent posts only. This count is also
+  why `syncDiscussionTurn` resolves the deliberation BEFORE mirroring
+  the triggering post (see "Turn Driving"): if the post committed
+  first, a cold rebuild would count it here and `RecordPost` would
+  increment it a second time. Note the count can undercount tool-only
+  turns (they advance the live FSM without posting an agent message);
+  the rebuilt counter is a best-effort reconstruction from what
+  persisted.
 - **CurrentSpeaker** (`rebuildCurrentSpeaker`) — the participant after
   the last agent poster in round-robin order (`NextSpeakerAfter`,
   exported specifically so this rebuild path uses the exact same rule
@@ -215,9 +250,11 @@ Two wire events keep the frontend live-updated instead of polling
   `GetChannelState` returns: `{channelId, threadId, status, turnCount,
   maxTurns, awaitingResponse, currentSpeakerThreadId,
   currentSpeakerRole, participants: [{threadId, role, provider,
-  model}, ...]}`. Emitted whenever the FSM's turn-facing state changes:
-  a successful claim, a recorded post, a conclusion, or a failed
-  dispatch's un-claim. `buildChannelState` (the shared projector behind
+  model}, ...]}`. Emitted whenever the FSM's turn-facing state changes
+  — exactly once per turn advance (the post-claim snapshot, or the
+  no-claim direct emission from `recordDiscussionPost`), plus a
+  conclusion and a failed dispatch's un-claim.
+  `buildChannelState` (the shared projector behind
   both the binding and this event) transparently rebuilds via
   `deliberationForChannel` when there's no live FSM, so a client
   opening a discussion after an app restart still gets a coherent

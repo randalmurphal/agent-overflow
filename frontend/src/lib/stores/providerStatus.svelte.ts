@@ -34,8 +34,8 @@ export function getProviderStatus(
  * at least one of `status`/`kind` are dropped as malformed.
  *
  * Called from the consolidated `provider:status` listener in
- * `events.ts applyProviderStatus`; kept as the sole mutator on the map
- * so the store has one entry point.
+ * `eventsProvider.ts applyProviderStatus`; kept as the sole mutator on
+ * the map so the store has one entry point.
  */
 export function recordProviderStatus(evt: ProviderStatusEvent | null | undefined): void {
   if (!evt || typeof evt.provider !== 'string') return;

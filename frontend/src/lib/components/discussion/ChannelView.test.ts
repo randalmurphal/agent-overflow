@@ -10,6 +10,7 @@ import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { lookupDiscussionLiveTail, clearAllDiscussionLiveTail } from '../../stores/discussionLiveTail';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
+import { makeChannelMessage, makeChannelStatePayload } from '../../../test/helpers/discussion';
 
 // This suite covers ChannelView's push-driven rewrite: no polling, an
 // authoritative discussion:state-derived header, live-tail streaming for
@@ -81,33 +82,25 @@ function makeThread(): Thread {
   });
 }
 
+// This suite's historical defaults: short 'm<seq>' ids with sequence 0,
+// a non-roster fromId, and an empty FSM snapshot (no current speaker,
+// no roster) so rendering tests opt IN to live-tail state explicitly.
 function makeMsg(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
-  return {
+  return makeChannelMessage({
     id: 'm' + (overrides.sequence ?? 0),
-    channelId: 'channel-1',
     sequence: 0,
-    fromType: 'agent',
     fromId: 'agent-id',
-    fromRole: 'advocate',
-    content: 'hello',
-    createdAt: 0,
     ...overrides,
-  };
+  });
 }
 
 function makeState(overrides: Partial<ChannelStatePayload> = {}): ChannelStatePayload {
-  return {
-    channelId: 'channel-1',
-    threadId: 'parent-thread',
-    status: 'open',
-    turnCount: 0,
-    maxTurns: 8,
-    awaitingResponse: false,
+  return makeChannelStatePayload({
     currentSpeakerThreadId: '',
     currentSpeakerRole: '',
     participants: [],
     ...overrides,
-  };
+  });
 }
 
 async function buildPane(thread = makeThread()) {
@@ -289,6 +282,56 @@ describe('<ChannelView>', () => {
 
     expect(await findByText('recovered')).toBeInTheDocument();
     expect(queryByText(/failed to load channel/i)).toBeNull();
+    consoleErr.mockRestore();
+  });
+
+  it('retry does not race itself: a slower first retry cannot clobber a newer one', async () => {
+    // retryInitialLoad must claim a fresh generation. Reusing the
+    // current one let two rapid Retry clicks run two un-cancellable
+    // concurrent loads with the SLOWER resolver winning — a stale
+    // failure landing after the newer retry's success re-raised the
+    // error banner over recovered content.
+    let callCount = 0;
+    let rejectFirstRetry: ((err: Error) => void) | undefined;
+    setBindingMock('GetChannelMessages', async () => {
+      callCount++;
+      if (callCount === 1) throw new Error('initial-down'); // initial load → Retry banner
+      if (callCount === 2) {
+        // First Retry click: hangs until we reject it below.
+        return await new Promise<ChannelMessage[]>((_, reject) => {
+          rejectFirstRetry = reject;
+        });
+      }
+      return [makeMsg({ sequence: 0, content: 'second retry wins' })];
+    });
+    const pane = await buildPane();
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { getByRole, findByText, queryByText } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
+    await settleInitialLoad();
+    expect(await findByText(/failed to load channel/i)).toBeInTheDocument();
+
+    // Two rapid clicks on the same Retry button, dispatched before any
+    // re-render can swap the banner for the loading placeholder.
+    const retryButton = getByRole('button', { name: /retry/i });
+    const firstClick = fireEvent.click(retryButton);
+    const secondClick = fireEvent.click(retryButton);
+    await firstClick;
+    await secondClick;
+    await settleInitialLoad();
+
+    // The second (newest) retry resolved: content is up.
+    expect(await findByText('second retry wins')).toBeInTheDocument();
+
+    // Now the FIRST retry fails late. Its generation is stale, so it
+    // must not re-raise the error banner over the newer success.
+    expect(rejectFirstRetry).toBeDefined();
+    rejectFirstRetry!(new Error('slow-stale-failure'));
+    await settleInitialLoad();
+
+    expect(queryByText(/failed to load channel/i)).toBeNull();
+    expect(await findByText('second retry wins')).toBeInTheDocument();
     consoleErr.mockRestore();
   });
 

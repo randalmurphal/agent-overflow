@@ -3,7 +3,10 @@
 // into the domain modules that actually own the reaction:
 //
 //   - eventsThreadRows.ts    — cached Thread row projections (shared leaf)
-//   - eventsItemStream.ts    — provider:item_event batching/upsert dispatch
+//   - eventsItemStream.ts    — provider:item_event batching/upsert dispatch,
+//                              incl. the discussion live-tail side-channel
+//                              feed (assistant_text from unmounted
+//                              participant threads → discussionLiveTail.ts)
 //   - eventsProvider.ts      — approvals, usage, turn/session lifecycle
 //   - eventsDesign.ts        — design preview/options throttled reload
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit

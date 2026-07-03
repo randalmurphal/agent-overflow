@@ -707,9 +707,29 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		t.Fatalf("channel.Status = %q, want concluded", channel.Status)
 	}
 
-	state = app.deliberations[parent.DiscussionID].State()
-	if !state.Concluded || state.TurnCount != 2 {
-		t.Fatalf("state after second turn = %+v, want concluded after 2 turns", state)
+	// A successful conclusion drops the FSM from a.deliberations — a
+	// concluded channel has nothing left to coordinate, and retaining
+	// the entry until thread deletion would leak it.
+	if _, ok := app.deliberation(parent.DiscussionID); ok {
+		t.Fatal("expected the concluded deliberation to be removed from a.deliberations")
+	}
+
+	// GetChannelState must still serve a coherent concluded snapshot
+	// via buildChannelState's SQLite fallback branch.
+	payload, err := app.GetChannelState(parent.DiscussionID)
+	if err != nil {
+		t.Fatalf("GetChannelState() after conclusion error = %v", err)
+	}
+	if payload.Status != "concluded" {
+		t.Fatalf("payload.Status = %q, want concluded", payload.Status)
+	}
+	if payload.TurnCount != 2 || payload.MaxTurns != 2 {
+		t.Fatalf("payload turn counts = %d/%d, want 2/2", payload.TurnCount, payload.MaxTurns)
+	}
+	if len(payload.Participants) != 2 ||
+		payload.Participants[0].ThreadID != children[0].ID ||
+		payload.Participants[1].ThreadID != children[1].ID {
+		t.Fatalf("payload.Participants = %+v, want both children in roster order", payload.Participants)
 	}
 
 	if _, err := app.PostChannelMessage(parent.DiscussionID, "Can we keep going?"); err == nil {
@@ -1328,6 +1348,353 @@ func TestDeliberationForChannelRebuildsFromStoreAfterRestart(t *testing.T) {
 	}
 	if len(payload.Participants) != 3 {
 		t.Fatalf("len(GetChannelState().Participants) = %d, want 3", len(payload.Participants))
+	}
+}
+
+// TestSyncDiscussionTurnAfterRestartCountsTriggeringTurnOnce guards
+// the restart-rebuild double-count: syncDiscussionTurn must resolve
+// the deliberation BEFORE mirroring the participant's post into the
+// channel. When the process restarted mid-turn (a.deliberations is
+// cold), deliberationForChannel reconstructs TurnCount from
+// CountChannelMessagesByType("agent") — if the triggering turn's row
+// was already committed, the rebuilt count includes it and the
+// subsequent RecordPost increments it AGAIN, so N prior turns become
+// N+2 instead of N+1 and the discussion concludes a turn early.
+func TestSyncDiscussionTurnAfterRestartCountsTriggeringTurnOnce(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+	// The advance arms the next speaker's prompt on a background
+	// goroutine; stub the dispatch so the test stays deterministic.
+	app.sendMessageFn = func(string, string, []string) error { return nil }
+
+	parent, children := seedDiscussionChannel(t, app, "restart-count", []string{"Architect", "Reviewer"}, 6)
+	channelID := parent.DiscussionID
+
+	// N = 2 prior agent turns already in the channel history. No
+	// installDeliberation — a.deliberations is cold, exactly like a
+	// freshly restarted process.
+	const priorAgentTurns = 2
+	post := func(fromID, fromRole, content string) {
+		t.Helper()
+		if _, err := app.channels.PostMessage(discussion.PostMessageInput{
+			ChannelID: channelID, FromType: "agent", FromID: fromID, FromRole: fromRole, Content: content,
+		}); err != nil {
+			t.Fatalf("PostMessage(%s): %v", fromID, err)
+		}
+	}
+	post(children[0].ID, "Architect", "Architect's take.")
+	post(children[1].ID, "Reviewer", "Reviewer's take.")
+
+	// The architect (next in round-robin after the reviewer) completes
+	// its turn only NOW — the mid-turn session the restart cut across.
+	if err := app.store.InsertItem(store.Item{
+		ID: "item-restart-count", ThreadID: children[0].ID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Summary: "Architect's follow-up.", CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertItem(): %v", err)
+	}
+	if err := app.syncDiscussionTurn(children[0].ID); err != nil {
+		t.Fatalf("syncDiscussionTurn(): %v", err)
+	}
+
+	d, ok := app.deliberation(channelID)
+	if !ok {
+		t.Fatal("expected a rebuilt deliberation after syncDiscussionTurn")
+	}
+	if got := d.State().TurnCount; got != priorAgentTurns+1 {
+		t.Fatalf("TurnCount = %d, want %d (the triggering turn must count exactly once)", got, priorAgentTurns+1)
+	}
+}
+
+// seedDiscussionChannel creates a parent thread, one child thread per
+// role, and an open deliberation channel linking them — the persisted
+// shape StartDiscussion produces, without going through the
+// definition/session machinery. Deliberately does NOT call
+// installDeliberation: tests that need a live FSM install their own,
+// and restart-shaped tests need the map cold. Returns the parent
+// (DiscussionID set) and the children in roster order.
+func seedDiscussionChannel(t *testing.T, app *App, idPrefix string, roles []string, maxTurns int) (store.Thread, []store.Thread) {
+	t.Helper()
+
+	now := time.Now().UnixMilli()
+	parent := store.Thread{
+		ID: "thread-" + idPrefix + "-parent", ProjectID: defaultTestProjectID, Title: "Design Review",
+		Provider: string(provider.Codex), WorkspacePath: "/tmp/workspace", Model: "gpt-5.4",
+		Mode: "discussion", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := app.store.CreateThread(parent); err != nil {
+		t.Fatalf("CreateThread(parent): %v", err)
+	}
+
+	children := make([]store.Thread, len(roles))
+	for i, role := range roles {
+		children[i] = store.Thread{
+			ID:             "thread-" + idPrefix + "-" + role,
+			ProjectID:      parent.ProjectID,
+			Title:          parent.Title + " - " + role,
+			Provider:       parent.Provider,
+			WorkspacePath:  parent.WorkspacePath,
+			Model:          parent.Model,
+			Mode:           "discussion",
+			ParentThreadID: parent.ID,
+			CreatedAt:      now + int64(i),
+			UpdatedAt:      now + int64(i),
+		}
+		if err := app.store.CreateThread(children[i]); err != nil {
+			t.Fatalf("CreateThread(%s): %v", role, err)
+		}
+	}
+
+	channelID := "channel-" + idPrefix
+	if err := app.store.CreateChannel(store.Channel{
+		ID: channelID, ThreadID: parent.ID, Type: "deliberation", Status: "open",
+		MaxTurns: maxTurns, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateChannel(): %v", err)
+	}
+	parent.DiscussionID = channelID
+	if err := app.store.UpdateThread(parent); err != nil {
+		t.Fatalf("UpdateThread(parent): %v", err)
+	}
+	for i := range children {
+		children[i].DiscussionID = channelID
+		if err := app.store.UpdateThread(children[i]); err != nil {
+			t.Fatalf("UpdateThread(%s): %v", children[i].ID, err)
+		}
+	}
+	return parent, children
+}
+
+// TestSyncDiscussionTurnEmitsExactlyOneStatePerAdvance guards the
+// discussion:state cadence: one turn advance produces exactly one
+// state emission — the post-claim snapshot from
+// claimAndPromptNextSpeaker — not an additional pre-claim snapshot
+// that the claim's own emission would immediately supersede.
+func TestSyncDiscussionTurnEmitsExactlyOneStatePerAdvance(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+
+	sendCh, sendFn := newSendCaptureChan()
+	app.sendMessageFn = sendFn
+
+	var mu sync.Mutex
+	stateEmits := 0
+	app.testEmitHook = func(name string, _ any) {
+		if name != "discussion:state" {
+			return
+		}
+		mu.Lock()
+		stateEmits++
+		mu.Unlock()
+	}
+
+	parent, children := seedDiscussionChannel(t, app, "one-state", []string{"Architect", "Reviewer"}, 6)
+	channelID := parent.DiscussionID
+	app.installDeliberation(channelID, []string{children[0].ID, children[1].ID}, 6)
+
+	if err := app.store.InsertItem(store.Item{
+		ID: "item-one-state", ThreadID: children[0].ID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Summary: "Architect's take.", CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertItem(): %v", err)
+	}
+	if err := app.syncDiscussionTurn(children[0].ID); err != nil {
+		t.Fatalf("syncDiscussionTurn(): %v", err)
+	}
+
+	// The claim's state emission happens synchronously before the
+	// async dispatch hand-off, and a successful dispatch emits nothing
+	// further — once the prompt lands, the count is final.
+	awaitSendCapture(t, sendCh)
+
+	mu.Lock()
+	got := stateEmits
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("discussion:state emissions across one turn advance = %d, want exactly 1", got)
+	}
+}
+
+// TestPostChannelMessageSelfHealsWedgedConcludedDeliberation covers
+// the conclusion-persistence failure wedge: RecordPost flips the FSM
+// to Concluded BEFORE concludeDiscussionChannel persists, so a
+// persistence failure strands a concluded FSM against a channel row
+// still "open" — TryClaimCurrentSpeaker refuses every claim and the
+// discussion would wedge forever. The next human post is the retry
+// trigger: maybePromptNextDiscussionSpeaker re-attempts the
+// conclusion instead of claiming.
+func TestPostChannelMessageSelfHealsWedgedConcludedDeliberation(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+
+	sendCh, sendFn := newSendCaptureChan()
+	app.sendMessageFn = sendFn
+
+	var mu sync.Mutex
+	var emitted []string
+	app.testEmitHook = func(name string, _ any) {
+		mu.Lock()
+		emitted = append(emitted, name)
+		mu.Unlock()
+	}
+
+	parent, children := seedDiscussionChannel(t, app, "wedged", []string{"Architect", "Reviewer"}, 2)
+	channelID := parent.DiscussionID
+
+	// Install the wedge shape directly: an FSM already concluded
+	// (turnCount >= maxTurns) while the channel row is still "open".
+	app.mu.Lock()
+	app.deliberations[channelID] = discussion.RestoreDeliberation(
+		channelID, 2, []string{children[0].ID, children[1].ID}, 2, "")
+	app.mu.Unlock()
+
+	if _, err := app.PostChannelMessage(channelID, "Anyone there?"); err != nil {
+		t.Fatalf("PostChannelMessage() error = %v", err)
+	}
+
+	channel, err := app.store.GetChannel(channelID)
+	if err != nil {
+		t.Fatalf("GetChannel(): %v", err)
+	}
+	if channel.Status != "concluded" {
+		t.Fatalf("channel.Status = %q, want concluded (self-heal must flip the row)", channel.Status)
+	}
+
+	messages, err := app.GetChannelMessages(channelID, -1, 0)
+	if err != nil {
+		t.Fatalf("GetChannelMessages(): %v", err)
+	}
+	last := messages[len(messages)-1]
+	if last.FromType != "system" || !strings.Contains(last.Content, "2-turn limit") {
+		t.Fatalf("last message = %+v, want the system conclusion notice", last)
+	}
+
+	mu.Lock()
+	gotEvents := append([]string(nil), emitted...)
+	mu.Unlock()
+	if !containsString(gotEvents, "discussion:state") {
+		t.Fatalf("emitted events = %v, want discussion:state after the self-heal", gotEvents)
+	}
+
+	// A successful re-conclusion also removes the FSM (same as the
+	// normal conclude path).
+	if _, ok := app.deliberation(channelID); ok {
+		t.Fatal("expected the healed deliberation to be removed from a.deliberations")
+	}
+
+	// And no prompt was dispatched — a concluded discussion never
+	// claims a speaker.
+	assertNoSendCapture(t, sendCh, 200*time.Millisecond)
+}
+
+// TestDiscussionPromptDispatchFailureUnclaimsAndAllowsRetry covers the
+// failed-dispatch recovery loop end to end: a dispatch failure must
+// un-claim the speaker (AwaitingResponse cleared), re-emit
+// discussion:state, surface the failure as thread error state on the
+// parent thread, and leave the deliberation retryable — a second
+// human post re-prompts the SAME CurrentSpeaker.
+func TestDiscussionPromptDispatchFailureUnclaimsAndAllowsRetry(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+
+	// Capture triage emissions so the test can await the wire-error
+	// surfacing (promptDiscussionSpeakerAsync → emitWireErrorToThread →
+	// triage persist + provider:item_event) without sleeping.
+	triageEmitCh := make(chan string, 32)
+	app.triage = triage.NewRouter(app.store, func(name string, _ any) {
+		select {
+		case triageEmitCh <- name:
+		default:
+		}
+	})
+
+	stateCh := make(chan struct{}, 16)
+	app.testEmitHook = func(name string, _ any) {
+		if name != "discussion:state" {
+			return
+		}
+		select {
+		case stateCh <- struct{}{}:
+		default:
+		}
+	}
+
+	dispatchErr := errors.New("provider session gone")
+	sendCh := make(chan sendCapture, 8)
+	var sendMu sync.Mutex
+	sendCalls := 0
+	app.sendMessageFn = func(threadID, content string, _ []string) error {
+		sendMu.Lock()
+		sendCalls++
+		n := sendCalls
+		sendMu.Unlock()
+		if n == 1 {
+			return dispatchErr
+		}
+		sendCh <- sendCapture{threadID: threadID, content: content}
+		return nil
+	}
+
+	parent, children := seedDiscussionChannel(t, app, "dispatch-retry", []string{"Architect", "Reviewer"}, 6)
+	channelID := parent.DiscussionID
+	app.installDeliberation(channelID, []string{children[0].ID, children[1].ID}, 6)
+
+	if _, err := app.PostChannelMessage(channelID, "Kick off."); err != nil {
+		t.Fatalf("PostChannelMessage(kickoff) error = %v", err)
+	}
+
+	// Two state snapshots land for the failed cycle: the synchronous
+	// post-claim emission, then the async un-claim after the dispatch
+	// error.
+	for i, label := range []string{"post-claim", "un-claim"} {
+		select {
+		case <-stateCh:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for the %s discussion:state (emission %d)", label, i+1)
+		}
+	}
+
+	// The failure surfaces on the parent thread. persistItem writes to
+	// SQLite before emitting, so once the provider:item_event lands the
+	// error row is queryable.
+	deadline := time.After(2 * time.Second)
+	for {
+		var name string
+		select {
+		case name = <-triageEmitCh:
+		case <-deadline:
+			t.Fatal("timed out waiting for the wire-error emission on the parent thread")
+		}
+		if name == "provider:item_event" {
+			break
+		}
+	}
+	errorItem, found, err := app.store.FindTurnItem(parent.ID, 0, "error")
+	if err != nil {
+		t.Fatalf("FindTurnItem(parent, error): %v", err)
+	}
+	if !found {
+		t.Fatal("expected a persisted error item on the parent thread")
+	}
+	if !strings.Contains(errorItem.Summary, "discussion turn prompt failed") {
+		t.Fatalf("error item summary = %q, want the discussion turn prompt failure", errorItem.Summary)
+	}
+
+	d, ok := app.deliberation(channelID)
+	if !ok {
+		t.Fatal("expected an installed deliberation")
+	}
+	if state := d.State(); state.AwaitingResponse || state.CurrentSpeaker != children[0].ID {
+		t.Fatalf("state after failed dispatch = %+v, want AwaitingResponse=false and CurrentSpeaker=%q", state, children[0].ID)
+	}
+
+	// A second human post retries the SAME speaker.
+	if _, err := app.PostChannelMessage(channelID, "Try again."); err != nil {
+		t.Fatalf("PostChannelMessage(retry) error = %v", err)
+	}
+	retry := awaitSendCapture(t, sendCh)
+	if retry.threadID != children[0].ID {
+		t.Fatalf("retry prompt threadID = %q, want %q (the same current speaker)", retry.threadID, children[0].ID)
 	}
 }
 

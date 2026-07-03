@@ -5,6 +5,7 @@ import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { transportGapChannel } from '../transport/wsClient';
 import { buildPane, makeThread } from '../../test/helpers/chat';
+import { makeChannelMessage, makeChannelStatePayload } from '../../test/helpers/discussion';
 import { refreshDiscussionChannel } from './eventsDiscussion';
 import { clearAllDiscussionLiveTail } from './discussionLiveTail';
 import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
@@ -28,35 +29,20 @@ function discussionThread(overrides: Partial<Thread> = {}): Thread {
   });
 }
 
+// This suite's historical defaults: short 'm<seq>' ids, an in-flight
+// turn (awaitingResponse true), and a single-participant roster.
 function makeMessage(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
-  return {
-    id: 'm' + (overrides.sequence ?? 1),
-    channelId: 'channel-1',
-    sequence: 1,
-    fromType: 'agent',
-    fromId: 'advocate-thread',
-    fromRole: 'advocate',
-    content: 'hello',
-    createdAt: 0,
-    ...overrides,
-  };
+  return makeChannelMessage({ id: 'm' + (overrides.sequence ?? 1), ...overrides });
 }
 
 function makeStatePayload(overrides: Partial<ChannelStatePayload> = {}): ChannelStatePayload {
-  return {
-    channelId: 'channel-1',
-    threadId: 'parent-thread',
-    status: 'open',
-    turnCount: 0,
-    maxTurns: 8,
+  return makeChannelStatePayload({
     awaitingResponse: true,
-    currentSpeakerThreadId: 'advocate-thread',
-    currentSpeakerRole: 'advocate',
     participants: [
       { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6' },
     ],
     ...overrides,
-  };
+  });
 }
 
 let cleanup: () => void;
@@ -109,6 +95,87 @@ describe('discussion:message / discussion:state routing', () => {
     const pane = await buildPane(discussionThread(), [], 'a');
     emitWailsEvent('discussion:message', { channelId: 'channel-1' });
     expect(pane.channelMessages).toHaveLength(0);
+  });
+
+  it('drops a discussion:message whose fields fail boundary validation', async () => {
+    // Same shared transport as the item stream — remote peers can reach
+    // this handler, so malformed payloads must be rejected before they
+    // touch reactive state (content flows into ChatMarkdown).
+    const pane = await buildPane(discussionThread(), [], 'a');
+    const base = { channelId: 'channel-1', threadId: 'parent-thread' };
+
+    // Non-finite sequence.
+    emitWailsEvent('discussion:message', {
+      ...base,
+      message: makeMessage({ sequence: Number.NaN }),
+    });
+    // Non-string content.
+    emitWailsEvent('discussion:message', {
+      ...base,
+      message: { ...makeMessage({ sequence: 2 }), content: 12345 },
+    });
+    // Oversized content (above the shared 2M text cap).
+    emitWailsEvent('discussion:message', {
+      ...base,
+      message: makeMessage({ sequence: 3, content: 'x'.repeat(2_000_001) }),
+    });
+    // Oversized fromRole (label fields cap at 128).
+    emitWailsEvent('discussion:message', {
+      ...base,
+      message: makeMessage({ sequence: 4, fromRole: 'r'.repeat(129) }),
+    });
+    // Empty id.
+    emitWailsEvent('discussion:message', {
+      ...base,
+      message: makeMessage({ sequence: 5, id: '  ' }),
+    });
+
+    expect(pane.channelMessages).toHaveLength(0);
+
+    // A valid message still routes after the rejects.
+    emitWailsEvent('discussion:message', {
+      ...base,
+      message: makeMessage({ sequence: 6, content: 'valid after rejects' }),
+    });
+    expect(pane.channelMessages).toHaveLength(1);
+    expect(pane.channelMessages[0].content).toBe('valid after rejects');
+  });
+
+  it('drops a discussion:state whose fields fail boundary validation', async () => {
+    const pane = await buildPane(discussionThread(), [], 'a');
+
+    // Non-finite turn counters.
+    emitWailsEvent('discussion:state', makeStatePayload({ turnCount: Number.POSITIVE_INFINITY }));
+    emitWailsEvent('discussion:state', makeStatePayload({ maxTurns: Number.NaN }));
+    // Non-boolean awaitingResponse.
+    emitWailsEvent('discussion:state', {
+      ...makeStatePayload(),
+      awaitingResponse: 'yes',
+    });
+    // participants not an array.
+    emitWailsEvent('discussion:state', {
+      ...makeStatePayload(),
+      participants: 'nope',
+    });
+    // Participant entry with an oversized role label.
+    emitWailsEvent('discussion:state', makeStatePayload({
+      participants: [
+        { threadId: 'advocate-thread', role: 'r'.repeat(129), provider: 'claude', model: 'claude-sonnet-4-6' },
+      ],
+    }));
+    // Non-string currentSpeakerThreadId.
+    emitWailsEvent('discussion:state', {
+      ...makeStatePayload(),
+      currentSpeakerThreadId: 42,
+    });
+
+    expect(pane.channelStatus).toBeNull();
+    expect(pane.channelTurnCount).toBe(0);
+
+    // A valid snapshot still routes after the rejects.
+    emitWailsEvent('discussion:state', makeStatePayload({ turnCount: 2 }));
+    expect(pane.channelStatus).toBe('open');
+    expect(pane.channelTurnCount).toBe(2);
   });
 });
 

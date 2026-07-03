@@ -460,10 +460,10 @@ export function moveFocusedPane(direction: -1 | 1): void {
  * pattern that was scattered across ~13 call sites. Forgetting one
  * half of the pair caused desync between sidebar list and chat header.
  *
- * Server-event handlers in `events.ts` that need merge-aware semantics
- * (preserving local read markers / latest-completion timestamps across
- * server-pushed updates) keep using `syncThreadRow` — that helper does
- * `syncThread`'s fan-out plus the merge.
+ * Server-event handlers in `eventsThreadRows.ts` that need merge-aware
+ * semantics (preserving local read markers / latest-completion
+ * timestamps across server-pushed updates) keep using `syncThreadRow` —
+ * that helper does `syncThread`'s fan-out plus the merge.
  *
  * `syncThread` deliberately does NOT bump project last-activity. The
  * backend's documented invariant (internal/store/threads.go) is that
@@ -471,7 +471,7 @@ export function moveFocusedPane(direction: -1 | 1): void {
  * threads.updated_at; real activity flows through
  * MarkThreadActivity at three sites (user_text persist, approval /
  * user-input request, turn complete). The frontend mirrors those
- * three sites via syncThreadActivity in events.ts, which is the
+ * three sites via syncThreadActivity in eventsThreadRows.ts, which is the
  * legitimate sort-bump path. An unconditional touchProjectActivity
  * here would re-sort the project on every toolbar action.
  */

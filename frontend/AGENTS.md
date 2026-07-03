@@ -11,8 +11,13 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 ## Layout
 
 - `src/lib/stores/` — runes-based reactive stores. `thread.svelte.ts`
-  owns the per-thread `ThreadPane` factory; `events.ts` fans backend
-  events into active panes; `bindings.ts` wraps generated Wails calls.
+  owns the per-thread `ThreadPane` factory, composed from its
+  `thread*` sub-factory modules (`threadChannelState.svelte.ts`,
+  `threadTimelineWindow.svelte.ts`, `threadStreamingReveal.svelte.ts`,
+  …); `events.ts` is a thin composition root that fans backend events
+  out to the `events*` domain modules (`eventsItemStream.ts`,
+  `eventsProvider.ts`, `eventsDiscussion.ts`, …); `bindings.ts` wraps
+  generated Wails calls.
 - `src/lib/components/panes/` — pane host/layout surfaces. This is the
   only place that should translate layout items into mounted chat panes.
 - `src/lib/components/chat/` — timeline rendering. Kind-based
@@ -66,6 +71,9 @@ Read that before touching:
 - `src/lib/stores/threadItemCache.ts`
 - `src/lib/stores/threadScrollSnapshots.ts`
 - `src/lib/components/chat/MessageTimeline.svelte`
+- `src/lib/components/chat/timeline{Restore,SizePriors,WindowAnchor}.svelte.ts`
+  and `timelinePaging.ts` (the scroll-session modules extracted from
+  MessageTimeline)
 - `src/lib/components/chat/TimelineVirtualizer.svelte`
 - `src/lib/components/discussion/ChannelView.svelte`
 - `src/lib/utils/scroll/` (`index.svelte.ts` controller + resolver/intent/spring/observers)

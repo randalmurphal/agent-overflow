@@ -108,7 +108,8 @@ const SETTLED_QUIET_MS = 16;
 // viewport-relative: the threshold is human-perceptible scroll
 // displacement, which does not scale with viewport height. The engine
 // places unmeasured rows at floor-biased kind estimates
-// (ROW_KIND_ESTIMATE_PX / ESTIMATED_ROW_SIZE, see MessageTimeline.svelte),
+// (ROW_KIND_ESTIMATE_PX / ESTIMATED_ROW_SIZE, see
+// components/chat/timelineSizePriors.svelte.ts),
 // so each per-row correction is |measured − floor| — tens-to-hundreds of
 // px for any real multi-line chat row, comfortably clear of this floor.
 const WARMUP_SETTLE_EPSILON_PX = 8;
