@@ -1295,6 +1295,50 @@ func TestV11CompactionReasoningKindWidening(t *testing.T) {
 	}
 }
 
+// TestV12ChannelMaxTurnsColumn covers the plain ALTER TABLE ADD COLUMN
+// migration that backs the restart-rebuild path
+// (deliberationForChannel): a pre-existing channel row must backfill
+// to DefaultMaxTurns (8), new rows can set an explicit value, and the
+// NOT NULL constraint is enforced.
+func TestV12ChannelMaxTurnsColumn(t *testing.T) {
+	db := migrateThrough(t, 11)
+
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v12', '/v12', 'v12', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode)
+		VALUES ('t-v12', 'p-v12', 'Discuss', 'claude-tui', '/tmp', '', 1, 1, 0, 'discussion')`)
+	mustExec(t, db, `INSERT INTO channels (id, thread_id, type, status, created_at, updated_at)
+		VALUES ('c-v12', 't-v12', 'deliberation', 'open', 1, 1)`)
+
+	if err := applyMigration(db, migrationByVersion(t, 12)); err != nil {
+		t.Fatalf("apply v12: %v", err)
+	}
+
+	var backfilled int
+	if err := db.QueryRow(`SELECT max_turns FROM channels WHERE id = 'c-v12'`).Scan(&backfilled); err != nil {
+		t.Fatalf("read backfilled max_turns: %v", err)
+	}
+	if backfilled != 8 {
+		t.Fatalf("max_turns for pre-existing row = %d, want 8 (DEFAULT backfill)", backfilled)
+	}
+
+	mustExec(t, db, `INSERT INTO channels (id, thread_id, type, status, max_turns, created_at, updated_at)
+		VALUES ('c-v12-custom', 't-v12', 'deliberation', 'open', 12, 2, 2)`)
+	var custom int
+	if err := db.QueryRow(`SELECT max_turns FROM channels WHERE id = 'c-v12-custom'`).Scan(&custom); err != nil {
+		t.Fatalf("read custom max_turns: %v", err)
+	}
+	if custom != 12 {
+		t.Fatalf("custom max_turns = %d, want 12", custom)
+	}
+
+	if _, err := db.Exec(`INSERT INTO channels (id, thread_id, type, status, max_turns, created_at, updated_at)
+		VALUES ('c-v12-null', 't-v12', 'deliberation', 'open', NULL, 3, 3)`); err == nil {
+		t.Fatal("expected a NOT NULL violation inserting a NULL max_turns")
+	}
+}
+
 // --- Helpers ---
 
 // migrateThrough opens an in-memory DB configured like production

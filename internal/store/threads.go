@@ -347,9 +347,17 @@ func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
 	return threads, rows.Err()
 }
 
+// ListChildThreads returns a parent's child threads ordered by
+// creation. Discussion participant threads are all created with the
+// same CreatedAt millisecond (see BuildParticipantPlans, which stamps
+// every plan with one shared nowMillis), so `ORDER BY created_at ASC`
+// alone is not a deterministic tiebreak under SQL semantics — ties can
+// come back in any order. `rowid ASC` breaks the tie by insert order
+// (these are rowid tables), which matches definition order and keeps
+// the deliberation roster's round-robin sequence stable across reads.
 func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
 	rows, err := s.db.Query(
-		`SELECT `+threadColumns+` FROM threads WHERE parent_thread_id = ? ORDER BY created_at ASC`,
+		`SELECT `+threadColumns+` FROM threads WHERE parent_thread_id = ? ORDER BY created_at ASC, rowid ASC`,
 		parentID,
 	)
 	if err != nil {

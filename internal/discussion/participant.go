@@ -66,13 +66,24 @@ func BuildParticipantPlans(parent store.Thread, def store.DiscussionDefinition, 
 	return plans, nil
 }
 
-// BuildParticipantPrompt joins the discussion-context preamble with
-// the participant's raw system prompt. Blank segments are dropped and
-// remaining segments are separated by a blank line so providers see a
-// single continuous prompt.
+// discussionProtocolPreamble tells a participant how the turn-driving
+// mechanics in app_discussion_drive.go present other speakers to it:
+// every other participant's and the human's contributions arrive as
+// plain user messages (see turnprompt.go), so the model needs to know
+// not to narrate the protocol itself back into its reply.
+const discussionProtocolPreamble = "You are one voice among several participants in a multi-participant deliberation. " +
+	"Messages from the other participants and from the human moderating the discussion arrive as user messages, " +
+	"each labeled with who sent it. Respond with your next contribution only — no meta commentary about the discussion protocol itself."
+
+// BuildParticipantPrompt joins the discussion-context preamble, the
+// discussion-protocol paragraph, and the participant's raw system
+// prompt. Blank segments are dropped and remaining segments are
+// separated by a blank line so providers see a single continuous
+// prompt.
 func BuildParticipantPrompt(role, rawSystem string) string {
 	return joinPrompts(
 		fmt.Sprintf("You are the %s participant in a discussion thread.", FormatRole(role)),
+		discussionProtocolPreamble,
 		rawSystem,
 	)
 }

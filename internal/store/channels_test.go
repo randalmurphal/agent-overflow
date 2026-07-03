@@ -139,6 +139,83 @@ func TestDeleteChannelRemovesChannelAndMessages(t *testing.T) {
 	}
 }
 
+// TestLastChannelMessageSeqFromNeverPostedIncludesSequenceZero guards
+// the off-by-one this helper used to have: falling back to 0 (instead
+// of -1) for "never posted" collided with the channel's legitimate
+// first sequence number (also 0), which meant ListChannelMessages's
+// exclusive `sequence > afterSeq` cursor silently dropped the very
+// first message ever posted into a channel from any never-yet-posted
+// participant's next-turn prompt — exactly the case a discussion's
+// first speaker hits reading a human's kickoff message.
+func TestLastChannelMessageSeqFromNeverPostedIncludesSequenceZero(t *testing.T) {
+	s := newTestStore(t)
+
+	thread := makeThread("thread-seq-zero", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	channel := Channel{
+		ID:        "channel-seq-zero",
+		ThreadID:  thread.ID,
+		Type:      "deliberation",
+		Status:    "open",
+		MaxTurns:  8,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.CreateChannel(channel); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	if _, err := s.InsertChannelMessageAtomic(ChannelMessage{
+		ID:        "msg-kickoff",
+		ChannelID: channel.ID,
+		FromType:  "human",
+		FromID:    "user",
+		Content:   "kickoff message at sequence 0",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertChannelMessageAtomic: %v", err)
+	}
+
+	seq, err := s.LastChannelMessageSeqFrom(channel.ID, "participant-never-posted")
+	if err != nil {
+		t.Fatalf("LastChannelMessageSeqFrom: %v", err)
+	}
+	if seq != -1 {
+		t.Fatalf("LastChannelMessageSeqFrom(never posted) = %d, want -1", seq)
+	}
+
+	messages, err := s.ListChannelMessages(channel.ID, seq, 0)
+	if err != nil {
+		t.Fatalf("ListChannelMessages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != "msg-kickoff" {
+		t.Fatalf("ListChannelMessages(afterSeq=%d) = %+v, want the sequence-0 kickoff message included", seq, messages)
+	}
+
+	// A participant that HAS posted still gets its own real cursor.
+	if _, err := s.InsertChannelMessageAtomic(ChannelMessage{
+		ID:        "msg-reply",
+		ChannelID: channel.ID,
+		FromType:  "agent",
+		FromID:    "participant-a",
+		FromRole:  "Architect",
+		Content:   "reply",
+		CreatedAt: now + 1,
+	}); err != nil {
+		t.Fatalf("InsertChannelMessageAtomic(reply): %v", err)
+	}
+	seqAfterReply, err := s.LastChannelMessageSeqFrom(channel.ID, "participant-a")
+	if err != nil {
+		t.Fatalf("LastChannelMessageSeqFrom(participant-a): %v", err)
+	}
+	if seqAfterReply != 1 {
+		t.Fatalf("LastChannelMessageSeqFrom(participant-a) = %d, want 1 (its own post's sequence)", seqAfterReply)
+	}
+}
+
 func TestChannelMutationsReturnNotFoundForMissingRows(t *testing.T) {
 	s := newTestStore(t)
 

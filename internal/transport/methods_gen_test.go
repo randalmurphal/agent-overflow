@@ -89,12 +89,14 @@ var wireSafeMethods = map[string]bool{
 	"CountRunningBackgroundTasks": true,
 	"ListLiveBackgroundTasks":     true,
 
-	// Discussion CRUD + transcript reads. Channel messages are the
-	// user's deliberation surface from the browser. PostChannelMessage
-	// is grouped here because today it inserts a "human" intervention
-	// row without spawning a provider subprocess — the LocalOnly
-	// SendMessage path is what drives the AI turn. Audit again if
-	// discussion channels grow a side-effecting path.
+	// Discussion CRUD + transcript reads. Channel messages and FSM
+	// state are the user's deliberation surface from the browser — both
+	// pure reads with no provider side effect. PostChannelMessage moved
+	// to LocalOnly (internalmethods.go category 2): it now arms the
+	// next participant's turn prompt, which drives a live provider
+	// session the same way SendMessage does. This is the "discussion
+	// channels grow a side-effecting path" case the comment used to
+	// warn about.
 	"CreateDiscussion":         true,
 	"DeleteDiscussion":         true,
 	"UpdateDiscussion":         true,
@@ -102,7 +104,7 @@ var wireSafeMethods = map[string]bool{
 	"ListDiscussions":          true,
 	"ListDiscussionsForThread": true,
 	"GetChannelMessages":       true,
-	"PostChannelMessage":       true,
+	"GetChannelState":          true,
 
 	// Proposed-plan inline comments. CRUD is wire-safe; the
 	// LocalOnly SendPlanRevisionComments path is what hands them to

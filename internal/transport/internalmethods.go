@@ -217,15 +217,24 @@ var LocalOnlyMethods = map[string]bool{
 	// diff-returning bindings (category 6 below): in-progress drafted work
 	// shouldn't be readable by a LAN token-holder. These bindings are
 	// loopback-only.
-	"RegisterQueueItem":              true,
-	"GetQueueState":                  true,
-	"GetThreadLiveState":             true,
-	"SaveDraft":                      true,
-	"GetDraft":                       true,
-	"ClearDraft":                     true,
-	"DeleteEmptyDraftThread":         true,
-	"StartDiscussion":                true,
-	"StartDiscussionByID":            true,
+	"RegisterQueueItem":      true,
+	"GetQueueState":          true,
+	"GetThreadLiveState":     true,
+	"SaveDraft":              true,
+	"GetDraft":               true,
+	"ClearDraft":             true,
+	"DeleteEmptyDraftThread": true,
+	"StartDiscussion":        true,
+	"StartDiscussionByID":    true,
+	// PostChannelMessage now has a side-effecting path: a human post
+	// can arm the next participant's turn prompt (promptDiscussionSpeakerAsync),
+	// which dispatches into that participant's live provider session
+	// via the same SendMessage path above. What used to be a plain
+	// data write became session control the moment turn-driving
+	// landed — see the comment this displaces in
+	// methods_gen_test.go's wireSafeMethods, which called out exactly
+	// this re-audit trigger.
+	"PostChannelMessage":             true,
 	"UpdateThreadMode":               true,
 	"UpdateThreadProvider":           true,
 	"UpdateThreadModel":              true,

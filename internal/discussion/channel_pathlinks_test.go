@@ -50,7 +50,7 @@ func TestChannelPostMessageEnrichesPathRefs(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	channel, err := channelSvc.Create(thread.ID, "deliberation")
+	channel, err := channelSvc.Create(thread.ID, "deliberation", 5)
 	if err != nil {
 		t.Fatalf("Create channel: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestChannelPostMessageNoPathsLeavesMetaEmpty(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	channel, err := channelSvc.Create(thread.ID, "deliberation")
+	channel, err := channelSvc.Create(thread.ID, "deliberation", 5)
 	if err != nil {
 		t.Fatalf("Create channel: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestChannelPostMessageMissingWorkspaceLeavesMetaEmpty(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	channel, err := channelSvc.Create(thread.ID, "deliberation")
+	channel, err := channelSvc.Create(thread.ID, "deliberation", 5)
 	if err != nil {
 		t.Fatalf("Create channel: %v", err)
 	}

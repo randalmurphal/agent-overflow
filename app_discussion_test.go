@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -339,6 +340,12 @@ func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 	app.registry = discussion.NewRegistry(app.store)
 	app.channels = discussion.NewChannelService(app.store)
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	// The synthesized early turn-complete below advances the FSM and
+	// arms a next-speaker prompt on a background goroutine
+	// (promptDiscussionSpeakerAsync). Stub the dispatch so the test
+	// stays deterministic instead of falling through to a real send
+	// with no registered provider session.
+	app.sendMessageFn = func(string, string, []string) error { return nil }
 
 	thread := testThread("thread-discussion-early-turn")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -436,12 +443,12 @@ func TestPostChannelMessageAndGetChannelMessages(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	channel, err := app.channels.Create(thread.ID, "deliberation")
+	channel, err := app.channels.Create(thread.ID, "deliberation", 5)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if err := app.PostChannelMessage(channel.ID, "Human intervention"); err != nil {
+	if _, err := app.PostChannelMessage(channel.ID, "Human intervention"); err != nil {
 		t.Fatalf("PostChannelMessage() error = %v", err)
 	}
 
@@ -538,6 +545,12 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 	app := newTestAppWithStore(t)
 	app.channels = discussion.NewChannelService(app.store)
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	// The first participant's turn-complete below advances the FSM and
+	// arms a next-speaker prompt on a background goroutine
+	// (promptDiscussionSpeakerAsync). Stub the dispatch so the test
+	// stays deterministic instead of falling through to a real send
+	// with no registered provider session.
+	app.sendMessageFn = func(string, string, []string) error { return nil }
 
 	// Threads + channels have a circular FK relationship
 	// (channel.thread_id → threads.id, threads.discussion_id → channels.id).
@@ -598,6 +611,7 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		ThreadID:  parent.ID,
 		Type:      "deliberation",
 		Status:    "open",
+		MaxTurns:  2,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}); err != nil {
@@ -613,7 +627,7 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 			t.Fatalf("UpdateThread(%s) error = %v", children[i].ID, err)
 		}
 	}
-	app.installDeliberation(channelID, 2)
+	app.installDeliberation(channelID, []string{children[0].ID, children[1].ID}, 2)
 
 	firstHandler := app.sessionEventHandler(children[0].ID, "session-a", "")
 	firstHandler(provider.ProviderEvent{
@@ -669,11 +683,20 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 	if err != nil {
 		t.Fatalf("GetChannelMessages(second) error = %v", err)
 	}
-	if len(messages) != 2 {
-		t.Fatalf("len(messages) after second turn = %d, want 2", len(messages))
+	// Reaching MaxTurns now posts a third, system-authored conclusion
+	// message into the channel (concludeDiscussionChannel) alongside
+	// the two agent turns.
+	if len(messages) != 3 {
+		t.Fatalf("len(messages) after second turn = %d, want 3 (two agent turns + conclusion notice)", len(messages))
 	}
 	if messages[1].FromRole != "Reviewer" {
 		t.Fatalf("second mirrored role = %q, want Reviewer", messages[1].FromRole)
+	}
+	if messages[2].FromType != "system" || messages[2].FromRole != "moderator" {
+		t.Fatalf("conclusion message = %+v, want system/moderator", messages[2])
+	}
+	if !strings.Contains(messages[2].Content, "2-turn limit") {
+		t.Fatalf("conclusion message content = %q, want mention of the 2-turn limit", messages[2].Content)
 	}
 
 	channel, err := app.store.GetChannel(parent.DiscussionID)
@@ -689,7 +712,7 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		t.Fatalf("state after second turn = %+v, want concluded after 2 turns", state)
 	}
 
-	if err := app.PostChannelMessage(parent.DiscussionID, "Can we keep going?"); err == nil {
+	if _, err := app.PostChannelMessage(parent.DiscussionID, "Can we keep going?"); err == nil {
 		t.Fatal("expected posting to concluded discussion channel to fail")
 	}
 }
@@ -827,5 +850,575 @@ func TestStartDiscussionRejectsEmptyName(t *testing.T) {
 				t.Fatalf("StartDiscussion() error = %v, want 'discussion name is required'", err)
 			}
 		})
+	}
+}
+
+// sendCapture is a small thread-safe recorder for app.sendMessageFn
+// calls, used by the turn-driving tests below to observe what the
+// (stubbed) provider dispatch actually received without racing the
+// background goroutine that makes the call.
+type sendCapture struct {
+	threadID string
+	content  string
+}
+
+func newSendCaptureChan() (chan sendCapture, func(string, string, []string) error) {
+	ch := make(chan sendCapture, 8)
+	return ch, func(threadID, content string, _ []string) error {
+		ch <- sendCapture{threadID: threadID, content: content}
+		return nil
+	}
+}
+
+func awaitSendCapture(t *testing.T, ch chan sendCapture) sendCapture {
+	t.Helper()
+	select {
+	case call := <-ch:
+		return call
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for a discussion turn prompt dispatch")
+		return sendCapture{}
+	}
+}
+
+func assertNoSendCapture(t *testing.T, ch chan sendCapture, window time.Duration) {
+	t.Helper()
+	select {
+	case unexpected := <-ch:
+		t.Fatalf("unexpected extra prompt dispatch: %+v", unexpected)
+	case <-time.After(window):
+	}
+}
+
+// TestPostChannelMessageClaimsCurrentSpeakerAndSuppressesWhileAwaiting
+// covers PostChannelMessage's turn-driving contract end to end: a
+// human post kicks off the first participant's turn exactly once, the
+// dispatched prompt carries the human's own message, and a second
+// human post landing before that participant replies does not
+// double-prompt.
+func TestPostChannelMessageClaimsCurrentSpeakerAndSuppressesWhileAwaiting(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.registry = discussion.NewRegistry(app.store)
+	app.channels = discussion.NewChannelService(app.store)
+	app.startSessionFn = func(string) error { return nil }
+
+	sendCh, sendFn := newSendCaptureChan()
+	app.sendMessageFn = sendFn
+
+	var mu sync.Mutex
+	var emitted []string
+	app.testEmitHook = func(name string, _ any) {
+		mu.Lock()
+		defer mu.Unlock()
+		emitted = append(emitted, name)
+	}
+
+	thread := testThread("thread-discussion-prompt-once")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.CreateDiscussionDef(store.DiscussionDefinition{
+		ID:        "def-prompt-once",
+		Name:      "Architects",
+		Scope:     "project",
+		ProjectID: projectPathForThread(t, app, thread),
+		Participants: []store.DiscussionParticipant{
+			{Role: "architect", System: "Design the change"},
+			{Role: "reviewer", System: "Review the change"},
+		},
+		Settings:  store.DiscussionSettings{MaxTurns: 6},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("CreateDiscussionDef() error = %v", err)
+	}
+	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+		t.Fatalf("StartDiscussion() error = %v", err)
+	}
+
+	parent, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	children, err := app.store.ListChildThreads(parent.ID)
+	if err != nil {
+		t.Fatalf("ListChildThreads() error = %v", err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("len(children) = %d, want 2", len(children))
+	}
+
+	if _, err := app.PostChannelMessage(parent.DiscussionID, "Let's evaluate the migration boundary."); err != nil {
+		t.Fatalf("PostChannelMessage() error = %v", err)
+	}
+
+	mu.Lock()
+	gotEvents := append([]string(nil), emitted...)
+	mu.Unlock()
+	if !containsString(gotEvents, "discussion:message") || !containsString(gotEvents, "discussion:state") {
+		t.Fatalf("emitted events = %v, want discussion:message and discussion:state", gotEvents)
+	}
+
+	first := awaitSendCapture(t, sendCh)
+	if first.threadID != children[0].ID {
+		t.Fatalf("first prompt threadID = %q, want %q (first participant in roster order)", first.threadID, children[0].ID)
+	}
+	if !strings.Contains(first.content, "Let's evaluate the migration boundary.") {
+		t.Fatalf("first prompt content = %q, want to contain the human's kickoff message", first.content)
+	}
+	if !strings.Contains(first.content, "Human:") {
+		t.Fatalf("first prompt content = %q, want a Human: label", first.content)
+	}
+
+	d, ok := app.deliberation(parent.DiscussionID)
+	if !ok {
+		t.Fatal("expected an installed deliberation")
+	}
+	if state := d.State(); !state.AwaitingResponse || state.CurrentSpeaker != children[0].ID {
+		t.Fatalf("state after first prompt = %+v, want AwaitingResponse=true, CurrentSpeaker=%q", state, children[0].ID)
+	}
+
+	// A second human post while the first participant hasn't replied
+	// yet (AwaitingResponse) must not dispatch a second prompt.
+	if _, err := app.PostChannelMessage(parent.DiscussionID, "Any early thoughts?"); err != nil {
+		t.Fatalf("PostChannelMessage() (second) error = %v", err)
+	}
+	assertNoSendCapture(t, sendCh, 200*time.Millisecond)
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSyncDiscussionTurnPromptsNextSpeakerWithMessagesSinceOwnLastPost
+// covers the unseen-messages windowing promptDiscussionSpeaker builds
+// from LastChannelMessageSeqFrom: a participant's SECOND prompt must
+// contain only what was posted after its own previous post, not the
+// entire channel history again.
+func TestSyncDiscussionTurnPromptsNextSpeakerWithMessagesSinceOwnLastPost(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.registry = discussion.NewRegistry(app.store)
+	app.channels = discussion.NewChannelService(app.store)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.startSessionFn = func(string) error { return nil }
+
+	sendCh, sendFn := newSendCaptureChan()
+	app.sendMessageFn = sendFn
+
+	thread := testThread("thread-discussion-window")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.CreateDiscussionDef(store.DiscussionDefinition{
+		ID:        "def-window",
+		Name:      "Architects",
+		Scope:     "project",
+		ProjectID: projectPathForThread(t, app, thread),
+		Participants: []store.DiscussionParticipant{
+			{Role: "architect", System: "Design the change"},
+			{Role: "reviewer", System: "Review the change"},
+		},
+		Settings:  store.DiscussionSettings{MaxTurns: 6},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("CreateDiscussionDef() error = %v", err)
+	}
+	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+		t.Fatalf("StartDiscussion() error = %v", err)
+	}
+
+	parent, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	children, err := app.store.ListChildThreads(parent.ID)
+	if err != nil {
+		t.Fatalf("ListChildThreads() error = %v", err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("len(children) = %d, want 2", len(children))
+	}
+	architect, reviewer := children[0], children[1]
+
+	// Kick off the discussion; architect gets prompted first.
+	if _, err := app.PostChannelMessage(parent.DiscussionID, "Topic: evaluate the migration boundary."); err != nil {
+		t.Fatalf("PostChannelMessage(kickoff) error = %v", err)
+	}
+	awaitSendCapture(t, sendCh)
+
+	// Architect's turn completes. Its first-ever prompt to reviewer
+	// naturally carries the whole history so far (reviewer has never
+	// posted, so it hasn't "seen" anything yet).
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItem(store.Item{
+		ID: "item-architect-1", ThreadID: architect.ID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Summary: "Architect's opening take.", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertItem(architect): %v", err)
+	}
+	if err := app.syncDiscussionTurn(architect.ID); err != nil {
+		t.Fatalf("syncDiscussionTurn(architect): %v", err)
+	}
+	toReviewer := awaitSendCapture(t, sendCh)
+	if toReviewer.threadID != reviewer.ID {
+		t.Fatalf("prompt threadID = %q, want %q (reviewer)", toReviewer.threadID, reviewer.ID)
+	}
+	if !strings.Contains(toReviewer.content, "Topic: evaluate the migration boundary.") {
+		t.Fatalf("reviewer's first prompt = %q, want the human kickoff included", toReviewer.content)
+	}
+	if !strings.Contains(toReviewer.content, "Architect's opening take.") {
+		t.Fatalf("reviewer's first prompt = %q, want the architect's reply included", toReviewer.content)
+	}
+
+	// Reviewer's turn completes. Architect's SECOND prompt must only
+	// contain what was posted after architect's own last post — not
+	// the kickoff or architect's own prior reply again.
+	if err := app.store.InsertItem(store.Item{
+		ID: "item-reviewer-1", ThreadID: reviewer.ID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Summary: "Reviewer's rebuttal.", CreatedAt: now + 1,
+	}); err != nil {
+		t.Fatalf("InsertItem(reviewer): %v", err)
+	}
+	if err := app.syncDiscussionTurn(reviewer.ID); err != nil {
+		t.Fatalf("syncDiscussionTurn(reviewer): %v", err)
+	}
+	toArchitect := awaitSendCapture(t, sendCh)
+	if toArchitect.threadID != architect.ID {
+		t.Fatalf("prompt threadID = %q, want %q (architect)", toArchitect.threadID, architect.ID)
+	}
+	if !strings.Contains(toArchitect.content, "Reviewer's rebuttal.") {
+		t.Fatalf("architect's second prompt = %q, want the reviewer's reply included", toArchitect.content)
+	}
+	if strings.Contains(toArchitect.content, "Topic: evaluate the migration boundary.") {
+		t.Fatalf("architect's second prompt = %q, want the already-seen kickoff excluded", toArchitect.content)
+	}
+	if strings.Contains(toArchitect.content, "Architect's opening take.") {
+		t.Fatalf("architect's second prompt = %q, want architect's own prior post excluded", toArchitect.content)
+	}
+}
+
+// TestSyncDiscussionTurnToolOnlyStillAdvancesAndPromptsNextSpeaker
+// covers the stall fix: a turn with no assistant text (e.g. the
+// participant only ran tools) must not post anything into the channel,
+// but the FSM still has to advance and prompt the next speaker —
+// otherwise a tool-only turn would silently leave the deliberation
+// awaiting a reply forever.
+func TestSyncDiscussionTurnToolOnlyStillAdvancesAndPromptsNextSpeaker(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.registry = discussion.NewRegistry(app.store)
+	app.channels = discussion.NewChannelService(app.store)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.startSessionFn = func(string) error { return nil }
+
+	sendCh, sendFn := newSendCaptureChan()
+	app.sendMessageFn = sendFn
+
+	thread := testThread("thread-discussion-tool-only")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.CreateDiscussionDef(store.DiscussionDefinition{
+		ID:        "def-tool-only",
+		Name:      "Architects",
+		Scope:     "project",
+		ProjectID: projectPathForThread(t, app, thread),
+		Participants: []store.DiscussionParticipant{
+			{Role: "architect", System: "Design the change"},
+			{Role: "reviewer", System: "Review the change"},
+		},
+		Settings:  store.DiscussionSettings{MaxTurns: 6},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("CreateDiscussionDef() error = %v", err)
+	}
+	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+		t.Fatalf("StartDiscussion() error = %v", err)
+	}
+
+	parent, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	children, err := app.store.ListChildThreads(parent.ID)
+	if err != nil {
+		t.Fatalf("ListChildThreads() error = %v", err)
+	}
+	architect, reviewer := children[0], children[1]
+
+	if _, err := app.PostChannelMessage(parent.DiscussionID, "Kick things off."); err != nil {
+		t.Fatalf("PostChannelMessage() error = %v", err)
+	}
+	awaitSendCapture(t, sendCh)
+
+	// Architect's turn ran tools only — a tool_call item, no
+	// assistant_text — and completed. No InsertItem of kind
+	// assistant_text at all for turn 0.
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItem(store.Item{
+		ID: "item-architect-tool", ThreadID: architect.ID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Summary: "ran `go build`", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertItem(tool_call): %v", err)
+	}
+	if err := app.syncDiscussionTurn(architect.ID); err != nil {
+		t.Fatalf("syncDiscussionTurn(architect, tool-only): %v", err)
+	}
+
+	messages, err := app.GetChannelMessages(parent.DiscussionID, -1, 0)
+	if err != nil {
+		t.Fatalf("GetChannelMessages() error = %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1 (only the human kickoff; the tool-only turn posts nothing)", len(messages))
+	}
+
+	d, ok := app.deliberation(parent.DiscussionID)
+	if !ok {
+		t.Fatal("expected an installed deliberation")
+	}
+	if state := d.State(); state.TurnCount != 1 {
+		t.Fatalf("TurnCount after tool-only turn = %d, want 1 (the FSM still advanced)", state.TurnCount)
+	}
+
+	toReviewer := awaitSendCapture(t, sendCh)
+	if toReviewer.threadID != reviewer.ID {
+		t.Fatalf("prompt threadID = %q, want %q (reviewer prompted despite the tool-only turn)", toReviewer.threadID, reviewer.ID)
+	}
+}
+
+// TestDeliberationForChannelRebuildsFromStoreAfterRestart simulates an
+// app restart: the channel, its participant threads, and channel
+// message history all exist in SQLite, but no in-memory Deliberation
+// was ever installed for it (a.deliberations starts empty, exactly
+// like a freshly-started process). deliberationForChannel must
+// reconstruct an equivalent FSM purely from store state.
+func TestDeliberationForChannelRebuildsFromStoreAfterRestart(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+
+	now := time.Now().UnixMilli()
+	parent := store.Thread{
+		ID: "thread-restart-parent", ProjectID: defaultTestProjectID, Title: "Design Review",
+		Provider: string(provider.Codex), WorkspacePath: "/tmp/workspace", Model: "gpt-5.4",
+		Mode: "discussion", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := app.store.CreateThread(parent); err != nil {
+		t.Fatalf("CreateThread(parent): %v", err)
+	}
+
+	roles := []string{"Architect", "Reviewer", "Scribe"}
+	children := make([]store.Thread, len(roles))
+	for i, role := range roles {
+		children[i] = store.Thread{
+			ID:             "thread-restart-" + role,
+			ProjectID:      parent.ProjectID,
+			Title:          parent.Title + " - " + role,
+			Provider:       parent.Provider,
+			WorkspacePath:  parent.WorkspacePath,
+			Model:          parent.Model,
+			Mode:           "discussion",
+			ParentThreadID: parent.ID,
+			CreatedAt:      now + int64(i),
+			UpdatedAt:      now + int64(i),
+		}
+		if err := app.store.CreateThread(children[i]); err != nil {
+			t.Fatalf("CreateThread(%s): %v", role, err)
+		}
+	}
+
+	const channelID = "channel-restart"
+	if err := app.store.CreateChannel(store.Channel{
+		ID: channelID, ThreadID: parent.ID, Type: "deliberation", Status: "open",
+		MaxTurns: 4, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateChannel(): %v", err)
+	}
+	parent.DiscussionID = channelID
+	if err := app.store.UpdateThread(parent); err != nil {
+		t.Fatalf("UpdateThread(parent): %v", err)
+	}
+	for i := range children {
+		children[i].DiscussionID = channelID
+		if err := app.store.UpdateThread(children[i]); err != nil {
+			t.Fatalf("UpdateThread(%s): %v", children[i].ID, err)
+		}
+	}
+
+	// Message history: human kickoff, then architect and reviewer each
+	// post once. Scribe hasn't spoken yet, so round-robin order says
+	// scribe is next.
+	post := func(fromType, fromID, fromRole, content string) {
+		t.Helper()
+		if _, err := app.channels.PostMessage(discussion.PostMessageInput{
+			ChannelID: channelID, FromType: fromType, FromID: fromID, FromRole: fromRole, Content: content,
+		}); err != nil {
+			t.Fatalf("PostMessage(%s): %v", fromID, err)
+		}
+	}
+	post("human", "user", "human", "Topic: evaluate the migration boundary.")
+	post("agent", children[0].ID, "Architect", "Architect's take.")
+	post("agent", children[1].ID, "Reviewer", "Reviewer's take.")
+
+	// No installDeliberation call — this is the crux of the restart
+	// scenario: a.deliberations has nothing for this channel.
+	if _, ok := app.deliberation(channelID); ok {
+		t.Fatal("expected no in-memory deliberation before rebuild — test setup bug")
+	}
+
+	rebuilt, err := app.deliberationForChannel(channelID)
+	if err != nil {
+		t.Fatalf("deliberationForChannel(): %v", err)
+	}
+	gotParticipants := rebuilt.Participants()
+	wantParticipants := []string{children[0].ID, children[1].ID, children[2].ID}
+	if len(gotParticipants) != len(wantParticipants) {
+		t.Fatalf("Participants() = %v, want %v", gotParticipants, wantParticipants)
+	}
+	for i := range wantParticipants {
+		if gotParticipants[i] != wantParticipants[i] {
+			t.Fatalf("Participants()[%d] = %q, want %q (roster order)", i, gotParticipants[i], wantParticipants[i])
+		}
+	}
+
+	state := rebuilt.State()
+	if state.TurnCount != 2 {
+		t.Fatalf("TurnCount = %d, want 2 (two agent posts)", state.TurnCount)
+	}
+	if state.MaxTurns != 4 {
+		t.Fatalf("MaxTurns = %d, want 4 (from the channel row)", state.MaxTurns)
+	}
+	if state.CurrentSpeaker != children[2].ID {
+		t.Fatalf("CurrentSpeaker = %q, want %q (scribe, next after reviewer)", state.CurrentSpeaker, children[2].ID)
+	}
+	if state.AwaitingResponse {
+		t.Fatal("AwaitingResponse must come back false across a restart")
+	}
+	if state.Concluded {
+		t.Fatal("2 of 4 turns must not be concluded")
+	}
+
+	// A second resolution must reuse the same instance rather than
+	// rebuilding again (double-checked locking in deliberationForChannel).
+	again, err := app.deliberationForChannel(channelID)
+	if err != nil {
+		t.Fatalf("deliberationForChannel() (second call): %v", err)
+	}
+	if again != rebuilt {
+		t.Fatal("expected the second resolution to reuse the same rebuilt Deliberation instance")
+	}
+
+	// The public GetChannelState binding must reflect the same
+	// rebuilt state.
+	payload, err := app.GetChannelState(channelID)
+	if err != nil {
+		t.Fatalf("GetChannelState(): %v", err)
+	}
+	if payload.TurnCount != 2 || payload.MaxTurns != 4 || payload.CurrentSpeakerThreadID != children[2].ID {
+		t.Fatalf("GetChannelState() = %+v, want turnCount=2 maxTurns=4 currentSpeaker=%q", payload, children[2].ID)
+	}
+	if payload.CurrentSpeakerRole != "Scribe" {
+		t.Fatalf("GetChannelState().CurrentSpeakerRole = %q, want Scribe", payload.CurrentSpeakerRole)
+	}
+	if len(payload.Participants) != 3 {
+		t.Fatalf("len(GetChannelState().Participants) = %d, want 3", len(payload.Participants))
+	}
+}
+
+// TestGetChannelStatePayloadShapeForLiveDiscussion covers
+// GetChannelState's payload for a freshly-started, still-live
+// discussion (the common case — no restart involved).
+func TestGetChannelStatePayloadShapeForLiveDiscussion(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.registry = discussion.NewRegistry(app.store)
+	app.channels = discussion.NewChannelService(app.store)
+	app.startSessionFn = func(string) error { return nil }
+
+	thread := testThread("thread-discussion-state-shape")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.CreateDiscussionDef(store.DiscussionDefinition{
+		ID:        "def-state-shape",
+		Name:      "Architects",
+		Scope:     "project",
+		ProjectID: projectPathForThread(t, app, thread),
+		Participants: []store.DiscussionParticipant{
+			{Role: "architect", System: "Design the change", Provider: string(provider.Claude), Model: "claude-sonnet-4"},
+			{Role: "reviewer", System: "Review the change"},
+		},
+		Settings:  store.DiscussionSettings{MaxTurns: 6},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("CreateDiscussionDef() error = %v", err)
+	}
+	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+		t.Fatalf("StartDiscussion() error = %v", err)
+	}
+
+	parent, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	children, err := app.store.ListChildThreads(parent.ID)
+	if err != nil {
+		t.Fatalf("ListChildThreads() error = %v", err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("len(children) = %d, want 2", len(children))
+	}
+
+	payload, err := app.GetChannelState(parent.DiscussionID)
+	if err != nil {
+		t.Fatalf("GetChannelState() error = %v", err)
+	}
+	if payload.ChannelID != parent.DiscussionID || payload.ThreadID != parent.ID {
+		t.Fatalf("payload channel/thread IDs = %q/%q, want %q/%q", payload.ChannelID, payload.ThreadID, parent.DiscussionID, parent.ID)
+	}
+	if payload.Status != "open" {
+		t.Fatalf("payload.Status = %q, want open", payload.Status)
+	}
+	if payload.TurnCount != 0 {
+		t.Fatalf("payload.TurnCount = %d, want 0 before any participant has posted", payload.TurnCount)
+	}
+	if payload.MaxTurns != 6 {
+		t.Fatalf("payload.MaxTurns = %d, want 6", payload.MaxTurns)
+	}
+	if payload.AwaitingResponse {
+		t.Fatal("payload.AwaitingResponse = true, want false before anyone has been prompted")
+	}
+	if payload.CurrentSpeakerThreadID != children[0].ID {
+		t.Fatalf("payload.CurrentSpeakerThreadID = %q, want %q (first participant)", payload.CurrentSpeakerThreadID, children[0].ID)
+	}
+	if payload.CurrentSpeakerRole != "Architect" {
+		t.Fatalf("payload.CurrentSpeakerRole = %q, want Architect", payload.CurrentSpeakerRole)
+	}
+	if len(payload.Participants) != 2 {
+		t.Fatalf("len(payload.Participants) = %d, want 2", len(payload.Participants))
+	}
+	byID := make(map[string]ChannelParticipantState, len(payload.Participants))
+	for _, p := range payload.Participants {
+		byID[p.ThreadID] = p
+	}
+	architect, ok := byID[children[0].ID]
+	if !ok {
+		t.Fatalf("payload.Participants missing %q", children[0].ID)
+	}
+	if architect.Role != "Architect" || architect.Provider != string(provider.Claude) || architect.Model != "claude-sonnet-4" {
+		t.Fatalf("architect participant = %+v, want role=Architect provider=%s model=claude-sonnet-4", architect, provider.Claude)
+	}
+	reviewer, ok := byID[children[1].ID]
+	if !ok {
+		t.Fatalf("payload.Participants missing %q", children[1].ID)
+	}
+	if reviewer.Role != "Reviewer" || reviewer.Provider != thread.Provider || reviewer.Model != thread.Model {
+		t.Fatalf("reviewer participant = %+v, want role=Reviewer provider/model inherited from parent", reviewer)
 	}
 }

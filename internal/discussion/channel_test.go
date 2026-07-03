@@ -41,7 +41,7 @@ func TestChannelServiceOrdersMessagesAndCloses(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	channel, err := channelSvc.Create(thread.ID, "deliberation")
+	channel, err := channelSvc.Create(thread.ID, "deliberation", 5)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -102,7 +102,7 @@ func TestChannelServiceRejectsPostingToConcludedChannel(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	channel, err := channelSvc.Create(thread.ID, "deliberation")
+	channel, err := channelSvc.Create(thread.ID, "deliberation", 5)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -129,12 +129,15 @@ func TestChannelServiceDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	channel, err := channelSvc.Create(thread.ID, "")
+	channel, err := channelSvc.Create(thread.ID, "", 0)
 	if err != nil {
 		t.Fatalf("Create(default type) error = %v", err)
 	}
 	if channel.Type != "deliberation" {
 		t.Fatalf("channel.Type = %q, want deliberation", channel.Type)
+	}
+	if channel.MaxTurns != DefaultMaxTurns {
+		t.Fatalf("channel.MaxTurns = %d, want normalized default %d", channel.MaxTurns, DefaultMaxTurns)
 	}
 
 	if _, err := channelSvc.PostMessage(PostMessageInput{}); err == nil {

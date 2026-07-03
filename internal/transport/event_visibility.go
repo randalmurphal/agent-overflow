@@ -31,6 +31,17 @@ var loopbackOnlyEventChannels = map[string]bool{
 	// feedback for understanding resource consumption and provider
 	// crashes. Without session_died, a remote viewer sees the turn
 	// silently stop with no explanation.
+
+	// discussion:message and discussion:state are intentionally absent
+	// from this map — both stay remote-visible, not loopback-only.
+	// Remote clients can already call GetChannelMessages and
+	// GetChannelState (neither is in transport.LocalOnlyMethods), so
+	// pushing the same data over the event channel discloses nothing a
+	// poll couldn't already read; it just saves the round-trip. This
+	// mirrors the provider:usage reasoning above, not the
+	// PostChannelMessage RPC, which moved to LocalOnly separately
+	// because dispatching a turn prompt is session control, not a data
+	// read.
 }
 
 func eventVisibleToOrigin(channel string, isLoopback bool) bool {

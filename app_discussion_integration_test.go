@@ -38,6 +38,15 @@ func newDiscussionApp(t *testing.T) (*App, string) {
 	// spawn real provider processes.
 	app.startSessionFn = func(threadID string) error { return nil }
 	app.stopSessionFn = func(threadID string) error { return nil }
+	// Turn-driving (PostChannelMessage / syncDiscussionTurn) dispatches
+	// the next speaker's prompt through a.sendMessage on a background
+	// goroutine (promptDiscussionSpeakerAsync). None of these
+	// persistence-focused integration tests exercise real provider
+	// dispatch, so stub it to a no-op — without this, every post would
+	// fall through to the real send pipeline with no registered
+	// session, erroring out on a background goroutine that easily
+	// outlives the test.
+	app.sendMessageFn = func(string, string, []string) error { return nil }
 	return app, dbPath
 }
 
@@ -194,7 +203,7 @@ func TestDisc_PostChannelMessageAppearsInGetChannelMessages(t *testing.T) {
 	}
 	parent, _ := app.store.GetThread(thread.ID)
 
-	if err := app.PostChannelMessage(parent.DiscussionID, "hello from human"); err != nil {
+	if _, err := app.PostChannelMessage(parent.DiscussionID, "hello from human"); err != nil {
 		t.Fatalf("PostChannelMessage: %v", err)
 	}
 	messages, err := app.GetChannelMessages(parent.DiscussionID, -1, 10)
@@ -229,7 +238,7 @@ func TestDisc_GetChannelMessagesOrdersBySeq(t *testing.T) {
 	parent, _ := app.store.GetThread(thread.ID)
 
 	for _, content := range []string{"first", "second", "third"} {
-		if err := app.PostChannelMessage(parent.DiscussionID, content); err != nil {
+		if _, err := app.PostChannelMessage(parent.DiscussionID, content); err != nil {
 			t.Fatalf("PostChannelMessage(%s): %v", content, err)
 		}
 	}
@@ -304,7 +313,7 @@ func TestDisc_DeleteDiscussionCascadesChannelMessages(t *testing.T) {
 	}
 	parent, _ := app.store.GetThread(thread.ID)
 
-	if err := app.PostChannelMessage(parent.DiscussionID, "msg-1"); err != nil {
+	if _, err := app.PostChannelMessage(parent.DiscussionID, "msg-1"); err != nil {
 		t.Fatalf("PostChannelMessage: %v", err)
 	}
 
@@ -442,10 +451,10 @@ func TestDisc_ChannelMessageSeqDedup(t *testing.T) {
 	}
 	parent, _ := app.store.GetThread(thread.ID)
 
-	if err := app.PostChannelMessage(parent.DiscussionID, "same content"); err != nil {
+	if _, err := app.PostChannelMessage(parent.DiscussionID, "same content"); err != nil {
 		t.Fatalf("PostChannelMessage #1: %v", err)
 	}
-	if err := app.PostChannelMessage(parent.DiscussionID, "same content"); err != nil {
+	if _, err := app.PostChannelMessage(parent.DiscussionID, "same content"); err != nil {
 		t.Fatalf("PostChannelMessage #2: %v", err)
 	}
 
@@ -563,7 +572,7 @@ func TestDisc_LargeChannelMessageList(t *testing.T) {
 
 	const N = 500
 	for i := 0; i < N; i++ {
-		if err := app.PostChannelMessage(parent.DiscussionID, formatLargeContent(i)); err != nil {
+		if _, err := app.PostChannelMessage(parent.DiscussionID, formatLargeContent(i)); err != nil {
 			t.Fatalf("PostChannelMessage #%d: %v", i, err)
 		}
 	}

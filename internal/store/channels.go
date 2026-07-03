@@ -4,9 +4,9 @@ import "fmt"
 
 func (s *Store) CreateChannel(ch Channel) error {
 	_, err := s.db.Exec(
-		`INSERT INTO channels (id, thread_id, type, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		ch.ID, ch.ThreadID, ch.Type, ch.Status, ch.CreatedAt, ch.UpdatedAt,
+		`INSERT INTO channels (id, thread_id, type, status, max_turns, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		ch.ID, ch.ThreadID, ch.Type, ch.Status, ch.MaxTurns, ch.CreatedAt, ch.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create channel %s: %w", ch.ID, err)
@@ -16,13 +16,13 @@ func (s *Store) CreateChannel(ch Channel) error {
 
 func (s *Store) GetChannel(id string) (Channel, error) {
 	row := s.db.QueryRow(
-		`SELECT id, thread_id, type, status, created_at, updated_at
+		`SELECT id, thread_id, type, status, max_turns, created_at, updated_at
 		 FROM channels WHERE id = ?`,
 		id,
 	)
 
 	var ch Channel
-	if err := row.Scan(&ch.ID, &ch.ThreadID, &ch.Type, &ch.Status, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+	if err := row.Scan(&ch.ID, &ch.ThreadID, &ch.Type, &ch.Status, &ch.MaxTurns, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 		return Channel{}, fmt.Errorf("store: get channel %s: %w", id, err)
 	}
 	return ch, nil
@@ -87,6 +87,52 @@ func (s *Store) InsertChannelMessageAtomic(msg ChannelMessage) (int, error) {
 		return 0, fmt.Errorf("store: insert channel message atomic %s: %w", msg.ID, err)
 	}
 	return sequence, nil
+}
+
+// LastChannelMessageSeqFrom returns the highest sequence number of any
+// message posted by fromID into the channel, or -1 when that
+// participant has never posted. Used by promptDiscussionSpeaker to
+// find the cursor a speaker's next turn prompt should read messages
+// after — the speaker has already "seen" everything up to and
+// including its own last post.
+//
+// The never-posted fallback MUST be -1, not 0: sequences are
+// zero-based (the channel's first-ever message is sequence 0), and
+// ListChannelMessages's cursor is an exclusive "after" bound
+// (`sequence > afterSeq`). Falling back to 0 would silently exclude
+// that very first message from a never-yet-posted participant's
+// first-ever turn prompt — exactly the case a new discussion's first
+// speaker hits when a human's kickoff message is the channel's only
+// content so far. -1 matches the "from the beginning" sentinel already
+// used throughout the codebase (e.g. GetChannelMessages(id, -1, ...)).
+func (s *Store) LastChannelMessageSeqFrom(channelID, fromID string) (int, error) {
+	var seq int
+	err := s.db.QueryRow(
+		`SELECT COALESCE(MAX(sequence), -1) FROM channel_messages WHERE channel_id = ? AND from_id = ?`,
+		channelID, fromID,
+	).Scan(&seq)
+	if err != nil {
+		return 0, fmt.Errorf("store: last channel message seq for %s/%s: %w", channelID, fromID, err)
+	}
+	return seq, nil
+}
+
+// CountChannelMessagesByType returns the number of messages in the
+// channel with the given from_type ("agent", "human", "system"). Used
+// by the restart-rebuild path (deliberationForChannel) to recompute
+// Deliberation.TurnCount — the FSM's turn counter tracks agent posts
+// only, matching RecordPost's caller (syncDiscussionTurn), which is
+// invoked exactly once per participant turn.
+func (s *Store) CountChannelMessagesByType(channelID, fromType string) (int, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM channel_messages WHERE channel_id = ? AND from_type = ?`,
+		channelID, fromType,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("store: count channel messages %s/%s: %w", channelID, fromType, err)
+	}
+	return count, nil
 }
 
 func (s *Store) ListChannelMessages(channelID string, afterSeq, limit int) ([]ChannelMessage, error) {

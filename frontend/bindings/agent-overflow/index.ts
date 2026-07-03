@@ -8,6 +8,8 @@ export {
 
 export {
     AttachmentThumbnail,
+    ChannelParticipantState,
+    ChannelStatePayload,
     CheckpointView,
     ContextSettingsProfile,
     ContextSettingsUpdate,

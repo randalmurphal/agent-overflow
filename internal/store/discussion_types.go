@@ -29,12 +29,18 @@ type DiscussionDefinition struct {
 
 // Channel is a persisted discussion channel.
 type Channel struct {
-	ID        string `json:"id"`
-	ThreadID  string `json:"threadId"`
-	Type      string `json:"type"`
-	Status    string `json:"status"`
-	CreatedAt int64  `json:"createdAt"`
-	UpdatedAt int64  `json:"updatedAt"`
+	ID       string `json:"id"`
+	ThreadID string `json:"threadId"`
+	Type     string `json:"type"`
+	Status   string `json:"status"`
+	// MaxTurns is the deliberation circuit-breaker turn count, carried
+	// on the channel row so a restart can rebuild the in-memory FSM
+	// (internal/discussion.Deliberation) with the same limit the
+	// original discussion.DiscussionDefinition specified. Zero/unset on
+	// pre-v12 rows defaults to 8 via the migration's column default.
+	MaxTurns  int   `json:"maxTurns"`
+	CreatedAt int64 `json:"createdAt"`
+	UpdatedAt int64 `json:"updatedAt"`
 }
 
 // ChannelMessage is one ordered message within a channel.

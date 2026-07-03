@@ -176,7 +176,7 @@ func TestDeleteThreadClearsSystemPromptAndDeliberationForParent(t *testing.T) {
 
 	app.setThreadSystemPrompt(parent.ID, "parent prompt")
 	app.setThreadSystemPrompt(child.ID, "child prompt")
-	app.installDeliberation("channel-delete", 4)
+	app.installDeliberation("channel-delete", nil, 4)
 
 	app.stopSessionFn = func(string) error { return nil }
 
@@ -235,7 +235,7 @@ func TestDeleteThreadChildOnlyLeavesParentDeliberationIntact(t *testing.T) {
 		t.Fatalf("UpdateThread(child) error = %v", err)
 	}
 
-	app.installDeliberation("channel-child-only", 4)
+	app.installDeliberation("channel-child-only", nil, 4)
 	app.stopSessionFn = func(string) error { return nil }
 
 	if err := app.DeleteThread(child.ID); err != nil {
@@ -337,7 +337,7 @@ func TestDeleteThreadAlreadyRemovedIsIdempotent(t *testing.T) {
 
 	// Install a deliberation for a channel that a missing parent used to
 	// own. deleteThreadTree should still tear down associated runtime state.
-	app.installDeliberation("ghost-channel", 2)
+	app.installDeliberation("ghost-channel", nil, 2)
 
 	app.stopSessionFn = func(string) error { return nil }
 
@@ -572,7 +572,7 @@ func TestDeleteThreadStopSessionAndTerminalFailuresCombined(t *testing.T) {
 // if this breaks, the other tests are suspect.
 func TestInstallDeliberationTracksState(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.installDeliberation("channel-canary", 5)
+	app.installDeliberation("channel-canary", nil, 5)
 
 	app.mu.Lock()
 	delib := app.deliberations["channel-canary"]

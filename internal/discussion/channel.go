@@ -30,8 +30,11 @@ func NewChannelService(st *store.Store) *ChannelService {
 	return &ChannelService{store: st}
 }
 
-// Create opens a new channel for the given thread.
-func (cs *ChannelService) Create(threadID, channelType string) (store.Channel, error) {
+// Create opens a new channel for the given thread. maxTurns <= 0
+// normalizes to DefaultMaxTurns — store.CreateChannel persists whatever
+// it's handed verbatim, so the fallback has to happen here rather than
+// in the store (package store must not import package discussion).
+func (cs *ChannelService) Create(threadID, channelType string, maxTurns int) (store.Channel, error) {
 	if cs.store == nil {
 		return store.Channel{}, fmt.Errorf("channel service unavailable")
 	}
@@ -44,6 +47,9 @@ func (cs *ChannelService) Create(threadID, channelType string) (store.Channel, e
 	if channelType == "" {
 		channelType = "deliberation"
 	}
+	if maxTurns <= 0 {
+		maxTurns = DefaultMaxTurns
+	}
 
 	now := time.Now().UnixMilli()
 	channel := store.Channel{
@@ -51,6 +57,7 @@ func (cs *ChannelService) Create(threadID, channelType string) (store.Channel, e
 		ThreadID:  threadID,
 		Type:      channelType,
 		Status:    "open",
+		MaxTurns:  maxTurns,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

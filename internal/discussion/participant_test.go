@@ -92,6 +92,9 @@ func TestBuildParticipantPromptIncludesContextAndBody(t *testing.T) {
 	if !strings.Contains(got, "Skeptic participant") {
 		t.Fatalf("prompt missing role preamble: %q", got)
 	}
+	if !strings.Contains(got, discussionProtocolPreamble) {
+		t.Fatalf("prompt missing discussion protocol paragraph: %q", got)
+	}
 	if !strings.Contains(got, "Disagree with everything.") {
 		t.Fatalf("prompt missing body: %q", got)
 	}
@@ -100,13 +103,25 @@ func TestBuildParticipantPromptIncludesContextAndBody(t *testing.T) {
 	}
 }
 
+// TestBuildParticipantPromptOmitsBlankBody guards the joinPrompts
+// contract now that the discussion-protocol paragraph is a permanent
+// second segment: a blank rawSystem must not add its OWN separator on
+// top of the one already sitting between the role preamble and the
+// protocol paragraph (no dangling trailing "\n\n", no doubled-up
+// separator).
 func TestBuildParticipantPromptOmitsBlankBody(t *testing.T) {
 	got := BuildParticipantPrompt("advocate", "   ")
-	if strings.Contains(got, "\n\n") {
-		t.Fatalf("blank body should not introduce separator: %q", got)
-	}
 	if !strings.Contains(got, "Advocate participant") {
 		t.Fatalf("prompt missing role preamble: %q", got)
+	}
+	if !strings.Contains(got, discussionProtocolPreamble) {
+		t.Fatalf("prompt missing discussion protocol paragraph: %q", got)
+	}
+	if strings.HasSuffix(got, "\n\n") {
+		t.Fatalf("blank body should not leave a dangling trailing separator: %q", got)
+	}
+	if count := strings.Count(got, "\n\n"); count != 1 {
+		t.Fatalf("expected exactly one blank-line separator with blank body, got %d: %q", count, got)
 	}
 }
 

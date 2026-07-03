@@ -92,19 +92,72 @@ func (a *App) GetChannelMessages(channelID string, afterSeq, limit int) ([]store
 	return a.channels.GetMessages(channelID, afterSeq, limit)
 }
 
-// PostChannelMessage posts a human-authored intervention into the channel.
-func (a *App) PostChannelMessage(channelID, content string) error {
+// GetChannelState returns a snapshot of the deliberation FSM for a
+// discussion channel: status, turn/max-turn counts, whether a
+// participant turn is currently in flight, and the participant roster
+// with role/provider/model. Rebuilds the FSM from SQLite when the
+// process restarted since the channel was opened (deliberationForChannel).
+// Read-only — same LAN-safety class as GetChannelMessages.
+func (a *App) GetChannelState(channelID string) (ChannelStatePayload, error) {
+	return a.buildChannelState(channelID)
+}
+
+// PostChannelMessage posts a human-authored intervention into the
+// channel and returns the created message so the frontend can merge
+// its own post immediately rather than waiting on the discussion:message
+// echo. If the deliberation isn't already mid-turn (no participant is
+// currently being awaited), this also kicks off the next participant's
+// turn: a human posting into a fresh discussion — or one where the
+// last participant already answered — is what drives the conversation
+// forward. A human interjecting WHILE a participant turn is in flight
+// does not re-prompt; the interjection lands in that participant's
+// next-turn context automatically (see promptDiscussionSpeaker's
+// unseen-messages window).
+//
+// PostChannelMessage now has a side-effecting path (it can dispatch a
+// prompt into a participant's live provider session via
+// promptDiscussionSpeakerAsync → sendMessage), so it is classified
+// LocalOnly in internal/transport/internalmethods.go alongside
+// SendMessage — see the category-2 comment there.
+func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessage, error) {
 	if a.channels == nil {
-		return fmt.Errorf("channel service unavailable")
+		return store.ChannelMessage{}, fmt.Errorf("channel service unavailable")
 	}
-	_, err := a.channels.PostMessage(discussion.PostMessageInput{
+	msg, err := a.channels.PostMessage(discussion.PostMessageInput{
 		ChannelID: channelID,
 		FromType:  "human",
 		FromID:    "user",
 		FromRole:  "human",
 		Content:   content,
 	})
-	return err
+	if err != nil {
+		return store.ChannelMessage{}, err
+	}
+	a.emitDiscussionMessage(channelID, msg)
+	a.maybePromptNextDiscussionSpeaker(channelID)
+	return msg, nil
+}
+
+// maybePromptNextDiscussionSpeaker prompts the current speaker after a
+// human post lands, unless the channel is closed/concluded or a
+// participant turn is already in flight (AwaitingResponse).
+// Resolution failures (channel isn't open, or isn't a
+// live/rebuildable deliberation) are not surfaced as errors here:
+// PostChannelMessage's own persistence already succeeded, and a
+// channel with nothing left to coordinate simply has nothing further
+// to do. The claim itself goes through claimAndPromptNextSpeaker so a
+// human post racing a participant's in-flight turn-complete can't
+// double-prompt the same speaker.
+func (a *App) maybePromptNextDiscussionSpeaker(channelID string) {
+	channel, err := a.store.GetChannel(channelID)
+	if err != nil || channel.Status != "open" {
+		return
+	}
+	deliberation, err := a.deliberationForChannel(channelID)
+	if err != nil {
+		return
+	}
+	a.claimAndPromptNextSpeaker(channelID, deliberation)
 }
 
 func (a *App) resolveDiscussionDefinition(thread store.Thread, discussionName string) (store.DiscussionDefinition, error) {

@@ -517,6 +517,11 @@ CREATE INDEX idx_payload_chunks_payload_start
 		SQL:     rebuildItemsV11SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 12,
+		Name:    "channel_max_turns",
+		SQL:     `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

@@ -81,7 +81,7 @@ func (a *App) createDiscussionRuntime(
 		return store.Channel{}, err
 	}
 
-	channel, err := a.channels.Create(parent.ID, "deliberation")
+	channel, err := a.channels.Create(parent.ID, "deliberation", maxTurns)
 	if err != nil {
 		return store.Channel{}, a.cleanupDiscussionSetup("", nil, createdIDs, err)
 	}
@@ -90,7 +90,15 @@ func (a *App) createDiscussionRuntime(
 		return store.Channel{}, a.cleanupDiscussionSetup(channel.ID, nil, createdIDs, err)
 	}
 
-	a.installDeliberation(channel.ID, maxTurns)
+	// Roster order matches plan order, which is definition order
+	// (BuildParticipantPlans walks def.Participants verbatim) — the
+	// FSM's round-robin sequence is the discussion author's intended
+	// speaking order.
+	participants := make([]string, 0, len(plans))
+	for _, plan := range plans {
+		participants = append(participants, plan.Thread.ID)
+	}
+	a.installDeliberation(channel.ID, participants, channel.MaxTurns)
 
 	startedIDs, err := a.startDiscussionParticipantSessions(plans)
 	if err != nil {
@@ -100,6 +108,10 @@ func (a *App) createDiscussionRuntime(
 	if err := a.persistDiscussionParent(parent, channel); err != nil {
 		return store.Channel{}, a.cleanupDiscussionSetup(channel.ID, startedIDs, createdIDs, err)
 	}
+
+	// Single emission point for both StartDiscussion and
+	// StartDiscussionByID — both route through this function.
+	a.emitDiscussionState(channel.ID)
 
 	return channel, nil
 }
@@ -181,12 +193,12 @@ func (a *App) cleanupDiscussionSetup(
 	return errors.Join(errs...)
 }
 
-func (a *App) installDeliberation(channelID string, maxTurns int) {
+func (a *App) installDeliberation(channelID string, participants []string, maxTurns int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if a.deliberations == nil {
 		a.deliberations = make(map[string]*discussion.Deliberation)
 	}
-	a.deliberations[channelID] = discussion.NewDeliberation(channelID, maxTurns)
+	a.deliberations[channelID] = discussion.NewDeliberation(channelID, maxTurns, participants)
 }
