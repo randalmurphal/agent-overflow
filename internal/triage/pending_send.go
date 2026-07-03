@@ -60,6 +60,14 @@ type pendingSend struct {
 	EnqueuedAt   int64
 	DeferredItem *store.Item
 	QuietItem    *store.Item
+	// PromotedAtInterrupt marks a quiet flush entry whose row was already
+	// repositioned to the turn tail by PromoteQuietFlushSends (user
+	// interrupt). The echo-side reposition in attachProviderItemIDToUserRow
+	// must skip these: rows landing between the promote and the echo are
+	// the interrupted turn's post-interrupt tail, which the user already
+	// watched stream BELOW the promoted message — a second bump would
+	// leapfrog the message over them and persist that inverted order.
+	PromotedAtInterrupt bool
 }
 
 type PendingFlushItemSnapshot struct {
@@ -388,14 +396,29 @@ func (r *Router) PromoteQuietFlushSends(threadID string) int {
 	}
 
 	promoted := 0
+	promotedIDs := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		item, err := r.store.BumpItemToTurnEnd(threadID, id)
 		if err != nil {
 			log.Printf("triage: promote quiet flush %s/%s: %v", threadID, id, err)
 			continue
 		}
+		promotedIDs[id] = struct{}{}
 		r.emitItemUpsertWithActivity(item, false)
 		promoted++
+	}
+	if len(promotedIDs) > 0 {
+		// Mark the successfully-bumped entries so the echo-side reposition
+		// (attachProviderItemIDToUserRow) knows the row is already at its
+		// user-visible interrupt position and stamps without re-bumping.
+		r.mu.Lock()
+		pending = r.pendingByThread[threadID]
+		for i := range pending {
+			if _, ok := promotedIDs[pending[i].AOItemID]; ok {
+				pending[i].PromotedAtInterrupt = true
+			}
+		}
+		r.mu.Unlock()
 	}
 	return promoted
 }

@@ -192,6 +192,97 @@ func TestHandleUserText_DirectSendMatch_DoesNotReposition(t *testing.T) {
 	}
 }
 
+// TestHandleUserText_InterruptPromotedFlush_EchoDoesNotRebump reproduces
+// the interrupt-time queued-message reordering bug (2026-07-03). A message
+// queued mid-turn is quietly persisted at the active turn; the user
+// interrupts, which promotes the row to the turn tail
+// (PromoteQuietFlushSends — the visible cut point); then the interrupted
+// turn's post-interrupt tail (a thinking block Claude flushes while
+// stopping) lands BELOW the promoted message. The wire echo arriving with
+// the response turn must stamp provider_item_id WITHOUT re-bumping the
+// row — a second BumpItemToTurnEnd would leapfrog the message over the
+// tail row, persisting an order the live view never showed (thinking
+// above the message after a reload).
+func TestHandleUserText_InterruptPromotedFlush_EchoDoesNotRebump(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 3)
+
+	// Quiet eager persist at dispatch time (app_flush_queue.go eager path).
+	now := time.Now().UnixMilli()
+	flushRow := store.Item{
+		ID:        "user:3:flush:0",
+		ThreadID:  "t1",
+		TurnIndex: 3,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "queued follow-up",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := router.PersistItemQuiet(flushRow, nil); err != nil {
+		t.Fatalf("quiet persist flush row: %v", err)
+	}
+	router.RegisterPendingQuietFlushSend("t1", "queue:m1", flushRow, 4, now)
+
+	// User interrupt → the promote anchors the row at the turn tail.
+	if promoted := router.PromoteQuietFlushSends("t1"); promoted != 1 {
+		t.Fatalf("PromoteQuietFlushSends: got %d, want 1", promoted)
+	}
+
+	// The interrupted turn's post-interrupt tail: a thinking block Claude
+	// flushes while stopping streams in AFTER the promote and lands below
+	// the message (MAX+1).
+	if _, err := st.AppendItem(store.Item{
+		ID:        "thinking:3:tail",
+		ThreadID:  "t1",
+		TurnIndex: 3,
+		Kind:      "thinking",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "tail reasoning flushed on stop",
+		CreatedAt: now + 1,
+		UpdatedAt: now + 1,
+	}); err != nil {
+		t.Fatalf("seed post-interrupt tail row: %v", err)
+	}
+
+	// Echo arrives when Claude starts the response turn.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "queued follow-up",
+		Meta:      json.RawMessage(`{"provider_item_id":"msg_flush_echo"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle wire echo: %v", err)
+	}
+
+	queued, found, err := st.GetThreadItem("t1", flushRow.ID)
+	if err != nil || !found {
+		t.Fatalf("flush row after echo: found=%v err=%v", found, err)
+	}
+	tail, found, err := st.GetThreadItem("t1", "thinking:3:tail")
+	if err != nil || !found {
+		t.Fatalf("tail row after echo: found=%v err=%v", found, err)
+	}
+	if queued.ItemIndex >= tail.ItemIndex {
+		t.Fatalf(
+			"promoted flush row re-bumped on echo: user item_index %d >= tail item_index %d — the message leapfrogged the post-interrupt tail the user watched stream below it",
+			queued.ItemIndex, tail.ItemIndex,
+		)
+	}
+	// The stamp must still happen — skipping the bump must not skip the merge.
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(queued.Meta), &meta); err != nil {
+		t.Fatalf("decode meta %q: %v", queued.Meta, err)
+	}
+	if id, _ := meta["provider_item_id"].(string); id != "msg_flush_echo" {
+		t.Fatalf("provider_item_id after echo = %v, want msg_flush_echo", meta["provider_item_id"])
+	}
+}
+
 func TestHandleUserText_PendingSendMatch_PreservesExistingMeta(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

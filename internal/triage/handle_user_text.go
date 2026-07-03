@@ -45,7 +45,7 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 			if pending.DeferredItem != nil {
 				return r.persistDeferredUserText(pending, providerItemID, evt)
 			}
-			return r.attachProviderItemIDToUserRow(evt.ThreadID, pending.AOItemID, providerItemID, evt)
+			return r.attachProviderItemIDToUserRow(evt.ThreadID, pending, providerItemID, evt)
 		}
 	}
 
@@ -155,12 +155,21 @@ func readParentUUIDFromMeta(meta json.RawMessage) string {
 // already at their intended position and must not move, so the
 // reposition is scoped to `:flush:` exactly as the interrupt path is.
 //
+// EXCEPT when the interrupt promote already ran (PromotedAtInterrupt):
+// the row is then already at its user-visible position — the interrupt
+// cut point — and rows landing between the promote and this echo are the
+// interrupted turn's post-interrupt tail, which the user watched stream
+// BELOW the message. Re-bumping here would leapfrog the message over
+// that tail and persist an order the live view never showed (queued
+// message reordering bug, 2026-07-03). Promoted rows stamp only.
+//
 // Missing-row is a bounded edge case (the AO send must have errored
 // after RegisterPendingSend but before the optimistic persist). Log
 // once and return nil rather than panic — the send-failure path has
 // already surfaced an error row to the user, and a stranded pending
 // entry would only mis-route the next wire user_text.
-func (r *Router) attachProviderItemIDToUserRow(threadID, aoItemID, providerItemID string, evt provider.ProviderEvent) error {
+func (r *Router) attachProviderItemIDToUserRow(threadID string, pending pendingSend, providerItemID string, evt provider.ProviderEvent) error {
+	aoItemID := pending.AOItemID
 	existing, found, err := r.store.GetThreadItem(threadID, aoItemID)
 	if err != nil {
 		return fmt.Errorf("triage: load user row %s/%s for provider_item_id stamp: %w", threadID, aoItemID, err)
@@ -216,8 +225,10 @@ func (r *Router) attachProviderItemIDToUserRow(threadID, aoItemID, providerItemI
 	// turn tail so the queued message lands AFTER that content, matching
 	// where Claude consumed it — the echo-side mirror of the interrupt
 	// promote (PromoteQuietFlushSends). Scoped to :flush: so direct sends
-	// and steers, already at their intended slot, never move.
-	if strings.Contains(aoItemID, ":flush:") {
+	// and steers, already at their intended slot, never move — and skipped
+	// when the interrupt promote already anchored the row (see the doc
+	// comment above).
+	if strings.Contains(aoItemID, ":flush:") && !pending.PromotedAtInterrupt {
 		bumped, bumpErr := r.store.BumpItemToTurnEnd(threadID, aoItemID)
 		if bumpErr != nil {
 			return fmt.Errorf("triage: reposition flush row %s/%s to turn tail: %w", threadID, aoItemID, bumpErr)
