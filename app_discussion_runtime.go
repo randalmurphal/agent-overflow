@@ -66,6 +66,19 @@ func (a *App) syncDiscussionTurn(threadID string) error {
 			return postErr
 		}
 		a.emitDiscussionMessage(thread.DiscussionID, msg)
+
+		// The posted channel content keeps the CONCLUDE line verbatim
+		// (transcript honesty — the other participants must see the
+		// stance in their own turn prompts); only the FSM's bookkeeping
+		// reacts to it. A latest-stance proposal here always overrides
+		// whatever this participant proposed earlier: no marker on this
+		// turn rescinds a prior proposal exactly like a fresh post from
+		// a participant who never proposed.
+		if summary, ok := discussion.ParseConclusionProposal(item.Summary); ok {
+			deliberation.ProposeConclusionFrom(thread.ID, summary)
+		} else {
+			deliberation.WithdrawConclusionProposal(thread.ID)
+		}
 	}
 
 	return a.recordDiscussionPost(thread.DiscussionID, thread.ID, deliberation)
@@ -103,7 +116,7 @@ func (a *App) latestAssistantTurn(threadID string) (store.Item, bool, error) {
 func (a *App) recordDiscussionPost(channelID, participantThreadID string, deliberation *discussion.Deliberation) error {
 	_, shouldConclude := deliberation.RecordPost(participantThreadID)
 	if shouldConclude {
-		if err := a.concludeDiscussionChannel(channelID, deliberation.State().MaxTurns); err != nil {
+		if err := a.concludeDiscussionChannel(channelID, deliberation); err != nil {
 			return err
 		}
 		// A concluded channel has nothing left to coordinate — drop the
@@ -126,13 +139,61 @@ func (a *App) recordDiscussionPost(channelID, participantThreadID string, delibe
 // flipping the channel status — ChannelService.PostMessage requires
 // the channel still be "open", so the ordering here is load-bearing —
 // then marks the channel concluded.
-func (a *App) concludeDiscussionChannel(channelID string, maxTurns int) error {
+//
+// The message content is cause-aware: it's unanimous only when every
+// roster participant has a live ConclusionProposals entry (>= 2
+// participants — a single-participant "discussion" can't reach
+// consensus with itself). Everything else, including the ordinary
+// MaxTurns circuit breaker, renders the turn-limit form. This is
+// derived structurally from the FSM's own state rather than threaded
+// through as a separate "cause" flag, so a caller can never pass a
+// cause that disagrees with what actually happened.
+//
+// Resolving the roster (for the unanimous form's per-role summary
+// lines) is a cold path — conclusion happens once per discussion — so
+// the extra GetChannel + discussionRoster query here is fine. A roster
+// resolution failure is returned rather than silently degraded to the
+// turn-limit message: presenting the wrong conclusion cause would be
+// worse than failing loudly.
+func (a *App) concludeDiscussionChannel(channelID string, deliberation *discussion.Deliberation) error {
+	state := deliberation.State()
+	participants := deliberation.Participants()
+
+	unanimous := len(participants) >= 2
+	for _, participant := range participants {
+		if _, ok := state.ConclusionProposals[participant]; !ok {
+			unanimous = false
+			break
+		}
+	}
+
+	channel, err := a.store.GetChannel(channelID)
+	if err != nil {
+		return fmt.Errorf("resolve channel for conclusion message %s: %w", channelID, err)
+	}
+	roster, err := a.discussionRoster(channel)
+	if err != nil {
+		return fmt.Errorf("resolve roster for conclusion message %s: %w", channelID, err)
+	}
+	roleByThreadID := make(map[string]string, len(roster))
+	for _, child := range roster {
+		roleByThreadID[child.ID] = discussion.RoleFromThreadTitle(child.Title)
+	}
+
+	content := discussion.BuildConclusionMessage(discussion.ConclusionMessageInput{
+		Unanimous:           unanimous,
+		MaxTurns:            state.MaxTurns,
+		ParticipantsInOrder: participants,
+		Proposals:           state.ConclusionProposals,
+		RoleByThreadID:      roleByThreadID,
+	})
+
 	msg, err := a.channels.PostMessage(discussion.PostMessageInput{
 		ChannelID: channelID,
 		FromType:  discussion.FromTypeSystem,
 		FromID:    "deliberation",
 		FromRole:  "moderator",
-		Content:   fmt.Sprintf("Discussion concluded: reached the %d-turn limit.", maxTurns),
+		Content:   content,
 	})
 	if err != nil {
 		return fmt.Errorf("post discussion conclusion message %s: %w", channelID, err)

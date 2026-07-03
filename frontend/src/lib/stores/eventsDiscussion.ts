@@ -68,6 +68,9 @@ function isValidChannelStatePayload(payload: ChannelStatePayload): boolean {
     if (!isBoundedString(participant.role, DISCUSSION_LABEL_MAX_CHARS)) return false;
     if (!isBoundedString(participant.provider, DISCUSSION_LABEL_MAX_CHARS)) return false;
     if (!isBoundedString(participant.model, DISCUSSION_MODEL_MAX_CHARS)) return false;
+    // Optional: a stale backend predating this field omits it entirely,
+    // and that must still validate — only reject a present-but-wrong-typed value.
+    if (participant.proposedConclusion !== undefined && typeof participant.proposedConclusion !== 'boolean') return false;
   }
   return true;
 }

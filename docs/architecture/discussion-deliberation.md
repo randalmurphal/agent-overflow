@@ -52,10 +52,13 @@ small, self-locking state machine keyed by channel ID. It tracks:
 - `AwaitingResponse` — true from the moment a turn prompt is claimed
   for dispatch until that turn resolves (a post, or a failed dispatch).
 - `ConclusionProposals` — a map of thread-ID → summary, fed by
-  `ProposeConclusionFrom`. Note: this early-exit-by-consensus path is
-  **implemented but not currently driven** by any app-layer trigger —
-  nothing calls it today. The circuit breaker (`MaxTurns`) is the only
-  path that actually concludes a discussion in the current wiring.
+  `ProposeConclusionFrom` / `WithdrawConclusionProposal`. Reflects each
+  participant's LATEST stance only: a text post whose final line starts
+  with the `CONCLUDE:` marker (see "Conclusion" below) proposes; a post
+  without that marker rescinds whatever that participant proposed
+  earlier. Once every roster participant (>= 2) has a live entry, the
+  FSM concludes exactly like the `MaxTurns` circuit breaker — see
+  "Conclusion" for the full early-exit flow.
 
 Key methods:
 
@@ -114,13 +117,19 @@ claim-then-dispatch sequence has exactly one implementation:
    concluding a turn early). Only then does it read the latest
    `assistant_text` item from that participant's timeline; if found,
    it mirrors it into the channel as a `from_type="agent"` message and
-   emits `discussion:message`. Either way — found or not —
-   `recordDiscussionPost` always runs `RecordPost` against the
-   already-resolved FSM and then attempts to claim the next speaker.
-   The "either way" part is the stall fix: a **tool-only turn** (the
-   participant only ran tools, no assistant text) still has to advance
-   the FSM, or the deliberation would sit awaiting a reply that will
-   never arrive.
+   emits `discussion:message` — the mirrored content keeps a `CONCLUDE:`
+   line verbatim (transcript honesty: the other participants must see
+   the stance in their own turn prompts). It then parses that same
+   `item.Summary` with `discussion.ParseConclusionProposal`: a match
+   calls `ProposeConclusionFrom(thread.ID, summary)`, no match calls
+   `WithdrawConclusionProposal(thread.ID)` — see "Conclusion" below.
+   Either way — found or not — `recordDiscussionPost` always runs
+   `RecordPost` against the already-resolved FSM and then attempts to
+   claim the next speaker. The "either way" part is the stall fix: a
+   **tool-only turn** (the participant only ran tools, no assistant
+   text) still has to advance the FSM, or the deliberation would sit
+   awaiting a reply that will never arrive — it also leaves conclusion
+   stance untouched, since there's no new text to parse.
 
 Exactly one `discussion:state` lands per turn advance: a successful
 claim synchronously emits the post-claim snapshot (so the frontend sees
@@ -153,19 +162,99 @@ A dispatched turn prompt is an ordinary user message, not a system
 prompt. The system prompt is installed once via `setThreadSystemPrompt`
 at start: `BuildParticipantPrompt` layers
 `discussion.discussionProtocolPreamble` ("messages from others arrive
-as labeled user messages, respond with your contribution only") onto
-the per-role preamble via `joinPrompts`, so every participant knows the
-multi-party wire shape before its first turn prompt arrives.
+as labeled user messages, respond with your contribution only", plus
+the `CONCLUDE:` marker instruction — see "Conclusion" below) onto the
+per-role preamble via `joinPrompts`, so every participant knows the
+multi-party wire shape, and how to propose ending the discussion,
+before its first turn prompt arrives.
 
 ## Conclusion
 
-Reaching `MaxTurns` posts a system-authored message into the channel
-(`concludeDiscussionChannel`, `app_discussion_runtime.go`) —
-`from_type="system"`, `from_id="deliberation"`, `from_role="moderator"`,
-content `"Discussion concluded: reached the N-turn limit."` — **before**
-flipping `channels.status` to `"concluded"` (`ChannelService.PostMessage`
-requires the channel still be `"open"`, so this ordering is load-bearing).
-`PostChannelMessage` on a concluded channel returns an error.
+A discussion ends for one of two causes, and the system-authored
+message posted into the channel is cause-aware:
+
+1. **Turn limit.** `RecordPost` increments `TurnCount` past `MaxTurns`
+   (the circuit breaker).
+2. **Unanimous conclusion proposals.** Every roster participant's
+   LATEST turn ended with a `CONCLUDE:` marker line.
+
+### The CONCLUDE marker and latest-stance rule
+
+`internal/discussion/conclusion.go` owns the pure parsing/rendering
+logic, kept separate from `deliberation.go`'s FSM bookkeeping:
+
+- `ParseConclusionProposal(text) (summary string, ok bool)` inspects
+  only the **last non-empty line** of a participant's message for a
+  case-insensitive `CONCLUDE:` prefix (leading whitespace tolerated,
+  CRLF tolerated). A marker anywhere earlier in the text — including a
+  `CONCLUDE:` line followed by more prose — is NOT a proposal; only the
+  participant's actual last line counts. Everything after the marker on
+  that line is the summary, trimmed and capped at 500 runes
+  (rune-safe). An empty summary still returns `ok=true`.
+- `BuildConclusionMessage(ConclusionMessageInput)` renders the
+  system-authored notice for either cause. The turn-limit form is the
+  original, byte-identical text: `"Discussion concluded: reached the
+  N-turn limit."` The unanimous form leads with `"Discussion concluded:
+  all participants proposed to conclude."`, then (if at least one
+  participant left a non-empty summary) a blank line followed by one
+  `<Role>: <summary>` line per roster participant in order, skipping
+  empty summaries.
+
+The FSM's own half lives in `deliberation.go`:
+
+- `ProposeConclusionFrom(threadID, summary)` (pre-existing) records a
+  proposal and flips `Concluded` once every roster participant (>= 2)
+  has one.
+- `WithdrawConclusionProposal(threadID)` removes a proposal. Together
+  these implement **latest-stance semantics**: a participant's stance
+  is whatever its most recent post said, not "has this participant ever
+  proposed." A later plain-text reply (no marker) rescinds an earlier
+  proposal, so a participant that flip-flops can't accidentally leave a
+  stale "yes" in the unanimity count.
+
+### Wiring: `syncDiscussionTurn`
+
+`app_discussion_runtime.go`'s `syncDiscussionTurn`, after mirroring a
+participant's assistant text into the channel (see "Turn Driving"
+above), parses that same text: a match calls `ProposeConclusionFrom`,
+no match calls `WithdrawConclusionProposal`. The mirrored channel
+content keeps the `CONCLUDE:` line verbatim — only the FSM's
+bookkeeping reacts to the marker, not the transcript other participants
+read in their own turn prompts. A tool-only turn (no assistant text)
+never calls either — there's no new stance to record, so the
+participant's prior stance carries forward unchanged.
+
+If the proposal reaches unanimity, `ProposeConclusionFrom` flips
+`Concluded` **before** `RecordPost` runs (`syncDiscussionTurn` always
+calls `RecordPost` after the propose/withdraw step). `RecordPost`'s
+existing terminal-state contract (`if d.state.Concluded { return "",
+true }`) then fires without incrementing `TurnCount` — a unanimous
+conclusion never touches the turn counter, only the turn-limit path
+does.
+
+### Posting the notice
+
+`concludeDiscussionChannel(channelID, deliberation)` (renamed from
+taking a bare `maxTurns int` — it now needs the live FSM to determine
+cause) posts the message — `from_type="system"`,
+`from_id="deliberation"`, `from_role="moderator"` — **before** flipping
+`channels.status` to `"concluded"` (`ChannelService.PostMessage`
+requires the channel still be `"open"`, so this ordering is
+load-bearing). `PostChannelMessage` on a concluded channel returns an
+error.
+
+The cause is derived structurally, never threaded through as a separate
+flag: `unanimous := len(participants) >= 2 &&` every participant has a
+live `ConclusionProposals` entry. This means the ordinary `MaxTurns`
+conclusion (where proposals are typically absent or partial) reliably
+renders the turn-limit form, and a proposal-driven conclusion reliably
+renders the unanimous form with each participant's summary — a caller
+can never pass a cause that disagrees with what the FSM state actually
+shows. Composing the unanimous message's per-role lines needs the
+roster's role labels, so `concludeDiscussionChannel` does one extra
+`GetChannel` + `discussionRoster` query (a cold path — conclusion
+happens once per discussion); a roster resolution failure is returned,
+never silently degraded to the wrong-cause message.
 
 A **successful** conclusion also removes the FSM from `a.deliberations`
 (`removeDeliberationByID`) — a concluded channel has nothing left to
@@ -174,17 +263,21 @@ deletion. `buildChannelState`'s SQLite fallback branch serves concluded
 channels from then on, so the post-conclusion `discussion:state` and
 any later `GetChannelState` still return a coherent snapshot.
 
-If the conclusion **fails to persist** (RecordPost flips the FSM's
-`Concluded` before `concludeDiscussionChannel` runs), the channel row
-stays `"open"` while the FSM refuses every claim — a shape that would
-otherwise wedge the discussion forever. `maybePromptNextDiscussionSpeaker`
-is the self-heal seam: on the next human post it detects the concluded
-FSM against an open row, re-attempts `concludeDiscussionChannel`
-(removing the FSM only on success, so a still-failing conclusion stays
-resolvable for the next retry), emits `discussion:state`, and never
-claims/prompts. The same seam covers the restart-shaped variant, where
-`deliberationForChannel`'s rebuild comes back concluded because the
-agent-message count already reached `max_turns`.
+If the conclusion **fails to persist** (the FSM's `Concluded` flips
+before `concludeDiscussionChannel` runs, whichever cause triggered it),
+the channel row stays `"open"` while the FSM refuses every claim — a
+shape that would otherwise wedge the discussion forever.
+`maybePromptNextDiscussionSpeaker` is the self-heal seam: on the next
+human post it detects the concluded FSM against an open row,
+re-attempts `concludeDiscussionChannel` (removing the FSM only on
+success, so a still-failing conclusion stays resolvable for the next
+retry), emits `discussion:state`, and never claims/prompts. Because
+`concludeDiscussionChannel` derives cause from the FSM's own state, this
+retry always posts the cause-correct message — including the
+restart-shaped variant, where `deliberationForChannel`'s rebuild re-seeds
+conclusion proposals from history (see "Restart Recovery" below) and can
+come back already concluded-by-consensus while the channel row is still
+`"open"`.
 
 ## Restart Recovery
 
@@ -212,6 +305,27 @@ since the channel was opened:
   the last agent poster in round-robin order (`NextSpeakerAfter`,
   exported specifically so this rebuild path uses the exact same rule
   the live FSM does), or `participants[0]` if no agent has posted yet.
+- **ConclusionProposals** (re-seeded) — `ConclusionProposals` is
+  in-memory-only state, same as everything else in `DeliberationState`;
+  it does not survive a restart on its own. `scanChannelAgentHistory`
+  (`app_discussion_drive.go`) walks the channel's full message history
+  ONCE and returns both the last agent poster (feeding
+  `rebuildCurrentSpeaker` above) and, per participant, that
+  participant's most recent agent-message content — one query serving
+  both needs instead of two. After `RestoreDeliberation` constructs the
+  rebuilt FSM, `deliberationForChannel` runs that latest content back
+  through `discussion.ParseConclusionProposal` per participant and
+  calls `ProposeConclusionFrom` on a match. Without this, a discussion
+  where every participant's last word before the restart carried a
+  `CONCLUDE:` marker would silently lose its unanimity on rebuild — the
+  FSM would come back merely at `turnCount`/`maxTurns` instead of
+  concluded-by-consensus. If the re-seed alone reaches unanimity, the
+  rebuilt FSM comes back `Concluded` while the channel row is still
+  `"open"` (the crash landed between unanimity and the status flip
+  pre-restart) — the self-heal seam in "Conclusion" above resolves it
+  on the next human post, posting the correct unanimous message because
+  `concludeDiscussionChannel` reads the same re-seeded
+  `ConclusionProposals` map.
 - **MaxTurns** — `channels.max_turns` (see below).
 
 `deliberationForChannel` double-checks under `a.mu` before installing
@@ -249,8 +363,14 @@ Two wire events keep the frontend live-updated instead of polling
 - **`discussion:state`** — the same `ChannelStatePayload` shape
   `GetChannelState` returns: `{channelId, threadId, status, turnCount,
   maxTurns, awaitingResponse, currentSpeakerThreadId,
-  currentSpeakerRole, participants: [{threadId, role, provider,
-  model}, ...]}`. Emitted whenever the FSM's turn-facing state changes
+  currentSpeakerRole, participants: [{threadId, role, provider, model,
+  proposedConclusion}, ...]}`. `proposedConclusion` is true when that
+  participant has a live entry in the FSM's `ConclusionProposals` map
+  (see "Conclusion"); it's populated only on the live-FSM branch — the
+  SQLite-fallback branch (concluded/non-open channels) always reports
+  `false`, since `ConclusionProposals` doesn't exist to ask once the FSM
+  is gone. The frontend badges a participant chip with it in
+  `ChannelHeader.svelte`. Emitted whenever the FSM's turn-facing state changes
   — exactly once per turn advance (the post-claim snapshot, or the
   no-claim direct emission from `recordDiscussionPost`), plus a
   conclusion and a failed dispatch's un-claim.

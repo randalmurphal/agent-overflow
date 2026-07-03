@@ -72,6 +72,16 @@ export class ChannelParticipantState {
     "provider": string;
     "model": string;
 
+    /**
+     * ProposedConclusion is true when this participant's latest channel
+     * post carried a CONCLUDE marker (discussion.ParseConclusionProposal)
+     * — i.e. it has a live entry in the FSM's ConclusionProposals map.
+     * Only meaningful on the live-FSM branch of buildChannelState; the
+     * SQLite-fallback branch (concluded/non-open channels, where
+     * ConclusionProposals no longer exists) always reports false.
+     */
+    "proposedConclusion": boolean;
+
     /** Creates a new ChannelParticipantState instance. */
     constructor($$source: Partial<ChannelParticipantState> = {}) {
         if (!("threadId" in $$source)) {
@@ -85,6 +95,9 @@ export class ChannelParticipantState {
         }
         if (!("model" in $$source)) {
             this["model"] = "";
+        }
+        if (!("proposedConclusion" in $$source)) {
+            this["proposedConclusion"] = false;
         }
 
         Object.assign(this, $$source);

@@ -31,8 +31,8 @@ export function makeChannelStatePayload(
     currentSpeakerThreadId: 'advocate-thread',
     currentSpeakerRole: 'advocate',
     participants: [
-      { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6' },
-      { threadId: 'critic-thread', role: 'critic', provider: 'claude', model: 'claude-sonnet-4-6' },
+      { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6', proposedConclusion: false },
+      { threadId: 'critic-thread', role: 'critic', provider: 'claude', model: 'claude-sonnet-4-6', proposedConclusion: false },
     ],
     ...overrides,
   };

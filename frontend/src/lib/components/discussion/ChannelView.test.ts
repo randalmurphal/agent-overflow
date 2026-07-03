@@ -391,7 +391,7 @@ describe('<ChannelView>', () => {
       awaitingResponse: true,
       currentSpeakerThreadId: 'advocate-thread',
       currentSpeakerRole: 'advocate',
-      participants: [{ threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6' }],
+      participants: [{ threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6', proposedConclusion: false }],
     }));
 
     // eventsItemStream.ts's live-tail seam feeds assistant_text upserts

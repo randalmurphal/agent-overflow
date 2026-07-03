@@ -256,6 +256,85 @@ func TestDeliberationRequiresUnanimousConclusion(t *testing.T) {
 	}
 }
 
+// TestDeliberationWithdrawConclusionProposalRequiresRepropose documents
+// the latest-stance rule: withdrawing a participant's proposal after a
+// unanimity-reaching sequence would have concluded means the FSM must
+// NOT be concluded, and the withdrawn participant has to propose again
+// to reach unanimity a second time.
+func TestDeliberationWithdrawConclusionProposalRequiresRepropose(t *testing.T) {
+	d := NewDeliberation("channel-1", 8, []string{"thread-a", "thread-b"})
+
+	if agreed := d.ProposeConclusionFrom("thread-a", "done"); agreed {
+		t.Fatal("expected first proposal to be non-unanimous")
+	}
+
+	d.WithdrawConclusionProposal("thread-a")
+	state := d.State()
+	if _, ok := state.ConclusionProposals["thread-a"]; ok {
+		t.Fatalf("ConclusionProposals = %+v, want thread-a removed", state.ConclusionProposals)
+	}
+	if state.Concluded {
+		t.Fatal("withdrawing the only proposal must not conclude the deliberation")
+	}
+
+	// thread-b proposing now must NOT reach unanimity — thread-a's
+	// stance was withdrawn, so only one of two participants has a live
+	// proposal.
+	if agreed := d.ProposeConclusionFrom("thread-b", "agreed"); agreed {
+		t.Fatal("expected non-unanimous after thread-a's proposal was withdrawn")
+	}
+
+	// thread-a re-proposes: now both have live proposals and unanimity
+	// is reached.
+	if agreed := d.ProposeConclusionFrom("thread-a", "done after all"); !agreed {
+		t.Fatal("expected unanimous conclusion after thread-a re-proposes")
+	}
+	if !d.State().Concluded {
+		t.Fatal("expected deliberation to be concluded after re-proposing to unanimity")
+	}
+}
+
+// TestDeliberationWithdrawConclusionProposalOnUnknownIDIsNoOp covers
+// withdrawing a proposal for a thread ID that never proposed (or
+// doesn't exist in the roster at all) — must not panic or otherwise
+// disturb existing state.
+func TestDeliberationWithdrawConclusionProposalOnUnknownIDIsNoOp(t *testing.T) {
+	d := NewDeliberation("channel-1", 8, []string{"thread-a", "thread-b"})
+	d.ProposeConclusionFrom("thread-a", "done")
+
+	d.WithdrawConclusionProposal("thread-never-proposed")
+	d.WithdrawConclusionProposal("thread-unknown-entirely")
+
+	state := d.State()
+	if len(state.ConclusionProposals) != 1 {
+		t.Fatalf("ConclusionProposals = %+v, want thread-a's proposal untouched", state.ConclusionProposals)
+	}
+	if _, ok := state.ConclusionProposals["thread-a"]; !ok {
+		t.Fatal("expected thread-a's proposal to remain after unrelated withdrawals")
+	}
+}
+
+// TestDeliberationWithdrawConclusionProposalOnConcludedIsNoOp guards the
+// terminal-state contract: once concluded, withdrawal must not mutate
+// ConclusionProposals (there is nothing left to coordinate).
+func TestDeliberationWithdrawConclusionProposalOnConcludedIsNoOp(t *testing.T) {
+	d := NewDeliberation("channel-1", 8, []string{"thread-a", "thread-b"})
+	d.ProposeConclusionFrom("thread-a", "done")
+	if agreed := d.ProposeConclusionFrom("thread-b", "agreed"); !agreed {
+		t.Fatal("expected unanimous conclusion — test setup bug")
+	}
+
+	d.WithdrawConclusionProposal("thread-a")
+
+	state := d.State()
+	if !state.Concluded {
+		t.Fatal("expected deliberation to remain concluded")
+	}
+	if len(state.ConclusionProposals) != 2 {
+		t.Fatalf("ConclusionProposals = %+v, want both proposals untouched once concluded", state.ConclusionProposals)
+	}
+}
+
 func TestNewDeliberationDefaultsMaxTurns(t *testing.T) {
 	d := NewDeliberation("channel-2", 0, []string{"thread-a", "thread-b"})
 	if d.State().MaxTurns != DefaultMaxTurns {

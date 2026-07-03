@@ -8,7 +8,7 @@ import { buildPane, makeThread } from '../../test/helpers/chat';
 import { makeChannelMessage, makeChannelStatePayload } from '../../test/helpers/discussion';
 import { refreshDiscussionChannel } from './eventsDiscussion';
 import { clearAllDiscussionLiveTail } from './discussionLiveTail';
-import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
+import type { ChannelMessage, ChannelParticipantState, ChannelStatePayload } from '../types/discussion';
 import type { Thread } from '../types/models';
 
 // Exercises the push-driven discussion wiring added alongside the
@@ -39,7 +39,7 @@ function makeStatePayload(overrides: Partial<ChannelStatePayload> = {}): Channel
   return makeChannelStatePayload({
     awaitingResponse: true,
     participants: [
-      { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6' },
+      { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6', proposedConclusion: false },
     ],
     ...overrides,
   });
@@ -160,7 +160,7 @@ describe('discussion:message / discussion:state routing', () => {
     // Participant entry with an oversized role label.
     emitWailsEvent('discussion:state', makeStatePayload({
       participants: [
-        { threadId: 'advocate-thread', role: 'r'.repeat(129), provider: 'claude', model: 'claude-sonnet-4-6' },
+        { threadId: 'advocate-thread', role: 'r'.repeat(129), provider: 'claude', model: 'claude-sonnet-4-6', proposedConclusion: false },
       ],
     }));
     // Non-string currentSpeakerThreadId.
@@ -176,6 +176,45 @@ describe('discussion:message / discussion:state routing', () => {
     emitWailsEvent('discussion:state', makeStatePayload({ turnCount: 2 }));
     expect(pane.channelStatus).toBe('open');
     expect(pane.channelTurnCount).toBe(2);
+  });
+
+  it('accepts a participant proposedConclusion field that is true, false, or absent (stale backend), but rejects a wrong-typed value', async () => {
+    const pane = await buildPane(discussionThread(), [], 'a');
+
+    // Present and true.
+    emitWailsEvent('discussion:state', makeStatePayload({
+      turnCount: 1,
+      participants: [
+        { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6', proposedConclusion: true },
+      ],
+    }));
+    expect(pane.channelTurnCount).toBe(1);
+
+    // Present and false.
+    emitWailsEvent('discussion:state', makeStatePayload({
+      turnCount: 2,
+      participants: [
+        { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6', proposedConclusion: false },
+      ],
+    }));
+    expect(pane.channelTurnCount).toBe(2);
+
+    // Absent entirely — a stale backend predating this field must still validate.
+    const withoutField = { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6' };
+    emitWailsEvent('discussion:state', makeStatePayload({
+      turnCount: 3,
+      participants: [withoutField as unknown as ChannelParticipantState],
+    }));
+    expect(pane.channelTurnCount).toBe(3);
+
+    // Wrong-typed value is rejected, same as any other boundary-validated field.
+    emitWailsEvent('discussion:state', makeStatePayload({
+      turnCount: 4,
+      participants: [
+        { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6', proposedConclusion: 'yes' as unknown as boolean },
+      ],
+    }));
+    expect(pane.channelTurnCount).toBe(3);
   });
 });
 

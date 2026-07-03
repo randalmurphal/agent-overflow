@@ -162,16 +162,21 @@ func (a *App) maybePromptNextDiscussionSpeaker(channelID string) {
 		log.Printf("discussion: resolve deliberation for next-speaker prompt %s: %v", channelID, err)
 		return
 	}
-	// Self-heal seam: RecordPost flips Concluded BEFORE the conclusion
-	// persists, so a concludeDiscussionChannel failure strands a
-	// concluded FSM against a channel row still "open" —
-	// TryClaimCurrentSpeaker then refuses every claim and the
+	// Self-heal seam: RecordPost/ProposeConclusionFrom flip Concluded
+	// BEFORE the conclusion persists, so a concludeDiscussionChannel
+	// failure strands a concluded FSM against a channel row still
+	// "open" — TryClaimCurrentSpeaker then refuses every claim and the
 	// discussion wedges forever. A concluded FSM here means exactly
 	// that shape (a live conclude removes the FSM on success); retry
 	// the conclusion instead of claiming, using this human post as the
-	// retry trigger.
+	// retry trigger. concludeDiscussionChannel derives the cause
+	// (turn limit vs. unanimous proposals) from the deliberation's own
+	// state, so this retry posts the correct message regardless of
+	// which cause wedged it — including the restart-shaped variant
+	// where deliberationForChannel's rebuild re-seeds conclusion
+	// proposals from history and comes back already concluded.
 	if state := deliberation.State(); state.Concluded {
-		if concludeErr := a.concludeDiscussionChannel(channelID, state.MaxTurns); concludeErr != nil {
+		if concludeErr := a.concludeDiscussionChannel(channelID, deliberation); concludeErr != nil {
 			log.Printf("discussion: re-conclude wedged channel %s: %v", channelID, concludeErr)
 		} else {
 			a.removeDeliberationByID(channelID)

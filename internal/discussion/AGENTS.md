@@ -20,7 +20,15 @@ messaging, and in-memory deliberation turn tracking.
   SQLite state after a restart. `TryClaimCurrentSpeaker` /
   `ClearAwaitingResponse` are the only ways `AwaitingResponse` changes
   — see their doc comments for the double-dispatch race
-  `TryClaimCurrentSpeaker`'s atomicity closes.
+  `TryClaimCurrentSpeaker`'s atomicity closes. `ProposeConclusionFrom` /
+  `WithdrawConclusionProposal` track each participant's latest
+  conclusion stance (see `conclusion.go`) and flip `Concluded` once
+  every roster participant (>= 2) has a live proposal.
+- `conclusion.go` — pure marker-protocol helpers, independent of the
+  FSM's locking/state: `ParseConclusionProposal` reads a participant's
+  final CONCLUDE marker line into a summary, `BuildConclusionMessage`
+  renders the cause-aware system conclusion notice (turn-limit vs.
+  unanimous). No app-layer or store dependency.
 - `turnprompt.go` — `BuildTurnPrompt`. Pure renderer: unseen channel
   messages (labeled `Human:` / `Moderator:` / `<Role>:`) followed by a
   your-turn instruction naming the speaker's own role. The app layer
@@ -33,9 +41,11 @@ messaging, and in-memory deliberation turn tracking.
   parent thread + `DiscussionDefinition`, plus the shared
   `discussionProtocolPreamble` every participant's system prompt
   carries (explains that other participants' and the human's messages
-  arrive as labeled user messages). The App in `app_discussion_start.go`
-  consumes a slice of `ParticipantPlan` and runs the orchestration
-  (CreateThread / startSession / channel link / cleanup) around it.
+  arrive as labeled user messages, and how to propose ending the
+  discussion via a final `CONCLUDE:` marker line). The App in
+  `app_discussion_start.go` consumes a slice of `ParticipantPlan` and
+  runs the orchestration (CreateThread / startSession / channel link /
+  cleanup) around it.
 
 ## Responsibility boundary
 
@@ -64,10 +74,17 @@ messaging, and in-memory deliberation turn tracking.
   serializable.
 - To persist conclusion artifacts: add a column + test in
   `internal/store/discussions.go`; keep deliberation logic in memory.
-- `ProposeConclusionFrom` (unanimous early-exit) is implemented but not
-  currently driven by any app-layer trigger — only the `MaxTurns`
-  circuit breaker concludes a discussion today. Wiring a "propose to
-  conclude" UI affordance is a natural extension point.
+- `ProposeConclusionFrom` / `WithdrawConclusionProposal` (unanimous
+  early-exit) ARE driven today: a participant proposes by ending its
+  message with a final line starting `CONCLUDE:` (case-insensitive,
+  optional one-line summary); `app_discussion_runtime.go`'s
+  `syncDiscussionTurn` parses every turn's text via
+  `conclusion.ParseConclusionProposal` and calls propose/withdraw
+  accordingly, so conclusion always reflects each participant's LATEST
+  message. Once every roster participant (>= 2) has proposed, the FSM
+  concludes exactly like the `MaxTurns` circuit breaker. A UI
+  affordance beyond the marker convention (e.g. a dedicated "conclude"
+  button) is a natural next extension.
 
 ## Anti-patterns
 

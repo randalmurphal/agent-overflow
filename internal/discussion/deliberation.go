@@ -171,6 +171,26 @@ func (d *Deliberation) ProposeConclusionFrom(threadID, summary string) (allAgree
 	return true
 }
 
+// WithdrawConclusionProposal rescinds threadID's earlier conclusion
+// proposal, if any. Conclusion proposals reflect a participant's LATEST
+// stance only: a text post that doesn't end with the CONCLUDE marker
+// rescinds whatever that participant proposed in an earlier turn, so
+// unanimity always reflects every participant's most recent message,
+// not "has this participant ever proposed." A tool-only turn (no
+// assistant text) never calls this — there's no new stance to record,
+// so the participant's prior stance is left as-is. No-op once the
+// deliberation has concluded (nothing left to coordinate) or when
+// threadID has no recorded proposal.
+func (d *Deliberation) WithdrawConclusionProposal(threadID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.state.Concluded {
+		return
+	}
+	delete(d.state.ConclusionProposals, threadID)
+}
+
 // State returns a defensive copy of the current deliberation state.
 func (d *Deliberation) State() DeliberationState {
 	d.mu.Lock()

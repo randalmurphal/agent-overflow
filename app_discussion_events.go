@@ -27,6 +27,13 @@ type ChannelParticipantState struct {
 	Role     string `json:"role"`
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// ProposedConclusion is true when this participant's latest channel
+	// post carried a CONCLUDE marker (discussion.ParseConclusionProposal)
+	// — i.e. it has a live entry in the FSM's ConclusionProposals map.
+	// Only meaningful on the live-FSM branch of buildChannelState; the
+	// SQLite-fallback branch (concluded/non-open channels, where
+	// ConclusionProposals no longer exists) always reports false.
+	ProposedConclusion bool `json:"proposedConclusion"`
 }
 
 // ChannelStatePayload is the discussion:state wire payload and the
@@ -119,12 +126,18 @@ func (a *App) buildChannelState(channelID string) (ChannelStatePayload, error) {
 	}
 
 	participantRows := roster
+	// conclusionProposals stays nil on the SQLite-fallback branch, so
+	// every participant's ProposedConclusion below reports false — a
+	// concluded/closed channel's FSM (and its ConclusionProposals map)
+	// no longer exists to ask.
+	var conclusionProposals map[string]string
 	if d, dErr := a.deliberationForChannel(channelID); dErr == nil {
 		state := d.State()
 		payload.TurnCount = state.TurnCount
 		payload.MaxTurns = state.MaxTurns
 		payload.AwaitingResponse = state.AwaitingResponse
 		payload.CurrentSpeakerThreadID = state.CurrentSpeaker
+		conclusionProposals = state.ConclusionProposals
 		// The live FSM's roster order is authoritative — order (and
 		// filter) the fetched rows by it. The two orders only diverge
 		// when the FSM lazily learned a poster that isn't a linked
@@ -152,11 +165,13 @@ func (a *App) buildChannelState(channelID string) (ChannelStatePayload, error) {
 	participants := make([]ChannelParticipantState, 0, len(participantRows))
 	for _, child := range participantRows {
 		role := discussion.RoleFromThreadTitle(child.Title)
+		_, proposedConclusion := conclusionProposals[child.ID]
 		participants = append(participants, ChannelParticipantState{
-			ThreadID: child.ID,
-			Role:     role,
-			Provider: child.Provider,
-			Model:    child.Model,
+			ThreadID:           child.ID,
+			Role:               role,
+			Provider:           child.Provider,
+			Model:              child.Model,
+			ProposedConclusion: proposedConclusion,
 		})
 		if child.ID == payload.CurrentSpeakerThreadID {
 			payload.CurrentSpeakerRole = role

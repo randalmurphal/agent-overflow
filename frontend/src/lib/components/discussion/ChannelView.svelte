@@ -55,6 +55,7 @@
   let currentSpeakerRole = $derived(pane.channelCurrentSpeakerRole ?? 'agent');
   let turnCount = $derived(pane.channelTurnCount);
   let maxTurns = $derived(pane.channelMaxTurns);
+  let participants = $derived(pane.channelParticipants);
   // "No tail text yet" covers both no live tail at all and a live tail
   // whose upsert/delta hasn't carried any text yet (a freshly-created
   // assistant_text item before its first chunk).
@@ -239,6 +240,7 @@
     {maxTurns}
     {awaitingResponse}
     {currentSpeakerRole}
+    {participants}
     {loadError}
   />
 

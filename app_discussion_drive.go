@@ -157,12 +157,42 @@ func (a *App) deliberationForChannel(channelID string) (*discussion.Deliberation
 	if err != nil {
 		return nil, err
 	}
-	currentSpeaker, err := a.rebuildCurrentSpeaker(channelID, participants)
+	lastAgentPoster, latestContentByPoster, err := a.scanChannelAgentHistory(channelID)
 	if err != nil {
 		return nil, err
 	}
+	currentSpeaker := rebuildCurrentSpeaker(participants, lastAgentPoster)
 
 	rebuilt := discussion.RestoreDeliberation(channelID, channel.MaxTurns, participants, turnCount, currentSpeaker)
+
+	// Re-seed conclusion proposals from each participant's LATEST
+	// channel post: ConclusionProposals is in-memory-only state (root
+	// CLAUDE.md principle 3 — a.deliberations is never persisted), so
+	// without this a discussion where every participant's last word
+	// before the restart carried a CONCLUDE marker would silently lose
+	// its unanimity on rebuild — the FSM would come back merely at
+	// turnCount/maxTurns instead of concluded-by-consensus. Re-seeding
+	// composes with ProposeConclusionFrom's latest-stance semantics: a
+	// participant's most recent post (post-restart, still their latest
+	// as far as this scan sees) is exactly what "propose" should see.
+	//
+	// If re-seeding alone reaches unanimity here, the rebuilt FSM comes
+	// back Concluded while the channel row is still "open" (the crash
+	// landed in the window between unanimity and the status flip) —
+	// maybePromptNextDiscussionSpeaker's self-heal seam concludes the
+	// channel on the next human post, and concludeDiscussionChannel
+	// derives cause from this same ConclusionProposals map, so that
+	// post is the correct unanimous message rather than the turn-limit
+	// fallback.
+	for _, participantID := range participants {
+		content, ok := latestContentByPoster[participantID]
+		if !ok {
+			continue
+		}
+		if summary, ok := discussion.ParseConclusionProposal(content); ok {
+			rebuilt.ProposeConclusionFrom(participantID, summary)
+		}
+	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -206,30 +236,43 @@ func (a *App) discussionRoster(channel store.Channel) ([]store.Thread, error) {
 	return participants, nil
 }
 
+// scanChannelAgentHistory walks a channel's full message history ONCE
+// and returns everything deliberationForChannel's restart rebuild needs
+// from it: the thread ID of the last participant to post an agent
+// message (rebuildCurrentSpeaker's round-robin continuation) and, per
+// participant, that participant's most recent agent-message content
+// (conclusion-proposal re-seeding — see deliberationForChannel). A
+// single query serves both needs rather than one dedicated GetMessages
+// call per need — deliberation channels are turn-limited (MaxTurns,
+// default 8) plus a handful of human interjections, so this is a small
+// bounded read even on a long-lived channel.
+func (a *App) scanChannelAgentHistory(channelID string) (lastAgentPoster string, latestContentByPoster map[string]string, err error) {
+	messages, err := a.channels.GetMessages(channelID, -1, 0)
+	if err != nil {
+		return "", nil, err
+	}
+	latestContentByPoster = make(map[string]string)
+	for _, msg := range messages {
+		if msg.FromType != discussion.FromTypeAgent {
+			continue
+		}
+		lastAgentPoster = msg.FromID
+		latestContentByPoster[msg.FromID] = msg.Content
+	}
+	return lastAgentPoster, latestContentByPoster, nil
+}
+
 // rebuildCurrentSpeaker recomputes CurrentSpeaker for a restart-rebuilt
 // deliberation: the participant after the last agent poster in
 // round-robin order, or participants[0] when no agent has posted yet
-// (mirrors NewDeliberation's initial-state rule). The channel's message
-// history is scanned directly rather than adding another store query —
-// deliberation channels are turn-limited (MaxTurns, default 8) plus a
-// handful of human interjections, so this is a small bounded read even
-// on a long-lived channel.
-func (a *App) rebuildCurrentSpeaker(channelID string, participants []string) (string, error) {
+// (mirrors NewDeliberation's initial-state rule). Pure function over
+// scanChannelAgentHistory's lastAgentPoster result.
+func rebuildCurrentSpeaker(participants []string, lastAgentPoster string) string {
 	if len(participants) == 0 {
-		return "", nil
-	}
-	messages, err := a.channels.GetMessages(channelID, -1, 0)
-	if err != nil {
-		return "", err
-	}
-	var lastAgentPoster string
-	for _, msg := range messages {
-		if msg.FromType == discussion.FromTypeAgent {
-			lastAgentPoster = msg.FromID
-		}
+		return ""
 	}
 	if lastAgentPoster == "" {
-		return participants[0], nil
+		return participants[0]
 	}
-	return discussion.NextSpeakerAfter(participants, lastAgentPoster), nil
+	return discussion.NextSpeakerAfter(participants, lastAgentPoster)
 }

@@ -68,6 +68,11 @@ export interface ChannelParticipantState {
   role: string;
   provider: string;
   model: string;
+  // True when this participant's latest channel post carried a CONCLUDE
+  // marker (see internal/discussion/conclusion.go). Only meaningful on
+  // the live-FSM branch of buildChannelState; a concluded/non-open
+  // channel's SQLite-fallback branch always reports false.
+  proposedConclusion: boolean;
 }
 
 /**

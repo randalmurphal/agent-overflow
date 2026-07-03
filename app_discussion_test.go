@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1787,5 +1788,238 @@ func TestGetChannelStatePayloadShapeForLiveDiscussion(t *testing.T) {
 	}
 	if reviewer.Role != "Reviewer" || reviewer.Provider != thread.Provider || reviewer.Model != thread.Model {
 		t.Fatalf("reviewer participant = %+v, want role=Reviewer provider/model inherited from parent", reviewer)
+	}
+}
+
+// insertAssistantTurn appends an assistant_text item for threadID at
+// the given turn index and drives it through syncDiscussionTurn — the
+// same path a real participant's completed turn takes
+// (sessionEventHandler → EventTurnComplete → syncDiscussionTurn).
+func insertAssistantTurn(t *testing.T, app *App, threadID string, turnIndex int, content string) {
+	t.Helper()
+	if err := app.store.InsertItem(store.Item{
+		ID:        threadID + "-turn-" + strconv.Itoa(turnIndex),
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		ItemIndex: 0,
+		Kind:      "assistant_text",
+		Role:      "assistant",
+		Summary:   content,
+		CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertItem(%s, turn %d): %v", threadID, turnIndex, err)
+	}
+	if err := app.syncDiscussionTurn(threadID); err != nil {
+		t.Fatalf("syncDiscussionTurn(%s): %v", threadID, err)
+	}
+}
+
+// TestUnanimousConclusionProposalsEndDiscussionEarly is the headline
+// early-exit test: two participants each end their latest message with
+// a CONCLUDE line. The first proposal alone must not conclude anything
+// (only one of two participants has proposed) — the channel stays
+// open and GetChannelState reflects the lone proposal via
+// ProposedConclusion. The second proposal reaches unanimity: the
+// channel concludes, the system message names both participants'
+// summaries, and the FSM is dropped from a.deliberations exactly like
+// the MaxTurns conclusion path.
+func TestUnanimousConclusionProposalsEndDiscussionEarly(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+	app.sendMessageFn = func(string, string, []string) error { return nil }
+
+	parent, children := seedDiscussionChannel(t, app, "unanimous", []string{"Architect", "Reviewer"}, 8)
+	channelID := parent.DiscussionID
+	architect, reviewer := children[0], children[1]
+	app.installDeliberation(channelID, []string{architect.ID, reviewer.ID}, 8)
+
+	insertAssistantTurn(t, app, architect.ID, 0,
+		"Let's wrap this up.\nCONCLUDE: we agree on the migration boundary.")
+
+	channel, err := app.store.GetChannel(channelID)
+	if err != nil {
+		t.Fatalf("GetChannel() after first proposal: %v", err)
+	}
+	if channel.Status != "open" {
+		t.Fatalf("channel.Status after first (non-unanimous) proposal = %q, want open", channel.Status)
+	}
+
+	payload, err := app.GetChannelState(channelID)
+	if err != nil {
+		t.Fatalf("GetChannelState() after first proposal: %v", err)
+	}
+	byID := make(map[string]ChannelParticipantState, len(payload.Participants))
+	for _, p := range payload.Participants {
+		byID[p.ThreadID] = p
+	}
+	if !byID[architect.ID].ProposedConclusion {
+		t.Fatalf("architect.ProposedConclusion = false, want true after its CONCLUDE post")
+	}
+	if byID[reviewer.ID].ProposedConclusion {
+		t.Fatalf("reviewer.ProposedConclusion = true, want false — reviewer hasn't posted yet")
+	}
+
+	insertAssistantTurn(t, app, reviewer.ID, 0,
+		"Agreed on all points.\nCONCLUDE: no further concerns, ready to close out.")
+
+	channel, err = app.store.GetChannel(channelID)
+	if err != nil {
+		t.Fatalf("GetChannel() after second proposal: %v", err)
+	}
+	if channel.Status != "concluded" {
+		t.Fatalf("channel.Status after unanimous proposals = %q, want concluded", channel.Status)
+	}
+
+	messages, err := app.GetChannelMessages(channelID, -1, 0)
+	if err != nil {
+		t.Fatalf("GetChannelMessages(): %v", err)
+	}
+	last := messages[len(messages)-1]
+	if last.FromType != "system" || last.FromRole != "moderator" {
+		t.Fatalf("last message = %+v, want the system conclusion notice", last)
+	}
+	if !strings.Contains(last.Content, "all participants proposed to conclude") {
+		t.Fatalf("conclusion content = %q, want the unanimous-form header", last.Content)
+	}
+	if !strings.Contains(last.Content, "Architect: we agree on the migration boundary.") {
+		t.Fatalf("conclusion content = %q, want the architect's summary", last.Content)
+	}
+	if !strings.Contains(last.Content, "Reviewer: no further concerns, ready to close out.") {
+		t.Fatalf("conclusion content = %q, want the reviewer's summary", last.Content)
+	}
+
+	// The agent messages mirrored into the channel must keep the
+	// CONCLUDE line verbatim (transcript honesty) — only the FSM's
+	// bookkeeping strips it out, not the posted content.
+	if !strings.Contains(messages[0].Content, "CONCLUDE:") {
+		t.Fatalf("architect's mirrored message = %q, want the CONCLUDE line preserved", messages[0].Content)
+	}
+
+	if _, ok := app.deliberation(channelID); ok {
+		t.Fatal("expected the concluded-by-consensus deliberation to be removed from a.deliberations")
+	}
+}
+
+// TestConclusionProposalWithdrawnByLatestPlainMessage covers the
+// latest-stance rule end to end: a participant that proposed to
+// conclude and then posts again WITHOUT a CONCLUDE line rescinds its
+// earlier stance, so a later unanimous-looking sequence (the other
+// participant now proposing) must NOT conclude the discussion.
+func TestConclusionProposalWithdrawnByLatestPlainMessage(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+	app.sendMessageFn = func(string, string, []string) error { return nil }
+
+	parent, children := seedDiscussionChannel(t, app, "withdraw", []string{"Architect", "Reviewer"}, 8)
+	channelID := parent.DiscussionID
+	architect, reviewer := children[0], children[1]
+	app.installDeliberation(channelID, []string{architect.ID, reviewer.ID}, 8)
+
+	// A proposes to conclude.
+	insertAssistantTurn(t, app, architect.ID, 0, "CONCLUDE: I think we're done here.")
+	// B replies with an ordinary message — no marker.
+	insertAssistantTurn(t, app, reviewer.ID, 0, "Actually, one more consideration on rollout.")
+	// A follows up with a plain message too — this withdraws A's
+	// earlier proposal (latest stance wins).
+	insertAssistantTurn(t, app, architect.ID, 1, "Good point, let's cover rollout risk too.")
+	// B now proposes to conclude. Only B has a live proposal (A's was
+	// withdrawn), so this must NOT reach unanimity.
+	insertAssistantTurn(t, app, reviewer.ID, 1, "CONCLUDE: rollout risk addressed, agreed to close.")
+
+	channel, err := app.store.GetChannel(channelID)
+	if err != nil {
+		t.Fatalf("GetChannel(): %v", err)
+	}
+	if channel.Status != "open" {
+		t.Fatalf("channel.Status = %q, want open (architect's withdrawal must block unanimity)", channel.Status)
+	}
+
+	payload, err := app.GetChannelState(channelID)
+	if err != nil {
+		t.Fatalf("GetChannelState(): %v", err)
+	}
+	byID := make(map[string]ChannelParticipantState, len(payload.Participants))
+	for _, p := range payload.Participants {
+		byID[p.ThreadID] = p
+	}
+	if byID[architect.ID].ProposedConclusion {
+		t.Fatal("architect.ProposedConclusion = true, want false — withdrawn by its later plain message")
+	}
+	if !byID[reviewer.ID].ProposedConclusion {
+		t.Fatal("reviewer.ProposedConclusion = false, want true — its latest message carried CONCLUDE")
+	}
+
+	if _, ok := app.deliberation(channelID); !ok {
+		t.Fatal("expected the deliberation to still be live — the discussion has not concluded")
+	}
+}
+
+// TestDeliberationForChannelReseedsConclusionProposalsFromHistory covers
+// the restart re-seeding path: a channel's history shows a participant's
+// LATEST agent message carrying a CONCLUDE line, but a.deliberations is
+// cold (as after a process restart) — deliberationForChannel's rebuild
+// must re-seed that proposal into the fresh FSM from history alone, not
+// just recompute TurnCount/CurrentSpeaker. Without the re-seed, the
+// rebuilt FSM would have an empty ConclusionProposals map and the
+// second participant's CONCLUDE would land as a lone 1-of-2 proposal
+// instead of reaching unanimity.
+func TestDeliberationForChannelReseedsConclusionProposalsFromHistory(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+	app.sendMessageFn = func(string, string, []string) error { return nil }
+
+	parent, children := seedDiscussionChannel(t, app, "restart-reseed", []string{"Architect", "Reviewer"}, 8)
+	channelID := parent.DiscussionID
+	architect, reviewer := children[0], children[1]
+
+	// Seed the pre-restart history directly (no installDeliberation —
+	// a.deliberations is cold, exactly like a freshly started process
+	// that inherits an in-progress discussion from SQLite).
+	if _, err := app.channels.PostMessage(discussion.PostMessageInput{
+		ChannelID: channelID, FromType: "agent", FromID: architect.ID, FromRole: "Architect",
+		Content: "Let's wrap up.\nCONCLUDE: aligned on the plan.",
+	}); err != nil {
+		t.Fatalf("PostMessage(architect): %v", err)
+	}
+
+	if _, ok := app.deliberation(channelID); ok {
+		t.Fatal("expected no in-memory deliberation before rebuild — test setup bug")
+	}
+
+	rebuilt, err := app.deliberationForChannel(channelID)
+	if err != nil {
+		t.Fatalf("deliberationForChannel(): %v", err)
+	}
+	rebuiltState := rebuilt.State()
+	if got, want := rebuiltState.ConclusionProposals[architect.ID], "aligned on the plan."; got != want {
+		t.Fatalf("re-seeded proposal for architect = %q, want %q", got, want)
+	}
+	if rebuiltState.Concluded {
+		t.Fatal("expected the rebuilt FSM to NOT be concluded — only 1 of 2 participants proposed")
+	}
+
+	// Reviewer now proposes to conclude via the normal turn path. This
+	// must reach unanimity ONLY because the rebuild re-seeded
+	// architect's proposal from history.
+	insertAssistantTurn(t, app, reviewer.ID, 0, "CONCLUDE: agreed, nothing further to add.")
+
+	channel, err := app.store.GetChannel(channelID)
+	if err != nil {
+		t.Fatalf("GetChannel(): %v", err)
+	}
+	if channel.Status != "concluded" {
+		t.Fatalf("channel.Status = %q, want concluded (proves the restart re-seed)", channel.Status)
+	}
+
+	messages, err := app.GetChannelMessages(channelID, -1, 0)
+	if err != nil {
+		t.Fatalf("GetChannelMessages(): %v", err)
+	}
+	last := messages[len(messages)-1]
+	if !strings.Contains(last.Content, "Architect: aligned on the plan.") {
+		t.Fatalf("conclusion content = %q, want the re-seeded architect summary", last.Content)
+	}
+	if !strings.Contains(last.Content, "Reviewer: agreed, nothing further to add.") {
+		t.Fatalf("conclusion content = %q, want the reviewer summary", last.Content)
 	}
 }

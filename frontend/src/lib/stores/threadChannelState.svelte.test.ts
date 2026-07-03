@@ -267,7 +267,7 @@ describe('createThreadChannelState', () => {
 
       state.applyState(makeStatePayload({
         participants: [
-          { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6' },
+          { threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6', proposedConclusion: false },
         ],
       }));
 

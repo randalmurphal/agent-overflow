@@ -73,7 +73,10 @@ func BuildParticipantPlans(parent store.Thread, def store.DiscussionDefinition, 
 // not to narrate the protocol itself back into its reply.
 const discussionProtocolPreamble = "You are one voice among several participants in a multi-participant deliberation. " +
 	"Messages from the other participants and from the human moderating the discussion arrive as user messages, " +
-	"each labeled with who sent it. Respond with your next contribution only — no meta commentary about the discussion protocol itself."
+	"each labeled with who sent it. Respond with your next contribution only — no meta commentary about the discussion protocol itself. " +
+	"When you believe the discussion has fully run its course and you have nothing further to add, end your message with a final line " +
+	"starting with \"CONCLUDE:\" followed by a one-sentence summary of the outcome. The discussion only ends early once every participant's " +
+	"latest message carries a CONCLUDE line, so keep contributing normally until then."
 
 // BuildParticipantPrompt joins the discussion-context preamble, the
 // discussion-protocol paragraph, and the participant's raw system

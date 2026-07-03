@@ -1425,6 +1425,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get channelCurrentSpeakerRole() {
       return channelState.currentSpeakerRole;
     },
+    get channelParticipants() {
+      return channelState.participants;
+    },
     get channelLiveTail() {
       return channelState.liveTail;
     },
