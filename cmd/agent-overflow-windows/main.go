@@ -777,6 +777,10 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	title := appidentity.AppTitle(mode)
 	enableDevBrowserArgs := mode == "dev"
 
+	// Preserve the previous browser session's Chromium log before this
+	// session's WebView2 environment truncates it — see rotateChromeDebugLog.
+	rotateChromeDebugLog(webviewDataDir(mode))
+
 	app := application.New(application.Options{
 		Name:           title,
 		SingleInstance: wslSingleInstanceOptions(a.win),
@@ -788,6 +792,16 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		},
 		Windows: application.WindowsOptions{
 			AdditionalBrowserArgs: browserArgs(enableDevBrowserArgs),
+			// Stable per-mode WebView2 profile. Without this the profile
+			// path defaults to %APPDATA%\<exe name>, and dev builds carry a
+			// unique timestamped exe name — every `make dev-wsl` minted a
+			// fresh EBWebView profile dir (cold caches, orphaned junk under
+			// Roaming). A stable path also pins where WebView2 diagnostics
+			// land (EBWebView\chrome_debug.log, EBWebView\Crashpad\) so the
+			// mixed-DPI blank-window investigation has one place to look.
+			// Empty string (unresolvable %APPDATA%) falls back to the Wails
+			// default rather than failing the launch.
+			WebviewUserDataPath: webviewDataDir(mode),
 		},
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
@@ -948,9 +962,59 @@ func browserArgs(enableDevArgs bool) []string {
 		args = append(args,
 			"--remote-debugging-port=9223",
 			"--remote-debugging-address=127.0.0.1",
+			// Chromium's own debug log, written to
+			// <WebviewUserDataPath>\EBWebView\chrome_debug.log. Dev-only
+			// diagnostics for the mixed-DPI blank-window investigation: the
+			// WebView2 browser process performs an orderly shutdown mid-drag
+			// (Crashpad temp/edge_shutdown_crash.txt appears, zero crash
+			// dumps, then every controller COM call returns
+			// ERROR_INVALID_STATE), and this log is where Chromium states
+			// WHY it is exiting (GPU device-loss retry exhaustion, watchdog,
+			// controller close, ...). Remove once that failure is root-caused.
+			"--enable-logging",
+			"--v=1",
 		)
 	}
 	return args
+}
+
+// rotateChromeDebugLog renames the previous browser session's
+// EBWebView\chrome_debug.log (written when browserArgs passes
+// --enable-logging) to chrome_debug.previous.log. Chromium truncates the
+// live file at every browser startup, and the session worth autopsying is by
+// definition the one that just died — without this rotation, relaunching
+// after a blank-window event destroys the only record of why the previous
+// browser process shut down. Must run before the WebView2 environment is
+// created (i.e. before the window exists). Best-effort: no file or a failed
+// rename only costs the post-mortem, never the launch.
+func rotateChromeDebugLog(dataDir string) {
+	if dataDir == "" {
+		return
+	}
+	src := filepath.Join(dataDir, "EBWebView", "chrome_debug.log")
+	if _, err := os.Stat(src); err != nil {
+		return
+	}
+	dst := filepath.Join(dataDir, "EBWebView", "chrome_debug.previous.log")
+	if err := os.Rename(src, dst); err != nil {
+		log.Printf("launcher: rotate chrome_debug.log: %v", err)
+	}
+}
+
+// webviewDataDir returns the stable WebView2 user-data folder for this
+// launcher mode, or "" when %APPDATA% is unresolvable (Wails then falls back
+// to its default). Dev and prod use separate profiles so a dev session never
+// pollutes the production cache/cookies, mirroring the single-instance and
+// window-title mode split.
+func webviewDataDir(mode string) string {
+	dir, ok := wsldistro.WSLConfigDir()
+	if !ok {
+		return ""
+	}
+	if mode == "dev" {
+		return filepath.Join(dir, "webview2-dev")
+	}
+	return filepath.Join(dir, "webview2")
 }
 
 // run drives the Wails app loop. Errors are logged but don't take

@@ -494,3 +494,64 @@ func TestResolveChosenDistro(t *testing.T) {
 		})
 	}
 }
+
+// TestWebviewDataDir covers the per-mode profile split and the
+// unresolvable-%APPDATA% fallback to "" (Wails default).
+func TestWebviewDataDir(t *testing.T) {
+	appData := t.TempDir()
+	t.Setenv("APPDATA", appData)
+
+	base := filepath.Join(appData, "agent-overflow")
+	if got, want := webviewDataDir("dev"), filepath.Join(base, "webview2-dev"); got != want {
+		t.Errorf("dev dir = %q, want %q", got, want)
+	}
+	if got, want := webviewDataDir("prod"), filepath.Join(base, "webview2"); got != want {
+		t.Errorf("prod dir = %q, want %q", got, want)
+	}
+}
+
+// TestRotateChromeDebugLog covers the pre-launch log rotation: the live
+// chrome_debug.log becomes chrome_debug.previous.log (replacing any older
+// rotation), and missing inputs are silent no-ops.
+func TestRotateChromeDebugLog(t *testing.T) {
+	t.Run("renames live log over previous", func(t *testing.T) {
+		dataDir := t.TempDir()
+		ebDir := filepath.Join(dataDir, "EBWebView")
+		if err := os.MkdirAll(ebDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		src := filepath.Join(ebDir, "chrome_debug.log")
+		dst := filepath.Join(ebDir, "chrome_debug.previous.log")
+		if err := os.WriteFile(src, []byte("fresh session"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst, []byte("stale rotation"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		rotateChromeDebugLog(dataDir)
+
+		if _, err := os.Stat(src); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("live log still present after rotation: %v", err)
+		}
+		got, err := os.ReadFile(dst)
+		if err != nil {
+			t.Fatalf("read rotated log: %v", err)
+		}
+		if string(got) != "fresh session" {
+			t.Errorf("rotated content = %q, want %q", got, "fresh session")
+		}
+	})
+
+	t.Run("no live log is a no-op", func(t *testing.T) {
+		dataDir := t.TempDir()
+		rotateChromeDebugLog(dataDir)
+		if _, err := os.Stat(filepath.Join(dataDir, "EBWebView", "chrome_debug.previous.log")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("unexpected previous log: %v", err)
+		}
+	})
+
+	t.Run("empty dataDir is a no-op", func(t *testing.T) {
+		rotateChromeDebugLog("")
+	})
+}
