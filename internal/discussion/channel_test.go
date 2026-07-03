@@ -1,6 +1,7 @@
 package discussion
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -110,13 +111,21 @@ func TestChannelServiceRejectsPostingToConcludedChannel(t *testing.T) {
 		t.Fatalf("UpdateChannelStatus(concluded) error = %v", err)
 	}
 
-	if _, err := channelSvc.PostMessage(PostMessageInput{
+	_, err = channelSvc.PostMessage(PostMessageInput{
 		ChannelID: channel.ID,
 		FromType:  "human",
 		FromID:    "user",
 		Content:   "after conclusion",
-	}); err == nil {
+	})
+	if err == nil {
 		t.Fatal("expected posting to concluded channel to fail")
+	}
+	// syncDiscussionTurn (app_discussion_runtime.go) distinguishes this
+	// expected-shape rejection — a discussion concluding while a
+	// participant's turn is still in flight — from other PostMessage
+	// failures via errors.Is against this sentinel.
+	if !errors.Is(err, ErrChannelNotOpen) {
+		t.Fatalf("PostMessage(concluded channel) error = %v, want errors.Is(err, ErrChannelNotOpen)", err)
 	}
 }
 

@@ -317,6 +317,7 @@ export const StartDiscussionByID = dispatch('StartDiscussionByID');
 export const GetChannelMessages = dispatch('GetChannelMessages');
 export const GetChannelState = dispatch('GetChannelState');
 export const PostChannelMessage = dispatch('PostChannelMessage');
+export const ConcludeDiscussion = dispatch('ConcludeDiscussion');
 
 export const ListDesignOptions = dispatch('ListDesignOptions');
 export const LatestDesignOptionSet = dispatch('LatestDesignOptionSet');

@@ -170,13 +170,19 @@ before its first turn prompt arrives.
 
 ## Conclusion
 
-A discussion ends for one of two causes, and the system-authored
-message posted into the channel is cause-aware:
+A discussion ends for one of three causes (`discussion.ConclusionCause`
+in `conclusion.go`), and the system-authored message posted into the
+channel is cause-aware:
 
-1. **Turn limit.** `RecordPost` increments `TurnCount` past `MaxTurns`
-   (the circuit breaker).
-2. **Unanimous conclusion proposals.** Every roster participant's
-   LATEST turn ended with a `CONCLUDE:` marker line.
+1. **Turn limit** (`ConclusionTurnLimit`). `RecordPost` increments
+   `TurnCount` past `MaxTurns` (the circuit breaker).
+2. **Unanimous conclusion proposals** (`ConclusionUnanimous`). Every
+   roster participant's LATEST turn ended with a `CONCLUDE:` marker
+   line.
+3. **Moderator stop** (`ConclusionModerator`). The human moderator ends
+   an open discussion immediately via `App.ConcludeDiscussion` —
+   independent of turn count or proposal state. See "Moderator stop"
+   below.
 
 ### The CONCLUDE marker and latest-stance rule
 
@@ -192,13 +198,17 @@ logic, kept separate from `deliberation.go`'s FSM bookkeeping:
   that line is the summary, trimmed and capped at 500 runes
   (rune-safe). An empty summary still returns `ok=true`.
 - `BuildConclusionMessage(ConclusionMessageInput)` renders the
-  system-authored notice for either cause. The turn-limit form is the
-  original, byte-identical text: `"Discussion concluded: reached the
-  N-turn limit."` The unanimous form leads with `"Discussion concluded:
-  all participants proposed to conclude."`, then (if at least one
-  participant left a non-empty summary) a blank line followed by one
-  `<Role>: <summary>` line per roster participant in order, skipping
-  empty summaries.
+  system-authored notice for whichever cause the `ConclusionCause`
+  field names. The turn-limit form is the original, byte-identical
+  text: `"Discussion concluded: reached the N-turn limit."` The
+  unanimous form leads with `"Discussion concluded: all participants
+  proposed to conclude."`, then (if at least one participant left a
+  non-empty summary) a blank line followed by one `<Role>: <summary>`
+  line per roster participant in order, skipping empty summaries. The
+  moderator form is a single fixed line, `"Discussion concluded: ended
+  by the moderator."`, with no summaries block — the transcript already
+  shows any `CONCLUDE:` lines verbatim, and this cause has no FSM
+  proposal state to summarize (see "Moderator stop" below).
 
 The FSM's own half lives in `deliberation.go`:
 
@@ -234,18 +244,22 @@ does.
 
 ### Posting the notice
 
-`concludeDiscussionChannel(channelID, deliberation)` (renamed from
-taking a bare `maxTurns int` — it now needs the live FSM to determine
-cause) posts the message — `from_type="system"`,
-`from_id="deliberation"`, `from_role="moderator"` — **before** flipping
-`channels.status` to `"concluded"` (`ChannelService.PostMessage`
-requires the channel still be `"open"`, so this ordering is
-load-bearing). `PostChannelMessage` on a concluded channel returns an
-error.
+`postDiscussionConclusion(channelID, content)` is the shared post+flip
+core: it posts the given content as the message —
+`from_type="system"`, `from_id="deliberation"`, `from_role="moderator"`
+— **before** flipping `channels.status` to `"concluded"`
+(`ChannelService.PostMessage` requires the channel still be `"open"`,
+so this ordering is load-bearing), then calls
+`UpdateChannelStatus(channelID, "concluded")`. `PostChannelMessage` on
+a concluded channel returns an error (wrapping
+`discussion.ErrChannelNotOpen` — see "Moderator stop" below for why
+that matters).
 
-The cause is derived structurally, never threaded through as a separate
-flag: `unanimous := len(participants) >= 2 &&` every participant has a
-live `ConclusionProposals` entry. This means the ordinary `MaxTurns`
+`concludeDiscussionChannel(channelID, deliberation)` is the turn-limit
+and unanimous causes' caller: it derives the cause structurally from
+the live FSM, never threaded through as a separate flag —
+`unanimous := len(participants) >= 2 &&` every participant has a live
+`ConclusionProposals` entry. This means the ordinary `MaxTurns`
 conclusion (where proposals are typically absent or partial) reliably
 renders the turn-limit form, and a proposal-driven conclusion reliably
 renders the unanimous form with each participant's summary — a caller
@@ -254,7 +268,8 @@ shows. Composing the unanimous message's per-role lines needs the
 roster's role labels, so `concludeDiscussionChannel` does one extra
 `GetChannel` + `discussionRoster` query (a cold path — conclusion
 happens once per discussion); a roster resolution failure is returned,
-never silently degraded to the wrong-cause message.
+never silently degraded to the wrong-cause message. It then hands the
+rendered content to `postDiscussionConclusion`.
 
 A **successful** conclusion also removes the FSM from `a.deliberations`
 (`removeDeliberationByID`) — a concluded channel has nothing left to
@@ -278,6 +293,62 @@ restart-shaped variant, where `deliberationForChannel`'s rebuild re-seeds
 conclusion proposals from history (see "Restart Recovery" below) and can
 come back already concluded-by-consensus while the channel row is still
 `"open"`.
+
+### Moderator stop: `App.ConcludeDiscussion`
+
+`App.ConcludeDiscussion(channelID)` (`app_discussion.go`) is the human
+"conclude now" affordance: a bound method the frontend calls from
+`ChannelHeader`'s Conclude control (visible only while `status ===
+'open'`) to end an open discussion immediately, independent of
+`MaxTurns` and CONCLUDE-marker unanimity. Flow: `GetChannel` (error if
+already non-open — a clear "already concluded"-shaped message, not a
+generic failure), `discussion.BuildConclusionMessage` with
+`Cause: ConclusionModerator`, `postDiscussionConclusion`,
+`removeDeliberationByID` (safe no-op if no FSM was ever resolved for
+this channel), `emitDiscussionState`, then `buildChannelState` to
+return a coherent snapshot (serving the SQLite-fallback branch since
+the channel is no longer open).
+
+Deliberately, this does **not** resolve or rebuild the deliberation
+FSM. Unlike the turn-limit and unanimous causes, the moderator form
+needs no proposals or roster — rebuilding an FSM (or its restart-cold
+`deliberationForChannel` reconstruction) just to immediately discard it
+would only add failure modes (e.g. a roster-resolution error blocking a
+stop the human explicitly asked for) for zero benefit.
+
+`ConcludeDiscussion` does **not** interrupt an in-flight participant
+turn. If a participant's provider session is already mid-turn when the
+human concludes, that session finishes normally — nothing tells the
+provider process to stop — and its reply is dispatched into
+`syncDiscussionTurn` exactly like any other completed turn. This is the
+in-flight-turn race the feature makes benign rather than eliminates:
+
+- `syncDiscussionTurn`'s own top-of-function open-check
+  (`channel.Status != "open" { return nil }`) catches the common case
+  where the conclusion landed before the participant's turn-complete
+  event was even processed.
+- The narrower race — the open-check passes, then status flips
+  underneath the call before the channel mirror's `PostMessage`
+  actually runs — surfaces as `PostMessage`'s not-open rejection.
+  `internal/discussion/channel.go` wraps that rejection in
+  `discussion.ErrChannelNotOpen`, and `syncDiscussionTurn` checks
+  `errors.Is(postErr, discussion.ErrChannelNotOpen)`: a match logs and
+  returns `nil` (skipping `recordDiscussionPost` too — the discussion
+  is over, nothing left to advance) instead of propagating a wire error
+  onto the parent thread. Before this feature, hitting the not-open
+  rejection here was always a fault (the channel shouldn't have gone
+  non-open with a turn still in flight, since only `concludeDiscussionChannel`
+  flipped status, and that only fires from a completed turn). With a
+  human able to stop mid-turn, the interleaving is now an expected
+  shape, and the late reply stays fully visible — just only in the
+  participant's own child thread, not mirrored into the (concluded)
+  channel.
+
+`ConcludeDiscussion` is `LocalOnly` in
+`internal/transport/internalmethods.go`, same class as
+`PostChannelMessage`: it is lifecycle control over the deliberation's
+coordination state (it removes the live FSM and can race an in-flight
+participant turn), not a plain data read.
 
 ## Restart Recovery
 

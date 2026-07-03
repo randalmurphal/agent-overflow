@@ -692,6 +692,7 @@ func (p *privilegedApp) DeleteEmptyDraftThread() string         { return "ok" }
 func (p *privilegedApp) StartDiscussion() string                { return "ok" }
 func (p *privilegedApp) StartDiscussionByID() string            { return "ok" }
 func (p *privilegedApp) PostChannelMessage() string             { return "ok" }
+func (p *privilegedApp) ConcludeDiscussion() string             { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string               { return "ok" }
 func (p *privilegedApp) UpdateThreadProvider() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadModel() string              { return "ok" }

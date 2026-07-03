@@ -128,8 +128,8 @@ func TestParseConclusionProposalTruncatesLongSummaryRuneSafe(t *testing.T) {
 
 func TestBuildConclusionMessageTurnLimitForm(t *testing.T) {
 	got := BuildConclusionMessage(ConclusionMessageInput{
-		Unanimous: false,
-		MaxTurns:  8,
+		Cause:    ConclusionTurnLimit,
+		MaxTurns: 8,
 	})
 	want := "Discussion concluded: reached the 8-turn limit."
 	if got != want {
@@ -137,9 +137,38 @@ func TestBuildConclusionMessageTurnLimitForm(t *testing.T) {
 	}
 }
 
+// TestBuildConclusionMessageZeroValueCauseIsTurnLimit guards
+// ConclusionCause's iota ordering: the zero value must render the
+// turn-limit form so a caller that forgets to set Cause explicitly
+// (or a future restructuring that reorders the constants) fails loudly
+// via this test rather than silently mislabeling a conclusion.
+func TestBuildConclusionMessageZeroValueCauseIsTurnLimit(t *testing.T) {
+	var zero ConclusionMessageInput
+	zero.MaxTurns = 3
+	got := BuildConclusionMessage(zero)
+	want := "Discussion concluded: reached the 3-turn limit."
+	if got != want {
+		t.Fatalf("BuildConclusionMessage(zero-value Cause) = %q, want %q", got, want)
+	}
+}
+
+func TestBuildConclusionMessageModeratorForm(t *testing.T) {
+	got := BuildConclusionMessage(ConclusionMessageInput{
+		Cause: ConclusionModerator,
+		// MaxTurns/ParticipantsInOrder/Proposals/RoleByThreadID are all
+		// deliberately left zero-valued — the moderator form needs none
+		// of them (no FSM is resolved for this cause; see
+		// App.ConcludeDiscussion's doc comment).
+	})
+	want := "Discussion concluded: ended by the moderator."
+	if got != want {
+		t.Fatalf("BuildConclusionMessage(moderator) = %q, want %q", got, want)
+	}
+}
+
 func TestBuildConclusionMessageUnanimousWithTwoRolesInRosterOrder(t *testing.T) {
 	got := BuildConclusionMessage(ConclusionMessageInput{
-		Unanimous:           true,
+		Cause:               ConclusionUnanimous,
 		MaxTurns:            8,
 		ParticipantsInOrder: []string{"thread-a", "thread-b"},
 		Proposals: map[string]string{
@@ -161,7 +190,7 @@ func TestBuildConclusionMessageUnanimousWithTwoRolesInRosterOrder(t *testing.T) 
 
 func TestBuildConclusionMessageUnanimousSkipsEmptySummaryParticipant(t *testing.T) {
 	got := BuildConclusionMessage(ConclusionMessageInput{
-		Unanimous:           true,
+		Cause:               ConclusionUnanimous,
 		MaxTurns:            8,
 		ParticipantsInOrder: []string{"thread-a", "thread-b"},
 		Proposals: map[string]string{
@@ -185,7 +214,7 @@ func TestBuildConclusionMessageUnanimousSkipsEmptySummaryParticipant(t *testing.
 
 func TestBuildConclusionMessageUnanimousAllEmptySummariesOmitsBlock(t *testing.T) {
 	got := BuildConclusionMessage(ConclusionMessageInput{
-		Unanimous:           true,
+		Cause:               ConclusionUnanimous,
 		MaxTurns:            8,
 		ParticipantsInOrder: []string{"thread-a", "thread-b"},
 		Proposals: map[string]string{

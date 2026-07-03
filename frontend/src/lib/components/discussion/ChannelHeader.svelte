@@ -1,10 +1,13 @@
 <script lang="ts">
   import type { ChannelParticipantState } from '../../types/discussion';
+  import Button from '../primitives/Button.svelte';
 
   // ChannelView's status bar: the Live/Concluded/Loading pill, message
-  // count, turn counter, current-speaker label, participant roster, and
-  // load-error banner. Pure presentation — all state is derived by
-  // ChannelView and passed down as props.
+  // count, turn counter, current-speaker label, participant roster,
+  // moderator "Conclude" control, and load-error banner. Pure
+  // presentation — all state is derived by ChannelView and passed down
+  // as props; ChannelView owns the ConcludeDiscussion call and the
+  // concluding flag.
   let {
     concluded,
     statusLabel,
@@ -16,6 +19,8 @@
     currentSpeakerRole,
     participants,
     loadError,
+    onConclude,
+    concluding,
   }: {
     concluded: boolean;
     statusLabel: string;
@@ -27,6 +32,8 @@
     currentSpeakerRole: string;
     participants: ChannelParticipantState[];
     loadError: string | null;
+    onConclude: () => void;
+    concluding: boolean;
   } = $props();
 </script>
 
@@ -61,6 +68,18 @@
     <span class="text-[0.6875rem] text-fg-subtle italic truncate max-w-[200px]">
       Speaking: {currentSpeakerRole}
     </span>
+  {/if}
+  {#if status === 'open'}
+    <Button
+      variant="ghost"
+      size="xs"
+      title="End the discussion now"
+      disabled={concluding}
+      loading={concluding}
+      onclick={onConclude}
+    >
+      {#snippet children()}Conclude{/snippet}
+    </Button>
   {/if}
   {#if loadError}
     <span role="alert" class="ml-auto text-[0.6875rem] text-error truncate max-w-[280px]" title={loadError}>

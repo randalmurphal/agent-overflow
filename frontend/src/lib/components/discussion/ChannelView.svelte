@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from 'svelte';
-  import type { ChannelMessage } from '../../types/discussion';
+  import type { ChannelMessage, ChannelStatePayload } from '../../types/discussion';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
-  import { PostChannelMessage } from '../../stores/bindings';
+  import { PostChannelMessage, ConcludeDiscussion } from '../../stores/bindings';
   import { refreshDiscussionChannel, DISCUSSION_CHANNEL_FETCH_LIMIT } from '../../stores/eventsDiscussion';
   import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -28,6 +28,7 @@
   let loadGeneration = 0;
   let composing = $state('');
   let posting = $state(false);
+  let concluding = $state(false);
   let loadError = $state<string | null>(null);
   let loadingInitial = $state(true);
   let scrollEl: HTMLDivElement | undefined = $state(undefined);
@@ -199,6 +200,29 @@
     }
   }
 
+  // Moderator "conclude now" affordance (ChannelHeader's Conclude
+  // button). `concluding` guards double-clicks the same way `posting`
+  // guards a double-submit of the composer. On success the returned
+  // ChannelStatePayload is applied through the same pane surface
+  // discussion:state pushes use, so the header flips to Concluded
+  // without waiting on the push echo — mirrors how handlePost applies
+  // PostChannelMessage's own returned message immediately. Failure
+  // surfaces the same way handlePost's does: a console.error plus an
+  // error toast, no local error banner.
+  async function handleConclude(): Promise<void> {
+    if (concluding || concluded) return;
+    concluding = true;
+    try {
+      const payload = await ConcludeDiscussion(channelId);
+      pane.applyChannelState(payload as ChannelStatePayload);
+    } catch (err) {
+      console.error('Failed to conclude discussion:', err);
+      addToast('error', `Failed to conclude discussion: ${errString(err)}`);
+    } finally {
+      concluding = false;
+    }
+  }
+
   function handleKeydown(e: KeyboardEvent): void {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -242,6 +266,8 @@
     {currentSpeakerRole}
     {participants}
     {loadError}
+    onConclude={handleConclude}
+    {concluding}
   />
 
   <div class="relative flex-1 min-h-0 flex flex-col">

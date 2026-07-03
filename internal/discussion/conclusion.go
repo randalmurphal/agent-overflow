@@ -73,12 +73,31 @@ func capRunes(s string, n int) string {
 	return string(runes[:n])
 }
 
+// ConclusionCause names why a discussion ended. BuildConclusionMessage
+// renders a different system notice for each.
+type ConclusionCause int
+
+const (
+	// ConclusionTurnLimit is the MaxTurns circuit breaker — the default
+	// cause whenever proposals are absent or only partial.
+	ConclusionTurnLimit ConclusionCause = iota
+	// ConclusionUnanimous is every roster participant's latest turn
+	// carrying a live CONCLUDE proposal (see the FSM's
+	// ProposeConclusionFrom/WithdrawConclusionProposal).
+	ConclusionUnanimous
+	// ConclusionModerator is the human moderator ending the discussion
+	// early via App.ConcludeDiscussion — independent of turn count or
+	// proposal state.
+	ConclusionModerator
+)
+
 // ConclusionMessageInput is BuildConclusionMessage's parameter struct.
 // Proposals and RoleByThreadID are keyed by participant thread ID;
 // ParticipantsInOrder supplies the deterministic roster order the
-// unanimous form renders in (map iteration order is not stable).
+// unanimous form renders in (map iteration order is not stable). Both
+// are unused for ConclusionModerator.
 type ConclusionMessageInput struct {
-	Unanimous           bool
+	Cause               ConclusionCause
 	MaxTurns            int
 	ParticipantsInOrder []string
 	Proposals           map[string]string
@@ -86,11 +105,11 @@ type ConclusionMessageInput struct {
 }
 
 // BuildConclusionMessage renders the system-authored conclusion message
-// for either termination cause.
+// for whichever cause ended the discussion.
 //
-// The turn-limit form (Unanimous == false) is byte-identical to the
-// original circuit-breaker text — callers persist and assert against
-// it verbatim.
+// The turn-limit form (the default, Cause == ConclusionTurnLimit) is
+// byte-identical to the original circuit-breaker text — callers persist
+// and assert against it verbatim.
 //
 // The unanimous form leads with a summary line, then (if at least one
 // participant left a non-empty summary) a blank line followed by one
@@ -98,29 +117,38 @@ type ConclusionMessageInput struct {
 // skipping participants whose summary is empty. If every participant's
 // summary is empty the whole trailing block is omitted rather than
 // rendering empty "<Role>: " lines.
+//
+// The moderator form is a single fixed line with no summaries block —
+// the transcript already shows any CONCLUDE lines verbatim, and a
+// moderator stop has no FSM proposal state to summarize (see
+// App.ConcludeDiscussion's doc comment for why no FSM is resolved for
+// this cause).
 func BuildConclusionMessage(in ConclusionMessageInput) string {
-	if !in.Unanimous {
+	switch in.Cause {
+	case ConclusionModerator:
+		return "Discussion concluded: ended by the moderator."
+	case ConclusionUnanimous:
+		var lines []string
+		for _, threadID := range in.ParticipantsInOrder {
+			summary := strings.TrimSpace(in.Proposals[threadID])
+			if summary == "" {
+				continue
+			}
+			role := strings.TrimSpace(in.RoleByThreadID[threadID])
+			if role == "" {
+				role = "Participant"
+			}
+			lines = append(lines, fmt.Sprintf("%s: %s", role, summary))
+		}
+
+		var b strings.Builder
+		b.WriteString("Discussion concluded: all participants proposed to conclude.")
+		if len(lines) > 0 {
+			b.WriteString("\n\n")
+			b.WriteString(strings.Join(lines, "\n"))
+		}
+		return b.String()
+	default: // ConclusionTurnLimit
 		return fmt.Sprintf("Discussion concluded: reached the %d-turn limit.", in.MaxTurns)
 	}
-
-	var lines []string
-	for _, threadID := range in.ParticipantsInOrder {
-		summary := strings.TrimSpace(in.Proposals[threadID])
-		if summary == "" {
-			continue
-		}
-		role := strings.TrimSpace(in.RoleByThreadID[threadID])
-		if role == "" {
-			role = "Participant"
-		}
-		lines = append(lines, fmt.Sprintf("%s: %s", role, summary))
-	}
-
-	var b strings.Builder
-	b.WriteString("Discussion concluded: all participants proposed to conclude.")
-	if len(lines) > 0 {
-		b.WriteString("\n\n")
-		b.WriteString(strings.Join(lines, "\n"))
-	}
-	return b.String()
 }

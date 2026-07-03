@@ -11,6 +11,11 @@ messaging, and in-memory deliberation turn tracking.
   Messages persist raw `ChannelMessage.Content` via `internal/store`.
   The frontend renders discussion markdown. `Create` also normalizes
   a non-positive `maxTurns` to `DefaultMaxTurns` before persisting.
+  `PostMessage`'s not-open rejection wraps `ErrChannelNotOpen` so
+  callers can `errors.Is` it — `app_discussion_runtime.go`'s
+  `syncDiscussionTurn` uses this to tell "the discussion concluded
+  while this participant's turn was in flight" (benign, drop the
+  mirror) apart from a genuine store error (propagate).
 - `deliberation.go` — `Deliberation` + `DeliberationState`. The only
   in-memory state in this package: roster, current speaker, turn
   count, awaiting-response flag, conclusion proposals. Coordinates one
@@ -27,8 +32,11 @@ messaging, and in-memory deliberation turn tracking.
 - `conclusion.go` — pure marker-protocol helpers, independent of the
   FSM's locking/state: `ParseConclusionProposal` reads a participant's
   final CONCLUDE marker line into a summary, `BuildConclusionMessage`
-  renders the cause-aware system conclusion notice (turn-limit vs.
-  unanimous). No app-layer or store dependency.
+  renders the cause-aware system conclusion notice for all three
+  `ConclusionCause` values (turn-limit, unanimous, moderator). The
+  moderator form needs no FSM/roster input — see
+  `App.ConcludeDiscussion` in `app_discussion.go`. No app-layer or
+  store dependency.
 - `turnprompt.go` — `BuildTurnPrompt`. Pure renderer: unseen channel
   messages (labeled `Human:` / `Moderator:` / `<Role>:`) followed by a
   your-turn instruction naming the speaker's own role. The app layer
@@ -82,9 +90,16 @@ messaging, and in-memory deliberation turn tracking.
   `conclusion.ParseConclusionProposal` and calls propose/withdraw
   accordingly, so conclusion always reflects each participant's LATEST
   message. Once every roster participant (>= 2) has proposed, the FSM
-  concludes exactly like the `MaxTurns` circuit breaker. A UI
-  affordance beyond the marker convention (e.g. a dedicated "conclude"
-  button) is a natural next extension.
+  concludes exactly like the `MaxTurns` circuit breaker.
+- A UI affordance beyond the marker convention now exists:
+  `App.ConcludeDiscussion` (`app_discussion.go`) lets the human
+  moderator end an open discussion immediately — the third
+  `ConclusionCause`, alongside turn-limit and unanimous. It
+  deliberately skips FSM resolution/rebuild (the moderator form needs
+  no proposals/roster) and does not interrupt an in-flight participant
+  turn; that turn's late reply mirror is dropped as a benign no-op via
+  `ErrChannelNotOpen` (see `channel.go` above and
+  `app_discussion_runtime.go`'s `syncDiscussionTurn`).
 
 ## Anti-patterns
 

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"agent-overflow/internal/discussion"
@@ -63,6 +65,22 @@ func (a *App) syncDiscussionTurn(threadID string) error {
 			Content:   item.Summary,
 		})
 		if postErr != nil {
+			// The discussion concluded (e.g. the human moderator stopped
+			// it via ConcludeDiscussion) in the window between this
+			// function's own "channel open" check above and this
+			// PostMessage call — status flipped underneath an in-flight
+			// participant turn. With the moderator stop this
+			// interleaving is an expected shape, not a fault: the
+			// provider session already finished its turn normally: drop
+			// the mirror as benign rather than surfacing a wire error on
+			// the parent thread. The reply is still visible in the
+			// participant's own child thread. RecordPost must also be
+			// skipped below — the discussion is over, nothing left to
+			// advance.
+			if errors.Is(postErr, discussion.ErrChannelNotOpen) {
+				log.Printf("discussion: channel %s concluded while turn in flight, dropping mirror for %s", thread.DiscussionID, thread.ID)
+				return nil
+			}
 			return postErr
 		}
 		a.emitDiscussionMessage(thread.DiscussionID, msg)
@@ -135,10 +153,10 @@ func (a *App) recordDiscussionPost(channelID, participantThreadID string, delibe
 	return nil
 }
 
-// concludeDiscussionChannel posts the conclusion system message BEFORE
-// flipping the channel status — ChannelService.PostMessage requires
-// the channel still be "open", so the ordering here is load-bearing —
-// then marks the channel concluded.
+// concludeDiscussionChannel derives the turn-limit-vs-unanimous cause
+// from the FSM's own state, composes the roster's per-role summary
+// lines for the unanimous form, and hands the rendered content to
+// postDiscussionConclusion for the shared post+flip.
 //
 // The message content is cause-aware: it's unanimous only when every
 // roster participant has a live ConclusionProposals entry (>= 2
@@ -159,12 +177,16 @@ func (a *App) concludeDiscussionChannel(channelID string, deliberation *discussi
 	state := deliberation.State()
 	participants := deliberation.Participants()
 
+	cause := discussion.ConclusionTurnLimit
 	unanimous := len(participants) >= 2
 	for _, participant := range participants {
 		if _, ok := state.ConclusionProposals[participant]; !ok {
 			unanimous = false
 			break
 		}
+	}
+	if unanimous {
+		cause = discussion.ConclusionUnanimous
 	}
 
 	channel, err := a.store.GetChannel(channelID)
@@ -181,13 +203,26 @@ func (a *App) concludeDiscussionChannel(channelID string, deliberation *discussi
 	}
 
 	content := discussion.BuildConclusionMessage(discussion.ConclusionMessageInput{
-		Unanimous:           unanimous,
+		Cause:               cause,
 		MaxTurns:            state.MaxTurns,
 		ParticipantsInOrder: participants,
 		Proposals:           state.ConclusionProposals,
 		RoleByThreadID:      roleByThreadID,
 	})
 
+	return a.postDiscussionConclusion(channelID, content)
+}
+
+// postDiscussionConclusion posts the given conclusion content as the
+// system/deliberation/moderator channel message BEFORE flipping the
+// channel status — ChannelService.PostMessage requires the channel
+// still be "open", so this ordering is load-bearing — then marks the
+// channel concluded. Shared by concludeDiscussionChannel (turn-limit
+// and unanimous causes, driven by the turn-completion path) and
+// ConcludeDiscussion (the moderator cause, app_discussion.go) so the
+// post+flip sequence has exactly one implementation regardless of
+// which cause triggered it.
+func (a *App) postDiscussionConclusion(channelID, content string) error {
 	msg, err := a.channels.PostMessage(discussion.PostMessageInput{
 		ChannelID: channelID,
 		FromType:  discussion.FromTypeSystem,

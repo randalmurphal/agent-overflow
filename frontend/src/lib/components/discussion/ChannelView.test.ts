@@ -3,6 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChannelView from './ChannelView.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
+import { getToasts } from '../../stores/toast.svelte';
 import type { ChannelMessage, ChannelStatePayload } from '../../types/discussion';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -258,6 +259,61 @@ describe('<ChannelView>', () => {
     for (let i = 0; i < 5; i++) await Promise.resolve();
     expect(textarea.value).toBe('fails');
     expect(pane.channelMessages).toHaveLength(0);
+    consoleErr.mockRestore();
+  });
+
+  it('renders the Conclude button while open and hides it once concluded', async () => {
+    const pane = await buildPane();
+    const { getByRole, queryByRole } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
+    await settleInitialLoad();
+
+    expect(getByRole('button', { name: /conclude/i })).toBeInTheDocument();
+
+    pane.applyChannelState(makeState({ status: 'concluded' }));
+    await tick();
+
+    expect(queryByRole('button', { name: /conclude/i })).toBeNull();
+  });
+
+  it('concludes via ConcludeDiscussion and applies the returned state to flip the header', async () => {
+    const concludeMock = setBindingMock('ConcludeDiscussion', async () =>
+      makeState({ status: 'concluded', awaitingResponse: false }));
+    const pane = await buildPane();
+    const { getByRole, getAllByText } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
+    await settleInitialLoad();
+
+    await fireEvent.click(getByRole('button', { name: /conclude/i }));
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    await tick();
+
+    expect(concludeMock.mock.calls[0]).toEqual(['channel-1']);
+    // Applied immediately from ConcludeDiscussion's own return value, not
+    // from a subsequent discussion:state echo — same "apply the response
+    // directly" shape handlePost uses for PostChannelMessage.
+    expect(pane.channelStatus).toBe('concluded');
+    expect(getAllByText(/concluded/i).length).toBeGreaterThanOrEqual(1);
+    // The Conclude control itself is gone now that status !== 'open'.
+    expect(() => getByRole('button', { name: /^conclude$/i })).toThrow();
+  });
+
+  it('surfaces a ConcludeDiscussion failure the same way a failed post does', async () => {
+    setBindingMock('ConcludeDiscussion', async () => { throw new Error('conclude-rpc-down'); });
+    const pane = await buildPane();
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { getByRole } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
+    await settleInitialLoad();
+
+    await fireEvent.click(getByRole('button', { name: /conclude/i }));
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+
+    expect(consoleErr).toHaveBeenCalled();
+    expect(pane.channelStatus).toBe('open');
+    const toasts = getToasts();
+    expect(toasts.some((toast) => toast.type === 'error' && /conclude-rpc-down/.test(toast.message))).toBe(true);
     consoleErr.mockRestore();
   });
 

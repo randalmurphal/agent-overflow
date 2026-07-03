@@ -163,6 +163,7 @@ export {
   GetChannelMessages,
   GetChannelState,
   PostChannelMessage,
+  ConcludeDiscussion,
 
   // Design operations
   ListDesignOptions,

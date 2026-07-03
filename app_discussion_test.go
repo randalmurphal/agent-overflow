@@ -2023,3 +2023,143 @@ func TestDeliberationForChannelReseedsConclusionProposalsFromHistory(t *testing.
 		t.Fatalf("conclusion content = %q, want the reviewer summary", last.Content)
 	}
 }
+
+// TestConcludeDiscussionEndsOpenDiscussionWithModeratorMessage is the
+// headline test for the human "conclude now" affordance: calling
+// ConcludeDiscussion on an open discussion posts the moderator-cause
+// system message, flips the channel row to concluded, drops the FSM
+// from a.deliberations, and returns a coherent post-conclusion
+// snapshot — all independent of turn count or CONCLUDE proposals.
+func TestConcludeDiscussionEndsOpenDiscussionWithModeratorMessage(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+
+	parent, children := seedDiscussionChannel(t, app, "conclude-now", []string{"Architect", "Reviewer"}, 8)
+	channelID := parent.DiscussionID
+	architect, reviewer := children[0], children[1]
+	app.installDeliberation(channelID, []string{architect.ID, reviewer.ID}, 8)
+
+	payload, err := app.ConcludeDiscussion(channelID)
+	if err != nil {
+		t.Fatalf("ConcludeDiscussion() error = %v", err)
+	}
+	if payload.Status != "concluded" {
+		t.Fatalf("payload.Status = %q, want concluded", payload.Status)
+	}
+	if payload.ChannelID != channelID || payload.ThreadID != parent.ID {
+		t.Fatalf("payload channel/thread IDs = %q/%q, want %q/%q", payload.ChannelID, payload.ThreadID, channelID, parent.ID)
+	}
+
+	channel, err := app.store.GetChannel(channelID)
+	if err != nil {
+		t.Fatalf("GetChannel() error = %v", err)
+	}
+	if channel.Status != "concluded" {
+		t.Fatalf("channel.Status = %q, want concluded", channel.Status)
+	}
+
+	messages, err := app.GetChannelMessages(channelID, -1, 0)
+	if err != nil {
+		t.Fatalf("GetChannelMessages() error = %v", err)
+	}
+	last := messages[len(messages)-1]
+	if last.FromType != "system" || last.FromID != "deliberation" || last.FromRole != "moderator" {
+		t.Fatalf("last message = %+v, want system/deliberation/moderator", last)
+	}
+	const wantModeratorText = "Discussion concluded: ended by the moderator."
+	if last.Content != wantModeratorText {
+		t.Fatalf("last message content = %q, want exactly %q", last.Content, wantModeratorText)
+	}
+
+	if _, ok := app.deliberation(channelID); ok {
+		t.Fatal("expected ConcludeDiscussion to remove the FSM from a.deliberations")
+	}
+
+	if _, err := app.PostChannelMessage(channelID, "still talking?"); err == nil {
+		t.Fatal("expected PostChannelMessage on a moderator-concluded channel to fail")
+	}
+}
+
+// TestConcludeDiscussionOnAlreadyConcludedChannelErrors covers the
+// idempotency guard: a second ConcludeDiscussion call against a channel
+// that's already concluded must fail and must NOT append a second
+// conclusion message.
+func TestConcludeDiscussionOnAlreadyConcludedChannelErrors(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+
+	parent, children := seedDiscussionChannel(t, app, "conclude-twice", []string{"Architect", "Reviewer"}, 8)
+	channelID := parent.DiscussionID
+	app.installDeliberation(channelID, []string{children[0].ID, children[1].ID}, 8)
+
+	if _, err := app.ConcludeDiscussion(channelID); err != nil {
+		t.Fatalf("ConcludeDiscussion() first call error = %v", err)
+	}
+	messagesAfterFirst, err := app.GetChannelMessages(channelID, -1, 0)
+	if err != nil {
+		t.Fatalf("GetChannelMessages() after first conclude error = %v", err)
+	}
+	if len(messagesAfterFirst) != 1 {
+		t.Fatalf("len(messages) after first conclude = %d, want 1 (the moderator notice)", len(messagesAfterFirst))
+	}
+
+	if _, err := app.ConcludeDiscussion(channelID); err == nil {
+		t.Fatal("expected ConcludeDiscussion on an already-concluded channel to error")
+	}
+
+	messagesAfterSecond, err := app.GetChannelMessages(channelID, -1, 0)
+	if err != nil {
+		t.Fatalf("GetChannelMessages() after second conclude error = %v", err)
+	}
+	if len(messagesAfterSecond) != 1 {
+		t.Fatalf("len(messages) after failed second conclude = %d, want still 1 (no duplicate notice)", len(messagesAfterSecond))
+	}
+}
+
+// TestConcludeDiscussionDropsLateParticipantTurnMirrorBenignly covers
+// the mid-turn race this feature makes benign: a participant can be
+// mid-turn when the human concludes, so its eventual turn-complete
+// still flows into syncDiscussionTurn. The top-of-function open-check
+// there reads the now-concluded channel row and returns nil without
+// attempting any mirror — the reply stays visible only in the
+// participant's own child thread's items.
+func TestConcludeDiscussionDropsLateParticipantTurnMirrorBenignly(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+
+	parent, children := seedDiscussionChannel(t, app, "conclude-race", []string{"Architect", "Reviewer"}, 8)
+	channelID := parent.DiscussionID
+	architect, reviewer := children[0], children[1]
+	app.installDeliberation(channelID, []string{architect.ID, reviewer.ID}, 8)
+
+	if _, err := app.ConcludeDiscussion(channelID); err != nil {
+		t.Fatalf("ConcludeDiscussion() error = %v", err)
+	}
+	messagesAfterConclude, err := app.GetChannelMessages(channelID, -1, 0)
+	if err != nil {
+		t.Fatalf("GetChannelMessages() after conclude error = %v", err)
+	}
+
+	// Reviewer's provider session was mid-turn when the moderator
+	// concluded; its turn-complete arrives after the fact with a fresh
+	// assistant_text item, exactly like a real late reply.
+	if err := app.store.InsertItem(store.Item{
+		ID: reviewer.ID + "-late-turn", ThreadID: reviewer.ID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Summary: "Sorry, missed that we wrapped up.",
+		CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertItem(late reviewer turn): %v", err)
+	}
+	if err := app.syncDiscussionTurn(reviewer.ID); err != nil {
+		t.Fatalf("syncDiscussionTurn(reviewer) after conclusion error = %v, want nil (benign drop)", err)
+	}
+
+	messagesAfterLateTurn, err := app.GetChannelMessages(channelID, -1, 0)
+	if err != nil {
+		t.Fatalf("GetChannelMessages() after late turn error = %v", err)
+	}
+	if len(messagesAfterLateTurn) != len(messagesAfterConclude) {
+		t.Fatalf("len(messages) after late turn = %d, want unchanged %d (nothing mirrored)",
+			len(messagesAfterLateTurn), len(messagesAfterConclude))
+	}
+}

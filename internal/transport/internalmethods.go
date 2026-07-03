@@ -234,7 +234,13 @@ var LocalOnlyMethods = map[string]bool{
 	// landed — see the comment this displaces in
 	// methods_gen_test.go's wireSafeMethods, which called out exactly
 	// this re-audit trigger.
-	"PostChannelMessage":             true,
+	"PostChannelMessage": true,
+	// ConcludeDiscussion is lifecycle control over the deliberation's
+	// provider-session turn loop — same class as PostChannelMessage: it
+	// removes the in-memory FSM (a.deliberations) and can race an
+	// in-flight participant turn, the same coordination surface
+	// PostChannelMessage's turn-driving path touches.
+	"ConcludeDiscussion":             true,
 	"UpdateThreadMode":               true,
 	"UpdateThreadProvider":           true,
 	"UpdateThreadModel":              true,

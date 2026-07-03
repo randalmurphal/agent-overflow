@@ -35,6 +35,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ClearDraft", ID: 296814681},                            // main.App.ClearDraft
 	{Name: "CloseTerminal", ID: 2702963191},                        // main.App.CloseTerminal
 	{Name: "CloseThreadTerminals", ID: 1705768020},                 // main.App.CloseThreadTerminals
+	{Name: "ConcludeDiscussion", ID: 4019739936},                   // main.App.ConcludeDiscussion
 	{Name: "CountRunningBackgroundTasks", ID: 2617952423},          // main.App.CountRunningBackgroundTasks
 	{Name: "CreateDiffReviewComment", ID: 565306783},               // main.App.CreateDiffReviewComment
 	{Name: "CreateDiscussion", ID: 757689265},                      // main.App.CreateDiscussion

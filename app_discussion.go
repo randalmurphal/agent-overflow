@@ -139,6 +139,54 @@ func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessag
 	return msg, nil
 }
 
+// ConcludeDiscussion lets the human moderator end an open discussion
+// immediately — independent of the MaxTurns circuit breaker and
+// unanimous CONCLUDE-marker proposals (internal/discussion/conclusion.go),
+// this is the third way a discussion ends. Deliberately does NOT resolve
+// or rebuild the deliberation FSM: the moderator-stop message
+// (discussion.ConclusionModerator) carries no proposals/roster summary,
+// so there's nothing the FSM would contribute — reconstructing one just
+// to discard it would only add failure modes (a rebuild error blocking
+// a stop the human explicitly asked for).
+//
+// This does NOT interrupt an in-flight participant turn: the provider
+// session that's already mid-turn finishes normally. Its late reply
+// mirror into the channel is then dropped as a benign no-op once the
+// channel is no longer open (syncDiscussionTurn's ErrChannelNotOpen
+// handling in app_discussion_runtime.go) — the reply stays visible only
+// in that participant's own child thread.
+func (a *App) ConcludeDiscussion(channelID string) (ChannelStatePayload, error) {
+	if a.store == nil || a.channels == nil {
+		return ChannelStatePayload{}, fmt.Errorf("discussion services unavailable")
+	}
+
+	channel, err := a.store.GetChannel(channelID)
+	if err != nil {
+		return ChannelStatePayload{}, err
+	}
+	if channel.Status != "open" {
+		return ChannelStatePayload{}, fmt.Errorf("channel %s discussion already concluded", channelID)
+	}
+
+	content := discussion.BuildConclusionMessage(discussion.ConclusionMessageInput{
+		Cause: discussion.ConclusionModerator,
+	})
+	if err := a.postDiscussionConclusion(channelID, content); err != nil {
+		return ChannelStatePayload{}, err
+	}
+	// A concluded channel has nothing left to coordinate — same
+	// FSM-removal rule concludeDiscussionChannel's callers follow (see
+	// recordDiscussionPost). Safe no-op if no live FSM was ever resolved
+	// for this channel (deliberationForChannel never ran).
+	a.removeDeliberationByID(channelID)
+	a.emitDiscussionState(channelID)
+	// Re-resolve rather than reuse the pre-conclusion state: buildChannelState's
+	// SQLite-fallback branch is what now serves this (now non-open,
+	// FSM-less) channel, mirroring how a MaxTurns/unanimous conclusion's
+	// post-conclusion snapshot is served.
+	return a.buildChannelState(channelID)
+}
+
 // maybePromptNextDiscussionSpeaker prompts the current speaker after a
 // human post lands, unless the channel is closed/concluded or a
 // participant turn is already in flight (AwaitingResponse).

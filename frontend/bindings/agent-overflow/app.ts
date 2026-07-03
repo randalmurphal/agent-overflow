@@ -217,13 +217,37 @@ export function CloseThreadTerminals(threadID: string): $CancellablePromise<void
     return $Call.ByID(1705768020, threadID);
 }
 
+/**
+ * ConcludeDiscussion lets the human moderator end an open discussion
+ * immediately — independent of the MaxTurns circuit breaker and
+ * unanimous CONCLUDE-marker proposals (internal/discussion/conclusion.go),
+ * this is the third way a discussion ends. Deliberately does NOT resolve
+ * or rebuild the deliberation FSM: the moderator-stop message
+ * (discussion.ConclusionModerator) carries no proposals/roster summary,
+ * so there's nothing the FSM would contribute — reconstructing one just
+ * to discard it would only add failure modes (a rebuild error blocking
+ * a stop the human explicitly asked for).
+ * 
+ * This does NOT interrupt an in-flight participant turn: the provider
+ * session that's already mid-turn finishes normally. Its late reply
+ * mirror into the channel is then dropped as a benign no-op once the
+ * channel is no longer open (syncDiscussionTurn's ErrChannelNotOpen
+ * handling in app_discussion_runtime.go) — the reply stays visible only
+ * in that participant's own child thread.
+ */
+export function ConcludeDiscussion(channelID: string): $CancellablePromise<$models.ChannelStatePayload> {
+    return $Call.ByID(4019739936, channelID).then(($result: any) => {
+        return $$createType4($result);
+    });
+}
+
 export function CountRunningBackgroundTasks(threadID: string): $CancellablePromise<number> {
     return $Call.ByID(2617952423, threadID);
 }
 
 export function CreateDiffReviewComment(threadID: string, input: store$0.DiffReviewCommentInput): $CancellablePromise<store$0.DiffReviewComment> {
     return $Call.ByID(565306783, threadID, input).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType5($result);
     });
 }
 
@@ -242,7 +266,7 @@ export function CreateDiscussion(def: store$0.DiscussionDefinition): $Cancellabl
  */
 export function CreateMcpServer(input: $models.MCPServer): $CancellablePromise<$models.MCPServer> {
     return $Call.ByID(3722089728, input).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType6($result);
     });
 }
 
@@ -254,13 +278,13 @@ export function CreateMcpServer(input: $models.MCPServer): $CancellablePromise<$
  */
 export function CreateProject(path: string): $CancellablePromise<store$0.Project> {
     return $Call.ByID(969543070, path).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType7($result);
     });
 }
 
 export function CreateProposedPlanComment(threadID: string, input: store$0.ProposedPlanCommentInput): $CancellablePromise<store$0.ProposedPlanComment> {
     return $Call.ByID(4246792665, threadID, input).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType8($result);
     });
 }
 
@@ -343,7 +367,7 @@ export function DeleteMcpServer(provider: string, name: string): $CancellablePro
  */
 export function DeleteProject(id: string): $CancellablePromise<string[]> {
     return $Call.ByID(3379369923, id).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
@@ -487,7 +511,7 @@ export function ForkThreadFromMessage(sourceThreadID: string, userItemID: string
  */
 export function GenerateCommitMessage(threadID: string): $CancellablePromise<$models.GeneratedCommitMessage> {
     return $Call.ByID(1669373286, threadID).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType10($result);
     });
 }
 
@@ -515,7 +539,7 @@ export function GetAttachmentData(threadID: string, attachmentID: string): $Canc
  */
 export function GetAttachmentThumbnail(threadID: string, attachmentID: string): $CancellablePromise<$models.AttachmentThumbnail> {
     return $Call.ByID(3414107538, threadID, attachmentID).then(($result: any) => {
-        return $$createType10($result);
+        return $$createType11($result);
     });
 }
 
@@ -524,7 +548,7 @@ export function GetAttachmentThumbnail(threadID: string, attachmentID: string): 
  */
 export function GetChannelMessages(channelID: string, afterSeq: number, limit: number): $CancellablePromise<store$0.ChannelMessage[]> {
     return $Call.ByID(3595031866, channelID, afterSeq, limit).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType13($result);
     });
 }
 
@@ -538,7 +562,7 @@ export function GetChannelMessages(channelID: string, afterSeq: number, limit: n
  */
 export function GetChannelState(channelID: string): $CancellablePromise<$models.ChannelStatePayload> {
     return $Call.ByID(3664812883, channelID).then(($result: any) => {
-        return $$createType13($result);
+        return $$createType4($result);
     });
 }
 
@@ -1260,7 +1284,7 @@ export function ListChatBarFavorites(): $CancellablePromise<store$0.ChatBarFavor
  */
 export function ListDesignOptions(threadID: string, setID: string): $CancellablePromise<string[]> {
     return $Call.ByID(3070635863, threadID, setID).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
@@ -1696,7 +1720,7 @@ export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
  */
 export function PostChannelMessage(channelID: string, content: string): $CancellablePromise<store$0.ChannelMessage> {
     return $Call.ByID(1315440605, channelID, content).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType12($result);
     });
 }
 
@@ -1991,7 +2015,7 @@ export function RemoveOtherWorktreeForProject(projectID: string, currentWorkspac
  */
 export function RenameProject(id: string, name: string): $CancellablePromise<store$0.Project> {
     return $Call.ByID(3728890856, id, name).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType7($result);
     });
 }
 
@@ -2391,7 +2415,7 @@ export function TriggerMcpAuth(threadID: string, name: string): $CancellableProm
  */
 export function UnarchiveProject(id: string): $CancellablePromise<store$0.Project> {
     return $Call.ByID(2561521885, id).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType7($result);
     });
 }
 
@@ -2424,7 +2448,7 @@ export function UpdateContextSettingsProfile(update: $models.ContextSettingsUpda
 
 export function UpdateDiffReviewComment(threadID: string, commentID: string, input: store$0.DiffReviewCommentUpdate): $CancellablePromise<store$0.DiffReviewComment> {
     return $Call.ByID(2452201652, threadID, commentID, input).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType5($result);
     });
 }
 
@@ -2450,7 +2474,7 @@ export function UpdateKeybindings(bindings: keybindings$0.Keybinding[]): $Cancel
  */
 export function UpdateMcpServer(input: $models.MCPServer): $CancellablePromise<$models.MCPServer> {
     return $Call.ByID(4282105115, input).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType6($result);
     });
 }
 
@@ -2476,7 +2500,7 @@ export function UpdateProjectSortPositions(orderedIDs: string[]): $CancellablePr
 
 export function UpdateProposedPlanComment(threadID: string, commentID: string, input: store$0.ProposedPlanCommentUpdate): $CancellablePromise<store$0.ProposedPlanComment> {
     return $Call.ByID(2747956806, threadID, commentID, input).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType8($result);
     });
 }
 
@@ -2690,16 +2714,16 @@ const $$createType0 = settings$0.RemoteEndpointSummary.createFrom;
 const $$createType1 = store$0.Thread.createFrom;
 const $$createType2 = dirbrowse$0.Listing.createFrom;
 const $$createType3 = $models.UpdateAvailability.createFrom;
-const $$createType4 = store$0.DiffReviewComment.createFrom;
-const $$createType5 = $models.MCPServer.createFrom;
-const $$createType6 = store$0.Project.createFrom;
-const $$createType7 = store$0.ProposedPlanComment.createFrom;
-const $$createType8 = $Create.Array($Create.Any);
-const $$createType9 = $models.GeneratedCommitMessage.createFrom;
-const $$createType10 = $models.AttachmentThumbnail.createFrom;
-const $$createType11 = store$0.ChannelMessage.createFrom;
-const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = $models.ChannelStatePayload.createFrom;
+const $$createType4 = $models.ChannelStatePayload.createFrom;
+const $$createType5 = store$0.DiffReviewComment.createFrom;
+const $$createType6 = $models.MCPServer.createFrom;
+const $$createType7 = store$0.Project.createFrom;
+const $$createType8 = store$0.ProposedPlanComment.createFrom;
+const $$createType9 = $Create.Array($Create.Any);
+const $$createType10 = $models.GeneratedCommitMessage.createFrom;
+const $$createType11 = $models.AttachmentThumbnail.createFrom;
+const $$createType12 = store$0.ChannelMessage.createFrom;
+const $$createType13 = $Create.Array($$createType12);
 const $$createType14 = $models.ContextSettingsProfile.createFrom;
 const $$createType15 = $models.DesignWorkdirInfo.createFrom;
 const $$createType16 = store$0.DiscussionDefinition.createFrom;
@@ -2742,18 +2766,18 @@ const $$createType52 = $models.EditorInfo.createFrom;
 const $$createType53 = $Create.Array($$createType52);
 const $$createType54 = store$0.ChatBarFavorite.createFrom;
 const $$createType55 = $Create.Array($$createType54);
-const $$createType56 = $Create.Array($$createType4);
+const $$createType56 = $Create.Array($$createType5);
 const $$createType57 = $Create.Array($$createType16);
 const $$createType58 = $Create.Array($$createType36);
 const $$createType59 = store$0.PagedItems.createFrom;
 const $$createType60 = $Create.Array($$createType22);
-const $$createType61 = $Create.Array($$createType5);
+const $$createType61 = $Create.Array($$createType6);
 const $$createType62 = store$0.PayloadMeta.createFrom;
 const $$createType63 = $Create.Array($$createType62);
 const $$createType64 = provider$0.PendingInteractiveRequests.createFrom;
 const $$createType65 = store$0.ProjectWithCounts.createFrom;
 const $$createType66 = $Create.Array($$createType65);
-const $$createType67 = $Create.Array($$createType7);
+const $$createType67 = $Create.Array($$createType8);
 const $$createType68 = store$0.Turn.createFrom;
 const $$createType69 = $Create.Array($$createType68);
 const $$createType70 = $models.ReleaseSummary.createFrom;

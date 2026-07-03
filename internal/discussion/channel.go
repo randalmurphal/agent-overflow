@@ -1,6 +1,7 @@
 package discussion
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -21,6 +22,15 @@ const (
 	FromTypeHuman  = "human"
 	FromTypeSystem = "system"
 )
+
+// ErrChannelNotOpen is wrapped into PostMessage's rejection when a
+// channel's status isn't "open" (concluded or closed). Callers
+// distinguish this expected-shape rejection via errors.Is from other
+// failures — in particular, syncDiscussionTurn (app_discussion_runtime.go)
+// treats it as a benign drop when a participant's turn finishes just
+// after the human moderator concluded the discussion, rather than a
+// wire error to surface.
+var ErrChannelNotOpen = errors.New("not open")
 
 // ChannelService manages discussion channels and ordered channel messages.
 type ChannelService struct {
@@ -107,7 +117,7 @@ func (cs *ChannelService) PostMessage(input PostMessageInput) (store.ChannelMess
 		return store.ChannelMessage{}, err
 	}
 	if channel.Status != "open" {
-		return store.ChannelMessage{}, fmt.Errorf("channel %s is not open", input.ChannelID)
+		return store.ChannelMessage{}, fmt.Errorf("channel %s is %w", input.ChannelID, ErrChannelNotOpen)
 	}
 
 	msg := store.ChannelMessage{
