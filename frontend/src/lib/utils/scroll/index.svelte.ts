@@ -76,6 +76,7 @@ import type {
   ScrollWriteCaller,
   UseStickToBottomController,
   UseStickToBottomOptions,
+  WarmReason,
 } from './types';
 
 // Public types re-exported so consumers import the controller and its
@@ -84,6 +85,7 @@ export type {
   ScrollObservationKind,
   UseStickToBottomController,
   UseStickToBottomOptions,
+  WarmReason,
 } from './types';
 
 // Three-band geometry — see docs/architecture/frontend-scroll.md for
@@ -172,6 +174,10 @@ export function createUseStickToBottomController(
   // bigger the shift) producing the visible "lands wrong, then jumps"
   // regression.
   let warm = $state(false);
+  // Reporting-only counterpart to `warm`: which path last opened the
+  // gate (see `WarmReason`). Driven by the same observer pipeline via
+  // `setWarmReason`; no decision in this controller reads it back.
+  let warmReason: WarmReason = $state(null);
   // ===== Geometry =====
   function targetScrollTop(): number {
     if (!scrollEl) return 0;
@@ -384,6 +390,9 @@ export function createUseStickToBottomController(
     warm: () => warm,
     setWarm: (next) => {
       warm = next;
+    },
+    setWarmReason: (next) => {
+      warmReason = next;
     },
     isAtBottom: () => isAtBottomState,
     setIsAtBottom: (next) => {
@@ -877,6 +886,9 @@ export function createUseStickToBottomController(
     },
     get isWarm() {
       return warm;
+    },
+    get warmReason() {
+      return warmReason;
     },
     pauseAutoScroll,
     observe,

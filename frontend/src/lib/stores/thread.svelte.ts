@@ -69,6 +69,7 @@ import {
   reconcileItemWindow,
 } from './threadItems';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
+import { coldLoadItemsApplied, coldLoadSwitchStart } from '../utils/coldLoadTrace';
 import { clearThreadSizePriors } from '../utils/virtual/priors';
 import { ListThreadSliceAround } from './bindings';
 import { sameNormalizedPath } from '../utils/path';
@@ -1049,6 +1050,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
             ),
           (paged) => {
             timelineWindow.applyInitialSlice(paged, newThread.id);
+            // Only the initial switch load marks this — loadOlder/loadNewer
+            // paging never calls applyInitialSlice.
+            coldLoadItemsApplied(paneId, (paged.items ?? []).length);
           },
           (err) => {
             // Cache miss + load failure leaves the timeline blank and
@@ -1516,6 +1520,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         snapshotOutgoingPane(newThread.id);
         resetIncomingPaneState(newThread);
         const { cached, sliceAnchorId } = installCacheOrFreshState(newThread);
+        // Cold-load instrumentation (dev-trace only; see coldLoadTrace.ts).
+        // Draft-placeholder flows (startDraftPlaceholder /
+        // adoptMaterializedDraftThread) never call switchThread, so
+        // there's nothing to skip here — every switchThread call is a
+        // real cold-load candidate. Discussion-surface threads DO reach
+        // this point but mount no MessageTimeline to fire the warm-edge
+        // mark; their session simply sits open until the next switch
+        // overwrites it (see coldLoadSwitchStart).
+        coldLoadSwitchStart(paneId, newThread.id, cached ? 'cache-restore' : 'fetch');
         armSpinnerThreshold();
         liveStateHydrationToken = beginThreadLiveStateHydration(newThread.id);
         commitIncomingThread(newThread);

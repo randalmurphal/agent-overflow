@@ -29,6 +29,7 @@
   import { createTimelineRowProjection } from './timelineRowProjection.svelte';
   import { createTimelineDiagnostics } from './timelineDiagnostics';
   import { createTimelineRowUiPrune } from './timelineRowUiPrune';
+  import { coldLoadPriors, coldLoadWarmEdge } from '../../utils/coldLoadTrace';
 
   // Extra buffer rendered above + below the viewport. Sized for two viewports
   // worth of rows on each side so fast scrolls (trackpad fling, scrollbar
@@ -368,7 +369,8 @@
 
   // The scroll surface's CONTENT-box width, sourced ONLY from the async
   // ResizeObserver inside observeScrollSurfaceContentWidth. It feeds the
-  // size-priors validity key (currentSizePriorsKey). This effect
+  // size-priors width dimension (timelineSizePriors.svelte.ts's capture
+  // and its lazy-once validity check). This effect
   // must depend on `scrollEl` alone: it never reads
   // `scrollSurfaceContentWidth` and never seeds it from a synchronous layout
   // query. Either would re-subscribe the effect to the width state, so any
@@ -382,8 +384,10 @@
   // observeScrollSurfaceContentWidth (idle CPU/heap-churn incident 2026-06-26;
   // the CPU trace caught this exact effect re-running ~33k times in 30s of
   // idle). The RO's first delivery — content-box, before paint — sets the
-  // initial width; until then it stays 0 (a width-0 size key simply never
-  // matches a stored snapshot).
+  // initial width; until then it stays 0, which the priors validity check
+  // reads as "layout hasn't reported yet" and optimistically trusts the
+  // entry's captured width (see buildRowEstimate in
+  // timelineSizePriors.svelte.ts).
   $effect(() => {
     const surface = scrollEl;
     if (!surface) {
@@ -496,6 +500,13 @@
 
   $effect(() => {
     sizePriors.captureOnWarmRisingEdge(stick.isWarm);
+    // Dev-trace only (see coldLoadTrace.ts): stamp the priors replay
+    // summary, then close the cold-load session `thread.svelte.ts`
+    // opened for this pane's current switch, once the warm gate's
+    // rising edge matches this threadId. Order matters — the stamp must
+    // land before the edge emits the record.
+    coldLoadPriors(pane.paneId, sizePriors.replayStats());
+    coldLoadWarmEdge(pane.paneId, pane.threadId ?? '', stick.isWarm, stick.warmReason);
   });
 
   $effect.pre(() => {

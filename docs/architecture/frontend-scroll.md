@@ -295,6 +295,12 @@ Same-thread reloads must watch `pane.switchGeneration`, not just
 `pane.threadId`, because revert/reload can replace items without changing
 the thread id.
 
+The controller also exposes `warmReason` alongside `isWarm` — which of
+`'quiet'` / `'failsafe'` / `'settled'` / `'skip'` last opened the gate, or
+`null` before it has opened for the current cycle. It is reporting-only
+(see "Cold-load trace" under Diagnostics); no consumer should branch
+scroll behavior on it.
+
 ## Intent And Programmatic Writes
 
 Bottom geometry and user intent are separate. The viewport can be near
@@ -758,6 +764,25 @@ Useful trace records:
   `contentRO` transient and an `oscillationSnap`. Must stay silent; see
   [`settle-flicker-analysis.md`](settle-flicker-analysis.md) for the root cause
   and the `[data-row-geometry-content] { display: flow-root }` containment fix.
+- `timeline.coldload` — one record per pane per thread-switch cold load
+  (`utils/coldLoadTrace.ts`), consolidating the switch-to-warm timeline
+  into segments instead of leaving them scattered across the
+  `scroll.warmup.*` / `chat.state` records above. Fields: `source`
+  (`'cache-restore'` or `'fetch'`), `fetchMs` (switch start → initial
+  slice applied; `null` on a cache restore), `itemCount` (rows in that
+  slice), `settleMs` (slice applied — or switch start on a cache
+  restore — → the warm gate's rising edge), `totalMs` (switch start →
+  warm), `warmReason` (the controller's `warmReason` at that edge —
+  `'quiet'`, `'failsafe'`, `'settled'`, or `'skip'`), and `priors` (the
+  size-priors replay summary stamped by MessageTimeline's warm-edge
+  effect — `{source, validity, rowsResolved}` per
+  `SizePriorsReplayStats` in `timelineSizePriors.svelte.ts`, or `null`
+  when no timeline stamped one). A large `fetchMs` points at the
+  backend/IPC leg; a large `settleMs` with `warmReason: 'failsafe'`
+  points at a measurement cascade that never went quiet; `priors`
+  distinguishes "no stored entry" from "entry refused (width/expansion
+  mismatch)" from "replayed N rows".
+  Needs a `make dev DEBUG=1` build (`VITE_AGENT_OVERFLOW_UI_TRACE=1`).
 
 Work backward from the visible symptom to the last relevant
 `scroll.contentRO`. The record carries the resolver's decision

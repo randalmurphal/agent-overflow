@@ -2436,6 +2436,100 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
   });
 
+  describe('warmReason', () => {
+    // Reporting-only counterpart to isWarm — mechanical coverage of the
+    // four transitions observers.ts drives it through. No timing or
+    // decision assertions belong here; those live in the isWarm tests
+    // above.
+    it('is null before warm-up resolves', () => {
+      expect(controller.warmReason).toBeNull();
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      // Quiet timer armed but not yet fired.
+      expect(controller.warmReason).toBeNull();
+    });
+
+    it("is 'quiet' once the quiet timer fires", async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+      expect(controller.warmReason).toBe('quiet');
+    });
+
+    it("is 'failsafe' once the failsafe ceiling fires", async () => {
+      // Fake timers make this deterministic: the isWarm-only sibling
+      // failsafe test above (real timers, resets every 80ms) actually
+      // races the quiet timer's LAST reset (deadline ~2420ms after
+      // start) against the fixed 2500ms failsafe deadline — quiet
+      // reliably wins that race, which the sibling test can't tell
+      // apart because either reason satisfies isWarm===true. Asserting
+      // the reason itself requires deliberately keeping the quiet
+      // timer's reset cadence going PAST the failsafe deadline (so its
+      // own deadline lands after 2500ms) and then letting time run
+      // out — only the failsafe timer is left to fire.
+      vi.useFakeTimers();
+      try {
+        // Re-attach under fake-timer control: beforeEach's attach()
+        // armed the failsafe timer with a REAL setTimeout before fake
+        // timers existed, so it would never advance via
+        // advanceTimersByTimeAsync below.
+        controller.detach();
+        controller.attach(scrollEl, contentEl);
+        const ro = getRO();
+        ro.fire(contentEl, 800); // t=0: quiet deadline=100, failsafe deadline=2500
+
+        // 49 resets at 50ms (< QUIET_MS) intervals, t=50..2450. The last
+        // reset's quiet deadline (2450+100=2550) lands PAST the fixed
+        // failsafe deadline (2500).
+        for (let i = 1; i <= 49; i++) {
+          await vi.advanceTimersByTimeAsync(50);
+          geom.scrollHeight += 1;
+          geom.contentHeight += 1;
+          ro.fire(contentEl, geom.contentHeight);
+        }
+        // Stop resetting and cross t=2500: the failsafe timer (armed
+        // once, never reset) is the only one left that can fire.
+        await vi.advanceTimersByTimeAsync(60);
+        expect(controller.isWarm).toBe(true);
+        expect(controller.warmReason).toBe('failsafe');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('resets to null on armWarmup() re-arm', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.warmReason).toBe('quiet');
+
+      controller.armWarmup();
+      expect(controller.isWarm).toBe(false);
+      expect(controller.warmReason).toBeNull();
+
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.warmReason).toBe('quiet');
+    });
+
+    it('resets to null on detach()', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.warmReason).toBe('quiet');
+
+      controller.detach();
+      expect(controller.warmReason).toBeNull();
+    });
+
+    it("is 'skip' after skipWarmup() forces the gate open", () => {
+      controller.skipWarmup();
+      expect(controller.isWarm).toBe(true);
+      expect(controller.warmReason).toBe('skip');
+    });
+  });
+
   describe('warm-up gate — quietContextSignal', () => {
     // These tests construct their own controller because they need to
     // pass a quietContextSignal option that the outer beforeEach's
@@ -6153,8 +6247,10 @@ describe('createUseStickToBottomController — external content-geometry source'
     it('reveals immediately on settle evidence when no quietContextSignal option exists', () => {
       deliver(800); // first sample: window not yet measured
       expect(controller.isWarm).toBe(false);
+      expect(controller.warmReason).toBeNull();
       deliver(800, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 0 });
       expect(controller.isWarm).toBe(true);
+      expect(controller.warmReason).toBe('settled');
     });
 
     it('reveals immediately on settle evidence once the typesetting signal is settled', () => {
@@ -6163,6 +6259,7 @@ describe('createUseStickToBottomController — external content-geometry source'
       expect(controller.isWarm).toBe(false);
       deliver(800, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 2 });
       expect(controller.isWarm).toBe(true);
+      expect(controller.warmReason).toBe('settled');
     });
 
     it('holds the gate while the typesetting signal is falsy, then reveals on notifyQuietContextSignalChanged', () => {
@@ -6177,6 +6274,7 @@ describe('createUseStickToBottomController — external content-geometry source'
       signal = true;
       controller.notifyQuietContextSignalChanged();
       expect(controller.isWarm).toBe(true);
+      expect(controller.warmReason).toBe('settled');
     });
 
     it('large first-measure corrections never fast-path (cold estimate cascade)', async () => {

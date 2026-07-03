@@ -37,7 +37,7 @@ import {
 import type { SpringChase } from './spring';
 import { nowMs } from './time';
 import { trace } from './trace';
-import type { ScrollWriteCaller } from './types';
+import type { ScrollWriteCaller, WarmReason } from './types';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import type { ContentGeometrySample } from '../virtual/types';
 
@@ -141,6 +141,9 @@ export interface ContentObserverDeps {
   /** Reactive warm flag (controller-owned $state; consumers read isWarm). */
   warm(): boolean;
   setWarm(next: boolean): void;
+  /** Reactive warm-reason flag (controller-owned $state; consumers read
+   * warmReason). Reporting only — see `WarmReason`. */
+  setWarmReason(reason: WarmReason): void;
   /** Intent flag: "we want to be glued to the bottom" (isAtBottomState). */
   isAtBottom(): boolean;
   setIsAtBottom(next: boolean): void;
@@ -249,6 +252,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   function markWarm(reason: 'quiet' | 'failsafe' | 'settled'): void {
     if (deps.warm()) return;
     deps.setWarm(true);
+    deps.setWarmReason(reason);
     clearWarmupTimers();
     if (isUiRenderTraceEnabled()) trace(`scroll.warmup.${reason}`, () => ({
       isAtBottomState: deps.isAtBottom(),
@@ -260,6 +264,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   function beginWarmup(): void {
     clearWarmupTimers();
     deps.setWarm(false);
+    deps.setWarmReason(null);
     hasFirstContentRO = false;
     lastContentHeightDelta = Number.POSITIVE_INFINITY;
     lastSettleEvidence = false;
@@ -281,6 +286,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   function skipWarmup(): void {
     if (!deps.warm()) {
       deps.setWarm(true);
+      deps.setWarmReason('skip');
       clearWarmupTimers();
     }
   }
@@ -596,6 +602,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     }
     clearWarmupTimers();
     deps.setWarm(false);
+    deps.setWarmReason(null);
     resizeDifference = 0;
     resizeCorrelatedUntaggedScrollBudget = 0;
     previousHeight = undefined;

@@ -52,6 +52,18 @@ export type ScrollObservationKind =
   | 'composer-geometry'
   | 'host-layout';
 
+/**
+ * Why the warm-up gate last opened for the current cycle — mirrors
+ * observers.ts `markWarm`'s reasons ('quiet' | 'failsafe' | 'settled'),
+ * plus 'skip' (`skipWarmup()` forced the gate open) and `null` before
+ * it has opened since the last `attach()` / `armWarmup()` /
+ * restore-reason `forceStick()`. Diagnostic-only — feeds the
+ * `timeline.coldload` dev-trace record (see `utils/coldLoadTrace.ts`);
+ * no consumer should branch scroll behavior on this value, only
+ * `isWarm`.
+ */
+export type WarmReason = 'quiet' | 'failsafe' | 'settled' | 'skip' | null;
+
 export interface UseStickToBottomController {
   /** True when sticky AND no lease is held. Drives auto-follow gating. */
   readonly isSticky: boolean;
@@ -79,6 +91,12 @@ export interface UseStickToBottomController {
    * my next forceStick / attach call, so reset the gate now."
    */
   readonly isWarm: boolean;
+  /**
+   * Reports which path last opened the warm-up gate — see `WarmReason`.
+   * Purely a reporting surface alongside `isWarm`; consumers should
+   * still gate behavior on `isWarm` and only read this for diagnostics.
+   */
+  readonly warmReason: WarmReason;
 
   /** Depth-counted lease that suspends auto-scroll until released. */
   pauseAutoScroll(): () => void;
