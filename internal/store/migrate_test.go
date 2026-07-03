@@ -1428,3 +1428,20 @@ func assertPlanUses(t *testing.T, db *sql.DB, indexName, query string, args ...a
 		t.Errorf("query plan did not use %s: %s", indexName, plan.String())
 	}
 }
+
+// v13: the partial in-flight index backing the boot-time crashed-turn
+// sweep. Assert both the index and its partial predicate so a rebuild
+// migration that recreates turns can't silently drop the WHERE clause.
+func TestTurnsInflightPartialIndex(t *testing.T) {
+	s := newTestStore(t)
+
+	var indexSQL string
+	if err := s.db.QueryRow(
+		"SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_turns_inflight'",
+	).Scan(&indexSQL); err != nil {
+		t.Fatalf("idx_turns_inflight not found: %v", err)
+	}
+	if !strings.Contains(indexSQL, "completed_at IS NULL") {
+		t.Fatalf("idx_turns_inflight lost its partial predicate: %s", indexSQL)
+	}
+}

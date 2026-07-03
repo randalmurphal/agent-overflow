@@ -49,8 +49,13 @@ const threadColumns = `id, COALESCE(project_id, ''),
          AND payloads.kind = 'proposed_plan'
     ),
     COALESCE((
-      SELECT turns.completed_at IS NULL
-         AND (threads.last_read_at IS NULL OR threads.last_read_at < turns.started_at)
+      SELECT CASE
+          WHEN turns.completed_at IS NULL
+            THEN (threads.last_read_at IS NULL OR threads.last_read_at < turns.started_at)
+          WHEN turns.stop_reason = 'interrupted'
+            THEN (threads.last_read_at IS NULL OR threads.last_read_at < turns.completed_at)
+          ELSE 0
+        END
         FROM turns
        WHERE turns.thread_id = threads.id
        ORDER BY turns.turn_index DESC

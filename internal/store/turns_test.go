@@ -695,3 +695,178 @@ func TestTurnsCascadeOnThreadDelete(t *testing.T) {
 		t.Errorf("expected CASCADE to drop turn rows, still have %d", count)
 	}
 }
+
+// testInterruptedSummary mirrors triage's interruptedSummary suffix
+// convention so the store tests assert the same stored shape the boot
+// sweep produces.
+func testInterruptedSummary(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return "Interrupted"
+	}
+	const suffix = " — interrupted"
+	if strings.HasSuffix(summary, suffix) {
+		return summary
+	}
+	return summary + suffix
+}
+
+func seedItemWithStatus(t *testing.T, s *Store, threadID, id string, turnIndex int, itemIndex int, kind, status, summary string, background bool) {
+	t.Helper()
+	if err := s.InsertItem(Item{
+		ID:           id,
+		ThreadID:     threadID,
+		TurnIndex:    turnIndex,
+		ItemIndex:    itemIndex,
+		Kind:         kind,
+		Role:         "assistant",
+		Status:       status,
+		Summary:      summary,
+		IsBackground: background,
+		CreatedAt:    int64(turnIndex*10 + itemIndex),
+	}); err != nil {
+		t.Fatalf("seed item %s: %v", id, err)
+	}
+}
+
+func TestRecoverCrashedTurnsSettlesInflightRowsAcrossThreads(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForTurn(t, s, "t1")
+	mustCreateThreadForTurn(t, s, "t2")
+
+	// t1: one settled turn, one crashed in-flight turn.
+	if err := s.InsertTurn(makeInflightTurn("turn-done", "t1", 0, 1)); err != nil {
+		t.Fatalf("insert done: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-done", 100, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("settle done: %v", err)
+	}
+	if err := s.InsertTurn(makeInflightTurn("turn-crashed-1", "t1", 1, 200)); err != nil {
+		t.Fatalf("insert crashed t1: %v", err)
+	}
+	// t2: one crashed in-flight turn.
+	if err := s.InsertTurn(makeInflightTurn("turn-crashed-2", "t2", 0, 300)); err != nil {
+		t.Fatalf("insert crashed t2: %v", err)
+	}
+
+	crashed, err := s.RecoverCrashedTurns(testInterruptedSummary, 999)
+	if err != nil {
+		t.Fatalf("RecoverCrashedTurns(): %v", err)
+	}
+	if len(crashed) != 2 {
+		t.Fatalf("settled %d turns, want 2: %+v", len(crashed), crashed)
+	}
+	if crashed[0] != (CrashedTurn{ThreadID: "t1", TurnIndex: 1}) ||
+		crashed[1] != (CrashedTurn{ThreadID: "t2", TurnIndex: 0}) {
+		t.Fatalf("crashed turns = %+v", crashed)
+	}
+
+	for _, turnID := range []string{"turn-crashed-1", "turn-crashed-2"} {
+		got, ok, err := s.GetTurn(turnID)
+		if err != nil || !ok {
+			t.Fatalf("GetTurn(%s): ok=%v err=%v", turnID, ok, err)
+		}
+		if got.CompletedAt == nil || *got.CompletedAt != 999 {
+			t.Errorf("%s CompletedAt = %v, want 999", turnID, got.CompletedAt)
+		}
+		if got.StopReason != "interrupted" {
+			t.Errorf("%s StopReason = %q, want interrupted", turnID, got.StopReason)
+		}
+	}
+	// The already-settled row keeps its original settle.
+	done, ok, err := s.GetTurn("turn-done")
+	if err != nil || !ok {
+		t.Fatalf("GetTurn(turn-done): ok=%v err=%v", ok, err)
+	}
+	if done.StopReason != "end_turn" || done.CompletedAt == nil || *done.CompletedAt != 100 {
+		t.Errorf("settled turn mutated: %+v", done)
+	}
+
+	// The revert guard's view: no thread has an active turn anymore.
+	for _, threadID := range []string{"t1", "t2"} {
+		if _, active, err := s.GetActiveTurn(threadID); err != nil {
+			t.Fatalf("GetActiveTurn(%s): %v", threadID, err)
+		} else if active {
+			t.Errorf("GetActiveTurn(%s) still active after recovery", threadID)
+		}
+	}
+
+	// Idempotent: a second sweep finds nothing.
+	again, err := s.RecoverCrashedTurns(testInterruptedSummary, 1000)
+	if err != nil {
+		t.Fatalf("second RecoverCrashedTurns(): %v", err)
+	}
+	if len(again) != 0 {
+		t.Fatalf("second sweep settled %d turns, want 0", len(again))
+	}
+}
+
+func TestRecoverCrashedTurnsFlipsStrandedItems(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForTurn(t, s, "t1")
+
+	// Settled turn 0 with a running background launch (stays untouched:
+	// wrong turn AND background-exempt either way).
+	if err := s.InsertTurn(makeInflightTurn("turn-0", "t1", 0, 1)); err != nil {
+		t.Fatalf("insert turn-0: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-0", 50, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("settle turn-0: %v", err)
+	}
+	seedItemWithStatus(t, s, "t1", "bg:settled-turn", 0, 0, "tool_call", "running", "Old background task", true)
+
+	// Crashed turn 1: streaming text, running foreground tool, running
+	// background launch (exempt), completed text (already settled).
+	if err := s.InsertTurn(makeInflightTurn("turn-1", "t1", 1, 100)); err != nil {
+		t.Fatalf("insert turn-1: %v", err)
+	}
+	seedItemWithStatus(t, s, "t1", "text:streaming", 1, 0, "assistant_text", "streaming", "Half a reply", false)
+	seedItemWithStatus(t, s, "t1", "tool:running", 1, 1, "tool_call", "running", "Running tests", false)
+	seedItemWithStatus(t, s, "t1", "bg:running", 1, 2, "tool_call", "running", "Background build", true)
+	seedItemWithStatus(t, s, "t1", "text:done", 1, 3, "assistant_text", "completed", "Finished thought", false)
+
+	if _, err := s.RecoverCrashedTurns(testInterruptedSummary, 999); err != nil {
+		t.Fatalf("RecoverCrashedTurns(): %v", err)
+	}
+
+	assertItem := func(id, wantStatus, wantSummary string) {
+		t.Helper()
+		item, ok, err := s.GetThreadItem("t1", id)
+		if err != nil || !ok {
+			t.Fatalf("GetThreadItem(%s): ok=%v err=%v", id, ok, err)
+		}
+		if item.Status != wantStatus {
+			t.Errorf("%s status = %q, want %q", id, item.Status, wantStatus)
+		}
+		if item.Summary != wantSummary {
+			t.Errorf("%s summary = %q, want %q", id, item.Summary, wantSummary)
+		}
+		if wantStatus == "errored" && item.UpdatedAt != 999 {
+			t.Errorf("%s updated_at = %d, want 999", id, item.UpdatedAt)
+		}
+	}
+	assertItem("text:streaming", "errored", "Half a reply — interrupted")
+	assertItem("tool:running", "errored", "Running tests — interrupted")
+	assertItem("bg:running", "running", "Background build")
+	assertItem("text:done", "completed", "Finished thought")
+	assertItem("bg:settled-turn", "running", "Old background task")
+}
+
+func TestRecoverCrashedTurnsNoInflightRowsIsNoop(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForTurn(t, s, "t1")
+	if err := s.InsertTurn(makeInflightTurn("turn-0", "t1", 0, 1)); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-0", 100, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+
+	crashed, err := s.RecoverCrashedTurns(testInterruptedSummary, 999)
+	if err != nil {
+		t.Fatalf("RecoverCrashedTurns(): %v", err)
+	}
+	if len(crashed) != 0 {
+		t.Fatalf("settled %d turns on a clean store, want 0", len(crashed))
+	}
+}

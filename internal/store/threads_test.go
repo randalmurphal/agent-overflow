@@ -1933,3 +1933,85 @@ func TestUpdateThreadPreservesPinnedAt(t *testing.T) {
 		t.Fatalf("UpdateThread failed to write title: got %q", after.Title)
 	}
 }
+
+// A boot-swept crashed turn (settled with stop_reason='interrupted' by
+// RecoverCrashedTurns) must keep lighting the sidebar's durable
+// Interrupted pill until the user views the thread — same UX as the
+// completed_at=NULL row it replaced.
+func TestListThreadsWithItemsDerivesInterruptedSettledNewestTurn(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-swept-interrupted", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	seedItem(t, s, thread.ID, "item-1", 0, 0, "")
+	startedAt := thread.CreatedAt + 100
+	completedAt := startedAt + 50
+	if err := s.InsertTurn(Turn{
+		TurnID:    "turn-1",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: startedAt,
+	}); err != nil {
+		t.Fatalf("InsertTurn(): %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-1", completedAt, "interrupted", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted(): %v", err)
+	}
+
+	got := mustListSingleThreadWithItems(t, s)
+	if !got.HasIncompleteTurn {
+		t.Fatal("HasIncompleteTurn = false for unseen interrupted turn, want true")
+	}
+
+	// A read mid-turn (before the interrupt landed) does not clear it.
+	lastReadAt := completedAt - 1
+	if err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
+		t.Fatalf("setThreadLastRead(mid-turn): %v", err)
+	}
+	got = mustListSingleThreadWithItems(t, s)
+	if !got.HasIncompleteTurn {
+		t.Fatal("HasIncompleteTurn = false for read before interrupt, want true")
+	}
+
+	// Reading at/after the settle clears it.
+	lastReadAt = completedAt
+	if err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
+		t.Fatalf("setThreadLastRead(after): %v", err)
+	}
+	got = mustListSingleThreadWithItems(t, s)
+	if got.HasIncompleteTurn {
+		t.Fatal("HasIncompleteTurn = true after reading the interrupted settle, want false")
+	}
+}
+
+// MarkThreadReadNow must clear the settled-interrupted pill: its read
+// target includes MAX(completed_at), which covers the swept turn.
+func TestMarkThreadReadNowClearsInterruptedSettledTurn(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-swept-read-now", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	seedItem(t, s, thread.ID, "item-1", 0, 0, "")
+	startedAt := thread.CreatedAt + 100
+	if err := s.InsertTurn(Turn{
+		TurnID:    "turn-1",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: startedAt,
+	}); err != nil {
+		t.Fatalf("InsertTurn(): %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-1", startedAt+50, "interrupted", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted(): %v", err)
+	}
+
+	if err := s.MarkThreadReadNow(thread.ID); err != nil {
+		t.Fatalf("MarkThreadReadNow(): %v", err)
+	}
+	got := mustListSingleThreadWithItems(t, s)
+	if got.HasIncompleteTurn {
+		t.Fatal("HasIncompleteTurn = true after MarkThreadReadNow, want false")
+	}
+}

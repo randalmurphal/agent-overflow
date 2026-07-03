@@ -121,11 +121,14 @@ type Thread struct {
 	// true when the latest assistant proposed plan is completed and has
 	// not been implemented yet. It is not a persisted threads column.
 	HasActionableProposedPlan bool `json:"hasActionableProposedPlan"`
-	// HasIncompleteTurn is derived from the newest unseen turn row. A
-	// newest turn with completed_at=NULL and started_at newer than
-	// last_read_at means the prior provider process died or was closed
-	// mid-turn, so the sidebar should show Interrupted, not live Working.
-	// It is not a persisted threads column.
+	// HasIncompleteTurn is derived from the newest unseen turn row: an
+	// in-flight turn (completed_at=NULL) whose start the user hasn't
+	// seen, or a settled stop_reason='interrupted' turn whose end the
+	// user hasn't seen (boot-swept crashes land here —
+	// RecoverCrashedTurns settles NULL rows as interrupted before the
+	// frontend ever loads). Either way the sidebar should show
+	// Interrupted, not live Working. It is not a persisted threads
+	// column.
 	HasIncompleteTurn bool `json:"hasIncompleteTurn"`
 	// IsDraft is true when no items have been persisted for the thread.
 	// Used by the sidebar to render a draft indicator and by the project

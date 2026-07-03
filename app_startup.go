@@ -362,6 +362,21 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	// boundaries and capture message checkpoints once the provider echo
 	// confirms the deferred user row. See app_flush_queue.go.
 	a.configureTriageQueueCallbacks()
+	// Settle turn rows the previous app instance left in-flight. An
+	// in-app session death settles its turn via the synthesized
+	// truncated turn-complete, but an app crash leaves completed_at
+	// NULL — which GetActiveTurn reads as "turn still active", wedging
+	// revert behind an interrupt that has nothing to interrupt, and
+	// leaving the turn's streaming items stuck forever. Runs before any
+	// provider session can spawn, so every NULL row is provably crash
+	// residue. See docs/architecture/turn-lifecycle.md §Crash recovery.
+	sweepStarted := time.Now()
+	if settled, err := a.triage.RecoverCrashedTurns(); err != nil {
+		log.Printf("app: recover crashed turns: %v", err)
+	} else if settled > 0 {
+		log.Printf("app: settled %d crashed in-flight turns as interrupted", settled)
+	}
+	logBootPhase("app.recover_crashed_turns", sweepStarted)
 	// Synthesize session_died terminals for backgrounded launches whose
 	// owning Claude session did not survive the previous app instance.
 	// Without this sweep the launches would render as "running" forever

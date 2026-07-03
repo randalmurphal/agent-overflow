@@ -528,6 +528,18 @@ CREATE INDEX idx_payload_chunks_payload_start
 		// migration carries the new value.
 		SQL: `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
 	},
+	{
+		Version: 13,
+		Name:    "turns_inflight_partial_index",
+		// Backs the boot-time crashed-turn sweep (RecoverCrashedTurns).
+		// Partial on completed_at IS NULL so it only ever holds the
+		// handful of in-flight rows — the sweep's SELECT is O(crashed)
+		// instead of a full turns scan, and steady-state maintenance
+		// cost is one insert + one delete per turn.
+		SQL: `CREATE INDEX idx_turns_inflight
+  ON turns(thread_id, turn_index)
+  WHERE completed_at IS NULL;`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

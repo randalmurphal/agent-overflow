@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 func TestRevertToMessageCheckpointDeletesSelectedPromptAndRestoresDraft(t *testing.T) {
@@ -1094,5 +1095,65 @@ func insertRunningBackgroundToolCall(t *testing.T, st *store.Store, threadID, id
 		UpdatedAt:    now,
 	}); err != nil {
 		t.Fatalf("append running background tool call: %v", err)
+	}
+}
+
+// Regression for the crash-restart revert deadlock (2026-07-03): an app
+// crash mid-turn leaves the latest turns row with completed_at=NULL,
+// which the revert guard reads as "turn still active" — but
+// InterruptTurn no-ops when no session exists, so the user could never
+// satisfy the "interrupt the current turn" error. The boot sweep
+// (Router.RecoverCrashedTurns, wired in initSubsystems) settles the row
+// as interrupted; revert must succeed afterwards.
+func TestRevertToMessageCheckpointSucceedsAfterCrashedTurnRecovery(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	thread := createCheckpointTestThread(t, app, "t-crashed-turn", "claude", t.TempDir())
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	if err := app.store.SaveCheckpoint(store.Checkpoint{
+		ID:                    "chk-crashed",
+		ThreadID:              thread.ID,
+		UserItemID:            "user:0",
+		TurnIndex:             0,
+		ProviderUserMessageID: "provider-user-0",
+		RefName:               checkpoint.ThreadRefPrefix(thread.ID) + "message/crashed",
+		CapturedAt:            time.Now().UnixMilli(),
+		WorkspacePath:         thread.WorkspacePath,
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+	// The crash leftover: turn started, app died before any settle.
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-crashed",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert crashed turn: %v", err)
+	}
+
+	err := app.RevertToMessageCheckpoint(thread.ID, "user:0", RevertModeConversationOnly)
+	if err == nil || !strings.Contains(err.Error(), "interrupt the current turn") {
+		t.Fatalf("pre-recovery revert error = %v, want active-turn guard", err)
+	}
+
+	router := triage.NewRouter(app.store, func(string, any) {})
+	settled, err := router.RecoverCrashedTurns()
+	if err != nil {
+		t.Fatalf("RecoverCrashedTurns(): %v", err)
+	}
+	if settled != 1 {
+		t.Fatalf("settled %d turns, want 1", settled)
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "user:0", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert after recovery: %v", err)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items after revert = %+v, want empty", items)
 	}
 }

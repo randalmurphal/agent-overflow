@@ -8,14 +8,16 @@ import (
 // Turn is one row in the turns table — a record of a single user → assistant
 // round-trip on a thread.
 //
-// CompletedAt is a pointer because NULL is load-bearing on the latest
-// turn row: it means "in-flight or crashed mid-turn." We never write a
-// synthetic CompletedAt just to dismiss that latest stuck row. Older
-// NULL rows followed by newer turns are obsolete crash/error residue
-// and may be repaired by migration. The frontend treats a NULL
-// CompletedAt on rehydration as "interrupted," separate from the
-// live-push "provider:turn_started" path that drives the working
-// indicator.
+// CompletedAt is a pointer because NULL is load-bearing while the app
+// runs: it means "in-flight right now." A NULL row can only outlive its
+// provider session when the whole app dies mid-turn — every in-app
+// session death settles the row through triage's synthesized truncated
+// turn-complete (stop_reason='interrupted'). RecoverCrashedTurns runs
+// at boot, before any session can spawn, and settles those crash
+// leftovers the same way, so a persisted NULL CompletedAt is never
+// carried across app restarts. The durable "interrupted" signal the
+// sidebar and rehydration read is stop_reason='interrupted', not the
+// NULL itself.
 //
 // See docs/architecture/turn-lifecycle.md §Turn lifecycle for the full
 // mental model and docs/architecture/invariants.md #22-24 for the rules
@@ -191,6 +193,140 @@ func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) er
 	)
 	if err != nil {
 		return fmt.Errorf("store: update turn %s late payload: %w", turnID, err)
+	}
+	return nil
+}
+
+// CrashedTurn identifies one turn row that RecoverCrashedTurns settled:
+// the previous app instance died while this (thread, turn) was
+// in-flight.
+type CrashedTurn struct {
+	ThreadID  string
+	TurnIndex int
+}
+
+// RecoverCrashedTurns settles every turn row left with
+// completed_at=NULL by a previous app instance and flips that turn's
+// stranded streaming/running items to errored. Callers MUST only run
+// this while no provider session exists (App boot, before any session
+// can spawn) — at that point a NULL completed_at is provably a crash
+// leftover, because every in-app session death already settles its row
+// via triage's synthesized truncated turn-complete.
+//
+// The settle mirrors what that synthesized turn-complete writes:
+// completed_at=now, stop_reason='interrupted'. The item flip mirrors
+// triage's flipTurnItemsErrored — summarise rewrites each flipped
+// row's summary (callers pass the idempotent " — interrupted" suffix
+// convention) and backgrounded tool_call launches are exempt
+// (invariant 24: their disposition belongs to the background recovery
+// sweep, which writes completion siblings instead).
+//
+// Everything runs in a single transaction so an N-thread crash pays
+// one WAL commit and a mid-sweep crash leaves all rows untouched for
+// the next boot. The SELECT is O(crashed rows) via the partial index
+// idx_turns_inflight. Thread activity is deliberately NOT bumped —
+// sweeping crash residue is not a user interaction (matches
+// FlipGhostBackgroundRowsOnStart).
+//
+// Returns the settled turns so the caller can log the repair.
+func (s *Store) RecoverCrashedTurns(summarise func(string) string, now int64) ([]CrashedTurn, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("store: begin crashed-turn recovery tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(
+		`SELECT thread_id, turn_index FROM turns
+		  WHERE completed_at IS NULL
+		  ORDER BY thread_id, turn_index`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: crashed-turn select: %w", err)
+	}
+	var crashed []CrashedTurn
+	for rows.Next() {
+		var c CrashedTurn
+		if err := rows.Scan(&c.ThreadID, &c.TurnIndex); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: crashed-turn scan: %w", err)
+		}
+		crashed = append(crashed, c)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("store: crashed-turn rows err: %w", err)
+	}
+	rows.Close()
+
+	if len(crashed) == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("store: commit crashed-turn recovery (no rows): %w", err)
+		}
+		return nil, nil
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE turns
+		    SET completed_at = ?, stop_reason = 'interrupted'
+		  WHERE completed_at IS NULL`,
+		now,
+	); err != nil {
+		return nil, fmt.Errorf("store: crashed-turn settle: %w", err)
+	}
+
+	for _, c := range crashed {
+		if err := flipCrashedTurnItemsTx(tx, c, summarise, now); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit crashed-turn recovery tx: %w", err)
+	}
+	return crashed, nil
+}
+
+// flipCrashedTurnItemsTx flips one crashed turn's streaming/running
+// items to errored inside the recovery transaction. Backgrounded
+// tool_call launches are exempt — see RecoverCrashedTurns.
+func flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) string, now int64) error {
+	rows, err := tx.Query(
+		`SELECT id, summary FROM items
+		  WHERE thread_id = ?
+		    AND turn_index = ?
+		    AND status IN ('streaming', 'running')
+		    AND NOT (is_background = 1 AND kind = 'tool_call')`,
+		c.ThreadID, c.TurnIndex,
+	)
+	if err != nil {
+		return fmt.Errorf("store: crashed-turn item select %s/%d: %w", c.ThreadID, c.TurnIndex, err)
+	}
+	type flip struct{ id, summary string }
+	var flips []flip
+	for rows.Next() {
+		var f flip
+		if err := rows.Scan(&f.id, &f.summary); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: crashed-turn item scan: %w", err)
+		}
+		flips = append(flips, f)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("store: crashed-turn item rows err: %w", err)
+	}
+	rows.Close()
+
+	for _, f := range flips {
+		if _, err := tx.Exec(
+			`UPDATE items
+			    SET status = 'errored', summary = ?, updated_at = ?
+			  WHERE thread_id = ? AND id = ?`,
+			summarise(f.summary), now, c.ThreadID, f.id,
+		); err != nil {
+			return fmt.Errorf("store: crashed-turn item flip %s: %w", f.id, err)
+		}
 	}
 	return nil
 }
@@ -484,8 +620,10 @@ func (s *Store) activeTurnFloor(threadID string) (int, bool, error) {
 // turn is still in-flight (completed_at=NULL).
 //
 // In normal operation at most one turn per thread is in-flight at a
-// time (triage serialises turn-start via the per-thread action lock). A
-// crash or old bug can leave older NULL rows behind; once a newer turn exists
+// time (triage serialises turn-start via the per-thread action lock).
+// RecoverCrashedTurns settles crash leftovers at boot, so during an app
+// run an active result here means genuinely live provider work. A bug
+// can still leave older NULL rows behind; once a newer turn exists
 // those rows are historical corruption, not live provider work.
 //
 // Returns (Turn{}, false, nil) when no turn exists or the latest row is

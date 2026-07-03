@@ -492,9 +492,9 @@ The `turns` row carries:
 - `thread_id` FK
 - `turn_index` (incrementing per-thread counter)
 - `started_at` (ms)
-- `completed_at` (ms, nullable; null = latest turn is in-flight or
-  session died; older null rows followed by newer turns are obsolete
-  crash/error residue and are repaired by migration)
+- `completed_at` (ms, nullable; null = turn is in-flight right now.
+  Crash leftovers are settled as `interrupted` by the boot sweep — see
+  §Crash behavior — so null never survives an app restart)
 - `stop_reason` (text: `end_turn` / `max_tokens` / `tool_use` /
   `stop_sequence` / `refusal` / `error` / `interrupted`)
 - `assistant_message_id` (text, nullable) — provider-derived final
@@ -506,20 +506,39 @@ The `turns` row carries:
 
 ### Crash behavior
 
-If the app or provider crashes mid-turn, the latest `turns` row may stay
-with `completed_at=null`. On next startup / thread reopen:
+A provider crash while the app is alive settles its turn: the session
+teardown synthesizes a truncated turn-complete, which writes
+`completed_at` + `stop_reason='interrupted'` and flips the turn's
+streaming/running items to errored.
 
-- Frontend shows no active-turn spinner (spinner requires a live
-  `activeTurn` push, not a nullable DB row).
-- Frontend shows no "Worked for Xs" divider for that turn (requires
-  `completed_at`).
-- UI may optionally render an "interrupted" marker for the turn.
-- We do NOT reconcile by probing the session (see §Non-goals).
+An **app** crash mid-turn skips all of that and leaves the latest
+`turns` row with `completed_at=null` plus stranded streaming/running
+items. `Router.RecoverCrashedTurns` runs once during
+`App.ServiceStartup` (before any provider session can spawn, so every
+null row is provably crash residue) and performs the same settle the
+in-app path would have: `completed_at=now`,
+`stop_reason='interrupted'`, item flip with the " — interrupted"
+suffix (backgrounded launches exempt — the background recovery sweep
+below owns those). One transaction, O(crashed rows) via the partial
+index `idx_turns_inflight`. Without this sweep the null row wedges
+`GetActiveTurn`-guarded flows — most visibly revert, whose "interrupt
+the current turn" error is unsatisfiable when no session exists to
+interrupt.
+
+Post-sweep, a `completed_at=null` row during an app run means
+genuinely live provider work. The durable "interrupted" signal that
+survives restarts is `stop_reason='interrupted'`; the sidebar's boot
+pill (`Thread.HasIncompleteTurn`) covers both encodings — an unseen
+in-flight turn, or an unseen settled-interrupted turn.
+
+The frontend still shows no active-turn spinner for any of this
+(spinner requires a live `activeTurn` push, not a DB row), and we do
+NOT reconcile by probing the session (see §Non-goals).
 
 If a later turn exists for the same thread, any older
 `completed_at=null` row is no longer eligible to mean "active"; it is
-historical corruption from a dropped/faulty completion and should be
-settled or ignored by backend active-turn checks.
+historical corruption from a dropped/faulty completion and is ignored
+by backend active-turn checks (and settled by the same boot sweep).
 
 ### Non-goals — no session-liveness probing
 
@@ -622,9 +641,10 @@ get isTurnActive() {
 On `SwitchThread`, the frontend calls `ListRecentTurns(threadId, 2)`
 to rehydrate `latestSettledTurn` from the DB. The global active-turn
 registry is NOT rehydrated from persistence — it's only set on live
-`provider:turn_started` events. A turn with `completed_at=null` in
-the DB renders as "turn was interrupted" not "turn is currently
-active"; older null rows behind newer turns are stale history. When the user switches AWAY from a thread with a live
+`provider:turn_started` events. A crashed turn rehydrates as "turn
+was interrupted", not "turn is currently active": the boot sweep has
+settled it with `stop_reason='interrupted'` (see §Crash behavior), so
+it surfaces through the normal settled-turn projection. When the user switches AWAY from a thread with a live
 turn and back, the indicator returns because the global registry
 held the record across the switch — nothing in pane lifecycle
 clears it.

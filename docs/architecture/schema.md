@@ -18,7 +18,7 @@ the migrations win.
 | `discussion_definitions` | Reusable discussion templates. Scoped global or per-project. `UNIQUE(name, scope, project_id)`. |
 | `design_artifacts` | Design-mode HTML artifacts. `html_path` points at the on-disk file. |
 | `attachments` | Message attachments. `mime_type`, `size`, `relative_path` on disk. |
-| `turns` | Per-turn records (one row per user → assistant round-trip). `turn_id` PK, `thread_id` FK, `turn_index`, `started_at`, nullable `completed_at` (NULL = in-flight or crashed), `stop_reason`, `assistant_message_id`, `token_usage_json`, `error_message`. |
+| `turns` | Per-turn records (one row per user → assistant round-trip). `turn_id` PK, `thread_id` FK, `turn_index`, `started_at`, nullable `completed_at` (NULL = in-flight; crash leftovers are boot-swept to `interrupted`), `stop_reason`, `assistant_message_id`, `token_usage_json`, `error_message`. |
 | `thread_checkpoints` | Git checkpoint metadata captured immediately before a real user message is sent. `user_item_id` is the canonical target for revert/fork; `turn_index` is retained for ordering and Claude in-thread rollback/message forking. Rows also carry provider correlation ids (`provider_user_message_id`, `provider_parent_uuid`), `status`, compact `files` JSON, `captured_at`, `ref_name`, and `workspace_path`. |
 | `thread_tracked_files` | Workspace-relative files the agent touched in a thread, keyed by the turn where the structured edit/file-change tool completed successfully. Used to scope conversation-and-files restore plus agent-only diff previews. Bash side effects and failed edits are intentionally not inferred. |
 | `proposed_plans` | Per-plan state layered over proposed-plan payload items. Tracks immutable plan item id, thread id, revision parent item id, version, implementation marker, implementation thread/item ids, and timestamps. |
@@ -55,6 +55,7 @@ implementation markers and revision parent links.
 - `idx_channels_thread`, `idx_design_artifacts_thread` — per-thread feature lookups.
 - `turns_thread_index` on `turns(thread_id, turn_index DESC)` — backs `ListRecentTurns` for the newest-first rehydration the frontend runs on thread-switch.
 - `idx_turns_thread_completed` on `turns(thread_id, completed_at DESC) WHERE completed_at IS NOT NULL` — backs sidebar read-state checks against the newest completed turn.
+- `idx_turns_inflight` on `turns(thread_id, turn_index) WHERE completed_at IS NULL` — keeps the boot-time crashed-turn sweep (`RecoverCrashedTurns`) O(in-flight rows) instead of a full `turns` scan.
 - `thread_checkpoints UNIQUE(thread_id, user_item_id)` — enforces one checkpoint per real user message and backs message-keyed revert/fork lookups.
 - `idx_thread_checkpoints_thread_turn` on `thread_checkpoints(thread_id, turn_index)` — backs checkpoint drawer listing and previous-checkpoint lookup.
 - `idx_thread_checkpoints_provider_user` on `thread_checkpoints(thread_id, provider_user_message_id) WHERE provider_user_message_id <> ''` — updates the row when provider replay echoes the optimistic user message id.
@@ -100,7 +101,9 @@ Columns:
 - `thread_id` FK threads(id)
 - `turn_index` INTEGER — monotonic per thread, caller-assigned
 - `started_at` INTEGER (ms) — turn-start wire event timestamp
-- `completed_at` INTEGER (ms, nullable) — NULL = in-flight or crashed mid-turn
+- `completed_at` INTEGER (ms, nullable) — NULL = in-flight right now (crash
+  leftovers are settled as `interrupted` by the boot sweep, so NULL never
+  survives an app restart)
 - `stop_reason` TEXT — end_turn / max_tokens / tool_use / stop_sequence / refusal / error / interrupted
 - `assistant_message_id` TEXT — provider-derived final assistant
   message id when available. Claude derives it from the last in-stream
@@ -112,10 +115,16 @@ Columns:
 Indexes:
 - `turns_thread_index` on (thread_id, turn_index DESC) for ListRecentTurns
 - `idx_turns_thread_completed` on (thread_id, completed_at DESC) where completed_at is not NULL for sidebar read-state
+- `idx_turns_inflight` on (thread_id, turn_index) where completed_at IS NULL — keeps the boot-time crashed-turn sweep O(in-flight rows)
 
 Rules:
 - Inserted at turn-start with `completed_at=NULL`; updated at turn-complete.
-- NEVER auto-close a NULL row. Crash-interrupted turns stay NULL; the frontend treats them as "interrupted" state.
+- NEVER auto-close a NULL row while the owning session may be alive. The
+  only sanctioned settle-without-wire-event paths are triage's synthesized
+  truncated turn-complete (in-app session death) and the boot sweep
+  `RecoverCrashedTurns` (app died mid-turn; runs before any session can
+  spawn). Both settle with `stop_reason='interrupted'`, which is the durable
+  signal behind the sidebar's Interrupted pill.
 - `turn_index` is assigned by the caller (triage), not by the store.
 
 See `docs/architecture/turn-lifecycle.md` for the full lifecycle rules.

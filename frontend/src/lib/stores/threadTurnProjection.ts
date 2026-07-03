@@ -33,7 +33,9 @@ export interface SettledTurn {
  * `ListRecentTurns` binding. `completedAt` is nullable / optional:
  * Go's `json:"completedAt,omitempty"` omits the field entirely when
  * it's NULL in the DB, so callers must handle both `null` and
- * `undefined` as "in-flight / crashed."
+ * `undefined` as "in-flight." (Crashed turns don't stay NULL across
+ * restarts — the backend boot sweep settles them with
+ * `stopReason='interrupted'`.)
  */
 export interface TurnRow {
   turnId: string;

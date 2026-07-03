@@ -1061,6 +1061,34 @@ func stoppedSummary(summary string) string {
 	return summary + suffix
 }
 
+// RecoverCrashedTurns settles every turn row the previous app instance
+// left in-flight (completed_at=NULL) and flips that turn's stranded
+// streaming/running items to errored with the same " — interrupted"
+// suffix a live truncated turn-complete applies. It is the turn-level
+// sibling of RecoverOrphanedBackgroundTasks: an in-app session death
+// settles its turn through the synthesized truncated turn-complete,
+// but nothing runs when the whole app dies — leaving a NULL row that
+// GetActiveTurn reads as "turn still active", which wedged the revert
+// flow behind an interrupt that had nothing to interrupt.
+//
+// Called once during App.ServiceStartup, after the store is open and
+// before any provider session can spawn — at that point every NULL row
+// is provably a crash leftover. Idempotent: the swept rows are settled,
+// so a second run finds nothing. Crash-safe: the store runs the sweep
+// in one transaction, so dying mid-sweep leaves every row NULL for the
+// next boot. No frontend emission is needed — recovery runs before any
+// client connects, and the repaired rows are what the initial loads
+// read.
+//
+// Returns the count of settled turns.
+func (r *Router) RecoverCrashedTurns() (int, error) {
+	crashed, err := r.store.RecoverCrashedTurns(interruptedSummary, time.Now().UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("triage: recover crashed turns: %w", err)
+	}
+	return len(crashed), nil
+}
+
 // MarkUserInterrupt is the public chokepoint for the app-layer
 // interrupt flow. It flips every streaming/running item in the current
 // turn to errored with a " — stopped" suffix and records a new
