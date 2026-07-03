@@ -555,3 +555,32 @@ func TestRotateChromeDebugLog(t *testing.T) {
 		rotateChromeDebugLog("")
 	})
 }
+
+// TestBrowserArgsWebviewLogGate covers the opt-in Chromium logging flags:
+// present only when AGENT_OVERFLOW_WEBVIEW_LOG is set (in any mode — the
+// gate is the env var, not dev mode), absent otherwise so the WebView2
+// console-window side effect (WebView2Feedback #3192) stays out of normal
+// runs.
+func TestBrowserArgsWebviewLogGate(t *testing.T) {
+	hasLogging := func(args []string) bool {
+		for _, a := range args {
+			if a == "--enable-logging" {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Setenv(webviewLogEnv, "")
+	if hasLogging(browserArgs(true)) || hasLogging(browserArgs(false)) {
+		t.Error("logging flags present without opt-in")
+	}
+
+	t.Setenv(webviewLogEnv, "1")
+	if !hasLogging(browserArgs(true)) {
+		t.Error("dev: logging flags missing despite opt-in")
+	}
+	if !hasLogging(browserArgs(false)) {
+		t.Error("prod: logging flags missing despite opt-in")
+	}
+}

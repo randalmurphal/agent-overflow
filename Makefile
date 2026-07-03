@@ -141,6 +141,9 @@ dev:
 #   2. Windows launcher -> WSL backend (wsl.exe child).
 # The launcher already handles hop 2, but hop 1 must be whitelisted here
 # or Windows never receives AGENT_OVERFLOW_DEBUG in the first place.
+# AGENT_OVERFLOW_WEBVIEW_LOG (opt-in chrome_debug.log; spawns a console
+# window — closing it kills the app, WebView2Feedback #3192) only needs
+# hop 1: it is consumed by the Windows launcher itself.
 dev-wsl:
 	@if [ -z "$$WSL_DISTRO_NAME" ]; then \
 		echo "ERROR: WSL_DISTRO_NAME is unset. Run this target from inside a WSL shell."; \
@@ -160,16 +163,20 @@ dev-wsl:
 	find "$$WIN_DEV_DIR_LINUX" -maxdepth 1 -name 'agent-overflow-dev-*.exe' ! -name "agent-overflow-$$DEV_VERSION.exe" -delete 2>/dev/null || true; \
 	cp bin/agent-overflow.exe "$$WIN_DEV_EXE_LINUX"; \
 	echo "Launching $$WIN_DEV_EXE_LINUX --distro $$WSL_DISTRO_NAME"; \
+	FWD_WSLENV="$$WSLENV"; \
 	if [ -n "$(AGENT_OVERFLOW_DEBUG)" ]; then \
-		DEBUG_WSLENV="$$WSLENV"; \
-		case ":$$DEBUG_WSLENV:" in \
+		case ":$$FWD_WSLENV:" in \
 			*:AGENT_OVERFLOW_DEBUG:*) ;; \
-			*) DEBUG_WSLENV="AGENT_OVERFLOW_DEBUG$${DEBUG_WSLENV:+:$$DEBUG_WSLENV}" ;; \
+			*) FWD_WSLENV="AGENT_OVERFLOW_DEBUG$${FWD_WSLENV:+:$$FWD_WSLENV}" ;; \
 		esac; \
-		WSLENV="$$DEBUG_WSLENV" AGENT_OVERFLOW_DEBUG="$(AGENT_OVERFLOW_DEBUG)" "$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"; \
-	else \
-		"$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"; \
-	fi
+	fi; \
+	if [ -n "$(AGENT_OVERFLOW_WEBVIEW_LOG)" ]; then \
+		case ":$$FWD_WSLENV:" in \
+			*:AGENT_OVERFLOW_WEBVIEW_LOG:*) ;; \
+			*) FWD_WSLENV="AGENT_OVERFLOW_WEBVIEW_LOG$${FWD_WSLENV:+:$$FWD_WSLENV}" ;; \
+		esac; \
+	fi; \
+	WSLENV="$$FWD_WSLENV" AGENT_OVERFLOW_DEBUG="$(AGENT_OVERFLOW_DEBUG)" AGENT_OVERFLOW_WEBVIEW_LOG="$(AGENT_OVERFLOW_WEBVIEW_LOG)" "$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"
 
 # build-wsl: cross-compiles the Linux ELF backend + Windows .exe launcher
 # without running. Use this when you want to hand the .exe off (e.g.

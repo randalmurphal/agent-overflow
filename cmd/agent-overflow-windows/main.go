@@ -81,6 +81,10 @@ var payloadVersion = "dev"
 // version string, but they still need the production single-instance ID.
 var launcherMode = "prod"
 
+// webviewLogEnv opts in to Chromium's chrome_debug.log (see browserArgs).
+// dev-wsl forwards it across the WSL→Windows interop hop via WSLENV.
+const webviewLogEnv = "AGENT_OVERFLOW_WEBVIEW_LOG"
+
 // shutdownTimeout caps how long the launcher waits for the WSL-side
 // backend to drain before tearing the Job Object down.
 const shutdownTimeout = 5 * time.Second
@@ -970,25 +974,28 @@ func browserArgs(enableDevArgs bool) []string {
 		args = append(args,
 			"--remote-debugging-port=9223",
 			"--remote-debugging-address=127.0.0.1",
-			// Chromium's own debug log, written to
-			// <WebviewUserDataPath>\EBWebView\chrome_debug.log (rotated per
-			// session by rotateChromeDebugLog). Dev-only: captures Chromium
-			// internals (GPU/compositor errors — this is what root-caused
-			// the mixed-DPI GPU-kill crash, wails #5732) plus renderer
-			// CONSOLE(n) lines. "=file" keeps logging off stderr: the bare
-			// "--enable-logging" flag also streams to stderr, for which
-			// msedgewebview2 allocates a visible console window — and
-			// closing that console CTRL_CLOSE-kills every attached process,
-			// taking the whole app down with it.
-			"--enable-logging=file",
 		)
+	}
+	// Opt-in Chromium logging, written to
+	// <WebviewUserDataPath>\EBWebView\chrome_debug.log (rotated per session
+	// by rotateChromeDebugLog): GPU/compositor errors, process deaths, and
+	// renderer CONSOLE(n) lines — this log is what root-caused the mixed-DPI
+	// GPU-kill crash (wails #5732). NOT on by default because WebView2 opens
+	// a visible console window whenever Chromium logging is enabled — even
+	// for file-only destinations like --enable-logging=file
+	// (WebView2Feedback #3192, tracked priority-low with no workaround) —
+	// and closing that console CTRL_CLOSE-kills the whole app. Available in
+	// prod too: it is explicit opt-in, and field debugging is exactly when
+	// it is needed.
+	if os.Getenv(webviewLogEnv) != "" {
+		args = append(args, "--enable-logging", "--v=1")
 	}
 	return args
 }
 
 // rotateChromeDebugLog renames the previous browser session's
-// EBWebView\chrome_debug.log (written when browserArgs passes
-// --enable-logging) to chrome_debug.previous.log. Chromium truncates the
+// EBWebView\chrome_debug.log (written when Chromium logging is opted in
+// via webviewLogEnv) to chrome_debug.previous.log. Chromium truncates the
 // live file at every browser startup, and the session worth autopsying is by
 // definition the one that just died — without this rotation, relaunching
 // after a blank-window event destroys the only record of why the previous

@@ -62,16 +62,19 @@ is a GUI-subsystem exe. When debugging, look here (all under
   info-level in dev, warn+ in prod — without this wiring Wails logs go
   to a discarded GUI stderr), and the **entire WSL backend's stderr**,
   which `wsllauncher` pipes in line-by-line.
-- **`webview2-dev\EBWebView\chrome_debug.log`** (dev only; prod profile
-  is `webview2\`) — Chromium's own log: GPU/compositor errors, process
+- **`webview2-dev\EBWebView\chrome_debug.log`** (prod profile:
+  `webview2\`) — Chromium's own log: GPU/compositor errors, process
   deaths, and renderer `CONSOLE(n)` lines (frontend `console.*`).
-  Enabled by `--enable-logging=file` in `browserArgs`. Chromium
-  truncates it at every browser start, so `rotateChromeDebugLog`
-  preserves the prior session as `chrome_debug.previous.log` — after a
-  webview crash, the autopsy is in `previous.log`, not the live file.
-  Keep the `=file` value: bare `--enable-logging` also streams to
-  stderr, msedgewebview2 pops a console window for it, and closing
-  that console CTRL_CLOSE-kills the whole app.
+  **Opt-in**: run `AGENT_OVERFLOW_WEBVIEW_LOG=1 make dev-wsl` (dev-wsl
+  whitelists the var across the WSL→Windows hop via WSLENV; the gate
+  works in prod builds too). Not on by default because WebView2 opens
+  a visible console window whenever Chromium logging is enabled — even
+  file-only destinations; WebView2Feedback #3192, no workaround — and
+  closing that console CTRL_CLOSE-kills the whole app. While enabled,
+  Chromium truncates the log at every browser start, so
+  `rotateChromeDebugLog` preserves the prior session as
+  `chrome_debug.previous.log` — after a webview crash, the autopsy is
+  in `previous.log`, not the live file.
 - **DevTools** — dev builds expose remote debugging on
   `127.0.0.1:9223`.
 
