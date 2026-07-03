@@ -17,6 +17,7 @@ import {
   getTotalSize,
   initSizeStore,
   isMeasured,
+  remapSizes,
   setItemSize,
   spliceHead,
   takeSizeSnapshot,
@@ -625,5 +626,61 @@ describe('spliceHead', () => {
       expect(res).toBe(-30);
       expect(store.length).toBe(0);
     });
+  });
+});
+
+describe('remapSizes', () => {
+  it('returns false and leaves the store untouched for the identity permutation', () => {
+    const store = storeWithMeasuredOffsets([10, 20, 30], flat(40));
+    const before = snapshotFields(store);
+    expect(remapSizes(store, [0, 1, 2])).toBe(false);
+    expect(snapshotFields(store)).toEqual(before);
+  });
+
+  it('moves measured sizes with their rows', () => {
+    const store = storeWithSizes([10, 20, 30, UNMEASURED], flat(40));
+    expect(remapSizes(store, [0, 2, 1, 3])).toBe(true);
+    expect(store.sizes).toEqual([10, 30, 20, UNMEASURED]);
+    expect(getItemOffset(store, 2)).toBe(40); // 10 + 30
+    expect(getTotalSize(store)).toBe(100);
+  });
+
+  it('a key absent from the previous order comes in UNMEASURED', () => {
+    const store = storeWithSizes([10, 20, 30], flat(40));
+    expect(remapSizes(store, [0, -1, 1])).toBe(true);
+    expect(store.sizes).toEqual([10, UNMEASURED, 20]);
+    expect(isMeasured(store, 1)).toBe(false);
+  });
+
+  it('keeps the offsets memo up to the first changed index', () => {
+    const store = storeWithMeasuredOffsets([10, 20, 30, 40], flat(50));
+    // Rows 0 and 1 stay put; 2 and 3 swap. offsets[0..2] stay valid.
+    expect(remapSizes(store, [0, 1, 3, 2])).toBe(true);
+    expect(store.offsetWatermark).toBe(2);
+    expect(store.offsets.slice(0, 3)).toEqual([0, 10, 30]);
+    expect(store.offsets[3]).toBe(UNMEASURED);
+    expect(getItemOffset(store, 3)).toBe(70); // 10 + 20 + 40
+    expect(getTotalSize(store)).toBe(100);
+  });
+
+  it('handles length changes with an identity prefix', () => {
+    const grow = storeWithSizes([10, 20], flat(40));
+    expect(remapSizes(grow, [0, 1, -1])).toBe(true);
+    expect(grow.length).toBe(3);
+    expect(grow.sizes).toEqual([10, 20, UNMEASURED]);
+
+    const shrink = storeWithMeasuredOffsets([10, 20, 30], flat(40));
+    expect(remapSizes(shrink, [0, 1])).toBe(true);
+    expect(shrink.length).toBe(2);
+    expect(shrink.sizes).toEqual([10, 20]);
+    expect(getTotalSize(shrink)).toBe(30);
+  });
+
+  it('handles a mid-list insert (reorder plus growth)', () => {
+    const store = storeWithMeasuredOffsets([10, 20, 30], flat(40));
+    expect(remapSizes(store, [0, -1, 1, 2])).toBe(true);
+    expect(store.sizes).toEqual([10, UNMEASURED, 20, 30]);
+    expect(store.offsetWatermark).toBe(1);
+    expect(getTotalSize(store)).toBe(100); // 10 + 40 (estimate) + 20 + 30
   });
 });

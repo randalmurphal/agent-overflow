@@ -144,6 +144,18 @@ added and the result is sorted. This preserves row identity (and the
 engine's index-keyed measurements) while remaining correct under
 persist-then-emit ordering.
 
+Sort-position changes are the one merge outcome that is neither a tail
+nor a head change: an upsert that moves a row (e.g. a queued message
+repositioned to the turn tail on interrupt) re-sorts `items` at the
+same length. The virtualizer compares row keys every beat
+(`utils/virtual/keys.ts`); a change that isn't a pure head/tail splice
+remaps measured sizes by row identity (`engine.applyKeyedReorder`)
+instead of leaving them position-keyed. The remap — not an
+invalidation — matters because a moved row keeps its DOM size, so no
+ResizeObserver delivery follows the move; a stale position-keyed entry
+would never self-correct and rows below the move point would render at
+wrong offsets (overlap) until an unrelated resize.
+
 ## Load Paging (head-splice `shift`)
 
 `loadOlder` and `loadNewer` mutate the window at one end and prune the

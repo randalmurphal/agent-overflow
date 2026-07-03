@@ -1,6 +1,7 @@
 <script lang="ts" generics="T">
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { createEngine, mergeCompensations } from '../../utils/virtual/engine';
+  import { isPureHeadTailChange, keyedReorderPermutation } from '../../utils/virtual/keys';
   import { createRowEstimate } from '../../utils/virtual/priors';
   import type {
     ContentGeometrySample,
@@ -248,15 +249,35 @@
   });
 
   // ------------------------------------------------------------------
-  // Data-length changes (append/trim at tail, load-older at head)
+  // Data changes (tail append/trim, load-older head splice, reorders)
   // ------------------------------------------------------------------
   // $effect.pre so the engine's window is clamped to the new length
   // before the row loop renders against it.
+  //
+  // Keys are compared every beat, not just lengths: a same-length upsert
+  // can REORDER rows (e.g. a queued user message repositioned to its
+  // turn tail by the interrupt promote), and a moved row keeps its DOM
+  // size — no RO delivery follows to correct a position-keyed
+  // measurement, so the stale offsets would persist until an unrelated
+  // resize (the prose-overlaps-message bug, 2026-07-03). Pure head/tail
+  // changes stay on the applyLength path (its head-splice compensation
+  // kind is load-bearing for load-older); anything else remaps measured
+  // sizes by row identity.
+  let prevKeys: readonly unknown[] = untrack(() =>
+    data.map((item, index) => getKey(item, index)),
+  );
+
   $effect.pre(() => {
-    const length = data.length;
-    if (length === engine.getItemCount()) return;
-    const headSplice = shift ? length - engine.getItemCount() : 0;
-    applyUpdate(engine.applyLength(length, headSplice));
+    const nextKeys = data.map((item, index) => getKey(item, index));
+    const prev = prevKeys;
+    prevKeys = nextKeys;
+    const lengthChanged = nextKeys.length !== prev.length;
+    const headSplice = shift && lengthChanged ? nextKeys.length - prev.length : 0;
+    if (isPureHeadTailChange(prev, nextKeys, headSplice)) {
+      if (lengthChanged) applyUpdate(engine.applyLength(nextKeys.length, headSplice));
+      return;
+    }
+    applyUpdate(engine.applyKeyedReorder(keyedReorderPermutation(prev, nextKeys)));
   });
 
   // ------------------------------------------------------------------

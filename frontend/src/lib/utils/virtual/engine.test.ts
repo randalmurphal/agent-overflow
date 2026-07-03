@@ -271,6 +271,84 @@ describe('applyLength', () => {
   });
 });
 
+describe('applyKeyedReorder', () => {
+  it('returns null for the identity permutation', () => {
+    const engine = mountedEngine();
+    engine.applyMeasurements([[5, 80]]);
+    expect(engine.applyKeyedReorder([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])).toBeNull();
+    expect(engine.sizeAt(5)).toBe(80);
+  });
+
+  it('measured sizes travel with their rows (the reorder-overlap regression)', () => {
+    // The 2026-07-03 bug shape: a queued user message (80px, row 5) and a
+    // thinking row (240px, row 6) swap order via an upsert. Moved rows
+    // keep their DOM size, so no RO delivery follows — position-keyed
+    // sizes would leave row 6's offset computed from the 80px entry and
+    // the rows below overlapping.
+    const engine = mountedEngine();
+    engine.applyScroll(0);
+    engine.applyMeasurements([
+      [5, 80],
+      [6, 240],
+    ]);
+    const totalBefore = engine.getTotalSize();
+
+    const update = engine.applyKeyedReorder([0, 1, 2, 3, 4, 6, 5, 7, 8, 9]);
+    expect(update).not.toBeNull();
+    expect(engine.sizeAt(5)).toBe(240);
+    expect(engine.sizeAt(6)).toBe(80);
+    expect(engine.isMeasuredAt(5)).toBe(true);
+    expect(engine.isMeasuredAt(6)).toBe(true);
+    expect(engine.getItemOffset(6)).toBe(engine.getItemOffset(5) + 240);
+    expect(engine.getItemOffset(7)).toBe(engine.getItemOffset(6) + 80);
+    // A permutation moves sizes, it never creates or destroys extent.
+    expect(engine.getTotalSize()).toBe(totalBefore);
+    // Below-viewport-top moves carry no compensation.
+    expect(update?.compensation).toBeUndefined();
+  });
+
+  it('a new key comes in unmeasured', () => {
+    const engine = mountedEngine();
+    engine.applyMeasurements([[5, 80]]);
+    // Same length, but index 5's key is brand new (-1) and the old row 5
+    // moved to index 6.
+    engine.applyKeyedReorder([0, 1, 2, 3, 4, -1, 5, 7, 8, 9]);
+    expect(engine.isMeasuredAt(5)).toBe(false);
+    expect(engine.sizeAt(5)).toBe(100); // estimate
+    expect(engine.sizeAt(6)).toBe(80);
+    expect(engine.isMeasuredAt(6)).toBe(true);
+  });
+
+  it('size changes entirely above the viewport top emit remeasure-above compensation', () => {
+    const engine = mountedEngine();
+    engine.applyMeasurements([
+      [2, 150],
+      [8, 100],
+    ]);
+    engine.applyScroll(700);
+    // Swap rows 2 and 8: the region above the viewport shrinks by 50px.
+    const update = engine.applyKeyedReorder([0, 1, 8, 3, 4, 5, 6, 7, 2, 9]);
+    expect(update?.compensation).toEqual({ kind: 'remeasure-above', delta: -50, target: 650 });
+    expect(engine.sizeAt(2)).toBe(100);
+    expect(engine.sizeAt(8)).toBe(150);
+  });
+
+  it('handles a keyed change that also changes length (mid-list insert)', () => {
+    const engine = mountedEngine();
+    engine.applyMeasurements([
+      [5, 80],
+      [6, 240],
+    ]);
+    // A new row lands between old rows 5 and 6.
+    const update = engine.applyKeyedReorder([0, 1, 2, 3, 4, 5, -1, 6, 7, 8, 9]);
+    expect(update).not.toBeNull();
+    expect(engine.getItemCount()).toBe(11);
+    expect(engine.sizeAt(5)).toBe(80);
+    expect(engine.isMeasuredAt(6)).toBe(false);
+    expect(engine.sizeAt(7)).toBe(240);
+  });
+});
+
 describe('mergeCompensations (same-flush adapter merge)', () => {
   it('recomputes the combined target from summed deltas', () => {
     // Both targets derive from the same scrollOffset (100).

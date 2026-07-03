@@ -19,9 +19,11 @@ import {
   getTotalSize as storeTotalSize,
   initSizeStore,
   isMeasured,
+  remapSizes,
   setItemSize,
   spliceHead,
   takeSizeSnapshot,
+  UNMEASURED,
   updateLength,
 } from './sizes';
 import { computeWindow, EMPTY_WINDOW, fullWindow, rangesEqual, seedTailWindow } from './window';
@@ -55,6 +57,13 @@ export interface VirtualEngine {
    * inserted (+) / removed (−) at the head (the `shift` one-flush
    * contract), the rest is tail growth/shrink. */
   applyLength(count: number, headSplice?: number): EngineUpdate | null;
+  /** Row identities moved to new indices (same-length reorder or a keyed
+   * change the head/tail entry points can't express).
+   * `prevIndexByNewIndex[i]` = the row's pre-change index, -1 for a new
+   * key. Measured sizes travel with their rows — a moved row keeps its
+   * DOM size, so no RO delivery would ever correct a position-keyed
+   * stale entry. */
+  applyKeyedReorder(prevIndexByNewIndex: readonly number[]): EngineUpdate | null;
 
   getWindow(): ItemsRange;
   getTotalSize(): number;
@@ -174,6 +183,35 @@ export function createEngine(options: EngineOptions): VirtualEngine {
         setItemSize(store, index, size);
       }
 
+      return refresh(
+        delta !== 0 ? compensationFor('remeasure-above', delta) : undefined,
+        true,
+      );
+    },
+
+    applyKeyedReorder(prevIndexByNewIndex) {
+      // Pass 1 — compensation delta against PRE-mutation geometry, the
+      // same rule as applyMeasurements: effective-size changes of rows
+      // entirely above the viewport top move the reading position. Rows
+      // are offset-ordered, so the scan stops at the first row that
+      // reaches the viewport. (Estimates for unmeasured rows read the
+      // live — post-reorder — data; an approximation, but rows above the
+      // viewport are measured in practice.)
+      const oldLength = store.length;
+      const shared = Math.min(oldLength, prevIndexByNewIndex.length);
+      let delta = 0;
+      for (let i = 0; i < shared; i++) {
+        const top = storeItemOffset(store, i);
+        const oldSize = storeItemSize(store, i);
+        if (top + oldSize > scrollOffset) break;
+        const prev = prevIndexByNewIndex[i];
+        if (prev === i) continue;
+        const raw = prev >= 0 && prev < oldLength ? store.sizes[prev] : UNMEASURED;
+        const newSize = raw === UNMEASURED ? estimate.at(i) : raw;
+        delta += newSize - oldSize;
+      }
+
+      if (!remapSizes(store, prevIndexByNewIndex)) return null;
       return refresh(
         delta !== 0 ? compensationFor('remeasure-above', delta) : undefined,
         true,

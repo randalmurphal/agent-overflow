@@ -191,6 +191,59 @@ export function updateLength(store: SizeStore, length: number): number {
 }
 
 /**
+ * Keyed remap: row identities moved to new positions (a same-length
+ * reorder, a mid-list insert/removal, or any combination the head/tail
+ * entry points can't express). `prevIndexByNewIndex[i]` is the row's
+ * pre-change index, or -1 for a key that wasn't present before.
+ *
+ * Measured sizes travel WITH their rows. This matters because a moved
+ * row keeps its DOM size, so no ResizeObserver delivery follows the move
+ * — a position-keyed stale entry would never self-correct and rows below
+ * the move point would render at wrong offsets (overlap) until an
+ * unrelated resize. Rows whose key is new come in UNMEASURED.
+ *
+ * Offsets up to the first changed index stay memoized (they depend only
+ * on the identity-mapped prefix). Returns true when anything changed.
+ */
+export function remapSizes(store: SizeStore, prevIndexByNewIndex: readonly number[]): boolean {
+  const oldLength = store.length;
+  const newLength = prevIndexByNewIndex.length;
+
+  let firstChanged = -1;
+  for (let i = 0; i < newLength; i++) {
+    if (prevIndexByNewIndex[i] !== i) {
+      firstChanged = i;
+      break;
+    }
+  }
+  if (firstChanged === -1) {
+    if (newLength === oldLength) return false;
+    // Identity prefix with a pure length change: the tail entry point
+    // would also work, but handle it so callers don't need to split.
+    firstChanged = Math.min(newLength, oldLength);
+  }
+
+  const oldSizes = store.sizes;
+  const sizes = new Array<number>(newLength);
+  for (let i = 0; i < newLength; i++) {
+    const prev = prevIndexByNewIndex[i];
+    sizes[i] = prev >= 0 && prev < oldLength ? oldSizes[prev] : UNMEASURED;
+  }
+
+  const offsets = new Array<number>(newLength + 1).fill(UNMEASURED);
+  const keepWatermark = Math.min(store.offsetWatermark, firstChanged);
+  for (let i = 0; i <= keepWatermark; i++) {
+    offsets[i] = store.offsets[i];
+  }
+
+  store.length = newLength;
+  store.sizes = sizes;
+  store.offsets = offsets;
+  store.offsetWatermark = keepWatermark;
+  return true;
+}
+
+/**
  * Insert (`count > 0`) or remove (`count < 0`) rows at the head. Returns
  * the total-size delta: +sum of inserted estimates, or −sum of removed
  * sizes/estimates.
