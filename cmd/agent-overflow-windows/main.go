@@ -971,16 +971,16 @@ func browserArgs(enableDevArgs bool) []string {
 			"--remote-debugging-port=9223",
 			"--remote-debugging-address=127.0.0.1",
 			// Chromium's own debug log, written to
-			// <WebviewUserDataPath>\EBWebView\chrome_debug.log. Dev-only
-			// diagnostics for the mixed-DPI blank-window investigation: the
-			// WebView2 browser process performs an orderly shutdown mid-drag
-			// (Crashpad temp/edge_shutdown_crash.txt appears, zero crash
-			// dumps, then every controller COM call returns
-			// ERROR_INVALID_STATE), and this log is where Chromium states
-			// WHY it is exiting (GPU device-loss retry exhaustion, watchdog,
-			// controller close, ...). Remove once that failure is root-caused.
-			"--enable-logging",
-			"--v=1",
+			// <WebviewUserDataPath>\EBWebView\chrome_debug.log (rotated per
+			// session by rotateChromeDebugLog). Dev-only: captures Chromium
+			// internals (GPU/compositor errors — this is what root-caused
+			// the mixed-DPI GPU-kill crash, wails #5732) plus renderer
+			// CONSOLE(n) lines. "=file" keeps logging off stderr: the bare
+			// "--enable-logging" flag also streams to stderr, for which
+			// msedgewebview2 allocates a visible console window — and
+			// closing that console CTRL_CLOSE-kills every attached process,
+			// taking the whole app down with it.
+			"--enable-logging=file",
 		)
 	}
 	return args
