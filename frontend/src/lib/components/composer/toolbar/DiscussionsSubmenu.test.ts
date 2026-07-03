@@ -3,6 +3,11 @@
 // fire-and-forgot `StartDiscussion` and the backend does not emit a
 // `thread:updated` event — which left ChatHeader / ModeCycleButton /
 // DiscussionView showing the pre-discussion mode until reload.
+//
+// DiscussionsSubmenu is pure presentation: `definitions` and `error` are
+// props owned by ModelProviderMenu (see ensureDiscussions there). These
+// tests drive the component directly off those props instead of mocking
+// ListDiscussionsForThread.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
@@ -44,10 +49,63 @@ const architects: DiscussionDefinition = {
   updatedAt: 0,
 };
 
+const projectDef: DiscussionDefinition = {
+  id: 'proj-def',
+  name: 'Project Reviewers',
+  scope: 'project',
+  projectId: '/tmp',
+  description: 'Project-scoped crew',
+  participants: [],
+  settings: {} as DiscussionDefinition['settings'],
+  createdAt: 0,
+  updatedAt: 0,
+};
+
 describe('<DiscussionsSubmenu>', () => {
   beforeEach(() => {
     resetBindingMocks();
-    setBindingMock('ListDiscussionsForThread', async () => [architects]);
+  });
+
+  it('buckets project-scoped definitions above global ones', async () => {
+    const pane = await buildPane(makeThread({ mode: 'chat' }));
+
+    const { findByRole, findByText } = render(DiscussionsSubmenu, {
+      props: { pane, definitions: [architects, projectDef], error: null },
+    });
+
+    await findByText('Project');
+    await findByText('Global');
+    await findByRole('menuitem', { name: /Project Reviewers/i });
+    await findByRole('menuitem', { name: /Architects/i });
+  });
+
+  it('a project-scoped definition for a different project is bucketed as neither section (filtered out)', async () => {
+    const pane = await buildPane(makeThread({ mode: 'chat', projectPath: '/other' }));
+
+    const { queryByRole } = render(DiscussionsSubmenu, {
+      props: { pane, definitions: [projectDef], error: null },
+    });
+
+    // projectDef.projectId is '/tmp' but the pane's project is '/other',
+    // and its scope isn't 'global' either, so it renders in neither bucket.
+    await waitFor(() => {
+      expect(queryByRole('menuitem', { name: /Project Reviewers/i })).toBeNull();
+    });
+  });
+
+  it('renders the error prop and skips the definition list entirely', async () => {
+    const pane = await buildPane(makeThread({ mode: 'chat' }));
+
+    const { findByTestId, queryByRole } = render(DiscussionsSubmenu, {
+      props: { pane, definitions: [architects], error: 'db offline' },
+    });
+
+    const errorEl = await findByTestId('discussions-submenu-error');
+    expect(errorEl.textContent).toBe('db offline');
+    // Definitions are not rendered while an error is present, even if
+    // some were loaded previously (stale-while-revalidate keeps them in
+    // the parent's state, but the submenu shows the error, not a stale list).
+    expect(queryByRole('menuitem', { name: /Architects/i })).toBeNull();
   });
 
   it('refreshes the thread after StartDiscussion so the UI flips mode', async () => {
@@ -57,9 +115,10 @@ describe('<DiscussionsSubmenu>', () => {
     const refreshed = makeThread({ mode: 'discussion', discussionId: architects.id });
     const getThread = setBindingMock('GetThread', async () => refreshed);
 
-    const { findByRole } = render(DiscussionsSubmenu, { props: { pane } });
+    const { findByRole } = render(DiscussionsSubmenu, {
+      props: { pane, definitions: [architects], error: null },
+    });
 
-    // Wait for the definitions to hydrate + the Architects row to render.
     const row = await findByRole('menuitem', { name: /Architects/i });
     await fireEvent.click(row);
 
@@ -84,7 +143,9 @@ describe('<DiscussionsSubmenu>', () => {
       throw new Error('db offline');
     });
 
-    const { findByRole } = render(DiscussionsSubmenu, { props: { pane } });
+    const { findByRole } = render(DiscussionsSubmenu, {
+      props: { pane, definitions: [architects], error: null },
+    });
     const row = await findByRole('menuitem', { name: /Architects/i });
     await fireEvent.click(row);
 
@@ -112,7 +173,7 @@ describe('<DiscussionsSubmenu>', () => {
     const onSelectSpy = vi.fn();
 
     const { findByRole } = render(DiscussionsSubmenu, {
-      props: { pane, onSelect: onSelectSpy },
+      props: { pane, definitions: [architects], error: null, onSelect: onSelectSpy },
     });
     const row = await findByRole('menuitem', { name: /Architects/i });
     await fireEvent.click(row);
@@ -132,7 +193,9 @@ describe('<DiscussionsSubmenu>', () => {
       makeThread({ mode: 'discussion' }),
     );
 
-    const { findByRole } = render(DiscussionsSubmenu, { props: { pane } });
+    const { findByRole } = render(DiscussionsSubmenu, {
+      props: { pane, definitions: [architects], error: null },
+    });
     const row = await findByRole('menuitem', { name: /Architects/i });
     await fireEvent.click(row);
 
@@ -143,5 +206,24 @@ describe('<DiscussionsSubmenu>', () => {
     // NOT have been invoked.
     expect(getThread).not.toHaveBeenCalled();
     expect(pane.thread?.mode).toBe('chat');
+  });
+
+  // Harmless defense: even though ModelProviderMenu now hides the
+  // Discussions entry entirely for a draft/unstarted thread (empty id),
+  // startDiscussion still guards on pane.threadId in case this component
+  // is ever reached in that state some other way.
+  it('toasts instead of starting when the pane has no threadId', async () => {
+    const pane = await buildPane(makeThread({ mode: 'chat', id: '' }));
+    const start = setBindingMock('StartDiscussionByID', async () => {});
+
+    const { findByRole } = render(DiscussionsSubmenu, {
+      props: { pane, definitions: [architects], error: null },
+    });
+    const row = await findByRole('menuitem', { name: /Architects/i });
+    await fireEvent.click(row);
+
+    await waitFor(() => {
+      expect(start).not.toHaveBeenCalled();
+    });
   });
 });

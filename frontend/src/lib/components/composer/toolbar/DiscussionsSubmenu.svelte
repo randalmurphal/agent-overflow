@@ -6,6 +6,13 @@
   // selecting one promotes the current thread into discussion mode via
   // StartDiscussion.
   //
+  // Pure presentation: ModelProviderMenu owns the ListDiscussionsForThread
+  // fetch (via ensureDiscussions, called on every menu open) so it can
+  // decide whether to render the "Discussions" entry at all — the entry
+  // is hidden when zero definitions exist rather than opening onto an
+  // empty submenu. This component only renders the `definitions`/`error`
+  // props it's handed; it does not fetch.
+  //
   // Scoping: project-scoped discussions (matching the pane's project
   // path) are listed before global ones, mirroring how the old picker
   // grouped them.
@@ -13,7 +20,7 @@
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { DiscussionDefinition } from '../../../types/discussion';
   import type { Thread } from '../../../types/models';
-  import { GetThread, ListDiscussionsForThread, StartDiscussionByID } from '../../../stores/bindings';
+  import { GetThread, StartDiscussionByID } from '../../../stores/bindings';
   import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
@@ -24,6 +31,8 @@
 
   interface Props {
     pane: ThreadPane;
+    definitions: DiscussionDefinition[];
+    error: string | null;
     /**
      * Called synchronously when a discussion is picked, BEFORE the
      * async StartDiscussion round-trip begins. Lets the parent menu
@@ -37,51 +46,9 @@
     onToggleFavorite?: (definition: DiscussionDefinition) => void;
   }
 
-  let { pane, onSelect, isFavorite = () => false, onToggleFavorite }: Props = $props();
-
-  let definitions: DiscussionDefinition[] = $state([]);
-  let loading = $state(false);
-  let error: string | null = $state(null);
-  let loadGeneration = 0;
+  let { pane, definitions, error, onSelect, isFavorite = () => false, onToggleFavorite }: Props = $props();
 
   let projectPath = $derived(pane.thread?.projectPath ?? pane.thread?.workspacePath ?? '');
-
-  // Load on first mount AND whenever the pane's project path changes so
-  // the project-scoped bucket reflects the active thread.
-  $effect(() => {
-    const threadID = pane.thread?.id ?? '';
-    if (threadID === '') {
-      definitions = [];
-      loading = false;
-      error = null;
-      return;
-    }
-    // Track deps explicitly so Svelte re-runs on thread/project changes.
-    const _ = projectPath;
-    const generation = ++loadGeneration;
-    loading = true;
-    error = null;
-    void (async () => {
-      try {
-        const scoped = (await ListDiscussionsForThread(threadID)) as DiscussionDefinition[] | null;
-        if (generation !== loadGeneration) return;
-        // Merge + dedupe by id — the backend may surface the same row in
-        // both scopes depending on how the user seeded it.
-        const merged: DiscussionDefinition[] = scoped ?? [];
-        const byId = new Map<string, DiscussionDefinition>();
-        for (const d of merged) {
-          if (!byId.has(d.id)) byId.set(d.id, d);
-        }
-        definitions = Array.from(byId.values());
-      } catch (err) {
-        if (generation !== loadGeneration) return;
-        error = err instanceof Error ? err.message : String(err);
-        definitions = [];
-      } finally {
-        if (generation === loadGeneration) loading = false;
-      }
-    })();
-  });
 
   let projectDefs = $derived(
     definitions.filter((d) => d.scope === 'project' && (d.projectId ?? '') === projectPath),
@@ -120,29 +87,13 @@
   }
 </script>
 
-{#if loading}
-  <div
-    class="px-3 py-2 text-xs text-text-secondary/60"
-    data-testid="discussions-submenu-loading"
-    role="presentation"
-  >
-    Loading discussions…
-  </div>
-{:else if error}
+{#if error}
   <div
     class="px-3 py-2 text-xs text-error"
     data-testid="discussions-submenu-error"
     role="presentation"
   >
     {error}
-  </div>
-{:else if definitions.length === 0}
-  <div
-    class="px-3 py-2 text-xs text-text-secondary/60"
-    data-testid="discussions-submenu-empty"
-    role="presentation"
-  >
-    No discussions defined
   </div>
 {:else}
   {#if projectDefs.length > 0}

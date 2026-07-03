@@ -3,8 +3,10 @@
   import type { Thread } from '../../../types/models';
   import type { ModelInfo } from '../../../types/settings';
   import type { ChatBarFavorite } from '../../../stores/bindings';
+  import type { DiscussionDefinition } from '../../../types/discussion';
   import {
     ListChatBarFavorites,
+    ListDiscussionsForThread,
     SetChatBarFavorite,
     StartDiscussionByID,
     GetThread,
@@ -52,6 +54,9 @@
   let applying = $state(false);
   let favorites: ChatBarFavorite[] = $state([]);
   let favoritesLoaded = $state(false);
+  let discussionDefs: DiscussionDefinition[] = $state([]);
+  let discussionDefsError: string | null = $state(null);
+  let discussionsLoadGeneration = 0;
 
   async function ensureModels(provider: ProviderID): Promise<void> {
     try {
@@ -77,6 +82,39 @@
     }
   }
 
+  // Unlike ensureFavorites there is no loaded-once flag: definitions can
+  // be created in Settings mid-session, and this is a cheap local query,
+  // so every menu open refetches. A draft/unstarted thread (empty id)
+  // can't start a discussion at all, so the entry is simply hidden for
+  // it without a round-trip.
+  async function ensureDiscussions(): Promise<void> {
+    const threadID = pane.thread?.id ?? '';
+    if (threadID === '') {
+      discussionDefs = [];
+      discussionDefsError = null;
+      return;
+    }
+    const generation = ++discussionsLoadGeneration;
+    try {
+      const scoped = (await ListDiscussionsForThread(threadID)) as DiscussionDefinition[] | null;
+      if (generation !== discussionsLoadGeneration) return;
+      // Merge + dedupe by id — the backend may surface the same row in
+      // both scopes depending on how the user seeded it.
+      const merged: DiscussionDefinition[] = scoped ?? [];
+      const byId = new Map<string, DiscussionDefinition>();
+      for (const d of merged) {
+        if (!byId.has(d.id)) byId.set(d.id, d);
+      }
+      discussionDefs = Array.from(byId.values());
+      discussionDefsError = null;
+    } catch (err) {
+      if (generation !== discussionsLoadGeneration) return;
+      // Stale-while-revalidate: keep whatever defs were last loaded
+      // successfully rather than clearing them on a transient error.
+      discussionDefsError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
   function getModels(provider: ProviderID): ModelInfo[] {
     return getProviderModels(provider);
   }
@@ -87,6 +125,7 @@
       const provider = asProviderID(pane.thread?.provider);
       if (provider) void ensureModels(provider);
       void ensureFavorites();
+      void ensureDiscussions();
     }
   }
 
@@ -109,6 +148,7 @@
         const provider = asProviderID(pane.thread?.provider);
         if (provider) void ensureModels(provider);
         void ensureFavorites();
+        void ensureDiscussions();
       },
       close: closeMenu,
     });
@@ -214,7 +254,13 @@
   let isLocked = $derived(pane.isLocked);
   let isDiscussion = $derived(pane.thread?.mode === 'discussion');
   let activeProvider = $derived(asProviderID(pane.thread?.provider));
-  let showDiscussions = $derived(!isDiscussion && !isLocked);
+  // The error branch keeps the entry visible even with zero loaded defs
+  // so a failed fetch surfaces its error inside the submenu instead of
+  // silently hiding the feature — errors are user-facing state, never
+  // silent.
+  let showDiscussions = $derived(
+    !isDiscussion && !isLocked && (discussionDefs.length > 0 || discussionDefsError !== null),
+  );
   let visibleFavorites = $derived.by(() => {
     const settings = getSettings();
     // Hidden sets built once per provider per recompute, not per
@@ -297,6 +343,8 @@
         {#snippet children()}
           <DiscussionsSubmenu
             {pane}
+            definitions={discussionDefs}
+            error={discussionDefsError}
             onSelect={closeMenu}
             isFavorite={isDiscussionFavorite}
             onToggleFavorite={toggleDiscussionFavorite}
