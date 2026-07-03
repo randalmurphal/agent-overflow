@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -784,6 +785,13 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	app := application.New(application.Options{
 		Name:           title,
 		SingleInstance: wslSingleInstanceOptions(a.win),
+		// Route Wails' internal slog into launcher.log. Its default logger
+		// writes to stderr, which a GUI subsystem exe discards — that hid
+		// the WebView2 process-failure/recovery lines ("webview2: process
+		// failed: kind=...") during the mixed-DPI investigation.
+		Logger: slog.New(slog.NewTextHandler(log.Writer(), &slog.HandlerOptions{
+			Level: wailsLogLevel(mode),
+		})),
 		Services: []application.Service{
 			application.NewService(a),
 		},
@@ -999,6 +1007,16 @@ func rotateChromeDebugLog(dataDir string) {
 	if err := os.Rename(src, dst); err != nil {
 		log.Printf("launcher: rotate chrome_debug.log: %v", err)
 	}
+}
+
+// wailsLogLevel picks how much of Wails' internal slog reaches launcher.log:
+// info in dev (WebView2 recovery narration, window lifecycle), warn+ in
+// production so user logs only carry actionable problems.
+func wailsLogLevel(mode string) slog.Level {
+	if mode == "dev" {
+		return slog.LevelInfo
+	}
+	return slog.LevelWarn
 }
 
 // webviewDataDir returns the stable WebView2 user-data folder for this
