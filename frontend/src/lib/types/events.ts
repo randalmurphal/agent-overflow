@@ -390,6 +390,12 @@ export interface SessionDiedEvent {
   reason?: string;
   exitCode?: number;
   signal?: string;
+  /**
+   * The process's captured last stderr output, pre-sanitized backend-side
+   * (single line, hard length cap). Carries the actual failure text for
+   * exits with no wire output (bad CLI flag, missing module).
+   */
+  stderrTail?: string;
   /** Unix-millis when the exit was observed. */
   occurredAt: number;
 }

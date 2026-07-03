@@ -9,7 +9,7 @@
    *
    * Decoded meta shape (sanitizedTimelineNotificationMeta in
    * internal/triage/timeline_notifications.go):
-   *   { kind: "session_died", title, reason?, exitCode?, signal? }
+   *   { kind: "session_died", title, reason?, exitCode?, signal?, stderrTail? }
    */
   import PowerOff from 'lucide-svelte/icons/power-off';
   import Icon from '../primitives/Icon.svelte';
@@ -22,6 +22,9 @@
   const reason = $derived(typeof meta?.reason === 'string' ? meta.reason : '');
   const exitCode = $derived(typeof meta?.exitCode === 'number' ? meta.exitCode : 0);
   const signal = $derived(typeof meta?.signal === 'string' ? meta.signal : '');
+  // Backend-sanitized last stderr output — the actual failure text when
+  // the process died without wire output (bad CLI flag, missing module).
+  const stderrTail = $derived(typeof meta?.stderrTail === 'string' ? meta.stderrTail : '');
 
   // Prefer the most specific signal/exit-code we have. Reason is the
   // wire's pre-baked description; surface it as a tooltip even when we
@@ -43,6 +46,9 @@
     <div>{item.summary || 'Provider session ended'}</div>
     {#if detail}
       <div class="not-italic font-mono text-fg-hint">{detail}</div>
+    {/if}
+    {#if stderrTail}
+      <div class="not-italic font-mono text-fg-hint break-all">{stderrTail}</div>
     {/if}
   </div>
 </div>

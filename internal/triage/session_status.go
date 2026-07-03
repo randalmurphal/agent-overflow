@@ -83,6 +83,7 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 			Reason:     info.Reason,
 			ExitCode:   info.ExitCode,
 			Signal:     info.Signal,
+			StderrTail: info.StderrTail,
 			OccurredAt: now,
 		})
 	}

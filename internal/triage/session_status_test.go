@@ -30,8 +30,9 @@ func TestSessionStatusErrorPersistsAndSynthesizesTurnComplete(t *testing.T) {
 	emissions.reset()
 
 	exitMeta, _ := json.Marshal(provider.ProcessExitInfo{
-		Reason:   "provider process exited unexpectedly",
-		ExitCode: 1,
+		Reason:     "provider process exited unexpectedly",
+		ExitCode:   1,
+		StderrTail: "error: unknown option '--thinking-display'",
 	})
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
@@ -65,6 +66,11 @@ func TestSessionStatusErrorPersistsAndSynthesizesTurnComplete(t *testing.T) {
 		if got := meta["exitCode"]; got != float64(1) {
 			t.Fatalf("notification meta.exitCode: got %v, want 1", got)
 		}
+		// The captured stderr tail rides along so the timeline row can
+		// show the actual failure text, not just the exit code.
+		if got := meta["stderrTail"]; got != "error: unknown option '--thinking-display'" {
+			t.Fatalf("notification meta.stderrTail: got %v", got)
+		}
 	}
 	if !sawNotif {
 		t.Fatalf("expected a notification item with kind=session_died, got %+v", items)
@@ -81,6 +87,9 @@ func TestSessionStatusErrorPersistsAndSynthesizesTurnComplete(t *testing.T) {
 	}
 	if deathPayload.ThreadID != "t1" || deathPayload.ExitCode != 1 {
 		t.Fatalf("payload: got %+v", deathPayload)
+	}
+	if deathPayload.StderrTail != "error: unknown option '--thinking-display'" {
+		t.Fatalf("payload.StderrTail: got %q", deathPayload.StderrTail)
 	}
 
 	// 3. Synthesized truncated turn-complete reached the frontend.

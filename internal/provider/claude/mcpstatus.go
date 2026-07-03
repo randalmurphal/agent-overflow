@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/mcpstatus"
+	"agent-overflow/internal/provider"
 )
 
 // MCPStatusFetcher runs `claude mcp list` and parses the human-readable
@@ -72,30 +73,10 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 		// lines — `mcp list` returns 0 in practice, but treat any
 		// captured output as authoritative if present.
 		if stdout.Len() == 0 {
-			return nil, fmt.Errorf("claude mcp list: %w (stderr: %s)", err, sanitizeChildStderr(stderr.String()))
+			return nil, fmt.Errorf("claude mcp list: %w (stderr: %s)", err, provider.SanitizeChildStderr(stderr.String()))
 		}
 	}
 	return parseMCPList(stdout.String(), time.Now()), nil
-}
-
-// sanitizeChildStderr bounds child-process stderr before it lands in a
-// user-facing error message. The Claude CLI inherits AO's full
-// os.Environ() (intentionally — env vars are how MCP bearer-token
-// indirection is resolved), so a future CLI panic that dumped
-// process.env would otherwise channel a token through to the popup
-// toast verbatim. 256B is enough for typical CLI errors ("command not
-// found", "ECONNREFUSED", "config invalid: ...") while keeping a
-// runaway dump out of the wire. Newlines collapse so the toast
-// renders on one line.
-func sanitizeChildStderr(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", " ")
-	const cap = 256
-	if len(s) > cap {
-		return s[:cap] + "…(truncated)"
-	}
-	return s
 }
 
 // mcpListLine matches the three formats `claude mcp list` emits in

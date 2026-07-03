@@ -13,25 +13,6 @@ import (
 	"agent-overflow/internal/mcpstatus"
 )
 
-func TestSanitizeChildStderr_BoundsAndFlattens(t *testing.T) {
-	short := sanitizeChildStderr("  ENOENT: no such file\n  ")
-	if short != "ENOENT: no such file" {
-		t.Fatalf("short trim got %q", short)
-	}
-	multiline := sanitizeChildStderr("line one\nline two\nline three")
-	if strings.Contains(multiline, "\n") {
-		t.Fatalf("newlines not collapsed: %q", multiline)
-	}
-	long := sanitizeChildStderr(strings.Repeat("A", 1024))
-	if !strings.HasSuffix(long, "…(truncated)") {
-		t.Fatalf("expected truncation marker, got %q (len=%d)", long, len(long))
-	}
-	// Cap is 256B + the truncation marker.
-	if len(long) > 256+len("…(truncated)") {
-		t.Fatalf("oversized output: len=%d", len(long))
-	}
-}
-
 func TestParseClaudeMCPList_RealOutput(t *testing.T) {
 	// Captured verbatim from `claude mcp list` on a live machine.
 	// Locks the parser against the actual emitter without depending

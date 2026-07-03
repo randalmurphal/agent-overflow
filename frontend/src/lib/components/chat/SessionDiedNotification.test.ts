@@ -43,6 +43,18 @@ describe('<SessionDiedNotification>', () => {
     expect(getByText(/Exited with code 137/)).toBeInTheDocument();
   });
 
+  it('renders the captured stderr tail when meta.stderrTail is present', () => {
+    const { getByText } = render(SessionDiedNotification, {
+      props: {
+        item: makeNotification({
+          exitCode: 1,
+          stderrTail: "error: unknown option '--thinking-display'",
+        }),
+      },
+    });
+    expect(getByText(/unknown option '--thinking-display'/)).toBeInTheDocument();
+  });
+
   it('forwards meta.reason as the wrapper title for hover', () => {
     const { getByTestId } = render(SessionDiedNotification, {
       props: { item: makeNotification({ reason: 'killed by host', exitCode: 0 }) },

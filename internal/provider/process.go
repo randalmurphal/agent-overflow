@@ -49,6 +49,7 @@ type Process struct {
 	eventLogRedactor EventLogRedactor
 	threadID         string
 	provider         string
+	stderrTail *stderrTee
 	// killOnce guards the one-shot kill triggered on oversized lines so
 	// concurrent ReadLine failures (should never happen but defense in
 	// depth) do not double-signal the process group.
@@ -112,20 +113,65 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	}
 	cmd.Stdout = stdoutWrite
 
-	// Forward stderr so provider debug output is visible during development.
-	cmd.Stderr = os.Stderr
+	// Tee stderr: forward to our own stderr so provider debug output is
+	// visible during development, and retain a bounded tail so an
+	// unexpected exit can surface the provider's last words to the user
+	// (e.g. a CLI rejecting an unknown flag exits 1 with the reason only
+	// on stderr — invisible in the UI without this capture).
+	//
+	// Like stdout above, this is a manual os.Pipe rather than handing
+	// exec an io.Writer: a writer would make cmd.Wait block on exec's
+	// internal copy goroutine until stderr EOF, and a grandchild that
+	// inherited the fd (backgrounded helper, MCP server) can hold that
+	// open long past the provider's own exit. With the *os.File the fd
+	// passes straight through and Wait returns on process exit; our
+	// drain goroutine below consumes the read end independently.
+	stderrRead, stderrWrite, err := os.Pipe()
+	if err != nil {
+		stdoutRead.Close()
+		stdoutWrite.Close()
+		return nil, fmt.Errorf("provider: stderr pipe: %w", err)
+	}
+	cmd.Stderr = stderrWrite
+	stderrTail := &stderrTee{}
 
 	if err := cmd.Start(); err != nil {
 		stdoutRead.Close()
 		stdoutWrite.Close()
+		stderrRead.Close()
+		stderrWrite.Close()
 		return nil, fmt.Errorf("provider: start %s: %w", cfg.Binary, err)
 	}
 	// The child inherited stdoutWrite. The parent must close its copy so the
 	// reader observes EOF after the child exits and its final bytes drain.
 	if err := stdoutWrite.Close(); err != nil {
 		stdoutRead.Close()
+		stderrRead.Close()
+		stderrWrite.Close()
 		return nil, fmt.Errorf("provider: close parent stdout writer: %w", err)
 	}
+	// Same for the parent's stderr write end. Best-effort: a failed
+	// close only delays the drain goroutine's EOF, it doesn't affect
+	// the session.
+	_ = stderrWrite.Close()
+
+	// Drain stderr until EOF. Owns closing the read end. Exits when
+	// every writer fd is gone (the provider and any inheriting
+	// descendants), which may be after cmd.Wait returns — that's fine,
+	// the goroutine holds no Process state beyond the tee.
+	go func() {
+		defer stderrRead.Close()
+		buf := make([]byte, 4096)
+		for {
+			n, err := stderrRead.Read(buf)
+			if n > 0 {
+				_, _ = stderrTail.Write(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 
 	// We use bufio.Reader (not Scanner) so we control the per-line size
 	// check ourselves. Scanner's ErrTooLong path aborts the scan but leaves
@@ -139,6 +185,7 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 		stdin:            stdin,
 		stdout:           reader,
 		stdoutFile:       stdoutRead,
+		stderrTail:       stderrTail,
 		done:             make(chan struct{}),
 		eventLogger:      cfg.EventLogger,
 		eventLogRedactor: cfg.EventLogRedactor,
@@ -345,6 +392,51 @@ func (p *Process) PID() int {
 		return 0
 	}
 	return p.cmd.Process.Pid
+}
+
+// StderrTail returns the most recent stderr output the subprocess
+// wrote, bounded by stderrTailCap. Raw bytes — callers that put this
+// in user-facing text MUST route it through SanitizeChildStderr (see
+// ProcessExitInfo's security note).
+func (p *Process) StderrTail() string {
+	return p.stderrTail.Tail()
+}
+
+// stderrTailCap bounds the retained stderr tail. 2 KB holds a typical
+// CLI startup error (arg parse failure, missing module, ENOENT) with
+// room for a few preceding warning lines, while keeping a runaway
+// debug stream from accumulating in memory for the session's lifetime.
+const stderrTailCap = 2048
+
+// stderrTee forwards subprocess stderr to the parent's stderr while
+// retaining the last stderrTailCap bytes for exit diagnostics. Fed by
+// the drain goroutine in Spawn, read by StderrTail after exit.
+//
+// Write never returns an error: the os.Stderr forward is best-effort
+// (a closed fd or full pipe must not stop the capture this type
+// exists for).
+type stderrTee struct {
+	mu   sync.Mutex
+	tail []byte
+}
+
+func (t *stderrTee) Write(p []byte) (int, error) {
+	_, _ = os.Stderr.Write(p)
+	t.mu.Lock()
+	t.tail = append(t.tail, p...)
+	if len(t.tail) > stderrTailCap {
+		trimmed := make([]byte, stderrTailCap)
+		copy(trimmed, t.tail[len(t.tail)-stderrTailCap:])
+		t.tail = trimmed
+	}
+	t.mu.Unlock()
+	return len(p), nil
+}
+
+func (t *stderrTee) Tail() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return string(t.tail)
 }
 
 func (p *Process) logEvent(direction string, data []byte) {

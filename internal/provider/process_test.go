@@ -427,7 +427,7 @@ func TestMarshalProcessExitMetaForExitCode(t *testing.T) {
 
 	<-p.Done()
 
-	data := MarshalProcessExitMeta(p.Err())
+	data := MarshalProcessExitMeta(p.Err(), "")
 	var meta ProcessExitInfo
 	if err := json.Unmarshal(data, &meta); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -453,7 +453,7 @@ func TestMarshalProcessExitMetaForSignal(t *testing.T) {
 
 	<-p.Done()
 
-	data := MarshalProcessExitMeta(p.Err())
+	data := MarshalProcessExitMeta(p.Err(), "")
 	var meta ProcessExitInfo
 	if err := json.Unmarshal(data, &meta); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -468,7 +468,7 @@ func TestMarshalProcessExitMetaForSignal(t *testing.T) {
 }
 
 func TestMarshalProcessExitMetaForNilError(t *testing.T) {
-	data := MarshalProcessExitMeta(nil)
+	data := MarshalProcessExitMeta(nil, "")
 	var meta ProcessExitInfo
 	if err := json.Unmarshal(data, &meta); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -482,7 +482,7 @@ func TestMarshalProcessExitMetaForNonExitError(t *testing.T) {
 	// Simulate a fork/exec error that would leak a filesystem path
 	// if passed through verbatim.
 	err := fmt.Errorf("fork/exec /home/user/.local/bin/claude: no such file or directory")
-	data := MarshalProcessExitMeta(err)
+	data := MarshalProcessExitMeta(err, "")
 	var meta ProcessExitInfo
 	if jsonErr := json.Unmarshal(data, &meta); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
@@ -492,6 +492,83 @@ func TestMarshalProcessExitMetaForNonExitError(t *testing.T) {
 	}
 	if strings.Contains(string(data), "/home/") {
 		t.Fatal("marshaled metadata leaks filesystem path")
+	}
+}
+
+func TestStderrTailCapturesFinalOutput(t *testing.T) {
+	ctx := context.Background()
+	p, err := Spawn(ctx, SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", `echo "error: unknown option '--thinking-display'" >&2; exit 1`},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	<-p.Done()
+
+	// The drain goroutine consumes stderr independently of cmd.Wait, so
+	// poll briefly rather than asserting on the first read. Production
+	// has the same grace via WaitProcessExitErr's 100ms reap window.
+	var tail string
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		tail = p.StderrTail()
+		if strings.Contains(tail, "unknown option '--thinking-display'") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("StderrTail = %q, want captured stderr line", tail)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	data := MarshalProcessExitMeta(p.Err(), tail)
+	var meta ProcessExitInfo
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if meta.ExitCode != 1 {
+		t.Fatalf("ExitCode = %d, want 1", meta.ExitCode)
+	}
+	if !strings.Contains(meta.StderrTail, "unknown option") {
+		t.Fatalf("StderrTail meta = %q, want sanitized stderr", meta.StderrTail)
+	}
+}
+
+func TestStderrTailKeepsMostRecentBytes(t *testing.T) {
+	tee := &stderrTee{}
+	if _, err := tee.Write([]byte(strings.Repeat("x", stderrTailCap))); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := tee.Write([]byte("THE-END")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	tail := tee.Tail()
+	if len(tail) != stderrTailCap {
+		t.Fatalf("tail len = %d, want cap %d", len(tail), stderrTailCap)
+	}
+	if !strings.HasSuffix(tail, "THE-END") {
+		t.Fatalf("tail should keep the most recent bytes, got suffix %q", tail[len(tail)-16:])
+	}
+}
+
+func TestSanitizeChildStderrBoundsAndFlattens(t *testing.T) {
+	short := SanitizeChildStderr("  ENOENT: no such file\n  ")
+	if short != "ENOENT: no such file" {
+		t.Fatalf("short trim got %q", short)
+	}
+	multiline := SanitizeChildStderr("line one\nline two\r\nline three")
+	if strings.ContainsAny(multiline, "\n\r") {
+		t.Fatalf("newlines not collapsed: %q", multiline)
+	}
+	long := SanitizeChildStderr(strings.Repeat("A", 1024))
+	if !strings.HasSuffix(long, "…(truncated)") {
+		t.Fatalf("expected truncation marker, got %q (len=%d)", long, len(long))
+	}
+	// Cap is 256B + the truncation marker.
+	if len(long) > 256+len("…(truncated)") {
+		t.Fatalf("oversized output: len=%d", len(long))
 	}
 }
 

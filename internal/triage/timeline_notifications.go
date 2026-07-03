@@ -319,6 +319,9 @@ func addSessionDiedNotificationMeta(meta map[string]any, raw json.RawMessage) {
 	if signal := strings.TrimSpace(info.Signal); signal != "" {
 		meta["signal"] = signal
 	}
+	if tail := strings.TrimSpace(info.StderrTail); tail != "" {
+		meta["stderrTail"] = tail
+	}
 }
 
 func addHookNotificationMeta(meta map[string]any, raw json.RawMessage) {

@@ -69,10 +69,15 @@ type TurnCompletedEvent struct {
 // working indicator, item upsert persists history, this event lights
 // the banner with Reconnect.
 type SessionDiedEvent struct {
-	ThreadID   string `json:"threadId"`
-	Reason     string `json:"reason,omitempty"`
-	ExitCode   int    `json:"exitCode,omitempty"`
-	Signal     string `json:"signal,omitempty"`
+	ThreadID string `json:"threadId"`
+	Reason   string `json:"reason,omitempty"`
+	ExitCode int    `json:"exitCode,omitempty"`
+	Signal   string `json:"signal,omitempty"`
+	// StderrTail is the provider process's captured last stderr output,
+	// pre-sanitized by provider.MarshalProcessExitMeta (single line,
+	// hard length cap). It carries the actual failure text for exits
+	// with no wire output (bad CLI flag, missing module).
+	StderrTail string `json:"stderrTail,omitempty"`
 	OccurredAt int64  `json:"occurredAt"`
 }
 

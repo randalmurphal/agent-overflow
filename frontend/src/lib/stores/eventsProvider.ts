@@ -339,10 +339,15 @@ export function applySessionDied(evt: SessionDiedEvent): void {
 function sessionDiedBannerMessage(evt: SessionDiedEvent): string {
   const reason = (evt.reason ?? '').trim();
   const signal = (evt.signal ?? '').trim();
-  if (reason) return reason;
-  if (signal) return `Provider session terminated by signal ${signal}`;
-  if (evt.exitCode) return `Provider session exited with code ${evt.exitCode}`;
-  return 'Provider session exited unexpectedly';
+  const stderrTail = (evt.stderrTail ?? '').trim();
+  let base = 'Provider session exited unexpectedly';
+  if (reason) base = reason;
+  else if (signal) base = `Provider session terminated by signal ${signal}`;
+  else if (evt.exitCode) base = `Provider session exited with code ${evt.exitCode}`;
+  // The stderr tail is the actual failure text for a process that died
+  // without wire output (bad CLI flag, missing module) — surface it so
+  // the banner is self-diagnosing instead of just "exited with code 1".
+  return stderrTail ? `${base}: ${stderrTail}` : base;
 }
 
 /**

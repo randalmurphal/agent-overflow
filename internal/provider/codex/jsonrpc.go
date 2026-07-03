@@ -284,7 +284,7 @@ func (s *Session) readLoop() {
 				Kind:      provider.EventSessionStatus,
 				ThreadID:  s.threadID,
 				Content:   "error",
-				Meta:      provider.MarshalProcessExitMeta(exitErr),
+				Meta:      provider.MarshalProcessExitMeta(exitErr, s.proc.StderrTail()),
 				Timestamp: time.Now(),
 			})
 		}
