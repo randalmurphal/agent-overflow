@@ -39,11 +39,16 @@ defensive escape); the restore `$effect` calls
 `pane.switchGeneration`, not only `pane.threadId`.
 
 The scroll-session machinery extracted from `MessageTimeline.svelte`
-lives in four sibling modules: `timelineRestore.svelte.ts` (thread-switch
+lives in seven sibling modules: `timelineRestore.svelte.ts` (thread-switch
 restore sessions and scroll snapshots), `timelineSizePriors.svelte.ts`
 (per-thread row size priors, incl. `ROW_KIND_ESTIMATE_PX`),
-`timelinePaging.ts` (load-older/newer gates and handlers), and
-`timelineWindowAnchor.svelte.ts` (prune-shift anchoring).
+`timelinePaging.ts` (load-older/newer gates and handlers),
+`timelineWindowAnchor.svelte.ts` (prune-shift anchoring),
+`timelineRowProjection.svelte.ts` (the node-derivation pipeline: grouping,
+the reveal gate, rail classification, response-pill duration),
+`timelineDiagnostics.ts` (render/state tracing and the dev-only memory /
+pane-geometry / row-resize / margin-divergence / reasoning-tail-jump
+probes), and `timelineRowUiPrune.ts` (offscreen row-UI-state pruning).
 `MessageTimeline` keeps only the thin `$effect` bodies that call into
 them.
 

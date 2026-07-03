@@ -71,9 +71,9 @@ Read that before touching:
 - `src/lib/stores/threadItemCache.ts`
 - `src/lib/stores/threadScrollSnapshots.ts`
 - `src/lib/components/chat/MessageTimeline.svelte`
-- `src/lib/components/chat/timeline{Restore,SizePriors,WindowAnchor}.svelte.ts`
-  and `timelinePaging.ts` (the scroll-session modules extracted from
-  MessageTimeline)
+- `src/lib/components/chat/timeline{Restore,SizePriors,WindowAnchor,RowProjection}.svelte.ts`
+  and `timeline{Paging,Diagnostics,RowUiPrune}.ts` (the scroll-session
+  modules extracted from MessageTimeline)
 - `src/lib/components/chat/TimelineVirtualizer.svelte`
 - `src/lib/components/discussion/ChannelView.svelte`
 - `src/lib/utils/scroll/` (`index.svelte.ts` controller + resolver/intent/spring/observers)

@@ -1,28 +1,15 @@
 <script lang="ts">
-  import { onDestroy, setContext, tick, untrack } from 'svelte';
+  import { onDestroy, setContext } from 'svelte';
   import type {
     PaneScrollController,
     ThreadPane,
   } from '../../stores/thread.svelte';
-  import type { Item } from '../../types/models';
-  import { formatElapsedSeconds } from '../../utils/format';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../../utils/springAnimationLatch';
   import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
   import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
   import TimelineVirtualizer from './TimelineVirtualizer.svelte';
-  import {
-    groupItemsBySubagent,
-    sliceRevealedNodes,
-    timelineNodeKey,
-    type TimelineNode,
-  } from '../../utils/subagentGrouping';
-  import { groupConsecutiveReads } from '../../utils/readGrouping';
-  import { timelineRowDecorations } from './timelineRows';
-  import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
-  import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
-  import { filterRedundantNotifications } from '../../utils/notificationFilter';
-  import { patchStructuralTimelineNodeItemRefs } from '../../utils/timelineNodePatch';
+  import { timelineNodeKey, type TimelineNode } from '../../utils/subagentGrouping';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
   import ReadGroupRow from './ReadGroupRow.svelte';
@@ -31,33 +18,17 @@
   import TimelineLeaf from './TimelineLeaf.svelte';
   import WaitGroup from './WaitGroup.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
-  import {
-    recordTimelineRenderTrace,
-    startTimelineRowResizeTrace,
-    startRowMarginDivergenceTrace,
-    startReasoningTailJumpTrace,
-  } from './messageTimelineTrace';
-  import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
-  import {
-    countMountedTimelineMemoryNodes,
-    installTimelineMemoryDiagnostics,
-  } from '../../utils/timelineMemoryDiagnostics';
-  import {
-    installPaneGeometryProbe,
-    type PaneGeometrySnapshot,
-  } from '../../utils/paneGeometryProbe';
   import type { UserMessageActions } from './userMessageActions';
   import { resolveVisibleTimelineNodeIndex } from './timelineScroll';
   import { createTimelineTargetFlash } from './timelineTargetFlash.svelte';
-  import {
-    collectTimelineRowUiRetention,
-    timelineRowUiPruneSignature,
-  } from './timelineRowUiRetention';
   import { observeScrollSurfaceContentWidth } from './scrollSurfaceWidth';
   import { createTimelineRestore } from './timelineRestore.svelte';
   import { createTimelineSizePriors } from './timelineSizePriors.svelte';
   import { createTimelinePaging } from './timelinePaging';
   import { createTimelineWindowAnchor } from './timelineWindowAnchor.svelte';
+  import { createTimelineRowProjection } from './timelineRowProjection.svelte';
+  import { createTimelineDiagnostics } from './timelineDiagnostics';
+  import { createTimelineRowUiPrune } from './timelineRowUiPrune';
 
   // Extra buffer rendered above + below the viewport. Sized for two viewports
   // worth of rows on each side so fast scrolls (trackpad fling, scrollbar
@@ -67,12 +38,6 @@
   // DOM/component state for the smoother scroll. Revisit only if it's
   // ever measured to hurt mount-time on first-open.
   const BUFFER_SIZE_PX = 1800;
-  // Expansion handles keep loaded payload bytes and Svelte effect roots so
-  // rows can survive normal windowing remounts. Keep that cache near the
-  // viewport and tail only; old offscreen rows remount collapsed instead of
-  // retaining detached DOM through stale component contexts.
-  const ROW_UI_RETAIN_NODE_BUFFER = 96;
-  const ROW_UI_RETAIN_TAIL_NODE_COUNT = 64;
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
   const BOTTOM_PAD_PX = 16;
@@ -97,30 +62,6 @@
     `left top / calc(100% - ${SCROLLBAR_SAFE_PX}px) 100% no-repeat, ` +
     `linear-gradient(#000, #000) right top / ${SCROLLBAR_SAFE_PX}px 100% no-repeat`;
   const TARGET_FLASH_MS = 900;
-  // Leaf item kinds that participate in the continuous left-border
-  // rail. Subagent / wait group containers also participate so the
-  // rail stays continuous through nested cards and the agent card's
-  // chevron/icon/label gutter aligns with adjacent tool rows — see
-  // docs/specs/tool-call-ui-redesign/README.md.
-  const RAIL_LEAF_KINDS = new Set<string>([
-    'tool_call',
-    'tool_completion',
-    'thinking',
-  ]);
-  const RAIL_GROUP_KINDS = new Set<string>([
-    'group',
-    'wait_group',
-    'read_group',
-  ]);
-  // Tool rows whose body is a structured full-width card rather than
-  // the compact chev/icon/label/preview pattern — these break out of
-  // the rail so the vertical line doesn't run alongside the
-  // structured body (which would otherwise look like it belongs with
-  // the tool gutter even though the card spans the whole row).
-  // Proposed-plan rows are the only entry today; extend the set
-  // alongside any future card-style payload kind.
-  const RAIL_EXEMPT_PAYLOAD_KINDS = new Set<string>(['proposed_plan']);
-  const EMPTY_RECEIVER_LABELS = new Map<string, string>();
   // happy-dom returns 0 for clientHeight/clientWidth, which makes the
   // windowing engine mount zero rows. In happy-dom test runs we mount
   // everything via the virtualizer's renderAll seam so test assertions
@@ -164,88 +105,16 @@
 
   const targetFlash = createTimelineTargetFlash(TARGET_FLASH_MS);
 
-  function currentTimelineLeafItem(node: TimelineNode): Item | null {
-    if (node.kind !== 'leaf') return null;
-    return pane.getItemById(node.item.id) ?? node.item;
-  }
-
-  function timelineNodeHasRail(node: TimelineNode, leafItem: Item | null): boolean {
-    if (leafItem) {
-      return RAIL_LEAF_KINDS.has(leafItem.kind)
-        && !RAIL_EXEMPT_PAYLOAD_KINDS.has(leafItem.payloadKind ?? '');
-    }
-    return RAIL_GROUP_KINDS.has(node.kind);
-  }
-
-  // Two-phase derivation: structuralNodes runs the expensive grouping
-  // pipeline only when the item window changes shape (timelineRevision
-  // bump). groupedNodes patches only child-bearing structural roots
-  // (subagent/wait groups); plain leaf rows and read_group rows resolve
-  // their current items inside their row components so ordinary
-  // streaming does not rebuild the virtualizer data array.
-  // Stable identity on purpose: both derivations below receive this and
-  // re-read fold state via the pane on each run (fold mutations always
-  // ride a timelineRevision bump, so no extra reactivity is needed).
-  const subagentAggregates = (anchorId: string) => pane.subagentLiveAggregate(anchorId);
-  let structuralNodes = $derived.by(() => {
-    pane.timelineRevision;
-    return untrack(() =>
-      groupConsecutiveReads(
-        groupItemsBySubagent(filterRedundantNotifications(pane.items), subagentAggregates),
-      ),
-    );
-  });
-  function structuralPatchIndexesFor(nodes: readonly TimelineNode[]): number[] {
-    const indexes: number[] = [];
-    for (let i = 0; i < nodes.length; i += 1) {
-      const node = nodes[i];
-      if (node.kind === 'group' || node.kind === 'wait_group') indexes.push(i);
-    }
-    return indexes;
-  }
-  let structuralPatchIndexes = $derived(structuralPatchIndexesFor(structuralNodes));
-  let groupedNodes = $derived.by(() =>
-    patchStructuralTimelineNodeItemRefs(
-      structuralNodes,
-      structuralPatchIndexes,
-      (id) => pane.getItemById(id),
-      subagentAggregates,
-    ),
-  );
-  // Reveal gate: while a turn streams, the pane's sequencer holds the next
-  // top-level row back until the current item's smoother drains
-  // (`pane.revealBoundary`). `sliceRevealedNodes` returns the SAME array
-  // reference when nothing is withheld (boundary null, or the frontier is the
-  // tail node), so this is zero-cost outside the brief withhold windows.
-  // Everything index-based downstream (virtualizer data, decorations,
-  // scroll-to-index) must read THIS, not `groupedNodes`, so the indices
-  // line up with what the virtualizer actually renders.
-  let revealedNodes = $derived(sliceRevealedNodes(groupedNodes, pane.revealBoundary));
-  let codexReceiverLabels = $derived.by(() => {
-    const provider = pane.thread?.provider;
-    // Receiver labels come from spawn-row metadata. Summary-only streaming
-    // deltas do not change that metadata and do not bump timelineRevision.
-    pane.timelineRevision;
-
-    return provider === PROVIDER_DEFINITIONS.codex.id
-      ? untrack(() => codexSubagentReceiverLabels(pane.items))
-      : EMPTY_RECEIVER_LABELS;
-  });
-
-  let rowDecorations = $derived.by(() => {
-    const activeTurnIndex = getActiveTurn(pane.threadId)?.turnIndex ?? null;
-    // Decoration sets depend on row structure and active-turn exclusion,
-    // not the growing summary text inside an existing row. Track
-    // `pane.revealBoundary` (a $state that only changes when the gate
-    // advances — NOT per streaming delta) so divider/boundary indexes
-    // realign with the gated set without recomputing on every chunk;
-    // `revealedNodes` is read inside `untrack` because structural/group
-    // patches can change its array ref even when the boundary is unchanged.
-    pane.timelineRevision;
-    pane.revealBoundary;
-
-    return untrack(() => timelineRowDecorations(revealedNodes, activeTurnIndex));
-  });
+  // Node-derivation pipeline (structural grouping, the reveal gate, rail
+  // classification, response-pill duration) lives in
+  // timelineRowProjection.svelte.ts. `revealedNodes` gets a local alias
+  // because it's referenced throughout this component (factory option
+  // closures below, the template, scroll-snapshot capture) — the alias is a
+  // plain property read, so it carries the SAME array reference reactively
+  // without wrapping or copying it; that identity flows into the
+  // virtualizer and index-based decorations downstream.
+  const rows = createTimelineRowProjection({ getPane: () => pane });
+  let revealedNodes = $derived(rows.revealedNodes);
 
   // Animation mode is keyed on whether LIVE timeline content advanced
   // recently (`pane.lastLiveContentAt`), NOT on whether a provider turn
@@ -388,13 +257,31 @@
     getListRef: () => listRef,
     getScrollEl: () => scrollEl,
     getRevealedNodes: () => revealedNodes,
-    getGroupedNodes: () => groupedNodes,
+    getGroupedNodes: () => rows.groupedNodes,
     findTimelineNodeIndex,
     persistSizePriors: () => sizePriors.maybePersistSizePriors(),
     armWarmupWithReset,
     resetAutoLoadGates: () => paging.resetGates(),
     clearTimelineWindowPruneShift: () => windowAnchor.clearTimelineWindowPruneShift(),
     targetFlash,
+  });
+
+  const diag = createTimelineDiagnostics({
+    getPane: () => pane,
+    stick,
+    getScrollEl: () => scrollEl,
+    getContentEl: () => contentEl,
+    getListRef: () => listRef,
+    getRevealedNodes: () => revealedNodes,
+    getScrollSurfaceContentWidth: () => scrollSurfaceContentWidth,
+    getRestoredThreadId: () => restore.restoredThreadId,
+  });
+
+  const prune = createTimelineRowUiPrune({
+    getPane: () => pane,
+    getListRef: () => listRef,
+    getRevealedNodes: () => revealedNodes,
+    isTest: IS_TEST,
   });
 
   // Depends on windowAnchor (module 4), so declared here rather than
@@ -522,237 +409,40 @@
   // 'composer-geometry' so activity-rail changes during streaming can
   // continue the spring.
 
-  // Diagnostic UI render trace — extracted to messageTimelineTrace.ts.
-  // Production builds short-circuit at isUiRenderTraceEnabled() inside
-  // the helper, so this $effect's only steady-state cost is the reactive
-  // dep tracking.
+  // Diagnostic UI render trace, memory/geometry probes, and the
+  // trace-flag gated row-resize / margin-divergence / reasoning-tail-jump
+  // oracles all live in timelineDiagnostics.ts; production builds
+  // short-circuit inside each helper, so these thin effects' only
+  // steady-state cost is the reactive dep tracking their called method
+  // performs.
   $effect(() => {
-    pane.threadId;
-    pane.items.length;
-    pane.timelineRevision;
-    revealedNodes.length;
-    recordTimelineRenderTrace(pane, revealedNodes, scrollEl, listRef);
+    diag.recordRenderTrace();
   });
 
-  $effect(() => installTimelineMemoryDiagnostics(pane.paneId, () => ({
-    threadId: pane.threadId || null,
-    itemWindowItems: pane.items.length,
-    revealedNodes: revealedNodes.length,
-    oldestLoadedCursor: pane.oldestLoadedCursor,
-    newestLoadedCursor: pane.newestLoadedCursor,
-    oldestLoadedTurnIndex: pane.oldestLoadedTurnIndex,
-    newestLoadedTurnIndex: pane.newestLoadedTurnIndex,
-    hasMoreHistory: pane.hasMoreHistory,
-    hasMoreNewer: pane.hasMoreNewer,
-    loadingOlder: pane.loadingOlder,
-    loadingNewer: pane.loadingNewer,
-    ...countMountedTimelineMemoryNodes(scrollEl),
-    paneState: pane.debugMemoryStats(),
-  })));
+  $effect(() => diag.memoryDiagnosticsSnapshotInstall());
 
-  // Dev-only per-pane scroll-geometry probe for the width-reflow strand
-  // (last message left floating high after a pane widens, never self-correcting).
-  // Reports the engine's per-row slot size vs the real DOM row height, so a
-  // Ctrl+Shift+B capture at a stable strand names the mechanism. Reads THIS
-  // pane's controller + refs directly, so it is immune to __stickState's
-  // last-writer-wins. See utils/paneGeometryProbe.ts.
-  function captureTimelineGeometry(): PaneGeometrySnapshot {
-    const snapshot: PaneGeometrySnapshot = {
-      paneId: pane.paneId,
-      threadId: pane.threadId || null,
-      isAtBottom: stick.isAtBottom,
-      isSticky: stick.isSticky,
-      escapedFromLock: stick.escapedFromLock,
-      isWarm: stick.isWarm,
-      scrollTop: null,
-      scrollHeight: null,
-      clientHeight: null,
-      clientWidth: null,
-      distanceFromBottom: null,
-      scrollSurfaceContentWidth,
-      itemsLength: pane.items.length,
-      engineTotalSize: null,
-      bottomRenderedIndex: null,
-      rows: [],
-    };
-    try {
-      const surface = scrollEl;
-      if (surface) {
-        snapshot.scrollTop = Math.round(surface.scrollTop);
-        snapshot.scrollHeight = Math.round(surface.scrollHeight);
-        snapshot.clientHeight = Math.round(surface.clientHeight);
-        snapshot.clientWidth = Math.round(surface.clientWidth);
-        snapshot.distanceFromBottom = Math.round(
-          surface.scrollHeight - surface.scrollTop - surface.clientHeight,
-        );
-      }
+  $effect(() => diag.geometryProbeInstall());
 
-      const list = listRef;
-      if (list) {
-        snapshot.engineTotalSize = Math.round(list.getTotalSize());
-      }
-
-      if (contentEl) {
-        const itemCount = revealedNodes.length;
-        const wrappers = contentEl.querySelectorAll<HTMLElement>('[data-row-index]');
-        let bottomIndex = -1;
-        for (const wrapper of wrappers) {
-          const index = Number(wrapper.dataset.rowIndex);
-          if (!Number.isInteger(index)) continue;
-          const wrapperHeight = wrapper.offsetHeight;
-          // The engine's slot for this index: measured size, or the
-          // estimate the row is currently placed at.
-          const slotSize =
-            list && index >= 0 && index < itemCount ? Math.round(list.sizeAt(index)) : null;
-          snapshot.rows.push({
-            index,
-            wrapperHeight,
-            slotSize,
-            slotVsWrapper: slotSize === null ? null : slotSize - wrapperHeight,
-          });
-          if (index > bottomIndex) bottomIndex = index;
-        }
-        snapshot.rows.sort((a, b) => a.index - b.index);
-        snapshot.bottomRenderedIndex = bottomIndex >= 0 ? bottomIndex : null;
-      }
-    } catch (err) {
-      snapshot.error = String(err);
-    }
-    return snapshot;
-  }
-
-  $effect(() => installPaneGeometryProbe(pane.paneId, captureTimelineGeometry));
-
-  // Trace virtualizer remount transitions: listRef goes undefined →
-  // defined when the {#key pane.threadId} block remounts the
-  // virtualizer. A stale scrollTop from the outgoing thread can be
-  // visible here until the restore effect lands.
   $effect(() => {
-    if (!isUiRenderTraceEnabled()) return;
-    const bound = listRef !== undefined;
-    recordUiTrace('timeline.listRef.bind', {
-      bound,
-      threadId: pane.threadId,
-      restoredThreadId: restore.restoredThreadId,
-      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-      scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
-      clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-      groupedNodesLength: revealedNodes.length,
-    });
+    diag.recordListRefBindTrace();
   });
 
-  // Per-row resize tracker. Diagnostic-only — gated on the trace flag, so
-  // production builds skip it entirely. The helper observes mounted
-  // [data-row-index] wrappers with ResizeObserver and keeps its
-  // MutationObserver scoped to row add/remove discovery, so streaming text
-  // mutations do not trigger trace-side layout measurements.
-  $effect(() => {
-    if (!isUiRenderTraceEnabled() || !contentEl) return;
-    return startTimelineRowResizeTrace(contentEl);
-  });
+  $effect(() => diag.rowResizeTraceInstall());
 
-  // Settle-flicker regression oracle. Observes the `contain: layout` VirtualRow
-  // wrappers AND their inner [data-row-index] rows, and emits
-  // `timeline.margin.diverge` only when a frame moves the wrapper by a
-  // different amount than the row — the escaped-margin signature the
-  // `[data-row-geometry-content] { display: flow-root }` fix eliminated. With
-  // the fix in place it stays silent; any emission flags a new wrapper chain
-  // that re-opened the collapse-out. Same trace-flag gate, so production skips
-  // it entirely.
-  $effect(() => {
-    if (!isUiRenderTraceEnabled() || !contentEl) return;
-    return startRowMarginDivergenceTrace(contentEl);
-  });
+  $effect(() => diag.marginDivergenceTraceInstall());
 
-  // Streaming-thinking flicker regression oracle. Tracks each reasoning-tail
-  // body and emits `timeline.reasoning.tailJump` only when a frame re-wraps it
-  // (width change) with no text delta yet leaves the newest line below the
-  // 3-line window — the stale imperative-pin signature the TailClampedText
-  // flex bottom-anchor eliminated. Silent with the fix; an emission flags a
-  // regression (or, on the pre-fix build, confirms the trigger fires live).
-  // Same trace-flag gate, so production skips it entirely.
-  $effect(() => {
-    if (!isUiRenderTraceEnabled() || !contentEl) return;
-    return startReasoningTailJumpTrace(contentEl);
-  });
+  $effect(() => diag.reasoningTailJumpTraceInstall());
 
   // ============================================================
   // Helpers
   // ============================================================
   // Pure helpers live alongside the TimelineNode type in
-  // subagentGrouping.ts; the local thin wrappers below adapt them to the
+  // subagentGrouping.ts; the local thin wrapper below adapts them to the
   // current groupedNodes array so the template doesn't have to thread
   // `groupedNodes` into every call site.
 
   function findTimelineNodeIndex(itemId: string): number {
     return resolveVisibleTimelineNodeIndex(revealedNodes, pane.items, itemId);
-  }
-
-  function clampTimelineIndex(index: number): number {
-    if (revealedNodes.length === 0) return -1;
-    if (!Number.isFinite(index)) return 0;
-    return Math.max(0, Math.min(revealedNodes.length - 1, Math.floor(index)));
-  }
-
-  function currentVisibleTimelineRange(): { first: number; last: number } | null {
-    if (!listRef || revealedNodes.length === 0) return null;
-    // The engine's cached geometry only — a clientHeight read here would
-    // force layout, and the prune used to run behind scroll frames
-    // interleaved with streaming DOM writes. A zero viewport means the
-    // scroller hasn't measured yet; pruning against it would treat
-    // every row as offscreen and drop leased expansion state that's
-    // about to be visible.
-    const viewport = listRef.getViewportSize();
-    if (viewport <= 0) return null;
-    const offset = Math.max(0, listRef.getScrollOffset());
-    const first = clampTimelineIndex(listRef.findItemIndex(offset));
-    const last = clampTimelineIndex(listRef.findItemIndex(offset + viewport));
-    if (first < 0 || last < 0) return null;
-    return first <= last ? { first, last } : { first: last, last: first };
-  }
-
-  let lastRowUiPruneSignature = '';
-  let rowUiPruneToken = 0;
-
-  function scheduleRowUiStatePrune(): void {
-    if (IS_TEST) return;
-    const token = ++rowUiPruneToken;
-    void tick().then(() => {
-      if (token !== rowUiPruneToken) return;
-      pruneOffscreenRowUiState();
-    });
-  }
-
-  function pruneOffscreenRowUiState(): void {
-    const range = currentVisibleTimelineRange();
-    if (!range) return;
-
-    // Every signature input is available without walking the node tree,
-    // so a no-op prune (same window, same structure, same active rows)
-    // bails before the retention collection allocates anything.
-    const signature = timelineRowUiPruneSignature({
-      threadId: pane.threadId,
-      timelineRevision: pane.timelineRevision,
-      revealTurnIndex: pane.revealBoundary?.turnIndex ?? '',
-      revealItemIndex: pane.revealBoundary?.itemIndex ?? '',
-      nodesLength: revealedNodes.length,
-      range,
-      items: pane.items,
-    });
-    if (signature === lastRowUiPruneSignature) return;
-    lastRowUiPruneSignature = signature;
-
-    const retention = collectTimelineRowUiRetention(
-      revealedNodes,
-      pane.items,
-      range,
-      {
-        nodeBuffer: ROW_UI_RETAIN_NODE_BUFFER,
-        tailNodeCount: ROW_UI_RETAIN_TAIL_NODE_COUNT,
-        isGroupExpanded: pane.isSubagentGroupExpanded,
-      },
-    );
-    pane.pruneRowUiState(retention);
   }
 
   // Prune cadence: structural timeline changes (revision / reveal /
@@ -765,13 +455,13 @@
     pane.threadId;
     pane.timelineRevision;
     pane.revealBoundary;
-    scheduleRowUiStatePrune();
+    prune.schedule();
   });
 
   $effect(() => {
     listRef;
     scrollEl;
-    scheduleRowUiStatePrune();
+    prune.schedule();
   });
 
 
@@ -797,16 +487,7 @@
 
   function handleTimelineScrollEnd(): void {
     restore.saveScrollSnapshot();
-    scheduleRowUiStatePrune();
-  }
-
-  function responsePillDuration(node: TimelineNode): string {
-    if (node.kind !== 'leaf') return '';
-    const settledTurn = pane.latestSettledTurn;
-    if (settledTurn?.turnIndex !== node.item.turnIndex) return '';
-    const elapsedMs = settledTurn.completedAt - settledTurn.startedAt;
-    if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return '';
-    return formatElapsedSeconds(Math.floor(elapsedMs / 1_000));
+    prune.schedule();
   }
 
   $effect.pre(() => {
@@ -835,7 +516,7 @@
   });
 
   onDestroy(() => {
-    rowUiPruneToken += 1;
+    prune.invalidate();
     restore.invalidateRestore();
     restore.saveSnapshotOnDestroy();
     targetFlash.clear();
@@ -926,7 +607,7 @@
             orphan={node.orphan === true}
             {onImageExpand}
             {userMessageActions}
-            codexSubagentReceiverLabels={codexReceiverLabels}
+            codexSubagentReceiverLabels={rows.codexReceiverLabels}
             targetFlash={targetFlash.itemId === node.item.id}
             targetFlashNonce={targetFlash.itemId === node.item.id ? targetFlash.nonce : 0}
           />
@@ -938,7 +619,7 @@
             group={node}
             {onImageExpand}
             {userMessageActions}
-            codexSubagentReceiverLabels={codexReceiverLabels}
+            codexSubagentReceiverLabels={rows.codexReceiverLabels}
           />
         {:else if node.kind === 'read_group'}
           <ReadGroupRow {pane} group={node} />
@@ -981,8 +662,8 @@
           onContentGeometry={stick.deliverContentGeometry}
         >
           {#snippet children(node: TimelineNode, index: number)}
-            {@const currentLeafItem = currentTimelineLeafItem(node)}
-            {@const isRail = timelineNodeHasRail(node, currentLeafItem)}
+            {@const currentLeafItem = rows.currentTimelineLeafItem(node)}
+            {@const isRail = rows.timelineNodeHasRail(node, currentLeafItem)}
             <!-- Outer per-row wrapper. We do NOT set data-item-id here:
                  only TimelineLeaf owns that attribute on its root. Structural
                  rows stay unanchored, and tests rely on the divider rendering
@@ -998,7 +679,7 @@
                  renders flat and breaks the line. -->
             <div
               data-row-index={index}
-              class:mt-4={rowDecorations.toolTextBoundaryIndexes.has(index)}
+              class:mt-4={rows.rowDecorations.toolTextBoundaryIndexes.has(index)}
             >
               <!-- Style-load-bearing: app.css sets `display: flow-root` on
                    [data-row-geometry-content] to establish a BFC that CONTAINS
@@ -1045,9 +726,9 @@
                 {/if}
 
                 <div class="mx-auto w-full max-w-[62rem] px-6">
-                  {#if rowDecorations.responseDividerIndexes.has(index)}
-                    {@const showResponsePill = rowDecorations.responsePillIndexes.has(index)}
-                    {@const responseDuration = responsePillDuration(node)}
+                  {#if rows.rowDecorations.responseDividerIndexes.has(index)}
+                    {@const showResponsePill = rows.rowDecorations.responsePillIndexes.has(index)}
+                    {@const responseDuration = rows.responsePillDuration(node)}
                     <!-- Two visual modes share a fixed wrapper height
                          (`h-[1.625rem]` = 26px = pill chrome: text-[0.625rem]
                          × leading-tight ≈ 12px + py-1 8px + 2× 1px border).

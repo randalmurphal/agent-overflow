@@ -144,15 +144,27 @@ function mergeLatestActivityAt(activityMarkers: Array<number | undefined>): numb
   return Math.max(...definedActivity);
 }
 
-export function updateThreadUsageCache(threadId: string, raw: string): void {
-  const existing = getThreads().find((thread) => thread.id === threadId);
+// Shared patch-everywhere: updates the cached thread-list row (sidebar)
+// and every pane currently showing the thread with the same partial
+// patch. `applyModeChanged`, `applyRuntimeModeChanged`, and
+// `updateThreadUsageCache` all repeat this shape; `getThreadById` is the
+// same lookup as `getThreads().find((t) => t.id === threadId)`.
+// `patchThreadDurableStatus` is deliberately NOT rewritten onto this
+// helper — its no-op dedupe semantics (skip the replace when the patch
+// doesn't actually change the thread) are documented as different.
+function patchThreadEverywhere(threadId: string, patch: Partial<Thread>): void {
+  const existing = getThreadById(threadId);
   if (existing) {
-    replaceThread({ ...existing, lastTokenUsage: raw });
+    replaceThread({ ...existing, ...patch });
   }
   for (const pane of iterPanes()) {
     if (pane.threadId !== threadId || !pane.thread) continue;
-    pane.replaceThread({ ...pane.thread, lastTokenUsage: raw });
+    pane.replaceThread({ ...pane.thread, ...patch });
   }
+}
+
+export function updateThreadUsageCache(threadId: string, raw: string): void {
+  patchThreadEverywhere(threadId, { lastTokenUsage: raw });
 }
 
 export function patchThreadDurableStatus(
@@ -252,16 +264,7 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
 
 export function applyModeChanged(payload: ModeChangedPayload): void {
   if (!payload || !payload.threadId) return;
-  const existing = getThreads().find((t) => t.id === payload.threadId);
-  if (existing) {
-    replaceThread({ ...existing, mode: payload.mode });
-  }
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== payload.threadId) continue;
-    if (pane.thread) {
-      pane.replaceThread({ ...pane.thread, mode: payload.mode });
-    }
-  }
+  patchThreadEverywhere(payload.threadId, { mode: payload.mode });
   if (payload.needsReconnect) {
     addToast(
       'warning',
@@ -272,14 +275,5 @@ export function applyModeChanged(payload: ModeChangedPayload): void {
 
 export function applyRuntimeModeChanged(payload: RuntimeModeChangedPayload): void {
   if (!payload || !payload.threadId || !payload.runtimeMode) return;
-  const existing = getThreads().find((t) => t.id === payload.threadId);
-  if (existing) {
-    replaceThread({ ...existing, runtimeMode: payload.runtimeMode });
-  }
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== payload.threadId) continue;
-    if (pane.thread) {
-      pane.replaceThread({ ...pane.thread, runtimeMode: payload.runtimeMode });
-    }
-  }
+  patchThreadEverywhere(payload.threadId, { runtimeMode: payload.runtimeMode });
 }

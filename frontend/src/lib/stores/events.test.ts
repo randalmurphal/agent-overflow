@@ -11,6 +11,7 @@ import {
 } from './threadStatuses.svelte';
 import { resetForTest as resetSendQueue } from './sendQueue.svelte';
 import { getThreads, refreshThreads } from './threads.svelte';
+import { getToasts } from './toast.svelte';
 import { getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
 import {
   getProviderRateLimit,
@@ -1330,6 +1331,62 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.model).toBe('claude-opus-4-1');
     expect(getThreads()[0]?.lastReadAt).toBe(300);
     expect(getThreads()[0]?.latestTurnCompletedAt).toBe(300);
+  });
+
+  it('patches the sidebar row and every matching pane from thread:mode_changed, and toasts when needsReconnect', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', mode: 'chat' }),
+    ]);
+    await refreshThreads();
+    const pane = await buildPane(makeThread({ id: 'thread-1', mode: 'chat' }));
+
+    emitWailsEvent('thread:mode_changed', {
+      threadId: 'thread-1',
+      mode: 'plan',
+      needsReconnect: true,
+    });
+
+    expect(getThreads()[0]?.mode).toBe('plan');
+    expect(pane.thread?.mode).toBe('plan');
+    expect(getToasts().some((toast) => toast.type === 'warning' && toast.message.includes('plan'))).toBe(true);
+  });
+
+  it('patches without a toast from thread:mode_changed when needsReconnect is false', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', mode: 'chat' }),
+    ]);
+    await refreshThreads();
+    const pane = await buildPane(makeThread({ id: 'thread-1', mode: 'chat' }));
+    const toastCountBefore = getToasts().length;
+
+    emitWailsEvent('thread:mode_changed', {
+      threadId: 'thread-1',
+      mode: 'design',
+      needsReconnect: false,
+    });
+
+    expect(getThreads()[0]?.mode).toBe('design');
+    expect(pane.thread?.mode).toBe('design');
+    expect(getToasts().length).toBe(toastCountBefore);
+  });
+
+  it('patches the sidebar row and every matching pane from thread:runtime_mode_changed', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', runtimeMode: 'approval-required' }),
+    ]);
+    await refreshThreads();
+    const paneA = await buildPane(makeThread({ id: 'thread-1', runtimeMode: 'approval-required' }), [], 'a');
+    const paneB = await buildPane(makeThread({ id: 'thread-2', runtimeMode: 'approval-required' }), [], 'b');
+
+    emitWailsEvent('thread:runtime_mode_changed', {
+      threadId: 'thread-1',
+      runtimeMode: 'full-access',
+      needsReconnect: false,
+    });
+
+    expect(getThreads()[0]?.runtimeMode).toBe('full-access');
+    expect(paneA.thread?.runtimeMode).toBe('full-access');
+    expect(paneB.thread?.runtimeMode).toBe('approval-required');
   });
 
   it('does NOT bump cached project activity from non-user_text item_event upserts', async () => {

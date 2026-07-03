@@ -72,6 +72,15 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
   - `timelinePaging.ts` — load-older/load-newer gates and handlers.
   - `timelineWindowAnchor.svelte.ts` — prune-shift anchoring when the
     live window drops rows off the top.
+  - `timelineRowProjection.svelte.ts` — the node-derivation pipeline:
+    structural grouping (subagent/wait/read groups), the reveal gate
+    (`revealedNodes`), rail classification, and response-pill duration.
+  - `timelineDiagnostics.ts` — render/state tracing and the dev-only
+    memory-stats, pane-geometry, row-resize, margin-divergence, and
+    reasoning-tail-jump probes.
+  - `timelineRowUiPrune.ts` — bounds per-row expansion-handle retention
+    to a buffer around the visible range plus the tail, on a prune
+    cadence (structural changes + scroll end).
 - `ThreadPane` owns the scroll-controller registration slot so shared
   surfaces can pause or notify scrolling without reaching into component
   internals.

@@ -15,6 +15,7 @@ import {
   createAutoLoadGate,
   isWithinBottomTriggerZone,
   isWithinTopTriggerZone,
+  type AutoLoadGate,
   type AutoLoadZoneThresholds,
 } from './timelineScroll';
 
@@ -126,6 +127,31 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     return true;
   }
 
+  // Shared shape behind all three load handlers below: pause auto-scroll
+  // for the duration of the load, run the caller's load body, then disarm
+  // the gate — UNLESS a thread switch happened mid-load (that switch
+  // already reset the new pane's gate, so disarming here would stomp on
+  // the wrong pane's state). Disarming matters because each load's own
+  // follow-up write — the older prepend's head-splice compensation, the
+  // newer-manual scrollToIndex, or the newer-auto head-prune's
+  // compensation — is a PROGRAMMATIC scrollTop write, not a user gesture,
+  // and must not re-fire the gate into a load cascade; a real
+  // wheel/touch/keydown re-arms it, and the gate's own 350ms cooldown is
+  // the fallback for devices where gesture detection misses an event.
+  async function withGuardedDisarm(
+    gate: AutoLoadGate,
+    body: () => Promise<void>,
+  ): Promise<void> {
+    const release = options.stick.pauseAutoScroll();
+    const switchGenAtStart = options.getPane().switchGeneration;
+    try {
+      await body();
+    } finally {
+      release();
+      if (options.getPane().switchGeneration === switchGenAtStart) gate.disarm();
+    }
+  }
+
   // The prepend holds the reading position via the engine's head-splice
   // handling: pane.loadOlder sets pane.pendingTimelineShiftAtHead for the
   // head-grow flush, so the engine re-bases its size store and reports the
@@ -136,37 +162,23 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   // prepend's scrollHeight growth from re-sticking; `escaped` marks the
   // user as reading older.
   async function handleLoadOlder(): Promise<void> {
-    const listRef = options.getListRef();
-    if (!listRef) return;
-    const release = options.stick.pauseAutoScroll();
-    options.stick.setEscapedFromLock(true);
+    if (!options.getListRef()) return;
     const pane = options.getPane();
-    const switchGenAtStart = pane.switchGeneration;
-    try {
+    await withGuardedDisarm(autoLoadOlderGate, async () => {
+      options.stick.setEscapedFromLock(true);
       await pane.loadOlder();
       await tick();
       options.saveScrollSnapshot();
-    } finally {
-      release();
-      // Disarm so the prepend's shift compensation (a programmatic scrollTop
-      // write, not a user gesture) can't re-fire the gate into a cascade. A
-      // real wheel/touch/keydown re-arms; the 350ms cooldown is the
-      // fallback. Guard on switchGeneration so a thread switch mid-load
-      // (which already reset the new pane's gate) is not disarmed.
-      if (options.getPane().switchGeneration === switchGenAtStart) autoLoadOlderGate.disarm();
-    }
+    });
   }
 
   // Manual "Load newer messages" button. Jumps to the end of the freshly
   // loaded page (align:'end') so the click visibly reveals newer content.
   async function handleLoadNewer(): Promise<void> {
-    const listRef = options.getListRef();
-    if (!listRef) return;
-    const release = options.stick.pauseAutoScroll();
-    const myToken = options.nextRestoreToken();
-    const pane = options.getPane();
-    const switchGenAtStart = pane.switchGeneration;
-    try {
+    if (!options.getListRef()) return;
+    await withGuardedDisarm(autoLoadNewerGate, async () => {
+      const myToken = options.nextRestoreToken();
+      const pane = options.getPane();
       const result = await pane.loadNewer();
       await tick();
       const currentListRef = options.getListRef();
@@ -181,16 +193,12 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
       // Explicit navigation into the middle of history (more-newer may
       // remain below): escape bottom follow, then jump.
       options.stick.setEscapedFromLock(true);
+      // scrollToIndex(end) below can land in the bottom trigger zone;
+      // withGuardedDisarm's disarm keeps that programmatic scroll from
+      // auto-firing another load.
       currentListRef.scrollToIndex(lastIndex, { align: 'end' });
       options.saveScrollSnapshot();
-    } finally {
-      release();
-      // The scrollToIndex(end) above can land in the bottom trigger zone;
-      // disarm so that programmatic scroll can't auto-fire another load.
-      // Guard on switchGeneration (a thread switch mid-load already reset the
-      // new pane's gate).
-      if (options.getPane().switchGeneration === switchGenAtStart) autoLoadNewerGate.disarm();
-    }
+    });
   }
 
   // Auto-load-newer path. Unlike the manual button it must NOT scroll:
@@ -199,23 +207,13 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   // via the engine's head-splice handling. The pause lease guards the
   // transient scrollHeight growth from a restick.
   async function handleLoadNewerAuto(): Promise<void> {
-    const listRef = options.getListRef();
-    if (!listRef) return;
-    const release = options.stick.pauseAutoScroll();
+    if (!options.getListRef()) return;
     const pane = options.getPane();
-    const switchGenAtStart = pane.switchGeneration;
-    try {
+    await withGuardedDisarm(autoLoadNewerGate, async () => {
       await pane.loadNewer();
       await tick();
       options.saveScrollSnapshot();
-    } finally {
-      release();
-      // Disarm so the head-prune's shift compensation (programmatic, not a
-      // user gesture) can't re-fire the gate into a cascade. Guard on
-      // switchGeneration so a thread switch mid-load (which already reset the
-      // new pane's gate) is not disarmed. See handleLoadOlder.
-      if (options.getPane().switchGeneration === switchGenAtStart) autoLoadNewerGate.disarm();
-    }
+    });
   }
 
   async function jumpToLatest(): Promise<void> {
