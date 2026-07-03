@@ -1940,7 +1940,7 @@ describe('createThreadPane', () => {
   it('clears discussion channel state on switchThread', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-a' }));
-    pane.mergeChannelMessages([
+    pane.applyChannelMessages([
       {
         id: 'channel-message-1',
         channelId: 'channel-1',
@@ -1952,7 +1952,17 @@ describe('createThreadPane', () => {
         createdAt: 0,
       },
     ]);
-    pane.setChannelStatus('concluded');
+    pane.applyChannelState({
+      channelId: 'channel-1',
+      threadId: 'thread-a',
+      status: 'concluded',
+      turnCount: 8,
+      maxTurns: 8,
+      awaitingResponse: false,
+      currentSpeakerThreadId: '',
+      currentSpeakerRole: '',
+      participants: [],
+    });
 
     await pane.switchThread(makeThread({ id: 'thread-b' }));
 
@@ -2392,7 +2402,7 @@ describe('createThreadPane', () => {
       input: null,
       title: 'Approve bash',
     });
-    pane.mergeChannelMessages([
+    pane.applyChannelMessages([
       {
         id: 'channel-message-1',
         channelId: 'channel-1',
@@ -2404,7 +2414,17 @@ describe('createThreadPane', () => {
         createdAt: 0,
       },
     ]);
-    pane.setChannelStatus('concluded');
+    pane.applyChannelState({
+      channelId: 'channel-1',
+      threadId: 'thread-1',
+      status: 'concluded',
+      turnCount: 8,
+      maxTurns: 8,
+      awaitingResponse: false,
+      currentSpeakerThreadId: '',
+      currentSpeakerRole: '',
+      participants: [],
+    });
     const expansion = pane.expansionStateFor(item);
     pane.toggleSubagentGroupExpanded('group-x');
     pane.attachmentCacheFor(item.id).set('attachment-x', {

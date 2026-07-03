@@ -12,6 +12,7 @@ import { threadItemCache } from './threadItemCache';
 import { isSmoothLiveContentKind } from './threadPaneShared';
 import { projectThreadItem } from './threadStatuses.svelte';
 import { syncProposedPlanStatus, syncThreadActivity, userTextCountsAsActivity } from './eventsThreadRows';
+import { lookupDiscussionLiveTail } from './discussionLiveTail';
 
 const itemUpsertSubscribers: Set<(item: Item) => void> = new Set();
 const ITEM_EVENT_FLUSH_MAX_DELAY_MS = 50;
@@ -143,6 +144,28 @@ function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming:
   return !itemsRenderEqual(existing, incoming);
 }
 
+/**
+ * Feed a discussion child thread's `assistant_text` upserts to any
+ * registered live-tail handlers, keyed by the item's OWN threadId — not
+ * the pane-matching loop below it. Discussion participant threads have
+ * no mounted pane (only the parent thread gets a ChannelView), so
+ * without this side-channel their streaming text never reaches anyone.
+ * `lookupDiscussionLiveTail` returns `undefined` for every ordinary chat
+ * thread, so this is a single Map miss per thread on the common path.
+ */
+function feedDiscussionLiveTailUpserts(itemsByThread: Map<string, Item[]>): void {
+  for (const [threadId, threadItems] of itemsByThread) {
+    const handlers = lookupDiscussionLiveTail(threadId);
+    if (!handlers || handlers.size === 0) continue;
+    for (const item of threadItems) {
+      if (item.kind !== 'assistant_text') continue;
+      for (const handler of handlers) {
+        handler.applyTailUpsert(threadId, item.id, item.summary);
+      }
+    }
+  }
+}
+
 function applyItemUpserts(upserts: PendingItemUpsert[]): void {
   if (upserts.length === 0) return;
   const itemsByThread = new Map<string, Item[]>();
@@ -173,6 +196,7 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
       }
     }
   }
+  feedDiscussionLiveTailUpserts(itemsByThread);
   const changedThreadIds = new Set<string>();
   const activeThreadIds = new Set<string>();
   for (const pane of iterPanes()) {
@@ -219,6 +243,18 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
   if (!isBoundedString(evt.threadId, 512) || !isBoundedString(evt.itemId, 512)) return;
   if (!isBoundedString(evt.kind, 128) || !isBoundedString(evt.delta)) return;
   if (!isFiniteNumber(evt.updatedAt)) return;
+
+  // Same discussion live-tail side-channel as feedDiscussionLiveTailUpserts
+  // above, for the delta half of the wire. A no-op Map lookup for every
+  // ordinary chat thread.
+  if (evt.kind === 'assistant_text') {
+    const handlers = lookupDiscussionLiveTail(evt.threadId);
+    if (handlers) {
+      for (const handler of handlers) {
+        handler.applyTailDelta(evt.threadId, evt.itemId, evt.delta);
+      }
+    }
+  }
 
   for (const pane of iterPanes()) {
     if (pane.threadId !== evt.threadId) continue;

@@ -19,7 +19,7 @@ import type {
   CheckpointRevertedEvent,
   CheckpointUnavailableEvent,
 } from '../types/checkpoint';
-import type { ChannelMessage } from '../types/discussion';
+import type { ChannelMessage, ChannelParticipantState, ChannelStatePayload } from '../types/discussion';
 import type {
   ActiveOptionSet,
   ClarificationRequest,
@@ -101,10 +101,7 @@ import {
   normalizeContextWindowForThread,
   seedContextWindow,
 } from './threadContextWindow';
-import {
-  createThreadChannelState,
-  type ThreadChannelStatus,
-} from './threadChannelState.svelte';
+import { createThreadChannelState } from './threadChannelState.svelte';
 import { createThreadDesignState } from './threadDesignState.svelte';
 import {
   ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
@@ -1416,6 +1413,37 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get channelStatus() {
       return channelState.status;
     },
+    get channelTurnCount() {
+      return channelState.turnCount;
+    },
+    get channelMaxTurns() {
+      return channelState.maxTurns;
+    },
+    get channelAwaitingResponse() {
+      return channelState.awaitingResponse;
+    },
+    get channelCurrentSpeakerThreadId() {
+      return channelState.currentSpeakerThreadId;
+    },
+    get channelCurrentSpeakerRole() {
+      return channelState.currentSpeakerRole;
+    },
+    get channelParticipants() {
+      return channelState.participants;
+    },
+    get channelLiveTail() {
+      return channelState.liveTail;
+    },
+    /**
+     * Non-reactive `performance.now()` stamp of the last live discussion
+     * advance (a new channel message, or live-tail growth). Read
+     * imperatively by ChannelView's scroll controller `animationMode` —
+     * mirrors `pane.lastLiveContentAt`'s chat-surface role. See
+     * `threadChannelState.svelte.ts`.
+     */
+    get channelLastLiveContentAt() {
+      return channelState.lastLiveContentAt;
+    },
     get pendingClarification() {
       return designState.pendingClarification;
     },
@@ -2587,12 +2615,22 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       activatePanel(null);
     },
 
-    mergeChannelMessages(incoming: ChannelMessage[]): void {
-      channelState.mergeMessages(incoming);
+    /** Single-message merge for a live `discussion:message` push, or the
+     * message `PostChannelMessage` itself returns on a successful post. */
+    applyChannelMessage(message: ChannelMessage): void {
+      channelState.applyMessage(message);
     },
 
-    setChannelStatus(status: ThreadChannelStatus): void {
-      channelState.setStatus(status);
+    /** Bulk merge for an initial channel load or gap-recovery resync
+     * page — see `eventsDiscussion.ts`'s `refreshDiscussionChannel`. */
+    applyChannelMessages(messages: ChannelMessage[]): void {
+      channelState.applyMessageBatch(messages);
+    },
+
+    /** Full deliberation-FSM snapshot apply, shared by the initial load
+     * and every `discussion:state` push. */
+    applyChannelState(payload: ChannelStatePayload): void {
+      channelState.applyState(payload);
     },
 
     clearChannel(): void {

@@ -10,6 +10,7 @@
 //   - eventsQueue.ts         — send-queue mirror (state/flushed/restored)
 //   - eventsCheckpoint.ts    — checkpoint capture/revert + message revert
 //   - eventsTransportGap.ts  — missed-seq resync
+//   - eventsDiscussion.ts    — discussion:message / discussion:state push
 //
 // This file itself stays a thin fan-in: channel names, generics, and the
 // teardown order live here; the reaction logic lives in the domain modules.
@@ -100,6 +101,13 @@ import {
   applyUserMessageReverted,
 } from './eventsCheckpoint';
 import { applyTransportGap } from './eventsTransportGap';
+import {
+  applyDiscussionMessage,
+  applyDiscussionState,
+  type DiscussionMessageEvent,
+  type DiscussionStateEvent,
+} from './eventsDiscussion';
+import { clearAllDiscussionLiveTail } from './discussionLiveTail';
 
 /**
  * Frontend custom DOM event names live in `./eventNames` so consumers
@@ -318,6 +326,20 @@ export function setupEventListeners(): () => void {
     applyModeChanged,
   );
 
+  // discussion:message / discussion:state — push-driven replacement for
+  // ChannelView's old 2.5s poll. Routed to every pane whose threadId
+  // matches the event's PARENT thread id (a discussion channel hangs
+  // off the parent, not any one participant child thread). See
+  // eventsDiscussion.ts and docs/architecture/discussion-deliberation.md.
+  const cancelDiscussionMessage = wailsEventOn<DiscussionMessageEvent>(
+    'discussion:message',
+    applyDiscussionMessage,
+  );
+  const cancelDiscussionState = wailsEventOn<DiscussionStateEvent>(
+    'discussion:state',
+    applyDiscussionState,
+  );
+
   return () => {
     cancelItemEvent();
     flushItemEventQueue();
@@ -349,6 +371,9 @@ export function setupEventListeners(): () => void {
     cancelDesignOptionsUpdate();
     cancelModeChanged();
     cancelRuntimeModeChanged();
+    cancelDiscussionMessage();
+    cancelDiscussionState();
     clearAllDesignThrottles();
+    clearAllDiscussionLiveTail();
   };
 }

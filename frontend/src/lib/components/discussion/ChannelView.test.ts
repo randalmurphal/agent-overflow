@@ -3,11 +3,22 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChannelView from './ChannelView.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
-import type { ChannelMessage } from '../../types/discussion';
+import type { ChannelMessage, ChannelStatePayload } from '../../types/discussion';
 import type { Thread } from '../../types/models';
-import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
+import { resetPanesForTest } from '../../stores/panes.svelte';
+import { lookupDiscussionLiveTail, clearAllDiscussionLiveTail } from '../../stores/discussionLiveTail';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
+
+// This suite covers ChannelView's push-driven rewrite: no polling, an
+// authoritative discussion:state-derived header, live-tail streaming for
+// the current speaker, and the same spring/sync-pin scroll choreography
+// MessageTimeline uses. Event ROUTING (discussion:message / discussion:state
+// / the provider:item_event live-tail seam) has its own coverage in
+// events.discussion.test.ts — here we drive the pane's applyChannel*
+// methods directly (what that routing layer calls) to test ChannelView's
+// rendering in isolation.
 
 // Stub Element.animate for Svelte transitions (reused by Markdown's nested components).
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -74,7 +85,7 @@ function makeMsg(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
   return {
     id: 'm' + (overrides.sequence ?? 0),
     channelId: 'channel-1',
-    sequence: 1,
+    sequence: 0,
     fromType: 'agent',
     fromId: 'agent-id',
     fromRole: 'advocate',
@@ -84,8 +95,32 @@ function makeMsg(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
   };
 }
 
+function makeState(overrides: Partial<ChannelStatePayload> = {}): ChannelStatePayload {
+  return {
+    channelId: 'channel-1',
+    threadId: 'parent-thread',
+    status: 'open',
+    turnCount: 0,
+    maxTurns: 8,
+    awaitingResponse: false,
+    currentSpeakerThreadId: '',
+    currentSpeakerRole: '',
+    participants: [],
+    ...overrides,
+  };
+}
+
 async function buildPane(thread = makeThread()) {
   return buildRegisteredPane(thread);
+}
+
+// Advance past the initial-load promise chain (Promise.all(GetChannelState,
+// GetChannelMessages) → applyChannelState/applyChannelMessages → tick() →
+// forceStick). Fake timers still need draining because loadInitial awaits
+// a real microtask chain even with instant-resolving mocks.
+async function settleInitialLoad(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(0);
+  for (let i = 0; i < 5; i++) await Promise.resolve();
 }
 
 describe('<ChannelView>', () => {
@@ -101,9 +136,14 @@ describe('<ChannelView>', () => {
     // mouseDown=true into this file, where the controller's
     // isSelectingInside() would silently suppress sync-pin writes.
     resetScrollIntentModuleStateForTest();
+    // Default channel-state/message mocks so tests that don't care about
+    // the FSM snapshot don't have to stub GetChannelState explicitly —
+    // an unmocked binding throws, which loadInitial would otherwise
+    // surface as a spurious error banner in unrelated tests.
+    setBindingMock('GetChannelState', async () => makeState());
+    setBindingMock('GetChannelMessages', async () => []);
     // Install the controllable RO. Tests that don't need to fire it
-    // (the existing six cases) just don't call .fire() — observe is
-    // a no-op so they're undisturbed.
+    // just don't call .fire() — observe is a no-op so they're undisturbed.
     FireableResizeObserver.instances = [];
     originalRO = globalThis.ResizeObserver;
     (globalThis as unknown as { ResizeObserver: typeof FireableResizeObserver }).ResizeObserver
@@ -117,6 +157,8 @@ describe('<ChannelView>', () => {
     }
     FireableResizeObserver.instances = [];
     vi.useRealTimers();
+    resetPanesForTest();
+    clearAllDiscussionLiveTail();
   });
 
   it('opts out of browser scroll-anchor on the scroll container', async () => {
@@ -130,7 +172,7 @@ describe('<ChannelView>', () => {
     // opt-out.
     const pane = await buildPane();
     setBindingMock('GetChannelMessages', async () => [
-      makeMsg({ id: 'a', sequence: 1, content: 'first' }),
+      makeMsg({ id: 'a', sequence: 0, content: 'first' }),
     ]);
     const { getByTestId } = render(ChannelView, {
       props: { pane, channelId: 'channel-1' },
@@ -139,119 +181,216 @@ describe('<ChannelView>', () => {
     expect(scroll.style.overflowAnchor).toBe('none');
   });
 
-  it('loads initial channel messages via GetChannelMessages and renders them', async () => {
+  it('loads with afterSeq -1 and renders a sequence-0 message (regression: afterSeq=0 used to hide it)', async () => {
+    // Message sequences are zero-based. The old poll cursor started at
+    // afterSeq=0, which is an EXCLUSIVE bound — so a channel's very
+    // first message (sequence 0) never rendered on a fresh load. -1 is
+    // the correct "fetch everything" cursor.
     const pane = await buildPane();
     const getMock = setBindingMock('GetChannelMessages', async () => [
-      makeMsg({ id: 'a', sequence: 1, content: 'first', fromRole: 'advocate' }),
-      makeMsg({ id: 'b', sequence: 2, content: 'second', fromRole: 'critic' }),
+      makeMsg({ id: 'a', sequence: 0, content: 'first', fromRole: 'advocate' }),
+      makeMsg({ id: 'b', sequence: 1, content: 'second', fromRole: 'critic' }),
     ]);
     const { findByText } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
     expect(await findByText('first')).toBeInTheDocument();
     expect(await findByText('second')).toBeInTheDocument();
-    // First call uses afterSeq = 0.
-    expect(getMock.mock.calls[0]).toEqual(['channel-1', 0, 200]);
-    expect(pane.channelMessages.length).toBe(2);
+    expect(getMock.mock.calls[0]).toEqual(['channel-1', -1, 500]);
+    expect(pane.channelMessages.map((m) => m.sequence)).toEqual([0, 1]);
   });
 
-  it('polls incrementally with the highest seen sequence as afterSeq', async () => {
+  it('does not poll: GetChannelMessages is called once regardless of elapsed time', async () => {
     const pane = await buildPane();
-    let callCount = 0;
-    const getMock = setBindingMock('GetChannelMessages', async () => {
-      callCount++;
-      if (callCount === 1) {
-        return [makeMsg({ id: 'a', sequence: 1 })];
-      }
-      return [makeMsg({ id: 'b', sequence: 2, content: 'second' })];
-    });
+    const getMock = setBindingMock('GetChannelMessages', async () => [makeMsg({ sequence: 0 })]);
     render(ChannelView, { props: { pane, channelId: 'channel-1' } });
-    // initial call
-    await vi.advanceTimersByTimeAsync(0);
-    await Promise.resolve();
-    expect(getMock.mock.calls[0][1]).toBe(0);
-    // poll timer fires
-    await vi.advanceTimersByTimeAsync(2500);
-    // settle any pending awaits
+    await settleInitialLoad();
+    expect(getMock).toHaveBeenCalledTimes(1);
+
+    // Advance well past the old 2.5s poll interval and its backoff ceiling.
+    await vi.advanceTimersByTimeAsync(10_000);
     for (let i = 0; i < 5; i++) await Promise.resolve();
-    expect(getMock.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(getMock.mock.calls[1][1]).toBe(1);
-    expect(pane.channelMessages.length).toBe(2);
+    expect(getMock).toHaveBeenCalledTimes(1);
   });
 
-  it('posts user messages via PostChannelMessage and immediately re-polls', async () => {
+  it('applies a discussion:message push without duplicating an already-loaded sequence', async () => {
+    // Push-driven equivalent of the old poll-merge test: simulates what
+    // eventsDiscussion.ts's applyDiscussionMessage does on a real
+    // discussion:message event (dedupe-by-sequence itself is unit-tested
+    // in threadChannelState.svelte.test.ts; this checks ChannelView
+    // renders the merge).
     const pane = await buildPane();
-    setBindingMock('GetChannelMessages', async () => [makeMsg({ id: 'a', sequence: 1 })]);
-    const postMock = setBindingMock('PostChannelMessage', async () => {});
-    const { container, getByRole } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    setBindingMock('GetChannelMessages', async () => [makeMsg({ id: 'a', sequence: 0, content: 'first' })]);
+    const { findByText } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
+    expect(await findByText('first')).toBeInTheDocument();
+
+    pane.applyChannelMessage(makeMsg({ id: 'a', sequence: 0, content: 'first' })); // duplicate, no-op
+    pane.applyChannelMessage(makeMsg({ id: 'b', sequence: 1, content: 'second' }));
+    await tick();
+
+    expect(pane.channelMessages.map((m) => m.sequence)).toEqual([0, 1]);
+    expect(await findByText('second')).toBeInTheDocument();
+  });
+
+  it('posts via PostChannelMessage and immediately applies the returned message', async () => {
+    const postMock = setBindingMock('PostChannelMessage', async () =>
+      makeMsg({ id: 'posted-1', sequence: 0, fromType: 'human', fromId: 'human', fromRole: undefined, content: 'my intervention' }));
+    const pane = await buildPane();
+    const { container, getByRole, findByText } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
+    await settleInitialLoad();
 
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Channel Message Input"]')!;
     await fireEvent.input(textarea, { target: { value: 'my intervention' } });
-    const sendBtn = getByRole('button', { name: /post/i }) as HTMLButtonElement;
-    await fireEvent.click(sendBtn);
-    // Allow the async post to complete.
+    await fireEvent.click(getByRole('button', { name: /post/i }));
     for (let i = 0; i < 5; i++) await Promise.resolve();
+
     expect(postMock.mock.calls[0]).toEqual(['channel-1', 'my intervention']);
     expect(textarea.value).toBe('');
-  });
-
-  it('disables posting and shows Concluded badge when channel status is concluded', async () => {
-    const pane = await buildPane();
-    setBindingMock('GetChannelMessages', async () => []);
-    const { getAllByText, queryByRole } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 3; i++) await Promise.resolve();
-    // Simulate conclusion arriving (deliberation engine hit max turns).
-    pane.setChannelStatus('concluded');
-    for (let i = 0; i < 3; i++) await Promise.resolve();
-    const concludedMatches = getAllByText(/concluded/i);
-    expect(concludedMatches.length).toBeGreaterThanOrEqual(1);
-    // Composer is hidden when concluded, so there is no Post button.
-    expect(queryByRole('button', { name: /post/i })).toBeNull();
+    // Applied immediately from PostChannelMessage's own return value, not
+    // from a subsequent discussion:message echo (that echo's sequence
+    // dedupe would make it a no-op — see threadChannelState.svelte.test.ts).
+    expect(pane.channelMessages).toHaveLength(1);
+    expect(await findByText('my intervention')).toBeInTheDocument();
+    expect(await findByText('You')).toBeInTheDocument();
   });
 
   it('rolls back the textarea when PostChannelMessage rejects', async () => {
-    const pane = await buildPane();
-    setBindingMock('GetChannelMessages', async () => []);
     setBindingMock('PostChannelMessage', async () => { throw new Error('rpc-down'); });
+    const pane = await buildPane();
     const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { container, getByRole } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 3; i++) await Promise.resolve();
+    await settleInitialLoad();
 
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Channel Message Input"]')!;
     await fireEvent.input(textarea, { target: { value: 'fails' } });
     await fireEvent.click(getByRole('button', { name: /post/i }));
     for (let i = 0; i < 5; i++) await Promise.resolve();
     expect(textarea.value).toBe('fails');
+    expect(pane.channelMessages).toHaveLength(0);
     consoleErr.mockRestore();
   });
 
-  it('merges incremental messages without duplicating by sequence', async () => {
-    const pane = await buildPane();
+  it('shows an error banner on initial-load failure and recovers via Retry', async () => {
     let callCount = 0;
     setBindingMock('GetChannelMessages', async () => {
       callCount++;
-      if (callCount === 1) {
-        return [
-          makeMsg({ id: 'a', sequence: 1 }),
-          makeMsg({ id: 'b', sequence: 2 }),
-        ];
-      }
-      // Server repeats seq=2 (simulating overlap) plus adds seq=3.
-      return [
-        makeMsg({ id: 'b', sequence: 2 }),
-        makeMsg({ id: 'c', sequence: 3 }),
-      ];
+      if (callCount === 1) throw new Error('rpc-down');
+      return [makeMsg({ sequence: 0, content: 'recovered' })];
     });
-    render(ChannelView, { props: { pane, channelId: 'channel-1' } });
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 5; i++) await Promise.resolve();
-    expect(pane.channelMessages.length).toBe(2);
-    await vi.advanceTimersByTimeAsync(2500);
-    for (let i = 0; i < 5; i++) await Promise.resolve();
-    expect(pane.channelMessages.length).toBe(3);
-    expect(pane.channelMessages.map((m) => m.sequence)).toEqual([1, 2, 3]);
+    const pane = await buildPane();
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { getByRole, findByText, queryByText } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
+    await settleInitialLoad();
+
+    expect(await findByText(/failed to load channel/i)).toBeInTheDocument();
+
+    await fireEvent.click(getByRole('button', { name: /retry/i }));
+    await settleInitialLoad();
+
+    expect(await findByText('recovered')).toBeInTheDocument();
+    expect(queryByText(/failed to load channel/i)).toBeNull();
+    consoleErr.mockRestore();
+  });
+
+  it('disables posting, hides the composer, and suppresses the speaking indicator once concluded', async () => {
+    setBindingMock('GetChannelState', async () =>
+      makeState({ status: 'concluded', awaitingResponse: true, currentSpeakerRole: 'critic' }));
+    const pane = await buildPane();
+    const { getAllByText, queryByRole, queryByTestId } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
+    await settleInitialLoad();
+
+    const concludedMatches = getAllByText(/concluded/i);
+    expect(concludedMatches.length).toBeGreaterThanOrEqual(1);
+    // Composer is hidden when concluded, so there is no Post button.
+    expect(queryByRole('button', { name: /post/i })).toBeNull();
+    // status !== 'open' gates the speaking indicator even though
+    // awaitingResponse is (implausibly) still true in this payload.
+    expect(queryByTestId('channel-speaking-indicator')).toBeNull();
+  });
+
+  it('shows the turn counter and current-speaker label from the channel-state snapshot', async () => {
+    setBindingMock('GetChannelState', async () =>
+      makeState({ turnCount: 3, maxTurns: 8, awaitingResponse: true, currentSpeakerRole: 'critic' }));
+    const pane = await buildPane();
+    const { findByText } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
+    await settleInitialLoad();
+
+    expect(await findByText('Turn 3 of 8')).toBeInTheDocument();
+    expect(await findByText(/Speaking: critic/)).toBeInTheDocument();
+  });
+
+  it('shows a speaking indicator while awaitingResponse and no live-tail text has arrived yet', async () => {
+    const pane = await buildPane();
+    const { queryByTestId, getByTestId } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
+    await settleInitialLoad();
+
+    expect(queryByTestId('channel-speaking-indicator')).toBeNull();
+
+    pane.applyChannelState(makeState({ awaitingResponse: true, currentSpeakerRole: 'critic' }));
+    await tick();
+
+    const indicator = getByTestId('channel-speaking-indicator');
+    expect(indicator.textContent).toMatch(/critic is preparing a response/i);
+  });
+
+  it('streams the current speaker live tail as a card, then swaps it for the settled agent message', async () => {
+    const pane = await buildPane();
+    const { findByText, queryByText, queryByTestId } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
+    await settleInitialLoad();
+
+    // discussion:state seeds the roster — registers 'advocate-thread' in
+    // the discussionLiveTail registry and marks it as the current speaker.
+    pane.applyChannelState(makeState({
+      awaitingResponse: true,
+      currentSpeakerThreadId: 'advocate-thread',
+      currentSpeakerRole: 'advocate',
+      participants: [{ threadId: 'advocate-thread', role: 'advocate', provider: 'claude', model: 'claude-sonnet-4-6' }],
+    }));
+
+    // eventsItemStream.ts's live-tail seam feeds assistant_text upserts
+    // from the (unmounted) advocate child thread through the registry.
+    const handlers = lookupDiscussionLiveTail('advocate-thread');
+    expect(handlers?.size).toBe(1);
+    for (const handler of handlers!) handler.applyTailUpsert('advocate-thread', 'item-1', 'partial reply');
+    await tick();
+
+    expect(await findByText('partial reply')).toBeInTheDocument();
+    expect(queryByTestId('channel-speaking-indicator')).toBeNull();
+
+    // The advocate's turn settles: discussion:message lands with the
+    // final text (clearing the tail — same fromId as the message),
+    // followed by a discussion:state push resolving awaitingResponse.
+    pane.applyChannelMessage(makeMsg({
+      id: 'final-1', sequence: 0, fromType: 'agent', fromId: 'advocate-thread', fromRole: 'advocate', content: 'final reply',
+    }));
+    pane.applyChannelState(makeState({ awaitingResponse: false }));
+    await tick();
+
+    expect(await findByText('final reply')).toBeInTheDocument();
+    expect(queryByText('partial reply')).toBeNull();
+    expect(pane.channelLiveTail).toBeNull();
+    expect(queryByTestId('channel-speaking-indicator')).toBeNull();
+  });
+
+  it('badges system messages as Moderator', async () => {
+    setBindingMock('GetChannelMessages', async () => [
+      makeMsg({ id: 'a', sequence: 0, fromType: 'system', fromId: 'system', fromRole: undefined, content: 'Discussion started.' }),
+    ]);
+    const pane = await buildPane();
+    const { findByText } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
+    expect(await findByText('Discussion started.')).toBeInTheDocument();
+    expect(await findByText('Moderator')).toBeInTheDocument();
+  });
+
+  it('shows empty-state copy when the channel has no messages, tail, or speaking indicator', async () => {
+    const pane = await buildPane();
+    const { findByText } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
+    await settleInitialLoad();
+    expect(await findByText('No messages yet. Post a message to start the discussion.')).toBeInTheDocument();
   });
 
   it('initial channel load + async row growth sync-pins scrollTop in the same paint as each contentRO delta', async () => {
@@ -267,8 +406,8 @@ describe('<ChannelView>', () => {
     // browser only paints the final state per frame.
     const pane = await buildPane();
     setBindingMock('GetChannelMessages', async () => [
-      makeMsg({ id: 'a', sequence: 1, content: 'first' }),
-      makeMsg({ id: 'b', sequence: 2, content: 'second' }),
+      makeMsg({ id: 'a', sequence: 0, content: 'first' }),
+      makeMsg({ id: 'b', sequence: 1, content: 'second' }),
     ]);
     const { getByTestId } = render(ChannelView, {
       props: { pane, channelId: 'channel-1' },
@@ -284,10 +423,9 @@ describe('<ChannelView>', () => {
       get: () => 600,
     });
 
-    // Initial poll completes; ChannelView's post-poll forceStick()
+    // Initial load completes; ChannelView's post-load forceStick()
     // writes scrollTop to the current target (= 1000 - 600 = 400).
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    await settleInitialLoad();
     const composerSection = getByTestId('channel-composer-section');
     const ro = FireableResizeObserver.instances.find((observer) => observer.observed[0] !== composerSection);
     if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
@@ -330,12 +468,7 @@ describe('<ChannelView>', () => {
     // Clicking the chip calls forceStick, which slams scrollTop back to
     // bottom and clears the escape.
     const pane = await buildPane();
-    let callCount = 0;
-    setBindingMock('GetChannelMessages', async () => {
-      callCount++;
-      if (callCount === 1) return [makeMsg({ id: 'a', sequence: 1, content: 'first' })];
-      return [makeMsg({ id: 'b', sequence: 2, content: 'second' })];
-    });
+    setBindingMock('GetChannelMessages', async () => [makeMsg({ id: 'a', sequence: 0, content: 'first' })]);
 
     const { getByTestId, queryByTestId } = render(ChannelView, {
       props: { pane, channelId: 'channel-1' },
@@ -353,8 +486,7 @@ describe('<ChannelView>', () => {
 
     // Initial state: sticky + at-bottom, chip hidden. Fire the
     // first-mount RO callback so the controller seeds previousHeight.
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    await settleInitialLoad();
     const composerSection = getByTestId('channel-composer-section');
     const ro = FireableResizeObserver.instances.find((observer) => observer.observed[0] !== composerSection);
     if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
@@ -376,12 +508,13 @@ describe('<ChannelView>', () => {
     // so both inputs to `stick.isAtBottom` are false. Chip is visible.
     expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
 
-    // Subsequent poll cycle: a new message arrives, contentEl grows,
-    // and the RO fires a positive delta. The escape state must block
+    // A discussion:message push lands (simulated directly on the pane —
+    // the push-driven equivalent of the old poll cycle) and contentEl
+    // grows; the RO fires a positive delta. The escape state must block
     // the sync-pin — scrollTop stays at 200 and the chip stays visible.
+    pane.applyChannelMessage(makeMsg({ id: 'b', sequence: 1, content: 'second' }));
+    await tick();
     scrollHeightValue = 1100;
-    await vi.advanceTimersByTimeAsync(2500);
-    for (let i = 0; i < 5; i++) await Promise.resolve();
     ro.fire(contentEl, 500);
     await vi.advanceTimersByTimeAsync(16);
     for (let i = 0; i < 3; i++) await Promise.resolve();
@@ -401,14 +534,9 @@ describe('<ChannelView>', () => {
     // Posting preserves current scroll intent. If the user has escaped
     // upward to read earlier discussion, sending a post must not yank
     // them back to the bottom.
+    setBindingMock('GetChannelMessages', async () => [makeMsg({ id: 'a', sequence: 0, content: 'first' })]);
+    setBindingMock('PostChannelMessage', async () => makeMsg({ id: 'b', sequence: 1, fromType: 'human', fromId: 'human', fromRole: undefined, content: 'follow up' }));
     const pane = await buildPane();
-    setBindingMock('GetChannelMessages', async (_channelId: string, afterSeq: number) => {
-      if (afterSeq <= 0) {
-        return [makeMsg({ id: 'a', sequence: 1, content: 'first' })];
-      }
-      return [makeMsg({ id: 'b', sequence: 2, content: 'posted reply' })];
-    });
-    setBindingMock('PostChannelMessage', async () => {});
 
     const { container, getByRole, getByTestId } = render(ChannelView, {
       props: { pane, channelId: 'channel-1' },
@@ -421,8 +549,7 @@ describe('<ChannelView>', () => {
     });
     Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => 600 });
 
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    await settleInitialLoad();
     const composerSection = getByTestId('channel-composer-section');
     const ro = FireableResizeObserver.instances.find((observer) => observer.observed[0] !== composerSection);
     if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
@@ -453,9 +580,9 @@ describe('<ChannelView>', () => {
     expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
     expect(pane.channelMessages.map((msg) => msg.id)).toContain('b');
 
-    // The post's follow-up poll merged a new message. If that message
-    // makes content taller, the content RO still must respect the
-    // existing user escape.
+    // The post's own applied message grows content. If that makes
+    // content taller, the content RO still must respect the existing
+    // user escape.
     scrollHeightValue = 1100;
     ro.fire(contentEl, 500);
     await vi.advanceTimersByTimeAsync(16);
@@ -477,7 +604,7 @@ describe('<ChannelView>', () => {
     // so the user stays pinned to the last message.
     const pane = await buildPane();
     setBindingMock('GetChannelMessages', async () => [
-      makeMsg({ id: 'a', sequence: 1, content: 'first' }),
+      makeMsg({ id: 'a', sequence: 0, content: 'first' }),
     ]);
 
     const { getByTestId } = render(ChannelView, {
@@ -495,8 +622,7 @@ describe('<ChannelView>', () => {
       get: () => clientHeightValue,
     });
 
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    await settleInitialLoad();
 
     // Two ROs are installed: the controller's contentEl RO and
     // ChannelView's composer-section RO. Identify the composer RO by
@@ -525,6 +651,8 @@ describe('<ChannelView>', () => {
     // the freed space to the scroll container. Without notify, the
     // controller wouldn't know; with notify, scrollTop is re-pinned to
     // the new target.
+    pane.applyChannelState(makeState({ status: 'concluded' }));
+    await tick();
     clientHeightValue = 640;
     composerRO.fire(composerEl, 28);
 

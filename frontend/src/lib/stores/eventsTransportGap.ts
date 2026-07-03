@@ -7,6 +7,7 @@ import type { Thread } from '../types/models';
 import { iterPanes } from './panes.svelte';
 import { GetThread } from './bindings';
 import { refreshSidebarProjections } from './eventsThreadRows';
+import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
 
 // The handler matches on the channel name we lost rather than each
 // payload kind because a single gap on `provider:item_event` can
@@ -52,6 +53,32 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
           }
         }).catch((err: unknown) => {
           console.warn(`events: refresh thread ${threadId} after provider:usage gap: ${err}`);
+        });
+      }
+      return;
+    }
+    case 'discussion:message':
+    case 'discussion:state': {
+      // A discussion channel's state is owned by the channel, not by any
+      // one pane — so like the usage case above, fetch once per channelId
+      // and apply the identical result to every pane hanging off that
+      // channel's parent thread (split view of the same discussion),
+      // rather than one GetChannelState + GetChannelMessages round trip
+      // per pane. Full resync (afterSeq -1): a gap means we don't trust
+      // any pane's incremental cursor.
+      const seenChannelIds = new Set<string>();
+      for (const pane of iterPanes()) {
+        const channelId = pane.thread?.discussionId;
+        if (!channelId || seenChannelIds.has(channelId)) continue;
+        seenChannelIds.add(channelId);
+        void fetchDiscussionChannelSnapshot(channelId).then(({ state, messages }) => {
+          for (const p of iterPanes()) {
+            if (p.thread?.discussionId !== channelId) continue;
+            p.applyChannelState(state);
+            p.applyChannelMessages(messages);
+          }
+        }).catch((err: unknown) => {
+          console.warn(`events: refresh discussion channel ${channelId} after transport gap: ${err}`);
         });
       }
       return;

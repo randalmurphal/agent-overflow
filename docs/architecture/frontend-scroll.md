@@ -629,6 +629,35 @@ path handles message growth and async Streamdown layout. Composer-section
 resize must also notify the controller because discussion's composer is a
 flex sibling that changes `scrollEl.clientHeight`.
 
+The channel is push-driven, not polled: `discussion:message` and
+`discussion:state` events land on `threadChannelState.svelte.ts` (the
+pane's discussion data layer, surfaced through `ThreadPane`'s
+`channel*` getters), and `ChannelView` renders whatever that state holds.
+Initial load and transport-gap recovery share one resync helper
+(`eventsDiscussion.ts`'s `refreshDiscussionChannel`) that fetches with
+`afterSeq = -1` — the exclusive "everything" cursor, since message
+sequences are zero-based and a `0` cursor would silently drop the
+channel's first message.
+
+The current speaker's in-flight text streams like chat: a discussion
+child thread (one participant's own session) has no mounted pane, so
+`eventsItemStream.ts` feeds its `assistant_text` upserts/deltas through a
+side-channel registry (`discussionLiveTail.ts`) into the channel state's
+`liveTail`, keyed by the roster `discussion:state` last published.
+`ChannelView` renders that tail as a streaming card and lets it fall
+away once the matching agent message lands.
+
+Animation mode uses the same content-keyed latch as chat (see Live
+Content Animation above): the channel state stamps
+`lastLiveContentAt` on every genuinely-new message and on live-tail
+growth, and `ChannelView` calls `latchedSpringMode(now,
+pane.channelLastLiveContentAt, SPRING_MODE_HOLD_MS)` for the controller's
+`animationMode`, springing while a speaker is actively producing content
+and sync-pinning once the channel goes quiet. This is the channel's own
+stamp, independent of the chat timeline's `lastLiveContentAt` — the two
+surfaces never mount at once, but each pane tracks both so switching a
+pane between chat and discussion mode never reads a stale latch.
+
 ## Diagnostics
 
 Scroll bugs are usually second-order interactions between controller

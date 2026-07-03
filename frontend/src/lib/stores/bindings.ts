@@ -161,6 +161,7 @@ export {
   StartDiscussion,
   StartDiscussionByID,
   GetChannelMessages,
+  GetChannelState,
   PostChannelMessage,
 
   // Design operations
