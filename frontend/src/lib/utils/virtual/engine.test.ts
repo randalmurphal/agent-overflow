@@ -6,25 +6,7 @@ import type { RowEstimate } from './types';
 
 const flatEstimate = (size: number): RowEstimate => ({
   at: () => size,
-  shiftBase: () => {},
 });
-
-// Records the interleaving of estimate reads and shiftBase calls so the
-// splice-ordering contract (remap BEFORE a prepend, AFTER a removal) is
-// pinned by a test, not just a comment.
-const trackedEstimate = (size: number): RowEstimate & { events: string[] } => {
-  const events: string[] = [];
-  return {
-    events,
-    at(index) {
-      events.push(`at:${index}`);
-      return size;
-    },
-    shiftBase(count) {
-      events.push(`shift:${count}`);
-    },
-  };
-};
 
 // 10 rows, 100px estimates, 300px viewport, 200px symmetric buffer.
 // Offsets are i*100, total 1000, tail seed = last 500px = rows 5..9.
@@ -202,48 +184,44 @@ describe('applyLength', () => {
     });
   });
 
-  it('remaps the estimate base BEFORE a prepend', () => {
-    const estimate = trackedEstimate(100);
-    const engine = mountedEngine({ estimate });
-    estimate.events.length = 0;
+  it('a prepend consults the estimate at the NEW post-splice head indices', () => {
+    // The estimate carries no index-keyed state to remap (unlike the
+    // deleted snapshot+shiftBase design) — it is simply called fresh for
+    // whatever index the store asks about. This test double records the
+    // indices to pin which ones prependHead actually consults.
+    const seen: number[] = [];
+    const indexedEstimate: RowEstimate = {
+      at(index) {
+        seen.push(index);
+        return 100;
+      },
+    };
+    const engine = mountedEngine({ estimate: indexedEstimate });
+    seen.length = 0;
 
     engine.applyLength(12, 2);
-    expect(estimate.events.slice(0, 3)).toEqual(['shift:2', 'at:0', 'at:1']);
+    // prependHead computes offsets for the 2 new head rows via estimate
+    // at their post-splice indices 0 and 1.
+    expect(seen).toEqual([0, 1]);
   });
 
-  it('head removal shifts the memo and remaps the estimate base AFTER', () => {
-    const estimate = trackedEstimate(100);
-    const engine = mountedEngine({ estimate });
-    engine.applyScroll(300);
-    estimate.events.length = 0;
+  it('head removal takes the offsets-memo path and consults no estimate at all', () => {
+    const seen: number[] = [];
+    const indexedEstimate: RowEstimate = {
+      at(index) {
+        seen.push(index);
+        return 100;
+      },
+    };
+    const engine = mountedEngine({ estimate: indexedEstimate });
+    engine.applyScroll(300); // seeds the full offsets memo
+    seen.length = 0;
 
     const update = engine.applyLength(8, -2);
     expect(update?.compensation).toEqual({ kind: 'head-splice', delta: -200, target: 100 });
-    // Seeding computed the full offsets memo, so the removal takes the
-    // memo path — no estimate reads, just the remap.
-    expect(estimate.events).toEqual(['shift:-2']);
-  });
-
-  it('estimates resolve against post-splice identities after head changes', () => {
-    const snapshot = [11, 22, 33, 44, 55, 66, 77, 88, 99, 110];
-    const engine = createEngine({
-      itemCount: 10,
-      estimate: createRowEstimate({ snapshot, defaultSize: 56 }),
-      bufferSize: 200,
-    });
-    engine.applyViewportResize(300);
-    engine.applyScroll(300);
-
-    engine.applyLength(8, -2);
-    // The old row 2 is now row 0 and keeps its prior.
-    expect(engine.sizeAt(0)).toBe(33);
-
-    engine.applyLength(10, 2);
-    // The prepended rows are NEW identities — they must not inherit the
-    // removed rows' priors even though the net bias is back to 0.
-    expect(engine.sizeAt(0)).toBe(56);
-    expect(engine.sizeAt(1)).toBe(56);
-    expect(engine.sizeAt(2)).toBe(33);
+    // Seeding computed the full offsets memo, so the removal reads the
+    // memo's already-known removed size instead of calling estimate.
+    expect(seen).toEqual([]);
   });
 
   it('clamps the compensation target at 0', () => {
@@ -335,7 +313,7 @@ describe('priors integration (hot revisit)', () => {
     const sizes = [120, 80, 200, 56, 90, 130, 75, 110, 60, 95];
     const engine = createEngine({
       itemCount: 10,
-      estimate: createRowEstimate({ snapshot: sizes, defaultSize: 56 }),
+      estimate: createRowEstimate({ rowPrior: (index) => sizes[index], defaultSize: 56 }),
       bufferSize: 200,
     });
 

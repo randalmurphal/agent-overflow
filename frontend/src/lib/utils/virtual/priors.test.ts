@@ -3,72 +3,131 @@ import {
   clearAllThreadSizePriorsForTest,
   clearThreadSizePriors,
   createRowEstimate,
-  getReplayableSizePriors,
+  getThreadSizePriors,
   peekThreadSizePriorsForTest,
+  setSizePriorsStorageAdapter,
   setThreadSizePriors,
   type SizePriorsEntry,
+  type SizePriorsStorageAdapter,
 } from './priors';
-import { UNMEASURED } from './sizes';
 
 const entry = (overrides: Partial<SizePriorsEntry> = {}): SizePriorsEntry => ({
   width: 800,
-  structureSig: 'sig-a',
   expansionSig: '',
-  sizes: [100, 200, UNMEASURED, 56],
+  rows: new Map([
+    ['L:a:completed:2:1', 100],
+    ['L:b:completed:2:1', 200],
+  ]),
   ...overrides,
 });
 
+interface FakeAdapter extends SizePriorsStorageAdapter {
+  store: Map<string, SizePriorsEntry>;
+  persistCalls: string[];
+  removeCalls: string[];
+}
+
+function fakeAdapter(): FakeAdapter {
+  const store = new Map<string, SizePriorsEntry>();
+  const persistCalls: string[] = [];
+  const removeCalls: string[] = [];
+  return {
+    store,
+    persistCalls,
+    removeCalls,
+    load: (threadId) => store.get(threadId),
+    persist: (threadId, e) => {
+      persistCalls.push(threadId);
+      store.set(threadId, e);
+    },
+    remove: (threadId) => {
+      removeCalls.push(threadId);
+      store.delete(threadId);
+    },
+  };
+}
+
 beforeEach(() => {
   clearAllThreadSizePriorsForTest();
+  setSizePriorsStorageAdapter(undefined);
 });
 
-describe('thread size priors persistence', () => {
-  it('replays only on an exact key match', () => {
+describe('thread size priors store', () => {
+  it('setThreadSizePriors replaces the entry wholesale', () => {
+    setThreadSizePriors('t1', entry({ rows: new Map([['a', 1], ['b', 2]]) }));
+    setThreadSizePriors('t1', entry({ rows: new Map([['c', 3]]) }));
+    const stored = peekThreadSizePriorsForTest('t1');
+    expect(stored?.rows.has('a')).toBe(false);
+    expect(stored?.rows.has('b')).toBe(false);
+    expect(stored?.rows.get('c')).toBe(3);
+  });
+
+  it('getThreadSizePriors returns the stored entry on a memory hit', () => {
     setThreadSizePriors('t1', entry());
-    expect(
-      getReplayableSizePriors('t1', { width: 800, structureSig: 'sig-a', expansionSig: '' }),
-    ).toEqual([100, 200, UNMEASURED, 56]);
+    expect(getThreadSizePriors('t1')).toEqual(entry());
   });
 
-  it.each([
-    ['width', { width: 640, structureSig: 'sig-a', expansionSig: '' }],
-    ['structureSig', { width: 800, structureSig: 'sig-b', expansionSig: '' }],
-    ['expansionSig', { width: 800, structureSig: 'sig-a', expansionSig: 'diff:x' }],
-  ])('refuses the snapshot on a %s mismatch', (_, key) => {
+  it('returns undefined for an unknown thread with no adapter installed', () => {
+    expect(getThreadSizePriors('nope')).toBeUndefined();
+  });
+
+  it('notifies the adapter on every set', () => {
+    const adapter = fakeAdapter();
+    setSizePriorsStorageAdapter(adapter);
     setThreadSizePriors('t1', entry());
-    expect(getReplayableSizePriors('t1', key)).toBeUndefined();
+    expect(adapter.persistCalls).toEqual(['t1']);
+    expect(adapter.store.get('t1')).toEqual(entry());
   });
 
-  it('returns undefined for an unknown thread', () => {
-    expect(
-      getReplayableSizePriors('nope', { width: 800, structureSig: 'sig-a', expansionSig: '' }),
-    ).toBeUndefined();
-  });
-
-  it('clears a single thread', () => {
+  it('clears a single thread from memory AND the adapter', () => {
+    const adapter = fakeAdapter();
+    setSizePriorsStorageAdapter(adapter);
     setThreadSizePriors('t1', entry());
     clearThreadSizePriors('t1');
     expect(peekThreadSizePriorsForTest('t1')).toBeUndefined();
+    expect(adapter.removeCalls).toEqual(['t1']);
   });
 
-  it('evicts the least recently used entry past the cap', () => {
+  it('falls back to the adapter on a memory miss and installs the result into the LRU', () => {
+    const adapter = fakeAdapter();
+    adapter.store.set('t1', entry({ width: 999 }));
+    setSizePriorsStorageAdapter(adapter);
+
+    expect(peekThreadSizePriorsForTest('t1')).toBeUndefined(); // memory miss
+    const result = getThreadSizePriors('t1');
+    expect(result?.width).toBe(999);
+    expect(peekThreadSizePriorsForTest('t1')).toEqual(result); // now in memory
+  });
+
+  it('returns undefined when neither memory nor the adapter has the thread', () => {
+    setSizePriorsStorageAdapter(fakeAdapter());
+    expect(getThreadSizePriors('nope')).toBeUndefined();
+  });
+
+  it('evicts the least recently used memory entry past the cap without touching the adapter', () => {
+    const adapter = fakeAdapter();
+    setSizePriorsStorageAdapter(adapter);
     for (let i = 0; i < 50; i++) {
       setThreadSizePriors(`t${i}`, entry());
     }
     expect(peekThreadSizePriorsForTest('t0')).toBeDefined();
 
     setThreadSizePriors('t50', entry());
+    // Evicted from the in-memory LRU...
     expect(peekThreadSizePriorsForTest('t0')).toBeUndefined();
     expect(peekThreadSizePriorsForTest('t1')).toBeDefined();
     expect(peekThreadSizePriorsForTest('t50')).toBeDefined();
+    // ...but eviction is memory housekeeping only — the adapter never sees a remove.
+    expect(adapter.removeCalls).toEqual([]);
+    expect(adapter.store.has('t0')).toBe(true);
   });
 
-  it('bumps recency on a successful replay', () => {
+  it('bumps recency on a successful get', () => {
     for (let i = 0; i < 50; i++) {
       setThreadSizePriors(`t${i}`, entry());
     }
     // t0 becomes most recent; the next eviction takes t1 instead.
-    getReplayableSizePriors('t0', { width: 800, structureSig: 'sig-a', expansionSig: '' });
+    getThreadSizePriors('t0');
 
     setThreadSizePriors('t50', entry());
     expect(peekThreadSizePriorsForTest('t0')).toBeDefined();
@@ -79,52 +138,46 @@ describe('thread size priors persistence', () => {
     for (let i = 0; i < 50; i++) {
       setThreadSizePriors(`t${i}`, entry());
     }
-    setThreadSizePriors('t0', entry({ structureSig: 'sig-updated' }));
+    setThreadSizePriors('t0', entry({ width: 999 }));
 
     setThreadSizePriors('t50', entry());
-    expect(peekThreadSizePriorsForTest('t0')?.structureSig).toBe('sig-updated');
+    expect(peekThreadSizePriorsForTest('t0')?.width).toBe(999);
     expect(peekThreadSizePriorsForTest('t1')).toBeUndefined();
   });
 
-  it('a refused replay does not bump recency', () => {
+  it('installing an entry from an adapter hit past the cap also evicts memory-only', () => {
+    const adapter = fakeAdapter();
+    setSizePriorsStorageAdapter(adapter);
     for (let i = 0; i < 50; i++) {
       setThreadSizePriors(`t${i}`, entry());
     }
-    getReplayableSizePriors('t0', { width: 641, structureSig: 'sig-a', expansionSig: '' });
-
-    setThreadSizePriors('t50', entry());
+    adapter.store.set('overflow', entry());
+    getThreadSizePriors('overflow'); // memory miss → adapter hit → installed, pushing t0 out
     expect(peekThreadSizePriorsForTest('t0')).toBeUndefined();
+    expect(adapter.removeCalls).toEqual([]); // still memory-only eviction
   });
 });
 
 describe('createRowEstimate', () => {
-  it('resolves snapshot → kind → default in that order', () => {
+  it('resolves rowPrior → kind → default in that order', () => {
     const estimate = createRowEstimate({
-      snapshot: [120, UNMEASURED],
+      rowPrior: (index) => (index === 0 ? 120 : undefined),
       kindOf: (index) => (index === 1 ? 'tool' : index === 2 ? 'unknown-kind' : undefined),
       kindHeights: { tool: 44 },
       defaultSize: 56,
     });
-    expect(estimate.at(0)).toBe(120); // snapshot hit
-    expect(estimate.at(1)).toBe(44); // snapshot UNMEASURED → kind
+    expect(estimate.at(0)).toBe(120); // rowPrior hit
+    expect(estimate.at(1)).toBe(44); // rowPrior miss → kind
     expect(estimate.at(2)).toBe(56); // kind not in table → default
-    expect(estimate.at(3)).toBe(56); // out of snapshot, no kind → default
+    expect(estimate.at(3)).toBe(56); // no rowPrior, no kind → default
   });
 
   it('treats a measured 0 as a valid prior', () => {
-    const estimate = createRowEstimate({ snapshot: [0], defaultSize: 56 });
+    const estimate = createRowEstimate({ rowPrior: () => 0, defaultSize: 56 });
     expect(estimate.at(0)).toBe(0);
   });
 
-  it('rejects a negative snapshot value (corrupt prior) and falls back', () => {
-    // UNMEASURED (-1) means "no prior"; any other negative is corrupt
-    // data and must degrade to the estimate chain, never become a
-    // negative offset.
-    const estimate = createRowEstimate({ snapshot: [-5], defaultSize: 56 });
-    expect(estimate.at(0)).toBe(56);
-  });
-
-  it('falls back to kind heights without any snapshot', () => {
+  it('falls back to kind heights without any rowPrior', () => {
     const estimate = createRowEstimate({
       kindOf: () => 'prose',
       kindHeights: { prose: 88 },
@@ -138,68 +191,27 @@ describe('createRowEstimate', () => {
     expect(estimate.at(0)).toBe(56);
   });
 
-  describe('shiftBase', () => {
-    it('remaps the snapshot after a head prepend', () => {
-      const estimate = createRowEstimate({ snapshot: [120, 130], defaultSize: 56 });
-      estimate.shiftBase(2);
-      // New head rows have no prior; old rows keep theirs at +2.
-      expect(estimate.at(0)).toBe(56);
-      expect(estimate.at(1)).toBe(56);
-      expect(estimate.at(2)).toBe(120);
-      expect(estimate.at(3)).toBe(130);
+  it('is index-free: rowPrior and kindOf are consulted per call with no positional remap', () => {
+    // The deleted snapshot+shiftBase design carried index-keyed bias
+    // state across head splices; a signature-based rowPrior has nothing
+    // to remap — every call resolves fresh against whatever the caller
+    // reports for that index right now.
+    const rowSeen: number[] = [];
+    const kindSeen: number[] = [];
+    const estimate = createRowEstimate({
+      rowPrior: (index) => {
+        rowSeen.push(index);
+        return index === 2 ? 77 : undefined;
+      },
+      kindOf: (index) => {
+        kindSeen.push(index);
+        return undefined;
+      },
+      defaultSize: 56,
     });
-
-    it('remaps the snapshot after a head removal', () => {
-      const estimate = createRowEstimate({ snapshot: [120, 130], defaultSize: 56 });
-      estimate.shiftBase(-1);
-      expect(estimate.at(0)).toBe(130);
-      expect(estimate.at(1)).toBe(56);
-    });
-
-    it('accumulates across splices', () => {
-      const estimate = createRowEstimate({ snapshot: [120, 130], defaultSize: 56 });
-      estimate.shiftBase(3);
-      estimate.shiftBase(-2);
-      expect(estimate.at(1)).toBe(120);
-      expect(estimate.at(2)).toBe(130);
-    });
-
-    it('never aliases removed rows onto later-prepended fresh rows', () => {
-      const estimate = createRowEstimate({ snapshot: [120, 130, 140], defaultSize: 56 });
-      estimate.shiftBase(-2);
-      expect(estimate.at(0)).toBe(140);
-
-      estimate.shiftBase(2);
-      // Net bias is 0 again, but rows 0..1 are new identities.
-      expect(estimate.at(0)).toBe(56);
-      expect(estimate.at(1)).toBe(56);
-      expect(estimate.at(2)).toBe(140);
-    });
-
-    it('a removal consumes fresh head rows before originals', () => {
-      const estimate = createRowEstimate({ snapshot: [120, 130], defaultSize: 56 });
-      estimate.shiftBase(2);
-      estimate.shiftBase(-1);
-      // One fresh row survives at the head; original row 0 sits at 1.
-      expect(estimate.at(0)).toBe(56);
-      expect(estimate.at(1)).toBe(120);
-      expect(estimate.at(2)).toBe(130);
-    });
-
-    it('does not remap kind lookups (they resolve against live indices)', () => {
-      const seen: number[] = [];
-      const estimate = createRowEstimate({
-        snapshot: [120],
-        kindOf: (index) => {
-          seen.push(index);
-          return 'tool';
-        },
-        kindHeights: { tool: 44 },
-        defaultSize: 56,
-      });
-      estimate.shiftBase(2);
-      expect(estimate.at(0)).toBe(44);
-      expect(seen).toEqual([0]);
-    });
+    expect(estimate.at(2)).toBe(77);
+    expect(estimate.at(5)).toBe(56);
+    expect(rowSeen).toEqual([2, 5]);
+    expect(kindSeen).toEqual([5]); // rowPrior hit at 2 short-circuits kindOf
   });
 });

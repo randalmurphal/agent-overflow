@@ -15,9 +15,13 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     or estimate per row, memoized offsets), `window.ts` (visible-range
     math), `engine.ts` (the reducer: scroll/resize/measurement/length
     inputs in → mount window + totalSize + at most one compensation
-    observation out), `priors.ts` (per-thread measured-size persistence
-    and the estimate resolver), `types.ts` (the shared shapes).
-    Design doc: [`virtualizer-replacement-plan.md`](virtualizer-replacement-plan.md).
+    observation out), `priors.ts` (per-thread, per-row measured-size
+    persistence and the estimate resolver — DOM-free; see its header for
+    the per-row signature model and the storage-adapter seam),
+    `priorsStorage.ts` (the localStorage-backed adapter that makes
+    priors survive an app restart, not just a same-session thread
+    switch), `types.ts` (the shared shapes). Design doc:
+    [`virtualizer-replacement-plan.md`](virtualizer-replacement-plan.md).
   - `TimelineVirtualizer.svelte` — the adapter binding the engine to the
     DOM: one lazy ResizeObserver for the scroller and every mounted row,
     scroll-event feed, spacer + absolute row positioning (`VirtualRow`),
@@ -66,9 +70,12 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
   - `timelineRestore.svelte.ts` — thread-switch restore sessions:
     switch-edge bookkeeping, scroll-snapshot save/restore, and the
     scroll-to-item flow.
-  - `timelineSizePriors.svelte.ts` — per-thread row size priors,
-    including the `ROW_KIND_ESTIMATE_PX` floor-biased kind estimates
-    and the priors snapshot/persist cadence.
+  - `timelineSizePriors.svelte.ts` — per-thread, per-row size priors,
+    including the `ROW_KIND_ESTIMATE_PX` floor-biased kind estimates,
+    the priors capture/persist cadence, and the lazy-once
+    width/expansion validity check. Installs the localStorage
+    persistence adapter (`utils/virtual/priorsStorage.ts`) at module
+    scope.
   - `timelinePaging.ts` — load-older/load-newer gates and handlers.
   - `timelineWindowAnchor.svelte.ts` — prune-shift anchoring when the
     live window drops rows off the top.
@@ -143,10 +150,12 @@ persist-then-emit ordering.
 other, and they drive the virtualizer's `shift` head-splice so the reading
 position holds without an explicit re-anchor. `shift` tells the engine
 which end a length change hit: on a **head** change `applyLength` splices
-the size store at the head (`spliceHead`), remaps the estimate's
-index-keyed priors (`RowEstimate.shiftBase`), and reports a `head-splice`
+the size store at the head (`spliceHead`) and reports a `head-splice`
 compensation whose target keeps the viewport stationary — applied in the
-same flush; on a **tail** change it does neither. Without it every change
+same flush; on a **tail** change it does neither. Priors need no remap
+step across the splice: they resolve per-row against a content
+signature (`utils/virtual/priors.ts`), not a position, so there is no
+index-keyed prior state left to shift. Without the `shift` hint itself, every change
 is treated as tail growth/shrink and a prepend misindexes the whole size
 store — every measured height lands on the wrong row, forcing a
 re-measure of everything visible: the "viewport shifts, scrollbar jumps
@@ -263,9 +272,16 @@ their estimates — and the warm gate then reveals **immediately**
 markdown-settled signal also confirms no late typesetting wave is
 coming. A cold mount's corrections are tens-to-hundreds of px, so it can
 never fast-path; late async growth (mermaid, images) lands as a
-correction and holds the gate exactly as before. The geometry gate
-therefore guards only the **first** visit to a thread within a session —
-where no priors exist yet and the estimate→measure cascade is
+correction and holds the gate exactly as before. Priors are per-row and
+persist past a restart (`utils/virtual/priorsStorage.ts`), so the
+"revisited" case above now also covers a thread reopened after a fresh
+app boot, not just a same-session thread switch — the boot window only
+needs to be a suffix of a previously-captured, possibly much larger,
+window (see priors.ts's header for why the per-row key makes that
+robust to window-composition changes). The geometry gate therefore
+guards only a **genuine first-ever** visit to a thread, or rows whose
+content changed since their last capture (a per-row signature miss) —
+where no valid prior exists and the estimate→measure cascade is
 unavoidable — and is best-effort there. Both defenses coexist: priors
 remove the cascade when they can, the gate hides it when they can't.
 
@@ -525,52 +541,75 @@ survive remount lives on `ThreadPane` registries keyed by item id,
 payload id, or subagent group key. Loaded payload bytes live in the
 byte-bounded module cache in `payloadDataCache.ts`.
 
-Measured row heights ARE replayed across thread switches, but only under
-a strict validity key (`utils/virtual/priors.ts`). The `{#key
-pane.threadId}` block remounts the `<TimelineVirtualizer>` on every
-switch, so without a replay it re-runs the full estimate→measure cascade —
-the thread-switch flicker, identical for cached and uncached threads
-because the item cache avoids the *fetch*, not the *remeasure*. The priors
-replay makes the mount start at the already-measured total: the engine's
-`RowEstimate` resolves each unmeasured row from the previous visit's
-persisted measurement (falling back per-row to the kind-height table,
-then the flat default), and the per-row ResizeObserver's first delivery
-matches the estimated size, so `applyMeasurements` no-ops it. Zero
-re-render, zero scroll jump.
+Measured row heights ARE replayed across thread switches — and across an
+app restart — under a per-row validity model (`utils/virtual/priors.ts`).
+The `{#key pane.threadId}` block remounts the `<TimelineVirtualizer>` on
+every switch, so without a replay it re-runs the full estimate→measure
+cascade — the thread-switch flicker, identical for cached and uncached
+threads because the item cache avoids the *fetch*, not the *remeasure*.
+The priors replay makes the mount start at the already-measured total:
+the engine's `RowEstimate` resolves each unmeasured row from the previous
+visit's persisted measurement (falling back per-row to the kind-height
+table, then the flat default), and the per-row ResizeObserver's first
+delivery matches the estimated size, so `applyMeasurements` no-ops it.
+Zero re-render, zero scroll jump.
 
-The replay is sound only when the rows re-render at the heights they were
-measured at, so the stored sizes are refused (every row falls back to its
-kind estimate — the cold-mount behavior, never worse) unless three things
-still match: **scroll-pane width** (the wrap point), a **structure
-signature** (`timelineStructureSignature` over the rendered node sequence
-plus per-leaf content — id, status, `summary.length`, `updatedAt`), and a
-**non-default expansion signature** (`pane.expansionSignature()` over
-expanded subagent groups, diff overrides, and payloads). A handful of global
-display settings (`fontSize`, the sans/mono fonts, `collapseDiffPreviews`)
-also change row height but are deliberately **not** keyed — a documented,
-benign residual: toggling one mid-session then revisiting a thread replays
-stale heights, which the warm-up gate masks as a cold first visit (the
-estimate→measure cascade re-runs and corrects them), never a crash or stuck
-viewport. Keying them would make the residual airtight but buys no visible
-change (same masked cascade either way) at the cost of a drift-prone
-signature; the choice is recorded in `priors.ts`. The structure signature
-superseded an earlier version of this key that read `pane.timelineRevision`
-— a monotonic per-pane counter that is never restored on a cache-hit
-re-entry, so every revisit computed a strictly-greater revision than
-capture and the replay **never matched** (the cache was inert; the
-switch-back flicker was never actually fixed). `pane.timelineRevision`
-itself remains as the timeline-derivation reactivity trigger; it was just
-the wrong input to key the size replay on. The signature is reproducible
-instead: revisiting a settled thread yields the identical string, and it
-is content-aware (Go bumps `updatedAt` on every streaming append), so a
-backgrounded thread that changed and got reloaded is refused on the key
-alone — eviction (`thread.svelte.ts` removal/reswitch,
-`threads.svelte.ts removeThread`) is memory housekeeping, not the
-correctness guard. Row-UI state is reset to default on every switch
+Priors are keyed by a **per-row content signature** (`nodeSignature` in
+`utils/timelineStructureSignature.ts` — id, status, `summary.length`,
+`updatedAt` for a leaf; key + member count for a group), not by
+position. Each thread's `SizePriorsEntry` is `{ width, expansionSig,
+rows: Map<signature, measuredPx> }`: **width** (the wrap point) and
+**expansionSig** (`pane.expansionSignature()`, non-default subagent/diff/
+payload expansion) gate the whole entry — a mismatch on either refuses
+every row in it, degrading the mount to the kind/flat estimate chain,
+same as a cold first visit. The per-row signature gates each row
+independently within a valid entry: a row whose content changed simply
+misses on its own map key, without invalidating its still-valid
+siblings. This replaced an earlier design that keyed ONE positional
+`sizes: number[]` snapshot against a **whole-window** structure
+signature (the newline-join of every loaded row's signature) — a key
+that a fresh app boot's small initial window essentially never matched
+against a full session window of hundreds of streamed/paged rows, so
+restart replay was effectively dead. The per-row map fixes that: a boot
+window's rows are a *suffix* of a larger captured window, and each one
+resolves independently. A handful of global display settings (`fontSize`,
+the sans/mono fonts, `collapseDiffPreviews`) also change row height but
+are deliberately **not** keyed — a documented, benign residual: toggling
+one mid-session then revisiting a thread replays stale heights, which the
+warm-up gate masks as a cold first visit (the estimate→measure cascade
+re-runs and corrects them), never a crash or stuck viewport. Keying them
+would make the residual airtight but buys no visible change (same masked
+cascade either way) at the cost of a drift-prone signature; the choice is
+recorded in `priors.ts`. Row-UI state is reset to default on every switch
 (`rowUiState.clear()`), so at restore time the expansion signature is the
 default one — which is exactly why a thread that was idle-at-default
 replays cleanly and a thread that had something expanded (taller rows) is
 correctly refused.
+
+The width/expansion validity check is deliberately **lazy-once**, not
+eager: `resolveRowEstimateOnThreadEdge` (`timelineSizePriors.svelte.ts`)
+runs in `$effect.pre` before the virtualizer remounts, and on a fresh app
+boot the scroll surface has not been laid out yet — an eager check would
+read width 0 and spuriously refuse every restart replay. The check
+instead runs on the first `RowEstimate.at()` call and is memoized for
+the rest of that mount. Even at first use the width can still
+legitimately read 0: the width signal is RO-only (async by the
+one-source rule in `scrollSurfaceWidth.ts`), while the engine's first
+`at()` calls run synchronously when the virtualizer mounts with data —
+on boot, whichever lands first is a machine-speed race. Width 0
+therefore means "layout hasn't reported yet", not a real wrap point,
+and the check **trusts the entry's captured width** in that case
+(latched, so every row in the mount resolves consistently): window
+geometry restores across restarts, so the real width almost always
+matches, and a genuine mismatch degrades to the documented
+self-correcting display-settings residual instead of a guaranteed full
+cascade.
+
+`setThreadSizePriors` REPLACES a thread's entry wholesale on every
+capture rather than merging row-by-row: streaming rows carry
+`updatedAt`/`summary.length` in their signature, so a row's key changes
+on every append, and merging would accumulate dead signatures forever.
+A wholesale replace self-cleans that for free.
 
 Captures must store the **settled** sizes or the replay restores a
 mid-cascade height. They ride two triggers, both routed through one
@@ -578,18 +617,33 @@ size-gated persist (gated on `getScrollSize()` so a 60Hz spring does not
 re-slice the array): the scroll-position snapshot (`saveScrollSnapshot`),
 and the rising edge of `stick.isWarm` — the controller's
 "measurement-cascade-settled" signal — which guarantees a final-height
-capture for a thread the user views but never scrolls. The store is a
-bounded session-only LRU (memory: ~one float per loaded row per recent
-thread) — it does not persist to SQLite and does not violate the
-visible-thread memory budget. This replays revisits within a session; a
-genuine first visit has no priors and still cascades (hidden by the
-warm-up gate, above). Kind estimates for priors-miss rows are **floors,
-not averages** (`ROW_KIND_ESTIMATE_PX` in
-`components/chat/timelineSizePriors.svelte.ts`): an estimate
-above a row's real height shrinks `totalSize` on first measurement — a
-scrollbar dip plus a synchronous browser `scrollTop` clamp at exact
-bottom — while an undershoot only grows `totalSize`, absorbed invisibly
-by remeasure-above compensation at the cost of a few extra transiently
+capture for a thread the user views but never scrolls.
+
+The in-memory store is a bounded LRU (memory: ~one float per loaded row
+per recent thread) — a WORKING SET over a persistent backing store, not
+the store itself. `utils/virtual/priorsStorage.ts` is a
+localStorage-backed adapter (installed at module scope of
+`timelineSizePriors.svelte.ts`, so it is active before any pane mounts)
+that makes priors survive an app restart: writes are debounced (~1s,
+coalesced per thread) and flushed early on `pagehide`/hidden
+`visibilitychange`; reads lazily hydrate a memory miss. A 50-thread
+storage cap and 50-thread in-memory cap both evict LRU-oldest — a memory
+eviction never touches the persistent store (the thread's priors are
+still on disk and rehydrate on its next visit); only an explicit
+`clearThreadSizePriors` (thread deletion, item mutation, same-thread
+reswitch — `thread.svelte.ts`, `threads.svelte.ts removeThread`) deletes
+from storage too. Storage failures (quota, corrupt JSON from a stale
+schema version or a hand-edited profile) warn once and degrade to
+"priors don't persist this session" rather than throwing. None of this
+violates the visible-thread memory budget or touches SQLite — it is
+still a session-scoped cache in memory, just one that can rehydrate
+itself from disk. Kind estimates for priors-miss rows are **floors, not
+averages** (`ROW_KIND_ESTIMATE_PX` in
+`components/chat/timelineSizePriors.svelte.ts`): an estimate above a
+row's real height shrinks `totalSize` on first measurement — a scrollbar
+dip plus a synchronous browser `scrollTop` clamp at exact bottom — while
+an undershoot only grows `totalSize`, absorbed invisibly by
+remeasure-above compensation at the cost of a few extra transiently
 mounted rows on a cold switch.
 
 There is deliberately NO per-row min-height floor system. An earlier

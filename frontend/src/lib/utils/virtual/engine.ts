@@ -184,16 +184,12 @@ export function createEngine(options: EngineOptions): VirtualEngine {
       if (count === store.length && !headSplice) return null;
 
       let compensation: EngineCompensation | undefined;
-      if (headSplice > 0) {
-        // Remap index-keyed estimates BEFORE a prepend, AFTER a removal —
-        // spliceHead consults post-splice indices for inserted rows and
-        // pre-splice indices for removed ones (sizes.ts contract).
-        estimate.shiftBase(headSplice);
+      if (headSplice !== 0) {
+        // No estimate remap needed here: priors resolve per-row against
+        // live data (a content signature, not a position — see
+        // utils/virtual/priors.ts), so `estimate.at()` already reads
+        // correctly against post-splice indices without help.
         const delta = spliceHead(store, headSplice);
-        compensation = compensationFor('head-splice', delta);
-      } else if (headSplice < 0) {
-        const delta = spliceHead(store, headSplice);
-        estimate.shiftBase(headSplice);
         compensation = compensationFor('head-splice', delta);
       }
       if (count !== store.length) {

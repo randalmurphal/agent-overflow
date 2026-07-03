@@ -34,7 +34,7 @@ import {
 } from '../../utils/threadScrollSnapshots';
 import {
   clearAllThreadSizePriorsForTest,
-  getReplayableSizePriors,
+  getThreadSizePriors,
   peekThreadSizePriorsForTest,
 } from '../../utils/virtual/priors';
 import * as sizePriorsModule from '../../utils/virtual/priors';
@@ -201,11 +201,14 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
   // The measured-size priors are what let a revisited thread skip the
   // estimate→measure cascade (the thread-switch flicker). This proves the
-  // wiring: a mount that settles persists a replayable entry stamped with the
-  // thread's validity key. The actual replay-at-final-height behavior is
-  // proven against the engine in utils/virtual/engine.test.ts (it can't be
-  // observed in happy-dom, which reports zero geometry).
-  it('persists replayable size priors for a thread after mount settles', async () => {
+  // wiring: a mount that settles persists an entry stamped with the
+  // thread's width/expansion, keyed per-row by content signature. The
+  // actual replay-at-final-height behavior is proven against the engine
+  // in utils/virtual/engine.test.ts (it can't be observed in happy-dom,
+  // which reports zero geometry and never delivers a ResizeObserver
+  // callback — see setup.ts's StubResizeObserver — so `rows` in this
+  // environment captures no real measurements, only the wiring).
+  it('persists a size-priors entry for a thread after mount settles', async () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'a', summary: 'first' }),
       makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
@@ -221,32 +224,13 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     // effect depends on both — see the ordering note in MessageTimeline).
     const entry = peekThreadSizePriorsForTest('thread-size-cache');
     expect(entry).toBeTruthy();
-    // One slot per rendered row (measured or not).
-    expect(entry?.sizes).toHaveLength(2);
-    // The structure signature encodes both leaves (the reproducible key that
-    // replaced the inert monotonic revision counter).
-    expect(entry?.structureSig).toContain('L:a:');
-    expect(entry?.structureSig).toContain('L:b:');
+    expect(entry?.rows).toBeInstanceOf(Map);
     expect(entry?.expansionSig).toBe('');
 
-    // It round-trips through the validity gate with its captured key…
-    expect(
-      getReplayableSizePriors('thread-size-cache', {
-        width: entry!.width,
-        structureSig: entry!.structureSig,
-        expansionSig: entry!.expansionSig,
-      }),
-    ).toBe(entry!.sizes);
-
-    // …and a stale key (items changed → different structure) refuses the
-    // replay → per-row estimate fallback.
-    expect(
-      getReplayableSizePriors('thread-size-cache', {
-        width: entry!.width,
-        structureSig: entry!.structureSig + '\nL:c:completed:1:0',
-        expansionSig: entry!.expansionSig,
-      }),
-    ).toBeUndefined();
+    // It round-trips through the store by threadId (no validity key
+    // argument anymore — validity is a per-row, lazy-once check made by
+    // the consumer; see timelineSizePriors.svelte.ts's `rowPrior`).
+    expect(getThreadSizePriors('thread-size-cache')).toBe(entry);
   });
 
   // The decisive regression: actually switch away and back, and prove the
@@ -255,11 +239,13 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
   // cache-hit re-entry — so every revisit computed a strictly-greater revision
   // than capture and the resolver always returned undefined (the architecture
   // trace saw revision 2→4→5 across A→B→A; severing the replay arm left the
-  // whole scroll suite green). The structure signature is reproducible
-  // for A's unchanged rows, so the settled sizes replay on return instead of
-  // re-running the estimate→measure cascade. RED on the old key, GREEN now.
-  it('resolves the replay priors when switching away and back (A→B→A)', async () => {
-    const resolveSpy = vi.spyOn(sizePriorsModule, 'getReplayableSizePriors');
+  // whole scroll suite green). A's captured entry is untouched by the B visit
+  // (clearThreadSizePriors only fires on a same-thread reswitch or item
+  // mutation, neither of which happens here), so the settled sizes are found
+  // again on return instead of re-running the estimate→measure cascade.
+  // RED on the old key, GREEN now.
+  it('resolves the priors entry when switching away and back (A→B→A)', async () => {
+    const resolveSpy = vi.spyOn(sizePriorsModule, 'getThreadSizePriors');
     // Restore via onTestFinished so a failed assertion below can't leak the spy
     // (which calls through) into sibling tests — the suite has no global mock restore.
     onTestFinished(() => resolveSpy.mockRestore());
@@ -276,7 +262,6 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     // First visit captured A's settled size priors.
     const firstEntry = peekThreadSizePriorsForTest('thread-aba-a');
     expect(firstEntry).toBeTruthy();
-    const firstSig = firstEntry!.structureSig;
 
     // Switch to an uncached thread B.
     const threadB = makeThread({ id: 'thread-aba-b' });
@@ -306,10 +291,10 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await waitForAnimationFrame();
 
-    // The component asked the resolver for A on the return and got a defined
-    // snapshot — a cache HIT, not the estimate fallback. (If the spy ever stops
-    // intercepting the component's import, the first assertion fails loudly
-    // rather than passing vacuously.)
+    // The component asked the store for A on the return and got a defined
+    // entry back — a cache HIT, not the estimate fallback. (If the spy ever
+    // stops intercepting the component's import, the first assertion fails
+    // loudly rather than passing vacuously.)
     const aCallIndexes = resolveSpy.mock.calls
       .map((call, i) => (call[0] === 'thread-aba-a' ? i : -1))
       .filter((i) => i >= 0);
@@ -321,9 +306,13 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
       }),
     ).toBe(true);
 
-    // And the key itself reproduced: the return-visit signature equals the
-    // first-visit signature (the property the monotonic revision counter lacked).
-    expect(peekThreadSizePriorsForTest('thread-aba-a')?.structureSig).toBe(firstSig);
+    // And it's the SAME entry object captured on the first visit — the
+    // resolver's first lookup for A on return runs in $effect.pre, before
+    // this new mount's own settle capture can overwrite it, so this proves
+    // the return visit actually found A's priors rather than some
+    // coincidentally-truthy fresh capture.
+    const firstReturnCallIndex = aCallIndexes[0];
+    expect(resolveSpy.mock.results[firstReturnCallIndex]?.value).toBe(firstEntry);
   });
 
   it('saves an anchor snapshot after escape even inside the near-bottom band', async () => {

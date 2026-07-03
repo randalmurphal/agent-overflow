@@ -195,11 +195,12 @@ export function updateLength(store: SizeStore, length: number): number {
  * the total-size delta: +sum of inserted estimates, or −sum of removed
  * sizes/estimates.
  *
- * Estimate-index contract (the engine owns the ordering): a prepend
- * consults `estimate` for the NEW head indices [0, count), so any
- * index-keyed estimate state must be remapped BEFORE calling; a removal
- * consults the REMOVED pre-splice indices, so remap AFTER. See
- * RowEstimate.shiftBase in types.ts.
+ * A prepend consults `estimate` for the NEW head indices [0, count); a
+ * removal consults the REMOVED pre-splice indices. Neither needs an
+ * ordering contract with the caller: `RowEstimate.at` (utils/virtual/priors.ts)
+ * resolves per-row against live data — a content signature, not a
+ * position — so there is no index-keyed estimate state left to remap
+ * across the splice.
  */
 export function spliceHead(store: SizeStore, count: number): number {
   if (count === 0) return 0;

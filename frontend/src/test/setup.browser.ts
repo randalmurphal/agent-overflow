@@ -18,6 +18,7 @@ import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/thread
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { clearThreadScrollSnapshotsForTest } from '../lib/utils/threadScrollSnapshots';
 import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
+import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
 
 // Chromium emits this when a ResizeObserver callback itself changes layout so
 // notifications remain for the next frame — the scroll controller's sync-pin
@@ -68,4 +69,8 @@ afterEach(() => {
   clearThreadItemCacheForTest();
   clearThreadScrollSnapshotsForTest();
   clearAllThreadSizePriorsForTest();
+  // Real localStorage persists across tests in the same Chromium context
+  // (unlike happy-dom's per-file in-memory shim), so also cancel any
+  // pending debounced flush and wipe the size-priors keys it wrote.
+  __resetSizePriorsStorageForTest();
 });

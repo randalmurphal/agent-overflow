@@ -12,6 +12,8 @@ import {
 import { __resetPayloadCacheForTest } from '../lib/utils/payloadDataCache';
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { resetProviderModelsForTest } from '../lib/stores/providerModels.svelte';
+import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
+import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -202,6 +204,15 @@ afterEach(() => {
   // catalog per case, so stale model capabilities from another suite make
   // menus lie about context windows and fast-mode support.
   resetProviderModelsForTest();
+  // Any component test that imports timelineSizePriors.svelte.ts installs
+  // the real localStorage-backed size-priors adapter at module scope
+  // (installSizePriorsPersistence runs on import). Reset its debounce
+  // timer, dirty set, and disabled flag before wiping localStorage below —
+  // otherwise a pending ~1s flush from this test can fire mid-way through
+  // a LATER test in the same file and write stale entries into its
+  // localStorage.
+  clearAllThreadSizePriorsForTest();
+  __resetSizePriorsStorageForTest();
   // Wipe the in-memory localStorage between tests so persistence-aware
   // stores don't leak state across suites.
   try {

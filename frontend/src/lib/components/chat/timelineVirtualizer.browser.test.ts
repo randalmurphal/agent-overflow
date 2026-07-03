@@ -296,7 +296,7 @@ describe('content geometry samples (engine-sourced contentRO replacement)', () =
   function exactEstimate(): RowEstimate {
     // Models a priors-hit revisit: every row's estimate matches its real
     // rendered height, so first measurements land with zero correction.
-    return { at: () => ROW_PX, shiftBase: () => {} };
+    return { at: () => ROW_PX };
   }
 
   it('delivers post-flush (height already in the DOM) and only on change', async () => {

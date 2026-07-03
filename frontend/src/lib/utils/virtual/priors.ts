@@ -1,27 +1,75 @@
 // Per-thread row-height priors: persistence of measured sizes across
-// thread switches, and the live per-row estimate resolver the engine uses
-// for unmeasured rows.
+// thread switches AND app restarts, and the live per-row estimate
+// resolver the engine uses for unmeasured rows.
 //
-// Persistence carries the proven design of the virtua-era
-// threadVirtuaSizeCache (deleted with virtua in V3): an LRU of
-// measured-size snapshots keyed by {width, structureSig, expansionSig},
-// where a mismatch on ANY dimension refuses the snapshot. The key is why
-// priors can never mis-place rows from stale data:
+// MODEL: per-row signature → measured px, not a positional whole-window
+// snapshot. The prior generation of this module kept ONE `sizes:
+// number[]` array per thread, keyed against a whole-window
+// `structureSig` — the newline-join of every loaded row's signature
+// (utils/timelineStructureSignature.ts). That whole-window key made
+// replay brittle exactly where it mattered most: a thread's loaded
+// window grows to hundreds of rows over a session (streaming appends,
+// loadOlder, prunes), but a fresh app boot always starts from a small
+// initial slice — so the whole-window signature captured before restart
+// almost never equals the signature computed after, and the persisted
+// snapshot never replayed except on tiny threads. Keying each row
+// independently by its OWN signature
+// (utils/timelineStructureSignature.ts's `nodeSignature`) fixes both
+// problems at once: the boot window's rows are a SUFFIX subset of a
+// larger session window's rows, and each one resolves independently
+// against the shared per-row map — window composition no longer has to
+// match, only the individual rows that are still present.
+//
+// VALIDITY: two dimensions still gate an entire entry (a mismatch on
+// either refuses every row in it, degrading the whole mount to the
+// kind/flat estimate chain):
 //
 //   - width        : the wrap point — a narrower/wider pane changes every
-//                    multi-line row's height, so it is a key miss.
-//   - structureSig : node sequence + per-leaf content
-//                    (utils/timelineStructureSignature.ts) — a tool call
-//                    that errored, streamed text that grew, anything that
-//                    changes what a row renders is a key miss.
-//   - expansionSig : non-default row-UI expansion state.
+//                    multi-line row's height, so it is a whole-entry miss.
+//   - expansionSig : non-default row-UI expansion state
+//                    (`pane.expansionSignature()`).
 //
-// What DID change from threadVirtuaSizeCache: consumption. Instead of the
-// constructor-once `cache` prop replay (all-or-nothing, resolved in an
-// $effect.pre before a keyed remount), the engine reads priors lazily per
-// row through RowEstimate whenever a row is unmeasured. A key miss
-// degrades per-row to the kind estimate or flat default — and measured
-// sizes always win over any prior (plan §2 Priors, §8 D2).
+// The structure/content dimension is NOT a top-level key anymore — it is
+// folded into the per-row map key itself (`nodeSignature` encodes id,
+// status, summary length, updatedAt / group membership), so a row whose
+// content changed simply has a different map key and misses on its own,
+// without invalidating its still-valid siblings.
+//
+// PERSISTENCE: entries survive an app restart through the storage
+// adapter seam below (`SizePriorsStorageAdapter`). This module stays
+// DOM-free — no `localStorage` import here — so it has no opinion about
+// where entries live at rest; `utils/virtual/priorsStorage.ts`
+// implements the real localStorage-backed adapter and wires itself in
+// via `setSizePriorsStorageAdapter`, installed at module scope of
+// `components/chat/timelineSizePriors.svelte.ts` so it is active before
+// any pane mounts. The in-memory `entries` Map here is an LRU WORKING SET
+// over that persistent store, not the store itself:
+//
+//   - A memory miss in `getThreadSizePriors` falls through to
+//     `adapter.load()`; a hit there is installed back into the LRU.
+//   - A memory eviction past `MAX_ENTRIES` never calls `adapter.remove()`
+//     — eviction is memory housekeeping (the thread's priors are still
+//     on disk and rehydrate on its next visit), not a deletion.
+//   - Only `clearThreadSizePriors` (a real thread deletion — see
+//     `threads.svelte.ts removeThread` / `thread.svelte.ts` reswitch
+//     eviction) calls `adapter.remove()`.
+//
+// `setThreadSizePriors` REPLACES a thread's entry wholesale on every
+// capture rather than merging row-by-row. This is deliberate: streaming
+// rows carry `updatedAt`/`summary.length` in their signature, so a row's
+// key changes on every append — merging would accumulate an ever-growing
+// tail of dead signatures from rows that no longer exist in that exact
+// form. A wholesale replace self-cleans that churn for free.
+//
+// Consumption is unchanged in spirit from the prior generation: the
+// engine reads priors lazily per row through `RowEstimate` whenever a row
+// is unmeasured. Estimates only ever PREDICT placement for unmeasured
+// rows — they never decide what a row renders, and a measurement always
+// overrides them in the size store (plan §2 Priors, §8 D2). Because
+// per-row lookup is index-free (no positional snapshot to keep in sync
+// with the row it describes), head splices need no remap step — contrast
+// the deleted `RowEstimate.shiftBase`, which remapped the old positional
+// snapshot's base index across a load-older prepend/removal.
 //
 // KNOWN RESIDUAL — display settings are NOT keyed. Four global settings
 // change a timeline row's height at constant width/structure/expansion:
@@ -41,40 +89,50 @@
 // silently regress the day a new height-affecting setting is added and
 // not threaded through it. If it must become airtight, add ONE
 // display-settings dimension — covering all four — here AND in
-// timelineSizePriors.svelte.ts's currentSizePriorsKey, not a subset.
+// timelineSizePriors.svelte.ts's validity check, not a subset.
 
-import { UNMEASURED } from './sizes';
 import type { RowEstimate } from './types';
 
-export interface SizePriorsKey {
+export interface SizePriorsEntry {
+  /** Math.round(scroll-surface content width) at capture. */
   width: number;
-  structureSig: string;
+  /** `pane.expansionSignature()` at capture. */
   expansionSig: string;
+  /** nodeSignature(node) → last measured px, for every row measured at capture. */
+  rows: Map<string, number>;
 }
 
-export interface SizePriorsEntry extends SizePriorsKey {
-  /** Measured px per row index; UNMEASURED where the row never measured. */
-  sizes: number[];
+/** Persists priors past the in-memory LRU (utils/virtual/priorsStorage.ts). */
+export interface SizePriorsStorageAdapter {
+  load(threadId: string): SizePriorsEntry | undefined;
+  /** The adapter owns its own write debouncing. */
+  persist(threadId: string, entry: SizePriorsEntry): void;
+  remove(threadId: string): void;
 }
 
-// Each entry holds ~one float per loaded row plus the signature strings;
+let storageAdapter: SizePriorsStorageAdapter | undefined;
+
+export function setSizePriorsStorageAdapter(adapter: SizePriorsStorageAdapter | undefined): void {
+  storageAdapter = adapter;
+}
+
+// Each entry holds ~one float per loaded row plus its signature string;
 // both scale with the live window and are bounded here. 50 recently
 // visited threads is a generous working set; older threads fall back to
-// kind estimates, which is correct, just not pixel-exact.
+// the adapter (if the thread is still stored) or kind estimates, which is
+// correct, just not pixel-exact until the next capture.
 const MAX_ENTRIES = 50;
 
 const entries = new Map<string, SizePriorsEntry>();
 
-// Compare EVERY field of SizePriorsKey. TypeScript forces the key builder
-// (MessageTimeline's key derivation) to set a newly-added field but will
-// NOT flag a field missed here — a newly-keyed height input must be added
-// in both places.
-function keysMatch(a: SizePriorsKey, b: SizePriorsKey): boolean {
-  return (
-    a.width === b.width &&
-    a.structureSig === b.structureSig &&
-    a.expansionSig === b.expansionSig
-  );
+function evictOverCap(): void {
+  // Memory-only eviction: the store below is the persistent copy, so
+  // dropping a thread from this LRU never calls adapter.remove().
+  while (entries.size > MAX_ENTRIES) {
+    const oldest = entries.keys().next().value;
+    if (oldest === undefined) break;
+    entries.delete(oldest);
+  }
 }
 
 export function setThreadSizePriors(threadId: string, entry: SizePriorsEntry): void {
@@ -83,45 +141,60 @@ export function setThreadSizePriors(threadId: string, entry: SizePriorsEntry): v
     entries.delete(threadId);
   }
   entries.set(threadId, entry);
-  while (entries.size > MAX_ENTRIES) {
-    const oldest = entries.keys().next().value;
-    if (oldest === undefined) break;
-    entries.delete(oldest);
-  }
+  evictOverCap();
+  storageAdapter?.persist(threadId, entry);
 }
 
 /**
- * The stored sizes ONLY when the captured key matches the current mount's
- * key — otherwise undefined and every row falls back to its kind estimate.
- * A successful match bumps LRU recency.
+ * The stored entry for a thread — a memory hit bumps LRU recency; a
+ * memory miss falls through to the storage adapter (if installed) and,
+ * on a storage hit, installs the result into the in-memory LRU before
+ * returning it. Validity checking (width/expansionSig, per-row signature
+ * lookup) is the consumer's job — see
+ * `components/chat/timelineSizePriors.svelte.ts`.
  */
-export function getReplayableSizePriors(
-  threadId: string,
-  key: SizePriorsKey,
-): number[] | undefined {
-  const entry = entries.get(threadId);
-  if (!entry || !keysMatch(entry, key)) return undefined;
-  entries.delete(threadId);
-  entries.set(threadId, entry);
-  return entry.sizes;
+export function getThreadSizePriors(threadId: string): SizePriorsEntry | undefined {
+  const hit = entries.get(threadId);
+  if (hit) {
+    entries.delete(threadId);
+    entries.set(threadId, hit);
+    return hit;
+  }
+  const loaded = storageAdapter?.load(threadId);
+  if (!loaded) return undefined;
+  entries.set(threadId, loaded);
+  evictOverCap();
+  return loaded;
+}
+
+/**
+ * Whether the thread's entry is already in the in-memory LRU — WITHOUT
+ * bumping recency or falling through to the adapter. Lets the consumer
+ * distinguish a memory hit from a storage hydration for the cold-load
+ * trace (`replayStats` in timelineSizePriors.svelte.ts); call it BEFORE
+ * `getThreadSizePriors`, which installs a storage hit into memory.
+ */
+export function hasThreadSizePriorsInMemory(threadId: string): boolean {
+  return entries.has(threadId);
 }
 
 export function clearThreadSizePriors(threadId: string): void {
   entries.delete(threadId);
+  storageAdapter?.remove(threadId);
 }
 
 export function clearAllThreadSizePriorsForTest(): void {
   entries.clear();
 }
 
-/** Test-only: raw stored entry without the validity gate. */
+/** Test-only: raw stored entry without the validity gate, memory only. */
 export function peekThreadSizePriorsForTest(threadId: string): SizePriorsEntry | undefined {
   return entries.get(threadId);
 }
 
 export interface RowEstimateOptions {
-  /** Replayable priors for this mount (already key-validated), if any. */
-  snapshot?: readonly number[];
+  /** Per-row prior lookup (already validity-gated by the caller), if any. */
+  rowPrior?: (index: number) => number | undefined;
   /** Maps a row index to its kind for the kind-height table. */
   kindOf?: (index: number) => string | undefined;
   /** Kind → typical height px. Static table, tuned against real data. */
@@ -131,42 +204,27 @@ export interface RowEstimateOptions {
 }
 
 /**
- * The live estimate resolver: prior snapshot value → kind height → flat
- * default. Estimates only ever predict placement for unmeasured rows —
- * they never decide what a row renders, and a measurement always
- * overrides them in the size store.
+ * The live estimate resolver: per-row prior → kind height → flat default.
+ * Estimates only ever predict placement for unmeasured rows — they never
+ * decide what a row renders, and a measurement always overrides them in
+ * the size store.
  *
- * The snapshot is positional (captured at mount), so head splices remap
- * it through `shiftBase`; `kindOf` resolves against live data and needs
- * no remap.
+ * `rowPrior` and `kindOf` both resolve against the row currently at
+ * `index` (live data), so there is nothing positional to remap across a
+ * head splice — unlike the deleted snapshot+`shiftBase` design, this
+ * resolver carries no index-keyed state at all.
  */
 export function createRowEstimate(options: RowEstimateOptions): RowEstimate {
-  let bias = 0;
-  // Rows prepended after mount are new identities: bias math alone would
-  // alias them onto removed rows' priors (remove k then prepend k lands
-  // bias back at 0), so the fresh head-run is excluded from the snapshot.
-  let freshHeadCount = 0;
   return {
     at(index: number): number {
-      const snapshot = options.snapshot;
-      if (snapshot && index >= freshHeadCount) {
-        const snapshotIndex = index - bias;
-        if (snapshotIndex >= 0 && snapshotIndex < snapshot.length) {
-          const size = snapshot[snapshotIndex];
-          if (size !== UNMEASURED && size >= 0) return size;
-        }
-      }
+      const prior = options.rowPrior?.(index);
+      if (prior !== undefined) return prior;
       const kind = options.kindOf?.(index);
       if (kind !== undefined) {
         const kindHeight = options.kindHeights?.[kind];
         if (kindHeight !== undefined) return kindHeight;
       }
       return options.defaultSize;
-    },
-    shiftBase(count: number): void {
-      bias += count;
-      // A removal consumes fresh rows first (they sit at the head).
-      freshHeadCount = Math.max(0, freshHeadCount + count);
     },
   };
 }

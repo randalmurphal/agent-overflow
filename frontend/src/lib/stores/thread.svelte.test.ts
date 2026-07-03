@@ -8199,15 +8199,14 @@ describe('createThreadPane', () => {
 });
 
 describe('size-priors eviction on item mutation', () => {
-  // With the self-validating structureSig key these evictions are memory
-  // housekeeping (a stale snapshot is refused on the key mismatch anyway), but
-  // they free the entry immediately instead of waiting for the LRU. Guard each
-  // call site so a future edit that drops one is caught.
+  // With the self-validating per-row nodeSignature key these evictions are
+  // memory housekeeping (a stale row is refused on its own signature mismatch
+  // anyway), but they free the entry immediately instead of waiting for the
+  // LRU. Guard each call site so a future edit that drops one is caught.
   const seedEntry = {
     width: 0,
-    structureSig: 'seed',
     expansionSig: '',
-    sizes: [42],
+    rows: new Map([['seed', 42]]),
   };
 
   beforeEach(() => {

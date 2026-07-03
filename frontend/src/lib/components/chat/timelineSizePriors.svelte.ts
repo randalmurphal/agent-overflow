@@ -3,18 +3,33 @@
 // `RowEstimate` before the virtualizer remounts, and captures the
 // outgoing thread's measured sizes on the same triggers as the scroll
 // snapshot (see timelineRestore.svelte.ts's `saveScrollSnapshot`).
+//
+// Priors are keyed per-row by content signature (nodeSignature), not by
+// position — see utils/virtual/priors.ts's header for why a whole-window
+// positional key made restart replay nearly inert. That per-row model is
+// also what makes priors survive an app restart: installSizePriorsPersistence
+// (below) wires a localStorage-backed adapter into priors.ts at module
+// scope, so a thread's measured sizes outlive the session, not just a
+// same-run thread switch.
 
 import { untrack } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import {
   createRowEstimate,
-  getReplayableSizePriors,
+  getThreadSizePriors,
+  hasThreadSizePriorsInMemory,
   setThreadSizePriors,
-  type SizePriorsKey,
 } from '../../utils/virtual/priors';
+import { installSizePriorsPersistence } from '../../utils/virtual/priorsStorage';
 import type { RowEstimate, TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
-import { timelineStructureSignature } from '../../utils/timelineStructureSignature';
+import { nodeSignature } from '../../utils/timelineStructureSignature';
+
+// Module scope, not inside createTimelineSizePriors: this must run once,
+// before any pane's timeline mounts, in both the embedded webview and
+// `agent-overflow --connect` browser mode. installSizePriorsPersistence
+// is itself idempotent, so re-importing this module elsewhere is safe.
+installSizePriorsPersistence();
 
 // Flat fallback row estimate for the windowing engine. Real sizes come
 // from the virtualizer's per-row ResizeObserver; estimates only place
@@ -59,19 +74,59 @@ export interface TimelineSizePriorsOptions {
   getRestoredThreadId(): string | null;
 }
 
+/**
+ * Diagnostic summary of the current mount's priors replay, read at the
+ * warm edge by the cold-load trace (utils/coldLoadTrace.ts). `validity`
+ * stays 'pending' until the first `at()` call runs the lazy-once check;
+ * 'replayed-trusted-width' means the width dimension was skipped because
+ * the surface had not reported a width yet at first use (see the memo in
+ * `buildRowEstimate`). `rowsResolved` counts prior hits, including
+ * re-consultations of the same row across structural recomputes — an
+ * indicative volume, not a distinct-row count.
+ */
+export interface SizePriorsReplayStats {
+  source: 'none' | 'memory' | 'storage';
+  validity:
+    | 'no-entry'
+    | 'pending'
+    | 'replayed'
+    | 'replayed-trusted-width'
+    | 'width-mismatch'
+    | 'expansion-mismatch';
+  rowsResolved: number;
+}
+
 export interface TimelineSizePriors {
   /** Reactive — the template binds `estimate={sizePriors.rowEstimate}`. */
   readonly rowEstimate: RowEstimate | undefined;
   maybePersistSizePriors(): void;
   resolveRowEstimateOnThreadEdge(threadId: string | null): void;
   captureOnWarmRisingEdge(warm: boolean): void;
+  /** Non-reactive snapshot — see SizePriorsReplayStats. */
+  replayStats(): SizePriorsReplayStats;
 }
+
+interface SizePriorsRowEstimateBuild {
+  stats: SizePriorsReplayStats;
+  estimate: RowEstimate;
+}
+
+const NO_REPLAY_STATS: SizePriorsReplayStats = {
+  source: 'none',
+  validity: 'no-entry',
+  rowsResolved: 0,
+};
 
 export function createTimelineSizePriors(
   options: TimelineSizePriorsOptions,
 ): TimelineSizePriors {
   let rowEstimate = $state<RowEstimate | undefined>(undefined);
   let rowEstimateThreadId: string | null = null;
+  // Diagnostics for the CURRENT mount's replay — plain (non-reactive)
+  // state: it is read imperatively at the warm edge, mutated from inside
+  // the rowPrior closure, and must never add reactive deps to the
+  // engine's estimate path.
+  let currentReplayStats: SizePriorsReplayStats = NO_REPLAY_STATS;
 
   // Total size at the last capture. The estimate→measure cascade only
   // moves this when rows actually measure, so it gates the capture: we
@@ -82,32 +137,10 @@ export function createTimelineSizePriors(
   let lastPersistedTotalSize = -1;
   let lastWarmForCapture = false;
 
-  // The validity stamp for a measured-size snapshot: row height is keyed on
-  // pane width (wrap point), the rendered node sequence + per-leaf content
-  // (structureSig), and non-default expansion (taller rows). A snapshot only
-  // replays when all three still match — otherwise every row falls back to
-  // its kind estimate. (Display settings — fontSize, fonts,
-  // collapseDiffPreviews — also affect height but are a deliberately-unkeyed
-  // benign residual; see the header of utils/virtual/priors.ts.)
-  // `scrollSurfaceContentWidth` persists across switches (MessageTimeline is
-  // not keyed on threadId), so it carries the correct width into the next
-  // mount. structureSig is computed from `revealedNodes` — the exact array
-  // the virtualizer receives as `data` — so capture and the next mount's
-  // lookup sign the same thing; it superseded an earlier version of this key
-  // that read `pane.timelineRevision`, a monotonic counter that was never
-  // restored on re-entry and so could never match on a revisit (the field
-  // itself remains, as the timeline-derivation trigger).
-  function currentSizePriorsKey(): SizePriorsKey {
-    return {
-      width: Math.round(options.getScrollSurfaceContentWidth()),
-      structureSig: timelineStructureSignature(options.getRevealedNodes()),
-      expansionSig: options.getPane().expansionSignature(),
-    };
-  }
-
   // Kind resolver for the estimate fallback. Reads live `revealedNodes`,
-  // so it needs no remap across head splices (unlike the positional
-  // priors snapshot, which the engine re-bases via RowEstimate.shiftBase).
+  // so it needs no remap across head splices (the per-row prior lookup
+  // below reads live data the same way — neither carries index-keyed
+  // state across a splice).
   function timelineRowEstimateKind(index: number): string | undefined {
     const node = options.getRevealedNodes()[index];
     if (!node) return undefined;
@@ -123,12 +156,13 @@ export function createTimelineSizePriors(
   //
   // Mid-stream cost is known and tolerated: on an actively-streaming thread the
   // size-gate passes once per geometry change (each append grows the total), so
-  // takeSnapshot() + the O(N) structureSig rebuild in currentSizePriorsKey()
-  // run ~5–20×/sec — bounded by the gate (never per-frame) and only while the
-  // visible thread streams. Only the settle capture (isWarm rising) matters for
-  // replay; the interim ones are overwritten. Deliberately NOT gated on
-  // spring-chase state: that would risk dropping the settle capture on an
-  // already-warm streaming thread (isWarm does not re-arm), regressing replay.
+  // takeSnapshot() + the O(N) rows-map rebuild below run ~5–20×/sec — bounded
+  // by the gate (never per-frame) and only while the visible thread streams.
+  // Only the settle capture (isWarm rising) matters for replay; the interim
+  // ones are overwritten by the next capture (setThreadSizePriors replaces the
+  // whole entry). Deliberately NOT gated on spring-chase state: that would risk
+  // dropping the settle capture on an already-warm streaming thread (isWarm
+  // does not re-arm), regressing replay.
   function maybePersistSizePriors(): void {
     const pane = options.getPane();
     const threadId = pane.threadId || null;
@@ -140,9 +174,21 @@ export function createTimelineSizePriors(
     const totalSize = listRef.getTotalSize();
     if (totalSize === lastPersistedTotalSize) return;
     lastPersistedTotalSize = totalSize;
+
+    const nodes = options.getRevealedNodes();
+    const snapshot = listRef.takeSnapshot();
+    const rows = new Map<string, number>();
+    for (let index = 0; index < snapshot.length; index++) {
+      const size = snapshot[index];
+      if (size < 0) continue; // UNMEASURED (or any corrupt negative) — never persisted
+      const node = nodes[index];
+      if (!node) continue;
+      rows.set(nodeSignature(node), size);
+    }
     setThreadSizePriors(threadId, {
-      sizes: listRef.takeSnapshot(),
-      ...currentSizePriorsKey(),
+      width: Math.round(options.getScrollSurfaceContentWidth()),
+      expansionSig: pane.expansionSignature(),
+      rows,
     });
   }
 
@@ -158,16 +204,85 @@ export function createTimelineSizePriors(
     if (threadId === rowEstimateThreadId) return;
     rowEstimateThreadId = threadId;
     lastPersistedTotalSize = -1;
-    rowEstimate = threadId
-      ? untrack(() =>
-          createRowEstimate({
-            snapshot: getReplayableSizePriors(threadId, currentSizePriorsKey()),
-            kindOf: timelineRowEstimateKind,
-            kindHeights: ROW_KIND_ESTIMATE_PX,
-            defaultSize: ESTIMATED_ROW_SIZE,
-          }),
-        )
-      : undefined;
+    if (threadId) {
+      const build = untrack(() => buildRowEstimate(threadId));
+      currentReplayStats = build.stats;
+      rowEstimate = build.estimate;
+    } else {
+      currentReplayStats = NO_REPLAY_STATS;
+      rowEstimate = undefined;
+    }
+  }
+
+  // Fetching the stored entry is cheap and layout-independent (it may
+  // lazily hydrate from localStorage), so it happens eagerly here. The
+  // width/expansionSig VALIDITY CHECK is deliberately deferred to the
+  // first `at()` call instead: this function runs in $effect.pre, before
+  // the virtualizer remounts, and on a fresh app boot the scroll surface
+  // has not been laid out yet — `getScrollSurfaceContentWidth()` would
+  // read 0 here, and checking eagerly would spuriously refuse EVERY
+  // restart replay (0 never equals a captured width).
+  //
+  // Deferral alone is not enough, though: the width signal is RO-only
+  // (scrollSurfaceWidth.ts's async-delivery rule), and the engine's FIRST
+  // `at()` calls run synchronously when the virtualizer mounts with data
+  // (sizes.ts's updateLength consults estimates eagerly for the spacer
+  // height). On boot, whichever lands first — the surface RO's initial
+  // width delivery or the item fetch's WS response — is a machine-speed
+  // race, so the first `at()` can still legitimately see width 0. A width
+  // of 0 is "layout hasn't reported yet", not a real wrap point, so the
+  // memo TRUSTS the entry's captured width in that case rather than
+  // refusing it: window geometry restores across restarts, so the real
+  // width almost always matches, and when it doesn't the stale replay
+  // degrades to the documented self-correcting residual (per-row RO
+  // corrections behind the warm-up gate — priors.ts header), which is
+  // strictly better than guaranteeing the full cascade. The decision is
+  // latched either way so every row in the mount resolves consistently.
+  function buildRowEstimate(threadId: string): SizePriorsRowEstimateBuild {
+    const inMemory = hasThreadSizePriorsInMemory(threadId);
+    const entry = getThreadSizePriors(threadId);
+    const stats: SizePriorsReplayStats = {
+      source: entry ? (inMemory ? 'memory' : 'storage') : 'none',
+      validity: entry ? 'pending' : 'no-entry',
+      rowsResolved: 0,
+    };
+    let valid: boolean | undefined;
+
+    function rowPrior(index: number): number | undefined {
+      if (!entry) return undefined;
+      if (valid === undefined) {
+        const width = Math.round(options.getScrollSurfaceContentWidth());
+        if (entry.expansionSig !== options.getPane().expansionSignature()) {
+          valid = false;
+          stats.validity = 'expansion-mismatch';
+        } else if (width === 0) {
+          valid = true;
+          stats.validity = 'replayed-trusted-width';
+        } else if (width !== entry.width) {
+          valid = false;
+          stats.validity = 'width-mismatch';
+        } else {
+          valid = true;
+          stats.validity = 'replayed';
+        }
+      }
+      if (!valid) return undefined;
+      const node = options.getRevealedNodes()[index];
+      if (!node) return undefined;
+      const size = entry.rows.get(nodeSignature(node));
+      if (size !== undefined) stats.rowsResolved += 1;
+      return size;
+    }
+
+    return {
+      stats,
+      estimate: createRowEstimate({
+        rowPrior,
+        kindOf: timelineRowEstimateKind,
+        kindHeights: ROW_KIND_ESTIMATE_PX,
+        defaultSize: ESTIMATED_ROW_SIZE,
+      }),
+    };
   }
 
   // Guarantee a post-settle capture. The scroll-driven captures
@@ -196,5 +311,6 @@ export function createTimelineSizePriors(
     maybePersistSizePriors,
     resolveRowEstimateOnThreadEdge,
     captureOnWarmRisingEdge,
+    replayStats: () => currentReplayStats,
   };
 }

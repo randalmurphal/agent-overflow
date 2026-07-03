@@ -34,20 +34,20 @@ export interface EngineUpdate {
 
 /**
  * Per-row size estimate used for rows that have no measurement yet.
- * Backed by priors (utils/virtual/priors.ts): persisted snapshot value →
+ * Backed by priors (utils/virtual/priors.ts): a per-row signature prior →
  * kind-based table → flat default. `at` MUST be stable per index between
  * structural changes — the size store's offsets memo bakes estimates in,
  * and the engine only invalidates that memo on structural events.
+ *
+ * Resolution is index-free: a prior is looked up by the row's own content
+ * signature, not by its position, so a head splice (load-older prepend,
+ * prune) needs no remap step here. An earlier design cached one
+ * positional snapshot per thread and remapped it across splices via a
+ * `shiftBase(count)` method — deleted along with the snapshot it
+ * remapped (utils/virtual/priors.ts header).
  */
 export interface RowEstimate {
   at(index: number): number;
-  /**
-   * Remap index-keyed state after a head splice: `count > 0` rows were
-   * inserted at the head, `count < 0` removed. Called by the engine at
-   * the correct moment relative to the store splice (before a prepend,
-   * after a removal) so estimates always resolve against live indices.
-   */
-  shiftBase(count: number): void;
 }
 
 /**
