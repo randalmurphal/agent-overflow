@@ -190,4 +190,7 @@ require (
 
 tool github.com/wailsapp/wails/v3/cmd/wails3
 
+// Fork pin: branch ao-webview2-dpi-hardening — WebView2 mixed-DPI GPU-crash
+// prevention + ProcessFailed recovery on top of the v3.0.0-alpha2.112 tag.
+// Drop once wails #5732 / #5733 land upstream.
 replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-alpha2.112.0.20260703173515-5e478c96489e

@@ -51,6 +51,39 @@ the CLI shape; `resolveChosenDistro` in `main.go` is where the
 override-vs-saved precedence lives. Both are unit-tested in
 `flags_test.go` / `main_test.go`.
 
+## Diagnostics: where the logs are
+
+Nothing from the Windows side reaches the dev terminal — the launcher
+is a GUI-subsystem exe. When debugging, look here (all under
+`%APPDATA%\agent-overflow\`):
+
+- **`launcher.log`** — the primary log. Carries the launcher's own
+  `log` output, Wails' internal slog (wired via `application.Options.Logger`;
+  info-level in dev, warn+ in prod — without this wiring Wails logs go
+  to a discarded GUI stderr), and the **entire WSL backend's stderr**,
+  which `wsllauncher` pipes in line-by-line.
+- **`webview2-dev\EBWebView\chrome_debug.log`** (dev only; prod profile
+  is `webview2\`) — Chromium's own log: GPU/compositor errors, process
+  deaths, and renderer `CONSOLE(n)` lines (frontend `console.*`).
+  Enabled by `--enable-logging=file` in `browserArgs`. Chromium
+  truncates it at every browser start, so `rotateChromeDebugLog`
+  preserves the prior session as `chrome_debug.previous.log` — after a
+  webview crash, the autopsy is in `previous.log`, not the live file.
+  Keep the `=file` value: bare `--enable-logging` also streams to
+  stderr, msedgewebview2 pops a console window for it, and closing
+  that console CTRL_CLOSE-kills the whole app.
+- **DevTools** — dev builds expose remote debugging on
+  `127.0.0.1:9223`.
+
+The WebView2 user-data dirs are pinned via `WebviewUserDataPath`
+(`webviewDataDir`) because the default derives from the exe name and
+dev exes are timestamp-named — every run would mint a throwaway
+profile.
+
+Case study for all of the above: the mixed-DPI monitor-cross crash
+(wails #5732/#5733, fixed by the pinned wails fork — see the `replace`
+in `go.mod`) was root-caused entirely from `chrome_debug.previous.log`.
+
 ## References
 
 - `internal/wsllauncher/AGENTS.md` — the package this binary drives.
