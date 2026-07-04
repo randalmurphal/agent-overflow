@@ -759,8 +759,31 @@ flags, row measurement, and browser layout. Reproduce with
 `make dev DEBUG=1`, then inspect `window.__agentOverflowUiTrace.dump()` or
 `.filePath()`.
 
+The trace surface has two tiers (Makefile: `UI_TRACE`, `UI_ORACLES`;
+`DEBUG=1` enables both). `UI_TRACE=1` alone is the light tier — event
+traces plus the spring chase telemetry below — cheap enough to measure
+production-representative frame cadence (`make build-wsl UI_TRACE=1`
+builds the minified bundle with only this tier). `UI_ORACLES=1` adds the
+standing regression oracles (`timeline.row.resize`,
+`timeline.margin.diverge`, `timeline.reasoning.tailJump` — each an extra
+per-row ResizeObserver plus a subtree MutationObserver) and the
+throttled DOM snapshot walks (`timeline.dom` / `chat.dom` /
+`plan-sidebar.dom`), which are the expensive part of the surface during
+streaming.
+
 Useful trace records:
 
+- `scroll.spring.chase` — one summary per spring chase (emitted at
+  cancel; chases under 3 ticks are skipped): tick counts (write /
+  sentinel), a frame-gap histogram (`gapBuckets`, bounds
+  `[<9, 9–13, 13–18, 18–26, 26–42, >42]` ms — see
+  `CHASE_GAP_BUCKET_BOUNDS_MS`), `maxGapMs`, catch-up clamp count,
+  target changes, sentinel entries (stop/restart cycles), and long-task
+  count/duration during the chase (Chromium `longtask` observer; absent
+  under WebKit). This — not the 1-in-12 sampled `spring.tick` spacing —
+  is how to judge whether a chase actually dropped frames; see the
+  telemetry footgun note in
+  [`settle-flicker-analysis.md`](settle-flicker-analysis.md).
 - `scroll.contentRO` — content-geometry delta, width-reflow state, and pin
   decisions (in chat the delivery is engine-sourced, not an RO fire; the
   record name stays for trace continuity, and `settleEvidence` reports

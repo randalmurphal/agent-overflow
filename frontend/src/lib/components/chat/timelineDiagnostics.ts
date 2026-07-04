@@ -16,7 +16,11 @@ import {
   startRowMarginDivergenceTrace,
   startReasoningTailJumpTrace,
 } from './messageTimelineTrace';
-import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
+import {
+  isUiOracleTraceEnabled,
+  isUiRenderTraceEnabled,
+  recordUiTrace,
+} from '../../utils/uiRenderTrace';
 import {
   countMountedTimelineMemoryNodes,
   installTimelineMemoryDiagnostics,
@@ -189,7 +193,7 @@ export function createTimelineDiagnostics(
   // mutations do not trigger trace-side layout measurements.
   function rowResizeTraceInstall(): (() => void) | undefined {
     const contentEl = options.getContentEl();
-    if (!isUiRenderTraceEnabled() || !contentEl) return undefined;
+    if (!isUiOracleTraceEnabled() || !contentEl) return undefined;
     return startTimelineRowResizeTrace(contentEl);
   }
 
@@ -203,7 +207,7 @@ export function createTimelineDiagnostics(
   // it entirely.
   function marginDivergenceTraceInstall(): (() => void) | undefined {
     const contentEl = options.getContentEl();
-    if (!isUiRenderTraceEnabled() || !contentEl) return undefined;
+    if (!isUiOracleTraceEnabled() || !contentEl) return undefined;
     return startRowMarginDivergenceTrace(contentEl);
   }
 
@@ -216,7 +220,7 @@ export function createTimelineDiagnostics(
   // Same trace-flag gate, so production skips it entirely.
   function reasoningTailJumpTraceInstall(): (() => void) | undefined {
     const contentEl = options.getContentEl();
-    if (!isUiRenderTraceEnabled() || !contentEl) return undefined;
+    if (!isUiOracleTraceEnabled() || !contentEl) return undefined;
     return startReasoningTailJumpTrace(contentEl);
   }
 

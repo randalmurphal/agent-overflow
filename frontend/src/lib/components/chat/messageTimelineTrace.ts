@@ -7,6 +7,7 @@ import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import {
+  isUiOracleTraceEnabled,
   isUiRenderTraceEnabled,
   recordUiTrace,
   scheduleDomUiTrace,
@@ -109,7 +110,7 @@ export function recordTimelineRenderTrace(
 }
 
 export function startTimelineRowResizeTrace(root: Element): () => void {
-  if (!isUiRenderTraceEnabled()) return () => {};
+  if (!isUiOracleTraceEnabled()) return () => {};
   if (typeof ResizeObserver === 'undefined') return () => {};
 
   const trackedHeights = new Map<Element, number | null>();
@@ -240,7 +241,7 @@ function edgeChain(el: Element, edge: 'first' | 'last'): Array<Record<string, un
 }
 
 export function startRowMarginDivergenceTrace(root: Element): () => void {
-  if (!isUiRenderTraceEnabled()) return () => {};
+  if (!isUiOracleTraceEnabled()) return () => {};
   if (typeof ResizeObserver === 'undefined') return () => {};
 
   const wrapperToRow = new Map<Element, HTMLElement>();
@@ -395,7 +396,7 @@ function tailOverflowPx(body: HTMLElement): number {
 }
 
 export function startReasoningTailJumpTrace(root: Element): () => void {
-  if (!isUiRenderTraceEnabled()) return () => {};
+  if (!isUiOracleTraceEnabled()) return () => {};
   if (typeof ResizeObserver === 'undefined') return () => {};
 
   // Per body: last seen content width + text length, or null until the first

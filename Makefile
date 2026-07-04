@@ -3,7 +3,17 @@
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing and raw provider
 # stdio capture. Use UI_TRACE=1 or PROVIDER_DEBUG=1 for narrower captures.
+#
+# UI_TRACE=1 alone is the LIGHT tier: event traces + spring chase
+# telemetry (`scroll.spring.chase`), cheap enough to measure
+# production-representative frame cadence (e.g.
+# `make build-wsl UI_TRACE=1`). UI_ORACLES=1 adds the heavy standing
+# oracles (per-row resize / margin-divergence / reasoning-tail observers)
+# and the throttled DOM snapshot walks; DEBUG=1 turns on both. UI_ORACLES
+# requires UI_TRACE at runtime — UI_ORACLES=1 without UI_TRACE=1 builds
+# the oracle code but the disabled base trace gate keeps everything off.
 UI_TRACE ?= $(DEBUG)
+UI_ORACLES ?= $(DEBUG)
 
 # Raw provider stdio capture logs land in
 # <dbDir>/logs/provider-events-YYYY-MM-DD.ndjson (one JSON object per line:
@@ -99,7 +109,7 @@ install:
 
 dev:
 	go build -o bin/agent-overflow-dev ./cmd/agent-overflow-dev
-	AGENT_OVERFLOW_DEBUG=$(AGENT_OVERFLOW_DEBUG) VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) bin/agent-overflow-dev
+	AGENT_OVERFLOW_DEBUG=$(AGENT_OVERFLOW_DEBUG) VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) bin/agent-overflow-dev
 
 # dev-wsl: cross-compiles the Linux ELF + Windows .exe launcher inside
 # this WSL distro, copies the .exe to a versioned Windows-native path,
@@ -151,7 +161,7 @@ dev-wsl:
 	fi
 	@set -e; \
 	DEV_VERSION=dev-$$(date +%Y%m%d%H%M%S)-$$$$; \
-	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE) WSL_BUILD_MODE=build:dev; \
+	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES) WSL_BUILD_MODE=build:dev; \
 	WIN_LAD=$$(/mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r\n'); \
 	if [ -z "$$WIN_LAD" ]; then \
 		echo "ERROR: could not resolve %LOCALAPPDATA% via cmd.exe interop."; \
@@ -184,7 +194,7 @@ dev-wsl:
 # in place.
 build-wsl:
 	@case "$(WSL_BUILD_MODE)" in build|build:dev) ;; *) echo "ERROR: WSL_BUILD_MODE must be 'build' or 'build:dev', got '$(WSL_BUILD_MODE)'" >&2; exit 1;; esac
-	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) pnpm run $(WSL_BUILD_MODE)
+	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run $(WSL_BUILD_MODE)
 	@if [ -n "$(WSL_FORCE_RELINK)" ]; then rm -f bin/agent-overflow.exe bin/agent-overflow-linux; fi
 	WSL_LAUNCHER_MODE="$$(case "$(WSL_BUILD_MODE)" in build:dev) echo dev ;; *) echo prod ;; esac)" VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
 

@@ -3,7 +3,6 @@ import type { ItemPatchEvent } from '../types/events';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import { SvelteMap } from 'svelte/reactivity';
 import {
-  END_OF_TURN_DRAIN_MS,
   FAST_DRAIN_SNAP_LAG_CHARS,
   PerItemSmoother,
 } from '../markdown/smoothing/PerItemSmoother';
@@ -69,8 +68,6 @@ export interface ThreadStreamingReveal {
   disposeAll(): void;
   /** visibilitychange snap (body of pane's snapSmoothersToReceived, incl. its recomputeReveal). */
   snapAllToReceived(): void;
-  /** settleTurn's fast-drain loop: requestFastDrain(END_OF_TURN_DRAIN_MS) on every live smoother. */
-  requestEndOfTurnFastDrain(): void;
   /** Live smoother-revealed text for a streaming thinking row, or null. */
   liveThinkingTailFor(itemId: string): string | null;
   debugStats(): { itemSmoothers: number; liveThinkingTails: number };
@@ -612,18 +609,6 @@ export function createThreadStreamingReveal(
     recomputeReveal();
   }
 
-  /** settleTurn's fast-drain loop: requestFastDrain(END_OF_TURN_DRAIN_MS) on every live smoother. */
-  function requestEndOfTurnFastDrain(): void {
-    // The wire is done; any smoother still behind is pure backlog. At
-    // the adaptive ceiling (~840 cps) a multi-KB reasoning backlog
-    // keeps animating for many seconds after the turn settled — drain
-    // it within ~END_OF_TURN_DRAIN_MS instead. First-drain-wins
-    // semantics keep an earlier sequencer drain's tighter deadline.
-    for (const entry of itemSmoothers.values()) {
-      entry.smoother.requestFastDrain(END_OF_TURN_DRAIN_MS);
-    }
-  }
-
   function liveThinkingTailFor(itemId: string): string | null {
     return itemLiveThinkingTail.get(itemId) ?? null;
   }
@@ -668,7 +653,6 @@ export function createThreadStreamingReveal(
     disposeSmootherFor,
     disposeAll,
     snapAllToReceived,
-    requestEndOfTurnFastDrain,
     liveThinkingTailFor,
     debugStats,
     __flushForTest,

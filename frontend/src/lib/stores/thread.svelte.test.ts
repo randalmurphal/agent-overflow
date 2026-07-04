@@ -8,7 +8,6 @@ import {
   type TimelineWindowAnchorOperation,
 } from './thread.svelte';
 import {
-  END_OF_TURN_DRAIN_MS,
   FAST_DRAIN_SNAP_LAG_CHARS,
   type SmoothingClock,
 } from '../markdown/smoothing/PerItemSmoother';
@@ -7391,7 +7390,7 @@ describe('createThreadPane', () => {
       }
     });
 
-    it('settleTurn fast-drains leftover smoother backlog within the end-of-turn window', async () => {
+    it('settleTurn keeps the normal reveal cadence — no end-of-turn rush', async () => {
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);
       try {
@@ -7410,9 +7409,11 @@ describe('createThreadPane', () => {
           }),
         );
         // 2000-char backlog on a solo tail row: the sequencer never
-        // fast-drains it (no successor), and at the adaptive ceiling
-        // (~10 word-aligned chars/frame) it would keep animating for
-        // ~3 seconds after the wire went quiet.
+        // fast-drains it (no successor). The historical end-of-turn
+        // fast-drain rushed this at the elevated per-tick cap (~3360
+        // cps) — rushed motion the user read as jank. Deliberately
+        // removed: the backlog now drains at the same steady cadence
+        // as live streaming (adaptive catch-up, ≤ ~840 cps).
         const text = 'word '.repeat(400);
         pane.applyItemDelta({
           threadId: 't',
@@ -7432,10 +7433,18 @@ describe('createThreadPane', () => {
           aborted: false,
           errorMessage: '',
         });
-        // The end-of-turn drain clears the backlog within ~the drain
-        // window (plus a little slack for word-boundary rounding).
-        const frames = Math.ceil(END_OF_TURN_DRAIN_MS / 16) + 10;
-        for (let i = 0; i < frames; i++) clock.tickFrame(16);
+        // Inside the historical 800ms drain window the backlog must
+        // still be mid-reveal (the rush would have finished it) —
+        // advancing steadily, not snapped and not stalled.
+        for (let i = 0; i < 60; i++) clock.tickFrame(16);
+        const midSummary =
+          pane.items.find((i) => i.id === 'text:0:0')?.summary ?? '';
+        expect(midSummary.length).toBeGreaterThan(0);
+        expect(midSummary.length).toBeLessThan(text.length);
+        // At the steady cadence (~10 word-aligned chars/frame while the
+        // lag is large, tapering below) the full 2000-char backlog
+        // completes within a few hundred frames.
+        for (let i = 0; i < 400; i++) clock.tickFrame(16);
         expect(pane.items.find((i) => i.id === 'text:0:0')?.summary).toBe(
           text,
         );

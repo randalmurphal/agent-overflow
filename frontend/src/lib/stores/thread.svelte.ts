@@ -2330,10 +2330,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         });
       }
       latestSettledTurn = settled;
-      // The wire is done; drain any still-behind smoother within
-      // ~END_OF_TURN_DRAIN_MS. See threadStreamingReveal.svelte.ts
-      // `requestEndOfTurnFastDrain`.
-      streamingReveal.requestEndOfTurnFastDrain();
+      // Any smoother still behind keeps revealing at the normal cadence
+      // (adaptive catch-up, PerItemSmoother) — there is deliberately no
+      // end-of-turn fast-drain: the rushed reveal read as jank, and a
+      // long final message finishing a few seconds after the wire
+      // settles is the accepted trade for uniform reveal speed. The
+      // reveal sequencer still fast-drains/snaps when a successor row
+      // is waiting, so nothing structural is ever blocked behind the
+      // tail row's backlog.
       // Run the deferred window prune now that the turn is quiet — the
       // streaming-append path skips it while a turn is active so the
       // head-drop repaint never lands mid-stream.

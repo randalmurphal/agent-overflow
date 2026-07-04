@@ -3270,15 +3270,19 @@ describe('createUseStickToBottomController — spring chase', () => {
       // frozen velocity causes an immediate overshoot+clamp instead of
       // the smooth interpolation a clean sentinel would produce.
       //
-      // These three cases also pin the UPPER bound of
-      // SPRING_CARRY_VELOCITY_CEILING. The momentum-carry change (see the
-      // sibling 'momentum carry across catch-up' describe) keeps a gentle
-      // upward velocity across diff === 0 instead of always zeroing it, but
-      // only below the ceiling (4). The remnant velocities here (~28, ~8,
-      // ~14) all exceed it, so they are still shed and these tests still
-      // pass. The cross-target-clamp case (~8) below is the tightest:
-      // raising the ceiling to >= 8 would let that remnant be carried into
-      // the follow-up growth and reintroduce the overshoot these guard.
+      // These three cases also pin the carry rule's safety bound. The
+      // momentum-carry behavior (see the sibling 'momentum carry across
+      // catch-up' describe) keeps upward velocity across diff === 0,
+      // CLAMPED to the carry ceiling instead of zeroed. The remnant
+      // velocities here (~28, ~8, ~14) all exceed the ceiling's floor
+      // (4) — and because they arise from mid-chase pins/clamps, the
+      // adaptive ceiling never learns a larger quantum (quanta are
+      // sampled only from target moves that land while parked at the
+      // previous target) — so each remnant clamps down to 4, which is
+      // provably snap-safe for the small follow-up growths below. The
+      // assertions still demand a smooth partial-progress first frame,
+      // which a carried-above-bound remnant would violate by
+      // cross-clamping instantly.
 
       it('content growth after instant pin during spring should chase smoothly, not overshoot+clamp', async () => {
         const ro = getRO();
@@ -3398,9 +3402,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Unconditionally zeroing velocity on every catch-up forced each new
       // line to re-accelerate from rest — a steady stream read as a series
       // of slow-start lurches. While still inside the retain window the
-      // spring now KEEPS a gentle (<= SPRING_CARRY_VELOCITY_CEILING) upward
-      // follow velocity across the catch-up so the next line continues the
-      // existing motion instead of restarting it. Carry is scoped to
+      // spring now KEEPS upward follow velocity across the catch-up —
+      // clamped to the adaptive carry ceiling (floor 4, raised only by
+      // growth quanta observed while parked) — so the next line continues
+      // the existing motion instead of restarting it. Carry is scoped to
       // growth-follow: downward (shrink-follow) remnants are shed so a
       // resumed growth never starts by nudging the viewport the wrong way.
 
@@ -3452,9 +3457,9 @@ describe('createUseStickToBottomController — spring chase', () => {
         await waitMs(150); // warm
 
         // Phase 1: jump up and cross-clamp. The clamp velocity is well
-        // above the carry ceiling, so the diff === 0 tick sheds it and the
-        // spring is left at rest at `up` — a clean start for a downward
-        // chase with no leftover upward momentum to overshoot.
+        // above the carry ceiling, so the diff === 0 tick clamps it down
+        // to the ceiling floor (4) — a small residual upward drift the
+        // downward chase in phase 2 decays within a frame or two.
         geom.scrollHeight = 1300;
         geom.contentHeight = 1100;
         ro.fire(contentEl, 1100); // target = 700
@@ -4171,13 +4176,15 @@ describe('createUseStickToBottomController — spring chase', () => {
       await advanceUntil(() => geom.scrollTop >= 500, 50);
       expect(controller.escapedFromLock).toBe(false);
 
-      // 4. Streaming chunks (3 in a row).
+      // 4. Streaming chunks (3 in a row). The combined 600px chase runs
+      // at the hard velocity cap (~18px/frame), so it needs ~45 frames
+      // plus the arrival tail — budget accordingly.
       for (let i = 0; i < 3; i++) {
         geom.scrollHeight += 200;
         geom.contentHeight += 200;
         ro.fire(contentEl, geom.contentHeight);
       }
-      await advanceUntil(() => geom.scrollTop >= geom.scrollHeight - geom.clientHeight - 4, 50);
+      await advanceUntil(() => geom.scrollTop >= geom.scrollHeight - geom.clientHeight - 4, 90);
       expect(controller.escapedFromLock).toBe(false);
 
       // 5. User wheels UP to read. Should escape.

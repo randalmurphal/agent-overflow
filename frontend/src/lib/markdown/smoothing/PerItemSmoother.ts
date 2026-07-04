@@ -61,11 +61,6 @@ export const FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS = 56;
 // work, so callers snap outright — one deliberate burst, same cost the
 // unbounded drain used to pay, reserved for the outlier case.
 export const FAST_DRAIN_SNAP_LAG_CHARS = 1200;
-// Caller policy for turn completion: remaining smoothers drain their
-// backlog within ~this window instead of trickling at the adaptive
-// catch-up ceiling (~840 cps), which left multi-KB reasoning backlogs
-// animating for many seconds after the turn had already settled.
-export const END_OF_TURN_DRAIN_MS = 800;
 // Hard cap on how many characters the smoother may reveal in a single
 // rAF tick, regardless of how much budget the adaptive catch-up math
 // has produced. Without this cap, sustained high-rate wire bursts
@@ -78,7 +73,12 @@ export const END_OF_TURN_DRAIN_MS = 800;
 // looks like a chunk" threshold. Excess budget is silently discarded
 // (not rolled over) so a sustained over-rate wire grows lag instead of
 // building per-tick chunks; the backlog drains at the elevated
-// fast-drain cap when a successor row is waiting or the turn settles.
+// fast-drain cap only when a successor row is waiting. A solo tail row's
+// end-of-turn backlog drains at this same steady cadence — there used to
+// be an end-of-turn fast-drain (END_OF_TURN_DRAIN_MS, removed 2026-07)
+// that rushed it at the elevated cap, and the rushed motion read as jank;
+// a long final message finishing a few seconds after the wire settles is
+// the accepted trade for uniform reveal speed.
 export const MAX_ADVANCE_PER_TICK_CHARS = 14;
 
 export interface PerItemSmootherOptions {

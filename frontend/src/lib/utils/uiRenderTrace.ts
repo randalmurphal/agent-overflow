@@ -19,6 +19,21 @@ const UI_TRACE_BUILD_GATE: boolean =
   import.meta.env.VITE_AGENT_OVERFLOW_UI_TRACE === '1' ||
   import.meta.env.MODE === 'test';
 
+// Second, heavier tier: the standing regression oracles (row-resize /
+// margin-divergence / reasoning-tail probes — each an extra
+// ResizeObserver per mounted row plus a subtree MutationObserver) and
+// the throttled DOM snapshot walks (timeline.dom / chat.dom /
+// plan-sidebar.dom querySelectorAll sweeps). During streaming these are
+// the expensive part of the trace surface, so a light
+// `UI_TRACE=1`-only build captures event traces and the spring chase
+// telemetry WITHOUT paying for them — that is the configuration for
+// measuring production-representative frame cadence. `DEBUG=1` sets
+// both flags (Makefile: `UI_ORACLES ?= $(DEBUG)`); test mode enables
+// both so oracle regression suites keep running.
+const UI_ORACLE_BUILD_GATE: boolean =
+  import.meta.env.VITE_AGENT_OVERFLOW_UI_ORACLES === '1' ||
+  import.meta.env.MODE === 'test';
+
 const MAX_RECORDS = 500;
 const MAX_PENDING_FILE_LINES = 200;
 // See uiTraceLimits.ts: keeps small per-event diagnostic traces from
@@ -84,6 +99,12 @@ export function isUiRenderTraceEnabled(): boolean {
   return UI_TRACE_BUILD_GATE && enabled;
 }
 
+/** The heavier diagnostic tier: oracles + DOM snapshot walks. Always
+ * implies `isUiRenderTraceEnabled()`. */
+export function isUiOracleTraceEnabled(): boolean {
+  return UI_ORACLE_BUILD_GATE && isUiRenderTraceEnabled();
+}
+
 export function setUiRenderTraceEnabled(next: boolean): void {
   if (!UI_TRACE_BUILD_GATE) return;
   enabled = next;
@@ -131,7 +152,9 @@ export function scheduleDomUiTrace(
   label: string,
   build: () => unknown,
 ): void {
-  if (!isUiRenderTraceEnabled()) return;
+  // DOM snapshot walks (querySelectorAll sweeps + geometry reads) are
+  // oracle-tier: skipped in a light UI_TRACE=1 build.
+  if (!isUiOracleTraceEnabled()) return;
   const existing = pendingDomTraces.get(key);
   if (existing) {
     existing.label = label;
