@@ -197,16 +197,18 @@ describe('momentum carry across catch-up', () => {
     // ceiling (4).
     catchUpWithRemnant(h, 300, 5);
 
-    // Next line-sized growth: first-frame move from carried v=4 is
-    // (0.7·4 + 0.08·20)/1.25 ≈ 3.52; a cold start would move only the
-    // speed floor (1.6). The old zeroing produced the cold value.
+    // Next line-sized growth: the carried remnant (4) integrates to
+    // (0.7·4 + 0.08·20)/1.25 ≈ 3.52, which the decel envelope shapes
+    // down to 0.11·20 = 2.2 on the first frame. A cold start (the old
+    // zeroing) would move only the glide floor (1.6) — carry is what
+    // keeps the next quantum measurably in motion.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
     const before = h.getScrollTop();
     frame();
     const firstFrameMove = h.getScrollTop() - before;
-    expect(firstFrameMove).toBeGreaterThan(3.0);
-    expect(firstFrameMove).toBeLessThan(4.5);
+    expect(firstFrameMove).toBeGreaterThan(2.1);
+    expect(firstFrameMove).toBeLessThan(2.3);
   });
 
   it('sheds all momentum once the retain window has lapsed', () => {
@@ -230,52 +232,71 @@ describe('momentum carry across catch-up', () => {
   });
 });
 
-describe('minimum glide speed', () => {
-  // scrollTop is integer-quantized by the engine, so any sustained
+describe('glide shaping (floor, decel envelope, settle taper)', () => {
+  // scrollTop is integer-quantized by the engine, so any SUSTAINED
   // sub-floor phase renders as 1px steps at a low effective rate — the
   // judder a 2026-07-04 165Hz capture pinned as the perceived "low
-  // fps". These tests pin that the ease-out tail is held at the floor
-  // (1.6px per 60Hz frame) and terminates with a bounded landing step.
+  // fps". These tests pin the shaped profile: body held at or above the
+  // floor (1.6px per 60Hz frame), peak bounded by the decel envelope
+  // (0.11 · remaining), and a settle taper bounded to a few frames.
   function parkAt(h: Harness, target: number): void {
     h.setTarget(target);
     h.spring.markTargetChanged();
     h.spring.start();
-    for (let i = 0; i < 40; i++) frame();
+    for (let i = 0; i < 60; i++) frame();
     expect(Math.abs(h.getScrollTop() - target)).toBeLessThanOrEqual(ARRIVAL_DISTANCE_PX);
   }
 
-  it('holds the ease-out tail at the floor instead of a sub-pixel crawl', () => {
+  /** Frame the chase until within 1px of `target`, returning per-frame moves. */
+  function movesUntilNear(h: Harness, target: number, budget: number): number[] {
+    const moves: number[] = [];
+    for (let i = 0; i < budget && Math.abs(h.getScrollTop() - target) > 1; i++) {
+      const before = h.getScrollTop();
+      frame();
+      moves.push(h.getScrollTop() - before);
+    }
+    expect(Math.abs(h.getScrollTop() - target)).toBeLessThanOrEqual(1);
+    return moves;
+  }
+
+  it('keeps the glide body at the floor and bounds the settle taper to a few frames', () => {
     const h = makeHarness();
     parkAt(h, 100);
 
     h.setTarget(160); // one sparse ~3-line quantum
     h.spring.markTargetChanged();
-    const moves = displacements(h, 40).filter((m) => m !== 0);
-    expect(h.getScrollTop()).toBe(160);
-    // Every animated frame except the final landing remainder moves at
-    // least the floor (1.6px per 60Hz frame). Without the floor the
-    // exponential tail spends ~15 frames below 1px/frame.
-    const landing = moves[moves.length - 1];
-    for (const move of moves.slice(0, -1)) {
+    const moves = movesUntilNear(h, 160, 40);
+
+    // Body: every frame before the settle taper moves at least the
+    // floor. Without the floor the exponential tail spends ~15 frames
+    // below 1px/frame.
+    const firstSettle = moves.findIndex((m) => m < 1.55);
+    const settleStart = firstSettle === -1 ? moves.length : firstSettle;
+    for (const move of moves.slice(0, settleStart)) {
       expect(move).toBeGreaterThanOrEqual(1.55);
     }
-    // The landing step is the leftover distance — never larger than one
-    // floor-speed step, so it reads like any other step.
-    expect(landing).toBeLessThanOrEqual(1.7);
-    expect(landing).toBeGreaterThan(0);
+    // Settle: sub-floor frames are bounded — a brief visible
+    // deceleration, not a sustained crawl.
+    expect(moves.length - settleStart).toBeLessThanOrEqual(5);
+    // Envelope: a 60px quantum peaks near 0.11·remaining, never the raw
+    // spring's distance-proportional zoom.
+    for (const move of moves) {
+      expect(move).toBeLessThanOrEqual(7);
+    }
   });
 
-  it('lands a tiny growth in a couple of floor-speed steps without a snap', () => {
+  it('eases a tiny growth in gently without a snap', () => {
     const h = makeHarness();
     parkAt(h, 100);
 
     h.setTarget(103); // sub-line growth
     h.spring.markTargetChanged();
-    const moves = displacements(h, 5).filter((m) => m !== 0);
-    expect(h.getScrollTop()).toBe(103);
-    expect(moves.length).toBeLessThanOrEqual(2);
+    const moves = movesUntilNear(h, 103, 4);
     for (const move of moves) {
-      expect(move).toBeLessThanOrEqual(1.7); // no single-frame teleport
+      // First frame is the tapered lift (0.4·3 = 1.2), not the full
+      // floor — tiny growths start soft and decelerate in.
+      expect(move).toBeLessThanOrEqual(1.3);
+      expect(move).toBeGreaterThan(0);
     }
   });
 });

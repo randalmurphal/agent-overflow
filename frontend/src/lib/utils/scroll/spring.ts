@@ -100,7 +100,7 @@ const SPRING_CARRY_VELOCITY_CEILING = 4;
 // accumulates lag; genuine bulk layout corrections bypass the spring
 // entirely (resolver decline tier / instant pins) and still snap.
 const SPRING_MAX_VELOCITY_PX_PER_FRAME = 18;
-// Minimum glide speed while actively chasing, in px per 60Hz frame
+// Minimum glide speed for the BODY of a chase, in px per 60Hz frame
 // (1.6 ≈ 96 px/s). scrollTop lands on whole CSS pixels, so motion below
 // ~1px per display frame renders as 1px steps every N frames — a
 // 2026-07-04 165Hz session capture showed the exponential ease-out tail
@@ -108,17 +108,16 @@ const SPRING_MAX_VELOCITY_PX_PER_FRAME = 18;
 // an effective 14–55Hz: the reported "low fps" judder, with rAF cadence
 // measured clean. The floor keeps stepping at ≥ ~96Hz effective
 // (0.58px per 165Hz frame, 0.67px at 144Hz, 1.6px at 60Hz) — far above
-// the observed judder band; the cross-target clamp then bounds the
-// landing step to one floor-speed step, indistinguishable from the
-// steps before it.
+// the observed judder band. Inside the settle-taper zone (the last
+// SPRING_MIN / SPRING_SETTLE_TAPER_RATIO ≈ 4px) the effective minimum
+// tapers below this value — see SPRING_SETTLE_TAPER_RATIO.
 //
 // TUNING (2026-07-04, same-day feedback): the floor first shipped at
 // 2.5, which sat ABOVE the spring's natural peak velocity (≈0.13 · D)
 // for quanta under ~19px — line-sized glides ran start-to-stop at the
-// constant floor and read as a flat "glide, not a spring". 1.6 keeps
-// the visible ease-out for D ≳ 13px while staying judder-safe. Raise
-// toward 2.0–2.5 only if 1px stepping at ~96Hz proves visible; every
-// bump trades spring character on small quanta for step rate.
+// constant floor and read as a flat "glide, not a spring". Raise only
+// if 1px stepping at ~96Hz proves visible; every bump trades spring
+// character on small quanta for step rate.
 //
 // Applied only when the spring's own velocity already points at the
 // target, so direction reversals still turn around on the spring curve
@@ -130,6 +129,30 @@ const SPRING_MAX_VELOCITY_PX_PER_FRAME = 18;
 // SPRING_CARRY_VELOCITY_CEILING so carried momentum still dominates
 // mid-stream.
 const SPRING_MIN_VELOCITY_PX_PER_FRAME = 1.6;
+// Deceleration envelope: max chase speed as a fraction of the REMAINING
+// distance (per 60Hz frame), floored at SPRING_MIN and capped at
+// SPRING_MAX. This is what shapes the perceived ease-out — speed bleeds
+// off in proportion to how close the glide is — and it doubles as the
+// small-quantum peak limiter: a single-line 26px growth peaks at
+// ≈ 0.11·26 ≈ 2.6 px/frame instead of the raw spring's ≈ 3.4, and a
+// carried (≤4) start into a line is immediately shaped down to the same
+// envelope (2026-07-04 feedback: line-sized glides started too fast;
+// catch-up latency explicitly matters less than perceived smoothness).
+// 0.11 sits just under the spring's natural quasi-steady follow ratio
+// (≈ 0.145·remaining at 60Hz), so it binds gently rather than fighting
+// the integrator. Large chases cruise at SPRING_MAX until the envelope
+// takes over below ≈ 164px remaining, giving big glides a progressive
+// slowdown instead of cruise-until-stop.
+const SPRING_DECEL_ENVELOPE_RATIO = 0.11;
+// Settle taper: inside the last SPRING_MIN / this ≈ 4px, the minimum
+// speed is remaining · this instead of the flat floor, so a glide ends
+// with 3–4 frames of visible deceleration (≈1.4 → 0.9 → 0.5 → land)
+// rather than constant-speed-then-stop. Bounded sub-floor time is the
+// key: judder needs a SUSTAINED low step rate for the eye to lock onto
+// (the captured bad tails ran 300–500ms); ~3 frames ≈ 20–50ms cannot
+// register, and the sub-1px remainder never crosses a pixel boundary,
+// so it is invisible by construction.
+const SPRING_SETTLE_TAPER_RATIO = 0.4;
 // How long a structural-append mark (markStructuralAppend, the
 // controller's markStructuralContentPending) keeps near-term content
 // growth spring-eligible while animationMode is 'instant'.
@@ -564,16 +587,33 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               } else if (velocity < -SPRING_MAX_VELOCITY_PX_PER_FRAME) {
                 velocity = -SPRING_MAX_VELOCITY_PX_PER_FRAME;
               }
-              // Speed floor: the exponential ease-out tail otherwise drops
-              // below one physical pixel per display frame and the
-              // integer-quantized scrollTop renders it as visible 1px-step
-              // judder (see SPRING_MIN_VELOCITY_PX_PER_FRAME). Only lifts a
-              // velocity already pointing at the target — reversals still
-              // turn around on the spring curve.
-              if (stepDiff > 0 && velocity > 0 && velocity < SPRING_MIN_VELOCITY_PX_PER_FRAME) {
-                velocity = SPRING_MIN_VELOCITY_PX_PER_FRAME;
-              } else if (stepDiff < 0 && velocity < 0 && velocity > -SPRING_MIN_VELOCITY_PX_PER_FRAME) {
-                velocity = -SPRING_MIN_VELOCITY_PX_PER_FRAME;
+              // Perceived-smoothness shaping, applied only to a velocity
+              // already pointing at the target (reversals still turn on
+              // the spring curve). Upper bound: the deceleration envelope
+              // (speed ∝ remaining distance) caps small-quantum peaks and
+              // shapes the ease-out. Lower bound: the glide floor keeps
+              // stepping above the judder band, tapering off across the
+              // last ~4px so the landing decelerates visibly instead of
+              // stopping flat. See SPRING_DECEL_ENVELOPE_RATIO /
+              // SPRING_MIN_VELOCITY_PX_PER_FRAME / SPRING_SETTLE_TAPER_RATIO.
+              const remaining = Math.abs(stepDiff);
+              const envelope = Math.min(
+                SPRING_MAX_VELOCITY_PX_PER_FRAME,
+                Math.max(
+                  SPRING_MIN_VELOCITY_PX_PER_FRAME,
+                  remaining * SPRING_DECEL_ENVELOPE_RATIO,
+                ),
+              );
+              const minGlide = Math.min(
+                SPRING_MIN_VELOCITY_PX_PER_FRAME,
+                remaining * SPRING_SETTLE_TAPER_RATIO,
+              );
+              if (stepDiff > 0 && velocity > 0) {
+                if (velocity > envelope) velocity = envelope;
+                else if (velocity < minGlide) velocity = minGlide;
+              } else if (stepDiff < 0 && velocity < 0) {
+                if (velocity < -envelope) velocity = -envelope;
+                else if (velocity > -minGlide) velocity = -minGlide;
               }
               accumulated += velocity * stepFraction;
             }
