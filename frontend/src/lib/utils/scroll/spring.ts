@@ -146,13 +146,20 @@ const SPRING_MIN_VELOCITY_PX_PER_FRAME = 1.6;
 const SPRING_DECEL_ENVELOPE_RATIO = 0.11;
 // Settle taper: inside the last SPRING_MIN / this ≈ 4px, the minimum
 // speed is remaining · this instead of the flat floor, so a glide ends
-// with 3–4 frames of visible deceleration (≈1.4 → 0.9 → 0.5 → land)
-// rather than constant-speed-then-stop. Bounded sub-floor time is the
-// key: judder needs a SUSTAINED low step rate for the eye to lock onto
-// (the captured bad tails ran 300–500ms); ~3 frames ≈ 20–50ms cannot
-// register, and the sub-1px remainder never crosses a pixel boundary,
-// so it is invisible by construction.
-const SPRING_SETTLE_TAPER_RATIO = 0.4;
+// with a RITARDANDO — 1px steps whose intervals grow monotonically
+// (≈1.6 → 1.2 → 0.9 → 0.7 → 0.5 → 0.4 → land, ~130ms) — rather than
+// constant-speed-then-stop. The judder distinction is rhythm, not
+// speed: the captured bad tails hovered at a near-CONSTANT slow step
+// rate for 300–500ms, which the eye locks onto as a beat; a monotone
+// deceleration visits each rate once, reads as "coming to rest", and
+// the sub-1px remainder never crosses a pixel boundary at all.
+//
+// TUNING (2026-07-04): 0.4 (a ~4px / ~70ms settle) read as a hard
+// "drop and stick" landing; 0.25 stretches the settle to ~6.5px /
+// ~130ms for a cradled stop. Lower = longer, softer settle but more
+// frames at low step rates (0.11 = the envelope ratio = the unbounded
+// old tail; never go there); higher = crisper stick.
+const SPRING_SETTLE_TAPER_RATIO = 0.25;
 // How long a structural-append mark (markStructuralAppend, the
 // controller's markStructuralContentPending) keeps near-term content
 // growth spring-eligible while animationMode is 'instant'.

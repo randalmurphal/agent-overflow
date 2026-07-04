@@ -275,9 +275,16 @@ describe('glide shaping (floor, decel envelope, settle taper)', () => {
     for (const move of moves.slice(0, settleStart)) {
       expect(move).toBeGreaterThanOrEqual(1.55);
     }
-    // Settle: sub-floor frames are bounded — a brief visible
-    // deceleration, not a sustained crawl.
-    expect(moves.length - settleStart).toBeLessThanOrEqual(5);
+    // Settle: sub-floor frames are bounded (~130ms ritardando) — a
+    // brief, monotonically decelerating landing, not a sustained crawl.
+    // The final frame is excluded: it combines the last taper step with
+    // the sentinel-entry exact snap (≤1px arrival band, invisible), so
+    // it reads larger than the step before it.
+    expect(moves.length - settleStart).toBeLessThanOrEqual(8);
+    for (let i = settleStart + 1; i < moves.length - 1; i++) {
+      expect(moves[i]).toBeLessThanOrEqual(moves[i - 1] + 0.01);
+    }
+    expect(moves[moves.length - 1]).toBeLessThanOrEqual(1.55);
     // Envelope: a 60px quantum peaks near 0.11·remaining, never the raw
     // spring's distance-proportional zoom.
     for (const move of moves) {
@@ -291,11 +298,11 @@ describe('glide shaping (floor, decel envelope, settle taper)', () => {
 
     h.setTarget(103); // sub-line growth
     h.spring.markTargetChanged();
-    const moves = movesUntilNear(h, 103, 4);
+    const moves = movesUntilNear(h, 103, 6);
     for (const move of moves) {
-      // First frame is the tapered lift (0.4·3 = 1.2), not the full
+      // First frame is the tapered lift (0.25·3 = 0.75), not the full
       // floor — tiny growths start soft and decelerate in.
-      expect(move).toBeLessThanOrEqual(1.3);
+      expect(move).toBeLessThanOrEqual(0.8);
       expect(move).toBeGreaterThan(0);
     }
   });
