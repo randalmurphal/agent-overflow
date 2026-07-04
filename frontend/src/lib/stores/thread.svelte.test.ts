@@ -9,6 +9,7 @@ import {
 } from './thread.svelte';
 import {
   FAST_DRAIN_SNAP_LAG_CHARS,
+  MAX_ADVANCE_PER_TICK_CHARS,
   type SmoothingClock,
 } from '../markdown/smoothing/PerItemSmoother';
 import {
@@ -6133,14 +6134,14 @@ describe('createThreadPane', () => {
         }
 
         // "5 words show up" ≈ 30 chars; "15 more words" ≈ 90 chars.
-        // A healthy smoother should stay under ~14 chars/tick (about 2
-        // words) even under steady-state burst. The cap inside
+        // A healthy smoother stays under the per-tick work cap (~3
+        // short words) even under steady-state burst. The cap inside
         // `PerItemSmoother.tick()` is what enforces this; without it,
         // adaptive math at lag ~= wire_rate * (catchup_ms / 1000)
         // produces 60–100+ chars/tick under sustained 2000 cps bursts
         // and the user perceives those as chunks of 5–15 words.
-        expect(maxLengthJump).toBeLessThanOrEqual(14);
-        expect(maxContentJump).toBeLessThanOrEqual(14);
+        expect(maxLengthJump).toBeLessThanOrEqual(MAX_ADVANCE_PER_TICK_CHARS);
+        expect(maxContentJump).toBeLessThanOrEqual(MAX_ADVANCE_PER_TICK_CHARS);
       } finally {
         __setSmoothingClockForTest(undefined);
       }

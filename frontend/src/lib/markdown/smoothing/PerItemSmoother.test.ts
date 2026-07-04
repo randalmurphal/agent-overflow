@@ -348,6 +348,19 @@ describe('PerItemSmoother — adaptive rate ceiling', () => {
     // cap × 165 ≈ 2310 chars here; the rate clamp holds ≤ 840.
     expect(at165).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC + 20);
   });
+
+  it('bounds DOM-mutation cadence on a 165Hz display (refresh decoupling)', () => {
+    // Each onReveal is a markdown re-parse + DOM mutation + re-raster.
+    // Unthrottled, catch-up revealed on every ~6ms frame (165/sec of
+    // render work); MIN_REVEAL_TICK_INTERVAL_MS bounds processing to
+    // ~55Hz while the reveal RATE (chars/sec) stays unchanged.
+    const { clock, reveals, smoother } = makeSmoother();
+    smoother.appendDelta('word '.repeat(1000));
+    const frameMs = 1000 / 165;
+    for (let i = 0; i < 165; i++) clock.tickFrame(frameMs);
+    expect(reveals.length).toBeGreaterThan(30);
+    expect(reveals.length).toBeLessThanOrEqual(67); // 1000ms / 15ms
+  });
 });
 
 describe('PerItemSmoother — reveal sequencing primitives', () => {

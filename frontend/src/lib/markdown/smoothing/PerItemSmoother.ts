@@ -61,6 +61,20 @@ export const FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS = 56;
 // work, so callers snap outright — one deliberate burst, same cost the
 // unbounded drain used to pay, reserved for the outlier case.
 export const FAST_DRAIN_SNAP_LAG_CHARS = 1200;
+// Reveal processing is decoupled from display refresh. rAF fires at
+// panel rate, and during catch-up a 165Hz panel would re-parse
+// markdown, mutate the DOM, force layout, and re-raster the content
+// layer on every ~6ms frame — roughly 3× a 60Hz display's render work
+// for zero perceptual gain (word appearance above ~50Hz reads
+// identically). Sustained per-frame churn like that is also exactly
+// the load that aggravates system-level compositor contention
+// (2026-07-04: desktop-wide 0.2–0.5s hitches with video playback,
+// only while streaming). Ticks arriving sooner than this interval
+// re-schedule without processing; budget accrual uses real elapsed
+// time, so reveal RATES are unchanged — only the mutation cadence is
+// bounded. 15ms lets 60Hz process every frame; 165Hz every third
+// (~55Hz effective), 144Hz every third (~48Hz effective).
+export const MIN_REVEAL_TICK_INTERVAL_MS = 15;
 // Ceiling on the adaptive catch-up RATE. When a fat wire burst (an
 // Anthropic-API paragraph landing in one chunk) opens a large lag, the
 // adaptive rate (`lag / 0.5s`) wants thousands of chars/sec; this
@@ -74,20 +88,22 @@ export const FAST_DRAIN_SNAP_LAG_CHARS = 1200;
 // on every display; lower it to slow peak catch-up everywhere.
 export const MAX_ADAPTIVE_CHARS_PER_SEC = 840;
 // Hard cap on how many characters the smoother may reveal in a single
-// rAF tick, regardless of accumulated budget. With the rate ceiling
-// above owning speed, this is purely the per-frame WORK bound: one
-// tick's markdown re-parse + DOM mutation stays bounded even right
-// after a stalled frame (where dt, and so the tick's budget, is
-// large). 14 chars ≈ 2 short words. Excess budget is clamped after
-// each tick (not rolled over) so a stall can't burst a multi-tick
-// chunk; the backlog drains at the elevated fast-drain cap only when
-// a successor row is waiting. A solo tail row's end-of-turn backlog
-// drains at the steady cadence — there used to be an end-of-turn
-// fast-drain (END_OF_TURN_DRAIN_MS, removed 2026-07) that rushed it,
-// and the rushed motion read as jank; a long final message finishing
-// a few seconds after the wire settles is the accepted trade for
-// uniform reveal speed.
-export const MAX_ADVANCE_PER_TICK_CHARS = 14;
+// PROCESSED tick, regardless of accumulated budget. With the rate
+// ceiling above owning speed, this is purely the per-frame WORK
+// bound: one tick's markdown re-parse + DOM mutation stays bounded
+// even right after a stalled frame (where dt, and so the tick's
+// budget, is large). Sized so the 840cps ceiling stays reachable at
+// the slowest throttled cadence (144Hz panels process every third
+// frame ≈ 48Hz: 840/48 ≈ 17.5 → 18; ~3 short words per processed
+// tick). Excess budget is clamped after each tick (not rolled over)
+// so a stall can't burst a multi-tick chunk; the backlog drains at
+// the elevated fast-drain cap only when a successor row is waiting. A
+// solo tail row's end-of-turn backlog drains at the steady cadence —
+// there used to be an end-of-turn fast-drain (END_OF_TURN_DRAIN_MS,
+// removed 2026-07) that rushed it, and the rushed motion read as
+// jank; a long final message finishing a few seconds after the wire
+// settles is the accepted trade for uniform reveal speed.
+export const MAX_ADVANCE_PER_TICK_CHARS = 18;
 
 export interface PerItemSmootherOptions {
   /** Seed for the received buffer (mid-flight resume). */
@@ -239,6 +255,14 @@ export class PerItemSmoother {
   private tick(): void {
     if (this.disposed) return;
     const now = this.clock.now();
+    // Refresh-rate decoupling: high-Hz panels re-schedule without
+    // processing until the minimum interval has elapsed. lastTickAt is
+    // NOT advanced on skipped frames, so the processed tick's dt (and
+    // budget) covers the full elapsed time.
+    if (now - this.lastTickAt < MIN_REVEAL_TICK_INTERVAL_MS) {
+      this.scheduleTick();
+      return;
+    }
     const dt = Math.max(0, now - this.lastTickAt);
     this.lastTickAt = now;
     if (this.isCaughtUp()) return;
