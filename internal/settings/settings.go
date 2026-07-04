@@ -102,14 +102,21 @@ type Settings struct {
 	// CollapseDiffPreviews starts chat-timeline file-edit diff cards
 	// collapsed (header row only). It controls the default state, not
 	// capability: cards stay individually expandable either way.
-	CollapseDiffPreviews bool   `json:"collapseDiffPreviews"`
-	StreamingEnabled     bool   `json:"streamingEnabled"`
-	ConfirmArchive       bool   `json:"confirmArchive"`
-	ConfirmDelete        bool   `json:"confirmDelete"`
-	ClaudeBinaryPath     string `json:"claudeBinaryPath"`
-	CodexBinaryPath      string `json:"codexBinaryPath"`
-	ClaudeEnabled        bool   `json:"claudeEnabled"`
-	CodexEnabled         bool   `json:"codexEnabled"`
+	CollapseDiffPreviews bool `json:"collapseDiffPreviews"`
+	StreamingEnabled     bool `json:"streamingEnabled"`
+	// LowPowerMode minimizes rendering work for GPU-constrained
+	// environments (weak machines, or a game/GPU-heavy app running
+	// alongside): scroll placement is instant instead of spring-gliding,
+	// streamed text reveals per wire chunk instead of animating, and the
+	// activity shimmer is suppressed. Display-only — content and timing
+	// are unaffected.
+	LowPowerMode     bool   `json:"lowPowerMode"`
+	ConfirmArchive   bool   `json:"confirmArchive"`
+	ConfirmDelete    bool   `json:"confirmDelete"`
+	ClaudeBinaryPath string `json:"claudeBinaryPath"`
+	CodexBinaryPath  string `json:"codexBinaryPath"`
+	ClaudeEnabled    bool   `json:"claudeEnabled"`
+	CodexEnabled     bool   `json:"codexEnabled"`
 
 	// ClaudeHiddenModels / CodexHiddenModels list catalog model slugs
 	// the user has hidden from model pickers. Hide-list semantics:
@@ -269,6 +276,7 @@ var DefaultSettings = Settings{
 	DiffWordWrap:         false,
 	CollapseDiffPreviews: false,
 	StreamingEnabled:     true,
+	LowPowerMode:         false,
 	ConfirmArchive:       true,
 	ConfirmDelete:        true,
 	ClaudeBinaryPath:     "claude",

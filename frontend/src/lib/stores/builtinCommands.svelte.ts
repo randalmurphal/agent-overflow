@@ -60,7 +60,7 @@ import {
 import { cycleMode } from '../utils/modeCycle';
 import { runInterruptOrRevert } from './revertOnInterrupt.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
-import { getSettings } from './settings.svelte';
+import { getSettings, updateSetting } from './settings.svelte';
 import { requestThreadActionConfirmation } from './threadActionConfirmations.svelte';
 import {
   clearSidebarCursor,
@@ -710,6 +710,17 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Settings: Open',
     icon: '⚙',
     run: () => openSettings(),
+  });
+
+  registerCommand({
+    id: 'settings.toggleLowPowerMode',
+    label: 'Settings: Toggle Low Power Mode',
+    description:
+      'Minimize rendering work: instant scroll placement, chunked text reveal, no shimmer. For weaker machines or when running GPU-heavy apps alongside.',
+    icon: '⚙',
+    run: () => {
+      void updateSetting('lowPowerMode', !getSettings().lowPowerMode);
+    },
   });
 
   registerCommand({

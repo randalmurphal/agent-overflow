@@ -113,6 +113,14 @@ export interface PerItemSmootherOptions {
   initialRevealed?: string;
   /** Fires every time `revealed` advances (including on `snap`). */
   onReveal: (revealed: string, delta: string) => void;
+  /**
+   * Low-power seam: when this returns true, the next processed tick
+   * snaps everything pending instead of animating, so revealed text
+   * tracks the wire chunk-for-chunk with one DOM mutation per chunk.
+   * Sampled per tick (not latched), so flipping the app's low-power
+   * setting mid-stream takes effect on the next scheduled frame.
+   */
+  revealImmediately?: () => boolean;
   /** Optional clock injection for deterministic tests. */
   clock?: SmoothingClock;
 }
@@ -121,6 +129,7 @@ export class PerItemSmoother {
   private received: string;
   private revealed: string;
   private readonly onReveal: (revealed: string, delta: string) => void;
+  private readonly revealImmediately: (() => boolean) | undefined;
   private readonly clock: SmoothingClock;
 
   private lastTickAt: number;
@@ -144,6 +153,7 @@ export class PerItemSmoother {
     this.received = opts.initialReceived ?? '';
     this.revealed = opts.initialRevealed ?? this.received;
     this.onReveal = opts.onReveal;
+    this.revealImmediately = opts.revealImmediately;
     this.clock = opts.clock ?? defaultClock;
     this.lastTickAt = this.clock.now();
     if (!this.isCaughtUp()) this.scheduleTick();
@@ -254,6 +264,20 @@ export class PerItemSmoother {
 
   private tick(): void {
     if (this.disposed) return;
+    // Low-power: reveal everything pending in one mutation instead of
+    // animating. Checked at the tick (not in appendDelta) so the
+    // reveal stays asynchronous — a synchronous snap inside
+    // getOrCreateSmoothing's construction path would fire onReveal
+    // before the caller's smoother reference exists. lastTickAt is
+    // advanced so a later flip back to animated cadence doesn't see
+    // the whole low-power stint as one giant dt (a ballooned budget
+    // dumps a full per-tick cap on the first animated frame instead
+    // of easing in at word cadence).
+    if (this.revealImmediately?.()) {
+      this.lastTickAt = this.clock.now();
+      this.snap();
+      return;
+    }
     const now = this.clock.now();
     // Refresh-rate decoupling: high-Hz panels re-schedule without
     // processing until the minimum interval has elapsed. lastTickAt is

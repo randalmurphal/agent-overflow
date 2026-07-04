@@ -57,6 +57,7 @@
 // out-of-content height changes; the seam is identical on both surfaces.
 
 import { tick } from 'svelte';
+import { getSettings } from '../../stores/settings.svelte';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import { createScrollIntent, isSelectingInside } from './intent';
 import { createContentObserver } from './observers';
@@ -450,6 +451,18 @@ export function createUseStickToBottomController(
     }
     return reducedMotionQuery?.matches ?? false;
   }
+  // The app-level low-power setting rides the same gate as the OS
+  // reduced-motion preference: both mean "place instantly, never
+  // spring-glide". Spring glides are the app's dominant GPU cost —
+  // one compositor frame per vsync for the whole chase — so this is
+  // the scroll half of low-power mode (the reveal smoother and the
+  // activity shimmer gate on the same setting at their own sites).
+  // Read live (plain non-reactive read; the spring gate and resolver
+  // sample it per event/tick, so a toggle applies to the next
+  // decision without any subscription).
+  function motionReduced(): boolean {
+    return prefersReducedMotion() || getSettings().lowPowerMode;
+  }
 
   // ===== Spring chase =====
   // Kinematics live in scroll/spring.ts. This wiring hands the spring its
@@ -476,7 +489,7 @@ export function createUseStickToBottomController(
     arrival: arrivalReadback,
     writeScrollTop,
     animationMode: animationModeNow,
-    prefersReducedMotion,
+    prefersReducedMotion: motionReduced,
     forceNextSpringTickTrace,
     settleGlideResidue,
     // Fusion floor from the display's device quantum (1/dpr CSS px):
@@ -525,7 +538,7 @@ export function createUseStickToBottomController(
     refreshIsNearBottom,
     writeScrollTop,
     resolverStateSnapshot,
-    prefersReducedMotion,
+    prefersReducedMotion: motionReduced,
     spring,
   });
 

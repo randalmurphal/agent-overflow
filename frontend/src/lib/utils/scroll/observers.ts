@@ -154,6 +154,7 @@ export interface ContentObserverDeps {
   refreshIsNearBottom(): number;
   writeScrollTop(caller: ScrollWriteCaller, value: number): void;
   resolverStateSnapshot(): ResolverState;
+  /** OS prefers-reduced-motion OR the app's low-power setting. */
   prefersReducedMotion(): boolean;
   /** Narrowed to what a delivery decision may drive on the spring. */
   spring: Pick<SpringChase, 'structuralAppendPending' | 'snapOscillationToBottom' | 'markTargetChanged' | 'start'>;

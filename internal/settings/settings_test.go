@@ -295,6 +295,48 @@ func TestCollapseDiffPreviewsRoundTripAndSparseDefault(t *testing.T) {
 	}
 }
 
+// TestLowPowerModeRoundTripAndSparseDefault confirms the low-power
+// rendering toggle persists like every other setting: Update writes
+// the patch, a fresh service reload yields the same value, and the
+// file omits the key once it equals the default again.
+func TestLowPowerModeRoundTripAndSparseDefault(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{"lowPowerMode": true})
+	if err != nil {
+		t.Fatalf("Update(lowPowerMode=true) error = %v", err)
+	}
+	if !updated.LowPowerMode {
+		t.Fatal("LowPowerMode = false, want true")
+	}
+
+	reloaded := NewService(dir).Get()
+	if !reloaded.LowPowerMode {
+		t.Fatal("reloaded LowPowerMode = false, want true")
+	}
+
+	updated, err = svc.Update(map[string]any{"lowPowerMode": false})
+	if err != nil {
+		t.Fatalf("Update(lowPowerMode=false) error = %v", err)
+	}
+	if updated.LowPowerMode {
+		t.Fatal("LowPowerMode = true, want false")
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal settings file: %v", err)
+	}
+	if _, ok := fileMap["lowPowerMode"]; ok {
+		t.Fatalf("settings file = %s, want lowPowerMode omitted when default", string(data))
+	}
+}
+
 func TestUpdateMergesOverDefaults(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)

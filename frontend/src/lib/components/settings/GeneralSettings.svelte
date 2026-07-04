@@ -180,6 +180,17 @@
           onToggle={(value) => updateSetting('streamingEnabled', value)}
         />
       </SettingsField>
+
+      <SettingsField
+        label="Low power mode"
+        hint="Minimize rendering work: instant scroll placement, chunked text reveal, no shimmer. For weaker machines or when running GPU-heavy apps alongside."
+      >
+        <ToggleSwitch
+          checked={settings.lowPowerMode}
+          ariaLabel="Toggle Low Power Mode"
+          onToggle={(value) => updateSetting('lowPowerMode', value)}
+        />
+      </SettingsField>
     </div>
   </section>
 

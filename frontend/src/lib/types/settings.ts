@@ -74,6 +74,13 @@ export interface Settings {
    */
   collapseDiffPreviews: boolean;
   streamingEnabled: boolean;
+  /**
+   * Minimize rendering work for GPU-constrained environments (weak
+   * machines, or a game running alongside): instant scroll placement
+   * instead of spring glides, per-wire-chunk text reveal instead of
+   * animated streaming, activity shimmer suppressed. Display-only.
+   */
+  lowPowerMode: boolean;
   confirmArchive: boolean;
   confirmDelete: boolean;
   claudeBinaryPath: string;

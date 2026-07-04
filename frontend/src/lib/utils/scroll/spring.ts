@@ -236,6 +236,8 @@ export interface SpringChaseDeps {
   writeScrollTop(caller: ScrollWriteCaller, value: number): void;
   /** Normalized per-fire animation mode (anything but 'spring' is 'instant'). */
   animationMode(): 'spring' | 'instant';
+  /** OS prefers-reduced-motion OR the app's low-power setting (the
+   * controller's combined motionReduced() gate). */
   prefersReducedMotion(): boolean;
   /**
    * Force the controller's sampled spring-tick trace to record the next
@@ -552,6 +554,22 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const target = deps.targetScrollTop();
       const current = el.scrollTop;
       deps.arrival.invalidateStale(target);
+
+      // Reduced motion (OS preference or the app's low-power setting)
+      // flipped on mid-chase: land exactly and stop. The gate is
+      // otherwise only consulted when (re)starting a chase (start(),
+      // the delivery resolver, notifyLiveContentMaybeGrew), never
+      // inside the running tick loop — so without this an in-flight
+      // chase, kept alive by the retain window across streaming
+      // quanta, would keep gliding indefinitely after the toggle.
+      // Subsequent placements take the resolver's instant paths.
+      if (deps.prefersReducedMotion()) {
+        if (deps.arrival.shouldWriteExact(target)) {
+          deps.arrival.writeExact('spring.arrive', target);
+        }
+        cancel();
+        return;
+      }
 
       if (chaseTelemetry) {
         if (lastChaseTarget >= 0 && target !== lastChaseTarget) {

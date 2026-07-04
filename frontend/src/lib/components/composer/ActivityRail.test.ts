@@ -5,6 +5,7 @@ import ActivityRail from './ActivityRail.svelte';
 import type { UserInputRequest } from '../../types/events';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
 import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 import { resetForTest as resetSendQueue, replaceQueueForThread } from '../../stores/sendQueue.svelte';
 import { __resetActivityRailUiPrefsForTest, __resetLiveTodoUiPrefsForTest, LIVE_TODO_AUTOHIDE_MS } from '../../stores/thread.svelte';
@@ -55,6 +56,7 @@ describe('<ActivityRail>', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    resetSettingsForTest();
   });
 
   it('renders nothing when idle, no todos, no background', async () => {
@@ -83,6 +85,16 @@ describe('<ActivityRail>', () => {
     const { findByTestId } = render(ActivityRail, { props: { pane } });
     await tick();
     expect(await findByTestId('activity-rail-shimmer')).toBeInTheDocument();
+  });
+
+  it('suppresses the shimmer in low power mode (working chip still shows)', async () => {
+    getSettings().lowPowerMode = true;
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    await tick();
+    expect(await findByTestId('activity-rail-working')).toBeInTheDocument();
+    expect(queryByTestId('activity-rail-shimmer')).toBeNull();
   });
 
   it('does not mount the shimmer when only todos are visible (rail visible, isWorking false)', async () => {

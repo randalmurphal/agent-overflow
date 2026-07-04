@@ -75,6 +75,18 @@ describe('<GeneralSettings> — Behavior toggles', () => {
     const toggle = getByRole('switch', { name: 'Toggle Collapse Diff Previews' });
     expect(toggle.getAttribute('aria-checked')).toBe('true');
   });
+
+  it('dispatches lowPowerMode patch when the toggle is clicked', async () => {
+    const { getByRole } = render(GeneralSettings);
+    const toggle = getByRole('switch', { name: 'Toggle Low Power Mode' });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+
+    await fireEvent.click(toggle);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ lowPowerMode: true });
+  });
 });
 
 describe('<GeneralSettings> — Pane density', () => {

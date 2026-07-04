@@ -1201,9 +1201,9 @@ export class Turn {
  */
 export class UsageBucket {
     /**
-     * Bucket is the group key: a date ("2026-07-03"), ISO 8601 week
-     * ("2026-W26"), month ("2026-07"), model/provider/thread/project id,
-     * or "" for the lifetime bucket.
+     * Bucket is the group key: a date ("2026-07-03"), a Sunday-start
+     * week keyed by its start date ("2026-06-28"), month ("2026-07"),
+     * model/provider/thread/project id, or "" for the lifetime bucket.
      */
     "bucket": string;
     "inputTokens": number;

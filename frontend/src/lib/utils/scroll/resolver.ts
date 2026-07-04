@@ -120,6 +120,8 @@ export interface ContentDeltaObservation {
   animationMode: 'spring' | 'instant';
   /** markStructuralContentPending() window still open. */
   structuralAppendPending: boolean;
+  /** OS prefers-reduced-motion OR the app's low-power setting — the
+   * controller feeds this from its combined motionReduced() gate. */
   prefersReducedMotion: boolean;
 }
 
@@ -176,6 +178,7 @@ export interface SpringGateInputs {
   paused: boolean;
   isAtBottom: boolean;
   escaped: boolean;
+  /** OS prefers-reduced-motion OR the app's low-power setting. */
   prefersReducedMotion: boolean;
   animationMode: 'spring' | 'instant';
   structuralAppendPending: boolean;

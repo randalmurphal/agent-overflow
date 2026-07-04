@@ -14,6 +14,7 @@ import {
   trimToTailRunes,
 } from './threadPaneShared';
 import { compareItemsByTimelinePosition } from './threadItems';
+import { getSettings } from './settings.svelte';
 import {
   COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY,
   THINKING_PAYLOAD_EXPANSION_STATE_KEY,
@@ -367,6 +368,12 @@ export function createThreadStreamingReveal(
       // Seed revealed = received so a mid-flight feature deploy or
       // turn-resume sees no visible snap.
       initialRevealed: initialReceived,
+      // Low power: reveal per wire chunk (one mutation per chunk, a
+      // few Hz) instead of the animated 48–60Hz cadence. All the
+      // onReveal invariants (live-content stamp, reasoning tail,
+      // terminal auto-dispose, gate recompute) run unchanged — the
+      // snap just delivers the whole backlog in one reveal.
+      revealImmediately: () => getSettings().lowPowerMode,
       clock: getSmoothingClockForTest(),
       onReveal: (revealed, delta) => {
         const idx = options.getItemIndex(itemId);

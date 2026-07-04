@@ -8,6 +8,7 @@ import { resetScrollIntentModuleStateForTest } from './intent';
 import { RETAIN_ANIMATION_DURATION_MS } from './spring';
 import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../springAnimationLatch';
 import { clearUiRenderTrace, getUiRenderTraceRecords, setUiRenderTraceEnabled } from '../uiRenderTrace';
+import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
 
 // happy-dom doesn't measure layout, so tests stub scrollHeight /
 // clientHeight / scrollTop on the scroll element via Object.defineProperty.
@@ -2111,6 +2112,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;
     }
     vi.restoreAllMocks();
+    resetSettingsForTest();
   });
 
   // The cold-thread-switch flicker: after the controller has pinned the DOM
@@ -3944,6 +3946,46 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 1200);
 
       // Sync-pin: scrollTop already at target, no spring.
+      expect(geom.scrollTop).toBe(800);
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(800);
+    });
+
+    it('low-power setting suppresses the spring like prefers-reduced-motion', async () => {
+      getSettings().lowPowerMode = true;
+
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+
+      // Sync-pin: scrollTop already at target, no spring.
+      expect(geom.scrollTop).toBe(800);
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(800);
+    });
+
+    it('low-power flipped on mid-chase lands the spring at the target instantly', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await nextFrame();
+      const midScrollTop = geom.scrollTop;
+      expect(midScrollTop).toBeGreaterThan(400);
+      expect(midScrollTop).toBeLessThan(800);
+
+      getSettings().lowPowerMode = true;
+
+      // The next spring tick samples the gate, writes the exact target,
+      // and cancels — no multi-frame glide to the bottom.
+      await nextFrame();
       expect(geom.scrollTop).toBe(800);
       for (let i = 0; i < 5; i++) await nextFrame();
       expect(geom.scrollTop).toBe(800);
@@ -6259,6 +6301,7 @@ describe('createUseStickToBottomController — external content-geometry source'
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;
     }
     vi.restoreAllMocks();
+    resetSettingsForTest();
   });
 
   describe('source parity', () => {

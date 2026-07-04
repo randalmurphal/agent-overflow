@@ -11,6 +11,7 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     diffWordWrap: false,
     collapseDiffPreviews: false,
     streamingEnabled: true,
+    lowPowerMode: false,
     confirmArchive: true,
     confirmDelete: true,
     claudeBinaryPath: 'claude',

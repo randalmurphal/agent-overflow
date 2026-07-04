@@ -305,6 +305,16 @@ export class Settings {
      */
     "collapseDiffPreviews": boolean;
     "streamingEnabled": boolean;
+
+    /**
+     * LowPowerMode minimizes rendering work for GPU-constrained
+     * environments (weak machines, or a game/GPU-heavy app running
+     * alongside): scroll placement is instant instead of spring-gliding,
+     * streamed text reveals per wire chunk instead of animating, and the
+     * activity shimmer is suppressed. Display-only — content and timing
+     * are unaffected.
+     */
+    "lowPowerMode": boolean;
     "confirmArchive": boolean;
     "confirmDelete": boolean;
     "claudeBinaryPath": string;
@@ -524,6 +534,9 @@ export class Settings {
         if (!("streamingEnabled" in $$source)) {
             this["streamingEnabled"] = false;
         }
+        if (!("lowPowerMode" in $$source)) {
+            this["lowPowerMode"] = false;
+        }
         if (!("confirmArchive" in $$source)) {
             this["confirmArchive"] = false;
         }
@@ -608,49 +621,49 @@ export class Settings {
      */
     static createFrom($$source: any = {}): Settings {
         const $$createField6_0 = $$createType2;
-        const $$createField16_0 = $$createType2;
         const $$createField17_0 = $$createType2;
-        const $$createField31_0 = $$createType3;
-        const $$createField32_0 = $$createType4;
-        const $$createField33_0 = $$createType5;
-        const $$createField34_0 = $$createType2;
-        const $$createField35_0 = $$createType7;
-        const $$createField37_0 = $$createType2;
-        const $$createField38_0 = $$createType8;
-        const $$createField39_0 = $$createType9;
+        const $$createField18_0 = $$createType2;
+        const $$createField32_0 = $$createType3;
+        const $$createField33_0 = $$createType4;
+        const $$createField34_0 = $$createType5;
+        const $$createField35_0 = $$createType2;
+        const $$createField36_0 = $$createType7;
+        const $$createField38_0 = $$createType2;
+        const $$createField39_0 = $$createType8;
+        const $$createField40_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
         }
         if ("claudeHiddenModels" in $$parsedSource) {
-            $$parsedSource["claudeHiddenModels"] = $$createField16_0($$parsedSource["claudeHiddenModels"]);
+            $$parsedSource["claudeHiddenModels"] = $$createField17_0($$parsedSource["claudeHiddenModels"]);
         }
         if ("codexHiddenModels" in $$parsedSource) {
-            $$parsedSource["codexHiddenModels"] = $$createField17_0($$parsedSource["codexHiddenModels"]);
+            $$parsedSource["codexHiddenModels"] = $$createField18_0($$parsedSource["codexHiddenModels"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField31_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField32_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField32_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField33_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField33_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField34_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField34_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField35_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField35_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField36_0($$parsedSource["remoteEndpoints"]);
         }
         if ("collapsedProjects" in $$parsedSource) {
-            $$parsedSource["collapsedProjects"] = $$createField37_0($$parsedSource["collapsedProjects"]);
+            $$parsedSource["collapsedProjects"] = $$createField38_0($$parsedSource["collapsedProjects"]);
         }
         if ("paneLayout" in $$parsedSource) {
-            $$parsedSource["paneLayout"] = $$createField38_0($$parsedSource["paneLayout"]);
+            $$parsedSource["paneLayout"] = $$createField39_0($$parsedSource["paneLayout"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField39_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField40_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

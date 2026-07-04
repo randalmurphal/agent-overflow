@@ -562,3 +562,121 @@ describe('PerItemSmoother — reveal sequencing primitives', () => {
     );
   });
 });
+
+describe('PerItemSmoother — revealImmediately (low power)', () => {
+  function makeImmediateSmoother(active: { value: boolean }) {
+    const clock = new FakeClock();
+    const reveals: RevealEntry[] = [];
+    const smoother = new PerItemSmoother({
+      onReveal: (revealed, delta) => reveals.push({ revealed, delta }),
+      revealImmediately: () => active.value,
+      clock,
+    });
+    return { clock, reveals, smoother };
+  }
+
+  it('reveals the whole backlog in one mutation on the next tick', () => {
+    const active = { value: true };
+    const { clock, reveals, smoother } = makeImmediateSmoother(active);
+
+    smoother.appendDelta('a long paragraph that would normally animate word by word over many frames');
+    // Reveal stays asynchronous — nothing is revealed inside appendDelta.
+    expect(reveals).toHaveLength(0);
+
+    clock.tickFrame(1);
+    expect(reveals).toHaveLength(1);
+    expect(smoother.isCaughtUp()).toBe(true);
+    expect(smoother.getRevealed()).toBe(
+      'a long paragraph that would normally animate word by word over many frames',
+    );
+
+    // Each subsequent chunk is one reveal on its next frame — no
+    // animated multi-frame cadence.
+    smoother.appendDelta(' and a second wire chunk');
+    clock.tickFrame(1);
+    expect(reveals).toHaveLength(2);
+    expect(smoother.isCaughtUp()).toBe(true);
+  });
+
+  it('is sampled per tick: flipping mid-animation snaps the remainder', () => {
+    const active = { value: false };
+    const { clock, reveals, smoother } = makeImmediateSmoother(active);
+
+    smoother.appendDelta('one two three four five six seven eight nine ten eleven twelve');
+    // Animate a couple of frames at the normal word cadence.
+    clock.tickFrame(16);
+    clock.tickFrame(16);
+    expect(smoother.isCaughtUp()).toBe(false);
+    const animatedReveals = reveals.length;
+
+    active.value = true;
+    clock.tickFrame(16);
+    expect(smoother.isCaughtUp()).toBe(true);
+    // Exactly one additional reveal carrying everything left.
+    expect(reveals).toHaveLength(animatedReveals + 1);
+    expect(reveals[reveals.length - 1].revealed).toBe(
+      'one two three four five six seven eight nine ten eleven twelve',
+    );
+  });
+
+  it('flipping off resumes the animated cadence for later chunks', () => {
+    const active = { value: true };
+    const { clock, smoother } = makeImmediateSmoother(active);
+
+    smoother.appendDelta('first chunk of text');
+    clock.tickFrame(1);
+    expect(smoother.isCaughtUp()).toBe(true);
+
+    active.value = false;
+    smoother.appendDelta(
+      'a much longer follow-up that should animate word by word again across frames',
+    );
+    clock.tickFrame(16);
+    // Base cadence: far from caught up after one frame.
+    expect(smoother.isCaughtUp()).toBe(false);
+  });
+
+  it('flipping off after a long low-power stint does not burst the first animated frame', () => {
+    const active = { value: true };
+    const { clock, reveals, smoother } = makeImmediateSmoother(active);
+
+    // Stream in low power for ~20s: each chunk snaps on its next frame.
+    // Every one of these ticks must keep lastTickAt current — a stale
+    // value would make the first animated tick below see the whole
+    // stint as one dt, balloon the budget, and dump a full per-tick
+    // cap (~18 chars) instead of easing in at the base word cadence.
+    for (let i = 0; i < 100; i++) {
+      smoother.appendDelta(`chunk${i} `);
+      clock.tickFrame(200);
+    }
+    expect(smoother.isCaughtUp()).toBe(true);
+
+    active.value = false;
+    reveals.length = 0;
+    smoother.appendDelta('alpha beta gamma delta epsilon zeta eta');
+    clock.tickFrame(16);
+    const firstFrameChars = reveals.reduce((n, r) => n + r.delta.length, 0);
+    // One 16ms frame of base-rate budget is ~2.5 chars — at most one
+    // short word unit, nowhere near the 18-char per-tick cap.
+    expect(firstFrameChars).toBeLessThanOrEqual(8);
+  });
+
+  it('a paused smoother that resumes under low power snaps in one reveal', () => {
+    const active = { value: true };
+    const { clock, reveals, smoother } = makeImmediateSmoother(active);
+
+    smoother.pause();
+    smoother.appendDelta('text streamed while withheld behind the reveal gate');
+    clock.tickFrame(16);
+    // Paused: nothing ticks, nothing reveals.
+    expect(reveals).toHaveLength(0);
+
+    smoother.resume();
+    clock.tickFrame(16);
+    expect(reveals).toHaveLength(1);
+    expect(smoother.isCaughtUp()).toBe(true);
+    expect(smoother.getRevealed()).toBe(
+      'text streamed while withheld behind the reveal gate',
+    );
+  });
+});

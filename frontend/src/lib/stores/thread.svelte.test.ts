@@ -12,6 +12,7 @@ import {
   MAX_ADVANCE_PER_TICK_CHARS,
   type SmoothingClock,
 } from '../markdown/smoothing/PerItemSmoother';
+import { getSettings, resetSettingsForTest } from './settings.svelte';
 import {
   resetForTest as resetWorktreeIntent,
   setAttachBranch,
@@ -1709,6 +1710,42 @@ describe('createThreadPane', () => {
       expect(summary).toBe(expected);
     } finally {
       __setSmoothingClockForTest(undefined);
+    }
+  });
+
+  it('low power mode reveals a streamed delta whole on the next frame', async () => {
+    // Guards the revealImmediately wiring in threadStreamingReveal: with
+    // the setting on, a fat delta lands as ONE summary write on the next
+    // scheduled tick instead of animating across hundreds of frames.
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    getSettings().lowPowerMode = true;
+    try {
+      const pane = createThreadPane();
+      pane.upsertItem(
+        makeItem({
+          id: 'text:0:0',
+          kind: 'assistant_text',
+          status: 'streaming',
+          summary: 'seed',
+        }),
+      );
+
+      const delta = Array.from({ length: 200 }, (_, index) => `word${index}`).join(' ');
+      pane.applyItemDelta({
+        threadId: 'thread-1',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        delta,
+        updatedAt: 125,
+      });
+      clock.tickFrame(1);
+      expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe(
+        `seed${delta}`,
+      );
+    } finally {
+      __setSmoothingClockForTest(undefined);
+      resetSettingsForTest();
     }
   });
 

@@ -31,6 +31,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { UserInputRequest } from '../../types/events';
   import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
+  import { getSettings } from '../../stores/settings.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { activityRailChipClasses, activityRailRowClasses } from './activityRailClasses';
   import { createBackgroundController } from './activityRailBackground.svelte';
@@ -108,6 +109,11 @@
   // chip shows. `showWorking` gates every working-segment render below.
   let showWorking = $derived(isWorking && inputRequest === null);
 
+  // The shimmer is an infinite CSS animation — a continuous raster +
+  // composite cost for the whole working duration. Low-power mode
+  // drops it (the working chip and timer still show).
+  let showShimmer = $derived(showWorking && !getSettings().lowPowerMode);
+
   // Rail visible when ANY sub-state is non-empty (a pending input always shows
   // its chip). Each segment within the row has its own predicate so e.g. a
   // background-only render doesn't include working chrome.
@@ -137,7 +143,7 @@
     aria-label="Activity"
     data-testid="activity-rail"
   >
-    {#if showWorking}
+    {#if showShimmer}
       <span
         class="activity-shimmer pointer-events-none absolute inset-x-0 top-0 z-10 block h-px overflow-hidden"
         aria-hidden="true"

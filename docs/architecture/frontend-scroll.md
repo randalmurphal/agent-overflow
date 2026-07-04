@@ -370,7 +370,14 @@ asynchronous scroll events that race the controller's tagging; do not add
 a smooth option, and never call `scrollIntoView()` on a virtualized row.
 
 `prefers-reduced-motion: reduce` forces sync-pin behavior regardless of
-requested animation mode.
+requested animation mode. The app's `lowPowerMode` setting rides the same
+gate (`motionReduced()` in the controller): spring glides are the app's
+dominant GPU cost — one compositor frame per vsync for a whole chase — so
+low power means instant placement everywhere, including landing an
+in-flight chase on its next tick when the setting flips mid-glide. The
+same setting also snaps the streaming reveal to per-wire-chunk mutations
+(`PerItemSmoother`'s `revealImmediately` seam) and suppresses the
+activity shimmer.
 
 ## Engine Compensation Routing
 
