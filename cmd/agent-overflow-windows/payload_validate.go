@@ -29,7 +29,7 @@ const minPayloadBytes = 1 * 1024 * 1024
 // elfMagic is the byte signature of an ELF executable. Real Linux
 // agent-overflow binaries start with this. The placeholder is plain
 // ASCII so the magic check fails loudly.
-var elfMagic = []byte{0x7f, 'E', 'L', 'F'}
+const elfMagic = "\x7fELF"
 
 func init() {
 	if len(linuxPayload) < minPayloadBytes {
@@ -46,14 +46,6 @@ func init() {
 	}
 }
 
-func hasELFMagic(b []byte) bool {
-	if len(b) < len(elfMagic) {
-		return false
-	}
-	for i, c := range elfMagic {
-		if b[i] != c {
-			return false
-		}
-	}
-	return true
+func hasELFMagic(payload string) bool {
+	return len(payload) >= len(elfMagic) && payload[:len(elfMagic)] == elfMagic
 }

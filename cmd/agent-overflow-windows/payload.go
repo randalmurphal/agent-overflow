@@ -91,7 +91,7 @@ func writeEmbeddedPayload() (string, error) {
 		return "", err
 	}
 	defer f.Close()
-	if _, err := f.Write(linuxPayload); err != nil {
+	if _, err := f.WriteString(linuxPayload); err != nil {
 		os.Remove(f.Name())
 		return "", err
 	}

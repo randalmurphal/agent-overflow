@@ -65,8 +65,14 @@ import (
 //go:embed picker.html
 var pickerHTML string
 
+// linuxPayload is embedded as a string, not []byte: string embeds land
+// in the read-only .rdata section (file-backed, shareable, no commit
+// charge), while []byte embeds land in the writable .data section,
+// which Windows maps copy-on-write and charges the full ~47 MiB
+// against the process's private commit at load time — measured as the
+// bulk of the launcher's memory footprint before this was a string.
 //go:embed payload/agent-overflow-linux
-var linuxPayload []byte
+var linuxPayload string
 
 // payloadVersion identifies the embedded payload. The launcher writes
 // this into wsl.json so a future upgrade can compare against the
