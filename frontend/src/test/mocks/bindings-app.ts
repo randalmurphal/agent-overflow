@@ -407,6 +407,9 @@ export const CountRunningBackgroundTasks = dispatch('CountRunningBackgroundTasks
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
 export const GetThreadItem = dispatch('GetThreadItem');
 
+// Usage accounting
+export const GetUsageStats = dispatch('GetUsageStats');
+
 // MCP library
 export const ListMcpServers = dispatch('ListMcpServers');
 export const ListMcpServersForThread = dispatch('ListMcpServersForThread');

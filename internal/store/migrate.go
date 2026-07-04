@@ -540,6 +540,38 @@ CREATE INDEX idx_payload_chunks_payload_start
   ON turns(thread_id, turn_index)
   WHERE completed_at IS NULL;`,
 	},
+	{
+		Version: 14,
+		Name:    "usage_ledger",
+		// Append-only per-turn token/cost accounting (one row per model
+		// per settled turn). DELIBERATELY no foreign keys: lifetime
+		// usage totals must survive thread and project deletion, so
+		// thread_id / project_id / turn_id are plain attribution columns
+		// and provider/model are denormalized at write time. cost_usd is
+		// wire-reported only (Claude); 0 with no wire cost means
+		// "unpriced", which is what cost_source records.
+		SQL: `CREATE TABLE usage_ledger (
+    id                          INTEGER PRIMARY KEY,
+    created_at                  INTEGER NOT NULL,
+    thread_id                   TEXT    NOT NULL,
+    project_id                  TEXT    NOT NULL DEFAULT '',
+    turn_id                     TEXT    NOT NULL DEFAULT '',
+    provider                    TEXT    NOT NULL DEFAULT '',
+    model                       TEXT    NOT NULL DEFAULT '',
+    input_tokens                INTEGER NOT NULL DEFAULT 0,
+    output_tokens               INTEGER NOT NULL DEFAULT 0,
+    cache_read_input_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_output_tokens     INTEGER NOT NULL DEFAULT 0,
+    cost_usd                    REAL    NOT NULL DEFAULT 0,
+    cost_source                 TEXT    NOT NULL DEFAULT 'none'
+        CHECK(cost_source IN ('wire','none'))
+);
+
+CREATE INDEX idx_usage_ledger_created ON usage_ledger(created_at);
+
+CREATE INDEX idx_usage_ledger_thread ON usage_ledger(thread_id, created_at);`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

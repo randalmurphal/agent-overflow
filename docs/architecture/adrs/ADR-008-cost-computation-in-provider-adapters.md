@@ -1,7 +1,31 @@
 # ADR-008: Cost Computation in Provider Adapters
 
-Status: accepted
+Status: superseded (2026-07-03)
 Date: 2026-04-18
+
+> **Superseded.** The client-side pricing table (`CalculateCost` /
+> `internal/provider/cost.go`) was removed on 2026-07-03: provider
+> adapters attach **wire-reported cost only**. Claude computes cost
+> CLI-side and reports it on `result.modelUsage[model].costUSD` /
+> `total_cost_usd` (both session-cumulative — the adapter
+> snapshot-deltas them per turn; see
+> `internal/provider/claude/usage_accounting.go`). Codex reports no
+> USD anywhere on its wire, so Codex (and claudetui) rows carry tokens
+> only and persist with `cost_source='none'`.
+>
+> Later the same day, read-time pricing was added on top of this at a
+> different layer: `internal/usagecost` holds a hardcoded per-model
+> rate table, and `GetUsageStats` (`app_usage.go`) calls it to price
+> `cost_source='none'` rows when it aggregates the ledger for display.
+> The estimate is computed fresh on every query and never written back
+> to `usage_ledger.cost_usd` — a rate-table update reprices all history
+> the next time someone looks at usage stats, and Claude's wire cost is
+> never touched by this path. The parts of this ADR that survive:
+> usage/cost accounting is still attached in the provider adapter (not
+> triage), what lands in `usage_ledger.cost_usd` is still wire-reported
+> only, and the frontend still never recomputes cost itself — dollar
+> totals it renders come from `GetUsageStats`, wire and estimate
+> already merged.
 
 ## Context
 

@@ -27,6 +27,7 @@ the migrations win.
 | `chat_model_profiles` | Last-used composer settings per provider/model: reasoning effort, fast mode, context window, per-tier auto-compact percentages, runtime mode, and `updated_at` for seeding new chats. |
 | `new_thread_mcp_defaults` | Provider/workspace-scoped MCP disabled-server snapshots for future chat/plan thread creation. Existing threads keep their own `threads.disabled_mcp_servers` snapshot. |
 | `pending_background_task_terminals` | Per-task stash of Claude `task_updated` terminals whose chat-side `tool_completion` sibling has not been written yet. PK `(thread_id, task_id)`; carries `tool_use_id`, `status`, `exit_code`, `output_file`, `end_time`, `source` (`task_updated`), `created_at`. The tray query `ListLiveBackgroundTasks` joins against this table to hide launches whose host process exited but whose agent observation has not arrived. Drained when `task_notification` / TaskOutput observation lands. The startup sweep for recoverable Claude launches writes the `tool_completion` sibling directly (with `source="session_died"` recorded on the sibling's meta) and never stages a stash row. |
+| `usage_ledger` | Append-only per-turn per-model token/cost accounting (migration v14). One row per (settled turn, model): `created_at`, attribution columns `thread_id` / `project_id` / `turn_id` / `provider` / `model` (denormalized, DELIBERATELY no FKs so lifetime totals survive thread/project deletion), token columns (`input_tokens` = non-cached input for both providers, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `reasoning_output_tokens`), `cost_usd` (wire-reported only), `cost_source` (`wire`\|`none`). Values are per-turn deltas computed by the provider parsers — summing any slice of rows is safe. Written by `triage/usage_ledger.go`; aggregated by `store.QueryUsage` behind the `GetUsageStats` binding. |
 
 Plan implementation and revision source references are stored on the user
 message `items.meta` as `sourceProposedPlan` and
@@ -66,6 +67,8 @@ implementation markers and revision parent links.
 - `idx_chat_bar_favorites_created` on `chat_bar_favorites(created_at DESC)` — backs newest-first favorite listing in the composer menu.
 - `idx_chat_model_profiles_updated` on `chat_model_profiles(updated_at DESC)` — backs latest-profile seeding for new chats.
 - `idx_pending_terminals_tool_use` on `pending_background_task_terminals(thread_id, tool_use_id) WHERE tool_use_id <> ''` — partial index backing the tray query's `NOT EXISTS` join. The PK on `(thread_id, task_id)` already covers thread-prefix lookups.
+- `idx_usage_ledger_created` on `usage_ledger(created_at)` — time-range usage aggregation.
+- `idx_usage_ledger_thread` on `usage_ledger(thread_id, created_at)` — per-thread usage aggregation.
 
 ## Migration Policy
 
@@ -109,7 +112,10 @@ Columns:
   message id when available. Claude derives it from the last in-stream
   assistant `message.id`; current Codex `turn/completed` does not
   carry one.
-- `token_usage_json` TEXT — snapshot of provider usage at turn-end
+- `token_usage_json` TEXT — the turn's PER-TURN usage delta (aggregate
+  across models; JSON shape of `provider.TokenUsage`). First non-empty
+  write wins across multi-result settles; the per-model split lands in
+  `usage_ledger` instead.
 - `error_message` TEXT — populated when stop_reason indicates error
 
 Indexes:

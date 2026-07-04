@@ -169,6 +169,20 @@ type Parser struct {
 	// the interrupt ack before the result line (verified 6/6 runs,
 	// 2.1.170, both mid-stream and pre-output interrupts).
 	interruptAcked bool
+	// usageTotalsByModel is the cumulative `result.modelUsage` snapshot
+	// as of the last result envelope. The wire reports SESSION-CUMULATIVE
+	// per-model usage/cost; per-turn accounting is the delta between
+	// consecutive snapshots (see usage_accounting.go). Keyed by model
+	// slug; bounded by the handful of models a session can touch (parent
+	// + subagents + advisor). Process-lifetime state: a fresh process
+	// (including --resume) restarts the CLI's counters at zero, so the
+	// nil map is always the correct baseline. Cleared by Close.
+	usageTotalsByModel map[string]provider.TokenUsage
+	// usageAccountedCostUSD mirrors usageTotalsByModel for the flat
+	// `total_cost_usd` field — the session-cumulative cost already
+	// attributed to settled turns. Single lifecycle owner:
+	// takeTurnUsage via advanceAccountedCost.
+	usageAccountedCostUSD float64
 }
 
 // MarkInterruptAcked flags that the CLI just acked an interrupt
@@ -198,8 +212,9 @@ func (p *Parser) takeInterruptAcked() bool {
 
 // SetModel primes the parser with the model id the session was started
 // with. Init messages still overwrite the field when they arrive, but
-// seeding from Session.Start lets the first result usage snapshot carry
-// priced usage metadata even if the init line is late or absent.
+// seeding from Session.Start lets the flat-usage accounting fallback
+// (takeFlatUsageDelta) attribute the first turn to the right model even
+// if the init line is late or absent.
 func (p *Parser) SetModel(model string) {
 	if p == nil {
 		return
@@ -245,6 +260,8 @@ func (p *Parser) Close() {
 	p.recoveredBlockSeq = nil
 	p.lastAssistantMessageID = ""
 	p.interruptAcked = false
+	p.usageTotalsByModel = nil
+	p.usageAccountedCostUSD = 0
 }
 
 // markSubagentModelStamped records that we've already emitted a

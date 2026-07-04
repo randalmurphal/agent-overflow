@@ -90,6 +90,9 @@ export function installAppDefaults(): void {
   // Sidebar fetches projects on mount. Default to an empty list — tests
   // that need visible threads should seed a project via seedProject().
   setBindingMock('ListProjects', async () => []);
+  // Usage surfaces (composer UsageChip, sidebar UsageFooter) fetch
+  // ledger aggregates on mount. Default to no usage recorded.
+  setBindingMock('GetUsageStats', async () => []);
 }
 
 /**

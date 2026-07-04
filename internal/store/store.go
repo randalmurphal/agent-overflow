@@ -141,6 +141,7 @@ type Thread struct {
 type ThreadContextSettings struct {
 	Provider                   string
 	Model                      string
+	ProjectID                  string
 	ContextWindow              int
 	AutoCompactStandardPercent int
 	AutoCompactExtendedPercent int

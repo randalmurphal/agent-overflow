@@ -29,7 +29,7 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - `src/lib/components/primitives/` — reusable Menu / Popover / Modal /
   dropdown shells. Pickers compose these rather than rolling their own
   positioning, focus-trap, or keyboard behavior.
-- `src/lib/components/{design,discussion,git,palette,settings,terminal,shared}/` —
+- `src/lib/components/{design,discussion,git,palette,settings,terminal,usage,shared}/` —
   per-feature component groups.
 - `src/lib/types/` — shared TypeScript types.
 - `src/lib/utils/` — pure helpers.

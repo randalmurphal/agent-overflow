@@ -99,6 +99,10 @@ export function installPaneMocks(items: Item[] = []): void {
   // buildPane / installPaneMocks.
   setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('ListThreadCheckpoints', async () => []);
+  // UsageChip queries the lifetime usage bucket on mount. Default to "no
+  // usage yet" so buildPane-based tests that don't care about the usage
+  // chip don't have to stub it; tests exercising usage data override this.
+  setBindingMock('GetUsageStats', async () => []);
   // Seed the proposed-plan cache for any plan items pushed into the pane.
   // Composer / PlanSidebar derive "current plan" from the cache (not pane.items)
   // so a test that sets up plans via buildPane(thread, [planItem]) needs the

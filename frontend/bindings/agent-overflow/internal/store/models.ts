@@ -927,11 +927,14 @@ export class Thread {
     "hasActionableProposedPlan": boolean;
 
     /**
-     * HasIncompleteTurn is derived from the newest unseen turn row. A
-     * newest turn with completed_at=NULL and started_at newer than
-     * last_read_at means the prior provider process died or was closed
-     * mid-turn, so the sidebar should show Interrupted, not live Working.
-     * It is not a persisted threads column.
+     * HasIncompleteTurn is derived from the newest unseen turn row: an
+     * in-flight turn (completed_at=NULL) whose start the user hasn't
+     * seen, or a settled stop_reason='interrupted' turn whose end the
+     * user hasn't seen (boot-swept crashes land here —
+     * RecoverCrashedTurns settles NULL rows as interrupted before the
+     * frontend ever loads). Either way the sidebar should show
+     * Interrupted, not live Working. It is not a persisted threads
+     * column.
      */
     "hasIncompleteTurn": boolean;
 
@@ -1132,14 +1135,16 @@ export class TimelineCursor {
  * Turn is one row in the turns table — a record of a single user → assistant
  * round-trip on a thread.
  * 
- * CompletedAt is a pointer because NULL is load-bearing on the latest
- * turn row: it means "in-flight or crashed mid-turn." We never write a
- * synthetic CompletedAt just to dismiss that latest stuck row. Older
- * NULL rows followed by newer turns are obsolete crash/error residue
- * and may be repaired by migration. The frontend treats a NULL
- * CompletedAt on rehydration as "interrupted," separate from the
- * live-push "provider:turn_started" path that drives the working
- * indicator.
+ * CompletedAt is a pointer because NULL is load-bearing while the app
+ * runs: it means "in-flight right now." A NULL row can only outlive its
+ * provider session when the whole app dies mid-turn — every in-app
+ * session death settles the row through triage's synthesized truncated
+ * turn-complete (stop_reason='interrupted'). RecoverCrashedTurns runs
+ * at boot, before any session can spawn, and settles those crash
+ * leftovers the same way, so a persisted NULL CompletedAt is never
+ * carried across app restarts. The durable "interrupted" signal the
+ * sidebar and rehydration read is stop_reason='interrupted', not the
+ * NULL itself.
  * 
  * See docs/architecture/turn-lifecycle.md §Turn lifecycle for the full
  * mental model and docs/architecture/invariants.md #22-24 for the rules
@@ -1180,6 +1185,146 @@ export class Turn {
     static createFrom($$source: any = {}): Turn {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new Turn($$parsedSource as Partial<Turn>);
+    }
+}
+
+/**
+ * UsageBucket is one aggregated row of a usage query.
+ */
+export class UsageBucket {
+    /**
+     * Bucket is the group key: a date ("2026-07-03"), ISO-ish week
+     * ("2026-W26"), month ("2026-07"), model/provider/thread/project id,
+     * or "" for the lifetime bucket.
+     */
+    "bucket": string;
+    "inputTokens": number;
+    "outputTokens": number;
+    "cacheReadInputTokens": number;
+    "cacheCreationInputTokens": number;
+    "reasoningOutputTokens": number;
+    "costUsd": number;
+
+    /**
+     * TurnCount counts distinct settled turns in the bucket (a turn that
+     * used several models is one turn). UnpricedRows counts rows whose
+     * cost is not wire-reported — when > 0 the bucket's CostUSD is a
+     * lower bound, not a total.
+     */
+    "turnCount": number;
+    "unpricedRows": number;
+
+    /** Creates a new UsageBucket instance. */
+    constructor($$source: Partial<UsageBucket> = {}) {
+        if (!("bucket" in $$source)) {
+            this["bucket"] = "";
+        }
+        if (!("inputTokens" in $$source)) {
+            this["inputTokens"] = 0;
+        }
+        if (!("outputTokens" in $$source)) {
+            this["outputTokens"] = 0;
+        }
+        if (!("cacheReadInputTokens" in $$source)) {
+            this["cacheReadInputTokens"] = 0;
+        }
+        if (!("cacheCreationInputTokens" in $$source)) {
+            this["cacheCreationInputTokens"] = 0;
+        }
+        if (!("reasoningOutputTokens" in $$source)) {
+            this["reasoningOutputTokens"] = 0;
+        }
+        if (!("costUsd" in $$source)) {
+            this["costUsd"] = 0;
+        }
+        if (!("turnCount" in $$source)) {
+            this["turnCount"] = 0;
+        }
+        if (!("unpricedRows" in $$source)) {
+            this["unpricedRows"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UsageBucket instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UsageBucket {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UsageBucket($$parsedSource as Partial<UsageBucket>);
+    }
+}
+
+/**
+ * UsageQuery filters and shapes an aggregation over the ledger.
+ */
+export class UsageQuery {
+    /**
+     * FromMillis / ToMillis bound created_at (inclusive / exclusive).
+     * Zero means unbounded on that side.
+     */
+    "fromMillis": number;
+    "toMillis": number;
+
+    /**
+     * Optional equality filters.
+     */
+    "threadId": string;
+    "projectId": string;
+    "provider": string;
+    "model": string;
+
+    /**
+     * GroupBy selects the bucket dimension: "" (single lifetime bucket),
+     * "day", "week", "month" (calendar buckets in the query's timezone),
+     * or "model", "provider", "thread", "project".
+     */
+    "groupBy": string;
+
+    /**
+     * TZOffsetMinutes shifts calendar bucketing east of UTC (e.g. -300
+     * for EST). Only meaningful for day/week/month grouping; block math
+     * and raw timestamps stay UTC.
+     */
+    "tzOffsetMinutes": number;
+
+    /** Creates a new UsageQuery instance. */
+    constructor($$source: Partial<UsageQuery> = {}) {
+        if (!("fromMillis" in $$source)) {
+            this["fromMillis"] = 0;
+        }
+        if (!("toMillis" in $$source)) {
+            this["toMillis"] = 0;
+        }
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("model" in $$source)) {
+            this["model"] = "";
+        }
+        if (!("groupBy" in $$source)) {
+            this["groupBy"] = "";
+        }
+        if (!("tzOffsetMinutes" in $$source)) {
+            this["tzOffsetMinutes"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UsageQuery instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UsageQuery {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UsageQuery($$parsedSource as Partial<UsageQuery>);
     }
 }
 

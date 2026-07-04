@@ -70,10 +70,23 @@ export function formatTokens(n: number): string {
 }
 
 /**
- * Format a USD cost for display.
+ * Format a USD amount for the usage surfaces (composer usage chip,
+ * sidebar usage footer, usage modal). Cents ALWAYS show, at every
+ * magnitude — an unqualified "$118" reading as "exactly $118" was a
+ * bug:
+ *
+ *   0            -> "$0.00"
+ *   0.0042       -> "<$0.01"
+ *   0.32         -> "$0.32"
+ *   42.104       -> "$42.10"
+ *   142.7        -> "$142.70"
+ *
+ * Non-finite / negative inputs collapse to "$0.00".
  */
-export function formatCost(usd: number): string {
-  return '$' + usd.toFixed(4);
+export function formatUsd(usd: number): string {
+  if (!Number.isFinite(usd) || usd <= 0) return '$0.00';
+  if (usd < 0.01) return '<$0.01';
+  return '$' + usd.toFixed(2);
 }
 
 /**

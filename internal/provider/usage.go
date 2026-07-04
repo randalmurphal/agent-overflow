@@ -56,13 +56,63 @@ type AccountInfo struct {
 	APIProvider      string `json:"apiProvider,omitempty"`
 }
 
-// TokenUsage tracks turn token/cost accounting.
+// TokenUsage tracks per-turn token/cost accounting. Values are per-turn
+// deltas, never provider-cumulative — the provider parsers own the
+// cumulative→delta subtraction (Claude: modelUsage snapshot deltas in
+// parse_result.go; Codex: thread/tokenUsage/updated total deltas in
+// usage_accounting.go) so everything downstream can sum rows safely.
+//
+// InputTokens is NON-cached input for both providers (Codex's wire
+// inputTokens includes cachedInputTokens; the parser subtracts —
+// see codex-rs protocol.rs TokenUsage::non_cached_input).
+// ReasoningOutputTokens is Codex-only and informational: it is already
+// included in OutputTokens on the wire.
+//
+// TotalCostUSD is wire-reported only (Claude computes it CLI-side).
+// There is deliberately no client-side pricing fallback — a missing
+// cost stays 0 rather than being estimated from a rate table.
 type TokenUsage struct {
 	InputTokens              int     `json:"inputTokens"`
 	OutputTokens             int     `json:"outputTokens"`
 	CacheReadInputTokens     int     `json:"cacheReadInputTokens,omitempty"`
 	CacheCreationInputTokens int     `json:"cacheCreationInputTokens,omitempty"`
+	ReasoningOutputTokens    int     `json:"reasoningOutputTokens,omitempty"`
 	TotalCostUSD             float64 `json:"totalCostUsd,omitempty"`
+}
+
+// IsZero reports whether the usage carries no accounting signal at all.
+func (u TokenUsage) IsZero() bool {
+	return u == TokenUsage{}
+}
+
+// Add accumulates other into u field-wise.
+func (u *TokenUsage) Add(other TokenUsage) {
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.CacheReadInputTokens += other.CacheReadInputTokens
+	u.CacheCreationInputTokens += other.CacheCreationInputTokens
+	u.ReasoningOutputTokens += other.ReasoningOutputTokens
+	u.TotalCostUSD += other.TotalCostUSD
+}
+
+// ModelTokenUsage attributes a per-turn usage delta to one model. A turn
+// that ran several models (parent + Task subagents on Claude) produces one
+// entry per model; Codex cannot attribute per-model and produces a single
+// entry for the session's configured model.
+type ModelTokenUsage struct {
+	Model string `json:"model"`
+	TokenUsage
+}
+
+// UsageProviderFamily normalizes a thread provider name to its billing
+// family for usage-ledger attribution. claude-tui drives the same claude
+// binary and bills against the same account, so its usage must not split
+// into a separate provider bucket in aggregates.
+func UsageProviderFamily(providerName string) string {
+	if providerName == string(ClaudeTUI) {
+		return string(Claude)
+	}
+	return providerName
 }
 
 // ContextWindow describes provider context window usage.

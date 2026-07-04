@@ -65,17 +65,11 @@ import (
 // interruptAcked are cleared so neither leaks into the next turn's
 // result.
 func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
-	model := p.currentModel()
-
-	// Extract usage/cost data from the result summary. If the wire
-	// didn't include a cost and we know the model, price the usage
-	// here for turn-complete accounting only.
-	usage := extractResultUsage(raw)
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
-		if usage.TotalCostUSD == 0 && model != "" {
-			usage.TotalCostUSD = provider.CalculateCost(model, usage)
-		}
-	}
+	// Extract this turn's usage as per-turn deltas (aggregate + per-model).
+	// The wire's `modelUsage` / `total_cost_usd` are session-cumulative;
+	// takeTurnUsage owns the snapshot subtraction — see
+	// usage_accounting.go for the verified semantics.
+	usage, modelUsage := p.takeTurnUsage(raw)
 
 	subtype := readRawString(raw["subtype"])
 	stopReason := readRawString(raw["stop_reason"])
@@ -107,7 +101,7 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	// turn can't affect the next (see streamedMessageIDs / recoveredBlockSeq).
 	p.clearSnapshotRecoveryState()
 	var usagePayload *provider.TokenUsage
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+	if !usage.IsZero() {
 		usagePayload = &usage
 	}
 
@@ -118,6 +112,7 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 			StopReason:         stopReason,
 			AssistantMessageID: assistantMessageID,
 			Usage:              usagePayload,
+			ModelUsage:         modelUsage,
 			Aborted:            aborted,
 			ErrorMessage:       errorMessage,
 		},
@@ -244,57 +239,3 @@ func looksInterrupted(s string) bool {
 	return strings.Contains(lower, "aborted") || strings.Contains(lower, "interrupted")
 }
 
-// extractResultUsage parses token usage from a Claude result message.
-// It checks both "usage" (flat format) and "modelUsage" (per-model format)
-// and aggregates total_cost_usd when present.
-func extractResultUsage(raw map[string]json.RawMessage) provider.TokenUsage {
-	var usage provider.TokenUsage
-
-	// Try flat "usage" object first.
-	if v, ok := raw["usage"]; ok {
-		var u struct {
-			InputTokens              int `json:"input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-		}
-		if json.Unmarshal(v, &u) == nil {
-			usage.InputTokens = u.InputTokens
-			usage.OutputTokens = u.OutputTokens
-			usage.CacheReadInputTokens = u.CacheReadInputTokens
-			usage.CacheCreationInputTokens = u.CacheCreationInputTokens
-		}
-	}
-
-	// Aggregate from "modelUsage" if flat usage was empty.
-	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
-		if v, ok := raw["modelUsage"]; ok {
-			var models map[string]struct {
-				InputTokens              int     `json:"inputTokens"`
-				OutputTokens             int     `json:"outputTokens"`
-				CacheReadInputTokens     int     `json:"cacheReadInputTokens"`
-				CacheCreationInputTokens int     `json:"cacheCreationInputTokens"`
-				CostUSD                  float64 `json:"costUSD"`
-			}
-			if json.Unmarshal(v, &models) == nil {
-				for _, m := range models {
-					usage.InputTokens += m.InputTokens
-					usage.OutputTokens += m.OutputTokens
-					usage.CacheReadInputTokens += m.CacheReadInputTokens
-					usage.CacheCreationInputTokens += m.CacheCreationInputTokens
-					usage.TotalCostUSD += m.CostUSD
-				}
-			}
-		}
-	}
-
-	// Override cost with explicit total_cost_usd if present.
-	if v, ok := raw["total_cost_usd"]; ok {
-		var cost float64
-		if json.Unmarshal(v, &cost) == nil && cost > 0 {
-			usage.TotalCostUSD = cost
-		}
-	}
-
-	return usage
-}

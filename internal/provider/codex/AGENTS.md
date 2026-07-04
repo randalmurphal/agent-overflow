@@ -44,7 +44,15 @@ over stdio.
   normalization, and tool-result content extraction.
 - `protocol_turn.go` / `protocol_thread.go` — turn lifecycle,
   thread/account/model notifications, and token usage normalization.
-- `protocol_meta.go` — item meta enrichment for triage/rendering.
+- `usage_accounting.go` — per-turn token accounting derived from the
+  cumulative `thread/tokenUsage/updated` totals (Codex has no per-turn
+  usage signal and no USD cost on the wire). Tracks
+  accounted-vs-latest cumulative per session, handles the resume
+  baseline (skips the first post-resume turn when no pre-turn seed
+  arrived) and the ContextWindowExceeded sentinel that destroys the
+  cumulative; `attachTurnUsage` stamps the delta onto the parent
+  turn-complete meta in `updateNotificationState`. Wire `inputTokens`
+  includes `cachedInputTokens` — the normalized delta splits them.
 - `protocol_json.go` — JSON navigation, compact/pretty JSON, retry-count,
   and flexible wire-shape helpers.
 - `protocol_rate_limits.go` — rate-limit event normalizer.

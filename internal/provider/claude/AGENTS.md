@@ -47,6 +47,14 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   approvals and the exit_plan_mode signal.
 - `parse_stream.go` — `stream_event` envelopes (incremental deltas
   between assistant-message boundaries).
+- `usage_accounting.go` — per-turn usage extraction for `result`
+  envelopes. The wire's `modelUsage` / `total_cost_usd` are
+  SESSION-CUMULATIVE (and `modelUsage` is the only subagent-inclusive
+  source); the parser keeps a cumulative snapshot per process and
+  `takeTurnUsage` emits per-model per-turn DELTAS onto
+  `WireTurnCompleteMeta.{Usage,ModelUsage}`. Cost is wire-reported
+  only — no client-side pricing table. Verified against the
+  `*_20260703.ndjson` fixtures below.
 - `protocol_meta.go` — `compact_boundary` / context-window meta
   normalisation shared across envelopes.
 - `approvals.go` — approval-response encoding for the SDK.
@@ -201,8 +209,10 @@ back to the parent tool call.
   to the agent's identity) rather than fighting the rebind; see
   claude-wire.md §E6.
 - **Turn lifecycle** — `result` envelope remains authoritative for
-  cumulative turn payload (token usage, cost, and raw
-  `terminal_reason` for wire reference). The final
+  the turn's accounting payload (token usage + cost, emitted as
+  per-turn deltas by `usage_accounting.go` because the wire values
+  are session-cumulative; raw `terminal_reason` stays wire-reference
+  only). The final
   `assistant_message_id` is tracked from the last in-stream assistant
   `message.id`; it is NOT carried on `result`. `result` is also NOT
   the only source of `EventTurnComplete`: when the parent message ends with a
@@ -212,7 +222,7 @@ back to the parent tool call.
   immediately so the working indicator clears even when the CLI
   withholds `result` (it does this whenever a `local_agent` subagent
   is still in flight). The trailing `result` envelope, when it
-  eventually arrives, folds in the cumulative payload via
+  eventually arrives, folds in the accounting payload via
   `persistLateTurnPayload` — see
   [`invariants.md §27`](../../../docs/architecture/invariants.md#27-soft-round-close-from-message_deltastop_reason-is-wire-typed)
   and the
@@ -293,6 +303,16 @@ start and complete. These are load-bearing rules enforced by
   a replayed wire log — the Go regression guard is
   `TestAssistantEnvelopeDoesNotDuplicateStreamedText`. See
   `claude-wire.md §"Resume does not re-emit assistant content"`.
+- `docs/references/fixtures/claude/multiturn_cost_cumulative_20260703.ndjson`
+  — three trivial turns in one stream-json session. Proves
+  `result.total_cost_usd` + `result.modelUsage` are SESSION-CUMULATIVE
+  while flat `result.usage` is per-turn. Authoritative for the
+  snapshot-delta accounting in `usage_accounting.go`
+  (`TestParseResult_ModelUsageCumulativeToDelta`).
+- `docs/references/fixtures/claude/subagent_usage_inclusion_20260703.ndjson`
+  — one turn launching a Task agent. Proves flat `result.usage` is
+  PARENT-ONLY while `modelUsage` includes sidechain tokens + per-model
+  `costUSD` (`TestParseResult_ModelUsagePreferredOverFlatUsage`).
 
 Use these in tests via file path. When fresh captures prove wire drift,
 refresh the checked-in fixtures from a new `AGENT_OVERFLOW_DEBUG=provider`

@@ -62,6 +62,13 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 	if method == "item/plan/delta" {
 		s.appendPlanDelta(params)
 	}
+	if method == "thread/tokenUsage/updated" {
+		// Parent-thread only (child-thread notifications returned above).
+		// Folds the cumulative total into the per-turn usage accounting;
+		// the context-meter EventTokenUsage classification below is
+		// untouched.
+		s.usageAcct.observe(params)
+	}
 	events := s.classifyNotificationWithBufferedPlan(method, params)
 	suppressSubagentNotificationCarrier := s.emitSubagentNotificationsFromUserCarrier(method, params, events)
 
@@ -221,6 +228,7 @@ func (s *Session) prepareNotificationEvent(evt *provider.ProviderEvent, method s
 func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 	switch evt.Kind {
 	case provider.EventTurnStart:
+		s.usageAcct.onTurnStart()
 		if evt.TurnID == "" {
 			return
 		}
@@ -228,6 +236,9 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 		s.activeTurnID = evt.TurnID
 		s.mu.Unlock()
 	case provider.EventTurnComplete:
+		if meta, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta); ok && meta != nil {
+			s.attachTurnUsage(meta)
+		}
 		s.mu.Lock()
 		s.activeTurnID = ""
 		s.rawToolCallsByID = make(map[string]rawToolCall)

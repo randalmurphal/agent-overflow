@@ -501,7 +501,9 @@ The `turns` row carries:
   assistant message id when available. Claude derives it from the last
   in-stream assistant `message.id`; current Codex `turn/completed`
   does not carry one.
-- `token_usage_json` — snapshot of `usage` for trace/debug surfaces.
+- `token_usage_json` — the turn's per-turn usage delta (aggregate
+  across models; the per-model split lands in `usage_ledger`).
+  First-non-empty-wins across multi-result settles.
 - `error_message` — populated when `stop_reason` indicates error.
 
 ### Crash behavior

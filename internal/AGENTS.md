@@ -11,6 +11,7 @@ one closest to what you're touching.
 | `provider/` | Provider process lifecycle and stdio protocols. Has its own subarea guide. |
 | `triage/` | Event classification. Decides what goes to the frontend vs SQLite. |
 | `store/` | SQLite access, migrations, schema. |
+| `usagecost/` | Hardcoded per-million-token USD rate table with progressive family-prefix matching (exact match, then trim trailing `-`/`.` segments). Prices `usage_ledger` rows whose wire carries no cost (Codex, claudetui) at query time — `app_usage.go`'s `GetUsageStats` is the only caller. Stdlib-only; estimates are computed fresh per query and never persisted, so a rate-table update reprices all history. |
 | `itemmeta/` | Shaping helpers for the persisted `items.meta` JSON column, shared by the triage write path and the store migration chain (which cannot import each other). Stdlib-only. |
 | `checkpoint/` | Message-keyed git-ref snapshots, diffs, and restore helpers. |
 | `git/` | Git and `gh` operations (branches, worktrees, commit, push, PR). |

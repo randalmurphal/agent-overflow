@@ -91,6 +91,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThreadLiveState", ID: 70226550},                     // main.App.GetThreadLiveState
 	{Name: "GetThreadRuntimeMode", ID: 2573491630},                 // main.App.GetThreadRuntimeMode
 	{Name: "GetUIRenderTracePath", ID: 1009213933},                 // main.App.GetUIRenderTracePath
+	{Name: "GetUsageStats", ID: 3135466533},                        // main.App.GetUsageStats
 	{Name: "GetWSLDistroPreference", ID: 294719565},                // main.App.GetWSLDistroPreference
 	{Name: "GetWorkingTreeDiff", ID: 1858968113},                   // main.App.GetWorkingTreeDiff
 	{Name: "GetWorkspaceCurrentDiff", ID: 736820142},               // main.App.GetWorkspaceCurrentDiff

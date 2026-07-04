@@ -175,9 +175,19 @@ Three observations that drive parser behavior:
   heuristic stays as fallback for interrupts AO didn't originate.
 
 ### Fields the SDK exposes that we should capture
-- `total_cost_usd` (NOT `cost_usd`)
-- `usage` — cumulative turn token/cost accounting; do not use its
-  aggregate token counts as current context-window occupancy
+- `total_cost_usd` (NOT `cost_usd`) — ⚠ SESSION-CUMULATIVE across turns
+  within one CLI process, not per-turn (verified 2026-07-03 across a
+  3-turn session: 0.0216 → 0.0253 → 0.0282; fixture
+  `multiturn_cost_cumulative_20260703.ndjson`). Per-turn cost is the
+  delta between consecutive envelopes.
+- `usage` — per-turn token accounting, but PARENT-ONLY: Task-subagent
+  (sidechain) tokens are excluded (fixture
+  `subagent_usage_inclusion_20260703.ndjson`). Do not use its
+  aggregate token counts as current context-window occupancy.
+- `modelUsage` — per-model tokens + CLI-computed `costUSD`,
+  subagent-INCLUSIVE, but session-cumulative like `total_cost_usd`.
+  This is the preferred accounting source once snapshot-deltaed
+  (`internal/provider/claude/usage_accounting.go`).
 - `modelUsage[model].contextWindow` — authoritative max context, use
   this instead of assuming `200_000`
 - `permission_denials: []` — list of declined tool calls
@@ -281,8 +291,8 @@ Other captured usage-adjacent signals worth preserving for future UI:
 | `stream_event.event.type == "message_start"` `message.usage` | Early API-response usage snapshot, useful for diagnostics or "request started" telemetry. | Do not treat as settled context usage. |
 | `stream_event.event.type == "message_delta"` `usage` | Best passive live/settled context signal. | Read top-level (`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`), excluding `output_tokens`. The cumulative sum across iterations is what auto-compact uses. |
 | `result.usage.iterations[]` | Per-call breakdown for the closing envelope. Useful for replay diagnostics or splitting advisor cost from parent cost. | Do not drive the live meter from `result`; the trailing message_delta already pushed the right value. |
-| `result.usage` (flat) | Per-turn API-call/cost accounting; same cumulative parent-only sum the message_delta top-level carries. Good for "tokens spent this turn" or billing diagnostics. | Same shape as message_delta top-level — both correlate with `compactMetadata.preTokens`. We drive the meter from the live stream, not the closing envelope. |
-| `result.modelUsage[parent_model]` | Per-model accounting across top-level calls. Carries the same cumulative sum as `result.usage` (flat). `contextWindow` is a useful max-window hint. | Token totals are spend/accounting; meter is driven from the live stream. |
+| `result.usage` (flat) | Per-turn, PARENT-ONLY API-call accounting — it excludes Task-subagent (sidechain) tokens (verified: `subagent_usage_inclusion_20260703.ndjson`, flat in=42/cc=22168 vs modelUsage in=52/cc=35397). Accounting fallback only, when `modelUsage` is absent (claudetui synthesized results). | Same shape as message_delta top-level — both correlate with `compactMetadata.preTokens`. We drive the meter from the live stream, not the closing envelope. |
+| `result.modelUsage` | THE turn-accounting source: per-model tokens + CLI-computed `costUSD`, subagent-inclusive. ⚠ SESSION-CUMULATIVE across turns within one process — like `total_cost_usd` (verified: `multiturn_cost_cumulative_20260703.ndjson`, in=10→20→30, cost monotonic). Per-turn truth is the delta between consecutive snapshots; `parse_result.go`/`usage_accounting.go` own that subtraction. `contextWindow` is a useful max-window hint. | Token totals are spend/accounting; meter is driven from the live stream. |
 | `result.modelUsage[advisor_model]` | Advisor's own per-call usage (separate model run, separate context window). | Subagent-style private accounting; never updates the parent meter. |
 | `system.task_notification.usage` | Subagent/background-task progress or row-level token display. | Subagent-private accounting; do not update parent meter. |
 | `user.tool_use_result.usage` and `tool_use_result.totalTokens` | Completed Agent/Task details and subagent cost display. | Subagent-private accounting; do not update parent meter. |

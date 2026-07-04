@@ -167,9 +167,13 @@ type turnCompleteMeta struct {
 	StopReason         string
 	AssistantMessageID string
 	Usage              json.RawMessage
-	Aborted            bool
-	Truncated          bool
-	Error              string
+	// ModelUsage is the per-model split of Usage (both are per-turn
+	// deltas — see provider.WireTurnCompleteMeta). Usage persists on the
+	// turns row; ModelUsage appends usage-ledger rows.
+	ModelUsage []provider.ModelTokenUsage
+	Aborted    bool
+	Truncated  bool
+	Error      string
 }
 
 func turnCompleteMetaFromEvent(evt provider.ProviderEvent) (turnCompleteMeta, error) {
@@ -211,6 +215,7 @@ func wireTurnCompleteMeta(meta provider.WireTurnCompleteMeta) turnCompleteMeta {
 		StopReason:         meta.StopReason,
 		AssistantMessageID: meta.AssistantMessageID,
 		Usage:              usage,
+		ModelUsage:         meta.ModelUsage,
 		Aborted:            meta.Aborted,
 		Error:              meta.ErrorMessage,
 	}

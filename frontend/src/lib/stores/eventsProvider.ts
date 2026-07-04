@@ -33,6 +33,7 @@ import {
 // Import parseTokenUsage from its leaf home, not via the thread.svelte barrel,
 // so this module no longer depends on the 2800-line thread store at all.
 import { parseTokenUsage } from './threadTurnProjection';
+import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { patchThreadDurableStatus, syncLatestTurnCompleted, syncThreadActivity, updateThreadUsageCache } from './eventsThreadRows';
 
 export function applyApprovalEvent(evt: ApprovalEvent): void {
@@ -275,6 +276,11 @@ export function applyTurnStarted(evt: TurnStartedEvent): void {
  */
 export function applyTurnCompleted(evt: TurnCompletedEvent): void {
   if (!evt?.threadId || !evt.turnId) return;
+  // New usage_ledger rows may exist for this turn; nudge every usage
+  // surface (composer chip, sidebar footer, usage modal) to refetch —
+  // the composer chip is thread-scoped and only reacts to its own
+  // thread's bump; see usageRefresh.svelte.ts.
+  bumpUsageRefresh(evt.threadId);
   const rawAssistantId = evt.assistantMessageId ?? '';
   const settled = {
     turnId: evt.turnId,

@@ -61,6 +61,10 @@ var wireSafeMethods = map[string]bool{
 	"SwitchThread":         true,
 	"GetThreadRuntimeMode": true,
 
+	// Usage accounting reads (append-only ledger aggregates: token
+	// counts + wire-reported cost; no credentials, no FS).
+	"GetUsageStats": true,
+
 	// Timeline reads (item slice / turn / search).
 	"GetThreadItem":           true,
 	"ListItems":               true,

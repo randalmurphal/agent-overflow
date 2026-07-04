@@ -923,7 +923,7 @@ func (s *Store) UpdateContextWindow(threadID string, tokens int) error {
 func (s *Store) GetThreadContextSettings(threadID string) (ThreadContextSettings, error) {
 	var settings ThreadContextSettings
 	err := s.db.QueryRow(
-		`SELECT provider, model, context_window,
+		`SELECT provider, model, project_id, context_window,
 		        auto_compact_standard_percent, auto_compact_extended_percent
 		   FROM threads
 		  WHERE id = ?`,
@@ -931,6 +931,7 @@ func (s *Store) GetThreadContextSettings(threadID string) (ThreadContextSettings
 	).Scan(
 		&settings.Provider,
 		&settings.Model,
+		&settings.ProjectID,
 		&settings.ContextWindow,
 		&settings.AutoCompactStandardPercent,
 		&settings.AutoCompactExtendedPercent,

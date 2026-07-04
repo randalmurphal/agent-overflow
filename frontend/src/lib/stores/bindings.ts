@@ -61,6 +61,11 @@ export {
   UpdateSettings,
   GetContextSettings,
 
+  // Usage accounting (append-only ledger aggregates; costs are
+  // wire-true for Claude, table-priced at read time for Codex /
+  // claude-tui — see internal/usagecost).
+  GetUsageStats,
+
   // Network bindings (LAN-bind toggle for the embedded transport).
   GetNetworkSettings,
   SetNetworkSettings,
@@ -499,3 +504,8 @@ export function GetQueueState(threadId: string): Promise<WireQueuedItem[]> {
 // docs/architecture/invariants.md #22 and turn-lifecycle.md §Frontend
 // state shape.
 export { Turn } from '../../../bindings/agent-overflow/internal/store/models.js';
+
+// Usage-accounting models. `GetUsageStats` takes a `UsageQuery` class
+// instance (construct with `new UsageQuery({...})` — omitted fields
+// default to zero values / '') and returns `UsageBucket[]`.
+export { UsageBucket, UsageQuery } from '../../../bindings/agent-overflow/internal/store/models.js';

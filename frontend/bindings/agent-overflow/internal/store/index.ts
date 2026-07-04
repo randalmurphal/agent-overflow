@@ -24,5 +24,7 @@ export {
     Thread,
     ThreadMessageHit,
     TimelineCursor,
-    Turn
+    Turn,
+    UsageBucket,
+    UsageQuery
 } from "./models.js";

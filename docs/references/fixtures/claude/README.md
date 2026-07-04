@@ -64,6 +64,20 @@ behavior. These back parser replay tests and the reference docs in
   ([`claude-api-error-upstream-report.md`](../../claude-api-error-upstream-report.md)).
   Dropped into `~/.claude/projects/<slug>/<id>.jsonl`, resume-at
   `a3-final` reproduces the pre-init hard failure on 2.1.170.
+- `multiturn_cost_cumulative_20260703.ndjson` — three trivial turns in
+  one `-p --input-format stream-json` session (haiku). Proves
+  `result.total_cost_usd` and `result.modelUsage` are
+  SESSION-CUMULATIVE (cost 0.0216 → 0.0253 → 0.0282; modelUsage
+  inputTokens 10 → 20 → 30) while flat `result.usage` stays per-turn.
+  Authoritative for the snapshot-delta accounting in
+  `internal/provider/claude/usage_accounting.go`.
+- `subagent_usage_inclusion_20260703.ndjson` — one turn that launches a
+  Task (general-purpose agent). Proves flat `result.usage` is
+  PARENT-ONLY (in=42, cacheCreate=22168) while `result.modelUsage`
+  INCLUDES the sidechain (in=52, cacheCreate=35397 = parent 22168 +
+  sidechain 13229) and carries the CLI-computed per-model `costUSD`.
+  Authoritative for preferring modelUsage over flat usage in turn
+  accounting.
 - `*_summary.json` — notes captured during the spike runs
 
 ## Refresh

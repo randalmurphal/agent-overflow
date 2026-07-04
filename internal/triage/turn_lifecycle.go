@@ -565,6 +565,7 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
 		log.Printf("triage: update turn %s: %v", fields.logicalTurnID, err)
 	}
+	r.appendUsageLedger(evt, fields.logicalTurnID, meta, now)
 	if turnCountsAsThreadActivity(evt) {
 		r.bumpThreadActivity(evt.ThreadID, now, "turn settle")
 	}
@@ -656,6 +657,12 @@ func (r *Router) buildRoundCompletedEvent(
 // on the trailing `result`) pays one autocommit boundary.
 func (r *Router) persistLateTurnPayload(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta) {
 	turnID := r.persistedTurnID(evt, turnIndex)
+	// Ledger rows append on every settle event: the provider emits
+	// per-turn DELTAS, so a late fold's usage is new spend the first
+	// settle could not have carried (soft round-close settles with no
+	// usage at all; a multi-result cascade's second envelope deltas only
+	// the re-round's growth).
+	r.appendUsageLedger(evt, turnID, meta, eventTimestampMillis(evt))
 	usageJSON := ""
 	if len(meta.Usage) > 0 {
 		usageJSON = string(meta.Usage)

@@ -43,6 +43,23 @@ root `CLAUDE.md` principle 3.
   launch anchor with its descendant count + latest-child summary
   (collapsed-card aggregates), and `ListSubagentDescendants` loads the
   full child subtree on demand when a group card expands.
+- `usage_ledger.go` — append-only per-turn per-model token/cost
+  accounting (`usage_ledger` table, migration v14). DELIBERATELY no
+  foreign keys: lifetime aggregates must survive thread/project
+  deletion, so thread/project/turn ids are plain attribution columns
+  and provider/model are denormalized at write time. `AppendUsage`
+  inserts; `QueryUsage` aggregates with time-range/thread/project/
+  provider/model filters and day/week/month (timezone-shifted) or
+  model/provider/thread/project grouping; `QueryUsageDetail` runs the
+  same filters/bucketing but additionally splits by (model,
+  cost_source) — the granularity `GetUsageStats` (repo-root
+  `app_usage.go`) needs to price `cost_source='none'` rows per model at
+  query time from `internal/usagecost`. `cost_usd` in the table is
+  wire-reported only and this package never estimates it; `QueryUsage`
+  alone always reports `UnpricedRows=0` — that field is populated by
+  `GetUsageStats` after merging in the rate-table lookup, and now means
+  "rows whose model the rate table doesn't recognize" rather than
+  "rows with no wire cost."
 - `migrate_fixups.go` — Go-side data fixups referenced by `Fix`
   migrations in `migrate.go`, built on the shared `rewriteItemMetas`
   scan/rewrite helper (v8 trims persisted tool_result echo, v9 trims

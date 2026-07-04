@@ -5,6 +5,7 @@ import {
   formatResetCountdown,
   formatTimeOfDay,
   formatTurnTokens,
+  formatUsd,
 } from './format';
 
 describe('formatTimeOfDay', () => {
@@ -157,5 +158,21 @@ describe('formatGiB', () => {
     expect(formatGiB(Number.POSITIVE_INFINITY)).toBe('0.0');
     expect(formatGiB(Number.NEGATIVE_INFINITY)).toBe('0.0');
     expect(formatGiB(-1)).toBe('0.0');
+  });
+});
+
+describe('formatUsd', () => {
+  it('formats the aggregate-display magnitude bands', () => {
+    expect(formatUsd(0)).toBe('$0.00');
+    expect(formatUsd(0.0042)).toBe('<$0.01');
+    expect(formatUsd(0.32)).toBe('$0.32');
+    expect(formatUsd(42.104)).toBe('$42.10');
+    expect(formatUsd(142.7)).toBe('$142.70');
+  });
+
+  it('collapses non-finite / negative to "$0.00"', () => {
+    expect(formatUsd(Number.NaN)).toBe('$0.00');
+    expect(formatUsd(Number.POSITIVE_INFINITY)).toBe('$0.00');
+    expect(formatUsd(-3)).toBe('$0.00');
   });
 });

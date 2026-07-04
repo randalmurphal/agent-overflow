@@ -207,10 +207,17 @@ type TurnCompleteMeta interface {
 
 // WireTurnCompleteMeta represents a provider-reported turn boundary. It
 // carries the durable payload triage may persist or forward to the frontend.
+//
+// Usage is the turn's aggregate per-turn delta (see TokenUsage docs);
+// ModelUsage is the same delta split per model where the provider can
+// attribute it. When both are set, Usage equals the sum of ModelUsage —
+// triage persists Usage on the turn row and ModelUsage as usage-ledger
+// rows.
 type WireTurnCompleteMeta struct {
 	StopReason         string
 	AssistantMessageID string
 	Usage              *TokenUsage
+	ModelUsage         []ModelTokenUsage
 	Aborted            bool
 	ErrorMessage       string
 }

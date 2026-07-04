@@ -9,7 +9,9 @@
   // project — they operate against the project root and have no
   // worktree/branch surface to switch.
   // The whole group sits on the left so the strip reads as a single
-  // "where am I" cluster rather than several opposing controls.
+  // "where am I" cluster rather than several opposing controls; the
+  // usage chip is pinned to the right as the opposing "what has this
+  // cost" element.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
   import ThreadModePicker from './workspace/ThreadModePicker.svelte';
@@ -17,6 +19,7 @@
   import EnvPicker from './workspace/EnvPicker.svelte';
   import BranchPicker from './workspace/BranchPicker.svelte';
   import WorktreeNameInput from './workspace/WorktreeNameInput.svelte';
+  import UsageChip from './UsageChip.svelte';
   import { createWorkspaceChangeLockState } from '../../stores/workspaceChangeLock.svelte';
 
   interface Props {
@@ -40,5 +43,8 @@
       <BranchPicker {pane} />
       <WorktreeNameInput {pane} workspaceDirty={false} />
     {/if}
+    <div class="ml-auto">
+      <UsageChip {pane} />
+    </div>
   </div>
 {/if}

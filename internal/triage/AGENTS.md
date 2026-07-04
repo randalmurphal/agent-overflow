@@ -94,6 +94,13 @@ none fits.
   `provider:turn_started` / `provider:turn_completed` /
   `provider:subagent_notification`, plus the canonical stop-reason
   normaliser.
+- `usage_ledger.go` — projects the per-model per-turn usage deltas on
+  turn-complete meta into append-only `usage_ledger` rows
+  (`appendUsageLedger`, called from BOTH settle paths — settleTurnRow
+  and persistLateTurnPayload — which is additive-correct because
+  providers emit deltas). Attribution (provider family, project) is
+  read from the thread row at write time; ledger append failure is
+  error-logged, never dropped silently.
 - `meta.go` — shared JSON-inspection helpers.
 - `maps.go` — generic map utilities (currently just `deleteByPrefix`).
 
@@ -109,7 +116,7 @@ none fits.
 | Thinking block | SQLite payload + preview to frontend. |
 | Thinking block w/ `CompactionReasoningScope` | Top-level `compaction_reasoning` streaming row (the live "compact" tail above the divider). Reuses thinking streaming machinery; dispatched ahead of `handleThinking` / `handleContentBlockStop`. See `compaction_reasoning.go`. |
 | Compaction boundary | `compaction` divider row + on-demand summary payload (`usage_compaction.go`). |
-| Turn metadata (cost/tokens) | Persist on turn completion. |
+| Turn metadata (cost/tokens) | Per-turn deltas from the provider: aggregate onto `turns.token_usage_json` (first-write-wins for display) + one `usage_ledger` row per model on every settle event (`usage_ledger.go`). |
 | Context-window usage | Frontend context meter + `threads.last_token_usage`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
 | Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; typed command completions clear live state and persist normal command rows using the original item id only while a Codex wire round is active. Spawn-agent starts are pending-only; terminal spawn completions persist the visible row and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |

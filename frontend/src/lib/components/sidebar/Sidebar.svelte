@@ -15,6 +15,7 @@
   } from '../../stores/sidebarLayout.svelte';
   import SidebarSearch from './SidebarSearch.svelte';
   import ProjectsSection from './ProjectsSection.svelte';
+  import UsageFooter from './UsageFooter.svelte';
   import SystemStatsFooter from './SystemStatsFooter.svelte';
   import SettingsFooter from './SettingsFooter.svelte';
   import SidebarResizer from './SidebarResizer.svelte';
@@ -69,6 +70,7 @@
 >
   <SidebarSearch {registerFocusSearch} />
   <ProjectsSection {pane} />
+  <UsageFooter />
   <SystemStatsFooter />
   <SettingsFooter {onOpenSettings} />
   <SidebarResizer

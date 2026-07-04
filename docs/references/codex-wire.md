@@ -165,9 +165,42 @@ the max window:
 `last.totalTokens` is what occupies the visible context window. The
 rolling `total.totalTokens` value is aggregate processed/spend-style
 accounting across messages and must not be shown as context used in the
-meter. Keep that aggregate out of the context-meter payload; if future
-diagnostics need it, carry it on an explicitly diagnostic or turn
-accounting path.
+meter. Keep that aggregate out of the context-meter payload.
+
+That aggregate IS the turn-accounting source, though — Codex has no
+per-turn usage signal (`turn/completed` carries no token fields) and no
+USD cost anywhere on the wire, so per-turn usage is the delta of
+`total` between turn boundaries. Verified in codex-rs source: `total`
+accumulates via `TokenUsageInfo::append_last_usage` `add_assign` and
+never resets — compaction's `recompute_token_usage` rewrites only
+`last`, and resume seeds `total` from the rollout's last TokenCount.
+The one exception is `fill_to_context_window` (the
+ContextWindowExceeded sentinel), which pegs `total.totalTokens` to the
+window and zeroes the components — deltas across that event are
+garbage. Also note wire `inputTokens` INCLUDES `cachedInputTokens`
+(`TokenUsage::non_cached_input` subtracts). All of this is owned by
+`internal/provider/codex/usage_accounting.go`.
+
+Live-verified 2026-07-03 against `codex-cli 0.142.5` (three turns across
+a fresh thread + a `thread/resume`, spike per spike-policy; raw capture
+not checked in per the rule below):
+
+- The final `thread/tokenUsage/updated` of a turn arrives BEFORE
+  `turn/completed` (3/3 turns) — the accounting snapshot at
+  turn-complete is complete, no rollover needed in practice.
+- `turn/completed.turn` carries exactly `{completedAt, durationMs,
+  error, id, items, itemsView, startedAt, status}` — no usage fields.
+- `total` grew 12044 → 24106 → 36186 across turns and the resumed
+  process's first reading matched the prior process's final total
+  exactly (cumulative persists across resume, as the source promised).
+- After `thread/resume`, a seed `thread/tokenUsage/updated` carrying
+  the historical cumulative arrives BEFORE any turn (between
+  `thread/status/changed` and `thread/goal/cleared`) — so the
+  accounting's pre-turn baseline path is the live path and the
+  skip-first-resumed-turn fallback is a backstop only.
+- No cost / USD / dollar field appears in any notification.
+- `inputTokens` includes `cachedInputTokens` on the live wire
+  (in=12039, cached=9600, out=5, total=12044).
 
 ### Server requests (approvals, tool-user-input, elicitation)
 

@@ -75,6 +75,11 @@ type Session struct {
 	// clearTurnStart on EventTurnComplete so re-used turn IDs (rare,
 	// typically across resumed sessions) can fire fresh.
 	seenTurnStarts map[string]struct{}
+	// usageAcct derives per-turn token usage from the cumulative
+	// thread/tokenUsage/updated totals (see usage_accounting.go).
+	// Read-loop goroutine only — observed in dispatchNotification and
+	// settled in updateNotificationState; no lock.
+	usageAcct usageAccounting
 	// requestTimeoutOverride replaces defaultRequestTimeout when
 	// non-zero. Set by tests that exercise the late-response path; a
 	// production Session leaves it at zero to use the default.
@@ -224,6 +229,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		ctx:                       childCtx,
 		threadID:                  threadID,
 		model:                     cfg.Model,
+		usageAcct:                 newUsageAccounting(cfg.ResumeThreadID != ""),
 		reasoningEffort:           cfg.ReasoningEffort,
 		serviceTier:               cfg.ServiceTier,
 		approvalPolicy:            cfg.ApprovalPolicy,
