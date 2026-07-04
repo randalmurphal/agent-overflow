@@ -61,24 +61,32 @@ export const FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS = 56;
 // work, so callers snap outright — one deliberate burst, same cost the
 // unbounded drain used to pay, reserved for the outlier case.
 export const FAST_DRAIN_SNAP_LAG_CHARS = 1200;
+// Ceiling on the adaptive catch-up RATE. When a fat wire burst (an
+// Anthropic-API paragraph landing in one chunk) opens a large lag, the
+// adaptive rate (`lag / 0.5s`) wants thousands of chars/sec; this
+// clamps the reveal to a bounded "rushing but followable" pace
+// instead. Refresh-rate independent by construction — the per-tick
+// cap below used to be the only ceiling, and since rAF ticks at
+// display refresh it allowed cap × Hz chars/sec: ~840 cps on the
+// 60Hz panel the cap was sized against, but ~2310 cps on a 165Hz
+// panel (2026-07-04 report: "catches up by speeding up a ton...too
+// fast at its peak"). 840 preserves the originally intended ceiling
+// on every display; lower it to slow peak catch-up everywhere.
+export const MAX_ADAPTIVE_CHARS_PER_SEC = 840;
 // Hard cap on how many characters the smoother may reveal in a single
-// rAF tick, regardless of how much budget the adaptive catch-up math
-// has produced. Without this cap, sustained high-rate wire bursts
-// (e.g. Claude reasoning at 1500–3000 chars/sec) push lag into the
-// hundreds-of-chars range, and the adaptive rate (`lag / 0.5s`) then
-// produces 30–80 chars per tick — the user perceives those as a chunk
-// of 5–15 words appearing instantly rather than a smooth reveal.
-// 14 chars ≈ 2 short words at 60Hz ≈ 840 cps effective ceiling, which
-// is comfortably above readable streaming pace but well below a "burst
-// looks like a chunk" threshold. Excess budget is silently discarded
-// (not rolled over) so a sustained over-rate wire grows lag instead of
-// building per-tick chunks; the backlog drains at the elevated
-// fast-drain cap only when a successor row is waiting. A solo tail row's
-// end-of-turn backlog drains at this same steady cadence — there used to
-// be an end-of-turn fast-drain (END_OF_TURN_DRAIN_MS, removed 2026-07)
-// that rushed it at the elevated cap, and the rushed motion read as jank;
-// a long final message finishing a few seconds after the wire settles is
-// the accepted trade for uniform reveal speed.
+// rAF tick, regardless of accumulated budget. With the rate ceiling
+// above owning speed, this is purely the per-frame WORK bound: one
+// tick's markdown re-parse + DOM mutation stays bounded even right
+// after a stalled frame (where dt, and so the tick's budget, is
+// large). 14 chars ≈ 2 short words. Excess budget is clamped after
+// each tick (not rolled over) so a stall can't burst a multi-tick
+// chunk; the backlog drains at the elevated fast-drain cap only when
+// a successor row is waiting. A solo tail row's end-of-turn backlog
+// drains at the steady cadence — there used to be an end-of-turn
+// fast-drain (END_OF_TURN_DRAIN_MS, removed 2026-07) that rushed it,
+// and the rushed motion read as jank; a long final message finishing
+// a few seconds after the wire settles is the accepted trade for
+// uniform reveal speed.
 export const MAX_ADVANCE_PER_TICK_CHARS = 14;
 
 export interface PerItemSmootherOptions {
@@ -246,7 +254,14 @@ export class PerItemSmoother {
       const msLeft = Math.max(16, (this.fastDrainEndsAt as number) - now);
       charsPerSec = Math.max(charsPerSec, (lag * 1000) / msLeft);
     } else if (lag > ADAPTIVE_TRIGGER_CHARS) {
-      charsPerSec = Math.max(charsPerSec, (lag * 1000) / ADAPTIVE_CATCHUP_MS);
+      // Rate-clamped: the target-500ms drain math is a lower bound on
+      // urgency, MAX_ADAPTIVE_CHARS_PER_SEC an upper bound on speed —
+      // a fat burst drains at the ceiling for as long as it takes
+      // rather than proportionally faster the fatter it is.
+      charsPerSec = Math.min(
+        MAX_ADAPTIVE_CHARS_PER_SEC,
+        Math.max(charsPerSec, (lag * 1000) / ADAPTIVE_CATCHUP_MS),
+      );
     }
     this.revealBudget += (charsPerSec * dt) / 1000;
 

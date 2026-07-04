@@ -7,6 +7,7 @@ import {
   ADAPTIVE_CATCHUP_MS,
   FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS,
   MAX_ADVANCE_PER_TICK_CHARS,
+  MAX_ADAPTIVE_CHARS_PER_SEC,
   type SmoothingClock,
 } from './PerItemSmoother';
 
@@ -315,6 +316,39 @@ describe('PerItemSmoother', () => {
 });
 
 const FAST_DRAIN_WINDOW = 200;
+
+describe('PerItemSmoother — adaptive rate ceiling', () => {
+  // A fat wire burst opens a large lag; the adaptive catch-up must
+  // drain it at MAX_ADAPTIVE_CHARS_PER_SEC regardless of display
+  // refresh. Before the rate clamp, only the per-tick cap bounded the
+  // reveal, and since ticks run at display refresh a 165Hz panel
+  // revealed cap × 165 ≈ 2310 cps vs the intended ≈ 840 (2026-07-04
+  // "catches up by speeding up a ton" report).
+  function revealAfterOneSecond(frameMs: number): number {
+    const { clock, smoother } = makeSmoother();
+    smoother.appendDelta('word '.repeat(1000)); // 5000-char burst
+    const frames = Math.round(1000 / frameMs);
+    for (let i = 0; i < frames; i++) clock.tickFrame(frameMs);
+    return smoother.getRevealed().length;
+  }
+
+  it('drains a large burst at (not above) the rate ceiling on a 60Hz display', () => {
+    // Word-unit quantization under the 14-char per-tick cap lands
+    // below the ceiling with this 5-char word mix (2 units/tick =
+    // 600cps) — acceptable; the ceiling is an upper bound.
+    const revealed = revealAfterOneSecond(1000 / 60);
+    expect(revealed).toBeGreaterThan(500);
+    expect(revealed).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC + 20);
+  });
+
+  it('holds the ceiling on a 165Hz display instead of scaling with refresh', () => {
+    const at165 = revealAfterOneSecond(1000 / 165);
+    expect(at165).toBeGreaterThan(500);
+    // THE regression bound: the per-tick-only ceiling revealed
+    // cap × 165 ≈ 2310 chars here; the rate clamp holds ≤ 840.
+    expect(at165).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC + 20);
+  });
+});
 
 describe('PerItemSmoother — reveal sequencing primitives', () => {
   it('pause holds the reveal cursor while received keeps accumulating', () => {
