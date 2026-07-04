@@ -39,10 +39,10 @@
     { value: 'codex', label: 'Codex' },
   ];
 
-  // Labels happen to match the period values themselves ('1d', '1w',
-  // '30d', 'all'), so the options list derives straight from the shared
-  // VALID_PERIODS constant instead of hardcoding a second array that
-  // could drift out of sync with it.
+  // Labels happen to match the period values themselves ('day', 'week',
+  // 'month', 'all'), so the options list derives straight from the
+  // shared VALID_PERIODS constant instead of hardcoding a second array
+  // that could drift out of sync with it.
   const PERIOD_OPTIONS: Array<{ value: UsagePeriod; label: string }> = VALID_PERIODS.map((value) => ({
     value,
     label: value,

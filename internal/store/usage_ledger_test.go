@@ -99,21 +99,30 @@ func TestUsageLedger_DayBucketingRespectsTimezone(t *testing.T) {
 	}
 }
 
-// TestUsageLedger_WeekBucketingIsISOAcrossYearBoundary is the regression
-// guard for ISO week bucketing: 2027-01-01T00:00:00Z falls in ISO week
-// 2026-W53 (verified against `date -d 2027-01-01 +%G-W%V` => 2026-W53),
-// not calendar-year week "2027-W00" — which is what the old non-ISO
-// `%Y-W%W` format produced (wrong year AND non-ISO week numbering for
-// the first partial week of January).
-func TestUsageLedger_WeekBucketingIsISOAcrossYearBoundary(t *testing.T) {
+// TestUsageLedger_WeekBucketingIsSundayStart pins the week-bucket
+// contract: Sunday-start weeks keyed by the week's start date, correct
+// across a year boundary. 2027-01-01 is a Friday (verified with
+// `date -d 2027-01-01 +%A`), so its week began Sunday 2026-12-27 —
+// that date is the bucket key. A Sunday row must key to its own date
+// (Sunday IS the week start), the following Saturday joins the same
+// bucket, and the next Sunday opens a new one.
+func TestUsageLedger_WeekBucketingIsSundayStart(t *testing.T) {
 	s := newTestStore(t)
-	const jan1_2027 = 1798761600000 // 2027-01-01T00:00:00Z
+	const (
+		jan1_2027  = 1798761600000 // 2027-01-01T00:00:00Z (Friday)
+		dec27_2026 = 1798329600000 // 2026-12-27T00:00:00Z (Sunday, week start)
+		jan2_2027  = 1798848000000 // 2027-01-02T00:00:00Z (Saturday, week end)
+		jan3_2027  = 1798934400000 // 2027-01-03T00:00:00Z (Sunday, NEXT week)
+	)
 	rows := []UsageLedgerRow{
-		{
-			CreatedAt: jan1_2027, ThreadID: "ta", ProjectID: "p1", TurnID: "turn-1",
-			Provider: "claude", Model: "claude-haiku-4-5",
-			InputTokens: 7, OutputTokens: 3,
-		},
+		{CreatedAt: dec27_2026, ThreadID: "ta", ProjectID: "p1", TurnID: "turn-1",
+			Provider: "claude", Model: "claude-haiku-4-5", InputTokens: 1, OutputTokens: 1},
+		{CreatedAt: jan1_2027, ThreadID: "ta", ProjectID: "p1", TurnID: "turn-2",
+			Provider: "claude", Model: "claude-haiku-4-5", InputTokens: 7, OutputTokens: 3},
+		{CreatedAt: jan2_2027, ThreadID: "ta", ProjectID: "p1", TurnID: "turn-3",
+			Provider: "claude", Model: "claude-haiku-4-5", InputTokens: 2, OutputTokens: 2},
+		{CreatedAt: jan3_2027, ThreadID: "ta", ProjectID: "p1", TurnID: "turn-4",
+			Provider: "claude", Model: "claude-haiku-4-5", InputTokens: 5, OutputTokens: 5},
 	}
 	if err := s.AppendUsage(rows); err != nil {
 		t.Fatalf("append usage: %v", err)
@@ -123,8 +132,14 @@ func TestUsageLedger_WeekBucketingIsISOAcrossYearBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("week query: %v", err)
 	}
-	if len(buckets) != 1 || buckets[0].Bucket != "2026-W53" {
-		t.Fatalf("week bucket = %+v, want a single 2026-W53 bucket (ISO week, not 2027-W00)", buckets)
+	if len(buckets) != 2 {
+		t.Fatalf("week buckets = %+v, want 2 (Sun 12-27..Sat 01-02, then Sun 01-03)", buckets)
+	}
+	if buckets[0].Bucket != "2026-12-27" || buckets[0].TurnCount != 3 {
+		t.Fatalf("year-straddling week: %+v, want bucket 2026-12-27 holding Sun+Fri+Sat rows", buckets[0])
+	}
+	if buckets[1].Bucket != "2027-01-03" || buckets[1].TurnCount != 1 {
+		t.Fatalf("next week: %+v, want bucket 2027-01-03 holding only the next Sunday's row", buckets[1])
 	}
 }
 

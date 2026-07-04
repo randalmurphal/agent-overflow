@@ -15,75 +15,100 @@ describe('usage period store', () => {
     resetUsagePeriodForTest();
   });
 
-  it('defaults to 30d when nothing is persisted', () => {
-    expect(getUsagePeriod()).toBe('30d');
+  it('defaults to month when nothing is persisted', () => {
+    expect(getUsagePeriod()).toBe('month');
   });
 
   it('setUsagePeriod updates state and persists', () => {
-    setUsagePeriod('1w');
-    expect(getUsagePeriod()).toBe('1w');
-    expect(localStorage.getItem(STORAGE_KEY)).toBe('1w');
+    setUsagePeriod('week');
+    expect(getUsagePeriod()).toBe('week');
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('week');
   });
 
   describe('cycleUsagePeriod', () => {
-    it('rotates 1d -> 1w -> 30d -> all -> 1d', () => {
-      setUsagePeriod('1d');
+    it('rotates day -> week -> month -> all -> day', () => {
+      setUsagePeriod('day');
       cycleUsagePeriod();
-      expect(getUsagePeriod()).toBe('1w');
+      expect(getUsagePeriod()).toBe('week');
       cycleUsagePeriod();
-      expect(getUsagePeriod()).toBe('30d');
+      expect(getUsagePeriod()).toBe('month');
       cycleUsagePeriod();
       expect(getUsagePeriod()).toBe('all');
       cycleUsagePeriod();
-      expect(getUsagePeriod()).toBe('1d');
+      expect(getUsagePeriod()).toBe('day');
     });
 
     it('persists each step of the cycle', () => {
       setUsagePeriod('all');
       cycleUsagePeriod();
-      expect(localStorage.getItem(STORAGE_KEY)).toBe('1d');
+      expect(localStorage.getItem(STORAGE_KEY)).toBe('day');
     });
   });
 
   describe('readPersistedPeriod', () => {
     it('returns default when no value is stored', () => {
-      expect(readPersistedPeriod()).toBe('30d');
+      expect(readPersistedPeriod()).toBe('month');
     });
 
     it('returns default when the stored value is garbage', () => {
       localStorage.setItem(STORAGE_KEY, 'garbage');
-      expect(readPersistedPeriod()).toBe('30d');
+      expect(readPersistedPeriod()).toBe('month');
     });
 
     it('returns default when the stored value is empty', () => {
       localStorage.setItem(STORAGE_KEY, '');
-      expect(readPersistedPeriod()).toBe('30d');
+      expect(readPersistedPeriod()).toBe('month');
     });
 
     it('round-trips a valid stored value', () => {
+      localStorage.setItem(STORAGE_KEY, 'week');
+      expect(readPersistedPeriod()).toBe('week');
+    });
+
+    it('migrates the pre-calendar rolling-window values', () => {
+      // Users who persisted a period before the calendar-alignment
+      // change must land on the closest calendar period, not the
+      // default.
+      localStorage.setItem(STORAGE_KEY, '1d');
+      expect(readPersistedPeriod()).toBe('day');
       localStorage.setItem(STORAGE_KEY, '1w');
-      expect(readPersistedPeriod()).toBe('1w');
+      expect(readPersistedPeriod()).toBe('week');
+      localStorage.setItem(STORAGE_KEY, '30d');
+      expect(readPersistedPeriod()).toBe('month');
     });
   });
 
   describe('periodFromMillis', () => {
-    const now = Date.UTC(2026, 6, 3, 12, 0, 0);
-    const DAY_MS = 24 * 60 * 60 * 1000;
+    // Friday 2026-07-03 15:30 LOCAL time — calendar boundaries are
+    // local-midnight based (the backend query carries the matching
+    // tzOffsetMinutes), so fixtures use the local Date constructor.
+    const now = new Date(2026, 6, 3, 15, 30, 0).getTime();
 
     it('"all" is unbounded (0)', () => {
       expect(periodFromMillis('all', now)).toBe(0);
     });
 
-    it('"1d" is now minus 1 day', () => {
-      expect(periodFromMillis('1d', now)).toBe(now - DAY_MS);
+    it('"day" is local midnight of today', () => {
+      expect(periodFromMillis('day', now)).toBe(new Date(2026, 6, 3).getTime());
     });
 
-    it('"1w" is now minus 7 days', () => {
-      expect(periodFromMillis('1w', now)).toBe(now - 7 * DAY_MS);
+    it('"week" is local midnight of the most recent Sunday', () => {
+      // 2026-07-03 is a Friday; the week started Sunday 2026-06-28.
+      expect(periodFromMillis('week', now)).toBe(new Date(2026, 5, 28).getTime());
     });
 
-    it('"30d" is now minus 30 days', () => {
-      expect(periodFromMillis('30d', now)).toBe(now - 30 * DAY_MS);
+    it('"week" on a Sunday is that Sunday\'s own midnight', () => {
+      const sundayAfternoon = new Date(2026, 5, 28, 14, 0, 0).getTime();
+      expect(periodFromMillis('week', sundayAfternoon)).toBe(new Date(2026, 5, 28).getTime());
+    });
+
+    it('"month" is local midnight of the 1st', () => {
+      expect(periodFromMillis('month', now)).toBe(new Date(2026, 6, 1).getTime());
+    });
+
+    it('"month" on the 1st is that day\'s own midnight', () => {
+      const firstMorning = new Date(2026, 6, 1, 9, 0, 0).getTime();
+      expect(periodFromMillis('month', firstMorning)).toBe(new Date(2026, 6, 1).getTime());
     });
   });
 });

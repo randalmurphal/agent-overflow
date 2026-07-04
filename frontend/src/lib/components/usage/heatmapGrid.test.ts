@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { buildHeatmapGrid, computeQuartiles, type UsageDayBucket } from './heatmapGrid';
 
 // Fixed reference "now": Friday, July 3 2026 (matches this session's
-// current date). Its week runs Mon 2026-06-29 .. Sun 2026-07-05, so
-// Sat 07-04 / Sun 07-05 are future relative to "today".
+// current date). Its Sunday-start week runs Sun 2026-06-28 ..
+// Sat 2026-07-04, so only Sat 07-04 is future relative to "today".
 const NOW = new Date(2026, 6, 3, 15, 30, 0).getTime();
 
 function bucket(dateKey: string, overrides: Partial<UsageDayBucket> = {}): UsageDayBucket {
@@ -60,16 +60,16 @@ describe('buildHeatmapGrid', () => {
     expect(empty?.level).toBe(0);
   });
 
-  it('week alignment: every column starts on a Monday and runs Mon..Sun in weekday order', () => {
+  it('week alignment: every column starts on a Sunday and runs Sun..Sat in weekday order', () => {
     const columns = buildHeatmapGrid([], NOW, 4);
     for (const column of columns) {
-      const monday = new Date(`${column.weekStartKey}T00:00:00`);
-      expect(monday.getDay()).toBe(1);
+      const sunday = new Date(`${column.weekStartKey}T00:00:00`);
+      expect(sunday.getDay()).toBe(0);
       expect(column.cells).toHaveLength(7);
       column.cells.forEach((cell, i) => {
         expect(cell.weekday).toBe(i);
         const cellDate = new Date(`${cell.dateKey}T00:00:00`);
-        expect(cellDate.getDay()).toBe((i + 1) % 7); // Mon=1..Sat=6,Sun=0
+        expect(cellDate.getDay()).toBe(i); // Sun=0..Sat=6
       });
     }
   });
@@ -77,18 +77,18 @@ describe('buildHeatmapGrid', () => {
   it('week alignment: the last column is the week containing "now"', () => {
     const columns = buildHeatmapGrid([], NOW, 1);
     expect(columns).toHaveLength(1);
-    expect(columns[0].weekStartKey).toBe('2026-06-29');
+    expect(columns[0].weekStartKey).toBe('2026-06-28');
     expect(columns[0].cells.map((c) => c.dateKey)).toEqual([
-      '2026-06-29', '2026-06-30', '2026-07-01', '2026-07-02',
-      '2026-07-03', '2026-07-04', '2026-07-05',
+      '2026-06-28', '2026-06-29', '2026-06-30', '2026-07-01',
+      '2026-07-02', '2026-07-03', '2026-07-04',
     ]);
   });
 
   it('week alignment: grid spans exactly the requested number of weeks', () => {
     const columns = buildHeatmapGrid([], NOW, 26);
     expect(columns).toHaveLength(26);
-    // Oldest column is 25 weeks before the current week's Monday.
-    expect(columns[0].weekStartKey).toBe('2026-01-05');
+    // Oldest column is 25 weeks before the current week's Sunday.
+    expect(columns[0].weekStartKey).toBe('2026-01-04');
   });
 
   it('marks dates after "now"\'s local day as future', () => {
@@ -96,8 +96,8 @@ describe('buildHeatmapGrid', () => {
     const byDate = new Map(columns[0].cells.map((c) => [c.dateKey, c]));
     expect(byDate.get('2026-07-03')?.isFuture).toBe(false); // today
     expect(byDate.get('2026-07-02')?.isFuture).toBe(false); // past
+    expect(byDate.get('2026-06-28')?.isFuture).toBe(false); // week start
     expect(byDate.get('2026-07-04')?.isFuture).toBe(true); // future
-    expect(byDate.get('2026-07-05')?.isFuture).toBe(true); // future
   });
 
   it('quartile stepping: quantizes cost into 5 steps using only in-window non-zero values', () => {
@@ -161,8 +161,9 @@ describe('buildHeatmapGrid', () => {
 
   it('month label: columns without a 1st-of-month day are unlabeled', () => {
     const columns = buildHeatmapGrid([], NOW, 6);
-    // Week of Jun 8-14 2026 contains no 1st-of-month day.
-    const midJune = columns.find((c) => c.weekStartKey === '2026-06-08');
+    // Week of Sun Jun 7 - Sat Jun 13 2026 contains no 1st-of-month day.
+    const midJune = columns.find((c) => c.weekStartKey === '2026-06-07');
+    expect(midJune).toBeDefined();
     expect(midJune?.monthLabel).toBeNull();
   });
 });

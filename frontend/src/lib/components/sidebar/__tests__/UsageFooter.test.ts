@@ -79,7 +79,7 @@ describe('<UsageFooter>', () => {
     const { findByTestId, queryByRole } = render(UsageFooter, { props: {} });
     const periodBtn = await findByTestId('usage-footer-period');
 
-    expect(getUsagePeriod()).toBe('30d');
+    expect(getUsagePeriod()).toBe('month');
     await fireEvent.click(periodBtn);
     expect(getUsagePeriod()).toBe('all');
     expect(localStorage.getItem(STORAGE_KEY)).toBe('all');

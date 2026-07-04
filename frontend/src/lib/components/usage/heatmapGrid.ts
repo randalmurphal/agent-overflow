@@ -2,9 +2,10 @@
 // the heatmap lives here — the component only renders the cells this
 // module produces.
 //
-// Shape: GitHub-style contribution grid. Columns are ISO-ish weeks
-// (Monday..Sunday), most recent `weeks` of them, ending at the week
-// containing `nowMs`. Cell intensity is a 5-step quantization (0 = no
+// Shape: GitHub-style contribution grid. Columns are Sunday-start
+// weeks (Sunday..Saturday, matching GitHub and the usage period
+// selector's week boundary), most recent `weeks` of them, ending at
+// the week containing `nowMs`. Cell intensity is a 5-step quantization (0 = no
 // data/zero, 1-4 = quartile buckets of the non-zero values) over
 // per-day cost, falling back to output-token totals when every bucket's
 // cost is zero (subscription-less accounts still paint a heatmap).
@@ -26,7 +27,7 @@ export type HeatmapLevel = 0 | 1 | 2 | 3 | 4;
 export interface HeatmapCell {
   /** Local date key, "YYYY-MM-DD". */
   dateKey: string;
-  /** 0 = Monday .. 6 = Sunday. */
+  /** 0 = Sunday .. 6 = Saturday (row index within the column). */
   weekday: number;
   /** Three-letter month abbreviation for this cell's date (tooltip use). */
   monthShort: string;
@@ -48,13 +49,13 @@ export interface HeatmapCell {
 }
 
 export interface HeatmapColumn {
-  /** Date key of this column's Monday. */
+  /** Date key of this column's Sunday. */
   weekStartKey: string;
   /** Three-letter month label, set on the column that contains the 1st
    *  of a month (matches the GitHub contribution-graph convention: the
    *  label marks where the month starts, not the week's own month). */
   monthLabel: string | null;
-  /** Exactly 7 cells, Monday..Sunday. */
+  /** Exactly 7 cells, Sunday..Saturday. */
   cells: HeatmapCell[];
 }
 
@@ -75,11 +76,9 @@ function addDays(d: Date, days: number): Date {
   return next;
 }
 
-/** Monday of the ISO week containing `d` (0=Sun..6=Sat native getDay). */
-function mondayOf(d: Date): Date {
-  const dow = d.getDay();
-  const daysSinceMonday = (dow + 6) % 7;
-  return addDays(d, -daysSinceMonday);
+/** Sunday of the week containing `d` (native getDay: 0=Sun..6=Sat). */
+function sundayOf(d: Date): Date {
+  return addDays(d, -d.getDay());
 }
 
 function toDateKey(d: Date): string {
@@ -137,8 +136,8 @@ export function buildHeatmapGrid(
   weeks = 26,
 ): HeatmapColumn[] {
   const today = startOfLocalDay(nowMs);
-  const currentWeekMonday = mondayOf(today);
-  const firstWeekMonday = addDays(currentWeekMonday, -7 * (weeks - 1));
+  const currentWeekSunday = sundayOf(today);
+  const firstWeekSunday = addDays(currentWeekSunday, -7 * (weeks - 1));
 
   const byDate = new Map<string, UsageDayBucket>();
   for (const b of buckets) byDate.set(b.bucket, b);
@@ -156,8 +155,8 @@ export function buildHeatmapGrid(
   // which may contain dates outside the visible window).
   const allDates: Date[] = [];
   for (let w = 0; w < weeks; w++) {
-    const weekMonday = addDays(firstWeekMonday, w * 7);
-    for (let day = 0; day < 7; day++) allDates.push(addDays(weekMonday, day));
+    const weekSunday = addDays(firstWeekSunday, w * 7);
+    for (let day = 0; day < 7; day++) allDates.push(addDays(weekSunday, day));
   }
 
   const nonZeroValues = allDates
@@ -167,11 +166,11 @@ export function buildHeatmapGrid(
 
   const columns: HeatmapColumn[] = [];
   for (let w = 0; w < weeks; w++) {
-    const weekMonday = addDays(firstWeekMonday, w * 7);
+    const weekSunday = addDays(firstWeekSunday, w * 7);
     const cells: HeatmapCell[] = [];
     let monthLabel: string | null = null;
     for (let day = 0; day < 7; day++) {
-      const date = addDays(weekMonday, day);
+      const date = addDays(weekSunday, day);
       const dateKey = toDateKey(date);
       const bucket = byDate.get(dateKey);
       const value = metricFor(bucket);
@@ -189,7 +188,7 @@ export function buildHeatmapGrid(
         isFuture: date.getTime() > today.getTime(),
       });
     }
-    columns.push({ weekStartKey: toDateKey(weekMonday), monthLabel, cells });
+    columns.push({ weekStartKey: toDateKey(weekSunday), monthLabel, cells });
   }
   return columns;
 }

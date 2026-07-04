@@ -124,9 +124,9 @@ type UsageQuery struct {
 // internal/usagecost, producing the complete CostUSD / UnpricedRows
 // pair callers should read.
 type UsageBucket struct {
-	// Bucket is the group key: a date ("2026-07-03"), ISO 8601 week
-	// ("2026-W26"), month ("2026-07"), model/provider/thread/project id,
-	// or "" for the lifetime bucket.
+	// Bucket is the group key: a date ("2026-07-03"), a Sunday-start
+	// week keyed by its start date ("2026-06-28"), month ("2026-07"),
+	// model/provider/thread/project id, or "" for the lifetime bucket.
 	Bucket                   string  `json:"bucket"`
 	InputTokens              int64   `json:"inputTokens"`
 	OutputTokens             int64   `json:"outputTokens"`
@@ -188,13 +188,16 @@ func usageBucketExpr(groupBy string, tzOffsetMinutes int) (string, error) {
 	case "day":
 		return fmt.Sprintf(`strftime('%%Y-%%m-%%d', %s, 'unixepoch')`, local), nil
 	case "week":
-		// %G/%V (ISO 8601 year + week) rather than %Y/%W: %W is not ISO
-		// (week 00 for the first partial week of January) and pairing it
-		// with %Y mislabels the year on a year-straddling week (e.g.
-		// 2027-01-01 is ISO week 2026-W53, but %Y-W%W reports 2027-W00).
-		// Verified against modernc.org/sqlite 3.51.3, which supports both
-		// specifiers.
-		return fmt.Sprintf(`strftime('%%G-W%%V', %s, 'unixepoch')`, local), nil
+		// Sunday-start weeks (product decision: every usage surface —
+		// heatmap columns, the period selector's week boundary — starts
+		// weeks on Sunday), keyed by the week's start DATE ("2026-06-28")
+		// rather than a year+week-number pair. Subtracting the local
+		// day-of-week (%w, 0=Sunday) lands every row on its week's
+		// Sunday; a date key sidesteps the year-pairing pitfalls that a
+		// week-number format has on year-straddling weeks entirely.
+		return fmt.Sprintf(
+			`date(%[1]s, 'unixepoch', '-' || strftime('%%w', %[1]s, 'unixepoch') || ' days')`,
+			local), nil
 	case "month":
 		return fmt.Sprintf(`strftime('%%Y-%%m', %s, 'unixepoch')`, local), nil
 	case "model":

@@ -1,6 +1,6 @@
 <script lang="ts">
-  // GitHub-style contribution heatmap: last 26 ISO weeks, Mon..Sun rows,
-  // one cell per day. ALL date math lives in heatmapGrid.ts — this
+  // GitHub-style contribution heatmap: last 26 Sunday-start weeks,
+  // Sun..Sat rows, one cell per day. ALL date math lives in heatmapGrid.ts — this
   // component only fetches the day buckets and renders the cells it's
   // handed. Independent of the footer/modal period selector by design
   // (always the fixed 26-week window); only the provider filter and
@@ -31,7 +31,8 @@
   const CELL_PX = 11;
   const GAP_PX = 3;
   const LABEL_WIDTH_PX = 26;
-  const WEEKDAY_LABELS = ['Mon', '', 'Wed', '', 'Fri', '', ''];
+  // Rows are Sun..Sat; label Mon/Wed/Fri (rows 1/3/5), GitHub-style.
+  const WEEKDAY_LABELS = ['', 'Mon', '', 'Wed', '', 'Fri', ''];
   const LEVELS: readonly HeatmapLevel[] = [0, 1, 2, 3, 4];
 
   const tzOffsetMinutes = localTzOffsetMinutes();
