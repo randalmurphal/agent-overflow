@@ -101,26 +101,35 @@ const SPRING_CARRY_VELOCITY_CEILING = 4;
 // entirely (resolver decline tier / instant pins) and still snap.
 const SPRING_MAX_VELOCITY_PX_PER_FRAME = 18;
 // Minimum glide speed while actively chasing, in px per 60Hz frame
-// (2.5 ≈ 150 px/s ≈ 1px per 144/165Hz display frame). scrollTop lands on
-// whole CSS pixels, so motion below ~1px per display frame renders as
-// 1px steps every N frames — a 2026-07-04 165Hz session capture showed
-// the exponential ease-out tail spending >half of each glide at
-// 0.08–0.9 px/frame, i.e. 1px steps at an effective 14–55Hz: the
-// reported "low fps" judder, with rAF cadence measured clean. Holding
-// the tail at this floor keeps every animated frame moving ≈1 physical
-// pixel (≈0.9px at 165Hz — an effective ~150Hz step rate, far out of
-// the judder band); the cross-target clamp then bounds the landing step
-// to one floor-speed step, indistinguishable from the steps before it.
+// (1.6 ≈ 96 px/s). scrollTop lands on whole CSS pixels, so motion below
+// ~1px per display frame renders as 1px steps every N frames — a
+// 2026-07-04 165Hz session capture showed the exponential ease-out tail
+// spending >half of each glide at 0.08–0.9 px/frame, i.e. 1px steps at
+// an effective 14–55Hz: the reported "low fps" judder, with rAF cadence
+// measured clean. The floor keeps stepping at ≥ ~96Hz effective
+// (0.58px per 165Hz frame, 0.67px at 144Hz, 1.6px at 60Hz) — far above
+// the observed judder band; the cross-target clamp then bounds the
+// landing step to one floor-speed step, indistinguishable from the
+// steps before it.
+//
+// TUNING (2026-07-04, same-day feedback): the floor first shipped at
+// 2.5, which sat ABOVE the spring's natural peak velocity (≈0.13 · D)
+// for quanta under ~19px — line-sized glides ran start-to-stop at the
+// constant floor and read as a flat "glide, not a spring". 1.6 keeps
+// the visible ease-out for D ≳ 13px while staying judder-safe. Raise
+// toward 2.0–2.5 only if 1px stepping at ~96Hz proves visible; every
+// bump trades spring character on small quanta for step rate.
+//
 // Applied only when the spring's own velocity already points at the
 // target, so direction reversals still turn around on the spring curve
 // instead of snapping. Snap-safety: for realistic quanta (≥ ~3px, cross
 // bound ≈1.67 · D ≥ 5) the floor never crosses a fresh growth in one
-// frame; a rare sub-2px growth is at most LANDED ON in one frame — the
-// cross-target clamp bounds that move to the growth itself, which is
-// smaller than a regular floor step. Must also stay below
+// frame; a rare sub-1.5px growth is at most LANDED ON in one frame —
+// the cross-target clamp bounds that move to the growth itself, which
+// is smaller than a regular floor step. Must also stay below
 // SPRING_CARRY_VELOCITY_CEILING so carried momentum still dominates
 // mid-stream.
-const SPRING_MIN_VELOCITY_PX_PER_FRAME = 2.5;
+const SPRING_MIN_VELOCITY_PX_PER_FRAME = 1.6;
 // How long a structural-append mark (markStructuralAppend, the
 // controller's markStructuralContentPending) keeps near-term content
 // growth spring-eligible while animationMode is 'instant'.

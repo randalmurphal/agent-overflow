@@ -199,7 +199,7 @@ describe('momentum carry across catch-up', () => {
 
     // Next line-sized growth: first-frame move from carried v=4 is
     // (0.7·4 + 0.08·20)/1.25 ≈ 3.52; a cold start would move only the
-    // speed floor (2.5). The old zeroing produced the cold value.
+    // speed floor (1.6). The old zeroing produced the cold value.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
     const before = h.getScrollTop();
@@ -218,24 +218,24 @@ describe('momentum carry across catch-up', () => {
 
     // A fresh growth after the gap starts cold — no carried velocity.
     // Cold spring physics would move (0.08·20)/1.25 = 1.28; the speed
-    // floor lifts that first frame to exactly 2.5, still clearly below
+    // floor lifts that first frame to exactly 1.6, still clearly below
     // the carried-momentum value (≈3.52) asserted above.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
     const before = h.getScrollTop();
     frame();
     const firstFrameMove = h.getScrollTop() - before;
-    expect(firstFrameMove).toBeGreaterThan(2.3);
-    expect(firstFrameMove).toBeLessThan(2.7);
+    expect(firstFrameMove).toBeGreaterThan(1.5);
+    expect(firstFrameMove).toBeLessThan(1.7);
   });
 });
 
 describe('minimum glide speed', () => {
   // scrollTop is integer-quantized by the engine, so any sustained
-  // sub-2.5px/frame (60Hz units) phase renders as 1px steps at a low
-  // effective rate — the judder a 2026-07-04 165Hz capture pinned as
-  // the perceived "low fps". These tests pin that the ease-out tail is
-  // held at the floor and terminates with a bounded landing step.
+  // sub-floor phase renders as 1px steps at a low effective rate — the
+  // judder a 2026-07-04 165Hz capture pinned as the perceived "low
+  // fps". These tests pin that the ease-out tail is held at the floor
+  // (1.6px per 60Hz frame) and terminates with a bounded landing step.
   function parkAt(h: Harness, target: number): void {
     h.setTarget(target);
     h.spring.markTargetChanged();
@@ -253,15 +253,15 @@ describe('minimum glide speed', () => {
     const moves = displacements(h, 40).filter((m) => m !== 0);
     expect(h.getScrollTop()).toBe(160);
     // Every animated frame except the final landing remainder moves at
-    // least the floor (2.5px per 60Hz frame). Without the floor the
+    // least the floor (1.6px per 60Hz frame). Without the floor the
     // exponential tail spends ~15 frames below 1px/frame.
     const landing = moves[moves.length - 1];
     for (const move of moves.slice(0, -1)) {
-      expect(move).toBeGreaterThanOrEqual(2.4);
+      expect(move).toBeGreaterThanOrEqual(1.55);
     }
     // The landing step is the leftover distance — never larger than one
     // floor-speed step, so it reads like any other step.
-    expect(landing).toBeLessThanOrEqual(2.6);
+    expect(landing).toBeLessThanOrEqual(1.7);
     expect(landing).toBeGreaterThan(0);
   });
 
@@ -275,7 +275,7 @@ describe('minimum glide speed', () => {
     expect(h.getScrollTop()).toBe(103);
     expect(moves.length).toBeLessThanOrEqual(2);
     for (const move of moves) {
-      expect(move).toBeLessThanOrEqual(2.6); // no single-frame teleport
+      expect(move).toBeLessThanOrEqual(1.7); // no single-frame teleport
     }
   });
 });
