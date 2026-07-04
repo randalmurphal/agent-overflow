@@ -40,10 +40,28 @@ describe('<UsageFooter>', () => {
     // The label is rendered lowercase with a CSS `uppercase` transform
     // (visual-only), so textContent stays lowercase.
     expect(rows[0].textContent).toContain('claude');
-    // Cents always show (a bare "$42" or "$118" reading as exact was a
-    // bug), with real spaces around the separator (template whitespace
-    // collapsing once glued it: "4.1M· $42.10").
-    expect(rows[0].textContent).toContain('4.1M · $42.10');
+    // Output tokens ONLY (1.1M), not in+out (4.1M) — the shared
+    // usage-surface token metric. Cents always show (a bare "$42" or
+    // "$118" reading as exact was a bug), with real spaces around the
+    // separator (template whitespace collapsing once glued it:
+    // "1.1M· $42.10").
+    expect(rows[0].textContent).toContain('1.1M · $42.10');
+  });
+
+  it('stacks each provider on its own line when both have usage', async () => {
+    setBindingMock('GetUsageStats', async () => [
+      providerBucket('claude', { inputTokens: 1_000_000, outputTokens: 40_000, costUsd: 141.03 }),
+      providerBucket('codex', { inputTokens: 4_000, outputTokens: 500 }),
+    ]);
+    const { findAllByTestId } = render(UsageFooter, { props: {} });
+    const rows = await findAllByTestId('usage-footer-row');
+    // Two block-level rows (not inline segments sharing one line — the
+    // single-line layout truncated whichever provider came second).
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain('claude');
+    expect(rows[0].textContent).toContain('40.0k · $141.03');
+    expect(rows[1].textContent).toContain('codex');
+    expect(rows[1].textContent).toContain('500');
   });
 
   it('is hidden entirely when there is no usage', async () => {
@@ -56,7 +74,7 @@ describe('<UsageFooter>', () => {
 
   it('clicking the period label cycles + persists the period without opening the modal', async () => {
     setBindingMock('GetUsageStats', async () => [
-      providerBucket('claude', { inputTokens: 100, costUsd: 1 }),
+      providerBucket('claude', { outputTokens: 100, costUsd: 1 }),
     ]);
     const { findByTestId, queryByRole } = render(UsageFooter, { props: {} });
     const periodBtn = await findByTestId('usage-footer-period');
@@ -70,7 +88,7 @@ describe('<UsageFooter>', () => {
 
   it('clicking the row (outside the period label) opens the usage modal', async () => {
     setBindingMock('GetUsageStats', async () => [
-      providerBucket('claude', { inputTokens: 100, costUsd: 1 }),
+      providerBucket('claude', { outputTokens: 100, costUsd: 1 }),
     ]);
     const { findByTestId, findByRole } = render(UsageFooter, { props: {} });
     const row = await findByTestId('sidebar-usage-footer');

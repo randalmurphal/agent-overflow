@@ -6,8 +6,10 @@
 // (Monday..Sunday), most recent `weeks` of them, ending at the week
 // containing `nowMs`. Cell intensity is a 5-step quantization (0 = no
 // data/zero, 1-4 = quartile buckets of the non-zero values) over
-// per-day cost, falling back to token totals when every bucket's cost
-// is zero (subscription-less accounts still paint a heatmap).
+// per-day cost, falling back to output-token totals when every bucket's
+// cost is zero (subscription-less accounts still paint a heatmap).
+// Output only, like every usage surface's token count: input re-bills
+// the growing context each turn and would drown the produced work.
 
 /** Minimal per-day bucket shape the grid needs. Structurally compatible
  *  with `UsageBucket` from stores/bindings — callers pass those directly. */
@@ -15,7 +17,6 @@ export interface UsageDayBucket {
   /** Local calendar date, "YYYY-MM-DD" (per the query's tzOffsetMinutes). */
   bucket: string;
   costUsd: number;
-  inputTokens: number;
   outputTokens: number;
   unpricedRows: number;
 }
@@ -32,6 +33,7 @@ export interface HeatmapCell {
   /** Day-of-month for this cell's date (tooltip use). */
   dayOfMonth: number;
   costUsd: number;
+  /** Output tokens for the day (the shared usage-surface token metric). */
   tokens: number;
   unpricedRows: number;
   /** True when a bucket exists for this date (distinguishes "zero usage"
@@ -146,7 +148,7 @@ export function buildHeatmapGrid(
 
   const metricFor = (b: UsageDayBucket | undefined): number => {
     if (!b) return 0;
-    return useTokenFallback ? b.inputTokens + b.outputTokens : b.costUsd;
+    return useTokenFallback ? b.outputTokens : b.costUsd;
   };
 
   // Enumerate every cell date up front so quartiles are computed over
@@ -180,7 +182,7 @@ export function buildHeatmapGrid(
         monthShort: MONTH_LABELS[date.getMonth()],
         dayOfMonth: date.getDate(),
         costUsd: bucket?.costUsd ?? 0,
-        tokens: (bucket?.inputTokens ?? 0) + (bucket?.outputTokens ?? 0),
+        tokens: bucket?.outputTokens ?? 0,
         unpricedRows: bucket?.unpricedRows ?? 0,
         hasData: bucket !== undefined,
         level: levelFor(value, q1, q2, q3),

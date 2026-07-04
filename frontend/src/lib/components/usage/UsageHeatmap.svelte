@@ -21,9 +21,11 @@
   interface Props {
     /** '' = all providers, else 'claude' | 'codex'. */
     provider: string;
+    /** '' = all projects, else a project id. */
+    projectId: string;
   }
 
-  let { provider }: Props = $props();
+  let { provider, projectId }: Props = $props();
 
   const HEATMAP_WEEKS = 26;
   const CELL_PX = 11;
@@ -42,6 +44,7 @@
 
   const stats = createUsageStats(() => {
     const currentProvider = provider;
+    const currentProjectId = projectId;
     // Read the refresh version so this effect re-runs on turn completion.
     getUsageRefreshVersion();
     // Compute from a LOCAL, then publish to the $state. Reading
@@ -52,7 +55,13 @@
     const nowMs = Date.now();
     queryNowMs = nowMs;
     const fromMillis = nowMs - HEATMAP_WEEKS * 7 * 24 * 60 * 60 * 1000;
-    return new UsageQuery({ groupBy: 'day', fromMillis, provider: currentProvider, tzOffsetMinutes });
+    return new UsageQuery({
+      groupBy: 'day',
+      fromMillis,
+      provider: currentProvider,
+      projectId: currentProjectId,
+      tzOffsetMinutes,
+    });
   });
 
   let grid: HeatmapColumn[] = $derived(buildHeatmapGrid(stats.buckets ?? [], queryNowMs, HEATMAP_WEEKS));
@@ -69,46 +78,51 @@
   }
 </script>
 
-<div class="flex flex-col gap-1.5" data-testid="usage-heatmap">
-  <div class="flex" style="padding-left: {LABEL_WIDTH_PX + GAP_PX}px; gap: {GAP_PX}px">
-    {#each grid as column (column.weekStartKey)}
-      <div
-        class="text-[0.625rem] leading-none text-fg-subtle whitespace-nowrap"
-        style="width: {CELL_PX}px"
-      >
-        {column.monthLabel ?? ''}
-      </div>
-    {/each}
-  </div>
-  <div class="flex" style="gap: {GAP_PX}px">
-    <div class="flex flex-col shrink-0" style="gap: {GAP_PX}px; width: {LABEL_WIDTH_PX}px">
-      {#each WEEKDAY_LABELS as label, i (i)}
+<!-- The grid block has a fixed intrinsic width (26 week columns), so
+     items-center centers it in whatever width the modal gives it; the
+     legend sits centered underneath on the same axis. -->
+<div class="flex flex-col items-center gap-1.5" data-testid="usage-heatmap">
+  <div class="flex flex-col gap-1.5">
+    <div class="flex" style="padding-left: {LABEL_WIDTH_PX + GAP_PX}px; gap: {GAP_PX}px">
+      {#each grid as column (column.weekStartKey)}
         <div
-          class="flex items-center text-[0.625rem] leading-none text-fg-subtle"
-          style="height: {CELL_PX}px"
+          class="text-[0.625rem] leading-none text-fg-subtle whitespace-nowrap"
+          style="width: {CELL_PX}px"
         >
-          {label}
+          {column.monthLabel ?? ''}
         </div>
       {/each}
     </div>
     <div class="flex" style="gap: {GAP_PX}px">
-      {#each grid as column (column.weekStartKey)}
-        <div class="flex flex-col" style="gap: {GAP_PX}px">
-          {#each column.cells as cell (cell.dateKey)}
-            <div
-              class="rounded-[3px] {heatClass(cell.level)} {cell.isFuture ? 'invisible' : ''}"
-              style="width: {CELL_PX}px; height: {CELL_PX}px"
-              title={cell.isFuture ? undefined : tooltipFor(cell)}
-              data-testid="usage-heatmap-cell"
-              data-date={cell.dateKey}
-              data-level={cell.level}
-            ></div>
-          {/each}
-        </div>
-      {/each}
+      <div class="flex flex-col shrink-0" style="gap: {GAP_PX}px; width: {LABEL_WIDTH_PX}px">
+        {#each WEEKDAY_LABELS as label, i (i)}
+          <div
+            class="flex items-center text-[0.625rem] leading-none text-fg-subtle"
+            style="height: {CELL_PX}px"
+          >
+            {label}
+          </div>
+        {/each}
+      </div>
+      <div class="flex" style="gap: {GAP_PX}px">
+        {#each grid as column (column.weekStartKey)}
+          <div class="flex flex-col" style="gap: {GAP_PX}px">
+            {#each column.cells as cell (cell.dateKey)}
+              <div
+                class="rounded-[3px] {heatClass(cell.level)} {cell.isFuture ? 'invisible' : ''}"
+                style="width: {CELL_PX}px; height: {CELL_PX}px"
+                title={cell.isFuture ? undefined : tooltipFor(cell)}
+                data-testid="usage-heatmap-cell"
+                data-date={cell.dateKey}
+                data-level={cell.level}
+              ></div>
+            {/each}
+          </div>
+        {/each}
+      </div>
     </div>
   </div>
-  <div class="flex items-center justify-end gap-1 text-[0.625rem] leading-none text-fg-subtle">
+  <div class="flex items-center gap-1 text-[0.625rem] leading-none text-fg-subtle">
     <span>Less</span>
     {#each LEVELS as level (level)}
       <div class="rounded-[3px] {heatClass(level)}" style="width: {CELL_PX}px; height: {CELL_PX}px"></div>

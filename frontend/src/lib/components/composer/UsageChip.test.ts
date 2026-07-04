@@ -62,8 +62,10 @@ describe('<UsageChip>', () => {
     const { findByTestId } = render(UsageChip, { props: { pane } });
 
     const trigger = await findByTestId('usage-chip-trigger');
-    // inputTokens (1000) + outputTokens (500) = 1500 -> "1.5k"; costUsd 0.32 -> "$0.32".
-    expect(trigger.textContent?.trim()).toBe('1.5k · $0.32');
+    // Output tokens ONLY (500), not in+out (1500) — input re-bills the
+    // growing context every turn and drowns out what the thread
+    // actually produced. costUsd 0.32 -> "$0.32".
+    expect(trigger.textContent?.trim()).toBe('500 · $0.32');
   });
 
   it('suppresses the cost when costUsd is 0 and some rows are unpriced', async () => {
@@ -74,7 +76,7 @@ describe('<UsageChip>', () => {
     const { findByTestId } = render(UsageChip, { props: { pane } });
 
     const trigger = await findByTestId('usage-chip-trigger');
-    expect(trigger.textContent?.trim()).toBe('1.5k');
+    expect(trigger.textContent?.trim()).toBe('500');
   });
 
   it('shows the ≥ lower-bound marker when cost is nonzero but some rows are unpriced', async () => {
@@ -85,7 +87,7 @@ describe('<UsageChip>', () => {
     const { findByTestId } = render(UsageChip, { props: { pane } });
 
     const trigger = await findByTestId('usage-chip-trigger');
-    expect(trigger.textContent?.trim()).toBe('1.5k · ≥$1.20');
+    expect(trigger.textContent?.trim()).toBe('500 · ≥$1.20');
   });
 
   it('refetches the lifetime bucket when its own thread usage refresh version bumps', async () => {
@@ -152,11 +154,14 @@ describe('<UsageChip>', () => {
     expect(getByText('Cache read')).toBeInTheDocument();
     expect(getByText('Cache write')).toBeInTheDocument();
 
-    // Per-model row lazily fetched on first open.
+    // Per-model row lazily fetched on first open, rendered with the
+    // picker-style display name (raw slug survives in the title attr).
     await waitFor(() => {
       expect(getUsageStats).toHaveBeenCalledTimes(2);
     });
-    expect(getByText('claude-sonnet-4-6')).toBeInTheDocument();
+    const modelRow = getByText('Sonnet 4.6');
+    expect(modelRow).toBeInTheDocument();
+    expect(modelRow.getAttribute('title')).toBe('claude-sonnet-4-6');
 
     // Turn count line.
     expect(getByText('3 turns')).toBeInTheDocument();

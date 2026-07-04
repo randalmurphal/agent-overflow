@@ -1190,10 +1190,18 @@ export class Turn {
 
 /**
  * UsageBucket is one aggregated row of a usage query.
+ * 
+ * QueryUsage alone only populates token totals and TurnCount — it has
+ * no rate table to price cost_source='none' rows, so CostUSD and
+ * UnpricedRows are left at their zero value on a raw QueryUsage result.
+ * GetUsageStats (app_usage.go) is the caller that merges QueryUsage's
+ * totals with QueryUsageDetail's per-model breakdown priced through
+ * internal/usagecost, producing the complete CostUSD / UnpricedRows
+ * pair callers should read.
  */
 export class UsageBucket {
     /**
-     * Bucket is the group key: a date ("2026-07-03"), ISO-ish week
+     * Bucket is the group key: a date ("2026-07-03"), ISO 8601 week
      * ("2026-W26"), month ("2026-07"), model/provider/thread/project id,
      * or "" for the lifetime bucket.
      */
@@ -1207,11 +1215,15 @@ export class UsageBucket {
 
     /**
      * TurnCount counts distinct settled turns in the bucket (a turn that
-     * used several models is one turn). UnpricedRows counts rows whose
-     * cost is not wire-reported — when > 0 the bucket's CostUSD is a
-     * lower bound, not a total.
+     * used several models is one turn). SessionCount counts distinct
+     * threads — the usage modal reports "sessions", and a thread is the
+     * user-facing session unit. UnpricedRows counts rows whose model has
+     * no known price in the internal/usagecost rate table — when > 0 the
+     * bucket's CostUSD is a lower bound, not a total. Set by
+     * GetUsageStats, not by QueryUsage (see the struct doc above).
      */
     "turnCount": number;
+    "sessionCount": number;
     "unpricedRows": number;
 
     /** Creates a new UsageBucket instance. */
@@ -1239,6 +1251,9 @@ export class UsageBucket {
         }
         if (!("turnCount" in $$source)) {
             this["turnCount"] = 0;
+        }
+        if (!("sessionCount" in $$source)) {
+            this["sessionCount"] = 0;
         }
         if (!("unpricedRows" in $$source)) {
             this["unpricedRows"] = 0;
@@ -1285,7 +1300,15 @@ export class UsageQuery {
     /**
      * TZOffsetMinutes shifts calendar bucketing east of UTC (e.g. -300
      * for EST). Only meaningful for day/week/month grouping; block math
-     * and raw timestamps stay UTC.
+     * and raw timestamps stay UTC. It is a SINGLE fixed offset applied
+     * across the whole query range — DST transitions and rows recorded
+     * under a different UTC offset than the caller's "now" are not
+     * modeled, so a timestamp within ~1h of local midnight can land in
+     * the adjacent calendar day/week/month from what its own wall clock
+     * would have shown. Accepted tradeoff (per-row IANA tz bucketing
+     * would need each row to know a timezone, not just an offset); it is
+     * not a bug callers need to work around, just an edge case to expect.
+     * GetUsageStats (app_usage.go) clamps this to [-840, 840] before use.
      */
     "tzOffsetMinutes": number;
 

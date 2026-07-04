@@ -20,10 +20,9 @@
 
   interface ProviderRow {
     provider: string;
-    /** Pre-joined "862.4k · $118" (cost segment omitted when unpriced-only).
-     *  Built in script so template whitespace collapsing can't glue the
-     *  separator to the token count, and so the footer's whole-dollar
-     *  policy lives in one place. */
+    /** Pre-joined "862.4k · $118.42" (cost segment omitted when
+     *  unpriced-only). Built in script so template whitespace collapsing
+     *  can't glue the separator to the token count. */
     valueLabel: string;
   }
 
@@ -43,7 +42,11 @@
     (stats.buckets ?? [])
       .filter((b) => b.inputTokens + b.outputTokens > 0 || b.costUsd > 0)
       .map((b) => {
-        const tokens = formatTokens(b.inputTokens + b.outputTokens);
+        // Output tokens only — the shared usage-surface token metric
+        // (input re-bills the growing context every turn). The presence
+        // filter above stays broad so a provider with cost but no
+        // output yet still gets its row.
+        const tokens = formatTokens(b.outputTokens);
         const cost = formatUsageCostOrNull(b.costUsd, b.unpricedRows);
         return {
           provider: b.bucket,
@@ -81,11 +84,14 @@
     onclick={openModal}
     onkeydown={handleRowKeydown}
   >
-    <span class="flex items-center gap-4 tabular-nums min-w-0 overflow-hidden">
+    <!-- One line per provider so neither row truncates the other. The
+         fixed label column keeps the centered values on a shared axis
+         across lines. -->
+    <span class="flex flex-col gap-1.5 flex-1 min-w-0">
       {#each rows as row (row.provider)}
-        <span class="inline-flex items-center gap-2 truncate" data-testid="usage-footer-row">
+        <span class="grid grid-cols-[3.5rem_1fr] items-center gap-2" data-testid="usage-footer-row">
           <span class="text-fg-subtle uppercase tracking-[0.12em]">{row.provider}</span>
-          <span class="whitespace-pre">{row.valueLabel}</span>
+          <span class="text-center tabular-nums whitespace-pre truncate">{row.valueLabel}</span>
         </span>
       {/each}
     </span>

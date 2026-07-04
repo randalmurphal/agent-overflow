@@ -61,6 +61,9 @@ func TestUsageLedger_LifetimeAggregate(t *testing.T) {
 	if b.TurnCount != 3 {
 		t.Fatalf("turn count = %d, want 3 (multi-model turn counts once)", b.TurnCount)
 	}
+	if b.SessionCount != 2 {
+		t.Fatalf("session count = %d, want 2 (threads ta + tb; two turns on ta count once)", b.SessionCount)
+	}
 	// QueryUsage no longer selects cost_usd at all — pricing (both the
 	// wire-reported sum and the rate-table estimate for cost_source='none'
 	// rows) is GetUsageStats' job (see app_usage_test.go). The raw
@@ -138,6 +141,9 @@ func TestUsageLedger_GroupByModelAndFilters(t *testing.T) {
 	}
 	if byModel[0].Bucket != "claude-haiku-4-5" || byModel[0].OutputTokens != 62 {
 		t.Fatalf("haiku bucket: %+v", byModel[0])
+	}
+	if byModel[0].SessionCount != 1 {
+		t.Fatalf("haiku session count = %d, want 1 (both haiku turns are thread ta)", byModel[0].SessionCount)
 	}
 	if byModel[1].Bucket != "claude-sonnet-4-6" || byModel[1].CacheCreationInputTokens != 9000 {
 		t.Fatalf("sonnet bucket: %+v", byModel[1])

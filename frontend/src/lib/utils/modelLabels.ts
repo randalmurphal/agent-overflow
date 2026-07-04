@@ -49,6 +49,30 @@ function displayClaudeModelLabel(slug: string, name?: string): string {
   return label.join(' ');
 }
 
+/**
+ * Display label for a model slug coming out of the usage ledger, where
+ * the provider isn't carried alongside the slug. Claude slugs get the
+ * same friendly form the model picker shows ("claude-fable-5" →
+ * "Fable 5", release datestamps and the `[1m]` tier marker stripped);
+ * GPT slugs are title-cased to match the Codex catalog names
+ * ("gpt-5.3-codex" → "GPT-5.3 Codex"). Anything else renders as-is —
+ * an unrecognized raw slug is better than a wrong guess.
+ */
+export function displayUsageModelLabel(slug: string): string {
+  const trimmed = slug.trim();
+  if (trimmed === '') return slug;
+  if (/^claude/i.test(trimmed)) {
+    return displayModelLabel(PROVIDER_DEFINITIONS.claude.id, trimmed);
+  }
+  const gptMatch = /^gpt-([^-]+)(.*)$/i.exec(trimmed.replace(/\[[^\]]+\]$/, ''));
+  if (gptMatch) {
+    const version = gptMatch[1];
+    const rest = gptMatch[2].split('-').filter(Boolean).map(capitalizeWord);
+    return [`GPT-${version}`, ...rest].join(' ');
+  }
+  return trimmed;
+}
+
 function capitalizeWord(word: string): string {
   if (word === '') return word;
   return word[0].toUpperCase() + word.slice(1);

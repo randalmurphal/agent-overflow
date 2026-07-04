@@ -1,5 +1,5 @@
 // Shared cost-display rule for the usage surfaces (sidebar UsageFooter,
-// UsageModal heatmap/totals/model-table/top-projects). A UsageBucket's
+// UsageModal heatmap/totals/model-table). A UsageBucket's
 // cost is wire-reported only (Claude) — when `unpricedRows > 0`, some
 // rows in the aggregate carried no price and `costUsd` is a lower
 // bound, not a total.

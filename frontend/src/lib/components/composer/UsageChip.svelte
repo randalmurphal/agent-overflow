@@ -10,7 +10,8 @@
   import { UsageQuery } from '../../stores/bindings';
   import { getThreadUsageRefreshVersion } from '../../stores/usageRefresh.svelte';
   import { createUsageStats } from '../../stores/usageQuery.svelte';
-  import { formatTokens, formatUsd } from '../../utils/format';
+  import { formatTokens } from '../../utils/format';
+  import { displayUsageModelLabel } from '../../utils/modelLabels';
   import { formatUsageCostOrNull } from '../../utils/usageDisplay';
   import { composerTriggerClasses } from './triggerClasses';
   import Popover from '../primitives/Popover.svelte';
@@ -58,9 +59,10 @@
     open = false;
   }
 
-  let tokenTotal = $derived(
-    lifetimeBucket ? lifetimeBucket.inputTokens + lifetimeBucket.outputTokens : 0,
-  );
+  // Output tokens only: input counts re-bill the growing context every
+  // turn, so in+out balloons into a number that says little about what
+  // the thread produced. The popover's split has the full picture.
+  let tokenTotal = $derived(lifetimeBucket?.outputTokens ?? 0);
 
   // A bucket with unpriced rows carries a partial CostUSD, not a total.
   // formatUsageCostOrNull both omits the segment when there's no priced
@@ -95,8 +97,9 @@
   // formatting function twice per row.
   let modelRows = $derived(
     modelBuckets.map((bucket) => ({
-      name: bucket.bucket,
-      tokens: formatTokens(bucket.inputTokens + bucket.outputTokens),
+      name: bucket.bucket ? displayUsageModelLabel(bucket.bucket) : 'unknown',
+      slug: bucket.bucket,
+      tokens: formatTokens(bucket.outputTokens),
       cost: formatUsageCostOrNull(bucket.costUsd, bucket.unpricedRows),
     })),
   );
@@ -141,9 +144,9 @@
           <p class="mt-2 text-xs text-fg-hint">Loading models…</p>
         {:else if modelRows.length > 0}
           <div class="mt-2 border-t border-border-subtle pt-2 space-y-0.5 text-xs text-fg-muted">
-            {#each modelRows as row (row.name)}
+            {#each modelRows as row (row.slug)}
               <div class="flex items-center justify-between gap-4">
-                <span class="truncate max-w-[140px]" title={row.name}>{row.name}</span>
+                <span class="truncate max-w-[140px]" title={row.slug}>{row.name}</span>
                 <span class="tabular-nums shrink-0">
                   {row.tokens}{#if row.cost}
                     &nbsp;· {row.cost}

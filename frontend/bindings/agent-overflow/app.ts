@@ -868,8 +868,13 @@ export function GetUIRenderTracePath(): $CancellablePromise<string> {
  * "day" / "week" / "month" (calendar buckets shifted by
  * TZOffsetMinutes), or "model" / "provider" / "thread" / "project".
  * 
- * Costs are wire-reported only (Claude); buckets with UnpricedRows > 0
- * carry a partial CostUSD and the UI should label it as a lower bound.
+ * Claude's wire-reported cost_usd passes through untouched. Rows with
+ * no wire cost (Codex, claudetui — cost_source='none') are priced here,
+ * at query time, from the hardcoded internal/usagecost rate table. The
+ * estimate is never persisted back to usage_ledger: a future rate-table
+ * update reprices all history the next time this runs. Buckets with
+ * UnpricedRows > 0 carry a model the rate table doesn't recognize —
+ * the UI should label those buckets' CostUSD as a lower bound.
  * Not a LocalOnlyMethods entry: read-only aggregate data, safe for
  * remote clients.
  */

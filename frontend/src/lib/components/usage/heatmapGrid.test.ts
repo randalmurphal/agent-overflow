@@ -10,7 +10,6 @@ function bucket(dateKey: string, overrides: Partial<UsageDayBucket> = {}): Usage
   return {
     bucket: dateKey,
     costUsd: 0,
-    inputTokens: 0,
     outputTokens: 0,
     unpricedRows: 0,
     ...overrides,
@@ -119,10 +118,10 @@ describe('buildHeatmapGrid', () => {
     expect(byDate.get('2026-07-03')?.level).toBe(0); // no data
   });
 
-  it('quartile stepping: falls back to token totals when every bucket has zero cost', () => {
+  it('quartile stepping: falls back to output tokens when every bucket has zero cost', () => {
     const buckets = [
-      bucket('2026-06-29', { costUsd: 0, inputTokens: 100, outputTokens: 0 }),
-      bucket('2026-06-30', { costUsd: 0, inputTokens: 900, outputTokens: 100 }),
+      bucket('2026-06-29', { costUsd: 0, outputTokens: 100 }),
+      bucket('2026-06-30', { costUsd: 0, outputTokens: 1000 }),
     ];
     const columns = buildHeatmapGrid(buckets, NOW, 1);
     const byDate = new Map(columns[0].cells.map((c) => [c.dateKey, c]));
@@ -138,8 +137,8 @@ describe('buildHeatmapGrid', () => {
 
   it('does not fall back to tokens when any cost is present', () => {
     const buckets = [
-      bucket('2026-06-29', { costUsd: 0, inputTokens: 5_000_000, outputTokens: 0 }),
-      bucket('2026-06-30', { costUsd: 0.5, inputTokens: 0, outputTokens: 0 }),
+      bucket('2026-06-29', { costUsd: 0, outputTokens: 5_000_000 }),
+      bucket('2026-06-30', { costUsd: 0.5, outputTokens: 0 }),
     ];
     const columns = buildHeatmapGrid(buckets, NOW, 1);
     const byDate = new Map(columns[0].cells.map((c) => [c.dateKey, c]));

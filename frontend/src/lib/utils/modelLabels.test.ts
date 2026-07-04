@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { displayModelLabel } from './modelLabels';
+import { displayModelLabel, displayUsageModelLabel } from './modelLabels';
 
 describe('displayModelLabel', () => {
   it('formats Claude slugs as provider-free display names', () => {
@@ -40,5 +40,28 @@ describe('displayModelLabel', () => {
   it('leaves non-Claude names alone', () => {
     expect(displayModelLabel('codex', 'gpt-5.4-mini', 'GPT-5.4 Mini')).toBe('GPT-5.4 Mini');
     expect(displayModelLabel('codex', 'gpt-5.4-mini')).toBe('gpt-5.4-mini');
+  });
+});
+
+describe('displayUsageModelLabel', () => {
+  it('formats Claude ledger slugs like the model picker, incl. datestamps and the [1m] marker', () => {
+    // These are the exact slug shapes the Claude wire stamps into
+    // usage_ledger rows (see result.modelUsage keys).
+    expect(displayUsageModelLabel('claude-fable-5')).toBe('Fable 5');
+    expect(displayUsageModelLabel('claude-sonnet-5')).toBe('Sonnet 5');
+    expect(displayUsageModelLabel('claude-opus-4-8[1m]')).toBe('Opus 4.8');
+    expect(displayUsageModelLabel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5');
+  });
+
+  it('title-cases GPT slugs to match the Codex catalog names', () => {
+    expect(displayUsageModelLabel('gpt-5.2-codex')).toBe('GPT-5.2 Codex');
+    expect(displayUsageModelLabel('gpt-5.5')).toBe('GPT-5.5');
+    expect(displayUsageModelLabel('gpt-5.4-mini')).toBe('GPT-5.4 Mini');
+    expect(displayUsageModelLabel('gpt-5.3-codex-spark')).toBe('GPT-5.3 Codex Spark');
+  });
+
+  it('passes unrecognized slugs through untouched', () => {
+    expect(displayUsageModelLabel('o4-mini')).toBe('o4-mini');
+    expect(displayUsageModelLabel('some-custom-model')).toBe('some-custom-model');
   });
 });

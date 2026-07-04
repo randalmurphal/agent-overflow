@@ -135,11 +135,14 @@ type UsageBucket struct {
 	ReasoningOutputTokens    int64   `json:"reasoningOutputTokens"`
 	CostUSD                  float64 `json:"costUsd"`
 	// TurnCount counts distinct settled turns in the bucket (a turn that
-	// used several models is one turn). UnpricedRows counts rows whose
-	// model has no known price in the internal/usagecost rate table —
-	// when > 0 the bucket's CostUSD is a lower bound, not a total. Set
-	// by GetUsageStats, not by QueryUsage (see the struct doc above).
+	// used several models is one turn). SessionCount counts distinct
+	// threads — the usage modal reports "sessions", and a thread is the
+	// user-facing session unit. UnpricedRows counts rows whose model has
+	// no known price in the internal/usagecost rate table — when > 0 the
+	// bucket's CostUSD is a lower bound, not a total. Set by
+	// GetUsageStats, not by QueryUsage (see the struct doc above).
 	TurnCount    int64 `json:"turnCount"`
+	SessionCount int64 `json:"sessionCount"`
 	UnpricedRows int64 `json:"unpricedRows"`
 }
 
@@ -233,7 +236,7 @@ func usageWhereFilters(q UsageQuery) ([]string, []any) {
 }
 
 // QueryUsage aggregates the ledger per the query into token totals and
-// turn counts only. Buckets order by key ascending, so calendar
+// turn/session counts only. Buckets order by key ascending, so calendar
 // groupings come back chronologically. CostUSD and UnpricedRows are
 // left at their zero value here — GetUsageStats (app_usage.go) is the
 // only caller that populates them, by merging in QueryUsageDetail's
@@ -250,7 +253,8 @@ func (s *Store) QueryUsage(q UsageQuery) ([]UsageBucket, error) {
         SUM(input_tokens), SUM(output_tokens),
         SUM(cache_read_input_tokens), SUM(cache_creation_input_tokens),
         SUM(reasoning_output_tokens),
-        COUNT(DISTINCT CASE WHEN turn_id <> '' THEN turn_id END)
+        COUNT(DISTINCT CASE WHEN turn_id <> '' THEN turn_id END),
+        COUNT(DISTINCT CASE WHEN thread_id <> '' THEN thread_id END)
         FROM usage_ledger`, bucketExpr)
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -272,7 +276,7 @@ func (s *Store) QueryUsage(q UsageQuery) ([]UsageBucket, error) {
 			&b.InputTokens, &b.OutputTokens,
 			&b.CacheReadInputTokens, &b.CacheCreationInputTokens,
 			&b.ReasoningOutputTokens,
-			&b.TurnCount,
+			&b.TurnCount, &b.SessionCount,
 		); err != nil {
 			return nil, fmt.Errorf("store: usage query scan: %w", err)
 		}
