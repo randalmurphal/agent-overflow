@@ -3413,7 +3413,9 @@ describe('createUseStickToBottomController — spring chase', () => {
       }
 
       function parseTranslateY(transform: string): number {
-        const match = /^translateY\((-?\d*\.?\d+)px\)$/.exec(transform);
+        // The trailing epsilon rotation is the compositor anti-snap
+        // (see setGlideResidue); the translateY carries the residue.
+        const match = /^translateY\((-?\d*\.?\d+)px\) rotate\(0\.0001deg\)$/.exec(transform);
         expect(match, `unexpected transform: "${transform}"`).not.toBeNull();
         return Number(match![1]);
       }

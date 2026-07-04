@@ -322,7 +322,19 @@ export function createUseStickToBottomController(
     if (next === glideResidue) return;
     glideResidue = next;
     if (!contentEl) return;
-    contentEl.style.transform = next === 0 ? '' : `translateY(${-next}px)`;
+    // The epsilon rotation defeats compositor pixel alignment: WebKit
+    // snaps axis-aligned composited layers to the device-pixel grid
+    // (text-sharpness heuristic), which rounds a pure sub-pixel
+    // translateY to 0 or ±1 device px — the applied offset then FLIPS
+    // each time the residue crosses the half-pixel mark, oscillating
+    // around the smooth trajectory instead of following it (captured
+    // 2026-07-04T2016 on a 1.1-DPR grid: rendered math monotone,
+    // on-screen motion vibrating, hairline rows worst). A
+    // non-axis-aligned matrix cannot be pixel-snapped, so the
+    // compositor must resample at the true fractional offset. 1e-4deg
+    // shears < 0.01px across a 5000px layer — imperceptible itself.
+    contentEl.style.transform =
+      next === 0 ? '' : `translateY(${-next}px) rotate(0.0001deg)`;
   }
   /** Instant set/clear — for glide writes and clears that accompany a real scrollTop write. */
   function applyGlideResidue(residue: number): void {
