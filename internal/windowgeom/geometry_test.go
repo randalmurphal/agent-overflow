@@ -53,6 +53,25 @@ func TestClampAnchorsToSavedDisplayWhenStillPresent(t *testing.T) {
 	}
 }
 
+func TestClampPullsStaleRectOntoSavedDisplay(t *testing.T) {
+	// The Tracker can persist a normal rect from screen A with Display pointing
+	// at screen B: the window changed screens while maximized/fullscreen, so
+	// only the flags and Display moved. Restore must land on B (where the
+	// window actually was), pulling the stale rect inside B's work area.
+	g := Geometry{X: 100, Y: 120, Width: 800, Height: 600, Display: secondary, Valid: true}
+	got, ok := g.Clamp([]Rect{primary, secondary})
+	if !ok {
+		t.Fatal("Clamp() ok = false, want true")
+	}
+	if got.Display != secondary {
+		t.Fatalf("Clamp() Display = %+v, want %+v", got.Display, secondary)
+	}
+	if got.X < secondary.X || got.X+got.Width > secondary.X+secondary.Width ||
+		got.Y < secondary.Y || got.Y+got.Height > secondary.Y+secondary.Height {
+		t.Fatalf("Clamp() = %+v, want fully inside secondary %+v", got, secondary)
+	}
+}
+
 func TestClampCapsOversizeToScreen(t *testing.T) {
 	g := Geometry{X: 0, Y: 0, Width: 5000, Height: 5000, Valid: true}
 	got, ok := g.Clamp([]Rect{primary})

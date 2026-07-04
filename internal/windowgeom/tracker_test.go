@@ -53,6 +53,48 @@ func TestTrackerKeepsNormalRectWhileMaximized(t *testing.T) {
 	}
 }
 
+func TestTrackerMaximizedSampleUpdatesDisplay(t *testing.T) {
+	// Regression: move-to-other-screen + maximize/fullscreen in one fast
+	// gesture. Samples are read from the live window at handler-run time, so
+	// every sample from the gesture can already report maximized — the normal
+	// rect stays frozen (correct), but the Display must follow the window, or
+	// restore reopens on the old monitor.
+	initial := Geometry{X: 100, Y: 120, Width: 900, Height: 700, Display: primary, Valid: true}
+	var got Geometry
+	tr := NewTracker(neverFires, func(g Geometry) { got = g }, initial)
+
+	tr.Record(Sample{Bounds: Rect{X: 1920, Y: 0, Width: 1920, Height: 1080}, Maximized: true, Display: secondary})
+	tr.Flush()
+
+	if !got.Maximized {
+		t.Fatal("got.Maximized = false, want true")
+	}
+	if got.Display != secondary {
+		t.Fatalf("got.Display = %+v, want %+v (screen tracked through maximized sample)", got.Display, secondary)
+	}
+	if got.X != 100 || got.Y != 120 || got.Width != 900 || got.Height != 700 {
+		t.Fatalf("normal rect = %+v, want preserved 100,120,900,700", got)
+	}
+}
+
+func TestTrackerEmptyDisplaySampleKeepsLastDisplay(t *testing.T) {
+	// GetScreen can fail at the GUI boundary (Sample.Display zero); that must
+	// not wipe the last known screen.
+	initial := Geometry{X: 100, Y: 120, Width: 900, Height: 700, Display: secondary, Valid: true}
+	var got Geometry
+	tr := NewTracker(neverFires, func(g Geometry) { got = g }, initial)
+
+	tr.Record(Sample{Bounds: Rect{X: 1920, Y: 0, Width: 1920, Height: 1080}, Fullscreen: true})
+	tr.Flush()
+
+	if !got.Fullscreen {
+		t.Fatal("got.Fullscreen = false, want true")
+	}
+	if got.Display != secondary {
+		t.Fatalf("got.Display = %+v, want %+v (empty sample display ignored)", got.Display, secondary)
+	}
+}
+
 func TestTrackerMaximizedFirstSampleDoesNotSeedNormalRect(t *testing.T) {
 	// First observation (nothing restored) is itself maximized: the maximized
 	// bounds must NOT become the normal rect, otherwise un-maximize would

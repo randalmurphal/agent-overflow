@@ -25,9 +25,10 @@ type Sample struct {
 //   - Minimized samples are dropped entirely. Some platforms report bogus
 //     off-screen coordinates (e.g. Windows' (-32000,-32000)) while minimized;
 //     persisting those would strand the window on next launch.
-//   - While maximized or fullscreen, only the flag is updated; the normal rect
-//     is preserved so un-maximizing restores to a real window, not the
-//     maximized bounds.
+//   - While maximized or fullscreen, the flags and current Display are
+//     updated but the normal rect is preserved, so un-maximizing restores to
+//     a real window (not the maximized bounds) while restore still lands on
+//     the monitor the window actually occupied.
 //
 // Construct with NewTracker. All methods are safe for concurrent use; the sink
 // is always invoked off the caller's goroutine without the lock held.
@@ -67,29 +68,37 @@ func (t *Tracker) Record(s Sample) {
 	}
 
 	if !t.hasData {
-		// First observation with nothing restored: mark it valid and remember
-		// the display, but leave the normal rect to the non-maximized branch
-		// below. Seeding the rect unconditionally here would capture the
-		// maximized bounds when the first sample is itself maximized, which is
-		// exactly what we must never persist as the restore rect.
+		// First observation with nothing restored: mark it valid, but leave the
+		// normal rect to the non-maximized branch below. Seeding the rect
+		// unconditionally here would capture the maximized bounds when the
+		// first sample is itself maximized, which is exactly what we must never
+		// persist as the restore rect.
 		t.hasData = true
 		t.latest.Valid = true
-		t.latest.Display = s.Display
 	}
 
 	t.latest.Maximized = s.Maximized
 	t.latest.Fullscreen = s.Fullscreen
+	// The current screen is trustworthy in every non-minimized state — a
+	// maximized/fullscreen window unambiguously occupies its screen — so track
+	// it on every sample. This is what keeps restore on the right monitor when
+	// the window changes screens while (or racing into) maximized/fullscreen:
+	// samples are read from the live window at handler-run time, so a fast
+	// move-then-maximize gesture can deliver every sample already maximized,
+	// and the flag-only branch below would otherwise freeze the old Display.
+	if !s.Display.empty() {
+		t.latest.Display = s.Display
+	}
 	// Only a normal (non-maximized, non-fullscreen) sample updates the stored
 	// rect: while maximized/fullscreen the event reports the maximized bounds,
-	// which must NOT overwrite the rect we restore to on un-maximize.
+	// which must NOT overwrite the rect we restore to on un-maximize. Restore
+	// re-anchors this rect to the tracked Display via Clamp, so a stale rect
+	// from another screen still reopens on the correct monitor.
 	if !s.Maximized && !s.Fullscreen && !s.Bounds.empty() {
 		t.latest.X = s.Bounds.X
 		t.latest.Y = s.Bounds.Y
 		t.latest.Width = s.Bounds.Width
 		t.latest.Height = s.Bounds.Height
-		if !s.Display.empty() {
-			t.latest.Display = s.Display
-		}
 	}
 
 	if t.timer != nil {
