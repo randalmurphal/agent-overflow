@@ -70,6 +70,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		BasePermissionMode: claudeBasePermissionMode(opts.RuntimeMode),
 		InteractionMode:    opts.Mode,
 		AutoCompactPercent: autoCompactPercent,
+		ContextWindow:      contextWindow,
 	}
 }
 
@@ -135,6 +136,22 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 		}
 		settings.Env = map[string]string{
 			"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": strconv.Itoa(percent),
+		}
+		// Claude Code ≥2.1.201 only runs auto-compact when an explicit
+		// auto-compact window resolves (env var, SDK option, statsig
+		// experiment, or a hardcoded model table that covers only
+		// claude-sonnet-5). Without one of those the pct override above
+		// is dead code inside the CLI — the should-compact check bails
+		// before reading it and the session runs to the hard blocking
+		// limit uncompacted. Sending the thread's context window as
+		// CLAUDE_CODE_AUTO_COMPACT_WINDOW opens that gate
+		// deterministically; the CLI clamps the value to [100k, 1M] and
+		// takes min(model max, value), so passing the resolved window
+		// straight through is safe. Verified against claude 2.1.201
+		// (spike: pct=1 never compacts without this var, compacts
+		// immediately with it, on both 200k and 1m windows).
+		if cfg.ContextWindow > 0 {
+			settings.Env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = strconv.Itoa(cfg.ContextWindow)
 		}
 	}
 	if !settings.FastMode && len(settings.Env) == 0 {

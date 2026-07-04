@@ -199,6 +199,14 @@ type Config struct {
 	// the `flagSettings` source ranks above `userSettings` so the
 	// inline env here wins. Verified against claude 2.1.118.
 	AutoCompactPercent int
+	// ContextWindow is the thread's resolved context window in tokens
+	// (200000 or 1000000). When AutoCompactPercent is set, it is also
+	// rendered into the `--settings` env block as
+	// CLAUDE_CODE_AUTO_COMPACT_WINDOW — on claude ≥2.1.201 auto-compact
+	// is gated on an explicitly resolved auto-compact window, and
+	// without this var the pct override is silently ignored (see
+	// inlineSettingsForCLI). Zero omits the var.
+	ContextWindow int
 	// Env carries per-session environment variables Claude Code does NOT
 	// override at startup — currently just CLAUDE_CODE_ENTRYPOINT (the
 	// CLI's `initializeEntrypoint` skips the rewrite when the value is

@@ -110,6 +110,9 @@ func TestConfigFromOptionsOneMillionContextUsesModelSuffix(t *testing.T) {
 	if cfg.AutoCompactPercent != 0 {
 		t.Fatalf("AutoCompactPercent = %d, want 0 for unset auto-compact", cfg.AutoCompactPercent)
 	}
+	if cfg.ContextWindow != provider.ClaudeExtendedContextWindow {
+		t.Fatalf("ContextWindow = %d, want %d (resolved window carried on Config)", cfg.ContextWindow, provider.ClaudeExtendedContextWindow)
+	}
 }
 
 func TestConfigFromOptionsAutoCompactPercentExtendedTier(t *testing.T) {
@@ -143,9 +146,44 @@ func TestBuildArgsAutoCompactRendersThroughSettingsFlag(t *testing.T) {
 	})
 	args := buildArgs(cfg)
 	joined := strings.Join(args, " ")
-	want := `--settings {"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50"}}`
+	want := `--settings {"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
 	if !strings.Contains(joined, want) {
 		t.Fatalf("args missing autocompact-via-flag-settings: got=%v\nwant substring=%q", args, want)
+	}
+}
+
+// TestBuildArgsAutoCompactSendsWindowForExtendedTier pins the companion
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW value to the thread's RESOLVED window:
+// claude ≥2.1.201 refuses to auto-compact at all unless an explicit
+// auto-compact window resolves, so the pct override alone is a no-op.
+// The extended tier must send 1000000, not the 200k default.
+func TestBuildArgsAutoCompactSendsWindowForExtendedTier(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:                   "claude",
+		Model:                      "claude-opus-4-7",
+		ContextWindow:              provider.ClaudeExtendedContextWindow,
+		AutoCompactExtendedPercent: 40,
+	})
+	args := buildArgs(cfg)
+	joined := strings.Join(args, " ")
+	want := `--settings {"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"40","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"1000000"}}`
+	if !strings.Contains(joined, want) {
+		t.Fatalf("args missing extended-tier autocompact settings: got=%v\nwant substring=%q", args, want)
+	}
+}
+
+// TestBuildArgsAutoCompactOmitsWindowWhenUnresolved covers hand-built
+// Configs that bypass ConfigFromOptions: a percent with no known window
+// still renders the pct override but must not invent a window value.
+func TestBuildArgsAutoCompactOmitsWindowWhenUnresolved(t *testing.T) {
+	cfg := Config{AutoCompactPercent: 50}
+	args := buildArgs(cfg)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, `"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50"`) {
+		t.Fatalf("args missing pct override: %v", args)
+	}
+	if strings.Contains(joined, "CLAUDE_CODE_AUTO_COMPACT_WINDOW") {
+		t.Fatalf("zero ContextWindow must omit the window env var: %v", args)
 	}
 }
 
@@ -158,7 +196,7 @@ func TestBuildArgsCombinesFastModeAndAutoCompactInOneSettingsFlag(t *testing.T) 
 	})
 	args := buildArgs(cfg)
 	joined := strings.Join(args, " ")
-	want := `--settings {"fastMode":true,"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50"}}`
+	want := `--settings {"fastMode":true,"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
 	if !strings.Contains(joined, want) {
 		t.Fatalf("args missing combined fastMode + autocompact settings: got=%v\nwant substring=%q", args, want)
 	}
