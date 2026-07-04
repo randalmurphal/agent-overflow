@@ -171,14 +171,13 @@ func Track(w *application.WebviewWindow, restored windowgeom.Geometry, sink func
 	for _, et := range geometryEvents {
 		w.OnWindowEvent(et, record)
 	}
-	// Take one last sample before flushing: the window is still live during
-	// WindowClosing, and the final gesture's events may have been coalesced or
-	// sampled while a state transition was still applying. Minimized samples
-	// are dropped by the tracker as usual.
-	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
-		tr.Record(sampleWindow(w))
-		tr.Flush()
-	})
+	// Flush WITHOUT sampling: by WindowClosing the window can already be
+	// decomposing its state (Windows reports a closing fullscreen window as
+	// un-fullscreened + maximized), so a sample here corrupts the persisted
+	// flags. Flush writes the tracker's in-memory latest — built only from
+	// trustworthy pre-close events — and stops the tracker so teardown
+	// transition events are ignored.
+	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) { tr.Flush() })
 	return tr.Flush
 }
 
