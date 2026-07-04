@@ -1,7 +1,8 @@
 // Unit tests for the spring chase kinematics (createSpringChase) that
 // need frame-precise control over rAF timing and target geometry:
-// the hard velocity cap, the clamp-not-zero momentum carry with its
-// adaptive ceiling, and the per-chase telemetry summary. Controller-level
+// the hard velocity cap, the minimum glide speed (anti-judder floor),
+// the clamp-not-zero momentum carry, and the per-chase telemetry
+// summary. Controller-level
 // choreography (when a chase runs) lives in index.svelte.test.ts; these
 // tests pin HOW a chase advances, driven through a fake deps harness.
 
@@ -190,87 +191,15 @@ describe('momentum carry across catch-up', () => {
     frame(); // caught-up tick — carry rule applies here
   }
 
-  it('clamps an above-ceiling remnant to the carry floor instead of zeroing it (no dead stop)', () => {
+  it('clamps an above-ceiling remnant to the carry ceiling instead of zeroing it (no dead stop)', () => {
     const h = makeHarness();
-    // ~5 frames into a 300px chase the velocity is well above the floor
-    // (and mid-chase target moves never feed the quantum EMA, so the
-    // adaptive ceiling stays at its floor of 4).
+    // ~5 frames into a 300px chase the velocity is well above the
+    // ceiling (4).
     catchUpWithRemnant(h, 300, 5);
 
     // Next line-sized growth: first-frame move from carried v=4 is
-    // (0.7·4 + 0.08·20)/1.25 ≈ 3.52; a cold start from rest would move
-    // (0.08·20)/1.25 = 1.28. The old zeroing produced the cold value.
-    h.setTarget(h.getTarget() + 20);
-    h.spring.markTargetChanged();
-    const before = h.getScrollTop();
-    frame();
-    const firstFrameMove = h.getScrollTop() - before;
-    expect(firstFrameMove).toBeGreaterThan(3.0);
-    expect(firstFrameMove).toBeLessThan(4.5);
-  });
-
-  it('raises the carry ceiling from growth quanta observed while parked at the bottom', () => {
-    const h = makeHarness();
-    // Arrive and settle at 100 so subsequent growths sample the quantum
-    // EMA (samples only count when the target moves while parked at the
-    // previous target).
-    h.setTarget(100);
-    h.spring.markTargetChanged();
-    h.spring.start();
-    for (let i = 0; i < 40; i++) frame();
-    expect(Math.abs(h.getScrollTop() - 100)).toBeLessThanOrEqual(ARRIVAL_DISTANCE_PX);
-
-    // Two 100px growths from parked position: EMA → ~100, adaptive
-    // ceiling → its max (12).
-    h.setTarget(200);
-    h.spring.markTargetChanged();
-    for (let i = 0; i < 30; i++) frame();
-    h.setTarget(300);
-    h.spring.markTargetChanged();
-    // Build velocity into this chase, then force a catch-up with the
-    // remnant (which sits above the floor of 4 after 4 frames).
-    for (let i = 0; i < 4; i++) frame();
-    h.setTarget(h.getScrollTop());
-    h.spring.markTargetChanged();
-    frame(); // caught-up tick — remnant clamps to the ADAPTIVE ceiling
-
-    // Next 100px growth: a floor-clamped carry (v=4) would move
-    // (0.7·4 + 0.08·100)/1.25 = 8.64 on the first frame. A carry above
-    // the floor moves more — proving the adaptive ceiling engaged. The
-    // ceiling max (12) bounds it: (0.7·12 + 0.08·100)/1.25 = 13.1.
-    h.setTarget(h.getTarget() + 100);
-    h.spring.markTargetChanged();
-    const before = h.getScrollTop();
-    frame();
-    const firstFrameMove = h.getScrollTop() - before;
-    expect(firstFrameMove).toBeGreaterThan(9.0);
-    expect(firstFrameMove).toBeLessThanOrEqual(13.5);
-  });
-
-  it('ignores parked shrinks when learning the carry ceiling', () => {
-    const h = makeHarness();
-    // Park at 100, then let a shrink land while parked (typesetting
-    // oscillation). Sampled via |Δ| it would push the adaptive ceiling to
-    // its max; shrinks say nothing about the next growth quantum.
-    h.setTarget(100);
-    h.spring.markTargetChanged();
-    h.spring.start();
-    for (let i = 0; i < 40; i++) frame();
-    h.setTarget(40);
-    h.spring.markTargetChanged();
-    frame(); // tick observes the parked shrink
-
-    // Growth resumes before the shrink-follow settles — a mid-chase move,
-    // never sampled — then a catch-up leaves an above-floor remnant.
-    h.setTarget(340);
-    h.spring.markTargetChanged();
-    for (let i = 0; i < 5; i++) frame();
-    h.setTarget(h.getScrollTop());
-    h.spring.markTargetChanged();
-    frame(); // caught-up tick — remnant clamps to the ceiling
-
-    // Next line-sized growth: carry must be the floor (4 → first-frame
-    // move ≈ 3.52), not a shrink-inflated ceiling (12 → ≈ 8.0).
+    // (0.7·4 + 0.08·20)/1.25 ≈ 3.52; a cold start would move only the
+    // speed floor (2.5). The old zeroing produced the cold value.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
     const before = h.getScrollTop();
@@ -288,12 +217,66 @@ describe('momentum carry across catch-up', () => {
     for (let i = 0; i < 30; i++) frame();
 
     // A fresh growth after the gap starts cold — no carried velocity.
+    // Cold spring physics would move (0.08·20)/1.25 = 1.28; the speed
+    // floor lifts that first frame to exactly 2.5, still clearly below
+    // the carried-momentum value (≈3.52) asserted above.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
     const before = h.getScrollTop();
     frame();
     const firstFrameMove = h.getScrollTop() - before;
-    expect(firstFrameMove).toBeLessThan(1.6); // cold ≈ 1.28
+    expect(firstFrameMove).toBeGreaterThan(2.3);
+    expect(firstFrameMove).toBeLessThan(2.7);
+  });
+});
+
+describe('minimum glide speed', () => {
+  // scrollTop is integer-quantized by the engine, so any sustained
+  // sub-2.5px/frame (60Hz units) phase renders as 1px steps at a low
+  // effective rate — the judder a 2026-07-04 165Hz capture pinned as
+  // the perceived "low fps". These tests pin that the ease-out tail is
+  // held at the floor and terminates with a bounded landing step.
+  function parkAt(h: Harness, target: number): void {
+    h.setTarget(target);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 40; i++) frame();
+    expect(Math.abs(h.getScrollTop() - target)).toBeLessThanOrEqual(ARRIVAL_DISTANCE_PX);
+  }
+
+  it('holds the ease-out tail at the floor instead of a sub-pixel crawl', () => {
+    const h = makeHarness();
+    parkAt(h, 100);
+
+    h.setTarget(160); // one sparse ~3-line quantum
+    h.spring.markTargetChanged();
+    const moves = displacements(h, 40).filter((m) => m !== 0);
+    expect(h.getScrollTop()).toBe(160);
+    // Every animated frame except the final landing remainder moves at
+    // least the floor (2.5px per 60Hz frame). Without the floor the
+    // exponential tail spends ~15 frames below 1px/frame.
+    const landing = moves[moves.length - 1];
+    for (const move of moves.slice(0, -1)) {
+      expect(move).toBeGreaterThanOrEqual(2.4);
+    }
+    // The landing step is the leftover distance — never larger than one
+    // floor-speed step, so it reads like any other step.
+    expect(landing).toBeLessThanOrEqual(2.6);
+    expect(landing).toBeGreaterThan(0);
+  });
+
+  it('lands a tiny growth in a couple of floor-speed steps without a snap', () => {
+    const h = makeHarness();
+    parkAt(h, 100);
+
+    h.setTarget(103); // sub-line growth
+    h.spring.markTargetChanged();
+    const moves = displacements(h, 5).filter((m) => m !== 0);
+    expect(h.getScrollTop()).toBe(103);
+    expect(moves.length).toBeLessThanOrEqual(2);
+    for (const move of moves) {
+      expect(move).toBeLessThanOrEqual(2.6); // no single-frame teleport
+    }
   });
 });
 

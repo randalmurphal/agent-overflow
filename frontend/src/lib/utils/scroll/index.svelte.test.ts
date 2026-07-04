@@ -3129,7 +3129,11 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 1000);
 
       await advanceUntil(() => Math.abs(geom.scrollTop - 600) <= 1);
-      while (mockNow < 360) await nextFrame();
+      // The speed floor lands the chase well inside the retain window
+      // (unlike the old asymptotic tail, which outlasted it), and the
+      // structural-append flag keeps momentum carry alive until retain
+      // lapses (markTargetChanged at ~150ms + 350ms). Wait past that.
+      while (mockNow < 520) await nextFrame();
 
       // Spring canceled (instant mode never enters the sentinel), so a
       // routed compensation resolves through the pass tier and lands.
@@ -3273,16 +3277,12 @@ describe('createUseStickToBottomController — spring chase', () => {
       // These three cases also pin the carry rule's safety bound. The
       // momentum-carry behavior (see the sibling 'momentum carry across
       // catch-up' describe) keeps upward velocity across diff === 0,
-      // CLAMPED to the carry ceiling instead of zeroed. The remnant
-      // velocities here (~28, ~8, ~14) all exceed the ceiling's floor
-      // (4) — and because they arise from mid-chase pins/clamps, the
-      // adaptive ceiling never learns a larger quantum (quanta are
-      // sampled only from target moves that land while parked at the
-      // previous target) — so each remnant clamps down to 4, which is
-      // provably snap-safe for the small follow-up growths below. The
-      // assertions still demand a smooth partial-progress first frame,
-      // which a carried-above-bound remnant would violate by
-      // cross-clamping instantly.
+      // CLAMPED to the carry ceiling (4) instead of zeroed. The remnant
+      // velocities here (~28, ~8, ~14) all exceed the ceiling, so each
+      // clamps down to 4, which is provably snap-safe for the small
+      // follow-up growths below. The assertions still demand a smooth
+      // partial-progress first frame, which a carried-above-bound
+      // remnant would violate by cross-clamping instantly.
 
       it('content growth after instant pin during spring should chase smoothly, not overshoot+clamp', async () => {
         const ro = getRO();
@@ -3403,8 +3403,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // line to re-accelerate from rest — a steady stream read as a series
       // of slow-start lurches. While still inside the retain window the
       // spring now KEEPS upward follow velocity across the catch-up —
-      // clamped to the adaptive carry ceiling (floor 4, raised only by
-      // growth quanta observed while parked) — so the next line continues
+      // clamped to the carry ceiling (4) — so the next line continues
       // the existing motion instead of restarting it. Carry is scoped to
       // growth-follow: downward (shrink-follow) remnants are shed so a
       // resumed growth never starts by nudging the viewport the wrong way.
@@ -3603,7 +3602,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         geom.contentHeight = 900;
         ro.fire(contentEl, 900); // target = 500
         await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame(); // sentinel
+        while (mockNow < 520) await nextFrame(); // sentinel
 
         const posBeforeRow2 = geom.scrollTop; // 500
 
@@ -3642,7 +3641,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         geom.contentHeight = 900;
         ro.fire(contentEl, 900);
         await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
+        while (mockNow < 520) await nextFrame();
 
         const posBeforeNudge = geom.scrollTop;
 
@@ -5368,7 +5367,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         geom.contentHeight = 900;
         ro.fire(contentEl, 900); // target = 500
         await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame(); // past retain → sentinel
+        while (mockNow < 520) await nextFrame(); // past retain → sentinel
         // Advance well past the sentinel snap age guard (50ms) so the
         // oscillation snap is eligible. The trace showed ~180ms
         // between sentinel entry and the oscillation.
@@ -5416,7 +5415,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         geom.contentHeight = 900;
         ro.fire(contentEl, 900); // target = 500
         await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame(); // past retain → sentinel
+        while (mockNow < 520) await nextFrame(); // past retain → sentinel
 
         // Dip: above-viewport row shrinks -37, browser auto-clamps
         // scrollTop 500 → 463 (max = 1063 - 600).
@@ -5454,7 +5453,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         geom.contentHeight = 900;
         ro.fire(contentEl, 900);
         await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
+        while (mockNow < 520) await nextFrame();
 
         // Real content growth: target moves to a NEW value (not
         // the sentinel entry value). Should spring-chase, not snap.
@@ -5479,7 +5478,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         geom.contentHeight = 900;
         ro.fire(contentEl, 900);
         await advanceUntil(() => geom.scrollTop === 500);
-        while (mockNow < 360) await nextFrame();
+        while (mockNow < 520) await nextFrame();
 
         // Oscillation that does NOT return to sentinel entry value:
         // target goes 500 → 400 → 520 (net +20px growth).
@@ -5563,7 +5562,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // window has expired. The sentinel branch keeps the spring alive.
       await advanceUntil(() => geom.scrollTop === 500);
       // Ensure we're past the retain window.
-      while (mockNow < 360) await nextFrame();
+      while (mockNow < 520) await nextFrame();
 
       // Widen the scroll range so the compensation target sits above the
       // current position without being clamped by the stub geometry
@@ -5608,7 +5607,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 900);
       await advanceUntil(() => geom.scrollTop === 500);
       // Ensure past retain window so spring enters sentinel.
-      while (mockNow < 360) await nextFrame();
+      while (mockNow < 520) await nextFrame();
 
       // Turn ends — mode flips to instant. The sentinel tick's next
       // arrival evaluation sees wantsSpringNow=false and takes the
@@ -5881,7 +5880,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.contentHeight = 900;
       ro.fire(contentEl, 900);
       await advanceUntil(() => geom.scrollTop === 500); // pinned at bottom
-      while (mockNow < 360) await nextFrame(); // retain expired → sentinel
+      while (mockNow < 520) await nextFrame(); // retain expired → sentinel
 
       // Wire-round gap: content stops advancing, well within the hold.
       contentAdvancing = false;
@@ -5945,7 +5944,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.contentHeight = 900;
       ro.fire(contentEl, 900);
       await advanceUntil(() => geom.scrollTop === 500);
-      while (mockNow < 360) await nextFrame();
+      while (mockNow < 520) await nextFrame();
 
       // Sentinel running. scrollTop === target === 500.
       const scrollTopBefore = geom.scrollTop;
@@ -5966,7 +5965,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.contentHeight = 900;
       ro.fire(contentEl, 900);
       await advanceUntil(() => geom.scrollTop === 500);
-      while (mockNow < 360) await nextFrame();
+      while (mockNow < 520) await nextFrame();
 
       const scrollTopBefore = geom.scrollTop;
       // Simulate 4 back-to-back pane structural nudges (armStructuralSpring
@@ -5990,7 +5989,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.contentHeight = 900;
       ro.fire(contentEl, 900);
       await advanceUntil(() => geom.scrollTop === 500);
-      while (mockNow < 360) await nextFrame();
+      while (mockNow < 520) await nextFrame();
 
       // Simulate sub-pixel rounding leaving scrollTop 1px short.
       geom.scrollTop = 499;
@@ -6029,7 +6028,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 900);
 
       await advanceUntil(() => Math.abs(geom.scrollTop - 500) <= 1);
-      while (mockNow < 360) await nextFrame();
+      while (mockNow < 520) await nextFrame();
 
       const writesAfterSettling = writes.length;
       for (let i = 0; i < 20; i++) await nextFrame();

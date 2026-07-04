@@ -66,52 +66,30 @@ const ARRIVAL_VELOCITY_THRESHOLD = 0.5;
 // streaming — a line wrap moves the bottom ~20px, a command-output flush
 // 60–150px — so the spring repeatedly reaches the bottom and idles in the
 // gaps. When it catches up mid-stream (inside the retain window), its
-// upward velocity is CLAMPED to a safe ceiling rather than zeroed, so the
+// upward velocity is CLAMPED to this ceiling rather than zeroed, so the
 // next quantum continues the existing motion instead of re-accelerating
 // from a dead stop — the difference between one continuous glide and a
-// string of stop-start pulses (the reported jank; the clamp-not-zero form
-// removes the dead stop the original fixed ceiling still produced after
-// every above-ceiling burst).
+// string of stop-start pulses (the clamp-not-zero form removes the dead
+// stop the original fixed ceiling still produced after every
+// above-ceiling burst).
 //
 // The ceiling keeps carry from reintroducing the big→small snap that the
 // historical diff===0 zeroing fixed: a carried velocity crosses a growth
 // of size D on the very first frame when
-// velocity > D · (mass − stiffness) / damping
-// (SPRING_FIRST_FRAME_CROSS_RATIO, ≈1.67 for DEFAULT_SPRING), and the
-// cross-target clamp then lands it as an instant snap instead of a glide.
-// The floor value 4 is safe for even a sub-line ~3px growth. The ceiling
-// ADAPTS upward — bounded by SPRING_CARRY_VELOCITY_CEILING_MAX — from the
-// growth quanta actually observed at the bottom this chase
-// (followQuantumEma): a line-wrap stream (~20px quanta) or a command
-// output burst train (~100px) licenses proportionally more carried
-// momentum via the same cross bound scaled by SPRING_CARRY_SAFETY. Quanta
-// are sampled ONLY when a target move lands while the spring is parked at
-// the previous target (a genuine streaming growth event) — mid-chase
-// target moves are bulk corrections and must not inflate the estimate,
-// which is what keeps the "stuck spring" snap-guard scenarios (frozen
-// remnants ~8/14/28 from instant pins) shedding down to the floor
+// velocity > D · (mass − stiffness) / damping ≈ 1.67 · D
+// for DEFAULT_SPRING, and the cross-target clamp then lands it as an
+// instant snap instead of a glide. 4 is safe for even a sub-line ~3px
+// growth (1.67 · 3 ≈ 5), and keeps the "stuck spring" snap-guard
+// scenarios (frozen remnants ~8/14/28 from instant pins) shedding down
 // exactly as the zeroing did, minus the dead stop.
-const SPRING_CARRY_VELOCITY_CEILING_MIN = 4;
-// Upper bound on the adaptive carry ceiling. Carrying up to 12 px/frame
-// keeps a 10Hz command-output burst train (~100px quanta, steady-state
-// follow ≈ 10–16 px/frame) in near-continuous motion, while bounding the
-// worst mispredicted first-frame snap (a small growth arriving right
-// after large quanta) to D < 12/1.67 ≈ 7px — sub-line, visually nil.
-const SPRING_CARRY_VELOCITY_CEILING_MAX = 12;
-// Safety factor applied to the exact first-frame cross bound when
-// deriving the adaptive ceiling, so an EMA that slightly lags a shrinking
-// quantum stream still doesn't cross.
-const SPRING_CARRY_SAFETY = 0.8;
-// A carried velocity crosses a growth of size D on the first integration
-// step when velocity > D * this ratio (derivation in the carry comment).
-const SPRING_FIRST_FRAME_CROSS_RATIO =
-  (DEFAULT_SPRING.mass - DEFAULT_SPRING.stiffness) / DEFAULT_SPRING.damping;
-// Follow-quantum estimator tuning: EMA blend per sample, and a per-sample
-// cap so one bulk correction that happens to land while parked (a late
-// typesetting wave) can't balloon the estimate past what streaming
-// content ever produces.
-const SPRING_QUANTUM_EMA_ALPHA = 0.5;
-const SPRING_QUANTUM_SAMPLE_MAX_PX = 240;
+//
+// A quantum-EMA adaptive ceiling (floor 4, max 12, learned from growth
+// quanta observed while parked) shipped briefly in 2026-07 and was
+// removed: a real-session capture showed the sampler never fired —
+// streaming quanta land mid-glide or across chase boundaries, never
+// while parked within the same chase — so the machinery was dead weight
+// and the fixed ceiling is all that ever ran.
+const SPRING_CARRY_VELOCITY_CEILING = 4;
 // Hard cap on chase speed, in px per 60Hz frame (18 ≈ 1080 px/s). Large
 // distances — a command block appended mid-prose, a several-hundred-px
 // correction routed through the spring — glide at a bounded constant
@@ -122,6 +100,27 @@ const SPRING_QUANTUM_SAMPLE_MAX_PX = 240;
 // accumulates lag; genuine bulk layout corrections bypass the spring
 // entirely (resolver decline tier / instant pins) and still snap.
 const SPRING_MAX_VELOCITY_PX_PER_FRAME = 18;
+// Minimum glide speed while actively chasing, in px per 60Hz frame
+// (2.5 ≈ 150 px/s ≈ 1px per 144/165Hz display frame). scrollTop lands on
+// whole CSS pixels, so motion below ~1px per display frame renders as
+// 1px steps every N frames — a 2026-07-04 165Hz session capture showed
+// the exponential ease-out tail spending >half of each glide at
+// 0.08–0.9 px/frame, i.e. 1px steps at an effective 14–55Hz: the
+// reported "low fps" judder, with rAF cadence measured clean. Holding
+// the tail at this floor keeps every animated frame moving ≈1 physical
+// pixel (≈0.9px at 165Hz — an effective ~150Hz step rate, far out of
+// the judder band); the cross-target clamp then bounds the landing step
+// to one floor-speed step, indistinguishable from the steps before it.
+// Applied only when the spring's own velocity already points at the
+// target, so direction reversals still turn around on the spring curve
+// instead of snapping. Snap-safety: for realistic quanta (≥ ~3px, cross
+// bound ≈1.67 · D ≥ 5) the floor never crosses a fresh growth in one
+// frame; a rare sub-2px growth is at most LANDED ON in one frame — the
+// cross-target clamp bounds that move to the growth itself, which is
+// smaller than a regular floor step. Must also stay below
+// SPRING_CARRY_VELOCITY_CEILING so carried momentum still dominates
+// mid-stream.
+const SPRING_MIN_VELOCITY_PX_PER_FRAME = 2.5;
 // How long a structural-append mark (markStructuralAppend, the
 // controller's markStructuralContentPending) keeps near-term content
 // growth spring-eligible while animationMode is 'instant'.
@@ -282,29 +281,15 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   // at the moment the spring settled. Cleared on cancel() and
   // when the spring exits sentinel with a different target.
   let sentinelEntryTarget = -1;
-  // EMA of the growth quanta observed while parked at the bottom this
-  // chase — the input to the adaptive carry ceiling (see the
-  // SPRING_CARRY_VELOCITY_CEILING_MIN comment for the sampling rule and why
-  // mid-chase target moves are excluded). 0 = no sample yet, which
-  // resolves the ceiling to its floor.
-  let followQuantumEma = 0;
-  // Target seen by the previous tick; -1 = none yet this chase. Drives
-  // both the quantum sampler and the telemetry target-change counter.
+  // Target seen by the previous tick; -1 = none yet this chase.
+  // Telemetry-only (drives the target-change counter); untouched when
+  // tracing is disabled.
   let lastChaseTarget = -1;
   // Per-chase telemetry (null when tracing is disabled or no chase is in
   // flight) and the long-task observer that attributes main-thread
   // blockage to the chase window. Both live start()→cancel().
   let chaseTelemetry: ChaseTelemetry | null = null;
   let longTaskObserver: PerformanceObserver | null = null;
-
-  function carryCeilingNow(): number {
-    const adaptive =
-      SPRING_CARRY_SAFETY * SPRING_FIRST_FRAME_CROSS_RATIO * followQuantumEma;
-    return Math.max(
-      SPRING_CARRY_VELOCITY_CEILING_MIN,
-      Math.min(SPRING_CARRY_VELOCITY_CEILING_MAX, adaptive),
-    );
-  }
 
   function beginChaseTelemetry(): void {
     if (!isUiRenderTraceEnabled()) return;
@@ -387,7 +372,6 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       sentinelEntries: stats.sentinelEntries,
       longTasks: stats.longTasks,
       longTaskMs: Math.round(stats.longTaskMs),
-      followQuantumEma: Math.round(followQuantumEma),
     }));
   }
 
@@ -407,7 +391,6 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     // of the gate (matches the historical 80LoC-spring cleanup semantics).
     lastTargetChangedAt = 0;
     sentinelEntryTarget = -1;
-    followQuantumEma = 0;
     lastChaseTarget = -1;
     endChaseTelemetry();
   }
@@ -509,27 +492,12 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const current = el.scrollTop;
       deps.arrival.invalidateStale(target);
 
-      // Follow-quantum sampling for the adaptive carry ceiling. Only an
-      // upward target move that lands while the spring is parked at the
-      // previous target counts — that is a genuine streaming growth
-      // quantum. Mid-chase moves are bulk corrections (fresh-mount
-      // remeasures, late typesetting) and shrinks say nothing about the
-      // next growth quantum; neither may inflate the estimate (see the
-      // SPRING_CARRY_VELOCITY_CEILING_MIN comment).
-      if (lastChaseTarget >= 0 && target !== lastChaseTarget) {
-        if (chaseTelemetry) chaseTelemetry.targetChanges += 1;
-        if (target > lastChaseTarget && withinArrivalBand(current, lastChaseTarget)) {
-          const sample = Math.min(
-            target - lastChaseTarget,
-            SPRING_QUANTUM_SAMPLE_MAX_PX,
-          );
-          followQuantumEma = followQuantumEma === 0
-            ? sample
-            : followQuantumEma
-              + SPRING_QUANTUM_EMA_ALPHA * (sample - followQuantumEma);
+      if (chaseTelemetry) {
+        if (lastChaseTarget >= 0 && target !== lastChaseTarget) {
+          chaseTelemetry.targetChanges += 1;
         }
+        lastChaseTarget = target;
       }
-      lastChaseTarget = target;
 
       // Whether the consumer still wants spring follow, and whether a
       // target change landed recently enough that more content is probably
@@ -587,6 +555,17 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               } else if (velocity < -SPRING_MAX_VELOCITY_PX_PER_FRAME) {
                 velocity = -SPRING_MAX_VELOCITY_PX_PER_FRAME;
               }
+              // Speed floor: the exponential ease-out tail otherwise drops
+              // below one physical pixel per display frame and the
+              // integer-quantized scrollTop renders it as visible 1px-step
+              // judder (see SPRING_MIN_VELOCITY_PX_PER_FRAME). Only lifts a
+              // velocity already pointing at the target — reversals still
+              // turn around on the spring curve.
+              if (stepDiff > 0 && velocity > 0 && velocity < SPRING_MIN_VELOCITY_PX_PER_FRAME) {
+                velocity = SPRING_MIN_VELOCITY_PX_PER_FRAME;
+              } else if (stepDiff < 0 && velocity < 0 && velocity > -SPRING_MIN_VELOCITY_PX_PER_FRAME) {
+                velocity = -SPRING_MIN_VELOCITY_PX_PER_FRAME;
+              }
               accumulated += velocity * stepFraction;
             }
             const next = current + accumulated;
@@ -622,12 +601,12 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         // overshoot.
         //
         // KEEP upward follow velocity across the catch-up — clamped to
-        // the adaptive carry ceiling — instead of zeroing it: that is
-        // what turns a quantum-by-quantum stream into one glide rather
-        // than a stop-start pulse per quantum. Clamping (not zeroing) an
+        // the carry ceiling — instead of zeroing it: that is what turns
+        // a quantum-by-quantum stream into one glide rather than a
+        // stop-start pulse per quantum. Clamping (not zeroing) an
         // above-ceiling remnant is equally snap-safe: the kept value is
         // by construction one the ceiling rule already licenses (see
-        // SPRING_CARRY_VELOCITY_CEILING_MIN for the derivation).
+        // SPRING_CARRY_VELOCITY_CEILING for the derivation).
         // Shed velocity entirely when:
         //   - outside the retain window → streaming paused; the arrival
         //     check below needs |velocity| < 0.5 to settle the spring (or
@@ -637,8 +616,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         //     nudge the viewport the wrong way for a frame.
         accumulated = 0;
         if (withinTargetChangeRetainWindow && velocity > 0) {
-          const ceiling = carryCeilingNow();
-          if (velocity > ceiling) velocity = ceiling;
+          if (velocity > SPRING_CARRY_VELOCITY_CEILING) {
+            velocity = SPRING_CARRY_VELOCITY_CEILING;
+          }
         } else {
           velocity = 0;
         }
