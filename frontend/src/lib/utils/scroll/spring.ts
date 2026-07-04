@@ -115,13 +115,20 @@ const SPRING_MAX_VELOCITY_PX_PER_FRAME = 18;
 // takes over below ≈ 164px remaining, giving big glides a progressive
 // slowdown instead of cruise-until-stop.
 //
-// The exponential tail below the envelope is left UNSHAPED: sub-pixel
-// motion renders continuously through the fractional glide residue
-// (the controller rides the sub-CSS-pixel remainder of each spring
-// write on a contentEl translateY — see writeScrollTop), so the
-// historical anti-judder floor/taper (integer-quantized scrollTop
-// rendered slow tails as 1px steps at 14–55Hz; captured 2026-07-04)
-// is no longer needed and the original cradled ease-out survives.
+// The tail below the envelope is the spring's own decay, rendered
+// continuously through the fractional glide residue (the controller
+// rides the sub-CSS-pixel remainder of each spring write on a
+// contentEl translateY — see writeScrollTop), bounded below by the
+// fusion floor (see the deps.glideFusionFloorPxPerFrame call site):
+// position is exact, but bilinear resampling makes thin features
+// (1px separators, glyph stems) breathe between sharp and dim as the
+// fractional offset sweeps each device pixel. The breathing rate is
+// speed ÷ device quantum; above ~60 cycles/s flicker fusion hides it,
+// while a 2026-07-04T2026 capture measured 49% of glide time at
+// 5–40px/s — squarely visible. The floor keeps a decelerating glide's
+// breathing above fusion; it replaces the historical anti-judder
+// floor/taper (integer-quantized scrollTop rendering slow tails as
+// 1px steps), which the residue made obsolete.
 const SPRING_DECEL_ENVELOPE_RATIO = 0.11;
 // Lower cap on the envelope itself (an upper bound never squeezed below
 // this), NOT a forced minimum speed: without it the envelope would
@@ -129,6 +136,11 @@ const SPRING_DECEL_ENVELOPE_RATIO = 0.11;
 // capped at 0.33 px/frame and take ~300ms). The spring's own velocity
 // below this value is untouched.
 const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
+// The fusion floor releases inside this remaining distance so the
+// landing is one floor-speed step into the arrival band plus the
+// controller's residue settle-ease — never a sustained crawl through
+// the visible-breathing speed band (5–40px/s at ~1× DPR).
+const SPRING_FUSION_FLOOR_RELEASE_PX = 1.2;
 // How long a structural-append mark (markStructuralAppend, the
 // controller's markStructuralContentPending) keeps near-term content
 // growth spring-eligible while animationMode is 'instant'.
@@ -237,6 +249,18 @@ export interface SpringChaseDeps {
    * read as a faint vibration — 2026-07-04 report).
    */
   settleGlideResidue(): void;
+  /**
+   * Minimum glide speed (px per 60Hz frame) a DECELERATING chase may
+   * not fall below until the last SPRING_FUSION_FLOOR_RELEASE_PX.
+   * Display-aware: bilinear resampling of the fractional residue makes
+   * thin features breathe between sharp and dim at (speed ÷ device
+   * quantum) cycles/s; the controller derives this floor from
+   * devicePixelRatio so the breathing stays above flicker fusion
+   * (~60Hz) on every display. Engages only after the chase has
+   * exceeded it (per quantum), so gentle sub-line growths keep their
+   * natural soft entry.
+   */
+  glideFusionFloorPxPerFrame(): number;
 }
 
 export interface SpringChase {
@@ -277,6 +301,11 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   let velocity = 0;
   let accumulated = 0;
   let lastTickAt: number | null = null;
+  // True once the CURRENT quantum's glide has exceeded the fusion
+  // floor — only then does the floor hold the deceleration up (see
+  // glideFusionFloorPxPerFrame). Reset at every catch-up and on
+  // cancel, so each growth's entry ramp stays natural.
+  let fusionFloorEngaged = false;
   // Monotonic counter (cheaper than `Symbol('spring')` per start). 0 means
   // no spring in flight; positive values identify the current spring run.
   let springToken = 0;
@@ -403,6 +432,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     springToken = 0;
     velocity = 0;
     accumulated = 0;
+    fusionFloorEngaged = false;
     lastTickAt = null;
     deps.arrival.clear();
     springStartedFromStructuralAppend = false;
@@ -600,6 +630,27 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               } else if (stepDiff < 0 && velocity < -envelope) {
                 velocity = -envelope;
               }
+              // Fusion floor: once this quantum's glide has run faster
+              // than the floor, don't let the deceleration sink below
+              // it until the release distance — the sub-floor speed
+              // band renders thin features as visible sharp/dim
+              // breathing under the residue's bilinear resample (see
+              // the constant block). Applies only to velocity already
+              // pointing at the target; reversals decelerate through
+              // zero naturally.
+              const fusionFloor = deps.glideFusionFloorPxPerFrame();
+              if (Math.abs(velocity) >= fusionFloor) {
+                fusionFloorEngaged = true;
+              } else if (
+                fusionFloorEngaged
+                && remaining > SPRING_FUSION_FLOOR_RELEASE_PX
+              ) {
+                if (stepDiff > 0 && velocity > 0) {
+                  velocity = fusionFloor;
+                } else if (stepDiff < 0 && velocity < 0) {
+                  velocity = -fusionFloor;
+                }
+              }
               accumulated += velocity * stepFraction;
             }
             const next = current + accumulated;
@@ -661,6 +712,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         //     a shrink-follow remnant carried into a resumed growth would
         //     nudge the viewport the wrong way for a frame.
         accumulated = 0;
+        // Each quantum re-earns the fusion floor: a caught-up spring's
+        // next growth starts its ramp naturally (a carried remnant ≥
+        // the floor re-engages it on the first step anyway).
+        fusionFloorEngaged = false;
         // No write happens in this branch, so the residue left by the
         // previous tick's write is released — EASED to zero by the
         // controller, never snapped. The asymptotic tail parks every

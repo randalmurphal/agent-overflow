@@ -57,7 +57,14 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     pixels, and the sub-pixel remainder is composited as a `translateY`
     on `contentEl` (which carries a permanent `will-change-transform`
     for it) so slow spring tails render continuously instead of as
-    1px steps. The residue is a render detail, not a second scroll
+    1px steps. Two display-physics guards ride along: an epsilon
+    `rotate(0.0001deg)` defeats WebKit's compositor pixel alignment
+    (which would round the sub-pixel translate to whole device pixels
+    and oscillate around the trajectory), and the spring holds a
+    DPR-derived "fusion floor" (~1.1/dpr px per 60Hz frame) while
+    decelerating so bilinear-resample breathing on thin rows cycles
+    above flicker fusion (~60Hz) instead of inside the visible 5–40Hz
+    band. The residue is a render detail, not a second scroll
     writer — it never changes `scrollTop` and fires no scroll events.
     Release rules: a clear that accompanies a real write (any
     non-spring caller, or detach) is instant; a release with no write

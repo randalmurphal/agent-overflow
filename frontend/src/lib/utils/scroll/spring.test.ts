@@ -93,6 +93,8 @@ function makeHarness(opts: { quantize?: boolean } = {}): Harness {
     settleGlideResidue: () => {
       residueSettles += 1;
     },
+    // Matches the controller's derivation at dpr 1 (1.1/1, clamped).
+    glideFusionFloorPxPerFrame: () => 1.1,
   };
 
   return {
@@ -277,7 +279,7 @@ describe('glide shaping (decel envelope + fractional tail)', () => {
     return moves;
   }
 
-  it('bounds the peak with the envelope and lands through a natural sub-pixel tail', () => {
+  it('bounds the peak with the envelope and holds the fusion floor through the tail', () => {
     const h = makeHarness();
     parkAt(h, 100);
 
@@ -292,21 +294,24 @@ describe('glide shaping (decel envelope + fractional tail)', () => {
       expect(move).toBeLessThanOrEqual(7);
     }
     // Ease-out: once past the peak, per-frame moves only decelerate —
-    // the envelope tracks remaining distance down, then hands off to
-    // the spring's own exponential decay. The final frame is excluded:
-    // it combines the last decay step with the sentinel-entry exact
-    // snap (≤1px arrival band, invisible), so it reads larger than the
-    // step before it.
+    // the envelope tracks remaining distance down, decays naturally,
+    // then plateaus at the fusion floor (equal frames allowed).
     const peakIndex = moves.indexOf(Math.max(...moves));
-    for (let i = peakIndex + 1; i < moves.length - 1; i++) {
+    for (let i = peakIndex + 1; i < moves.length; i++) {
       expect(moves[i]).toBeLessThanOrEqual(moves[i - 1] + 0.01);
     }
-    expect(moves[moves.length - 1]).toBeLessThanOrEqual(1.05);
-    // Cradled tail: the glide ends with genuinely sub-1px frames (the
-    // phase the removed anti-judder floor used to truncate). The
-    // fractional glide residue is what makes these render smoothly.
-    const subPixelTail = moves.filter((m) => m > 0 && m < 1);
-    expect(subPixelTail.length).toBeGreaterThanOrEqual(3);
+    // Fusion-floor hold: the deceleration parks at the floor (1.1 in
+    // this harness) for several frames instead of decaying through it.
+    const floorHold = moves.filter((m) => m > 1.09 && m < 1.12);
+    expect(floorHold.length).toBeGreaterThanOrEqual(3);
+    // THE regression assertion: a decelerating glide never dwells in
+    // the visible-breathing speed band (sub-floor but still moving) —
+    // bilinear resampling of the residue renders thin rows as sharp/dim
+    // flicker at those speeds (2026-07-04T2026 capture: 49% of glide
+    // time spent there). The floor releases only inside the last
+    // ~1.2px, so at most ONE sub-floor frame lands the glide.
+    const breathingBand = moves.filter((m) => m > 0.05 && m < 0.95);
+    expect(breathingBand.length).toBeLessThanOrEqual(1);
   });
 
   it('eases a tiny growth in gently without a snap', () => {
