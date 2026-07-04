@@ -268,6 +268,36 @@ export function createUseStickToBottomController(
   function forceNextSpringTickTrace(): void {
     springTickSinceLastTrace = SPRING_TICK_TRACE_SAMPLE - 1;
   }
+  // ===== Fractional glide residue =====
+  // scrollTop is quantized to whole CSS pixels by the engine, so a slow
+  // spring tail (< ~1px per display frame) rendered through scrollTop
+  // alone becomes 1px steps at a low effective rate — measured as
+  // 14–55Hz stepping on a 165Hz panel (2026-07-04 capture), perceived
+  // as "low fps" judder. The compositor has no such quantum: the
+  // sub-pixel remainder of each spring write rides as a translateY on
+  // contentEl, so the rendered position IS the spring's fractional
+  // output and sub-pixel motion is genuinely continuous (bilinear
+  // resample during motion only). The residue is always < 1px, applies
+  // only to 'spring.tick' writes, and clears on every other write, on
+  // spring cancel/sentinel entry (clearGlideResidue dep), and on
+  // detach — text always rests crisp at translate 0. This is a render
+  // detail of the write chokepoint, not a second scroll writer: it
+  // never changes scrollTop, fires no scroll events, and does not
+  // affect layout offsets or any measurement this package or the
+  // virtualizer performs (row sizes come from ResizeObserver content
+  // boxes; only an absolute getBoundingClientRect against the viewport
+  // would see the <1px offset, and nothing in the scroll path does).
+  let glideResidue = 0;
+  function applyGlideResidue(residue: number): void {
+    // Sub-1/50px residues are visually void; snap them to zero so the
+    // transform clears (and the style write is skipped) at rest.
+    const next = Math.abs(residue) < 0.02 ? 0 : residue;
+    if (next === glideResidue) return;
+    glideResidue = next;
+    if (!contentEl) return;
+    contentEl.style.transform = next === 0 ? '' : `translateY(${-next}px)`;
+  }
+
   function writeScrollTop(caller: ScrollWriteCaller, value: number): void {
     if (!scrollEl) return;
     // Hot path: spring follow can call this every frame. The app contract is
@@ -322,9 +352,23 @@ export function createUseStickToBottomController(
         isNearBottomState,
       }));
     }
-    // Restore LAST: the style write dirties style state, so keeping it
+    // Style writes LAST (residue transform, then scrollBehavior
+    // restore): a style write dirties style state, so keeping both
     // after every layout read above avoids forcing an extra recalc
-    // mid-sequence on the (rare) suppression path.
+    // mid-sequence — this runs at up to display refresh rate during a
+    // chase. Same-frame visually: the transform composites with this
+    // frame's paint regardless of its position in the sequence.
+    if (caller === 'spring.tick') {
+      // Render the engine-rounded remainder via the content transform.
+      // |residue| ≥ 1 means the engine clamped the write (max-scrollTop
+      // race), not rounding — never smear a clamp onto the transform.
+      const residue = value - taggedTop;
+      applyGlideResidue(residue > -1 && residue < 1 ? residue : 0);
+    } else if (glideResidue !== 0) {
+      // Every non-glide write is an exact/instant placement; rendered
+      // position must equal scrollTop exactly.
+      applyGlideResidue(0);
+    }
     if (suppressScrollBehavior) scrollEl.style.scrollBehavior = originalScrollBehavior;
   }
 
@@ -372,6 +416,7 @@ export function createUseStickToBottomController(
     animationMode: animationModeNow,
     prefersReducedMotion,
     forceNextSpringTickTrace,
+    clearGlideResidue: () => applyGlideResidue(0),
   });
 
   // ===== Content observation pipeline =====
@@ -867,7 +912,8 @@ export function createUseStickToBottomController(
     // in intent.detach for the first-mount arm-then-attach ordering).
     intent.detach();
     // spring.cancel() also resets the target-change timestamp and
-    // sentinel state; only the stop request needs a separate clear.
+    // sentinel state (and clears the glide residue through its dep);
+    // only the stop request needs a separate clear.
     spring.cancel();
     spring.clearStopRequest();
     scrollEl = undefined;

@@ -285,7 +285,10 @@
       aria-label="Discussion Channel Messages"
       data-testid="channel-message-list"
     >
-      <div bind:this={contentEl} class="space-y-3">
+      <!-- will-change-transform: permanent layer promotion for the scroll
+           controller's sub-pixel glide residue (translateY), matching
+           MessageTimeline's contentEl. -->
+      <div bind:this={contentEl} class="space-y-3 will-change-transform">
         {#if loadingInitial}
           <div class="text-[0.75rem] text-fg-subtle">Loading channel messages…</div>
         {:else if loadError}

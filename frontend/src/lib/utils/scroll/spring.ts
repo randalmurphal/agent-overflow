@@ -100,40 +100,11 @@ const SPRING_CARRY_VELOCITY_CEILING = 4;
 // accumulates lag; genuine bulk layout corrections bypass the spring
 // entirely (resolver decline tier / instant pins) and still snap.
 const SPRING_MAX_VELOCITY_PX_PER_FRAME = 18;
-// Minimum glide speed for the BODY of a chase, in px per 60Hz frame
-// (1.6 ≈ 96 px/s). scrollTop lands on whole CSS pixels, so motion below
-// ~1px per display frame renders as 1px steps every N frames — a
-// 2026-07-04 165Hz session capture showed the exponential ease-out tail
-// spending >half of each glide at 0.08–0.9 px/frame, i.e. 1px steps at
-// an effective 14–55Hz: the reported "low fps" judder, with rAF cadence
-// measured clean. The floor keeps stepping at ≥ ~96Hz effective
-// (0.58px per 165Hz frame, 0.67px at 144Hz, 1.6px at 60Hz) — far above
-// the observed judder band. Inside the settle-taper zone (the last
-// SPRING_MIN / SPRING_SETTLE_TAPER_RATIO ≈ 4px) the effective minimum
-// tapers below this value — see SPRING_SETTLE_TAPER_RATIO.
-//
-// TUNING (2026-07-04, same-day feedback): the floor first shipped at
-// 2.5, which sat ABOVE the spring's natural peak velocity (≈0.13 · D)
-// for quanta under ~19px — line-sized glides ran start-to-stop at the
-// constant floor and read as a flat "glide, not a spring". Raise only
-// if 1px stepping at ~96Hz proves visible; every bump trades spring
-// character on small quanta for step rate.
-//
-// Applied only when the spring's own velocity already points at the
-// target, so direction reversals still turn around on the spring curve
-// instead of snapping. Snap-safety: for realistic quanta (≥ ~3px, cross
-// bound ≈1.67 · D ≥ 5) the floor never crosses a fresh growth in one
-// frame; a rare sub-1.5px growth is at most LANDED ON in one frame —
-// the cross-target clamp bounds that move to the growth itself, which
-// is smaller than a regular floor step. Must also stay below
-// SPRING_CARRY_VELOCITY_CEILING so carried momentum still dominates
-// mid-stream.
-const SPRING_MIN_VELOCITY_PX_PER_FRAME = 1.6;
 // Deceleration envelope: max chase speed as a fraction of the REMAINING
-// distance (per 60Hz frame), floored at SPRING_MIN and capped at
-// SPRING_MAX. This is what shapes the perceived ease-out — speed bleeds
-// off in proportion to how close the glide is — and it doubles as the
-// small-quantum peak limiter: a single-line 26px growth peaks at
+// distance (per 60Hz frame), never squeezed below the _MIN below and
+// capped at SPRING_MAX. This shapes the perceived ease-out — speed
+// bleeds off in proportion to how close the glide is — and it doubles
+// as the small-quantum peak limiter: a single-line 26px growth peaks at
 // ≈ 0.11·26 ≈ 2.6 px/frame instead of the raw spring's ≈ 3.4, and a
 // carried (≤4) start into a line is immediately shaped down to the same
 // envelope (2026-07-04 feedback: line-sized glides started too fast;
@@ -143,23 +114,21 @@ const SPRING_MIN_VELOCITY_PX_PER_FRAME = 1.6;
 // the integrator. Large chases cruise at SPRING_MAX until the envelope
 // takes over below ≈ 164px remaining, giving big glides a progressive
 // slowdown instead of cruise-until-stop.
-const SPRING_DECEL_ENVELOPE_RATIO = 0.11;
-// Settle taper: inside the last SPRING_MIN / this ≈ 4px, the minimum
-// speed is remaining · this instead of the flat floor, so a glide ends
-// with a RITARDANDO — 1px steps whose intervals grow monotonically
-// (≈1.6 → 1.2 → 0.9 → 0.7 → 0.5 → 0.4 → land, ~130ms) — rather than
-// constant-speed-then-stop. The judder distinction is rhythm, not
-// speed: the captured bad tails hovered at a near-CONSTANT slow step
-// rate for 300–500ms, which the eye locks onto as a beat; a monotone
-// deceleration visits each rate once, reads as "coming to rest", and
-// the sub-1px remainder never crosses a pixel boundary at all.
 //
-// TUNING (2026-07-04): 0.4 (a ~4px / ~70ms settle) read as a hard
-// "drop and stick" landing; 0.25 stretches the settle to ~6.5px /
-// ~130ms for a cradled stop. Lower = longer, softer settle but more
-// frames at low step rates (0.11 = the envelope ratio = the unbounded
-// old tail; never go there); higher = crisper stick.
-const SPRING_SETTLE_TAPER_RATIO = 0.25;
+// The exponential tail below the envelope is left UNSHAPED: sub-pixel
+// motion renders continuously through the fractional glide residue
+// (the controller rides the sub-CSS-pixel remainder of each spring
+// write on a contentEl translateY — see writeScrollTop), so the
+// historical anti-judder floor/taper (integer-quantized scrollTop
+// rendered slow tails as 1px steps at 14–55Hz; captured 2026-07-04)
+// is no longer needed and the original cradled ease-out survives.
+const SPRING_DECEL_ENVELOPE_RATIO = 0.11;
+// Lower cap on the envelope itself (an upper bound never squeezed below
+// this), NOT a forced minimum speed: without it the envelope would
+// strangle a tiny growth's natural motion (a 3px quantum would be
+// capped at 0.33 px/frame and take ~300ms). The spring's own velocity
+// below this value is untouched.
+const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
 // How long a structural-append mark (markStructuralAppend, the
 // controller's markStructuralContentPending) keeps near-term content
 // growth spring-eligible while animationMode is 'instant'.
@@ -256,6 +225,14 @@ export interface SpringChaseDeps {
    * ~12th sampled tick.
    */
   forceNextSpringTickTrace(): void;
+  /**
+   * Clear the fractional glide residue (the sub-CSS-pixel remainder of
+   * the last spring write, rendered as a contentEl translateY by the
+   * controller). Called whenever the spring stops driving motion without
+   * a write that would clear it — cancel() and sentinel entry — so text
+   * never rests fractionally offset (soft) while the user reads.
+   */
+  clearGlideResidue(): void;
 }
 
 export interface SpringChase {
@@ -431,6 +408,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     lastTargetChangedAt = 0;
     sentinelEntryTarget = -1;
     lastChaseTarget = -1;
+    deps.clearGlideResidue();
     endChaseTelemetry();
   }
 
@@ -509,7 +487,11 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       }
       if (deps.selectionActive()) {
         // Selection drag should never fight the user — re-rAF without
-        // advancing scrollTop so the spring effectively pauses.
+        // advancing scrollTop so the spring effectively pauses. Clear
+        // the glide residue so the paused text reads crisp (the pause
+        // can last as long as the drag); `accumulated` is untouched, so
+        // the resumed chase stays continuous.
+        deps.clearGlideResidue();
         springFrameHandle = requestFrame(tick);
         return;
       }
@@ -594,33 +576,25 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               } else if (velocity < -SPRING_MAX_VELOCITY_PX_PER_FRAME) {
                 velocity = -SPRING_MAX_VELOCITY_PX_PER_FRAME;
               }
-              // Perceived-smoothness shaping, applied only to a velocity
-              // already pointing at the target (reversals still turn on
-              // the spring curve). Upper bound: the deceleration envelope
-              // (speed ∝ remaining distance) caps small-quantum peaks and
-              // shapes the ease-out. Lower bound: the glide floor keeps
-              // stepping above the judder band, tapering off across the
-              // last ~4px so the landing decelerates visibly instead of
-              // stopping flat. See SPRING_DECEL_ENVELOPE_RATIO /
-              // SPRING_MIN_VELOCITY_PX_PER_FRAME / SPRING_SETTLE_TAPER_RATIO.
+              // Deceleration envelope (speed ∝ remaining distance),
+              // applied only to a velocity already pointing at the
+              // target — reversals still turn on the spring curve. Caps
+              // small-quantum peaks and shapes the ease-out; the tail
+              // below it is the spring's own decay, rendered smoothly
+              // via the fractional glide residue. See
+              // SPRING_DECEL_ENVELOPE_RATIO.
               const remaining = Math.abs(stepDiff);
               const envelope = Math.min(
                 SPRING_MAX_VELOCITY_PX_PER_FRAME,
                 Math.max(
-                  SPRING_MIN_VELOCITY_PX_PER_FRAME,
+                  SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME,
                   remaining * SPRING_DECEL_ENVELOPE_RATIO,
                 ),
               );
-              const minGlide = Math.min(
-                SPRING_MIN_VELOCITY_PX_PER_FRAME,
-                remaining * SPRING_SETTLE_TAPER_RATIO,
-              );
-              if (stepDiff > 0 && velocity > 0) {
-                if (velocity > envelope) velocity = envelope;
-                else if (velocity < minGlide) velocity = minGlide;
-              } else if (stepDiff < 0 && velocity < 0) {
-                if (velocity < -envelope) velocity = -envelope;
-                else if (velocity > -minGlide) velocity = -minGlide;
+              if (stepDiff > 0 && velocity > envelope) {
+                velocity = envelope;
+              } else if (stepDiff < 0 && velocity < -envelope) {
+                velocity = -envelope;
               }
               accumulated += velocity * stepFraction;
             }
@@ -642,7 +616,19 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
             if (clamped === target) {
               deps.arrival.record(target);
             }
-            if (el.scrollTop !== current) accumulated = 0;
+            if (el.scrollTop !== current) {
+              // Carry the browser's integer-rounding remainder instead of
+              // dropping it, so consecutive written values stay continuous
+              // (the controller renders the remainder via the glide
+              // residue; dropping it produced a ±0.5px sawtooth at slow
+              // speeds). A remainder ≥1px means the browser CLAMPED the
+              // write (engine max-scrollTop race) — resync from the
+              // readback rather than fighting it. Cross-target landings
+              // start the next segment clean.
+              const remainder = clamped - el.scrollTop;
+              accumulated =
+                !crossedTarget && remainder > -1 && remainder < 1 ? remainder : 0;
+            }
           }
         }
       } else {
@@ -671,6 +657,15 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         //     a shrink-follow remnant carried into a resumed growth would
         //     nudge the viewport the wrong way for a frame.
         accumulated = 0;
+        // No write happens in this branch, so the rendered position
+        // must equal the rounded scrollTop — clear any residue left by
+        // the previous tick's write. Without this, end-of-stream text
+        // would sit statically sub-pixel-offset (softened) for the
+        // remainder of the retain window before the sentinel clears
+        // it. The ≤0.5px one-frame shift matches the `accumulated = 0`
+        // drop above, so the next growth's motion starts from the same
+        // point the physics does.
+        deps.clearGlideResidue();
         if (withinTargetChangeRetainWindow && velocity > 0) {
           if (velocity > SPRING_CARRY_VELOCITY_CEILING) {
             velocity = SPRING_CARRY_VELOCITY_CEILING;
@@ -719,6 +714,11 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           }
           velocity = 0;
           accumulated = 0;
+          // The exact write above clears the glide residue when it fires;
+          // when the readback already matched the target it doesn't run,
+          // so clear explicitly — the pane idles here and text must rest
+          // crisp (a lingering fractional translateY keeps it resampled).
+          deps.clearGlideResidue();
           if (chaseTelemetry) chaseTelemetry.sentinelTicks += 1;
           if (sentinelEntryTarget < 0) {
             sentinelEntryTarget = target;

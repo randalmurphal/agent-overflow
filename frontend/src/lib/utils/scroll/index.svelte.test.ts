@@ -3129,10 +3129,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 1000);
 
       await advanceUntil(() => Math.abs(geom.scrollTop - 600) <= 1);
-      // The speed floor lands the chase well inside the retain window
-      // (unlike the old asymptotic tail, which outlasted it), and the
-      // structural-append flag keeps momentum carry alive until retain
-      // lapses (markTargetChanged at ~150ms + 350ms). Wait past that.
+      // Arrival also needs |velocity| < 0.5, and the structural-append
+      // flag keeps momentum carry alive until the retain window lapses
+      // (markTargetChanged at ~150ms + 350ms). Wait past that so the
+      // spring's arrival check can cancel it.
       while (mockNow < 520) await nextFrame();
 
       // Spring canceled (instant mode never enters the sentinel), so a
@@ -3393,6 +3393,83 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop).toBeLessThan(605);
 
         await advanceUntil(() => geom.scrollTop === 605);
+      });
+    });
+
+    describe('fractional glide residue (sub-pixel translateY on contentEl)', () => {
+      // The engine rounds scrollTop to whole CSS pixels; the controller
+      // renders the sub-pixel remainder of each spring write as a
+      // translateY on contentEl. The default geometry stub stores
+      // fractional values (residue always 0), so these tests re-stub
+      // with a rounding setter to model the browser.
+      function stubRoundingScrollTop(): void {
+        stubGeometry(scrollEl, contentEl, geom, {
+          setScrollTop: (v, g) => {
+            g.scrollTop = Math.round(
+              Math.max(0, Math.min(v, g.scrollHeight - g.clientHeight)),
+            );
+          },
+        });
+      }
+
+      function parseTranslateY(transform: string): number {
+        const match = /^translateY\((-?\d*\.?\d+)px\)$/.exec(transform);
+        expect(match, `unexpected transform: "${transform}"`).not.toBeNull();
+        return Number(match![1]);
+      }
+
+      it('rides the rounding remainder on the transform during a chase and rests at translate 0', async () => {
+        stubRoundingScrollTop();
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150); // warm
+
+        geom.scrollHeight = 1400;
+        geom.contentHeight = 1200;
+        ro.fire(contentEl, 1200);
+
+        // During the chase the residue is applied on spring.tick writes:
+        // every non-empty transform is a translateY strictly inside the
+        // rounding band (|residue| ≤ 0.5 ⇒ |translate| ≤ 0.5), and at
+        // least some frames carry one (fractional spring output cannot
+        // stay integer-aligned for a whole chase).
+        let residueFrames = 0;
+        for (let i = 0; i < 60 && geom.scrollTop !== 800; i++) {
+          await nextFrame();
+          const transform = contentEl.style.transform;
+          if (transform !== '') {
+            residueFrames += 1;
+            expect(Math.abs(parseTranslateY(transform))).toBeLessThanOrEqual(0.5);
+          }
+        }
+        expect(geom.scrollTop).toBe(800);
+        expect(residueFrames).toBeGreaterThan(0);
+
+        // Settled (caught-up/sentinel clear): text rests crisp.
+        await nextFrame();
+        expect(contentEl.style.transform).toBe('');
+      });
+
+      it('clears the residue on the next non-spring write', async () => {
+        stubRoundingScrollTop();
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150); // warm
+
+        geom.scrollHeight = 1400;
+        geom.contentHeight = 1200;
+        ro.fire(contentEl, 1200);
+
+        // Advance until a frame leaves a live residue mid-chase.
+        await advanceUntil(
+          () => contentEl.style.transform !== '' && geom.scrollTop < 800,
+        );
+
+        // An instant placement (forceStick) must land with rendered
+        // position exactly equal to scrollTop — transform cleared.
+        controller.forceStick();
+        expect(geom.scrollTop).toBe(800);
+        expect(contentEl.style.transform).toBe('');
       });
     });
 

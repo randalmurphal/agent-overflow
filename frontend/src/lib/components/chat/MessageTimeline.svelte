@@ -652,8 +652,14 @@
            mismatch the estimate degrades per-row to the kind table /
            flat default. See utils/virtual/priors.ts and
            docs/architecture/frontend-scroll.md. -->
+      <!-- will-change-transform: the scroll controller composites the spring's
+           sub-pixel remainder onto this element as a translateY (glide
+           residue). Keeping the layer promotion permanent avoids the
+           subpixel-AA repaint blink that layer creation/destruction would
+           cause at every chase start/end. -->
       <div
         bind:this={contentEl}
+        class="will-change-transform"
         style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}
       >
         {#key pane.threadId}

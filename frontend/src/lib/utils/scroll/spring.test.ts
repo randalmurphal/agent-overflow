@@ -1,6 +1,7 @@
 // Unit tests for the spring chase kinematics (createSpringChase) that
 // need frame-precise control over rAF timing and target geometry:
-// the hard velocity cap, the minimum glide speed (anti-judder floor),
+// the hard velocity cap, the deceleration envelope, the
+// integer-rounding remainder carry (glide-residue continuity),
 // the clamp-not-zero momentum carry, and the per-chase telemetry
 // summary. Controller-level
 // choreography (when a chase runs) lives in index.svelte.test.ts; these
@@ -35,13 +36,25 @@ interface Harness {
   setTarget(value: number): void;
   getTarget(): number;
   setAnimationMode(mode: 'spring' | 'instant'): void;
+  residueClears(): number;
 }
 
-function makeHarness(): Harness {
+/**
+ * `quantize: true` models the browser's scrollTop contract at 1× DPI:
+ * a fractional write lands on a whole pixel, and readbacks return that
+ * rounded value. The default (fractional storage) keeps the kinematic
+ * assertions exact; the quantized variant exercises the
+ * remainder-carry path (which is inert when writes store exactly).
+ */
+function makeHarness(opts: { quantize?: boolean } = {}): Harness {
   let scrollTop = 0;
   let target = 0;
   let animationMode: 'spring' | 'instant' = 'spring';
+  let residueClears = 0;
   const writes: { caller: string; value: number }[] = [];
+  const store = (value: number): void => {
+    scrollTop = opts.quantize ? Math.round(value) : value;
+  };
 
   const el = {
     get scrollTop() {
@@ -55,7 +68,7 @@ function makeHarness(): Harness {
     shouldWriteExact: (t) => scrollTop !== t,
     writeExact: (caller, t) => {
       writes.push({ caller, value: t });
-      scrollTop = t;
+      store(t);
     },
     clear: () => {},
     invalidateStale: () => {},
@@ -72,11 +85,14 @@ function makeHarness(): Harness {
     arrival,
     writeScrollTop: (caller, value) => {
       writes.push({ caller, value });
-      scrollTop = value;
+      store(value);
     },
     animationMode: () => animationMode,
     prefersReducedMotion: () => false,
     forceNextSpringTickTrace: () => {},
+    clearGlideResidue: () => {
+      residueClears += 1;
+    },
   };
 
   return {
@@ -90,6 +106,7 @@ function makeHarness(): Harness {
     setAnimationMode: (mode) => {
       animationMode = mode;
     },
+    residueClears: () => residueClears,
   };
 }
 
@@ -200,7 +217,7 @@ describe('momentum carry across catch-up', () => {
     // Next line-sized growth: the carried remnant (4) integrates to
     // (0.7·4 + 0.08·20)/1.25 ≈ 3.52, which the decel envelope shapes
     // down to 0.11·20 = 2.2 on the first frame. A cold start (the old
-    // zeroing) would move only the glide floor (1.6) — carry is what
+    // zeroing) would move only (0.08·20)/1.25 = 1.28 — carry is what
     // keeps the next quantum measurably in motion.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
@@ -219,26 +236,27 @@ describe('momentum carry across catch-up', () => {
     for (let i = 0; i < 30; i++) frame();
 
     // A fresh growth after the gap starts cold — no carried velocity.
-    // Cold spring physics would move (0.08·20)/1.25 = 1.28; the speed
-    // floor lifts that first frame to exactly 1.6, still clearly below
-    // the carried-momentum value (≈3.52) asserted above.
+    // Cold spring physics move (0.08·20)/1.25 = 1.28 on the first
+    // frame (the envelope, 2.2, doesn't bind), clearly below the
+    // envelope-clamped carried-momentum value (2.2) asserted above.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
     const before = h.getScrollTop();
     frame();
     const firstFrameMove = h.getScrollTop() - before;
-    expect(firstFrameMove).toBeGreaterThan(1.5);
-    expect(firstFrameMove).toBeLessThan(1.7);
+    expect(firstFrameMove).toBeGreaterThan(1.2);
+    expect(firstFrameMove).toBeLessThan(1.4);
   });
 });
 
-describe('glide shaping (floor, decel envelope, settle taper)', () => {
-  // scrollTop is integer-quantized by the engine, so any SUSTAINED
-  // sub-floor phase renders as 1px steps at a low effective rate — the
-  // judder a 2026-07-04 165Hz capture pinned as the perceived "low
-  // fps". These tests pin the shaped profile: body held at or above the
-  // floor (1.6px per 60Hz frame), peak bounded by the decel envelope
-  // (0.11 · remaining), and a settle taper bounded to a few frames.
+describe('glide shaping (decel envelope + fractional tail)', () => {
+  // The envelope (0.11 · remaining) bounds the peak and shapes the
+  // ease-out; the exponential tail below it is deliberately UNSHAPED —
+  // sub-pixel motion renders continuously through the controller's
+  // fractional glide residue, so the historical anti-judder floor and
+  // settle taper are gone. These tests pin the envelope bound, the
+  // natural cradled tail (sub-1px frames the floor used to erase), and
+  // the remainder-carry continuity under integer scrollTop rounding.
   function parkAt(h: Harness, target: number): void {
     h.setTarget(target);
     h.spring.markTargetChanged();
@@ -259,37 +277,36 @@ describe('glide shaping (floor, decel envelope, settle taper)', () => {
     return moves;
   }
 
-  it('keeps the glide body at the floor and bounds the settle taper to a few frames', () => {
+  it('bounds the peak with the envelope and lands through a natural sub-pixel tail', () => {
     const h = makeHarness();
     parkAt(h, 100);
 
     h.setTarget(160); // one sparse ~3-line quantum
     h.spring.markTargetChanged();
-    const moves = movesUntilNear(h, 160, 40);
+    const moves = movesUntilNear(h, 160, 60);
 
-    // Body: every frame before the settle taper moves at least the
-    // floor. Without the floor the exponential tail spends ~15 frames
-    // below 1px/frame.
-    const firstSettle = moves.findIndex((m) => m < 1.55);
-    const settleStart = firstSettle === -1 ? moves.length : firstSettle;
-    for (const move of moves.slice(0, settleStart)) {
-      expect(move).toBeGreaterThanOrEqual(1.55);
-    }
-    // Settle: sub-floor frames are bounded (~130ms ritardando) — a
-    // brief, monotonically decelerating landing, not a sustained crawl.
-    // The final frame is excluded: it combines the last taper step with
-    // the sentinel-entry exact snap (≤1px arrival band, invisible), so
-    // it reads larger than the step before it.
-    expect(moves.length - settleStart).toBeLessThanOrEqual(8);
-    for (let i = settleStart + 1; i < moves.length - 1; i++) {
-      expect(moves[i]).toBeLessThanOrEqual(moves[i - 1] + 0.01);
-    }
-    expect(moves[moves.length - 1]).toBeLessThanOrEqual(1.55);
-    // Envelope: a 60px quantum peaks near 0.11·remaining, never the raw
-    // spring's distance-proportional zoom.
+    // Envelope: a 60px quantum peaks near 0.11·remaining (integration
+    // peaks ≈5.7 before the clamp binds), never the raw spring's
+    // distance-proportional zoom (≈8.7 for 60px).
     for (const move of moves) {
       expect(move).toBeLessThanOrEqual(7);
     }
+    // Ease-out: once past the peak, per-frame moves only decelerate —
+    // the envelope tracks remaining distance down, then hands off to
+    // the spring's own exponential decay. The final frame is excluded:
+    // it combines the last decay step with the sentinel-entry exact
+    // snap (≤1px arrival band, invisible), so it reads larger than the
+    // step before it.
+    const peakIndex = moves.indexOf(Math.max(...moves));
+    for (let i = peakIndex + 1; i < moves.length - 1; i++) {
+      expect(moves[i]).toBeLessThanOrEqual(moves[i - 1] + 0.01);
+    }
+    expect(moves[moves.length - 1]).toBeLessThanOrEqual(1.05);
+    // Cradled tail: the glide ends with genuinely sub-1px frames (the
+    // phase the removed anti-judder floor used to truncate). The
+    // fractional glide residue is what makes these render smoothly.
+    const subPixelTail = moves.filter((m) => m > 0 && m < 1);
+    expect(subPixelTail.length).toBeGreaterThanOrEqual(3);
   });
 
   it('eases a tiny growth in gently without a snap', () => {
@@ -298,13 +315,68 @@ describe('glide shaping (floor, decel envelope, settle taper)', () => {
 
     h.setTarget(103); // sub-line growth
     h.spring.markTargetChanged();
-    const moves = movesUntilNear(h, 103, 6);
+    const moves = movesUntilNear(h, 103, 20);
+    // Cold first frame is pure spring physics, (0.08·3)/1.25 ≈ 0.19 —
+    // the envelope min (1.6) is an upper bound, never a forced speed.
+    expect(moves[0]).toBeGreaterThan(0.15);
+    expect(moves[0]).toBeLessThan(0.25);
     for (const move of moves) {
-      // First frame is the tapered lift (0.25·3 = 0.75), not the full
-      // floor — tiny growths start soft and decelerate in.
-      expect(move).toBeLessThanOrEqual(0.8);
+      expect(move).toBeLessThanOrEqual(1);
       expect(move).toBeGreaterThan(0);
     }
+  });
+
+  it('keeps written values continuous under integer scrollTop rounding (remainder carry)', () => {
+    // Quantized harness: writes land on whole pixels like the browser.
+    // Without the remainder carry, each rounded-DOWN readback dropped
+    // the sub-pixel progress and the next written value could regress
+    // (write 100.4 → readback 100 → next write 100.2), a ±0.5px
+    // sawtooth in the rendered (residue-composited) position at tail
+    // speeds. With carry, the written sequence never moves backwards.
+    const h = makeHarness({ quantize: true });
+    parkAt(h, 100);
+
+    const writesBefore = h.writes.length;
+    h.setTarget(160);
+    h.spring.markTargetChanged();
+    for (let i = 0; i < 80 && Math.abs(h.getScrollTop() - 160) > 0; i++) frame();
+    expect(h.getScrollTop()).toBe(160);
+
+    const glideWrites = h.writes
+      .slice(writesBefore)
+      .filter((w) => w.caller === 'spring.tick' || w.caller === 'spring.overshoot')
+      .map((w) => w.value);
+    expect(glideWrites.length).toBeGreaterThan(10);
+    for (let i = 1; i < glideWrites.length; i++) {
+      expect(glideWrites[i]).toBeGreaterThanOrEqual(glideWrites[i - 1]);
+    }
+  });
+});
+
+describe('glide residue clearing', () => {
+  it('clears the residue on cancel', () => {
+    const h = makeHarness();
+    h.setTarget(200);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 5; i++) frame();
+    const before = h.residueClears();
+    h.spring.cancel();
+    expect(h.residueClears()).toBe(before + 1);
+  });
+
+  it('clears the residue when the chase settles into the sentinel', () => {
+    const h = makeHarness();
+    h.setTarget(60);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    // Run past arrival + retain lapse; animationMode stays 'spring', so
+    // the chase parks in sentinel mode (which must leave text crisp
+    // even though no exact write fires once the readback matches).
+    for (let i = 0; i < 80; i++) frame();
+    expect(Math.abs(h.getScrollTop() - 60)).toBeLessThanOrEqual(ARRIVAL_DISTANCE_PX);
+    expect(h.residueClears()).toBeGreaterThan(0);
+    expect(h.spring.isActive()).toBe(true); // sentinel-alive, not cancelled
   });
 });
 

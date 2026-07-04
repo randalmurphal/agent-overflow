@@ -52,6 +52,16 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     every programmatic write routes through, wiring for the three
     machines below, and the public API. `types.ts` holds the consumer
     contract; consumers import from `utils/scroll/index.svelte`.
+    The chokepoint also owns the **fractional glide residue**: spring
+    writes are fractional, the engine rounds `scrollTop` to whole CSS
+    pixels, and the sub-pixel remainder is composited as a `translateY`
+    on `contentEl` (which carries a permanent `will-change-transform`
+    for it) so slow spring tails render continuously instead of as
+    1px steps. The residue is a render detail, not a second scroll
+    writer — it never changes `scrollTop`, fires no scroll events, and
+    clears on every non-spring write, on spring catch-up/cancel/
+    sentinel entry, and on detach, so text at rest is always crisp at
+    translate 0.
   - `intent.ts` — the event-sourced intent machine: wheel/scroll/pointer/
     key/touch listeners, escape and re-stick, restore-snap consent, and
     programmatic-write tagging. Intent is never geometry-inferred.
