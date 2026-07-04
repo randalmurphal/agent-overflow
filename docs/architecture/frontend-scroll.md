@@ -58,10 +58,13 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     on `contentEl` (which carries a permanent `will-change-transform`
     for it) so slow spring tails render continuously instead of as
     1px steps. The residue is a render detail, not a second scroll
-    writer — it never changes `scrollTop`, fires no scroll events, and
-    clears on every non-spring write, on spring catch-up/cancel/
-    sentinel entry, and on detach, so text at rest is always crisp at
-    translate 0.
+    writer — it never changes `scrollTop` and fires no scroll events.
+    Release rules: a clear that accompanies a real write (any
+    non-spring caller, or detach) is instant; a release with no write
+    (spring catch-up, selection pause, sentinel entry, cancel) is
+    EASED to zero over ~6 frames — snapping the parked ~0.5px residue
+    once per quantum read as a faint vibration during bursty output.
+    Either way text at rest ends crisp at translate 0.
   - `intent.ts` — the event-sourced intent machine: wheel/scroll/pointer/
     key/touch listeners, escape and re-stick, restore-snap consent, and
     programmatic-write tagging. Intent is never geometry-inferred.

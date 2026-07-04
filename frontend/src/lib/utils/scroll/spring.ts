@@ -226,13 +226,17 @@ export interface SpringChaseDeps {
    */
   forceNextSpringTickTrace(): void;
   /**
-   * Clear the fractional glide residue (the sub-CSS-pixel remainder of
-   * the last spring write, rendered as a contentEl translateY by the
-   * controller). Called whenever the spring stops driving motion without
-   * a write that would clear it — cancel() and sentinel entry — so text
-   * never rests fractionally offset (soft) while the user reads.
+   * Release the fractional glide residue (the sub-CSS-pixel remainder
+   * of the last spring write, rendered as a contentEl translateY by
+   * the controller) by EASING it to zero over a few frames. Called
+   * whenever the spring stops driving motion without a write that
+   * would clear it — catch-up between quanta, selection pause,
+   * sentinel entry, cancel() — so text comes to rest crisp without a
+   * sub-pixel pop (the asymptotic tail parks every landing with up to
+   * ~0.5px live; popping that once per quantum during bursty output
+   * read as a faint vibration — 2026-07-04 report).
    */
-  clearGlideResidue(): void;
+  settleGlideResidue(): void;
 }
 
 export interface SpringChase {
@@ -408,7 +412,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     lastTargetChangedAt = 0;
     sentinelEntryTarget = -1;
     lastChaseTarget = -1;
-    deps.clearGlideResidue();
+    deps.settleGlideResidue();
     endChaseTelemetry();
   }
 
@@ -487,11 +491,11 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       }
       if (deps.selectionActive()) {
         // Selection drag should never fight the user — re-rAF without
-        // advancing scrollTop so the spring effectively pauses. Clear
-        // the glide residue so the paused text reads crisp (the pause
-        // can last as long as the drag); `accumulated` is untouched, so
-        // the resumed chase stays continuous.
-        deps.clearGlideResidue();
+        // advancing scrollTop so the spring effectively pauses. Ease
+        // the glide residue out so the paused text reads crisp (the
+        // pause can last as long as the drag); `accumulated` is
+        // untouched, so the resumed chase stays continuous.
+        deps.settleGlideResidue();
         springFrameHandle = requestFrame(tick);
         return;
       }
@@ -657,15 +661,16 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         //     a shrink-follow remnant carried into a resumed growth would
         //     nudge the viewport the wrong way for a frame.
         accumulated = 0;
-        // No write happens in this branch, so the rendered position
-        // must equal the rounded scrollTop — clear any residue left by
-        // the previous tick's write. Without this, end-of-stream text
-        // would sit statically sub-pixel-offset (softened) for the
-        // remainder of the retain window before the sentinel clears
-        // it. The ≤0.5px one-frame shift matches the `accumulated = 0`
-        // drop above, so the next growth's motion starts from the same
-        // point the physics does.
-        deps.clearGlideResidue();
+        // No write happens in this branch, so the residue left by the
+        // previous tick's write is released — EASED to zero by the
+        // controller, never snapped. The asymptotic tail parks every
+        // landing with up to ~0.5px live; an instant clear here popped
+        // once per quantum during bursty output and read as a faint
+        // vibration (2026-07-04). The ease completes the landing's
+        // final half-pixel as motion, converging on the rounded
+        // scrollTop — the same point `accumulated = 0` restarts the
+        // physics from, so the next growth stays continuous.
+        deps.settleGlideResidue();
         if (withinTargetChangeRetainWindow && velocity > 0) {
           if (velocity > SPRING_CARRY_VELOCITY_CEILING) {
             velocity = SPRING_CARRY_VELOCITY_CEILING;
@@ -716,9 +721,11 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           accumulated = 0;
           // The exact write above clears the glide residue when it fires;
           // when the readback already matched the target it doesn't run,
-          // so clear explicitly — the pane idles here and text must rest
-          // crisp (a lingering fractional translateY keeps it resampled).
-          deps.clearGlideResidue();
+          // so release explicitly (eased) — the pane idles here and text
+          // must come to rest crisp (a lingering fractional translateY
+          // keeps it resampled). Usually a no-op: the caught-up branch
+          // already settled it.
+          deps.settleGlideResidue();
           if (chaseTelemetry) chaseTelemetry.sentinelTicks += 1;
           if (sentinelEntryTarget < 0) {
             sentinelEntryTarget = target;

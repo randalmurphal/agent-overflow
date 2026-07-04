@@ -278,17 +278,44 @@ export function createUseStickToBottomController(
   // contentEl, so the rendered position IS the spring's fractional
   // output and sub-pixel motion is genuinely continuous (bilinear
   // resample during motion only). The residue is always < 1px, applies
-  // only to 'spring.tick' writes, and clears on every other write, on
-  // spring cancel/sentinel entry (clearGlideResidue dep), and on
-  // detach — text always rests crisp at translate 0. This is a render
+  // only to 'spring.tick' writes, clears on every other write, is
+  // eased out when the spring stops without a write (catch-up /
+  // selection pause / sentinel entry / cancel, via the
+  // settleGlideResidue dep), and clears instantly on detach — text
+  // always comes to rest crisp at translate 0. This is a render
   // detail of the write chokepoint, not a second scroll writer: it
   // never changes scrollTop, fires no scroll events, and does not
   // affect layout offsets or any measurement this package or the
   // virtualizer performs (row sizes come from ResizeObserver content
   // boxes; only an absolute getBoundingClientRect against the viewport
   // would see the <1px offset, and nothing in the scroll path does).
+  //
+  // Releasing the residue has two shapes, and the split is load-bearing:
+  //   - A clear that ACCOMPANIES a real scrollTop write (any non-glide
+  //     caller below) is instant — the rendered jump IS the write's
+  //     motion, so rendered position must equal the new scrollTop in
+  //     the same frame.
+  //   - A release with NO accompanying write (spring caught up between
+  //     quanta, selection pause, sentinel entry, cancel) EASES the
+  //     residue to zero over a few frames instead. The asymptotic tail
+  //     parks every landing with up to ~0.5px of live residue; snapping
+  //     that with no write is a sub-pixel pop, and during bursty tool
+  //     output — one landing per quantum at a few Hz — the repeated
+  //     pops read as a faint vibration (2026-07-04 report on the first
+  //     residue build). The ease-out is the same "cradle" shape as the
+  //     glide itself, ~100ms to crisp.
   let glideResidue = 0;
-  function applyGlideResidue(residue: number): void {
+  let residueSettleHandle: number | null = null;
+  // Per-frame decay factor for the no-write release: 0.5px falls below
+  // the 0.02 snap threshold in ~6 frames (~100ms at 60Hz).
+  const RESIDUE_SETTLE_DECAY = 0.55;
+  function stopResidueSettle(): void {
+    if (residueSettleHandle !== null) {
+      cancelAnimationFrame(residueSettleHandle);
+      residueSettleHandle = null;
+    }
+  }
+  function setGlideResidue(residue: number): void {
     // Sub-1/50px residues are visually void; snap them to zero so the
     // transform clears (and the style write is skipped) at rest.
     const next = Math.abs(residue) < 0.02 ? 0 : residue;
@@ -296,6 +323,23 @@ export function createUseStickToBottomController(
     glideResidue = next;
     if (!contentEl) return;
     contentEl.style.transform = next === 0 ? '' : `translateY(${-next}px)`;
+  }
+  /** Instant set/clear — for glide writes and clears that accompany a real scrollTop write. */
+  function applyGlideResidue(residue: number): void {
+    stopResidueSettle();
+    setGlideResidue(residue);
+  }
+  /** No-write release — ease the residue to zero instead of popping. Idempotent per release. */
+  function settleGlideResidue(): void {
+    if (glideResidue === 0 || residueSettleHandle !== null) return;
+    const step = (): void => {
+      residueSettleHandle = null;
+      setGlideResidue(glideResidue * RESIDUE_SETTLE_DECAY);
+      if (glideResidue !== 0) {
+        residueSettleHandle = requestAnimationFrame(step);
+      }
+    };
+    residueSettleHandle = requestAnimationFrame(step);
   }
 
   function writeScrollTop(caller: ScrollWriteCaller, value: number): void {
@@ -346,6 +390,12 @@ export function createUseStickToBottomController(
         clientHeight: Math.round(beforeClient),
         maxTarget: Math.round(Math.max(0, beforeHeight - beforeClient)),
         taggedTop,
+        // Sub-pixel remainder THIS write rides on the content transform
+        // (glide writes only; every other caller clears it below).
+        residue:
+          caller === 'spring.tick'
+            ? Math.round((value - taggedTop) * 100) / 100
+            : 0,
         isAtBottomState,
         escapedFromLockState,
         pauseDepth,
@@ -416,7 +466,7 @@ export function createUseStickToBottomController(
     animationMode: animationModeNow,
     prefersReducedMotion,
     forceNextSpringTickTrace,
-    clearGlideResidue: () => applyGlideResidue(0),
+    settleGlideResidue,
   });
 
   // ===== Content observation pipeline =====
@@ -912,10 +962,13 @@ export function createUseStickToBottomController(
     // in intent.detach for the first-mount arm-then-attach ordering).
     intent.detach();
     // spring.cancel() also resets the target-change timestamp and
-    // sentinel state (and clears the glide residue through its dep);
-    // only the stop request needs a separate clear.
+    // sentinel state; only the stop request needs a separate clear.
+    // The glide residue is cleared INSTANTLY here (not via cancel's
+    // gentle settle) — the settle loop would outlive contentEl below
+    // and leave the detached element with a stale transform.
     spring.cancel();
     spring.clearStopRequest();
+    applyGlideResidue(0);
     scrollEl = undefined;
     contentEl = undefined;
   }

@@ -3445,9 +3445,23 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop).toBe(800);
         expect(residueFrames).toBeGreaterThan(0);
 
-        // Settled (caught-up/sentinel clear): text rests crisp.
-        await nextFrame();
+        // Landing release: the residue left by the last write is EASED
+        // to zero (a few decaying frames), never popped — an instant
+        // clear once per quantum read as a faint vibration during
+        // bursty tool output (2026-07-04). Magnitudes must only
+        // decrease until the transform rests at ''.
+        const settleMagnitudes: number[] = [];
+        for (let i = 0; i < 20 && contentEl.style.transform !== ''; i++) {
+          await nextFrame();
+          const transform = contentEl.style.transform;
+          if (transform !== '') {
+            settleMagnitudes.push(Math.abs(parseTranslateY(transform)));
+          }
+        }
         expect(contentEl.style.transform).toBe('');
+        for (let i = 1; i < settleMagnitudes.length; i++) {
+          expect(settleMagnitudes[i]).toBeLessThan(settleMagnitudes[i - 1]);
+        }
       });
 
       it('clears the residue on the next non-spring write', async () => {

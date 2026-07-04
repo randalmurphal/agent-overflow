@@ -36,7 +36,7 @@ interface Harness {
   setTarget(value: number): void;
   getTarget(): number;
   setAnimationMode(mode: 'spring' | 'instant'): void;
-  residueClears(): number;
+  residueSettles(): number;
 }
 
 /**
@@ -50,7 +50,7 @@ function makeHarness(opts: { quantize?: boolean } = {}): Harness {
   let scrollTop = 0;
   let target = 0;
   let animationMode: 'spring' | 'instant' = 'spring';
-  let residueClears = 0;
+  let residueSettles = 0;
   const writes: { caller: string; value: number }[] = [];
   const store = (value: number): void => {
     scrollTop = opts.quantize ? Math.round(value) : value;
@@ -90,8 +90,8 @@ function makeHarness(opts: { quantize?: boolean } = {}): Harness {
     animationMode: () => animationMode,
     prefersReducedMotion: () => false,
     forceNextSpringTickTrace: () => {},
-    clearGlideResidue: () => {
-      residueClears += 1;
+    settleGlideResidue: () => {
+      residueSettles += 1;
     },
   };
 
@@ -106,7 +106,7 @@ function makeHarness(opts: { quantize?: boolean } = {}): Harness {
     setAnimationMode: (mode) => {
       animationMode = mode;
     },
-    residueClears: () => residueClears,
+    residueSettles: () => residueSettles,
   };
 }
 
@@ -360,9 +360,9 @@ describe('glide residue clearing', () => {
     h.spring.markTargetChanged();
     h.spring.start();
     for (let i = 0; i < 5; i++) frame();
-    const before = h.residueClears();
+    const before = h.residueSettles();
     h.spring.cancel();
-    expect(h.residueClears()).toBe(before + 1);
+    expect(h.residueSettles()).toBe(before + 1);
   });
 
   it('clears the residue when the chase settles into the sentinel', () => {
@@ -375,7 +375,7 @@ describe('glide residue clearing', () => {
     // even though no exact write fires once the readback matches).
     for (let i = 0; i < 80; i++) frame();
     expect(Math.abs(h.getScrollTop() - 60)).toBeLessThanOrEqual(ARRIVAL_DISTANCE_PX);
-    expect(h.residueClears()).toBeGreaterThan(0);
+    expect(h.residueSettles()).toBeGreaterThan(0);
     expect(h.spring.isActive()).toBe(true); // sentinel-alive, not cancelled
   });
 });
