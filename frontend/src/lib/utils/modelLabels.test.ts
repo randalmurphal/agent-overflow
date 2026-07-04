@@ -44,12 +44,16 @@ describe('displayModelLabel', () => {
 });
 
 describe('displayUsageModelLabel', () => {
-  it('formats Claude ledger slugs like the model picker, incl. datestamps and the [1m] marker', () => {
+  it('formats Claude ledger slugs like the model picker, keeping the [1m] tier marker', () => {
     // These are the exact slug shapes the Claude wire stamps into
-    // usage_ledger rows (see result.modelUsage keys).
+    // usage_ledger rows (see result.modelUsage keys). The [1m] marker
+    // MUST survive: the ledger keeps the extended-context tier as its
+    // own model, and without the suffix "claude-sonnet-5" and
+    // "claude-sonnet-5[1m]" render as two identical "Sonnet 5" rows.
     expect(displayUsageModelLabel('claude-fable-5')).toBe('Fable 5');
     expect(displayUsageModelLabel('claude-sonnet-5')).toBe('Sonnet 5');
-    expect(displayUsageModelLabel('claude-opus-4-8[1m]')).toBe('Opus 4.8');
+    expect(displayUsageModelLabel('claude-sonnet-5[1m]')).toBe('Sonnet 5 [1m]');
+    expect(displayUsageModelLabel('claude-opus-4-8[1m]')).toBe('Opus 4.8 [1m]');
     expect(displayUsageModelLabel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5');
   });
 

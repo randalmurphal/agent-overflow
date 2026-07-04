@@ -53,22 +53,30 @@ function displayClaudeModelLabel(slug: string, name?: string): string {
  * Display label for a model slug coming out of the usage ledger, where
  * the provider isn't carried alongside the slug. Claude slugs get the
  * same friendly form the model picker shows ("claude-fable-5" →
- * "Fable 5", release datestamps and the `[1m]` tier marker stripped);
- * GPT slugs are title-cased to match the Codex catalog names
- * ("gpt-5.3-codex" → "GPT-5.3 Codex"). Anything else renders as-is —
- * an unrecognized raw slug is better than a wrong guess.
+ * "Fable 5", release datestamps stripped); GPT slugs are title-cased to
+ * match the Codex catalog names ("gpt-5.3-codex" → "GPT-5.3 Codex").
+ * Anything else renders as-is — an unrecognized raw slug is better
+ * than a wrong guess.
+ *
+ * A trailing context-tier marker survives as a suffix ("Sonnet 5 [1m]"):
+ * Claude bills the extended-context tier as its own wire model
+ * (claude-sonnet-5[1m]) and the ledger keeps them separate, so
+ * stripping the marker would make the two rows read as duplicates.
  */
 export function displayUsageModelLabel(slug: string): string {
   const trimmed = slug.trim();
   if (trimmed === '') return slug;
-  if (/^claude/i.test(trimmed)) {
-    return displayModelLabel(PROVIDER_DEFINITIONS.claude.id, trimmed);
+  const tierMatch = /\[([^\]]+)\]$/.exec(trimmed);
+  const base = tierMatch ? trimmed.slice(0, tierMatch.index) : trimmed;
+  const tierSuffix = tierMatch ? ` [${tierMatch[1]}]` : '';
+  if (/^claude/i.test(base)) {
+    return displayModelLabel(PROVIDER_DEFINITIONS.claude.id, base) + tierSuffix;
   }
-  const gptMatch = /^gpt-([^-]+)(.*)$/i.exec(trimmed.replace(/\[[^\]]+\]$/, ''));
+  const gptMatch = /^gpt-([^-]+)(.*)$/i.exec(base);
   if (gptMatch) {
     const version = gptMatch[1];
     const rest = gptMatch[2].split('-').filter(Boolean).map(capitalizeWord);
-    return [`GPT-${version}`, ...rest].join(' ');
+    return [`GPT-${version}`, ...rest].join(' ') + tierSuffix;
   }
   return trimmed;
 }
