@@ -710,6 +710,29 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
+ * Band-limited hairline for timeline separators (response divider,
+ * compaction divider). A hard 1px line has all its energy at exactly
+ * the pixel frequency, so the scroll glide's sub-pixel compositing
+ * (fractional translateY + bilinear resample — see
+ * utils/scroll/index.svelte.ts glide residue) makes it breathe
+ * sharp↔dim as the fractional offset sweeps each device pixel. A 2px
+ * transparent→color→transparent gradient is smooth at the pixel
+ * scale, so sub-pixel shifts barely change any sampled row: same
+ * perceived hairline weight, breathing amplitude cut from ~50% to
+ * ~10%. Use this (not h-px + bg) for any thin rule that lives inside
+ * a scroll-glide surface.
+ */
+.timeline-hairline {
+  height: 2px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    var(--color-border-strong),
+    transparent
+  );
+}
+
+/*
  * Reduced-motion reset. One place to silence every transition /
  * animation so individual components don't have to care. Scroll
  * behavior is also snapped so `scroll-smooth` usages don't fight a

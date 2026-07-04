@@ -1190,12 +1190,14 @@ describe('<MessageTimeline>', () => {
       expect(dividers[1].textContent).toContain('Response');
 
       // Pin the structural shape of each branch: unlabeled mode is one
-      // full-width line (one `h-px` span), labeled mode is two
+      // full-width line (one hairline span), labeled mode is two
       // (line | gap | pill | gap | line). A regression that swaps the
       // conditional or accidentally renders both flank lines without
       // the pill would leave the empty-divider void back in the UI.
-      expect(dividers[0].querySelectorAll('span.h-px')).toHaveLength(1);
-      expect(dividers[1].querySelectorAll('span.h-px')).toHaveLength(2);
+      // (.timeline-hairline is the band-limited gradient rule — see
+      // app.css — not a 1px background.)
+      expect(dividers[0].querySelectorAll('span.timeline-hairline')).toHaveLength(1);
+      expect(dividers[1].querySelectorAll('span.timeline-hairline')).toHaveLength(2);
 
       // Pin the geometry contract: both branches share the same
       // wrapper height class. Without this, the engine re-measures to a

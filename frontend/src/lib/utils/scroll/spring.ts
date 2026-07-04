@@ -136,11 +136,17 @@ const SPRING_DECEL_ENVELOPE_RATIO = 0.11;
 // capped at 0.33 px/frame and take ~300ms). The spring's own velocity
 // below this value is untouched.
 const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
-// The fusion floor releases inside this remaining distance so the
-// landing is one floor-speed step into the arrival band plus the
-// controller's residue settle-ease — never a sustained crawl through
-// the visible-breathing speed band (5–40px/s at ~1× DPR).
-const SPRING_FUSION_FLOOR_RELEASE_PX = 1.2;
+// The fusion floor releases inside this remaining distance, letting
+// the spring's natural exponential decay land the glide — a ~3-frame
+// ritardando (the "cradle") instead of constant-speed-then-stop,
+// which read as too firm (2026-07-04 feedback on the 1.2px release).
+// The decay sweeps the visible-breathing speed band (5–40px/s at ~1×
+// DPR) in those same ~3 frames — about one sharp↔dim cycle, gone
+// before the eye can register it as flicker; only SUSTAINED sub-floor
+// dwell breathes visibly (the pre-floor build spent 49% of glide time
+// there). Raising this further trades landing softness back into
+// perceptible breathing.
+const SPRING_FUSION_FLOOR_RELEASE_PX = 3;
 // How long a structural-append mark (markStructuralAppend, the
 // controller's markStructuralContentPending) keeps near-term content
 // growth spring-eligible while animationMode is 'instant'.
