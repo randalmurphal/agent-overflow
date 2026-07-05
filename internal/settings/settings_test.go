@@ -956,6 +956,45 @@ func TestProjectSortModeValidation(t *testing.T) {
 	}
 }
 
+// TestUsagePeriodRoundTripAndValidation — the usage period persists in
+// Go settings (not webview localStorage: the transport binds an
+// ephemeral port, so the webview origin — and its localStorage —
+// changes every launch). Round-trip, reject-invalid, and sanitize-on-
+// load must all hold or the selection silently resets to the default.
+func TestUsagePeriodRoundTripAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	if got := svc.Get().UsagePeriod; got != "month" {
+		t.Fatalf("default UsagePeriod = %q, want month", got)
+	}
+
+	for _, period := range []string{"day", "week", "all", "month"} {
+		if _, err := svc.Update(map[string]any{"usagePeriod": period}); err != nil {
+			t.Errorf("Update(usagePeriod=%q) error = %v", period, err)
+		}
+	}
+	if _, err := svc.Update(map[string]any{"usagePeriod": "week"}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if reloaded := NewService(dir).Get().UsagePeriod; reloaded != "week" {
+		t.Errorf("reloaded UsagePeriod = %q, want week", reloaded)
+	}
+
+	if _, err := svc.Update(map[string]any{"usagePeriod": "30d"}); err == nil {
+		t.Fatal("expected error for invalid usagePeriod (legacy rolling value), got nil")
+	}
+
+	// Load path: dirty JSON sanitizes back to the default.
+	raw := `{"usagePeriod":"bogus"}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if loaded := NewService(dir).Get().UsagePeriod; loaded != "month" {
+		t.Errorf("sanitized UsagePeriod = %q, want month", loaded)
+	}
+}
+
 func TestCollapsedProjectsSanitization(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)

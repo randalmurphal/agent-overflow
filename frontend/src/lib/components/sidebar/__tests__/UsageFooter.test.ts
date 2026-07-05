@@ -27,6 +27,9 @@ describe('<UsageFooter>', () => {
   beforeEach(() => {
     resetUsagePeriodForTest();
     resetUsageRefreshForTest();
+    // Cycling the period writes through to Go settings; keep the RPC a
+    // no-op here — persistence itself is covered by the store's tests.
+    setBindingMock('UpdateSettings', async () => null);
   });
 
   it('renders one row per provider present, skipping zero rows', async () => {

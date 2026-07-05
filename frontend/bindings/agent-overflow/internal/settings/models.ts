@@ -488,6 +488,14 @@ export class Settings {
     "collapsedProjects"?: string[];
 
     /**
+     * UsagePeriod is the selected time period for the usage surfaces
+     * (sidebar usage footer + usage modal). One of {"day", "week",
+     * "month", "all"} — calendar periods, not rolling windows. Same
+     * persistence rationale as ProjectSortMode.
+     */
+    "usagePeriod": string;
+
+    /**
      * PaneLayout stores the visible thread panes, their order/ratios,
      * and the focused pane. Same persistence rationale as
      * ProjectSortMode: webview localStorage is not durable everywhere.
@@ -606,6 +614,9 @@ export class Settings {
         if (!("projectSortMode" in $$source)) {
             this["projectSortMode"] = "";
         }
+        if (!("usagePeriod" in $$source)) {
+            this["usagePeriod"] = "";
+        }
         if (!("paneLayout" in $$source)) {
             this["paneLayout"] = (new PaneLayoutSettings());
         }
@@ -629,8 +640,8 @@ export class Settings {
         const $$createField35_0 = $$createType2;
         const $$createField36_0 = $$createType7;
         const $$createField38_0 = $$createType2;
-        const $$createField39_0 = $$createType8;
-        const $$createField40_0 = $$createType9;
+        const $$createField40_0 = $$createType8;
+        const $$createField41_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
@@ -660,10 +671,10 @@ export class Settings {
             $$parsedSource["collapsedProjects"] = $$createField38_0($$parsedSource["collapsedProjects"]);
         }
         if ("paneLayout" in $$parsedSource) {
-            $$parsedSource["paneLayout"] = $$createField39_0($$parsedSource["paneLayout"]);
+            $$parsedSource["paneLayout"] = $$createField40_0($$parsedSource["paneLayout"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField40_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField41_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

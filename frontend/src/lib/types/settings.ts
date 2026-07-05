@@ -164,6 +164,14 @@ export interface Settings {
 
   /** Sidebar project sort order. Persisted in Go settings for cross-restart durability. */
   projectSortMode: ProjectSortMode;
+
+  /**
+   * Usage-surface time period (sidebar usage footer + usage modal):
+   * 'day' | 'week' | 'month' | 'all'. Persisted in Go settings for the
+   * same reason as paneLayout — webview localStorage is not durable
+   * (the transport's ephemeral port changes the origin every launch).
+   */
+  usagePeriod: string;
   /** Project IDs explicitly collapsed in the sidebar. Absent IDs default to expanded.
    * Go uses `omitempty`, so the key may be absent on the wire — treat undefined as [].
    */

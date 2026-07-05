@@ -1,8 +1,15 @@
 // Selected time period for the usage surfaces (sidebar UsageFooter +
-// UsageModal). Persisted in localStorage so the choice survives a
-// reload, mirroring the pattern in sidebarLayout.svelte.ts. The modal's
-// period Segmented control and the footer's period label read/write the
-// same store, so changing it in either place moves the other.
+// UsageModal). The modal's period Segmented control and the footer's
+// period label read/write the same store, so changing it in either
+// place moves the other.
+//
+// Durability: Go settings are the source of truth (same rationale as
+// projectSortMode in sidebar.svelte.ts — webview localStorage is NOT
+// durable here: the transport binds an ephemeral port, so the webview
+// origin and its localStorage change every launch). localStorage stays
+// as a same-session cache so the pre-settings-load render doesn't
+// flash the default; syncUsagePeriodFromSettings() reconciles after
+// loadSettings(), and every mutation writes through to both layers.
 //
 // Periods are CALENDAR-aligned, not rolling windows: 'day' resets at
 // local midnight, 'week' at the most recent Sunday's midnight, 'month'
@@ -10,6 +17,8 @@
 // the heatmap and day buckets are already calendar-day based, so a
 // rolling "last 24h" number would disagree with the heatmap's "today"
 // cell whenever yesterday evening had usage.
+
+import { getSettings, updateSettingsPatch } from './settings.svelte';
 
 const STORAGE_KEY = 'agent-overflow:usage:period';
 const DEFAULT_PERIOD: UsagePeriod = 'month';
@@ -66,6 +75,28 @@ export function getUsagePeriod(): UsagePeriod {
 export function setUsagePeriod(next: UsagePeriod): void {
   period = next;
   write(next);
+  void updateSettingsPatch({ usagePeriod: next });
+}
+
+/**
+ * Reconcile the in-memory period with Go settings after loadSettings()
+ * completes. Same semantics as syncSidebarFromSettings: Go is the
+ * durable source of truth, but when Go still holds the factory default
+ * while this webview's localStorage carries a real selection (first
+ * run after this field moved into Go settings), push local → Go
+ * instead of clobbering the user's choice with the default.
+ */
+export function syncUsagePeriodFromSettings(): void {
+  const raw = getSettings().usagePeriod;
+  const goPeriod = isUsagePeriod(raw) ? raw : DEFAULT_PERIOD;
+  if (goPeriod === DEFAULT_PERIOD && period !== DEFAULT_PERIOD) {
+    void updateSettingsPatch({ usagePeriod: period });
+    return;
+  }
+  if (period !== goPeriod) {
+    period = goPeriod;
+    write(goPeriod);
+  }
 }
 
 /** Advances to the next period in a fixed rotation. Used by the footer's

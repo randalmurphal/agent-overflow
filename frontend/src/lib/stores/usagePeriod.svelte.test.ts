@@ -6,13 +6,21 @@ import {
   readPersistedPeriod,
   resetUsagePeriodForTest,
   setUsagePeriod,
+  syncUsagePeriodFromSettings,
 } from './usagePeriod.svelte';
+import { loadSettings, resetSettingsForTest } from './settings.svelte';
+import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
 const STORAGE_KEY = 'agent-overflow:usage:period';
 
 describe('usage period store', () => {
   beforeEach(() => {
+    resetBindingMocks();
+    resetSettingsForTest();
     resetUsagePeriodForTest();
+    // setUsagePeriod writes through to Go settings; default the RPC to
+    // a no-op so tests that aren't about persistence stay quiet.
+    setBindingMock('UpdateSettings', async () => null);
   });
 
   it('defaults to month when nothing is persisted', () => {
@@ -23,6 +31,50 @@ describe('usage period store', () => {
     setUsagePeriod('week');
     expect(getUsagePeriod()).toBe('week');
     expect(localStorage.getItem(STORAGE_KEY)).toBe('week');
+  });
+
+  it('setUsagePeriod writes through to Go settings (localStorage is not durable)', () => {
+    // The webview origin changes every launch (ephemeral transport
+    // port), so localStorage alone silently resets the period; the Go
+    // settings patch is the durable copy.
+    const updateMock = setBindingMock('UpdateSettings', async () => null);
+    setUsagePeriod('day');
+    expect(updateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ usagePeriod: 'day' }),
+    );
+  });
+
+  describe('syncUsagePeriodFromSettings', () => {
+    it('adopts the Go-persisted value after loadSettings', async () => {
+      setBindingMock('GetSettings', async () => ({ usagePeriod: 'day' }));
+      await loadSettings();
+      syncUsagePeriodFromSettings();
+      expect(getUsagePeriod()).toBe('day');
+      expect(localStorage.getItem(STORAGE_KEY)).toBe('day');
+    });
+
+    it('falls back to the default when Go holds garbage', async () => {
+      setBindingMock('GetSettings', async () => ({ usagePeriod: 'bogus' }));
+      await loadSettings();
+      syncUsagePeriodFromSettings();
+      expect(getUsagePeriod()).toBe('month');
+    });
+
+    it('pushes a non-default local selection up when Go still has the factory default', () => {
+      // Precondition (first launch after this field moved into Go
+      // settings): the local period carries a real selection while Go
+      // still holds the factory default. Migration must push local →
+      // Go instead of clobbering the user's choice.
+      setUsagePeriod('week');
+      resetSettingsForTest(); // Go side back at the factory default
+
+      const updateMock = setBindingMock('UpdateSettings', async () => null);
+      syncUsagePeriodFromSettings();
+      expect(updateMock).toHaveBeenCalledWith(
+        expect.objectContaining({ usagePeriod: 'week' }),
+      );
+      expect(getUsagePeriod()).toBe('week');
+    });
   });
 
   describe('cycleUsagePeriod', () => {

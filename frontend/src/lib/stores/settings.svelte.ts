@@ -50,6 +50,7 @@ const DEFAULT_SETTINGS: Settings = {
   // default. Users add self-hosted entries through the Settings UI.
   gitlabSelfHostedHosts: [],
   projectSortMode: "lastActivity",
+  usagePeriod: "month",
   collapsedProjects: [],
   paneLayout: { version: 1, panes: [], focusedPaneId: null },
 };

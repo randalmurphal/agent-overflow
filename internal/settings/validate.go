@@ -60,6 +60,12 @@ var (
 		"createdAt":    {},
 		"manual":       {},
 	}
+	allowedUsagePeriods = map[string]struct{}{
+		"day":   {},
+		"week":  {},
+		"month": {},
+		"all":   {},
+	}
 	// allowedFonts enumerates the typefaces selectable for --font-sans
 	// and --font-mono. "geist" is the eager default, "hack-nerd" lazy-
 	// loads, and "system" uses the OS fallback chain.
@@ -183,6 +189,10 @@ func validateSettings(current Settings) (Settings, error) {
 
 	current.ProjectSortMode = strings.TrimSpace(current.ProjectSortMode)
 	if err := validateOption("projectSortMode", current.ProjectSortMode, allowedProjectSortModes); err != nil {
+		return Settings{}, err
+	}
+	current.UsagePeriod = strings.TrimSpace(current.UsagePeriod)
+	if err := validateOption("usagePeriod", current.UsagePeriod, allowedUsagePeriods); err != nil {
 		return Settings{}, err
 	}
 	if len(current.CollapsedProjects) > MaxCollapsedProjects {
@@ -314,6 +324,12 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		current.ProjectSortMode,
 		DefaultSettings.ProjectSortMode,
 		allowedProjectSortModes,
+	)
+	current.UsagePeriod = sanitizeOption(
+		"usagePeriod",
+		current.UsagePeriod,
+		DefaultSettings.UsagePeriod,
+		allowedUsagePeriods,
 	)
 	current.CollapsedProjects = sanitizeCollapsedProjects(current.CollapsedProjects)
 	current.PaneLayout = sanitizePaneLayout(current.PaneLayout)

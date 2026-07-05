@@ -16,6 +16,7 @@
   import { installTakeControl } from './lib/stores/takeControl.svelte';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
   import { syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
+  import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyTheme } from './lib/utils/theme';
   import { applyFonts } from './lib/utils/fonts';
@@ -235,6 +236,7 @@
     const loaded = await loadSettings();
     if (!loaded) return;
     syncSidebarFromSettings();
+    syncUsagePeriodFromSettings();
     void preloadProviderModelsForSettings(getSettings());
   }
 

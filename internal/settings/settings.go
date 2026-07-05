@@ -251,6 +251,12 @@ type Settings struct {
 	// expanded. Same persistence rationale as ProjectSortMode.
 	CollapsedProjects []string `json:"collapsedProjects,omitempty"`
 
+	// UsagePeriod is the selected time period for the usage surfaces
+	// (sidebar usage footer + usage modal). One of {"day", "week",
+	// "month", "all"} — calendar periods, not rolling windows. Same
+	// persistence rationale as ProjectSortMode.
+	UsagePeriod string `json:"usagePeriod"`
+
 	// PaneLayout stores the visible thread panes, their order/ratios,
 	// and the focused pane. Same persistence rationale as
 	// ProjectSortMode: webview localStorage is not durable everywhere.
@@ -312,6 +318,7 @@ var DefaultSettings = Settings{
 	// this on every tick, so toggling it doesn't require a restart.
 	Retention:       RetentionSettings{Days: 30},
 	ProjectSortMode: "lastActivity",
+	UsagePeriod:     "month",
 	PaneLayout:      PaneLayoutSettings{Version: 1},
 }
 
