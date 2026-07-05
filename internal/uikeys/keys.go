@@ -36,6 +36,7 @@ func BrowserWithReload(reloadURL func() string) map[string]func(application.Wind
 	// (Ctrl/Cmd+Plus/Minus adjusts by 1px). The keybindings here
 	// are no-ops that suppress the webview's native viewport zoom.
 	suppressZoom := func(application.Window) {}
+	suppressHistoryNavigation := func(application.Window) {}
 	toggleFullscreen := func(window application.Window) { window.ToggleFullscreen() }
 
 	reload := func(window application.Window) {
@@ -69,6 +70,8 @@ func BrowserWithReload(reloadURL func() string) map[string]func(application.Wind
 		"CmdOrCtrl+-":       suppressZoom,
 		"CmdOrCtrl+r":       reload,
 		"CmdOrCtrl+Shift+r": forceReload,
+		"Alt+Left":          suppressHistoryNavigation,
+		"Alt+Right":         suppressHistoryNavigation,
 		"F11":               toggleFullscreen,
 		"Ctrl+Command+F":    toggleFullscreen,
 	}

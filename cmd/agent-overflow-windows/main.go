@@ -71,6 +71,7 @@ var pickerHTML string
 // which Windows maps copy-on-write and charges the full ~47 MiB
 // against the process's private commit at load time — measured as the
 // bulk of the launcher's memory footprint before this was a string.
+//
 //go:embed payload/agent-overflow-linux
 var linuxPayload string
 
@@ -866,12 +867,13 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	a.wails = app
 
 	opts := application.WebviewWindowOptions{
-		Title:            title,
-		Width:            1280,
-		Height:           800,
-		MinWidth:         800,
-		MinHeight:        600,
-		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
+		Title:                      title,
+		Width:                      1280,
+		Height:                     800,
+		MinWidth:                   800,
+		MinHeight:                  600,
+		BackgroundColour:           application.NewRGBA(22, 22, 30, 255),
+		DefaultContextMenuDisabled: true,
 		// Picker / loading first; once Launch returns we SetURL to
 		// the WSL backend's localhost port. We can't use the WSL URL
 		// up front because we don't know the port until after Launch.

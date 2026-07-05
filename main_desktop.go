@@ -74,14 +74,15 @@ func runClient(rawURL string) {
 	})
 
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:            title,
-		Width:            1280,
-		Height:           800,
-		MinWidth:         800,
-		MinHeight:        600,
-		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
-		URL:              stub.AppURL(),
-		KeyBindings:      uikeys.BrowserWithReload(stub.AppURL),
+		Title:                      title,
+		Width:                      1280,
+		Height:                     800,
+		MinWidth:                   800,
+		MinHeight:                  600,
+		BackgroundColour:           application.NewRGBA(22, 22, 30, 255),
+		URL:                        stub.AppURL(),
+		DefaultContextMenuDisabled: true,
+		KeyBindings:                uikeys.BrowserWithReload(stub.AppURL),
 	})
 
 	runErr := app.Run()
@@ -157,14 +158,15 @@ func runDesktop(listenAddr string) {
 	reloadURL := func() string { return withClientID(srv.AppURL()) }
 
 	opts := application.WebviewWindowOptions{
-		Title:            title,
-		Width:            1280,
-		Height:           800,
-		MinWidth:         800,
-		MinHeight:        600,
-		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
-		URL:              withClientID(appURL),
-		KeyBindings:      uikeys.BrowserWithReload(reloadURL),
+		Title:                      title,
+		Width:                      1280,
+		Height:                     800,
+		MinWidth:                   800,
+		MinHeight:                  600,
+		BackgroundColour:           application.NewRGBA(22, 22, 30, 255),
+		URL:                        withClientID(appURL),
+		DefaultContextMenuDisabled: true,
+		KeyBindings:                uikeys.BrowserWithReload(reloadURL),
 	}
 	// Reopen where we left off last. The window is created on ApplicationStarted
 	// (not here) so it materializes synchronously against a live app loop — that

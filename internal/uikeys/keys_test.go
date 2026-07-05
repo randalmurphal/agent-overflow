@@ -18,6 +18,8 @@ func TestBrowserBindings(t *testing.T) {
 		"CmdOrCtrl+-",
 		"CmdOrCtrl+r",
 		"CmdOrCtrl+Shift+r",
+		"Alt+Left",
+		"Alt+Right",
 		"F11",
 		"Ctrl+Command+F",
 	}
