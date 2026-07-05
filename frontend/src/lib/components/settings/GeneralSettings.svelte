@@ -172,7 +172,7 @@
 
       <SettingsField
         label="Streaming enabled"
-        hint="Show text as it arrives from the provider."
+        hint="Show text live as it arrives. When off, each block appears only once it's complete."
       >
         <ToggleSwitch
           checked={settings.streamingEnabled}

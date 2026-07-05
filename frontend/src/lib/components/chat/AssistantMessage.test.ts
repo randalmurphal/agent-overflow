@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { makeItem } from '../../../test/helpers/chat';
+import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
 import AssistantMessage from './AssistantMessage.svelte';
 
 describe('<AssistantMessage>', () => {
@@ -28,6 +29,132 @@ describe('<AssistantMessage>', () => {
       expect(body.textContent).toContain('streaming **markdown');
       expect(body.querySelector('strong')).toBeNull();
     });
+  });
+
+  // The fixture leads each section with `**bold**`, matching real
+  // assistant prose (and the reported bug): the boundary detector must
+  // commit a `**…**`-led paragraph so the committed prefix advances. If
+  // isListItemStart regresses to treating a leading `*` as a bullet, the
+  // prefix stays empty and the "committed section" assertion below fails.
+  const SPLIT_FIXTURE =
+    '**Committed section:** done body text.\n\n**Volatile section:** still in progress';
+
+  it('withholds the volatile tail while streaming when streaming is disabled', async () => {
+    // "Streaming enabled" = off: the in-progress (uncommitted) block is
+    // held back and only committed markdown blocks render until the row
+    // settles. This is the user-visible half of the setting; orthogonal
+    // to low power, which only strips the reveal animation.
+    getSettings().streamingEnabled = false;
+    try {
+      const { getByTestId } = render(AssistantMessage, {
+        props: {
+          item: makeItem({ status: 'streaming', summary: SPLIT_FIXTURE }),
+        },
+      });
+      const body = getByTestId('assistant-message-body');
+      await waitFor(() => {
+        expect(body.textContent).toContain('done body text.');
+      });
+      expect(body.textContent).not.toContain('still in progress');
+    } finally {
+      resetSettingsForTest();
+    }
+  });
+
+  it('streams the volatile tail while streaming when streaming is enabled', async () => {
+    // Default (setting on): both the committed prefix and the live
+    // in-progress block are visible as text arrives.
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({ status: 'streaming', summary: SPLIT_FIXTURE }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.textContent).toContain('done body text.');
+      expect(body.textContent).toContain('still in progress');
+    });
+  });
+
+  it('hides the timestamp/meta row until the first block commits (streaming disabled)', async () => {
+    // Bug follow-up: with streaming disabled the body is withheld until a
+    // block commits, but the meta row (timestamp + copy slot) used to
+    // render unconditionally — so a lone timestamp floated over an empty
+    // body from the instant streaming started. A single unterminated
+    // paragraph has no committed prefix, so the whole row must be empty.
+    getSettings().streamingEnabled = false;
+    try {
+      const { getByTestId, queryByTestId } = render(AssistantMessage, {
+        props: {
+          item: makeItem({
+            status: 'streaming',
+            summary: '**On the ports:** still typing this first section',
+          }),
+        },
+      });
+      // Nothing committed → no visible body text and no meta row.
+      expect(getByTestId('assistant-message-body').textContent?.trim()).toBe('');
+      expect(queryByTestId('assistant-message-meta')).toBeNull();
+    } finally {
+      resetSettingsForTest();
+    }
+  });
+
+  it('shows the meta row once a block commits (streaming disabled)', async () => {
+    getSettings().streamingEnabled = false;
+    try {
+      const { getByTestId } = render(AssistantMessage, {
+        props: {
+          item: makeItem({ status: 'streaming', summary: SPLIT_FIXTURE }),
+        },
+      });
+      // A committed block is on screen → the meta row appears with it.
+      await waitFor(() => {
+        expect(getByTestId('assistant-message-meta')).toBeInTheDocument();
+      });
+    } finally {
+      resetSettingsForTest();
+    }
+  });
+
+  it('reveals the meta row when the first block commits mid-stream (streaming disabled)', async () => {
+    getSettings().streamingEnabled = false;
+    try {
+      const item = makeItem({
+        status: 'streaming',
+        summary: '**On the ports:** still typing this first section',
+      });
+      const { queryByTestId, rerender } = render(AssistantMessage, {
+        props: { item },
+      });
+      expect(queryByTestId('assistant-message-meta')).toBeNull();
+
+      // The section terminates (blank line) and a second one begins — the
+      // first block commits, so the meta row latches on.
+      await rerender({
+        item: {
+          ...item,
+          summary:
+            '**On the ports:** first section done.\n\n**On the fans:** next section',
+        },
+      });
+      await waitFor(() => {
+        expect(queryByTestId('assistant-message-meta')).toBeInTheDocument();
+      });
+    } finally {
+      resetSettingsForTest();
+    }
+  });
+
+  it('shows the meta row immediately for normal streaming (setting on)', () => {
+    // Default streaming still reserves the meta row (and copy slot) as
+    // soon as any text arrives — this fix must not regress that.
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        item: makeItem({ status: 'streaming', summary: 'live text arriving' }),
+      },
+    });
+    expect(getByTestId('assistant-message-meta')).toBeInTheDocument();
   });
 
   it('promotes the dangling marker to a strong element once the closer arrives', async () => {

@@ -368,12 +368,27 @@ export function createThreadStreamingReveal(
       // Seed revealed = received so a mid-flight feature deploy or
       // turn-resume sees no visible snap.
       initialRevealed: initialReceived,
-      // Low power: reveal per wire chunk (one mutation per chunk, a
-      // few Hz) instead of the animated 48–60Hz cadence. All the
-      // onReveal invariants (live-content stamp, reasoning tail,
-      // terminal auto-dispose, gate recompute) run unchanged — the
-      // snap just delivers the whole backlog in one reveal.
-      revealImmediately: () => getSettings().lowPowerMode,
+      // Reveal the whole received backlog per wire chunk (one mutation
+      // per chunk, a few Hz) instead of the animated 48–60Hz cadence.
+      // Two independent settings want this, for different reasons:
+      //   - lowPowerMode: minimise per-frame render work. The live
+      //     volatile tail is still shown, just without the word-by-word
+      //     animation.
+      //   - streamingEnabled === false: the user opted out of live
+      //     streaming and wants text to appear one committed markdown
+      //     block at a time (ChatMarkdown withholds the volatile tail).
+      //     For that gate to reflect WIRE arrival rather than a
+      //     rate-limited crawl, the smoother must pass `received`
+      //     straight through — otherwise a committed block would only
+      //     surface after the animation had already inched through it.
+      // The two stay orthogonal: low power governs the reveal ANIMATION;
+      // the streaming toggle governs whether the in-progress block is
+      // shown at all. All the onReveal invariants (live-content stamp,
+      // reasoning tail, terminal auto-dispose, gate recompute) run
+      // unchanged — the snap just delivers the whole backlog in one
+      // reveal.
+      revealImmediately: () =>
+        getSettings().lowPowerMode || !getSettings().streamingEnabled,
       clock: getSmoothingClockForTest(),
       onReveal: (revealed, delta) => {
         const idx = options.getItemIndex(itemId);

@@ -49,6 +49,7 @@
   } from '../../utils/pathLinkExtension';
   import type { PathRef } from '../../types/models';
   import { StreamingBoundarySplitter } from '../../markdown/boundary';
+  import { getSettings } from '../../stores/settings.svelte';
 
   let {
     source,
@@ -147,6 +148,21 @@
     }
     return boundarySplitter.split(processedSource);
   });
+
+  // "Streaming enabled" (Settings → Live Updates) governs whether the
+  // in-progress markdown block is shown while a turn streams. When it is
+  // off, the volatile tail is withheld: the row reveals one committed
+  // block at a time, each appearing only once it stabilises at a markdown
+  // boundary — the user opted out of word-by-word streaming. This is
+  // orthogonal to low-power mode, which only strips the reveal ANIMATION
+  // (see threadStreamingReveal.svelte.ts's revealImmediately) while still
+  // showing the live tail. Gated behind `streaming` so settled rows and
+  // non-streaming surfaces short-circuit before reading the setting — no
+  // reactive dependency, always rendered in full. On completion
+  // `streaming` flips false and the whole message renders as committed.
+  const hideVolatileTail = $derived(
+    streaming && !getSettings().streamingEnabled,
+  );
 </script>
 
 <!--
@@ -205,7 +221,7 @@
   {#if splitDerived.prefix}
     {@render streamdownInstance(splitDerived.prefix, false, 'md-committed')}
   {/if}
-  {#if splitDerived.tail || !splitDerived.prefix}
+  {#if !hideVolatileTail && (splitDerived.tail || !splitDerived.prefix)}
     {@render streamdownInstance(splitDerived.tail, streaming, 'md-volatile')}
   {/if}
 </div>

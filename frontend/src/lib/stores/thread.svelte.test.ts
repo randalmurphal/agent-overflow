@@ -1749,6 +1749,44 @@ describe('createThreadPane', () => {
     }
   });
 
+  it('disabling streaming reveals a streamed delta whole on the next frame', async () => {
+    // The "Streaming enabled" setting is separate from low power: with it
+    // OFF the smoother must also pass received straight through (one
+    // summary write on the next tick), so ChatMarkdown's committed-block
+    // gate reflects wire arrival rather than a rate-limited crawl. Guards
+    // the streamingEnabled arm of threadStreamingReveal's revealImmediately.
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    getSettings().streamingEnabled = false;
+    try {
+      const pane = createThreadPane();
+      pane.upsertItem(
+        makeItem({
+          id: 'text:0:0',
+          kind: 'assistant_text',
+          status: 'streaming',
+          summary: 'seed',
+        }),
+      );
+
+      const delta = Array.from({ length: 200 }, (_, index) => `word${index}`).join(' ');
+      pane.applyItemDelta({
+        threadId: 'thread-1',
+        itemId: 'text:0:0',
+        kind: 'assistant_text',
+        delta,
+        updatedAt: 125,
+      });
+      clock.tickFrame(1);
+      expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe(
+        `seed${delta}`,
+      );
+    } finally {
+      __setSmoothingClockForTest(undefined);
+      resetSettingsForTest();
+    }
+  });
+
   it('thinking-row deltas trim to the 400-rune tail in place', async () => {
     // The frontend mirrors the server-side `thinkingPreviewRunes = 400`
     // cap so the completion upsert (which carries the same tail) does
