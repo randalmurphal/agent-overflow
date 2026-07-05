@@ -159,34 +159,35 @@ export function isThematicBreak(line: string): boolean {
  * 但因为前面有4个空格的缩进，所以是列表项的有效形式。
  */
 export function isListItemStart(line: string): { ordered: boolean; indent: number } | null {
-  // 先检查是否以列表标记开头（-、*、+、数字）
-  const hasListMarker = /^(\s*)([-*+]|\d{1,9}[.)])/.test(line)
-  
-  if (!hasListMarker) {
-    return null
-  }
-  
   // 如果有列表标记，检查是否是列表项的延续（缩进4+个空格）
   const match = line.match(/^(\s*)([-*+]|\d{1,9}[.)])(.*)/)
   if (match) {
     const indent = match[1].length
     const marker = match[2]
     const rest = match[3]
-    
-    // 如果标记后有内容，检查是否是有效的列表项
-    if (rest.trim()) {
-      const isOrdered = /^\d{1,9}[.)]/.test(marker)
-      return { ordered: isOrdered, indent }
-    }
-    
-    // 标记后只有空格，可能是缩进的列表项
-    // 如 "    - text" 或 "        1. text"
-    if (/^\s+$/.test(rest)) {
+
+    // CommonMark requires whitespace after a bullet/ordered marker for it
+    // to open a list item. Without this guard, a paragraph that merely
+    // STARTS with a marker char and no space — `**bold**`, `*emphasis*`,
+    // `-dash`, `1.5x` — is misread as a list item. That is not just a
+    // cosmetic slip: it opens a phantom list whose `listMayEnd` state
+    // treats every following blank-line-separated paragraph as another
+    // loose-list item, so `findStableBoundary` never commits a boundary.
+    // The streaming committed prefix then stays empty for the whole
+    // message (assistant prose leads almost every section with `**…**`),
+    // which both defeats the "streaming disabled = reveal per committed
+    // block" path AND forces the volatile tail to re-parse the entire
+    // message every tick (the O(n²) the StreamingBoundarySplitter exists
+    // to avoid). `rest` starting with whitespace covers both "- text"
+    // and the indented "    -   " empty/continuation item; an empty
+    // `rest` (marker at EOL) stays a non-list, matching prior behaviour.
+    // See detector.listMarkerSpacing.test.ts.
+    if (/^\s/.test(rest)) {
       const isOrdered = /^\d{1,9}[.)]/.test(marker)
       return { ordered: isOrdered, indent }
     }
   }
-  
+
   return null
 }
 
