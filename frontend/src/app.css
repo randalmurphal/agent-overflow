@@ -172,6 +172,28 @@ html.light {
   --font-sans: 'Geist Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 
+  /* Override Tailwind's animate-pulse with a stepped timing function.
+     Every animate-pulse in this app is an ambient indicator (working
+     dots in the sidebar/header/picker, loading text, retry icons) —
+     and a continuously-eased compositor animation forces a GPU present
+     every vsync for as long as it is visible. On a 165Hz panel that
+     made one pulsing 6px dot a standing 165 presents/sec client in the
+     desktop composition lane whenever ANY thread was working, which
+     showed up as stutter in OTHER apps (2026-07-04: YouTube video +
+     typing hitches with the app idle-visible; minimizing the window —
+     which stops Chromium frame production — cleared it). steps() makes
+     the animation update in discrete jumps: 4 steps per half-cycle ≈ 4
+     opacity changes/sec, imperceptible on indicator dots, ~40× less
+     lane traffic. Spinners (animate-spin) are deliberately NOT stepped
+     — rotation reads as broken when discretized — and are only used
+     transiently. */
+  --animate-pulse: pulse 2s steps(8, jump-none) infinite;
+  @keyframes pulse {
+    50% {
+      opacity: 0.5;
+    }
+  }
+
   /* Existing semantic colors. */
   --color-surface-0: var(--surface-0);
   --color-surface-1: var(--surface-1);
@@ -654,7 +676,14 @@ pre, code, kbd, samp, .ansi-body {
   border-radius: inherit;
   pointer-events: none;
   border: 1px solid currentColor;
-  animation: status-glow-pulse 2.5s ease-in-out infinite;
+  /* steps(): box-shadow animation cannot be composited, so a smooth
+     ease repaints AND presents every vsync for as long as the glow is
+     visible — attention states can persist for minutes, making this a
+     standing full-refresh-rate client (same incident as the
+     --animate-pulse override in @theme). 5 steps per half-cycle ≈ 4
+     updates/sec — the breathing still reads, the lane traffic drops
+     ~40×. */
+  animation: status-glow-pulse 2.5s steps(5, jump-none) infinite;
 }
 .status-glow-warning::before {
   color: var(--warning);
