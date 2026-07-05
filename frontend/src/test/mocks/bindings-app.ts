@@ -410,6 +410,11 @@ export const GetThreadItem = dispatch('GetThreadItem');
 // Usage accounting
 export const GetUsageStats = dispatch('GetUsageStats');
 
+// Per-client UI view state (appStorage)
+export const GetUIState = dispatch('GetUIState');
+export const SetUIState = dispatch('SetUIState');
+export const DeleteUIState = dispatch('DeleteUIState');
+
 // MCP library
 export const ListMcpServers = dispatch('ListMcpServers');
 export const ListMcpServersForThread = dispatch('ListMcpServersForThread');

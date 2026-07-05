@@ -73,68 +73,6 @@ export class NetworkSettings {
     }
 }
 
-export class PaneLayoutPane {
-    "paneId": string;
-    "threadId": string;
-    "ratio": number;
-
-    /** Creates a new PaneLayoutPane instance. */
-    constructor($$source: Partial<PaneLayoutPane> = {}) {
-        if (!("paneId" in $$source)) {
-            this["paneId"] = "";
-        }
-        if (!("threadId" in $$source)) {
-            this["threadId"] = "";
-        }
-        if (!("ratio" in $$source)) {
-            this["ratio"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new PaneLayoutPane instance from a string or object.
-     */
-    static createFrom($$source: any = {}): PaneLayoutPane {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new PaneLayoutPane($$parsedSource as Partial<PaneLayoutPane>);
-    }
-}
-
-/**
- * PaneLayoutSettings stores the user's visible thread-pane arrangement.
- * This used to live in webview localStorage, but packaged webviews are not
- * durable on every platform. Keep it with settings so app restart behavior
- * is owned by the same cross-platform persistence path as sidebar layout.
- */
-export class PaneLayoutSettings {
-    "version": number;
-    "panes"?: PaneLayoutPane[];
-    "focusedPaneId"?: string;
-
-    /** Creates a new PaneLayoutSettings instance. */
-    constructor($$source: Partial<PaneLayoutSettings> = {}) {
-        if (!("version" in $$source)) {
-            this["version"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new PaneLayoutSettings instance from a string or object.
-     */
-    static createFrom($$source: any = {}): PaneLayoutSettings {
-        const $$createField1_0 = $$createType1;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("panes" in $$parsedSource) {
-            $$parsedSource["panes"] = $$createField1_0($$parsedSource["panes"]);
-        }
-        return new PaneLayoutSettings($$parsedSource as Partial<PaneLayoutSettings>);
-    }
-}
-
 /**
  * RemoteEndpoint is one stored `--connect` target. The desktop binary
  * takes a URL+token from this list (or from --connect on the command
@@ -481,26 +419,12 @@ export class Settings {
     "projectSortMode": string;
 
     /**
-     * CollapsedProjects lists project IDs the user has explicitly
-     * collapsed in the sidebar. Projects not in this list default to
-     * expanded. Same persistence rationale as ProjectSortMode.
-     */
-    "collapsedProjects"?: string[];
-
-    /**
      * UsagePeriod is the selected time period for the usage surfaces
      * (sidebar usage footer + usage modal). One of {"day", "week",
      * "month", "all"} — calendar periods, not rolling windows. Same
      * persistence rationale as ProjectSortMode.
      */
     "usagePeriod": string;
-
-    /**
-     * PaneLayout stores the visible thread panes, their order/ratios,
-     * and the focused pane. Same persistence rationale as
-     * ProjectSortMode: webview localStorage is not durable everywhere.
-     */
-    "paneLayout": PaneLayoutSettings;
 
     /**
      * Window stores the desktop window placement (position, size, and
@@ -617,9 +541,6 @@ export class Settings {
         if (!("usagePeriod" in $$source)) {
             this["usagePeriod"] = "";
         }
-        if (!("paneLayout" in $$source)) {
-            this["paneLayout"] = (new PaneLayoutSettings());
-        }
         if (!("window" in $$source)) {
             this["window"] = (new windowgeom$0.Geometry());
         }
@@ -631,17 +552,15 @@ export class Settings {
      * Creates a new Settings instance from a string or object.
      */
     static createFrom($$source: any = {}): Settings {
-        const $$createField6_0 = $$createType2;
-        const $$createField17_0 = $$createType2;
-        const $$createField18_0 = $$createType2;
-        const $$createField32_0 = $$createType3;
-        const $$createField33_0 = $$createType4;
-        const $$createField34_0 = $$createType5;
-        const $$createField35_0 = $$createType2;
-        const $$createField36_0 = $$createType7;
-        const $$createField38_0 = $$createType2;
-        const $$createField40_0 = $$createType8;
-        const $$createField41_0 = $$createType9;
+        const $$createField6_0 = $$createType0;
+        const $$createField17_0 = $$createType0;
+        const $$createField18_0 = $$createType0;
+        const $$createField32_0 = $$createType1;
+        const $$createField33_0 = $$createType2;
+        const $$createField34_0 = $$createType3;
+        const $$createField35_0 = $$createType0;
+        const $$createField36_0 = $$createType5;
+        const $$createField39_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
@@ -667,27 +586,18 @@ export class Settings {
         if ("remoteEndpoints" in $$parsedSource) {
             $$parsedSource["remoteEndpoints"] = $$createField36_0($$parsedSource["remoteEndpoints"]);
         }
-        if ("collapsedProjects" in $$parsedSource) {
-            $$parsedSource["collapsedProjects"] = $$createField38_0($$parsedSource["collapsedProjects"]);
-        }
-        if ("paneLayout" in $$parsedSource) {
-            $$parsedSource["paneLayout"] = $$createField40_0($$parsedSource["paneLayout"]);
-        }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField41_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField39_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
 }
 
 // Private type creation functions
-const $$createType0 = PaneLayoutPane.createFrom;
-const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = $Create.Array($Create.Any);
-const $$createType3 = NetworkSettings.createFrom;
-const $$createType4 = EditorSettings.createFrom;
-const $$createType5 = RetentionSettings.createFrom;
-const $$createType6 = RemoteEndpoint.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = PaneLayoutSettings.createFrom;
-const $$createType9 = windowgeom$0.Geometry.createFrom;
+const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = NetworkSettings.createFrom;
+const $$createType2 = EditorSettings.createFrom;
+const $$createType3 = RetentionSettings.createFrom;
+const $$createType4 = RemoteEndpoint.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = windowgeom$0.Geometry.createFrom;

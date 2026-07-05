@@ -2,10 +2,15 @@ import type { Thread } from '../types/models';
 import type {
   PaneLayoutPersistedPane,
   PaneLayoutPersistedSettings,
-  Settings,
 } from '../types/settings';
 import { debounce } from '../utils/debounce';
-import { GetSettings, ListThreads, UpdateSettings } from './bindings';
+import {
+  appStorageAdoptLegacyKey,
+  appStorageGet,
+  appStorageSet,
+  flushAppStorage,
+} from './appStorage';
+import { ListThreads } from './bindings';
 import {
   DEFAULT_PANE_RATIO,
   getPaneLayoutItems,
@@ -21,6 +26,13 @@ import {
   setPanePersistenceHandler,
 } from './panes.svelte';
 
+// Persisted per client via appStorage (ui_state table): pane layout is
+// view state, and two clients of the same backend keep independent
+// layouts. Pre-appStorage copies migrate in transparently: the Go
+// startup migration moves the old settings.json paneLayout into the
+// embedded client's bucket, and the ancient localStorage key below is
+// adopted at read time.
+const PANE_LAYOUT_KEY = 'paneLayout';
 const LEGACY_PANE_LAYOUT_STORAGE_KEY = 'agentOverflowPaneLayout';
 const PANE_LAYOUT_SETTINGS_VERSION = 1;
 const PANE_RESIZE_PERSIST_DELAY_MS = 200;
@@ -33,11 +45,7 @@ const SAFE_PANE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 type PersistedPaneLayout = PaneLayoutPersistedSettings;
 type PersistedPane = PaneLayoutPersistedPane;
 
-let paneLayoutWriteInFlight = false;
-let pendingPaneLayoutSnapshot: PersistedPaneLayout | null = null;
 let lastPersistedPaneLayoutKey: string | null = null;
-let paneLayoutWriteIdlePromise: Promise<void> = Promise.resolve();
-let resolvePaneLayoutWriteIdlePromise: (() => void) | null = null;
 
 function normalizePersistedRatio(ratio: unknown): number {
   if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0) {
@@ -94,10 +102,6 @@ function paneLayoutKey(snapshot: PersistedPaneLayout): string {
   return JSON.stringify(snapshot);
 }
 
-function isEmptyPaneLayout(snapshot: PersistedPaneLayout): boolean {
-  return snapshot.panes.length === 0 && !snapshot.focusedPaneId;
-}
-
 function buildSnapshot(): PersistedPaneLayout {
   const panesById = getAllPanes();
   const panes: PersistedPane[] = [];
@@ -120,16 +124,7 @@ function buildSnapshot(): PersistedPaneLayout {
   };
 }
 
-function readLegacyPersistedLayout(): PersistedPaneLayout | null {
-  if (typeof localStorage === 'undefined') return null;
-  let raw: string | null;
-  try {
-    raw = localStorage.getItem(LEGACY_PANE_LAYOUT_STORAGE_KEY);
-  } catch (err) {
-    console.warn('Failed to read legacy pane layout persistence:', err);
-    return null;
-  }
-  if (!raw) return null;
+function parsePersistedLayoutJSON(raw: string): PersistedPaneLayout | null {
   try {
     return parsePersistedLayout(JSON.parse(raw));
   } catch {
@@ -137,82 +132,18 @@ function readLegacyPersistedLayout(): PersistedPaneLayout | null {
   }
 }
 
-function removeLegacyPersistedLayout(): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.removeItem(LEGACY_PANE_LAYOUT_STORAGE_KEY);
-  } catch (err) {
-    console.warn('Failed to clear legacy pane layout persistence:', err);
+function readPersistedLayout(): PersistedPaneLayout | null {
+  const raw =
+    appStorageGet(PANE_LAYOUT_KEY) ??
+    appStorageAdoptLegacyKey(PANE_LAYOUT_KEY, LEGACY_PANE_LAYOUT_STORAGE_KEY, (legacy) =>
+      parsePersistedLayoutJSON(legacy) === null ? null : legacy,
+    );
+  if (raw === null) return null;
+  const layout = parsePersistedLayoutJSON(raw);
+  if (layout) {
+    lastPersistedPaneLayoutKey = paneLayoutKey(layout);
   }
-}
-
-async function readPersistedLayout(): Promise<PersistedPaneLayout | null> {
-  const settings = await GetSettings() as Settings | null;
-  const settingsLayout = parsePersistedLayout(settings?.paneLayout ?? null);
-  if (settingsLayout && !isEmptyPaneLayout(settingsLayout)) {
-    lastPersistedPaneLayoutKey = paneLayoutKey(settingsLayout);
-    return settingsLayout;
-  }
-  const legacyLayout = readLegacyPersistedLayout();
-  if (legacyLayout && !isEmptyPaneLayout(legacyLayout)) {
-    queuePaneLayoutWrite(legacyLayout);
-    return legacyLayout;
-  }
-  if (settingsLayout) {
-    lastPersistedPaneLayoutKey = paneLayoutKey(settingsLayout);
-  }
-  return settingsLayout;
-}
-
-function resolvePaneLayoutWriteIdle(): void {
-  const resolve = resolvePaneLayoutWriteIdlePromise;
-  resolvePaneLayoutWriteIdlePromise = null;
-  resolve?.();
-}
-
-function ensurePaneLayoutWriteIdlePromise(): void {
-  if (resolvePaneLayoutWriteIdlePromise) return;
-  paneLayoutWriteIdlePromise = new Promise((resolve) => {
-    resolvePaneLayoutWriteIdlePromise = resolve;
-  });
-}
-
-function startPaneLayoutWriteLoop(): void {
-  if (paneLayoutWriteInFlight) return;
-  paneLayoutWriteInFlight = true;
-  ensurePaneLayoutWriteIdlePromise();
-  void (async () => {
-    try {
-      while (pendingPaneLayoutSnapshot) {
-        const snapshot = pendingPaneLayoutSnapshot;
-        pendingPaneLayoutSnapshot = null;
-        const key = paneLayoutKey(snapshot);
-        if (key === lastPersistedPaneLayoutKey) continue;
-        try {
-          await UpdateSettings({ paneLayout: snapshot } satisfies Partial<Settings>);
-          lastPersistedPaneLayoutKey = key;
-          removeLegacyPersistedLayout();
-        } catch (err) {
-          console.warn('Failed to write pane layout persistence:', err);
-        }
-      }
-    } finally {
-      paneLayoutWriteInFlight = false;
-      if (pendingPaneLayoutSnapshot) {
-        startPaneLayoutWriteLoop();
-      } else {
-        resolvePaneLayoutWriteIdle();
-      }
-    }
-  })();
-}
-
-function queuePaneLayoutWrite(snapshot: PersistedPaneLayout): void {
-  if (paneLayoutKey(snapshot) === lastPersistedPaneLayoutKey && !pendingPaneLayoutSnapshot) {
-    return;
-  }
-  pendingPaneLayoutSnapshot = snapshot;
-  startPaneLayoutWriteLoop();
+  return layout;
 }
 
 async function loadThreadsForValidation(availableThreads?: Thread[]): Promise<Thread[]> {
@@ -220,8 +151,14 @@ async function loadThreadsForValidation(availableThreads?: Thread[]): Promise<Th
   return await ListThreads() as Thread[];
 }
 
-export async function loadFromSettings(availableThreads?: Thread[]): Promise<void> {
-  const persisted = await readPersistedLayout();
+/**
+ * Restore the persisted pane layout into the layout + pane registry
+ * stores. Callers must run this AFTER hydrateAppStorage() has resolved
+ * — before that, only the same-session cache is visible and a fresh
+ * launch would restore an empty layout.
+ */
+export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Promise<void> {
+  const persisted = readPersistedLayout();
   if (!persisted) {
     await emptyLayout();
     return;
@@ -256,37 +193,37 @@ export async function loadFromSettings(availableThreads?: Thread[]): Promise<voi
   await hydrateRestoredPaneRegistry(registryEntries, restoredFocusedPaneId);
 }
 
-export function persistToSettings(): void {
-  queuePaneLayoutWrite(buildSnapshot());
+export function persistPaneLayout(): void {
+  const snapshot = buildSnapshot();
+  const key = paneLayoutKey(snapshot);
+  if (key === lastPersistedPaneLayoutKey) return;
+  lastPersistedPaneLayoutKey = key;
+  appStorageSet(PANE_LAYOUT_KEY, key);
 }
 
-export const persistToSettingsDebounced = debounce(persistToSettings, PANE_RESIZE_PERSIST_DELAY_MS);
+export const persistPaneLayoutDebounced = debounce(persistPaneLayout, PANE_RESIZE_PERSIST_DELAY_MS);
 
 async function flushPendingPaneLayoutPersistence(): Promise<void> {
-  persistToSettingsDebounced.flush();
-  await paneLayoutWriteIdlePromise;
+  persistPaneLayoutDebounced.flush();
+  await flushAppStorage();
 }
 
 export function installPaneLayoutPersistence(): void {
   setPaneLayoutPersistenceHandlers({
-    immediate: persistToSettings,
-    debounced: persistToSettingsDebounced,
+    immediate: persistPaneLayout,
+    debounced: persistPaneLayoutDebounced,
     flush: flushPendingPaneLayoutPersistence,
   });
-  setPanePersistenceHandler(persistToSettings);
+  setPanePersistenceHandler(persistPaneLayout);
 }
 
 export async function waitForPaneLayoutPersistenceForTest(): Promise<void> {
-  await paneLayoutWriteIdlePromise;
+  await flushAppStorage();
 }
 
 export function resetPaneLayoutPersistenceForTest(): void {
-  persistToSettingsDebounced.cancel();
-  paneLayoutWriteInFlight = false;
-  pendingPaneLayoutSnapshot = null;
+  persistPaneLayoutDebounced.cancel();
   lastPersistedPaneLayoutKey = null;
-  paneLayoutWriteIdlePromise = Promise.resolve();
-  resolvePaneLayoutWriteIdlePromise = null;
   setPaneLayoutPersistenceHandlers(null);
   setPanePersistenceHandler(null);
 }

@@ -36,8 +36,6 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     gitlabSelfHostedHosts: [],
     projectSortMode: 'lastActivity',
     usagePeriod: 'month',
-    collapsedProjects: [],
-    paneLayout: { version: 1, panes: [], focusedPaneId: null },
     ...overrides,
   };
 }

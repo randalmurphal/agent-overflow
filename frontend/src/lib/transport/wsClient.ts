@@ -81,6 +81,13 @@ interface Bootstrap {
   wsUrl: string;
   token: string;
   mode?: RunMode;
+  /**
+   * Durable UI-state client identity minted by the local shell
+   * (--connect injection only; the embedded-webview paths carry it as
+   * the ?cid= URL param instead). Consumed by stores/appStorage.ts at
+   * module init, not by the transport itself.
+   */
+  clientId?: string;
 }
 
 // Frame shapes — match internal/transport/frame.go ServerFrame /

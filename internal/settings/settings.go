@@ -49,22 +49,6 @@ type RetentionSettings struct {
 	Days int `json:"days"`
 }
 
-// PaneLayoutSettings stores the user's visible thread-pane arrangement.
-// This used to live in webview localStorage, but packaged webviews are not
-// durable on every platform. Keep it with settings so app restart behavior
-// is owned by the same cross-platform persistence path as sidebar layout.
-type PaneLayoutSettings struct {
-	Version       int              `json:"version"`
-	Panes         []PaneLayoutPane `json:"panes,omitempty"`
-	FocusedPaneID string           `json:"focusedPaneId,omitempty"`
-}
-
-type PaneLayoutPane struct {
-	PaneID   string  `json:"paneId"`
-	ThreadID string  `json:"threadId"`
-	Ratio    float64 `json:"ratio"`
-}
-
 // CurrentSchemaVersion is the version stamped on every Update-written
 // settings file. Bump on any breaking shape change so a future loader
 // can branch on the version and run a one-shot migration before
@@ -246,21 +230,17 @@ type Settings struct {
 	// ephemeral on some platforms (WebKit2GTK / WSL2).
 	ProjectSortMode string `json:"projectSortMode"`
 
-	// CollapsedProjects lists project IDs the user has explicitly
-	// collapsed in the sidebar. Projects not in this list default to
-	// expanded. Same persistence rationale as ProjectSortMode.
-	CollapsedProjects []string `json:"collapsedProjects,omitempty"`
-
 	// UsagePeriod is the selected time period for the usage surfaces
 	// (sidebar usage footer + usage modal). One of {"day", "week",
 	// "month", "all"} — calendar periods, not rolling windows. Same
 	// persistence rationale as ProjectSortMode.
 	UsagePeriod string `json:"usagePeriod"`
 
-	// PaneLayout stores the visible thread panes, their order/ratios,
-	// and the focused pane. Same persistence rationale as
-	// ProjectSortMode: webview localStorage is not durable everywhere.
-	PaneLayout PaneLayoutSettings `json:"paneLayout"`
+	// Per-client UI view state (pane layout, collapsed projects,
+	// sidebar width, …) deliberately does NOT live here: it moved to
+	// the store's ui_state table, keyed per client, so two clients of
+	// the same backend stop fighting over one value. See
+	// internal/store/ui_state.go and frontend stores/appStorage.ts.
 
 	// Window stores the desktop window placement (position, size, and
 	// maximized/fullscreen state) so the app reopens where it was last
@@ -319,7 +299,6 @@ var DefaultSettings = Settings{
 	Retention:       RetentionSettings{Days: 30},
 	ProjectSortMode: "lastActivity",
 	UsagePeriod:     "month",
-	PaneLayout:      PaneLayoutSettings{Version: 1},
 }
 
 // HiddenModelsForProvider returns the hidden-model slug list for the
@@ -743,8 +722,6 @@ func copyDefaults() Settings {
 	d := DefaultSettings
 	d.RecentWorkspaces = nil
 	d.GitLabSelfHostedHosts = nil
-	d.CollapsedProjects = nil
-	d.PaneLayout.Panes = nil
 	return d
 }
 

@@ -3,8 +3,6 @@ package settings
 import (
 	"fmt"
 	"log"
-	"math"
-	"regexp"
 	"strings"
 	"unicode"
 )
@@ -195,14 +193,6 @@ func validateSettings(current Settings) (Settings, error) {
 	if err := validateOption("usagePeriod", current.UsagePeriod, allowedUsagePeriods); err != nil {
 		return Settings{}, err
 	}
-	if len(current.CollapsedProjects) > MaxCollapsedProjects {
-		return Settings{}, fmt.Errorf(
-			"collapsedProjects has %d entries, max is %d",
-			len(current.CollapsedProjects), MaxCollapsedProjects,
-		)
-	}
-	current.CollapsedProjects = sanitizeCollapsedProjects(current.CollapsedProjects)
-
 	if len(current.ClaudeHiddenModels) > MaxHiddenModels {
 		return Settings{}, fmt.Errorf(
 			"claudeHiddenModels has %d entries, max is %d",
@@ -217,7 +207,6 @@ func validateSettings(current Settings) (Settings, error) {
 	}
 	current.ClaudeHiddenModels = dedupeTrimmed(current.ClaudeHiddenModels, MaxHiddenModels)
 	current.CodexHiddenModels = dedupeTrimmed(current.CodexHiddenModels, MaxHiddenModels)
-	current.PaneLayout = sanitizePaneLayout(current.PaneLayout)
 
 	return current, nil
 }
@@ -331,8 +320,6 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.UsagePeriod,
 		allowedUsagePeriods,
 	)
-	current.CollapsedProjects = sanitizeCollapsedProjects(current.CollapsedProjects)
-	current.PaneLayout = sanitizePaneLayout(current.PaneLayout)
 	return current
 }
 
@@ -677,16 +664,10 @@ func normalizeRecentWorkspaces(paths []string) []string {
 	return recent
 }
 
-const MaxCollapsedProjects = 500
-
 // MaxHiddenModels caps the per-provider hidden-model lists. Catalogs
 // hold well under a hundred models; anything beyond this is a corrupt
 // or hand-mangled file.
 const MaxHiddenModels = 100
-
-func sanitizeCollapsedProjects(ids []string) []string {
-	return dedupeTrimmed(ids, MaxCollapsedProjects)
-}
 
 // dedupeTrimmed trims each entry, drops empties and duplicates, and
 // caps the result at limit entries. Returns nil when nothing survives
@@ -715,68 +696,6 @@ func dedupeTrimmed(values []string, limit int) []string {
 		return nil
 	}
 	return out
-}
-
-const (
-	CurrentPaneLayoutVersion = 1
-	MaxPaneLayoutPanes       = 24
-	MaxPaneLayoutIDLength    = 64
-	MaxPaneLayoutThreadIDLen = 256
-	MaxPaneLayoutRatio       = 100
-)
-
-var safePaneLayoutIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
-
-func sanitizePaneLayout(layout PaneLayoutSettings) PaneLayoutSettings {
-	if layout.Version != CurrentPaneLayoutVersion {
-		return DefaultSettings.PaneLayout
-	}
-	capacity := min(len(layout.Panes), MaxPaneLayoutPanes)
-	seenPaneIDs := make(map[string]struct{}, capacity)
-	seenThreadIDs := make(map[string]struct{}, capacity)
-	panes := make([]PaneLayoutPane, 0, capacity)
-	for _, pane := range layout.Panes {
-		paneID := strings.TrimSpace(pane.PaneID)
-		threadID := strings.TrimSpace(pane.ThreadID)
-		if !safePaneLayoutIDPattern.MatchString(paneID) ||
-			len(paneID) > MaxPaneLayoutIDLength ||
-			threadID == "" ||
-			len(threadID) > MaxPaneLayoutThreadIDLen {
-			continue
-		}
-		if _, dup := seenPaneIDs[paneID]; dup {
-			continue
-		}
-		if _, dup := seenThreadIDs[threadID]; dup {
-			continue
-		}
-		seenPaneIDs[paneID] = struct{}{}
-		seenThreadIDs[threadID] = struct{}{}
-		ratio := pane.Ratio
-		if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 {
-			ratio = 1
-		}
-		if ratio > MaxPaneLayoutRatio {
-			ratio = MaxPaneLayoutRatio
-		}
-		panes = append(panes, PaneLayoutPane{
-			PaneID:   paneID,
-			ThreadID: threadID,
-			Ratio:    ratio,
-		})
-		if len(panes) >= MaxPaneLayoutPanes {
-			break
-		}
-	}
-	focusedPaneID := strings.TrimSpace(layout.FocusedPaneID)
-	if _, ok := seenPaneIDs[focusedPaneID]; !ok {
-		focusedPaneID = ""
-	}
-	return PaneLayoutSettings{
-		Version:       CurrentPaneLayoutVersion,
-		Panes:         panes,
-		FocusedPaneID: focusedPaneID,
-	}
 }
 
 func joinAllowedValues(values map[string]struct{}) string {

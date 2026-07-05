@@ -7,6 +7,7 @@ import {
   expandTerminalsGroup,
   getProjectSortMode,
   getThreadListVisibleLimit,
+  isDiscussionExpanded,
   isProjectExpanded,
   isTerminalsGroupExpanded,
   isThreadListExpanded,
@@ -14,18 +15,27 @@ import {
   revealMoreThreadList,
   setThreadListVisibleLimit,
   setProjectSortMode,
+  syncSidebarFromAppStorage,
   syncSidebarFromSettings,
   toggleProject,
   toggleTerminalsGroup,
 } from './sidebar.svelte';
+import { appStorageGet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
-import { setBindingMock } from '../../test/mocks/bindings-app';
+import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
 
+const COLLAPSED_KEY = 'sidebar:collapsedProjects';
+const TERMINALS_KEY = 'sidebar:terminalsGroupCollapsed';
+
 describe('sidebar store', () => {
   beforeEach(() => {
+    resetBindingMocks();
+    resetAppStorageForTest();
     resetSidebarForTest();
+    setBindingMock('SetUIState', async () => null);
+    setBindingMock('DeleteUIState', async () => null);
   });
 
   describe('expansion', () => {
@@ -37,13 +47,13 @@ describe('sidebar store', () => {
       toggleProject('p1');
       expect(isProjectExpanded('p1')).toBe(false);
 
-      const raw = localStorage.getItem('agent-overflow:sidebar:collapsedProjects');
+      const raw = appStorageGet(COLLAPSED_KEY);
       expect(raw).not.toBeNull();
       expect(JSON.parse(raw as string)).toContain('p1');
 
       toggleProject('p1');
       expect(isProjectExpanded('p1')).toBe(true);
-      const raw2 = localStorage.getItem('agent-overflow:sidebar:collapsedProjects');
+      const raw2 = appStorageGet(COLLAPSED_KEY);
       expect(JSON.parse(raw2 as string)).not.toContain('p1');
     });
 
@@ -56,7 +66,7 @@ describe('sidebar store', () => {
       expect(isProjectExpanded('p1')).toBe(false);
     });
 
-    it('corrupt stored JSON does not crash subsequent operations', () => {
+    it('corrupt legacy stored JSON does not crash subsequent operations', () => {
       localStorage.setItem('agent-overflow:sidebar:collapsedProjects', '{not json');
       // Module init already read storage once; this just verifies that
       // a write/read round-trip serializes over the garbage cleanly.
@@ -66,19 +76,17 @@ describe('sidebar store', () => {
   });
 
   describe('terminals group', () => {
-    const KEY = 'agent-overflow:sidebar:terminalsGroupCollapsed';
-
     it('defaults to expanded and toggleTerminalsGroup persists a collapsed flag', () => {
       expect(isTerminalsGroupExpanded()).toBe(true);
 
       toggleTerminalsGroup();
       expect(isTerminalsGroupExpanded()).toBe(false);
-      expect(localStorage.getItem(KEY)).toBe('1');
+      expect(appStorageGet(TERMINALS_KEY)).toBe('1');
 
       toggleTerminalsGroup();
       expect(isTerminalsGroupExpanded()).toBe(true);
       // Stored as a *collapsed* flag → returning to expanded clears the key.
-      expect(localStorage.getItem(KEY)).toBeNull();
+      expect(appStorageGet(TERMINALS_KEY)).toBeNull();
     });
 
     it('expandTerminalsGroup / collapseTerminalsGroup are idempotent', () => {
@@ -87,26 +95,31 @@ describe('sidebar store', () => {
       collapseTerminalsGroup();
       collapseTerminalsGroup();
       expect(isTerminalsGroupExpanded()).toBe(false);
-      expect(localStorage.getItem(KEY)).toBe('1');
+      expect(appStorageGet(TERMINALS_KEY)).toBe('1');
 
       expandTerminalsGroup();
       expandTerminalsGroup();
       expect(isTerminalsGroupExpanded()).toBe(true);
-      expect(localStorage.getItem(KEY)).toBeNull();
+      expect(appStorageGet(TERMINALS_KEY)).toBeNull();
     });
 
-    it('resetSidebarForTest restores the default expanded state and clears storage', () => {
+    it('resetSidebarForTest + resetAppStorageForTest restore the default expanded state', () => {
       toggleTerminalsGroup();
       expect(isTerminalsGroupExpanded()).toBe(false);
 
       resetSidebarForTest();
+      resetAppStorageForTest();
 
       expect(isTerminalsGroupExpanded()).toBe(true);
-      expect(localStorage.getItem(KEY)).toBeNull();
+      expect(appStorageGet(TERMINALS_KEY)).toBeNull();
     });
   });
 
   describe('project sort mode', () => {
+    beforeEach(() => {
+      setBindingMock('UpdateSettings', async () => null);
+    });
+
     it('defaults to lastActivity when no persisted value exists', () => {
       expect(getProjectSortMode()).toBe('lastActivity');
     });
@@ -140,71 +153,53 @@ describe('sidebar store', () => {
       resetSettingsForTest();
     });
 
-    it('overwrites sort mode and collapsed projects from Go settings', async () => {
+    it('overwrites sort mode from Go settings', async () => {
+      setBindingMock('UpdateSettings', async () => null);
       setProjectSortMode('lastActivity');
       expect(getProjectSortMode()).toBe('lastActivity');
-      expect(isProjectExpanded('proj-1')).toBe(true);
 
-      const serverSettings = makeSettings({
-        projectSortMode: 'manual',
-        collapsedProjects: ['proj-1', 'proj-2'],
-      });
+      const serverSettings = makeSettings({ projectSortMode: 'manual' });
       setBindingMock('GetSettings', async () => serverSettings);
       setBindingMock('UpdateSettings', async () => serverSettings);
       await loadSettings();
 
       syncSidebarFromSettings();
       expect(getProjectSortMode()).toBe('manual');
-      expect(isProjectExpanded('proj-1')).toBe(false);
-      expect(isProjectExpanded('proj-2')).toBe(false);
-      expect(isProjectExpanded('proj-3')).toBe(true);
     });
 
     it('back-fills localStorage from Go settings without pushing back', async () => {
-      const serverSettings = makeSettings({
-        projectSortMode: 'createdAt',
-        collapsedProjects: ['proj-a'],
-      });
+      const serverSettings = makeSettings({ projectSortMode: 'createdAt' });
       setBindingMock('GetSettings', async () => serverSettings);
       const updateMock = setBindingMock('UpdateSettings', async () => serverSettings);
       await loadSettings();
 
       syncSidebarFromSettings();
       expect(localStorage.getItem('agent-overflow:sidebar:projectSortMode')).toBe('createdAt');
-      const raw = localStorage.getItem('agent-overflow:sidebar:collapsedProjects');
-      expect(raw).not.toBeNull();
-      expect(JSON.parse(raw as string)).toContain('proj-a');
       expect(updateMock!.mock.calls.length).toBe(0);
     });
 
     it('Go wins when both Go and memory have non-default values', async () => {
+      setBindingMock('UpdateSettings', async () => null);
       setProjectSortMode('createdAt');
-      collapseProject('proj-local');
 
-      const serverSettings = makeSettings({
-        projectSortMode: 'manual',
-        collapsedProjects: ['proj-server'],
-      });
+      const serverSettings = makeSettings({ projectSortMode: 'manual' });
       setBindingMock('GetSettings', async () => serverSettings);
       const updateMock = setBindingMock('UpdateSettings', async () => serverSettings);
       await loadSettings();
 
       syncSidebarFromSettings();
       expect(getProjectSortMode()).toBe('manual');
-      expect(isProjectExpanded('proj-server')).toBe(false);
-      expect(isProjectExpanded('proj-local')).toBe(true);
       expect(updateMock!.mock.calls.length).toBe(0);
     });
 
-    it('pushes localStorage values to Go when Go has defaults but memory has non-defaults (upgrade migration)', async () => {
-      // Simulate the upgrade scenario: user has non-default values in
+    it('pushes the localStorage sort mode to Go when Go has the default but memory does not (upgrade migration)', async () => {
+      // Simulate the upgrade scenario: user has a non-default value in
       // memory (populated from localStorage at module init), but Go
-      // settings are at factory defaults because the fields didn't
+      // settings are at the factory default because the field didn't
       // exist before this version.
+      setBindingMock('UpdateSettings', async () => null);
       setProjectSortMode('manual');
-      collapseProject('proj-x');
       expect(getProjectSortMode()).toBe('manual');
-      expect(isProjectExpanded('proj-x')).toBe(false);
 
       const defaultGoSettings = makeSettings();
       setBindingMock('GetSettings', async () => defaultGoSettings);
@@ -216,21 +211,17 @@ describe('sidebar store', () => {
 
       syncSidebarFromSettings();
 
-      // In-memory values should NOT be overwritten with defaults.
+      // The in-memory value should NOT be overwritten with the default.
       expect(getProjectSortMode()).toBe('manual');
-      expect(isProjectExpanded('proj-x')).toBe(false);
 
-      // A single merged patch should push both fields to Go.
       expect(updateMock!.mock.calls.length).toBe(1);
       const patch = updateMock!.mock.calls[0][0] as Record<string, unknown>;
       expect(patch.projectSortMode).toBe('manual');
-      expect(patch.collapsedProjects).toContain('proj-x');
     });
 
     it('does not push when both Go and memory are at defaults', async () => {
       // Fresh install: both layers have defaults. No migration needed.
       expect(getProjectSortMode()).toBe('lastActivity');
-      expect(isProjectExpanded('any-project')).toBe(true);
 
       const defaultGoSettings = makeSettings();
       setBindingMock('GetSettings', async () => defaultGoSettings);
@@ -239,8 +230,57 @@ describe('sidebar store', () => {
 
       syncSidebarFromSettings();
 
-      // No push should have happened.
       expect(updateMock!.mock.calls.length).toBe(0);
+    });
+  });
+
+  describe('syncSidebarFromAppStorage', () => {
+    it('adopts hydrated view state from the per-client bucket', async () => {
+      setBindingMock('GetUIState', async () => ({
+        'sidebar:collapsedProjects': JSON.stringify(['proj-1', 'proj-2']),
+        'sidebar:expandedDiscussions': JSON.stringify(['disc-1']),
+        'sidebar:threadListVisibleLimits': JSON.stringify({ 'proj-1': 40 }),
+        'sidebar:terminalsGroupCollapsed': '1',
+      }));
+      await hydrateAppStorage();
+
+      syncSidebarFromAppStorage();
+
+      expect(isProjectExpanded('proj-1')).toBe(false);
+      expect(isProjectExpanded('proj-2')).toBe(false);
+      expect(isProjectExpanded('proj-3')).toBe(true);
+      expect(isDiscussionExpanded('disc-1')).toBe(true);
+      expect(isDiscussionExpanded('disc-2')).toBe(false);
+      expect(getThreadListVisibleLimit('proj-1')).toBe(40);
+      expect(getThreadListVisibleLimit('proj-2')).toBe(THREAD_PREVIEW_LIMIT);
+      expect(isTerminalsGroupExpanded()).toBe(false);
+    });
+
+    it('local pre-hydration writes survive an empty server bucket (pending wins)', async () => {
+      toggleProject('proj-local');
+      expect(isProjectExpanded('proj-local')).toBe(false);
+
+      setBindingMock('GetUIState', async () => ({}));
+      await hydrateAppStorage();
+
+      syncSidebarFromAppStorage();
+      expect(isProjectExpanded('proj-local')).toBe(false);
+    });
+
+    it('resets to defaults when the hydrated bucket has no view state', async () => {
+      // Simulate a fresh client: memory holds stale state from a prior
+      // identity, the new bucket is empty and holds no pending writes.
+      toggleProject('proj-stale');
+      toggleTerminalsGroup();
+      resetAppStorageForTest();
+      setBindingMock('GetUIState', async () => ({}));
+      await hydrateAppStorage();
+
+      syncSidebarFromAppStorage();
+
+      expect(isProjectExpanded('proj-stale')).toBe(true);
+      expect(isTerminalsGroupExpanded()).toBe(true);
+      expect(getThreadListVisibleLimit('any')).toBe(THREAD_PREVIEW_LIMIT);
     });
   });
 

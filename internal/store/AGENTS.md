@@ -60,6 +60,15 @@ root `CLAUDE.md` principle 3.
   `GetUsageStats` after merging in the rate-table lookup, and now means
   "rows whose model the rate table doesn't recognize" rather than
   "rows with no wire cost."
+- `ui_state.go` — persisted per-client UI view state (`ui_state`
+  table, migration v15). `(scope, key) → value` where scope is an
+  opaque namespace (`client:<uuid>` now, `user:<id>` reserved) and
+  values are opaque strings. The justified carve-out from "transient
+  UI state belongs to frontend `$state`": these rows are the
+  restart-surviving copy behind the frontend `appStorage` module,
+  needed because webview localStorage resets every launch (ephemeral
+  transport port = new origin). `GetUIState` returns a whole scope;
+  `SetUIState` batch-upserts; `DeleteUIState` is idempotent.
 - `migrate_fixups.go` — Go-side data fixups referenced by `Fix`
   migrations in `migrate.go`, built on the shared `rewriteItemMetas`
   scan/rewrite helper (v8 trims persisted tool_result echo, v9 trims

@@ -43,7 +43,7 @@ func TestMigrationFreshDB(t *testing.T) {
 		"proposed_plans", "proposed_plan_comments",
 		"chat_bar_favorites", "chat_model_profiles", "new_thread_mcp_defaults",
 		"diff_review_comments", "pending_background_task_terminals",
-		"projects", "thread_tracked_files",
+		"projects", "thread_tracked_files", "usage_ledger", "ui_state",
 	}
 	for _, table := range tables {
 		var name string

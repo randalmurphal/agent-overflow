@@ -9,11 +9,19 @@ import {
   setSidebarWidth,
   setSidebarWidthLive,
 } from './sidebarLayout.svelte';
+import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
+import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
-const STORAGE_KEY = 'agent-overflow:sidebar:width';
+const WIDTH_KEY = 'sidebar:width';
+const LEGACY_STORAGE_KEY = 'agent-overflow:sidebar:width';
 
 describe('sidebar layout store', () => {
   beforeEach(() => {
+    resetBindingMocks();
+    setBindingMock('SetUIState', async () => null);
+    setBindingMock('DeleteUIState', async () => null);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    resetAppStorageForTest();
     resetSidebarLayoutForTest();
   });
 
@@ -24,7 +32,7 @@ describe('sidebar layout store', () => {
   it('setSidebarWidth updates state and persists', () => {
     setSidebarWidth(320);
     expect(getSidebarWidth()).toBe(320);
-    expect(localStorage.getItem(STORAGE_KEY)).toBe('320');
+    expect(appStorageGet(WIDTH_KEY)).toBe('320');
   });
 
   it('clamps below the minimum', () => {
@@ -47,19 +55,19 @@ describe('sidebar layout store', () => {
     it('setSidebarWidthLive updates state without touching storage', () => {
       setSidebarWidthLive(340);
       expect(getSidebarWidth()).toBe(340);
-      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+      expect(appStorageGet(WIDTH_KEY)).toBeNull();
     });
 
     it('persistSidebarWidth flushes the current in-memory width', () => {
       setSidebarWidthLive(340);
-      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+      expect(appStorageGet(WIDTH_KEY)).toBeNull();
       persistSidebarWidth();
-      expect(localStorage.getItem(STORAGE_KEY)).toBe('340');
+      expect(appStorageGet(WIDTH_KEY)).toBe('340');
     });
 
     it('repeated live updates do not write even while dragging', () => {
       for (let px = 201; px < 220; px++) setSidebarWidthLive(px);
-      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+      expect(appStorageGet(WIDTH_KEY)).toBeNull();
       expect(getSidebarWidth()).toBe(219);
     });
   });
@@ -70,23 +78,32 @@ describe('sidebar layout store', () => {
     });
 
     it('returns default when the stored value is garbage', () => {
-      localStorage.setItem(STORAGE_KEY, 'garbage');
-      expect(readPersistedWidth()).toBe(280);
-    });
-
-    it('returns default when the stored value is empty', () => {
-      localStorage.setItem(STORAGE_KEY, '');
+      appStorageSet(WIDTH_KEY, 'garbage');
       expect(readPersistedWidth()).toBe(280);
     });
 
     it('clamps a stored value below the minimum', () => {
-      localStorage.setItem(STORAGE_KEY, '10');
+      appStorageSet(WIDTH_KEY, '10');
       expect(readPersistedWidth()).toBe(SIDEBAR_MIN_WIDTH);
     });
 
     it('round-trips a valid stored value', () => {
-      localStorage.setItem(STORAGE_KEY, '310');
+      appStorageSet(WIDTH_KEY, '310');
       expect(readPersistedWidth()).toBe(310);
+    });
+
+    it('adopts a legacy localStorage width when the bucket is empty', () => {
+      localStorage.setItem(LEGACY_STORAGE_KEY, '310');
+      expect(readPersistedWidth()).toBe(310);
+      // Adoption moves the value into the bucket and drops the legacy key.
+      expect(appStorageGet(WIDTH_KEY)).toBe('310');
+      expect(localStorage.getItem(LEGACY_STORAGE_KEY)).toBeNull();
+    });
+
+    it('rejects a corrupt legacy value and falls back to default', () => {
+      localStorage.setItem(LEGACY_STORAGE_KEY, 'garbage');
+      expect(readPersistedWidth()).toBe(280);
+      expect(appStorageGet(WIDTH_KEY)).toBeNull();
     });
   });
 });

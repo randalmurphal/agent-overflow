@@ -14,6 +14,7 @@ import (
 	"context"
 	"io/fs"
 	"log"
+	"net/url"
 	"sync"
 
 	"agent-overflow/internal/appidentity"
@@ -51,6 +52,10 @@ func runClient(rawURL string) {
 		fatalf("--connect: locate embedded frontend/dist: %v", err)
 	}
 	cfg.Assets = embeddedSPA
+	// Same durable identity the local-backend path uses: one client ID
+	// per installation, so this machine keeps one ui_state bucket on
+	// every backend it talks to, local or remote.
+	cfg.ClientID = ensureClientID()
 
 	stub, err := clientmode.Serve(cfg)
 	if err != nil {
@@ -138,6 +143,19 @@ func runDesktop(listenAddr string) {
 		fatalf("transport: AppURL is empty after Start (server addr = %q); refusing to fall through to Wails IPC scheme", srv.Addr())
 	}
 
+	// Thread the durable UI-state client ID onto the page URL (and the
+	// Ctrl+R reload URL) so the frontend's per-client ui_state bucket
+	// survives the per-launch origin change. Empty cid degrades to the
+	// frontend's browser-cached fallback identity.
+	clientID := ensureClientID()
+	withClientID := func(pageURL string) string {
+		if clientID == "" || pageURL == "" {
+			return pageURL
+		}
+		return pageURL + "&cid=" + url.QueryEscape(clientID)
+	}
+	reloadURL := func() string { return withClientID(srv.AppURL()) }
+
 	opts := application.WebviewWindowOptions{
 		Title:            title,
 		Width:            1280,
@@ -145,8 +163,8 @@ func runDesktop(listenAddr string) {
 		MinWidth:         800,
 		MinHeight:        600,
 		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
-		URL:              appURL,
-		KeyBindings:      uikeys.BrowserWithReload(srv.AppURL),
+		URL:              withClientID(appURL),
+		KeyBindings:      uikeys.BrowserWithReload(reloadURL),
 	}
 	// Reopen where we left off last. The window is created on ApplicationStarted
 	// (not here) so it materializes synchronously against a live app loop — that

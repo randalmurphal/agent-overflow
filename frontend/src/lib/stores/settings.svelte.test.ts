@@ -35,20 +35,6 @@ describe('settings store', () => {
       expect(getSettings().claudeEnabled).toBe(true);
     });
 
-    it('normalizes sparse nested pane layout settings', async () => {
-      setBindingMock('GetSettings', async () => ({
-        paneLayout: { version: 1 },
-      } as Partial<Settings>));
-
-      await loadSettings();
-
-      expect(getSettings().paneLayout).toEqual({
-        version: 1,
-        panes: [],
-        focusedPaneId: null,
-      });
-    });
-
     it('does nothing when GetSettings returns null', async () => {
       setBindingMock('GetSettings', async () => null);
       const before = getSettings();

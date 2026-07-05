@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Thread } from '../types/models';
-import type { PaneLayoutPersistedSettings, Settings } from '../types/settings';
+import type { PaneLayoutPersistedSettings } from '../types/settings';
 import {
   flushPaneLayoutPersistence,
   getPaneLayoutItems,
@@ -17,14 +17,16 @@ import {
 } from './panes.svelte';
 import {
   installPaneLayoutPersistence,
-  loadFromSettings,
-  persistToSettings,
+  loadPersistedPaneLayout,
+  persistPaneLayout,
   resetPaneLayoutPersistenceForTest,
   waitForPaneLayoutPersistenceForTest,
 } from './paneLayoutPersistence';
+import { appStorageGet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
 import { installPaneMocks, makeItem } from '../../test/helpers/chat';
-import { makeSettings } from '../../test/helpers/settings';
-import { setBindingMock } from '../../test/mocks/bindings-app';
+import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+
+const LEGACY_KEY = 'agentOverflowPaneLayout';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -68,34 +70,36 @@ function makeSavedLayout(
   return { version: 1, panes, focusedPaneId };
 }
 
-function installSettingsMock(initialPaneLayout: unknown = makeSavedLayout([], null)) {
-  let settings = makeSettings({
-    paneLayout: initialPaneLayout as PaneLayoutPersistedSettings,
-  });
-  const updateSettings = vi.fn(async (patch: Partial<Settings>) => {
-    settings = makeSettings({
-      ...settings,
-      ...patch,
-    });
-    return settings;
-  });
-  setBindingMock('GetSettings', async () => settings);
-  setBindingMock('UpdateSettings', updateSettings);
-  return {
-    get paneLayout(): PaneLayoutPersistedSettings {
-      return settings.paneLayout;
-    },
-    updateSettings,
-  };
+function persistedPaneLayout(): unknown {
+  const raw = appStorageGet('paneLayout');
+  return raw === null ? null : JSON.parse(raw);
+}
+
+/**
+ * Seed the appStorage bucket with a persisted layout by hydrating from
+ * a mocked GetUIState (mirrors a real boot: server bucket → memory).
+ * Passing null leaves the bucket empty.
+ */
+async function installUIStateMock(initialPaneLayout: unknown = makeSavedLayout([], null)) {
+  setBindingMock('GetUIState', async () =>
+    initialPaneLayout === null ? {} : { paneLayout: JSON.stringify(initialPaneLayout) },
+  );
+  const setUIState = vi.fn(async () => null);
+  setBindingMock('SetUIState', setUIState);
+  setBindingMock('DeleteUIState', async () => null);
+  await hydrateAppStorage();
+  return { setUIState };
 }
 
 describe('pane layout persistence', () => {
-  beforeEach(() => {
-    localStorage.removeItem('agentOverflowPaneLayout');
+  beforeEach(async () => {
+    localStorage.removeItem(LEGACY_KEY);
+    resetBindingMocks();
+    resetAppStorageForTest();
     resetPanesForTest();
     resetPaneLayoutForTest();
     installPaneLayoutPersistence();
-    installSettingsMock();
+    await installUIStateMock();
   });
 
   afterEach(() => {
@@ -104,10 +108,9 @@ describe('pane layout persistence', () => {
     vi.restoreAllMocks();
   });
 
-  it('round-trips panes and the focused pane id through settings', async () => {
+  it('round-trips panes and the focused pane id through appStorage', async () => {
     const left = makeThread({ id: 'left-thread', title: 'Left' });
     const right = makeThread({ id: 'right-thread', title: 'Right' });
-    const settings = installSettingsMock();
     installPaneMocks();
     seedPane('left', left);
     seedPane('right', right);
@@ -117,19 +120,17 @@ describe('pane layout persistence', () => {
     ]);
     focusPane('right');
 
-    persistToSettings();
+    persistPaneLayout();
     await waitForPaneLayoutPersistenceForTest();
     resetPanesForTest();
     setPaneLayoutItemsForTest([]);
 
-    await loadFromSettings([left, right]);
+    await loadPersistedPaneLayout([left, right]);
 
-    expect(settings.updateSettings).toHaveBeenCalledWith({
-      paneLayout: makeSavedLayout([
-        { paneId: 'left', threadId: 'left-thread', ratio: 0.75 },
-        { paneId: 'right', threadId: 'right-thread', ratio: 1.25 },
-      ], 'right'),
-    });
+    expect(persistedPaneLayout()).toEqual(makeSavedLayout([
+      { paneId: 'left', threadId: 'left-thread', ratio: 0.75 },
+      { paneId: 'right', threadId: 'right-thread', ratio: 1.25 },
+    ], 'right'));
     expect(getPaneLayoutItems()).toEqual([
       { id: 'left', paneId: 'left', kind: 'thread', ratio: 0.75 },
       { id: 'right', paneId: 'right', kind: 'thread', ratio: 1.25 },
@@ -143,18 +144,18 @@ describe('pane layout persistence', () => {
     const thread = makeThread({ id: 'restored-thread' });
     const restoredItem = makeItem({ id: 'restored-item', threadId: thread.id, summary: 'Loaded history' });
     installPaneMocks([restoredItem]);
-    installSettingsMock(makeSavedLayout([
+    await installUIStateMock(makeSavedLayout([
       { paneId: 'main', threadId: thread.id, ratio: 1 },
     ], 'main'));
 
-    await loadFromSettings([thread]);
+    await loadPersistedPaneLayout([thread]);
 
     expect(getAllPanes().get('main')?.items.map((item) => item.id)).toContain('restored-item');
   });
 
-  it('coalesces multiple resize persistence requests into one trailing settings write', async () => {
+  it('coalesces multiple resize persistence requests into one trailing write', async () => {
+    const mocks = await installUIStateMock();
     vi.useFakeTimers();
-    const settings = installSettingsMock();
     const left = makeThread({ id: 'left-thread' });
     const right = makeThread({ id: 'right-thread' });
     seedPane('left', left);
@@ -163,25 +164,24 @@ describe('pane layout persistence', () => {
       { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
       { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
     ]);
-    await waitForPaneLayoutPersistenceForTest();
-    settings.updateSettings.mockClear();
 
     resizeAdjacentPaneLayoutItems('left', 'right', 800, 800, 100, 560);
     resizeAdjacentPaneLayoutItems('left', 'right', 900, 700, -100, 560);
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(199);
-    expect(settings.updateSettings).not.toHaveBeenCalled();
+    expect(mocks.setUIState).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);
     await waitForPaneLayoutPersistenceForTest();
 
-    expect(settings.updateSettings).toHaveBeenCalledTimes(1);
-    expect(settings.paneLayout.panes.map((pane) => pane.threadId)).toEqual(['left-thread', 'right-thread']);
+    expect(mocks.setUIState).toHaveBeenCalledTimes(1);
+    const layout = persistedPaneLayout() as PaneLayoutPersistedSettings;
+    expect(layout.panes.map((pane) => pane.threadId)).toEqual(['left-thread', 'right-thread']);
   });
 
   it('flushes a pending resize persistence write immediately', async () => {
+    const mocks = await installUIStateMock();
     vi.useFakeTimers();
-    const settings = installSettingsMock();
     const left = makeThread({ id: 'left-thread' });
     const right = makeThread({ id: 'right-thread' });
     seedPane('left', left);
@@ -190,67 +190,72 @@ describe('pane layout persistence', () => {
       { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
       { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
     ]);
-    await waitForPaneLayoutPersistenceForTest();
-    settings.updateSettings.mockClear();
 
     resizeAdjacentPaneLayoutItems('left', 'right', 800, 800, 120, 560);
     await vi.advanceTimersByTimeAsync(0);
-    expect(settings.updateSettings).not.toHaveBeenCalled();
+    expect(mocks.setUIState).not.toHaveBeenCalled();
 
     await flushPaneLayoutPersistence();
 
-    expect(settings.updateSettings).toHaveBeenCalledTimes(1);
-    expect(settings.paneLayout.panes.map((pane) => pane.threadId)).toEqual(['left-thread', 'right-thread']);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(settings.updateSettings).toHaveBeenCalledTimes(1);
+    expect(mocks.setUIState).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(mocks.setUIState).toHaveBeenCalledTimes(1);
   });
 
   it('drops saved panes whose threads are no longer returned by ListThreads', async () => {
-    installSettingsMock(makeSavedLayout([
+    await installUIStateMock(makeSavedLayout([
       { paneId: 'left', threadId: 'kept-thread', ratio: 1 },
       { paneId: 'right', threadId: 'deleted-thread', ratio: 1 },
     ], 'right'));
 
     installPaneMocks();
-    await loadFromSettings([makeThread({ id: 'kept-thread' })]);
+    await loadPersistedPaneLayout([makeThread({ id: 'kept-thread' })]);
 
     expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left']);
     expect(getAllPanes().get('left')?.threadId).toBe('kept-thread');
     expect(getFocusedPaneId()).toBe('left');
   });
 
-  it('migrates a legacy localStorage layout when settings are still empty', async () => {
+  it('adopts a legacy localStorage layout when the bucket is still empty', async () => {
     const left = makeThread({ id: 'left-thread', title: 'Left' });
-    const settings = installSettingsMock(makeSavedLayout([], null));
-    localStorage.setItem('agentOverflowPaneLayout', JSON.stringify(makeSavedLayout([
+    // The suite-wide beforeEach hydrates an empty layout into the
+    // bucket; adoption only fires for a key with no bucket value at
+    // all, so start this scenario from a truly empty bucket.
+    resetAppStorageForTest();
+    const mocks = await installUIStateMock(null);
+    localStorage.setItem(LEGACY_KEY, JSON.stringify(makeSavedLayout([
       { paneId: 'left', threadId: left.id, ratio: 1.5 },
     ], 'left')));
     installPaneMocks();
 
-    await loadFromSettings([left]);
+    await loadPersistedPaneLayout([left]);
     await waitForPaneLayoutPersistenceForTest();
 
     expect(getPaneLayoutItems()).toEqual([
       { id: 'left', paneId: 'left', kind: 'thread', ratio: 1.5 },
     ]);
-    expect(settings.paneLayout).toEqual(makeSavedLayout([
+    expect(persistedPaneLayout()).toEqual(makeSavedLayout([
       { paneId: 'left', threadId: left.id, ratio: 1.5 },
     ], 'left'));
-    expect(localStorage.getItem('agentOverflowPaneLayout')).toBeNull();
+    expect(mocks.setUIState).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ paneLayout: expect.stringContaining('left-thread') }),
+    );
+    expect(localStorage.getItem(LEGACY_KEY)).toBeNull();
   });
 
   it('continues restoring other panes when one pane hydration fails', async () => {
     const good = makeThread({ id: 'good-thread' });
     const badThreadId = 'bad-thread';
     const bad = makeThreadThatThrowsDuringSwitch(badThreadId);
-    installSettingsMock(makeSavedLayout([
+    await installUIStateMock(makeSavedLayout([
       { paneId: 'good', threadId: good.id, ratio: 1 },
       { paneId: 'bad', threadId: badThreadId, ratio: 1 },
     ], 'bad'));
     installPaneMocks();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    await expect(loadFromSettings([good, bad])).resolves.toBeUndefined();
+    await expect(loadPersistedPaneLayout([good, bad])).resolves.toBeUndefined();
 
     expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['good']);
     expect(getAllPanes().get('good')?.threadId).toBe(good.id);
@@ -262,27 +267,19 @@ describe('pane layout persistence', () => {
     );
   });
 
-  it('surfaces GetSettings failures to the App startup error path', async () => {
-    setBindingMock('GetSettings', async () => {
-      throw new Error('settings unavailable');
-    });
-
-    await expect(loadFromSettings([makeThread({ id: 'left-thread' })])).rejects.toThrow('settings unavailable');
-  });
-
   it('ignores unsafe persisted pane ids and caps corrupt layouts', async () => {
     const panes = Array.from({ length: 30 }, (_, index) => ({
       paneId: `pane-${index + 1}`,
       threadId: `thread-${index + 1}`,
       ratio: 1,
     }));
-    installSettingsMock(makeSavedLayout([
+    await installUIStateMock(makeSavedLayout([
       { paneId: 'bad"] [data-pane-id="x', threadId: 'bad-thread', ratio: 1 },
       ...panes,
     ], 'bad"] [data-pane-id="x'));
     installPaneMocks();
 
-    await loadFromSettings(
+    await loadPersistedPaneLayout(
       panes.map((pane) => makeThread({ id: pane.threadId })),
     );
 
@@ -291,7 +288,7 @@ describe('pane layout persistence', () => {
     expect(getFocusedPaneId()).toBe('pane-1');
   });
 
-  it('falls back to an empty layout for missing, malformed, and mismatched persisted settings', async () => {
+  it('falls back to an empty layout for missing, malformed, and mismatched persisted values', async () => {
     const cases: unknown[] = [
       null,
       { version: 2, panes: [], focusedPaneId: null },
@@ -300,12 +297,13 @@ describe('pane layout persistence', () => {
     for (const paneLayout of cases) {
       resetPanesForTest();
       resetPaneLayoutForTest();
+      resetAppStorageForTest();
       seedPane('left', makeThread({ id: 'left-thread' }));
       setPaneLayoutItemsForTest([{ id: 'left', paneId: 'left', kind: 'thread', ratio: 1 }]);
-      installSettingsMock(paneLayout);
+      await installUIStateMock(paneLayout);
       installPaneMocks();
 
-      await loadFromSettings([makeThread({ id: 'left-thread' })]);
+      await loadPersistedPaneLayout([makeThread({ id: 'left-thread' })]);
 
       expect(getPaneLayoutItems()).toEqual([]);
       expect(getAllPanes().size).toBe(0);
@@ -314,29 +312,29 @@ describe('pane layout persistence', () => {
   });
 
   it('persists an explicit empty pane layout when saving an empty layout', async () => {
-    const settings = installSettingsMock(makeSavedLayout([
+    await installUIStateMock(makeSavedLayout([
       { paneId: 'left', threadId: 'thread-1', ratio: 1 },
     ], 'left'));
     setPaneLayoutItemsForTest([]);
 
-    persistToSettings();
+    persistPaneLayout();
     await waitForPaneLayoutPersistenceForTest();
 
-    expect(settings.paneLayout).toEqual(makeSavedLayout([], null));
+    expect(persistedPaneLayout()).toEqual(makeSavedLayout([], null));
   });
 
-  it('treats settings write failures as best-effort', async () => {
+  it('treats write failures as best-effort', async () => {
     seedPane('left', makeThread({ id: 'left-thread' }));
     setPaneLayoutItemsForTest([{ id: 'left', paneId: 'left', kind: 'thread', ratio: 1 }]);
-    setBindingMock('UpdateSettings', async () => {
-      throw new Error('settings write failed');
+    setBindingMock('SetUIState', async () => {
+      throw new Error('ui state write failed');
     });
-    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    expect(() => persistToSettings()).not.toThrow();
+    expect(() => persistPaneLayout()).not.toThrow();
     await waitForPaneLayoutPersistenceForTest();
-    expect(consoleWarn).toHaveBeenCalledWith(
-      'Failed to write pane layout persistence:',
+    expect(consoleError).toHaveBeenCalledWith(
+      'appStorage: flush failed:',
       expect.any(Error),
     );
   });

@@ -543,7 +543,15 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	// so a ::1 attempt hits Windows-loopback directly and is refused.
 	// Hard-coding the IPv4 literal makes the WebView navigation
 	// race-free against the OS resolver and the dual-stack hosts file.
-	url := fmt.Sprintf("http://127.0.0.1:%d/?t=%s", bs.Port, bs.Token)
+	// Durable UI-state client identity minted by the WSL backend;
+	// threading it onto the page URL keeps the frontend's per-client
+	// ui_state bucket stable across the per-launch origin change.
+	// Escaped before the `url` local below shadows the net/url package.
+	cidParam := ""
+	if bs.ClientID != "" {
+		cidParam = "&cid=" + url.QueryEscape(bs.ClientID)
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/?t=%s%s", bs.Port, bs.Token, cidParam)
 	// Same redaction shape probeBootstrap uses. The token is
 	// the per-launch credential; leaking it through launcher.log (which
 	// persists in %APPDATA% across runs and is a likely artifact in user

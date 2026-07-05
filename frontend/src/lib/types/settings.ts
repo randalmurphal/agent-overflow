@@ -167,22 +167,17 @@ export interface Settings {
 
   /**
    * Usage-surface time period (sidebar usage footer + usage modal):
-   * 'day' | 'week' | 'month' | 'all'. Persisted in Go settings for the
-   * same reason as paneLayout — webview localStorage is not durable
-   * (the transport's ephemeral port changes the origin every launch).
+   * 'day' | 'week' | 'month' | 'all'. Persisted in Go settings because
+   * webview localStorage is not durable (the transport's ephemeral
+   * port changes the origin every launch).
+   *
+   * Per-client view state (pane layout, collapsed projects, sidebar
+   * width, …) deliberately does NOT live in Settings — it persists
+   * through stores/appStorage.ts (the ui_state table) keyed per
+   * client, so two clients of the same backend keep independent view
+   * state.
    */
   usagePeriod: string;
-  /** Project IDs explicitly collapsed in the sidebar. Absent IDs default to expanded.
-   * Go uses `omitempty`, so the key may be absent on the wire — treat undefined as [].
-   */
-  collapsedProjects?: string[];
-
-  /**
-   * Visible thread pane order, ratios, and focus. Stored in Go settings
-   * instead of webview localStorage because packaged webviews are not
-   * durable on every platform.
-   */
-  paneLayout: PaneLayoutPersistedSettings;
 }
 
 export interface NetworkPersistedSettings {

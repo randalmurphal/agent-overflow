@@ -32,6 +32,14 @@ type Config struct {
 	// Token is the auth secret the SPA presents on the WS upgrade.
 	Token string
 
+	// ClientID is this installation's durable UI-state client
+	// identity, injected into the SPA bootstrap so the remote
+	// backend's per-client ui_state bucket stays stable across
+	// launches (the stub's ephemeral port changes the webview origin —
+	// and its localStorage — every run). Optional: when empty the SPA
+	// falls back to a best-effort browser-cached identity.
+	ClientID string
+
 	// Assets is the embedded SPA filesystem rooted at the directory
 	// containing index.html. Required.
 	Assets fs.FS
@@ -161,7 +169,7 @@ func Serve(cfg Config) (*Server, error) {
 		cfg.HTTPWriteTimeout = 60 * time.Second
 	}
 
-	indexHTML, err := buildInjectedIndex(cfg.Assets, cfg.WSURL, cfg.Token)
+	indexHTML, err := buildInjectedIndex(cfg.Assets, cfg.WSURL, cfg.Token, cfg.ClientID)
 	if err != nil {
 		return nil, fmt.Errorf("clientmode: build injected index: %w", err)
 	}
@@ -325,7 +333,7 @@ const bootstrapTag = "<head>"
 // the literal we inject — manual string concatenation would risk
 // quote-escaping bugs against tokens or URLs containing arbitrary
 // bytes.
-func buildInjectedIndex(assets fs.FS, wsURL, token string) ([]byte, error) {
+func buildInjectedIndex(assets fs.FS, wsURL, token, clientID string) ([]byte, error) {
 	indexFile, err := assets.Open("index.html")
 	if err != nil {
 		return nil, fmt.Errorf("open index.html: %w", err)
@@ -345,13 +353,15 @@ func buildInjectedIndex(assets fs.FS, wsURL, token string) ([]byte, error) {
 	// this field; defaultBootstrap in wsClient.ts treats absence as
 	// "local".
 	bootstrapJSON, err := json.Marshal(struct {
-		WSURL string `json:"wsUrl"`
-		Token string `json:"token"`
-		Mode  string `json:"mode"`
+		WSURL    string `json:"wsUrl"`
+		Token    string `json:"token"`
+		Mode     string `json:"mode"`
+		ClientID string `json:"clientId,omitempty"`
 	}{
-		WSURL: wsURL,
-		Token: token,
-		Mode:  "client",
+		WSURL:    wsURL,
+		Token:    token,
+		Mode:     "client",
+		ClientID: clientID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal bootstrap: %w", err)

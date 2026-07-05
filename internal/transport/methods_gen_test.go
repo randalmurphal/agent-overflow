@@ -65,6 +65,15 @@ var wireSafeMethods = map[string]bool{
 	// counts + wire-reported cost; no credentials, no FS).
 	"GetUsageStats": true,
 
+	// Per-client UI view state (ui_state table). Remote clients are
+	// the point: each presents an opaque client ID and can only touch
+	// its own "client:<id>" scope (built server-side in app_uistate.go,
+	// which also bounds batch/key/value sizes). Opaque preference
+	// strings — no credentials, no FS, same reasoning as keybindings.
+	"GetUIState":    true,
+	"SetUIState":    true,
+	"DeleteUIState": true,
+
 	// Timeline reads (item slice / turn / search).
 	"GetThreadItem":           true,
 	"ListItems":               true,

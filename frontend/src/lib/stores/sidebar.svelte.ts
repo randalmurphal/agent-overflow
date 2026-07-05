@@ -1,13 +1,17 @@
 // Sidebar UI state: which project rows are expanded, and which direction
 // the projects list is sorted.
 //
-// Dual-write persistence: localStorage is the synchronous fast-path so
-// module init has the correct value before the async Go settings load
-// completes. Go settings (settings.json on disk) is the durable source
-// of truth — localStorage is ephemeral on some webview platforms
-// (WebKit2GTK / WSL2). On loadSettings(), syncSidebarFromSettings()
-// overwrites the in-memory state from Go; on mutation, both layers are
-// written through.
+// Two persistence layers, split by what kind of state each is:
+//   - View state (collapsed projects, expanded discussions, thread-list
+//     limits, terminals group) persists per client through appStorage
+//     (ui_state table) — two machines looking at the same backend keep
+//     independent view state. appStorage serves module init from its
+//     same-session cache; syncSidebarFromAppStorage() re-reads after
+//     hydration lands the durable bucket.
+//   - projectSortMode is a user preference, not view state — it stays
+//     in Go settings (with localStorage as the pre-load cache) so it
+//     follows the user, and syncSidebarFromSettings() reconciles it
+//     after loadSettings().
 //
 // Project expansion uses an inverted set: we persist explicit *collapses*
 // rather than expansions, so an unseen project defaults to expanded
@@ -22,17 +26,32 @@
 
 import type { ProjectSortMode } from '../types/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
+import {
+  appStorageAdoptLegacyKey,
+  appStorageDelete,
+  appStorageGet,
+  appStorageSet,
+} from './appStorage';
 import { getSettings, updateSettingsPatch } from './settings.svelte';
 
 export type { ProjectSortMode };
 
-const COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
+// appStorage (per-client) keys.
+const COLLAPSED_KEY = 'sidebar:collapsedProjects';
+const EXPANDED_DISCUSSIONS_KEY = 'sidebar:expandedDiscussions';
+const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
+const TERMINALS_GROUP_COLLAPSED_KEY = 'sidebar:terminalsGroupCollapsed';
+
+// Pre-appStorage localStorage keys, adopted once at module init.
+const LEGACY_COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
 const LEGACY_EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
-const SORT_MODE_KEY = 'agent-overflow:sidebar:projectSortMode';
-const EXPANDED_DISCUSSIONS_KEY = 'agent-overflow:sidebar:expandedDiscussions';
+const LEGACY_EXPANDED_DISCUSSIONS_KEY = 'agent-overflow:sidebar:expandedDiscussions';
 const LEGACY_EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
-const THREAD_LIST_VISIBLE_LIMITS_KEY = 'agent-overflow:sidebar:threadListVisibleLimits';
-const TERMINALS_GROUP_COLLAPSED_KEY = 'agent-overflow:sidebar:terminalsGroupCollapsed';
+const LEGACY_THREAD_LIST_LIMITS_KEY = 'agent-overflow:sidebar:threadListVisibleLimits';
+const LEGACY_TERMINALS_COLLAPSED_KEY = 'agent-overflow:sidebar:terminalsGroupCollapsed';
+
+// projectSortMode cache key (Go settings remain the durable copy).
+const SORT_MODE_KEY = 'agent-overflow:sidebar:projectSortMode';
 
 const DEFAULT_PROJECT_SORT_MODE: ProjectSortMode = 'lastActivity';
 
@@ -42,36 +61,38 @@ const PROJECT_SORT_MODES: readonly ProjectSortMode[] = [
   'manual',
 ];
 
-function readStringSet(key: string): Set<string> {
-  if (typeof localStorage === 'undefined') return new Set();
+/** Parses a persisted JSON string[] value; null on any malformed shape. */
+function parseStringArray(raw: string): string[] | null {
   try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return new Set();
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    const out = new Set<string>();
-    for (const entry of parsed) {
-      if (typeof entry === 'string') out.add(entry);
-    }
-    return out;
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((entry): entry is string => typeof entry === 'string');
   } catch {
-    return new Set();
+    return null;
   }
 }
 
+function stringSetFromStorage(key: string, legacyKey: string): Set<string> {
+  const raw =
+    appStorageGet(key) ??
+    appStorageAdoptLegacyKey(key, legacyKey, (legacy) =>
+      parseStringArray(legacy) === null ? null : legacy,
+    );
+  if (raw === null) return new Set();
+  return new Set(parseStringArray(raw) ?? []);
+}
+
+function writeStringSet(key: string, set: ReadonlySet<string>): void {
+  appStorageSet(key, JSON.stringify([...set]));
+}
+
 function readCollapsed(): Set<string> {
-  // Drop the legacy "expanded" key on first read so old data doesn't
-  // linger forever. Old persisted state can't be migrated meaningfully:
-  // the old set listed user-expanded ids, but we'd need the full project
-  // list to compute the inverse — and that list isn't loaded here.
-  if (typeof localStorage !== 'undefined') {
-    try {
-      localStorage.removeItem(LEGACY_EXPANDED_STORAGE_KEY);
-    } catch {
-      // ignore
-    }
-  }
-  return readStringSet(COLLAPSED_STORAGE_KEY);
+  // Drop the pre-inversion legacy "expanded" key so old data doesn't
+  // linger forever. Its contents can't be migrated meaningfully: the
+  // old set listed user-expanded ids, and computing the inverse needs
+  // the full project list, which isn't loaded here.
+  removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
+  return stringSetFromStorage(COLLAPSED_KEY, LEGACY_COLLAPSED_STORAGE_KEY);
 }
 
 function readProjectSortMode(): ProjectSortMode {
@@ -87,15 +108,10 @@ function readProjectSortMode(): ProjectSortMode {
   }
 }
 
-function readThreadListVisibleLimits(): Record<string, number> {
-  if (typeof localStorage === 'undefined') return {};
+function parseThreadListVisibleLimits(raw: string): Record<string, number> | null {
   try {
-    localStorage.removeItem(LEGACY_EXPANDED_THREAD_LISTS_KEY);
-    const raw = localStorage.getItem(THREAD_LIST_VISIBLE_LIMITS_KEY);
-    if (!raw) return {};
     const parsed: unknown = JSON.parse(raw);
-    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-
+    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
     const out: Record<string, number> = {};
     for (const [projectId, value] of Object.entries(parsed)) {
       if (typeof value !== 'number' || !Number.isFinite(value)) continue;
@@ -104,21 +120,41 @@ function readThreadListVisibleLimits(): Record<string, number> {
     }
     return out;
   } catch {
-    return {};
+    return null;
   }
 }
 
-function writeStringSet(key: string, set: Set<string>): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(key, JSON.stringify([...set]));
-  } catch {
-    // Ignore quota / access errors — in-memory state stays consistent.
-  }
+function readThreadListVisibleLimits(): Record<string, number> {
+  removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
+  const raw =
+    appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY) ??
+    appStorageAdoptLegacyKey(THREAD_LIST_VISIBLE_LIMITS_KEY, LEGACY_THREAD_LIST_LIMITS_KEY, (legacy) =>
+      parseThreadListVisibleLimits(legacy) === null ? null : legacy,
+    );
+  if (raw === null) return {};
+  return parseThreadListVisibleLimits(raw) ?? {};
 }
 
-function writeCollapsed(set: Set<string>): void {
-  writeStringSet(COLLAPSED_STORAGE_KEY, set);
+function writeThreadListVisibleLimits(limits: Record<string, number>): void {
+  if (Object.keys(limits).length === 0) {
+    appStorageDelete(THREAD_LIST_VISIBLE_LIMITS_KEY);
+    return;
+  }
+  appStorageSet(THREAD_LIST_VISIBLE_LIMITS_KEY, JSON.stringify(limits));
+}
+
+function readTerminalsGroupCollapsed(): boolean {
+  const raw =
+    appStorageGet(TERMINALS_GROUP_COLLAPSED_KEY) ??
+    appStorageAdoptLegacyKey(TERMINALS_GROUP_COLLAPSED_KEY, LEGACY_TERMINALS_COLLAPSED_KEY, (legacy) =>
+      legacy === '1' ? legacy : null,
+    );
+  return raw === '1';
+}
+
+function writeTerminalsGroupCollapsed(value: boolean): void {
+  if (value) appStorageSet(TERMINALS_GROUP_COLLAPSED_KEY, '1');
+  else appStorageDelete(TERMINALS_GROUP_COLLAPSED_KEY);
 }
 
 function writeProjectSortMode(mode: ProjectSortMode): void {
@@ -130,48 +166,25 @@ function writeProjectSortMode(mode: ProjectSortMode): void {
   }
 }
 
-function writeThreadListVisibleLimits(limits: Record<string, number>): void {
+function removeLocalStorageKey(key: string): void {
   if (typeof localStorage === 'undefined') return;
   try {
-    if (Object.keys(limits).length === 0) {
-      localStorage.removeItem(THREAD_LIST_VISIBLE_LIMITS_KEY);
-      return;
-    }
-    localStorage.setItem(THREAD_LIST_VISIBLE_LIMITS_KEY, JSON.stringify(limits));
+    localStorage.removeItem(key);
   } catch {
-    // Ignore quota / access errors — in-memory state stays consistent.
-  }
-}
-
-function readBooleanFlag(key: string): boolean {
-  if (typeof localStorage === 'undefined') return false;
-  try {
-    return localStorage.getItem(key) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function writeBooleanFlag(key: string, value: boolean): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    if (value) localStorage.setItem(key, '1');
-    else localStorage.removeItem(key);
-  } catch {
-    // Ignore quota / access errors — in-memory state stays consistent.
+    // ignore
   }
 }
 
 let collapsedProjects: Set<string> = $state(readCollapsed());
-let expandedDiscussions: Set<string> = $state(readStringSet(EXPANDED_DISCUSSIONS_KEY));
+let expandedDiscussions: Set<string> = $state(
+  stringSetFromStorage(EXPANDED_DISCUSSIONS_KEY, LEGACY_EXPANDED_DISCUSSIONS_KEY),
+);
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
-// Standalone "Terminals" sidebar group collapse. localStorage-only, like
-// discussion expansion below — low-stakes view state that's fine to lose on a
-// webview that clears localStorage (it just defaults back to expanded). Stored
-// as a *collapsed* flag so the unset default is expanded, matching the
-// project-row convention.
-let terminalsGroupCollapsed: boolean = $state(readBooleanFlag(TERMINALS_GROUP_COLLAPSED_KEY));
+// Standalone "Terminals" sidebar group collapse. Stored as a *collapsed*
+// flag so the unset default is expanded, matching the project-row
+// convention.
+let terminalsGroupCollapsed: boolean = $state(readTerminalsGroupCollapsed());
 
 export function isProjectExpanded(id: string): boolean {
   return !collapsedProjects.has(id);
@@ -182,8 +195,7 @@ export function toggleProject(id: string): void {
   if (next.has(id)) next.delete(id);
   else next.add(id);
   collapsedProjects = next;
-  writeCollapsed(next);
-  void updateSettingsPatch({ collapsedProjects: [...next] });
+  writeStringSet(COLLAPSED_KEY, next);
 }
 
 export function expandProject(id: string): void {
@@ -191,16 +203,14 @@ export function expandProject(id: string): void {
   const next = new Set(collapsedProjects);
   next.delete(id);
   collapsedProjects = next;
-  writeCollapsed(next);
-  void updateSettingsPatch({ collapsedProjects: [...next] });
+  writeStringSet(COLLAPSED_KEY, next);
 }
 
 export function collapseProject(id: string): void {
   if (collapsedProjects.has(id)) return;
   const next = new Set(collapsedProjects).add(id);
   collapsedProjects = next;
-  writeCollapsed(next);
-  void updateSettingsPatch({ collapsedProjects: [...next] });
+  writeStringSet(COLLAPSED_KEY, next);
 }
 
 /**
@@ -216,13 +226,13 @@ export function isTerminalsGroupExpanded(): boolean {
 export function expandTerminalsGroup(): void {
   if (!terminalsGroupCollapsed) return;
   terminalsGroupCollapsed = false;
-  writeBooleanFlag(TERMINALS_GROUP_COLLAPSED_KEY, false);
+  writeTerminalsGroupCollapsed(false);
 }
 
 export function collapseTerminalsGroup(): void {
   if (terminalsGroupCollapsed) return;
   terminalsGroupCollapsed = true;
-  writeBooleanFlag(TERMINALS_GROUP_COLLAPSED_KEY, true);
+  writeTerminalsGroupCollapsed(true);
 }
 
 export function toggleTerminalsGroup(): void {
@@ -242,43 +252,49 @@ export function setProjectSortMode(mode: ProjectSortMode): void {
 }
 
 /**
- * Reconcile in-memory sidebar state with Go settings. Called after
- * loadSettings() completes. Go settings are the durable source of
- * truth, but on the first run after upgrade localStorage may hold
- * the user's real preferences while Go still has factory defaults.
- * In that case we push localStorage → Go (one-time migration)
- * instead of overwriting the user's state with defaults.
+ * Reconcile projectSortMode with Go settings after loadSettings()
+ * completes. Go settings are the durable source of truth, but on the
+ * first run after upgrade localStorage may hold the user's real
+ * preference while Go still has the factory default — in that case
+ * push localStorage → Go (one-time migration) instead of overwriting
+ * the user's state with the default.
  *
- * Steady state (post-migration): every mutation writes through to
- * both layers, so they stay in sync and Go always wins here.
+ * View state (collapsed projects etc.) is NOT handled here — it lives
+ * in appStorage; see syncSidebarFromAppStorage().
  */
 export function syncSidebarFromSettings(): void {
   const s = getSettings();
-  const migrationPatch: Partial<{ projectSortMode: ProjectSortMode; collapsedProjects: string[] }> =
-    {};
-
   const goMode = PROJECT_SORT_MODES.includes(s.projectSortMode)
     ? s.projectSortMode
     : DEFAULT_PROJECT_SORT_MODE;
   if (goMode === DEFAULT_PROJECT_SORT_MODE && projectSortMode !== DEFAULT_PROJECT_SORT_MODE) {
-    migrationPatch.projectSortMode = projectSortMode;
+    void updateSettingsPatch({ projectSortMode });
   } else if (projectSortMode !== goMode) {
     projectSortMode = goMode;
     writeProjectSortMode(goMode);
   }
+}
 
-  const goIds = s.collapsedProjects ?? [];
-  const goSet = new Set(goIds.filter((id) => typeof id === 'string' && id !== ''));
-  if (goSet.size === 0 && collapsedProjects.size > 0) {
-    migrationPatch.collapsedProjects = [...collapsedProjects];
-  } else if (!setsEqual(collapsedProjects, goSet)) {
-    collapsedProjects = goSet;
-    writeCollapsed(goSet);
+/**
+ * Re-read the appStorage-backed view state after hydration lands the
+ * durable per-client bucket. appStorage itself reconciles cache vs
+ * server (pending local writes win; cache-only keys push up), so this
+ * just adopts whatever the bucket now holds.
+ */
+export function syncSidebarFromAppStorage(): void {
+  const collapsed = new Set(parseStringArray(appStorageGet(COLLAPSED_KEY) ?? '[]') ?? []);
+  if (!setsEqual(collapsed, collapsedProjects)) {
+    collapsedProjects = collapsed;
   }
-
-  if (Object.keys(migrationPatch).length > 0) {
-    void updateSettingsPatch(migrationPatch);
+  const discussions = new Set(
+    parseStringArray(appStorageGet(EXPANDED_DISCUSSIONS_KEY) ?? '[]') ?? [],
+  );
+  if (!setsEqual(discussions, expandedDiscussions)) {
+    expandedDiscussions = discussions;
   }
+  const rawLimits = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
+  threadListVisibleLimits = rawLimits === null ? {} : (parseThreadListVisibleLimits(rawLimits) ?? {});
+  terminalsGroupCollapsed = appStorageGet(TERMINALS_GROUP_COLLAPSED_KEY) === '1';
 }
 
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -372,24 +388,19 @@ function visibleLimitsWith(id: string, limit: number): Record<string, number> {
   };
 }
 
-/** Test helper: clears in-memory + storage between tests. */
+/** Test helper: clears in-memory state and the sort-mode cache. View
+ *  state lives in appStorage — reset that via resetAppStorageForTest. */
 export function resetSidebarForTest(): void {
   collapsedProjects = new Set();
   expandedDiscussions = new Set();
   threadListVisibleLimits = {};
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   terminalsGroupCollapsed = false;
-  if (typeof localStorage !== 'undefined') {
-    try {
-      localStorage.removeItem(COLLAPSED_STORAGE_KEY);
-      localStorage.removeItem(LEGACY_EXPANDED_STORAGE_KEY);
-      localStorage.removeItem(EXPANDED_DISCUSSIONS_KEY);
-      localStorage.removeItem(LEGACY_EXPANDED_THREAD_LISTS_KEY);
-      localStorage.removeItem(THREAD_LIST_VISIBLE_LIMITS_KEY);
-      localStorage.removeItem(SORT_MODE_KEY);
-      localStorage.removeItem(TERMINALS_GROUP_COLLAPSED_KEY);
-    } catch {
-      // ignore
-    }
-  }
+  removeLocalStorageKey(SORT_MODE_KEY);
+  removeLocalStorageKey(LEGACY_COLLAPSED_STORAGE_KEY);
+  removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
+  removeLocalStorageKey(LEGACY_EXPANDED_DISCUSSIONS_KEY);
+  removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
+  removeLocalStorageKey(LEGACY_THREAD_LIST_LIMITS_KEY);
+  removeLocalStorageKey(LEGACY_TERMINALS_COLLAPSED_KEY);
 }

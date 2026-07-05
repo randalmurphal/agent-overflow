@@ -572,6 +572,26 @@ CREATE INDEX idx_usage_ledger_created ON usage_ledger(created_at);
 
 CREATE INDEX idx_usage_ledger_thread ON usage_ledger(thread_id, created_at);`,
 	},
+	{
+		Version: 15,
+		Name:    "ui_state",
+		// Persisted per-client UI view state (sidebar width, pane
+		// layout, collapsed sections). scope is an opaque namespace
+		// string — "client:<uuid>" today, "user:<id>" reserved for
+		// when identities exist. This table exists because webview
+		// localStorage is not durable here: the transport binds an
+		// ephemeral port, so the webview origin (and its per-origin
+		// storage) changes every launch. Frontend $state still owns
+		// in-session reactivity; these rows are the restart-surviving
+		// copy, hydrated once at boot.
+		SQL: `CREATE TABLE ui_state (
+    scope      TEXT    NOT NULL,
+    key        TEXT    NOT NULL,
+    value      TEXT    NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (scope, key)
+);`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

@@ -66,6 +66,11 @@ export {
   // claude-tui — see internal/usagecost).
   GetUsageStats,
 
+  // Per-client UI view state (ui_state table) behind stores/appStorage.ts.
+  GetUIState,
+  SetUIState,
+  DeleteUIState,
+
   // Network bindings (LAN-bind toggle for the embedded transport).
   GetNetworkSettings,
   SetNetworkSettings,

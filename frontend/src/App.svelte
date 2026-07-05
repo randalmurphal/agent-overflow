@@ -10,12 +10,14 @@
   import { getThreads, loadThreads } from './lib/stores/threads.svelte';
   import {
     installPaneLayoutPersistence,
-    loadFromSettings as loadPaneLayoutFromSettings,
+    loadPersistedPaneLayout,
   } from './lib/stores/paneLayoutPersistence';
   import { flushPaneLayoutPersistence, setPaneLayoutItems } from './lib/stores/paneLayout.svelte';
   import { installTakeControl } from './lib/stores/takeControl.svelte';
+  import { flushAppStorage, hydrateAppStorage } from './lib/stores/appStorage';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
-  import { syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
+  import { syncSidebarFromAppStorage, syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
+  import { syncSidebarWidthFromAppStorage } from './lib/stores/sidebarLayout.svelte';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyTheme } from './lib/utils/theme';
@@ -270,10 +272,19 @@
     // Passive on-launch update check + updater:* event bridge. No-op on builds
     // without an updater; never downloads or installs without an explicit click.
     const cleanupUpdates = initUpdates();
+    // appStorage hydration gates the view-state consumers: pane layout
+    // restore reads the per-client bucket, and the sidebar syncs adopt
+    // the durable copies over the pre-hydration cache. A failed
+    // hydration (offline backend) leaves the same-session cache in
+    // charge, which is the correct degraded behavior.
+    const appStorageReady = hydrateAppStorage();
     void (async () => {
       try {
         const threads = await loadThreads();
-        await loadPaneLayoutFromSettings(threads);
+        await appStorageReady;
+        syncSidebarWidthFromAppStorage();
+        syncSidebarFromAppStorage();
+        await loadPersistedPaneLayout(threads);
         installPaneLayoutPersistence();
         installTakeControl();
       } catch (err) {
@@ -323,6 +334,11 @@
     void loadKeybindings();
     const flushPaneLayout = () => {
       if (paneLayoutRestored) void flushPaneLayoutPersistence();
+      // Deliver any debounced appStorage writes (sidebar view state,
+      // width) before the page goes away. Best-effort — the WS send
+      // may not complete on a hard kill, and the same-session cache
+      // covers the reload case regardless.
+      void flushAppStorage();
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {

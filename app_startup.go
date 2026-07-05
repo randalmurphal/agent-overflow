@@ -192,6 +192,11 @@ func (a *App) initStores() (string, *store.Store, error) {
 			errorsx.WrapLifecycle("close store after logger initialization failure", closeErr),
 		)
 	}
+	// One-shot move of pre-appStorage view state (paneLayout,
+	// collapsedProjects) out of settings.json into the embedded
+	// client's ui_state bucket. Runs before any frontend RPC can
+	// arrive, so a settings save can't drop the stale keys first.
+	migrateUIStateFromSettings(dbDir, st)
 	return dbDir, st, nil
 }
 

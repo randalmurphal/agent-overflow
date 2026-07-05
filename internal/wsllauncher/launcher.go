@@ -44,6 +44,10 @@ var ErrNotSupported = errors.New("wsllauncher: only available on Windows")
 type Bootstrap struct {
 	Port  int    `json:"port"`
 	Token string `json:"token"`
+	// ClientID is the backend installation's durable UI-state client
+	// identity (main.go ensureClientID). The launcher forwards it onto
+	// the webview URL as ?cid=. Optional: older backends omit it.
+	ClientID string `json:"clientId"`
 }
 
 // LaunchOptions configures Launch.

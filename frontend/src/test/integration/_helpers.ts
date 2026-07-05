@@ -22,6 +22,7 @@ import { setBindingMock } from '../mocks/bindings-app';
 import type { Project, ProjectWithCounts, Thread } from '../../lib/types/models';
 import type { GitStatus } from '../../lib/types/git';
 import { resetProjectsForTest } from '../../lib/stores/projects.svelte';
+import { resetAppStorageForTest } from '../../lib/stores/appStorage';
 import { resetSidebarForTest, expandProject } from '../../lib/stores/sidebar.svelte';
 import { resetProviderModelsForTest } from '../../lib/stores/providerModels.svelte';
 import { resetSettingsForTest } from '../../lib/stores/settings.svelte';
@@ -59,6 +60,7 @@ export function resetAppState(): void {
   // Reset the projects-first sidebar state so tests that expect a clean
   // project list / collapsed chevrons don't inherit from a prior case.
   resetProjectsForTest();
+  resetAppStorageForTest();
   resetSidebarForTest();
   resetSettingsForTest();
   resetThreadActionConfirmationsForTest();
@@ -93,6 +95,12 @@ export function installAppDefaults(): void {
   // Usage surfaces (composer UsageChip, sidebar UsageFooter) fetch
   // ledger aggregates on mount. Default to no usage recorded.
   setBindingMock('GetUsageStats', async () => []);
+  // App boot hydrates the per-client appStorage bucket. Default to an
+  // empty bucket + no-op writes; tests that assert on persisted view
+  // state install their own stateful mocks.
+  setBindingMock('GetUIState', async () => ({}));
+  setBindingMock('SetUIState', async () => null);
+  setBindingMock('DeleteUIState', async () => null);
 }
 
 /**

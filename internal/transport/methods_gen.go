@@ -53,6 +53,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteProposedPlanComment", ID: 554913120},             // main.App.DeleteProposedPlanComment
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297},                 // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974},                         // main.App.DeleteThread
+	{Name: "DeleteUIState", ID: 1186757769},                        // main.App.DeleteUIState
 	{Name: "DismissDesignOptionSet", ID: 1381421528},               // main.App.DismissDesignOptionSet
 	{Name: "DownloadUpdate", ID: 115027584},                        // main.App.DownloadUpdate
 	{Name: "EnsureDesignWorkdir", ID: 1465371311},                  // main.App.EnsureDesignWorkdir
@@ -91,6 +92,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThreadLiveState", ID: 70226550},                     // main.App.GetThreadLiveState
 	{Name: "GetThreadRuntimeMode", ID: 2573491630},                 // main.App.GetThreadRuntimeMode
 	{Name: "GetUIRenderTracePath", ID: 1009213933},                 // main.App.GetUIRenderTracePath
+	{Name: "GetUIState", ID: 3380106838},                           // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533},                        // main.App.GetUsageStats
 	{Name: "GetWSLDistroPreference", ID: 294719565},                // main.App.GetWSLDistroPreference
 	{Name: "GetWorkingTreeDiff", ID: 1858968113},                   // main.App.GetWorkingTreeDiff
@@ -209,6 +211,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SetMcpServerEnabled", ID: 3696908699},                  // main.App.SetMcpServerEnabled
 	{Name: "SetNetworkSettings", ID: 3915514446},                   // main.App.SetNetworkSettings
 	{Name: "SetNewThreadMcpServerEnabled", ID: 545823411},          // main.App.SetNewThreadMcpServerEnabled
+	{Name: "SetUIState", ID: 1514250938},                           // main.App.SetUIState
 	{Name: "SetWSLDistroPreference", ID: 3978807241},               // main.App.SetWSLDistroPreference
 	{Name: "StartDiscussion", ID: 3188309099},                      // main.App.StartDiscussion
 	{Name: "StartDiscussionByID", ID: 2336869067},                  // main.App.StartDiscussionByID

@@ -51,8 +51,6 @@ const DEFAULT_SETTINGS: Settings = {
   gitlabSelfHostedHosts: [],
   projectSortMode: "lastActivity",
   usagePeriod: "month",
-  collapsedProjects: [],
-  paneLayout: { version: 1, panes: [], focusedPaneId: null },
 };
 
 function defaultSettings(): Settings {
@@ -64,11 +62,6 @@ function defaultSettings(): Settings {
     gitlabSelfHostedHosts: [...DEFAULT_SETTINGS.gitlabSelfHostedHosts],
     claudeHiddenModels: [...(DEFAULT_SETTINGS.claudeHiddenModels ?? [])],
     codexHiddenModels: [...(DEFAULT_SETTINGS.codexHiddenModels ?? [])],
-    collapsedProjects: [...(DEFAULT_SETTINGS.collapsedProjects ?? [])],
-    paneLayout: {
-      ...DEFAULT_SETTINGS.paneLayout,
-      panes: [...DEFAULT_SETTINGS.paneLayout.panes],
-    },
   };
 }
 
@@ -97,17 +90,6 @@ function mergeSettingsWithDefaults(result: Partial<Settings>): Settings {
     codexHiddenModels: result.codexHiddenModels
       ? [...result.codexHiddenModels]
       : defaults.codexHiddenModels,
-    collapsedProjects: result.collapsedProjects
-      ? [...result.collapsedProjects]
-      : defaults.collapsedProjects,
-    paneLayout: {
-      ...defaults.paneLayout,
-      ...result.paneLayout,
-      panes: result.paneLayout?.panes
-        ? [...result.paneLayout.panes]
-        : defaults.paneLayout.panes,
-      focusedPaneId: result.paneLayout?.focusedPaneId ?? defaults.paneLayout.focusedPaneId,
-    },
   };
 }
 

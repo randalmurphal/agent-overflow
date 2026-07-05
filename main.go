@@ -20,11 +20,14 @@ import (
 	"syscall"
 	"time"
 
+	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
 	"agent-overflow/internal/transport"
+
+	"github.com/google/uuid"
 )
 
 //go:embed all:frontend/dist
@@ -416,9 +419,17 @@ func writeBootstrap(fd int, srv *transport.Server) error {
 	bs := struct {
 		Port  int    `json:"port"`
 		Token string `json:"token"`
+		// ClientID is this installation's durable UI-state identity
+		// (see ensureClientID). The launcher threads it onto the
+		// webview URL as ?cid= so the frontend's per-client ui_state
+		// bucket survives the per-launch origin change. Empty when the
+		// backend couldn't persist one; the frontend then falls back
+		// to a best-effort browser-cached ID.
+		ClientID string `json:"clientId,omitempty"`
 	}{
-		Port:  portFromAddr(srv.Addr()),
-		Token: srv.Token(),
+		Port:     portFromAddr(srv.Addr()),
+		Token:    srv.Token(),
+		ClientID: ensureClientID(),
 	}
 	payload, err := json.Marshal(bs)
 	if err != nil {
@@ -523,6 +534,48 @@ func bootSettingsDir() string {
 		base = home
 	}
 	return filepath.Join(base, "agent-overflow")
+}
+
+// ensureClientID loads (or mints and persists) this installation's
+// opaque UI-state client ID — the durable identity behind the
+// per-client ui_state buckets. It lives in a small JSON file next to
+// settings.json because the webview's own storage cannot hold it (the
+// transport's ephemeral port changes the origin, and with it
+// localStorage, every launch). Returns "" when no config dir is
+// resolvable or persistence fails; callers omit the cid URL param and
+// the frontend degrades to a best-effort browser-cached identity.
+func ensureClientID() string {
+	return ensureClientIDIn(bootSettingsDir())
+}
+
+// ensureClientIDIn is the dir-parameterized core of ensureClientID,
+// split out so initStores' settings→ui_state migration can resolve the
+// same identity under a test-overridden config dir.
+func ensureClientIDIn(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	path := filepath.Join(dir, "client-id.json")
+	var state struct {
+		ClientID string `json:"clientId"`
+	}
+	found, err := atomicfile.ReadJSON(path, &state)
+	if err != nil {
+		log.Printf("client-id: read %s: %v", path, err)
+	}
+	if found && validClientID(state.ClientID) {
+		return state.ClientID
+	}
+	state.ClientID = uuid.NewString()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("client-id: mkdir %s: %v", dir, err)
+		return ""
+	}
+	if err := atomicfile.WriteJSON(path, state); err != nil {
+		log.Printf("client-id: write %s: %v", path, err)
+		return ""
+	}
+	return state.ClientID
 }
 
 // loadPersistedNetworkSettings reads the user's settings.json without
