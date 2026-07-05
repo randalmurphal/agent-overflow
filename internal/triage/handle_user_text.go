@@ -155,13 +155,15 @@ func readParentUUIDFromMeta(meta json.RawMessage) string {
 // already at their intended position and must not move, so the
 // reposition is scoped to `:flush:` exactly as the interrupt path is.
 //
-// EXCEPT when the interrupt promote already ran (PromotedAtInterrupt):
-// the row is then already at its user-visible position — the interrupt
-// cut point — and rows landing between the promote and this echo are the
-// interrupted turn's post-interrupt tail, which the user watched stream
-// BELOW the message. Re-bumping here would leapfrog the message over
-// that tail and persist an order the live view never showed (queued
-// message reordering bug, 2026-07-03). Promoted rows stamp only.
+// EXCEPT when the interrupt handler already placed the row
+// (AnchoredAtInterrupt — set by the quiet promote, the deferred eager
+// persist, and the Codex re-send registration): the row is then already
+// at its user-visible position — the interrupt cut point — and rows
+// landing between the interrupt and this echo are the interrupted
+// turn's post-interrupt tail, which the user watched stream BELOW the
+// message. Re-bumping here would leapfrog the message over that tail
+// and persist an order the live view never showed (queued message
+// reordering bug, 2026-07-03/07-05). Anchored rows stamp only.
 //
 // Missing-row is a bounded edge case (the AO send must have errored
 // after RegisterPendingSend but before the optimistic persist). Log
@@ -226,9 +228,9 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending pendingS
 	// where Claude consumed it — the echo-side mirror of the interrupt
 	// promote (PromoteQuietFlushSends). Scoped to :flush: so direct sends
 	// and steers, already at their intended slot, never move — and skipped
-	// when the interrupt promote already anchored the row (see the doc
+	// when the interrupt handler already anchored the row (see the doc
 	// comment above).
-	if strings.Contains(aoItemID, ":flush:") && !pending.PromotedAtInterrupt {
+	if strings.Contains(aoItemID, ":flush:") && !pending.AnchoredAtInterrupt {
 		bumped, bumpErr := r.store.BumpItemToTurnEnd(threadID, aoItemID)
 		if bumpErr != nil {
 			return fmt.Errorf("triage: reposition flush row %s/%s to turn tail: %w", threadID, aoItemID, bumpErr)

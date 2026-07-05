@@ -60,14 +60,17 @@ type pendingSend struct {
 	EnqueuedAt   int64
 	DeferredItem *store.Item
 	QuietItem    *store.Item
-	// PromotedAtInterrupt marks a quiet flush entry whose row was already
-	// repositioned to the turn tail by PromoteQuietFlushSends (user
-	// interrupt). The echo-side reposition in attachProviderItemIDToUserRow
-	// must skip these: rows landing between the promote and the echo are
-	// the interrupted turn's post-interrupt tail, which the user already
-	// watched stream BELOW the promoted message — a second bump would
-	// leapfrog the message over them and persist that inverted order.
-	PromotedAtInterrupt bool
+	// AnchoredAtInterrupt marks a flush entry whose row was already
+	// placed at its user-visible timeline position by the interrupt
+	// handler — either bumped to the turn tail (PromoteQuietFlushSends,
+	// quiet eager-persist rows) or persisted at the turn tail
+	// (EagerPersistDeferredFlushSends, deferred rows). The echo-side
+	// reposition in attachProviderItemIDToUserRow must skip these: rows
+	// landing between the interrupt and the echo are the interrupted
+	// turn's post-interrupt tail, which the user already watched stream
+	// BELOW the anchored message — an echo-time bump would leapfrog the
+	// message over them and persist that inverted order.
+	AnchoredAtInterrupt bool
 }
 
 type PendingFlushItemSnapshot struct {
@@ -327,9 +330,11 @@ type EagerPersistedFlush struct {
 // provider echo.
 //
 // Under lock: snapshots deferred items and nils DeferredItem on each
-// pending send entry. Nilling ensures the echo path routes to
-// attachProviderItemIDToUserRow (stamp-only) instead of
-// persistDeferredUserText (re-persist).
+// pending send entry. Nilling routes the echo path to
+// attachProviderItemIDToUserRow instead of persistDeferredUserText
+// (re-persist); the AnchoredAtInterrupt marker set after the persist is
+// what keeps that path stamp-only (without it, the :flush: echo bump
+// would reposition the row a second time).
 //
 // Each item is persisted via persistItem (UpsertItem + emit) so the
 // frontend receives a provider:item_event upsert immediately.
@@ -354,11 +359,13 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string) []EagerPersiste
 	}
 
 	result := make([]EagerPersistedFlush, 0, len(snapshots))
+	persistedIDs := make(map[string]struct{}, len(snapshots))
 	for _, item := range snapshots {
 		if err := r.persistItem(item, nil); err != nil {
 			log.Printf("triage: eager persist deferred flush %s/%s: %v", item.ThreadID, item.ID, err)
 			continue
 		}
+		persistedIDs[item.ID] = struct{}{}
 		result = append(result, EagerPersistedFlush{
 			UserItemID: item.ID,
 			TurnIndex:  item.TurnIndex,
@@ -366,6 +373,11 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string) []EagerPersiste
 			Meta:       item.Meta,
 		})
 	}
+	// The row now sits at its user-visible interrupt position (the
+	// persist landed at the turn tail). Without the marker the echo's
+	// :flush: bump would move it again — past any post-interrupt tail
+	// the provider flushes while stopping.
+	r.markPendingSendsAnchoredAtInterrupt(threadID, persistedIDs)
 	return result
 }
 
@@ -407,20 +419,41 @@ func (r *Router) PromoteQuietFlushSends(threadID string) int {
 		r.emitItemUpsertWithActivity(item, false)
 		promoted++
 	}
-	if len(promotedIDs) > 0 {
-		// Mark the successfully-bumped entries so the echo-side reposition
-		// (attachProviderItemIDToUserRow) knows the row is already at its
-		// user-visible interrupt position and stamps without re-bumping.
-		r.mu.Lock()
-		pending = r.pendingByThread[threadID]
-		for i := range pending {
-			if _, ok := promotedIDs[pending[i].AOItemID]; ok {
-				pending[i].PromotedAtInterrupt = true
-			}
-		}
-		r.mu.Unlock()
-	}
+	// Mark the successfully-bumped entries so the echo-side reposition
+	// (attachProviderItemIDToUserRow) knows the row is already at its
+	// user-visible interrupt position and stamps without re-bumping.
+	r.markPendingSendsAnchoredAtInterrupt(threadID, promotedIDs)
 	return promoted
+}
+
+// markPendingSendsAnchoredAtInterrupt flips AnchoredAtInterrupt on the
+// pending-send entries whose AOItemID appears in ids. Both interrupt
+// eager-persist paths (quiet promote, deferred persist) call this after
+// their store write succeeds; entries whose write failed stay unmarked
+// so the echo-time bump remains their fallback positioning.
+func (r *Router) markPendingSendsAnchoredAtInterrupt(threadID string, ids map[string]struct{}) {
+	if len(ids) == 0 {
+		return
+	}
+	r.mu.Lock()
+	pending := r.pendingByThread[threadID]
+	for i := range pending {
+		if _, ok := ids[pending[i].AOItemID]; ok {
+			pending[i].AnchoredAtInterrupt = true
+		}
+	}
+	r.mu.Unlock()
+}
+
+// MarkPendingSendAnchoredAtInterrupt is the app-layer entry point for
+// pending entries REGISTERED during interrupt handling for a row that
+// is already at its user-visible position — the Codex re-send after
+// interrupt registers a fresh non-deferred entry for the
+// eagerly-persisted flush row, and its echo must stamp without
+// re-bumping, exactly like the entries the triage-internal interrupt
+// paths mark themselves.
+func (r *Router) MarkPendingSendAnchoredAtInterrupt(threadID, aoItemID string) {
+	r.markPendingSendsAnchoredAtInterrupt(threadID, map[string]struct{}{aoItemID: {}})
 }
 
 // ClearPendingSendsByItemIDs removes pending send entries whose

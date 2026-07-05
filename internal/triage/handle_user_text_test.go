@@ -283,6 +283,91 @@ func TestHandleUserText_InterruptPromotedFlush_EchoDoesNotRebump(t *testing.T) {
 	}
 }
 
+// TestHandleUserText_EagerPersistedDeferredFlush_EchoDoesNotRebump covers
+// the second interrupt eager-persist path (2026-07-05 recurrence of the
+// 2026-07-03 bug). A message queued while the thread's `turns` row is
+// already settled — e.g. between wire rounds of a multi-round logical
+// turn — dispatches on the DEFERRED path, not the quiet path. On
+// interrupt, EagerPersistDeferredFlushSends persists the row at the turn
+// tail; the interrupted turn's post-interrupt thinking tail then lands
+// below it. The echo must stamp without re-bumping, exactly like the
+// quiet-promote path — this path was missed by the first fix.
+func TestHandleUserText_EagerPersistedDeferredFlush_EchoDoesNotRebump(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 3)
+
+	// Deferred registration at dispatch time (no active turns row).
+	now := time.Now().UnixMilli()
+	flushRow := store.Item{
+		ID:        "user:3:flush:0",
+		ThreadID:  "t1",
+		TurnIndex: 3,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "queued follow-up",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:m1", flushRow, now)
+
+	// User interrupt → the deferred row is eagerly persisted at the tail.
+	persisted := router.EagerPersistDeferredFlushSends("t1")
+	if len(persisted) != 1 {
+		t.Fatalf("EagerPersistDeferredFlushSends: got %d rows, want 1", len(persisted))
+	}
+
+	// The interrupted turn's post-interrupt thinking tail lands below the
+	// message (MAX+1).
+	if _, err := st.AppendItem(store.Item{
+		ID:        "thinking:3:tail",
+		ThreadID:  "t1",
+		TurnIndex: 3,
+		Kind:      "thinking",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "tail reasoning flushed on stop",
+		CreatedAt: now + 1,
+		UpdatedAt: now + 1,
+	}); err != nil {
+		t.Fatalf("seed post-interrupt tail row: %v", err)
+	}
+
+	// Echo arrives when the provider starts the response turn.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "queued follow-up",
+		Meta:      json.RawMessage(`{"provider_item_id":"msg_flush_echo"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle wire echo: %v", err)
+	}
+
+	queued, found, err := st.GetThreadItem("t1", flushRow.ID)
+	if err != nil || !found {
+		t.Fatalf("flush row after echo: found=%v err=%v", found, err)
+	}
+	tail, found, err := st.GetThreadItem("t1", "thinking:3:tail")
+	if err != nil || !found {
+		t.Fatalf("tail row after echo: found=%v err=%v", found, err)
+	}
+	if queued.ItemIndex >= tail.ItemIndex {
+		t.Fatalf(
+			"eager-persisted deferred flush row re-bumped on echo: user item_index %d >= tail item_index %d — the message leapfrogged the post-interrupt tail the user watched stream below it",
+			queued.ItemIndex, tail.ItemIndex,
+		)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(queued.Meta), &meta); err != nil {
+		t.Fatalf("decode meta %q: %v", queued.Meta, err)
+	}
+	if id, _ := meta["provider_item_id"].(string); id != "msg_flush_echo" {
+		t.Fatalf("provider_item_id after echo = %v, want msg_flush_echo", meta["provider_item_id"])
+	}
+}
+
 func TestHandleUserText_PendingSendMatch_PreservesExistingMeta(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

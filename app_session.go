@@ -529,8 +529,11 @@ func (a *App) codexResendAfterInterrupt(
 	// Register a non-deferred pending send for the first item so the
 	// echo stamps provider_item_id via attachProviderItemIDToUserRow.
 	// Items 2+ are merged into the same turn and share the first
-	// item's provider correlation.
+	// item's provider correlation. The row was already persisted at its
+	// interrupt position by EagerPersistDeferredFlushSends — anchor the
+	// fresh entry so the echo's :flush: bump doesn't move it again.
 	a.triage.RegisterPendingSend(threadID, persisted[0].UserItemID, turnIndex)
+	a.triage.MarkPendingSendAnchoredAtInterrupt(threadID, persisted[0].UserItemID)
 	sess.liveness.bumpActivity(time.Now())
 
 	if sendErr := sess.codex.Send(context.Background(), merged, sendOpts); sendErr != nil {
