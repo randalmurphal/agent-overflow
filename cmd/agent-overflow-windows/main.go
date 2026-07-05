@@ -91,6 +91,15 @@ var launcherMode = "prod"
 // dev-wsl forwards it across the WSL→Windows interop hop via WSLENV.
 const webviewLogEnv = "AGENT_OVERFLOW_WEBVIEW_LOG"
 
+// webviewSoftwareEnv opts the webview out of GPU acceleration (see
+// browserArgs). Diagnostic knob for isolating whether the app's GPU
+// submissions are implicated in system-level compositor stalls — the
+// standard WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var does not work
+// here because Wails' Go webviewloader never reads it (that is a
+// Microsoft WebView2Loader.dll feature). dev-wsl forwards this var
+// across the WSL→Windows interop hop via WSLENV.
+const webviewSoftwareEnv = "AGENT_OVERFLOW_WEBVIEW_SOFTWARE"
+
 // shutdownTimeout caps how long the launcher waits for the WSL-side
 // backend to drain before tearing the Job Object down.
 const shutdownTimeout = 5 * time.Second
@@ -995,6 +1004,16 @@ func browserArgs(enableDevArgs bool) []string {
 	// it is needed.
 	if os.Getenv(webviewLogEnv) != "" {
 		args = append(args, "--enable-logging", "--v=1")
+	}
+	// Opt-in software rendering: removes the webview as a GPU client
+	// entirely (raster + compositing on CPU). Diagnostic for the
+	// 2026-07-04 desktop-stutter investigation — system-wide present
+	// stalls correlated with this webview's GPU load transitions;
+	// running a session without GPU work discriminates app-caused from
+	// environmental. Expect visibly degraded scrolling/streaming
+	// smoothness while enabled.
+	if os.Getenv(webviewSoftwareEnv) != "" {
+		args = append(args, "--disable-gpu")
 	}
 	return args
 }

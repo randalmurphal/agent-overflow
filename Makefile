@@ -154,6 +154,8 @@ dev:
 # AGENT_OVERFLOW_WEBVIEW_LOG (opt-in chrome_debug.log; spawns a console
 # window — closing it kills the app, WebView2Feedback #3192) only needs
 # hop 1: it is consumed by the Windows launcher itself.
+# AGENT_OVERFLOW_WEBVIEW_SOFTWARE (opt-in --disable-gpu software
+# rendering, desktop-stutter diagnostics) likewise only needs hop 1.
 dev-wsl:
 	@if [ -z "$$WSL_DISTRO_NAME" ]; then \
 		echo "ERROR: WSL_DISTRO_NAME is unset. Run this target from inside a WSL shell."; \
@@ -186,7 +188,13 @@ dev-wsl:
 			*) FWD_WSLENV="AGENT_OVERFLOW_WEBVIEW_LOG$${FWD_WSLENV:+:$$FWD_WSLENV}" ;; \
 		esac; \
 	fi; \
-	WSLENV="$$FWD_WSLENV" AGENT_OVERFLOW_DEBUG="$(AGENT_OVERFLOW_DEBUG)" AGENT_OVERFLOW_WEBVIEW_LOG="$(AGENT_OVERFLOW_WEBVIEW_LOG)" "$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"
+	if [ -n "$(AGENT_OVERFLOW_WEBVIEW_SOFTWARE)" ]; then \
+		case ":$$FWD_WSLENV:" in \
+			*:AGENT_OVERFLOW_WEBVIEW_SOFTWARE:*) ;; \
+			*) FWD_WSLENV="AGENT_OVERFLOW_WEBVIEW_SOFTWARE$${FWD_WSLENV:+:$$FWD_WSLENV}" ;; \
+		esac; \
+	fi; \
+	WSLENV="$$FWD_WSLENV" AGENT_OVERFLOW_DEBUG="$(AGENT_OVERFLOW_DEBUG)" AGENT_OVERFLOW_WEBVIEW_LOG="$(AGENT_OVERFLOW_WEBVIEW_LOG)" AGENT_OVERFLOW_WEBVIEW_SOFTWARE="$(AGENT_OVERFLOW_WEBVIEW_SOFTWARE)" "$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"
 
 # build-wsl: cross-compiles the Linux ELF backend + Windows .exe launcher
 # without running. Use this when you want to hand the .exe off (e.g.

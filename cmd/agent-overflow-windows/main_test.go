@@ -584,3 +584,31 @@ func TestBrowserArgsWebviewLogGate(t *testing.T) {
 		t.Error("prod: logging flags missing despite opt-in")
 	}
 }
+
+// TestBrowserArgsWebviewSoftwareGate covers the opt-in software-rendering
+// flag: --disable-gpu present only when AGENT_OVERFLOW_WEBVIEW_SOFTWARE
+// is set (in any mode — the gate is the env var, not dev mode), absent
+// otherwise so normal runs keep GPU acceleration.
+func TestBrowserArgsWebviewSoftwareGate(t *testing.T) {
+	hasDisableGpu := func(args []string) bool {
+		for _, a := range args {
+			if a == "--disable-gpu" {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Setenv(webviewSoftwareEnv, "")
+	if hasDisableGpu(browserArgs(true)) || hasDisableGpu(browserArgs(false)) {
+		t.Error("--disable-gpu present without opt-in")
+	}
+
+	t.Setenv(webviewSoftwareEnv, "1")
+	if !hasDisableGpu(browserArgs(true)) {
+		t.Error("dev: --disable-gpu missing despite opt-in")
+	}
+	if !hasDisableGpu(browserArgs(false)) {
+		t.Error("prod: --disable-gpu missing despite opt-in")
+	}
+}
