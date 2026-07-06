@@ -53,27 +53,44 @@ describe('<ReviewFileTree>', () => {
     expect(view.getByTestId('review-tree-empty')).toBeInTheDocument();
   });
 
-  it('extension chips toggle a type filter with full-set counts', async () => {
+  it('filters by file type through the dropdown with full-set counts', async () => {
     const view = render(ReviewFileTree, { files: FILES, onSelectFile: () => {} });
 
-    const chips = view.getAllByTestId('review-tree-ext-filter');
-    // .ts ×2 sorts first; the rest are count-1 alphabetical.
-    expect(chips.map((chip) => chip.getAttribute('data-ext'))).toEqual([
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+
+    // Each option is "<ext><count>"; strip the trailing count (and check
+    // glyph) to recover the label. .ts ×2 sorts first, then count-1
+    // alphabetical.
+    const labelOf = (el: Element) => el.textContent!.replace(/[\s\d✓]+$/, '').trim();
+    expect(view.getAllByRole('menuitem').map(labelOf)).toEqual([
       '.ts',
       '.md',
       '.svelte',
       'Makefile',
     ]);
 
-    const tsChip = chips.find((chip) => chip.getAttribute('data-ext') === '.ts')!;
-    await fireEvent.click(tsChip);
+    await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
     expect(
       view.getAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path')),
     ).toEqual(['src/lib/app.ts', 'src/lib/gone.ts']);
-    expect(tsChip.getAttribute('aria-pressed')).toBe('true');
+    // The trigger surfaces the active-filter count; the menu stays open so
+    // several types can be toggled in one visit.
+    expect(view.getByTestId('review-tree-ext-trigger').textContent).toContain('1');
 
-    await fireEvent.click(tsChip);
+    await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
     expect(view.getAllByTestId('review-tree-file')).toHaveLength(5);
+  });
+
+  it('clears all active type filters from the dropdown', async () => {
+    const view = render(ReviewFileTree, { files: FILES, onSelectFile: () => {} });
+
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
+    expect(view.getAllByTestId('review-tree-file')).toHaveLength(2);
+
+    await fireEvent.click(view.getByRole('menuitem', { name: /clear filters/i }));
+    expect(view.getAllByTestId('review-tree-file')).toHaveLength(5);
+    expect(view.getByTestId('review-tree-ext-trigger').textContent).not.toContain('1');
   });
 
   it('tints file names by patch kind', () => {

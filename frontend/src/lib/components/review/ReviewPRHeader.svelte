@@ -29,11 +29,7 @@
         {detail.title} <span class="text-fg-muted">#{detail.number}</span>
       </button>
       <div class="mt-1 flex flex-wrap items-center gap-2 text-[0.6875rem] text-fg-muted">
-        <span class="rounded border border-border-subtle px-1.5 py-0.5">{detail.draft ? 'draft' : detail.state}</span>
         <span>{detail.authorLogin}</span>
-        <span>{detail.baseRefName} ← {detail.headRefName}</span>
-        <span class="text-success">+{detail.additions}</span>
-        <span class="text-error">-{detail.deletions}</span>
         {#if detail.mergeability === 'conflicts'}
           {#if hasWorkspace}
             <button

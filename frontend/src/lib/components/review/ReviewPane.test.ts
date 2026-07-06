@@ -4,7 +4,7 @@ import ReviewPane from './ReviewPane.svelte';
 import type { PanelContext } from '../../stores/panelContext.svelte';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
-import type { DiffReviewComment, DiffReviewCommentInput } from '../../types/models';
+import type { DiffReviewComment, DiffReviewCommentInput, PRDetail, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 function makeCtx(): PanelContext {
@@ -165,5 +165,71 @@ describe('<ReviewPane>', () => {
       expect(send).toHaveBeenCalledWith('thread-1', 'workspace', expect.stringMatching(/^fnv1a:/), ['comment-1'], { pr: undefined });
       expect(view.queryByTestId('review-send-strip')).not.toBeInTheDocument();
     });
+  });
+
+  it('carries the PR state + branch refs in the toolbar, not a second header stats line', async () => {
+    const detail: PRDetail = {
+      number: 5,
+      title: 'Add feature',
+      body: '',
+      authorLogin: 'octocat',
+      state: 'open',
+      draft: false,
+      headRefName: 'feature',
+      baseRefName: 'main',
+      headSHA: 'sha-a',
+      url: 'https://github.com/owner/repo/pull/5',
+      // A distinctive additions count that appears nowhere else, so a leaked
+      // header "+99" would be unambiguous.
+      additions: 99,
+      deletions: 0,
+      changedFiles: 1,
+      viewerIsAuthor: false,
+      reviewDecision: '',
+      latestReviews: [],
+      checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
+      mergeability: 'clean',
+    };
+    setBindingMock('SubscribePRUpdates', async (threadId: string, pr: unknown) => ({
+      id: 'sub-1',
+      threadId,
+      pr,
+      detail,
+      threads: [],
+      headSHA: 'sha-a',
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setBindingMock('GetPRDiff', async () => patch());
+    setBindingMock('ListPRReviewThreads', async () => []);
+
+    const ctx: PanelContext = {
+      ...makeCtx(),
+      thread: {
+        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
+        workspacePath: '/repo',
+      } as unknown as Thread,
+    };
+    const view = render(ReviewPane, { ctx });
+
+    // The PR scope option only appears once the thread's prRef resolves.
+    await waitFor(() => {
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+    });
+    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+
+    await waitFor(() => {
+      expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
+    });
+
+    // Toolbar now owns the state badge + branch refs.
+    const meta = view.getByTestId('review-pr-meta');
+    expect(meta.textContent).toContain('open');
+    expect(meta.textContent).toContain('main ← feature');
+
+    // The header no longer duplicates the branch refs or the PR-detail +/- stats.
+    const header = view.getByTestId('review-pr-header');
+    expect(header.querySelector('[data-testid="review-pr-meta"]')).toBeNull();
+    expect(header.textContent).not.toContain('main ← feature');
+    expect(header.textContent).not.toContain('+99');
   });
 });

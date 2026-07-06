@@ -174,12 +174,20 @@
     {/if}
 
     <div class="min-w-0 flex-1 truncate text-right text-[0.6875rem] tabular-nums text-fg-muted">
-      {#if review && !review.conflictView && review.files.length > 0}
-        <span data-testid="review-diff-stats">
-          {review.files.length} {review.files.length === 1 ? 'file' : 'files'}
-          {#if totalAdditions > 0}<span class="text-success">+{totalAdditions}</span>{/if}
-          {#if totalDeletions > 0}<span class="text-error">-{totalDeletions}</span>{/if}
-        </span>
+      {#if review && !review.conflictView}
+        {#if review.scope === 'pr' && review.prDetail}
+          <span data-testid="review-pr-meta">
+            <span class="rounded border border-border-subtle px-1.5 py-0.5">{review.prDetail.draft ? 'draft' : review.prDetail.state}</span>
+            <span class="ml-1.5">{review.prDetail.baseRefName} ← {review.prDetail.headRefName}</span>
+          </span>
+        {/if}
+        {#if review.files.length > 0}
+          <span data-testid="review-diff-stats" class="ml-2">
+            {review.files.length} {review.files.length === 1 ? 'file' : 'files'}
+            {#if totalAdditions > 0}<span class="text-success">+{totalAdditions}</span>{/if}
+            {#if totalDeletions > 0}<span class="text-error">-{totalDeletions}</span>{/if}
+          </span>
+        {/if}
       {/if}
     </div>
 

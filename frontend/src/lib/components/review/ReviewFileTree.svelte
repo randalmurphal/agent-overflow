@@ -3,8 +3,13 @@
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import FileText from 'lucide-svelte/icons/file-text';
   import Folder from 'lucide-svelte/icons/folder';
+  import ListFilter from 'lucide-svelte/icons/list-filter';
   import Search from 'lucide-svelte/icons/search';
   import Icon from '../primitives/Icon.svelte';
+  import Menu from '../primitives/Menu.svelte';
+  import MenuDivider from '../primitives/MenuDivider.svelte';
+  import MenuItem from '../primitives/MenuItem.svelte';
+  import Popover from '../primitives/Popover.svelte';
   import { appStorageGet, appStorageSet } from '../../stores/appStorage';
   import type { PatchFile } from '../../utils/patchFiles';
   import {
@@ -32,6 +37,8 @@
   let query = $state('');
   const activeExtensions = $state(new SvelteSet<string>());
   const collapsedPaths = $state(new SvelteSet<string>());
+  let extMenuOpen = $state(false);
+  let extTriggerEl: HTMLButtonElement | undefined = $state(undefined);
 
   // Chips come from the FULL file set so toggling one never removes the
   // others from the strip; counts stay stable under an active search.
@@ -61,6 +68,16 @@
   function toggleExtension(ext: string): void {
     if (activeExtensions.has(ext)) activeExtensions.delete(ext);
     else activeExtensions.add(ext);
+  }
+
+  function clearExtensions(): void {
+    activeExtensions.clear();
+    closeExtMenu();
+  }
+
+  function closeExtMenu(): void {
+    extMenuOpen = false;
+    extTriggerEl?.focus();
   }
 
   function isActive(node: ReviewTreeNode): boolean {
@@ -126,8 +143,8 @@
   style:width="{railWidth}px"
   data-testid="review-file-tree"
 >
-  <div class="flex shrink-0 flex-col gap-1.5 px-2 pb-1.5 pt-2">
-    <div class="relative">
+  <div class="flex shrink-0 items-center gap-1.5 px-2 pb-1.5 pt-2">
+    <div class="relative min-w-0 flex-1">
       <Icon
         icon={Search}
         size={12}
@@ -143,23 +160,40 @@
       />
     </div>
     {#if extensionCounts.length > 1}
-      <div class="flex flex-wrap gap-1" data-testid="review-tree-ext-filters">
-        {#each extensionCounts as [ext, count] (ext)}
-          <button
-            type="button"
-            class="rounded-full border px-1.5 py-px font-mono text-[0.625rem] {activeExtensions.has(ext)
-              ? 'border-accent/60 bg-accent/15 text-accent'
-              : 'border-border-subtle text-fg-muted hover:text-fg'}"
-            aria-pressed={activeExtensions.has(ext)}
-            data-testid="review-tree-ext-filter"
-            data-ext={ext}
-            onclick={() => toggleExtension(ext)}
-          >
-            {ext}
-            <span class="tabular-nums opacity-70">{count}</span>
-          </button>
-        {/each}
-      </div>
+      <button
+        bind:this={extTriggerEl}
+        type="button"
+        class="inline-flex h-6 shrink-0 items-center gap-1 rounded-[var(--radius-field)] border px-1.5 text-[0.6875rem] {activeExtensions.size > 0
+          ? 'border-accent/60 bg-accent/15 text-accent'
+          : 'border-border-subtle text-fg-muted hover:text-fg'}"
+        aria-haspopup="menu"
+        aria-expanded={extMenuOpen}
+        aria-label="Filter by file type"
+        title="Filter by file type"
+        data-testid="review-tree-ext-trigger"
+        onclick={() => { extMenuOpen = !extMenuOpen; }}
+      >
+        <Icon icon={ListFilter} size={13} />
+        {#if activeExtensions.size > 0}
+          <span class="tabular-nums">{activeExtensions.size}</span>
+        {/if}
+      </button>
+      <Popover anchor={extTriggerEl} open={extMenuOpen} onClose={closeExtMenu} placement="bottom-end" role="none">
+        <Menu ariaLabel="Filter by file type" onClose={closeExtMenu} minWidthClass="min-w-[160px]">
+          {#each extensionCounts as [ext, count] (ext)}
+            <MenuItem
+              label={ext}
+              suffix={String(count)}
+              checked={activeExtensions.has(ext)}
+              onSelect={() => toggleExtension(ext)}
+            />
+          {/each}
+          {#if activeExtensions.size > 0}
+            <MenuDivider />
+            <MenuItem label="Clear filters" onSelect={clearExtensions} />
+          {/if}
+        </Menu>
+      </Popover>
     {/if}
   </div>
 

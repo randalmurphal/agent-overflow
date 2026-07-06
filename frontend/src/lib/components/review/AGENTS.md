@@ -11,10 +11,10 @@ its source thread pane; open it via `openReviewCompanion` /
 |---|---|
 | `ReviewPane.svelte` | Shell: scope/branch/checkpoint selectors, tree/split/wrap toggles, error + send strip, snippet wiring. |
 | `ReviewDiffBody.svelte` | The continuous virtualized surface: one `TimelineVirtualizer` over the flat row model, sticky overlay file header, keyboard (j/k files, n/p comments, c file-level comment), jump-to-file. |
-| `ReviewFileTree.svelte` | Left-rail GitHub-style tree (`utils/reviewTree.ts`), click-to-jump, top-file highlight, search + extension-chip filters (filter the RAIL only, never the diff body), resizable width persisted via appStorage `reviewTreeWidth`. |
+| `ReviewFileTree.svelte` | Left-rail GitHub-style tree (`utils/reviewTree.ts`), click-to-jump, top-file highlight, a search box plus an extension-filter dropdown (funnel button right of the search box, multi-select `Menu` of file-type options with counts; filters the RAIL only, never the diff body), resizable width persisted via appStorage `reviewTreeWidth`. |
 | `ReviewFileHeaderRow/ReviewCollapsedRow/ReviewLineBlockRow.svelte` | Row renderers. Header/collapsed/line rows are EXACT-height (px-pinned from `utils/reviewRows.ts` constants). |
 | `ReviewDraftEditor/ReviewCommentThread.svelte` | Comment rows (measured, not exact). |
-| `ReviewPRHeader.svelte` | PR-scope header (title/refs/verdicts/checks/mergeability badge), normal flow above the diff body, not a virtual row. |
+| `ReviewPRHeader.svelte` | PR-scope header (title/author/verdicts/checks/mergeability badge + description), normal flow above the diff body, not a virtual row. The state badge and base←head refs live in the `ReviewPane` toolbar stats area (`review-pr-meta`), not here — the toolbar's local-diff +/- is the only additions/deletions readout. |
 | `ReviewPRThreadRow.svelte` | Incoming PR review-thread row (measured): comments, reply composer, send-to-agent. Reply text is store-backed. |
 | `reviewScroll.ts` | The pane's single scrollTop writer + per-(thread,scope,geometry) position memory. The conflict view passes `scope:conflicts` so its position doesn't clobber the diff's. |
 
