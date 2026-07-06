@@ -285,6 +285,14 @@ func (c *Core) run(cwd string, args ...string) (commandResult, error) {
 }
 
 func (c *Core) runBinary(binary, cwd string, args ...string) (commandResult, error) {
+	return c.runBinaryWithInput(binary, cwd, "", args...)
+}
+
+func (c *Core) runBinaryInput(binary, cwd, stdin string, args ...string) (commandResult, error) {
+	return c.runBinaryWithInput(binary, cwd, stdin, args...)
+}
+
+func (c *Core) runBinaryWithInput(binary, cwd, stdin string, args ...string) (commandResult, error) {
 	timeout := c.timeout
 	if timeout <= 0 {
 		timeout = defaultTimeout
@@ -300,6 +308,9 @@ func (c *Core) runBinary(binary, cwd string, args ...string) (commandResult, err
 	cmd := exec.CommandContext(ctx, binary, args...)
 	if cwd != "" {
 		cmd.Dir = cwd
+	}
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
 	}
 
 	stdoutBuf := newLimitedBuffer(maxBytes)

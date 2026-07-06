@@ -347,6 +347,108 @@ describe('applyKeyedReorder', () => {
     expect(engine.isMeasuredAt(6)).toBe(false);
     expect(engine.sizeAt(7)).toBe(240);
   });
+
+  // The next four pin the anchor-based compensation rule for mid-list
+  // splices — the review-pane collapse/expand shape. The anchor is the
+  // row under the viewport top; compensation keeps it (or the nearest
+  // surviving row after it) at the same distance from the viewport.
+  it('mid-list removal above the viewport compensates by the removed extent', () => {
+    const engine = mountedEngine();
+    engine.applyMeasurements([
+      [2, 150],
+      [3, 150],
+    ]);
+    // Offsets: r4=500 … r7=800; viewport top 800 sits on row 7.
+    engine.applyScroll(800);
+    // Remove rows 2 and 3 (a collapsed region of 300 measured px).
+    const update = engine.applyKeyedReorder([0, 1, 4, 5, 6, 7, 8, 9]);
+    expect(update?.compensation).toEqual({
+      kind: 'remeasure-above',
+      delta: -300,
+      target: 500,
+    });
+    // Old row 7 now sits at index 5, offset 500 — stationary under the target.
+    expect(engine.getItemOffset(5)).toBe(500);
+  });
+
+  it('mid-list insert above the viewport compensates by the inserted extent', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(800); // viewport top on row 8
+    // Two new rows land at index 2 (an expanded region, estimate-sized).
+    const update = engine.applyKeyedReorder([0, 1, -1, -1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(update?.compensation).toEqual({
+      kind: 'remeasure-above',
+      delta: 200,
+      target: 1000,
+    });
+    expect(engine.getItemCount()).toBe(12);
+  });
+
+  it('mid-list removal below the viewport does not compensate', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(0);
+    // Remove rows 7 and 8, far below the 300px viewport.
+    const update = engine.applyKeyedReorder([0, 1, 2, 3, 4, 5, 6, 9]);
+    expect(update?.compensation).toBeUndefined();
+    expect(update?.totalSize).toBe(800);
+  });
+
+  it('keeps the next surviving row stationary when the anchor row is removed', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(450); // viewport top inside row 4
+    // Rows 3-5 vanish (the region being read collapses); row 6 survives.
+    const update = engine.applyKeyedReorder([0, 1, 2, 6, 7, 8, 9]);
+    // Row 6's top moves 600 → 300; keeping it stationary is the -300 delta.
+    expect(update?.compensation).toEqual({
+      kind: 'remeasure-above',
+      delta: -300,
+      target: 150,
+    });
+    expect(engine.getItemOffset(3)).toBe(300);
+  });
+
+  it('reports no compensation when nothing at or after the anchor survives', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(700);
+    // Everything from the anchor down is removed; the browser's own
+    // scrollTop clamp is the right outcome.
+    const update = engine.applyKeyedReorder([0, 1, 2, 3, 4]);
+    expect(update?.compensation).toBeUndefined();
+    expect(update?.totalSize).toBe(500);
+  });
+});
+
+describe('exact-height rows', () => {
+  const exactEstimate = (size: number): RowEstimate => ({
+    at: () => size,
+    isExact: () => true,
+  });
+
+  it('exact rows count as measured without any measurement delivery', () => {
+    const engine = createEngine({ itemCount: 10, estimate: exactEstimate(100), bufferSize: 200 });
+    engine.applyViewportResize(300);
+    expect(engine.isMeasuredAt(0)).toBe(true);
+    expect(engine.isMeasuredAt(9)).toBe(true);
+    expect(engine.sizeAt(4)).toBe(100);
+    expect(engine.getItemOffset(7)).toBe(700);
+    // Snapshots stay honest: exactness is not a measurement.
+    expect(engine.takeSnapshot()).toEqual(new Array(10).fill(UNMEASURED));
+  });
+
+  it('a mixed estimate reports exactness per row', () => {
+    // Even rows exact (line blocks), odd rows measured (comment threads).
+    const engine = createEngine({
+      itemCount: 4,
+      estimate: { at: () => 100, isExact: (index) => index % 2 === 0 },
+      bufferSize: 200,
+    });
+    engine.applyViewportResize(300);
+    expect(engine.isMeasuredAt(0)).toBe(true);
+    expect(engine.isMeasuredAt(1)).toBe(false);
+    engine.applyMeasurements([[1, 140]]);
+    expect(engine.isMeasuredAt(1)).toBe(true);
+    expect(engine.getItemOffset(2)).toBe(240);
+  });
 });
 
 describe('mergeCompensations (same-flush adapter merge)', () => {

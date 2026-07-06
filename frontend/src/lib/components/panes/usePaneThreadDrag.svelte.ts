@@ -13,6 +13,7 @@ import {
 } from '../../stores/panes.svelte';
 import {
   movePaneLayoutItemToIndex,
+  paneBlockRangeAt,
   type PaneLayoutItem,
 } from '../../stores/paneLayout.svelte';
 import {
@@ -82,6 +83,17 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     if (gap?.dataset.paneGapIndex) {
       const insertIndex = Number(gap.dataset.paneGapIndex);
       if (!Number.isInteger(insertIndex)) return null;
+      // The gap between a source pane and one of its companions is not a
+      // valid slot (companions glue to their source): snap to the block's
+      // right edge so the preview and the landing agree.
+      if (insertIndex > 0 && insertIndex < layoutItems.length) {
+        const { start, end } = paneBlockRangeAt(layoutItems, insertIndex);
+        if (start < insertIndex) {
+          return end + 1 >= layoutItems.length
+            ? { kind: 'end', insertIndex: layoutItems.length }
+            : { kind: 'gap', insertIndex: end + 1 };
+        }
+      }
       return { kind: 'gap', insertIndex };
     }
 
@@ -92,11 +104,14 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
       if (index < 0) return null;
       const rect = paneEl.getBoundingClientRect();
       const after = event.clientX > rect.left + rect.width / 2;
-      return {
-        kind: after ? 'pane-right' : 'pane-left',
-        insertIndex: after ? index + 1 : index,
-        paneId,
-      };
+      // Companions glue to their source, so the slots around ANY pane in
+      // a block are the block's edges — hovering a companion's left half
+      // targets the slot before its source pane.
+      const { start, end } = paneBlockRangeAt(layoutItems, index);
+      if (after) {
+        return { kind: 'pane-right', insertIndex: end + 1, paneId: layoutItems[end].paneId };
+      }
+      return { kind: 'pane-left', insertIndex: start, paneId: layoutItems[start].paneId };
     }
 
     const lastPane = lastPaneElement();

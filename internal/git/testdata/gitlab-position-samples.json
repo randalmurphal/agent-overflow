@@ -1,0 +1,45 @@
+{
+  "single_line_new": {
+    "base_sha": "1ea109760deef3078a230f9a938ae38885a8c849",
+    "start_sha": "e46032181fe257bba6cb4d0fe918851fe14ee228",
+    "head_sha": "bf57b41c8484dee1e78ecce4df89de55fd2ebe9a",
+    "old_path": "ee/app/models/security/dependency_firewall_activity_stat.rb",
+    "new_path": "ee/app/models/security/dependency_firewall_activity_stat.rb",
+    "position_type": "text",
+    "old_line": null,
+    "new_line": 23,
+    "line_range": null
+  },
+  "multi_line": {
+    "base_sha": "7047fbd17caa3d8a230a442c83ec0b71d6a0eee8",
+    "start_sha": "6efccbbf240e148e11c19ec4ca28f0f98b8ec62c",
+    "head_sha": "f2449c77393c85e871a94310a1371ea81811e566",
+    "old_path": "ee/app/models/security/dependency_firewall_activity_stat.rb",
+    "new_path": "ee/app/models/security/dependency_firewall_activity_stat.rb",
+    "position_type": "text",
+    "old_line": null,
+    "new_line": 68,
+    "line_range": {
+      "start": {
+        "line_code": "a40045cdd675675227c282bd157baeebb662f963_0_62",
+        "type": "new",
+        "old_line": null,
+        "new_line": 62
+      },
+      "end": {
+        "line_code": "a40045cdd675675227c282bd157baeebb662f963_0_68",
+        "type": "new",
+        "old_line": null,
+        "new_line": 68
+      }
+    }
+  },
+  "file_level": {
+    "base_sha": "0470a4f7c2a99ed423630a6d272d123504532f99",
+    "start_sha": "c60c660a75899c93e83a31490b6a658664750a79",
+    "head_sha": "8b3930a729e2c4fc28123f3833d380cc489ee33f",
+    "old_path": "db/migrate/20260622090000_create_dependency_firewall_activity_stats.rb",
+    "new_path": "db/migrate/20260622090000_create_dependency_firewall_activity_stats.rb",
+    "position_type": "file"
+  }
+}

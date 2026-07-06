@@ -13,8 +13,8 @@
    * (itemId, file.path) so it survives windowing remounts. Toggling a
    * card back to the current default clears its override, so it keeps
    * following future setting flips. Files over the inline preview cap
-   * render only the capped rows with a fade-out gradient + a "Show
-   * full diff in side panel" CTA.
+   * render only the capped rows with a fade-out gradient + an "Open in
+   * review pane" CTA.
    * Empty `file.lines` (loading or pre-upgrade summary-only) keeps
    * the row's outer shell stable — the body region goes absent and
    * the chevron renders inert.
@@ -47,7 +47,7 @@
   import { languageFromPath } from '../../utils/diffLanguage';
   import type { LineToken } from '../../utils/tokenCache';
   import { getCachedTokensForLine } from '../../utils/tokenCacheReactive.svelte';
-  import { openDiffSidebar, isPromoteModifier } from './diffSidebarTrigger';
+  import { openReviewForItem, isPromoteModifier } from './reviewTrigger';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { classifyToolName } from './toolCardHeader';
   import { formatTimeOfDay } from '../../utils/format';
@@ -63,6 +63,7 @@
      *  override together with `file.path`; without it the toggle
      *  falls back to block-local state. */
     itemId?: string;
+    turnIndex?: number;
     workspacePath?: string;
     /** Tool name the file edit originated from (Edit / Write /
      *  MultiEdit / NotebookEdit / fileChange). Drives the icon +
@@ -84,6 +85,7 @@
     payloadId,
     threadId,
     itemId,
+    turnIndex,
     workspacePath,
     toolName,
     createdAt,
@@ -95,8 +97,8 @@
   let visibleRows = $derived(inlineRows.rows);
   let hasBody = $derived(visibleRows.length > 0);
   let isLong = $derived(inlineRows.hasOverflow);
-  let canPromoteToSidebar = $derived(pane !== undefined && payloadId !== undefined);
-  let shouldShowFullCTA = $derived(canPromoteToSidebar && (isLong || hasMoreDiffContent));
+  let canPromoteToReview = $derived(pane !== undefined && turnIndex !== undefined);
+  let shouldShowFullCTA = $derived(canPromoteToReview && (isLong || hasMoreDiffContent));
   let maxLineNo = $derived(inlineRows.maxLineNo);
   let gutterChars = $derived(Math.max(2, String(maxLineNo).length));
 
@@ -172,21 +174,21 @@
     return getCachedTokensForLine(line, threadId, theme, lang);
   }
 
-  function openSidebar(event: MouseEvent | KeyboardEvent): void {
-    if (!pane || !payloadId) return;
+  function openReview(event: MouseEvent | KeyboardEvent): void {
+    if (!pane || turnIndex === undefined) return;
     if (event && 'stopPropagation' in event) event.stopPropagation();
-    openDiffSidebar(pane, { payloadId, filePath: file.path });
+    openReviewForItem(pane, { turnIndex, filePath: file.path });
   }
 
   function onHeaderClick(event: MouseEvent): void {
     if (!isPromoteModifier(event)) return;
-    if (!pane || !payloadId) return;
+    if (!pane || turnIndex === undefined) return;
     event.preventDefault();
-    openDiffSidebar(pane, { payloadId, filePath: file.path });
+    openReviewForItem(pane, { turnIndex, filePath: file.path });
   }
 
   function onToggle(event: MouseEvent): void {
-    // Modifier-click promotes to the sidebar instead of toggling —
+    // Modifier-click promotes to the review pane instead of toggling —
     // bail so the click bubbles to the header wrapper's handler.
     if (isPromoteModifier(event)) return;
     const next = !effectiveExpanded;
@@ -207,11 +209,11 @@
   <div class="ml-5 border-l border-border-subtle px-3 py-2 bg-surface-0/35">
     <button
       type="button"
-      onclick={openSidebar}
+      onclick={openReview}
       data-testid="diff-file-show-full"
       class="text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
     >
-      Show full diff in side panel →
+      Open in review pane →
     </button>
   </div>
 {/snippet}
@@ -262,12 +264,12 @@
           {#if file.additions > 0}<span class="text-success">+{file.additions}</span>{/if}
           {#if file.deletions > 0}<span class="text-error">-{file.deletions}</span>{/if}
         </span>
-        {#if canPromoteToSidebar}
+        {#if canPromoteToReview}
           <button
             type="button"
-            onclick={openSidebar}
-            title="Open in side panel"
-            aria-label="Open Diff in Side Panel: {file.path}"
+            onclick={openReview}
+            title="Open in review pane"
+            aria-label="Open diff in review pane: {file.path}"
             data-testid="diff-file-open-sidebar"
             class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >

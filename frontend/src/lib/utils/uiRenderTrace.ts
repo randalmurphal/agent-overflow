@@ -252,7 +252,7 @@ function installBugReportHotkey(): void {
       }
       console.info(
         record()
-          ? '[BugReport] pane-geometry recording ON. Now make the glitch happen on screen (close the RHS panel, or continue a chat), then press Ctrl+Shift+B to dump.'
+          ? '[BugReport] pane-geometry recording ON. Now make the glitch happen on screen (toggle a companion pane, or continue a chat), then press Ctrl+Shift+B to dump.'
           : '[BugReport] pane-geometry recording OFF.',
       );
     }
@@ -429,9 +429,7 @@ export function summarizePaneForTrace(pane: ThreadPane): Record<string, unknown>
     })),
     showTerminal: pane.showTerminal,
     showPlanSidebar: pane.showPlanSidebar,
-    diffPanelOpen: pane.diffPanel.open,
-    diffSidebarPayloadId: pane.activeDiffPayload?.payloadId ?? null,
-    diffSidebarFilePath: pane.activeDiffPayload?.filePath ?? null,
+    showReviewPane: pane.showReviewPane,
     // The items array used to live here. It dominated the trace file
     // (single chat.state snapshot averaged ~45 KB on a 228-item thread,
     // burning ~25% of the 10 MB rotation cap on data that changes very

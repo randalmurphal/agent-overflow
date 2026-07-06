@@ -23,7 +23,6 @@ import {
   setItemSize,
   spliceHead,
   takeSizeSnapshot,
-  UNMEASURED,
   updateLength,
 } from './sizes';
 import { computeWindow, EMPTY_WINDOW, fullWindow, rangesEqual, seedTailWindow } from './window';
@@ -190,28 +189,45 @@ export function createEngine(options: EngineOptions): VirtualEngine {
     },
 
     applyKeyedReorder(prevIndexByNewIndex) {
-      // Pass 1 — compensation delta against PRE-mutation geometry, the
-      // same rule as applyMeasurements: effective-size changes of rows
-      // entirely above the viewport top move the reading position. Rows
-      // are offset-ordered, so the scan stops at the first row that
-      // reaches the viewport. (Estimates for unmeasured rows read the
-      // live — post-reorder — data; an approximation, but rows above the
-      // viewport are measured in practice.)
+      // Pass 1 — anchor selection against PRE-mutation geometry: the row
+      // under the viewport top is the reading anchor, and compensation
+      // keeps it stationary — delta = its post-remap offset minus its
+      // pre-remap offset. When the anchor row itself was removed, the
+      // nearest surviving row after it anchors instead (keeping content
+      // below the removal from jumping); when nothing at or after the
+      // anchor survives, the browser's own scrollTop clamp is the right
+      // outcome and no compensation is reported.
+      //
+      // An earlier version telescoped per-position size deltas over the
+      // above-viewport prefix. That is exact only for same-length
+      // reorders: a mid-list splice (review-pane collapse/expand, fold
+      // eviction) shifts every row after the splice point, which a
+      // fixed-position comparison under-counts.
       const oldLength = store.length;
-      const shared = Math.min(oldLength, prevIndexByNewIndex.length);
-      let delta = 0;
-      for (let i = 0; i < shared; i++) {
-        const top = storeItemOffset(store, i);
-        const oldSize = storeItemSize(store, i);
-        if (top + oldSize > scrollOffset) break;
+      const newLength = prevIndexByNewIndex.length;
+      const newIndexByOldIndex = new Int32Array(oldLength).fill(-1);
+      for (let i = 0; i < newLength; i++) {
         const prev = prevIndexByNewIndex[i];
-        if (prev === i) continue;
-        const raw = prev >= 0 && prev < oldLength ? store.sizes[prev] : UNMEASURED;
-        const newSize = raw === UNMEASURED ? estimate.at(i) : raw;
-        delta += newSize - oldSize;
+        if (prev >= 0 && prev < oldLength) newIndexByOldIndex[prev] = i;
       }
+      let survivorOldIndex = -1;
+      if (oldLength > 0) {
+        for (let i = findIndex(store, scrollOffset); i < oldLength; i++) {
+          if (newIndexByOldIndex[i] >= 0) {
+            survivorOldIndex = i;
+            break;
+          }
+        }
+      }
+      const survivorOldTop =
+        survivorOldIndex >= 0 ? storeItemOffset(store, survivorOldIndex) : 0;
 
       if (!remapSizes(store, prevIndexByNewIndex)) return null;
+
+      const delta =
+        survivorOldIndex >= 0
+          ? storeItemOffset(store, newIndexByOldIndex[survivorOldIndex]) - survivorOldTop
+          : 0;
       return refresh(
         delta !== 0 ? compensationFor('remeasure-above', delta) : undefined,
         true,
@@ -244,7 +260,8 @@ export function createEngine(options: EngineOptions): VirtualEngine {
     findItemIndex: (offset) => findIndex(store, offset),
     getItemOffset: (index) => storeItemOffset(store, index),
     sizeAt: (index) => storeItemSize(store, index),
-    isMeasuredAt: (index) => isMeasured(store, index),
+    isMeasuredAt: (index) =>
+      isMeasured(store, index) || (estimate.isExact?.(index) ?? false),
     takeSnapshot: () => takeSizeSnapshot(store),
 
     targetOffsetFor(index, align = 'start', extraOffset = 0) {

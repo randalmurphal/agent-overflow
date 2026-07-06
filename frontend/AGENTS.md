@@ -22,7 +22,8 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   only place that should translate layout items into mounted chat panes.
 - `src/lib/components/chat/` — timeline rendering. Kind-based
   discrimination; no role/content matching. See its local guide before
-  editing rows, virtualized scrolling, markdown, or RHS panels.
+  editing rows, virtualized scrolling, markdown, or review/companion
+  pane affordances.
 - `src/lib/components/composer/` — message composer, mode / effort /
   model pickers.
 - `src/lib/components/sidebar/` — projects + thread list.
@@ -41,8 +42,9 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 
 `ThreadPane` is the sole owner of per-thread runtime UI state: visible
 items, streaming flags, approvals, design artifacts, channel messages,
-token usage, right-side-panel state, terminal placement, and scroll
-controller registration. Do not add a parallel streaming or timeline
+token usage, checkpoint bookkeeping, terminal placement, and scroll
+controller registration. Companion pane layout/open state lives in the
+pane-layout/companion stores. Do not add a parallel streaming or timeline
 state slice next to it.
 
 Pane layout and pane runtime state are separate. Layout stores own
@@ -74,7 +76,7 @@ Read that before touching:
 - `src/lib/components/chat/timeline{Restore,SizePriors,WindowAnchor,RowProjection}.svelte.ts`
   and `timeline{Paging,Diagnostics,RowUiPrune}.ts` (the scroll-session
   modules extracted from MessageTimeline)
-- `src/lib/components/chat/TimelineVirtualizer.svelte`
+- `src/lib/components/virtual/TimelineVirtualizer.svelte`
 - `src/lib/components/discussion/ChannelView.svelte`
 - `src/lib/utils/scroll/` (`index.svelte.ts` controller + resolver/intent/spring/observers)
 - `src/lib/utils/virtual/` (windowing engine + per-thread size priors)

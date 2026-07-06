@@ -12,7 +12,7 @@
   // and this panel can call `ctx.refreshDesignOptions(threadId)` to
   // ask the backend for the latest unresolved option set.
 
-  import type { PanelContext } from '../../stores/rhsPanelSlot.svelte';
+  import type { PanelContext } from '../../stores/panelContext.svelte';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
   import { DismissDesignOptionSet, SendMessage } from '../../stores/bindings';

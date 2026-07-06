@@ -9,7 +9,7 @@ import { prependThread } from '../stores/threads.svelte';
 import { expandProject } from '../stores/sidebar.svelte';
 import { addToast } from '../stores/toast.svelte';
 import type { Thread } from '../types/models';
-import type { PanelContext } from '../stores/rhsPanelSlot.svelte';
+import type { PanelContext } from '../stores/panelContext.svelte';
 import { requestIframeCapture } from './captureHtml';
 import { errString } from './errors';
 

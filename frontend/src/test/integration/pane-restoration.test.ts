@@ -28,8 +28,8 @@ function savePaneLayout(
   focusedPaneId: string | null,
 ): PaneLayoutPersistedSettings {
   return {
-    version: 1,
-    panes,
+    version: 2,
+    panes: panes.map((pane) => ({ ...pane, kind: 'thread' })),
     focusedPaneId,
   };
 }

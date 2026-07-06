@@ -69,8 +69,9 @@ CREATE TABLE "chat_model_profiles" (
 CREATE TABLE diff_review_comments (
 	id            TEXT    PRIMARY KEY,
 	thread_id     TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-	scope         TEXT    NOT NULL CHECK(scope IN ('session', 'workspace')),
+	scope         TEXT    NOT NULL CHECK(scope IN ('turn', 'session', 'workspace', 'branch', 'pr')),
 	source_key    TEXT    NOT NULL,
+	commit_sha    TEXT    NOT NULL DEFAULT '',
 	file_path     TEXT    NOT NULL,
 	status        TEXT    NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'sent', 'resolved')),
 	old_line      INTEGER NOT NULL DEFAULT 0 CHECK(old_line >= 0),
@@ -252,6 +253,7 @@ CREATE TABLE "threads" (
     workspace_path           TEXT    NOT NULL,
     worktree_path            TEXT,
     branch                   TEXT,
+    pr_ref                   TEXT    NOT NULL DEFAULT '',
     session_ref              TEXT,
     pending_fork_session_ref TEXT,
     mode                     TEXT    NOT NULL DEFAULT 'chat'

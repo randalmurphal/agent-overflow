@@ -253,6 +253,14 @@ type App struct {
 	gitWatchPumpsMu sync.Mutex
 	gitWatchPumps   map[string]*gitWatchPump
 	gitWatchPumpWG  sync.WaitGroup
+	// prUpdatePumps index active PR-scope review-pane polling
+	// subscriptions. Each subscription owns one low-cadence poller and
+	// emits only when the normalized snapshot changes.
+	prUpdatePumpsMu  sync.Mutex
+	prUpdatePumps    map[string]*prUpdatePump
+	prUpdatePumpWG   sync.WaitGroup
+	prUpdateInterval time.Duration
+	prUpdateFetchFn  func(gitops.PRReference) (prUpdateSnapshot, error)
 	// codexModelCatalog caches Codex's live app-server model/list response by
 	// binary path. The catalog is provider-owned state, but fetching it spawns
 	// a local CLI subprocess; cache and coalesce calls so settings/model menus
@@ -466,6 +474,7 @@ func NewApp() *App {
 		threadSystemPrompts:    make(map[string]string),
 		deliberations:          make(map[string]*discussion.Deliberation),
 		gitWatchPumps:          make(map[string]*gitWatchPump),
+		prUpdatePumps:          make(map[string]*prUpdatePump),
 	}
 }
 

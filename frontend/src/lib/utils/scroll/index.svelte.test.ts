@@ -4769,7 +4769,7 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
 
     it('pauseAutoScroll lease released during escape does not strand the user', async () => {
-      // RHS panel mount holds a leaseDuringSettle while the user is
+      // Companion pane layout changes can hold a leaseDuringSettle while the user is
       // escaped. The lease release MUST NOT silently re-pin the user
       // to the bottom and MUST NOT leak pauseDepth.
       const ro = getRO();
@@ -4783,7 +4783,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
 
-      // RHS panel mounts: acquires lease, then releases after settle.
+      // Companion pane mounts: acquires lease, then releases after settle.
       const release = controller.pauseAutoScroll();
       release();
 
@@ -4793,7 +4793,7 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
 
     it('overlapping pauseAutoScroll leases all release; pauseDepth returns to 0', async () => {
-      // Multiple concurrent RHS / sidebar leases. Each must decrement
+      // Multiple concurrent layout leases. Each must decrement
       // pauseDepth independently — none should leak.
       const ro = getRO();
       ro.fire(contentEl, 800);

@@ -18,7 +18,7 @@
     formatPayloadSize,
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
-  import { openDiffSidebar } from './diffSidebarTrigger';
+  import { openReviewForItem } from './reviewTrigger';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
@@ -36,12 +36,12 @@
 
   function openSidebarForFile(filePath: string) {
     if (!pane || !payloadId) return;
-    openDiffSidebar(pane, { payloadId, filePath });
+    openReviewForItem(pane, { turnIndex: item.turnIndex, filePath });
   }
 
   function openSidebarForPatch() {
     if (!pane || !payloadId) return;
-    openDiffSidebar(pane, { payloadId });
+    openReviewForItem(pane, { turnIndex: item.turnIndex });
   }
 
   let canOpenSidebar = $derived(pane !== undefined && payloadId !== undefined);
@@ -171,8 +171,8 @@
                 <button
                   type="button"
                   onclick={(e) => { e.stopPropagation(); openSidebarForFile(file.path); }}
-                  title="Open in side panel"
-                  aria-label={`Open Diff in Side Panel: ${file.path}`}
+                  title="Open in review pane"
+                  aria-label={`Open diff in review pane: ${file.path}`}
                   data-testid="tool-result-chip-open-sidebar"
                   data-file-path={file.path}
                   class="opacity-70 group-hover/chip:opacity-100 hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded p-0.5"
@@ -196,8 +196,8 @@
                 <button
                   type="button"
                   onclick={(e) => { e.stopPropagation(); openSidebarForPatch(); }}
-                  title="Open full diff in side panel"
-                  aria-label="Open Full Diff in Side Panel"
+                  title="Open full diff in review pane"
+                  aria-label="Open full diff in review pane"
                   data-testid="tool-result-overflow-open-sidebar"
                   class="opacity-70 hover:opacity-100 hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded p-0.5"
                 >
@@ -245,8 +245,8 @@
             <button
               type="button"
               onclick={(e) => { e.stopPropagation(); openSidebarForPatch(); }}
-              title="Open in side panel"
-              aria-label="Open Patch in Side Panel"
+              title="Open in review pane"
+              aria-label="Open patch in review pane"
               data-testid="tool-result-patch-open-sidebar"
               class="opacity-0 group-hover/patch:opacity-100 focus-visible:opacity-100 rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
             >

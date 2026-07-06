@@ -38,7 +38,7 @@
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import MessagesSquare from 'lucide-svelte/icons/messages-square';
   import MessageSquarePlus from 'lucide-svelte/icons/message-square-plus';
-  import type { PanelContext } from '../../stores/rhsPanelSlot.svelte';
+  import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
     IngestDiagnosticBatch,
     EnsureDesignWorkdir,

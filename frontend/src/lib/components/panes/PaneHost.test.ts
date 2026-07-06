@@ -6,6 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../chat/ChatView.svelte', async () => ({
   default: (await import('../../../test/mocks/StubChatView.svelte')).default,
 }));
+vi.mock('../chat/PlanSidebar.svelte', async () => ({
+  default: (await import('../../../test/mocks/StubCompanionPanel.svelte')).default,
+}));
+vi.mock('../design/DesignPreviewRhsPanel.svelte', async () => ({
+  default: (await import('../../../test/mocks/StubCompanionPanel.svelte')).default,
+}));
+vi.mock('../review/ReviewPane.svelte', async () => ({
+  default: (await import('../../../test/mocks/StubCompanionPanel.svelte')).default,
+}));
 
 import PaneHost from './PaneHost.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
@@ -198,6 +207,35 @@ describe('PaneHost', () => {
     expect(left?.style.flexGrow).toBe('2');
     expect(right?.style.flexGrow).toBe('1');
     expect(rendered.getAllByTestId('pane-divider')).toHaveLength(1);
+  });
+
+  it('renders a plan companion layout item through CompanionPane', () => {
+    registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
+    setPaneLayoutItemsForTest([
+      { id: 'source', paneId: 'source', kind: 'thread', ratio: 1 },
+      { id: 'plan-source', paneId: 'plan-source', kind: 'plan', ratio: 1, sourcePaneId: 'source' },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', ratio: 1, sourcePaneId: 'source' },
+    ]);
+
+    const rendered = render(PaneHost);
+    const companion = rendered.getByTestId('companion-pane-plan');
+    const review = rendered.getByTestId('companion-pane-review');
+
+    expect(companion).toBeInTheDocument();
+    expect(review).toBeInTheDocument();
+    expect(rendered.getAllByTestId('stub-companion-panel')).toHaveLength(2);
+    expect(companion.closest('[data-pane-id="plan-source"]')).toHaveAttribute('data-pane-kind', 'plan');
+    expect(review.closest('[data-pane-id="review-source"]')).toHaveAttribute('data-pane-kind', 'review');
+  });
+
+  it('renders an explicit broken state for a companion whose source pane is missing', () => {
+    setPaneLayoutItemsForTest([
+      { id: 'plan-missing', paneId: 'plan-missing', kind: 'plan', ratio: 1, sourcePaneId: 'missing' },
+    ]);
+
+    const rendered = render(PaneHost);
+
+    expect(rendered.getByTestId('companion-pane-broken')).toHaveTextContent('Companion pane unavailable.');
   });
 
   it('publishes and clears measured widths by pane id', () => {
@@ -418,6 +456,63 @@ describe('PaneHost', () => {
     await waitFor(() => {
       const createdPaneId = paneIdForThread(dragged.id);
       expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', createdPaneId, 'right']);
+    });
+  });
+
+  it('drop on a companion left half lands before the whole source block', async () => {
+    const dragged = makeThread({ id: 'drag-companion', title: 'Dragged Companion' });
+    prependThread(dragged);
+    installThreadSwitchMocks(dragged);
+    registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
+    setPaneLayoutItemsForTest([
+      { id: 'source', paneId: 'source', kind: 'thread', ratio: 1 },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', ratio: 1, sourcePaneId: 'source' },
+    ]);
+    const rendered = render(PaneHost);
+    const companionPane = rendered.container.querySelector<HTMLElement>('[data-pane-id="review-source"]');
+    if (!companionPane) throw new Error('expected companion pane');
+    stubRect(companionPane, 500, 500);
+
+    // Left half of the companion: the slot between a source and its
+    // companion does not exist — the drop lands before the block.
+    const dataTransfer = threadDataTransfer(dragged.id);
+    await fireEvent.dragOver(companionPane, { dataTransfer, clientX: 550 });
+    await fireEvent.drop(companionPane, { dataTransfer, clientX: 550 });
+
+    await waitFor(() => {
+      const createdPaneId = paneIdForThread(dragged.id);
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([
+        createdPaneId,
+        'source',
+        'review-source',
+      ]);
+    });
+  });
+
+  it('drop on the gap between a source and its companion lands after the block', async () => {
+    const dragged = makeThread({ id: 'drag-block-gap', title: 'Dragged Block Gap' });
+    prependThread(dragged);
+    installThreadSwitchMocks(dragged);
+    registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
+    setPaneLayoutItemsForTest([
+      { id: 'source', paneId: 'source', kind: 'thread', ratio: 1 },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', ratio: 1, sourcePaneId: 'source' },
+    ]);
+    const rendered = render(PaneHost);
+    const gap = rendered.container.querySelector<HTMLElement>('[data-pane-gap-index="1"]');
+    if (!gap) throw new Error('expected gap');
+
+    const dataTransfer = threadDataTransfer(dragged.id);
+    await fireEvent.dragOver(gap, { dataTransfer, clientX: 500 });
+    await fireEvent.drop(gap, { dataTransfer, clientX: 500 });
+
+    await waitFor(() => {
+      const createdPaneId = paneIdForThread(dragged.id);
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([
+        'source',
+        'review-source',
+        createdPaneId,
+      ]);
     });
   });
 

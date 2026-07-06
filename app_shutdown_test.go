@@ -281,6 +281,7 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"stop orphan reaper",
 		"close design reactor",
 		"close gitwatch manager",
+		"close PR update subscriptions",
 		"close terminal sessions",
 		"close headless screenshot manager",
 		"close design MCP server",

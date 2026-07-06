@@ -1078,6 +1078,74 @@ func TestDiffRefToWorktreeOnCleanWorktreeIsEmpty(t *testing.T) {
 	}
 }
 
+func TestDiffBranchBaseToWorktreeIncludesCommittedAndUncommittedChanges(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	runCommand(t, dir, "git", "checkout", "-q", "-b", "feature")
+	writeTestFile(t, dir, "committed.txt", "committed branch work\n")
+	commitAll(t, dir, "feature commit")
+	writeTestFile(t, dir, "README", "initial\nuncommitted edit\n")
+	writeTestFile(t, dir, "untracked.txt", "untracked branch work\n")
+
+	diff, err := s.DiffBranchBaseToWorktree(ctx, dir, "main")
+	if err != nil {
+		t.Fatalf("DiffBranchBaseToWorktree() error = %v", err)
+	}
+	patch := string(diff)
+	for _, want := range []string{
+		"committed.txt",
+		"+committed branch work",
+		"+uncommitted edit",
+		"untracked.txt",
+		"+untracked branch work",
+	} {
+		if !strings.Contains(patch, want) {
+			t.Fatalf("diff missing %q:\n%s", want, patch)
+		}
+	}
+}
+
+func TestDiffBranchBaseToWorktreeBaseEqualsCurrentShowsOnlyUncommitted(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	writeTestFile(t, dir, "committed.txt", "main work\n")
+	commitAll(t, dir, "main commit")
+	writeTestFile(t, dir, "README", "initial\nworkspace edit\n")
+
+	diff, err := s.DiffBranchBaseToWorktree(ctx, dir, "main")
+	if err != nil {
+		t.Fatalf("DiffBranchBaseToWorktree() error = %v", err)
+	}
+	patch := string(diff)
+	if strings.Contains(patch, "committed.txt") || strings.Contains(patch, "+main work") {
+		t.Fatalf("diff included committed current-branch work:\n%s", patch)
+	}
+	if !strings.Contains(patch, "+workspace edit") {
+		t.Fatalf("diff missing workspace edit:\n%s", patch)
+	}
+}
+
+func TestDiffBranchBaseToWorktreeMissingBranchErrors(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	_, err := s.DiffBranchBaseToWorktree(ctx, dir, "missing-branch")
+	if err == nil {
+		t.Fatal("DiffBranchBaseToWorktree() error = nil, want missing branch error")
+	}
+	if !strings.Contains(err.Error(), "merge-base missing-branch HEAD") {
+		t.Fatalf("error = %v, want merge-base context", err)
+	}
+}
+
 func TestDiffRefToRefMissingRefErrors(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

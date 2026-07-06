@@ -1,7 +1,7 @@
 import { tick } from 'svelte';
 import type { Item, Project, Thread } from '../types/models';
 import { asProviderID } from '../types/providers';
-import type { Checkpoint, DiffPanelTab } from '../types/checkpoint';
+import type { Checkpoint } from '../types/checkpoint';
 import type {
   ApprovalRequest,
   ContextWindow,
@@ -44,14 +44,16 @@ import {
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 
 import { addToast } from './toast.svelte';
-import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
+import { createThreadCheckpointState, type ThreadCheckpointState } from './threadCheckpoints.svelte';
 import { createGitStatusSlot, type GitStatusSlot } from './gitStatus.svelte';
 import {
-  createRhsPanelSlot,
-  type DiffSidebarUIState,
-  type RhsPanel,
-  type RhsPanelSlot,
-} from './rhsPanelSlot.svelte';
+  closeCompanion,
+  companionForSource,
+  isCompanionOpen,
+  openCompanion,
+  toggleCompanion,
+} from './companionPanes.svelte';
+import { openReviewCompanion } from './reviewPane.svelte';
 import { errString } from '../utils/errors';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
@@ -110,7 +112,6 @@ import {
   SPINNER_THRESHOLD_MS,
   isSmoothLiveContentKind,
   nowForLiveContent,
-  sameRhsPanel,
   threadUsesDiscussionSurface,
   type DraftThreadPlaceholder,
   type DraftPlaceholderDefaults,
@@ -153,11 +154,6 @@ export {
   LIVE_TODO_AUTOHIDE_MS,
 } from './liveTodoState.svelte';
 export type { LiveTodo } from './liveTodoState.svelte';
-
-// Diff-sidebar UI types are owned by stores/rhsPanelSlot.svelte.ts.
-// Re-exported here so callers that import from this module
-// continue to find them at the same path.
-export type { DiffSidebarUIState, RhsPanel } from './rhsPanelSlot.svelte';
 
 /**
  * Creates a self-contained thread pane state instance.
@@ -304,63 +300,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // fire-once FOCUS_TERMINAL_EVENT, whose listener didn't exist yet when the
   // event fired on a cold first open (the lazy import hadn't resolved).
   let pendingTerminalFocus = $state(false);
-  // Diff panel is per-pane; created once and reset on thread switch so its
-  // caches don't leak between threads.
-  const diffPanel: DiffPanelState = createDiffPanelState();
+  // Checkpoint bookkeeping is per-pane and resets on thread switch so
+  // per-message checkpoint affordances never flash stale availability.
+  const checkpoints: ThreadCheckpointState = createThreadCheckpointState();
 
   // Live git-status for this pane's workspace. Owns the single gitwatch
   // subscription (driven by ChatHeaderActions via attach); GitActionsControl
   // and the header diff/PR badges read it. Reset on thread switch like
-  // diffPanel so a stale count never flashes for the incoming thread.
+  // checkpoints so a stale count never flashes for the incoming thread.
   const gitStatus: GitStatusSlot = createGitStatusSlot();
 
   const channelState = createThreadChannelState();
   const designState = createThreadDesignState();
-
-  // Shared right-side panel slot. The shell width and the active panel are
-  // saved per thread so plan/diff/payload views swap inside one stable pane
-  // instead of mounting separate sidebars with separate width stores.
-  const rhsPanelSlot: RhsPanelSlot = createRhsPanelSlot(paneId);
-
-  /**
-   * Single source of truth for which RHS panel is open. The store is the
-   * durable-for-session thread snapshot; diffPanel.open is kept in sync as a
-   * compatibility flag for existing commands/tests.
-   *
-   * Adding another RHS feature later should mean extending RhsPanel and adding
-   * one render branch in the shell, not adding another full-width sidebar.
-   */
-  function activatePanel(target: RhsPanel | null): void {
-    // Right-edge sidebars (plan / diff / diff-payload) reflow the chat
-    // column when they open or close. Hold a brief lease so the
-    // controller's content-RO sync-pin no-ops while the column's
-    // clientWidth is settling — preventing the timeline from yanking
-    // mid-transition.
-    const current = rhsPanelSlot.activePanel;
-    const willChange = !sameRhsPanel(current, target);
-    if (!willChange) {
-      if (target?.kind !== 'diff-checkpoint' && diffPanel.open) {
-        diffPanel.close();
-      }
-      if (target?.kind === 'diff-checkpoint' && !diffPanel.open) {
-        diffPanel.open_();
-      }
-      return;
-    }
-    leaseDuringSettle(scrollController, 250);
-
-    if (target?.kind !== 'diff-checkpoint' && diffPanel.open) {
-      diffPanel.close();
-    }
-    if (!target) {
-      rhsPanelSlot.closeForThread(thread?.id);
-      return;
-    }
-    rhsPanelSlot.open(target);
-    if (target.kind === 'diff-checkpoint') {
-      diffPanel.open_();
-    }
-  }
 
   // Turn-lifecycle state. The active turn lives in the global registry
   // in threadStatuses.svelte.ts (read directly via `getActiveTurn` at
@@ -438,8 +389,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   /**
    * Live registration slot for the timeline's sticky-bottom controller.
    * MessageTimeline registers its controller on mount so external surfaces
-   * (sidebar resizers, inspector panels, anything that opens a drawer over
-   * the chat column) can acquire a `pauseAutoScroll()` lease while a
+   * (inspector panels, resizable panes) can acquire a `pauseAutoScroll()` lease while a
    * gesture is in flight, preventing auto-follow from yanking the view
    * mid-drag. The factory only knows about the minimal surface
    * (`PaneScrollController`) — it never depends on the virtualizer or the DOM
@@ -722,16 +672,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // `subagentMemory.hydrateChildren`.
 
   async function refreshCheckpointsForThread(threadID: string): Promise<void> {
-    const checkpoints = ((await ListThreadCheckpoints(threadID)) ??
+    const checkpointRows = ((await ListThreadCheckpoints(threadID)) ??
       []) as Checkpoint[];
     if (thread?.id !== threadID) return;
-    const sorted = [...checkpoints].sort((a, b) => a.turnIndex - b.turnIndex);
-    diffPanel.setCheckpoints(sorted);
+    const sorted = [...checkpointRows].sort((a, b) => a.turnIndex - b.turnIndex);
+    checkpoints.setCheckpoints(sorted);
   }
 
   /**
    * Snapshot the outgoing thread into the LRU cache (when worth it),
-   * the RHS panel slot, and the partitioned shiki token cache.
+   * and the partitioned shiki token cache.
    * Same-thread re-switch (revert-to-checkpoint flows) skips the
    * snapshot AND force-evicts the cache entry so the incoming load
    * fetches fresh state instead of flashing the stale view through
@@ -781,21 +731,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       clearThreadSizePriors(incomingThreadId);
     }
     if (outgoingThreadId) {
-      rhsPanelSlot.snapshotForThread(outgoingThreadId);
       // Free Shiki tokens cached against the outgoing thread. The shared
       // cache is partitioned by threadId so this is a clean segmental
       // drop; new lines tokenized for the incoming thread start from a
       // fresh per-thread namespace.
       clearTokensForThread(outgoingThreadId);
-    } else {
-      rhsPanelSlot.closeForThread();
     }
   }
 
   /**
    * Wipe pane-scoped state to the empty/default shape for the incoming
    * thread: transient fields, turn-lifecycle pointers, live-todo state,
-   * and the diff panel. Pure mutation of pane state — no cache or
+   * and checkpoint bookkeeping. Pure mutation of pane state — no cache or
    * outgoing-thread side effects.
    */
   function resetIncomingPaneState(newThread: Thread): void {
@@ -809,9 +756,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     channelState.clear();
     designState.reset();
     // Bottom-drawer state is pane-scoped: opening the terminal on thread
-    // A should not spill into thread B. The RHS sidebar is different:
-    // its active panel + width are snapshotted per thread by
-    // snapshotOutgoingPane.
+    // A should not spill into thread B.
     showTerminal = false;
 
     // Turn-lifecycle reset. The active-turn registry lives in
@@ -825,7 +770,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     subagentNotifications = [];
 
     liveTodoState.resetForThread(newThread.id);
-    diffPanel.clearForThread();
+    checkpoints.clearForThread();
     gitStatus.reset();
   }
 
@@ -933,23 +878,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   }
 
   /**
-   * Commit the incoming thread to the pane. Sets `thread`, restores
-   * the per-thread RHS panel snapshot, and re-opens the diff panel
-   * when the restored panel was a diff-checkpoint.
+   * Commit the incoming thread to the pane.
    */
   function commitIncomingThread(newThread: Thread): void {
     draftPlaceholder = null;
     thread = newThread;
-    rhsPanelSlot.restoreForThread(newThread.id);
-    if (
-      newThread.mode === 'design' &&
-      (rhsPanelSlot.activePanel?.kind === 'diff-checkpoint' ||
-        rhsPanelSlot.activePanel?.kind === 'diff-payload')
-    ) {
-      rhsPanelSlot.closeForThread(newThread.id);
-    }
-    if (rhsPanelSlot.activePanel?.kind === 'diff-checkpoint') {
-      diffPanel.open_();
+    if (newThread.mode !== 'design') {
+      const preview = companionForSource(paneId, 'design-preview');
+      if (preview) closeCompanion(preview.paneId);
     }
   }
 
@@ -1090,7 +1026,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       () => refreshCheckpointsForThread(newThread.id),
       () => {},
       (err) => {
-        diffPanel.setError(`Failed to load checkpoints: ${errString(err)}`);
+        checkpoints.setError(`Failed to load checkpoints: ${errString(err)}`);
       },
     );
 
@@ -1289,8 +1225,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get showTerminal() {
       return showTerminal;
     },
-    get diffPanel() {
-      return diffPanel;
+    get checkpoints() {
+      return checkpoints;
     },
     get gitStatus() {
       return gitStatus;
@@ -1322,14 +1258,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       payload: CheckpointUnavailableEvent | null,
     ): void {
       if (!payload || payload.threadId !== thread?.id) return;
-      diffPanel.markCheckpointsUnavailable(payload.reason);
-      diffPanel.setError(
+      checkpoints.markUnavailable(payload.reason);
+      checkpoints.setError(
         'Workspace is not a git repo. Checkpoint diffs are unavailable.',
       );
     },
     applyCheckpointError(payload: CheckpointErrorEvent | null): void {
       if (!payload || payload.threadId !== thread?.id) return;
-      diffPanel.setError(`Checkpoint failed: ${payload.error}`);
+      checkpoints.setError(`Checkpoint failed: ${payload.error}`);
     },
     applyCheckpointReverted(payload: CheckpointRevertedEvent | null): void {
       if (!payload || payload.threadId !== thread?.id) return;
@@ -1454,30 +1390,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get designViewport() {
       return designState.designViewport;
     },
-    get activeRhsPanel() {
-      return rhsPanelSlot.activePanel;
-    },
-    get rhsSidebarWidth() {
-      return rhsPanelSlot.width;
-    },
     get showPlanSidebar() {
-      return rhsPanelSlot.activePanel?.kind === 'plan';
+      return isCompanionOpen(paneId, 'plan');
+    },
+    get showReviewPane() {
+      return isCompanionOpen(paneId, 'review');
     },
     get showDesignPreviewPanel() {
-      return rhsPanelSlot.activePanel?.kind === 'design-preview';
-    },
-    get activeDiffPayload() {
-      const panel = rhsPanelSlot.activePanel;
-      if (panel?.kind !== 'diff-payload') return null;
-      if (panel.filePath === undefined) return { payloadId: panel.payloadId };
-      return { payloadId: panel.payloadId, filePath: panel.filePath };
-    },
-    get diffSidebarRestoreState() {
-      return rhsPanelSlot.diffPayloadRestoreState;
-    },
-    /** Diagnostic — total snapshots held by the RHS panel slot. */
-    get rhsPanelSnapshotCount() {
-      return rhsPanelSlot.snapshotCount;
+      return isCompanionOpen(paneId, 'design-preview');
     },
     /**
      * Monotonically increasing counter bumped at the top of every
@@ -1664,7 +1584,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       sendInFlight = false;
       optimisticItemIds.clear();
       showTerminal = false;
-      rhsPanelSlot.reset();
       channelState.clear();
       designState.reset();
       // activeTurn lives in the global registry (threadStatuses) and is
@@ -1692,7 +1611,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // `pagingGeneration` and `scrollToItemRequest.nonce` stay
       // monotonic for the pane's lifetime so no consumer observes a
       // regressed counter.
-      diffPanel.clearForThread();
+      checkpoints.clearForThread();
       gitStatus.reset();
       // Invalidate any in-flight switchThread so its late resolutions can't
       // repopulate the pane we just cleared.
@@ -1878,8 +1797,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     /**
      * Registered scroll controller for this pane. Read by surfaces that
-     * need to suspend auto-follow during a gesture (sidebar resizers,
-     * resizable drawers). Call `pause = pane.scrollController?.pauseAutoScroll()`
+     * need to suspend auto-follow during a gesture. Call
+     * `pause = pane.scrollController?.pauseAutoScroll()`
      * on pointerdown and `pause?.()` on pointerup/cancel — the lease is
      * idempotent so a stray double-release is safe.
      */
@@ -2525,108 +2444,49 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return requested;
     },
 
-    toggleDiffPanel(tab: DiffPanelTab = 'workspace'): void {
-      if (thread?.mode === 'design') return;
-      if (diffPanel.open) {
-        activatePanel(null);
-        return;
-      }
-      // Land on the requested tab before the panel mounts so it never
-      // flashes the messages tab on the way to workspace. The header diff
-      // badge and the diff.panel.toggle keybinding both open on 'workspace';
-      // checkpoint-click / setDiffPanelOpen stay messages-oriented.
-      diffPanel.setTabMode(tab);
-      activatePanel({ kind: 'diff-checkpoint' });
-    },
-
     togglePlanSidebar(): void {
-      if (rhsPanelSlot.activePanel?.kind === 'plan') activatePanel(null);
-      else activatePanel({ kind: 'plan' });
+      toggleCompanion(paneId, 'plan');
     },
 
     setShowPlanSidebar(value: boolean): void {
-      if (value) activatePanel({ kind: 'plan' });
-      else if (rhsPanelSlot.activePanel?.kind === 'plan') activatePanel(null);
+      if (value) openCompanion(paneId, 'plan');
+      else {
+        const companion = companionForSource(paneId, 'plan');
+        if (companion) closeCompanion(companion.paneId);
+      }
+    },
+
+    toggleReviewPane(): void {
+      const companion = companionForSource(paneId, 'review');
+      if (companion) {
+        closeCompanion(companion.paneId);
+        return;
+      }
+      if (thread?.id) void openReviewCompanion(paneId, thread.id);
+    },
+
+    setShowReviewPane(value: boolean): void {
+      if (value) {
+        if (thread?.id) void openReviewCompanion(paneId, thread.id);
+      }
+      else {
+        const companion = companionForSource(paneId, 'review');
+        if (companion) closeCompanion(companion.paneId);
+      }
     },
 
     toggleDesignPreviewPanel(): void {
       if (thread?.mode !== 'design') return;
-      if (rhsPanelSlot.activePanel?.kind === 'design-preview')
-        activatePanel(null);
-      else activatePanel({ kind: 'design-preview' });
+      toggleCompanion(paneId, 'design-preview');
     },
 
     setShowDesignPreviewPanel(value: boolean): void {
       if (thread?.mode !== 'design') return;
-      if (value) activatePanel({ kind: 'design-preview' });
-      else if (rhsPanelSlot.activePanel?.kind === 'design-preview')
-        activatePanel(null);
-    },
-
-    setDiffPanelOpen(value: boolean): void {
-      if (value && thread?.mode === 'design') return;
-      if (value) activatePanel({ kind: 'diff-checkpoint' });
-      else if (diffPanel.open) activatePanel(null);
-    },
-
-    /**
-     * Open the per-tool diff sidebar for a specific payload. Mutex with
-     * PlanSidebar and DiffPanelDrawer — closes both. `filePath` is
-     * optional and used by the sidebar to scroll to a file when the
-     * payload contains multiple (e.g. a Claude `file_change` tool_result
-     * with several files).
-     */
-    openDiffSidebar(payload: { payloadId: string; filePath?: string }): void {
-      if (thread?.mode === 'design') return;
-      activatePanel({
-        kind: 'diff-payload',
-        payloadId: payload.payloadId,
-        filePath: payload.filePath,
-      });
-    },
-
-    closeRhsPanel(): void {
-      activatePanel(null);
-    },
-
-    setRhsSidebarWidthLive(next: number): void {
-      rhsPanelSlot.setWidthLive(next);
-    },
-
-    persistRhsSidebarWidth(): void {
-      rhsPanelSlot.persistWidthForThread(thread?.id);
-    },
-
-    getRhsSidebarMaxWidth(): number {
-      return rhsPanelSlot.getMaxWidth();
-    },
-
-    /**
-     * Push the sidebar's current UI state up to the pane. Called by
-     * DiffSidebar whenever its viewMode / wordWrap / expandedFiles /
-     * scrollTop change. Stored in memory only; snapshotted to the
-     * per-thread map on the next thread switch.
-     */
-    recordDiffSidebarUI(state: DiffSidebarUIState): void {
-      rhsPanelSlot.recordDiffPayloadUI(state);
-    },
-
-    /**
-     * Atomically take the pending restore-state and clear it.
-     * Returns null when no restore is pending. Called by DiffSidebar
-     * exactly once on mount.
-     */
-    consumeDiffSidebarRestoreState(): DiffSidebarUIState | null {
-      return rhsPanelSlot.consumeDiffPayloadRestore();
-    },
-
-    /**
-     * Close whichever right-side panel is currently open. Idempotent —
-     * safe to call when nothing is open. Explicit close keeps the
-     * thread-specific width but removes the restore target.
-     */
-    closeActivePanel(): void {
-      activatePanel(null);
+      if (value) openCompanion(paneId, 'design-preview');
+      else {
+        const companion = companionForSource(paneId, 'design-preview');
+        if (companion) closeCompanion(companion.paneId);
+      }
     },
 
     /** Single-message merge for a live `discussion:message` push, or the

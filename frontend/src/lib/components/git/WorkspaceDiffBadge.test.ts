@@ -28,9 +28,9 @@ describe('<WorkspaceDiffBadge>', () => {
     const { getByTestId } = render(WorkspaceDiffBadge, {
       props: { ...baseProps, status: null },
     });
-    const btn = getByTestId('diff-panel-toggle');
+    const btn = getByTestId('review-toggle');
     expect(btn).toBeTruthy();
-    expect(btn.getAttribute('title')).toBe('Toggle Diff Panel (Ctrl+Shift+G)');
+    expect(btn.getAttribute('title')).toBe('Toggle Review Pane (Ctrl+Shift+G)');
   });
 
   it('shows +0 -0 when no status has been observed yet', () => {
@@ -73,7 +73,7 @@ describe('<WorkspaceDiffBadge>', () => {
     const { getByTestId } = render(WorkspaceDiffBadge, {
       props: { ...baseProps, status: status(), pressed: true },
     });
-    expect(getByTestId('diff-panel-toggle').getAttribute('aria-pressed')).toBe('true');
+    expect(getByTestId('review-toggle').getAttribute('aria-pressed')).toBe('true');
   });
 
   it('invokes onActivate when clicked', async () => {
@@ -81,7 +81,7 @@ describe('<WorkspaceDiffBadge>', () => {
     const { getByTestId } = render(WorkspaceDiffBadge, {
       props: { ...baseProps, status: status(), onActivate },
     });
-    await fireEvent.click(getByTestId('diff-panel-toggle'));
+    await fireEvent.click(getByTestId('review-toggle'));
     expect(onActivate).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,18 +1,11 @@
-// Inline diff file-block tokenization dispatcher. Mirrors the
-// per-visible-set coordinator in DiffSidebarBody.svelte but scoped to a
-// single file (one DiffFileBlock = one file = one tokenize batch).
+// Inline diff file-block tokenization dispatcher scoped to a single file
+// (one DiffFileBlock = one file = one tokenize batch).
 //
 // Module-level inFlightKeys dedupes across blocks: if two
 // DiffFileBlocks render the same line content (rare but possible —
 // boilerplate code, generated headers), only the first dispatch
 // queues; the second sees the in-flight claim and skips.
 //
-// The sidebar has its own dispatcher with its own inFlightKeys. Brief
-// duplicate-work windows between inline + sidebar dispatching the same
-// line resolve to a single cache write either way (the cache is the
-// shared mutex point); the cost is one extra worker round-trip in
-// rare cases.
-
 import { getSharedDiffHighlighterPool, type DiffTheme } from '../../utils/diffHighlighterPool';
 import { getSharedReactiveTokenCache } from '../../utils/tokenCacheReactive.svelte';
 import { tokenCacheKeyFromSig, TOKENIZE_MAX_LINE_LENGTH } from '../../utils/tokenCache';
@@ -21,12 +14,8 @@ import { patchLineSourceKey } from '../../utils/patchLineHash';
 import { addToast } from '../../stores/toast.svelte';
 
 const inFlightKeys = new Set<string>();
-// Once-per-language guard for the degraded-highlight toast — same
-// behavior as DiffSidebarBody.svelte's `warnedTokenizeLanguages`.
+// Once-per-language guard for the degraded-highlight toast.
 // Module-scoped so all inline blocks share it; deliberately not
-// shared with the sidebar's set since the surfaces fail
-// independently — a sidebar failure doesn't suppress the inline
-// notification or vice versa.
 const warnedTokenizeLanguages = new Set<string>();
 
 /**

@@ -1,7 +1,7 @@
 <script lang="ts">
   // Workspace diff toggle for the chat header: shows the working-tree churn
-  // (+insertions / -deletions) and toggles the right-side diff panel onto its
-  // workspace tab.
+  // (+insertions / -deletions) and toggles the review pane onto workspace
+  // scope.
   //
   // The +/- counts are ALWAYS rendered — +0 -0 when the tree is clean, before
   // any status has been observed, or when the workspace isn't a repo — so the
@@ -26,7 +26,7 @@
   let insertions = $derived(status?.insertions ?? 0);
   let deletions = $derived(status?.deletions ?? 0);
   let ariaLabel = $derived(
-    `Toggle diff panel — ${insertions} insertions, ${deletions} deletions`,
+    `Toggle review pane — ${insertions} insertions, ${deletions} deletions`,
   );
 </script>
 
@@ -35,9 +35,9 @@
   size="xs"
   {pressed}
   {ariaLabel}
-  title={`Toggle Diff Panel (${chord})`}
+  title={`Toggle Review Pane (${chord})`}
   onclick={onActivate}
-  testId="diff-panel-toggle"
+  testId="review-toggle"
   class="shrink-0"
 >
   {#snippet children()}

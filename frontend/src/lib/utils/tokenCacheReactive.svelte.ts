@@ -47,8 +47,8 @@ export function getSharedTokenCache(): TokenCache {
 /**
  * Reactive wrapper: writes pass through to the underlying cache
  * AND bump the generation counter, so any consumer that reads
- * `getSharedTokenCacheGeneration()` re-evaluates. Used by the diff
- * sidebar's render path.
+ * `getSharedTokenCacheGeneration()` re-evaluates. Used by diff render
+ * paths.
  */
 export function getSharedReactiveTokenCache(): TokenCache {
   if (sharedReactiveCache) return sharedReactiveCache;
@@ -82,10 +82,10 @@ export function getSharedReactiveTokenCache(): TokenCache {
  * Pane hook for thread switch: drops every cached token line that
  * was tokenized while the named thread was the active diff target.
  * Called from `pane.switchThread` so leaving thread A frees tokens
- * before thread B's diff sidebar starts populating its own.
+ * before thread B's review or inline diffs start populating their own.
  *
  * No generation bump: nothing rendered against thread A's keys
- * survives the switch (the sidebar moves to thread B's namespace),
+ * survives the switch (diff renderers move to thread B's namespace),
  * so the eviction has no visible reactive consumer.
  */
 export function clearTokensForThread(threadId: string): void {
@@ -101,8 +101,8 @@ export function resetSharedTokenCacheForTest(): void {
 }
 
 /**
- * Reactive read-side helper shared by every patch-line renderer
- * (DiffFileBlock, DiffSidebarFile, DiffPanelFileCard). Returns the
+ * Reactive read-side helper shared by patch-line renderers
+ * (DiffFileBlock, ReviewLineBlockRow). Returns the
  * cached Shiki tokens for `line`, or null when the line is meta,
  * empty, over the per-line cap, or simply not in the cache yet.
  *

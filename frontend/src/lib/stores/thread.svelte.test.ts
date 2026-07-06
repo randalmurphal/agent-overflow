@@ -47,7 +47,15 @@ import {
   resetLayoutMetricsForTest,
   setPaneWidth,
 } from './layoutMetrics.svelte';
-import { RHS_PANEL_MIN_WIDTH } from './rhsPanelSlot.svelte';
+import {
+  getPaneLayoutItems,
+  resetPaneLayoutForTest,
+  setPaneLayoutItemsForTest,
+} from './paneLayout.svelte';
+import {
+  isCompanionOpen,
+  resetCompanionPanesForTest,
+} from './companionPanes.svelte';
 import {
   getExistingThreadTerminalState,
   getThreadTerminalState,
@@ -114,6 +122,10 @@ function designFence(payload: unknown): string {
   return ['```aoflow-design', JSON.stringify(payload), '```'].join('\n');
 }
 
+function seedThreadPaneLayout(paneId: string): void {
+  setPaneLayoutItemsForTest([{ id: paneId, paneId, kind: 'thread', ratio: 1 }]);
+}
+
 describe('createThreadPane', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'innerWidth', {
@@ -123,6 +135,8 @@ describe('createThreadPane', () => {
     });
     resetBindingMocks();
     resetLayoutMetricsForTest();
+    resetPaneLayoutForTest();
+    resetCompanionPanesForTest();
     resetThreadTerminalStatesForTest();
     resetThreadStatuses();
     resetSendQueueForTest();
@@ -798,7 +812,6 @@ describe('createThreadPane', () => {
     pane.setGeneralError('boom');
     pane.setShowTerminal(true);
     pane.setShowPlanSidebar(true);
-    pane.openDiffSidebar({ payloadId: 'p1' });
 
     await pane.switchThread(makeThread({ id: 'thread-b' }));
 
@@ -806,7 +819,6 @@ describe('createThreadPane', () => {
     expect(pane.generalError).toBeNull();
     expect(pane.showTerminal).toBe(false);
     expect(pane.showPlanSidebar).toBe(false);
-    expect(pane.activeDiffPayload).toBeNull();
   });
 
   // The terminal-focus intent is a pane-owned, consume-once flag that replaced
@@ -885,235 +897,18 @@ describe('createThreadPane', () => {
     });
   });
 
-  describe('right-side panel mutex', () => {
-    it('opening plan sidebar closes diff panel and diff sidebar', async () => {
+  describe('companion panes', () => {
+    it('keeps the plan companion open across thread switches', async () => {
       const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 't' }));
-
-      pane.setDiffPanelOpen(true);
-      expect(pane.diffPanel.open).toBe(true);
-
+      seedThreadPaneLayout(pane.paneId);
+      await pane.switchThread(makeThread({ id: 'thread-a' }));
       pane.setShowPlanSidebar(true);
+
+      await pane.switchThread(makeThread({ id: 'thread-b' }));
       expect(pane.showPlanSidebar).toBe(true);
-      expect(pane.diffPanel.open).toBe(false);
-      expect(pane.activeDiffPayload).toBeNull();
-
-      pane.openDiffSidebar({ payloadId: 'p1' });
-      expect(pane.activeDiffPayload).toEqual({ payloadId: 'p1' });
-      expect(pane.showPlanSidebar).toBe(false);
-    });
-
-    it('opening diff panel closes plan sidebar and diff sidebar', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 't' }));
-
-      pane.openDiffSidebar({ payloadId: 'p1', filePath: 'src/foo.ts' });
-      pane.setShowPlanSidebar(true);
-      pane.setDiffPanelOpen(true);
-
-      expect(pane.diffPanel.open).toBe(true);
-      expect(pane.showPlanSidebar).toBe(false);
-      expect(pane.activeDiffPayload).toBeNull();
-    });
-
-    it('opening diff sidebar closes plan sidebar and diff panel', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 't' }));
-
-      pane.setShowPlanSidebar(true);
-      pane.setDiffPanelOpen(true);
-      pane.openDiffSidebar({ payloadId: 'p1' });
-
-      expect(pane.activeDiffPayload).toEqual({ payloadId: 'p1' });
-      expect(pane.showPlanSidebar).toBe(false);
-      expect(pane.diffPanel.open).toBe(false);
-    });
-
-    it('opening design preview closes other RHS panels on design threads', async () => {
-      const pane = await buildPane(makeThread({ id: 't', mode: 'design' }));
-
-      pane.setShowPlanSidebar(true);
-      pane.setShowDesignPreviewPanel(true);
-
-      expect(pane.showDesignPreviewPanel).toBe(true);
-      expect(pane.showPlanSidebar).toBe(false);
-      expect(pane.activeRhsPanel).toEqual({ kind: 'design-preview' });
-    });
-
-    it('diff panels do not open on design threads', async () => {
-      const pane = await buildPane(makeThread({ id: 't', mode: 'design' }));
-
-      pane.toggleDiffPanel();
-      expect(pane.diffPanel.open).toBe(false);
-      expect(pane.activeRhsPanel).toBeNull();
-
-      pane.setDiffPanelOpen(true);
-      expect(pane.diffPanel.open).toBe(false);
-      expect(pane.activeRhsPanel).toBeNull();
-
-      pane.openDiffSidebar({ payloadId: 'p1' });
-      expect(pane.activeDiffPayload).toBeNull();
-      expect(pane.activeRhsPanel).toBeNull();
-    });
-
-    it('closeRhsPanel closes whichever RHS panel kind is active', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 't' }));
-
-      pane.setShowPlanSidebar(true);
-      expect(pane.activeRhsPanel?.kind).toBe('plan');
-      pane.closeRhsPanel();
-      expect(pane.activeRhsPanel).toBeNull();
-
-      pane.setDiffPanelOpen(true);
-      expect(pane.activeRhsPanel?.kind).toBe('diff-checkpoint');
-      pane.closeRhsPanel();
-      expect(pane.activeRhsPanel).toBeNull();
-      expect(pane.diffPanel.open).toBe(false);
-
-      pane.openDiffSidebar({ payloadId: 'p1' });
-      expect(pane.activeRhsPanel?.kind).toBe('diff-payload');
-      pane.closeRhsPanel();
-      expect(pane.activeRhsPanel).toBeNull();
-
-      const designPane = await buildPane(
-        makeThread({ id: 'design-t', mode: 'design' }),
-      );
-      designPane.setShowDesignPreviewPanel(true);
-      expect(designPane.activeRhsPanel?.kind).toBe('design-preview');
-      designPane.closeRhsPanel();
-      expect(designPane.activeRhsPanel).toBeNull();
-    });
-
-    it('togglePlanSidebar respects mutex when opening', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 't' }));
-
-      pane.setDiffPanelOpen(true);
-      pane.togglePlanSidebar();
-
-      expect(pane.showPlanSidebar).toBe(true);
-      expect(pane.diffPanel.open).toBe(false);
-    });
-
-    it('toggleDiffPanel respects mutex when opening', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 't' }));
-
-      pane.openDiffSidebar({ payloadId: 'p1' });
-      pane.toggleDiffPanel();
-
-      expect(pane.diffPanel.open).toBe(true);
-      expect(pane.activeDiffPayload).toBeNull();
-    });
-
-    it('toggleDiffPanel opens on the workspace tab by default and honors an explicit tab', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 't' }));
-
-      // No-arg toggle (header diff badge + diff.panel.toggle keybinding) lands
-      // on the workspace tab.
-      pane.toggleDiffPanel();
-      expect(pane.diffPanel.open).toBe(true);
-      expect(pane.diffPanel.tabMode).toBe('workspace');
-
-      // Toggling again closes it.
-      pane.toggleDiffPanel();
-      expect(pane.diffPanel.open).toBe(false);
-
-      // An explicit tab is respected on open.
-      pane.toggleDiffPanel('messages');
-      expect(pane.diffPanel.open).toBe(true);
-      expect(pane.diffPanel.tabMode).toBe('messages');
-    });
-
-    it('closeActivePanel clears all three panel flags', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 't' }));
-
-      pane.openDiffSidebar({ payloadId: 'p1' });
-      pane.closeActivePanel();
-      expect(pane.activeDiffPayload).toBeNull();
-
-      pane.setShowPlanSidebar(true);
-      pane.closeActivePanel();
-      expect(pane.showPlanSidebar).toBe(false);
-
-      pane.setDiffPanelOpen(true);
-      pane.closeActivePanel();
-      expect(pane.diffPanel.open).toBe(false);
-    });
-
-    it('closeActivePanel drops the diff-sidebar snapshot when the diff sidebar was the active panel', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      pane.openDiffSidebar({ payloadId: 'pa', filePath: 'src/foo.ts' });
-      pane.recordDiffSidebarUI({
-        viewMode: 'split',
-        wordWrap: false,
-        expandedFiles: ['src/foo.ts'],
-        scrollTop: 50,
-      });
-
-      // Close while the sidebar is the active panel — explicit close.
-      pane.closeActivePanel();
-
-      // Snapshot was dropped: switching away and back should not restore.
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      expect(pane.activeDiffPayload).toBeNull();
-      expect(pane.consumeDiffSidebarRestoreState()).toBeNull();
-    });
-
-    it('closeActivePanel keeps the thread width but clears the restore target', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      pane.openDiffSidebar({ payloadId: 'pa', filePath: 'src/foo.ts' });
-      pane.setRhsSidebarWidthLive(620);
-      pane.recordDiffSidebarUI({
-        viewMode: 'split',
-        wordWrap: false,
-        expandedFiles: ['src/foo.ts'],
-        scrollTop: 50,
-      });
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-
-      pane.closeActivePanel();
-
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      expect(pane.activeDiffPayload).toBeNull();
-      expect(pane.showPlanSidebar).toBe(false);
-      expect(pane.rhsSidebarWidth).toBe(620);
-    });
-  });
-
-  describe('right-side panel per-thread persistence', () => {
-    it('restores the plan sidebar when switching back to its thread', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      pane.setShowPlanSidebar(true);
-
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
-      expect(pane.showPlanSidebar).toBe(false);
 
       await pane.switchThread(makeThread({ id: 'thread-a' }));
       expect(pane.showPlanSidebar).toBe(true);
-      expect(pane.activeRhsPanel).toEqual({ kind: 'plan' });
-    });
-
-    it('restores the checkpoint diff panel when switching back to its thread', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      pane.setDiffPanelOpen(true);
-
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
-      expect(pane.diffPanel.open).toBe(false);
-
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      expect(pane.diffPanel.open).toBe(true);
-      expect(pane.activeRhsPanel).toEqual({ kind: 'diff-checkpoint' });
     });
 
     it('does not auto-open design preview for a fresh design thread', async () => {
@@ -1122,13 +917,13 @@ describe('createThreadPane', () => {
       );
 
       expect(pane.showDesignPreviewPanel).toBe(false);
-      expect(pane.activeRhsPanel).toBeNull();
     });
 
     it('does not auto-open design preview when options hydrate while closed', async () => {
       const pane = await buildPane(
         makeThread({ id: 'thread-a', mode: 'design' }),
       );
+      seedThreadPaneLayout(pane.paneId);
       setBindingMock('LatestDesignOptionSet', async () => ({
         setId: 'set-1',
         optionIds: ['alpha'],
@@ -1141,189 +936,39 @@ describe('createThreadPane', () => {
         optionPaths: ['options/set-1/alpha'],
       });
       expect(pane.showDesignPreviewPanel).toBe(false);
-      expect(pane.activeRhsPanel).toBeNull();
 
       pane.toggleDesignPreviewPanel();
-      expect(pane.activeRhsPanel).toEqual({ kind: 'design-preview' });
+      expect(pane.showDesignPreviewPanel).toBe(true);
     });
 
-    it('restores design preview only after the user opened it for that thread', async () => {
+    it('keeps design preview open across design thread switches', async () => {
       const threadA = makeThread({ id: 'thread-a', mode: 'design' });
       const threadB = makeThread({ id: 'thread-b', mode: 'design' });
       const pane = await buildPane(threadA);
+      seedThreadPaneLayout(pane.paneId);
       pane.setShowDesignPreviewPanel(true);
 
       setBindingMock('SwitchThread', async () => threadB);
       await pane.switchThread(threadB);
-      expect(pane.showDesignPreviewPanel).toBe(false);
+      expect(pane.showDesignPreviewPanel).toBe(true);
 
       setBindingMock('SwitchThread', async () => threadA);
       await pane.switchThread(threadA);
       expect(pane.showDesignPreviewPanel).toBe(true);
-      expect(pane.activeRhsPanel).toEqual({ kind: 'design-preview' });
     });
 
-    it('restores right-sidebar width per thread', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      pane.setShowPlanSidebar(true);
-      pane.setRhsSidebarWidthLive(620);
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
+    it('closes design preview when switching to a non-design thread', async () => {
+      const threadA = makeThread({ id: 'thread-a', mode: 'design' });
+      const threadB = makeThread({ id: 'thread-b', mode: 'chat' });
+      const pane = await buildPane(threadA);
+      seedThreadPaneLayout(pane.paneId);
+      pane.setShowDesignPreviewPanel(true);
 
-      pane.setDiffPanelOpen(true);
-      pane.setRhsSidebarWidthLive(590);
+      setBindingMock('SwitchThread', async () => threadB);
+      await pane.switchThread(threadB);
 
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      expect(pane.rhsSidebarWidth).toBe(620);
-      expect(pane.showPlanSidebar).toBe(true);
-
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
-      expect(pane.rhsSidebarWidth).toBe(590);
-      expect(pane.diffPanel.open).toBe(true);
-    });
-
-    it('clamps right-sidebar width against the owning pane width', () => {
-      setPaneWidth('left', 1000);
-      setPaneWidth('right', 1400);
-      const leftPane = createThreadPane({ paneId: 'left' });
-      const rightPane = createThreadPane({ paneId: 'right' });
-
-      leftPane.setRhsSidebarWidthLive(900);
-      rightPane.setRhsSidebarWidthLive(900);
-
-      expect(leftPane.getRhsSidebarMaxWidth()).toBe(500);
-      expect(leftPane.rhsSidebarWidth).toBe(500);
-      expect(rightPane.getRhsSidebarMaxWidth()).toBe(900);
-      expect(rightPane.rhsSidebarWidth).toBe(900);
-    });
-
-    it('restores activeDiffPayload when switching back to a previously-open thread', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      pane.openDiffSidebar({ payloadId: 'pa', filePath: 'src/foo.ts' });
-      pane.recordDiffSidebarUI({
-        viewMode: 'split',
-        wordWrap: true,
-        expandedFiles: ['src/foo.ts'],
-        scrollTop: 120,
-      });
-
-      // Switch away — snapshot is captured.
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
-      expect(pane.activeDiffPayload).toBeNull();
-
-      // Switch back — sidebar re-arms with the saved payload + UI state.
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      expect(pane.activeDiffPayload).toEqual({
-        payloadId: 'pa',
-        filePath: 'src/foo.ts',
-      });
-
-      const restored = pane.consumeDiffSidebarRestoreState();
-      expect(restored).toEqual({
-        viewMode: 'split',
-        wordWrap: true,
-        expandedFiles: ['src/foo.ts'],
-        scrollTop: 120,
-      });
-      // Consume is one-shot — second call returns null.
-      expect(pane.consumeDiffSidebarRestoreState()).toBeNull();
-    });
-
-    it('reopening the active payload preserves recorded UI for switch-back restore', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      pane.openDiffSidebar({ payloadId: 'pa', filePath: 'src/foo.ts' });
-      pane.recordDiffSidebarUI({
-        viewMode: 'split',
-        wordWrap: true,
-        expandedFiles: ['src/foo.ts'],
-        scrollTop: 180,
-      });
-
-      pane.openDiffSidebar({ payloadId: 'pa', filePath: 'src/foo.ts' });
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-
-      expect(pane.activeDiffPayload).toEqual({
-        payloadId: 'pa',
-        filePath: 'src/foo.ts',
-      });
-      expect(pane.consumeDiffSidebarRestoreState()).toEqual({
-        viewMode: 'split',
-        wordWrap: true,
-        expandedFiles: ['src/foo.ts'],
-        scrollTop: 180,
-      });
-    });
-
-    it('does not restore on switch-back if user explicitly closed the sidebar', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      pane.openDiffSidebar({ payloadId: 'pa' });
-      pane.recordDiffSidebarUI({
-        viewMode: 'stacked',
-        wordWrap: false,
-        expandedFiles: [],
-        scrollTop: 0,
-      });
-      pane.closeRhsPanel();
-
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-
-      expect(pane.activeDiffPayload).toBeNull();
-      expect(pane.consumeDiffSidebarRestoreState()).toBeNull();
-    });
-
-    it('LRU-evicts oldest entries past the cap', async () => {
-      // The pane's cap is 20. Open + switch 22 distinct threads, then
-      // switch back to the first — its snapshot should have evicted.
-      const pane = createThreadPane();
-      const threadCount = 22;
-      const threads = Array.from({ length: threadCount }, (_, i) =>
-        makeThread({ id: `t${i}` }),
-      );
-
-      for (let i = 0; i < threadCount; i += 1) {
-        const next = threads[i];
-        if (next === undefined) continue;
-        await pane.switchThread(next);
-        pane.openDiffSidebar({ payloadId: `p${i}` });
-        pane.recordDiffSidebarUI({
-          viewMode: 'stacked',
-          wordWrap: false,
-          expandedFiles: [],
-          scrollTop: i * 10,
-        });
-      }
-
-      // Switch one more time to flush the last open into the map.
-      await pane.switchThread(makeThread({ id: 'flush' }));
-
-      // Switching away from the flush thread records it too, so t2 is evicted
-      // before restore. t3 is still retained.
-      await pane.switchThread(threads[3]!);
-      expect(pane.activeDiffPayload).toEqual({ payloadId: 'p3' });
-
-      await pane.switchThread(threads[0]!);
-      expect(pane.activeDiffPayload).toBeNull();
-    });
-
-    it('clear() wipes the per-thread snapshot map', async () => {
-      const pane = createThreadPane();
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      pane.openDiffSidebar({ payloadId: 'pa' });
-      pane.recordDiffSidebarUI({
-        viewMode: 'stacked',
-        wordWrap: false,
-        expandedFiles: [],
-        scrollTop: 0,
-      });
-
-      pane.clear();
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      expect(pane.activeDiffPayload).toBeNull();
+      expect(pane.showDesignPreviewPanel).toBe(false);
+      expect(isCompanionOpen(pane.paneId, 'design-preview')).toBe(false);
     });
   });
 

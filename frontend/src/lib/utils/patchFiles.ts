@@ -102,8 +102,8 @@ export function parsePatchFiles(patch: string): PatchFile[] {
 // The cache holds the patch string itself as the key, so it is sized
 // for line-bounded preview patches and payload prefixes
 // (≤ INLINE_DIFF_PAYLOAD_PREVIEW_BYTES). Inputs too large to share the
-// budget bypass the cache; full multi-MB payload parses (diff sidebar,
-// panel drawer, revert flow) should keep calling parsePatchFiles.
+// budget bypass the cache; full multi-MB payload parses (review pane,
+// revert flow) should keep calling parsePatchFiles.
 export const PATCH_PARSE_CACHE_MAX_TOTAL_CHARS = 2 * 1024 * 1024;
 export const PATCH_PARSE_CACHE_MAX_ENTRY_CHARS = PATCH_PARSE_CACHE_MAX_TOTAL_CHARS / 4;
 const parsePatchCache = new Map<string, PatchFile[]>();

@@ -167,6 +167,13 @@ func SanitizeBranchNamePreservingSlashes(raw string) string {
 	return normalized
 }
 
+// ValidateBranchName checks caller-supplied branch names before they reach
+// argv. It exposes the same gate used by the git action helpers to app-layer
+// bindings that fetch named branches.
+func ValidateBranchName(name string) error {
+	return validateBranchName(name)
+}
+
 func normalizeWorktreeBranchPrefix(prefix string) string {
 	trimmed := strings.TrimSpace(prefix)
 	if trimmed == "" {

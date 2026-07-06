@@ -25,6 +25,7 @@
   import { getTransportStatus } from '../../stores/transportStatus.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
   import { openTerminalThread } from '../../stores/threadCreation.svelte';
+  import { openReviewCompanion } from '../../stores/reviewPane.svelte';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import PrBadge from '../git/PrBadge.svelte';
   import WorkspaceDiffBadge from '../git/WorkspaceDiffBadge.svelte';
@@ -45,7 +46,7 @@
   let terminalToggleChord = $derived(
     formatChord(keybindingForCommand('terminal.toggle') ?? 'mod+`'),
   );
-  let diffPanelToggleChord = $derived(
+  let reviewToggleChord = $derived(
     formatChord(keybindingForCommand('diff.panel.toggle') ?? 'mod+shift+g'),
   );
 
@@ -115,6 +116,15 @@
     }
     toggle();
   }
+
+  function toggleWorkspaceReview(): void {
+    if (!pane.threadId) return;
+    if (pane.showReviewPane) {
+      pane.setShowReviewPane(false);
+      return;
+    }
+    void openReviewCompanion(pane.paneId, pane.threadId, { scope: 'workspace' });
+  }
 </script>
 
 <!-- Right cluster: wraps, doesn't disappear, at narrow widths. Visible on
@@ -126,9 +136,9 @@
     <PrBadge status={pane.gitStatus.status} />
     <WorkspaceDiffBadge
       status={pane.gitStatus.status}
-      pressed={pane.diffPanel.open}
-      chord={diffPanelToggleChord}
-      onActivate={() => void ensureThenToggle(() => pane.toggleDiffPanel('workspace'))}
+      pressed={pane.showReviewPane}
+      chord={reviewToggleChord}
+      onActivate={() => void ensureThenToggle(toggleWorkspaceReview)}
     />
   {/if}
 

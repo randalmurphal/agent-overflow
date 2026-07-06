@@ -727,6 +727,42 @@ func (s *Store) DiffWorkspaceVsHead(ctx context.Context, workspace string) ([]by
 	return []byte(strings.Join(parts, "\n\n")), nil
 }
 
+// DiffBranchBaseToWorktree returns the patch a PR from HEAD plus the current
+// worktree would carry onto baseBranch. It diffs the merge-base of
+// baseBranch and HEAD against a synthetic tree of the current worktree so
+// committed changes, unstaged/staged changes, and untracked-not-ignored files
+// all share one patch stream.
+func (s *Store) DiffBranchBaseToWorktree(ctx context.Context, workspace, baseBranch string) ([]byte, error) {
+	baseBranch = strings.TrimSpace(baseBranch)
+	if baseBranch == "" {
+		return nil, errors.New("checkpoint: base branch is required")
+	}
+	mergeBase, _, _, err := runGit(ctx, workspace, nil, false, "merge-base", baseBranch, "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: merge-base %s HEAD: %w", baseBranch, err)
+	}
+	mergeBase = strings.TrimSpace(mergeBase)
+	if mergeBase == "" {
+		return nil, fmt.Errorf("checkpoint: merge-base %s HEAD returned empty oid", baseBranch)
+	}
+
+	worktreeTree, err := s.captureSyntheticWorktreeTree(ctx, workspace, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer worktreeTree.cleanup()
+	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, worktreeTree.env, false, maxDiffOutputBytes,
+		"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
+		mergeBase, worktreeTree.oid, "--")
+	if errors.Is(err, errGitOutputTooLarge) {
+		return nil, fmt.Errorf("checkpoint: branch-base diff exceeds %d byte limit", maxDiffOutputBytes)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: diff branch-base worktree: %w", err)
+	}
+	return []byte(stdout), nil
+}
+
 // CleanupThread deletes every checkpoint ref owned by threadID. Idempotent.
 func (s *Store) CleanupThread(ctx context.Context, workspace, threadID string) error {
 	refs, err := s.ListThreadRefs(ctx, workspace, threadID)

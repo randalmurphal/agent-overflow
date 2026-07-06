@@ -48,6 +48,15 @@ export interface EngineUpdate {
  */
 export interface RowEstimate {
   at(index: number): number;
+  /**
+   * True when `at(index)` is the row's real rendered height, not a guess —
+   * e.g. a diff line-block of N unwrapped lines at a fixed line height.
+   * Exact rows count as measured (engine `isMeasuredAt`) and the adapter
+   * skips observing them entirely. Exactness is a per-engine-instance
+   * contract: if a mode switch changes row heights (word wrap), the
+   * adapter rebuilds the engine rather than flipping this per row.
+   */
+  isExact?(index: number): boolean;
 }
 
 /**
@@ -78,7 +87,7 @@ export interface ContentGeometrySample {
 export type ScrollToIndexAlign = 'start' | 'center' | 'end' | 'nearest';
 
 /**
- * Imperative surface of components/chat/TimelineVirtualizer.svelte
+ * Imperative surface of components/virtual/TimelineVirtualizer.svelte
  * (structurally satisfied by its component instance). `scrollToIndex`
  * computes the target in the engine and performs the write through the
  * scroll controller chokepoint (`applyScrollTarget` prop); `revalidate`

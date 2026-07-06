@@ -118,12 +118,22 @@ func (a *App) resolveUserMessageEnvelope(
 	}
 	revisionDiffCommentIDs := inputs.revisionSourceDiffCommentIDs
 	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
-		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(threadID, content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs)
+		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(threadID, content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR)
 		if err != nil {
 			return resolvedUserMessage{}, fmt.Errorf("diff review comments: %w", err)
 		}
 		content = nextContent
 		revisionDiffCommentIDs = commentIDs
+	}
+	if revisionSourceDiff != nil && revisionSourceDiff.PR != nil {
+		// The per-comment hunk excerpts are prompt inputs already baked into
+		// content above; persisting them again in the item meta would bloat
+		// every PR-scope send's row. Keep only the PR identity.
+		strippedPR := *revisionSourceDiff.PR
+		strippedPR.Comments = nil
+		strippedRef := *revisionSourceDiff
+		strippedRef.PR = &strippedPR
+		revisionSourceDiff = &strippedRef
 	}
 
 	userMeta, err := usermessage.Marshal(
@@ -506,7 +516,7 @@ func (a *App) resolveSourceDiffReview(threadID string, source *SourceDiffReview)
 	if err != nil {
 		return nil, err
 	}
-	return &SourceDiffReview{ThreadID: sourceThreadID, Scope: scope, SourceKey: sourceKey}, nil
+	return &SourceDiffReview{ThreadID: sourceThreadID, Scope: scope, SourceKey: sourceKey, PR: source.PR}, nil
 }
 
 func (a *App) resolveSourceProposedPlan(threadID string, source *SourceProposedPlan, allowCrossThread bool) (*SourceProposedPlan, error) {

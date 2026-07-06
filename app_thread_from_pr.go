@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -65,6 +66,10 @@ func (a *App) CreateThreadFromPR(
 		Repo:      repo,
 		Number:    number,
 	}
+	prRefJSON, err := json.Marshal(ref)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("marshal %s reference: %w", prthread.ForgeNounLong(forgeID), err)
+	}
 	forgeImpl := a.gitCore().ForgeByID(forgeID)
 	// The view + diff calls don't need a local clone — gh --repo and
 	// glab -R both query authenticated state directly. Pass the
@@ -103,6 +108,7 @@ func (a *App) CreateThreadFromPR(
 		Title:           title,
 		Provider:        providerName,
 		WorkspacePath:   workspace,
+		PRRef:           string(prRefJSON),
 		Model:           model,
 		Mode:            "chat",
 		ReasoningEffort: seed.ReasoningEffort,

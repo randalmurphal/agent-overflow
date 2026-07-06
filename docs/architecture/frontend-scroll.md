@@ -8,7 +8,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
 ## Owners
 
 - `MessageTimeline.svelte` owns the outer chat scroll container.
-- `components/chat/TimelineVirtualizer.svelte` + `utils/virtual/` own
+- `components/virtual/TimelineVirtualizer.svelte` + `utils/virtual/` own
   virtual row geometry. The split inside:
   - `utils/virtual/` — the bespoke windowing engine, pure data + math
     with no DOM and no Svelte: `sizes.ts` (the size store: measured px
@@ -174,7 +174,11 @@ instead of leaving them position-keyed. The remap — not an
 invalidation — matters because a moved row keeps its DOM size, so no
 ResizeObserver delivery follows the move; a stale position-keyed entry
 would never self-correct and rows below the move point would render at
-wrong offsets (overlap) until an unrelated resize.
+wrong offsets (overlap) until an unrelated resize. The reorder's
+compensation is anchor-based: the row under the viewport top (or the
+nearest surviving row after it, when a mid-list splice removed it) is
+held stationary — exact for length-changing keyed splices such as the
+review pane's collapse/expand, not just same-length reorders.
 
 ## Load Paging (head-splice `shift`)
 

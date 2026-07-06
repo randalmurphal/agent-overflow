@@ -380,7 +380,7 @@ JSON
 	}
 }
 
-func TestGitLabViewPRPassesRepoFlag(t *testing.T) {
+func TestGitLabViewPRUsesRESTEndpoint(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script mock glab is unix-only")
 	}
@@ -404,11 +404,11 @@ echo '{"title": "T"}'
 
 	args, _ := os.ReadFile(argLog)
 	argv := strings.TrimSpace(string(args))
-	if !strings.Contains(argv, "mr view 7") {
-		t.Errorf("argv = %q, missing mr view 7", argv)
+	if !strings.Contains(argv, "api projects/group%2Fsub%2Frepo/merge_requests/7") {
+		t.Errorf("argv = %q, missing encoded MR REST endpoint", argv)
 	}
-	if !strings.Contains(argv, "-R group/sub/repo") {
-		t.Errorf("argv = %q, missing -R group/sub/repo", argv)
+	if strings.Contains(argv, "--output") || strings.Contains(argv, "mr view") {
+		t.Errorf("argv = %q, must not use glab mr view JSON flags", argv)
 	}
 }
 

@@ -20,7 +20,7 @@
     {
       mode: 'comfortable',
       label: 'Comfortable',
-      description: '880px panes. Keeps right-side panels beside the chat.',
+      description: '880px panes. Keeps companion panes beside the chat.',
     },
     {
       mode: 'spacious',

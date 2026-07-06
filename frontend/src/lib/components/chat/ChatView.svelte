@@ -10,7 +10,6 @@
   import TerminalView from '../terminal/TerminalView.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignClarificationPicker from '../design/DesignClarificationPicker.svelte';
-  import RhsSidebarShell from './RhsSidebarShell.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
@@ -316,8 +315,7 @@
     pane.latestSettledTurn?.turnId;
     pane.showTerminal;
     pane.showPlanSidebar;
-    pane.diffPanel.open;
-    pane.activeDiffPayload;
+    pane.showReviewPane;
 
     if (!isUiRenderTraceEnabled()) return;
     recordUiTrace('chat.state', summarizePaneForTrace(pane));
@@ -329,7 +327,7 @@
     !!pane.thread && pane.thread.mode === 'design',
   );
   // Terminal threads render a full-pane terminal surface instead of the chat
-  // machinery (composer, timeline, RHS panels) — the same whole-surface swap
+  // machinery (composer, timeline) — the same whole-surface swap
   // discussion mode does. No provider session is ever started for these.
   let inTerminalMode = $derived(
     !!pane.thread && pane.thread.mode === 'terminal',
@@ -573,11 +571,9 @@
 {:else if pane.thread && inTerminalMode}
   <TerminalView {pane} {onPaneDragStart} />
 {:else if pane.thread}
-  <!-- Standard chat surface. RhsSidebarShell carries plan, diff, payload,
-       and design preview panels. -->
+  <!-- Standard chat surface. Companion panes mount through PaneHost. -->
   <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="relative flex h-full min-h-0 overflow-hidden">
     {@render chatColumnBody()}
-    <RhsSidebarShell {pane} />
     {#if expandedImagePreview}
       <ExpandedImageDialog preview={expandedImagePreview} onClose={closeImagePreview} />
     {/if}

@@ -21,6 +21,7 @@ const threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
     workspace_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
+    COALESCE(pr_ref, ''),
     COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''),
     mode, reasoning_effort, fast_mode, context_window,
     auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
@@ -151,7 +152,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var disabledMcpServersJSON sql.NullString
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
-		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
+		&t.WorkspacePath, &t.WorktreePath, &t.Branch, &t.PRRef,
 		&t.SessionRef, &t.PendingForkRef,
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow,
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
@@ -214,14 +215,15 @@ func (s *Store) CreateThread(t Thread) error {
 	lastReadAtArg := nullableInt64(lastReadAt)
 	_, err := s.db.Exec(
 		`INSERT INTO threads (id, project_id, title, provider, model,
-		    workspace_path, worktree_path, branch, session_ref, pending_fork_session_ref,
+		    workspace_path, worktree_path, branch, pr_ref, session_ref, pending_fork_session_ref,
 		    mode, reasoning_effort, fast_mode, context_window,
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
 		    created_at, updated_at, archived, last_read_at, disabled_mcp_servers)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
+		t.PRRef,
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
@@ -417,7 +419,7 @@ func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
 }
 
 const updateThreadSetSQL = `UPDATE threads SET project_id=?, title=?, provider=?, model=?,
-    workspace_path=?, worktree_path=?, branch=?, session_ref=?, pending_fork_session_ref=?,
+    workspace_path=?, worktree_path=?, branch=?, pr_ref=?, session_ref=?, pending_fork_session_ref=?,
     mode=?, reasoning_effort=?, fast_mode=?, context_window=?,
     auto_compact_standard_percent=?, auto_compact_extended_percent=?, runtime_mode=?,
     discussion_id=?, parent_thread_id=?, forked_from_thread_id=?, last_token_usage=?,
@@ -449,6 +451,7 @@ func updateThreadArgs(t Thread) []any {
 	return []any{
 		nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
+		t.PRRef,
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,

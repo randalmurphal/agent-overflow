@@ -62,6 +62,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GenerateCommitMessage", ID: 1669373286},                // main.App.GenerateCommitMessage
 	{Name: "GetAttachmentData", ID: 71154490},                      // main.App.GetAttachmentData
 	{Name: "GetAttachmentThumbnail", ID: 3414107538},               // main.App.GetAttachmentThumbnail
+	{Name: "GetBranchBaseDiff", ID: 1342635161},                    // main.App.GetBranchBaseDiff
 	{Name: "GetChannelMessages", ID: 3595031866},                   // main.App.GetChannelMessages
 	{Name: "GetChannelState", ID: 3664812883},                      // main.App.GetChannelState
 	{Name: "GetContextSettings", ID: 3416004963},                   // main.App.GetContextSettings
@@ -73,10 +74,14 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetGitStatusForProject", ID: 1462513307},               // main.App.GetGitStatusForProject
 	{Name: "GetKeybindings", ID: 3015840904},                       // main.App.GetKeybindings
 	{Name: "GetMcpServerStatus", ID: 4139359668},                   // main.App.GetMcpServerStatus
+	{Name: "GetMergeConflictFile", ID: 3176695009},                 // main.App.GetMergeConflictFile
 	{Name: "GetMessageCheckpointDiff", ID: 1151360951},             // main.App.GetMessageCheckpointDiff
 	{Name: "GetMessageCheckpointRevertDiff", ID: 1106129437},       // main.App.GetMessageCheckpointRevertDiff
 	{Name: "GetModelsForProvider", ID: 1632984917},                 // main.App.GetModelsForProvider
 	{Name: "GetNetworkSettings", ID: 1026796858},                   // main.App.GetNetworkSettings
+	{Name: "GetPRDetail", ID: 2443547196},                          // main.App.GetPRDetail
+	{Name: "GetPRDiff", ID: 1867413234},                            // main.App.GetPRDiff
+	{Name: "GetPRMergeConflicts", ID: 106351482},                   // main.App.GetPRMergeConflicts
 	{Name: "GetPayloadChunk", ID: 73280836},                        // main.App.GetPayloadChunk
 	{Name: "GetPayloadData", ID: 3448919335},                       // main.App.GetPayloadData
 	{Name: "GetPayloadPreview", ID: 4070214921},                    // main.App.GetPayloadPreview
@@ -144,6 +149,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListMcpServers", ID: 1105613677},                       // main.App.ListMcpServers
 	{Name: "ListMcpServersForNewThread", ID: 3030514258},           // main.App.ListMcpServersForNewThread
 	{Name: "ListMcpServersForThread", ID: 2790948120},              // main.App.ListMcpServersForThread
+	{Name: "ListPRReviewThreads", ID: 763649720},                   // main.App.ListPRReviewThreads
 	{Name: "ListPayloadMetas", ID: 1007133701},                     // main.App.ListPayloadMetas
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978},       // main.App.ListPendingInteractiveRequests
 	{Name: "ListProjects", ID: 2721360259},                         // main.App.ListProjects
@@ -159,6 +165,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListThreadSliceAround", ID: 4176102096},                // main.App.ListThreadSliceAround
 	{Name: "ListThreads", ID: 1090132042},                          // main.App.ListThreads
 	{Name: "ListWSLDistros", ID: 2332614075},                       // main.App.ListWSLDistros
+	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995},           // main.App.MarkDiffReviewCommentsSent
 	{Name: "MarkThreadRead", ID: 1480646012},                       // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375},                      // main.App.MarkThreadUnread
 	{Name: "MoveThreadTerminals", ID: 3013708277},                  // main.App.MoveThreadTerminals
@@ -188,6 +195,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RemoveOtherWorktreeForProject", ID: 574548500},         // main.App.RemoveOtherWorktreeForProject
 	{Name: "RenameProject", ID: 3728890856},                        // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435},                          // main.App.RenameThread
+	{Name: "ReplyToPRThread", ID: 446243420},                       // main.App.ReplyToPRThread
 	{Name: "ReportFrontendErrorBatch", ID: 2174329377},             // main.App.ReportFrontendErrorBatch
 	{Name: "ResetKeybindings", ID: 2775767393},                     // main.App.ResetKeybindings
 	{Name: "ResizeTerminal", ID: 1887984285},                       // main.App.ResizeTerminal
@@ -220,12 +228,15 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SteerMessageWithOptions", ID: 1698485705},              // main.App.SteerMessageWithOptions
 	{Name: "StopClaudeTask", ID: 536320598},                        // main.App.StopClaudeTask
 	{Name: "StopSession", ID: 3838500111},                          // main.App.StopSession
+	{Name: "SubmitPRReview", ID: 2692607191},                       // main.App.SubmitPRReview
+	{Name: "SubscribePRUpdates", ID: 3272491649},                   // main.App.SubscribePRUpdates
 	{Name: "SwitchThread", ID: 3897387725},                         // main.App.SwitchThread
 	{Name: "TouchRemoteEndpoint", ID: 2647456459},                  // main.App.TouchRemoteEndpoint
 	{Name: "TriggerMcpAuth", ID: 1291217507},                       // main.App.TriggerMcpAuth
 	{Name: "UnarchiveProject", ID: 2561521885},                     // main.App.UnarchiveProject
 	{Name: "UnarchiveThread", ID: 3655125512},                      // main.App.UnarchiveThread
 	{Name: "UnpinThread", ID: 3175043037},                          // main.App.UnpinThread
+	{Name: "UnsubscribePRUpdates", ID: 2888550814},                 // main.App.UnsubscribePRUpdates
 	{Name: "UpdateContextSettingsProfile", ID: 1472386383},         // main.App.UpdateContextSettingsProfile
 	{Name: "UpdateDiffReviewComment", ID: 2452201652},              // main.App.UpdateDiffReviewComment
 	{Name: "UpdateDiscussion", ID: 1706395020},                     // main.App.UpdateDiscussion

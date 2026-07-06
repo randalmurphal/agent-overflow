@@ -428,6 +428,87 @@ BEGIN
 END;
 `
 
+const rebuildDiffReviewCommentsV16SQL = `
+CREATE TABLE diff_review_comments_new (
+	id            TEXT    PRIMARY KEY,
+	thread_id     TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+	scope         TEXT    NOT NULL CHECK(scope IN ('turn', 'session', 'workspace', 'branch')),
+	source_key    TEXT    NOT NULL,
+	file_path     TEXT    NOT NULL,
+	status        TEXT    NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'sent', 'resolved')),
+	old_line      INTEGER NOT NULL DEFAULT 0 CHECK(old_line >= 0),
+	new_line      INTEGER NOT NULL DEFAULT 0 CHECK(new_line >= 0),
+	side          TEXT    NOT NULL CHECK(side IN ('file', 'old', 'new', 'context')),
+	selected_text TEXT    NOT NULL DEFAULT '',
+	body          TEXT    NOT NULL,
+	sent_at       INTEGER NOT NULL DEFAULT 0,
+	sent_turn_id  TEXT    NOT NULL DEFAULT '',
+	created_at    INTEGER NOT NULL,
+	updated_at    INTEGER NOT NULL,
+	CHECK((side = 'file' AND old_line = 0 AND new_line = 0)
+	   OR (side = 'old' AND old_line > 0)
+	   OR (side = 'new' AND new_line > 0)
+	   OR (side = 'context' AND old_line > 0 AND new_line > 0))
+);
+
+INSERT INTO diff_review_comments_new (
+	id, thread_id, scope, source_key, file_path, status, old_line, new_line, side,
+	selected_text, body, sent_at, sent_turn_id, created_at, updated_at
+)
+SELECT
+	id, thread_id, scope, source_key, file_path, status, old_line, new_line, side,
+	selected_text, body, sent_at, sent_turn_id, created_at, updated_at
+FROM diff_review_comments;
+
+DROP TABLE diff_review_comments;
+
+ALTER TABLE diff_review_comments_new RENAME TO diff_review_comments;
+
+CREATE INDEX idx_diff_review_comments_scope
+	ON diff_review_comments(thread_id, scope, source_key, status, file_path, old_line, new_line, created_at);
+`
+
+const rebuildDiffReviewCommentsV18SQL = `
+CREATE TABLE diff_review_comments_new (
+	id            TEXT    PRIMARY KEY,
+	thread_id     TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+	scope         TEXT    NOT NULL CHECK(scope IN ('turn', 'session', 'workspace', 'branch', 'pr')),
+	source_key    TEXT    NOT NULL,
+	commit_sha    TEXT    NOT NULL DEFAULT '',
+	file_path     TEXT    NOT NULL,
+	status        TEXT    NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'sent', 'resolved')),
+	old_line      INTEGER NOT NULL DEFAULT 0 CHECK(old_line >= 0),
+	new_line      INTEGER NOT NULL DEFAULT 0 CHECK(new_line >= 0),
+	side          TEXT    NOT NULL CHECK(side IN ('file', 'old', 'new', 'context')),
+	selected_text TEXT    NOT NULL DEFAULT '',
+	body          TEXT    NOT NULL,
+	sent_at       INTEGER NOT NULL DEFAULT 0,
+	sent_turn_id  TEXT    NOT NULL DEFAULT '',
+	created_at    INTEGER NOT NULL,
+	updated_at    INTEGER NOT NULL,
+	CHECK((side = 'file' AND old_line = 0 AND new_line = 0)
+	   OR (side = 'old' AND old_line > 0)
+	   OR (side = 'new' AND new_line > 0)
+	   OR (side = 'context' AND old_line > 0 AND new_line > 0))
+);
+
+INSERT INTO diff_review_comments_new (
+	id, thread_id, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
+	selected_text, body, sent_at, sent_turn_id, created_at, updated_at
+)
+SELECT
+	id, thread_id, scope, source_key, '', file_path, status, old_line, new_line, side,
+	selected_text, body, sent_at, sent_turn_id, created_at, updated_at
+FROM diff_review_comments;
+
+DROP TABLE diff_review_comments;
+
+ALTER TABLE diff_review_comments_new RENAME TO diff_review_comments;
+
+CREATE INDEX idx_diff_review_comments_scope
+	ON diff_review_comments(thread_id, scope, source_key, status, file_path, old_line, new_line, created_at);
+`
+
 // migrations is the ordered list of all schema migrations. Squashed
 // for v0.0.1: the prior 51-migration chain produced this schema; old
 // databases were rebaked into a single (1, 'initial_schema') row by
@@ -591,6 +672,23 @@ CREATE INDEX idx_usage_ledger_thread ON usage_ledger(thread_id, created_at);`,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (scope, key)
 );`,
+	},
+	{
+		Version: 16,
+		Name:    "diff_review_comment_local_scopes",
+		SQL:     rebuildDiffReviewCommentsV16SQL,
+		Rebuild: true,
+	},
+	{
+		Version: 17,
+		Name:    "thread_pr_ref",
+		Fix:     addThreadPRRefColumn,
+	},
+	{
+		Version: 18,
+		Name:    "diff_review_comment_pr_scope",
+		SQL:     rebuildDiffReviewCommentsV18SQL,
+		Rebuild: true,
 	},
 }
 
@@ -763,6 +861,50 @@ func applyMigration(db *sql.DB, m Migration) error {
 
 	log.Printf("store: migration v%d applied", m.Version)
 	return nil
+}
+
+func addThreadPRRefColumn(tx *sql.Tx) error {
+	columns, err := tableColumnsTx(tx, "threads")
+	if err != nil {
+		return err
+	}
+	if columns["pr_ref"] {
+		return nil
+	}
+	if _, err := tx.Exec(`ALTER TABLE threads ADD COLUMN pr_ref TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add threads.pr_ref: %w", err)
+	}
+	return nil
+}
+
+func tableColumnsTx(tx *sql.Tx, table string) (map[string]bool, error) {
+	if !validTableName.MatchString(table) {
+		return nil, fmt.Errorf("invalid table name: %q", table)
+	}
+	rows, err := tx.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, fmt.Errorf("pragma table_info(%s): %w", table, err)
+	}
+	defer rows.Close()
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return nil, fmt.Errorf("scan table_info(%s): %w", table, err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate table_info(%s): %w", table, err)
+	}
+	return columns, nil
 }
 
 // applyRebuildMigration runs a table-rebuild migration with foreign keys

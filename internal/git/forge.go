@@ -29,6 +29,14 @@ type Forge interface {
 	ViewPR(cwd, project string, number int) (PRMetadata, error)
 	// Diff returns the unified-patch diff for the given PR/MR.
 	Diff(cwd, project string, number int) (string, error)
+	// GetPRDetail fetches the review-pane detail shape for a PR/MR.
+	GetPRDetail(cwd, project string, number int) (PRDetail, error)
+	// ListReviewThreads fetches normalized inline review threads.
+	ListReviewThreads(cwd, project string, number int) ([]ReviewThread, error)
+	// SubmitReview publishes a PR/MR review verdict plus draft comments.
+	SubmitReview(cwd, project string, number int, review SubmitReviewRequest) (SubmitReviewResult, error)
+	// ReplyToThread posts an immediate reply to an existing review thread.
+	ReplyToThread(cwd, project string, number int, threadID string, databaseID int64, body string) error
 }
 
 // PRMetadata is the forge-agnostic view of a PR/MR fetched via ViewPR.
@@ -48,6 +56,166 @@ type PRFile struct {
 	Path      string `json:"path"`
 	Additions int    `json:"additions"`
 	Deletions int    `json:"deletions"`
+}
+
+const (
+	ReviewVerdictApprove        = "approve"
+	ReviewVerdictRequestChanges = "request-changes"
+	ReviewVerdictComment        = "comment"
+
+	MergeabilityConflicts = "conflicts"
+	MergeabilityClean     = "clean"
+	MergeabilityChecking  = "checking"
+)
+
+// PRDetail is the normalized PR/MR detail shape consumed by the review pane.
+type PRDetail struct {
+	Number         int             `json:"number"`
+	Title          string          `json:"title"`
+	Body           string          `json:"body"`
+	AuthorLogin    string          `json:"authorLogin"`
+	State          string          `json:"state"`
+	Draft          bool            `json:"draft"`
+	HeadRefName    string          `json:"headRefName"`
+	BaseRefName    string          `json:"baseRefName"`
+	HeadSHA        string          `json:"headSHA"`
+	URL            string          `json:"url"`
+	Additions      int             `json:"additions"`
+	Deletions      int             `json:"deletions"`
+	ChangedFiles   int             `json:"changedFiles"`
+	ViewerIsAuthor bool            `json:"viewerIsAuthor"`
+	ReviewDecision string          `json:"reviewDecision"`
+	LatestReviews  []ReviewVerdict `json:"latestReviews"`
+	Checks         CheckSummary    `json:"checks"`
+	Mergeability   string          `json:"mergeability"`
+	DiffRefs       *PRDiffRefs     `json:"diffRefs,omitempty"`
+}
+
+type PRDiffRefs struct {
+	BaseSHA  string `json:"baseSHA"`
+	HeadSHA  string `json:"headSHA"`
+	StartSHA string `json:"startSHA"`
+}
+
+type ReviewVerdict struct {
+	AuthorLogin string `json:"authorLogin"`
+	State       string `json:"state"`
+	SubmittedAt string `json:"submittedAt"`
+	Body        string `json:"body"`
+	CommitSHA   string `json:"commitSHA"`
+}
+
+type CheckSummary struct {
+	Total    int           `json:"total"`
+	Success  int           `json:"success"`
+	Pending  int           `json:"pending"`
+	Failure  int           `json:"failure"`
+	Skipped  int           `json:"skipped"`
+	Canceled int           `json:"canceled"`
+	Checks   []CheckStatus `json:"checks"`
+}
+
+type CheckStatus struct {
+	Kind        string `json:"kind"`
+	Name        string `json:"name"`
+	Workflow    string `json:"workflow,omitempty"`
+	Status      string `json:"status"`
+	Conclusion  string `json:"conclusion,omitempty"`
+	DetailsURL  string `json:"detailsURL,omitempty"`
+	StartedAt   string `json:"startedAt,omitempty"`
+	CompletedAt string `json:"completedAt,omitempty"`
+}
+
+type ReviewThread struct {
+	ID         string          `json:"id"`
+	Path       string          `json:"path"`
+	Line       *int            `json:"line"`
+	StartLine  *int            `json:"startLine"`
+	Side       string          `json:"side"`
+	IsResolved bool            `json:"isResolved"`
+	IsOutdated bool            `json:"isOutdated"`
+	Comments   []ReviewComment `json:"comments"`
+}
+
+type ReviewComment struct {
+	AuthorLogin string         `json:"authorLogin"`
+	Body        string         `json:"body"`
+	CreatedAt   string         `json:"createdAt"`
+	DatabaseID  int64          `json:"databaseID"`
+	ReplyTo     *ReviewReplyTo `json:"replyTo,omitempty"`
+}
+
+type ReviewReplyTo struct {
+	ID         string `json:"id"`
+	DatabaseID int64  `json:"databaseID"`
+}
+
+type SubmitReviewRequest struct {
+	Verdict  string              `json:"verdict"`
+	Body     string              `json:"body"`
+	Comments []ReviewLineComment `json:"comments"`
+}
+
+type ReviewLineComment struct {
+	Path      string `json:"path"`
+	Body      string `json:"body"`
+	Line      *int   `json:"line,omitempty"`
+	Side      string `json:"side"`
+	StartLine *int   `json:"startLine,omitempty"`
+}
+
+type SubmitReviewResult struct {
+	PostedReview       bool `json:"postedReview"`
+	PostedFileComments int  `json:"postedFileComments"`
+}
+
+// PartialSubmitError reports that the primary review landed but a later
+// provider-specific follow-up call failed.
+type PartialSubmitError struct {
+	PostedReview       bool
+	PostedFileComments int
+	FailedPath         string
+	Err                error
+}
+
+func (e *PartialSubmitError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.FailedPath != "" {
+		return fmt.Sprintf("review submitted, but posting file-level comment for %s failed: %v", e.FailedPath, e.Err)
+	}
+	return fmt.Sprintf("review submitted, but a follow-up step failed: %v", e.Err)
+}
+
+func (e *PartialSubmitError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// ForgeSetupError is a typed, user-facing setup problem for a forge CLI.
+type ForgeSetupError struct {
+	Forge   string
+	Binary  string
+	Kind    string
+	Message string
+	Err     error
+}
+
+func (e *ForgeSetupError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
+}
+
+func (e *ForgeSetupError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
 }
 
 // PRReference identifies a PR/MR by host, namespace, repo, and number.
@@ -97,6 +265,22 @@ func (nullForge) ViewPR(string, string, int) (PRMetadata, error) {
 
 func (nullForge) Diff(string, string, int) (string, error) {
 	return "", ErrUnsupportedForge
+}
+
+func (nullForge) GetPRDetail(string, string, int) (PRDetail, error) {
+	return PRDetail{}, ErrUnsupportedForge
+}
+
+func (nullForge) ListReviewThreads(string, string, int) ([]ReviewThread, error) {
+	return nil, ErrUnsupportedForge
+}
+
+func (nullForge) SubmitReview(string, string, int, SubmitReviewRequest) (SubmitReviewResult, error) {
+	return SubmitReviewResult{}, ErrUnsupportedForge
+}
+
+func (nullForge) ReplyToThread(string, string, int, string, int64, string) error {
+	return ErrUnsupportedForge
 }
 
 // PRAnchorScheme is the URI scheme used for the project-row anchor we
@@ -191,4 +375,24 @@ func NormalizePRState(s string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(s))
 	}
+}
+
+func (c *Core) GetPRDetail(cwd string, ref PRReference) (PRDetail, error) {
+	return c.ForgeByID(ref.Forge).GetPRDetail(cwd, ref.Project(), ref.Number)
+}
+
+func (c *Core) GetPRDiff(cwd string, ref PRReference) (string, error) {
+	return c.ForgeByID(ref.Forge).Diff(cwd, ref.Project(), ref.Number)
+}
+
+func (c *Core) ListReviewThreads(cwd string, ref PRReference) ([]ReviewThread, error) {
+	return c.ForgeByID(ref.Forge).ListReviewThreads(cwd, ref.Project(), ref.Number)
+}
+
+func (c *Core) SubmitReview(cwd string, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
+	return c.ForgeByID(ref.Forge).SubmitReview(cwd, ref.Project(), ref.Number, review)
+}
+
+func (c *Core) ReplyToThread(cwd string, ref PRReference, threadID string, databaseID int64, body string) error {
+	return c.ForgeByID(ref.Forge).ReplyToThread(cwd, ref.Project(), ref.Number, threadID, databaseID, body)
 }

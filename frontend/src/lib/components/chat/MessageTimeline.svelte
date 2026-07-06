@@ -8,7 +8,7 @@
   import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../../utils/springAnimationLatch';
   import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
   import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
-  import TimelineVirtualizer from './TimelineVirtualizer.svelte';
+  import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
   import { timelineNodeKey, type TimelineNode } from '../../utils/subagentGrouping';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';

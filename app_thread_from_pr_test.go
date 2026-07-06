@@ -61,7 +61,7 @@ esac
 }
 
 // installFakeGlab installs a PATH-prepended `glab` shim that responds
-// to `mr view` with onView and `mr diff` with onDiff.
+// to `api .../merge_requests/:iid` with onView and `mr diff` with onDiff.
 func installFakeGlab(t *testing.T, onView, onDiff string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -74,14 +74,14 @@ func installFakeGlab(t *testing.T, onView, onDiff string) string {
 set -eu
 echo "$@" >> %q
 case "$1" in
+  api)
+    cat <<'END_OF_VIEW'
+%s
+END_OF_VIEW
+    ;;
   mr)
     shift
     case "$1" in
-      view)
-        cat <<'END_OF_VIEW'
-%s
-END_OF_VIEW
-        ;;
       diff)
         cat <<'END_OF_DIFF'
 %s
@@ -186,6 +186,9 @@ func TestCreateThreadFromPRCreatesThreadWithFirstItem(t *testing.T) {
 	}
 	if thread.Mode != "chat" {
 		t.Fatalf("Mode = %q, want chat", thread.Mode)
+	}
+	if !strings.Contains(thread.PRRef, `"Forge":"github"`) || !strings.Contains(thread.PRRef, `"Number":42`) {
+		t.Fatalf("PRRef = %q, want marshaled github PR ref", thread.PRRef)
 	}
 
 	items, err := app.store.ListItems(thread.ID)
@@ -465,15 +468,17 @@ func TestCreateThreadFromMRAcceptsSubgroupNamespace(t *testing.T) {
 		t.Errorf("ProjectPath = %q, want full subgroup chain", thread.ProjectPath)
 	}
 
-	// glab must have been invoked with the full namespace via -R.
+	// The REST view call must preserve the full namespace as an encoded
+	// project id; diff still uses glab's -R repo selector.
 	calls := readArgLog(t, argLog)
 	if len(calls) != 2 {
 		t.Fatalf("len(calls) = %d, want 2: %v", len(calls), calls)
 	}
-	for _, call := range calls {
-		if !strings.Contains(call, "-R group/sub1/sub2/repo") {
-			t.Errorf("call missing -R flag with subgroup: %q", call)
-		}
+	if !strings.Contains(calls[0], "api projects/group%2Fsub1%2Fsub2%2Frepo/merge_requests/9") {
+		t.Errorf("view call missing encoded subgroup endpoint: %q", calls[0])
+	}
+	if !strings.Contains(calls[1], "-R group/sub1/sub2/repo") {
+		t.Errorf("diff call missing -R flag with subgroup: %q", calls[1])
 	}
 }
 

@@ -2,9 +2,6 @@
 // server-side; the generated CheckpointView is the frontend-visible DTO.
 export type { CheckpointView as Checkpoint } from '../../../bindings/agent-overflow/models';
 
-/** Diff panel view mode. */
-export type DiffPanelTab = 'messages' | 'workspace';
-
 export type RevertMode = 'conversation-and-files' | 'conversation-only';
 
 /**

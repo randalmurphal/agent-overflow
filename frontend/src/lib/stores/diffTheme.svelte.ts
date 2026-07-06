@@ -14,9 +14,8 @@ export type DiffThemeName = 'github-dark' | 'github-light';
  * Returns the resolved Shiki theme name for the current settings.
  *
  * **Pure read** — safe to call from `$derived` blocks. The
- * "evict prior theme's cached tokens on transition" side-effect
- * is the caller's responsibility (DiffSidebarBody runs it from a
- * `$effect`).
+ * "evict prior theme's cached tokens on transition" side-effect is
+ * the caller's responsibility.
  */
 export function getDiffTheme(): DiffThemeName {
   return getResolvedTheme() === 'dark' ? 'github-dark' : 'github-light';

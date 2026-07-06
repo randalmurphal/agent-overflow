@@ -7,7 +7,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 import { setupEventListeners } from '../../stores/events';
 import { resetProposedPlanCacheForTests } from '../../stores/proposedPlans.svelte';
-import { makePanelContext } from '../../stores/rhsPanelSlot.svelte';
+import { makePanelContext } from '../../stores/panelContext.svelte';
 import { installAnimateShim } from '../../../test/integration/_helpers';
 
 beforeAll(installAnimateShim);
@@ -32,7 +32,7 @@ describe('<PlanSidebar>', () => {
   });
 
   async function renderSidebar(pane: Awaited<ReturnType<typeof buildPane>>) {
-    const result = render(PlanSidebar, { props: { ctx: makePanelContext(pane) } });
+    const result = render(PlanSidebar, { props: { ctx: makePanelContext(pane, () => {}) } });
     await tick();
     await tick();
     return result;

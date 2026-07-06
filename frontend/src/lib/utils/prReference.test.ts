@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePRReference } from './prReference';
+import { parsePRReference, prRefFromThread, prRefFromUrl, prScopeLabel } from './prReference';
 
 describe('parsePRReference — GitHub', () => {
   it('parses https://github.com/OWNER/REPO/pull/N', () => {
@@ -199,5 +199,35 @@ describe('parsePRReference — self-hosted GitLab', () => {
       { gitlabHosts: ['gitlab.mycompany.com'] },
     );
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('review-pane PRRef helpers', () => {
+  it.each([
+    ['github', 'https://github.com/foo/bar/pull/42', 42, { forge: 'github', namespace: 'foo', repo: 'bar', number: 42 }],
+    ['github', 'https://github.com/foo/bar/pull/42/', 42, { forge: 'github', namespace: 'foo', repo: 'bar', number: 42 }],
+    ['gitlab', 'https://gitlab.com/group/repo/-/merge_requests/45', 45, { forge: 'gitlab', namespace: 'group', repo: 'repo', number: 45 }],
+    ['gitlab', 'https://gitlab.com/group/sub/repo/-/merge_requests/3', 3, { forge: 'gitlab', namespace: 'group/sub', repo: 'repo', number: 3 }],
+    ['gitlab', 'https://git.example.com/group/repo/-/merge_requests/7', 7, { forge: 'gitlab', namespace: 'group', repo: 'repo', number: 7 }],
+  ])('prRefFromUrl parses %s %s', (forge, url, number, want) => {
+    expect(prRefFromUrl(forge, url, number)).toEqual(want);
+  });
+
+  it('prRefFromUrl returns null for garbage and mismatched numbers', () => {
+    expect(prRefFromUrl('github', 'not a url', 1)).toBeNull();
+    expect(prRefFromUrl('github', 'https://github.com/o/r/issues/1', 1)).toBeNull();
+    expect(prRefFromUrl('gitlab', 'https://gitlab.com/g/r/-/merge_requests/2', 1)).toBeNull();
+  });
+
+  it('prRefFromThread parses persisted Go JSON and rejects invalid JSON', () => {
+    expect(prRefFromThread({
+      prRef: JSON.stringify({ Forge: 'gitlab', Namespace: 'group/sub', Repo: 'repo', Number: 12 }),
+    })).toEqual({ forge: 'gitlab', namespace: 'group/sub', repo: 'repo', number: 12 });
+    expect(prRefFromThread({ prRef: '{nope' })).toBeNull();
+  });
+
+  it('prScopeLabel adapts by forge', () => {
+    expect(prScopeLabel({ forge: 'github', namespace: 'o', repo: 'r', number: 12 })).toBe('PR #12');
+    expect(prScopeLabel({ forge: 'gitlab', namespace: 'o', repo: 'r', number: 12 })).toBe('MR !12');
   });
 });

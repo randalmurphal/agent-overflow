@@ -15,7 +15,7 @@
     SendPlanRevisionComments,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
-  import type { PanelContext } from '../../stores/rhsPanelSlot.svelte';
+  import type { PanelContext } from '../../stores/panelContext.svelte';
   import type { Thread } from '../../types/models';
   import {
     normalizePlanMarkdownForExport,

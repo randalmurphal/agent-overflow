@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { PanelContext } from '../../stores/rhsPanelSlot.svelte';
+  import type { PanelContext } from '../../stores/panelContext.svelte';
   import DesignOptionsPanel from './DesignOptionsPanel.svelte';
   import DesignPreviewPanel from './DesignPreviewPanel.svelte';
 

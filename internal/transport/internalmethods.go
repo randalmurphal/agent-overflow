@@ -138,6 +138,17 @@ var LocalOnlyMethods = map[string]bool{
 	// GitCreatePR shells out to `gh` — same RCE-equivalent class as
 	// the rest of the git/external-CLI surface.
 	"GitCreatePR": true,
+	// PR review APIs shell out to gh/glab and expose remote review state
+	// tied to local credentials; keep them with the forge CLI surface.
+	"GetPRDetail":          true,
+	"GetPRDiff":            true,
+	"ListPRReviewThreads":  true,
+	"SubmitPRReview":       true,
+	"ReplyToPRThread":      true,
+	"SubscribePRUpdates":   true,
+	"UnsubscribePRUpdates": true,
+	"GetPRMergeConflicts":  true,
+	"GetMergeConflictFile": true,
 	// PrepareThreadWorktree creates a git worktree on disk; same
 	// class as the Git* mutators above.
 	"PrepareThreadWorktree": true,
@@ -166,6 +177,7 @@ var LocalOnlyMethods = map[string]bool{
 	// workflow grows to need them) would be a breaking change.
 	"GetMessageCheckpointDiff":       true,
 	"GetMessageCheckpointRevertDiff": true,
+	"GetBranchBaseDiff":              true,
 	"GetSessionAgentDiff":            true,
 	"ListThreadCheckpoints":          true,
 	"GetWorkingTreeDiff":             true,
@@ -174,6 +186,7 @@ var LocalOnlyMethods = map[string]bool{
 	"CreateDiffReviewComment":        true,
 	"UpdateDiffReviewComment":        true,
 	"DeleteDiffReviewComment":        true,
+	"MarkDiffReviewCommentsSent":     true,
 	"SendDiffReviewComments":         true,
 	// Codex model discovery spawns the configured `codex app-server`
 	// subprocess. It looks like a catalog read, but the local process

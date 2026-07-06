@@ -1,0 +1,13 @@
+{
+  "unchanged_line_both_set": {
+    "base_sha": "a635b74cbcd768d31c5086fb2c7dbeda60f71138",
+    "start_sha": "25865e0d648be5d70eb149e2eec5b24efc1cb88b",
+    "head_sha": "61186e2381e8fa352eeedc2cf936772250c3716b",
+    "old_path": "ee/app/assets/javascripts/cd/graphql/mock_resolvers.js",
+    "new_path": "ee/app/assets/javascripts/cd/graphql/mock_resolvers.js",
+    "position_type": "text",
+    "old_line": 99,
+    "new_line": 94,
+    "line_range": null
+  }
+}
