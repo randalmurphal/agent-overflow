@@ -785,9 +785,10 @@ func (f *githubForge) Diff(cwd, project string, number int) (string, error) {
 		return "", fmt.Errorf("PR number must be positive, got %d", number)
 	}
 
-	result, err := f.core.runBinary(
+	result, err := f.core.runBinaryWithLimit(
 		"gh",
 		cwd,
+		maxPRDiffBytes,
 		"pr", "diff",
 		"--repo", project,
 		strconv.Itoa(number),

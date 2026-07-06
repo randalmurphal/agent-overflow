@@ -80,16 +80,28 @@ func (a *App) GetMergeConflictFile(threadID, treeOID, path string) (string, erro
 }
 
 func (a *App) conflictWorkspace(threadID string) (string, error) {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return "", fmt.Errorf("view merge conflicts: %w", err)
-	}
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil || strings.TrimSpace(workspace) == "" {
-		return "", errors.New("viewing conflicts requires a local clone")
-	}
-	if !a.checkpointStore().IsGitRepository(context.Background(), workspace) {
+	workspace, ok := a.localCloneWorkspace(threadID)
+	if !ok {
 		return "", errors.New("viewing conflicts requires a local clone")
 	}
 	return workspace, nil
+}
+
+// localCloneWorkspace resolves the thread's workspace when it is a real
+// local git clone. ok=false means no clone is available (a pr-anchor
+// thread with no matching local checkout); callers decide whether that is
+// an error (conflict viewer) or a fall-back-to-API signal (PR diff).
+func (a *App) localCloneWorkspace(threadID string) (string, bool) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return "", false
+	}
+	_, workspace, err := a.resolveGitPaths(thread)
+	if err != nil || strings.TrimSpace(workspace) == "" {
+		return "", false
+	}
+	if !a.checkpointStore().IsGitRepository(context.Background(), workspace) {
+		return "", false
+	}
+	return workspace, true
 }

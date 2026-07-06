@@ -913,24 +913,28 @@ async function loadPatch(
 
 async function loadPRPatch(threadId: string, ref: PRRef): Promise<LoadedPatch> {
   const pr = prReference(ref);
-  const subPromise = SubscribePRUpdates(threadId, pr);
-  const diffPromise = GetPRDiff(pr);
-  const [subResult, diffResult] = await Promise.allSettled([subPromise, diffPromise]);
-  if (subResult.status === 'fulfilled' && diffResult.status === 'rejected') {
-    await UnsubscribePRUpdates(String(subResult.value.id ?? ''));
+  // The subscription resolves the PR detail, whose baseRefName the diff
+  // needs to compute a local three-dot diff (gh/glab's PR-diff API caps at
+  // 20k lines; large PRs must go through the local-clone path). Sequenced,
+  // not parallel — the base ref is only known once the detail lands.
+  const subResult = await SubscribePRUpdates(threadId, pr);
+  try {
+    const detail = subResult.detail as PRDetail;
+    const patchText = String((await GetPRDiff(threadId, pr, detail?.baseRefName ?? '')) ?? '');
+    return {
+      patchText,
+      prDetail: detail,
+      prThreads: (subResult.threads ?? []) as ReviewThread[],
+      prHeadSHA: String(subResult.headSHA ?? detail?.headSHA ?? ''),
+      subscriptionId: String(subResult.id),
+    };
+  } catch (err) {
+    await UnsubscribePRUpdates(String(subResult.id ?? ''));
+    throw err;
   }
-  if (subResult.status === 'rejected') throw subResult.reason;
-  if (diffResult.status === 'rejected') throw diffResult.reason;
-  return {
-    patchText: String(diffResult.value ?? ''),
-    prDetail: subResult.value.detail as PRDetail,
-    prThreads: (subResult.value.threads ?? []) as ReviewThread[],
-    prHeadSHA: String(subResult.value.headSHA ?? subResult.value.detail?.headSHA ?? ''),
-    subscriptionId: String(subResult.value.id),
-  };
 }
 
-function prReference(ref: PRRef): Parameters<typeof GetPRDiff>[0] {
+function prReference(ref: PRRef): Parameters<typeof GetPRDiff>[1] {
   return {
     Forge: ref.forge,
     Namespace: ref.namespace,

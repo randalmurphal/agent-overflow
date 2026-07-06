@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,14 +57,57 @@ func (a *App) GetPRDetail(pr gitops.PRReference) (gitops.PRDetail, error) {
 	return a.gitCore().GetPRDetail("", pr)
 }
 
-func (a *App) GetPRDiff(pr gitops.PRReference) (string, error) {
+func (a *App) GetPRDiff(threadID string, pr gitops.PRReference, baseRef string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
 	if err := validatePRReference(pr); err != nil {
 		return "", err
 	}
+	// Prefer a locally-computed diff: gh/glab's PR-diff endpoints refuse
+	// diffs over 20k lines (HTTP 406), which large PRs blow past. When the
+	// thread has a clone and we know the base ref, we can fetch the PR head
+	// + base and diff them from local objects with no such cap. The forge
+	// API stays the fallback for pr-anchor threads with no local checkout.
+	if diff, attempted, err := a.localPRDiff(threadID, pr, baseRef); attempted {
+		return diff, err
+	}
 	return a.gitCore().GetPRDiff("", pr)
+}
+
+// localPRDiff computes the PR diff from local git objects. attempted=false
+// means the local path was not viable (no clone or no base ref) and the
+// caller should fall back to the forge API; attempted=true returns the
+// local result (or its error) authoritatively.
+func (a *App) localPRDiff(threadID string, pr gitops.PRReference, baseRef string) (diff string, attempted bool, err error) {
+	baseRef = strings.TrimSpace(baseRef)
+	if threadID == "" || baseRef == "" {
+		return "", false, nil
+	}
+	workspace, ok := a.localCloneWorkspace(threadID)
+	if !ok {
+		return "", false, nil
+	}
+	if err := gitops.ValidateBranchName(baseRef); err != nil {
+		return "", true, err
+	}
+	headRef, err := gitops.PRHeadRef(pr.Forge, pr.Number)
+	if err != nil {
+		return "", true, err
+	}
+	core := a.gitCore()
+	headOID, err := core.FetchRefOID(workspace, "origin", headRef)
+	if err != nil {
+		return "", true, fmt.Errorf("fetch PR head: %w", err)
+	}
+	if err := core.FetchBranch(workspace, "origin", baseRef); err != nil {
+		return "", true, fmt.Errorf("fetch base branch: %w", err)
+	}
+	diff, err = core.DiffMergeBase(workspace, "origin/"+baseRef, headOID)
+	if err != nil {
+		return "", true, err
+	}
+	return diff, true, nil
 }
 
 func (a *App) ListPRReviewThreads(pr gitops.PRReference) ([]gitops.ReviewThread, error) {

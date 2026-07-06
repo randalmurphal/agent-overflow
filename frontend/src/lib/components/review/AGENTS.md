@@ -60,6 +60,13 @@ state registry); the row model in `utils/reviewRows.ts`.
   each draft's `commitSha` records what it was anchored to, and orphan
   detection (drafts whose line left the diff) excludes them from PR
   submission without deleting them.
+- **PR diff source**: `GetPRDiff(threadId, pr, baseRef)` prefers a
+  locally-computed three-dot diff (`git diff --merge-base origin/<base>
+  <fetched-head-oid>`) when the thread has a clone — gh/glab's PR-diff
+  endpoints refuse diffs over 20k lines (HTTP 406), which large PRs blow
+  past. The forge API is the fallback for pr-anchor threads with no local
+  checkout. `loadPRPatch` sequences the subscription BEFORE the diff (not
+  parallel) because the base ref only lands with the PR detail.
 - **PR subscription lifecycle**: entering pr scope opens a Go-side poll
   pump (`SubscribePRUpdates`); the pane state OWNS that subscription.
   Every exit path must unsubscribe exactly once — scope switch, pane

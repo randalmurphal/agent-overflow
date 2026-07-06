@@ -439,11 +439,19 @@ function installPRMocks(): {
 describe('reviewPane store — PR scope', () => {
   it('enter subscribes and loads the PR diff; leaving unsubscribes exactly once', async () => {
     const { subscribe, unsubscribe } = installPRMocks();
+    const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
     const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
     await waitLoaded(state);
 
     await state.setScope('pr');
     expect(subscribe).toHaveBeenCalledTimes(1);
+    // The diff is fetched with the thread id + base ref from the detail so
+    // the backend can compute a local diff (past gh/glab's 20k-line cap).
+    expect(diff).toHaveBeenCalledWith(
+      'thread-1',
+      expect.objectContaining({ Number: 5 }),
+      'main',
+    );
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
     expect(state.prDetail?.number).toBe(5);
     expect(state.prHeadSHA).toBe('sha-a');
@@ -451,6 +459,19 @@ describe('reviewPane store — PR scope', () => {
 
     await state.setScope('workspace');
     expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).toHaveBeenCalledWith('sub-1');
+  });
+
+  it('a diff failure after subscribe unsubscribes and surfaces the error', async () => {
+    const { unsubscribe } = installPRMocks();
+    setBindingMock('GetPRDiff', async () => {
+      throw new Error('diff exploded');
+    });
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+
+    await state.setScope('pr');
+    expect(state.error).toContain('diff exploded');
     expect(unsubscribe).toHaveBeenCalledWith('sub-1');
   });
 

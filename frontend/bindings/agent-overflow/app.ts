@@ -721,8 +721,8 @@ export function GetPRDetail(pr: git$0.PRReference): $CancellablePromise<git$0.PR
     });
 }
 
-export function GetPRDiff(pr: git$0.PRReference): $CancellablePromise<string> {
-    return $Call.ByID(1867413234, pr);
+export function GetPRDiff(threadID: string, pr: git$0.PRReference, baseRef: string): $CancellablePromise<string> {
+    return $Call.ByID(1867413234, threadID, pr, baseRef);
 }
 
 export function GetPRMergeConflicts(threadID: string, pr: git$0.PRReference, baseRef: string, headRefName: string): $CancellablePromise<$models.PRMergeConflictsResult> {

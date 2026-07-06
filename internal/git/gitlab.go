@@ -347,9 +347,10 @@ func (f *gitlabForge) Diff(cwd, project string, number int) (string, error) {
 	if number <= 0 {
 		return "", fmt.Errorf("MR number must be positive, got %d", number)
 	}
-	result, err := f.core.runBinary(
+	result, err := f.core.runBinaryWithLimit(
 		"glab",
 		cwd,
+		maxPRDiffBytes,
 		"mr", "diff",
 		strconv.Itoa(number),
 		"-R", project,

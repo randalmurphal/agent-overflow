@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil"
 )
 
 func TestParseMergeTreeNameOnly(t *testing.T) {
@@ -101,6 +103,49 @@ func TestPRHeadRef(t *testing.T) {
 	}
 	if _, err := PRHeadRef("github", 0); err == nil {
 		t.Fatal("expected non-positive number error")
+	}
+}
+
+func TestDiffMergeBaseIsThreeDot(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	// Diverge: base advances on main, head branches off the initial commit
+	// and adds a file. A three-dot diff (merge-base..head) must show ONLY
+	// the head's change, never the base-only commit made after divergence.
+	testutil.RunGit(t, repo, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("feature body\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "feature.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "add feature file")
+
+	testutil.RunGit(t, repo, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(repo, "base-only.txt"), []byte("base body\n"), 0o644); err != nil {
+		t.Fatalf("write base-only file: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "base-only.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "base advances")
+
+	diff, err := core.DiffMergeBase(repo, "main", "feature")
+	if err != nil {
+		t.Fatalf("DiffMergeBase: %v", err)
+	}
+	if !strings.Contains(diff, "feature.txt") || !strings.Contains(diff, "+feature body") {
+		t.Fatalf("diff missing head change:\n%s", diff)
+	}
+	if strings.Contains(diff, "base-only.txt") {
+		t.Fatalf("three-dot diff leaked the base-only commit:\n%s", diff)
+	}
+}
+
+func TestDiffMergeBaseValidatesRefs(t *testing.T) {
+	core := NewCore()
+	if _, err := core.DiffMergeBase("", "", "head"); err == nil {
+		t.Fatal("expected error for empty base")
+	}
+	if _, err := core.DiffMergeBase("", "base", ""); err == nil {
+		t.Fatal("expected error for empty head")
 	}
 }
 

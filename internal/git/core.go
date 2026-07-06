@@ -284,8 +284,19 @@ func (c *Core) run(cwd string, args ...string) (commandResult, error) {
 	return c.runBinary("git", cwd, args...)
 }
 
+// runWithLimit runs a git command with an explicit stdout/stderr cap
+// (0 = Core default). PR diffs can exceed the shared default, so their
+// callers raise the ceiling rather than truncating.
+func (c *Core) runWithLimit(cwd string, maxBytes int64, args ...string) (commandResult, error) {
+	return c.runBinaryWithInputLimit("git", cwd, "", maxBytes, args...)
+}
+
 func (c *Core) runBinary(binary, cwd string, args ...string) (commandResult, error) {
 	return c.runBinaryWithInput(binary, cwd, "", args...)
+}
+
+func (c *Core) runBinaryWithLimit(binary, cwd string, maxBytes int64, args ...string) (commandResult, error) {
+	return c.runBinaryWithInputLimit(binary, cwd, "", maxBytes, args...)
 }
 
 func (c *Core) runBinaryInput(binary, cwd, stdin string, args ...string) (commandResult, error) {
@@ -293,11 +304,19 @@ func (c *Core) runBinaryInput(binary, cwd, stdin string, args ...string) (comman
 }
 
 func (c *Core) runBinaryWithInput(binary, cwd, stdin string, args ...string) (commandResult, error) {
+	return c.runBinaryWithInputLimit(binary, cwd, stdin, 0, args...)
+}
+
+// runBinaryWithInputLimit is the shared runner; maxBytes <= 0 falls back
+// to the Core's configured cap (then the package default).
+func (c *Core) runBinaryWithInputLimit(binary, cwd, stdin string, maxBytes int64, args ...string) (commandResult, error) {
 	timeout := c.timeout
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	maxBytes := c.maxOutputBytes
+	if maxBytes <= 0 {
+		maxBytes = c.maxOutputBytes
+	}
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxOutputBytes
 	}
