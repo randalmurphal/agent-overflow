@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import ReviewPane from './ReviewPane.svelte';
 import type { PanelContext } from '../../stores/panelContext.svelte';
 import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
+import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { DiffReviewComment, DiffReviewCommentInput, PRDetail, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -46,6 +47,7 @@ function patch(): string {
 beforeEach(() => {
   resetAppStorageForTest();
   __resetReviewPaneStateForTest();
+  resetDiffReviewCommentsForTest();
   // The mount/reload PR probe reads both; defaults resolve to "no PR".
   setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/repo' }));
   setBindingMock('GetGitStatus', async () => ({}));
@@ -231,5 +233,90 @@ describe('<ReviewPane>', () => {
     expect(header.querySelector('[data-testid="review-pr-meta"]')).toBeNull();
     expect(header.textContent).not.toContain('main ← feature');
     expect(header.textContent).not.toContain('+99');
+  });
+
+  it("disables approve/request-changes on the viewer's own GitHub PR, keeps comment", async () => {
+    const detail: PRDetail = {
+      number: 5,
+      title: 'Add feature',
+      body: '',
+      authorLogin: 'octocat',
+      state: 'open',
+      draft: false,
+      headRefName: 'feature',
+      baseRefName: 'main',
+      headSHA: 'sha-a',
+      url: 'https://github.com/owner/repo/pull/5',
+      additions: 3,
+      deletions: 0,
+      changedFiles: 1,
+      // GitHub rejects approve/request-changes on a PR you authored.
+      viewerIsAuthor: true,
+      reviewDecision: '',
+      latestReviews: [],
+      checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
+      mergeability: 'clean',
+    };
+    setBindingMock('SubscribePRUpdates', async (threadId: string, pr: unknown) => ({
+      id: 'sub-1',
+      threadId,
+      pr,
+      detail,
+      threads: [],
+      headSHA: 'sha-a',
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setBindingMock('GetPRDiff', async () => patch());
+    setBindingMock('ListPRReviewThreads', async () => []);
+    // A pending PR-scope draft makes the send strip (and verdict buttons) render.
+    setBindingMock('ListDiffReviewComments', async (_threadId: never, scope: never) =>
+      scope === 'pr'
+        ? [
+            {
+              id: 'pr-draft-1',
+              threadId: 'thread-1',
+              scope: 'pr',
+              sourceKey: 'pr:github:owner/repo:5',
+              filePath: 'src/app.ts',
+              status: 'draft',
+              side: 'new',
+              newLine: 1,
+              selectedText: '',
+              body: 'nit',
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ]
+        : [],
+    );
+
+    const ctx: PanelContext = {
+      ...makeCtx(),
+      thread: {
+        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
+        workspacePath: '/repo',
+      } as unknown as Thread,
+    };
+    const view = render(ReviewPane, { ctx });
+
+    await waitFor(() => {
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+    });
+    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+
+    // Retarget the send from the agent to the PR to reveal the verdict row.
+    await waitFor(() => {
+      expect(view.getByTestId('review-send-strip')).toBeInTheDocument();
+    });
+    const targetSelect = view.getByTestId('review-send-strip').querySelector('select')!;
+    await fireEvent.change(targetSelect, { target: { value: 'pr' } });
+
+    await waitFor(() => {
+      expect(view.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    });
+    expect(view.getByRole('button', { name: 'Approve' })).toBeDisabled();
+    expect(view.getByRole('button', { name: 'Request changes' })).toBeDisabled();
+    // A comment-only review is always allowed, even on your own PR.
+    expect(view.getByRole('button', { name: 'Comment' })).toBeEnabled();
   });
 });

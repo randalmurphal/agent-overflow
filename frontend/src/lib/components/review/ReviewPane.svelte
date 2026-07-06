@@ -425,11 +425,12 @@
         {#if review.scope === 'pr' && review.submitTarget === 'pr'}
           <div class="mt-2 flex flex-wrap items-center gap-2">
             {#each ['comment', 'approve', 'request-changes'] as nextVerdict}
+              {@const ownPRBlocked = review.prRef?.forge === 'github' && review.prDetail?.viewerIsAuthor && nextVerdict !== 'comment'}
               <button
                 type="button"
-                class="rounded border px-2 py-1 text-[0.6875rem] {review.verdict === nextVerdict ? 'border-accent bg-accent/10 text-accent' : 'border-border-subtle text-fg-muted'}"
-                disabled={review.prRef?.forge === 'github' && review.prDetail?.viewerIsAuthor && nextVerdict !== 'comment'}
-                title={review.prRef?.forge === 'github' && review.prDetail?.viewerIsAuthor && nextVerdict !== 'comment' ? 'GitHub rejects approving/requesting changes on your own PR' : ''}
+                class="rounded border px-2 py-1 text-[0.6875rem] transition-colors disabled:cursor-not-allowed disabled:opacity-40 {review.verdict === nextVerdict ? 'border-accent bg-accent/10 text-accent' : 'border-border-subtle text-fg-muted hover:text-fg'}"
+                disabled={ownPRBlocked}
+                title={ownPRBlocked ? 'GitHub rejects approving or requesting changes on your own PR' : ''}
                 onclick={() => review?.setVerdict(nextVerdict as 'comment' | 'approve' | 'request-changes')}
               >
                 {nextVerdict === 'request-changes' ? 'Request changes' : nextVerdict[0].toUpperCase() + nextVerdict.slice(1)}
