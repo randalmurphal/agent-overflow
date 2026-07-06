@@ -41,6 +41,10 @@ async function waitLoaded(state: ReturnType<typeof reviewStateForPane>): Promise
 }
 
 function installDefaultMocks(): void {
+  // The mount/reload PR probe (probePRRef) reads both of these on every
+  // state creation; the defaults resolve to "no PR anywhere".
+  setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/tmp/ws' }) as Thread);
+  setBindingMock('GetGitStatus', async () => ({}));
   setBindingMock('GetWorkspaceCurrentDiff', async () => '');
   setBindingMock('GetSessionAgentDiff', async () => '');
   setBindingMock('GetBranchBaseDiff', async () => '');
@@ -660,6 +664,43 @@ describe('reviewPane store — PR scope', () => {
 
     expect(rows.map((row) => row.kind)).toEqual(['file-header', 'line-block']);
     expect(rows.some((row) => row.kind === 'comment-thread' || row.kind === 'draft-editor' || row.kind === 'pr-thread')).toBe(false);
+  });
+
+  it('detects an open PR from git status at mount without switching scope', async () => {
+    // The scope dropdown's PR option is gated on a resolved prRef, so a
+    // thread whose BRANCH has an open PR must resolve it proactively —
+    // entering pr scope can't be the trigger (the option wouldn't exist).
+    setBindingMock('GetGitStatus', async () => ({
+      forge: 'github',
+      openPrUrl: 'https://github.com/acme/widgets/pull/7',
+      openPrNumber: 7,
+    }));
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+
+    await vi.waitFor(() => {
+      expect(state.prRef).toEqual({ forge: 'github', namespace: 'acme', repo: 'widgets', number: 7 });
+    });
+    // Detection only surfaces the option; it never hijacks the scope.
+    expect(state.scope).toBe('workspace');
+  });
+
+  it('detects a PR opened after mount on the next reload', async () => {
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    expect(state.prRef).toBeNull();
+
+    setBindingMock('GetGitStatus', async () => ({
+      forge: 'gitlab',
+      openPrUrl: 'https://gitlab.com/group/sub/repo/-/merge_requests/3',
+      openPrNumber: 3,
+    }));
+    await state.reload();
+
+    await vi.waitFor(() => {
+      expect(state.prRef).toEqual({ forge: 'gitlab', namespace: 'group/sub', repo: 'repo', number: 3 });
+    });
   });
 
   it('a workspace-less thread with a prRef defaults to pr scope', async () => {

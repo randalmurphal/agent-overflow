@@ -307,6 +307,19 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
     }
   }
 
+  // The scope dropdown's PR option renders only once prRef resolves, and
+  // ensurePRRef otherwise runs only on ENTRY into pr scope — without
+  // probing at mount (and on reload, for a PR opened while the pane sat
+  // open), a thread whose BRANCH has an open PR (the git-status detection
+  // path) could never surface the option at all.
+  function probePRRef(): void {
+    if (prRef) return;
+    void ensurePRRef().catch(() => {
+      // Not swallowed: ensurePRRef records a thread-lookup failure in
+      // `error` before throwing, and no-PR resolves to null, not a throw.
+    });
+  }
+
   // Set by dispose(); a reload that resolves after disposal must drop the
   // subscription it just created instead of registering it on a dead state.
   let disposed = false;
@@ -406,6 +419,10 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
         // Persisted 'pr' scope restores before the thread/git status is at
         // hand; resolve the reference here instead of failing the load.
         await ensurePRRef();
+      } else {
+        // Fire-and-forget: a PR opened after this pane mounted becomes
+        // selectable on the next reload without blocking the diff load.
+        probePRRef();
       }
       const loaded = await loadPatch(
         threadId,

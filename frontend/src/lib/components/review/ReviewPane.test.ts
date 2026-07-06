@@ -46,6 +46,9 @@ function patch(): string {
 beforeEach(() => {
   resetAppStorageForTest();
   __resetReviewPaneStateForTest();
+  // The mount/reload PR probe reads both; defaults resolve to "no PR".
+  setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/repo' }));
+  setBindingMock('GetGitStatus', async () => ({}));
   setBindingMock('GetWorkspaceCurrentDiff', async () => patch());
   setBindingMock('GetSessionAgentDiff', async () => '');
   setBindingMock('GetBranchBaseDiff', async () => '');
