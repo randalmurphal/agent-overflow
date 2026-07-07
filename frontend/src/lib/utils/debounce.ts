@@ -1,5 +1,5 @@
 // Minimal trailing-edge debounce used by thread-wide refresh surfaces
-// (PlanSidebar, DiffPanelDrawer, ActivityRail's Background segment) to
+// (PlanSidebar, ActivityRail's Background segment) to
 // collapse a burst of provider:item_event events into a single backend
 // re-fetch. Each call resets the timer; the wrapped `fn` runs exactly
 // once `ms` after the last call with no further arrivals.

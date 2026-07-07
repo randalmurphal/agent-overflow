@@ -18,6 +18,7 @@ import {
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
 } from '../../stores/paneLayout.svelte';
+import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { projectTurnStarted, setThreadStatus } from '../../stores/threadStatuses.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
@@ -87,6 +88,7 @@ describe('<ChatHeader>', () => {
     resetProjectsForTest();
     resetSidebarForTest();
     resetPanesForTest();
+    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
     vi.mocked(openTerminalThread).mockClear();
   });
@@ -196,21 +198,23 @@ describe('<ChatHeader>', () => {
     consoleErr.mockRestore();
   });
 
-  it('toggles the diff panel via the Diffs button', async () => {
+  it('toggles the review pane via the Diffs button', async () => {
     const pane = await buildPane();
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
     const { getByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
-    expect(pane.diffPanel.open).toBe(false);
-    await fireEvent.click(getByTestId('diff-panel-toggle'));
-    expect(pane.diffPanel.open).toBe(true);
+    expect(pane.showReviewPane).toBe(false);
+    await fireEvent.click(getByTestId('review-toggle'));
+    expect(pane.showReviewPane).toBe(true);
   });
 
   it('shows the design preview toggle and hides the diff toggle on design threads', async () => {
     const pane = await buildPane(makeThread({ mode: 'design' }));
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
     const { getByTestId, queryByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
 
-    expect(queryByTestId('diff-panel-toggle')).toBeNull();
+    expect(queryByTestId('review-toggle')).toBeNull();
     expect(pane.showDesignPreviewPanel).toBe(false);
     await fireEvent.click(getByTestId('design-preview-toggle'));
     expect(pane.showDesignPreviewPanel).toBe(true);
@@ -271,7 +275,7 @@ describe('<ChatHeader>', () => {
     const { getByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
     expect(getByTestId('terminal-toggle').getAttribute('title')).toBe('Toggle Terminal (Ctrl+`)');
-    expect(getByTestId('diff-panel-toggle').getAttribute('title')).toBe('Toggle Diff Panel (Ctrl+Shift+G)');
+    expect(getByTestId('review-toggle').getAttribute('title')).toBe('Toggle Review Pane (Ctrl+Shift+G)');
   });
 
   it('opens the project root in the editor via the Open button', async () => {
@@ -469,7 +473,7 @@ describe('<ChatHeader>', () => {
     // until real content creates the row.
     expect(getByTestId('chat-header-open-editor')).toBeTruthy();
     expect(getByTestId('terminal-toggle')).toBeTruthy();
-    expect(getByTestId('diff-panel-toggle')).toBeTruthy();
+    expect(getByTestId('review-toggle')).toBeTruthy();
   });
 
   it('terminal-toggle click on a placeholder opens without creating a thread', async () => {

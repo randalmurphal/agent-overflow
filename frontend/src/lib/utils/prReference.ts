@@ -25,6 +25,13 @@ export interface ParsedPRReference {
   number: number;
 }
 
+export interface PRRef {
+  forge: Forge;
+  namespace: string;
+  repo: string;
+  number: number;
+}
+
 export type PRReferenceResult =
   | { ok: true; value: ParsedPRReference }
   | { ok: false; error: string };
@@ -105,6 +112,68 @@ export function parsePRReference(
       'https://gitlab.com/NAMESPACE/REPO/-/merge_requests/N, ' +
       'OWNER/REPO#N, or NAMESPACE/REPO!N',
   };
+}
+
+export function prRefFromUrl(forge: string, url: string, number: number): PRRef | null {
+  if (forge !== 'github' && forge !== 'gitlab') return null;
+  if (!Number.isFinite(number) || number <= 0) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  if (forge === 'github') {
+    if (parsed.hostname !== 'github.com') return null;
+    if (parts.length < 4 || parts[2] !== 'pull') return null;
+    const n = Number.parseInt(parts[3] ?? '', 10);
+    if (n !== number) return null;
+    return { forge, namespace: parts[0], repo: parts[1], number };
+  }
+  const sep = parts.indexOf('-');
+  if (sep < 2 || parts[sep + 1] !== 'merge_requests') return null;
+  const n = Number.parseInt(parts[sep + 2] ?? '', 10);
+  if (n !== number) return null;
+  const project = parts.slice(0, sep);
+  return {
+    forge,
+    namespace: project.slice(0, -1).join('/'),
+    repo: project[project.length - 1] ?? '',
+    number,
+  };
+}
+
+export function prRefFromThread(thread: { prRef?: string | null }): PRRef | null {
+  const raw = thread.prRef?.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PRRef> & {
+      Forge?: string;
+      Namespace?: string;
+      Repo?: string;
+      Number?: number;
+    };
+    const forge = parsed.forge ?? parsed.Forge;
+    const namespace = parsed.namespace ?? parsed.Namespace;
+    const repo = parsed.repo ?? parsed.Repo;
+    const number = parsed.number ?? parsed.Number;
+    if (forge !== 'github' && forge !== 'gitlab') return null;
+    if (!namespace || !repo || !Number.isFinite(number) || (number ?? 0) <= 0) return null;
+    if (number === undefined) return null;
+    return {
+      forge,
+      namespace,
+      repo,
+      number,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function prScopeLabel(ref: PRRef): string {
+  return ref.forge === 'gitlab' ? `MR !${ref.number}` : `PR #${ref.number}`;
 }
 
 function parseMatch(forge: Forge, namespace: string, repo: string, numberStr: string): PRReferenceResult {

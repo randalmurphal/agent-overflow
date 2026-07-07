@@ -28,7 +28,24 @@ import (
 // `selectedText` echo — the file:line anchor is enough to locate the
 // comment.
 func BuildPrompt(comments []store.DiffReviewComment) string {
+	return buildPrompt(comments, nil)
+}
+
+func BuildPromptWithPRContext(comments []store.DiffReviewComment, pr *store.DiffReviewPRContext) string {
+	return buildPrompt(comments, pr)
+}
+
+func buildPrompt(comments []store.DiffReviewComment, pr *store.DiffReviewPRContext) string {
 	var b strings.Builder
+	if pr != nil {
+		b.WriteString("PR #")
+		b.WriteString(strconv.Itoa(pr.Number))
+		if strings.TrimSpace(pr.URL) != "" {
+			b.WriteString(" - ")
+			b.WriteString(strings.TrimSpace(pr.URL))
+		}
+	}
+	hunks := hunkExcerptsByCommentID(pr)
 	for _, comment := range comments {
 		body := strings.TrimSpace(comment.Body)
 		if body == "" {
@@ -45,8 +62,27 @@ func BuildPrompt(comments []store.DiffReviewComment) string {
 		}
 		b.WriteString("\ncomment: ")
 		b.WriteString(body)
+		if hunk := strings.Trim(hunks[comment.ID], "\r\n"); hunk != "" {
+			b.WriteString("\n\nhunk:\n")
+			b.WriteString(hunk)
+		}
 	}
 	return b.String()
+}
+
+func hunkExcerptsByCommentID(pr *store.DiffReviewPRContext) map[string]string {
+	if pr == nil || len(pr.Comments) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(pr.Comments))
+	for _, entry := range pr.Comments {
+		id := strings.TrimSpace(entry.CommentID)
+		if id == "" {
+			continue
+		}
+		out[id] = strings.Trim(entry.HunkExcerpt, "\r\n")
+	}
+	return out
 }
 
 // CommentLine returns the line number to use as the comment's anchor.

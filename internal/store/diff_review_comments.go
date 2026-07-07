@@ -19,8 +19,11 @@ const (
 type DiffReviewScope string
 
 const (
+	DiffReviewScopeTurn      DiffReviewScope = "turn"
 	DiffReviewScopeSession   DiffReviewScope = "session"
 	DiffReviewScopeWorkspace DiffReviewScope = "workspace"
+	DiffReviewScopeBranch    DiffReviewScope = "branch"
+	DiffReviewScopePR        DiffReviewScope = "pr"
 )
 
 type DiffReviewComment struct {
@@ -28,6 +31,7 @@ type DiffReviewComment struct {
 	ThreadID     string `json:"threadId"`
 	Scope        string `json:"scope"`
 	SourceKey    string `json:"sourceKey"`
+	CommitSHA    string `json:"commitSha,omitempty"`
 	FilePath     string `json:"filePath"`
 	Status       string `json:"status"`
 	OldLine      int    `json:"oldLine,omitempty"`
@@ -44,6 +48,7 @@ type DiffReviewComment struct {
 type DiffReviewCommentInput struct {
 	Scope        string `json:"scope"`
 	SourceKey    string `json:"sourceKey"`
+	CommitSHA    string `json:"commitSha,omitempty"`
 	FilePath     string `json:"filePath"`
 	OldLine      int    `json:"oldLine,omitempty"`
 	NewLine      int    `json:"newLine,omitempty"`
@@ -57,19 +62,37 @@ type DiffReviewCommentUpdate struct {
 }
 
 type DiffReviewSourceRef struct {
-	ThreadID  string `json:"threadId,omitempty"`
-	Scope     string `json:"scope"`
-	SourceKey string `json:"sourceKey"`
+	ThreadID  string               `json:"threadId,omitempty"`
+	Scope     string               `json:"scope"`
+	SourceKey string               `json:"sourceKey"`
+	PR        *DiffReviewPRContext `json:"pr,omitempty"`
+}
+
+type DiffReviewPRContext struct {
+	Number   int                        `json:"number"`
+	URL      string                     `json:"url"`
+	Comments []DiffReviewPRContextEntry `json:"comments"`
+}
+
+type DiffReviewPRContextEntry struct {
+	CommentID   string `json:"commentId"`
+	HunkExcerpt string `json:"hunkExcerpt"`
 }
 
 func NormalizeDiffReviewScope(scope string) (string, error) {
 	switch DiffReviewScope(strings.TrimSpace(scope)) {
+	case DiffReviewScopeTurn:
+		return string(DiffReviewScopeTurn), nil
 	case DiffReviewScopeSession:
 		return string(DiffReviewScopeSession), nil
 	case DiffReviewScopeWorkspace:
 		return string(DiffReviewScopeWorkspace), nil
+	case DiffReviewScopeBranch:
+		return string(DiffReviewScopeBranch), nil
+	case DiffReviewScopePR:
+		return string(DiffReviewScopePR), nil
 	default:
-		return "", fmt.Errorf("diff review scope must be session or workspace")
+		return "", fmt.Errorf("diff review scope must be turn, session, workspace, branch, or pr")
 	}
 }
 
@@ -194,6 +217,7 @@ func (s *Store) CreateDiffReviewComment(comment DiffReviewComment) (DiffReviewCo
 	}
 	comment.Scope = scope
 	comment.SourceKey = sourceKey
+	comment.CommitSHA = strings.TrimSpace(comment.CommitSHA)
 	comment.FilePath = filePath
 	comment.Side = side
 	comment.SelectedText = selectedText
@@ -207,10 +231,10 @@ func (s *Store) CreateDiffReviewComment(comment DiffReviewComment) (DiffReviewCo
 	}
 	_, err = s.db.Exec(
 		`INSERT INTO diff_review_comments (
-			id, thread_id, scope, source_key, file_path, status, old_line, new_line, side,
+			id, thread_id, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
 			selected_text, body, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)`,
-		comment.ID, comment.ThreadID, comment.Scope, comment.SourceKey, comment.FilePath, comment.OldLine, comment.NewLine,
+		) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)`,
+		comment.ID, comment.ThreadID, comment.Scope, comment.SourceKey, comment.CommitSHA, comment.FilePath, comment.OldLine, comment.NewLine,
 		comment.Side, comment.SelectedText, comment.Body, comment.CreatedAt, comment.UpdatedAt,
 	)
 	if err != nil {
@@ -338,7 +362,7 @@ func (s *Store) diffReviewCommentsAlreadySent(threadID, scope, sourceKey string,
 
 func (s *Store) GetDiffReviewComment(threadID, commentID string) (DiffReviewComment, error) {
 	row := s.db.QueryRow(
-		`SELECT id, thread_id, scope, source_key, file_path, status, old_line, new_line, side,
+		`SELECT id, thread_id, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
 		        selected_text, body, sent_at, sent_turn_id, created_at, updated_at
 		   FROM diff_review_comments
 		  WHERE thread_id = ? AND id = ?`,
@@ -364,7 +388,7 @@ func (s *Store) ListDiffReviewComments(threadID, scope, sourceKey string) ([]Dif
 		return nil, err
 	}
 	rows, err := s.db.Query(
-		`SELECT id, thread_id, scope, source_key, file_path, status, old_line, new_line, side,
+		`SELECT id, thread_id, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
 		        selected_text, body, sent_at, sent_turn_id, created_at, updated_at
 		   FROM diff_review_comments
 		  WHERE thread_id = ? AND scope = ? AND source_key = ? AND status <> 'resolved'
@@ -406,7 +430,7 @@ func (s *Store) ListDraftDiffReviewCommentsByID(threadID, scope, sourceKey strin
 	if len(wanted) > MaxDiffReviewCommentIDs {
 		return nil, fmt.Errorf("store: too many diff review comments selected")
 	}
-	query := `SELECT id, thread_id, scope, source_key, file_path, status, old_line, new_line, side,
+	query := `SELECT id, thread_id, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
 	                 selected_text, body, sent_at, sent_turn_id, created_at, updated_at
 	            FROM diff_review_comments
 	           WHERE thread_id = ?
@@ -448,7 +472,7 @@ func (s *Store) ListDraftDiffReviewCommentsByID(threadID, scope, sourceKey strin
 func scanDiffReviewComment(scanner interface{ Scan(...any) error }) (DiffReviewComment, error) {
 	var comment DiffReviewComment
 	if err := scanner.Scan(
-		&comment.ID, &comment.ThreadID, &comment.Scope, &comment.SourceKey, &comment.FilePath, &comment.Status,
+		&comment.ID, &comment.ThreadID, &comment.Scope, &comment.SourceKey, &comment.CommitSHA, &comment.FilePath, &comment.Status,
 		&comment.OldLine, &comment.NewLine, &comment.Side, &comment.SelectedText, &comment.Body,
 		&comment.SentAt, &comment.SentTurnID, &comment.CreatedAt, &comment.UpdatedAt,
 	); err != nil {

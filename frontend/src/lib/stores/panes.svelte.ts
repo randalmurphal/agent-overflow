@@ -19,19 +19,22 @@ export type PaneActivation = 'preview' | 'committed';
 let paneActivationById: Map<string, PaneActivation> = $state(new Map());
 let nextGeneratedPaneId = 1;
 let panePersistenceHandler: (() => void) | null = null;
-// Notified with a paneId after that pane (a ThreadPane) is destroyed. The
-// take-control store registers here to cascade-close the terminal pane paired
-// to a closing source pane. Kept as a registration hook (not a direct import)
-// so panes.svelte.ts never depends on takeControl.svelte.ts — the dependency
-// runs one way only (takeControl reads the pane registry, never the reverse).
-let paneDestroyedObserver: ((paneId: string) => void) | null = null;
+// Notified with a paneId after that pane (a ThreadPane) is destroyed.
+// Companion stores register here to cascade-close panes paired to a closing
+// source pane. Kept as a registration hook (not direct imports) so
+// panes.svelte.ts never depends on companion stores — the dependency runs one
+// way only (companion stores read the pane registry, never the reverse).
+let paneDestroyedObservers: Array<(paneId: string) => void> = [];
 
 export function setPanePersistenceHandler(handler: (() => void) | null): void {
   panePersistenceHandler = handler;
 }
 
-export function setPaneDestroyedObserver(observer: ((paneId: string) => void) | null): void {
-  paneDestroyedObserver = observer;
+export function addPaneDestroyedObserver(observer: (paneId: string) => void): () => void {
+  paneDestroyedObservers = [...paneDestroyedObservers, observer];
+  return () => {
+    paneDestroyedObservers = paneDestroyedObservers.filter((existing) => existing !== observer);
+  };
 }
 
 function requestPanePersistence(): void {
@@ -215,10 +218,10 @@ export function destroyPane(id: string): void {
     focusedPaneId = nextFocusId;
     if (nextFocusId) requestPaneReveal(nextFocusId);
   }
-  // Cascade: a paired take-control terminal pane closes with its source. Fired
-  // after the source pane is fully torn down so the observer sees consistent
-  // registry/layout state.
-  paneDestroyedObserver?.(id);
+  // Cascade: paired companion panes close with their source. Fired after the
+  // source pane is fully torn down so observers see consistent registry/layout
+  // state.
+  for (const observer of paneDestroyedObservers) observer(id);
   requestPanePersistence();
 }
 

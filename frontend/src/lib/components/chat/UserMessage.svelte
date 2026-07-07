@@ -1,6 +1,7 @@
 <script lang="ts">
   import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
   import GitFork from 'lucide-svelte/icons/git-fork';
+  import FileDiff from 'lucide-svelte/icons/file-diff';
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -14,6 +15,7 @@
   import IconButton from '../primitives/IconButton.svelte';
   import Popover from '../primitives/Popover.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { openReviewCompanion } from '../../stores/reviewPane.svelte';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import {
     parseUserMessageAttachments,
@@ -43,7 +45,7 @@
   let revertAnchor: HTMLSpanElement | undefined = $state(undefined);
 
   const userMeta = $derived(parseUserMessageMeta(item.meta));
-  const hasMessageCheckpoint = $derived(pane?.diffPanel.checkpointUserItemIds.has(item.id) ?? false);
+  const hasMessageCheckpoint = $derived(pane?.checkpoints.checkpointUserItemIds.has(item.id) ?? false);
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
   const canRequestRevert = $derived(typeof actions?.onRevertMessage === 'function');
   const canRequestFork = $derived(typeof actions?.onForkMessage === 'function');
@@ -71,9 +73,8 @@
   // no pointer events — instead of removing them from the DOM.
   const showMessageActions = $derived(
     pane !== undefined
-      && (canRequestRevert || canRequestFork)
-      && pane.diffPanel.checkpointsLoaded
-      && !pane.diffPanel.checkpointsUnavailable
+      && pane.checkpoints.loaded
+      && !pane.checkpoints.unavailable
       && hasMessageCheckpoint
       && !isWireOnlyUserMessage,
   );
@@ -136,6 +137,14 @@
     if (!canRequestFork || forkBusy) return;
     await actions?.onForkMessage?.(item);
   }
+
+  function openCheckpointReview(): void {
+    if (!pane?.threadId) return;
+    void openReviewCompanion(pane.paneId, pane.threadId, {
+      scope: 'turn',
+      checkpointUserItemId: item.id,
+    });
+  }
 </script>
 
 <div class="group mb-5 flex justify-end">
@@ -185,6 +194,21 @@
     {/if}
     <div class="mt-1.5 flex items-center justify-end gap-1.5 text-[0.625rem] text-fg-hint/70">
       {#if showMessageActions && pane}
+        <span
+          class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100"
+          class:invisible={actionsTurnLocked}
+        >
+          <IconButton
+            label="Open checkpoint in review pane"
+            size="sm"
+            variant="ghost"
+            onClick={openCheckpointReview}
+          >
+            {#snippet children()}
+              <Icon icon={FileDiff} size={13} strokeWidth={2.2} />
+            {/snippet}
+          </IconButton>
+        </span>
         {#if canRequestRevert}
           <span
             bind:this={revertAnchor}

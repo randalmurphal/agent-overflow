@@ -322,10 +322,11 @@ func TestMR_CreateThreadFromValidGitLabSubgroup(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("glab calls = %d, want 2: %v", len(calls), calls)
 	}
-	for _, call := range calls {
-		if !strings.Contains(call, "-R group/sub/repo") {
-			t.Errorf("glab call missing subgroup -R: %q", call)
-		}
+	if !strings.Contains(calls[0], "api projects/group%2Fsub%2Frepo/merge_requests/77") {
+		t.Errorf("glab view call missing encoded subgroup endpoint: %q", calls[0])
+	}
+	if !strings.Contains(calls[1], "-R group/sub/repo") {
+		t.Errorf("glab diff call missing subgroup -R: %q", calls[1])
 	}
 }
 

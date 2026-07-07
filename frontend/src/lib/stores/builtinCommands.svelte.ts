@@ -61,6 +61,7 @@ import { cycleMode } from '../utils/modeCycle';
 import { runInterruptOrRevert } from './revertOnInterrupt.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { getSettings, updateSetting } from './settings.svelte';
+import { openReviewCompanion } from './reviewPane.svelte';
 import { requestThreadActionConfirmation } from './threadActionConfirmations.svelte';
 import {
   clearSidebarCursor,
@@ -305,12 +306,12 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   });
 
   registerCommand({
-    id: 'rhs.close',
-    label: 'Right Sidebar: Close',
-    icon: '×',
-    when: 'activeRhsPanel && !anyModalOpen && !terminalFocus',
+    id: 'review.toggle',
+    label: 'Toggle review pane',
+    icon: '▥',
+    when: 'hasActiveThread && !anyModalOpen && !terminalFocus',
     editableReachable: true,
-    run: (ctx) => ctx.pane?.closeRhsPanel(),
+    run: (ctx) => ctx.pane?.toggleReviewPane(),
   });
 
   registerCommand({
@@ -739,31 +740,38 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'diff.panel.toggle',
-    label: 'Diffs: Toggle Panel',
-    icon: '±',
-    when: 'hasActiveThread',
-    run: (ctx) => withMaterializedThread(ctx, (_id, pane) => pane.toggleDiffPanel()),
-  });
-
-  registerCommand({
-    id: 'diff.panel.open',
-    label: 'Diffs: Open Panel',
+    label: 'Review: Toggle Workspace',
     icon: '±',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withMaterializedThread(ctx, (_id, pane) => {
-        pane.setDiffPanelOpen(true);
+      withMaterializedThread(ctx, (threadId, pane) => {
+        if (pane.showReviewPane) {
+          pane.setShowReviewPane(false);
+          return;
+        }
+        void openReviewCompanion(pane.paneId, threadId, { scope: 'workspace' });
       }),
   });
 
   registerCommand({
-    id: 'diff.panel.close',
-    label: 'Diffs: Close Panel',
+    id: 'review.open',
+    label: 'Review: Open',
+    icon: '±',
+    when: 'hasActiveThread',
+    run: (ctx) =>
+      withMaterializedThread(ctx, (threadId, pane) => {
+        void openReviewCompanion(pane.paneId, threadId, { scope: 'workspace' });
+      }),
+  });
+
+  registerCommand({
+    id: 'review.close',
+    label: 'Review: Close',
     icon: '■',
     when: 'hasActiveThread',
     run: (ctx) =>
       withActiveThread(ctx, (_t, pane) => {
-        pane.setDiffPanelOpen(false);
+        pane.setShowReviewPane(false);
       }),
   });
 
@@ -1017,7 +1025,6 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     approvalPending: pane ? pane.pendingApprovals.length > 0 : false,
     anyModalOpen: false,
     hasActiveThread: thread !== null,
-    activeRhsPanel: pane?.activeRhsPanel !== null && pane?.activeRhsPanel !== undefined,
     turnActive: getActiveTurn(pane?.threadId ?? null) !== null,
     sendInFlight: isSendInFlight(pane?.threadId ?? null, pane?.sendInFlight ?? false),
     hasPendingPrompt: pane ? pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0 : false,

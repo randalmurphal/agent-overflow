@@ -40,12 +40,14 @@ export type ProjectSortMode = "lastActivity" | "createdAt" | "manual";
 
 export interface PaneLayoutPersistedPane {
   paneId: string;
-  threadId: string;
+  kind: "thread" | "plan" | "design-preview" | "review";
+  threadId?: string;
+  sourcePaneId?: string;
   ratio: number;
 }
 
 export interface PaneLayoutPersistedSettings {
-  version: 1;
+  version: 2;
   panes: PaneLayoutPersistedPane[];
   focusedPaneId?: string | null;
 }

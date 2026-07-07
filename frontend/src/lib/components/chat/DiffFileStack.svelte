@@ -8,7 +8,7 @@
    * Modern tool_result metadata carries a line-bounded preview patch
    * per file, so multi-file tool calls can render one independent
    * chat row per file without byte-slicing a combined payload. The
-   * combined payload still backs the sidebar.
+   * combined payload still backs the review-pane affordance.
    *
    * Legacy rows without per-file previews keep the old lazy-fetch
    * path: fetch a small payload prefix, parse it, and match by path.
@@ -29,7 +29,7 @@
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import DiffFileBlock from './DiffFileBlock.svelte';
-  import { openDiffSidebar } from './diffSidebarTrigger';
+  import { openReviewForItem } from './reviewTrigger';
   import { useLeasedPayloadExpansion } from './useLeasedPayloadExpansion.svelte';
 
   interface Props {
@@ -145,7 +145,7 @@
 
   function openFullDiff(): void {
     if (!pane || !payloadId) return;
-    openDiffSidebar(pane, { payloadId });
+    openReviewForItem(pane, { turnIndex: item.turnIndex });
   }
 
   function applyMetaToPatchFile(
@@ -179,6 +179,7 @@
     {payloadId}
     threadId={item.threadId}
     itemId={item.id}
+    turnIndex={item.turnIndex}
     workspacePath={paneWorkspacePath(pane)}
     toolName={item.toolName}
     createdAt={item.createdAt}
@@ -201,8 +202,8 @@
         variant="ghost"
         size="xs"
         onclick={openFullDiff}
-        ariaLabel="Open Full Diff in Side Panel"
-        title="Open full diff in side panel"
+        ariaLabel="Open full diff in review pane"
+        title="Open full diff in review pane"
         testId="diff-file-overflow-open-sidebar"
       >
         {#snippet leading()}<Icon icon={PanelRightOpen} size={12} />{/snippet}

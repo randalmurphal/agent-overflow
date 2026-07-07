@@ -22,7 +22,8 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   only place that should translate layout items into mounted chat panes.
 - `src/lib/components/chat/` — timeline rendering. Kind-based
   discrimination; no role/content matching. See its local guide before
-  editing rows, virtualized scrolling, markdown, or RHS panels.
+  editing rows, virtualized scrolling, markdown, or review/companion
+  pane affordances.
 - `src/lib/components/composer/` — message composer, mode / effort /
   model pickers.
 - `src/lib/components/sidebar/` — projects + thread list.
@@ -41,8 +42,9 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 
 `ThreadPane` is the sole owner of per-thread runtime UI state: visible
 items, streaming flags, approvals, design artifacts, channel messages,
-token usage, right-side-panel state, terminal placement, and scroll
-controller registration. Do not add a parallel streaming or timeline
+token usage, checkpoint bookkeeping, terminal placement, and scroll
+controller registration. Companion pane layout/open state lives in the
+pane-layout/companion stores. Do not add a parallel streaming or timeline
 state slice next to it.
 
 Pane layout and pane runtime state are separate. Layout stores own
@@ -74,7 +76,7 @@ Read that before touching:
 - `src/lib/components/chat/timeline{Restore,SizePriors,WindowAnchor,RowProjection}.svelte.ts`
   and `timeline{Paging,Diagnostics,RowUiPrune}.ts` (the scroll-session
   modules extracted from MessageTimeline)
-- `src/lib/components/chat/TimelineVirtualizer.svelte`
+- `src/lib/components/virtual/TimelineVirtualizer.svelte`
 - `src/lib/components/discussion/ChannelView.svelte`
 - `src/lib/utils/scroll/` (`index.svelte.ts` controller + resolver/intent/spring/observers)
 - `src/lib/utils/virtual/` (windowing engine + per-thread size priors)
@@ -250,6 +252,14 @@ corrupt every project on the machine. Use
      the committed-prefix/volatile-tail split remounts each settled
      block once — the caches make that migration free. Perf-only: each
      can be dropped independently if upstream grows an equivalent.
+  10. **relative-reference links** (`Elements/Link.svelte`) — the
+      blocked-link branch drops its " [blocked]" suffix for schemeless
+      relative references (`docs/guide.md`, `../x`, `#frag` — common
+      repo-relative links in PR/issue bodies). They aren't navigable
+      here but they aren't *blocked URLs* either; the text renders
+      muted with the href as hover title. Disallowed absolute URLs
+      (`javascript:` etc.) and network-path refs (`//host/x`) keep the
+      tag. Regression: `ChatMarkdown.test.ts`. Upstream-PR candidate.
 
 ## References
 

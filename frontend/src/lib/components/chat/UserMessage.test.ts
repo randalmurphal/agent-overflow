@@ -3,7 +3,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { createDiffPanelState } from '../../stores/diffPanel.svelte';
+import { createThreadCheckpointState } from '../../stores/threadCheckpoints.svelte';
 import {
   projectTurnCompleted,
   projectTurnStarted,
@@ -32,8 +32,8 @@ describe('<UserMessage>', () => {
   });
 
   function makeCheckpointedPane(userItemId = 'user:1'): ThreadPane {
-    const diffPanel = createDiffPanelState();
-    diffPanel.setCheckpoints([{
+    const checkpoints = createThreadCheckpointState();
+    checkpoints.setCheckpoints([{
       id: 'checkpoint-1',
       threadId: 'thread-1',
       userItemId,
@@ -44,8 +44,9 @@ describe('<UserMessage>', () => {
     }]);
     return {
       threadId: 'thread-1',
+      paneId: 'pane-1',
       thread: makeThread({ id: 'thread-1' }),
-      diffPanel,
+      checkpoints,
       attachmentCacheFor: () => undefined,
     } as unknown as ThreadPane;
   }

@@ -39,6 +39,8 @@ import {
   notifyTerminalFocus,
   resetTerminalFocusForTest,
 } from '../terminal/terminalStore.svelte';
+import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 
 function installDraftMocks() {
   setBindingMock('GetDraft', async (threadId: string) => ({
@@ -149,6 +151,8 @@ describe('<Composer>', () => {
     resetSendQueueForTest();
     resetThreadStatuses();
     resetTerminalFocusForTest();
+    resetPaneLayoutForTest();
+    resetCompanionPanesForTest();
     installDraftMocks();
     setBindingMock('SendMessageWithOptions', async () => makeTestThread({ runtimeMode: 'full-access' }));
     setBindingMock('InterruptTurn', async () => {});
@@ -1198,6 +1202,7 @@ describe('<Composer>', () => {
       updatedAt: 1,
     });
     const pane = await buildPane(makeTestThread(), [plan]);
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
     const draft = await buildDraft();
     setBindingMock('ListProposedPlanComments', async () => []);
     const sendGate = deferred<ReturnType<typeof makeTestThread>>();
@@ -1624,6 +1629,7 @@ describe('<Composer>', () => {
       updatedAt: 1,
     });
     const pane = await buildPane(makeTestThread(), [plan]);
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
     const draft = await buildDraft();
     setBindingMock('ListThreadProposedPlans', async () => []);
 

@@ -1,7 +1,6 @@
 import type { ItemKind, Thread } from '../types/models';
 import type { ScrollObservationKind } from '../utils/scroll/index.svelte';
 import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
-import type { RhsPanel } from './rhsPanelSlot.svelte';
 import type { ActiveTurn } from './threadStatuses.svelte';
 
 // Test-only injection: when set, every PerItemSmoother created by
@@ -128,17 +127,6 @@ export function threadUsesDiscussionSurface(
   thread: Pick<Thread, 'mode' | 'discussionId'> | null | undefined,
 ): boolean {
   return !!thread && thread.mode === 'discussion' && !!thread.discussionId;
-}
-
-export function sameRhsPanel(
-  left: RhsPanel | null,
-  right: RhsPanel | null,
-): boolean {
-  if (left === null || right === null) return left === right;
-  if (left.kind !== right.kind) return false;
-  if (left.kind !== 'diff-payload' || right.kind !== 'diff-payload')
-    return true;
-  return left.payloadId === right.payloadId && left.filePath === right.filePath;
 }
 
 export type LoadOlderResult = {

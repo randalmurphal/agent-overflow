@@ -147,7 +147,10 @@ export const chatMarkdownTheme: ThemeOverride = {
   h4: { base: 'mt-2 mb-1 text-sm font-semibold' },
   h5: { base: 'mt-2 mb-1 text-sm font-semibold' },
   h6: { base: 'mt-2 mb-1 text-sm font-semibold' },
-  ul: { base: 'ml-0 pl-5 list-outside list-disc whitespace-normal' },
-  ol: { base: 'ml-0 pl-5 list-outside whitespace-normal' },
+  // pl matches `.markdown-body ul/ol` in app.css (which wins the
+  // cascade): 2em of marker room so wide fonts don't clip — see the
+  // comment there.
+  ul: { base: 'ml-0 pl-[2em] list-outside list-disc whitespace-normal' },
+  ol: { base: 'ml-0 pl-[2em] list-outside whitespace-normal' },
   li: { base: 'py-0.5', checkbox: 'mr-2' },
 };

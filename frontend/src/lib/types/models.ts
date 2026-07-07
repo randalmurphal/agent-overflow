@@ -21,6 +21,7 @@ export interface Thread {
   projectId?: string;
   worktreePath?: string;
   branch?: string;
+  prRef?: string;
   /**
    * Canonical mode column.
    * "chat" | "plan" | "design" | "discussion" | "terminal".
@@ -273,12 +274,24 @@ export interface SourceProposedPlan {
   title?: string;
 }
 
-export type DiffReviewScope = "session" | "workspace";
+export type DiffReviewScope = "turn" | "session" | "workspace" | "branch" | "pr";
 
 export interface SourceDiffReview {
   threadId?: string;
   scope: DiffReviewScope;
   sourceKey: string;
+  pr?: DiffReviewPRContext;
+}
+
+export interface DiffReviewPRContext {
+  number: number;
+  url: string;
+  comments: DiffReviewPRContextEntry[];
+}
+
+export interface DiffReviewPRContextEntry {
+  commentId: string;
+  hunkExcerpt: string;
 }
 
 export interface DiffReviewComment {
@@ -286,6 +299,7 @@ export interface DiffReviewComment {
   threadId: string;
   scope: DiffReviewScope;
   sourceKey: string;
+  commitSha?: string;
   filePath: string;
   status: "draft" | "sent" | "resolved";
   oldLine?: number;
@@ -302,6 +316,7 @@ export interface DiffReviewComment {
 export interface DiffReviewCommentInput {
   scope: DiffReviewScope;
   sourceKey: string;
+  commitSha?: string;
   filePath: string;
   oldLine?: number;
   newLine?: number;
@@ -312,6 +327,138 @@ export interface DiffReviewCommentInput {
 
 export interface DiffReviewCommentUpdate {
   body: string;
+}
+
+export interface PRReference {
+  forge: "github" | "gitlab";
+  namespace: string;
+  repo: string;
+  number: number;
+}
+
+export interface PRDetail {
+  number: number;
+  title: string;
+  body: string;
+  authorLogin: string;
+  state: string;
+  draft: boolean;
+  headRefName: string;
+  baseRefName: string;
+  headSHA: string;
+  url: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  viewerIsAuthor: boolean;
+  reviewDecision: string;
+  latestReviews: ReviewVerdict[];
+  checks: CheckSummary;
+  mergeability: string;
+}
+
+export interface ReviewVerdict {
+  authorLogin: string;
+  state: string;
+  submittedAt: string;
+  body: string;
+  commitSHA: string;
+}
+
+export interface CheckSummary {
+  total: number;
+  success: number;
+  pending: number;
+  failure: number;
+  skipped: number;
+  canceled: number;
+  checks: CheckStatus[];
+}
+
+export interface CheckStatus {
+  kind: string;
+  name: string;
+  workflow?: string;
+  status: string;
+  conclusion?: string;
+  detailsURL?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+// Normalized CI shapes mirroring internal/git/ci.go. "Stage" is the
+// GitLab pipeline stage or the GitHub workflow name.
+export interface CIPipeline {
+  status: string;
+  url?: string;
+  stages: CIStage[];
+}
+
+export interface CIStage {
+  name: string;
+  status: string;
+  jobs: CIJob[];
+}
+
+export interface CIJob {
+  id?: string;
+  name: string;
+  status: string;
+  durationSeconds?: number;
+  url?: string;
+  allowFailure?: boolean;
+  logsAvailable: boolean;
+  steps?: CIStep[];
+}
+
+export interface CIStep {
+  number: number;
+  name: string;
+  status: string;
+}
+
+export interface CIJobLogResult {
+  text: string;
+  truncated: boolean;
+  totalBytes: number;
+}
+
+/** One PR discussion: a file-anchored review thread (path set) or a
+ * PR-level conversation thread (path empty). */
+export interface ReviewThread {
+  id: string;
+  path: string;
+  line?: number | null;
+  startLine?: number | null;
+  side: string;
+  /** False for flat conversation comments with no resolve state. */
+  isResolvable: boolean;
+  isResolved: boolean;
+  isOutdated: boolean;
+  comments: ReviewComment[];
+}
+
+export interface ReviewComment {
+  authorLogin: string;
+  body: string;
+  createdAt: string;
+  databaseID: number;
+  replyTo?: { id: string; databaseID: number };
+}
+
+export interface ReviewLineComment {
+  path: string;
+  body: string;
+  line?: number;
+  side: string;
+  startLine?: number;
+}
+
+export interface SubmitPRReviewResult {
+  postedReview: boolean;
+  postedFileComments: number;
+  partialFailurePath?: string;
+  partialFailure?: string;
 }
 
 export interface ProposedPlanComment {

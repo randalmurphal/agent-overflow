@@ -21,8 +21,6 @@ function makeStats(threadId: string): TimelineMemoryStats {
     mountedTimelineNodes: 0,
     mountedDiffBlocks: 0,
     mountedDiffBodies: 0,
-    mountedDiffSidebarFiles: 0,
-    mountedDiffSidebarBodies: 0,
     paneState: {},
   };
 }
@@ -59,8 +57,6 @@ describe('timelineMemoryDiagnostics', () => {
         <div data-testid="message-timeline-node"></div>
         <div data-testid="diff-file-block"></div>
         <div data-testid="diff-file-body"></div>
-        <div data-testid="diff-sidebar-file"></div>
-        <div data-testid="diff-sidebar-file-body"></div>
       </section>
       <section id="other">
         <div data-testid="message-timeline-node"></div>
@@ -72,8 +68,6 @@ describe('timelineMemoryDiagnostics', () => {
       mountedTimelineNodes: 1,
       mountedDiffBlocks: 1,
       mountedDiffBodies: 1,
-      mountedDiffSidebarFiles: 1,
-      mountedDiffSidebarBodies: 1,
     });
   });
 });

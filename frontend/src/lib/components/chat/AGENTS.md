@@ -91,26 +91,22 @@ Heavy work such as Mermaid render, Shiki highlight, KaTeX typeset, and
 attachment image load should stay lazy and row-local. Module-level
 singletons in the markdown pipeline keep remounts cheap.
 
-## Right-Side Panels
+## Companion Panes
 
-`RhsSidebarShell.svelte` hosts plan, diff checkpoint, and diff payload
-panels. Visibility, width, and per-thread snapshot/restore live in
-`stores/rhsPanelSlot.svelte.ts`.
+Plan, design preview, and review surfaces mount as companion panes through
+`components/panes/CompanionPane.svelte`, snapped next to their source
+thread pane by `stores/companionPanes.svelte.ts` and the pane layout store.
+Chat components should open these via the companion/review store helpers,
+not by mounting sidebars inside `ChatView`.
 
-Panel bodies receive `ctx: PanelContext`, not `pane: ThreadPane`. Keep
-the body contract narrow so panels cannot accidentally subscribe to every
-chat tick. The shell itself keeps `pane` because it owns resizer chrome
-and the scroll-controller pause lease.
+Panel bodies receive `ctx: PanelContext`, not `pane: ThreadPane`. Keep the
+body contract narrow so companion panes cannot accidentally subscribe to
+every chat tick.
 
-To add a panel kind:
-
-1. Extend the `RhsPanel` union and `clonePanel` in
-   `stores/rhsPanelSlot.svelte.ts`.
-2. Add the component to `PANEL_COMPONENTS` in `RhsSidebarShell.svelte`.
-3. Add a render branch in the keyed shell body.
-
-Clamp panel width through the owning pane (`pane.getRhsSidebarMaxWidth`),
-not `window.innerWidth` or the app shell.
+The review pane (`components/review/`) owns full-diff workflows: local
+scope selection, file-tree navigation, virtualized diff rendering, and
+comment drafts. Inline diff affordances should route there through
+`reviewTrigger.ts` / `openReviewCompanion`.
 
 ## Markdown Rendering
 

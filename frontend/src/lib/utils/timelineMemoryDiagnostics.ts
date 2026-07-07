@@ -18,8 +18,6 @@ export interface TimelineMemoryStats {
   mountedTimelineNodes: number;
   mountedDiffBlocks: number;
   mountedDiffBodies: number;
-  mountedDiffSidebarFiles: number;
-  mountedDiffSidebarBodies: number;
   paneState: unknown;
 }
 
@@ -76,8 +74,6 @@ export function countMountedTimelineMemoryNodes(
   | 'mountedTimelineNodes'
   | 'mountedDiffBlocks'
   | 'mountedDiffBodies'
-  | 'mountedDiffSidebarFiles'
-  | 'mountedDiffSidebarBodies'
 > {
   const queryRoot = root ?? (typeof document === 'undefined' ? null : document);
   if (!queryRoot) {
@@ -85,15 +81,11 @@ export function countMountedTimelineMemoryNodes(
       mountedTimelineNodes: 0,
       mountedDiffBlocks: 0,
       mountedDiffBodies: 0,
-      mountedDiffSidebarFiles: 0,
-      mountedDiffSidebarBodies: 0,
     };
   }
   return {
     mountedTimelineNodes: queryRoot.querySelectorAll('[data-testid="message-timeline-node"]').length,
     mountedDiffBlocks: queryRoot.querySelectorAll('[data-testid="diff-file-block"]').length,
     mountedDiffBodies: queryRoot.querySelectorAll('[data-testid="diff-file-body"]').length,
-    mountedDiffSidebarFiles: queryRoot.querySelectorAll('[data-testid="diff-sidebar-file"]').length,
-    mountedDiffSidebarBodies: queryRoot.querySelectorAll('[data-testid="diff-sidebar-file-body"]').length,
   };
 }

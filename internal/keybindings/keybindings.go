@@ -59,7 +59,7 @@ var Defaults = []Keybinding{
 	// close when open), the sidebar search input moves to mod+/, and
 	// the cheat sheet moves to mod+shift+/. The sidebar.focus-search
 	// binding fires globally
-	// (empty `when`) so it works from the composer, the diff panel,
+	// (empty `when`) so it works from the composer, the review pane,
 	// the terminal, etc.
 	{Key: "mod+shift+k", Command: "palette.open", DefaultID: "palette.open"},
 	{Key: "mod+/", Command: "sidebar.focus-search", DefaultID: "sidebar.focus-search"},
@@ -136,7 +136,6 @@ var Defaults = []Keybinding{
 	// command palette.
 	{Key: "mod+f", Command: "search.in-thread", When: "hasActiveThread && !terminalFocus", DefaultID: "search.in-thread"},
 	{Key: "mod+,", Command: "settings.open", DefaultID: "settings.open"},
-	{Key: "esc", Command: "rhs.close", When: "activeRhsPanel && !anyModalOpen && !terminalFocus", DefaultID: "rhs.close"},
 	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen", DefaultID: "thread.interrupt"},
 	{Key: "mod+1", Command: "thread.jump.1", DefaultID: "thread.jump.1"},
 	{Key: "mod+2", Command: "thread.jump.2", DefaultID: "thread.jump.2"},

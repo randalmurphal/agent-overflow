@@ -249,6 +249,33 @@ func (a *App) GetWorkspaceCurrentDiff(threadID string) (string, error) {
 	return string(patch), nil
 }
 
+// GetBranchBaseDiff returns the combined diff of the thread's workspace
+// (committed work since merge-base plus uncommitted changes) against the
+// merge base of baseBranch and the workspace HEAD — i.e. what a PR onto
+// baseBranch would contain.
+func (a *App) GetBranchBaseDiff(threadID string, baseBranch string) (string, error) {
+	const action = "get branch base diff"
+	if strings.TrimSpace(baseBranch) == "" {
+		return "", fmt.Errorf("%s: base branch is required", action)
+	}
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", action, err)
+	}
+	_, workspace, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", action, err)
+	}
+	if !a.checkpointStore().IsGitRepository(context.Background(), workspace) {
+		return "", nil
+	}
+	patch, err := a.checkpointStore().DiffBranchBaseToWorktree(context.Background(), workspace, baseBranch)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", action, err)
+	}
+	return string(patch), nil
+}
+
 func (a *App) RevertToMessageCheckpoint(threadID string, userItemID string, mode string) error {
 	return a.revertToMessageCheckpoint(threadID, userItemID, mode, RevertToMessageCheckpointOptions{})
 }

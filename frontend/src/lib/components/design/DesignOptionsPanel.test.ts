@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import DesignOptionsPanel from './DesignOptionsPanel.svelte';
-import { makePanelContext } from '../../stores/rhsPanelSlot.svelte';
+import { makePanelContext } from '../../stores/panelContext.svelte';
 import type { Thread } from '../../types/models';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
@@ -34,7 +34,7 @@ describe('<DesignOptionsPanel>', () => {
   it('renders option iframes for the active option set', async () => {
     const pane = await buildPane();
     const { container, getAllByTestId } = render(DesignOptionsPanel, {
-      props: { ctx: makePanelContext(pane) },
+      props: { ctx: makePanelContext(pane, () => {}) },
     });
 
     expect(getAllByTestId('design-option-card')).toHaveLength(2);
@@ -53,7 +53,7 @@ describe('<DesignOptionsPanel>', () => {
       optionIds: ['gamma'],
     }));
     const { container, getByRole } = render(DesignOptionsPanel, {
-      props: { ctx: makePanelContext(pane) },
+      props: { ctx: makePanelContext(pane, () => {}) },
     });
 
     await fireEvent.click(getByRole('button', { name: 'Refresh options' }));
@@ -70,7 +70,7 @@ describe('<DesignOptionsPanel>', () => {
     const send = setBindingMock('SendMessage', async () => {});
     const dismiss = setBindingMock('DismissDesignOptionSet', async () => {});
     const { getAllByTestId } = render(DesignOptionsPanel, {
-      props: { ctx: makePanelContext(pane) },
+      props: { ctx: makePanelContext(pane, () => {}) },
     });
 
     await fireEvent.click(getAllByTestId('design-option-pick')[0]);
@@ -88,7 +88,7 @@ describe('<DesignOptionsPanel>', () => {
     const pane = await buildPane();
     const send = setBindingMock('SendMessage', async () => {});
     const { getByRole } = render(DesignOptionsPanel, {
-      props: { ctx: makePanelContext(pane) },
+      props: { ctx: makePanelContext(pane, () => {}) },
     });
 
     await fireEvent.click(getByRole('button', { name: 'Dismiss' }));

@@ -1,9 +1,9 @@
 <script lang="ts" module>
   /*
-   * Shared diff-line content renderer. Both the inline DiffFileBlock
-   * (in-chat) and DiffSidebarFile (sidebar) consume this so the
-   * tokenized line render is defined once. Pure: renders one PatchLine
-   * given the resolved tokens (caller does the cache lookup).
+   * Shared diff-line content renderer. Inline and review diff rows
+   * consume this so tokenized line rendering is defined once. Pure:
+   * renders one PatchLine given the resolved tokens (caller does the
+   * cache lookup).
    *
    * The first character of `+` / `-` lines is the diff prefix and is
    * surfaced separately from the tokenized body — Shiki tokenizes the

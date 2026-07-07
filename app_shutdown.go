@@ -216,6 +216,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 		record("close gitwatch manager", nil)
 	}
 
+	a.closePRUpdatePumps()
+	record("close PR update subscriptions", nil)
+
 	// Step 5c: stop any design watchers that survived session teardown.
 	// Per-session teardownDesignThread already fires from the parallel
 	// closer in step 4 for sessions that reached close cleanly, but a

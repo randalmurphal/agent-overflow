@@ -1,10 +1,9 @@
 /**
  * Shared line-tint classes for the diff renderers.
  *
- * Three surfaces render unified-diff lines today (inline DiffFileBlock
- * in the chat timeline, the per-tool DiffSidebar, and the per-turn
- * DiffPanelDrawer). All three use the same background + foreground
- * tints to mark add/del/meta/context lines. Centralizing the class
+ * Inline diff blocks and the review pane render unified-diff lines.
+ * Both use the same background + foreground tints to mark
+ * add/del/meta/context lines. Centralizing the class
  * strings here:
  *   - keeps the surfaces visually consistent
  *   - puts a future palette tweak (e.g. when light-mode is wired
@@ -13,7 +12,10 @@
  *     (padding, block, grid cell) without duplicating the color rules.
  */
 
-export type LineTintType = 'add' | 'del' | 'meta' | 'context';
+// `marker` is conflict-view only (`utils/conflictFile.ts`): visible,
+// unnumbered rows for conflict markers and fold placeholders. Regular
+// diff parsing never emits it.
+export type LineTintType = 'add' | 'del' | 'meta' | 'context' | 'marker';
 
 export function lineTintClass(type: LineTintType): string {
   switch (type) {
@@ -23,6 +25,8 @@ export function lineTintClass(type: LineTintType): string {
       return 'bg-error/20 text-error';
     case 'meta':
       return 'text-accent/70';
+    case 'marker':
+      return 'bg-accent/10 text-accent';
     default:
       return 'text-text-secondary';
   }

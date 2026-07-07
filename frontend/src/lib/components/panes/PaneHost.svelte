@@ -2,13 +2,14 @@
   import type { Snippet } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
   import TakeControlPane from '../takecontrol/TakeControlPane.svelte';
+  import CompanionPane from './CompanionPane.svelte';
   import {
     focusPane,
     getFocusedPaneId,
     getPane,
   } from '../../stores/panes.svelte';
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
-  import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
+  import { getPaneLayoutItems, isCompanionKind } from '../../stores/paneLayout.svelte';
   import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import { REVEAL_PANE_EVENT } from '../../stores/events';
   import PaneDivider from './PaneDivider.svelte';
@@ -218,6 +219,23 @@
           data-pane-ratio={item.ratio}
         >
           <TakeControlPane paneId={item.paneId} />
+        </section>
+      {:else if isCompanionKind(item.kind)}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <section
+          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
+          style:flex-grow={item.ratio}
+          style:flex-basis="0"
+          style:min-width={`${minPaneWidth}px`}
+          class="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border-subtle/70"
+          data-pane-id={item.paneId}
+          data-pane-kind={item.kind}
+          data-pane-min-width={minPaneWidth}
+          data-pane-ratio={item.ratio}
+          onpointerdown={() => handlePaneFocus(item.sourcePaneId!)}
+          onfocusin={() => handlePaneFocus(item.sourcePaneId!)}
+        >
+          <CompanionPane paneId={item.paneId} kind={item.kind} sourcePaneId={item.sourcePaneId!} />
         </section>
       {:else}
         {@const pane = getPane(item.paneId)}

@@ -8,6 +8,8 @@ export {
     DiffReviewComment,
     DiffReviewCommentInput,
     DiffReviewCommentUpdate,
+    DiffReviewPRContext,
+    DiffReviewPRContextEntry,
     DiffReviewSourceRef,
     DiscussionDefinition,
     DiscussionParticipant,

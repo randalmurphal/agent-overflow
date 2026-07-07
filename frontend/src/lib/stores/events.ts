@@ -110,6 +110,7 @@ import {
   type DiscussionMessageEvent,
   type DiscussionStateEvent,
 } from './eventsDiscussion';
+import { applyPRReviewUpdated } from './eventsPRReview';
 import { clearAllDiscussionLiveTail } from './discussionLiveTail';
 
 /**
@@ -342,6 +343,7 @@ export function setupEventListeners(): () => void {
     'discussion:state',
     applyDiscussionState,
   );
+  const cancelPRUpdated = wailsEventOn('pr:updated', applyPRReviewUpdated);
 
   return () => {
     cancelItemEvent();
@@ -376,6 +378,7 @@ export function setupEventListeners(): () => void {
     cancelRuntimeModeChanged();
     cancelDiscussionMessage();
     cancelDiscussionState();
+    cancelPRUpdated();
     clearAllDesignThrottles();
     clearAllDiscussionLiveTail();
   };

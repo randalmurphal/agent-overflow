@@ -102,9 +102,8 @@ describe('diffTheme', () => {
   it('getDiffTheme is a pure read — does not evict the cache (eviction is the caller\'s responsibility)', async () => {
     // The store deliberately does NOT touch the shared cache when
     // resolving the theme — Svelte 5 forbids state mutations during
-    // `$derived` recomputation, and DiffSidebarBody.svelte calls
-    // `$derived(getDiffTheme())`. Eviction lives in a sibling
-    // `$effect` in DiffSidebarBody. This test pins the contract.
+    // `$derived` recomputation, so eviction lives in caller-owned
+    // effects. This test pins the contract.
     const cache = getSharedTokenCache();
     cache.set(tokenCacheKey('thread-1', 'github-dark', 'typescript', 'const x = 1;'), [
       { content: 'const', color: '#ff79c6' },

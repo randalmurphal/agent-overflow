@@ -12,7 +12,13 @@ import (
 )
 
 const (
-	defaultTimeout        = 30 * time.Second
+	// defaultTimeout bounds every git / gh / glab subprocess. It MUST
+	// stay well below the frontend RPC timeout (RPC_TIMEOUT_MS in
+	// frontend/src/lib/transport/wsClient.ts): when a forge CLI hangs
+	// on a dead network, the descriptive error here ("gh ... timed out
+	// after 45s") must reach the pane before the opaque client-side
+	// "RPC timed out" fires.
+	defaultTimeout        = 45 * time.Second
 	defaultMaxOutputBytes = int64(1_000_000)
 
 	// prLookupTTL is how long an open-PR lookup result stays cached.
@@ -284,12 +290,39 @@ func (c *Core) run(cwd string, args ...string) (commandResult, error) {
 	return c.runBinary("git", cwd, args...)
 }
 
+// runWithLimit runs a git command with an explicit stdout/stderr cap
+// (0 = Core default). PR diffs can exceed the shared default, so their
+// callers raise the ceiling rather than truncating.
+func (c *Core) runWithLimit(cwd string, maxBytes int64, args ...string) (commandResult, error) {
+	return c.runBinaryWithInputLimit("git", cwd, "", maxBytes, args...)
+}
+
 func (c *Core) runBinary(binary, cwd string, args ...string) (commandResult, error) {
+	return c.runBinaryWithInput(binary, cwd, "", args...)
+}
+
+func (c *Core) runBinaryWithLimit(binary, cwd string, maxBytes int64, args ...string) (commandResult, error) {
+	return c.runBinaryWithInputLimit(binary, cwd, "", maxBytes, args...)
+}
+
+func (c *Core) runBinaryInput(binary, cwd, stdin string, args ...string) (commandResult, error) {
+	return c.runBinaryWithInput(binary, cwd, stdin, args...)
+}
+
+func (c *Core) runBinaryWithInput(binary, cwd, stdin string, args ...string) (commandResult, error) {
+	return c.runBinaryWithInputLimit(binary, cwd, stdin, 0, args...)
+}
+
+// runBinaryWithInputLimit is the shared runner; maxBytes <= 0 falls back
+// to the Core's configured cap (then the package default).
+func (c *Core) runBinaryWithInputLimit(binary, cwd, stdin string, maxBytes int64, args ...string) (commandResult, error) {
 	timeout := c.timeout
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	maxBytes := c.maxOutputBytes
+	if maxBytes <= 0 {
+		maxBytes = c.maxOutputBytes
+	}
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxOutputBytes
 	}
@@ -300,6 +333,9 @@ func (c *Core) runBinary(binary, cwd string, args ...string) (commandResult, err
 	cmd := exec.CommandContext(ctx, binary, args...)
 	if cwd != "" {
 		cmd.Dir = cwd
+	}
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
 	}
 
 	stdoutBuf := newLimitedBuffer(maxBytes)

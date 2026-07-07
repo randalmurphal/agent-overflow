@@ -1,7 +1,6 @@
 // Main-thread wrapper around the Shiki tokenizer worker.
 //
-// Single worker instance for the whole app — diff tokenization isn't
-// concurrent in the per-tool sidebar model. Lazy-boots on first
+// Single worker instance for the whole app. Lazy-boots on first
 // request; idle-terminates after a quiet period. On termination,
 // in-flight Promises reject and a subsequent request reboots.
 //

@@ -24,6 +24,7 @@ import {
   DisconnectedError,
   MAX_PENDING_RPCS,
   MAX_REPLAY_CHANNELS,
+  RPC_TIMEOUT_MS,
   TransportError,
   transportGapChannel,
 } from './wsClient';
@@ -515,8 +516,7 @@ describe('WSClient', () => {
     const ws = MockWebSocket.instances[0]!;
     ws.acceptOpen();
     await vi.advanceTimersByTimeAsync(0);
-    // Default RPC_TIMEOUT_MS is 30_000; advance past it.
-    await vi.advanceTimersByTimeAsync(30_001);
+    await vi.advanceTimersByTimeAsync(RPC_TIMEOUT_MS + 1);
     const caught = await settled;
     expect(caught).toBeInstanceOf(TransportError);
     expect((caught as TransportError).code).toBe('timeout');

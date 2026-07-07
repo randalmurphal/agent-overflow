@@ -229,6 +229,96 @@ func TestGetWorkspaceCurrentDiffUsesLinkedWorktree(t *testing.T) {
 	}
 }
 
+func TestGetBranchBaseDiffIncludesCommittedAndUncommittedChanges(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	thread := createGitDiffTestThread(t, app, repo, "thread-branch-base-diff")
+
+	testutil.RunGit(t, repo, "checkout", "-b", "feature/review")
+	if err := os.WriteFile(filepath.Join(repo, "committed.txt"), []byte("committed branch work\n"), 0o644); err != nil {
+		t.Fatalf("write committed file: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "committed.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "feature commit")
+	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("hello\nuncommitted edit\n"), 0o644); err != nil {
+		t.Fatalf("write uncommitted file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("untracked branch work\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+
+	diff, err := app.GetBranchBaseDiff(thread.ID, "main")
+	if err != nil {
+		t.Fatalf("GetBranchBaseDiff() error = %v", err)
+	}
+	for _, want := range []string{
+		"committed.txt",
+		"+committed branch work",
+		"+uncommitted edit",
+		"untracked.txt",
+		"+untracked branch work",
+	} {
+		if !strings.Contains(diff, want) {
+			t.Fatalf("diff missing %q:\n%s", want, diff)
+		}
+	}
+}
+
+func TestGetBranchBaseDiffBaseEqualsCurrentShowsOnlyUncommitted(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	thread := createGitDiffTestThread(t, app, repo, "thread-branch-base-current")
+
+	if err := os.WriteFile(filepath.Join(repo, "committed.txt"), []byte("main work\n"), 0o644); err != nil {
+		t.Fatalf("write committed file: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "committed.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "main commit")
+	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("hello\nworkspace edit\n"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+
+	diff, err := app.GetBranchBaseDiff(thread.ID, "main")
+	if err != nil {
+		t.Fatalf("GetBranchBaseDiff() error = %v", err)
+	}
+	if strings.Contains(diff, "committed.txt") || strings.Contains(diff, "+main work") {
+		t.Fatalf("diff included committed current-branch work:\n%s", diff)
+	}
+	if !strings.Contains(diff, "+workspace edit") {
+		t.Fatalf("diff missing workspace edit:\n%s", diff)
+	}
+}
+
+func TestGetBranchBaseDiffMissingBranchErrors(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	thread := createGitDiffTestThread(t, app, repo, "thread-branch-base-missing")
+
+	_, err := app.GetBranchBaseDiff(thread.ID, "missing-branch")
+	if err == nil {
+		t.Fatal("GetBranchBaseDiff() error = nil, want missing branch error")
+	}
+	if !strings.Contains(err.Error(), "get branch base diff: checkpoint: merge-base missing-branch HEAD") {
+		t.Fatalf("error = %v, want wrapped merge-base context", err)
+	}
+}
+
+func createGitDiffTestThread(t *testing.T, app *App, repo string, threadID string) store.Thread {
+	t.Helper()
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread(threadID)
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	return thread
+}
+
 func TestGitCreateWorktreePreservesExplicitBranchCase(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

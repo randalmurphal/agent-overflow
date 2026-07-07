@@ -18,7 +18,7 @@
 // source pane). The mirrored threadId is resolved reactively from the source
 // pane by TakeControlPane.svelte, so "switch follows" needs no bookkeeping
 // here. Adjacency ("never a dangling pane on the side") is enforced
-// structurally by resnapTakeControlItems in paneLayout.svelte.ts; cascade close
+// structurally by resnapCompanionItems in paneLayout.svelte.ts; cascade close
 // is wired through panes.svelte.ts's destroy observer.
 
 import {
@@ -27,7 +27,7 @@ import {
   getPaneLayoutItems,
   removePaneLayoutItem,
 } from './paneLayout.svelte';
-import { getPane, setPaneDestroyedObserver } from './panes.svelte';
+import { addPaneDestroyedObserver, getPane } from './panes.svelte';
 
 export interface TakeControlPaneState {
   // The take-control pane's own id (a layout paneId, e.g. "take-control-main").
@@ -38,6 +38,7 @@ export interface TakeControlPaneState {
 
 // Keyed by the take-control pane's own paneId.
 let takeControlPanes: Map<string, TakeControlPaneState> = $state(new Map());
+let unsubscribePaneDestroyed: (() => void) | null = null;
 
 function takeControlPaneIdFor(sourcePaneId: string): string {
   return `take-control-${sourcePaneId}`;
@@ -164,10 +165,12 @@ export function sourcePaneForTakeControl(paneId: string) {
 
 /** Wire the cascade-close observer. Call once during app store setup. */
 export function installTakeControl(): void {
-  setPaneDestroyedObserver(onSourcePaneDestroyed);
+  unsubscribePaneDestroyed?.();
+  unsubscribePaneDestroyed = addPaneDestroyedObserver(onSourcePaneDestroyed);
 }
 
 export function resetTakeControlForTest(): void {
   takeControlPanes = new Map();
-  setPaneDestroyedObserver(null);
+  unsubscribePaneDestroyed?.();
+  unsubscribePaneDestroyed = null;
 }

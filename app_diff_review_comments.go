@@ -29,6 +29,7 @@ func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCom
 		ThreadID:     threadID,
 		Scope:        input.Scope,
 		SourceKey:    input.SourceKey,
+		CommitSHA:    input.CommitSHA,
 		FilePath:     input.FilePath,
 		OldLine:      input.OldLine,
 		NewLine:      input.NewLine,
@@ -60,7 +61,18 @@ func (a *App) DeleteDiffReviewComment(threadID, commentID string) error {
 	return nil
 }
 
-func (a *App) SendDiffReviewComments(threadID, scope, sourceKey string, commentIDs []string) (store.Thread, error) {
+func (a *App) MarkDiffReviewCommentsSent(threadID, scope, sourceKey string, commentIDs []string, sentTurnID string) error {
+	if err := a.store.MarkDiffReviewCommentsSent(threadID, scope, sourceKey, commentIDs, time.Now().UnixMilli(), sentTurnID); err != nil {
+		return fmt.Errorf("mark diff review comments sent: %w", err)
+	}
+	return nil
+}
+
+type SendDiffReviewCommentsInput struct {
+	PR *store.DiffReviewPRContext `json:"pr,omitempty"`
+}
+
+func (a *App) SendDiffReviewComments(threadID, scope, sourceKey string, commentIDs []string, input SendDiffReviewCommentsInput) (store.Thread, error) {
 	scope, err := store.NormalizeDiffReviewScope(scope)
 	if err != nil {
 		return store.Thread{}, err
@@ -73,7 +85,7 @@ func (a *App) SendDiffReviewComments(threadID, scope, sourceKey string, commentI
 		return store.Thread{}, fmt.Errorf("send diff review comments: too many comments selected")
 	}
 	if _, err := a.sendMessageWithOptions(threadID, "", sendMessageOptions{
-		RevisionSourceDiffReview:     &SourceDiffReview{ThreadID: threadID, Scope: scope, SourceKey: sourceKey},
+		RevisionSourceDiffReview:     &SourceDiffReview{ThreadID: threadID, Scope: scope, SourceKey: sourceKey, PR: input.PR},
 		RevisionSourceDiffCommentIDs: commentIDs,
 	}); err != nil {
 		return store.Thread{}, err
@@ -81,7 +93,7 @@ func (a *App) SendDiffReviewComments(threadID, scope, sourceKey string, commentI
 	return a.store.GetThread(threadID)
 }
 
-func (a *App) appendDiffReviewCommentsToContent(threadID, content, scope, sourceKey string, commentIDs []string) (string, []string, error) {
+func (a *App) appendDiffReviewCommentsToContent(threadID, content, scope, sourceKey string, commentIDs []string, pr *store.DiffReviewPRContext) (string, []string, error) {
 	if len(store.UniqueNonEmptyStringsForApp(commentIDs)) > store.MaxDiffReviewCommentIDs {
 		return "", nil, fmt.Errorf("too many diff review comments selected")
 	}
@@ -92,7 +104,12 @@ func (a *App) appendDiffReviewCommentsToContent(threadID, content, scope, source
 	if len(comments) == 0 {
 		return "", nil, fmt.Errorf("no draft diff review comments selected")
 	}
-	prompt := diffreview.BuildPrompt(comments)
+	var prompt string
+	if scope == string(store.DiffReviewScopePR) {
+		prompt = diffreview.BuildPromptWithPRContext(comments, pr)
+	} else {
+		prompt = diffreview.BuildPrompt(comments)
+	}
 	if len(prompt) > store.MaxDiffReviewPromptBytes {
 		return "", nil, fmt.Errorf("diff review comments are too large")
 	}

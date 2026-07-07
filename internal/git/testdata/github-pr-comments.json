@@ -1,0 +1,37 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "comments": {
+          "pageInfo": { "hasNextPage": false, "endCursor": "Y3Vyc29yOjI=" },
+          "nodes": [
+            {
+              "id": "IC_kwDOAbc123",
+              "databaseId": 2401001,
+              "author": { "login": "coderabbitai[bot]" },
+              "body": "First pass done — see inline notes.",
+              "createdAt": "2026-06-26T22:47:39Z",
+              "isMinimized": false
+            },
+            {
+              "id": "IC_kwDOAbc124",
+              "databaseId": 2401002,
+              "author": { "login": "rmurphy" },
+              "body": "Thanks, addressing the config comment now.",
+              "createdAt": "2026-06-26T23:02:11Z",
+              "isMinimized": false
+            },
+            {
+              "id": "IC_kwDOAbc125",
+              "databaseId": 2401003,
+              "author": { "login": "spam-bot" },
+              "body": "This comment was minimized as off-topic.",
+              "createdAt": "2026-06-27T01:00:00Z",
+              "isMinimized": true
+            }
+          ]
+        }
+      }
+    }
+  }
+}

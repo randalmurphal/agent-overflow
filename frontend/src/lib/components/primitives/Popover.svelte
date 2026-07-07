@@ -342,6 +342,34 @@
     const handleScroll = () => updatePosition();
     const handleResize = () => updatePosition();
 
+    // Per-frame anchor tracking. Scroll/resize listeners miss anchor
+    // movement that fires no event at the moved element — programmatic
+    // scrollLeft writes (PaneHost drag auto-scroll), transform-driven
+    // layout shifts — leaving the popover stranded at a stale viewport
+    // position. While open, re-measure the anchor each frame and
+    // reposition only when its rect actually changed (one
+    // getBoundingClientRect per frame; popovers are open briefly and
+    // one at a time, so this is cheap). An anchor that leaves the DOM
+    // closes the popover instead of clamping it to the viewport origin.
+    let lastAnchorRect = '';
+    let rafId = 0;
+    const trackAnchor = () => {
+      if (anchor && floatingEl) {
+        if (!anchor.isConnected) {
+          onClose();
+          return;
+        }
+        const r = anchor.getBoundingClientRect();
+        const key = `${r.top}:${r.left}:${r.width}:${r.height}`;
+        if (key !== lastAnchorRect) {
+          lastAnchorRect = key;
+          updatePosition();
+        }
+      }
+      rafId = requestAnimationFrame(trackAnchor);
+    };
+    rafId = requestAnimationFrame(trackAnchor);
+
     document.addEventListener('mousedown', handleMouseDown);
     document.addEventListener('keydown', handleKeydown);
     window.addEventListener('scroll', handleScroll, { passive: true, capture: true });
@@ -356,6 +384,7 @@
     floatObserver.observe(floatingEl);
 
     return () => {
+      cancelAnimationFrame(rafId);
       document.removeEventListener('mousedown', handleMouseDown);
       document.removeEventListener('keydown', handleKeydown);
       window.removeEventListener('scroll', handleScroll, true);

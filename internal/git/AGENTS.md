@@ -55,6 +55,19 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   thin `Core.CreatePR` / `Core.ListOpenPRs` wrappers that dispatch
   through `forgeFor`.
 - `gitlab.go` — `gitlabForge` implementation backed by the `glab` CLI.
+- `ci.go` — forge-agnostic CI shapes (`CIPipeline`/`CIStage`/`CIJob`/
+  `CIStep`), the normalized status vocabulary + `NormalizeCIStatus` /
+  `AggregateCIStatus`, and `ValidateCIJobID`. "Stage" is GitLab's
+  pipeline stage or the GitHub workflow name.
+- `ci_github.go` / `ci_gitlab.go` — per-forge `ListPRCIJobs` +
+  `GetCIJobLog`: GitHub resolves workflow runs from the rollup's
+  `detailsUrl` job links and fans out `gh run view --json jobs` (steps
+  included); GitLab reads the MR's `head_pipeline` then pages
+  `/pipelines/:id/jobs` (stage order recovered by ascending job id)
+  and fetches `/jobs/:id/trace`, cleaned by `cleanGitLabTrace`
+  (timestamps kept; stream flags, `section_start/end` markers,
+  erase-line escapes, and `\r` overwrites resolved). Logs are capped
+  at `maxCILogBytes`.
 - `paths.go` — path canonicalization (`CanonicalPath`,
   `SameFilesystemPath`) for the symlink-heavy macOS tmp dir cases.
 - `results.go` — small result-type declarations shared across actions.

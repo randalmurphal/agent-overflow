@@ -83,7 +83,7 @@ func TestDiffReviewCommentsRejectInvalidScopeAndAnchors(t *testing.T) {
 	if _, err := s.CreateDiffReviewComment(DiffReviewComment{
 		ID:        "bad-scope",
 		ThreadID:  thread.ID,
-		Scope:     "turn",
+		Scope:     "junk",
 		SourceKey: "diff-1",
 		FilePath:  "app.ts",
 		Side:      "file",
@@ -103,6 +103,104 @@ func TestDiffReviewCommentsRejectInvalidScopeAndAnchors(t *testing.T) {
 		Body:      "Nope.",
 	}); err == nil {
 		t.Fatal("CreateDiffReviewComment accepted file comment with line number")
+	}
+}
+
+func TestNormalizeDiffReviewScopeAcceptsLocalScopes(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"turn", string(DiffReviewScopeTurn)},
+		{"session", string(DiffReviewScopeSession)},
+		{"workspace", string(DiffReviewScopeWorkspace)},
+		{"branch", string(DiffReviewScopeBranch)},
+		{"pr", string(DiffReviewScopePR)},
+		{" branch ", string(DiffReviewScopeBranch)},
+	}
+	for _, tt := range tests {
+		got, err := NormalizeDiffReviewScope(tt.in)
+		if err != nil {
+			t.Fatalf("NormalizeDiffReviewScope(%q): %v", tt.in, err)
+		}
+		if got != tt.want {
+			t.Fatalf("NormalizeDiffReviewScope(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+
+	if _, err := NormalizeDiffReviewScope("junk"); err == nil {
+		t.Fatal("NormalizeDiffReviewScope accepted junk")
+	}
+}
+
+func TestDiffReviewCommentsAcceptAllLocalScopes(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("diff-review-all-scopes-thread", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	for _, scope := range []DiffReviewScope{
+		DiffReviewScopeTurn,
+		DiffReviewScopeSession,
+		DiffReviewScopeWorkspace,
+		DiffReviewScopeBranch,
+		DiffReviewScopePR,
+	} {
+		t.Run(string(scope), func(t *testing.T) {
+			created, err := s.CreateDiffReviewComment(DiffReviewComment{
+				ID:        "comment-" + string(scope),
+				ThreadID:  thread.ID,
+				Scope:     string(scope),
+				SourceKey: "diff-" + string(scope),
+				FilePath:  "app.ts",
+				NewLine:   1,
+				Side:      "new",
+				Body:      "Comment for " + string(scope),
+				CreatedAt: 100,
+				UpdatedAt: 100,
+			})
+			if err != nil {
+				t.Fatalf("CreateDiffReviewComment(%s): %v", scope, err)
+			}
+			if created.Scope != string(scope) {
+				t.Fatalf("created.Scope = %q, want %q", created.Scope, scope)
+			}
+		})
+	}
+}
+
+func TestDiffReviewCommentCommitSHARoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("diff-review-pr-sha-thread", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	created, err := s.CreateDiffReviewComment(DiffReviewComment{
+		ID:        "comment-pr",
+		ThreadID:  thread.ID,
+		Scope:     string(DiffReviewScopePR),
+		SourceKey: "pr:github:o/r:1",
+		CommitSHA: "abc123",
+		FilePath:  "app.ts",
+		NewLine:   1,
+		Side:      "new",
+		Body:      "PR comment",
+		CreatedAt: 100,
+		UpdatedAt: 100,
+	})
+	if err != nil {
+		t.Fatalf("CreateDiffReviewComment: %v", err)
+	}
+	if created.CommitSHA != "abc123" {
+		t.Fatalf("CommitSHA = %q, want abc123", created.CommitSHA)
+	}
+	listed, err := s.ListDiffReviewComments(thread.ID, string(DiffReviewScopePR), "pr:github:o/r:1")
+	if err != nil {
+		t.Fatalf("ListDiffReviewComments: %v", err)
+	}
+	if len(listed) != 1 || listed[0].CommitSHA != "abc123" {
+		t.Fatalf("listed = %+v", listed)
 	}
 }
 

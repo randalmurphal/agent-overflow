@@ -18,6 +18,7 @@ import {
   setPaneLayoutItems,
   type PaneLayoutItem,
 } from './paneLayout.svelte';
+import { restoreCompanion, type CompanionKind } from './companionPanes.svelte';
 import {
   getAllPanes,
   getFocusedPaneId,
@@ -34,7 +35,7 @@ import {
 // adopted at read time.
 const PANE_LAYOUT_KEY = 'paneLayout';
 const LEGACY_PANE_LAYOUT_STORAGE_KEY = 'agentOverflowPaneLayout';
-const PANE_LAYOUT_SETTINGS_VERSION = 1;
+const PANE_LAYOUT_SETTINGS_VERSION = 2;
 const PANE_RESIZE_PERSIST_DELAY_MS = 200;
 const MAX_RESTORED_PANES = 24;
 const MAX_PANE_ID_LENGTH = 64;
@@ -64,6 +65,14 @@ function isSafePersistedThreadId(threadId: string): boolean {
   return threadId.length > 0 && threadId.length <= MAX_THREAD_ID_LENGTH;
 }
 
+function isPersistedCompanionKind(kind: unknown): kind is CompanionKind {
+  return kind === 'plan' || kind === 'design-preview' || kind === 'review';
+}
+
+function companionPaneIdFor(sourcePaneId: string, kind: CompanionKind): string {
+  return `${kind}-${sourcePaneId}`;
+}
+
 async function emptyLayout(): Promise<void> {
   setPaneLayoutItems([]);
   resetPaneRegistry(null);
@@ -72,27 +81,79 @@ async function emptyLayout(): Promise<void> {
 function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
   if (!raw || typeof raw !== 'object') return null;
   const record = raw as Record<string, unknown>;
-  if (record.version !== PANE_LAYOUT_SETTINGS_VERSION) return null;
+  if (record.version !== 1 && record.version !== PANE_LAYOUT_SETTINGS_VERSION) return null;
   if (!Array.isArray(record.panes)) return null;
   const focusedPaneId = typeof record.focusedPaneId === 'string' && isSafePersistedPaneId(record.focusedPaneId)
     ? record.focusedPaneId
     : null;
   const panes: PersistedPane[] = [];
+  if (record.version === 1) {
+    const seenPaneIds = new Set<string>();
+    const seenThreadIds = new Set<string>();
+    for (const item of record.panes) {
+      if (!item || typeof item !== 'object') continue;
+      const pane = item as Record<string, unknown>;
+      if (typeof pane.paneId !== 'string' || !isSafePersistedPaneId(pane.paneId)) continue;
+      if (typeof pane.threadId !== 'string' || !isSafePersistedThreadId(pane.threadId)) continue;
+      if (seenPaneIds.has(pane.paneId) || seenThreadIds.has(pane.threadId)) continue;
+      seenPaneIds.add(pane.paneId);
+      seenThreadIds.add(pane.threadId);
+      panes.push({
+        paneId: pane.paneId,
+        kind: 'thread',
+        threadId: pane.threadId,
+        ratio: normalizePersistedRatio(pane.ratio),
+      });
+      if (panes.length >= MAX_RESTORED_PANES) break;
+    }
+    return { version: PANE_LAYOUT_SETTINGS_VERSION, panes, focusedPaneId };
+  }
+
+  const validThreadPaneIds = new Set<string>();
+  const firstPassPaneIds = new Set<string>();
+  const firstPassThreadIds = new Set<string>();
+  for (const item of record.panes) {
+    if (!item || typeof item !== 'object') continue;
+    const pane = item as Record<string, unknown>;
+    if (pane.kind !== 'thread') continue;
+    if (typeof pane.paneId !== 'string' || !isSafePersistedPaneId(pane.paneId)) continue;
+    if (typeof pane.threadId !== 'string' || !isSafePersistedThreadId(pane.threadId)) continue;
+    if (firstPassPaneIds.has(pane.paneId) || firstPassThreadIds.has(pane.threadId)) continue;
+    firstPassPaneIds.add(pane.paneId);
+    firstPassThreadIds.add(pane.threadId);
+    validThreadPaneIds.add(pane.paneId);
+  }
+
   const seenPaneIds = new Set<string>();
   const seenThreadIds = new Set<string>();
   for (const item of record.panes) {
     if (!item || typeof item !== 'object') continue;
     const pane = item as Record<string, unknown>;
     if (typeof pane.paneId !== 'string' || !isSafePersistedPaneId(pane.paneId)) continue;
-    if (typeof pane.threadId !== 'string' || !isSafePersistedThreadId(pane.threadId)) continue;
-    if (seenPaneIds.has(pane.paneId) || seenThreadIds.has(pane.threadId)) continue;
-    seenPaneIds.add(pane.paneId);
-    seenThreadIds.add(pane.threadId);
-    panes.push({
-      paneId: pane.paneId,
-      threadId: pane.threadId,
-      ratio: normalizePersistedRatio(pane.ratio),
-    });
+    if (seenPaneIds.has(pane.paneId)) continue;
+    if (pane.kind === 'thread') {
+      if (typeof pane.threadId !== 'string' || !isSafePersistedThreadId(pane.threadId)) continue;
+      if (seenThreadIds.has(pane.threadId)) continue;
+      seenPaneIds.add(pane.paneId);
+      seenThreadIds.add(pane.threadId);
+      panes.push({
+        paneId: pane.paneId,
+        kind: 'thread',
+        threadId: pane.threadId,
+        ratio: normalizePersistedRatio(pane.ratio),
+      });
+    } else if (isPersistedCompanionKind(pane.kind)) {
+      if (typeof pane.sourcePaneId !== 'string' || !isSafePersistedPaneId(pane.sourcePaneId)) continue;
+      if (!validThreadPaneIds.has(pane.sourcePaneId)) continue;
+      if (pane.paneId !== companionPaneIdFor(pane.sourcePaneId, pane.kind)) continue;
+      seenPaneIds.add(pane.paneId);
+      panes.push({
+        paneId: pane.paneId,
+        kind: pane.kind,
+        sourcePaneId: pane.sourcePaneId,
+        ratio: normalizePersistedRatio(pane.ratio),
+      });
+    }
     if (panes.length >= MAX_RESTORED_PANES) break;
   }
   return { version: PANE_LAYOUT_SETTINGS_VERSION, panes, focusedPaneId };
@@ -104,15 +165,35 @@ function paneLayoutKey(snapshot: PersistedPaneLayout): string {
 
 function buildSnapshot(): PersistedPaneLayout {
   const panesById = getAllPanes();
+  const layoutItems = getPaneLayoutItems();
+  const persistedThreadPaneIds = new Set<string>();
+  for (const item of layoutItems) {
+    if (item.kind !== 'thread') continue;
+    if (panesById.get(item.paneId)?.threadId) persistedThreadPaneIds.add(item.paneId);
+  }
   const panes: PersistedPane[] = [];
-  for (const item of getPaneLayoutItems()) {
-    const threadId = panesById.get(item.paneId)?.threadId;
-    if (!threadId) continue;
-    panes.push({
-      paneId: item.paneId,
-      threadId,
-      ratio: normalizePersistedRatio(item.ratio),
-    });
+  for (const item of layoutItems) {
+    if (item.kind === 'thread') {
+      const threadId = panesById.get(item.paneId)?.threadId;
+      if (!threadId) continue;
+      panes.push({
+        paneId: item.paneId,
+        kind: 'thread',
+        threadId,
+        ratio: normalizePersistedRatio(item.ratio),
+      });
+    } else if (
+      isPersistedCompanionKind(item.kind) &&
+      item.sourcePaneId &&
+      persistedThreadPaneIds.has(item.sourcePaneId)
+    ) {
+      panes.push({
+        paneId: item.paneId,
+        kind: item.kind,
+        sourcePaneId: item.sourcePaneId,
+        ratio: normalizePersistedRatio(item.ratio),
+      });
+    }
   }
   const focusedPaneId = getFocusedPaneId();
   return {
@@ -165,7 +246,9 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
   }
 
   const threads = await loadThreadsForValidation(availableThreads);
-  const neededThreadIds = new Set(persisted.panes.map((pane) => pane.threadId));
+  const threadPanes = persisted.panes.filter((pane) => pane.kind === 'thread' && pane.threadId);
+  const companionPanes = persisted.panes.filter((pane) => isPersistedCompanionKind(pane.kind));
+  const neededThreadIds = new Set(threadPanes.map((pane) => pane.threadId as string));
   const threadById = new Map<string, Thread>();
   for (const thread of threads) {
     const threadId = thread.id;
@@ -173,8 +256,8 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
   }
   const layoutItems: PaneLayoutItem[] = [];
   const registryEntries: Array<{ paneId: string; thread: Thread }> = [];
-  for (const pane of persisted.panes) {
-    const thread = threadById.get(pane.threadId);
+  for (const pane of threadPanes) {
+    const thread = threadById.get(pane.threadId as string);
     if (!thread) continue;
     layoutItems.push({
       id: pane.paneId,
@@ -191,6 +274,33 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
     : registryEntries[0]?.paneId ?? null;
   setPaneLayoutItems(layoutItems);
   await hydrateRestoredPaneRegistry(registryEntries, restoredFocusedPaneId);
+
+  const restoredThreadItems = layoutItems.filter((item) => getAllPanes().has(item.paneId));
+  const companionsBySource = new Map<string, PaneLayoutItem[]>();
+  for (const pane of companionPanes) {
+    if (!isPersistedCompanionKind(pane.kind) || !pane.sourcePaneId) continue;
+    const sourcePane = getAllPanes().get(pane.sourcePaneId);
+    if (!sourcePane) continue;
+    if (pane.kind === 'design-preview' && sourcePane.thread?.mode !== 'design') continue;
+    const item: PaneLayoutItem = {
+      id: pane.paneId,
+      paneId: pane.paneId,
+      kind: pane.kind,
+      ratio: pane.ratio,
+      sourcePaneId: pane.sourcePaneId,
+    };
+    const companions = companionsBySource.get(pane.sourcePaneId) ?? [];
+    companions.push(item);
+    companionsBySource.set(pane.sourcePaneId, companions);
+    restoreCompanion(pane.sourcePaneId, pane.kind, pane.paneId);
+  }
+  const restoredLayoutItems: PaneLayoutItem[] = [];
+  for (const item of restoredThreadItems) {
+    restoredLayoutItems.push(item);
+    const companions = companionsBySource.get(item.paneId);
+    if (companions) restoredLayoutItems.push(...companions);
+  }
+  setPaneLayoutItems(restoredLayoutItems);
 }
 
 export function persistPaneLayout(): void {

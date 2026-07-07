@@ -24,7 +24,12 @@ import {
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installPaneMocks, makeItem } from '../../../test/helpers/chat';
-import { resetLayoutMetricsForTest, setPaneWidth } from '../../stores/layoutMetrics.svelte';
+import { resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
+import {
+  resetPaneLayoutForTest,
+  setPaneLayoutItemsForTest,
+} from '../../stores/paneLayout.svelte';
+import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 
 beforeAll(() => {
   // Svelte transitions used by children call element.animate; happy-dom
@@ -64,6 +69,8 @@ beforeEach(() => {
     value: 1400,
   });
   resetLayoutMetricsForTest();
+  resetPaneLayoutForTest();
+  resetCompanionPanesForTest();
   resetPanesForTest();
   resetThreadStatuses();
   resetComposerDraftSnapshotsForTest();
@@ -152,7 +159,7 @@ describe('<ChatView>', () => {
 
     expect(getByTestId('chat-header')).toBeInTheDocument();
     expect(getByTestId('chat-header-title')).toBeInTheDocument();
-    expect(getByTestId('diff-panel-toggle')).toBeInTheDocument();
+    expect(getByTestId('review-toggle')).toBeInTheDocument();
     expect(queryByTestId('plan-sidebar-toggle')).toBeNull();
   });
 
@@ -179,7 +186,7 @@ describe('<ChatView>', () => {
       summary: 'Update one of the lines',
     });
     const pane = await buildPane(thread, [userItem]);
-    pane.diffPanel.setCheckpoints([{
+    pane.checkpoints.setCheckpoints([{
       id: 'checkpoint-1',
       threadId: thread.id,
       userItemId: userItem.id,
@@ -211,7 +218,7 @@ describe('<ChatView>', () => {
       summary: 'Update one of the lines',
     });
     const pane = await buildPane(thread, [userItem]);
-    pane.diffPanel.setCheckpoints([{
+    pane.checkpoints.setCheckpoints([{
       id: 'checkpoint-1',
       threadId: thread.id,
       userItemId: userItem.id,
@@ -261,7 +268,7 @@ describe('<ChatView>', () => {
       summary: 'Update one of the lines',
     });
     const pane = await buildPane(thread, [userItem]);
-    pane.diffPanel.setCheckpoints([{
+    pane.checkpoints.setCheckpoints([{
       id: 'checkpoint-1',
       threadId: thread.id,
       userItemId: userItem.id,
@@ -305,7 +312,7 @@ describe('<ChatView>', () => {
       summary: 'Second update',
     });
     const pane = await buildPane(thread, [firstItem, secondItem]);
-    pane.diffPanel.setCheckpoints([
+    pane.checkpoints.setCheckpoints([
       {
         id: 'checkpoint-1',
         threadId: thread.id,
@@ -366,7 +373,7 @@ describe('<ChatView>', () => {
       summary: 'Update one of the lines',
     });
     const pane = await buildPane(thread, [userItem]);
-    pane.diffPanel.setCheckpoints([{
+    pane.checkpoints.setCheckpoints([{
       id: 'checkpoint-1',
       threadId: thread.id,
       userItemId: userItem.id,
@@ -401,7 +408,7 @@ describe('<ChatView>', () => {
       summary: 'Update one of the lines',
     });
     const pane = await buildPane(thread, [userItem]);
-    pane.diffPanel.setCheckpoints([{
+    pane.checkpoints.setCheckpoints([{
       id: 'checkpoint-1',
       threadId: thread.id,
       userItemId: userItem.id,
@@ -442,7 +449,7 @@ describe('<ChatView>', () => {
       summary: 'Update one of the lines',
     });
     const pane = await buildPane(thread, [userItem]);
-    pane.diffPanel.setCheckpoints([{
+    pane.checkpoints.setCheckpoints([{
       id: 'checkpoint-1',
       threadId: thread.id,
       userItemId: userItem.id,
@@ -474,89 +481,32 @@ describe('<ChatView>', () => {
     });
   });
 
-  it('keeps one stable right-sidebar shell while swapping panel content', async () => {
-    setBindingMock('GetPayloadPreview', async () => ({
-      data: '',
-      nextOffset: 0,
-      totalSize: 0,
-      isComplete: true,
-    }));
-    const pane = await buildPane();
-    setPaneWidth(pane.paneId, 1400);
-    pane.setShowPlanSidebar(true);
-    pane.setRhsSidebarWidthLive(620);
-
-    const { getByTestId, queryAllByTestId, findByTestId } = render(ChatView, { props: { pane } });
-    await tick();
-
-    expect(queryAllByTestId('rhs-sidebar-shell')).toHaveLength(1);
-    expect(getByTestId('rhs-sidebar-shell')).toHaveStyle({ width: '620px' });
-    expect(getByTestId('plan-sidebar')).toBeInTheDocument();
-
-    pane.setDiffPanelOpen(true);
-    await tick();
-    expect(queryAllByTestId('rhs-sidebar-shell')).toHaveLength(1);
-    expect(getByTestId('rhs-sidebar-shell')).toHaveStyle({ width: '620px' });
-    expect(getByTestId('diff-panel-drawer')).toBeInTheDocument();
-
-    pane.openDiffSidebar({ payloadId: 'payload-1' });
-    await tick();
-    expect(queryAllByTestId('rhs-sidebar-shell')).toHaveLength(1);
-    expect(getByTestId('rhs-sidebar-shell')).toHaveStyle({ width: '620px' });
-    expect(await findByTestId('diff-sidebar')).toBeInTheDocument();
-  });
-
-  it('renders RHS panels as a pane-local overlay below 880px', async () => {
-    const pane = await buildPane();
-    registerPaneForTest(pane.paneId, pane);
-    focusPane(pane.paneId);
-    setPaneWidth(pane.paneId, 700);
-    pane.setShowPlanSidebar(true);
-
-    const { getByTestId, queryByTestId } = render(ChatView, { props: { pane } });
-    await tick();
-
-    const shell = getByTestId('rhs-sidebar-shell');
-    expect(shell.dataset.rhsMode).toBe('overlay');
-    expect(shell).toHaveClass('absolute');
-    expect(queryByTestId('rhs-sidebar-resizer')).toBeNull();
-
-    pane.closeRhsPanel();
-    await tick();
-
-    await waitFor(() => expect(queryByTestId('rhs-sidebar-shell')).toBeNull());
-  });
-
-  it('renders design preview through the RHS shell only after explicit toggle', async () => {
+  it('does not render design preview inside ChatView after explicit toggle', async () => {
     setBindingMock('EnsureDesignWorkdir', async () => {});
     setBindingMock('LatestDesignOptionSet', async () => null);
     const pane = await buildPane({ ...seedThread(), mode: 'design' });
-    const { getByTestId, queryByTestId, queryAllByTestId } = render(ChatView, { props: { pane } });
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
+    const { getByTestId, queryByTestId } = render(ChatView, { props: { pane } });
     await tick();
 
     expect(queryByTestId('design-split')).toBeNull();
     expect(queryByTestId('design-split-resizer')).toBeNull();
-    expect(queryByTestId('rhs-sidebar-shell')).toBeNull();
 
     await fireEvent.click(getByTestId('design-preview-toggle'));
 
-    await waitFor(() => expect(queryAllByTestId('rhs-sidebar-shell')).toHaveLength(1));
+    expect(pane.showDesignPreviewPanel).toBe(true);
     expect(queryByTestId('design-split')).toBeNull();
-    await waitFor(() => expect(getByTestId('design-preview-iframe')).toBeInTheDocument());
-
-    const shell = getByTestId('rhs-sidebar-shell');
     pane.setActiveOptionSet({ setId: 'set-1', optionPaths: ['options/set-1/alpha'] });
     await tick();
 
-    expect(queryAllByTestId('rhs-sidebar-shell')).toHaveLength(1);
-    expect(getByTestId('rhs-sidebar-shell')).toBe(shell);
-    expect(getByTestId('design-options-panel')).toBeInTheDocument();
+    expect(queryByTestId('design-options-panel')).toBeNull();
   });
 
   it('keeps design clarification controls in the chat column', async () => {
     setBindingMock('EnsureDesignWorkdir', async () => {});
     setBindingMock('LatestDesignOptionSet', async () => null);
     const pane = await buildPane({ ...seedThread(), mode: 'design' });
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
     pane.setPendingClarification({
       requestId: 'clarify-1',
       threadId: pane.threadId ?? 'thread-1',
@@ -576,10 +526,9 @@ describe('<ChatView>', () => {
     expect(overlay).toContainElement(picker);
 
     await fireEvent.click(getByTestId('design-preview-toggle'));
-    await waitFor(() => expect(getByTestId('rhs-sidebar-shell')).toBeInTheDocument());
 
-    const shell = getByTestId('rhs-sidebar-shell');
-    expect(shell).not.toContainElement(picker);
+    expect(pane.showDesignPreviewPanel).toBe(true);
+    expect(overlay).toContainElement(picker);
   });
 
   it('renders TerminalView instead of the chat surface for terminal-mode threads', async () => {

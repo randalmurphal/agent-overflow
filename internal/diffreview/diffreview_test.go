@@ -47,6 +47,26 @@ func TestBuildPromptSkipsBlankBodies(t *testing.T) {
 	}
 }
 
+func TestBuildPromptWithPRContextAddsHeaderAndHunks(t *testing.T) {
+	prompt := BuildPromptWithPRContext([]store.DiffReviewComment{
+		{ID: "c1", FilePath: "app.ts", Side: "new", NewLine: 5, Body: "Fix this."},
+	}, &store.DiffReviewPRContext{
+		Number: 12,
+		URL:    "https://github.com/o/r/pull/12",
+		Comments: []store.DiffReviewPRContextEntry{{
+			CommentID:   "c1",
+			HunkExcerpt: "   4    4 context\n        5 +added",
+		}},
+	})
+
+	want := "PR #12 - https://github.com/o/r/pull/12\n\n" +
+		"app.ts:5:\ncomment: Fix this.\n\n" +
+		"hunk:\n   4    4 context\n        5 +added"
+	if prompt != want {
+		t.Fatalf("prompt mismatch\n got:\n%s\nwant:\n%s", prompt, want)
+	}
+}
+
 func TestCommentLinePrefersNewThenOld(t *testing.T) {
 	cases := []struct {
 		name string

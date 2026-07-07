@@ -196,14 +196,6 @@ describe('makeCommandContext', () => {
     expect(makeCommandContext(pane, {}).turnActive).toBe(true);
   });
 
-  it('activeRhsPanel follows the live pane RHS state', () => {
-    const pane = readyPane();
-    expect(makeCommandContext(pane, {}).activeRhsPanel).toBe(false);
-
-    pane.setShowPlanSidebar(true);
-    expect(makeCommandContext(pane, {}).activeRhsPanel).toBe(true);
-  });
-
   // The fork palette/keybinding gate (thread.fork's `when: 'canForkActiveThread'`)
   // ANDs a live session reference with the provider's fork capability. claude-tui
   // drives the real TUI from outside and can't fork from AO, so the flag stays
@@ -221,28 +213,22 @@ describe('makeCommandContext', () => {
   });
 });
 
-describe('rhs.close command', () => {
+describe('review.toggle command', () => {
   beforeEach(() => {
     clearCommandRegistry();
   });
 
-  it('is enabled only while the active pane has an RHS panel', () => {
+  it('toggles the review companion on the command context pane', () => {
     const pane = readyPane();
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
     registerFixtureCommands(pane);
 
-    expect(isCommandEnabled('rhs.close', makeCommandContext(pane, {}))).toBe(false);
+    expect(isCommandEnabled('review.toggle', makeCommandContext(pane, {}))).toBe(true);
+    expect(runCommand('review.toggle', makeCommandContext(pane, {}))).toBe(true);
+    expect(pane.showReviewPane).toBe(true);
 
-    pane.setShowPlanSidebar(true);
-    expect(isCommandEnabled('rhs.close', makeCommandContext(pane, {}))).toBe(true);
-  });
-
-  it('closes the RHS panel on the command context pane', () => {
-    const pane = readyPane();
-    pane.setShowPlanSidebar(true);
-    registerFixtureCommands(pane);
-
-    expect(runCommand('rhs.close', makeCommandContext(pane, {}))).toBe(true);
-    expect(pane.activeRhsPanel).toBeNull();
+    expect(runCommand('review.toggle', makeCommandContext(pane, {}))).toBe(true);
+    expect(pane.showReviewPane).toBe(false);
   });
 });
 
@@ -1498,13 +1484,13 @@ describe('thread-bound commands on placeholders', () => {
     registerFixtureCommands(pane);
 
     expect(pane.threadId).toBeNull();
-    expect(pane.diffPanel.open).toBe(false);
+    expect(pane.showReviewPane).toBe(false);
 
     runCommand('diff.panel.toggle', makeCommandContext(pane, {}) as CommandContext);
 
     expect(create).not.toHaveBeenCalled();
     expect(pane.threadId).toBeNull();
-    expect(pane.diffPanel.open).toBe(false);
+    expect(pane.showReviewPane).toBe(false);
   });
 });
 

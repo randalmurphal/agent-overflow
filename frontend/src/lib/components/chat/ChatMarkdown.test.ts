@@ -203,6 +203,48 @@ describe('<ChatMarkdown> path-link rendering', () => {
     expect(webLink?.textContent).toBe('https://example.com');
   });
 
+  it('renders a repo-relative link as plain text without a [blocked] tag', async () => {
+    // PR/issue bodies routinely carry repo-relative links like
+    // `[docs/guide.md](docs/guide.md)` — not navigable from the app,
+    // but not *blocked URLs* either. The Link.svelte hunk in
+    // `patches/svelte-streamdown@3.1.2.patch` drops the " [blocked]"
+    // suffix for schemeless relative references (the href survives as
+    // the hover title); disallowed absolute URLs keep the tag.
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: 'All phases of [docs/guide.md](docs/guide.md) done.',
+        pathRefs: [],
+      },
+    });
+
+    await waitFor(() => {
+      const span = container.querySelector('[data-streamdown-link-blocked]');
+      expect(span).not.toBeNull();
+      expect(span?.textContent).toContain('docs/guide.md');
+      expect(span?.getAttribute('title')).toBe('docs/guide.md');
+    });
+
+    expect(container.textContent).not.toContain('[blocked]');
+    expect(container.querySelector('a')).toBeNull();
+  });
+
+  it('keeps the [blocked] tag on a disallowed absolute URL', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '[click me](vbscript:evil())',
+        pathRefs: [],
+      },
+    });
+
+    await waitFor(() => {
+      const span = container.querySelector('[data-streamdown-link-blocked]');
+      expect(span).not.toBeNull();
+      expect(span?.textContent).toContain('[blocked]');
+    });
+
+    expect(container.querySelector('a')).toBeNull();
+  });
+
   it('unwraps a ```markdown fence so inner code blocks render correctly', async () => {
     const source = [
       '```markdown',

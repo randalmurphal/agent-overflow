@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // GitPR describes a pull request returned by a forge CLI. Fields are
@@ -20,10 +22,21 @@ type GitPR struct {
 	State  string `json:"state"`
 }
 
+// githubViewerLoginTTL bounds how long the authenticated gh login is
+// memoized. The login only changes when the user re-authenticates the
+// gh CLI under a different account, but GetPRDetail runs on every PR
+// update poll tick — without the cache each tick would cost an extra
+// `gh api user` subprocess and network round-trip.
+const githubViewerLoginTTL = 15 * time.Minute
+
 // githubForge implements Forge using the gh CLI. All operations route
 // through the owning Core's runBinary for timeout + size-cap discipline.
 type githubForge struct {
 	core *Core
+
+	viewerMu        sync.Mutex
+	viewerLogin     string
+	viewerExpiresAt time.Time
 }
 
 func (f *githubForge) ID() string         { return "github" }
@@ -150,6 +163,720 @@ func (f *githubForge) ViewPR(cwd, project string, number int) (PRMetadata, error
 	}, nil
 }
 
+// GetPRDetail fetches the review-pane PR detail via gh's JSON view plus
+// a tiny authenticated-user probe for own-PR verdict gating.
+func (f *githubForge) GetPRDetail(cwd, project string, number int) (PRDetail, error) {
+	if strings.TrimSpace(project) == "" {
+		return PRDetail{}, errors.New("project (owner/repo) is required")
+	}
+	if number <= 0 {
+		return PRDetail{}, fmt.Errorf("PR number must be positive, got %d", number)
+	}
+	result, err := f.core.runBinary(
+		"gh",
+		cwd,
+		"pr", "view",
+		"--repo", project,
+		strconv.Itoa(number),
+		"--json", strings.Join(githubPRDetailFields, ","),
+	)
+	if err != nil {
+		return PRDetail{}, normalizeGitHubCLIError(err)
+	}
+	if result.exitCode != 0 {
+		return PRDetail{}, githubCommandFailure("gh pr view failed", result)
+	}
+	detail, err := parseGitHubPRDetail(result.stdout)
+	if err != nil {
+		return PRDetail{}, fmt.Errorf("gh pr view returned malformed JSON: %w", err)
+	}
+	viewer, err := f.githubViewerLogin(cwd)
+	if err != nil {
+		return PRDetail{}, err
+	}
+	detail.ViewerIsAuthor = viewer != "" && strings.EqualFold(viewer, detail.AuthorLogin)
+	return detail, nil
+}
+
+func (f *githubForge) githubViewerLogin(cwd string) (string, error) {
+	now := f.core.nowFn()
+	f.viewerMu.Lock()
+	if f.viewerLogin != "" && f.viewerExpiresAt.After(now) {
+		login := f.viewerLogin
+		f.viewerMu.Unlock()
+		return login, nil
+	}
+	f.viewerMu.Unlock()
+
+	result, err := f.core.runBinary("gh", cwd, "api", "user", "--jq", ".login")
+	if err != nil {
+		return "", normalizeGitHubCLIError(err)
+	}
+	if result.exitCode != 0 {
+		return "", githubCommandFailure("gh api user failed", result)
+	}
+	login := strings.TrimSpace(result.stdout)
+	if login != "" {
+		f.viewerMu.Lock()
+		f.viewerLogin = login
+		f.viewerExpiresAt = now.Add(githubViewerLoginTTL)
+		f.viewerMu.Unlock()
+	}
+	return login, nil
+}
+
+var githubPRDetailFields = []string{
+	"title", "body", "author", "state", "baseRefName", "headRefName",
+	"headRefOid", "reviews", "statusCheckRollup", "isDraft", "mergeable",
+	"number", "url", "additions", "deletions", "changedFiles",
+	"mergeStateStatus", "reviewDecision",
+}
+
+func parseGitHubPRDetail(stdout string) (PRDetail, error) {
+	var raw struct {
+		Number            int               `json:"number"`
+		Title             string            `json:"title"`
+		Body              string            `json:"body"`
+		State             string            `json:"state"`
+		IsDraft           bool              `json:"isDraft"`
+		BaseRefName       string            `json:"baseRefName"`
+		HeadRefName       string            `json:"headRefName"`
+		HeadRefOID        string            `json:"headRefOid"`
+		URL               string            `json:"url"`
+		Additions         int               `json:"additions"`
+		Deletions         int               `json:"deletions"`
+		ChangedFiles      int               `json:"changedFiles"`
+		Mergeable         string            `json:"mergeable"`
+		MergeStateStatus  string            `json:"mergeStateStatus"`
+		ReviewDecision    string            `json:"reviewDecision"`
+		StatusCheckRollup []json.RawMessage `json:"statusCheckRollup"`
+		Author            struct {
+			Login string `json:"login"`
+		} `json:"author"`
+		Reviews []githubReviewRaw `json:"reviews"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
+		return PRDetail{}, err
+	}
+	return PRDetail{
+		Number:         raw.Number,
+		Title:          raw.Title,
+		Body:           raw.Body,
+		AuthorLogin:    raw.Author.Login,
+		State:          NormalizePRState(raw.State),
+		Draft:          raw.IsDraft,
+		HeadRefName:    raw.HeadRefName,
+		BaseRefName:    raw.BaseRefName,
+		HeadSHA:        raw.HeadRefOID,
+		URL:            raw.URL,
+		Additions:      raw.Additions,
+		Deletions:      raw.Deletions,
+		ChangedFiles:   raw.ChangedFiles,
+		ReviewDecision: raw.ReviewDecision,
+		LatestReviews:  latestGitHubReviews(raw.Reviews),
+		Checks:         parseGitHubCheckSummary(raw.StatusCheckRollup),
+		Mergeability:   normalizeGitHubMergeability(raw.Mergeable, raw.MergeStateStatus),
+	}, nil
+}
+
+type githubReviewRaw struct {
+	Body        string `json:"body"`
+	SubmittedAt string `json:"submittedAt"`
+	State       string `json:"state"`
+	Author      struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	Commit struct {
+		OID string `json:"oid"`
+	} `json:"commit"`
+}
+
+func latestGitHubReviews(reviews []githubReviewRaw) []ReviewVerdict {
+	latest := make(map[string]ReviewVerdict)
+	order := make([]string, 0, len(reviews))
+	for _, review := range reviews {
+		if review.Author.Login == "" || review.State == "" {
+			continue
+		}
+		if _, ok := latest[review.Author.Login]; !ok {
+			order = append(order, review.Author.Login)
+		}
+		latest[review.Author.Login] = ReviewVerdict{
+			AuthorLogin: review.Author.Login,
+			State:       review.State,
+			SubmittedAt: review.SubmittedAt,
+			Body:        review.Body,
+			CommitSHA:   review.Commit.OID,
+		}
+	}
+	out := make([]ReviewVerdict, 0, len(latest))
+	for _, login := range order {
+		out = append(out, latest[login])
+	}
+	return out
+}
+
+func parseGitHubCheckSummary(items []json.RawMessage) CheckSummary {
+	var summary CheckSummary
+	for _, item := range items {
+		var tag struct {
+			Type string `json:"__typename"`
+		}
+		if err := json.Unmarshal(item, &tag); err != nil {
+			continue
+		}
+		check := CheckStatus{Kind: tag.Type}
+		switch tag.Type {
+		case "CheckRun":
+			var raw struct {
+				CompletedAt  string `json:"completedAt"`
+				Conclusion   string `json:"conclusion"`
+				DetailsURL   string `json:"detailsUrl"`
+				Name         string `json:"name"`
+				StartedAt    string `json:"startedAt"`
+				Status       string `json:"status"`
+				WorkflowName string `json:"workflowName"`
+			}
+			if err := json.Unmarshal(item, &raw); err != nil {
+				continue
+			}
+			check.Name = raw.Name
+			check.Workflow = raw.WorkflowName
+			check.Status = raw.Status
+			check.Conclusion = raw.Conclusion
+			check.DetailsURL = raw.DetailsURL
+			check.StartedAt = zeroTimeToEmpty(raw.StartedAt)
+			check.CompletedAt = zeroTimeToEmpty(raw.CompletedAt)
+		case "StatusContext":
+			var raw struct {
+				Context   string `json:"context"`
+				StartedAt string `json:"startedAt"`
+				State     string `json:"state"`
+				TargetURL string `json:"targetUrl"`
+			}
+			if err := json.Unmarshal(item, &raw); err != nil {
+				continue
+			}
+			check.Name = raw.Context
+			check.Status = raw.State
+			check.DetailsURL = raw.TargetURL
+			check.StartedAt = zeroTimeToEmpty(raw.StartedAt)
+		default:
+			continue
+		}
+		summary.Checks = append(summary.Checks, check)
+		summary.Total++
+		addCheckBucket(&summary, check)
+	}
+	return summary
+}
+
+func addCheckBucket(summary *CheckSummary, check CheckStatus) {
+	switch strings.ToUpper(firstNonEmpty(check.Conclusion, check.Status)) {
+	case "SUCCESS":
+		summary.Success++
+	case "FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
+		summary.Failure++
+	case "CANCELLED", "CANCELED":
+		summary.Canceled++
+	case "SKIPPED", "NEUTRAL":
+		summary.Skipped++
+	default:
+		summary.Pending++
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func zeroTimeToEmpty(value string) string {
+	if strings.HasPrefix(value, "0001-01-01T") {
+		return ""
+	}
+	return value
+}
+
+func normalizeGitHubMergeability(mergeable, mergeStateStatus string) string {
+	switch strings.ToUpper(strings.TrimSpace(mergeable)) {
+	case "CONFLICTING":
+		return MergeabilityConflicts
+	case "UNKNOWN", "":
+		return MergeabilityChecking
+	case "MERGEABLE":
+		if strings.EqualFold(mergeStateStatus, "DIRTY") {
+			return MergeabilityConflicts
+		}
+		return MergeabilityClean
+	default:
+		return MergeabilityChecking
+	}
+}
+
+// ListReviewThreads fetches GitHub review threads through GraphQL because
+// gh porcelain and REST comments cannot expose nullable current anchors
+// and databaseId in one grouped response. PR conversation comments
+// (issue comments — GitHub keeps them flat, outside review threads) are
+// appended as path-less single-comment threads so the review pane can
+// list the whole discussion.
+func (f *githubForge) ListReviewThreads(cwd, project string, number int) ([]ReviewThread, error) {
+	owner, repo, err := splitGitHubProject(project)
+	if err != nil {
+		return nil, err
+	}
+	if number <= 0 {
+		return nil, fmt.Errorf("PR number must be positive, got %d", number)
+	}
+	var all []ReviewThread
+	var after string
+	for {
+		query := githubReviewThreadsQuery(owner, repo, number, after)
+		result, err := f.core.runBinary("gh", cwd, "api", "graphql", "-f", "query="+query)
+		if err != nil {
+			return nil, normalizeGitHubCLIError(err)
+		}
+		if result.exitCode != 0 {
+			return nil, githubCommandFailure("gh api graphql reviewThreads failed", result)
+		}
+		threads, pageInfo, err := parseGitHubReviewThreads(result.stdout)
+		if err != nil {
+			return nil, fmt.Errorf("gh api graphql reviewThreads returned malformed JSON: %w", err)
+		}
+		all = append(all, threads...)
+		if !pageInfo.HasNextPage {
+			break
+		}
+		after = pageInfo.EndCursor
+	}
+	conversation, err := f.listPRConversationThreads(cwd, owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	return append(all, conversation...), nil
+}
+
+func (f *githubForge) listPRConversationThreads(cwd, owner, repo string, number int) ([]ReviewThread, error) {
+	var all []ReviewThread
+	var after string
+	for {
+		query := githubPRCommentsQuery(owner, repo, number, after)
+		result, err := f.core.runBinary("gh", cwd, "api", "graphql", "-f", "query="+query)
+		if err != nil {
+			return nil, normalizeGitHubCLIError(err)
+		}
+		if result.exitCode != 0 {
+			return nil, githubCommandFailure("gh api graphql pullRequest comments failed", result)
+		}
+		threads, pageInfo, err := parseGitHubPRComments(result.stdout)
+		if err != nil {
+			return nil, fmt.Errorf("gh api graphql pullRequest comments returned malformed JSON: %w", err)
+		}
+		all = append(all, threads...)
+		if !pageInfo.HasNextPage {
+			return all, nil
+		}
+		after = pageInfo.EndCursor
+	}
+}
+
+func parseGitHubPRComments(stdout string) ([]ReviewThread, githubPageInfo, error) {
+	var raw struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					Comments struct {
+						PageInfo githubPageInfo `json:"pageInfo"`
+						Nodes    []struct {
+							ID          string `json:"id"`
+							DatabaseID  int64  `json:"databaseId"`
+							Body        string `json:"body"`
+							CreatedAt   string `json:"createdAt"`
+							IsMinimized bool   `json:"isMinimized"`
+							Author      struct {
+								Login string `json:"login"`
+							} `json:"author"`
+						} `json:"nodes"`
+					} `json:"comments"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
+		return nil, githubPageInfo{}, err
+	}
+	nodes := raw.Data.Repository.PullRequest.Comments.Nodes
+	threads := make([]ReviewThread, 0, len(nodes))
+	for _, node := range nodes {
+		if node.IsMinimized {
+			continue
+		}
+		threads = append(threads, ReviewThread{
+			ID: node.ID,
+			Comments: []ReviewComment{{
+				AuthorLogin: node.Author.Login,
+				Body:        node.Body,
+				CreatedAt:   node.CreatedAt,
+				DatabaseID:  node.DatabaseID,
+			}},
+		})
+	}
+	return threads, raw.Data.Repository.PullRequest.Comments.PageInfo, nil
+}
+
+func githubPRCommentsQuery(owner, repo string, number int, after string) string {
+	afterClause := ""
+	if after != "" {
+		afterClause = fmt.Sprintf(`, after: %q`, after)
+	}
+	return fmt.Sprintf(`query {
+  repository(owner: %q, name: %q) {
+    pullRequest(number: %d) {
+      comments(first: 50%s) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          databaseId
+          author { login }
+          body
+          createdAt
+          isMinimized
+        }
+      }
+    }
+  }
+}`, owner, repo, number, afterClause)
+}
+
+type githubPageInfo struct {
+	HasNextPage bool
+	EndCursor   string
+}
+
+func parseGitHubReviewThreads(stdout string) ([]ReviewThread, githubPageInfo, error) {
+	var raw struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						PageInfo githubPageInfo `json:"pageInfo"`
+						Nodes    []struct {
+							ID            string `json:"id"`
+							IsResolved    bool   `json:"isResolved"`
+							IsOutdated    bool   `json:"isOutdated"`
+							Path          string `json:"path"`
+							Line          *int   `json:"line"`
+							StartLine     *int   `json:"startLine"`
+							DiffSide      string `json:"diffSide"`
+							StartDiffSide string `json:"startDiffSide"`
+							SubjectType   string `json:"subjectType"`
+							Comments      struct {
+								Nodes []struct {
+									DatabaseID int64  `json:"databaseId"`
+									Body       string `json:"body"`
+									CreatedAt  string `json:"createdAt"`
+									Author     struct {
+										Login string `json:"login"`
+									} `json:"author"`
+									ReplyTo *struct {
+										ID         string `json:"id"`
+										DatabaseID int64  `json:"databaseId"`
+									} `json:"replyTo"`
+								} `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
+		return nil, githubPageInfo{}, err
+	}
+	nodes := raw.Data.Repository.PullRequest.ReviewThreads.Nodes
+	threads := make([]ReviewThread, 0, len(nodes))
+	for _, node := range nodes {
+		side := strings.ToLower(node.DiffSide)
+		if strings.EqualFold(node.SubjectType, "FILE") {
+			side = "file"
+		}
+		thread := ReviewThread{
+			ID:           node.ID,
+			Path:         node.Path,
+			Line:         node.Line,
+			StartLine:    node.StartLine,
+			Side:         side,
+			IsResolvable: true,
+			IsResolved:   node.IsResolved,
+			IsOutdated:   node.IsOutdated,
+			Comments:     make([]ReviewComment, 0, len(node.Comments.Nodes)),
+		}
+		for _, comment := range node.Comments.Nodes {
+			out := ReviewComment{
+				AuthorLogin: comment.Author.Login,
+				Body:        comment.Body,
+				CreatedAt:   comment.CreatedAt,
+				DatabaseID:  comment.DatabaseID,
+			}
+			if comment.ReplyTo != nil {
+				out.ReplyTo = &ReviewReplyTo{ID: comment.ReplyTo.ID, DatabaseID: comment.ReplyTo.DatabaseID}
+			}
+			thread.Comments = append(thread.Comments, out)
+		}
+		threads = append(threads, thread)
+	}
+	return threads, raw.Data.Repository.PullRequest.ReviewThreads.PageInfo, nil
+}
+
+func githubReviewThreadsQuery(owner, repo string, number int, after string) string {
+	afterClause := ""
+	if after != "" {
+		afterClause = fmt.Sprintf(`, after: %q`, after)
+	}
+	return fmt.Sprintf(`query {
+  repository(owner: %q, name: %q) {
+    pullRequest(number: %d) {
+      reviewThreads(first: 50%s) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          startLine
+          diffSide
+          startDiffSide
+          subjectType
+          comments(first: 50) {
+            nodes {
+              id
+              databaseId
+              author { login }
+              body
+              createdAt
+              replyTo { id databaseId }
+            }
+          }
+        }
+      }
+    }
+  }
+}`, owner, repo, number, afterClause)
+}
+
+func (f *githubForge) SubmitReview(cwd, project string, number int, review SubmitReviewRequest) (SubmitReviewResult, error) {
+	owner, repo, err := splitGitHubProject(project)
+	if err != nil {
+		return SubmitReviewResult{}, err
+	}
+	if number <= 0 {
+		return SubmitReviewResult{}, fmt.Errorf("PR number must be positive, got %d", number)
+	}
+	headSHA := ""
+	fileComments := make([]ReviewLineComment, 0)
+	lineComments := make([]ReviewLineComment, 0, len(review.Comments))
+	for _, comment := range review.Comments {
+		if strings.EqualFold(comment.Side, "file") {
+			fileComments = append(fileComments, comment)
+			continue
+		}
+		lineComments = append(lineComments, comment)
+	}
+	if len(fileComments) > 0 {
+		detail, err := f.GetPRDetail(cwd, project, number)
+		if err != nil {
+			return SubmitReviewResult{}, err
+		}
+		headSHA = detail.HeadSHA
+	}
+	endpoint := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, number)
+	body, err := githubReviewRequestBody(review, lineComments)
+	if err != nil {
+		return SubmitReviewResult{}, err
+	}
+	result, err := f.core.runBinaryInput("gh", cwd, string(body), "api", endpoint, "-X", "POST", "--input", "-")
+	if err != nil {
+		return SubmitReviewResult{}, normalizeGitHubCLIError(err)
+	}
+	if result.exitCode != 0 {
+		return SubmitReviewResult{}, githubCommandFailure("gh api submit review failed", result)
+	}
+	out := SubmitReviewResult{PostedReview: true}
+	for _, comment := range fileComments {
+		body, err := githubFileCommentRequestBody(comment, headSHA)
+		if err != nil {
+			return out, err
+		}
+		result, err := f.core.runBinaryInput(
+			"gh",
+			cwd,
+			string(body),
+			"api",
+			fmt.Sprintf("repos/%s/%s/pulls/%d/comments", owner, repo, number),
+			"-X", "POST",
+			"--input", "-",
+		)
+		if err != nil {
+			return out, &PartialSubmitError{PostedReview: true, PostedFileComments: out.PostedFileComments, FailedPath: comment.Path, Err: normalizeGitHubCLIError(err)}
+		}
+		if result.exitCode != 0 {
+			return out, &PartialSubmitError{PostedReview: true, PostedFileComments: out.PostedFileComments, FailedPath: comment.Path, Err: githubCommandFailure("gh api file-level comment failed", result)}
+		}
+		out.PostedFileComments++
+	}
+	return out, nil
+}
+
+func githubReviewRequestBody(review SubmitReviewRequest, comments []ReviewLineComment) ([]byte, error) {
+	payload := struct {
+		Event    string                  `json:"event"`
+		Body     string                  `json:"body,omitempty"`
+		Comments []githubReviewCommentIn `json:"comments,omitempty"`
+	}{
+		Event: githubReviewEvent(review.Verdict),
+		Body:  review.Body,
+	}
+	for _, comment := range comments {
+		in, err := githubReviewCommentBody(comment)
+		if err != nil {
+			return nil, err
+		}
+		payload.Comments = append(payload.Comments, in)
+	}
+	return json.Marshal(payload)
+}
+
+type githubReviewCommentIn struct {
+	Path      string `json:"path"`
+	Body      string `json:"body"`
+	Line      int    `json:"line"`
+	Side      string `json:"side"`
+	StartLine *int   `json:"start_line,omitempty"`
+	StartSide string `json:"start_side,omitempty"`
+}
+
+func githubReviewCommentBody(comment ReviewLineComment) (githubReviewCommentIn, error) {
+	if strings.TrimSpace(comment.Path) == "" {
+		return githubReviewCommentIn{}, errors.New("review comment path is required")
+	}
+	if strings.TrimSpace(comment.Body) == "" {
+		return githubReviewCommentIn{}, errors.New("review comment body is required")
+	}
+	if comment.Line == nil {
+		return githubReviewCommentIn{}, fmt.Errorf("review comment for %s is missing a line", comment.Path)
+	}
+	side := githubLineSide(comment.Side)
+	if side == "" {
+		return githubReviewCommentIn{}, fmt.Errorf("review comment for %s has invalid side %q", comment.Path, comment.Side)
+	}
+	out := githubReviewCommentIn{
+		Path:      comment.Path,
+		Body:      comment.Body,
+		Line:      *comment.Line,
+		Side:      side,
+		StartLine: comment.StartLine,
+	}
+	if comment.StartLine != nil {
+		out.StartSide = side
+	}
+	return out, nil
+}
+
+func githubFileCommentRequestBody(comment ReviewLineComment, headSHA string) ([]byte, error) {
+	if strings.TrimSpace(comment.Path) == "" {
+		return nil, errors.New("file-level comment path is required")
+	}
+	if strings.TrimSpace(comment.Body) == "" {
+		return nil, errors.New("file-level comment body is required")
+	}
+	if strings.TrimSpace(headSHA) == "" {
+		return nil, errors.New("file-level comment requires PR head SHA")
+	}
+	payload := struct {
+		Body        string `json:"body"`
+		CommitID    string `json:"commit_id"`
+		Path        string `json:"path"`
+		SubjectType string `json:"subject_type"`
+	}{
+		Body:        comment.Body,
+		CommitID:    headSHA,
+		Path:        comment.Path,
+		SubjectType: "file",
+	}
+	return json.Marshal(payload)
+}
+
+func githubReviewEvent(verdict string) string {
+	switch strings.ToLower(strings.TrimSpace(verdict)) {
+	case ReviewVerdictApprove:
+		return "APPROVE"
+	case ReviewVerdictRequestChanges:
+		return "REQUEST_CHANGES"
+	default:
+		return "COMMENT"
+	}
+}
+
+func githubLineSide(side string) string {
+	switch strings.ToLower(strings.TrimSpace(side)) {
+	case "right", "new":
+		return "RIGHT"
+	case "left", "old":
+		return "LEFT"
+	default:
+		return ""
+	}
+}
+
+func (f *githubForge) ReplyToThread(cwd, project string, number int, _ string, databaseID int64, body string) error {
+	owner, repo, err := splitGitHubProject(project)
+	if err != nil {
+		return err
+	}
+	if number <= 0 {
+		return fmt.Errorf("PR number must be positive, got %d", number)
+	}
+	if databaseID <= 0 {
+		return errors.New("GitHub review reply requires the root comment databaseID")
+	}
+	if strings.TrimSpace(body) == "" {
+		return errors.New("reply body is required")
+	}
+	payload, err := json.Marshal(map[string]string{"body": body})
+	if err != nil {
+		return err
+	}
+	result, err := f.core.runBinaryInput(
+		"gh",
+		cwd,
+		string(payload),
+		"api",
+		fmt.Sprintf("repos/%s/%s/pulls/%d/comments/%d/replies", owner, repo, number, databaseID),
+		"-X", "POST",
+		"--input", "-",
+	)
+	if err != nil {
+		return normalizeGitHubCLIError(err)
+	}
+	if result.exitCode != 0 {
+		return githubCommandFailure("gh api reply failed", result)
+	}
+	return nil
+}
+
+func splitGitHubProject(project string) (string, string, error) {
+	namespace, repo, err := SplitProjectForForge("github", project)
+	if err != nil {
+		return "", "", err
+	}
+	return namespace, repo, nil
+}
+
 // Diff returns the unified diff for a PR via `gh pr diff`.
 func (f *githubForge) Diff(cwd, project string, number int) (string, error) {
 	if strings.TrimSpace(project) == "" {
@@ -159,9 +886,10 @@ func (f *githubForge) Diff(cwd, project string, number int) (string, error) {
 		return "", fmt.Errorf("PR number must be positive, got %d", number)
 	}
 
-	result, err := f.core.runBinary(
+	result, err := f.core.runBinaryWithLimit(
 		"gh",
 		cwd,
+		maxPRDiffBytes,
 		"pr", "diff",
 		"--repo", project,
 		strconv.Itoa(number),
@@ -190,11 +918,36 @@ func (c *Core) ListOpenPRs(cwd, head string) ([]GitPR, error) {
 
 func normalizeGitHubCLIError(err error) error {
 	if _, ok := errors.AsType[*exec.Error](err); ok || errors.Is(err, exec.ErrNotFound) {
-		return errors.New(
-			"GitHub CLI (`gh`) is not installed or not on PATH. Install from https://cli.github.com and run 'gh auth login' to continue",
-		)
+		return &ForgeSetupError{
+			Forge:   "github",
+			Binary:  "gh",
+			Kind:    "missing",
+			Message: "GitHub CLI (`gh`) is not installed or not on PATH. Install from https://cli.github.com and run 'gh auth login' to continue",
+			Err:     err,
+		}
 	}
 	return err
+}
+
+func githubCommandFailure(prefix string, result commandResult) error {
+	message := commandOutputMessage(result.stdout, result.stderr)
+	if isGitHubAuthMessage(message) {
+		return &ForgeSetupError{
+			Forge:   "github",
+			Binary:  "gh",
+			Kind:    "unauthenticated",
+			Message: "GitHub CLI (`gh`) is not authenticated. Run 'gh auth login' to continue",
+		}
+	}
+	return fmt.Errorf("%s: %s", prefix, message)
+}
+
+func isGitHubAuthMessage(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "gh auth login") ||
+		strings.Contains(lower, "not logged") ||
+		strings.Contains(lower, "authentication required") ||
+		strings.Contains(lower, "requires authentication")
 }
 
 func commandOutputMessage(stdout, stderr string) string {

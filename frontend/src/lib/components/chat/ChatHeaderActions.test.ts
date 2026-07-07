@@ -3,6 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatHeaderActions from './ChatHeaderActions.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
+import { setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';
@@ -99,7 +100,7 @@ describe('<ChatHeaderActions> badge gating', () => {
     await flush();
 
     expect(getByTestId('chat-header-pr-badge').textContent?.replace(/\s+/g, '')).toBe('PR#7');
-    expect(getByTestId('diff-panel-toggle')).toBeTruthy();
+    expect(getByTestId('review-toggle')).toBeTruthy();
     expect(getByTestId('workspace-diff-counts').textContent).toContain('+4');
     expect(getByTestId('workspace-diff-counts').textContent).toContain('-1');
   });
@@ -111,7 +112,7 @@ describe('<ChatHeaderActions> badge gating', () => {
     await flush();
 
     expect(queryByTestId('chat-header-pr-badge')).toBeNull();
-    expect(getByTestId('diff-panel-toggle')).toBeTruthy();
+    expect(getByTestId('review-toggle')).toBeTruthy();
   });
 
   it('hides PR + workspace +/- and shows Design Preview on a design thread', async () => {
@@ -123,20 +124,20 @@ describe('<ChatHeaderActions> badge gating', () => {
     await flush();
 
     expect(queryByTestId('chat-header-pr-badge')).toBeNull();
-    expect(queryByTestId('diff-panel-toggle')).toBeNull();
+    expect(queryByTestId('review-toggle')).toBeNull();
     expect(getByTestId('design-preview-toggle')).toBeTruthy();
   });
 
-  it('clicking the workspace +/- opens the diff panel on the workspace tab', async () => {
+  it('clicking the workspace +/- opens review on the workspace scope', async () => {
     const pane = await buildPane();
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
     installSubscribeMock(status({ insertions: 2, deletions: 0 }));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();
 
-    expect(pane.diffPanel.open).toBe(false);
-    await fireEvent.click(getByTestId('diff-panel-toggle'));
-    expect(pane.diffPanel.open).toBe(true);
-    expect(pane.diffPanel.tabMode).toBe('workspace');
+    expect(pane.showReviewPane).toBe(false);
+    await fireEvent.click(getByTestId('review-toggle'));
+    expect(pane.showReviewPane).toBe(true);
   });
 });
 

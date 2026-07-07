@@ -5,6 +5,237 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+export class CIJob {
+    /**
+     * ID is the forge's numeric job id, as a string. Empty when the job
+     * has no fetchable log (external checks, commit statuses).
+     */
+    "id"?: string;
+    "name": string;
+    "status": string;
+    "durationSeconds"?: number;
+    "url"?: string;
+    "allowFailure"?: boolean;
+    "logsAvailable": boolean;
+    "steps"?: CIStep[];
+
+    /** Creates a new CIJob instance. */
+    constructor($$source: Partial<CIJob> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("logsAvailable" in $$source)) {
+            this["logsAvailable"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIJob instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIJob {
+        const $$createField7_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("steps" in $$parsedSource) {
+            $$parsedSource["steps"] = $$createField7_0($$parsedSource["steps"]);
+        }
+        return new CIJob($$parsedSource as Partial<CIJob>);
+    }
+}
+
+export class CIPipeline {
+    /**
+     * Status is the normalized aggregate for the whole pipeline.
+     */
+    "status": string;
+
+    /**
+     * URL links to the forge's pipeline page (GitLab only; empty on GitHub).
+     */
+    "url"?: string;
+    "stages": CIStage[];
+
+    /** Creates a new CIPipeline instance. */
+    constructor($$source: Partial<CIPipeline> = {}) {
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("stages" in $$source)) {
+            this["stages"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIPipeline instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIPipeline {
+        const $$createField2_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("stages" in $$parsedSource) {
+            $$parsedSource["stages"] = $$createField2_0($$parsedSource["stages"]);
+        }
+        return new CIPipeline($$parsedSource as Partial<CIPipeline>);
+    }
+}
+
+export class CIStage {
+    /**
+     * Name is the GitLab stage or GitHub workflow name.
+     */
+    "name": string;
+    "status": string;
+    "jobs": CIJob[];
+
+    /** Creates a new CIStage instance. */
+    constructor($$source: Partial<CIStage> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("jobs" in $$source)) {
+            this["jobs"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIStage instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIStage {
+        const $$createField2_0 = $$createType5;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("jobs" in $$parsedSource) {
+            $$parsedSource["jobs"] = $$createField2_0($$parsedSource["jobs"]);
+        }
+        return new CIStage($$parsedSource as Partial<CIStage>);
+    }
+}
+
+/**
+ * CIStep is a per-step status inside a job (GitHub Actions only —
+ * GitLab has no step concept).
+ */
+export class CIStep {
+    "number": number;
+    "name": string;
+    "status": string;
+
+    /** Creates a new CIStep instance. */
+    constructor($$source: Partial<CIStep> = {}) {
+        if (!("number" in $$source)) {
+            this["number"] = 0;
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIStep instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIStep {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CIStep($$parsedSource as Partial<CIStep>);
+    }
+}
+
+export class CheckStatus {
+    "kind": string;
+    "name": string;
+    "workflow"?: string;
+    "status": string;
+    "conclusion"?: string;
+    "detailsURL"?: string;
+    "startedAt"?: string;
+    "completedAt"?: string;
+
+    /** Creates a new CheckStatus instance. */
+    constructor($$source: Partial<CheckStatus> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CheckStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CheckStatus {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CheckStatus($$parsedSource as Partial<CheckStatus>);
+    }
+}
+
+export class CheckSummary {
+    "total": number;
+    "success": number;
+    "pending": number;
+    "failure": number;
+    "skipped": number;
+    "canceled": number;
+    "checks": CheckStatus[];
+
+    /** Creates a new CheckSummary instance. */
+    constructor($$source: Partial<CheckSummary> = {}) {
+        if (!("total" in $$source)) {
+            this["total"] = 0;
+        }
+        if (!("success" in $$source)) {
+            this["success"] = 0;
+        }
+        if (!("pending" in $$source)) {
+            this["pending"] = 0;
+        }
+        if (!("failure" in $$source)) {
+            this["failure"] = 0;
+        }
+        if (!("skipped" in $$source)) {
+            this["skipped"] = 0;
+        }
+        if (!("canceled" in $$source)) {
+            this["canceled"] = 0;
+        }
+        if (!("checks" in $$source)) {
+            this["checks"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CheckSummary instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CheckSummary {
+        const $$createField6_0 = $$createType7;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("checks" in $$parsedSource) {
+            $$parsedSource["checks"] = $$createField6_0($$parsedSource["checks"]);
+        }
+        return new CheckSummary($$parsedSource as Partial<CheckSummary>);
+    }
+}
+
 /**
  * GitActionResult summarizes the outcome of a git binding action.
  */
@@ -166,6 +397,418 @@ export class GitStatus {
 }
 
 /**
+ * PRDetail is the normalized PR/MR detail shape consumed by the review pane.
+ */
+export class PRDetail {
+    "number": number;
+    "title": string;
+    "body": string;
+    "authorLogin": string;
+    "state": string;
+    "draft": boolean;
+    "headRefName": string;
+    "baseRefName": string;
+    "headSHA": string;
+    "url": string;
+    "additions": number;
+    "deletions": number;
+    "changedFiles": number;
+    "viewerIsAuthor": boolean;
+    "reviewDecision": string;
+    "latestReviews": ReviewVerdict[];
+    "checks": CheckSummary;
+    "mergeability": string;
+    "diffRefs"?: PRDiffRefs | null;
+
+    /** Creates a new PRDetail instance. */
+    constructor($$source: Partial<PRDetail> = {}) {
+        if (!("number" in $$source)) {
+            this["number"] = 0;
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+        if (!("authorLogin" in $$source)) {
+            this["authorLogin"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("draft" in $$source)) {
+            this["draft"] = false;
+        }
+        if (!("headRefName" in $$source)) {
+            this["headRefName"] = "";
+        }
+        if (!("baseRefName" in $$source)) {
+            this["baseRefName"] = "";
+        }
+        if (!("headSHA" in $$source)) {
+            this["headSHA"] = "";
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+        if (!("additions" in $$source)) {
+            this["additions"] = 0;
+        }
+        if (!("deletions" in $$source)) {
+            this["deletions"] = 0;
+        }
+        if (!("changedFiles" in $$source)) {
+            this["changedFiles"] = 0;
+        }
+        if (!("viewerIsAuthor" in $$source)) {
+            this["viewerIsAuthor"] = false;
+        }
+        if (!("reviewDecision" in $$source)) {
+            this["reviewDecision"] = "";
+        }
+        if (!("latestReviews" in $$source)) {
+            this["latestReviews"] = [];
+        }
+        if (!("checks" in $$source)) {
+            this["checks"] = (new CheckSummary());
+        }
+        if (!("mergeability" in $$source)) {
+            this["mergeability"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRDetail instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRDetail {
+        const $$createField15_0 = $$createType9;
+        const $$createField16_0 = $$createType10;
+        const $$createField18_0 = $$createType12;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("latestReviews" in $$parsedSource) {
+            $$parsedSource["latestReviews"] = $$createField15_0($$parsedSource["latestReviews"]);
+        }
+        if ("checks" in $$parsedSource) {
+            $$parsedSource["checks"] = $$createField16_0($$parsedSource["checks"]);
+        }
+        if ("diffRefs" in $$parsedSource) {
+            $$parsedSource["diffRefs"] = $$createField18_0($$parsedSource["diffRefs"]);
+        }
+        return new PRDetail($$parsedSource as Partial<PRDetail>);
+    }
+}
+
+export class PRDiffRefs {
+    "baseSHA": string;
+    "headSHA": string;
+    "startSHA": string;
+
+    /** Creates a new PRDiffRefs instance. */
+    constructor($$source: Partial<PRDiffRefs> = {}) {
+        if (!("baseSHA" in $$source)) {
+            this["baseSHA"] = "";
+        }
+        if (!("headSHA" in $$source)) {
+            this["headSHA"] = "";
+        }
+        if (!("startSHA" in $$source)) {
+            this["startSHA"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRDiffRefs instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRDiffRefs {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRDiffRefs($$parsedSource as Partial<PRDiffRefs>);
+    }
+}
+
+/**
+ * PRReference identifies a PR/MR by host, namespace, repo, and number.
+ * Namespace carries the full path-segment chain before the repo
+ * (a single "owner" for GitHub, possibly a "group/sub/sub" chain for
+ * GitLab subgroups).
+ */
+export class PRReference {
+    /**
+     * "github" | "gitlab"
+     */
+    "Forge": string;
+
+    /**
+     * "owner" or "group/sub/..."
+     */
+    "Namespace": string;
+    "Repo": string;
+    "Number": number;
+
+    /** Creates a new PRReference instance. */
+    constructor($$source: Partial<PRReference> = {}) {
+        if (!("Forge" in $$source)) {
+            this["Forge"] = "";
+        }
+        if (!("Namespace" in $$source)) {
+            this["Namespace"] = "";
+        }
+        if (!("Repo" in $$source)) {
+            this["Repo"] = "";
+        }
+        if (!("Number" in $$source)) {
+            this["Number"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRReference instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRReference {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRReference($$parsedSource as Partial<PRReference>);
+    }
+}
+
+export class ReviewComment {
+    "authorLogin": string;
+    "body": string;
+    "createdAt": string;
+    "databaseID": number;
+    "replyTo"?: ReviewReplyTo | null;
+
+    /** Creates a new ReviewComment instance. */
+    constructor($$source: Partial<ReviewComment> = {}) {
+        if (!("authorLogin" in $$source)) {
+            this["authorLogin"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = "";
+        }
+        if (!("databaseID" in $$source)) {
+            this["databaseID"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewComment instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewComment {
+        const $$createField4_0 = $$createType14;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("replyTo" in $$parsedSource) {
+            $$parsedSource["replyTo"] = $$createField4_0($$parsedSource["replyTo"]);
+        }
+        return new ReviewComment($$parsedSource as Partial<ReviewComment>);
+    }
+}
+
+export class ReviewLineComment {
+    "path": string;
+    "body": string;
+    "line"?: number | null;
+    "side": string;
+    "startLine"?: number | null;
+
+    /** Creates a new ReviewLineComment instance. */
+    constructor($$source: Partial<ReviewLineComment> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+        if (!("side" in $$source)) {
+            this["side"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewLineComment instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewLineComment {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReviewLineComment($$parsedSource as Partial<ReviewLineComment>);
+    }
+}
+
+export class ReviewReplyTo {
+    "id": string;
+    "databaseID": number;
+
+    /** Creates a new ReviewReplyTo instance. */
+    constructor($$source: Partial<ReviewReplyTo> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("databaseID" in $$source)) {
+            this["databaseID"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewReplyTo instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewReplyTo {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReviewReplyTo($$parsedSource as Partial<ReviewReplyTo>);
+    }
+}
+
+/**
+ * ReviewThread is one PR discussion: a file-anchored review thread
+ * (Path set) or a PR-level conversation thread (Path empty — GitLab
+ * position-less discussions, GitHub PR conversation comments).
+ */
+export class ReviewThread {
+    "id": string;
+    "path": string;
+    "line": number | null;
+    "startLine": number | null;
+    "side": string;
+
+    /**
+     * IsResolvable distinguishes threads with a real resolve state from
+     * flat comments (GitHub conversation comments, non-resolvable GitLab
+     * notes) where IsResolved=false would misread as "needs attention".
+     */
+    "isResolvable": boolean;
+    "isResolved": boolean;
+    "isOutdated": boolean;
+    "comments": ReviewComment[];
+
+    /** Creates a new ReviewThread instance. */
+    constructor($$source: Partial<ReviewThread> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("line" in $$source)) {
+            this["line"] = null;
+        }
+        if (!("startLine" in $$source)) {
+            this["startLine"] = null;
+        }
+        if (!("side" in $$source)) {
+            this["side"] = "";
+        }
+        if (!("isResolvable" in $$source)) {
+            this["isResolvable"] = false;
+        }
+        if (!("isResolved" in $$source)) {
+            this["isResolved"] = false;
+        }
+        if (!("isOutdated" in $$source)) {
+            this["isOutdated"] = false;
+        }
+        if (!("comments" in $$source)) {
+            this["comments"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewThread instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewThread {
+        const $$createField8_0 = $$createType16;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("comments" in $$parsedSource) {
+            $$parsedSource["comments"] = $$createField8_0($$parsedSource["comments"]);
+        }
+        return new ReviewThread($$parsedSource as Partial<ReviewThread>);
+    }
+}
+
+export class ReviewVerdict {
+    "authorLogin": string;
+    "state": string;
+    "submittedAt": string;
+    "body": string;
+    "commitSHA": string;
+
+    /** Creates a new ReviewVerdict instance. */
+    constructor($$source: Partial<ReviewVerdict> = {}) {
+        if (!("authorLogin" in $$source)) {
+            this["authorLogin"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("submittedAt" in $$source)) {
+            this["submittedAt"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+        if (!("commitSHA" in $$source)) {
+            this["commitSHA"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewVerdict instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewVerdict {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReviewVerdict($$parsedSource as Partial<ReviewVerdict>);
+    }
+}
+
+export class SubmitReviewRequest {
+    "verdict": string;
+    "body": string;
+    "comments": ReviewLineComment[];
+
+    /** Creates a new SubmitReviewRequest instance. */
+    constructor($$source: Partial<SubmitReviewRequest> = {}) {
+        if (!("verdict" in $$source)) {
+            this["verdict"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+        if (!("comments" in $$source)) {
+            this["comments"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SubmitReviewRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SubmitReviewRequest {
+        const $$createField2_0 = $$createType18;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("comments" in $$parsedSource) {
+            $$parsedSource["comments"] = $$createField2_0($$parsedSource["comments"]);
+        }
+        return new SubmitReviewRequest($$parsedSource as Partial<SubmitReviewRequest>);
+    }
+}
+
+/**
  * Worktree describes a git worktree attached to a repository.
  */
 export class Worktree {
@@ -193,3 +836,24 @@ export class Worktree {
         return new Worktree($$parsedSource as Partial<Worktree>);
     }
 }
+
+// Private type creation functions
+const $$createType0 = CIStep.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = CIStage.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = CIJob.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = CheckStatus.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = ReviewVerdict.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = CheckSummary.createFrom;
+const $$createType11 = PRDiffRefs.createFrom;
+const $$createType12 = $Create.Nullable($$createType11);
+const $$createType13 = ReviewReplyTo.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = ReviewComment.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = ReviewLineComment.createFrom;
+const $$createType18 = $Create.Array($$createType17);
