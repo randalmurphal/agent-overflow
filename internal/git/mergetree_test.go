@@ -3,6 +3,7 @@ package git
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -34,10 +35,32 @@ func TestParseMergeTreeNameOnly(t *testing.T) {
 				Conflicted: true,
 				TreeOID:    "d2a25785a8eb8b7e49ce8638778429710b0d277c",
 				Paths:      []string{"main.go"},
-				Messages: []string{
-					"Auto-merging main.go",
-					"CONFLICT (content): Merge conflict in main.go",
+				// "Auto-merging main.go" and "CONFLICT (content)" from the
+				// fixture are both dropped: the viewer already renders the
+				// file with visible conflict regions and a badge.
+			},
+		},
+		{
+			name: "structural conflicts attribute to their paths",
+			stdout: "d2a25785a8eb8b7e49ce8638778429710b0d277c\n" +
+				"main.go\n" +
+				"lib/util.go\n" +
+				"\n" +
+				"Auto-merging main.go\n" +
+				"CONFLICT (content): Merge conflict in main.go\n" +
+				"CONFLICT (modify/delete): lib/util.go deleted in main and modified in feature. Version feature of lib/util.go left in tree.\n" +
+				"warning: something forge-wide happened\n",
+			conflicted: true,
+			want: MergeTreeResult{
+				Conflicted: true,
+				TreeOID:    "d2a25785a8eb8b7e49ce8638778429710b0d277c",
+				Paths:      []string{"main.go", "lib/util.go"},
+				Notes: map[string][]string{
+					"lib/util.go": {
+						"CONFLICT (modify/delete): lib/util.go deleted in main and modified in feature. Version feature of lib/util.go left in tree.",
+					},
 				},
+				Messages: []string{"warning: something forge-wide happened"},
 			},
 		},
 	}
@@ -48,12 +71,25 @@ func TestParseMergeTreeNameOnly(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseMergeTreeNameOnly: %v", err)
 			}
-			if got.Conflicted != tt.want.Conflicted || got.TreeOID != tt.want.TreeOID ||
-				strings.Join(got.Paths, "\x00") != strings.Join(tt.want.Paths, "\x00") ||
-				strings.Join(got.Messages, "\x00") != strings.Join(tt.want.Messages, "\x00") {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("result = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAttributeMergeMessagesLongestPathWins(t *testing.T) {
+	// "a/b.go" is a substring-adjacent trap: the message mentions the
+	// nested path, so the longer match must win over "b.go".
+	notes, rest := attributeMergeMessages(
+		[]string{"CONFLICT (rename/delete): a/b.go renamed in main"},
+		[]string{"b.go", "a/b.go"},
+	)
+	if len(rest) != 0 {
+		t.Fatalf("rest = %v, want empty", rest)
+	}
+	if len(notes["a/b.go"]) != 1 || len(notes["b.go"]) != 0 {
+		t.Fatalf("notes = %v, want attribution to a/b.go", notes)
 	}
 }
 

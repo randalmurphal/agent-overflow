@@ -1,6 +1,7 @@
 import { fireEvent, render } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewFileTree from './ReviewFileTree.svelte';
+import ReviewRail from './ReviewRail.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from '../../stores/appStorage';
 import type { PatchFile } from '../../utils/patchFiles';
 
@@ -101,20 +102,46 @@ describe('<ReviewFileTree>', () => {
     expect(view.getByText('app.ts').classList.contains('text-success')).toBe(false);
   });
 
+  it('shows per-file comment count badges', () => {
+    const view = render(ReviewFileTree, {
+      files: FILES,
+      onSelectFile: () => {},
+      commentCounts: new Map([['docs/readme.md', 3]]),
+    });
+    const badge = view.getByTestId('review-tree-comment-count');
+    expect(badge).toHaveTextContent('3');
+    expect(badge.closest('[data-file-path]')?.getAttribute('data-file-path')).toBe('docs/readme.md');
+  });
+});
+
+// Rail width/resize moved from the tree to the ReviewRail shell.
+function renderRail() {
+  return render(ReviewRail, {
+    tab: 'files' as const,
+    onTabChange: () => {},
+    files: FILES,
+    onSelectFile: () => {},
+    commentCounts: new Map(),
+    commentGroups: [],
+    onSelectComment: () => {},
+  });
+}
+
+describe('<ReviewRail>', () => {
   it('reads the persisted rail width, clamped to bounds', () => {
     appStorageSet('reviewTreeWidth', '320');
-    const view = render(ReviewFileTree, { files: FILES, onSelectFile: () => {} });
-    expect(view.getByTestId('review-file-tree').style.width).toBe('320px');
+    const view = renderRail();
+    expect(view.getByTestId('review-rail').style.width).toBe('320px');
   });
 
   it('double-clicking the resize handle resets and persists the default width', async () => {
     appStorageSet('reviewTreeWidth', '9999');
-    const view = render(ReviewFileTree, { files: FILES, onSelectFile: () => {} });
+    const view = renderRail();
     // Out-of-range stored values clamp on read.
-    expect(view.getByTestId('review-file-tree').style.width).toBe('480px');
+    expect(view.getByTestId('review-rail').style.width).toBe('480px');
 
     await fireEvent.dblClick(view.getByTestId('review-tree-resize'));
-    expect(view.getByTestId('review-file-tree').style.width).toBe('240px');
+    expect(view.getByTestId('review-rail').style.width).toBe('240px');
     expect(appStorageGet('reviewTreeWidth')).toBe('240');
   });
 });

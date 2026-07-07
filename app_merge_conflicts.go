@@ -15,7 +15,11 @@ type PRMergeConflictsResult struct {
 	BaseLabel  string   `json:"baseLabel"`
 	HeadLabel  string   `json:"headLabel"`
 	Paths      []string `json:"paths"`
-	Messages   []string `json:"messages"`
+	// Notes: per-path merge-tree messages for conflicts with no
+	// renderable content (modify/delete, rename/rename, …).
+	Notes map[string][]string `json:"notes"`
+	// Messages: leftover messages that mention no conflicted path.
+	Messages []string `json:"messages"`
 }
 
 func (a *App) GetPRMergeConflicts(threadID string, pr gitops.PRReference, baseRef, headRefName string) (PRMergeConflictsResult, error) {
@@ -64,6 +68,7 @@ func (a *App) GetPRMergeConflicts(threadID string, pr gitops.PRReference, baseRe
 		BaseLabel:  baseLabel,
 		HeadLabel:  headLabel,
 		Paths:      result.Paths,
+		Notes:      result.Notes,
 		Messages:   result.Messages,
 	}, nil
 }

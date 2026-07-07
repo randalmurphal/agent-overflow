@@ -386,12 +386,53 @@ export interface CheckStatus {
   completedAt?: string;
 }
 
+// Normalized CI shapes mirroring internal/git/ci.go. "Stage" is the
+// GitLab pipeline stage or the GitHub workflow name.
+export interface CIPipeline {
+  status: string;
+  url?: string;
+  stages: CIStage[];
+}
+
+export interface CIStage {
+  name: string;
+  status: string;
+  jobs: CIJob[];
+}
+
+export interface CIJob {
+  id?: string;
+  name: string;
+  status: string;
+  durationSeconds?: number;
+  url?: string;
+  allowFailure?: boolean;
+  logsAvailable: boolean;
+  steps?: CIStep[];
+}
+
+export interface CIStep {
+  number: number;
+  name: string;
+  status: string;
+}
+
+export interface CIJobLogResult {
+  text: string;
+  truncated: boolean;
+  totalBytes: number;
+}
+
+/** One PR discussion: a file-anchored review thread (path set) or a
+ * PR-level conversation thread (path empty). */
 export interface ReviewThread {
   id: string;
   path: string;
   line?: number | null;
   startLine?: number | null;
   side: string;
+  /** False for flat conversation comments with no resolve state. */
+  isResolvable: boolean;
   isResolved: boolean;
   isOutdated: boolean;
   comments: ReviewComment[];

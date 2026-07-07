@@ -28,6 +28,7 @@ export {
     MCPAuthInitResult,
     MCPServer,
     NewThreadDefaultsUpdate,
+    PRCIJobLogResult,
     PRMergeConflictsResult,
     PRUpdateSubscriptionResult,
     PayloadChunk,

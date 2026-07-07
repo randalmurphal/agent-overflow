@@ -221,6 +221,7 @@
           <TakeControlPane paneId={item.paneId} />
         </section>
       {:else if isCompanionKind(item.kind)}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
         <section
           use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
           style:flex-grow={item.ratio}
@@ -231,6 +232,8 @@
           data-pane-kind={item.kind}
           data-pane-min-width={minPaneWidth}
           data-pane-ratio={item.ratio}
+          onpointerdown={() => handlePaneFocus(item.sourcePaneId!)}
+          onfocusin={() => handlePaneFocus(item.sourcePaneId!)}
         >
           <CompanionPane paneId={item.paneId} kind={item.kind} sourcePaneId={item.sourcePaneId!} />
         </section>

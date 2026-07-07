@@ -148,7 +148,7 @@ func TestParseGitLabReviewThreadsFiltersSystemGroupsAndStaleness(t *testing.T) {
 	if len(threads) == 0 {
 		t.Fatal("expected positioned GitLab threads")
 	}
-	var sawOutdated, sawFileLevel, sawReplyGroup bool
+	var sawOutdated, sawFileLevel, sawReplyGroup, sawConversation bool
 	for _, thread := range threads {
 		if thread.IsOutdated {
 			sawOutdated = true
@@ -158,6 +158,17 @@ func TestParseGitLabReviewThreadsFiltersSystemGroupsAndStaleness(t *testing.T) {
 		}
 		if len(thread.Comments) > 1 {
 			sawReplyGroup = true
+		}
+		if thread.Path != "" && !thread.IsResolvable {
+			t.Fatalf("positioned thread must be resolvable: %+v", thread)
+		}
+		if thread.Path == "" {
+			// Position-less discussions are PR-level conversation threads —
+			// kept, not dropped, so the comments overview can list them.
+			sawConversation = true
+			if thread.Line != nil || thread.IsOutdated {
+				t.Fatalf("conversation thread carries diff anchors: %+v", thread)
+			}
 		}
 		for _, comment := range thread.Comments {
 			if strings.Contains(comment.Body, "changed this line in [version") || strings.Contains(comment.Body, "changed this file in [version") {
@@ -173,6 +184,33 @@ func TestParseGitLabReviewThreadsFiltersSystemGroupsAndStaleness(t *testing.T) {
 	}
 	if !sawReplyGroup {
 		t.Fatal("expected GitLab grouped replies")
+	}
+	if !sawConversation {
+		t.Fatal("expected GitLab position-less conversation threads from fixture")
+	}
+}
+
+func TestParseGitHubPRCommentsSkipsMinimized(t *testing.T) {
+	threads, pageInfo, err := parseGitHubPRComments(readTestdata(t, "github-pr-comments.json"))
+	if err != nil {
+		t.Fatalf("parseGitHubPRComments: %v", err)
+	}
+	if pageInfo.HasNextPage {
+		t.Fatal("fixture should fit on one page")
+	}
+	if len(threads) != 2 {
+		t.Fatalf("threads = %d, want 2 (minimized comment dropped)", len(threads))
+	}
+	for _, thread := range threads {
+		if thread.Path != "" || thread.Line != nil || thread.IsResolvable {
+			t.Fatalf("conversation comment mapped with diff-thread fields: %+v", thread)
+		}
+		if len(thread.Comments) != 1 || thread.Comments[0].AuthorLogin == "" || thread.Comments[0].DatabaseID == 0 {
+			t.Fatalf("conversation comment mapping = %+v", thread.Comments)
+		}
+	}
+	if threads[0].Comments[0].Body != "First pass done — see inline notes." {
+		t.Fatalf("body = %q", threads[0].Comments[0].Body)
 	}
 }
 

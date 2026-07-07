@@ -15,6 +15,7 @@ import {
   reviewLineCommentForDraft,
 } from './reviewPane.svelte';
 import { resetCompanionPanesForTest } from './companionPanes.svelte';
+import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import type { DiffReviewComment, PRDetail, Thread } from '../types/models';
 import { diffSourceKey } from '../utils/diffSourceKey';
@@ -80,6 +81,7 @@ beforeEach(() => {
   resetAppStorageForTest();
   __resetReviewPaneStateForTest();
   resetCompanionPanesForTest();
+  resetComposerDraftRegistryForTest();
   resetPaneLayoutForTest();
   installDefaultMocks();
 });
@@ -245,6 +247,75 @@ describe('reviewPane store', () => {
     expect(state.collapsedPaths.has('src/small.ts')).toBe(false);
     expect(state.collapsedPaths.has('pnpm-lock.yaml')).toBe(true);
     expect(state.collapsedPaths.has('src/large.ts')).toBe(true);
+  });
+
+  it('jumpToComment expands the file and thread and stages the row-key jump', async () => {
+    const patch = [patchFor('src/small.ts', 2), patchFor('pnpm-lock.yaml', 2)].join('\n');
+    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    expect(state.collapsedPaths.has('pnpm-lock.yaml')).toBe(true);
+
+    state.jumpToComment({
+      rowKey: 'pt:thread-9',
+      kind: 'pr-thread',
+      threadId: 'thread-9',
+      filePath: 'pnpm-lock.yaml',
+      line: 1,
+      author: 'alice',
+      snippet: 'hm',
+      state: 'unresolved',
+      orphaned: false,
+      inDiff: true,
+      replies: 0,
+      createdAtMs: null,
+      comments: [{ author: 'alice', body: 'hm' }],
+    });
+
+    expect(state.collapsedPaths.has('pnpm-lock.yaml')).toBe(false);
+    expect(state.expandedPRThreadIds.has('thread-9')).toBe(true);
+    expect(state.pendingJumpRowKey).toBe('pt:thread-9');
+
+    state.consumePendingJumpRowKey();
+    expect(state.pendingJumpRowKey).toBeNull();
+
+    // Items on files outside the diff have no row to jump to.
+    state.jumpToComment({
+      rowKey: 'pt:thread-10',
+      kind: 'pr-thread',
+      threadId: 'thread-10',
+      filePath: 'gone.ts',
+      line: null,
+      author: 'alice',
+      snippet: '',
+      state: 'unresolved',
+      orphaned: false,
+      inDiff: false,
+      replies: 0,
+      createdAtMs: null,
+      comments: [],
+    });
+    expect(state.pendingJumpRowKey).toBeNull();
+  });
+
+  it('toggleCollapseAll flips every file and allCollapsed tracks the set', async () => {
+    const patch = [patchFor('src/small.ts', 2), patchFor('pnpm-lock.yaml', 2)].join('\n');
+    setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    expect(state.allCollapsed).toBe(false);
+
+    await state.toggleCollapseAll();
+    expect(state.allCollapsed).toBe(true);
+    expect(state.collapsedPaths.has('src/small.ts')).toBe(true);
+    expect(state.collapsedPaths.has('pnpm-lock.yaml')).toBe(true);
+
+    // Expand-all clears the default lockfile collapse too.
+    await state.toggleCollapseAll();
+    expect(state.allCollapsed).toBe(false);
+    expect(state.collapsedPaths.size).toBe(0);
   });
 
   it('surfaces binding errors and clears them on successful reload', async () => {
@@ -431,6 +502,7 @@ function installPRMocks(): {
   const unsubscribe = setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
   setBindingMock('ListPRReviewThreads', async () => []);
+  setBindingMock('GetPRCIJobs', async () => ({ status: '', stages: [] }));
   setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
   setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
   return { subscribe, unsubscribe };
@@ -460,6 +532,35 @@ describe('reviewPane store — PR scope', () => {
     await state.setScope('workspace');
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     expect(unsubscribe).toHaveBeenCalledWith('sub-1');
+  });
+
+  it('switching scope away mid-PR-load lands on the new scope and closes the late subscription', async () => {
+    // The scope selector stays enabled while a PR loads, so a slow
+    // gh/glab call must not pin the pane: the superseded load's
+    // subscription has to be closed when it finally resolves.
+    const { unsubscribe } = installPRMocks();
+    let releaseDiff!: (patch: string) => void;
+    setBindingMock('GetPRDiff', () => new Promise<string>((resolve) => {
+      releaseDiff = resolve;
+    }));
+    setBindingMock('GetWorkspaceCurrentDiff', async () => patchFor('src/app.ts', 2));
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+
+    const prSwitch = state.setScope('pr'); // hangs on the PR diff
+    await vi.waitFor(() => {
+      if (!releaseDiff) throw new Error('PR diff not requested yet');
+    });
+    await state.setScope('workspace');
+    expect(state.scope).toBe('workspace');
+    expect(state.loading).toBe(false);
+
+    releaseDiff(patchFor('src/app.ts', 3));
+    await prSwitch;
+    // The stale load's subscription has no owner — it must be closed,
+    // and the pane must still be on the scope the user picked.
+    expect(unsubscribe).toHaveBeenCalledWith('sub-1');
+    expect(state.scope).toBe('workspace');
   });
 
   it('a diff failure after subscribe unsubscribes and surfaces the error', async () => {
@@ -547,7 +648,7 @@ describe('reviewPane store — PR scope', () => {
     expect(state.prStale).toBe(false);
   });
 
-  it('opens conflict view, keeps files collapsed, and loads file content once on expand', async () => {
+  it('opens conflict view expanded with file content loaded once', async () => {
     installPRMocks();
     setBindingMock('GetPRMergeConflicts', async () => ({
       conflicted: true,
@@ -572,29 +673,142 @@ describe('reviewPane store — PR scope', () => {
 
     await state.openConflictView();
 
+    // Conflict files open expanded like the regular diff: the open
+    // itself loads content and clears the collapsed set.
     expect(state.conflictView).toBe(true);
     expect(state.conflicts?.paths).toEqual(['main.go']);
-    expect(state.conflictCollapsedPaths.has('main.go')).toBe(true);
-    expect(state.conflictFiles[0]?.lines).toHaveLength(0);
-
-    await state.toggleConflictCollapsed('main.go');
     expect(getFile).toHaveBeenCalledTimes(1);
     expect(getFile).toHaveBeenCalledWith('thread-1', 'tree-1', 'main.go');
     expect(state.conflictCollapsedPaths.has('main.go')).toBe(false);
+    // Pseudo-diff shape: hunk header, then ours as del / theirs as add
+    // between visible marker rows, relabeled with base/head labels.
     expect(state.conflictFiles[0]?.lines.map((line) => line.type)).toEqual([
-      'context',
       'meta',
       'context',
-      'meta',
-      'context',
-      'meta',
+      'marker',
+      'del',
+      'marker',
+      'add',
+      'marker',
       'context',
     ]);
+    expect(state.conflictFiles[0]?.lines[2]?.content).toBe('<<<<<<< origin/main');
+    expect(state.conflictFiles[0]?.lines[6]?.content).toBe('>>>>>>> feature');
+    expect(state.conflictFiles[0]?.conflicts).toBe(1);
 
+    // Collapse/re-expand round-trip reuses the cached content.
     await state.toggleConflictCollapsed('main.go');
+    expect(state.conflictCollapsedPaths.has('main.go')).toBe(true);
     await state.toggleConflictCollapsed('main.go');
     expect(getFile).toHaveBeenCalledTimes(1);
     expect(state.conflictCollapsedPaths.has('main.go')).toBe(false);
+  });
+
+  it('toggleCollapseAll in conflict view reuses loaded content', async () => {
+    installPRMocks();
+    setBindingMock('GetPRMergeConflicts', async () => ({
+      conflicted: true,
+      treeOID: 'tree-1',
+      baseLabel: 'origin/main',
+      headLabel: 'feature',
+      paths: ['main.go', 'util.go'],
+      messages: [],
+    }));
+    const getFile = setBindingMock('GetMergeConflictFile', async () => [
+      '<<<<<<< ours',
+      'left',
+      '=======',
+      'right',
+      '>>>>>>> theirs',
+    ].join('\n'));
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await state.openConflictView();
+
+    // Both files load during open (default-expanded).
+    expect(getFile).toHaveBeenCalledTimes(2);
+    expect(state.allCollapsed).toBe(false);
+    expect(state.conflictCollapsedPaths.size).toBe(0);
+
+    await state.toggleCollapseAll();
+    expect(state.allCollapsed).toBe(true);
+
+    // Expand-all reuses the cached content — no refetch.
+    await state.toggleCollapseAll();
+    expect(state.allCollapsed).toBe(false);
+    expect(getFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders per-path notes in their file and expands note-only files whose content is unfetchable', async () => {
+    installPRMocks();
+    const note = 'CONFLICT (modify/delete): other.go deleted in origin/main and modified in feature.';
+    setBindingMock('GetPRMergeConflicts', async () => ({
+      conflicted: true,
+      treeOID: 'tree-1',
+      baseLabel: 'origin/main',
+      headLabel: 'feature',
+      paths: ['main.go', 'other.go'],
+      notes: { 'other.go': [note] },
+      messages: ['warning: unattributable message'],
+    }));
+    setBindingMock('GetMergeConflictFile', async (_thread: string, _tree: string, path: string) => {
+      if (path === 'other.go') throw new Error('path not in merged tree');
+      return '<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs';
+    });
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await state.openConflictView();
+
+    // Only unattributed messages stay on the fallback strip.
+    expect(state.conflicts?.messages).toEqual(['warning: unattributable message']);
+
+    // The note-bearing file expands despite the failed content load: its
+    // body is the note row, and the badge carries the conflict type.
+    expect(state.conflictCollapsedPaths.has('other.go')).toBe(false);
+    const structural = state.conflictFiles.find((file) => file.path === 'other.go');
+    expect(structural?.lines).toEqual([{ content: note, type: 'marker' }]);
+    expect(structural?.conflictLabel).toBe('modify/delete');
+    // The load failure is not swallowed.
+    expect(state.conflictsError).toContain('path not in merged tree');
+  });
+
+  it('expands conflict folds per file', async () => {
+    installPRMocks();
+    setBindingMock('GetPRMergeConflicts', async () => ({
+      conflicted: true,
+      treeOID: 'tree-1',
+      baseLabel: 'origin/main',
+      headLabel: 'feature',
+      paths: ['main.go'],
+      messages: [],
+    }));
+    setBindingMock('GetMergeConflictFile', async () => [
+      ...Array.from({ length: 10 }, (_, i) => `c${i + 1}`),
+      '<<<<<<< ours',
+      'left',
+      '=======',
+      'right',
+      '>>>>>>> theirs',
+    ].join('\n'));
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+
+    await state.openConflictView();
+    expect(state.conflictFiles[0]?.lines[0]?.fold).toEqual({ id: 0, lines: 7 });
+
+    state.expandConflictFold('main.go', 0);
+    const expanded = state.conflictFiles[0];
+    expect(expanded?.lines.some((line) => line.fold)).toBe(false);
+    expect(expanded?.lines[1]?.content).toBe(' c1');
+
+    // Closing and reopening the view resets expansion state.
+    await state.setScope('workspace');
+    await state.setScope('pr');
+    await state.openConflictView();
+    expect(state.conflictFiles[0]?.lines[0]?.fold).toEqual({ id: 0, lines: 7 });
   });
 
   it('shows no-conflicts state without setting an error when mergeability was stale', async () => {
@@ -671,7 +885,6 @@ describe('reviewPane store — PR scope', () => {
     await waitLoaded(state);
     await state.setScope('pr');
     await state.openConflictView();
-    await state.toggleConflictCollapsed('main.go');
 
     const rows = buildReviewRows({
       files: state.conflictFiles,
@@ -685,6 +898,113 @@ describe('reviewPane store — PR scope', () => {
 
     expect(rows.map((row) => row.kind)).toEqual(['file-header', 'line-block']);
     expect(rows.some((row) => row.kind === 'comment-thread' || row.kind === 'draft-editor' || row.kind === 'pr-thread')).toBe(false);
+  });
+
+  it('loads CI jobs in pr scope and opens a job log view', async () => {
+    installPRMocks();
+    setBindingMock('GetPRCIJobs', async () => ({
+      status: 'failed',
+      url: 'https://gl/p/77',
+      stages: [
+        {
+          name: 'test',
+          status: 'failed',
+          jobs: [
+            { id: '20', name: 'unit', status: 'failed', logsAvailable: true, url: 'https://gl/j/20' },
+          ],
+        },
+      ],
+    }));
+    const getLog = setBindingMock('GetPRCIJobLog', async () => ({
+      text: 'line 1\nline 2\n',
+      truncated: false,
+      totalBytes: 14,
+    }));
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+
+    await vi.waitFor(() => {
+      expect(state.ciPipeline?.status).toBe('failed');
+    });
+    expect(state.ciPipeline?.stages[0]?.jobs[0]?.name).toBe('unit');
+
+    const job = state.ciPipeline!.stages[0]!.jobs[0]!;
+    await state.openCIJobLog('test', job);
+    expect(getLog).toHaveBeenCalledWith(
+      { Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 },
+      '20',
+    );
+    expect(state.ciLogView?.job.name).toBe('unit');
+    expect(state.ciLog?.text).toBe('line 1\nline 2\n');
+
+    state.closeCILogView();
+    expect(state.ciLogView).toBeNull();
+    expect(state.ciLog).toBeNull();
+
+    // Leaving pr scope drops the pipeline state.
+    await state.setScope('workspace');
+    expect(state.ciPipeline).toBeNull();
+  });
+
+  it('opening the conflict view closes the CI log view and vice versa', async () => {
+    installPRMocks();
+    setBindingMock('GetPRMergeConflicts', async () => ({
+      conflicted: false,
+      treeOID: 'tree-clean',
+      baseLabel: 'origin/main',
+      headLabel: 'feature',
+      paths: [],
+      messages: [],
+    }));
+    setBindingMock('GetPRCIJobLog', async () => ({ text: 'x\n', truncated: false, totalBytes: 2 }));
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+
+    const job = { id: '20', name: 'unit', status: 'failed', logsAvailable: true };
+    await state.openCIJobLog('test', job);
+    expect(state.ciLogView).not.toBeNull();
+
+    await state.openConflictView();
+    expect(state.ciLogView).toBeNull();
+    expect(state.conflictView).toBe(true);
+
+    await state.openCIJobLog('test', job);
+    expect(state.conflictView).toBe(false);
+    expect(state.ciLogView).not.toBeNull();
+  });
+
+  it('sendCILogToChat saves the log and prefills the source pane composer', async () => {
+    installPRMocks();
+    setBindingMock('GetPRCIJobLog', async () => ({ text: 'boom\n', truncated: false, totalBytes: 5 }));
+    const save = setBindingMock('SavePRCIJobLog', async () => '/data/ci-logs/github-owner-repo-pr5-20-unit.log');
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+
+    let content = '';
+    const dispose = registerComposerDraft('pane-1', {
+      get content() { return content; },
+      setContent(next: string) { content = next; },
+    } as never);
+
+    try {
+      await state.openCIJobLog('test', { id: '20', name: 'unit', status: 'failed', logsAvailable: true });
+      await state.sendCILogToChat();
+
+      expect(save).toHaveBeenCalledWith(
+        { Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 },
+        '20',
+        'unit',
+      );
+      expect(state.ciLogSavedPath).toBe('/data/ci-logs/github-owner-repo-pr5-20-unit.log');
+      expect(content).toContain('CI job `unit`');
+      expect(content).toContain('status: failed');
+      expect(content).toContain('/data/ci-logs/github-owner-repo-pr5-20-unit.log');
+    } finally {
+      dispose();
+    }
   });
 
   it('detects an open PR from git status at mount without switching scope', async () => {

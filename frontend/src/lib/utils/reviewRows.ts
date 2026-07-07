@@ -16,7 +16,6 @@ export const REVIEW_LINE_HEIGHT_PX = 20;
 export const REVIEW_FILE_GAP_PX = 16;
 export const REVIEW_FILE_HEADER_BAR_PX = 36;
 export const REVIEW_FILE_HEADER_PX = REVIEW_FILE_GAP_PX + REVIEW_FILE_HEADER_BAR_PX;
-export const REVIEW_COLLAPSED_ROW_PX = 36;
 export const REVIEW_LINE_BLOCK_MAX_LINES = 32;
 const REVIEW_COMMENT_ESTIMATE_PX = 120;
 
@@ -30,7 +29,6 @@ export interface CommentAnchor {
 
 export type ReviewRow =
   | { kind: 'file-header'; fileIndex: number; path: string }
-  | { kind: 'file-collapsed'; fileIndex: number; path: string }
   | { kind: 'line-block'; fileIndex: number; rows: PatchDisplayRow[]; splitRows?: SplitDisplayRow[]; startLine: number }
   | { kind: 'draft-editor'; fileIndex: number; anchor: CommentAnchor }
   | { kind: 'comment-thread'; fileIndex: number; threadKey: string; anchor: CommentAnchor }
@@ -82,10 +80,9 @@ export function buildReviewRows(input: ReviewRowsInput): ReviewRowsResult {
     firstRowOfFile[fileIndex] = rows.length;
     push({ kind: 'file-header', fileIndex, path: file.path }, `h:${file.path}`, fileIndex);
 
-    if (input.collapsedPaths.has(file.path)) {
-      push({ kind: 'file-collapsed', fileIndex, path: file.path }, `c:${file.path}`, fileIndex);
-      continue;
-    }
+    // A collapsed file is just its header row — the header carries the
+    // chevron, +/- counts, and kind badge, so no body row is needed.
+    if (input.collapsedPaths.has(file.path)) continue;
 
     const inserts = insertsByFile.get(file.path);
     pushFileLevelInserts(push, fileIndex, inserts);
@@ -109,7 +106,6 @@ export function reviewRowEstimate(result: ReviewRowsResult, wordWrap: boolean): 
       const row = result.rows[index];
       if (!row) return REVIEW_LINE_HEIGHT_PX;
       if (row.kind === 'file-header') return REVIEW_FILE_HEADER_PX;
-      if (row.kind === 'file-collapsed') return REVIEW_COLLAPSED_ROW_PX;
       // Split view renders side pairs, so the visual row count is
       // splitRows.length, not the stacked display-row count.
       if (row.kind === 'line-block') return (row.splitRows ?? row.rows).length * REVIEW_LINE_HEIGHT_PX;
@@ -118,7 +114,7 @@ export function reviewRowEstimate(result: ReviewRowsResult, wordWrap: boolean): 
     isExact(index: number): boolean {
       if (wordWrap) return false;
       const row = result.rows[index];
-      return row?.kind === 'file-header' || row?.kind === 'file-collapsed' || row?.kind === 'line-block';
+      return row?.kind === 'file-header' || row?.kind === 'line-block';
     },
   };
 }

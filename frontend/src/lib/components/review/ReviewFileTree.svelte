@@ -10,7 +10,6 @@
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
-  import { appStorageGet, appStorageSet } from '../../stores/appStorage';
   import type { PatchFile } from '../../utils/patchFiles';
   import {
     buildReviewTree,
@@ -20,22 +19,38 @@
     type ReviewTreeNode,
   } from '../../utils/reviewTree';
 
+  // The rail's Files tab. Sizing/resize lives in ReviewRail; this
+  // component fills whatever width the rail gives it.
+
   interface Props {
     files: PatchFile[];
     activeFileIndex?: number;
     onSelectFile: (filePath: string) => void;
+    /** Per-file comment/draft counts for the badge pills. */
+    commentCounts?: ReadonlyMap<string, number>;
+    /** Shared extension-filter set. ReviewPane owns it so the filter can
+     * also apply to the diff body; standalone use falls back to a local
+     * set (rail-only filtering). */
+    activeExtensions?: SvelteSet<string>;
+    /** The dropdown's "Apply filter to diff" toggle. The item renders
+     * only when a handler is provided. */
+    filterDiff?: boolean;
+    onFilterDiffChange?: (value: boolean) => void;
   }
 
-  let { files, activeFileIndex = -1, onSelectFile }: Props = $props();
+  let {
+    files,
+    activeFileIndex = -1,
+    onSelectFile,
+    commentCounts,
+    activeExtensions = new SvelteSet<string>(),
+    filterDiff = false,
+    onFilterDiffChange,
+  }: Props = $props();
 
-  const RAIL_MIN_PX = 180;
-  const RAIL_MAX_PX = 480;
-  const RAIL_DEFAULT_PX = 240;
   const EMPTY_COLLAPSED: ReadonlySet<string> = new Set();
 
-  let railWidth = $state(readStoredRailWidth());
   let query = $state('');
-  const activeExtensions = $state(new SvelteSet<string>());
   const collapsedPaths = $state(new SvelteSet<string>());
   let extMenuOpen = $state(false);
   let extTriggerEl: HTMLButtonElement | undefined = $state(undefined);
@@ -96,40 +111,6 @@
         return '';
     }
   }
-
-  function readStoredRailWidth(): number {
-    const raw = Number(appStorageGet('reviewTreeWidth'));
-    return Number.isFinite(raw) && raw > 0 ? clampRailWidth(raw) : RAIL_DEFAULT_PX;
-  }
-
-  function clampRailWidth(px: number): number {
-    return Math.min(RAIL_MAX_PX, Math.max(RAIL_MIN_PX, Math.round(px)));
-  }
-
-  function startRailResize(event: PointerEvent): void {
-    event.preventDefault();
-    const handle = event.currentTarget as HTMLElement;
-    const startX = event.clientX;
-    const startWidth = railWidth;
-    handle.setPointerCapture(event.pointerId);
-    const onMove = (move: PointerEvent) => {
-      railWidth = clampRailWidth(startWidth + (move.clientX - startX));
-    };
-    const onEnd = () => {
-      handle.removeEventListener('pointermove', onMove);
-      handle.removeEventListener('pointerup', onEnd);
-      handle.removeEventListener('pointercancel', onEnd);
-      appStorageSet('reviewTreeWidth', String(railWidth));
-    };
-    handle.addEventListener('pointermove', onMove);
-    handle.addEventListener('pointerup', onEnd);
-    handle.addEventListener('pointercancel', onEnd);
-  }
-
-  function resetRailWidth(): void {
-    railWidth = RAIL_DEFAULT_PX;
-    appStorageSet('reviewTreeWidth', String(railWidth));
-  }
 </script>
 
 {#snippet indentGuides(depth: number)}
@@ -138,11 +119,7 @@
   {/each}
 {/snippet}
 
-<div
-  class="relative flex h-full min-h-0 shrink-0 flex-col border-r border-border-subtle bg-surface-0/45"
-  style:width="{railWidth}px"
-  data-testid="review-file-tree"
->
+<div class="flex min-h-0 flex-1 flex-col" data-testid="review-file-tree">
   <div class="flex shrink-0 items-center gap-1.5 px-2 pb-1.5 pt-2">
     <div class="relative min-w-0 flex-1">
       <Icon
@@ -188,6 +165,14 @@
               onSelect={() => toggleExtension(ext)}
             />
           {/each}
+          {#if onFilterDiffChange}
+            <MenuDivider />
+            <MenuItem
+              label="Apply filter to diff"
+              checked={filterDiff}
+              onSelect={() => onFilterDiffChange?.(!filterDiff)}
+            />
+          {/if}
           {#if activeExtensions.size > 0}
             <MenuDivider />
             <MenuItem label="Clear filters" onSelect={clearExtensions} />
@@ -225,9 +210,10 @@
           </span>
         </button>
       {:else}
+        {@const commentCount = commentCounts?.get(node.path) ?? 0}
         <button
           type="button"
-          class="flex h-7 w-full min-w-0 items-center pr-2 text-left text-xs hover:bg-surface-2/50 {isActive(node) ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
+          class="flex h-7 w-full min-w-0 items-center pr-2 text-left text-xs hover:bg-surface-2/50 {isActive(node) ? 'bg-accent/15 text-fg' : 'text-fg-muted hover:text-fg'}"
           onclick={() => onSelectFile(node.path)}
           data-testid="review-tree-file"
           data-file-path={node.path}
@@ -237,6 +223,13 @@
           <span class="flex min-w-0 flex-1 items-center gap-1.5 pl-0.5">
             <Icon icon={FileText} size={12} class="shrink-0 opacity-75" />
             <span class="min-w-0 flex-1 truncate font-mono {fileNameClass(node.fileKind)}">{node.name}</span>
+            {#if commentCount > 0}
+              <span
+                class="shrink-0 rounded-full bg-surface-2 px-1.5 text-[0.625rem] tabular-nums text-fg-muted"
+                title="{commentCount} comment{commentCount === 1 ? '' : 's'}"
+                data-testid="review-tree-comment-count"
+              >{commentCount}</span>
+            {/if}
             {#if node.additions > 0}
               <span class="shrink-0 tabular-nums text-success">+{node.additions}</span>
             {/if}
@@ -248,15 +241,4 @@
       {/if}
     {/each}
   </nav>
-
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div
-    role="separator"
-    aria-orientation="vertical"
-    aria-label="Resize file tree"
-    class="absolute inset-y-0 -right-0.5 z-10 w-1 cursor-col-resize hover:bg-accent/40 active:bg-accent/60"
-    data-testid="review-tree-resize"
-    onpointerdown={startRailResize}
-    ondblclick={resetRailWidth}
-  ></div>
 </div>

@@ -119,7 +119,7 @@ export function getCachedTokensForLine(
   lang: string,
 ): LineToken[] | null {
   getSharedTokenCacheGeneration();
-  if (line.type === 'meta') return null;
+  if (line.type === 'meta' || line.type === 'marker') return null;
   const text = stripPatchLinePrefix(line);
   if (text.length === 0 || text.length > TOKENIZE_MAX_LINE_LENGTH) return null;
   return (

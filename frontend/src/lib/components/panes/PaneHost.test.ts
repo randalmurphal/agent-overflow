@@ -238,6 +238,27 @@ describe('PaneHost', () => {
     expect(rendered.getByTestId('companion-pane-broken')).toHaveTextContent('Companion pane unavailable.');
   });
 
+  it('clicking a companion pane focuses its source pane', async () => {
+    // jsdom has no scrollIntoView; handlePaneFocus scrolls the target
+    // pane into view after focusing it.
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
+    registerPaneForTest('other', createThreadPane({ paneId: 'other' }));
+    setPaneLayoutItemsForTest([
+      { id: 'source', paneId: 'source', kind: 'thread', ratio: 1 },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', ratio: 1, sourcePaneId: 'source' },
+      { id: 'other', paneId: 'other', kind: 'thread', ratio: 1 },
+    ]);
+    focusPane('other');
+
+    const rendered = render(PaneHost);
+    const companion = rendered.container.querySelector<HTMLElement>('[data-pane-id="review-source"]');
+    if (!companion) throw new Error('expected companion pane');
+
+    await fireEvent.pointerDown(companion);
+    expect(getFocusedPaneId()).toBe('source');
+  });
+
   it('publishes and clears measured widths by pane id', () => {
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));

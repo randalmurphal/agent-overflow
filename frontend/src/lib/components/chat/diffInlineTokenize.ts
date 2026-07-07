@@ -42,7 +42,7 @@ export async function dispatchInlineFileTokens(
   const claimed: string[] = [];
 
   for (const line of lines) {
-    if (line.type === 'meta') continue;
+    if (line.type === 'meta' || line.type === 'marker') continue;
     const text = stripPatchLinePrefix(line);
     if (text.length === 0 || text.length > TOKENIZE_MAX_LINE_LENGTH) continue;
     const sourceKey = patchLineSourceKey(line);

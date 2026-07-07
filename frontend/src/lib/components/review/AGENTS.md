@@ -11,19 +11,49 @@ its source thread pane; open it via `openReviewCompanion` /
 |---|---|
 | `ReviewPane.svelte` | Shell: scope/branch/checkpoint selectors, tree/split/wrap toggles, error + send strip, snippet wiring. |
 | `ReviewDiffBody.svelte` | The continuous virtualized surface: one `TimelineVirtualizer` over the flat row model, sticky overlay file header, keyboard (j/k files, n/p comments, c file-level comment), jump-to-file. |
-| `ReviewFileTree.svelte` | Left-rail GitHub-style tree (`utils/reviewTree.ts`), click-to-jump, top-file highlight, a search box plus an extension-filter dropdown (funnel button right of the search box, multi-select `Menu` of file-type options with counts; filters the RAIL only, never the diff body), resizable width persisted via appStorage `reviewTreeWidth`. |
-| `ReviewFileHeaderRow/ReviewCollapsedRow/ReviewLineBlockRow.svelte` | Row renderers. Header/collapsed/line rows are EXACT-height (px-pinned from `utils/reviewRows.ts` constants). |
+| `ReviewRail.svelte` | The left rail shell: Files \| Comments tabs, resizable width persisted via appStorage `reviewTreeWidth`. Tab state is owned by `ReviewPane` (the toolbar comment tally switches to the Comments tab). |
+| `ReviewFileTree.svelte` | Files tab: GitHub-style tree (`utils/reviewTree.ts`), click-to-jump, top-file highlight, per-file comment-count badges, a search box plus an extension-filter dropdown (funnel button right of the search box, multi-select `Menu` of file-type options with counts). The extension set filters the rail; the dropdown's "Apply filter to diff" checkbox extends it to the diff body (state owned by `ReviewPane`, which derives the `diffFiles` subset and maps top-file highlight indexes back to the full list). The text search stays rail-only. |
+| `ReviewCommentsList.svelte` | Comments tab: every PR thread (file-anchored AND PR-level conversation — `ReviewThread.path === ''`, listed under a "Conversation" group first) + local draft grouped by file in diff order (`utils/reviewComments.ts`), actionable (unresolved/draft) first. The snippet is the row's primary text (markdown-stripped, bot badge lines skipped — see `commentSnippet`); author/line/state sit on a small meta line, full author on hover. Non-resolvable conversation comments get the neutral `comment` state (info dot, excluded from the unresolved tally). Clicking an in-diff item jumps the diff body to the row and flash-highlights it (`jumpToComment` on the store → `pendingJumpRowKey` → `ReviewDiffBody.jumpToRowKey`); items with no diff row (conversation threads, files outside the diff) expand inline instead, bodies rendered via `ChatMarkdown` (as a sibling of the row button — links must not nest in a button). PR scope shows review-verdict summaries on top. |
+| `ReviewFileHeaderRow/ReviewLineBlockRow.svelte` | Row renderers. Header/line rows are EXACT-height (px-pinned from `utils/reviewRows.ts` constants). A collapsed file is its header row alone (chevron + counts) — there is no collapsed body row; the toolbar's collapse-all/expand-all toggle flips the whole surface. |
 | `ReviewDraftEditor/ReviewCommentThread.svelte` | Comment rows (measured, not exact). |
-| `ReviewPRHeader.svelte` | PR-scope header (title/author/verdicts/checks/mergeability badge + description), normal flow above the diff body, not a virtual row. The state badge and base←head refs live in the `ReviewPane` toolbar stats area (`review-pr-meta`), not here — the toolbar's local-diff +/- is the only additions/deletions readout. |
+| `ReviewPRHeader.svelte` | PR-scope header (title/author/verdicts/mergeability badge + description), normal flow above the diff body, not a virtual row. The CI chips are the ONLY checks surface (the old ✓/✗/● summary button is deleted). The state badge and base←head refs live in the `ReviewPane` toolbar stats area (`review-pr-meta`), not here — the toolbar's local-diff +/- is the only additions/deletions readout. |
 | `ReviewPRThreadRow.svelte` | Incoming PR review-thread row (measured): comments, reply composer, send-to-agent. Reply text is store-backed. |
 | `reviewScroll.ts` | The pane's single scrollTop writer + per-(thread,scope,geometry) position memory. The conflict view passes `scope:conflicts` so its position doesn't clobber the diff's. |
+| `ReviewCIChips.svelte` | PR-scope pipeline chips on the header meta line: one per stage (GitLab) / workflow (GitHub) with a status dot, hover tally, and a job dropdown. Jobs with fetchable logs open the log view; external checks link out. |
+| `ReviewCILogView.svelte` | CI job log view — replaces the diff body (conflict-viewer pattern, Back button). Virtualized ANSI log chunks (bottom-anchored on load, tail-capped by the backend), per-step status strip (GitHub), Refresh / Save-to-file / Send-to-chat toolbar. |
 
 The PR-scope conflict viewer (`git merge-tree`, local clone required)
 renders through the same `ReviewDiffBody` with `utils/conflictFile.ts`
-pseudo-files: marker lines are `meta`-tinted, content is `context`, and
-the surface is deliberately read-only — no comment anchors, drafts, or
-PR-thread rows on conflict content. File content loads on expand
-(`GetMergeConflictFile`), never eagerly.
+pseudo-files: the merged blob's conflict regions become a pseudo-diff
+(ours → `del`, theirs → `add`, so split view shows ours|theirs side by
+side), marker lines render as visible unnumbered `marker` rows relabeled
+with the base/head labels, and non-conflict runs fold to a few context
+lines around each conflict — fold rows expand via
+`expandConflictFold(path, foldId)` on the store (ids are stable per
+file). Line numbers flow through synthetic `@@` headers. merge-tree's
+informational messages are attributed to their file Go-side
+(`MergeTreeResult.Notes`; redundant "CONFLICT (content)" /
+"Auto-merging" lines are dropped) and render as marker rows at the top
+of that file's body — the only signal for modify/delete-style
+conflicts. A file with notes but no textual regions gets a structural
+badge (`PatchFile.conflictLabel`, e.g. "modify/delete") in place of
+the conflict-count badge, and expands even when its content is
+unfetchable (the path may not exist in the merged tree). Messages
+naming no conflicted path (rare) fall back to a strip above the diff
+body. The surface is deliberately read-only — no comment anchors,
+drafts, or PR-thread rows on conflict content. Files open EXPANDED
+(content loads fan out in parallel via `GetMergeConflictFile` inside
+`openConflictView`); a file whose load fails with no notes stays
+collapsed.
+
+The PR-scope CI surface (`GetPRCIJobs` / `GetPRCIJobLog` /
+`SavePRCIJobLog`, normalized in `internal/git/ci.go`) loads lazily with
+the PR detail and refreshes on the same `pr:updated` pump — no separate
+poll. The log view is read-only and in-memory; "Save to file" writes the
+full log under the app-managed `ci-logs/` dir and "Send to chat"
+prefills the source pane's composer with a path reference (never
+auto-sends). The log wire payload is tail-capped (2 MB) because failures
+read tail-first.
 
 Data orchestration lives in `stores/reviewPane.svelte.ts` (per-source-pane
 state registry); the row model in `utils/reviewRows.ts`.
@@ -31,9 +61,8 @@ state registry); the row model in `utils/reviewRows.ts`.
 ## Contracts that bite
 
 - **Exact-height rows**: with word wrap off, line blocks render at exactly
-  `REVIEW_LINE_HEIGHT_PX` per visual line, headers at
-  `REVIEW_FILE_HEADER_PX`, and collapsed bodies at
-  `REVIEW_COLLAPSED_ROW_PX` — the engine skips their ResizeObservers
+  `REVIEW_LINE_HEIGHT_PX` per visual line and headers at
+  `REVIEW_FILE_HEADER_PX` — the engine skips their ResizeObservers
   (`RowEstimate.isExact`), so ANY vertical padding/border/rem-based height
   drift misplaces every row below. Heights are px-pinned from the shared
   constants; keep them that way. The between-files separation gap is

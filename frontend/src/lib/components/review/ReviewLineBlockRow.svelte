@@ -34,9 +34,11 @@
     /** Line-number gutter width in ch, per file (max line number). */
     gutterCh: number;
     onAddComment?: (anchor: CommentAnchor) => void;
+    /** Conflict view only: expands the fold row's hidden lines. */
+    onExpandFold?: (path: string, foldId: number) => void;
   }
 
-  let { rows, splitRows, path, threadId, wordWrap, gutterCh, onAddComment }: Props = $props();
+  let { rows, splitRows, path, threadId, wordWrap, gutterCh, onAddComment, onExpandFold }: Props = $props();
 
   let theme: DiffTheme = $derived(getDiffTheme());
   let lang = $derived(languageFromPath(path));
@@ -45,7 +47,8 @@
     const t = theme;
     const l = lang;
     const id = threadId;
-    const lines = rows.map((row) => row.line);
+    // Marker/fold rows render plain — no point queueing them for Shiki.
+    const lines = rows.map((row) => row.line).filter((line) => line.type !== 'marker');
     untrack(() => {
       void dispatchInlineFileTokens(lines, id, l, t);
     });
@@ -99,6 +102,20 @@
   {/if}
 {/snippet}
 
+{#snippet foldRow(fold: { id: number; lines: number })}
+  <button
+    type="button"
+    class="flex w-full cursor-pointer items-center bg-surface-2/40 px-8 text-left text-fg-muted hover:bg-surface-2/70 hover:text-fg disabled:cursor-default"
+    style:height={wordWrap ? undefined : lineHeight}
+    data-testid="review-conflict-fold"
+    aria-label="Expand {fold.lines} unchanged lines"
+    disabled={!onExpandFold}
+    onclick={() => onExpandFold?.(path, fold.id)}
+  >
+    ⋯ {fold.lines} unchanged lines
+  </button>
+{/snippet}
+
 {#snippet gutter(lineNo: number)}
   <span
     class="shrink-0 select-none pr-1 text-right tabular-nums text-fg-subtle"
@@ -115,6 +132,11 @@
 >
   {#if splitRows}
     {#each splitRows as pair, pairIndex (pairIndex)}
+      {#if pair.left?.line.fold}
+        <!-- Fold rows span both sides (buildSplitDisplayRows mirrors
+             context-like rows, so left === right here). -->
+        {@render foldRow(pair.left.line.fold)}
+      {:else}
       <div class={lineClass} style:height={wordWrap ? undefined : lineHeight}>
         <div class="group relative flex w-1/2 min-w-0 {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/30'}">
           {#if pair.left}
@@ -131,18 +153,23 @@
           {/if}
         </div>
       </div>
+      {/if}
     {/each}
   {:else}
     {#each rows as row (row.id)}
-      <div
-        class="group relative {lineClass} {lineTintClass(row.line.type)}"
-        style:height={wordWrap ? undefined : lineHeight}
-      >
-        {@render addButton(stackedAnchor(row), 'line')}
-        {@render gutter(row.oldLine)}
-        {@render gutter(row.newLine)}
-        <span class="min-w-0 flex-1 {contentClass} pl-2 pr-3"><DiffLineContent line={row.line} tokens={getTokens(row.line)} /></span>
-      </div>
+      {#if row.line.fold}
+        {@render foldRow(row.line.fold)}
+      {:else}
+        <div
+          class="group relative {lineClass} {lineTintClass(row.line.type)}"
+          style:height={wordWrap ? undefined : lineHeight}
+        >
+          {@render addButton(stackedAnchor(row), 'line')}
+          {@render gutter(row.oldLine)}
+          {@render gutter(row.newLine)}
+          <span class="min-w-0 flex-1 {contentClass} pl-2 pr-3"><DiffLineContent line={row.line} tokens={getTokens(row.line)} /></span>
+        </div>
+      {/if}
     {/each}
   {/if}
 </div>

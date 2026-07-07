@@ -252,6 +252,14 @@ corrupt every project on the machine. Use
      the committed-prefix/volatile-tail split remounts each settled
      block once — the caches make that migration free. Perf-only: each
      can be dropped independently if upstream grows an equivalent.
+  10. **relative-reference links** (`Elements/Link.svelte`) — the
+      blocked-link branch drops its " [blocked]" suffix for schemeless
+      relative references (`docs/guide.md`, `../x`, `#frag` — common
+      repo-relative links in PR/issue bodies). They aren't navigable
+      here but they aren't *blocked URLs* either; the text renders
+      muted with the href as hover title. Disallowed absolute URLs
+      (`javascript:` etc.) and network-path refs (`//host/x`) keep the
+      tag. Regression: `ChatMarkdown.test.ts`. Upstream-PR candidate.
 
 ## References
 

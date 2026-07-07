@@ -12,7 +12,10 @@
  *     (padding, block, grid cell) without duplicating the color rules.
  */
 
-export type LineTintType = 'add' | 'del' | 'meta' | 'context';
+// `marker` is conflict-view only (`utils/conflictFile.ts`): visible,
+// unnumbered rows for conflict markers and fold placeholders. Regular
+// diff parsing never emits it.
+export type LineTintType = 'add' | 'del' | 'meta' | 'context' | 'marker';
 
 export function lineTintClass(type: LineTintType): string {
   switch (type) {
@@ -22,6 +25,8 @@ export function lineTintClass(type: LineTintType): string {
       return 'bg-error/20 text-error';
     case 'meta':
       return 'text-accent/70';
+    case 'marker':
+      return 'bg-accent/10 text-accent';
     default:
       return 'text-text-secondary';
   }

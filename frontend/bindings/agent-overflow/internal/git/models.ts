@@ -5,6 +5,154 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+export class CIJob {
+    /**
+     * ID is the forge's numeric job id, as a string. Empty when the job
+     * has no fetchable log (external checks, commit statuses).
+     */
+    "id"?: string;
+    "name": string;
+    "status": string;
+    "durationSeconds"?: number;
+    "url"?: string;
+    "allowFailure"?: boolean;
+    "logsAvailable": boolean;
+    "steps"?: CIStep[];
+
+    /** Creates a new CIJob instance. */
+    constructor($$source: Partial<CIJob> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("logsAvailable" in $$source)) {
+            this["logsAvailable"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIJob instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIJob {
+        const $$createField7_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("steps" in $$parsedSource) {
+            $$parsedSource["steps"] = $$createField7_0($$parsedSource["steps"]);
+        }
+        return new CIJob($$parsedSource as Partial<CIJob>);
+    }
+}
+
+export class CIPipeline {
+    /**
+     * Status is the normalized aggregate for the whole pipeline.
+     */
+    "status": string;
+
+    /**
+     * URL links to the forge's pipeline page (GitLab only; empty on GitHub).
+     */
+    "url"?: string;
+    "stages": CIStage[];
+
+    /** Creates a new CIPipeline instance. */
+    constructor($$source: Partial<CIPipeline> = {}) {
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("stages" in $$source)) {
+            this["stages"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIPipeline instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIPipeline {
+        const $$createField2_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("stages" in $$parsedSource) {
+            $$parsedSource["stages"] = $$createField2_0($$parsedSource["stages"]);
+        }
+        return new CIPipeline($$parsedSource as Partial<CIPipeline>);
+    }
+}
+
+export class CIStage {
+    /**
+     * Name is the GitLab stage or GitHub workflow name.
+     */
+    "name": string;
+    "status": string;
+    "jobs": CIJob[];
+
+    /** Creates a new CIStage instance. */
+    constructor($$source: Partial<CIStage> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("jobs" in $$source)) {
+            this["jobs"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIStage instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIStage {
+        const $$createField2_0 = $$createType5;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("jobs" in $$parsedSource) {
+            $$parsedSource["jobs"] = $$createField2_0($$parsedSource["jobs"]);
+        }
+        return new CIStage($$parsedSource as Partial<CIStage>);
+    }
+}
+
+/**
+ * CIStep is a per-step status inside a job (GitHub Actions only —
+ * GitLab has no step concept).
+ */
+export class CIStep {
+    "number": number;
+    "name": string;
+    "status": string;
+
+    /** Creates a new CIStep instance. */
+    constructor($$source: Partial<CIStep> = {}) {
+        if (!("number" in $$source)) {
+            this["number"] = 0;
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CIStep instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CIStep {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CIStep($$parsedSource as Partial<CIStep>);
+    }
+}
+
 export class CheckStatus {
     "kind": string;
     "name": string;
@@ -79,7 +227,7 @@ export class CheckSummary {
      * Creates a new CheckSummary instance from a string or object.
      */
     static createFrom($$source: any = {}): CheckSummary {
-        const $$createField6_0 = $$createType1;
+        const $$createField6_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("checks" in $$parsedSource) {
             $$parsedSource["checks"] = $$createField6_0($$parsedSource["checks"]);
@@ -336,9 +484,9 @@ export class PRDetail {
      * Creates a new PRDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): PRDetail {
-        const $$createField15_0 = $$createType3;
-        const $$createField16_0 = $$createType4;
-        const $$createField18_0 = $$createType6;
+        const $$createField15_0 = $$createType9;
+        const $$createField16_0 = $$createType10;
+        const $$createField18_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
             $$parsedSource["latestReviews"] = $$createField15_0($$parsedSource["latestReviews"]);
@@ -457,7 +605,7 @@ export class ReviewComment {
      * Creates a new ReviewComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewComment {
-        const $$createField4_0 = $$createType8;
+        const $$createField4_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replyTo" in $$parsedSource) {
             $$parsedSource["replyTo"] = $$createField4_0($$parsedSource["replyTo"]);
@@ -522,12 +670,24 @@ export class ReviewReplyTo {
     }
 }
 
+/**
+ * ReviewThread is one PR discussion: a file-anchored review thread
+ * (Path set) or a PR-level conversation thread (Path empty — GitLab
+ * position-less discussions, GitHub PR conversation comments).
+ */
 export class ReviewThread {
     "id": string;
     "path": string;
     "line": number | null;
     "startLine": number | null;
     "side": string;
+
+    /**
+     * IsResolvable distinguishes threads with a real resolve state from
+     * flat comments (GitHub conversation comments, non-resolvable GitLab
+     * notes) where IsResolved=false would misread as "needs attention".
+     */
+    "isResolvable": boolean;
     "isResolved": boolean;
     "isOutdated": boolean;
     "comments": ReviewComment[];
@@ -549,6 +709,9 @@ export class ReviewThread {
         if (!("side" in $$source)) {
             this["side"] = "";
         }
+        if (!("isResolvable" in $$source)) {
+            this["isResolvable"] = false;
+        }
         if (!("isResolved" in $$source)) {
             this["isResolved"] = false;
         }
@@ -566,10 +729,10 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField7_0 = $$createType10;
+        const $$createField8_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
-            $$parsedSource["comments"] = $$createField7_0($$parsedSource["comments"]);
+            $$parsedSource["comments"] = $$createField8_0($$parsedSource["comments"]);
         }
         return new ReviewThread($$parsedSource as Partial<ReviewThread>);
     }
@@ -636,7 +799,7 @@ export class SubmitReviewRequest {
      * Creates a new SubmitReviewRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): SubmitReviewRequest {
-        const $$createField2_0 = $$createType12;
+        const $$createField2_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField2_0($$parsedSource["comments"]);
@@ -675,16 +838,22 @@ export class Worktree {
 }
 
 // Private type creation functions
-const $$createType0 = CheckStatus.createFrom;
+const $$createType0 = CIStep.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = ReviewVerdict.createFrom;
+const $$createType2 = CIStage.createFrom;
 const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = CheckSummary.createFrom;
-const $$createType5 = PRDiffRefs.createFrom;
-const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = ReviewReplyTo.createFrom;
-const $$createType8 = $Create.Nullable($$createType7);
-const $$createType9 = ReviewComment.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = ReviewLineComment.createFrom;
-const $$createType12 = $Create.Array($$createType11);
+const $$createType4 = CIJob.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = CheckStatus.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = ReviewVerdict.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = CheckSummary.createFrom;
+const $$createType11 = PRDiffRefs.createFrom;
+const $$createType12 = $Create.Nullable($$createType11);
+const $$createType13 = ReviewReplyTo.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = ReviewComment.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = ReviewLineComment.createFrom;
+const $$createType18 = $Create.Array($$createType17);

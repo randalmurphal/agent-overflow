@@ -418,7 +418,12 @@ pre, code, kbd, samp, .ansi-body {
 .markdown-body ul,
 .markdown-body ol {
   margin: 0.25rem 0;
-  padding-left: 1.25rem;
+  /* 2em, not 1.25rem: outside markers render in this padding, and wide
+     fonts (Hack Nerd Font numbers like "5.") plus WebKit's fixed
+     marker gap overflow ~1.7em — anything tighter clips the marker
+     against overflow-auto containers (PR description, plan card).
+     em so the room scales with the surface's font size. */
+  padding-left: 2em;
 }
 /* Tailwind v4's preflight resets list-style on ul/ol globally; restore
    it inside .markdown-body so chat markdown bullets/numbers actually
@@ -528,10 +533,11 @@ pre, code, kbd, samp, .ansi-body {
   margin: 0;
 }
 
-/* GFM task lists. */
+/* GFM task lists. Negative margin mirrors the list padding-left above
+   so checkbox items sit flush where the marker column would start. */
 .markdown-body li:has(> input[type="checkbox"]) {
   list-style: none;
-  margin-left: -1.25rem;
+  margin-left: -2em;
 }
 .markdown-body li > input[type="checkbox"] {
   margin-right: 0.375rem;

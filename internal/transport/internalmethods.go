@@ -149,6 +149,11 @@ var LocalOnlyMethods = map[string]bool{
 	"UnsubscribePRUpdates": true,
 	"GetPRMergeConflicts":  true,
 	"GetMergeConflictFile": true,
+	// CI surface: shells out to gh/glab; SavePRCIJobLog additionally
+	// writes into the local ci-logs directory.
+	"GetPRCIJobs":    true,
+	"GetPRCIJobLog":  true,
+	"SavePRCIJobLog": true,
 	// PrepareThreadWorktree creates a git worktree on disk; same
 	// class as the Git* mutators above.
 	"PrepareThreadWorktree": true,

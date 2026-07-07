@@ -4,9 +4,12 @@ import {
   GetGitStatus,
   GetMessageCheckpointDiff,
   GetMergeConflictFile,
+  GetPRCIJobLog,
+  GetPRCIJobs,
   GetPRDiff,
   GetPRMergeConflicts,
   GetThread,
+  SavePRCIJobLog,
   GetSessionAgentDiff,
   GetWorkspaceCurrentDiff,
   GitListBranches,
@@ -22,6 +25,7 @@ import {
 } from './bindings';
 import { appStorageGet, appStorageSet } from './appStorage';
 import { openCompanion } from './companionPanes.svelte';
+import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import {
   createDiffReviewComment,
   deleteDiffReviewComment,
@@ -35,6 +39,9 @@ import { getActiveTurn } from './threadStatuses.svelte';
 import type { Checkpoint } from '../types/checkpoint';
 import type { GitBranch } from '../types/git';
 import type {
+  CIJob,
+  CIJobLogResult,
+  CIPipeline,
   DiffReviewComment,
   DiffReviewScope,
   PRDetail,
@@ -53,6 +60,7 @@ import {
   type PatchFile,
 } from '../utils/patchFiles';
 import { anchorKey, type CommentAnchor } from '../utils/reviewRows';
+import type { CommentListItem } from '../utils/reviewComments';
 
 export type ReviewScope = DiffReviewScope;
 
@@ -72,6 +80,8 @@ export interface ReviewPaneState {
   readonly checkpoints: readonly Checkpoint[];
   selectedCheckpointUserItemId: string | null;
   pendingJumpFilePath: string | null;
+  /** Diff row key to jump to (comments-list click); consumed by the diff body. */
+  readonly pendingJumpRowKey: string | null;
   readonly loading: boolean;
   readonly error: string | null;
   readonly sendingComments: boolean;
@@ -86,12 +96,22 @@ export interface ReviewPaneState {
   readonly conflictContentByPath: SvelteMap<string, string>;
   readonly conflictCollapsedPaths: SvelteSet<string>;
   readonly conflictFiles: PatchFile[];
+  readonly ciPipeline: CIPipeline | null;
+  readonly ciLoading: boolean;
+  readonly ciError: string | null;
+  readonly ciLogView: CILogView | null;
+  readonly ciLog: CIJobLogResult | null;
+  readonly ciLogLoading: boolean;
+  readonly ciLogError: string | null;
+  readonly ciLogSavedPath: string | null;
   readonly submitTarget: 'agent' | 'pr';
   readonly verdict: 'comment' | 'approve' | 'request-changes';
   readonly summaryBody: string;
   readonly submitError: string | null;
   readonly isTurnActive: boolean;
   readonly collapsedPaths: SvelteSet<string>;
+  /** Every file on the active surface (conflict view or diff) is collapsed. */
+  readonly allCollapsed: boolean;
   readonly expandedPRThreadIds: SvelteSet<string>;
   readonly viewMode: 'stacked' | 'split';
   readonly wordWrap: boolean;
@@ -99,6 +119,10 @@ export interface ReviewPaneState {
   selectCheckpoint(userItemId: string | null): Promise<void>;
   reload(): Promise<void>;
   consumePendingJumpFilePath(): void;
+  /** Jump the diff body to a comment row: leaves conflict/CI-log views,
+   * expands the file (and the thread, for collapsed PR threads). */
+  jumpToComment(item: CommentListItem): void;
+  consumePendingJumpRowKey(): void;
   openDraftEditor(anchor: CommentAnchor): void;
   closeDraftEditor(anchor: CommentAnchor): void;
   /** Store-backed editor text — survives virtualizer row unmounts. */
@@ -125,7 +149,15 @@ export interface ReviewPaneState {
   openConflictView(): Promise<void>;
   closeConflictView(): void;
   toggleConflictCollapsed(path: string): Promise<void>;
+  expandConflictFold(path: string, foldId: number): void;
+  loadCIJobs(): Promise<void>;
+  openCIJobLog(stageName: string, job: CIJob): Promise<void>;
+  closeCILogView(): void;
+  refreshCILog(): Promise<void>;
+  saveCILog(): Promise<string | null>;
+  sendCILogToChat(): Promise<void>;
   toggleCollapsed(path: string): void;
+  toggleCollapseAll(): Promise<void>;
   setViewMode(mode: 'stacked' | 'split'): void;
   setWordWrap(wrap: boolean): void;
   dispose(): void;
@@ -136,11 +168,22 @@ interface PersistedReviewScope {
   baseBranch?: string | null;
 }
 
+export interface CILogView {
+  stageName: string;
+  job: CIJob;
+}
+
 interface PRMergeConflictsView {
   treeOID: string;
   baseLabel: string;
   headLabel: string;
   paths: string[];
+  /** Per-path merge-tree messages — the only signal for non-textual
+   * conflicts (modify/delete, rename/rename, …); rendered as marker
+   * rows at the top of that file's body. */
+  notes: Partial<Record<string, string[]>>;
+  /** Fallback strip: messages that name no conflicted path (rare). */
+  messages: string[];
 }
 
 const statesBySourcePane = new Map<string, ReviewPaneState>();
@@ -176,7 +219,7 @@ export function reviewStateForPane(sourcePaneId: string, threadId: string, threa
   // The replaced state may own a live PR-update subscription; drop it or
   // the Go-side poll pump outlives the state that could unsubscribe it.
   existing?.dispose();
-  const state = createReviewPaneState(threadId, thread ?? null);
+  const state = createReviewPaneState(sourcePaneId, threadId, thread ?? null);
   statesBySourcePane.set(sourcePaneId, state);
   return state;
 }
@@ -214,7 +257,7 @@ export async function openReviewCompanion(
   return state;
 }
 
-function createReviewPaneState(threadId: string, initialThread: Thread | null): ReviewPaneState {
+function createReviewPaneState(sourcePaneId: string, threadId: string, initialThread: Thread | null): ReviewPaneState {
   const persisted = readPersistedScope(threadId);
   const initialPRRef = prRefFromThread(initialThread ?? {});
   let prRef: PRRef | null = $state(initialPRRef);
@@ -234,6 +277,19 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
   const conflictContentByPath = new SvelteMap<string, string>();
   let conflictCollapsedPaths: SvelteSet<string> = $state(new SvelteSet<string>());
   const conflictFileLoads = new Map<string, Promise<void>>();
+  // Expanded fold ids per path. Entries are replaced wholesale on expand
+  // so the SvelteMap write re-derives conflictFiles.
+  const conflictExpandedFolds = new SvelteMap<string, ReadonlySet<number>>();
+  let ciPipeline: CIPipeline | null = $state(null);
+  let ciLoading = $state(false);
+  let ciError: string | null = $state(null);
+  let ciLoadSeq = 0;
+  let ciLogView: CILogView | null = $state(null);
+  let ciLog: CIJobLogResult | null = $state(null);
+  let ciLogLoading = $state(false);
+  let ciLogError: string | null = $state(null);
+  let ciLogSavedPath: string | null = $state(null);
+  let ciLogSeq = 0;
   let submitTarget: 'agent' | 'pr' = $state('agent');
   let verdict: 'comment' | 'approve' | 'request-changes' = $state('comment');
   let summaryBody = $state('');
@@ -245,6 +301,7 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
   let selectedCheckpointUserItemId: string | null = $state(null);
   let checkpoints: Checkpoint[] = $state([]);
   let pendingJumpFilePath: string | null = $state(null);
+  let pendingJumpRowKey: string | null = $state(null);
   let patchText = $state('');
   let loading = $state(false);
   let error: string | null = $state(null);
@@ -273,11 +330,31 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
   const files = $derived(parsePatchFilesCached(patchText));
   const conflictFiles = $derived.by(() => {
     if (!conflicts) return [];
+    const { baseLabel, headLabel, notes } = conflicts;
     return conflicts.paths.map((path) => {
       const content = conflictContentByPath.get(path);
-      if (content !== undefined) return conflictPatchFile(path, content);
+      const pathNotes = notes[path];
+      // A structural conflict's content can be unfetchable (the path may
+      // not exist in the merged tree at all) — its notes still render.
+      if (content !== undefined || pathNotes?.length) {
+        return conflictPatchFile(path, content ?? '', {
+          baseLabel,
+          headLabel,
+          notes: pathNotes,
+          expandedFolds: conflictExpandedFolds.get(path),
+        });
+      }
       return { path, kind: 'conflict', additions: 0, deletions: 0, lines: [] };
     });
+  });
+  // Whether every file on the ACTIVE surface (conflict view or diff) is
+  // collapsed — drives the toolbar's expand-all/collapse-all toggle.
+  const allCollapsed = $derived.by(() => {
+    if (conflictView) {
+      const paths = conflicts?.paths ?? [];
+      return paths.length > 0 && paths.every((path) => conflictCollapsedPaths.has(path));
+    }
+    return files.length > 0 && files.every((file) => collapsedPaths.has(file.path));
   });
   const comments = $derived(getDiffReviewComments(threadId, scope, sourceKey));
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
@@ -339,6 +416,7 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
   function dispose(): void {
     disposed = true;
     resetConflictState();
+    resetCIState();
     const id = subscriptionId;
     if (!id) return;
     subscriptionId = null;
@@ -355,11 +433,15 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
       prThreads = event.threads ?? [];
       prHeadSHA = event.headSHA;
       prStale = true;
+      void loadCIJobs();
       return;
     }
     prDetail = event.detail;
     prThreads = event.threads ?? [];
     prHeadSHA = event.headSHA || event.detail?.headSHA || prHeadSHA;
+    // The pump only fires on snapshot change, so this refresh tracks
+    // check/pipeline movement without its own poll.
+    void loadCIJobs();
   }
 
   function resetConflictState(): void {
@@ -370,10 +452,14 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
     conflictContentByPath.clear();
     conflictCollapsedPaths = new SvelteSet<string>();
     conflictFileLoads.clear();
+    conflictExpandedFolds.clear();
   }
 
   async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string }): Promise<void> {
-    if (nextScope !== scope) resetConflictState();
+    if (nextScope !== scope) {
+      resetConflictState();
+      resetCIState();
+    }
     if (scope === 'pr' && nextScope !== 'pr') {
       await unsubscribePR();
     }
@@ -411,9 +497,12 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
     loadSeq = seq;
     loading = true;
     error = null;
-    if (scope === 'pr') {
-      await unsubscribePR();
-    }
+    // Unconditionally, not just in pr scope: scope can change mid-load
+    // (the selector stays enabled while a PR loads), and an in-flight
+    // pr load that resolved during setScope's awaits may have
+    // registered a subscription after the scope flipped. No-op when
+    // none is held.
+    await unsubscribePR();
     try {
       if (scope === 'pr' && !prRef) {
         // Persisted 'pr' scope restores before the thread/git status is at
@@ -450,7 +539,10 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
       }
       patchText = loaded.patchText;
       collapsedPaths = defaultCollapsedPaths(parsePatchFilesCached(loaded.patchText));
-      if (scope === 'pr') prStale = false;
+      if (scope === 'pr') {
+        prStale = false;
+        void loadCIJobs();
+      }
       const nextSourceKey = scope === 'pr'
         ? sourceKey
         : (loaded.patchText ? diffSourceKey(loaded.patchText) : '');
@@ -669,6 +761,7 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
       conflictsError = 'PR details are not loaded.';
       return;
     }
+    closeCILogView();
     conflictView = true;
     conflictsLoading = true;
     conflictsError = null;
@@ -676,6 +769,7 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
     conflictContentByPath.clear();
     conflictCollapsedPaths = new SvelteSet<string>();
     conflictFileLoads.clear();
+    conflictExpandedFolds.clear();
     try {
       const result = await GetPRMergeConflicts(
         threadId,
@@ -688,9 +782,15 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
         baseLabel: String(result.baseLabel ?? `origin/${prDetail.baseRefName}`),
         headLabel: String(result.headLabel ?? prDetail.headRefName),
         paths: result.conflicted ? [...(result.paths ?? [])] : [],
+        notes: result.conflicted ? { ...(result.notes ?? {}) } : {},
+        messages: result.conflicted ? [...(result.messages ?? [])] : [],
       };
       conflictCollapsedPaths = new SvelteSet<string>(conflicts.paths);
       conflictsError = null;
+      // Conflict files open expanded like the regular diff; the loads
+      // fan out in parallel (one local git read per conflicted file).
+      // A file whose load fails stays collapsed and surfaces the error.
+      await Promise.all(conflicts.paths.map((path) => toggleConflictCollapsed(path)));
     } catch (err) {
       conflictsError = userFacingError(err);
     } finally {
@@ -711,7 +811,135 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
       return;
     }
     await ensureConflictFileLoaded(path);
-    if (conflictContentByPath.has(path)) conflictCollapsedPaths.delete(path);
+    // A note-bearing file expands even when its content load failed —
+    // the notes are the conflict's only signal (the path may not exist
+    // in the merged tree). The load error still surfaces in the banner.
+    if (conflictContentByPath.has(path) || conflicts.notes[path]?.length) {
+      conflictCollapsedPaths.delete(path);
+    }
+  }
+
+  async function toggleCollapseAll(): Promise<void> {
+    if (conflictView) {
+      const paths = conflicts?.paths ?? [];
+      if (allCollapsed) {
+        // Expanding a conflict file loads its content; an explicit
+        // expand-all fans the loads out in parallel.
+        await Promise.all(paths.map((path) => toggleConflictCollapsed(path)));
+      } else {
+        for (const path of paths) conflictCollapsedPaths.add(path);
+      }
+      return;
+    }
+    if (allCollapsed) {
+      collapsedPaths.clear();
+    } else {
+      for (const file of files) collapsedPaths.add(file.path);
+    }
+  }
+
+  function expandConflictFold(path: string, foldId: number): void {
+    const next = new Set(conflictExpandedFolds.get(path) ?? []);
+    next.add(foldId);
+    conflictExpandedFolds.set(path, next);
+  }
+
+  function resetCIState(): void {
+    ciLoadSeq += 1;
+    ciPipeline = null;
+    ciLoading = false;
+    ciError = null;
+    closeCILogView();
+  }
+
+  async function loadCIJobs(): Promise<void> {
+    if (scope !== 'pr' || !prRef) return;
+    const seq = ++ciLoadSeq;
+    ciLoading = true;
+    try {
+      const pipeline = (await GetPRCIJobs(prReference(prRef))) as CIPipeline;
+      if (seq !== ciLoadSeq || disposed) return;
+      ciPipeline = pipeline ?? null;
+      ciError = null;
+    } catch (err) {
+      if (seq !== ciLoadSeq || disposed) return;
+      ciError = userFacingError(err);
+    } finally {
+      if (seq === ciLoadSeq) ciLoading = false;
+    }
+  }
+
+  async function openCIJobLog(stageName: string, job: CIJob): Promise<void> {
+    if (!prRef || !job.logsAvailable || !job.id) return;
+    // The log view and the conflict view both replace the diff body.
+    conflictView = false;
+    ciLogView = { stageName, job };
+    ciLogSavedPath = null;
+    await fetchCILog(job);
+  }
+
+  async function refreshCILog(): Promise<void> {
+    const job = ciLogView?.job;
+    if (!job) return;
+    await fetchCILog(job);
+  }
+
+  async function fetchCILog(job: CIJob): Promise<void> {
+    if (!prRef || !job.id) return;
+    const seq = ++ciLogSeq;
+    ciLogLoading = true;
+    ciLogError = null;
+    try {
+      const result = (await GetPRCIJobLog(prReference(prRef), job.id)) as CIJobLogResult;
+      if (seq !== ciLogSeq || disposed) return;
+      ciLog = result;
+    } catch (err) {
+      if (seq !== ciLogSeq || disposed) return;
+      ciLog = null;
+      ciLogError = userFacingError(err);
+    } finally {
+      if (seq === ciLogSeq) ciLogLoading = false;
+    }
+  }
+
+  function closeCILogView(): void {
+    ciLogSeq += 1;
+    ciLogView = null;
+    ciLog = null;
+    ciLogLoading = false;
+    ciLogError = null;
+    ciLogSavedPath = null;
+  }
+
+  async function saveCILog(): Promise<string | null> {
+    const view = ciLogView;
+    if (!prRef || !view?.job.id) return null;
+    try {
+      const path = String(await SavePRCIJobLog(prReference(prRef), view.job.id, view.job.name));
+      if (ciLogView === view) ciLogSavedPath = path;
+      return path;
+    } catch (err) {
+      if (ciLogView === view) ciLogError = userFacingError(err);
+      return null;
+    }
+  }
+
+  async function sendCILogToChat(): Promise<void> {
+    const view = ciLogView;
+    if (!prRef || !view) return;
+    const path = await saveCILog();
+    if (!path) return;
+    const draft = getComposerDraftForPane(sourcePaneId);
+    if (!draft) {
+      ciLogError = 'The source chat pane is not available.';
+      return;
+    }
+    const message = [
+      `Investigate CI job \`${view.job.name}\` (${view.stageName}) on PR #${prRef.number} — status: ${view.job.status}.`,
+      `Full log saved at: ${path}`,
+    ].join('\n');
+    const existing = draft.content.trim();
+    draft.setContent(existing ? `${existing}\n\n${message}` : message);
   }
 
   async function ensureConflictFileLoaded(path: string): Promise<void> {
@@ -768,6 +996,7 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
     set selectedCheckpointUserItemId(value: string | null) { selectedCheckpointUserItemId = value; },
     get pendingJumpFilePath() { return pendingJumpFilePath; },
     set pendingJumpFilePath(value: string | null) { pendingJumpFilePath = value; },
+    get pendingJumpRowKey() { return pendingJumpRowKey; },
     get loading() { return loading; },
     get error() { return error; },
     get sendingComments() { return sendingComments; },
@@ -782,12 +1011,21 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
     get conflictContentByPath() { return conflictContentByPath; },
     get conflictCollapsedPaths() { return conflictCollapsedPaths; },
     get conflictFiles() { return conflictFiles; },
+    get ciPipeline() { return ciPipeline; },
+    get ciLoading() { return ciLoading; },
+    get ciError() { return ciError; },
+    get ciLogView() { return ciLogView; },
+    get ciLog() { return ciLog; },
+    get ciLogLoading() { return ciLogLoading; },
+    get ciLogError() { return ciLogError; },
+    get ciLogSavedPath() { return ciLogSavedPath; },
     get submitTarget() { return submitTarget; },
     get verdict() { return verdict; },
     get summaryBody() { return summaryBody; },
     get submitError() { return submitError; },
     get isTurnActive() { return isTurnActive; },
     get collapsedPaths() { return collapsedPaths; },
+    get allCollapsed() { return allCollapsed; },
     get expandedPRThreadIds() { return expandedPRThreadIds; },
     get viewMode() { return viewMode; },
     get wordWrap() { return wordWrap; },
@@ -797,6 +1035,19 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
     reload,
     consumePendingJumpFilePath(): void {
       pendingJumpFilePath = null;
+    },
+    jumpToComment(item: CommentListItem): void {
+      if (!item.inDiff) return;
+      // The comment rows live on the diff surface — leave any
+      // replacement view first.
+      closeCILogView();
+      closeConflictView();
+      collapsedPaths.delete(item.filePath);
+      if (item.threadId) expandedPRThreadIds.add(item.threadId);
+      pendingJumpRowKey = item.rowKey;
+    },
+    consumePendingJumpRowKey(): void {
+      pendingJumpRowKey = null;
     },
     openDraftEditor,
     closeDraftEditor,
@@ -847,10 +1098,18 @@ function createReviewPaneState(threadId: string, initialThread: Thread | null): 
     openConflictView,
     closeConflictView,
     toggleConflictCollapsed,
+    expandConflictFold,
+    loadCIJobs,
+    openCIJobLog,
+    closeCILogView,
+    refreshCILog,
+    saveCILog,
+    sendCILogToChat,
     toggleCollapsed(path: string): void {
       if (collapsedPaths.has(path)) collapsedPaths.delete(path);
       else collapsedPaths.add(path);
     },
+    toggleCollapseAll,
     setViewMode(mode: 'stacked' | 'split'): void {
       viewMode = mode;
     },

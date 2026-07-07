@@ -31,7 +31,13 @@
 // names for the production code paths (clearer at the call site than
 // a member-access) and re-export the values so tests can derive
 // boundaries from the same source rather than hard-coding numerals.
-export const RPC_TIMEOUT_MS = 30_000;
+// Deliberately ABOVE the Go-side subprocess timeout (defaultTimeout in
+// internal/git/core.go, 45s): when a git/gh/glab call hangs, the
+// backend's descriptive error ("gh ... timed out after 45s") must win
+// the race against this opaque client-side timeout. This timer is the
+// last-resort guard for a live-but-stuck server; dead connections are
+// handled by the WS close path rejecting all pending RPCs.
+export const RPC_TIMEOUT_MS = 60_000;
 const RECONNECT_INITIAL_MS = 250;
 const RECONNECT_MAX_MS = 30_000;
 const TRANSPORT_GAP_CHANNEL = 'transport:gap';

@@ -1,15 +1,19 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
+  import ChevronsDownUp from 'lucide-svelte/icons/chevrons-down-up';
+  import ChevronsUpDown from 'lucide-svelte/icons/chevrons-up-down';
   import Columns2 from 'lucide-svelte/icons/columns-2';
   import ListTree from 'lucide-svelte/icons/list-tree';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import WrapText from 'lucide-svelte/icons/wrap-text';
+  import ReviewCILogView from './ReviewCILogView.svelte';
   import ReviewCommentThread from './ReviewCommentThread.svelte';
   import ReviewDiffBody from './ReviewDiffBody.svelte';
   import ReviewDraftEditor from './ReviewDraftEditor.svelte';
-  import ReviewFileTree from './ReviewFileTree.svelte';
   import ReviewPRHeader from './ReviewPRHeader.svelte';
   import ReviewPRThreadRow from './ReviewPRThreadRow.svelte';
+  import ReviewRail, { type ReviewRailTab } from './ReviewRail.svelte';
   import { appStorageGet, appStorageSet } from '../../stores/appStorage';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
@@ -20,6 +24,12 @@
   import { GitListBranches } from '../../stores/bindings';
   import type { GitBranch } from '../../types/git';
   import type { DiffReviewComment } from '../../types/models';
+  import {
+    buildCommentGroups,
+    commentCountsByFile,
+    commentTally,
+  } from '../../utils/reviewComments';
+  import { fileExtensionLabel } from '../../utils/reviewTree';
   import Icon from '../primitives/Icon.svelte';
 
   interface Props {
@@ -27,6 +37,11 @@
   }
 
   let { ctx }: Props = $props();
+  // Extension-filter state is owned here (not in the tree) so the
+  // dropdown's "Apply filter to diff" toggle can also narrow the diff
+  // body, and the selection survives rail tab switches.
+  const activeExtensions = new SvelteSet<string>();
+  let extensionsFilterDiff = $state(false);
   let review = $derived(ctx.threadId ? reviewStateForPane(ctx.paneId, ctx.threadId, ctx.thread) : null);
   let branches: GitBranch[] = $state([]);
   let branchesError: string | null = $state(null);
@@ -35,12 +50,57 @@
   let treeVisible = $state(storedTreeVisible ?? true);
   let jumpFilePath: string | null = $state(null);
   let topFileIndex = $state(-1);
+  // The files the diff body renders: the full set, or the extension-
+  // filtered subset when the dropdown's apply-to-diff toggle is on.
+  const diffFiles = $derived.by(() => {
+    const files = review?.files ?? [];
+    if (!extensionsFilterDiff || activeExtensions.size === 0) return files;
+    return files.filter((file) => activeExtensions.has(fileExtensionLabel(file.path)));
+  });
+  // The tree highlights by index into the FULL file list; the diff body
+  // reports indexes into diffFiles — map through the path.
+  const treeActiveFileIndex = $derived.by(() => {
+    if (topFileIndex < 0) return -1;
+    const path = diffFiles[topFileIndex]?.path;
+    if (path === undefined) return -1;
+    return (review?.files ?? []).findIndex((file) => file.path === path);
+  });
   const totalAdditions = $derived(
-    (review?.files ?? []).reduce((sum, file) => sum + file.additions, 0),
+    diffFiles.reduce((sum, file) => sum + file.additions, 0),
   );
   const totalDeletions = $derived(
-    (review?.files ?? []).reduce((sum, file) => sum + file.deletions, 0),
+    diffFiles.reduce((sum, file) => sum + file.deletions, 0),
   );
+  const collapsibleFileCount = $derived(
+    review
+      ? (review.conflictView ? (review.conflicts?.paths.length ?? 0) : review.files.length)
+      : 0,
+  );
+  let railTab: ReviewRailTab = $state('files');
+  const commentGroups = $derived(
+    review
+      ? buildCommentGroups({
+          files: review.files,
+          prThreads: review.prThreads,
+          drafts: review.drafts,
+          orphanedDraftIds: review.orphanedDraftIds(),
+        })
+      : [],
+  );
+  const commentCounts = $derived(commentCountsByFile(commentGroups));
+  const tally = $derived(commentTally(commentGroups));
+  const tallyLabel = $derived.by(() => {
+    const parts: string[] = [];
+    if (tally.unresolved > 0) parts.push(`${tally.unresolved} unresolved`);
+    if (tally.drafts > 0) parts.push(`${tally.drafts} ${tally.drafts === 1 ? 'draft' : 'drafts'}`);
+    if (parts.length === 0) parts.push(`${tally.total} ${tally.total === 1 ? 'comment' : 'comments'}`);
+    return parts.join(' · ');
+  });
+
+  function openCommentsTab(): void {
+    railTab = 'comments';
+    if (!treeVisible) toggleTree();
+  }
 
   onMount(() => {
     if (storedTreeVisible !== null) return;
@@ -126,7 +186,7 @@
       data-testid="review-scope-select"
       value={review?.scope ?? 'workspace'}
       onchange={(event) => setScope(event.currentTarget.value)}
-      disabled={!review || review.loading}
+      disabled={!review}
     >
       {#if ctx.workspacePath}
         <option value="turn">Turn</option>
@@ -181,12 +241,23 @@
             <span class="ml-1.5">{review.prDetail.baseRefName} ← {review.prDetail.headRefName}</span>
           </span>
         {/if}
-        {#if review.files.length > 0}
+        {#if diffFiles.length > 0}
           <span data-testid="review-diff-stats" class="ml-2">
-            {review.files.length} {review.files.length === 1 ? 'file' : 'files'}
+            {diffFiles.length} {diffFiles.length === 1 ? 'file' : 'files'}
             {#if totalAdditions > 0}<span class="text-success">+{totalAdditions}</span>{/if}
             {#if totalDeletions > 0}<span class="text-error">-{totalDeletions}</span>{/if}
           </span>
+        {/if}
+        {#if tally.total > 0}
+          <button
+            type="button"
+            class="ml-2 rounded border border-border-subtle px-1.5 py-0.5 text-fg-muted hover:text-fg"
+            title="Open comments list"
+            data-testid="review-comment-tally"
+            onclick={openCommentsTab}
+          >
+            {tallyLabel}
+          </button>
         {/if}
       {/if}
     </div>
@@ -228,6 +299,18 @@
       onclick={() => review?.setWordWrap(!review.wordWrap)}
     >
       <Icon icon={WrapText} size={14} />
+    </button>
+
+    <button
+      type="button"
+      class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
+      aria-label={review?.allCollapsed ? 'Expand all files' : 'Collapse all files'}
+      title={review?.allCollapsed ? 'Expand all files' : 'Collapse all files'}
+      data-testid="review-collapse-all-toggle"
+      disabled={!review || !!review.ciLogView || collapsibleFileCount === 0}
+      onclick={() => { void review?.toggleCollapseAll(); }}
+    >
+      <Icon icon={review?.allCollapsed ? ChevronsUpDown : ChevronsDownUp} size={14} />
     </button>
 
     <button
@@ -277,9 +360,25 @@
         detail={review.prDetail}
         hasWorkspace={!!ctx.workspacePath}
         onViewConflicts={() => { void review?.openConflictView(); }}
+        ciPipeline={review.ciPipeline}
+        ciLoading={review.ciLoading}
+        ciError={review.ciError}
+        onOpenCIJob={(stageName, job) => { void review?.openCIJobLog(stageName, job); }}
       />
     {/if}
-    {#if review.conflictView}
+    {#if review.ciLogView}
+      <ReviewCILogView
+        view={review.ciLogView}
+        log={review.ciLog}
+        loading={review.ciLogLoading}
+        error={review.ciLogError}
+        savedPath={review.ciLogSavedPath}
+        onBack={() => review?.closeCILogView()}
+        onRefresh={() => { void review?.refreshCILog(); }}
+        onSave={() => { void review?.saveCILog(); }}
+        onSend={() => { void review?.sendCILogToChat(); }}
+      />
+    {:else if review.conflictView}
       <div class="flex items-center justify-between gap-3 border-b border-border bg-surface-1 px-3 py-2 text-xs">
         <span class="min-w-0 truncate text-fg-muted">
           {#if review.conflicts}
@@ -296,6 +395,15 @@
           Back
         </button>
       </div>
+      {#if review.conflicts && review.conflicts.messages.length > 0}
+        <!-- Fallback only: per-file messages render as note rows inside
+             their file's body; this strip carries the rare merge-tree
+             message that names no conflicted path. -->
+        <div
+          class="max-h-28 overflow-y-auto border-b border-warning/30 bg-warning/5 px-3 py-2 font-mono text-[0.6875rem] leading-relaxed text-fg-muted whitespace-pre-wrap"
+          data-testid="review-conflict-messages"
+        >{review.conflicts.messages.join('\n')}</div>
+      {/if}
       {#if review.conflictsLoading && review.conflictFiles.length === 0}
         <div class="px-4 py-3 text-xs text-fg-muted">Loading…</div>
       {:else if review.conflicts && review.conflicts.paths.length === 0}
@@ -315,6 +423,7 @@
             wordWrap={review.wordWrap}
             collapsedPaths={review.conflictCollapsedPaths}
             onToggleCollapsed={review.toggleConflictCollapsed}
+            onExpandFold={review.expandConflictFold}
             drafts={[]}
             openEditors={[]}
             prThreads={[]}
@@ -331,16 +440,30 @@
     {:else}
       <div class="flex min-h-0 flex-1">
         {#if treeVisible}
-          <ReviewFileTree
+          <ReviewRail
+            tab={railTab}
+            onTabChange={(tab) => { railTab = tab; }}
             files={review.files}
-            activeFileIndex={topFileIndex}
+            activeFileIndex={treeActiveFileIndex}
             onSelectFile={jumpToFile}
+            {commentCounts}
+            {commentGroups}
+            onSelectComment={(item) => review?.jumpToComment(item)}
+            reviews={review.scope === 'pr' ? (review.prDetail?.latestReviews ?? []) : []}
+            {activeExtensions}
+            filterDiff={extensionsFilterDiff}
+            onFilterDiffChange={(value) => { extensionsFilterDiff = value; }}
           />
         {/if}
+        {#if diffFiles.length === 0}
+          <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-filter-empty">
+            No files match the type filter.
+          </div>
+        {:else}
         <ReviewDiffBody
           threadId={review.threadId}
           scope={review.scope}
-          files={review.files}
+          files={diffFiles}
           viewMode={review.viewMode}
           wordWrap={review.wordWrap}
           collapsedPaths={review.collapsedPaths}
@@ -352,6 +475,8 @@
           onAddComment={(anchor) => review?.openDraftEditor(anchor)}
           jumpToFilePath={jumpFilePath ?? review.pendingJumpFilePath}
           onJumpConsumed={onJumpConsumed}
+          jumpToRowKey={review.pendingJumpRowKey}
+          onJumpRowConsumed={() => review?.consumePendingJumpRowKey()}
           onTopFileChange={(fileIndex) => { topFileIndex = fileIndex; }}
         >
           {#snippet draftEditor(anchor)}
@@ -392,6 +517,7 @@
             />
           {/snippet}
         </ReviewDiffBody>
+        {/if}
       </div>
     {/if}
     {#if !review.conflictView && review.drafts.length > 0}

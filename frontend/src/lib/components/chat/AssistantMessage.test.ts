@@ -871,7 +871,7 @@ describe('<AssistantMessage>', () => {
       name: 'ordered',
       summary: '1. First predicate\n2. Second predicate',
       selector: 'ol[data-streamdown-ol]',
-      expectedClasses: ['ml-0', 'pl-5', 'list-outside', 'whitespace-normal'],
+      expectedClasses: ['ml-0', 'pl-[2em]', 'list-outside', 'whitespace-normal'],
     },
     {
       name: 'unordered',
@@ -879,7 +879,7 @@ describe('<AssistantMessage>', () => {
       selector: 'ul[data-streamdown-ul]',
       expectedClasses: [
         'ml-0',
-        'pl-5',
+        'pl-[2em]',
         'list-outside',
         'list-disc',
         'whitespace-normal',

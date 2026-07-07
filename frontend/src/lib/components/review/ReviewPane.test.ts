@@ -79,18 +79,104 @@ describe('<ReviewPane>', () => {
     expect(view.getByTestId('review-diff-stats').textContent).toContain('2 files');
     expect(view.getByTestId('review-diff-stats').textContent).toContain('+2');
     expect(view.getByTestId('review-diff-stats').textContent).toContain('-2');
-    // The lockfile default-collapses; the source file renders its lines.
-    expect(view.getAllByTestId('review-file-collapsed')).toHaveLength(1);
+    // The lockfile default-collapses to its header alone; the source
+    // file renders its lines.
     expect(view.getAllByTestId('review-line-block')).toHaveLength(1);
     expect(view.getByText('+new')).toBeInTheDocument();
     expect(view.getByText('-old')).toBeInTheDocument();
 
     await fireEvent.click(view.getAllByTestId('review-file-header-path')[0]!);
     expect(view.queryAllByTestId('review-line-block')).toHaveLength(0);
-    expect(view.getAllByTestId('review-file-collapsed')).toHaveLength(2);
+    expect(view.getAllByTestId('review-file-header')).toHaveLength(2);
 
-    await fireEvent.click(view.getAllByTestId('review-file-collapsed')[0]!);
+    await fireEvent.click(view.getAllByTestId('review-file-header-path')[0]!);
     expect(view.getAllByTestId('review-line-block')).toHaveLength(1);
+  });
+
+  it('toggles collapse-all/expand-all from the toolbar', async () => {
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(view.getAllByTestId('review-line-block')).toHaveLength(1);
+    });
+
+    const toggle = view.getByTestId('review-collapse-all-toggle');
+    expect(toggle).toHaveAccessibleName('Collapse all files');
+
+    await fireEvent.click(toggle);
+    expect(view.queryAllByTestId('review-line-block')).toHaveLength(0);
+    expect(view.getAllByTestId('review-file-header')).toHaveLength(2);
+    expect(toggle).toHaveAccessibleName('Expand all files');
+
+    await fireEvent.click(toggle);
+    // Expand-all overrides the lockfile's default collapse too.
+    expect(view.getAllByTestId('review-line-block')).toHaveLength(2);
+    expect(toggle).toHaveAccessibleName('Collapse all files');
+  });
+
+  it('surfaces comments in the rail tab, tree badges, and toolbar tally', async () => {
+    const draft: DiffReviewComment = {
+      id: 'draft-1',
+      threadId: 'thread-1',
+      scope: 'workspace',
+      sourceKey: 'source',
+      filePath: 'src/app.ts',
+      status: 'draft',
+      newLine: 1,
+      side: 'new',
+      selectedText: '',
+      body: 'needs a guard here',
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    setBindingMock('ListDiffReviewComments', async () => [draft]);
+
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(view.getByTestId('review-comment-tally')).toHaveTextContent('1 draft');
+    });
+
+    // Files tab: the commented file carries a count badge.
+    expect(view.getByTestId('review-tree-comment-count')).toHaveTextContent('1');
+
+    // Tally opens the Comments tab; the draft is listed with its snippet.
+    await fireEvent.click(view.getByTestId('review-comment-tally'));
+    const items = view.getAllByTestId('review-comments-item');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toHaveTextContent('You');
+    expect(items[0]).toHaveTextContent('needs a guard here');
+
+    // Clicking the item stages + consumes the row-key jump without errors.
+    await fireEvent.click(items[0]!);
+    expect(view.getByTestId('review-comments-list')).toBeInTheDocument();
+
+    // Tabs switch back to the file tree.
+    await fireEvent.click(view.getByTestId('review-rail-tab-files'));
+    expect(view.getByTestId('review-tree-search')).toBeInTheDocument();
+  });
+
+  it('applies the extension filter to the diff when the dropdown toggle is checked', async () => {
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(view.getAllByTestId('review-file-header')).toHaveLength(2);
+    });
+
+    // Distinct paths, because the sticky overlay can duplicate the top
+    // file's header row.
+    const headerPaths = () =>
+      [...new Set(view.getAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
+    // Rail-only by default: the diff still shows both files.
+    expect(headerPaths()).toHaveLength(2);
+
+    await fireEvent.click(view.getByRole('menuitem', { name: /apply filter to diff/i }));
+    expect(headerPaths()).toEqual(['src/app.ts']);
+    expect(view.getByTestId('review-diff-stats').textContent).toContain('1 file');
+
+    // Unchecking restores the full diff; the rail filter stays active.
+    await fireEvent.click(view.getByRole('menuitem', { name: /apply filter to diff/i }));
+    expect(headerPaths()).toHaveLength(2);
   });
 
   it('switches to split view and back', async () => {
@@ -318,5 +404,43 @@ describe('<ReviewPane>', () => {
     expect(view.getByRole('button', { name: 'Request changes' })).toBeDisabled();
     // A comment-only review is always allowed, even on your own PR.
     expect(view.getByRole('button', { name: 'Comment' })).toBeEnabled();
+  });
+
+  it('keeps the scope selector enabled while a slow PR load is in flight', async () => {
+    setBindingMock('SubscribePRUpdates', async (threadId: string, pr: unknown) => ({
+      id: 'sub-1',
+      threadId,
+      pr,
+      detail: null,
+      threads: [],
+      headSHA: 'sha-a',
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    // The PR diff never resolves — a hung gh/glab call must not lock
+    // the user out of switching back to a local scope.
+    setBindingMock('GetPRDiff', () => new Promise<string>(() => {}));
+    setBindingMock('ListPRReviewThreads', async () => []);
+
+    const ctx: PanelContext = {
+      ...makeCtx(),
+      thread: {
+        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
+        workspacePath: '/repo',
+      } as unknown as Thread,
+    };
+    const view = render(ReviewPane, { ctx });
+
+    await waitFor(() => {
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+    });
+    const select = view.getByTestId('review-scope-select');
+    await fireEvent.change(select, { target: { value: 'pr' } });
+
+    // Still loading (the diff hangs) — the selector must stay usable.
+    expect(select).toBeEnabled();
+    await fireEvent.change(select, { target: { value: 'workspace' } });
+    await waitFor(() => {
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+    });
   });
 });

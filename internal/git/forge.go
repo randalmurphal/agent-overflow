@@ -37,6 +37,11 @@ type Forge interface {
 	SubmitReview(cwd, project string, number int, review SubmitReviewRequest) (SubmitReviewResult, error)
 	// ReplyToThread posts an immediate reply to an existing review thread.
 	ReplyToThread(cwd, project string, number int, threadID string, databaseID int64, body string) error
+	// ListPRCIJobs fetches the PR/MR head pipeline grouped into stages
+	// (GitLab stages, GitHub workflows) with per-job status.
+	ListPRCIJobs(cwd, project string, number int) (CIPipeline, error)
+	// GetCIJobLog fetches the raw log/trace for one CI job.
+	GetCIJobLog(cwd, project, jobID string) (string, error)
 }
 
 // PRMetadata is the forge-agnostic view of a PR/MR fetched via ViewPR.
@@ -126,15 +131,22 @@ type CheckStatus struct {
 	CompletedAt string `json:"completedAt,omitempty"`
 }
 
+// ReviewThread is one PR discussion: a file-anchored review thread
+// (Path set) or a PR-level conversation thread (Path empty — GitLab
+// position-less discussions, GitHub PR conversation comments).
 type ReviewThread struct {
-	ID         string          `json:"id"`
-	Path       string          `json:"path"`
-	Line       *int            `json:"line"`
-	StartLine  *int            `json:"startLine"`
-	Side       string          `json:"side"`
-	IsResolved bool            `json:"isResolved"`
-	IsOutdated bool            `json:"isOutdated"`
-	Comments   []ReviewComment `json:"comments"`
+	ID        string `json:"id"`
+	Path      string `json:"path"`
+	Line      *int   `json:"line"`
+	StartLine *int   `json:"startLine"`
+	Side      string `json:"side"`
+	// IsResolvable distinguishes threads with a real resolve state from
+	// flat comments (GitHub conversation comments, non-resolvable GitLab
+	// notes) where IsResolved=false would misread as "needs attention".
+	IsResolvable bool            `json:"isResolvable"`
+	IsResolved   bool            `json:"isResolved"`
+	IsOutdated   bool            `json:"isOutdated"`
+	Comments     []ReviewComment `json:"comments"`
 }
 
 type ReviewComment struct {
@@ -283,6 +295,14 @@ func (nullForge) ReplyToThread(string, string, int, string, int64, string) error
 	return ErrUnsupportedForge
 }
 
+func (nullForge) ListPRCIJobs(string, string, int) (CIPipeline, error) {
+	return CIPipeline{}, ErrUnsupportedForge
+}
+
+func (nullForge) GetCIJobLog(string, string, string) (string, error) {
+	return "", ErrUnsupportedForge
+}
+
 // PRAnchorScheme is the URI scheme used for the project-row anchor we
 // generate when a PR/MR thread has no local clone matching its repo.
 // The anchor is opaque — it is stored as Project.Path and used as a
@@ -395,4 +415,12 @@ func (c *Core) SubmitReview(cwd string, ref PRReference, review SubmitReviewRequ
 
 func (c *Core) ReplyToThread(cwd string, ref PRReference, threadID string, databaseID int64, body string) error {
 	return c.ForgeByID(ref.Forge).ReplyToThread(cwd, ref.Project(), ref.Number, threadID, databaseID, body)
+}
+
+func (c *Core) ListPRCIJobs(cwd string, ref PRReference) (CIPipeline, error) {
+	return c.ForgeByID(ref.Forge).ListPRCIJobs(cwd, ref.Project(), ref.Number)
+}
+
+func (c *Core) GetCIJobLog(cwd string, ref PRReference, jobID string) (string, error) {
+	return c.ForgeByID(ref.Forge).GetCIJobLog(cwd, ref.Project(), jobID)
 }

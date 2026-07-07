@@ -420,7 +420,10 @@ func normalizeGitHubMergeability(mergeable, mergeStateStatus string) string {
 
 // ListReviewThreads fetches GitHub review threads through GraphQL because
 // gh porcelain and REST comments cannot expose nullable current anchors
-// and databaseId in one grouped response.
+// and databaseId in one grouped response. PR conversation comments
+// (issue comments — GitHub keeps them flat, outside review threads) are
+// appended as path-less single-comment threads so the review pane can
+// list the whole discussion.
 func (f *githubForge) ListReviewThreads(cwd, project string, number int) ([]ReviewThread, error) {
 	owner, repo, err := splitGitHubProject(project)
 	if err != nil {
@@ -446,10 +449,107 @@ func (f *githubForge) ListReviewThreads(cwd, project string, number int) ([]Revi
 		}
 		all = append(all, threads...)
 		if !pageInfo.HasNextPage {
+			break
+		}
+		after = pageInfo.EndCursor
+	}
+	conversation, err := f.listPRConversationThreads(cwd, owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	return append(all, conversation...), nil
+}
+
+func (f *githubForge) listPRConversationThreads(cwd, owner, repo string, number int) ([]ReviewThread, error) {
+	var all []ReviewThread
+	var after string
+	for {
+		query := githubPRCommentsQuery(owner, repo, number, after)
+		result, err := f.core.runBinary("gh", cwd, "api", "graphql", "-f", "query="+query)
+		if err != nil {
+			return nil, normalizeGitHubCLIError(err)
+		}
+		if result.exitCode != 0 {
+			return nil, githubCommandFailure("gh api graphql pullRequest comments failed", result)
+		}
+		threads, pageInfo, err := parseGitHubPRComments(result.stdout)
+		if err != nil {
+			return nil, fmt.Errorf("gh api graphql pullRequest comments returned malformed JSON: %w", err)
+		}
+		all = append(all, threads...)
+		if !pageInfo.HasNextPage {
 			return all, nil
 		}
 		after = pageInfo.EndCursor
 	}
+}
+
+func parseGitHubPRComments(stdout string) ([]ReviewThread, githubPageInfo, error) {
+	var raw struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					Comments struct {
+						PageInfo githubPageInfo `json:"pageInfo"`
+						Nodes    []struct {
+							ID          string `json:"id"`
+							DatabaseID  int64  `json:"databaseId"`
+							Body        string `json:"body"`
+							CreatedAt   string `json:"createdAt"`
+							IsMinimized bool   `json:"isMinimized"`
+							Author      struct {
+								Login string `json:"login"`
+							} `json:"author"`
+						} `json:"nodes"`
+					} `json:"comments"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
+		return nil, githubPageInfo{}, err
+	}
+	nodes := raw.Data.Repository.PullRequest.Comments.Nodes
+	threads := make([]ReviewThread, 0, len(nodes))
+	for _, node := range nodes {
+		if node.IsMinimized {
+			continue
+		}
+		threads = append(threads, ReviewThread{
+			ID: node.ID,
+			Comments: []ReviewComment{{
+				AuthorLogin: node.Author.Login,
+				Body:        node.Body,
+				CreatedAt:   node.CreatedAt,
+				DatabaseID:  node.DatabaseID,
+			}},
+		})
+	}
+	return threads, raw.Data.Repository.PullRequest.Comments.PageInfo, nil
+}
+
+func githubPRCommentsQuery(owner, repo string, number int, after string) string {
+	afterClause := ""
+	if after != "" {
+		afterClause = fmt.Sprintf(`, after: %q`, after)
+	}
+	return fmt.Sprintf(`query {
+  repository(owner: %q, name: %q) {
+    pullRequest(number: %d) {
+      comments(first: 50%s) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          databaseId
+          author { login }
+          body
+          createdAt
+          isMinimized
+        }
+      }
+    }
+  }
+}`, owner, repo, number, afterClause)
 }
 
 type githubPageInfo struct {
@@ -505,14 +605,15 @@ func parseGitHubReviewThreads(stdout string) ([]ReviewThread, githubPageInfo, er
 			side = "file"
 		}
 		thread := ReviewThread{
-			ID:         node.ID,
-			Path:       node.Path,
-			Line:       node.Line,
-			StartLine:  node.StartLine,
-			Side:       side,
-			IsResolved: node.IsResolved,
-			IsOutdated: node.IsOutdated,
-			Comments:   make([]ReviewComment, 0, len(node.Comments.Nodes)),
+			ID:           node.ID,
+			Path:         node.Path,
+			Line:         node.Line,
+			StartLine:    node.StartLine,
+			Side:         side,
+			IsResolvable: true,
+			IsResolved:   node.IsResolved,
+			IsOutdated:   node.IsOutdated,
+			Comments:     make([]ReviewComment, 0, len(node.Comments.Nodes)),
 		}
 		for _, comment := range node.Comments.Nodes {
 			out := ReviewComment{

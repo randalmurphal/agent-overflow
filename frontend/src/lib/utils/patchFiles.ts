@@ -3,6 +3,9 @@ import type { LineTintType } from './diffLineTint';
 export interface PatchLine {
   content: string;
   type: LineTintType;
+  /** Present on conflict-view fold rows (`utils/conflictFile.ts`): a
+   * placeholder for `lines` hidden unchanged lines, expandable by id. */
+  fold?: { id: number; lines: number };
 }
 
 export interface PatchDisplayRow {
@@ -24,6 +27,11 @@ export interface PatchFile {
   additions: number;
   deletions: number;
   lines: PatchLine[];
+  /** Conflict-region count for `kind === 'conflict'` pseudo-files. */
+  conflicts?: number;
+  /** Structural-conflict badge for `kind === 'conflict'` pseudo-files
+   * with no textual regions, e.g. "modify/delete". */
+  conflictLabel?: string;
 }
 
 export function patchFileRowId(file: Pick<PatchFile, 'path'>, index: number): string {
@@ -183,6 +191,21 @@ export function buildPatchDisplayRows(lines: PatchLine[]): PatchDisplayRow[] {
         oldLine = hunk.oldStart;
         newLine = hunk.newStart;
       }
+      continue;
+    }
+
+    // Conflict marker/fold rows display (unlike meta) but carry no line
+    // numbers and advance neither side — a fold's skipped span is applied
+    // by the hunk header that follows it.
+    if (line.type === 'marker') {
+      rows.push({
+        id: `${rows.length}:0:0:${fallbackIndex}`,
+        line,
+        oldLine: 0,
+        newLine: 0,
+        side: 'context',
+      });
+      fallbackIndex += 1;
       continue;
     }
 

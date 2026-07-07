@@ -652,6 +652,9 @@ func (p *privilegedApp) GetPRDetail() string                          { return "
 func (p *privilegedApp) GetPRDiff() string                            { return "ok" }
 func (p *privilegedApp) GetPRMergeConflicts() string                  { return "ok" }
 func (p *privilegedApp) GetMergeConflictFile() string                 { return "ok" }
+func (p *privilegedApp) GetPRCIJobs() string                          { return "ok" }
+func (p *privilegedApp) GetPRCIJobLog() string                        { return "ok" }
+func (p *privilegedApp) SavePRCIJobLog() string                       { return "ok" }
 func (p *privilegedApp) ListPRReviewThreads() string                  { return "ok" }
 func (p *privilegedApp) SubmitPRReview() string                       { return "ok" }
 func (p *privilegedApp) ReplyToPRThread() string                      { return "ok" }

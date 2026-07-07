@@ -1,7 +1,6 @@
 <script lang="ts">
   import { untrack, type Snippet } from 'svelte';
   import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
-  import ReviewCollapsedRow from './ReviewCollapsedRow.svelte';
   import ReviewFileHeaderRow from './ReviewFileHeaderRow.svelte';
   import ReviewLineBlockRow from './ReviewLineBlockRow.svelte';
   import { createReviewScrollOwner, reviewScrollKey } from './reviewScroll';
@@ -56,8 +55,14 @@
     commentThread?: Snippet<[threadKey: string, anchor: CommentAnchor]>;
     prThread?: Snippet<[thread: ReviewThread, anchor: CommentAnchor, collapsed: boolean, orphaned: boolean]>;
     onAddComment?: (anchor: CommentAnchor) => void;
+    /** Conflict view only: expands a fold row's hidden lines. */
+    onExpandFold?: (path: string, foldId: number) => void;
     jumpToFilePath?: string | null;
     onJumpConsumed?: () => void;
+    /** Row-key jump (comments list): scrolls to the exact row and
+     * flash-highlights it. Keys are buildReviewRows' rowKeys. */
+    jumpToRowKey?: string | null;
+    onJumpRowConsumed?: () => void;
     onTopFileChange?: (fileIndex: number) => void;
   }
 
@@ -77,8 +82,11 @@
     commentThread,
     prThread,
     onAddComment,
+    onExpandFold,
     jumpToFilePath = null,
     onJumpConsumed,
+    jumpToRowKey = null,
+    onJumpRowConsumed,
     onTopFileChange,
   }: Props = $props();
 
@@ -184,6 +192,27 @@
     });
   });
 
+  // Row-key jump from the comments list. The store expands the file
+  // (and thread) BEFORE setting the key, so the same flush's row model
+  // already contains the target row; the key is consumed either way so
+  // a stale request can't re-fire on a later rebuild.
+  let flashRowKey: string | null = $state(null);
+  let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    const key = jumpToRowKey;
+    const ref = listRef;
+    if (!key || !ref || built.rows.length === 0) return;
+    const rowIndex = built.rowKeys.indexOf(key);
+    untrack(() => {
+      onJumpRowConsumed?.();
+      if (rowIndex < 0) return;
+      ref.scrollToIndex(rowIndex);
+      flashRowKey = key;
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => { flashRowKey = null; }, 1600);
+    });
+  });
+
   const stickyFile = $derived(stickyFileIndex >= 0 ? (files[stickyFileIndex] ?? null) : null);
 
   function jumpToStickyFile(): void {
@@ -263,15 +292,21 @@
   }
 
   // Per-file gutter width (ch) from the file's max line number. Line
-  // numbers are monotonic within a file, so the file's LAST block's
-  // last row carries the max; the backwards scan hits it first.
+  // numbers are monotonic within a file, so the file's LAST numbered
+  // row carries the max; the backwards scan hits it first. Conflict
+  // files can end on unnumbered marker/fold rows, so keep scanning past
+  // rows without a line number.
   const gutterChars = $derived.by(() => {
     const byFile = new Map<number, number>();
     for (let i = built.rows.length - 1; i >= 0; i -= 1) {
       const row = built.rows[i];
       if (row.kind !== 'line-block' || byFile.has(row.fileIndex)) continue;
-      const last = row.rows[row.rows.length - 1];
-      const maxLine = Math.max(last?.oldLine ?? 0, last?.newLine ?? 0);
+      let maxLine = 0;
+      for (let j = row.rows.length - 1; j >= 0 && maxLine === 0; j -= 1) {
+        const displayRow = row.rows[j];
+        maxLine = Math.max(displayRow?.oldLine ?? 0, displayRow?.newLine ?? 0);
+      }
+      if (maxLine === 0) continue;
       byFile.set(row.fileIndex, Math.max(2, String(maxLine).length));
     }
     return byFile;
@@ -316,8 +351,9 @@
         onscroll={updateSticky}
         onscrollend={() => scroll.savePosition(scrollKey)}
       >
-        {#snippet children(row: ReviewRow)}
+        {#snippet children(row: ReviewRow, rowIndex: number)}
           {@const file = files[row.fileIndex]}
+          {@const flashing = flashRowKey !== null && built.rowKeys[rowIndex] === flashRowKey}
           {#if !file}
             <!-- Build/props raced; the next flush re-renders coherent rows. -->
           {:else if row.kind === 'file-header'}
@@ -326,8 +362,6 @@
               collapsed={collapsedPaths.has(file.path)}
               onToggle={() => onToggleCollapsed(file.path)}
             />
-          {:else if row.kind === 'file-collapsed'}
-            <ReviewCollapsedRow {file} onExpand={() => onToggleCollapsed(file.path)} />
           {:else if row.kind === 'line-block'}
             <ReviewLineBlockRow
               rows={row.rows}
@@ -337,13 +371,18 @@
               {wordWrap}
               gutterCh={gutterChars.get(row.fileIndex) ?? 2}
               {onAddComment}
+              {onExpandFold}
             />
           {:else if row.kind === 'draft-editor'}
             {@render draftEditor?.(row.anchor)}
           {:else if row.kind === 'comment-thread'}
-            {@render commentThread?.(row.threadKey, row.anchor)}
+            <div class="transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
+              {@render commentThread?.(row.threadKey, row.anchor)}
+            </div>
           {:else}
-            {@render prThread?.(row.thread, row.anchor, row.collapsed, row.orphaned)}
+            <div class="transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
+              {@render prThread?.(row.thread, row.anchor, row.collapsed, row.orphaned)}
+            </div>
           {/if}
         {/snippet}
       </TimelineVirtualizer>

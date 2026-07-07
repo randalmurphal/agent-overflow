@@ -79,6 +79,8 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetMessageCheckpointRevertDiff", ID: 1106129437},       // main.App.GetMessageCheckpointRevertDiff
 	{Name: "GetModelsForProvider", ID: 1632984917},                 // main.App.GetModelsForProvider
 	{Name: "GetNetworkSettings", ID: 1026796858},                   // main.App.GetNetworkSettings
+	{Name: "GetPRCIJobLog", ID: 2411810578},                        // main.App.GetPRCIJobLog
+	{Name: "GetPRCIJobs", ID: 2370852281},                          // main.App.GetPRCIJobs
 	{Name: "GetPRDetail", ID: 2443547196},                          // main.App.GetPRDetail
 	{Name: "GetPRDiff", ID: 1867413234},                            // main.App.GetPRDiff
 	{Name: "GetPRMergeConflicts", ID: 106351482},                   // main.App.GetPRMergeConflicts
@@ -206,6 +208,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RevertToMessageCheckpoint", ID: 263750815},             // main.App.RevertToMessageCheckpoint
 	{Name: "RevertToMessageCheckpointWithOptions", ID: 4144907731}, // main.App.RevertToMessageCheckpointWithOptions
 	{Name: "SaveDraft", ID: 3025273299},                            // main.App.SaveDraft
+	{Name: "SavePRCIJobLog", ID: 1537914193},                       // main.App.SavePRCIJobLog
 	{Name: "SavePayloadToFile", ID: 3576148797},                    // main.App.SavePayloadToFile
 	{Name: "SearchThreadItems", ID: 1414650511},                    // main.App.SearchThreadItems
 	{Name: "SearchThreadMessages", ID: 3644945077},                 // main.App.SearchThreadMessages

@@ -31,6 +31,41 @@ index b60d68b7df76d1e580a728f42411d0ac749ab122..7022294de7e730910649dc6f7b9da6b3
  		});
  	});
  </script>
+diff --git a/dist/Elements/Link.svelte b/dist/Elements/Link.svelte
+index 0726ea8449f350ec2af87bc984fd12531a395953..6963bc94ad8e110f9d7b7f1a323746dc4e6c2f73 100644
+--- a/dist/Elements/Link.svelte
++++ b/dist/Elements/Link.svelte
+@@ -22,6 +22,19 @@
+ 	const transformedUrl = $derived(
+ 		transformUrl(token.href, streamdown.allowedLinkPrefixes ?? [], streamdown.defaultOrigin)
+ 	);
++
++	// A schemeless relative reference (`docs/guide.md`, `../x`, `#frag`)
++	// is not a *blocked URL* — it is simply not navigable from here
++	// (common in PR/issue bodies, where such links are repo-relative).
++	// Render its text without the " [blocked]" tag; keep the tag for
++	// absolute URLs that were actually rejected (disallowed scheme or
++	// prefix). Network-path references (`//host/x`) name a real host,
++	// so they stay tagged.
++	const isSchemelessReference = $derived(
++		typeof token.href === 'string' &&
++			!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(token.href) &&
++			!token.href.startsWith('//')
++	);
+ </script>
+ 
+ {#if transformedUrl || token.href === 'streamdown:incomplete-link' || isRelativeUrl}
+@@ -50,8 +63,8 @@
+ 	<span
+ 		data-streamdown-link-blocked={id}
+ 		class={streamdown.theme.link.blocked}
+-		title={token.title ? `Blocked URL: ${token.href}` : undefined}
++		title={isSchemelessReference ? token.href : `Blocked URL: ${token.href}`}
+ 	>
+-		{@render children()} [blocked]
++		{@render children()}{#if !isSchemelessReference}{' '}[blocked]{/if}
+ 	</span>
+ {/if}
 diff --git a/dist/Elements/Math.svelte b/dist/Elements/Math.svelte
 index 5bdcc4a447da9dadf4edf58cbb991030a0c3dc2a..2356db144f2f3e7d37068f4f2e0ce9558f50624e 100644
 --- a/dist/Elements/Math.svelte

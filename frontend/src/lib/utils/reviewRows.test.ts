@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 import { parsePatchFiles } from './patchFiles';
 import {
-  REVIEW_COLLAPSED_ROW_PX,
   REVIEW_FILE_HEADER_PX,
   REVIEW_LINE_BLOCK_MAX_LINES,
   REVIEW_LINE_HEIGHT_PX,
@@ -61,6 +60,7 @@ function prThread(overrides: Partial<ReviewThread> = {}): ReviewThread {
     line: overrides.line ?? 2,
     startLine: overrides.startLine,
     side: overrides.side ?? 'right',
+    isResolvable: overrides.isResolvable ?? true,
     isResolved: overrides.isResolved ?? false,
     isOutdated: overrides.isOutdated ?? false,
     comments: overrides.comments ?? [{ authorLogin: 'alice', body: 'Please fix', createdAt: 'now', databaseID: 1 }],
@@ -291,7 +291,7 @@ describe('buildReviewRows', () => {
     });
 
     expect(expanded.rowKeys[0]).toBe('h:src/file.ts');
-    expect(collapsed.rowKeys).toEqual(['h:src/file.ts', 'c:src/file.ts']);
+    expect(collapsed.rowKeys).toEqual(['h:src/file.ts']);
     expect(expandedAgain.rowKeys).toEqual(expanded.rowKeys);
   });
 
@@ -309,9 +309,8 @@ describe('buildReviewRows', () => {
       'file-header',
       'line-block',
       'file-header',
-      'file-collapsed',
     ]);
-    expect(result.fileOfRow).toEqual([0, 0, 1, 1]);
+    expect(result.fileOfRow).toEqual([0, 0, 1]);
     expect(result.firstRowOfFile).toEqual([0, 2]);
   });
 
@@ -360,7 +359,7 @@ describe('reviewRowEstimate', () => {
     expect(wrapped.isExact?.(1)).toBe(false);
   });
 
-  it('estimates the collapsed body row at its own (bar-only) height', () => {
+  it('renders a collapsed file as its header row alone', () => {
     const files = parsePatchFiles(addedPatch('src/file.ts', 2));
     const result = buildReviewRows({
       files,
@@ -371,9 +370,8 @@ describe('reviewRowEstimate', () => {
     });
 
     const estimate = reviewRowEstimate(result, false);
-    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'file-collapsed']);
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header']);
     expect(estimate.at(0)).toBe(REVIEW_FILE_HEADER_PX);
-    expect(estimate.at(1)).toBe(REVIEW_COLLAPSED_ROW_PX);
-    expect(estimate.isExact?.(1)).toBe(true);
+    expect(estimate.isExact?.(0)).toBe(true);
   });
 });

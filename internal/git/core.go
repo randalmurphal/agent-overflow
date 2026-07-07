@@ -12,7 +12,13 @@ import (
 )
 
 const (
-	defaultTimeout        = 30 * time.Second
+	// defaultTimeout bounds every git / gh / glab subprocess. It MUST
+	// stay well below the frontend RPC timeout (RPC_TIMEOUT_MS in
+	// frontend/src/lib/transport/wsClient.ts): when a forge CLI hangs
+	// on a dead network, the descriptive error here ("gh ... timed out
+	// after 45s") must reach the pane before the opaque client-side
+	// "RPC timed out" fires.
+	defaultTimeout        = 45 * time.Second
 	defaultMaxOutputBytes = int64(1_000_000)
 
 	// prLookupTTL is how long an open-PR lookup result stays cached.

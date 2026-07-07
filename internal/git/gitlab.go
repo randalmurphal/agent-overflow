@@ -422,13 +422,14 @@ type gitlabDiscussionRaw struct {
 }
 
 type gitlabNoteRaw struct {
-	ID        int64              `json:"id"`
-	Body      string             `json:"body"`
-	System    bool               `json:"system"`
-	CreatedAt string             `json:"created_at"`
-	Position  *gitlabPositionRaw `json:"position"`
-	Resolved  *bool              `json:"resolved"`
-	Author    gitlabAuthorRaw    `json:"author"`
+	ID         int64              `json:"id"`
+	Body       string             `json:"body"`
+	System     bool               `json:"system"`
+	CreatedAt  string             `json:"created_at"`
+	Position   *gitlabPositionRaw `json:"position"`
+	Resolvable bool               `json:"resolvable"`
+	Resolved   *bool              `json:"resolved"`
+	Author     gitlabAuthorRaw    `json:"author"`
 }
 
 type gitlabAuthorRaw struct {
@@ -462,6 +463,7 @@ type gitlabLineRangePoint struct {
 func normalizeGitLabDiscussion(discussion gitlabDiscussionRaw, currentHeadSHA string) (ReviewThread, bool) {
 	var root *gitlabNoteRaw
 	comments := make([]ReviewComment, 0, len(discussion.Notes))
+	resolvable := discussion.Resolved != nil
 	resolved := false
 	if discussion.Resolved != nil {
 		resolved = *discussion.Resolved
@@ -471,14 +473,15 @@ func normalizeGitLabDiscussion(discussion gitlabDiscussionRaw, currentHeadSHA st
 		if note.System {
 			continue
 		}
-		if root == nil && note.Position != nil {
+		if root == nil {
+			// The first human note anchors the thread: a positioned note
+			// makes it a diff thread, an unpositioned one a PR-level
+			// conversation thread.
 			root = &discussion.Notes[i]
+			resolvable = resolvable || note.Resolvable
 			if note.Resolved != nil {
 				resolved = *note.Resolved
 			}
-		}
-		if note.Position == nil && root == nil {
-			continue
 		}
 		comments = append(comments, ReviewComment{
 			AuthorLogin: note.Author.Username,
@@ -487,19 +490,28 @@ func normalizeGitLabDiscussion(discussion gitlabDiscussionRaw, currentHeadSHA st
 			DatabaseID:  note.ID,
 		})
 	}
-	if root == nil || root.Position == nil || len(comments) == 0 {
+	if root == nil || len(comments) == 0 {
 		return ReviewThread{}, false
+	}
+	if root.Position == nil {
+		return ReviewThread{
+			ID:           discussion.ID,
+			IsResolvable: resolvable,
+			IsResolved:   resolved,
+			Comments:     comments,
+		}, true
 	}
 	path, line, startLine, side := normalizeGitLabPosition(root.Position)
 	return ReviewThread{
-		ID:         discussion.ID,
-		Path:       path,
-		Line:       line,
-		StartLine:  startLine,
-		Side:       side,
-		IsResolved: resolved,
-		IsOutdated: currentHeadSHA != "" && root.Position.HeadSHA != "" && root.Position.HeadSHA != currentHeadSHA,
-		Comments:   comments,
+		ID:           discussion.ID,
+		Path:         path,
+		Line:         line,
+		StartLine:    startLine,
+		Side:         side,
+		IsResolvable: true,
+		IsResolved:   resolved,
+		IsOutdated:   currentHeadSHA != "" && root.Position.HeadSHA != "" && root.Position.HeadSHA != currentHeadSHA,
+		Comments:     comments,
 	}, true
 }
 

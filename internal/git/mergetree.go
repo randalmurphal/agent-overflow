@@ -50,7 +50,15 @@ type MergeTreeResult struct {
 	Conflicted bool     `json:"conflicted"`
 	TreeOID    string   `json:"treeOID"`
 	Paths      []string `json:"paths"`
-	Messages   []string `json:"messages"`
+	// Notes maps a conflicted path to the merge-tree messages describing
+	// it — the only signal for conflicts with no renderable content
+	// (modify/delete, rename/rename, file/directory, …). Redundant
+	// "CONFLICT (content)" and "Auto-merging" lines are dropped: those
+	// files render with visible conflict regions and a per-file badge.
+	Notes map[string][]string `json:"notes"`
+	// Messages holds the leftover messages that mention no conflicted
+	// path (rare); the frontend renders them as a fallback strip.
+	Messages []string `json:"messages"`
 }
 
 func (c *Core) MergeTreeConflicts(cwd, base, head string) (MergeTreeResult, error) {
@@ -181,6 +189,7 @@ func parseMergeTreeNameOnly(stdout string, conflicted bool) (MergeTreeResult, er
 	}
 
 	inMessages := false
+	var messages []string
 	for _, raw := range lines[1:] {
 		line := strings.TrimSuffix(raw, "\r")
 		if !inMessages && line == "" {
@@ -188,14 +197,49 @@ func parseMergeTreeNameOnly(stdout string, conflicted bool) (MergeTreeResult, er
 			continue
 		}
 		if inMessages {
-			if strings.TrimSpace(line) != "" {
-				out.Messages = append(out.Messages, line)
+			if strings.TrimSpace(line) != "" && !isRedundantMergeMessage(line) {
+				messages = append(messages, line)
 			}
 			continue
 		}
 		out.Paths = append(out.Paths, line)
 	}
+	out.Notes, out.Messages = attributeMergeMessages(messages, out.Paths)
 	return out, nil
+}
+
+// isRedundantMergeMessage reports messages the conflict viewer already
+// expresses on its own: "Auto-merging <path>" progress noise and
+// "CONFLICT (content)" lines, whose files render with visible conflict
+// regions and a conflict-count badge.
+func isRedundantMergeMessage(line string) bool {
+	return strings.HasPrefix(line, "Auto-merging ") ||
+		strings.HasPrefix(line, "CONFLICT (content): ")
+}
+
+// attributeMergeMessages assigns each message to the conflicted path it
+// mentions (longest match wins so nested paths attribute correctly);
+// messages naming no conflicted path are returned separately.
+func attributeMergeMessages(messages, paths []string) (map[string][]string, []string) {
+	var notes map[string][]string
+	var rest []string
+	for _, message := range messages {
+		best := ""
+		for _, path := range paths {
+			if len(path) > len(best) && strings.Contains(message, path) {
+				best = path
+			}
+		}
+		if best == "" {
+			rest = append(rest, message)
+			continue
+		}
+		if notes == nil {
+			notes = make(map[string][]string)
+		}
+		notes[best] = append(notes[best], message)
+	}
+	return notes, rest
 }
 
 func validateFetchArg(label, value string) error {
