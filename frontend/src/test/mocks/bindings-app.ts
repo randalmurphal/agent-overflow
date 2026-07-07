@@ -417,6 +417,7 @@ export const SubmitPRReview = dispatch('SubmitPRReview');
 export const ReplyToPRThread = dispatch('ReplyToPRThread');
 export const SubscribePRUpdates = dispatch('SubscribePRUpdates');
 export const UnsubscribePRUpdates = dispatch('UnsubscribePRUpdates');
+export const SetPRUpdatesActive = dispatch('SetPRUpdatesActive');
 export const CountRunningBackgroundTasks = dispatch('CountRunningBackgroundTasks');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
 export const GetThreadItem = dispatch('GetThreadItem');

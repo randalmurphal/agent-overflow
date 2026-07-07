@@ -147,6 +147,7 @@ var LocalOnlyMethods = map[string]bool{
 	"ReplyToPRThread":      true,
 	"SubscribePRUpdates":   true,
 	"UnsubscribePRUpdates": true,
+	"SetPRUpdatesActive":   true,
 	"GetPRMergeConflicts":  true,
 	"GetMergeConflictFile": true,
 	// CI surface: shells out to gh/glab; SavePRCIJobLog additionally

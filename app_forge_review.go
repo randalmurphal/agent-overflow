@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,7 +45,14 @@ type prUpdatePump struct {
 	threadID string
 	pr       gitops.PRReference
 	done     chan struct{}
-	last     []byte
+	// paused suspends polling while every client looking at this
+	// subscription reports itself hidden (window minimized, tab in the
+	// background). The pump and its last-snapshot diff state stay alive;
+	// wake nudges the loop on resume so a poll missed while paused runs
+	// immediately instead of waiting out the next tick.
+	paused atomic.Bool
+	wake   chan struct{}
+	last   []byte
 }
 
 func (a *App) GetPRDetail(pr gitops.PRReference) (gitops.PRDetail, error) {
@@ -190,6 +198,7 @@ func (a *App) SubscribePRUpdates(ctx context.Context, threadID string, pr gitops
 		threadID: threadID,
 		pr:       pr,
 		done:     make(chan struct{}),
+		wake:     make(chan struct{}, 1),
 		last:     encoded,
 	}
 	a.prUpdatePumpsMu.Lock()
@@ -222,6 +231,28 @@ func (a *App) UnsubscribePRUpdates(subscriptionID string) error {
 	return nil
 }
 
+// SetPRUpdatesActive pauses (active=false) or resumes (active=true) a
+// subscription's poll pump. The frontend drives it from document
+// visibility so a hidden window stops spawning gh/glab every tick. An
+// unknown id is a no-op, not an error: visibility flips race scope
+// switches and pane disposal, and losing that race is benign.
+func (a *App) SetPRUpdatesActive(subscriptionID string, active bool) error {
+	a.prUpdatePumpsMu.Lock()
+	entry, ok := a.prUpdatePumps[subscriptionID]
+	a.prUpdatePumpsMu.Unlock()
+	if !ok {
+		return nil
+	}
+	entry.paused.Store(!active)
+	if active {
+		select {
+		case entry.wake <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
 func (a *App) pumpPRUpdates(id string, entry *prUpdatePump) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -234,41 +265,55 @@ func (a *App) pumpPRUpdates(id string, entry *prUpdatePump) {
 	interval := a.prUpdatePollInterval()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// missedTick makes resume-after-pause cheap for quick hide/show flips:
+	// a wake only triggers an immediate poll when a tick actually elapsed
+	// while paused; otherwise the regular ticker cadence resumes untouched.
+	missedTick := false
 	for {
 		select {
 		case <-entry.done:
 			return
 		case <-a.lifeCtx().Done():
 			return
+		case <-entry.wake:
+			if entry.paused.Load() || !missedTick {
+				continue
+			}
+			missedTick = false
 		case <-ticker.C:
-			snapshot, err := a.fetchPRUpdateSnapshot(entry.pr)
-			if err != nil {
-				log.Printf("pr updates: fetch failed for id=%s forge=%s project=%s number=%d: %v", id, entry.pr.Forge, entry.pr.Project(), entry.pr.Number, err)
+			if entry.paused.Load() {
+				missedTick = true
 				continue
 			}
-			encoded, err := encodePRUpdateSnapshot(snapshot)
-			if err != nil {
-				log.Printf("pr updates: encode failed for id=%s: %v", id, err)
-				continue
-			}
-			if string(encoded) == string(entry.last) {
-				continue
-			}
-			entry.last = encoded
-			select {
-			case <-entry.done:
-				return
-			default:
-			}
-			a.emit("pr:updated", PRUpdatedEvent{
-				SubscriptionID: id,
-				ThreadID:       entry.threadID,
-				PR:             entry.pr,
-				Detail:         snapshot.Detail,
-				Threads:        snapshot.Threads,
-				HeadSHA:        snapshot.Detail.HeadSHA,
-			})
+			missedTick = false
 		}
+		snapshot, err := a.fetchPRUpdateSnapshot(entry.pr)
+		if err != nil {
+			log.Printf("pr updates: fetch failed for id=%s forge=%s project=%s number=%d: %v", id, entry.pr.Forge, entry.pr.Project(), entry.pr.Number, err)
+			continue
+		}
+		encoded, err := encodePRUpdateSnapshot(snapshot)
+		if err != nil {
+			log.Printf("pr updates: encode failed for id=%s: %v", id, err)
+			continue
+		}
+		if string(encoded) == string(entry.last) {
+			continue
+		}
+		entry.last = encoded
+		select {
+		case <-entry.done:
+			return
+		default:
+		}
+		a.emit("pr:updated", PRUpdatedEvent{
+			SubscriptionID: id,
+			ThreadID:       entry.threadID,
+			PR:             entry.pr,
+			Detail:         snapshot.Detail,
+			Threads:        snapshot.Threads,
+			HeadSHA:        snapshot.Detail.HeadSHA,
+		})
 	}
 }
 

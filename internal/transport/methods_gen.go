@@ -222,6 +222,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SetMcpServerEnabled", ID: 3696908699},                  // main.App.SetMcpServerEnabled
 	{Name: "SetNetworkSettings", ID: 3915514446},                   // main.App.SetNetworkSettings
 	{Name: "SetNewThreadMcpServerEnabled", ID: 545823411},          // main.App.SetNewThreadMcpServerEnabled
+	{Name: "SetPRUpdatesActive", ID: 1078249699},                   // main.App.SetPRUpdatesActive
 	{Name: "SetUIState", ID: 1514250938},                           // main.App.SetUIState
 	{Name: "SetWSLDistroPreference", ID: 3978807241},               // main.App.SetWSLDistroPreference
 	{Name: "StartDiscussion", ID: 3188309099},                      // main.App.StartDiscussion

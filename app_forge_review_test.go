@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,5 +119,115 @@ func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
 	case evt := <-events:
 		t.Fatalf("unexpected unchanged snapshot emit: %+v", evt)
 	case <-time.After(40 * time.Millisecond):
+	}
+}
+
+func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {
+	app := NewApp()
+	app.prUpdateInterval = 5 * time.Millisecond
+	pr := gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 9}
+	var calls atomic.Int32
+	var changed atomic.Bool
+	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+		calls.Add(1)
+		head := "head-a"
+		if changed.Load() {
+			head = "head-b"
+		}
+		return prUpdateSnapshot{
+			Detail: gitops.PRDetail{Number: got.Number, HeadSHA: head, Mergeability: gitops.MergeabilityChecking},
+		}, nil
+	}
+	events := make(chan PRUpdatedEvent, 4)
+	app.testEmitHook = func(name string, data any) {
+		if name != "pr:updated" {
+			return
+		}
+		evt, ok := data.(PRUpdatedEvent)
+		if !ok {
+			t.Errorf("event payload type = %T", data)
+			return
+		}
+		events <- evt
+	}
+
+	sub, err := app.SubscribePRUpdates(context.Background(), "thread-123", pr)
+	if err != nil {
+		t.Fatalf("SubscribePRUpdates: %v", err)
+	}
+	defer func() {
+		if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
+			t.Fatalf("UnsubscribePRUpdates: %v", err)
+		}
+		app.prUpdatePumpWG.Wait()
+	}()
+
+	if err := app.SetPRUpdatesActive(sub.ID, false); err != nil {
+		t.Fatalf("SetPRUpdatesActive(false): %v", err)
+	}
+	// A tick already past the paused check may still complete one fetch;
+	// let it drain, then require the count to hold across many intervals.
+	time.Sleep(15 * time.Millisecond)
+	before := calls.Load()
+	time.Sleep(60 * time.Millisecond)
+	if after := calls.Load(); after != before {
+		t.Fatalf("paused pump kept polling: calls %d -> %d", before, after)
+	}
+
+	changed.Store(true)
+	if err := app.SetPRUpdatesActive(sub.ID, true); err != nil {
+		t.Fatalf("SetPRUpdatesActive(true): %v", err)
+	}
+	select {
+	case evt := <-events:
+		if evt.SubscriptionID != sub.ID || evt.HeadSHA != "head-b" {
+			t.Fatalf("event = %+v", evt)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("no catch-up poll after resume")
+	}
+}
+
+func TestPRUpdateResumeWithoutMissedTickDoesNotPoll(t *testing.T) {
+	app := NewApp()
+	app.prUpdateInterval = 300 * time.Millisecond
+	pr := gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 9}
+	var calls atomic.Int32
+	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+		calls.Add(1)
+		return prUpdateSnapshot{
+			Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a", Mergeability: gitops.MergeabilityChecking},
+		}, nil
+	}
+
+	sub, err := app.SubscribePRUpdates(context.Background(), "thread-123", pr)
+	if err != nil {
+		t.Fatalf("SubscribePRUpdates: %v", err)
+	}
+	defer func() {
+		if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
+			t.Fatalf("UnsubscribePRUpdates: %v", err)
+		}
+		app.prUpdatePumpWG.Wait()
+	}()
+
+	// Quick hide/show flip well inside one interval: no tick was missed,
+	// so resume must not spend a fetch.
+	if err := app.SetPRUpdatesActive(sub.ID, false); err != nil {
+		t.Fatalf("SetPRUpdatesActive(false): %v", err)
+	}
+	if err := app.SetPRUpdatesActive(sub.ID, true); err != nil {
+		t.Fatalf("SetPRUpdatesActive(true): %v", err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("resume without missed tick polled: calls = %d (want 1, the subscribe fetch)", got)
+	}
+}
+
+func TestSetPRUpdatesActiveUnknownIDIsNoOp(t *testing.T) {
+	app := NewApp()
+	if err := app.SetPRUpdatesActive("nope", true); err != nil {
+		t.Fatalf("SetPRUpdatesActive: %v", err)
 	}
 }

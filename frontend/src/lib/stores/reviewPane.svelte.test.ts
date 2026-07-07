@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import {
   activeDiffReviewSourceForThread,
@@ -1152,5 +1152,47 @@ describe('reviewPane store — PR scope', () => {
     expect(markSent).not.toHaveBeenCalled();
     expect(state.submitError).toContain('gh api submit review failed');
     expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+  });
+
+  function setDocumentVisibility(value: DocumentVisibilityState): void {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => value,
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }
+
+  afterEach(() => {
+    // Drop the per-test visibilityState override so later tests see the
+    // environment default ('visible') again.
+    delete (document as unknown as Record<string, unknown>).visibilityState;
+  });
+
+  it('pauses the pump while the document is hidden and resumes it on visible', async () => {
+    installPRMocks();
+    const setActive = setBindingMock('SetPRUpdatesActive', async () => undefined);
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(setActive).not.toHaveBeenCalled();
+
+    setDocumentVisibility('hidden');
+    expect(setActive).toHaveBeenCalledWith('sub-1', false);
+
+    setDocumentVisibility('visible');
+    expect(setActive).toHaveBeenCalledWith('sub-1', true);
+    expect(setActive).toHaveBeenCalledTimes(2);
+  });
+
+  it('a PR load that finishes while the document is hidden starts its pump paused', async () => {
+    installPRMocks();
+    const setActive = setBindingMock('SetPRUpdatesActive', async () => undefined);
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+
+    setDocumentVisibility('hidden');
+    setActive.mockClear();
+    await state.setScope('pr');
+    expect(setActive).toHaveBeenCalledWith('sub-1', false);
   });
 });

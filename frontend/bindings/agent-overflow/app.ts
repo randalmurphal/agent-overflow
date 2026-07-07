@@ -2367,6 +2367,17 @@ export function SetNewThreadMcpServerEnabled(providerName: string, workspacePath
 }
 
 /**
+ * SetPRUpdatesActive pauses (active=false) or resumes (active=true) a
+ * subscription's poll pump. The frontend drives it from document
+ * visibility so a hidden window stops spawning gh/glab every tick. An
+ * unknown id is a no-op, not an error: visibility flips race scope
+ * switches and pane disposal, and losing that race is benign.
+ */
+export function SetPRUpdatesActive(subscriptionID: string, active: boolean): $CancellablePromise<void> {
+    return $Call.ByID(1078249699, subscriptionID, active);
+}
+
+/**
  * SetUIState batch-upserts entries into the calling client's bucket.
  */
 export function SetUIState(clientID: string, entries: { [_ in string]?: string }): $CancellablePromise<void> {

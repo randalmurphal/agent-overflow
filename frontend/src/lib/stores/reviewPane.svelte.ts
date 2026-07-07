@@ -20,6 +20,7 @@ import {
   SendMessage,
   SendDiffReviewComments,
   SubmitPRReview,
+  SetPRUpdatesActive,
   SubscribePRUpdates,
   UnsubscribePRUpdates,
 } from './bindings';
@@ -200,6 +201,9 @@ export interface PRUpdatedEvent {
 
 function registerPRReviewState(subscriptionId: string, state: { applyPRUpdate(event: PRUpdatedEvent): void }): void {
   prStatesBySubscription.set(subscriptionId, state);
+  // A load can finish while the window sits minimized; the fresh pump
+  // must start paused like every other live one.
+  if (documentHidden()) setPRUpdatesActive(subscriptionId, false);
 }
 
 function unregisterPRReviewState(subscriptionId: string): void {
@@ -208,6 +212,33 @@ function unregisterPRReviewState(subscriptionId: string): void {
 
 export function applyPRUpdatedEvent(event: PRUpdatedEvent): void {
   prStatesBySubscription.get(event.subscriptionId)?.applyPRUpdate(event);
+}
+
+function documentHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
+function setPRUpdatesActive(subscriptionId: string, active: boolean): void {
+  void SetPRUpdatesActive(subscriptionId, active).catch((err: unknown) => {
+    // Not user-surfaced: a failed pause keeps the status quo (the pump
+    // just keeps polling), and a failed resume implies a dying transport
+    // whose server-side connection cleanup closes the pump anyway.
+    console.error('review: SetPRUpdatesActive failed', { subscriptionId, active, err });
+  });
+}
+
+// A hidden window doesn't need PR polling: pause every live subscription's
+// Go-side pump while the document is hidden and resume (with a catch-up
+// poll when a tick was missed) once it becomes visible again.
+export function handleReviewVisibilityChange(): void {
+  const active = !documentHidden();
+  for (const id of prStatesBySubscription.keys()) {
+    setPRUpdatesActive(id, active);
+  }
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', handleReviewVisibilityChange);
 }
 
 export function reviewStateForPane(sourcePaneId: string, threadId: string, thread?: Thread | null): ReviewPaneState {
@@ -1304,6 +1335,7 @@ function userFacingError(err: unknown): string {
 
 export function __resetReviewPaneStateForTest(): void {
   statesBySourcePane.clear();
+  prStatesBySubscription.clear();
 }
 
 export type { CommentAnchor };

@@ -105,7 +105,12 @@ state registry); the row model in `utils/reviewRows.ts`.
   subscription or the pump polls `gh`/`glab` until the connection dies.
   `pr:updated` events route by subscription id
   (`stores/eventsPRReview.ts`); a moved head sets `prStale` (banner) and
-  never swaps the diff out from under the user.
+  never swaps the diff out from under the user. A hidden document
+  (minimized window, background tab) pauses every live pump via
+  `SetPRUpdatesActive` — the store's module-level `visibilitychange`
+  listener owns that flip, and resume catch-up-polls only when a tick
+  was missed. Pausing suspends fetches without releasing ownership;
+  the unsubscribe-exactly-once rule above is unaffected.
 
 Diff rendering reuses the chat pipeline: `utils/patchFiles.ts` parsing,
 `DiffLineContent.svelte`, `dispatchInlineFileTokens` (Shiki worker pool),

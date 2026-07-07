@@ -660,6 +660,7 @@ func (p *privilegedApp) SubmitPRReview() string                       { return "
 func (p *privilegedApp) ReplyToPRThread() string                      { return "ok" }
 func (p *privilegedApp) SubscribePRUpdates() string                   { return "ok" }
 func (p *privilegedApp) UnsubscribePRUpdates() string                 { return "ok" }
+func (p *privilegedApp) SetPRUpdatesActive() string                   { return "ok" }
 func (p *privilegedApp) PrepareThreadWorktree() string                { return "ok" }
 func (p *privilegedApp) AttachThreadWorktree() string                 { return "ok" }
 func (p *privilegedApp) RevertToMessageCheckpoint() string            { return "ok" }

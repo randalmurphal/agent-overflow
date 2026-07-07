@@ -268,6 +268,7 @@ export {
   ReplyToPRThread,
   SubscribePRUpdates,
   UnsubscribePRUpdates,
+  SetPRUpdatesActive,
   ListLiveBackgroundTasks,
   GetThreadItem,
 
