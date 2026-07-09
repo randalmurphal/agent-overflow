@@ -13,12 +13,9 @@
   // This component owns the pane's single gitwatch subscription via the
   // $effect below — GitActionsControl and the two badges all read the resulting
   // status from `pane.gitStatus`, so there is exactly one subscription per pane.
-  import FolderClosed from 'lucide-svelte/icons/folder-closed';
   import SquareTerminal from 'lucide-svelte/icons/square-terminal';
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { OpenInEditor } from '../../stores/bindings';
-  import { errString } from '../../utils/errors';
   import { getProject } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
@@ -29,6 +26,7 @@
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import PrBadge from '../git/PrBadge.svelte';
   import WorkspaceDiffBadge from '../git/WorkspaceDiffBadge.svelte';
+  import OpenInEditorControl from './OpenInEditorControl.svelte';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
@@ -95,16 +93,6 @@
     };
   });
 
-  async function openProjectInEditor(): Promise<void> {
-    if (!projectBadge) return;
-    try {
-      // projectBadge.path is already absolute; workspacePath is unused.
-      await OpenInEditor(projectBadge.path, 0, 0, '');
-    } catch (err) {
-      addToast('error', errString(err));
-    }
-  }
-
   // Diff / Design panels need a real thread row — their backend bindings and
   // preview URL key off it. Drawer terminals are allowed on placeholders; they
   // use the synthetic placeholder id and are cleaned up or migrated by
@@ -143,20 +131,7 @@
   {/if}
 
   {#if projectBadge}
-    <Button
-      variant="secondary"
-      size="xs"
-      onclick={openProjectInEditor}
-      ariaLabel={`Open ${projectBadge.name} in editor`}
-      title={`Open ${projectBadge.name} in editor`}
-      testId="chat-header-open-editor"
-      class="shrink-0"
-    >
-      {#snippet leading()}
-        <Icon icon={FolderClosed} size={12} strokeWidth={2} class="opacity-90" />
-      {/snippet}
-      {#snippet children()}Open{/snippet}
-    </Button>
+    <OpenInEditorControl path={projectBadge.path} name={projectBadge.name} />
   {/if}
 
   <GitActionsControl {pane} />

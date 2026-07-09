@@ -27,12 +27,32 @@ func TestOpenInEditor_NilSettingsDoesNotPanic(t *testing.T) {
 		}
 	}()
 
-	err := app.OpenInEditor("relative-path-does-not-spawn", 0, 0, "")
+	err := app.OpenInEditor("relative-path-does-not-spawn", 0, 0, "", "")
 	if err == nil {
 		t.Fatal("relative path with empty workspacePath should be rejected before spawn")
 	}
 	if !strings.Contains(err.Error(), "workspacePath") {
 		t.Fatalf("expected workspacePath-required error, got: %v", err)
+	}
+}
+
+// TestOpenInEditor_UnavailableEditorIDErrors pins the one-shot override
+// contract: naming an editor that isn't available surfaces a clear
+// error rather than silently substituting a different one. The header
+// dropdown passes an explicit ID for "open in this editor, just this
+// once"; a bogus/uninstalled ID must not fall through to the catalog
+// default. A random ID is never available on the detection host, so
+// this exercises the ResolveExact error path deterministically without
+// spawning anything.
+func TestOpenInEditor_UnavailableEditorIDErrors(t *testing.T) {
+	app := &App{settings: settings.NewService(t.TempDir())}
+
+	err := app.OpenInEditor("/tmp/does-not-matter", 0, 0, "", "not-a-real-editor")
+	if err == nil {
+		t.Fatal("expected error when the named editor is not available")
+	}
+	if !strings.Contains(err.Error(), "not-a-real-editor") {
+		t.Fatalf("expected error naming the unavailable editor, got: %v", err)
 	}
 }
 
@@ -44,7 +64,7 @@ func TestOpenInEditor_NilSettingsDoesNotPanic(t *testing.T) {
 func TestOpenInEditor_RejectsEmptyPath(t *testing.T) {
 	app := &App{settings: settings.NewService(t.TempDir())}
 
-	err := app.OpenInEditor("", 1, 1, "")
+	err := app.OpenInEditor("", 1, 1, "", "")
 	if err == nil {
 		t.Fatal("expected error for empty path")
 	}

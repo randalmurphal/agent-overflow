@@ -46,9 +46,9 @@ func (a *App) ListAvailableEditors() ([]EditorInfo, error) {
 	return out, nil
 }
 
-// OpenInEditor launches the user's preferred editor against `path`,
-// optionally placing the cursor at (line, col). Both are 1-indexed;
-// pass 0 for either to open without cursor placement.
+// OpenInEditor launches an editor against `path`, optionally placing
+// the cursor at (line, col). Both are 1-indexed; pass 0 for either to
+// open without cursor placement.
 //
 // `workspacePath`, when non-empty, is the absolute base directory used
 // to resolve a relative `path`. Click sites in the SPA that hand us
@@ -59,31 +59,45 @@ func (a *App) ListAvailableEditors() ([]EditorInfo, error) {
 // the traversal-escape guard that keeps a token-holder over the
 // network from opening files outside the workspace.
 //
-// Resolution order: settings.Editor.Preference → catalog priority →
-// $EDITOR / $VISUAL fallback. On WSL the editor must be the
-// Windows-installed app reachable via the vendor's WSL bridge; a
-// Linux-native `code-oss` (or equivalent) on PATH is deliberately
-// rejected because it would render via WSLg and miss the user's
-// actual editor environment.
+// `editorID` selects which editor to launch:
+//   - Empty → resolve via settings.Editor.Preference → catalog priority
+//     → $EDITOR / $VISUAL fallback. This is the default path used by
+//     every path-link and the header "Open" primary click.
+//   - Non-empty → open in exactly that editor (the header dropdown's
+//     "open this one, just this once" pick). It must be available or
+//     the call errors; we never silently substitute a different editor
+//     for an explicit choice, and this path deliberately ignores the
+//     saved preference so a one-shot open doesn't change the default.
+//
+// On WSL the editor must be the Windows-installed app reachable via the
+// vendor's WSL bridge; a Linux-native `code-oss` (or equivalent) on
+// PATH is deliberately rejected because it would render via WSLg and
+// miss the user's actual editor environment.
 //
 // Errors flow back to the frontend as user-facing toasts; the strings
 // here are intentionally friendly — "no editor available" names
 // install paths the user can act on rather than dumping the internal
 // sentinel error.
-func (a *App) OpenInEditor(path string, line, col int, workspacePath string) error {
+func (a *App) OpenInEditor(path string, line, col int, workspacePath, editorID string) error {
 	// editor.ResolvePath (called inside editor.Open) is the single source
 	// of truth for the path-shape contract: empty / non-absolute / non-
 	// canonical / workspace-escaping inputs all surface as errors there.
 	// We don't pre-check here so the boundary stays in one place.
 
-	preference := ""
-	if a.settings != nil {
-		preference = a.settings.Get().Editor.Preference
-	}
-
 	ctx := context.Background()
 	detected := editor.DetectEditors(ctx)
-	chosen, err := editor.Resolve(detected, preference)
+
+	var chosen *editor.Editor
+	var err error
+	if editorID != "" {
+		chosen, err = editor.ResolveExact(detected, editorID)
+	} else {
+		preference := ""
+		if a.settings != nil {
+			preference = a.settings.Get().Editor.Preference
+		}
+		chosen, err = editor.Resolve(detected, preference)
+	}
 	if err != nil {
 		return err
 	}

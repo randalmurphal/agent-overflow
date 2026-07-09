@@ -369,7 +369,7 @@ describe('<DiffFileBlock>', () => {
     await waitFor(() => {
       expect(openEditor).toHaveBeenCalledTimes(1);
     });
-    expect(openEditor.mock.calls[0]).toEqual(['src/foo.ts', 0, 0, '/tmp/workspace']);
+    expect(openEditor.mock.calls[0]).toEqual(['src/foo.ts', 0, 0, '/tmp/workspace', '']);
     expect(openReviewCompanion).not.toHaveBeenCalled();
   });
 

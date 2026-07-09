@@ -27,6 +27,7 @@ import {
   resetProjectsForTest,
 } from '../../stores/projects.svelte';
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
+import { resetEditorsForTest } from '../../stores/editors.svelte';
 import { openTerminalThread } from '../../stores/threadCreation.svelte';
 import type { Project, Thread } from '../../types/models';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
@@ -90,6 +91,13 @@ describe('<ChatHeader>', () => {
     resetPanesForTest();
     resetCompanionPanesForTest();
     resetPaneLayoutForTest();
+    resetEditorsForTest();
+    // The header's Open-in-editor control loads this catalog on mount.
+    // An empty catalog keeps the primary button working (the backend
+    // still resolves the default) while rendering no dropdown, which is
+    // all these header tests care about.
+    setBindingMock('ListAvailableEditors', async () => []);
+    setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     vi.mocked(openTerminalThread).mockClear();
   });
 
@@ -295,7 +303,7 @@ describe('<ChatHeader>', () => {
     await tick();
     await fireEvent.click(getByTestId('chat-header-open-editor'));
     await tick();
-    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '']);
+    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', '']);
   });
 
   it('hides the Open button when the thread has no project', async () => {

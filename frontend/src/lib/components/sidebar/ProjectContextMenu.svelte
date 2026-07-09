@@ -53,7 +53,8 @@
   async function doOpenInEditor(): Promise<void> {
     try {
       // Project path is already absolute; workspacePath is unused.
-      await OpenInEditor(project.project.path, 0, 0, '');
+      // Empty editorID → the user's default editor.
+      await OpenInEditor(project.project.path, 0, 0, '', '');
     } catch (err) {
       addToast('error', userFacingError(err));
     }

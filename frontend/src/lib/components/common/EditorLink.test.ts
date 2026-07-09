@@ -46,7 +46,7 @@ describe('<EditorLink>', () => {
     await waitFor(() => {
       expect(mock).toHaveBeenCalledTimes(1);
     });
-    expect(mock.mock.calls[0]).toEqual(['src/foo.ts', 12, 4, '/work']);
+    expect(mock.mock.calls[0]).toEqual(['src/foo.ts', 12, 4, '/work', '']);
   });
 
   it('defaults line/col/workspacePath when not supplied', async () => {
@@ -56,7 +56,7 @@ describe('<EditorLink>', () => {
     await waitFor(() => {
       expect(mock).toHaveBeenCalledTimes(1);
     });
-    expect(mock.mock.calls[0]).toEqual(['README.md', 0, 0, '']);
+    expect(mock.mock.calls[0]).toEqual(['README.md', 0, 0, '', '']);
   });
 
   it('toasts the binding error message verbatim', async () => {

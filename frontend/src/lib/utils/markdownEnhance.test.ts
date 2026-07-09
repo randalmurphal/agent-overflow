@@ -38,7 +38,7 @@ describe('ensurePathLinkClickDelegate', () => {
     await waitFor(() => {
       expect(mock).toHaveBeenCalledTimes(1);
     });
-    expect(mock.mock.calls[0]).toEqual(['src/foo.ts', 42, 7, '/repo']);
+    expect(mock.mock.calls[0]).toEqual(['src/foo.ts', 42, 7, '/repo', '']);
     void getBindingMock; // helper kept reachable for future cases
   });
 
@@ -50,7 +50,7 @@ describe('ensurePathLinkClickDelegate', () => {
     link.click();
 
     await waitFor(() => expect(mock).toHaveBeenCalledTimes(1));
-    expect(mock.mock.calls[0]).toEqual(['a.ts', 0, 0, '']);
+    expect(mock.mock.calls[0]).toEqual(['a.ts', 0, 0, '', '']);
   });
 
   it('prevents default so the browser does not navigate to the custom scheme', () => {

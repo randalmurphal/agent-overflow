@@ -92,7 +92,7 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledTimes(1);
     });
-    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '']);
+    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '', '']);
   });
 
   it('clicking the editor-link does NOT toggle the row body', async () => {
@@ -112,7 +112,7 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledTimes(1);
     });
-    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '']);
+    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '', '']);
 
     expect(queryByTestId('tool-call-card-body')).toBeNull();
   });
@@ -172,7 +172,7 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledTimes(1);
     });
-    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '/home/user/repo']);
+    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '/home/user/repo', '']);
   });
 
   it('places the empty indicator slot before the timestamp', () => {
