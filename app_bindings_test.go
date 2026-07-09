@@ -818,7 +818,13 @@ func TestSwitchThreadDoesNotChangeRememberedContext(t *testing.T) {
 	}
 }
 
-func TestUpdateThreadModelRestartsActiveSession(t *testing.T) {
+// TestUpdateThreadModelReconnectsSessionWithoutLiveUpdateSurface pins the
+// restart-fallback path of the config reconciler: a registered session with
+// no live-update surface (no provider handle to live-apply onto) cannot
+// absorb a model change in place, so the deferred-reconnect watcher must
+// restart it — asynchronously, once the thread is quiet — while the binding
+// returns the persisted selection immediately.
+func TestUpdateThreadModelReconnectsSessionWithoutLiveUpdateSurface(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-model-active")
 	thread.UpdatedAt = 1_700_000_000_000
@@ -828,9 +834,9 @@ func TestUpdateThreadModelRestartsActiveSession(t *testing.T) {
 
 	app.sessions[thread.ID] = session{provider: string(provider.Codex), token: "active-model-token"}
 
-	var started []string
+	started := make(chan string, 1)
 	app.startSessionFn = func(threadID string) error {
-		started = append(started, threadID)
+		started <- threadID
 		return nil
 	}
 
@@ -838,47 +844,61 @@ func TestUpdateThreadModelRestartsActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateThreadModel() error = %v", err)
 	}
-	if len(started) != 1 || started[0] != thread.ID {
-		t.Fatalf("startSession calls = %v, want [%s]", started, thread.ID)
-	}
 	if updated.Model != "gpt-5.4-mini" {
 		t.Fatalf("returned model = %q, want %q", updated.Model, "gpt-5.4-mini")
 	}
 	if updated.UpdatedAt != thread.UpdatedAt {
 		t.Fatalf("returned UpdatedAt = %d, want %d", updated.UpdatedAt, thread.UpdatedAt)
 	}
+
+	select {
+	case threadID := <-started:
+		if threadID != thread.ID {
+			t.Fatalf("startSession thread = %q, want %q", threadID, thread.ID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("deferred config reconnect never restarted the session")
+	}
 }
 
-func TestUpdateThreadModelRollsBackOnRestartFailure(t *testing.T) {
+// TestUpdateThreadModelKeepsSelectionOnRestartFailure pins the new failure
+// semantics: a failed reconnect no longer rolls the row back — the
+// persisted selection stays authoritative (surfaced as thread error state)
+// and a later lazy start converges on it.
+func TestUpdateThreadModelKeepsSelectionOnRestartFailure(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread := testThread("thread-model-rollback")
+	thread := testThread("thread-model-restart-failure")
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
 	app.sessions[thread.ID] = session{provider: string(provider.Codex), token: "active-model-token"}
+	restartAttempted := make(chan struct{}, 1)
 	app.startSessionFn = func(string) error {
+		restartAttempted <- struct{}{}
 		return fmt.Errorf("restart boom")
 	}
 
-	_, err := app.UpdateThreadModel(thread.ID, "gpt-5.4-mini")
-	if err == nil {
-		t.Fatal("UpdateThreadModel() error = nil, want restart failure")
+	updated, err := app.UpdateThreadModel(thread.ID, "gpt-5.4-mini")
+	if err != nil {
+		t.Fatalf("UpdateThreadModel() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "restart session with updated model") {
-		t.Fatalf("UpdateThreadModel() error = %v, want restart context", err)
+	if updated.Model != "gpt-5.4-mini" {
+		t.Fatalf("returned model = %q, want %q", updated.Model, "gpt-5.4-mini")
+	}
+
+	select {
+	case <-restartAttempted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deferred config reconnect never attempted a restart")
 	}
 
 	stored, getErr := app.store.GetThread(thread.ID)
 	if getErr != nil {
 		t.Fatalf("GetThread() error = %v", getErr)
 	}
-	if stored.Model != thread.Model {
-		t.Fatalf("stored model = %q, want rollback to %q", stored.Model, thread.Model)
-	}
-	_, profileErr := app.store.GetChatModelProfile(thread.Provider, "gpt-5.4-mini")
-	if !errors.Is(profileErr, sql.ErrNoRows) {
-		t.Fatalf("failed model profile error = %v, want sql.ErrNoRows", profileErr)
+	if stored.Model != "gpt-5.4-mini" {
+		t.Fatalf("stored model = %q, want persisted selection %q", stored.Model, "gpt-5.4-mini")
 	}
 }
 
@@ -950,6 +970,7 @@ func newTestAppWithStore(t *testing.T) *App {
 
 	app := &App{
 		store:                  st,
+		settings:               settings.NewService(t.TempDir()),
 		sessions:               make(map[string]session),
 		startingSessions:       make(map[string]*sessionStart),
 		reconnectingThreads:    make(map[string]bool),

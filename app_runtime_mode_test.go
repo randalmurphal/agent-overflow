@@ -53,83 +53,48 @@ func emissionsFor(m *sync.Map, name string) []any {
 	return raw.([]any)
 }
 
-func TestUpdateThreadRuntimeModeRollsBackWhenRestartFails(t *testing.T) {
+// TestUpdateThreadRuntimeModeKeepsModeOnRestartFailure pins the reconciler
+// semantics: a session with no live-update surface gets a deferred restart,
+// the binding returns success immediately (the persisted mode is
+// authoritative), the mode-changed event fires, and a restart failure does
+// NOT roll the row back — the next lazy start converges on it.
+func TestUpdateThreadRuntimeModeKeepsModeOnRestartFailure(t *testing.T) {
 	app := newTestAppWithStore(t)
 	emissions := captureEmissions(app)
 	id := createRuntimeTestThread(t, app, provider.RuntimeApprovalRequired)
 	app.sessions[id] = session{token: "t"}
 	restartErr := errors.New("synthetic restart failure")
-	var startCalls atomic.Int32
-	app.startSessionFn = func(string) error {
-		startCalls.Add(1)
+	started := make(chan struct{}, 1)
+	app.startSessionFn = func(threadID string) error {
+		stored, err := app.store.GetThread(threadID)
+		if err != nil {
+			t.Errorf("GetThread during deferred restart: %v", err)
+		} else if stored.RuntimeMode != string(provider.RuntimeFullAccess) {
+			t.Errorf("deferred restart saw mode = %q, want full-access", stored.RuntimeMode)
+		}
+		started <- struct{}{}
 		return restartErr
 	}
 
-	_, err := app.UpdateThreadRuntimeMode(id, string(provider.RuntimeFullAccess))
-	if err == nil {
-		t.Fatal("UpdateThreadRuntimeMode error = nil, want restart failure")
+	if _, err := app.UpdateThreadRuntimeMode(id, string(provider.RuntimeFullAccess)); err != nil {
+		t.Fatalf("UpdateThreadRuntimeMode error = %v, want nil (restart is deferred)", err)
 	}
-	if !strings.Contains(err.Error(), "restart session with updated runtime mode") {
-		t.Fatalf("UpdateThreadRuntimeMode error = %v, want restart context", err)
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deferred config reconnect never attempted a restart")
 	}
-	if got := startCalls.Load(); got != 2 {
-		t.Fatalf("startSessionFn calls = %d, want initial restart plus rollback recovery", got)
-	}
+
 	stored, err := app.store.GetThread(id)
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	if stored.RuntimeMode != string(provider.RuntimeApprovalRequired) {
-		t.Fatalf("runtime mode after failed restart = %q, want rollback to approval-required", stored.RuntimeMode)
+	if stored.RuntimeMode != string(provider.RuntimeFullAccess) {
+		t.Fatalf("runtime mode after failed restart = %q, want persisted full-access", stored.RuntimeMode)
 	}
-	if fired := emissionsFor(emissions, "thread:runtime_mode_changed"); len(fired) != 0 {
-		t.Fatalf("runtime_mode_changed emissions = %d, want 0 after rollback", len(fired))
-	}
-}
-
-func TestUpdateThreadRuntimeModeRestoresPreviousSessionOnRestartFailure(t *testing.T) {
-	app := newTestAppWithStore(t)
-	id := createRuntimeTestThread(t, app, provider.RuntimeApprovalRequired)
-	app.sessions[id] = session{token: "old-session"}
-	restartErr := errors.New("synthetic restart failure")
-	var startCalls atomic.Int32
-	app.startSessionFn = func(threadID string) error {
-		call := startCalls.Add(1)
-		if call == 1 {
-			return restartErr
-		}
-		stored, err := app.store.GetThread(threadID)
-		if err != nil {
-			t.Fatalf("GetThread during rollback recovery: %v", err)
-		}
-		if stored.RuntimeMode != string(provider.RuntimeApprovalRequired) {
-			t.Fatalf("rollback recovery saw mode = %q, want approval-required", stored.RuntimeMode)
-		}
-		app.mu.Lock()
-		app.sessions[threadID] = session{token: "recovered-session"}
-		app.mu.Unlock()
-		return nil
-	}
-
-	_, err := app.UpdateThreadRuntimeMode(id, string(provider.RuntimeFullAccess))
-	if err == nil {
-		t.Fatal("UpdateThreadRuntimeMode error = nil, want initial restart failure")
-	}
-	if got := startCalls.Load(); got != 2 {
-		t.Fatalf("startSessionFn calls = %d, want initial restart plus rollback recovery", got)
-	}
-	stored, err := app.store.GetThread(id)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if stored.RuntimeMode != string(provider.RuntimeApprovalRequired) {
-		t.Fatalf("runtime mode after failed restart = %q, want rollback to approval-required", stored.RuntimeMode)
-	}
-	app.mu.Lock()
-	final := app.sessions[id]
-	app.mu.Unlock()
-	if final.token != "recovered-session" {
-		t.Fatalf("session token after rollback recovery = %q, want recovered-session", final.token)
+	if fired := emissionsFor(emissions, "thread:runtime_mode_changed"); len(fired) != 1 {
+		t.Fatalf("runtime_mode_changed emissions = %d, want 1", len(fired))
 	}
 }
 
@@ -184,17 +149,24 @@ func TestUpdateThreadRuntimeModeWaitsForThreadSendLock(t *testing.T) {
 	}
 }
 
-func TestSendRuntimeModeChangeRestartsAfterInflightStart(t *testing.T) {
+// TestSendRuntimeModeChangeReconnectsAfterInflightStart pins the reconcile
+// interaction with an in-flight session start: the mode change waits for
+// the start to settle (so it diffs against the session that actually
+// exists), the send proceeds without being blocked by the restart, and the
+// deferred reconnect then restarts the stale-config session against the
+// new mode.
+func TestSendRuntimeModeChangeReconnectsAfterInflightStart(t *testing.T) {
 	app := newTestAppWithStore(t)
 	id := createRuntimeTestThread(t, app, provider.RuntimeApprovalRequired)
 
 	firstStartEntered := make(chan struct{})
 	releaseFirstStart := make(chan struct{})
+	secondStart := make(chan struct{})
 	var startCalls atomic.Int32
 	app.startSessionFn = func(threadID string) error {
 		call := startCalls.Add(1)
 		if threadID != id {
-			t.Fatalf("startSessionFn threadID = %q, want %q", threadID, id)
+			t.Errorf("startSessionFn threadID = %q, want %q", threadID, id)
 		}
 		switch call {
 		case 1:
@@ -207,17 +179,17 @@ func TestSendRuntimeModeChangeRestartsAfterInflightStart(t *testing.T) {
 		case 2:
 			stored, err := app.store.GetThread(id)
 			if err != nil {
-				t.Fatalf("GetThread during restart: %v", err)
-			}
-			if stored.RuntimeMode != string(provider.RuntimeFullAccess) {
-				t.Fatalf("restart saw runtime mode = %q, want full-access", stored.RuntimeMode)
+				t.Errorf("GetThread during restart: %v", err)
+			} else if stored.RuntimeMode != string(provider.RuntimeFullAccess) {
+				t.Errorf("restart saw runtime mode = %q, want full-access", stored.RuntimeMode)
 			}
 			app.mu.Lock()
 			app.sessions[threadID] = session{provider: string(provider.Codex), token: "new-mode-session"}
 			app.mu.Unlock()
+			close(secondStart)
 			return nil
 		default:
-			t.Fatalf("unexpected startSessionFn call %d", call)
+			t.Errorf("unexpected startSessionFn call %d", call)
 			return nil
 		}
 	}
@@ -250,8 +222,11 @@ func TestSendRuntimeModeChangeRestartsAfterInflightStart(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "session has no provider") {
 		t.Fatalf("SendMessageWithOptions error = %v, want fake provider send failure", err)
 	}
-	if got := startCalls.Load(); got != 2 {
-		t.Fatalf("startSessionFn calls = %d, want 2", got)
+
+	select {
+	case <-secondStart:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deferred config reconnect never restarted the stale-config session")
 	}
 
 	app.mu.Lock()

@@ -80,7 +80,13 @@ over stdio.
   to fetch the current `thread.status.type` so the app-layer reconciler
   can flip stale running background tool rows.
 - `turn/start`, `turn/steer`, `turn/interrupt` — deliver, steer, and stop
-  user turns.
+  user turns. `turn/start` carries per-turn config overrides (`model`,
+  `effort`, `serviceTier`, `approvalPolicy`, `sandboxPolicy` — upstream
+  documents each as applying "for this turn and subsequent turns"),
+  which is how a mid-session model / effort / fast-mode / runtime-mode
+  change lands without a session restart (`live_update.go`).
+  `turn/steer` takes NO config fields, so an in-flight turn can never
+  be reconfigured.
 - Sandbox/approval method family — `file/write`, `file/delete`,
   `file/mkdir`, `command/execute`, etc. These arrive as requests we
   must respond to.

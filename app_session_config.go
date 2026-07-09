@@ -1,0 +1,251 @@
+package main
+
+import (
+	"log"
+	"time"
+
+	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/codex"
+)
+
+// This file owns applying thread-config changes (model, effort, fast mode,
+// runtime mode, context window, ...) to a live provider session.
+//
+// The old policy was "any session-affecting change kills and respawns the
+// provider process", which aborted in-flight turns and reaped backgrounded
+// tasks. The current policy:
+//
+//  1. Live-apply when the provider supports it — Claude via set_model /
+//     set_permission_mode control_requests (verified on claude 2.1.205),
+//     Codex via the per-turn turn/start overrides it re-reads every Send.
+//     No process restart, in-flight work untouched.
+//  2. Otherwise restart — but never while the thread is busy. A restart
+//     kills the working turn AND any live backgrounded tasks, so it is
+//     deferred until the thread is fully quiet (no active turn, no queued
+//     or in-flight sends, no running background tasks) and then fired by
+//     a per-thread watcher.
+//
+// The reconciler is convergence-based rather than delta-based: it diffs the
+// live session's launch options (session.launchOpts) against the thread
+// row's current options, so stacked changes and changes that landed while a
+// restart was pending all settle in one pass.
+
+const (
+	// defaultConfigReconnectPollInterval is how often the deferred-restart
+	// watcher re-checks a busy thread.
+	defaultConfigReconnectPollInterval = time.Second
+	// defaultConfigReconnectQuietWindow is the minimum session inactivity
+	// before a deferred restart may fire. It closes the gap where a send
+	// was just written but the wire hasn't opened the turn yet (triage's
+	// ActiveTurn is still nil for a few ms), mirroring the idle reaper's
+	// activity-floor technique.
+	defaultConfigReconnectQuietWindow = 3 * time.Second
+)
+
+func (a *App) configReconnectPollInterval() time.Duration {
+	if a.configReconnectPollIntervalOverride > 0 {
+		return a.configReconnectPollIntervalOverride
+	}
+	return defaultConfigReconnectPollInterval
+}
+
+func (a *App) configReconnectQuietWindow() time.Duration {
+	if a.configReconnectQuietWindowOverride > 0 {
+		return a.configReconnectQuietWindowOverride
+	}
+	return defaultConfigReconnectQuietWindow
+}
+
+// reconcileSessionConfig converges the thread's live session (if any) onto
+// the thread row's current config: live-apply when possible, deferred
+// restart otherwise. Safe to call with or without the per-thread action
+// lock held — it never takes it; restarts happen on the watcher goroutine,
+// which does.
+func (a *App) reconcileSessionConfig(threadID string) {
+	if a.liveApplySessionConfig(threadID) {
+		return
+	}
+	a.schedulePendingConfigReconnect(threadID)
+}
+
+// liveApplySessionConfig attempts to bring the live session in line with
+// the thread row without a restart. Returns true when the session now
+// matches the row (or there is no session to reconcile — the next lazy
+// start reads the row directly); false when only a restart can converge.
+func (a *App) liveApplySessionConfig(threadID string) bool {
+	// A start already in flight read the thread row at some point before
+	// this change persisted; wait for it so we diff against the session
+	// that actually exists.
+	if _, err := a.waitForStartingSession(threadID); err != nil {
+		// The in-flight start failed; there is no session to reconcile and
+		// the failed start already surfaced its own error.
+		return true
+	}
+	sess, ok := a.sessionManager().get(threadID)
+	if !ok {
+		return true
+	}
+
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		log.Printf("thread %s: config reconcile: load thread: %v", threadID, err)
+		return true
+	}
+	// Mirror startSessionNow's sanitize step (without persisting) so the
+	// comparison sees the same coerced view a spawn would.
+	opts, _, err := a.buildSessionOptions(a.sanitizeThreadModelSettings(thread))
+	if err != nil {
+		log.Printf("thread %s: config reconcile: build options: %v", threadID, err)
+		a.emitErrorToThread(threadID, "config change could not be applied: "+err.Error())
+		return true
+	}
+
+	switch {
+	case sess.claude != nil:
+		update, ok := claude.PlanLiveUpdate(sess.launchOpts, opts)
+		if !ok {
+			return false
+		}
+		if err := sess.claude.ApplyLiveUpdate(a.lifeCtx(), update); err != nil {
+			// ErrLiveUpdateRequiresRestart is the expected "can't do this
+			// one live" signal (bypassPermissions escalation); anything
+			// else is a wire failure. Either way the restart path is the
+			// convergence fallback — surface unexpected failures first.
+			if err != claude.ErrLiveUpdateRequiresRestart {
+				log.Printf("thread %s: claude live config update failed: %v", threadID, err)
+				a.emitErrorToThread(threadID, "live config change failed, restarting session to apply: "+err.Error())
+			}
+			return false
+		}
+	case sess.codex != nil:
+		update, ok := codex.PlanLiveUpdate(sess.launchOpts, opts)
+		if !ok {
+			return false
+		}
+		sess.codex.ApplyLiveUpdate(update)
+	default:
+		// claudetui has no live-update surface; restart is the only path.
+		return false
+	}
+
+	a.sessionManager().updateLaunchOpts(threadID, sess.token, opts)
+	return true
+}
+
+// schedulePendingConfigReconnect arms the per-thread deferred-restart
+// watcher. Idempotent — a second config change while one is pending folds
+// into the same watcher, which reconciles against the latest thread row
+// when it fires.
+func (a *App) schedulePendingConfigReconnect(threadID string) {
+	a.mu.Lock()
+	if a.pendingConfigReconnects == nil {
+		a.pendingConfigReconnects = make(map[string]bool)
+	}
+	if a.pendingConfigReconnects[threadID] {
+		a.mu.Unlock()
+		return
+	}
+	a.pendingConfigReconnects[threadID] = true
+	a.mu.Unlock()
+	go a.pendingConfigReconnectWatcher(threadID)
+}
+
+func (a *App) clearPendingConfigReconnect(threadID string) {
+	a.mu.Lock()
+	delete(a.pendingConfigReconnects, threadID)
+	a.mu.Unlock()
+}
+
+// pendingConfigReconnectWatcher waits for the thread to go fully quiet and
+// then restarts its session so the pending config takes effect. It re-runs
+// the live-apply check right before restarting: if the session died and a
+// fresh one spawned from the new row (or a newer change became
+// live-appliable), the restart is skipped.
+func (a *App) pendingConfigReconnectWatcher(threadID string) {
+	defer a.clearPendingConfigReconnect(threadID)
+	ticker := time.NewTicker(a.configReconnectPollInterval())
+	defer ticker.Stop()
+	for {
+		if a.shuttingDown.Load() {
+			return
+		}
+		if !a.hasActiveSession(threadID) {
+			// No live session: the next lazy start reads the thread row
+			// with the new config. Nothing to restart.
+			return
+		}
+		if !a.threadConfigBusy(threadID) {
+			unlock := a.threadLocks().Lock(threadID)
+			done := a.fireDeferredConfigReconnectLocked(threadID)
+			unlock()
+			if done {
+				return
+			}
+		}
+		select {
+		case <-ticker.C:
+		case <-a.lifeCtx().Done():
+			return
+		}
+	}
+}
+
+// fireDeferredConfigReconnectLocked performs the deferred restart under the
+// per-thread action lock (serializing against sends, steers, and other
+// thread mutations). Returns false when the thread turned busy again
+// between the watcher's check and lock acquisition — the watcher keeps
+// waiting.
+func (a *App) fireDeferredConfigReconnectLocked(threadID string) bool {
+	if a.threadConfigBusy(threadID) {
+		return false
+	}
+	// The world may have moved while we waited: the session may have been
+	// replaced (new launch config already matches) or the remaining delta
+	// may have become live-appliable. Re-check before killing anything.
+	if a.liveApplySessionConfig(threadID) {
+		return true
+	}
+	if err := a.startSession(threadID); err != nil {
+		log.Printf("thread %s: deferred config reconnect failed: %v", threadID, err)
+		a.emitErrorToThread(threadID, "config change failed to apply on session restart: "+err.Error())
+	}
+	return true
+}
+
+// threadConfigBusy reports whether restarting the thread's session now
+// would destroy live work: an active turn, queued or in-flight sends,
+// recent wire activity (a just-written send whose turn hasn't opened yet),
+// or running backgrounded tasks (a restart reaps their processes).
+func (a *App) threadConfigBusy(threadID string) bool {
+	if a.triage != nil {
+		live := a.triage.LiveStateSnapshotForThread(threadID)
+		if live.ActiveTurn != nil || len(live.QueueItems) > 0 || len(live.FlushedItems) > 0 {
+			return true
+		}
+	}
+
+	a.flushDispatchMu.Lock()
+	inflight := a.flushDispatchInflightItems[threadID]
+	a.flushDispatchMu.Unlock()
+	if inflight > 0 {
+		return true
+	}
+
+	if sess, ok := a.sessionManager().get(threadID); ok && sess.liveness != nil {
+		if sess.liveness.activeTurns.Load() > 0 {
+			return true
+		}
+		last := time.Unix(0, sess.liveness.lastActivityUnixNano.Load())
+		if time.Since(last) < a.configReconnectQuietWindow() {
+			return true
+		}
+	}
+
+	running, err := a.hasRunningBackgroundTasks(threadID)
+	if err != nil {
+		// Can't verify — err on the side of not killing anything.
+		log.Printf("thread %s: config reconcile busy check: %v", threadID, err)
+		return true
+	}
+	return running
+}

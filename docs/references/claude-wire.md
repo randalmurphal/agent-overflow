@@ -1367,7 +1367,26 @@ CLI binary; the subtypes we use or plan to use:
   `run_in_background:true` OR Task subagent). Takes `task_id` (the id
   from `system/task_started`). See [§stop_task](#stop_task) below.
 - `subtype: "set_permission_mode"` — switch the live session's permission
-  mode (Plan ↔ chat ↔ accept-edits ↔ bypass). Takes `mode`.
+  mode (Plan ↔ chat ↔ accept-edits ↔ bypass). Takes `mode`. Escalating to
+  `bypassPermissions` is REJECTED unless the process was launched with
+  `--allow-dangerously-skip-permissions` / `--dangerously-skip-permissions`
+  (error: "Cannot set permission mode to bypassPermissions because the
+  session was not launched with --dangerously-skip-permissions"; verified
+  2.1.205) — AO restarts the session for that transition instead.
+- `subtype: "set_model"` — switch the live session's active model. Takes
+  `model` (the same string `--model` accepts). Verified on 2.1.205: the
+  CLI acks immediately even mid-turn, the in-flight turn finishes on the
+  previous model, and the next turn (plus the fresh `system/init` it
+  emits) runs on the new one. Used by AO's config reconciler
+  (`app_session_config.go`) so a model change never kills a working
+  session. The CLI also echoes a replayed user envelope containing
+  `<local-command-stdout>Set model to ...</local-command-stdout>`.
+- `subtype: "set_max_thinking_tokens"` — set the live session's max
+  thinking-token budget. Takes `max_thinking_tokens` (int). Verified
+  accepted on 2.1.205; NOT currently used by AO (our effort tiers map to
+  the spawn-time `--effort` flag, which has no live equivalent — there is
+  no `set_effort`, `set_fast_mode`, or `set_context_window` subtype as of
+  2.1.205, so those changes restart the session).
 - `subtype: "mcp_set_servers"` — in-process diff-reconcile of the
   live MCP server set against `servers`. Returns
   `{added, removed, errors}`. Used by AO to sync per-thread MCP

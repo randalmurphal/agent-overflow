@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,14 +77,22 @@ type Session struct {
 	threadID  string
 	sessionID string
 	workDir   string
-	model     string
 	onEvent   func(provider.ProviderEvent)
 	cancel    context.CancelFunc
 	closing   atomic.Bool
 	readDone  chan struct{}
+	// allowsBypassPermissions records whether the process was spawned with
+	// --allow-dangerously-skip-permissions. The CLI rejects a live
+	// set_permission_mode escalation to bypassPermissions without it
+	// (verified on 2.1.205), so ApplyLiveUpdate routes that transition to
+	// the restart path instead. Written once at construction.
+	allowsBypassPermissions bool
 	// basePermissionMode is the runtime/access mode restored after a plan
 	// turn. currentPermissionMode mirrors the last successful
 	// set_permission_mode request so we avoid redundant control round-trips.
+	// Both are guarded by permissionModeMu: basePermissionMode is mutable
+	// post-construction via setBasePermissionMode (live runtime-mode
+	// changes).
 	permissionModeMu      sync.RWMutex
 	basePermissionMode    string
 	currentPermissionMode string
@@ -257,19 +266,19 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	}
 
 	s := &Session{
-		proc:                  proc,
-		threadID:              threadID,
-		sessionID:             cfg.Resume,
-		workDir:               cfg.WorkDir,
-		model:                 cfg.Model,
-		onEvent:               onEvent,
-		cancel:                cancel,
-		readDone:              make(chan struct{}),
-		parser:                NewParser(),
-		leafTracker:           newClaudeLeafTracker(cfg.ResumeAt),
-		basePermissionMode:    normalizeClaudePermissionMode(cfg.BasePermissionMode),
-		currentPermissionMode: normalizeClaudePermissionMode(cfg.BasePermissionMode),
-		interactionMode:       cfg.InteractionMode,
+		proc:                    proc,
+		threadID:                threadID,
+		sessionID:               cfg.Resume,
+		workDir:                 cfg.WorkDir,
+		onEvent:                 onEvent,
+		cancel:                  cancel,
+		readDone:                make(chan struct{}),
+		parser:                  NewParser(),
+		leafTracker:             newClaudeLeafTracker(cfg.ResumeAt),
+		allowsBypassPermissions: slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions"),
+		basePermissionMode:      normalizeClaudePermissionMode(cfg.BasePermissionMode),
+		currentPermissionMode:   normalizeClaudePermissionMode(cfg.BasePermissionMode),
+		interactionMode:         cfg.InteractionMode,
 	}
 	// Seed the parser with the configured model so result usage can be
 	// priced even if the init envelope lands late. The init handler still
@@ -397,6 +406,8 @@ func (s *Session) desiredPermissionModeForTurn(mode provider.InteractionMode) st
 	if provider.NormalizeInteractionMode(string(mode)) == provider.ModePlan {
 		return "plan"
 	}
+	s.permissionModeMu.RLock()
+	defer s.permissionModeMu.RUnlock()
 	return s.basePermissionMode
 }
 

@@ -166,7 +166,9 @@ Summary of what `ParseLine` dispatches:
   `exit_plan_mode`. Outbound from us carries `interrupt` (abort the
   current turn — `Session.Interrupt`), `stop_task` (kill a
   backgrounded Bash / Task subagent by `task_id` —
-  `Session.StopTask`), `set_permission_mode`, the four MCP control
+  `Session.StopTask`), `set_permission_mode`, `set_model` (live model
+  switch, `live_update.go` — acked mid-turn, applies from the next
+  turn; verified 2.1.205), the four MCP control
   subtypes (`mcp_set_servers` / `mcp_authenticate` /
   `mcp_oauth_callback_url` / `mcp_status`, all in `mcp.go`), and
   more. Every outbound subtype shares a single `sendControlRequest`

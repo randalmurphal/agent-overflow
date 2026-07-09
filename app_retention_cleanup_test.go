@@ -171,7 +171,9 @@ func TestRunRetentionSweepPrunesLogsAndBookmarks(t *testing.T) {
 func TestRunRetentionSweepNoSettingsServiceIsNoOp(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.stopSessionFn = func(string) error { return nil }
-	// app.settings intentionally nil.
+	// The fixture wires a settings service; this test pins the nil-service
+	// guard, so drop it explicitly.
+	app.settings = nil
 	seedThread(t, app, "stale", 0)
 
 	app.runRetentionSweep(time.Now())

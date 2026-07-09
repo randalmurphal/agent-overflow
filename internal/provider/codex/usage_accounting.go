@@ -190,5 +190,5 @@ func (s *Session) attachTurnUsage(meta *provider.WireTurnCompleteMeta) {
 		return
 	}
 	meta.Usage = &usage
-	meta.ModelUsage = []provider.ModelTokenUsage{{Model: s.model, TokenUsage: usage}}
+	meta.ModelUsage = []provider.ModelTokenUsage{{Model: s.currentModel(), TokenUsage: usage}}
 }

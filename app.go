@@ -239,6 +239,15 @@ type App struct {
 	// sessionEventHandler so a session that genuinely came back online and
 	// then dies later gets a fresh attempt.
 	autoReconnectAttempted map[string]bool
+	// threadID → a config change needs a session restart but the thread is
+	// busy (active turn / running background tasks); a watcher goroutine is
+	// waiting to fire it once the thread goes quiet. Guarded by mu; see
+	// app_session_config.go.
+	pendingConfigReconnects map[string]bool
+	// Test overrides for the deferred config-reconnect watcher cadence.
+	// Zero means the defaults in app_session_config.go.
+	configReconnectPollIntervalOverride time.Duration
+	configReconnectQuietWindowOverride  time.Duration
 	// threadID → persisted in-process system prompt overrides used for
 	// discussion participants and other non-default session starts.
 	threadSystemPrompts map[string]string
@@ -400,6 +409,12 @@ type session struct {
 	claude    *claude.Session
 	codex     *codex.Session
 	claudetui *claudetui.Session
+	// launchOpts is the SessionOptions bundle this session was spawned
+	// with, replaced (token-guarded, see sessionManager.updateLaunchOpts)
+	// when a config change is live-applied without a restart. The config
+	// reconciler diffs it against the thread row's current options to
+	// decide between live apply and restart (app_session_config.go).
+	launchOpts provider.SessionOptions
 	// liveness is the heap-allocated sibling that carries activity-tracking
 	// atomics. Never nil for registered sessions — spawnProviderSession sets
 	// it on construction. Stored behind a pointer so the value-type session

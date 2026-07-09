@@ -508,9 +508,12 @@ func (a *App) UnpinThread(id string) (store.Thread, error) {
 }
 
 // sessionAffectingFields enumerates the thread columns that, when
-// changed, require a provider-session restart to take effect. The
-// centralized restartSessionIfAffected helper consults this list so
-// every per-field binding participates in the same restart policy.
+// changed, must be pushed onto a live provider session. The centralized
+// restartSessionIfAffected helper consults this list so every per-field
+// binding participates in the same reconcile policy: live-apply where the
+// provider supports it, otherwise a restart that is deferred while the
+// thread has an active turn or running background tasks (see
+// app_session_config.go).
 //
 // `mcpServers` deliberately does NOT live here. Per-thread MCP
 // disabled state is stored in SQLite (disabled_mcp_servers column)
@@ -531,19 +534,16 @@ var sessionAffectingFields = map[string]struct{}{
 }
 
 // restartSessionIfAffected emits the refreshed thread and, when the
-// named field affects provider launch config AND a session is live,
-// refreshes the provider session so the new launch config takes
-// effect. Centralizing the restart call keeps the per-field bindings
-// free of duplicated "is this session live" plumbing.
+// named field affects provider launch config, reconciles the live
+// provider session with the new config. Centralizing the call keeps the
+// per-field bindings free of duplicated "is this session live" plumbing.
 //
-// Workspace changes synchronize with provider start state: the provider
+// Workspace changes keep their dedicated synchronous restart: the provider
 // process is bound to its cwd, and returning before any old or in-flight
 // session is retired lets the next send reuse a stale process. A restart
 // failure is surfaced as thread error state while the persisted workspace
 // switch still succeeds; once the stale session has been removed, a later
-// send can attempt a normal lazy start. Other field changes keep the legacy
-// best-effort background restart policy so low-risk preference toggles don't
-// block the UI.
+// send can attempt a normal lazy start.
 func (a *App) restartSessionIfAffected(threadID, changedField string) (store.Thread, error) {
 	refreshed, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -559,15 +559,7 @@ func (a *App) restartSessionIfAffected(threadID, changedField string) (store.Thr
 		}
 		return a.store.GetThread(threadID)
 	}
-	if !a.hasActiveSession(threadID) {
-		return refreshed, nil
-	}
-	go func() {
-		if err := a.ReconnectSession(threadID); err != nil {
-			log.Printf("thread %s: %s change reconnect failed: %v", threadID, changedField, err)
-			a.emitErrorToThread(threadID, fmt.Sprintf("%s change failed to reconnect: %v", changedField, err))
-		}
-	}()
+	a.reconcileSessionConfig(threadID)
 	return refreshed, nil
 }
 
@@ -619,8 +611,9 @@ func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error
 	return a.updateThreadFromChatModelProfile(current, profile, "provider")
 }
 
-// UpdateThreadReasoningEffort persists the effort tier and restarts the
-// session if one is live.
+// UpdateThreadReasoningEffort persists the effort tier and reconciles a
+// live session (Codex applies it on the next turn without a restart;
+// Claude needs a restart, deferred until the thread is quiet).
 func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update effort: store unavailable")
@@ -644,10 +637,10 @@ func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, erro
 	return refreshed, nil
 }
 
-// UpdateThreadFastMode persists the fast-mode boolean and restarts the
-// session if one is live. Providers translate the same model into their
-// native fast execution mode at launch, so a running session won't pick up
-// the change without a restart.
+// UpdateThreadFastMode persists the fast-mode boolean and reconciles a
+// live session (Codex maps it to the per-turn serviceTier override; the
+// Claude CLI only reads fast mode from launch settings, so a Claude
+// session restarts — deferred until the thread is quiet).
 func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update fast mode: store unavailable")
@@ -673,7 +666,8 @@ func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
 }
 
 // UpdateThreadContextWindow persists the context window size and
-// restarts the session if one is live.
+// reconciles a live session (context window is spawn-time config on both
+// providers, so this restarts — deferred until the thread is quiet).
 func (a *App) UpdateThreadContextWindow(id string, tokens int) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update context window: store unavailable")
@@ -691,8 +685,9 @@ func (a *App) UpdateThreadContextWindow(id string, tokens int) (store.Thread, er
 	})
 }
 
-// UpdateThreadRuntimeMode persists the runtime mode and restarts the
-// session if one is live.
+// UpdateThreadRuntimeMode persists the runtime mode and reconciles a live
+// session (live on both providers, except escalating a Claude session to
+// full access — that restarts, deferred until the thread is quiet).
 func (a *App) UpdateThreadRuntimeMode(id, mode string) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update runtime mode: store unavailable")

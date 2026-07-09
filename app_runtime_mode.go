@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 
 	"agent-overflow/internal/provider"
 )
@@ -13,8 +12,9 @@ import (
 var runtimeModeLockAttemptedForTest func(threadID string)
 
 // ThreadRuntimeModeChangedEvent is the payload emitted after the runtime
-// mode for a thread is updated. Runtime-mode changes now restart active
-// sessions synchronously, so needsReconnect is always false on success.
+// mode for a thread is updated. Runtime-mode changes apply live (Claude
+// set_permission_mode, Codex per-turn approval/sandbox overrides) or via a
+// reconciler-owned restart, so needsReconnect is always false on success.
 type ThreadRuntimeModeChangedEvent struct {
 	ThreadID       string `json:"threadId"`
 	RuntimeMode    string `json:"runtimeMode"`
@@ -63,34 +63,15 @@ func (a *App) applyRuntimeModeLocked(threadID string, mode provider.RuntimeMode)
 		return err
 	}
 
-	waitedForStart, waitErr := a.waitForStartingSession(threadID)
-	if waitErr != nil {
-		log.Printf("thread %s: in-flight session start before runtime-mode change failed: %v", threadID, waitErr)
-	}
-
-	if !waitedForStart && !a.hasActiveSession(threadID) {
-		a.emitRuntimeModeChanged(threadID, mode)
-		return nil
-	}
-	if err := a.startSession(threadID); err != nil {
-		return a.rollbackRuntimeModeAfterRestartFailure(threadID, previous, err)
-	}
+	// Live on both providers except escalating a Claude session to full
+	// access (the CLI refuses bypassPermissions on a process spawned
+	// without --allow-dangerously-skip-permissions); that case restarts,
+	// deferred while the thread is busy. The reconciler never takes the
+	// per-thread action lock this caller holds — its deferred restarts run
+	// on a watcher goroutine that acquires the lock itself.
+	a.reconcileSessionConfig(threadID)
 	a.emitRuntimeModeChanged(threadID, mode)
 	return nil
-}
-
-func (a *App) rollbackRuntimeModeAfterRestartFailure(
-	threadID string,
-	previous provider.RuntimeMode,
-	restartErr error,
-) error {
-	if rollbackErr := a.store.UpdateRuntimeMode(threadID, string(previous)); rollbackErr != nil {
-		return fmt.Errorf("restart session with updated runtime mode: %w (rollback failed: %v)", restartErr, rollbackErr)
-	}
-	if recoveryErr := a.startSession(threadID); recoveryErr != nil {
-		return fmt.Errorf("restart session with updated runtime mode: %w (rollback session restart failed: %v)", restartErr, recoveryErr)
-	}
-	return fmt.Errorf("restart session with updated runtime mode: %w", restartErr)
 }
 
 func (a *App) waitForStartingSession(threadID string) (bool, error) {

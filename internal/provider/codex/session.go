@@ -37,17 +37,22 @@ var _ provider.Session = (*Session)(nil)
 
 // Session manages a Codex app-server subprocess.
 type Session struct {
-	proc               *provider.Process
-	ctx                context.Context
-	threadID           string // our internal thread ID
-	codexThreadID      string // the Codex app-server's thread ID from thread/start
-	activeTurnID       string // current active turn ID from turn/started; cleared on turn/completed
-	model              string // model name for cost calculation
-	reasoningEffort    string // per-turn reasoning effort override; empty means inherit thread default
-	serviceTier        string // per-turn service tier override; "priority" enables Codex fast mode
-	approvalPolicy     string // per-turn approval override; empty means inherit thread default
-	sandbox            string // per-turn sandbox override; empty means inherit thread default
-	nextID             atomic.Int64
+	proc          *provider.Process
+	ctx           context.Context
+	threadID      string // our internal thread ID
+	codexThreadID string // the Codex app-server's thread ID from thread/start
+	activeTurnID  string // current active turn ID from turn/started; cleared on turn/completed
+	// The turn config block below is re-applied to every turn/start call, so
+	// a mid-session change (ApplyLiveUpdate) takes effect on the next turn
+	// without a process restart. All five are guarded by mu: Send copies
+	// them per turn, ApplyLiveUpdate rewrites them, and the read loop reads
+	// model for usage attribution.
+	model           string // active model; also used for usage attribution
+	reasoningEffort string // per-turn reasoning effort override; empty means inherit thread default
+	serviceTier     string // per-turn service tier override; "priority" enables Codex fast mode
+	approvalPolicy  string // per-turn approval override; empty means inherit thread default
+	sandbox         string // per-turn sandbox override; empty means inherit thread default
+	nextID          atomic.Int64
 	mu                 sync.Mutex
 	pending            map[int64]chan json.RawMessage
 	onEvent            func(provider.ProviderEvent)
@@ -333,27 +338,34 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		return err
 	}
 
+	cfg := s.turnConfig()
 	params := map[string]any{
 		"threadId":          s.codexThreadID,
 		"input":             input,
-		"collaborationMode": codexCollaborationMode(opts.InteractionMode, s.model, s.reasoningEffort),
+		"collaborationMode": codexCollaborationMode(opts.InteractionMode, cfg.Model, cfg.ReasoningEffort),
 	}
-	// Per-turn effort override — Codex's TurnStartParams takes `effort` at
-	// the top level. Threading it here (rather than only at thread-start)
-	// means a mid-session effort change from the composer takes effect on
-	// the very next turn without needing a session restart. Empty means
-	// "inherit the thread default set during thread/start".
-	if s.reasoningEffort != "" {
-		params["effort"] = s.reasoningEffort
+	// Per-turn config overrides — Codex's TurnStartParams takes `model`,
+	// `effort`, `serviceTier`, `approvalPolicy`, and `sandboxPolicy` at the
+	// top level, each documented upstream as applying "for this turn and
+	// subsequent turns". Threading them here (rather than only at
+	// thread-start) means a mid-session change from the composer
+	// (ApplyLiveUpdate) takes effect on the very next turn without a
+	// session restart. Empty means "inherit the thread default set during
+	// thread/start".
+	if cfg.Model != "" {
+		params["model"] = cfg.Model
 	}
-	if s.serviceTier != "" {
-		params["serviceTier"] = s.serviceTier
+	if cfg.ReasoningEffort != "" {
+		params["effort"] = cfg.ReasoningEffort
 	}
-	if s.approvalPolicy != "" {
-		params["approvalPolicy"] = s.approvalPolicy
+	if cfg.ServiceTier != "" {
+		params["serviceTier"] = cfg.ServiceTier
 	}
-	if s.sandbox != "" {
-		sandboxPolicy, err := turnSandboxPolicy(s.sandbox)
+	if cfg.ApprovalPolicy != "" {
+		params["approvalPolicy"] = cfg.ApprovalPolicy
+	}
+	if cfg.Sandbox != "" {
+		sandboxPolicy, err := turnSandboxPolicy(cfg.Sandbox)
 		if err != nil {
 			return err
 		}
