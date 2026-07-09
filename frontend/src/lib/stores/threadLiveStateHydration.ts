@@ -32,6 +32,12 @@ export interface ThreadLiveStateHydrationOptions {
   pendingInteractiveState: ThreadPendingInteractiveState;
   /** The pane's createLiveTodoState instance. */
   liveTodoState: LiveTodoState;
+  getEffectiveModelRevision(): number;
+  hydrateEffectiveModel(
+    model: string,
+    backendRevision: number,
+    expectedMutationRevision: number,
+  ): void;
 }
 
 export interface ThreadLiveStateHydration {
@@ -139,6 +145,11 @@ export function createThreadLiveStateHydration(
       threadID,
       guard.liveTodoRevisionAtRequest,
     );
+    options.hydrateEffectiveModel(
+      snapshot.effectiveModel ?? '',
+      snapshot.effectiveModelRevision ?? 0,
+      guard.effectiveModelRevisionAtRequest,
+    );
   }
 
   async function hydrateThreadLiveState(
@@ -152,6 +163,7 @@ export function createThreadLiveStateHydration(
       activeTurnAtRequest: getActiveTurn(threadID),
       queueRevisionAtRequest: getQueueRevisionForThread(threadID),
       liveTodoRevisionAtRequest: options.liveTodoState.revision,
+      effectiveModelRevisionAtRequest: options.getEffectiveModelRevision(),
     };
     try {
       let snapshot: ThreadLiveState;

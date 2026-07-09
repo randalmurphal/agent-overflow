@@ -139,6 +139,14 @@ type App struct {
 	// tests that don't need a real bus leave it nil and observe emissions
 	// via testEmitHook instead.
 	eventBus atomic.Pointer[transport.EventBus]
+	// rateLimitsByProvider retains the latest account-scoped snapshot so a
+	// freshly-mounted or reconnected frontend can hydrate explicitly instead
+	// of depending on having observed an earlier provider:usage event. The
+	// event bus is only a bounded replay buffer and a first connection has no
+	// prior channel sequence to request, so event-only ownership could leave
+	// the 5h/7d rings blank even after a successful startup probe.
+	rateLimitsMu         sync.RWMutex
+	rateLimitsByProvider map[string]provider.RateLimitsSnapshot
 	// transportServer is the Phase C HTTP+WS transport. Set by main.go
 	// via SetTransportServer before app.Run() so Shutdown can drain
 	// in-flight RPCs BEFORE App subsystems (store, telemetry, sessions)
@@ -239,6 +247,15 @@ type App struct {
 	// sessionEventHandler so a session that genuinely came back online and
 	// then dies later gets a fresh attempt.
 	autoReconnectAttempted map[string]bool
+	// threadID → a config change needs a session restart but the thread is
+	// busy (active turn / running background tasks); a watcher goroutine is
+	// waiting to fire it once the thread goes quiet. Guarded by mu; see
+	// app_session_config.go.
+	pendingConfigReconnects map[string]bool
+	// Test overrides for the deferred config-reconnect watcher cadence.
+	// Zero means the defaults in app_session_config.go.
+	configReconnectPollIntervalOverride time.Duration
+	configReconnectQuietWindowOverride  time.Duration
 	// threadID → persisted in-process system prompt overrides used for
 	// discussion participants and other non-default session starts.
 	threadSystemPrompts map[string]string
@@ -400,6 +417,12 @@ type session struct {
 	claude    *claude.Session
 	codex     *codex.Session
 	claudetui *claudetui.Session
+	// launchOpts is the SessionOptions bundle this session was spawned
+	// with, replaced (token-guarded, see sessionManager.updateLaunchOpts)
+	// when a config change is live-applied without a restart. The config
+	// reconciler diffs it against the thread row's current options to
+	// decide between live apply and restart (app_session_config.go).
+	launchOpts provider.SessionOptions
 	// liveness is the heap-allocated sibling that carries activity-tracking
 	// atomics. Never nil for registered sessions — spawnProviderSession sets
 	// it on construction. Stored behind a pointer so the value-type session

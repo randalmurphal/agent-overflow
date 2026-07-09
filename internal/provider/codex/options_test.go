@@ -17,7 +17,8 @@ func TestCodexEffortFromOption(t *testing.T) {
 		{provider.EffortMedium, "medium"},
 		{provider.EffortHigh, "high"},
 		{provider.EffortXHigh, "xhigh"},
-		{provider.EffortMax, ""},
+		{provider.EffortMax, "max"},
+		{provider.EffortUltra, "ultra"},
 		{"", ""}, // unknown / unset
 	}
 	for _, tc := range cases {
@@ -102,15 +103,15 @@ func TestConfigFromOptionsFastModePreservesModelAndSetsServiceTier(t *testing.T)
 	if cfg.Model != "gpt-5.5" {
 		t.Errorf("Model = %q, want gpt-5.5", cfg.Model)
 	}
-	if cfg.ServiceTier != "fast" {
-		t.Errorf("ServiceTier = %q, want fast", cfg.ServiceTier)
+	if cfg.ServiceTier != "priority" {
+		t.Errorf("ServiceTier = %q, want priority", cfg.ServiceTier)
 	}
 }
 
 func TestBuildThreadParamsThreadsServiceTier(t *testing.T) {
-	params := buildThreadParams(Config{ServiceTier: "fast"})
-	if params["serviceTier"] != "fast" {
-		t.Errorf("serviceTier = %v, want fast", params["serviceTier"])
+	params := buildThreadParams(Config{ServiceTier: "priority"})
+	if params["serviceTier"] != "priority" {
+		t.Errorf("serviceTier = %v, want priority", params["serviceTier"])
 	}
 }
 
@@ -125,14 +126,14 @@ func TestConfigFromOptionsFastModeOffOmitsServiceTier(t *testing.T) {
 	}
 }
 
-func TestConfigFromOptionsFastModeUnsupportedModelOmitsServiceTier(t *testing.T) {
+func TestConfigFromOptionsTrustsValidatedFastModeForLiveOnlyModel(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider: "codex",
-		Model:    "gpt-5.4-mini",
+		Model:    "gpt-live-only",
 		FastMode: true,
 	})
-	if cfg.ServiceTier != "" {
-		t.Errorf("ServiceTier = %q, want empty for model without fast mode", cfg.ServiceTier)
+	if cfg.ServiceTier != fastServiceTier {
+		t.Errorf("ServiceTier = %q, want %q for app-validated live model", cfg.ServiceTier, fastServiceTier)
 	}
 }
 

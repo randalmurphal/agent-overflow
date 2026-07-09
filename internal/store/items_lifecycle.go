@@ -410,10 +410,13 @@ func (s *Store) ListLiveCodexSubagentLaunches(threadID string) ([]Item, error) {
 		    AND items.is_background = 1
 		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
 		    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
-		    AND NOT EXISTS (
-		      SELECT 1 FROM items c
-		       WHERE c.thread_id = items.thread_id
-		         AND c.completion_of = items.id
+		    AND (
+		      NOT EXISTS (
+		        SELECT 1 FROM items c
+		         WHERE c.thread_id = items.thread_id
+		           AND c.completion_of = items.id
+		      )
+		      OR json_extract(items.meta, '$.live_background_active') = 1
 		    )
 		  ORDER BY items.turn_index, items.item_index`,
 		threadID,

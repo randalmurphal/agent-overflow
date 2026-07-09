@@ -15,7 +15,7 @@ import { setBindingMock } from '../mocks/bindings-app';
 import { createPane, getFocusedPaneId } from '../../lib/stores/panes.svelte';
 import {
   getPaneLayoutItems,
-  resizeAdjacentPaneLayoutItems,
+  applyPaneBoundaryDrag,
   setPaneLayoutItemsForTest,
 } from '../../lib/stores/paneLayout.svelte';
 import type { Thread } from '../../lib/types/models';
@@ -24,11 +24,11 @@ import type { PaneLayoutPersistedSettings } from '../../lib/types/settings';
 beforeAll(installAnimateShim);
 
 function savePaneLayout(
-  panes: Array<{ paneId: string; threadId: string; ratio: number }>,
+  panes: Array<{ paneId: string; threadId: string; widthPx: number }>,
   focusedPaneId: string | null,
 ): PaneLayoutPersistedSettings {
   return {
-    version: 2,
+    version: 3,
     panes: panes.map((pane) => ({ ...pane, kind: 'thread' })),
     focusedPaneId,
   };
@@ -89,8 +89,8 @@ describe('App integration - pane restoration', () => {
     installComposerDefaults(left.id);
     installComposerDefaults(right.id);
     installUIStateWithPaneLayout(savePaneLayout([
-      { paneId: 'left', threadId: left.id, ratio: 0.75 },
-      { paneId: 'right', threadId: right.id, ratio: 1.25 },
+      { paneId: 'left', threadId: left.id, widthPx: 660 },
+      { paneId: 'right', threadId: right.id, widthPx: 1100 },
     ], 'right'));
 
     const rendered = render(App);
@@ -106,7 +106,7 @@ describe('App integration - pane restoration', () => {
       rendered.container.querySelectorAll<HTMLElement>('[data-pane-kind="thread"]'),
     );
     expect(paneSections.map((section) => section.dataset.paneId)).toEqual(['left', 'right']);
-    expect(paneSections.map((section) => section.dataset.paneRatio)).toEqual(['0.75', '1.25']);
+    expect(paneSections.map((section) => section.dataset.paneWidth)).toEqual(['660', '1100']);
     expect(getFocusedPaneId()).toBe('right');
   });
 
@@ -123,7 +123,7 @@ describe('App integration - pane restoration', () => {
     installThreadViewDefaults();
     installComposerDefaults(left.id);
     const uiState = installUIStateWithPaneLayout(savePaneLayout([
-      { paneId: 'left', threadId: left.id, ratio: 1 },
+      { paneId: 'left', threadId: left.id, widthPx: 1 },
     ], 'left'));
     const savedLayout = uiState.paneLayout;
 
@@ -148,7 +148,7 @@ describe('App integration - pane restoration', () => {
     installThreadViewDefaults();
     installComposerDefaults(left.id);
     const uiState = installUIStateWithPaneLayout(savePaneLayout([
-      { paneId: 'left', threadId: left.id, ratio: 1 },
+      { paneId: 'left', threadId: left.id, widthPx: 1 },
     ], 'left'));
     const savedLayout = uiState.paneLayout;
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -166,7 +166,7 @@ describe('App integration - pane restoration', () => {
     const left = makeThread({ id: 'left-thread', title: 'Left Thread' });
     installThreadMocks([left]);
     const uiState = installUIStateWithPaneLayout(savePaneLayout([
-      { paneId: 'left', threadId: left.id, ratio: 1 },
+      { paneId: 'left', threadId: left.id, widthPx: 1 },
     ], 'left'));
 
     const rendered = render(App);
@@ -180,8 +180,8 @@ describe('App integration - pane restoration', () => {
     const kept = makeThread({ id: 'kept-thread', title: 'Kept Thread' });
     installThreadMocks([kept]);
     installUIStateWithPaneLayout(savePaneLayout([
-      { paneId: 'kept', threadId: kept.id, ratio: 1.5 },
-      { paneId: 'deleted', threadId: 'deleted-thread', ratio: 0.5 },
+      { paneId: 'kept', threadId: kept.id, widthPx: 840 },
+      { paneId: 'deleted', threadId: 'deleted-thread', widthPx: 600 },
     ], 'deleted'));
 
     const rendered = render(App);
@@ -195,7 +195,7 @@ describe('App integration - pane restoration', () => {
   it('renders the empty pane state when no saved panes are valid', async () => {
     installThreadMocks([]);
     installUIStateWithPaneLayout(savePaneLayout([
-      { paneId: 'deleted', threadId: 'deleted-thread', ratio: 1 },
+      { paneId: 'deleted', threadId: 'deleted-thread', widthPx: 1 },
     ], 'deleted'));
 
     const rendered = render(App);
@@ -217,13 +217,21 @@ describe('App integration - pane restoration', () => {
     await createPane('left').replaceThread(left);
     await createPane('right').replaceThread(right);
     setPaneLayoutItemsForTest([
-      { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
     await waitFor(() => expect(uiState.setUIState).toHaveBeenCalled());
     uiState.setUIState.mockClear();
 
-    resizeAdjacentPaneLayoutItems('left', 'right', 800, 800, 120, 560);
+    applyPaneBoundaryDrag({
+      leftPaneId: 'left',
+      rightPaneId: 'right',
+      startWidths: new Map([['left', 800], ['right', 800]]),
+      deltaPx: 120,
+      minPaneWidth: 560,
+      overflowPx: 0,
+      zeroSum: true,
+    });
     expect(uiState.setUIState).not.toHaveBeenCalled();
 
     window.dispatchEvent(new Event('pagehide'));

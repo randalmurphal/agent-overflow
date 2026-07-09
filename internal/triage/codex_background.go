@@ -1390,8 +1390,11 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 
 	threadID := evt.ThreadID
 	launchID := strings.TrimSpace(evt.ItemID)
+	if status == "running" || status == "pendingInit" {
+		return r.reactivateCodexSpawnChild(threadID, launchID, childID)
+	}
 
-	launch, found, err := r.findPersistedCodexSpawnLaunch(threadID, launchID, childID, true)
+	launch, found, err := r.findPersistedCodexSpawnLaunchForStatus(threadID, launchID, childID)
 	if err != nil {
 		return err
 	}
@@ -1408,6 +1411,62 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 		r.emitCodexBackgroundTasksChanged(threadID)
 	}
 	return nil
+}
+
+func (r *Router) reactivateCodexSpawnChild(threadID, launchID, childID string) error {
+	launch, found, err := r.findPersistedCodexSpawnLaunchForStatus(threadID, launchID, childID)
+	if err != nil || !found {
+		return err
+	}
+	terminalStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.item.Meta))
+	// mergeItemMetaJSON deep-merges maps, so an explicit empty value clears
+	// this child logically without requiring a delete sentinel in stored JSON.
+	terminalStatuses[childID] = ""
+	extra, err := json.Marshal(map[string]any{
+		"codex_child_terminal_statuses": terminalStatuses,
+		"codex_child_status":            "running",
+		"live_background_active":        true,
+	})
+	if err != nil {
+		return err
+	}
+	launch.item.Meta = mergeItemMetaJSON(launch.item.Meta, extra)
+	launch.item.UpdatedAt = time.Now().UnixMilli()
+	if err := r.persistItem(launch.item, nil); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	state := r.codexBackgroundForThread(threadID)
+	tracker := state.spawnAgent[launch.item.ID]
+	if tracker == nil {
+		tracker = &spawnAgentTracker{}
+		state.spawnAgent[launch.item.ID] = tracker
+	}
+	tracker.backgrounded = true
+	tracker.hasRunningChildren = true
+	tracker.receiverThreadIDs = append([]string(nil), launch.meta.ReceiverThreadIDs...)
+	r.mu.Unlock()
+	r.emitCodexBackgroundTasksChanged(threadID)
+	return nil
+}
+
+func (r *Router) findPersistedCodexSpawnLaunchForStatus(threadID, launchID, childID string) (persistedCodexSpawnLaunch, bool, error) {
+	if launchID == "" {
+		return r.findPersistedCodexSpawnLaunch(threadID, "", childID, true)
+	}
+	launch, found, err := r.store.GetThreadItem(threadID, launchID)
+	if err != nil || !found {
+		return persistedCodexSpawnLaunch{}, false, err
+	}
+	if launch.Kind != itemKindToolCall || launch.ToolName != "collab_agent" || !launch.IsBackground {
+		return persistedCodexSpawnLaunch{}, false, nil
+	}
+	meta := decodeCodexItemMeta(json.RawMessage(launch.Meta))
+	if !containsString(meta.ReceiverThreadIDs, childID) {
+		return persistedCodexSpawnLaunch{}, false, nil
+	}
+	return persistedCodexSpawnLaunch{item: launch, meta: meta}, true, nil
 }
 
 func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID string, allTerminal bool) {

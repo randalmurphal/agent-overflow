@@ -1,30 +1,34 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   addPaneLayoutItem,
-  averagePaneRatio,
+  applyPaneBoundaryDrag,
+  averagePaneWidthPx,
+  equalizePaneWidths,
   getPaneLayoutItems,
+  minAnchorPaneLayoutWidths,
   movePaneLayoutItem,
   movePaneLayoutItemToIndex,
   paneBlockRangeAt,
   removePaneLayoutItem,
   resetPaneLayoutForTest,
-  resizeAdjacentPaneLayoutItems,
   setPaneLayoutItemsForTest,
   type PaneLayoutItem,
 } from './paneLayout.svelte';
+import { resetLayoutMetricsForTest, setPaneHostWidth } from './layoutMetrics.svelte';
 
 function thread(paneId: string): PaneLayoutItem {
-  return { id: paneId, paneId, kind: 'thread', ratio: 1 };
+  return { id: paneId, paneId, kind: 'thread', widthPx: 560 };
 }
 
 function review(sourcePaneId: string): PaneLayoutItem {
   const paneId = `review-${sourcePaneId}`;
-  return { id: paneId, paneId, kind: 'review', ratio: 1, sourcePaneId };
+  return { id: paneId, paneId, kind: 'review', widthPx: 560, sourcePaneId };
 }
 
 describe('paneLayout store', () => {
   beforeEach(() => {
     resetPaneLayoutForTest();
+    resetLayoutMetricsForTest();
   });
 
   it('allows the layout to become empty', () => {
@@ -34,26 +38,26 @@ describe('paneLayout store', () => {
   });
 
   it('adds a pane at the requested position', () => {
-    addPaneLayoutItem({ id: 'right', paneId: 'right', kind: 'thread', ratio: 1 });
-    addPaneLayoutItem({ id: 'middle', paneId: 'middle', kind: 'thread', ratio: 1 }, 1);
+    addPaneLayoutItem({ id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 });
+    addPaneLayoutItem({ id: 'middle', paneId: 'middle', kind: 'thread', widthPx: 1 }, 1);
 
     expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['main', 'middle', 'right']);
   });
 
-  it('computes the average ratio for new panes', () => {
+  it('computes the average width for new panes', () => {
     setPaneLayoutItemsForTest([
-      { id: 'left', paneId: 'left', kind: 'thread', ratio: 0.625 },
-      { id: 'right', paneId: 'right', kind: 'thread', ratio: 0.375 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 700 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 900 },
     ]);
 
-    expect(averagePaneRatio()).toBeCloseTo(0.5);
+    expect(averagePaneWidthPx()).toBeCloseTo(800);
   });
 
   it('moves panes by one slot and clamps at the edges', () => {
     setPaneLayoutItemsForTest([
-      { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'middle', paneId: 'middle', kind: 'thread', ratio: 1 },
-      { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'middle', paneId: 'middle', kind: 'thread', widthPx: 1 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
 
     movePaneLayoutItem('middle', -1);
@@ -65,9 +69,9 @@ describe('paneLayout store', () => {
 
   it('moves panes to a post-removal insert index', () => {
     setPaneLayoutItemsForTest([
-      { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'middle', paneId: 'middle', kind: 'thread', ratio: 1 },
-      { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'middle', paneId: 'middle', kind: 'thread', widthPx: 1 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
 
     movePaneLayoutItemToIndex('left', 1);
@@ -77,13 +81,13 @@ describe('paneLayout store', () => {
 
   it('resnaps multiple companions after their source and drops orphans', () => {
     setPaneLayoutItemsForTest([
-      { id: 'source', paneId: 'source', kind: 'thread', ratio: 1 },
-      { id: 'other', paneId: 'other', kind: 'thread', ratio: 1 },
-      { id: 'take-control-source', paneId: 'take-control-source', kind: 'take-control', ratio: 1, sourcePaneId: 'source' },
-      { id: 'plan-source', paneId: 'plan-source', kind: 'plan', ratio: 1, sourcePaneId: 'source' },
-      { id: 'design-preview-source', paneId: 'design-preview-source', kind: 'design-preview', ratio: 1, sourcePaneId: 'source' },
-      { id: 'review-source', paneId: 'review-source', kind: 'review', ratio: 1, sourcePaneId: 'source' },
-      { id: 'plan-missing', paneId: 'plan-missing', kind: 'plan', ratio: 1, sourcePaneId: 'missing' },
+      { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
+      { id: 'other', paneId: 'other', kind: 'thread', widthPx: 1 },
+      { id: 'take-control-source', paneId: 'take-control-source', kind: 'take-control', widthPx: 1, sourcePaneId: 'source' },
+      { id: 'plan-source', paneId: 'plan-source', kind: 'plan', widthPx: 1, sourcePaneId: 'source' },
+      { id: 'design-preview-source', paneId: 'design-preview-source', kind: 'design-preview', widthPx: 1, sourcePaneId: 'source' },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', widthPx: 1, sourcePaneId: 'source' },
+      { id: 'plan-missing', paneId: 'plan-missing', kind: 'plan', widthPx: 1, sourcePaneId: 'missing' },
     ]);
 
     movePaneLayoutItemToIndex('other', 0);
@@ -160,7 +164,7 @@ describe('paneLayout store', () => {
     setPaneLayoutItemsForTest([
       thread('a'),
       review('a'),
-      { id: 'plan-a', paneId: 'plan-a', kind: 'plan', ratio: 1, sourcePaneId: 'a' },
+      { id: 'plan-a', paneId: 'plan-a', kind: 'plan', widthPx: 1, sourcePaneId: 'a' },
       thread('b'),
     ]);
     const items = getPaneLayoutItems();
@@ -171,17 +175,120 @@ describe('paneLayout store', () => {
     expect(paneBlockRangeAt(items, 3)).toEqual({ start: 3, end: 3 });
   });
 
-  it('trades ratio between adjacent panes without changing their combined ratio', () => {
+  it('applies a boundary drag from the drag-start snapshot, not accumulated state', () => {
     setPaneLayoutItemsForTest([
-      { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 800 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 800 },
+    ]);
+    const startWidths = new Map([['left', 800], ['right', 800]]);
+    const drag = (deltaPx: number) => applyPaneBoundaryDrag({
+      leftPaneId: 'left',
+      rightPaneId: 'right',
+      startWidths,
+      deltaPx,
+      minPaneWidth: 560,
+      overflowPx: 0,
+      zeroSum: false,
+    });
+
+    drag(100);
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([900, 700]);
+
+    // Same gesture, pointer moved back: retraces instead of compounding.
+    drag(0);
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([800, 800]);
+  });
+
+  it('rejects a boundary drag whose panes are not adjacent in the layout', () => {
+    setPaneLayoutItemsForTest([thread('a'), thread('b'), thread('c')]);
+
+    applyPaneBoundaryDrag({
+      leftPaneId: 'a',
+      rightPaneId: 'c',
+      startWidths: new Map([['a', 800], ['b', 800], ['c', 800]]),
+      deltaPx: 100,
+      minPaneWidth: 560,
+      overflowPx: 0,
+      zeroSum: false,
+    });
+
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 560, 560]);
+  });
+
+  it('treats a null right pane as the end handle and requires the last pane', () => {
+    setPaneLayoutItemsForTest([thread('a'), thread('b')]);
+    const startWidths = new Map([['a', 560], ['b', 560]]);
+
+    // Not the last pane: rejected.
+    applyPaneBoundaryDrag({
+      leftPaneId: 'a',
+      rightPaneId: null,
+      startWidths,
+      deltaPx: 200,
+      minPaneWidth: 560,
+      overflowPx: 40,
+      zeroSum: false,
+    });
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 560]);
+
+    applyPaneBoundaryDrag({
+      leftPaneId: 'b',
+      rightPaneId: null,
+      startWidths,
+      deltaPx: 200,
+      minPaneWidth: 560,
+      overflowPx: 40,
+      zeroSum: false,
+    });
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 760]);
+  });
+
+  it('equalizes every pane width to the density minimum', () => {
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 900 },
+      { id: 'b', paneId: 'b', kind: 'thread', widthPx: 1400 },
     ]);
 
-    resizeAdjacentPaneLayoutItems('left', 'right', 800, 800, 200, 560);
+    equalizePaneWidths(560);
 
-    const [left, right] = getPaneLayoutItems();
-    expect(left.ratio).toBeCloseTo(1.25);
-    expect(right.ratio).toBeCloseTo(0.75);
-    expect(left.ratio + right.ratio).toBeCloseTo(2);
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 560]);
+  });
+
+  it('re-anchors fit-mode widths so the smallest pane sits at the minimum', () => {
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 1120 },
+      { id: 'b', paneId: 'b', kind: 'thread', widthPx: 2240 },
+    ]);
+
+    setPaneHostWidth(5000);
+    minAnchorPaneLayoutWidths(560);
+
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 1120]);
+
+    // Already anchored: no-op.
+    minAnchorPaneLayoutWidths(560);
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 1120]);
+  });
+
+  it('never re-anchors an overflowing or unmeasured host', () => {
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 1120 },
+      { id: 'b', paneId: 'b', kind: 'thread', widthPx: 2240 },
+    ]);
+
+    // Host never measured: overflow state unknowable, leave widths alone.
+    minAnchorPaneLayoutWidths(560);
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([1120, 2240]);
+
+    // Total 3360 vs a 1200px host: the widths ARE the scroll extent the
+    // user built; anchoring here would silently rescale it.
+    setPaneHostWidth(1200);
+    minAnchorPaneLayoutWidths(560);
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([1120, 2240]);
+
+    // Wide enough host: anchoring applies again.
+    setPaneHostWidth(5000);
+    minAnchorPaneLayoutWidths(560);
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 1120]);
   });
 });

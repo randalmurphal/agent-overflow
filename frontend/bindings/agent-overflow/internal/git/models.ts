@@ -808,35 +808,6 @@ export class SubmitReviewRequest {
     }
 }
 
-/**
- * Worktree describes a git worktree attached to a repository.
- */
-export class Worktree {
-    "path": string;
-    "branch"?: string;
-    "head": string;
-
-    /** Creates a new Worktree instance. */
-    constructor($$source: Partial<Worktree> = {}) {
-        if (!("path" in $$source)) {
-            this["path"] = "";
-        }
-        if (!("head" in $$source)) {
-            this["head"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new Worktree instance from a string or object.
-     */
-    static createFrom($$source: any = {}): Worktree {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new Worktree($$parsedSource as Partial<Worktree>);
-    }
-}
-
 // Private type creation functions
 const $$createType0 = CIStep.createFrom;
 const $$createType1 = $Create.Array($$createType0);

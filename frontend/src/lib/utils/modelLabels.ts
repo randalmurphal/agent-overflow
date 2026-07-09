@@ -13,6 +13,9 @@ export function displayModelLabel(provider: ModelProvider, slug: string, name?: 
   ) {
     return displayClaudeModelLabel(slug, name);
   }
+  if (provider === PROVIDER_DEFINITIONS.codex.id) {
+    return displayCodexModelLabel(slug, name);
+  }
   return name?.trim() || slug;
 }
 
@@ -49,12 +52,21 @@ function displayClaudeModelLabel(slug: string, name?: string): string {
   return label.join(' ');
 }
 
+function displayCodexModelLabel(slug: string, name?: string): string {
+  const source = name?.trim() || slug.trim();
+  const match = /^gpt(?:-|\s)+(.*)$/i.exec(source);
+  if (!match) return source || slug;
+
+  const parts = match[1].split(/[-\s]+/).filter(Boolean).map(capitalizeWord);
+  return parts.length > 0 ? ['GPT', ...parts].join(' ') : 'GPT';
+}
+
 /**
  * Display label for a model slug coming out of the usage ledger, where
  * the provider isn't carried alongside the slug. Claude slugs get the
  * same friendly form the model picker shows ("claude-fable-5" →
- * "Fable 5", release datestamps stripped); GPT slugs are title-cased to
- * match the Codex catalog names ("gpt-5.3-codex" → "GPT-5.3 Codex").
+ * "Fable 5", release datestamps stripped); GPT slugs use the same friendly
+ * aliases as the Codex picker ("gpt-5.3-codex" → "GPT 5.3 Codex").
  * Anything else renders as-is — an unrecognized raw slug is better
  * than a wrong guess.
  *
@@ -74,9 +86,7 @@ export function displayUsageModelLabel(slug: string): string {
   }
   const gptMatch = /^gpt-([^-]+)(.*)$/i.exec(base);
   if (gptMatch) {
-    const version = gptMatch[1];
-    const rest = gptMatch[2].split('-').filter(Boolean).map(capitalizeWord);
-    return [`GPT-${version}`, ...rest].join(' ') + tierSuffix;
+    return displayCodexModelLabel(base) + tierSuffix;
   }
   return trimmed;
 }

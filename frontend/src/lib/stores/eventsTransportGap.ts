@@ -8,6 +8,7 @@ import { iterPanes } from './panes.svelte';
 import { GetThread } from './bindings';
 import { refreshSidebarProjections } from './eventsThreadRows';
 import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
+import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 
 // The handler matches on the channel name we lost rather than each
 // payload kind because a single gap on `provider:item_event` can
@@ -33,6 +34,9 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       return;
     }
     case 'provider:usage': {
+      void hydrateRateLimitsSnapshots().catch((err: unknown) => {
+        console.warn(`events: refresh rate limits after provider:usage gap: ${err}`);
+      });
       // refreshFromBackend doesn't pull `lastTokenUsage` from the
       // store, so a missed usage event would leave the meter stale
       // forever. Re-read each affected thread's row so

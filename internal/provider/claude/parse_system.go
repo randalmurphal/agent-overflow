@@ -5,7 +5,9 @@
 package claude
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -75,6 +77,47 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 			ThreadID:  threadID,
 			Meta:      retryMeta,
 			Timestamp: now,
+		}}, nil
+
+	case "model_refusal_fallback":
+		fallbackModel := strings.TrimSpace(readRawString(raw["fallbackModel"]))
+		if fallbackModel == "" {
+			return nil, fmt.Errorf("parse model_refusal_fallback: empty fallbackModel")
+		}
+		if len([]rune(fallbackModel)) > maxClaudeFallbackModelRunes {
+			return nil, fmt.Errorf("parse model_refusal_fallback: fallbackModel exceeds %d runes", maxClaudeFallbackModelRunes)
+		}
+		// The following assistant snapshot carries message.model and a
+		// content block of type "fallback", but this system envelope is the
+		// authoritative user-facing signal: it includes the classifier reason,
+		// category, requested model, and refused user-message identity.
+		if p != nil {
+			p.model = fallbackModel
+		}
+		reason := truncate(strings.TrimSpace(readRawString(raw["content"])), maxClaudeFallbackReasonRunes)
+		meta, _ := json.Marshal(map[string]any{
+			"kind":                   "model_refusal_fallback",
+			"originalModel":          boundedClaudeFallbackField(readRawString(raw["originalModel"]), maxClaudeFallbackModelRunes),
+			"fallbackModel":          fallbackModel,
+			"reason":                 reason,
+			"trigger":                boundedClaudeFallbackField(readRawString(raw["trigger"]), maxClaudeFallbackLabelRunes),
+			"apiRefusalCategory":     boundedClaudeFallbackField(readRawString(raw["apiRefusalCategory"]), maxClaudeFallbackLabelRunes),
+			"apiRefusalExplanation":  truncate(strings.TrimSpace(readRawString(raw["apiRefusalExplanation"])), maxClaudeFallbackExplanationRunes),
+			"refusedUserMessageUuid": boundedClaudeFallbackField(readRawString(raw["refusedUserMessageUuid"]), maxClaudeFallbackIDRunes),
+		})
+		requestID := strings.TrimSpace(readRawString(raw["requestId"]))
+		if requestID == "" {
+			requestID = strings.TrimSpace(readRawString(raw["uuid"]))
+		}
+		itemID := claudeFallbackItemID(requestID)
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventModelFallback,
+			ThreadID:  threadID,
+			ItemID:    itemID,
+			Content:   reason,
+			Meta:      meta,
+			Timestamp: now,
+			Raw:       line,
 		}}, nil
 
 	case "task_started":
@@ -219,6 +262,46 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		// Unknown system subtype — skip.
 		return nil, nil
 	}
+}
+
+const (
+	maxClaudeFallbackReasonRunes      = 1000
+	maxClaudeFallbackExplanationRunes = 300
+	maxClaudeFallbackModelRunes       = 128
+	maxClaudeFallbackLabelRunes       = 64
+	maxClaudeFallbackIDRunes          = 128
+)
+
+func boundedClaudeFallbackField(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes])
+}
+
+func claudeFallbackItemID(requestID string) string {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return ""
+	}
+	if len(requestID) <= maxClaudeFallbackIDRunes {
+		valid := true
+		for _, char := range requestID {
+			if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+				(char >= '0' && char <= '9') || char == '_' || char == '-' || char == '.' || char == ':' {
+				continue
+			}
+			valid = false
+			break
+		}
+		if valid {
+			return "model-fallback:" + requestID
+		}
+	}
+	sum := sha256.Sum256([]byte(requestID))
+	return fmt.Sprintf("model-fallback:sha256:%x", sum[:16])
 }
 
 func apiRetryPayload(raw map[string]json.RawMessage) json.RawMessage {

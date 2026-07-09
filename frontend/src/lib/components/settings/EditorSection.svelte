@@ -25,6 +25,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { isClientMode } from '../../transport/runMode';
+  import { applyEditorPreference } from '../../stores/editors.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
 
   const clientMode = isClientMode();
@@ -74,6 +75,9 @@
       )) as EditorSettings;
       preference = updated.preference;
       savedPreference = updated.preference;
+      // Mirror the new default into the shared editors store so the chat
+      // header's Open button icon updates without waiting for a refetch.
+      applyEditorPreference(updated.preference);
     } catch (err) {
       preference = previous;
       addToast('error', `Failed to update editor preference: ${errString(err)}`);

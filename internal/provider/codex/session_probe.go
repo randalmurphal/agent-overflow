@@ -76,7 +76,7 @@ func (s *Session) Probe(ctx context.Context) (ProbeResult, error) {
 // Resume calls `thread/resume` on a live session. Used by the on-reopen
 // reconciler when Probe reports `notLoaded` — the session is up but the
 // thread isn't in memory, so the app-server needs to be told to rehydrate
-// it before any further message/send will work.
+// it before any further turn/start will work.
 //
 // This is NOT the resume path used by NewSession. NewSession calls
 // thread/resume as part of its initial handshake to seed s.codexThreadID.
@@ -99,11 +99,14 @@ func (s *Session) Resume(ctx context.Context) error {
 	if s.codexThreadID == "" {
 		return fmt.Errorf("codex: resume: session has no thread id")
 	}
-	if _, err := s.sendRequest(ctx, "thread/resume", map[string]any{
+	s.beginCollabHistoryGeneration()
+	resp, err := s.sendRequest(ctx, "thread/resume", map[string]any{
 		"threadId": s.codexThreadID,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("codex: thread/resume: %w", err)
 	}
+	s.rehydrateCollabOwnershipFromThreadResponse(resp)
 	return nil
 }
 

@@ -152,8 +152,8 @@ func TestSessionOptionsFastModePreservesCodexModel(t *testing.T) {
 	if cfg.Model != "gpt-5.5" {
 		t.Errorf("Model = %q, want gpt-5.5", cfg.Model)
 	}
-	if cfg.ServiceTier != "fast" {
-		t.Errorf("ServiceTier = %q, want fast", cfg.ServiceTier)
+	if cfg.ServiceTier != "priority" {
+		t.Errorf("ServiceTier = %q, want priority", cfg.ServiceTier)
 	}
 }
 

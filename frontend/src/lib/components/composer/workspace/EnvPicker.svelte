@@ -26,8 +26,8 @@
 	    UpdateThreadWorkspace,
 	    type GitWorkspaceState,
 	    WorktreeStatus,
+	    type WorktreeListItem,
 	  } from '../../../stores/bindings';
-  import type { Worktree } from '../../../types/git';
   import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
@@ -64,7 +64,7 @@
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
-  let worktrees: Worktree[] = $state([]);
+  let worktrees: WorktreeListItem[] = $state([]);
   let loading = $state(false);
   let applying = $state(false);
   let confirm: ConfirmState | null = $state(null);
@@ -111,12 +111,12 @@
     if (!pane.threadId && !projectId) return;
     loading = true;
     try {
-      let res: Worktree[] | null;
+      let res: WorktreeListItem[] | null;
       if (pane.threadId) {
-        res = (await GitListWorktrees(pane.threadId)) as Worktree[] | null;
+        res = (await GitListWorktrees(pane.threadId)) as WorktreeListItem[] | null;
       } else {
         if (!projectId) return;
-        res = (await GitListWorktreesForProject(projectId)) as Worktree[] | null;
+        res = (await GitListWorktreesForProject(projectId)) as WorktreeListItem[] | null;
       }
       worktrees = Array.isArray(res) ? res : [];
     } catch (err) {
@@ -177,7 +177,7 @@
     closeMenu();
   }
 
-  async function requestRemove(wt: Worktree): Promise<void> {
+  async function requestRemove(wt: WorktreeListItem): Promise<void> {
     if (!pane.thread) return;
     const projectId = pane.thread.projectId;
     if (!pane.threadId && !projectId) return;
@@ -407,7 +407,8 @@
               onSelect={() => selectPath(wt.path)}
               actionLabel={`Remove worktree ${pathBasename(wt.path) || wt.path}`}
               actionPosition="end"
-              actionDisabled={!pane.threadId && !pane.thread?.projectId}
+              actionDisabled={(!pane.threadId && !pane.thread?.projectId) || wt.deleteBlocked}
+              actionTitle={wt.deleteBlocked ? 'This worktree cannot be removed while an attached thread is running.' : undefined}
               onAction={() => requestRemove(wt)}
             >
               {#snippet action()}

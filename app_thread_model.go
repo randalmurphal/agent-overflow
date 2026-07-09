@@ -90,26 +90,26 @@ func (a *App) chatModelProfileForSelection(providerName, model string) (store.Ch
 	if a.store != nil {
 		profile, err := a.store.GetChatModelProfile(providerName, model)
 		if err == nil {
-			return chatmodel.SanitizeProfile(profile), nil
+			return a.sanitizeChatModelProfile(profile), nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return store.ChatModelProfile{}, fmt.Errorf("load chat model profile: %w", err)
 		}
 	}
-	return chatmodel.FallbackProfile(providerName, model), nil
+	return a.sanitizeChatModelProfile(chatmodel.FallbackProfile(providerName, model)), nil
 }
 
 func (a *App) latestProviderProfileForSelection(providerName string) (store.ChatModelProfile, error) {
 	if a.store != nil {
 		profile, err := a.store.LatestChatModelProfileForProvider(providerName)
 		if err == nil {
-			return chatmodel.SanitizeProfile(profile), nil
+			return a.sanitizeChatModelProfile(profile), nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return store.ChatModelProfile{}, fmt.Errorf("load latest chat model profile for provider %s: %w", providerName, err)
 		}
 	}
-	return chatmodel.FallbackProfile(providerName, ""), nil
+	return a.sanitizeChatModelProfile(chatmodel.FallbackProfile(providerName, "")), nil
 }
 
 func threadWithModelSelectionProfile(thread store.Thread, profile store.ChatModelProfile) store.Thread {
@@ -133,7 +133,7 @@ func threadWithModelSelectionProfile(thread store.Thread, profile store.ChatMode
 	return thread
 }
 
-func (a *App) updateThreadFromChatModelProfile(previous store.Thread, profile store.ChatModelProfile, changedField string) (threadResult store.Thread, err error) {
+func (a *App) updateThreadFromChatModelProfile(previous store.Thread, profile store.ChatModelProfile, changedField string) (store.Thread, error) {
 	thread := threadWithModelSelectionProfile(previous, profile)
 	if err := a.updateThreadForModelSelection(previous, thread); err != nil {
 		if errors.Is(err, store.ErrThreadProviderLocked) {
@@ -142,25 +142,14 @@ func (a *App) updateThreadFromChatModelProfile(previous store.Thread, profile st
 		return store.Thread{}, err
 	}
 
-	active := a.hasActiveSession(thread.ID)
-	if !active {
-		a.rememberChatModelProfile(thread)
-		thread.UpdatedAt = a.mustLoadThreadUpdatedAt(thread.ID, thread.UpdatedAt)
-		return thread, nil
-	}
-
-	defer func() {
-		if err == nil {
-			return
-		}
-		if rollbackErr := a.store.UpdateThread(previous); rollbackErr != nil {
-			err = fmt.Errorf("restart session with updated %s: %w (rollback failed: %v)", changedField, err, rollbackErr)
-		}
-	}()
-
-	if err = a.startSession(thread.ID); err != nil {
-		return store.Thread{}, fmt.Errorf("restart session with updated %s: %w", changedField, err)
-	}
+	// Reconcile any live session with the new profile: a pure model switch
+	// applies live on both providers (Claude set_model, Codex per-turn
+	// override); profile diffs that touch spawn-only config restart the
+	// session, deferred while the thread is busy. Failures surface as
+	// thread error state from the reconciler rather than rolling back the
+	// row — the persisted selection stays authoritative and the next
+	// (lazy) start converges on it.
+	a.reconcileSessionConfig(thread.ID)
 
 	updated, err := a.store.GetThread(thread.ID)
 	if err != nil {
@@ -182,10 +171,3 @@ func (a *App) hasActiveSession(threadID string) bool {
 	return ok
 }
 
-func (a *App) mustLoadThreadUpdatedAt(threadID string, fallback int64) int64 {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return fallback
-	}
-	return thread.UpdatedAt
-}

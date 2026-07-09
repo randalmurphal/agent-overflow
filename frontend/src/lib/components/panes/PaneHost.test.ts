@@ -189,13 +189,13 @@ describe('PaneHost', () => {
     );
   });
 
-  it('uses density min width and layout ratios on pane sections', async () => {
+  it('uses density min width and layout widths on pane sections', async () => {
     await setPaneDensityMode('comfortable');
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
     setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 2 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1200 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 880 },
     ]);
 
     const rendered = render(PaneHost);
@@ -203,18 +203,29 @@ describe('PaneHost', () => {
     const right = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
 
     expect(left?.dataset.paneMinWidth).toBe('880');
-    expect(left?.dataset.paneRatio).toBe('2');
-    expect(left?.style.flexGrow).toBe('2');
-    expect(right?.style.flexGrow).toBe('1');
+    expect(left?.dataset.paneWidth).toBe('1200');
+    expect(left?.style.flexBasis).toBe('1200px');
+    expect(left?.style.flexGrow).toBe('1200');
+    expect(right?.style.flexBasis).toBe('880px');
     expect(rendered.getAllByTestId('pane-divider')).toHaveLength(1);
+    // The strip's right edge always carries the end handle for the last pane.
+    expect(rendered.getByTestId('pane-end-handle')).toBeInTheDocument();
+
+    // Regression guard: the divider only fills height because its gap
+    // wrapper is a flex container. Drop the `flex` and the divider
+    // collapses to 0px tall — invisible and unclickable. jsdom does no
+    // layout, so class presence is the only automated tripwire here.
+    for (const gap of rendered.container.querySelectorAll<HTMLElement>('[data-pane-gap-index]')) {
+      expect(gap.classList.contains('flex')).toBe(true);
+    }
   });
 
   it('renders a plan companion layout item through CompanionPane', () => {
     registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
     setPaneLayoutItemsForTest([
-      { id: 'source', paneId: 'source', kind: 'thread', ratio: 1 },
-      { id: 'plan-source', paneId: 'plan-source', kind: 'plan', ratio: 1, sourcePaneId: 'source' },
-      { id: 'review-source', paneId: 'review-source', kind: 'review', ratio: 1, sourcePaneId: 'source' },
+      { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
+      { id: 'plan-source', paneId: 'plan-source', kind: 'plan', widthPx: 1, sourcePaneId: 'source' },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', widthPx: 1, sourcePaneId: 'source' },
     ]);
 
     const rendered = render(PaneHost);
@@ -230,7 +241,7 @@ describe('PaneHost', () => {
 
   it('renders an explicit broken state for a companion whose source pane is missing', () => {
     setPaneLayoutItemsForTest([
-      { id: 'plan-missing', paneId: 'plan-missing', kind: 'plan', ratio: 1, sourcePaneId: 'missing' },
+      { id: 'plan-missing', paneId: 'plan-missing', kind: 'plan', widthPx: 1, sourcePaneId: 'missing' },
     ]);
 
     const rendered = render(PaneHost);
@@ -245,9 +256,9 @@ describe('PaneHost', () => {
     registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
     registerPaneForTest('other', createThreadPane({ paneId: 'other' }));
     setPaneLayoutItemsForTest([
-      { id: 'source', paneId: 'source', kind: 'thread', ratio: 1 },
-      { id: 'review-source', paneId: 'review-source', kind: 'review', ratio: 1, sourcePaneId: 'source' },
-      { id: 'other', paneId: 'other', kind: 'thread', ratio: 1 },
+      { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', widthPx: 1, sourcePaneId: 'source' },
+      { id: 'other', paneId: 'other', kind: 'thread', widthPx: 1 },
     ]);
     focusPane('other');
 
@@ -263,8 +274,8 @@ describe('PaneHost', () => {
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
     setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
 
     const rendered = render(PaneHost);
@@ -291,9 +302,9 @@ describe('PaneHost', () => {
     registerPaneForTest('middle', createThreadPane({ paneId: 'middle' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
     setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'middle-item', paneId: 'middle', kind: 'thread', ratio: 1 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'middle-item', paneId: 'middle', kind: 'thread', widthPx: 1 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
     const rendered = render(PaneHost);
     const titles = rendered.getAllByTestId('chat-header-title');
@@ -331,8 +342,8 @@ describe('PaneHost', () => {
     registerPaneForTest('left', leftPane);
     registerPaneForTest('right', rightPane);
     setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
 
     const leftObserve = vi.fn();
@@ -395,7 +406,7 @@ describe('PaneHost', () => {
     const dragged = makeThread({ id: 'drag-autoscroll', title: 'Dragged Auto' });
     prependThread(dragged);
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
-    setPaneLayoutItemsForTest([{ id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 }]);
     const rendered = render(PaneHost);
     const host = rendered.getByTestId('pane-host') as HTMLElement;
     let hostScrollLeft = 0;
@@ -437,8 +448,8 @@ describe('PaneHost', () => {
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
     setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
     const rendered = render(PaneHost);
     const rightPane = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
@@ -462,8 +473,8 @@ describe('PaneHost', () => {
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
     setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
     const rendered = render(PaneHost);
     const leftPane = rendered.container.querySelector<HTMLElement>('[data-pane-id="left"]');
@@ -486,8 +497,8 @@ describe('PaneHost', () => {
     installThreadSwitchMocks(dragged);
     registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
     setPaneLayoutItemsForTest([
-      { id: 'source', paneId: 'source', kind: 'thread', ratio: 1 },
-      { id: 'review-source', paneId: 'review-source', kind: 'review', ratio: 1, sourcePaneId: 'source' },
+      { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', widthPx: 1, sourcePaneId: 'source' },
     ]);
     const rendered = render(PaneHost);
     const companionPane = rendered.container.querySelector<HTMLElement>('[data-pane-id="review-source"]');
@@ -516,8 +527,8 @@ describe('PaneHost', () => {
     installThreadSwitchMocks(dragged);
     registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
     setPaneLayoutItemsForTest([
-      { id: 'source', paneId: 'source', kind: 'thread', ratio: 1 },
-      { id: 'review-source', paneId: 'review-source', kind: 'review', ratio: 1, sourcePaneId: 'source' },
+      { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', widthPx: 1, sourcePaneId: 'source' },
     ]);
     const rendered = render(PaneHost);
     const gap = rendered.container.querySelector<HTMLElement>('[data-pane-gap-index="1"]');
@@ -544,8 +555,8 @@ describe('PaneHost', () => {
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
     setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
     const rendered = render(PaneHost);
     const gap = rendered.container.querySelector<HTMLElement>('[data-pane-gap-index="1"]');
@@ -566,7 +577,7 @@ describe('PaneHost', () => {
     prependThread(dragged);
     installThreadSwitchMocks(dragged);
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
-    setPaneLayoutItemsForTest([{ id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 }]);
     const rendered = render(PaneHost);
     const host = rendered.getByTestId('pane-host') as HTMLElement;
     const leftPane = rendered.container.querySelector<HTMLElement>('[data-pane-id="left"]');
@@ -581,6 +592,24 @@ describe('PaneHost', () => {
       const createdPaneId = paneIdForThread(dragged.id);
       expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', createdPaneId]);
     });
+  });
+
+  it('previews a thread dragged over the end handle as an append, not a left-edge gap', async () => {
+    // The end handle carries data-pane-gap-index === length. Without the
+    // normalization it resolves to a `gap` whose target pane is undefined,
+    // snapping the preview to the strip's left edge; it must read as `end`.
+    const dragged = makeThread({ id: 'drag-end-preview', title: 'End Preview' });
+    prependThread(dragged);
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    setPaneLayoutItemsForTest([{ id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 900 }]);
+    const rendered = render(PaneHost);
+    const endHandle = rendered.getByTestId('pane-end-handle');
+
+    await dispatchDrag(endHandle, 'dragover', threadDataTransfer(dragged.id), 950);
+
+    const preview = rendered.getByTestId('pane-thread-drop-preview');
+    expect(preview).toHaveAttribute('data-drop-kind', 'end');
+    expect(preview).toHaveAttribute('data-insert-index', '1');
   });
 
   it('drop on the empty state creates the first pane', async () => {
@@ -609,8 +638,8 @@ describe('PaneHost', () => {
     registerPaneForTest('left', left);
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
     setPaneLayoutItemsForTest([
-      { id: 'left-item', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'right-item', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
     focusPane('right');
     const rendered = render(PaneHost);

@@ -123,7 +123,7 @@ function designFence(payload: unknown): string {
 }
 
 function seedThreadPaneLayout(paneId: string): void {
-  setPaneLayoutItemsForTest([{ id: paneId, paneId, kind: 'thread', ratio: 1 }]);
+  setPaneLayoutItemsForTest([{ id: paneId, paneId, kind: 'thread', widthPx: 1 }]);
 }
 
 describe('createThreadPane', () => {
@@ -1832,6 +1832,8 @@ describe('createThreadPane', () => {
     const pane = createThreadPane();
     setBindingMock('GetThreadLiveState', async (threadId: string) => ({
       threadId,
+      effectiveModel: 'claude-opus-4-8',
+      effectiveModelRevision: 1,
       activeTurn: {
         threadId,
         turnId: 'round-1',
@@ -1875,6 +1877,8 @@ describe('createThreadPane', () => {
     }));
 
     await pane.switchThread(makeThread({ id: 'thread-live' }));
+
+    expect(pane.activeModel).toBe('claude-opus-4-8');
 
     expect(getActiveTurn('thread-live')).toEqual({
       turnId: 'round-1',
@@ -1975,6 +1979,37 @@ describe('createThreadPane', () => {
       turnIndex: 2,
       startedAt: 2,
     });
+  });
+
+  it('does not let delayed live-state hydration overwrite a newer model fallback', async () => {
+    const pane = createThreadPane();
+    let releaseSnapshot!: (value: unknown) => void;
+    setBindingMock(
+      'GetThreadLiveState',
+      () =>
+        new Promise((resolve) => {
+          releaseSnapshot = resolve;
+        }),
+    );
+
+    const switching = pane.switchThread(makeThread({
+      id: 'thread-model-race',
+      provider: 'claude',
+      model: 'claude-fable-5',
+    }));
+    await Promise.resolve();
+    pane.setEffectiveModel('claude-opus-4-8');
+    releaseSnapshot({
+      threadId: 'thread-model-race',
+      effectiveModel: '',
+      activeTurn: null,
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
+    });
+    await switching;
+
+    expect(pane.activeModel).toBe('claude-opus-4-8');
   });
 
   it('does not let an older live-state hydration apply after a newer one completed', async () => {

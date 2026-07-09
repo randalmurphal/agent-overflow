@@ -21,8 +21,8 @@ import {
   toggleCompanion,
 } from './companionPanes.svelte';
 
-function threadItem(paneId: string, ratio = 1): PaneLayoutItem {
-  return { id: paneId, paneId, kind: 'thread', ratio };
+function threadItem(paneId: string, widthPx = 560): PaneLayoutItem {
+  return { id: paneId, paneId, kind: 'thread', widthPx };
 }
 
 function paneIds(): string[] {
@@ -44,7 +44,7 @@ afterEach(() => {
 
 describe('companionPanes store', () => {
   it('opens a companion after existing companions for the same source', () => {
-    setPaneLayoutItemsForTest([threadItem('main', 1.5), threadItem('right')]);
+    setPaneLayoutItemsForTest([threadItem('main', 900), threadItem('right')]);
 
     const plan = openCompanion('main', 'plan');
     const preview = openCompanion('main', 'design-preview');
@@ -58,7 +58,7 @@ describe('companionPanes store', () => {
     });
     expect(review).toEqual({ paneId: 'review-main', kind: 'review', sourcePaneId: 'main' });
     expect(paneIds()).toEqual(['main', 'plan-main', 'design-preview-main', 'review-main', 'right']);
-    expect(getPaneLayoutItems()[1].ratio).toBe(1.5);
+    expect(getPaneLayoutItems()[1].widthPx).toBe(900);
     expect(isCompanionOpen('main', 'plan')).toBe(true);
     expect(getCompanionPane('plan-main')).toEqual(plan);
     expect(companionForSource('main', 'design-preview')).toEqual(preview);

@@ -70,6 +70,7 @@ func (a *App) resolveTextGenerationConfig() textgen.Config {
 		}
 	}
 
+	coerceTextGenerationEffort(&cfg)
 	return cfg
 }
 
@@ -109,7 +110,16 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 	default:
 		return textgen.Config{}, false
 	}
+	coerceTextGenerationEffort(&cfg)
 	return cfg, true
+}
+
+func coerceTextGenerationEffort(cfg *textgen.Config) {
+	cfg.Effort = string(provider.CoerceReasoningEffortForModel(
+		cfg.Provider,
+		cfg.Model,
+		provider.NormalizeReasoningEffort(cfg.Effort),
+	))
 }
 
 // availableTextGenerationProviders probes the configured provider

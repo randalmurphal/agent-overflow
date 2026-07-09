@@ -322,6 +322,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // and trace/debug consumers; on thread switch we rehydrate it from the
   // most recent `ListRecentTurns` row whose `completedAt` is non-null.
   let latestSettledTurn: SettledTurn | null = $state(null);
+  // Session-scoped model actually serving the thread after a provider
+  // fallback. The durable thread.model remains the user's requested model.
+  let effectiveModel = $state('');
+  let effectiveModelRevision = 0;
+  let effectiveModelBackendRevision = 0;
+  function updateEffectiveModel(model: string): void {
+    effectiveModel = model.trim();
+    effectiveModelRevision += 1;
+  }
   const liveTodoState = createLiveTodoState();
   // Thread live-state hydration protocol (GetThreadLiveState +
   // ListPendingInteractiveRequests fallback, projected onto the global
@@ -333,6 +342,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getSwitchGeneration: () => switchGeneration,
     pendingInteractiveState,
     liveTodoState,
+    getEffectiveModelRevision: () => effectiveModelRevision,
+    hydrateEffectiveModel: (model, backendRevision, expectedMutationRevision) => {
+      if (effectiveModelRevision !== expectedMutationRevision) return;
+      if (backendRevision < effectiveModelBackendRevision) return;
+      effectiveModelBackendRevision = backendRevision;
+      updateEffectiveModel(model);
+    },
   });
   // Subagent notification log. The backend emits
   // `provider:subagent_notification` as a pass-through; no UI consumes it
@@ -767,6 +783,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // ListRecentTurns OR from the cache when available. Clear first so
     // a rehydration failure leaves the pane in a consistent state.
     latestSettledTurn = null;
+    updateEffectiveModel('');
     subagentNotifications = [];
 
     liveTodoState.resetForThread(newThread.id);
@@ -1051,6 +1068,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get threadId() {
       return draftPlaceholder ? null : (thread?.id ?? null);
+    },
+    get activeModel() {
+      return effectiveModel || thread?.model || '';
+    },
+    get effectiveModel() {
+      return effectiveModel;
     },
     get terminalThreadId() {
       return thread?.id ?? null;
@@ -1565,6 +1588,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         clearWorktreeIntent(draftPlaceholder.id);
       }
       thread = null;
+      updateEffectiveModel('');
       draftPlaceholder = null;
       replaceTimelineItems([]);
       subagentMemory.clearFolds();
@@ -2405,8 +2429,24 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     replaceThread(nextThread: Thread): void {
+      if (
+        thread &&
+        (thread.provider !== nextThread.provider || thread.model !== nextThread.model)
+      ) {
+        updateEffectiveModel('');
+      }
       thread = nextThread;
       contextWindow = seedContextWindow(nextThread);
+    },
+
+    setEffectiveModel(model: string): void {
+      updateEffectiveModel(model);
+    },
+
+    applyEffectiveModel(model: string, revision: number): void {
+      if (!Number.isSafeInteger(revision) || revision < effectiveModelBackendRevision) return;
+      effectiveModelBackendRevision = revision;
+      updateEffectiveModel(model);
     },
 
     setShowTerminal(value: boolean): void {

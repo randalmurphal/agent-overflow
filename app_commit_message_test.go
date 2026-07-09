@@ -114,7 +114,7 @@ func TestGenerateCommitMessage_CodexPathHappy(t *testing.T) {
 	if !argsContain(gotSpec.Args, "--model") {
 		t.Errorf("codex args missing '--model'; got %v", gotSpec.Args)
 	}
-	// Default model for codex text generation is gpt-5.4-mini.
+	// Default model for codex text generation is Sol.
 	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.DefaultCodexModel {
 		t.Errorf("codex model arg = %q, want %q", modelArg, textgen.DefaultCodexModel)
 	}

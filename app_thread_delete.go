@@ -32,6 +32,18 @@ import (
 // hundreds of ms. The idempotent-retry model gives us atomicity at the
 // resource-ownership level without that cost.
 func (a *App) deleteThreadTreeLocked(threadID string) error {
+	return a.deleteThreadTree(threadID, false)
+}
+
+// deleteThreadTreeWithSubtreeLocksHeld is used by project deletion after it
+// has locked every contained thread in stable order. Skipping recursive lock
+// acquisition avoids self-deadlock while preserving the exact same teardown
+// path as DeleteThread.
+func (a *App) deleteThreadTreeWithSubtreeLocksHeld(threadID string) error {
+	return a.deleteThreadTree(threadID, true)
+}
+
+func (a *App) deleteThreadTree(threadID string, subtreeLocksHeld bool) error {
 	thread, threadErr := a.store.GetThread(threadID)
 	if threadErr != nil && !errors.Is(threadErr, sql.ErrNoRows) {
 		return fmt.Errorf("delete thread %s: lookup: %w", threadID, threadErr)
@@ -48,9 +60,14 @@ func (a *App) deleteThreadTreeLocked(threadID string) error {
 		return fmt.Errorf("delete thread %s: list children: %w", threadID, err)
 	}
 	for _, child := range children {
-		unlockChild := a.threadLocks().Lock(child.ID)
-		err := a.deleteThreadTreeLocked(child.ID)
-		unlockChild()
+		var unlockChild func()
+		if !subtreeLocksHeld {
+			unlockChild = a.threadLocks().Lock(child.ID)
+		}
+		err := a.deleteThreadTree(child.ID, subtreeLocksHeld)
+		if unlockChild != nil {
+			unlockChild()
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("delete child %s: %w", child.ID, err))
 		}

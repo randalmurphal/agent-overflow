@@ -5,6 +5,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../time/models.js";
+
 /**
  * Provider identifies which native config a status entry was sourced
  * from. The same server name can exist for both providers so every
@@ -35,7 +39,7 @@ export class ServerStatus {
     "error"?: string;
     "raw"?: string;
     "source": Source;
-    "checkedAt": string;
+    "checkedAt": time$0.Time;
 
     /** Creates a new ServerStatus instance. */
     constructor($$source: Partial<ServerStatus> = {}) {
@@ -52,7 +56,7 @@ export class ServerStatus {
             this["source"] = Source.$zero;
         }
         if (!("checkedAt" in $$source)) {
-            this["checkedAt"] = "0001-01-01T00:00:00.000Z";
+            this["checkedAt"] = null;
         }
 
         Object.assign(this, $$source);

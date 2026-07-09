@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -107,6 +108,61 @@ func TestParseSystem_APIRetryTopLevelPayload(t *testing.T) {
 	}
 	if meta["error"] != "rate_limit" {
 		t.Fatalf("error = %v, want rate_limit", meta["error"])
+	}
+}
+
+func TestParseSystem_ModelRefusalFallbackCarriesReasonAndModels(t *testing.T) {
+	parser := NewParser()
+	parser.SetModel("claude-fable-5")
+	line := []byte(`{"type":"system","subtype":"model_refusal_fallback","content":"Fable 5's safeguards flagged this message. Switched to Opus 4.8.","trigger":"refusal","originalModel":"claude-fable-5","fallbackModel":"claude-opus-4-8","requestId":"req_fallback_1","apiRefusalCategory":"cyber","apiRefusalExplanation":"security-sensitive request","refusedUserMessageUuid":"user-1","uuid":"system-1"}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != provider.EventModelFallback {
+		t.Fatalf("events = %+v, want one model fallback", events)
+	}
+	evt := events[0]
+	if evt.ItemID != "model-fallback:req_fallback_1" {
+		t.Fatalf("ItemID = %q", evt.ItemID)
+	}
+	if evt.Content != "Fable 5's safeguards flagged this message. Switched to Opus 4.8." {
+		t.Fatalf("Content = %q", evt.Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["originalModel"] != "claude-fable-5" || meta["fallbackModel"] != "claude-opus-4-8" {
+		t.Fatalf("model metadata = %+v", meta)
+	}
+	if meta["apiRefusalCategory"] != "cyber" || meta["refusedUserMessageUuid"] != "user-1" {
+		t.Fatalf("reason metadata = %+v", meta)
+	}
+	if meta["apiRefusalExplanation"] != "security-sensitive request" {
+		t.Fatalf("explanation metadata = %+v", meta)
+	}
+	if got := parser.currentModel(); got != "claude-opus-4-8" {
+		t.Fatalf("current model = %q, want fallback model", got)
+	}
+}
+
+func TestParseSystem_ModelRefusalFallbackRejectsMissingFallbackModel(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"model_refusal_fallback","content":"flagged","originalModel":"claude-fable-5"}`)
+	if _, err := ParseLine(testThread, line); err == nil {
+		t.Fatal("parse error = nil, want missing fallbackModel failure")
+	}
+}
+
+func TestClaudeFallbackFieldsAreBounded(t *testing.T) {
+	unsafeID := strings.Repeat("request/", 100)
+	itemID := claudeFallbackItemID(unsafeID)
+	if !strings.HasPrefix(itemID, "model-fallback:sha256:") || len(itemID) != len("model-fallback:sha256:")+32 {
+		t.Fatalf("hashed item ID = %q", itemID)
+	}
+	if got := boundedClaudeFallbackField(strings.Repeat("m", maxClaudeFallbackModelRunes+20), maxClaudeFallbackModelRunes); len([]rune(got)) != maxClaudeFallbackModelRunes {
+		t.Fatalf("bounded model runes = %d", len([]rune(got)))
 	}
 }
 

@@ -14,6 +14,8 @@ export {
     PendingInteractiveRequests,
     PermissionProfile,
     ProviderStatus,
+    RateLimitEntry,
+    RateLimitsSnapshot,
     ReasoningEffortOption,
     UserInputQuestion,
     UserInputQuestionOption,

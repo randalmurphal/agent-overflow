@@ -54,5 +54,6 @@ export {
     ThreadLiveState,
     UpdateAvailability,
     WorkspaceFileSearchResult,
+    WorktreeListItem,
     WorktreeStatus
 } from "./models.js";

@@ -23,6 +23,7 @@ type rawToolCall struct {
 	Command   string
 	AgentType string
 	Prompt    string
+	Target    string
 	Targets   []string
 }
 
@@ -64,6 +65,11 @@ func (s *Session) rememberRawToolCall(item map[string]json.RawMessage) {
 		call.Prompt = rawSpawnAgentPrompt(args)
 	case "wait_agent":
 		call.Targets = readFlexibleStringArray(args, "targets")
+	case "send_message", "followup_task":
+		call.Target = readFlexibleString(args, "target")
+		call.Prompt = readFlexibleString(args, "message")
+	case "interrupt_agent":
+		call.Target = readFlexibleString(args, "target")
 	default:
 		return
 	}
@@ -133,18 +139,17 @@ func (s *Session) handleRawExecCommandOutput(call rawToolCall, params json.RawMe
 	if err != nil {
 		encoded = []byte("{}")
 	}
-	threadID := readTopLevelString(params, "threadId")
-	if threadID == "" {
-		threadID = s.threadID
-	}
+	providerThreadID := providerThreadIDFromParams(params)
+	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
 	s.onEvent(provider.ProviderEvent{
-		Kind:      provider.EventCodexExecResult,
-		ThreadID:  threadID,
-		TurnID:    readTopLevelString(params, "turnId"),
-		ItemID:    call.CallID,
-		ItemType:  "commandExecution",
-		Meta:      encoded,
-		Timestamp: time.Now(),
+		Kind:            provider.EventCodexExecResult,
+		ThreadID:        s.threadID,
+		TurnID:          readTopLevelString(params, "turnId"),
+		ItemID:          call.CallID,
+		ItemType:        "commandExecution",
+		ParentToolUseID: parentToolUseID,
+		Meta:            encoded,
+		Timestamp:       time.Now(),
 	})
 }
 
@@ -153,7 +158,7 @@ func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
 		return
 	}
 	switch evt.ItemType {
-	case "collab_agent", "wait_agent":
+	case "collab_agent", "send_input", "wait_agent":
 	default:
 		return
 	}
@@ -177,6 +182,11 @@ func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
 		case "wait_agent":
 			setRawStringIfMissing(input, "tool", "wait_agent")
 			setRawStringArray(input, "requestedReceiverThreadIds", call.Targets)
+		case "send_message", "followup_task":
+			setRawStringIfMissing(input, "tool", "send_input")
+			setRawStringIfMissing(input, "prompt", call.Prompt)
+			setRawStringIfMissing(input, "target", call.Target)
+			setRawStringIfMissing(input, "activityTool", call.Name)
 		}
 	})
 }
@@ -209,18 +219,24 @@ func (s *Session) deleteRawToolCall(callID string) {
 func (s *Session) handleRawSpawnAgentOutput(call rawToolCall, item map[string]json.RawMessage) {
 	var output struct {
 		AgentID  string `json:"agent_id"`
+		TaskName string `json:"task_name"`
 		Nickname string `json:"nickname"`
 	}
 	if json.Unmarshal([]byte(readRawString(item, "output")), &output) != nil {
 		return
 	}
 	output.AgentID = strings.TrimSpace(output.AgentID)
-	if output.AgentID == "" {
+	output.TaskName = strings.TrimSpace(output.TaskName)
+	providerThreadID := output.AgentID
+	if providerThreadID == "" && output.TaskName != "" {
+		providerThreadID = s.providerThreadForAgentPath(output.TaskName, call.CallID)
+	}
+	if providerThreadID == "" {
 		return
 	}
-	s.rememberRawSpawnAgentIDForSubagentNotifications(output.AgentID, call.CallID)
+	s.rememberRawSpawnAgentIDForSubagentNotifications(providerThreadID, call.CallID)
 	meta := collabReceiverMeta{
-		ThreadID:      output.AgentID,
+		ThreadID:      providerThreadID,
 		AgentNickname: strings.TrimSpace(output.Nickname),
 		AgentRole:     strings.TrimSpace(call.AgentType),
 	}

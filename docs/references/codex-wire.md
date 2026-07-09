@@ -4,6 +4,12 @@ Authoritative reference for the JSON-RPC 2.0 notifications Codex
 emits over stdio. Consulted by `internal/provider/codex/`
 parser code.
 
+Multi-agent shapes in this document were re-verified on 2026-07-09 against
+the exact `rust-v0.144.0` tag (`767822446c...`) and a live
+`codex-cli 0.144.0` MultiAgentV2 rollout. The local Codex checkout may be on
+an older tag; use `git show rust-v0.144.0:<path>` rather than assuming its
+worktree revision describes the installed binary.
+
 ## Sources
 
 **Shape-of-truth, in priority order:**
@@ -126,7 +132,7 @@ Authoritative method list from
 | `thread/compacted` | Thread housekeeping. Compaction boundary event. |
 | `thread/name/updated` | Thread housekeeping. Thread name/title changed. |
 | `thread/tokenUsage/updated` | Thread housekeeping. Rolling token-usage snapshot. |
-| `account/rateLimits/updated` | Rate-limit state updates. Surfaced as `EventSessionStatus` with `kind: rate_limited_*`. |
+| `account/rateLimits/updated` | Account-wide quota snapshot. Surfaced as `EventRateLimits` / `provider:usage action:"rate_limits"`. |
 | `model/rerouted` | Model reroute notice (Codex fell back to a different model). |
 | `configWarning` | Session-level notice surfaced to the user. |
 | `deprecationNotice` | Session-level deprecation notice. |
@@ -161,6 +167,26 @@ the max window:
   }
 }
 ```
+
+### `account/rateLimits/updated` and `account/rateLimits/read`
+
+Re-verified against the installed `codex-cli 0.144.0`: the canonical quota
+shape is unchanged. `rateLimits.primary` is the 300-minute window and
+`rateLimits.secondary` is the 10,080-minute window; each carries
+`usedPercent`, `windowDurationMins`, and Unix-seconds `resetsAt`.
+`account/rateLimits/read` additionally returns `rateLimitsByLimitId`; Agent
+Overflow selects only its canonical `codex` bucket and ignores model-specific
+buckets that share the same window durations.
+
+The backend retains the last normalized snapshot per provider, merging by
+`windowDurationMins` because Claude reports its 5h and 7d windows separately.
+The cache rejects older reset boundaries and same-window lower readings just
+like the frontend store, so a delayed session event cannot regress hydration.
+Frontends call `GetRateLimitsSnapshots` after installing the live
+`provider:usage` listener and again when that channel reports a transport gap.
+This is necessary because a startup account probe can complete before the
+first websocket connection has a prior channel sequence to replay, and a
+long-lived client can reconnect after the event ring has rolled over.
 
 `last.totalTokens` is what occupies the visible context window. The
 rolling `total.totalTokens` value is aggregate processed/spend-style
@@ -299,7 +325,7 @@ Enum values are `camelCase` on the wire (`#[serde(rename_all =
 
 ---
 
-## Collab agent lifecycle (`spawn_agent`, `wait`, `close_agent`, etc.)
+## Collab agent lifecycle (MultiAgentV1 and MultiAgentV2)
 
 The closest Codex analog to Claude's backgrounded tools, but
 structurally different — **a spawn creates a child thread**, not a
@@ -307,7 +333,54 @@ backgrounded process inside the parent tool call. Agent Overflow
 projects this into the shared background UI when that child is still
 non-terminal after the parent turn closes.
 
-### The `CollabAgentTool` enum
+### Versioned wire shapes
+
+Codex currently has two collaboration transports. Agent Overflow accepts both
+and normalizes them before triage:
+
+| Operation | MultiAgentV1 typed item | MultiAgentV2 typed item |
+|---|---|---|
+| spawn | `collabAgentToolCall`, `tool:"spawnAgent"`, start + complete | one completed `subAgentActivity`, `kind:"started"` |
+| send/follow-up | `collabAgentToolCall`, `tool:"sendInput"` | one completed `subAgentActivity`, `kind:"interacted"` |
+| interrupt/close | `collabAgentToolCall`, `tool:"closeAgent"` | one completed `subAgentActivity`, `kind:"interrupted"` |
+| wait | `collabAgentToolCall`, `tool:"wait"`, receivers/statuses | `collabAgentToolCall`, `tool:"wait"`, empty receiver/status maps |
+| list | model-facing raw function call/output only | model-facing raw function call/output only |
+
+The V2 item is:
+
+```json
+{
+  "id": "call_spawn",
+  "type": "subAgentActivity",
+  "kind": "started",
+  "agentThreadId": "<child-thread-id>",
+  "agentPath": "/root/reviewer"
+}
+```
+
+`kind` is `started | interacted | interrupted`. The `id` is the function
+call id. For `started`, it is also the stable parent spawn-card id; for the
+other kinds it is the control call's own id. `agentThreadId` is the routing
+identity and `agentPath` is the canonical task path. V2 spawn output normally
+returns `{"task_name":"/root/reviewer"}` and may intentionally hide nickname
+metadata; the activity item, not the raw output, is the ownership source.
+
+V2 core creates and starts the child before emitting `subAgentActivity`, so
+the child's `thread/started`, `turn/started`, or transcript deltas can arrive
+first. The session adapter must quarantine every unmapped non-root provider
+thread and replay it only after this typed ownership edge arrives. Falling
+through to the AO root is forbidden: child turn starts reset root stream
+counters, and child turn completions falsely close the root round. The
+quarantine has per-thread, total-count, byte, and thread-id bounds. If typed
+ownership does not arrive within ten seconds, queued approvals are rejected,
+the child events are dropped, and one visible session warning is emitted.
+
+This rule is recursive. A `subAgentActivity kind:"started"` received on a
+known child thread creates a nested edge from that child's spawn item to the
+grandchild provider thread. Grandchild output is scoped to the nested spawn
+card; if its edge is late, it remains quarantined and never reaches the root.
+
+### The MultiAgentV1 `CollabAgentTool` enum
 
 Defined at `codex-rs/app-server-protocol/src/protocol/v2.rs:4977`:
 
@@ -320,7 +393,7 @@ CollabAgentTool = "spawnAgent" | "sendInput" | "resumeAgent" | "wait" | "closeAg
 itemType; keep accepting the older `"waitAgent"` spelling only as a
 defensive alias.
 
-### Spawn flow (parent thread)
+### MultiAgentV1 spawn flow (parent thread)
 
 1. Agent emits a `FunctionCall` for `spawn_agent`.
 2. `item/started` fires with `type: "collabAgentToolCall"`,
@@ -345,7 +418,7 @@ After the typed spawn completion gives Agent Overflow the
 onto the parent spawn row as a metadata-only update. Wait rows then reuse
 that receiver-thread label map.
 
-With `thread/start.experimentalRawEvents=true`, some app-server builds also
+With `thread/start.experimentalRawEvents=true`, app-server builds also
 emit `rawResponseItem/completed` for the model-facing function call and its
 tool output. These raw items can carry the same label metadata:
 
@@ -358,12 +431,39 @@ Agent Overflow treats the typed `item/*` lifecycle as authoritative for the
 visible tool row. `thread/read` is the primary label source; raw response
 items are only an additional typed signal when present, not a prerequisite.
 
+### MultiAgentV2 spawn normalization
+
+V2 emits no `item/started` for `subAgentActivity`. Agent Overflow expands a
+canonical `kind:"started"` completion into the normalized spawn start +
+completion pair used by the existing projector. The normalized completion
+contains the authoritative receiver thread and a running `agentsStates`
+entry, because successful emission occurs only after core has spawned the
+child. This is a typed authorization signal, not an ordering heuristic.
+
+Raw `spawn_agent` arguments can enrich the row with prompt, role, and model
+during a fresh session. On resume, raw events are unavailable, so
+`agentPath`/`taskName` and `thread/read` metadata provide the stable label.
+`thread/resume` history is scanned for both V1 spawn items and V2 started
+activities to rebuild ownership without replaying duplicate transcript rows.
+One bounded, session-cancellable worker follows descendants with read-only
+`thread/read {includeTurns:true}` calls. It resumes only children whose
+reported status is `active`, using `excludeTurns:true` solely to restore the
+live subscription. A fresh `Session.Resume` starts a new traversal generation;
+transient reads/resumes retry, conflicting/self-referential ownership is
+rejected, and traversal stops after 256 descendants with a visible warning.
+
+Known child `turn/started` is normalized to a launch-keyed running status. This
+reactivates a previously completed child's spawn card when `followup_task`
+starts another turn; its later `turn/completed` marks that launch inactive
+again. Neither lifecycle event is allowed to mutate the root turn.
+
 ### Parent learning the child finished
 
 Two paths:
 
-**(a) Explicit `wait` tool**: the parent agent can call `wait` with
-a list of child `thread_id`s to block on. Emits
+**(a) Explicit `wait` tool**: in V1 the parent agent calls `wait` with a list
+of child `thread_id`s. V2 `wait_agent` instead waits for any mailbox/input
+queue activity and accepts only `timeout_ms`. Both emit
 `CollabWaitingBegin` → `CollabWaitingEnd` (which surface as
 `item/started` + `item/completed` for `tool: "wait"`,
 `receiverThreadIds` on the item, and in V1 `agentsStates` populated
@@ -382,7 +482,9 @@ When the wait observes completion, the raw output has
 `"timed_out":false` and `status` carries the terminal child result.
 The typed `item/completed` usually also carries `agentsStates`, and
 that typed state remains the source used to synthesize the indented
-spawn-agent completion row.
+spawn-agent completion row. V2 deliberately completes with empty
+`receiverThreadIds` and `agentsStates`; child `turn/completed` still updates
+the launch's live status, and the scoped child transcript provides its result.
 
 **(b) Implicit via `<subagent_notification>`**: When a detached
 child finishes and the parent has NO `wait` outstanding, Codex core
@@ -458,10 +560,13 @@ the session's child/parent map.
 
 When events arrive on a known child `thread_id`, our session maps
 them back to the parent's `spawn_agent` card via `childParentByThread`.
-Child-thread `turn/started` and `turn/completed` on the child are
-suppressed as session events at the parent level
-(`session.go:623-625`) to avoid spurious turn-lifecycle updates on
-the parent, but child `item/*` events are relayed via `ParentToolUseID`.
+Child `turn/started` is suppressed. Child `turn/completed` becomes only
+`EventSubagentStatus`; it never becomes a parent turn boundary. Child
+thread-wide state (token usage, name, status, model reroutes, plans, user
+message echoes) is suppressed so it cannot overwrite the root projection.
+Transcript-bearing child events are relayed via `ParentToolUseID`. Fatal child
+errors are downgraded to scoped, non-fatal error rows and terminal child
+status; they cannot close the root turn.
 
 ### `agentsStates` field on spawn/wait cards
 

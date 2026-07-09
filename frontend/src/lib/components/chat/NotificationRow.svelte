@@ -12,12 +12,32 @@
   let meta = $derived(parseJsonObject(item.meta));
   let kind = $derived(typeof meta?.kind === 'string' ? meta.kind : item.toolName || '');
   let icon = $derived.by(() => {
-    if (kind === 'warning' || kind === 'deprecation_notice' || kind === 'model_verification') {
+    if (
+      kind === 'warning' ||
+      kind === 'deprecation_notice' ||
+      kind === 'model_verification' ||
+      kind === 'model_refusal_fallback'
+    ) {
       return AlertTriangle;
     }
     if (kind === 'plan_update') return ClipboardList;
     if (kind === 'review_status') return SearchCheck;
     return Bell;
+  });
+  let isWarning = $derived(
+    kind === 'warning' ||
+    kind === 'deprecation_notice' ||
+    kind === 'model_verification' ||
+    kind === 'model_refusal_fallback',
+  );
+  let fallbackReason = $derived.by(() => {
+    if (kind !== 'model_refusal_fallback') return '';
+    const explanation = typeof meta?.explanation === 'string' ? meta.explanation.trim() : '';
+    if (explanation) return explanation;
+    const category = typeof meta?.category === 'string' ? meta.category.trim().toLowerCase() : '';
+    if (category === 'cyber') return 'Cybersecurity safety classifier';
+    if (category === 'bio') return 'Biology safety classifier';
+    return category ? `${category} safety classifier` : '';
   });
 
   let plan = $derived.by<Array<{ step: string; status: string }>>(() => {
@@ -75,13 +95,19 @@
 </script>
 
 <div
-  class="mb-1.5 px-2 py-1 text-[0.6875rem] italic text-fg-subtle"
+  class="mb-1.5 px-2 py-1 text-[0.6875rem] italic {isWarning ? 'text-warning' : 'text-fg-subtle'}"
   data-testid="notification-row"
+  role={isWarning ? 'status' : undefined}
 >
   <div class="flex items-center gap-1.5">
     <Icon {icon} size={11} strokeWidth={2} class="opacity-70 shrink-0" />
     <span>{item.summary || 'Provider notification'}</span>
   </div>
+  {#if fallbackReason}
+    <div class="ml-5 mt-0.5 not-italic text-warning/80">
+      Reason: {fallbackReason}
+    </div>
+  {/if}
   {#if plan.length > 0}
     <div class="ml-5 mt-1 space-y-0.5 not-italic">
       {#each plan as step}

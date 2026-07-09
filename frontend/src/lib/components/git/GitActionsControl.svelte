@@ -27,6 +27,7 @@
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import Icon from '../primitives/Icon.svelte';
   import Button from '../primitives/Button.svelte';
+  import { SPLIT_BTN_BASE } from '../primitives/splitButton';
   import {
     primaryActionFor,
     runCreatePRAction,
@@ -38,20 +39,11 @@
 
   let { pane }: { pane: ThreadPane } = $props();
 
-  // Shared chrome for the split-button's two segments. The `h-6` here is
-  // load-bearing: it locks BOTH segments to the 24px header-cluster height (same
-  // as an xs Button / PrBadge). Keeping the height in ONE place is the point —
-  // if the two halves drift apart, or either drifts off 24px, the control's
-  // async git-status mount grows the chat header and reflows the timeline (the
-  // bug this control originally caused). Per-segment bits (padding, which corners
-  // round, the shared middle border) are appended at each use site.
-  // Font size + focus-ring match the rest of the header cluster (xs Button,
-  // PrBadge: text-[0.6875rem] / ring-accent/40), not just the height — so the
-  // split-button reads as one of the cluster, not a slightly-bigger outlier.
-  const SPLIT_BTN_BASE =
-    'inline-flex items-center h-6 text-[0.6875rem] border border-border text-text-secondary ' +
-    'hover:text-text-primary hover:border-text-secondary cursor-pointer ' +
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
+  // Split-button chrome (both segments, 24px height, header-cluster font +
+  // focus ring) lives in ../primitives/splitButton so the Open-in-editor
+  // control shares the exact same base — see SPLIT_BTN_BASE there for why the
+  // height is load-bearing. Per-segment padding / rounded corners / middle
+  // border are appended at each use site below.
 
   // Live status for this pane's workspace, observed by the shared gitStatus
   // slot. Reading through $derived keeps this control reactive to the single

@@ -63,7 +63,7 @@ func TestSeedChatModelProfileSkipsHiddenCodexModel(t *testing.T) {
 		Provider:        "codex",
 		Model:           hiddenSlug,
 		ReasoningEffort: "medium",
-		ContextWindow:   provider.CodexStandardContextWindow,
+		ContextWindow:   provider.Codex56ContextWindow,
 	}); err != nil {
 		t.Fatalf("UpsertChatModelProfile: %v", err)
 	}

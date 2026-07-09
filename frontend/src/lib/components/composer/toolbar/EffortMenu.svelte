@@ -55,7 +55,7 @@
     });
   });
 
-  type Effort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  type Effort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
   const FALLBACK_EFFORTS: Array<ReasoningEffortOption> = [
     { slug: 'low', label: 'Low' },
@@ -70,6 +70,9 @@
   let currentFast = $derived(pane.thread?.fastMode === true);
   let currentContextWindow = $derived(pane.thread?.contextWindow ?? 0);
   let activeProvider = $derived(asProviderID(pane.thread?.provider));
+  // Effort/context/fast-mode settings belong to the durable requested model.
+  // A classifier fallback changes only the live model display; applying Opus
+  // capabilities here would mutate the saved Fable profile with the wrong menu.
   let activeModel = $derived(pane.thread?.model ?? '');
   let activeModelInfo = $derived<ModelInfo | undefined>(
     activeProvider

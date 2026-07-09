@@ -34,7 +34,9 @@ the doc comment on `knownRates` for the pricing decisions baked into
 the numbers: Claude cache-write uses the 1h-TTL rate (not 5m) because
 Claude Code pins 1h cache in practice and the ledger can't distinguish
 TTL tiers; there is no 200k-context tier because the ledger doesn't
-store per-request context size; OpenAI cache-write is always 0.
+store per-request context size; OpenAI cache-write is 0 unless a model
+has an explicit published `CacheWrite` rate, as the GPT-5.6 family
+does.
 
 The trim algorithm has a real gap: a future dotted Codex version
 without its own entry (e.g. `gpt-5.3-codex`) does NOT fall back to

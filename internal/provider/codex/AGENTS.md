@@ -13,12 +13,16 @@ over stdio.
 - `session_notifications.go` — notification pre-processing, child
   routing, classifier invocation, event enrichment, turn-state tracking,
   and final event emission.
+- `child_routing.go` — bounded/deadlined fail-closed quarantine for
+  notifications and server requests from not-yet-owned child threads.
+- `collab_rehydrate.go` — bounded read-only descendant-history traversal and
+  active-child subscription recovery on root resume.
 - `session_rollout_notifications.go` — narrow tailing of the active
   Codex rollout file for detached-child mailbox notifications that
   resumed app-server sessions do not expose as raw events.
 - `server_requests.go` — server-initiated request dispatch:
   approvals, MCP elicitation, structured user input, and dynamic tools.
-- `turn_input.go` — outbound `message/send` / `turn/steer` user-input
+- `turn_input.go` — outbound `turn/start` / `turn/steer` user-input
   payload shaping.
 - `interactive_requests.go` — pending approval/user-input tracking,
   dedupe, response claiming, interrupt/close drain, and lost-prompt
@@ -75,11 +79,18 @@ over stdio.
 
 ## Methods we call
 
-- `thread/new`, `thread/resume`, `thread/fork`, `thread/rollback`.
+- `thread/start`, `thread/resume`, `thread/fork`, `thread/rollback`.
 - `thread/read` — on-reopen liveness probe. Called by `Session.Probe`
   to fetch the current `thread.status.type` so the app-layer reconciler
   can flip stale running background tool rows.
-- `message/send` — deliver a user turn.
+- `turn/start`, `turn/steer`, `turn/interrupt` — deliver, steer, and stop
+  user turns. `turn/start` carries per-turn config overrides (`model`,
+  `effort`, `serviceTier`, `approvalPolicy`, `sandboxPolicy` — upstream
+  documents each as applying "for this turn and subsequent turns"),
+  which is how a mid-session model / effort / fast-mode / runtime-mode
+  change lands without a session restart (`live_update.go`).
+  `turn/steer` takes NO config fields, so an in-flight turn can never
+  be reconfigured.
 - Sandbox/approval method family — `file/write`, `file/delete`,
   `file/mkdir`, `command/execute`, etc. These arrive as requests we
   must respond to.
@@ -134,13 +145,19 @@ Summary:
   commands is blocked on an upstream protocol change; see
   [`codex.md §Known upstream constraints`](../../../docs/references/codex.md#known-upstream-constraints).
 
-## Collab agent lifecycle (spawn_agent / wait / close_agent / send_input / resume_agent)
+## Collab agent lifecycle (MultiAgentV1 and MultiAgentV2)
 
 Codex's closest analog to Claude's backgrounded tools, but
 structurally different — **a spawn creates a child thread**, not
 a backgrounded tool. See
-[`codex-wire.md §Collab agent lifecycle`](../../../docs/references/codex-wire.md#collab-agent-lifecycle-spawn_agent-wait-close_agent-etc)
+[`codex-wire.md §Collab agent lifecycle`](../../../docs/references/codex-wire.md#collab-agent-lifecycle-multiagentv1-and-multiagentv2)
 for the wire sequence. Key points:
+
+- V1 ownership arrives on `collabAgentToolCall spawnAgent`; V2 ownership
+  arrives on completed `subAgentActivity kind:"started"`.
+- V2 may start/stream the child before the ownership item. Every unknown
+  non-root thread is quarantined fail-closed, including recursively spawned
+  grandchildren; child lifecycle never becomes root lifecycle.
 
 - `spawn_agent` tool_call completes **immediately** (status:
   completed) when the spawn request is accepted; child runs on a

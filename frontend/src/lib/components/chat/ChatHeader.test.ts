@@ -27,6 +27,7 @@ import {
   resetProjectsForTest,
 } from '../../stores/projects.svelte';
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
+import { resetEditorsForTest } from '../../stores/editors.svelte';
 import { openTerminalThread } from '../../stores/threadCreation.svelte';
 import type { Project, Thread } from '../../types/models';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
@@ -90,6 +91,13 @@ describe('<ChatHeader>', () => {
     resetPanesForTest();
     resetCompanionPanesForTest();
     resetPaneLayoutForTest();
+    resetEditorsForTest();
+    // The header's Open-in-editor control loads this catalog on mount.
+    // An empty catalog keeps the primary button working (the backend
+    // still resolves the default) while rendering no dropdown, which is
+    // all these header tests care about.
+    setBindingMock('ListAvailableEditors', async () => []);
+    setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     vi.mocked(openTerminalThread).mockClear();
   });
 
@@ -200,7 +208,7 @@ describe('<ChatHeader>', () => {
 
   it('toggles the review pane via the Diffs button', async () => {
     const pane = await buildPane();
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     const { getByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
     expect(pane.showReviewPane).toBe(false);
@@ -210,7 +218,7 @@ describe('<ChatHeader>', () => {
 
   it('shows the design preview toggle and hides the diff toggle on design threads', async () => {
     const pane = await buildPane(makeThread({ mode: 'design' }));
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     const { getByTestId, queryByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
 
@@ -295,7 +303,7 @@ describe('<ChatHeader>', () => {
     await tick();
     await fireEvent.click(getByTestId('chat-header-open-editor'));
     await tick();
-    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '']);
+    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', '']);
   });
 
   it('hides the Open button when the thread has no project', async () => {
@@ -357,8 +365,8 @@ describe('<ChatHeader>', () => {
     await pane.switchThread(makeThread({ id: 'close-thread', title: 'Closes' }));
     registerPaneForTest('to-close', pane);
     setPaneLayoutItemsForTest([
-      { id: 'main-item', paneId: 'main', kind: 'thread', ratio: 1 },
-      { id: 'close-item', paneId: 'to-close', kind: 'thread', ratio: 1 },
+      { id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 },
+      { id: 'close-item', paneId: 'to-close', kind: 'thread', widthPx: 1 },
     ]);
     const { getByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
@@ -375,8 +383,8 @@ describe('<ChatHeader>', () => {
     registerPaneForTest('main', focused);
     registerPaneForTest('other', other);
     setPaneLayoutItemsForTest([
-      { id: 'main-item', paneId: 'main', kind: 'thread', ratio: 1 },
-      { id: 'other-item', paneId: 'other', kind: 'thread', ratio: 1 },
+      { id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 },
+      { id: 'other-item', paneId: 'other', kind: 'thread', widthPx: 1 },
     ]);
     focusPane('main');
 
@@ -393,7 +401,7 @@ describe('<ChatHeader>', () => {
     await pane.switchThread(makeThread({ id: 'solo-thread', title: 'Solo' }));
     registerPaneForTest('main', pane);
     setPaneLayoutItemsForTest([
-      { id: 'main-item', paneId: 'main', kind: 'thread', ratio: 1 },
+      { id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 },
     ]);
     focusPane('main');
     const { getByTestId } = render(ChatHeader, { props: { pane } });
@@ -411,8 +419,8 @@ describe('<ChatHeader>', () => {
     registerPaneForTest('main', focused);
     registerPaneForTest('other', other);
     setPaneLayoutItemsForTest([
-      { id: 'main-item', paneId: 'main', kind: 'thread', ratio: 1 },
-      { id: 'other-item', paneId: 'other', kind: 'thread', ratio: 1 },
+      { id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 },
+      { id: 'other-item', paneId: 'other', kind: 'thread', widthPx: 1 },
     ]);
     focusPane('main');
 

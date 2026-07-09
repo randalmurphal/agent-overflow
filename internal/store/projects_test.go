@@ -260,7 +260,7 @@ func TestArchiveAndUnarchiveProject(t *testing.T) {
 	}
 }
 
-func TestDeleteProjectCascadesThreads(t *testing.T) {
+func TestDeleteProjectRefusesThreads(t *testing.T) {
 	s := newTestStore(t)
 	p := newProject("proj-del", "/tmp/del", "delete-me")
 	if err := s.CreateProject(p); err != nil {
@@ -281,13 +281,17 @@ func TestDeleteProjectCascadesThreads(t *testing.T) {
 		t.Fatalf("ListThreadIDsForProject = %v, want [t-del]", ids)
 	}
 
-	if err := s.DeleteProject(p.ID); err != nil {
-		t.Fatalf("DeleteProject: %v", err)
+	if err := s.DeleteProject(p.ID); !errors.Is(err, ErrProjectHasThreads) {
+		t.Fatalf("DeleteProject with thread = %v, want ErrProjectHasThreads", err)
 	}
-
-	_, err = s.GetThread("t-del")
-	if !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("GetThread after DeleteProject = %v, want sql.ErrNoRows", err)
+	if _, err := s.GetThread("t-del"); err != nil {
+		t.Fatalf("thread removed by refused DeleteProject: %v", err)
+	}
+	if err := s.DeleteThread("t-del"); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	if err := s.DeleteProject(p.ID); err != nil {
+		t.Fatalf("DeleteProject after thread removal: %v", err)
 	}
 }
 

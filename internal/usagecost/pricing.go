@@ -36,7 +36,10 @@ type Rate struct {
 //   - This table only prices usage_ledger rows with cost_source='none'
 //     (Codex, claudetui). Claude's wire-reported cost_usd passes
 //     through untouched and is never repriced here.
-//   - OpenAI CacheWrite rates are 0: OpenAI does not bill cache writes.
+//   - OpenAI CacheWrite rates are 0 for older rows that have no
+//     explicit cache-write price. GPT-5.6 uses explicit prompt caching
+//     and bills cache writes at the published 1.25x input rate, so its
+//     entries set CacheWrite.
 var knownRates = map[string]Rate{
 	"claude-fable": {Input: 10.00, Output: 50.00, CacheRead: 1.00, CacheWrite: 20.00},
 	"claude-opus":  {Input: 5.00, Output: 25.00, CacheRead: 0.50, CacheWrite: 10.00},
@@ -59,12 +62,16 @@ var knownRates = map[string]Rate{
 	// entry (like gpt-5.2-codex / gpt-5.1-codex above) the day it ships.
 	"gpt-5-codex": {Input: 1.75, Output: 14.00, CacheRead: 0.175},
 
-	"gpt-5.5":      {Input: 5.00, Output: 30.00, CacheRead: 0.50},
-	"gpt-5.4":      {Input: 2.50, Output: 15.00, CacheRead: 0.25},
-	"gpt-5.4-mini": {Input: 0.75, Output: 4.50, CacheRead: 0.075},
+	// gpt-5.6 is the published alias for gpt-5.6-sol. The family row
+	// also lets gpt-5.6-sol resolve to Sol pricing through suffix trim.
+	"gpt-5.6":       {Input: 5.00, Output: 30.00, CacheRead: 0.50, CacheWrite: 6.25},
+	"gpt-5.6-terra": {Input: 2.50, Output: 15.00, CacheRead: 0.25, CacheWrite: 3.125},
+	"gpt-5.6-luna":  {Input: 1.00, Output: 6.00, CacheRead: 0.10, CacheWrite: 1.25},
+	"gpt-5.5":       {Input: 5.00, Output: 30.00, CacheRead: 0.50},
+	"gpt-5.4":       {Input: 2.50, Output: 15.00, CacheRead: 0.25},
+	"gpt-5.4-mini":  {Input: 0.75, Output: 4.50, CacheRead: 0.075},
 	// "gpt-5" is the family-level fallback for GPT-5 variants without an
-	// explicit per-version entry (for example a future gpt-5.6 until/if
-	// we add a distinct entry).
+	// explicit per-version entry.
 	"gpt-5": {Input: 1.25, Output: 10.00, CacheRead: 0.125},
 
 	"o3":      {Input: 1.75, Output: 14.00, CacheRead: 0.175},
@@ -94,8 +101,8 @@ func Price(model string, inputTokens, outputTokens, cacheReadTokens, cacheWriteT
 // matchRate finds pricing for a model slug: exact match first, then
 // progressive prefix matching by trimming the trailing "-" or "."
 // segment each round, until a known family prefix matches. This lets
-// "claude-sonnet-4-6" resolve to "claude-sonnet" and "gpt-5.6" resolve
-// to "gpt-5" with the same algorithm.
+// "claude-sonnet-4-6" resolve to "claude-sonnet" and "gpt-5.4-nano"
+// resolve to "gpt-5.4" with the same algorithm.
 func matchRate(model string) (Rate, bool) {
 	// Drop a trailing context-tier marker ("claude-sonnet-5[1m]" ->
 	// "claude-sonnet-5") — the wire slug carries it for 1M-context

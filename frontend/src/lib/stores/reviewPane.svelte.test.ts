@@ -208,7 +208,7 @@ describe('reviewPane store', () => {
   });
 
   it('openReviewCompanion applies scope, checkpoint, and pending jump target', async () => {
-    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
     setBindingMock('GetMessageCheckpointDiff', async () => 'turn patch');
     setBindingMock('ListThreadCheckpoints', async () => [
       { userItemId: 'u1', turnIndex: 1 },

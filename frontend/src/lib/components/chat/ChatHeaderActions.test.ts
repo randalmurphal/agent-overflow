@@ -5,6 +5,7 @@ import ChatHeaderActions from './ChatHeaderActions.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
+import { resetEditorsForTest } from '../../stores/editors.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
@@ -79,9 +80,13 @@ function installSubscribeMock(initial: GitStatus, id = 'sub-1') {
 describe('<ChatHeaderActions> badge gating', () => {
   beforeEach(async () => {
     resetPanesForTest();
+    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     setBindingMock('UpdateThreadBranch', async () => makeThread());
+    // The Open-in-editor control loads this catalog on mount.
+    setBindingMock('ListAvailableEditors', async () => []);
+    setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
   });
 
@@ -130,7 +135,7 @@ describe('<ChatHeaderActions> badge gating', () => {
 
   it('clicking the workspace +/- opens review on the workspace scope', async () => {
     const pane = await buildPane();
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     installSubscribeMock(status({ insertions: 2, deletions: 0 }));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();
@@ -144,9 +149,13 @@ describe('<ChatHeaderActions> badge gating', () => {
 describe('<ChatHeaderActions> subscription effect', () => {
   beforeEach(async () => {
     resetPanesForTest();
+    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     setBindingMock('UpdateThreadBranch', async () => makeThread());
+    // The Open-in-editor control loads this catalog on mount.
+    setBindingMock('ListAvailableEditors', async () => []);
+    setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
   });
 

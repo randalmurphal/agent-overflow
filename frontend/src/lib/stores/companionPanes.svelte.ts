@@ -6,7 +6,7 @@
 
 import {
   addPaneLayoutItem,
-  averagePaneRatio,
+  averagePaneWidthPx,
   getPaneLayoutItems,
   isCompanionKind,
   removePaneLayoutItem,
@@ -77,13 +77,13 @@ export function openCompanion(
   if (sourceIndex < 0) return null;
 
   const paneId = companionPaneIdFor(sourcePaneId, kind);
-  const sourceRatio = layoutItems[sourceIndex].ratio;
+  const sourceWidthPx = layoutItems[sourceIndex].widthPx;
   addPaneLayoutItem(
     {
       id: paneId,
       paneId,
       kind,
-      ratio: sourceRatio > 0 ? sourceRatio : averagePaneRatio(),
+      widthPx: sourceWidthPx > 0 ? sourceWidthPx : averagePaneWidthPx(),
       sourcePaneId,
     },
     companionInsertIndex(sourcePaneId),

@@ -61,7 +61,9 @@ async function invokePathLink(
   workspacePath: string,
 ): Promise<void> {
   try {
-    await OpenInEditor(path, line, col, workspacePath);
+    // Empty editorID → open in the user's default editor (preference →
+    // catalog → $EDITOR). Path links never target a specific editor.
+    await OpenInEditor(path, line, col, workspacePath, '');
   } catch (err) {
     addToast('error', errString(err));
   }

@@ -40,7 +40,9 @@
   let hostEl: HTMLDivElement | undefined = $state(undefined);
   let scrollLeft = $state(0);
   let scrollClientWidth = $state(0);
-  let paneOffsetLeftById: Map<string, number> = $state(new Map());
+  // Not reactive: consumed imperatively by the drag/drop preview math,
+  // and offset churn during resize drags would only feed GC.
+  const paneOffsetLeftById: Map<string, number> = new Map();
 
   function paneElementById(paneId: string): HTMLElement | null {
     for (const paneEl of hostEl?.querySelectorAll<HTMLElement>(PANE_SELECTOR) ?? []) {
@@ -76,27 +78,30 @@
   });
 
   function handlePaneOffsetChange(paneId: string, offsetLeft: number | null): void {
-    const next = new Map(paneOffsetLeftById);
-    if (offsetLeft === null) next.delete(paneId);
-    else next.set(paneId, offsetLeft);
-    paneOffsetLeftById = next;
+    if (offsetLeft === null) paneOffsetLeftById.delete(paneId);
+    else paneOffsetLeftById.set(paneId, offsetLeft);
+  }
+
+  // Also runs after a divider resize gesture: panes past the boundary
+  // shift without resizing, so their per-pane ResizeObservers stay
+  // silent and the cached offsets would go stale.
+  function publishPaneOffsets(): void {
+    const el = hostEl;
+    if (!el) return;
+    paneOffsetLeftById.clear();
+    for (const paneEl of el.querySelectorAll<HTMLElement>(PANE_SELECTOR)) {
+      const paneId = paneEl.dataset.paneId;
+      if (paneId) paneOffsetLeftById.set(paneId, paneEl.offsetLeft);
+    }
   }
 
   $effect(() => {
     const el = hostEl;
     if (!el) return;
-    const publishOffsets = (): void => {
-      const nextOffsets = new Map<string, number>();
-      for (const paneEl of el.querySelectorAll<HTMLElement>(PANE_SELECTOR)) {
-        const paneId = paneEl.dataset.paneId;
-        if (paneId) nextOffsets.set(paneId, paneEl.offsetLeft);
-      }
-      paneOffsetLeftById = nextOffsets;
-    };
     const publishHostGeometry = (): void => {
       scrollLeft = el.scrollLeft;
       scrollClientWidth = el.clientWidth;
-      publishOffsets();
+      publishPaneOffsets();
     };
     const publishScrollPosition = (): void => {
       scrollLeft = el.scrollLeft;
@@ -177,6 +182,14 @@
     focusPane(paneId);
     requestPaneScroll(paneId);
   }
+
+  // flex-grow = widthPx stretches panes proportionally to their base
+  // widths when the window is wider than their sum; shrink-0 in the
+  // class list keeps a narrower window as horizontal scroll instead of
+  // squeezing below the stored width.
+  function paneSectionStyle(widthPx: number): string {
+    return `flex-grow:${widthPx};flex-basis:${widthPx}px;min-width:${minPaneWidth}px`;
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -209,14 +222,12 @@
              a thread. The shared top border marks the pairing on both halves. -->
         <section
           use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
-          style:flex-grow={item.ratio}
-          style:flex-basis="0"
-          style:min-width={`${minPaneWidth}px`}
-          class="take-control-pair-top flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border-subtle/70"
+          style={paneSectionStyle(item.widthPx)}
+          class="take-control-pair-top flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70"
           data-pane-id={item.paneId}
           data-pane-kind={item.kind}
           data-pane-min-width={minPaneWidth}
-          data-pane-ratio={item.ratio}
+          data-pane-width={item.widthPx}
         >
           <TakeControlPane paneId={item.paneId} />
         </section>
@@ -224,14 +235,12 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <section
           use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
-          style:flex-grow={item.ratio}
-          style:flex-basis="0"
-          style:min-width={`${minPaneWidth}px`}
-          class="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border-subtle/70"
+          style={paneSectionStyle(item.widthPx)}
+          class="flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70"
           data-pane-id={item.paneId}
           data-pane-kind={item.kind}
           data-pane-min-width={minPaneWidth}
-          data-pane-ratio={item.ratio}
+          data-pane-width={item.widthPx}
           onpointerdown={() => handlePaneFocus(item.sourcePaneId!)}
           onfocusin={() => handlePaneFocus(item.sourcePaneId!)}
         >
@@ -244,11 +253,9 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <section
             use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
-            style:flex-grow={item.ratio}
-            style:flex-basis="0"
-            style:min-width={`${minPaneWidth}px`}
+            style={paneSectionStyle(item.widthPx)}
             class={[
-              'flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border-subtle/70',
+              'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70',
               paired ? 'take-control-pair-top' : '',
               focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
               drag.draggingPaneId === item.paneId ? 'opacity-55' : '',
@@ -257,7 +264,7 @@
             data-pane-id={item.paneId}
             data-pane-kind={item.kind}
             data-pane-min-width={minPaneWidth}
-            data-pane-ratio={item.ratio}
+            data-pane-width={item.widthPx}
             data-pane-focused={focusedPaneId === item.paneId}
             data-pane-paired={paired}
             onpointerdown={() => handlePaneFocus(item.paneId)}
@@ -269,10 +276,8 @@
           </section>
         {:else}
           <section
-            style:flex-grow={item.ratio}
-            style:flex-basis="0"
-            style:min-width={`${minPaneWidth}px`}
-            class="flex min-h-0 min-w-0 items-center justify-center text-sm text-error"
+            style={paneSectionStyle(item.widthPx)}
+            class="flex min-h-0 min-w-0 shrink-0 items-center justify-center text-sm text-error"
             data-pane-id={item.paneId}
             data-pane-kind={item.kind}
             data-pane-missing="true"
@@ -282,11 +287,32 @@
         {/if}
       {/if}
       {#if index < layoutItems.length - 1}
-        <div data-pane-gap-index={index + 1} class="shrink-0">
-          <PaneDivider leftPaneId={item.paneId} rightPaneId={layoutItems[index + 1].paneId} />
+        <!-- `flex` is load-bearing: it stretches the divider to the
+             full strip height. Without it the divider is a block box
+             whose only child is absolutely positioned, so it collapses
+             to 0px tall and there is nothing to hover or grab. -->
+        <div data-pane-gap-index={index + 1} class="flex shrink-0">
+          <PaneDivider
+            leftPaneId={item.paneId}
+            rightPaneId={layoutItems[index + 1].paneId}
+            leftPaneWidthPx={item.widthPx}
+            getHostEl={() => hostEl}
+            onDragEnd={publishPaneOffsets}
+          />
         </div>
       {/if}
     {/each}
+    <!-- End handle: the far-right pane has no divider on its right, so
+         the strip's right edge itself is draggable to resize it. The
+         `flex` wrapper stretches it to full height (see above). -->
+    <div data-pane-gap-index={layoutItems.length} class="flex shrink-0">
+      <PaneDivider
+        leftPaneId={layoutItems[layoutItems.length - 1].paneId}
+        leftPaneWidthPx={layoutItems[layoutItems.length - 1].widthPx}
+        getHostEl={() => hostEl}
+        onDragEnd={publishPaneOffsets}
+      />
+    </div>
     {#if drag.threadDropTarget}
       <div
         class="pointer-events-none absolute top-0 bottom-0 z-40 rounded-[var(--radius-field)] border-2 border-accent/70 bg-accent/10"

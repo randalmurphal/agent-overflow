@@ -72,3 +72,28 @@ func Resolve(detected []Editor, preferredID string) (*Editor, error) {
 
 	return nil, fmt.Errorf("%w; install VS Code, Cursor, Sublime Text, or set $EDITOR", ErrNoEditor)
 }
+
+// ResolveExact returns the editor with exactly the given ID, but only
+// if it is available. Unlike Resolve it never walks the catalog or the
+// env fallback: a caller that names an editor explicitly (the header
+// "open in this one" picker) wants that editor or a clear error, not a
+// silent substitution to a different app.
+//
+// An empty id is a programming error — callers with no specific editor
+// in mind should use Resolve so the preference/catalog/env chain runs.
+func ResolveExact(detected []Editor, id string) (*Editor, error) {
+	if id == "" {
+		return nil, fmt.Errorf("%w: no editor id given", ErrNoEditor)
+	}
+	for i := range detected {
+		if detected[i].ID != id {
+			continue
+		}
+		if !detected[i].Available {
+			return nil, fmt.Errorf("%w: %q is not available", ErrNoEditor, id)
+		}
+		ed := detected[i]
+		return &ed, nil
+	}
+	return nil, fmt.Errorf("%w: %q is not a known editor", ErrNoEditor, id)
+}

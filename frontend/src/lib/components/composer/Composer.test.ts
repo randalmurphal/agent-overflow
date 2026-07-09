@@ -1202,7 +1202,7 @@ describe('<Composer>', () => {
       updatedAt: 1,
     });
     const pane = await buildPane(makeTestThread(), [plan]);
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     const draft = await buildDraft();
     setBindingMock('ListProposedPlanComments', async () => []);
     const sendGate = deferred<ReturnType<typeof makeTestThread>>();
@@ -1629,7 +1629,7 @@ describe('<Composer>', () => {
       updatedAt: 1,
     });
     const pane = await buildPane(makeTestThread(), [plan]);
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     const draft = await buildDraft();
     setBindingMock('ListThreadProposedPlans', async () => []);
 

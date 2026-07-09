@@ -72,6 +72,7 @@ describe('setupEventListeners', () => {
     resetRateLimitsInfo();
     resetProviderStatuses();
     setBindingMock('AutoResumeThread', async () => {});
+    setBindingMock('GetRateLimitsSnapshots', async () => []);
     resetPanesForTest();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
@@ -88,6 +89,7 @@ describe('setupEventListeners', () => {
   it('registers and unregisters the unified listener set', () => {
     expect(wailsListenerCount('provider:approval')).toBe(1);
     expect(wailsListenerCount('provider:usage')).toBe(1);
+    expect(wailsListenerCount('provider:model_fallback')).toBe(1);
     expect(wailsListenerCount('provider:status')).toBe(1);
     expect(wailsListenerCount('provider:item_event')).toBe(1);
     expect(wailsListenerCount('provider:turn_started')).toBe(1);
@@ -99,6 +101,7 @@ describe('setupEventListeners', () => {
 
     expect(wailsListenerCount('provider:approval')).toBe(0);
     expect(wailsListenerCount('provider:usage')).toBe(0);
+    expect(wailsListenerCount('provider:model_fallback')).toBe(0);
     expect(wailsListenerCount('provider:status')).toBe(0);
     expect(wailsListenerCount('provider:item_event')).toBe(0);
     expect(wailsListenerCount('provider:turn_started')).toBe(0);
@@ -107,6 +110,25 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('thread:updated')).toBe(0);
 
     cleanup = setupEventListeners();
+  });
+
+  it('hydrates rate limits retained before the frontend connected', async () => {
+    cleanup();
+    resetRateLimitsInfo();
+    setBindingMock('GetRateLimitsSnapshots', async () => [{
+      provider: 'codex',
+      limits: [
+        { limitId: 'codex', limitName: '', usedPercent: 31, windowMins: 300, resetsAt: 1783643306 },
+        { limitId: 'codex', limitName: '', usedPercent: 30, windowMins: 10080, resetsAt: 1784009268 },
+      ],
+      updatedAt: 1783629000000,
+    }]);
+
+    cleanup = setupEventListeners();
+    await vi.waitFor(() => {
+      expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(31);
+      expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(30);
+    });
   });
 
   it('routes item_event upserts only to the matching pane', async () => {
@@ -1333,6 +1355,36 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.latestTurnCompletedAt).toBe(300);
   });
 
+  it('projects a model fallback without overwriting the requested model', async () => {
+    const pane = await buildPane(makeThread({
+      id: 'thread-1',
+      provider: 'claude',
+      model: 'claude-fable-5',
+    }));
+
+    emitWailsEvent('provider:model_fallback', {
+      threadId: 'thread-1',
+      requestedModel: 'claude-fable-5',
+      effectiveModel: 'claude-opus-4-8',
+      reason: 'Fable safeguards flagged this message.',
+      category: 'cyber',
+      revision: 1,
+    });
+
+    expect(pane.thread?.model).toBe('claude-fable-5');
+    expect(pane.activeModel).toBe('claude-opus-4-8');
+
+    emitWailsEvent('provider:model_fallback', { threadId: 'thread-1', revision: 2 });
+    expect(pane.activeModel).toBe('claude-fable-5');
+
+    emitWailsEvent('provider:model_fallback', {
+      threadId: 'thread-1',
+      effectiveModel: 'claude-opus-4-8',
+      revision: 1,
+    });
+    expect(pane.activeModel).toBe('claude-fable-5');
+  });
+
   it('patches the sidebar row and every matching pane from thread:mode_changed, and toasts when needsReconnect', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', mode: 'chat' }),
@@ -1833,6 +1885,14 @@ describe('setupEventListeners', () => {
         }),
       };
     });
+    setBindingMock('GetRateLimitsSnapshots', async () => [{
+      provider: 'codex',
+      limits: [
+        { limitId: 'codex', limitName: '', usedPercent: 47, windowMins: 300, resetsAt: 1783643306 },
+        { limitId: 'codex', limitName: '', usedPercent: 28, windowMins: 10080, resetsAt: 1784009268 },
+      ],
+      updatedAt: 1783629000000,
+    }]);
 
     emitWailsEvent(transportGapChannel, {
       channel: 'provider:usage',
@@ -1843,6 +1903,8 @@ describe('setupEventListeners', () => {
 
     expect(pane.contextWindow?.usedTokens).toBe(175000);
     expect(pane.contextWindow?.usedPercentage).toBe(87.5);
+    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(47);
+    expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(28);
   });
 
   it('preserves an explicit unread marker when thread:updated is stale', async () => {

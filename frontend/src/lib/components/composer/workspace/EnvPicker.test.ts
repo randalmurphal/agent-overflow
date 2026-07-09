@@ -220,6 +220,31 @@ describe('<EnvPicker>', () => {
     });
   });
 
+  it('disables removal when an attached thread is running', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      {
+        path: '/tmp/wt-feature',
+        branch: 'feat',
+        head: 'def',
+        deleteBlocked: true,
+      },
+    ]);
+
+    const { getByTestId, findByLabelText } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+
+    const trash = await findByLabelText(/Remove worktree wt-feature/);
+    expect(trash).toBeDisabled();
+    expect(trash).toHaveAttribute('title', expect.stringMatching(/attached thread is running/));
+    await fireEvent.click(trash);
+
+    expect(getBindingMock('GitWorktreeStatus')).toBeUndefined();
+    expect(getBindingMock('RemoveOtherWorktree')).toBeUndefined();
+  });
+
   it('removes worktrees for placeholders and updates placeholder workspace state', async () => {
     const pane = buildPlaceholderPane();
     setBindingMock('GitListWorktreesForProject', async () => [

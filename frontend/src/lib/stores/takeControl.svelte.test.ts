@@ -23,7 +23,7 @@ import {
 } from './takeControl.svelte';
 
 function threadItem(paneId: string): PaneLayoutItem {
-  return { id: paneId, paneId, kind: 'thread', ratio: 1 };
+  return { id: paneId, paneId, kind: 'thread', widthPx: 1 };
 }
 
 function paneIds(): string[] {

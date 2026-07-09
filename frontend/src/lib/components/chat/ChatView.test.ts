@@ -485,7 +485,7 @@ describe('<ChatView>', () => {
     setBindingMock('EnsureDesignWorkdir', async () => {});
     setBindingMock('LatestDesignOptionSet', async () => null);
     const pane = await buildPane({ ...seedThread(), mode: 'design' });
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     const { getByTestId, queryByTestId } = render(ChatView, { props: { pane } });
     await tick();
 
@@ -506,7 +506,7 @@ describe('<ChatView>', () => {
     setBindingMock('EnsureDesignWorkdir', async () => {});
     setBindingMock('LatestDesignOptionSet', async () => null);
     const pane = await buildPane({ ...seedThread(), mode: 'design' });
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     pane.setPendingClarification({
       requestId: 'clarify-1',
       threadId: pane.threadId ?? 'thread-1',

@@ -2,7 +2,8 @@ package provider
 
 // ReasoningEffort identifies a provider reasoning tier. Claude exposes
 // low/medium/high plus model-specific top tiers; Codex exposes its native
-// none/minimal/low/medium/high/xhigh set through app-server model metadata.
+// none/minimal/low/medium/high/xhigh/max/ultra set through app-server model
+// metadata.
 type ReasoningEffort string
 
 const (
@@ -13,6 +14,7 @@ const (
 	EffortHigh    ReasoningEffort = "high"
 	EffortXHigh   ReasoningEffort = "xhigh"
 	EffortMax     ReasoningEffort = "max"
+	EffortUltra   ReasoningEffort = "ultra"
 )
 
 // AllReasoningEfforts is the canonical ordered list used by validation and
@@ -25,6 +27,7 @@ var AllReasoningEfforts = []ReasoningEffort{
 	EffortHigh,
 	EffortXHigh,
 	EffortMax,
+	EffortUltra,
 }
 
 // DefaultReasoningEffort is the seed value for new threads when a caller
@@ -35,7 +38,7 @@ const DefaultReasoningEffort = EffortHigh
 // so a stale client cannot plant a value outside the enum.
 func NormalizeReasoningEffort(effort string) ReasoningEffort {
 	switch ReasoningEffort(effort) {
-	case EffortNone, EffortMinimal, EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax:
+	case EffortNone, EffortMinimal, EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax, EffortUltra:
 		return ReasoningEffort(effort)
 	default:
 		return DefaultReasoningEffort

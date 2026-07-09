@@ -127,6 +127,67 @@ func TestResolve_EmptyDetectedReturnsErrNoEditor(t *testing.T) {
 	}
 }
 
+func TestResolveExact_ReturnsNamedEditorWhenAvailable(t *testing.T) {
+	detected := []Editor{
+		{ID: "code", Available: true, ResolvedPath: "/usr/bin/code"},
+		{ID: "cursor", Available: true, ResolvedPath: "/usr/bin/cursor"},
+	}
+	got, err := ResolveExact(detected, "cursor")
+	if err != nil {
+		t.Fatalf("ResolveExact: %v", err)
+	}
+	if got.ID != "cursor" {
+		t.Fatalf("expected cursor; got %s", got.ID)
+	}
+}
+
+func TestResolveExact_UnavailableNamedEditorErrors(t *testing.T) {
+	// The one-shot header pick must NOT fall through to the catalog the
+	// way Resolve does — an explicit choice that isn't available is an
+	// error, never a silent substitution to `code`.
+	detected := []Editor{
+		{ID: "code", Available: true, ResolvedPath: "/usr/bin/code"},
+		{ID: "cursor", Available: false},
+	}
+	_, err := ResolveExact(detected, "cursor")
+	if !errors.Is(err, ErrNoEditor) {
+		t.Fatalf("expected ErrNoEditor for unavailable pick; got %v", err)
+	}
+}
+
+func TestResolveExact_UnknownEditorErrors(t *testing.T) {
+	detected := []Editor{{ID: "code", Available: true, ResolvedPath: "/usr/bin/code"}}
+	_, err := ResolveExact(detected, "not-a-real-editor")
+	if !errors.Is(err, ErrNoEditor) {
+		t.Fatalf("expected ErrNoEditor for unknown id; got %v", err)
+	}
+}
+
+func TestResolveExact_EmptyIDErrors(t *testing.T) {
+	// Empty id is a caller bug — Resolve is the entry point for "no
+	// specific editor in mind". ResolveExact refuses rather than
+	// matching the first zero-ID slice entry.
+	detected := []Editor{{ID: "code", Available: true}}
+	_, err := ResolveExact(detected, "")
+	if !errors.Is(err, ErrNoEditor) {
+		t.Fatalf("expected ErrNoEditor for empty id; got %v", err)
+	}
+}
+
+func TestResolveExact_ReturnsCopyNotPointerIntoDetected(t *testing.T) {
+	detected := []Editor{
+		{ID: "code", Name: "VS Code", Available: true, ResolvedPath: "/usr/bin/code"},
+	}
+	got, err := ResolveExact(detected, "code")
+	if err != nil {
+		t.Fatalf("ResolveExact: %v", err)
+	}
+	got.Name = "Mutated"
+	if detected[0].Name == "Mutated" {
+		t.Fatalf("ResolveExact handed back pointer into caller's slice")
+	}
+}
+
 func TestResolve_ReturnsCopyNotPointerIntoDetected(t *testing.T) {
 	// Mutating the returned editor must not race writes into the
 	// caller's detected slice — the App method passes the slice

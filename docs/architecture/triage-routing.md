@@ -24,6 +24,7 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | `rate_limits` | `handleRateLimits` — emit `provider:usage` (rate_limits). |
 | `content_block_start` / `content_block_stop` | Streaming text/thinking block markers; settle streaming rows on stop. |
 | `model_rerouted` | `handleThreadModelUpdate` — persist new model, emit `thread:updated`. |
+| `model_fallback` | `handleModelFallback` — persist the provider's warning as a notification, retain the requested model, and emit/hydrate the session-scoped effective model. |
 | `thread_renamed` | `handleThreadRename` — persist new title, emit `thread:updated`. |
 | `diff` | `handleDiff` — persist payload + meta, upgrade summary-only tool results, emit `provider:item_event` upsert. |
 | `command_output` | `handleCommandOutput` — streaming deltas accumulate in the stream-persist buffer and land as one payload append + one `provider:item_event` upsert per flush window (100ms / 64KB / lifecycle boundary); a `Replace` snapshot (Codex aggregatedOutput) discards the pending buffer and rewrites the payload. |

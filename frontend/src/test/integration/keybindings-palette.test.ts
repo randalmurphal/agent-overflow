@@ -208,7 +208,7 @@ describe('App integration — keybindings + palette', () => {
     const paneMod = await import('../../lib/stores/panes.svelte');
     const pane = paneMod.ensureMainPane();
     await pane.switchThread(threads[0]);
-    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 1 }]);
     await flush(15);
 
     const input = rendered.getByLabelText('Message Input') as HTMLTextAreaElement;
@@ -242,8 +242,8 @@ describe('App integration — keybindings + palette', () => {
     const secondary = panesMod.createPane('secondary');
     secondary.replaceThread(threads[1]);
     layoutMod.setPaneLayoutItemsForTest([
-      { id: 'main', paneId: 'main', kind: 'thread', ratio: 1 },
-      { id: 'secondary', paneId: 'secondary', kind: 'thread', ratio: 1 },
+      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 1 },
+      { id: 'secondary', paneId: 'secondary', kind: 'thread', widthPx: 1 },
     ]);
     panesMod.focusPane('secondary');
     await flush(15);
@@ -311,8 +311,8 @@ describe('App integration — keybindings + palette', () => {
     const secondary = panesMod.createPane('secondary');
     secondary.replaceThread(threads[1]);
     layoutMod.setPaneLayoutItemsForTest([
-      { id: 'main', paneId: 'main', kind: 'thread', ratio: 1 },
-      { id: 'secondary', paneId: 'secondary', kind: 'thread', ratio: 1 },
+      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 1 },
+      { id: 'secondary', paneId: 'secondary', kind: 'thread', widthPx: 1 },
     ]);
     panesMod.focusPane('secondary');
     await flush(15);
@@ -347,8 +347,8 @@ describe('App integration — keybindings + palette', () => {
     const secondary = panesMod.createPane('secondary');
     secondary.replaceThread(threads[1]);
     layoutMod.setPaneLayoutItemsForTest([
-      { id: 'main', paneId: 'main', kind: 'thread', ratio: 1 },
-      { id: 'secondary', paneId: 'secondary', kind: 'thread', ratio: 1 },
+      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 1 },
+      { id: 'secondary', paneId: 'secondary', kind: 'thread', widthPx: 1 },
     ]);
     panesMod.focusPane('secondary');
     await flush(15);

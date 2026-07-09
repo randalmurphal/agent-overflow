@@ -70,21 +70,18 @@ func (a *App) newThreadDefaultsProfile(update NewThreadDefaultsUpdate) (store.Ch
 	if model != "" {
 		profile.Model = provider.NormalizeModelSlug(profile.Provider, model)
 	}
+	profile = a.sanitizeChatModelProfile(profile)
 	if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
 		return store.ChatModelProfile{}, fmt.Errorf("update new thread defaults: provider and model are required")
 	}
 
 	if effort := strings.TrimSpace(update.ReasoningEffort); effort != "" {
-		if !provider.ReasoningEffortSupportedForModel(profile.Provider, profile.Model, effort) {
+		if !a.reasoningEffortSupportedForModel(profile.Provider, profile.Model, effort) {
 			return store.ChatModelProfile{}, fmt.Errorf("update new thread defaults: unsupported reasoning effort %q for %s/%s", effort, profile.Provider, profile.Model)
 		}
 		profile.ReasoningEffort = effort
 	} else {
-		profile.ReasoningEffort = string(provider.CoerceReasoningEffortForModel(
-			profile.Provider,
-			profile.Model,
-			provider.NormalizeReasoningEffort(profile.ReasoningEffort),
-		))
+		profile.ReasoningEffort = a.coerceReasoningEffortForModel(profile.Provider, profile.Model, profile.ReasoningEffort)
 	}
 
 	if update.FastMode != nil {

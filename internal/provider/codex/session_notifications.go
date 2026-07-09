@@ -30,8 +30,29 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 		s.dispatchMCPStartupUpdate(params)
 		return
 	}
+	providerThreadID := providerThreadIDFromParams(params)
+	if s.isUnmappedForeignProviderThread(providerThreadID) {
+		if s.deferChildWireEvent(providerThreadID, deferredChildWireEvent{
+			Method: method,
+			Params: params,
+		}) {
+			return
+		}
+		s.warnChildRoutingOverflow(providerThreadID, method, nil)
+		return
+	}
+
+	s.dispatchRoutableNotification(method, params)
+}
+
+// dispatchRoutableNotification handles a root notification or a child
+// notification whose spawn ownership is already known. The outer dispatcher
+// is deliberately the only entry from raw JSON-RPC so foreign child threads
+// can never fall through to parent turn state.
+func (s *Session) dispatchRoutableNotification(method string, params json.RawMessage) {
 	params = s.observeRawResponseItem(method, params)
 	providerThreadID := providerThreadIDFromParams(params)
+	mappedChildThreadIDs := s.observeSubAgentActivityOwnership(method, params)
 	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
 	if s.emitSubagentNotificationsFromRawMailboxCarrier(method, params, providerThreadID, parentToolUseID) {
 		return
@@ -52,8 +73,8 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 			return
 		}
 		if isChildTurnLifecycleNotification(method) {
-			if evt := s.childLifecycleEvent(method, params, parentToolUseID); evt != nil {
-				s.onEvent(*evt)
+			for _, evt := range s.childLifecycleEvents(method, params, parentToolUseID) {
+				s.onEvent(evt)
 			}
 			return
 		}
@@ -74,6 +95,12 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 
 	for i := range events {
 		evt := &events[i]
+		if parentToolUseID != "" && isUnsafeChildProjectionEvent(evt.Kind) {
+			continue
+		}
+		if parentToolUseID != "" && evt.Kind == provider.EventError {
+			evt.Meta = mergeMetaKeys(evt.Meta, map[string]any{"fatal": false})
+		}
 		if suppressSubagentNotificationCarrier && evt.Kind == provider.EventUserText {
 			continue
 		}
@@ -89,6 +116,18 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 		// wire-typed signals are exposed in evt.Meta; triage owns projection.
 		s.onEvent(*evt)
 	}
+	if parentToolUseID != "" && method == "error" && !readTopLevelBool(params, "willRetry") {
+		if evt := s.childErrorStatusEvent(providerThreadID, parentToolUseID); evt != nil {
+			s.onEvent(*evt)
+		}
+	}
+
+	// V1 establishes ownership from collabAgentToolCall spawn completion in
+	// prepareNotificationEvent. V2 establishes it above from
+	// subAgentActivity. In both cases, drain only after the spawn row event has
+	// reached triage so fast child output cannot race ahead of its parent card.
+	mappedChildThreadIDs = append(mappedChildThreadIDs, collabSpawnReceiverThreadIDs(method, params)...)
+	s.drainDeferredChildWireEvents(mappedChildThreadIDs...)
 }
 
 func (s *Session) emitSubagentNotificationsFromUserCarrier(method string, params json.RawMessage, events []provider.ProviderEvent) bool {

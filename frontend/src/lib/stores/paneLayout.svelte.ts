@@ -1,3 +1,14 @@
+import {
+  FALLBACK_PANE_WIDTH_PX,
+  OVERFLOW_EPSILON_PX,
+  PANE_DIVIDER_WIDTH_PX,
+  minAnchorPaneWidths,
+  normalizePaneWidthPx,
+  resolvePaneBoundaryDrag,
+  type PaneBoundaryDrag,
+} from '../utils/paneWidths';
+import { getPaneHostWidth } from './layoutMetrics.svelte';
+
 // 'thread' panes host a ChatView for a ThreadPane (the registry in
 // panes.svelte.ts). Companion panes are NOT ThreadPanes: they host surfaces
 // paired to a source thread pane via `sourcePaneId`. take-control remains
@@ -14,14 +25,16 @@ export interface PaneLayoutItem {
   id: string;
   paneId: string;
   kind: PaneLayoutKind;
-  ratio: number;
+  // Base width in px. PaneHost renders it as the flex basis: panes
+  // stretch proportionally when the window is wider than the sum of
+  // widths and horizontal-scroll when it is narrower. Resize semantics
+  // live in utils/paneWidths.ts.
+  widthPx: number;
   // Set only on companion items: the paneId of the source thread pane this
   // surface is paired to. Drives adjacency (companions sit immediately right
   // of their source) and cascade close (source closes → companions close).
   sourcePaneId?: string;
 }
-
-export const DEFAULT_PANE_RATIO = 1;
 
 interface PaneLayoutPersistenceHandlers {
   immediate: () => void;
@@ -38,7 +51,7 @@ function defaultMainPaneLayoutItem(): PaneLayoutItem {
     id: 'main',
     paneId: 'main',
     kind: 'thread',
-    ratio: DEFAULT_PANE_RATIO,
+    widthPx: FALLBACK_PANE_WIDTH_PX,
   };
 }
 
@@ -66,17 +79,12 @@ function shouldPersist(options?: PaneLayoutMutationOptions): boolean {
   return options?.persist !== false;
 }
 
-function normalizeRatio(ratio: number): number {
-  if (!Number.isFinite(ratio) || ratio <= 0) return DEFAULT_PANE_RATIO;
-  return ratio;
-}
-
 function cloneLayoutItem(item: PaneLayoutItem): PaneLayoutItem {
   const cloned: PaneLayoutItem = {
     id: item.id,
     paneId: item.paneId,
     kind: item.kind,
-    ratio: normalizeRatio(item.ratio),
+    widthPx: normalizePaneWidthPx(item.widthPx),
   };
   if (item.sourcePaneId !== undefined) cloned.sourcePaneId = item.sourcePaneId;
   return cloned;
@@ -219,45 +227,90 @@ function resnapCompanionItems(items: PaneLayoutItem[]): PaneLayoutItem[] {
   return result;
 }
 
-export function resizeAdjacentPaneLayoutItems(
-  leftPaneId: string,
-  rightPaneId: string,
-  leftWidth: number,
-  rightWidth: number,
-  deltaPx: number,
-  minPaneWidth: number,
-): void {
-  const leftIndex = layoutItems.findIndex((item) => item.paneId === leftPaneId);
-  const rightIndex = layoutItems.findIndex((item) => item.paneId === rightPaneId);
-  if (leftIndex < 0 || rightIndex < 0 || Math.abs(leftIndex - rightIndex) !== 1) return;
-  if (!Number.isFinite(leftWidth) || !Number.isFinite(rightWidth)) return;
-  if (leftWidth <= 0 || rightWidth <= 0) return;
-  const combinedWidth = leftWidth + rightWidth;
-  if (combinedWidth < minPaneWidth * 2) return;
+export interface PaneBoundaryDragArgs
+  extends Omit<PaneBoundaryDrag, 'widths' | 'leftIndex' | 'hasRightPane'> {
+  /** Pane immediately left of the grabbed boundary. */
+  leftPaneId: string;
+  /** Adjacent right pane, or null for the end handle at the strip's right edge. */
+  rightPaneId: string | null;
+  /** Measured pane widths at drag start, by paneId. */
+  startWidths: ReadonlyMap<string, number>;
+}
 
-  const nextLeftWidth = Math.max(
-    minPaneWidth,
-    Math.min(combinedWidth - minPaneWidth, leftWidth + deltaPx),
+// Live-applied on every drag frame. Resolution is pure in deltaPx over
+// the drag-start snapshot, so repeated calls retrace instead of
+// accumulating. Semantics live in utils/paneWidths.ts.
+export function applyPaneBoundaryDrag(args: PaneBoundaryDragArgs): void {
+  const leftIndex = layoutItems.findIndex((item) => item.paneId === args.leftPaneId);
+  if (leftIndex < 0) return;
+  if (args.rightPaneId !== null) {
+    if (layoutItems[leftIndex + 1]?.paneId !== args.rightPaneId) return;
+  } else if (leftIndex !== layoutItems.length - 1) {
+    return;
+  }
+  const widths = layoutItems.map(
+    (item) => args.startWidths.get(item.paneId) ?? normalizePaneWidthPx(item.widthPx),
   );
-  const nextRightWidth = combinedWidth - nextLeftWidth;
-  const combinedRatio = normalizeRatio(layoutItems[leftIndex].ratio) +
-    normalizeRatio(layoutItems[rightIndex].ratio);
-  const next = layoutItems.map(cloneLayoutItem);
-  next[leftIndex] = {
-    ...next[leftIndex],
-    ratio: (nextLeftWidth / combinedWidth) * combinedRatio,
-  };
-  next[rightIndex] = {
-    ...next[rightIndex],
-    ratio: (nextRightWidth / combinedWidth) * combinedRatio,
-  };
-  layoutItems = next;
+  const resolved = resolvePaneBoundaryDrag({
+    widths,
+    leftIndex,
+    hasRightPane: args.rightPaneId !== null,
+    deltaPx: args.deltaPx,
+    minPaneWidth: args.minPaneWidth,
+    overflowPx: args.overflowPx,
+    zeroSum: args.zeroSum,
+  });
+  if (!resolved) return;
+  const next = resolved.map(normalizePaneWidthPx);
+  if (layoutItems.every((item, index) => item.widthPx === next[index])) return;
+  layoutItems = layoutItems.map((item, index) =>
+    item.widthPx === next[index] ? item : { ...item, widthPx: next[index] },
+  );
   requestLayoutPersistence(true);
 }
 
-export function averagePaneRatio(): number {
-  if (layoutItems.length === 0) return DEFAULT_PANE_RATIO;
-  const total = layoutItems.reduce((sum, item) => sum + normalizeRatio(item.ratio), 0);
+/** Double-click reset: every pane back to the density minimum (equal fit). */
+export function equalizePaneWidths(minPaneWidth: number): void {
+  const width = normalizePaneWidthPx(minPaneWidth);
+  if (layoutItems.every((item) => item.widthPx === width)) return;
+  layoutItems = layoutItems.map((item) => ({ ...item, widthPx: width }));
+  requestLayoutPersistence();
+}
+
+// Called at drag end. The fit gate lives HERE, on store data, because
+// the caller's DOM may not have flushed the final drag frame yet — a
+// stale scrollWidth read could rescale an overflowing layout (see
+// minAnchorPaneWidths for why overflow widths must be left alone).
+export function minAnchorPaneLayoutWidths(minPaneWidth: number): void {
+  if (layoutItems.length === 0) return;
+  // Unmeasured host: cannot know whether the strip overflows, so leave
+  // the widths alone.
+  const hostWidth = getPaneHostWidth();
+  if (!Number.isFinite(hostWidth)) return;
+  const available = hostWidth - layoutItems.length * PANE_DIVIDER_WIDTH_PX;
+  const total = layoutItems.reduce(
+    (sum, item) => sum + normalizePaneWidthPx(item.widthPx),
+    0,
+  );
+  if (total > available + OVERFLOW_EPSILON_PX) return;
+  const anchored = minAnchorPaneWidths(
+    layoutItems.map((item) => item.widthPx),
+    minPaneWidth,
+  );
+  if (!anchored) return;
+  layoutItems = layoutItems.map((item, index) => ({
+    ...item,
+    widthPx: normalizePaneWidthPx(anchored[index]),
+  }));
+  requestLayoutPersistence();
+}
+
+export function averagePaneWidthPx(): number {
+  if (layoutItems.length === 0) return FALLBACK_PANE_WIDTH_PX;
+  const total = layoutItems.reduce(
+    (sum, item) => sum + normalizePaneWidthPx(item.widthPx),
+    0,
+  );
   return total / layoutItems.length;
 }
 

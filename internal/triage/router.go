@@ -127,6 +127,15 @@ type Router struct {
 	// per thread for frontend refresh / reconnect. Todo state is session
 	// state, not history; this map is the backend-owned live projection.
 	latestTodoByThread map[string]LiveTodoSnapshot
+	// effectiveModelByThread is the session-scoped model actually serving a
+	// thread after a provider fallback. The durable threads.model remains the
+	// user's requested model; this live projection is cleared with the provider
+	// session and included in GetThreadLiveState hydration.
+	effectiveModelByThread map[string]string
+	// effectiveModelRevisions is monotonic per thread for the process
+	// lifetime. Set/clear emissions can cross between provider and teardown
+	// goroutines; the revision lets the frontend reject stale delivery.
+	effectiveModelRevisions map[string]uint64
 	// tasksByThread is the per-thread mirror of the Claude Task*
 	// family task list. Survives any number of Parser recreations
 	// within the process lifetime so a TaskUpdate against an id
@@ -337,6 +346,8 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		settledTurns:               make(map[string]bool),
 		currentRoundByThread:       make(map[string]ActiveTurnSnapshot),
 		latestTodoByThread:         make(map[string]LiveTodoSnapshot),
+		effectiveModelByThread:     make(map[string]string),
+		effectiveModelRevisions:    make(map[string]uint64),
 		tasksByThread:              make(map[string]*threadTasks),
 		turnSpans:                  make(map[string]trace.Span),
 		stoppedThreads:             make(map[string]struct{}),
@@ -486,6 +497,8 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		return r.handleInit(evt)
 	case provider.EventModelRerouted:
 		return r.handleThreadModelUpdate(evt)
+	case provider.EventModelFallback:
+		return r.handleModelFallback(evt)
 	case provider.EventThreadRenamed:
 		return r.handleThreadRename(evt)
 	case provider.EventTurnComplete:

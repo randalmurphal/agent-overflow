@@ -107,10 +107,13 @@ func TestClaudeTUIResolvesLikeClaude(t *testing.T) {
 	}
 }
 
-func TestCodexModelsIncludeGPT55(t *testing.T) {
+func TestCodexModelsDefaultToGPT56Sol(t *testing.T) {
 	models := ModelsForProvider("codex")
 	if len(models) == 0 {
 		t.Fatal("expected codex models")
+	}
+	if models[0].Slug != "gpt-5.6-sol" {
+		t.Fatalf("first codex model = %q, want gpt-5.6-sol", models[0].Slug)
 	}
 	if !slices.ContainsFunc(models, func(model ModelInfo) bool {
 		return model.Slug == "gpt-5.5"
@@ -223,16 +226,21 @@ func TestSonnetAliasResolvesToSonnet5(t *testing.T) {
 func TestCodexModelCapabilitiesAndContextWindows(t *testing.T) {
 	cases := []struct {
 		model    string
+		name     string
 		fastMode bool
 		windows  []int
 		def      string
+		efforts  []string
 	}{
-		{"gpt-5.4", true, []int{CodexStandardContextWindow, CodexExtendedContextWindow}, "xhigh"},
-		{"gpt-5.5", true, []int{CodexStandardContextWindow}, "medium"},
-		{"gpt-5.2", false, []int{CodexStandardContextWindow}, "medium"},
-		{"gpt-5.3-codex", false, []int{CodexStandardContextWindow}, "medium"},
-		{"gpt-5.4-mini", false, []int{CodexStandardContextWindow}, "medium"},
-		{"gpt-5.3-codex-spark", false, []int{CodexSparkContextWindow}, "high"},
+		{"gpt-5.6-sol", "GPT 5.6 Sol", true, []int{Codex56ContextWindow}, "low", []string{"low", "medium", "high", "xhigh", "max", "ultra"}},
+		{"gpt-5.6-terra", "GPT 5.6 Terra", true, []int{Codex56ContextWindow}, "medium", []string{"low", "medium", "high", "xhigh", "max", "ultra"}},
+		{"gpt-5.6-luna", "GPT 5.6 Luna", true, []int{Codex56ContextWindow}, "medium", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"gpt-5.4", "GPT 5.4", true, []int{CodexStandardContextWindow, CodexExtendedContextWindow}, "xhigh", []string{"low", "medium", "high", "xhigh"}},
+		{"gpt-5.5", "GPT 5.5", true, []int{CodexStandardContextWindow}, "medium", []string{"low", "medium", "high", "xhigh"}},
+		{"gpt-5.2", "GPT 5.2", false, []int{CodexStandardContextWindow}, "medium", []string{"low", "medium", "high", "xhigh"}},
+		{"gpt-5.3-codex", "GPT 5.3 Codex", false, []int{CodexStandardContextWindow}, "medium", []string{"low", "medium", "high", "xhigh"}},
+		{"gpt-5.4-mini", "GPT 5.4 Mini", false, []int{CodexStandardContextWindow}, "medium", []string{"low", "medium", "high", "xhigh"}},
+		{"gpt-5.3-codex-spark", "GPT 5.3 Codex Spark", false, []int{CodexSparkContextWindow}, "high", []string{"low", "medium", "high", "xhigh"}},
 	}
 
 	for _, tc := range cases {
@@ -240,6 +248,9 @@ func TestCodexModelCapabilitiesAndContextWindows(t *testing.T) {
 			model, found := FindModel("codex", tc.model)
 			if !found {
 				t.Fatalf("FindModel(%q) not found", tc.model)
+			}
+			if model.Name != tc.name {
+				t.Fatalf("Name = %q, want %q", model.Name, tc.name)
 			}
 			if got := slices.Contains(model.Capabilities, ModelCapabilityFastMode); got != tc.fastMode {
 				t.Fatalf("fast capability = %v, want %v", got, tc.fastMode)
@@ -254,6 +265,13 @@ func TestCodexModelCapabilitiesAndContextWindows(t *testing.T) {
 			}
 			if got := string(DefaultReasoningEffortForModel("codex", tc.model, DefaultReasoningEffort)); got != tc.def {
 				t.Fatalf("default reasoning = %q, want %q", got, tc.def)
+			}
+			slugs := make([]string, len(model.ReasoningEfforts))
+			for i, option := range model.ReasoningEfforts {
+				slugs[i] = option.Slug
+			}
+			if !slices.Equal(slugs, tc.efforts) {
+				t.Fatalf("effort slugs = %v, want %v", slugs, tc.efforts)
 			}
 		})
 	}
@@ -272,6 +290,22 @@ func TestCodexFallbackReasoningLabelsAreTierNames(t *testing.T) {
 	}
 	if !slices.Equal(model.ReasoningEfforts, want) {
 		t.Fatalf("ReasoningEfforts = %#v, want %#v", model.ReasoningEfforts, want)
+	}
+}
+
+func TestModelInfoReasoningEffortHelpersIgnoreUnknownLiveSlugs(t *testing.T) {
+	model := ModelInfo{
+		Provider: string(Codex),
+		ReasoningEfforts: []ReasoningEffortOption{
+			{Slug: "future-effort", Default: true},
+			{Slug: "ultra"},
+		},
+	}
+	if ModelInfoSupportsReasoningEffort(model, "future-effort") {
+		t.Fatal("unknown live effort should not pass the app's persisted enum")
+	}
+	if got := CoerceReasoningEffortForModelInfo(model, EffortHigh); got != EffortUltra {
+		t.Fatalf("CoerceReasoningEffortForModelInfo = %q, want first known effort %q", got, EffortUltra)
 	}
 }
 

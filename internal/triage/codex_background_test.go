@@ -1334,6 +1334,62 @@ func TestCodexSubagentInactiveStatusMarksLaunchInactiveWithoutTranscriptCompleti
 	}
 }
 
+func TestCodexSubagentRunningStatusReactivatesCompletedChild(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexBackgroundTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-followup", "running")
+	for _, event := range []provider.ProviderEvent{
+		{Kind: provider.EventToolStart, ThreadID: "t1", TurnID: "turn-0", ItemID: "spawn-followup", ItemType: "collab_agent", Meta: spawnMeta, Timestamp: time.Now()},
+		{Kind: provider.EventToolComplete, ThreadID: "t1", TurnID: "turn-0", ItemID: "spawn-followup", ItemType: "collab_agent", Meta: spawnMeta, Timestamp: time.Now()},
+		{Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-followup", Meta: json.RawMessage(`{"agent_path":"child-followup","status":"completed"}`), Timestamp: time.Now()},
+	} {
+		if err := router.Handle(event); err != nil {
+			t.Fatalf("handle %s: %v", event.Kind, err)
+		}
+	}
+	// A previous child turn may already have produced a visible completion.
+	// Follow-up activity must still make the launch live again.
+	now := time.Now().UnixMilli()
+	if _, err := st.AppendItem(store.Item{
+		ID:           nextToolCompletionID("spawn-followup"),
+		ThreadID:     "t1",
+		TurnIndex:    0,
+		Kind:         itemKindBackgroundDone,
+		Role:         "assistant",
+		Status:       statusCompleted,
+		CompletionOf: "spawn-followup",
+		ToolName:     "collab_agent",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("seed previous completion: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-followup",
+		Meta: json.RawMessage(`{"agent_path":"child-followup","status":"running"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("reactivate child: %v", err)
+	}
+	live, err := st.ListLiveCodexSubagentLaunches("t1")
+	if err != nil || len(live) != 1 || live[0].ID != "spawn-followup" {
+		t.Fatalf("reactivated live launches = %+v err=%v", live, err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-followup",
+		Meta: json.RawMessage(`{"agent_path":"child-followup","status":"completed"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete follow-up child: %v", err)
+	}
+	live, err = st.ListLiveCodexSubagentLaunches("t1")
+	if err != nil || len(live) != 0 {
+		t.Fatalf("completed follow-up remained live: %+v err=%v", live, err)
+	}
+}
+
 func TestCodexSubagentStatusWaitsForAllChildrenBeforeHidingLiveBackground(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")

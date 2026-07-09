@@ -583,6 +583,28 @@ func TestUpdateReasoningEffortPersists(t *testing.T) {
 	}
 }
 
+func TestUpdateReasoningEffortPersistsCodexUltra(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-effort-codex", "/tmp/effort-codex")
+
+	thr := makeThread("thread-effort-codex", "codex")
+	thr.ProjectID = proj.ID
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+
+	if err := s.UpdateReasoningEffort(thr.ID, "ultra"); err != nil {
+		t.Fatalf("UpdateReasoningEffort(ultra): %v", err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread(): %v", err)
+	}
+	if got.ReasoningEffort != "ultra" {
+		t.Fatalf("ReasoningEffort = %q, want ultra", got.ReasoningEffort)
+	}
+}
+
 func TestUpdateReasoningEffortRejectsUnknown(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-effort-bad", "/tmp/eb")

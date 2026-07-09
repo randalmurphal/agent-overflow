@@ -3,9 +3,7 @@ package codex
 import "agent-overflow/internal/provider"
 
 // codexEffortFromOption translates AO's stored ReasoningEffort onto Codex's
-// native app-server enum: none|minimal|low|medium|high|xhigh. Max is
-// intentionally absent; Codex does not support it, and app/store validation
-// prevents setting it on Codex threads.
+// native app-server enum exposed by the live model catalog.
 func codexEffortFromOption(effort provider.ReasoningEffort) string {
 	switch effort {
 	case provider.EffortNone:
@@ -20,6 +18,10 @@ func codexEffortFromOption(effort provider.ReasoningEffort) string {
 		return "high"
 	case provider.EffortXHigh:
 		return "xhigh"
+	case provider.EffortMax:
+		return "max"
+	case provider.EffortUltra:
+		return "ultra"
 	default:
 		// Empty / unknown — let Codex pick its own default by omitting the
 		// parameter upstream.
@@ -105,17 +107,17 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		ResumeThreadID:        opts.Resume,
 		SystemPrompt:          opts.SystemPrompt,
 		ReasoningEffort:       codexEffortFromOption(opts.ReasoningEffort),
-		ServiceTier:           codexServiceTier(model, opts.FastMode),
+		ServiceTier:           codexServiceTier(opts.FastMode),
 		ContextWindow:         contextWindow,
 		AutoCompactTokenLimit: autoCompactTokenLimit(contextWindow, autoCompactPercent),
 	}
 }
 
-func codexServiceTier(model string, fastMode bool) string {
-	if !fastMode || !provider.ModelSupportsCapability(string(provider.Codex), model, provider.ModelCapabilityFastMode) {
+func codexServiceTier(fastMode bool) string {
+	if !fastMode {
 		return ""
 	}
-	return "fast"
+	return fastServiceTier
 }
 
 func autoCompactTokenLimit(contextWindow, percent int) int {

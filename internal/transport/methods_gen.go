@@ -89,6 +89,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetPayloadPreview", ID: 4070214921},                    // main.App.GetPayloadPreview
 	{Name: "GetProviderStatuses", ID: 3829328996},                  // main.App.GetProviderStatuses
 	{Name: "GetQueueState", ID: 3079581691},                        // main.App.GetQueueState
+	{Name: "GetRateLimitsSnapshots", ID: 3325141610},               // main.App.GetRateLimitsSnapshots
 	{Name: "GetRemoteEndpointToken", ID: 3604571249},               // main.App.GetRemoteEndpointToken
 	{Name: "GetSessionAgentDiff", ID: 2631559849},                  // main.App.GetSessionAgentDiff
 	{Name: "GetSettings", ID: 2554697378},                          // main.App.GetSettings

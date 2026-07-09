@@ -37,14 +37,19 @@ var _ provider.Session = (*Session)(nil)
 
 // Session manages a Codex app-server subprocess.
 type Session struct {
-	proc               *provider.Process
-	ctx                context.Context
-	threadID           string // our internal thread ID
-	codexThreadID      string // the Codex app-server's thread ID from thread/start
-	activeTurnID       string // current active turn ID from turn/started; cleared on turn/completed
-	model              string // model name for cost calculation
+	proc          *provider.Process
+	ctx           context.Context
+	threadID      string // our internal thread ID
+	codexThreadID string // the Codex app-server's thread ID from thread/start
+	activeTurnID  string // current active turn ID from turn/started; cleared on turn/completed
+	// The turn config block below is re-applied to every turn/start call, so
+	// a mid-session change (ApplyLiveUpdate) takes effect on the next turn
+	// without a process restart. All five are guarded by mu: Send copies
+	// them per turn, ApplyLiveUpdate rewrites them, and the read loop reads
+	// model for usage attribution.
+	model              string // active model; also used for usage attribution
 	reasoningEffort    string // per-turn reasoning effort override; empty means inherit thread default
-	serviceTier        string // per-turn service tier override; "fast" enables Codex fast mode
+	serviceTier        string // per-turn service tier override; "priority" enables Codex fast mode
 	approvalPolicy     string // per-turn approval override; empty means inherit thread default
 	sandbox            string // per-turn sandbox override; empty means inherit thread default
 	nextID             atomic.Int64
@@ -118,8 +123,31 @@ type Session struct {
 	collabMetadataReads       chan struct{}
 	rawToolCallsByID          map[string]rawToolCall
 	waitReceiverIDsByCall     map[string][]string
-	planBuffersByItemID       map[string]*planBuffer
-	planBuffersByTurnID       map[string]*planBuffer
+	// deferredChildWireEvents quarantines notifications and server requests
+	// from provider threads whose spawn ownership has not arrived yet. Codex
+	// MultiAgentV2 starts the child before it emits the parent's canonical
+	// subAgentActivity item, so child output can legitimately win that race.
+	// Nothing in this queue may reach the AO parent projection until a typed
+	// ownership edge maps the provider thread to its spawn card.
+	deferredChildWireEvents map[string][]deferredChildWireEvent
+	deferredChildWireCount  int
+	deferredChildWireBytes  int
+	deferredChildDeadlines  map[string]*time.Timer
+	childRoutingWarned      bool
+	// Collaboration metadata enrichment and reopen-history traversal run in
+	// session-scoped background work. collabAsyncMu closes the Add/Wait race;
+	// collabHistory* is guarded by mu and feeds one sequential traversal.
+	collabAsyncMu                 sync.Mutex
+	collabAsyncClosing            bool
+	collabAsyncWG                 sync.WaitGroup
+	collabHistoryQueue            []collabHistoryJob
+	collabHistoryRunning          bool
+	collabHistoryGeneration       uint64
+	collabHistoryVisited          map[string]uint64
+	collabHistoryAttempts         int
+	collabHistoryWarnedGeneration uint64
+	planBuffersByItemID           map[string]*planBuffer
+	planBuffersByTurnID           map[string]*planBuffer
 	// probeFn is a test-only override for Probe(). When non-nil, Probe
 	// skips the wire call and returns the result from this function.
 	// Production Session construction (NewSession) never sets it.
@@ -187,15 +215,15 @@ type Config struct {
 	MCPServers            map[string]any
 	ContextWindow         int
 	AutoCompactTokenLimit int
-	// ReasoningEffort is the Codex-native reasoning_effort enum value
-	// (none|minimal|low|medium|high|xhigh). Applied to the thread start
+	// ReasoningEffort is the Codex-native reasoning_effort enum value exposed
+	// by the selected model. Applied to the thread start
 	// handshake under `config.model_reasoning_effort`, and re-applied to
 	// every turn/start call under the `effort` parameter so per-thread
 	// tuning takes effect without a session restart.
 	ReasoningEffort string
-	// ServiceTier is Codex's native speed tier. "fast" is sent as
+	// ServiceTier is Codex's native speed tier. "priority" is sent as
 	// serviceTier on thread/start|resume and turn/start. It must not rewrite
-	// Model; GPT-5.5 fast mode is still GPT-5.5.
+	// Model; fast mode does not change the selected model.
 	ServiceTier string
 	EventLogger *logging.Logger
 }
@@ -246,8 +274,19 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		collabMetadataReads:       make(chan struct{}, 4),
 		rawToolCallsByID:          make(map[string]rawToolCall),
 		waitReceiverIDsByCall:     make(map[string][]string),
+		deferredChildWireEvents:   make(map[string][]deferredChildWireEvent),
+		deferredChildDeadlines:    make(map[string]*time.Timer),
+		collabHistoryGeneration:   1,
+		collabHistoryVisited:      make(map[string]uint64),
 		planBuffersByItemID:       make(map[string]*planBuffer),
 		planBuffersByTurnID:       make(map[string]*planBuffer),
+	}
+	// On resume the root provider id is already durable in AO. Seed it before
+	// the read loop starts so child notifications racing the thread/resume
+	// response are quarantined instead of being mistaken for root events. A
+	// fresh thread cannot have children before NewSession returns.
+	if cfg.ResumeThreadID != "" {
+		s.codexThreadID = cfg.ResumeThreadID
 	}
 
 	// Start stdout reader goroutine before sending any requests.
@@ -294,13 +333,19 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 
 	// Extract the Codex thread ID from response.
 	s.threadID = threadID // our internal ID
-	s.codexThreadID = readNestedString(resp, "thread", "id")
-	if s.codexThreadID == "" {
+	responseThreadID := readNestedString(resp, "thread", "id")
+	if responseThreadID == "" {
 		log.Printf("codex: %s response missing thread.id; response: %s", method, string(resp))
 		s.Close()
 		return nil, fmt.Errorf("codex: %s: response did not contain a thread ID", method)
 	}
+	if s.codexThreadID != "" && s.codexThreadID != responseThreadID {
+		s.Close()
+		return nil, fmt.Errorf("codex: %s: response thread ID %q does not match requested thread %q", method, responseThreadID, s.codexThreadID)
+	}
+	s.codexThreadID = responseThreadID
 	if method == "thread/resume" {
+		s.rehydrateCollabOwnershipFromThreadResponse(resp)
 		s.startRolloutSubagentNotificationObserver(readNestedString(resp, "thread", "path"))
 	}
 
@@ -333,27 +378,34 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		return err
 	}
 
+	cfg := s.turnConfig()
 	params := map[string]any{
 		"threadId":          s.codexThreadID,
 		"input":             input,
-		"collaborationMode": codexCollaborationMode(opts.InteractionMode, s.model, s.reasoningEffort),
+		"collaborationMode": codexCollaborationMode(opts.InteractionMode, cfg.Model, cfg.ReasoningEffort),
 	}
-	// Per-turn effort override — Codex's TurnStartParams takes `effort` at
-	// the top level. Threading it here (rather than only at thread-start)
-	// means a mid-session effort change from the composer takes effect on
-	// the very next turn without needing a session restart. Empty means
-	// "inherit the thread default set during thread/start".
-	if s.reasoningEffort != "" {
-		params["effort"] = s.reasoningEffort
+	// Per-turn config overrides — Codex's TurnStartParams takes `model`,
+	// `effort`, `serviceTier`, `approvalPolicy`, and `sandboxPolicy` at the
+	// top level, each documented upstream as applying "for this turn and
+	// subsequent turns". Threading them here (rather than only at
+	// thread-start) means a mid-session change from the composer
+	// (ApplyLiveUpdate) takes effect on the very next turn without a
+	// session restart. Empty means "inherit the thread default set during
+	// thread/start".
+	if cfg.Model != "" {
+		params["model"] = cfg.Model
 	}
-	if s.serviceTier != "" {
-		params["serviceTier"] = s.serviceTier
+	if cfg.ReasoningEffort != "" {
+		params["effort"] = cfg.ReasoningEffort
 	}
-	if s.approvalPolicy != "" {
-		params["approvalPolicy"] = s.approvalPolicy
+	if cfg.ServiceTier != "" {
+		params["serviceTier"] = cfg.ServiceTier
 	}
-	if s.sandbox != "" {
-		sandboxPolicy, err := turnSandboxPolicy(s.sandbox)
+	if cfg.ApprovalPolicy != "" {
+		params["approvalPolicy"] = cfg.ApprovalPolicy
+	}
+	if cfg.Sandbox != "" {
+		sandboxPolicy, err := turnSandboxPolicy(cfg.Sandbox)
 		if err != nil {
 			return err
 		}
@@ -508,6 +560,9 @@ func (s *Session) PID() int {
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
 	s.closing.Store(true)
+	s.collabAsyncMu.Lock()
+	s.collabAsyncClosing = true
+	s.collabAsyncMu.Unlock()
 	s.clearPendingApprovals()
 	err := s.proc.Close()
 	s.cancel()
@@ -515,6 +570,7 @@ func (s *Session) Close() error {
 		<-s.readDone
 	}
 	s.rolloutObserverWG.Wait()
+	s.collabAsyncWG.Wait()
 	// Drop session-scoped maps so the closed Session doesn't hold onto
 	// per-turn / per-child-thread entries indefinitely. The dispatch
 	// goroutine and rollout observer have exited by this point, so no
@@ -524,6 +580,13 @@ func (s *Session) Close() error {
 	// the existing WriteLine-on-closed-proc path handles shutdown
 	// cleanly.
 	s.mu.Lock()
+	deferredChildEvents := 0
+	for _, queued := range s.deferredChildWireEvents {
+		deferredChildEvents += len(queued)
+	}
+	if deferredChildEvents > 0 {
+		log.Printf("codex: closing with %d quarantined child events whose spawn ownership never arrived", deferredChildEvents)
+	}
 	s.seenTurnStarts = nil
 	s.childParentByThread = nil
 	s.childParentByAgentPath = nil
@@ -532,6 +595,15 @@ func (s *Session) Close() error {
 	s.subagentNotificationDedup = nil
 	s.rawToolCallsByID = nil
 	s.waitReceiverIDsByCall = nil
+	s.deferredChildWireEvents = nil
+	s.deferredChildWireCount = 0
+	s.deferredChildWireBytes = 0
+	for _, timer := range s.deferredChildDeadlines {
+		timer.Stop()
+	}
+	s.deferredChildDeadlines = nil
+	s.collabHistoryQueue = nil
+	s.collabHistoryVisited = nil
 	s.mu.Unlock()
 	return err
 }

@@ -26,9 +26,9 @@ var (
 		"claude": {},
 		"codex":  {},
 	}
-	// Text-generation efforts are provider-specific. Codex app-server has no
-	// "max"; Claude has no "none" or "minimal". Duplicated here to keep
-	// internal/settings dependency-free of the provider package.
+	// Text-generation efforts are provider-specific. Claude has no "none",
+	// "minimal", or "ultra". Duplicated here to keep internal/settings
+	// dependency-free of the provider package.
 	allowedCodexTextGenerationEfforts = map[string]struct{}{
 		"none":    {},
 		"minimal": {},
@@ -36,6 +36,8 @@ var (
 		"medium":  {},
 		"high":    {},
 		"xhigh":   {},
+		"max":     {},
+		"ultra":   {},
 	}
 	allowedClaudeTextGenerationEfforts = map[string]struct{}{
 		"low":    {},
@@ -707,7 +709,7 @@ func joinAllowedValues(values map[string]struct{}) string {
 		"system", "light", "dark",
 		"locale", "12-hour", "24-hour",
 		"claude", "codex",
-		"none", "minimal", "low", "medium", "high", "xhigh", "max",
+		"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 		"local", "worktree",
 		"compact", "comfortable", "spacious",
 		"geist", "hack-nerd",

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
@@ -54,25 +55,22 @@ func (a *App) startSessionNow(threadID string) error {
 	return a.startSessionNowWithClaudeResumeAt(threadID, "")
 }
 
-func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string) error {
-	t, err := a.store.GetThread(threadID)
-	if err != nil {
-		return fmt.Errorf("start session: %w", err)
-	}
-
-	sessionToken := uuid.NewString()
-	onEvent := a.sessionEventHandler(threadID, sessionToken, t.Provider)
-
-	// Design-mode plumbing (extra system prompt + Codex MCP servers) is
-	// caller-owned: the provider package intentionally doesn't know about
-	// design or discussion. We compose the final system prompt here, then
-	// hand a provider-agnostic SessionOptions bundle to each provider's
-	// ConfigFromOptions translator.
+// buildSessionOptions composes the provider-agnostic SessionOptions bundle
+// (plus the design-mode config it derives from) for a thread row. Shared by
+// the spawn path and the live config reconciler (app_session_config.go) so
+// both see the exact same view of "what a session for this row looks like".
+//
+// Design-mode plumbing (extra system prompt + Codex MCP servers) is
+// caller-owned: the provider package intentionally doesn't know about
+// design or discussion. We compose the final system prompt here, then
+// hand a provider-agnostic SessionOptions bundle to each provider's
+// ConfigFromOptions translator.
+func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, designSessionConfig, error) {
 	designCfg, err := a.designSessionConfig(t)
 	if err != nil {
-		return fmt.Errorf("start session: %w", err)
+		return provider.SessionOptions{}, designSessionConfig{}, err
 	}
-	systemPrompt := stringsx.JoinNonEmpty("\n\n", designCfg.Prompt, a.threadSystemPrompt(threadID))
+	systemPrompt := stringsx.JoinNonEmpty("\n\n", designCfg.Prompt, a.threadSystemPrompt(t.ID))
 
 	// Pending-fork intent is a one-shot. SessionOptionsFromThread reads
 	// either PendingForkRef or SessionRef into opts.Resume based on this
@@ -94,9 +92,32 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	)
 
 	if dir, err := a.designWorkDirOverride(t); err != nil {
-		return fmt.Errorf("start session: resolve design workdir: %w", err)
+		return provider.SessionOptions{}, designSessionConfig{}, fmt.Errorf("resolve design workdir: %w", err)
 	} else if dir != "" {
 		opts.WorkDir = dir
+	}
+	return opts, designCfg, nil
+}
+
+func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string) error {
+	t, err := a.store.GetThread(threadID)
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	sanitized := a.sanitizeThreadModelSettings(t)
+	if !chatmodel.SameModelFields(t, sanitized) {
+		if err := a.store.UpdateThread(sanitized); err != nil {
+			return fmt.Errorf("start session: persist live model settings: %w", err)
+		}
+		t = sanitized
+	}
+
+	sessionToken := uuid.NewString()
+	onEvent := a.sessionEventHandler(threadID, sessionToken, t.Provider)
+
+	opts, designCfg, err := a.buildSessionOptions(t)
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
 	}
 	if err := a.stopExistingSessionLocked(threadID); err != nil {
 		return fmt.Errorf("start session: %w", err)
@@ -313,10 +334,11 @@ func (a *App) spawnProviderSession(
 			return session{}, err
 		}
 		return session{
-			provider: string(provider.Claude),
-			token:    sessionToken,
-			claude:   sess,
-			liveness: liveness,
+			provider:   string(provider.Claude),
+			token:      sessionToken,
+			claude:     sess,
+			launchOpts: opts,
+			liveness:   liveness,
 		}, nil
 
 	case string(provider.Codex):
@@ -344,10 +366,11 @@ func (a *App) spawnProviderSession(
 			a.handleCodexMCPStartupUpdate(u)
 		})
 		return session{
-			provider: string(provider.Codex),
-			token:    sessionToken,
-			codex:    sess,
-			liveness: liveness,
+			provider:   string(provider.Codex),
+			token:      sessionToken,
+			codex:      sess,
+			launchOpts: opts,
+			liveness:   liveness,
 		}, nil
 
 	case string(provider.ClaudeTUI):
@@ -361,10 +384,11 @@ func (a *App) spawnProviderSession(
 			return session{}, err
 		}
 		return session{
-			provider:  string(provider.ClaudeTUI),
-			token:     sessionToken,
-			claudetui: sess,
-			liveness:  liveness,
+			provider:   string(provider.ClaudeTUI),
+			token:      sessionToken,
+			claudetui:  sess,
+			launchOpts: opts,
+			liveness:   liveness,
 		}, nil
 
 	default:

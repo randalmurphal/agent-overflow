@@ -145,8 +145,8 @@ type Parser struct {
 	// model is the latest model id observed on this session. Seeded from
 	// the system/init line and used to price result usage so triage
 	// doesn't have to reach back into the store for pricing. When
-	// the CLI rewrites the model mid-session (e.g. Sonnet → Opus auto-
-	// upgrade), the next init echo updates this field.
+	// the CLI rewrites the model mid-session, system/init and
+	// system/model_refusal_fallback update this field.
 	model string
 	// lastAssistantMessageID is the id of the most-recent `assistant`
 	// envelope's `message.id`. The `result` envelope does not carry this

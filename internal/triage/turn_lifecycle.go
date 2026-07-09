@@ -1297,6 +1297,12 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	// StopSession during a round).
 	delete(r.currentRoundByThread, threadID)
 	delete(r.latestTodoByThread, threadID)
+	_, hadEffectiveModel := r.effectiveModelByThread[threadID]
+	delete(r.effectiveModelByThread, threadID)
+	var effectiveModelRevision uint64
+	if hadEffectiveModel {
+		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)
+	}
 	delete(r.tasksByThread, threadID)
 	delete(r.openAPIRetryRows, threadID)
 	// Drop the Codex background projector's per-thread trackers. A
@@ -1326,6 +1332,10 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	pendingUsage, hasPendingUsage := r.takeUsageEmitPendingLocked(threadID)
 	delete(r.usageEmitThrottles, threadID)
 	r.mu.Unlock()
+
+	if hadEffectiveModel {
+		r.emit("provider:model_fallback", ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})
+	}
 
 	if hasPendingUsage {
 		r.emit("provider:usage", pendingUsage)
@@ -1460,8 +1470,17 @@ func (r *Router) MarkThreadActive(threadID string) {
 	r.mu.Lock()
 	delete(r.stoppedThreads, threadID)
 	deleteByPrefix(r.settledTurns, threadID+"|")
+	_, hadEffectiveModel := r.effectiveModelByThread[threadID]
+	delete(r.effectiveModelByThread, threadID)
+	var effectiveModelRevision uint64
+	if hadEffectiveModel {
+		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)
+	}
 	r.threadEpochs[threadID]++
 	r.mu.Unlock()
+	if hadEffectiveModel {
+		r.emit("provider:model_fallback", ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})
+	}
 }
 
 // ThreadEpoch returns the thread's reactivation epoch: a counter bumped

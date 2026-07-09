@@ -429,12 +429,33 @@ describe("<ToolCallCard> header dispatcher", () => {
     const row = getByTestId("collab-tool-row");
 
     expect(row.textContent).toContain("Spawned Plato [default]");
-    expect(row.textContent).toContain("(gpt-5.5 low)");
+    expect(row.textContent).toContain("(GPT 5.5 low)");
     expect(row.textContent).toContain(
       "Run `sleep 20` and report the exit code",
     );
     expect(row.textContent).not.toContain("running");
     expect(queryByTestId("subagent-group")).toBeNull();
+  });
+
+  it("uses the MultiAgentV2 task path when spawn nickname metadata is hidden", async () => {
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const item = makeItem({
+      id: "spawn-v2",
+      kind: "tool_call",
+      status: "running",
+      toolName: "collab_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "spawn_agent",
+          taskName: "/root/review_security",
+          receiverThreadIds: ["child-v2"],
+        },
+      }),
+    });
+
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    expect(getByTestId("collab-tool-row").textContent).toContain("Spawned review_security");
   });
 
   it("renders terminal Codex spawn_agent failures without receivers as failed spawns", async () => {

@@ -12,12 +12,13 @@ import {
 } from './appStorage';
 import { ListThreads } from './bindings';
 import {
-  DEFAULT_PANE_RATIO,
   getPaneLayoutItems,
   setPaneLayoutPersistenceHandlers,
   setPaneLayoutItems,
   type PaneLayoutItem,
 } from './paneLayout.svelte';
+import { getMinPaneWidth } from './paneDensity.svelte';
+import { FALLBACK_PANE_WIDTH_PX, normalizePaneWidthPx } from '../utils/paneWidths';
 import { restoreCompanion, type CompanionKind } from './companionPanes.svelte';
 import {
   getAllPanes,
@@ -35,12 +36,13 @@ import {
 // adopted at read time.
 const PANE_LAYOUT_KEY = 'paneLayout';
 const LEGACY_PANE_LAYOUT_STORAGE_KEY = 'agentOverflowPaneLayout';
-const PANE_LAYOUT_SETTINGS_VERSION = 2;
+const PANE_LAYOUT_SETTINGS_VERSION = 3;
 const PANE_RESIZE_PERSIST_DELAY_MS = 200;
 const MAX_RESTORED_PANES = 24;
 const MAX_PANE_ID_LENGTH = 64;
 const MAX_THREAD_ID_LENGTH = 256;
-const MAX_PANE_RATIO = 100;
+// Cap for pre-v3 persisted flex ratios during migration.
+const MAX_LEGACY_PANE_RATIO = 100;
 const SAFE_PANE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 type PersistedPaneLayout = PaneLayoutPersistedSettings;
@@ -48,11 +50,25 @@ type PersistedPane = PaneLayoutPersistedPane;
 
 let lastPersistedPaneLayoutKey: string | null = null;
 
-function normalizePersistedRatio(ratio: unknown): number {
+function normalizePersistedWidthPx(widthPx: unknown): number {
+  if (typeof widthPx !== 'number') return FALLBACK_PANE_WIDTH_PX;
+  return normalizePaneWidthPx(widthPx);
+}
+
+// Versions 1-2 persisted flex-grow ratios (typically ~1). Migrate to
+// absolute widths by scaling the current density minimum, preserving
+// any proportions a zero-sum resize had produced.
+function migrateLegacyRatioToWidthPx(ratio: unknown): number {
   if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0) {
-    return DEFAULT_PANE_RATIO;
+    return normalizePaneWidthPx(getMinPaneWidth());
   }
-  return Math.min(ratio, MAX_PANE_RATIO);
+  return normalizePaneWidthPx(Math.min(ratio, MAX_LEGACY_PANE_RATIO) * getMinPaneWidth());
+}
+
+function persistedWidthFor(record: Record<string, unknown>, version: unknown): number {
+  return version === PANE_LAYOUT_SETTINGS_VERSION
+    ? normalizePersistedWidthPx(record.widthPx)
+    : migrateLegacyRatioToWidthPx(record.ratio);
 }
 
 function isSafePersistedPaneId(paneId: string): boolean {
@@ -81,7 +97,9 @@ async function emptyLayout(): Promise<void> {
 function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
   if (!raw || typeof raw !== 'object') return null;
   const record = raw as Record<string, unknown>;
-  if (record.version !== 1 && record.version !== PANE_LAYOUT_SETTINGS_VERSION) return null;
+  if (record.version !== 1 && record.version !== 2 && record.version !== PANE_LAYOUT_SETTINGS_VERSION) {
+    return null;
+  }
   if (!Array.isArray(record.panes)) return null;
   const focusedPaneId = typeof record.focusedPaneId === 'string' && isSafePersistedPaneId(record.focusedPaneId)
     ? record.focusedPaneId
@@ -102,7 +120,7 @@ function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
         paneId: pane.paneId,
         kind: 'thread',
         threadId: pane.threadId,
-        ratio: normalizePersistedRatio(pane.ratio),
+        widthPx: migrateLegacyRatioToWidthPx(pane.ratio),
       });
       if (panes.length >= MAX_RESTORED_PANES) break;
     }
@@ -140,7 +158,7 @@ function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
         paneId: pane.paneId,
         kind: 'thread',
         threadId: pane.threadId,
-        ratio: normalizePersistedRatio(pane.ratio),
+        widthPx: persistedWidthFor(pane, record.version),
       });
     } else if (isPersistedCompanionKind(pane.kind)) {
       if (typeof pane.sourcePaneId !== 'string' || !isSafePersistedPaneId(pane.sourcePaneId)) continue;
@@ -151,7 +169,7 @@ function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
         paneId: pane.paneId,
         kind: pane.kind,
         sourcePaneId: pane.sourcePaneId,
-        ratio: normalizePersistedRatio(pane.ratio),
+        widthPx: persistedWidthFor(pane, record.version),
       });
     }
     if (panes.length >= MAX_RESTORED_PANES) break;
@@ -180,7 +198,7 @@ function buildSnapshot(): PersistedPaneLayout {
         paneId: item.paneId,
         kind: 'thread',
         threadId,
-        ratio: normalizePersistedRatio(item.ratio),
+        widthPx: normalizePersistedWidthPx(item.widthPx),
       });
     } else if (
       isPersistedCompanionKind(item.kind) &&
@@ -191,7 +209,7 @@ function buildSnapshot(): PersistedPaneLayout {
         paneId: item.paneId,
         kind: item.kind,
         sourcePaneId: item.sourcePaneId,
-        ratio: normalizePersistedRatio(item.ratio),
+        widthPx: normalizePersistedWidthPx(item.widthPx),
       });
     }
   }
@@ -263,7 +281,7 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
       id: pane.paneId,
       paneId: pane.paneId,
       kind: 'thread',
-      ratio: pane.ratio,
+      widthPx: pane.widthPx,
     });
     registryEntries.push({ paneId: pane.paneId, thread });
   }
@@ -286,7 +304,7 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
       id: pane.paneId,
       paneId: pane.paneId,
       kind: pane.kind,
-      ratio: pane.ratio,
+      widthPx: pane.widthPx,
       sourcePaneId: pane.sourcePaneId,
     };
     const companions = companionsBySource.get(pane.sourcePaneId) ?? [];

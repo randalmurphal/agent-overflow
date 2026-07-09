@@ -13,12 +13,14 @@ import (
 // this shape carries only in-memory session state that should mirror what
 // active provider processes are doing right now.
 type ThreadLiveState struct {
-	ThreadID     string                              `json:"threadId"`
-	ActiveTurn   *LiveStateActiveTurn                `json:"activeTurn,omitempty"`
-	QueueItems   []QueuedItem                        `json:"queueItems"`
-	FlushedItems []QueueFlushedItem                  `json:"flushedItems"`
-	Interactive  provider.PendingInteractiveRequests `json:"interactive"`
-	Todo         *LiveStateTodo                      `json:"todo,omitempty"`
+	ThreadID               string                              `json:"threadId"`
+	EffectiveModel         string                              `json:"effectiveModel,omitempty"`
+	EffectiveModelRevision uint64                              `json:"effectiveModelRevision,omitempty"`
+	ActiveTurn             *LiveStateActiveTurn                `json:"activeTurn,omitempty"`
+	QueueItems             []QueuedItem                        `json:"queueItems"`
+	FlushedItems           []QueueFlushedItem                  `json:"flushedItems"`
+	Interactive            provider.PendingInteractiveRequests `json:"interactive"`
+	Todo                   *LiveStateTodo                      `json:"todo,omitempty"`
 }
 
 type LiveStateActiveTurn struct {
@@ -70,6 +72,8 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	}
 
 	live := a.triage.LiveStateSnapshotForThread(threadID)
+	state.EffectiveModel = live.EffectiveModel
+	state.EffectiveModelRevision = live.EffectiveModelRevision
 	if live.ActiveTurn != nil {
 		state.ActiveTurn = &LiveStateActiveTurn{
 			ThreadID:  live.ActiveTurn.ThreadID,

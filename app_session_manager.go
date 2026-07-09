@@ -67,6 +67,22 @@ func (m sessionManager) startState(threadID string) (*sessionStart, bool) {
 	return startState, ok
 }
 
+// updateLaunchOpts replaces the stored launch options for threadID iff the
+// session still carries sessionToken (guarding against a newer session
+// having replaced the one whose config was just live-applied). Called by
+// the config reconciler after a successful live apply so later reconciles
+// diff against what the session is actually running.
+func (m sessionManager) updateLaunchOpts(threadID, sessionToken string, opts provider.SessionOptions) {
+	m.app.mu.Lock()
+	defer m.app.mu.Unlock()
+	current, ok := m.app.sessions[threadID]
+	if !ok || current.token != sessionToken {
+		return
+	}
+	current.launchOpts = opts
+	m.app.sessions[threadID] = current
+}
+
 // unregister removes the session for threadID iff it still carries
 // sessionToken (guarding against a newer session having replaced it), and
 // returns the removed session so the caller can release its process group

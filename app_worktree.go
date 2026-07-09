@@ -29,6 +29,17 @@ type WorktreeStatus struct {
 	AttachedThreads  int    `json:"attachedThreads"`
 }
 
+// WorktreeListItem is the picker-facing worktree shape. DeleteBlocked is true
+// when at least one attached thread has an active turn or a running background
+// task. Removal repeats the authoritative check while holding the thread locks;
+// this field only keeps the UI affordance in sync with that backend rule.
+type WorktreeListItem struct {
+	Path          string `json:"path"`
+	Branch        string `json:"branch"`
+	Head          string `json:"head"`
+	DeleteBlocked bool   `json:"deleteBlocked"`
+}
+
 // GitCreateWorktree creates a new worktree for the requested branch and returns its path.
 // Preserves legacy semantics — no carry-over of local changes.
 func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
@@ -660,7 +671,7 @@ func (a *App) computeWorktreeStatus(project, worktreePath string) (WorktreeStatu
 }
 
 // GitListWorktrees lists worktrees for the thread's repository.
-func (a *App) GitListWorktrees(threadID string) ([]gitops.Worktree, error) {
+func (a *App) GitListWorktrees(threadID string) ([]WorktreeListItem, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return nil, err
@@ -671,17 +682,56 @@ func (a *App) GitListWorktrees(threadID string) ([]gitops.Worktree, error) {
 		return nil, err
 	}
 
-	return a.gitCore().ListWorktrees(project)
+	return a.listWorktreesForPicker(project)
 }
 
 // GitListWorktreesForProject lists worktrees for a project without requiring
 // a thread row.
-func (a *App) GitListWorktreesForProject(projectID string) ([]gitops.Worktree, error) {
+func (a *App) GitListWorktreesForProject(projectID string) ([]WorktreeListItem, error) {
 	project, err := a.gitProjectPath(projectID)
 	if err != nil {
 		return nil, err
 	}
-	return a.gitCore().ListWorktrees(project)
+	return a.listWorktreesForPicker(project)
+}
+
+func (a *App) listWorktreesForPicker(project string) ([]WorktreeListItem, error) {
+	worktrees, err := a.gitCore().ListWorktrees(project)
+	if err != nil {
+		return nil, err
+	}
+	refs, err := a.store.ListThreadWorkspaceRefsWithActivity()
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]WorktreeListItem, len(worktrees))
+	for i, worktree := range worktrees {
+		items[i] = WorktreeListItem{
+			Path:   worktree.Path,
+			Branch: worktree.Branch,
+			Head:   worktree.HEAD,
+		}
+	}
+
+	itemByPath := make(map[string]int, len(items))
+	for i := range items {
+		itemByPath[gitops.CanonicalPath(items[i].Path)] = i
+	}
+	for _, ref := range refs {
+		if !ref.WorkspaceChangeBlocked {
+			continue
+		}
+		for _, path := range []string{ref.WorktreePath, ref.WorkspacePath} {
+			if strings.TrimSpace(path) == "" {
+				continue
+			}
+			if i, ok := itemByPath[gitops.CanonicalPath(path)]; ok {
+				items[i].DeleteBlocked = true
+			}
+		}
+	}
+	return items, nil
 }
 
 // switchThreadWorkspace switches a thread to the project root or one of the

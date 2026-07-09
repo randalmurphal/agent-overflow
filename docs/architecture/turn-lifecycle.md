@@ -72,9 +72,10 @@ signals:
 - A typed `TerminalInteraction` notification for an empty `write_stdin` poll
   targets a `unifiedExecStartup` process, proving the model explicitly waited
   on the live background PTY.
-- `collabAgentToolCall` `spawn_agent` whose `agentsStates` still
-  reports a non-terminal child when the parent yields or reaches
-  `turn/completed`.
+- MultiAgentV1 `collabAgentToolCall` `spawn_agent` whose `agentsStates`
+  reports a non-terminal child, or MultiAgentV2's canonical
+  `subAgentActivity kind:"started"` after successful child creation. The V2
+  adapter normalizes that activity into the same receiver/running-state shape.
 
 Codex command executions do not follow Claude's sibling completion contract:
 when Agent Overflow persists a command execution, typed `item/completed`
@@ -84,6 +85,15 @@ shown by a separate `tool_completion` sibling created from `wait_agent` or
 injected `<subagent_notification>` fragments. Direct child lifecycle
 notifications only update live/incomplete state so later explicit wait or
 notification output can own the visible transcript boundary.
+
+Every non-root Codex provider thread is fail-closed at the session boundary.
+Until a V1 spawn completion or V2 started activity maps it to a spawn item,
+its notifications and server requests are quarantined with bounded storage
+and an ownership deadline; expired server requests are rejected rather than
+stalling the provider indefinitely. Known child turn
+lifecycle and thread-wide state never enter the parent projection; only
+transcript-bearing events cross with `ParentToolUseID`. The same rule applies
+recursively when a child spawns a grandchild.
 
 Codex `unifiedExecStartup` command executions are the exception to the
 persisted-launch-row shape. Their starts are tracked as transient

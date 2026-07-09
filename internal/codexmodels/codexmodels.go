@@ -19,8 +19,12 @@ import (
 // DefaultTTL is the lifetime of a successful catalog entry. Five
 // minutes keeps the cache responsive to binary swaps in settings while
 // still letting the model picker render without spawning a CLI for
-// every render pass.
-const DefaultTTL = 5 * time.Minute
+// every render pass. Failures use a much shorter TTL so paired capability
+// checks share one failed subprocess without masking recovery for long.
+const (
+	DefaultTTL      = 5 * time.Minute
+	DefaultErrorTTL = 15 * time.Second
+)
 
 // Lister is the seam tests use to stub out the CLI shell-out. Production
 // wires it to codexprovider.ListModels.
@@ -39,6 +43,7 @@ type Cache struct {
 
 type entry struct {
 	models    []provider.ModelInfo
+	err       error
 	expiresAt time.Time
 }
 
@@ -79,7 +84,8 @@ func NewWith(ttl time.Duration, list Lister, now func() time.Time) *Cache {
 // Get returns the cached model list for the binary, calling the lister
 // at most once per binary across concurrent callers. Concurrent calls
 // to Get for the same binary block on a single in-flight lookup and
-// share its result.
+// share its result. Failed lookups are cached briefly to prevent sequential
+// effort and Fast-mode checks from repeating the same bounded subprocess.
 //
 // A non-empty binary is required; empty input falls through to the
 // CodexBinaryPath default that codex.ListModels resolves internally.
@@ -91,7 +97,7 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 		if e, ok := c.entries[binary]; ok && c.now().Before(e.expiresAt) {
 			models := cloneModels(e.models)
 			c.mu.Unlock()
-			return models, nil
+			return models, e.err
 		}
 		if existing, ok := c.inflight[binary]; ok {
 			done := existing.done
@@ -115,11 +121,14 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 		l.models = cloned
 		l.err = err
 		delete(c.inflight, binary)
-		if err == nil {
-			c.entries[binary] = entry{
-				models:    cloneModels(models),
-				expiresAt: c.now().Add(c.ttl),
-			}
+		entryTTL := c.ttl
+		if err != nil {
+			entryTTL = DefaultErrorTTL
+		}
+		c.entries[binary] = entry{
+			models:    cloneModels(models),
+			err:       err,
+			expiresAt: c.now().Add(entryTTL),
 		}
 		close(l.done)
 		c.mu.Unlock()

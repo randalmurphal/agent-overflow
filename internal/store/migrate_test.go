@@ -318,7 +318,7 @@ func TestThreadsReasoningEffortCheck(t *testing.T) {
 			t.Errorf("INSERT claude reasoning_effort=%q: %v", eff, err)
 		}
 	}
-	for _, eff := range []string{"none", "minimal", "low", "medium", "high", "xhigh"} {
+	for _, eff := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"} {
 		if _, err := s.db.Exec(`
 			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
 				created_at, updated_at, archived, mode, reasoning_effort)
@@ -330,17 +330,107 @@ func TestThreadsReasoningEffortCheck(t *testing.T) {
 	if _, err := s.db.Exec(`
 		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
 			created_at, updated_at, archived, mode, reasoning_effort)
-		VALUES ('t-codex-max', ?, 'Bad', 'codex', '/tmp', '', 1, 1, 0, 'chat', 'max')
-	`, defaultTestProjectID); err == nil {
-		t.Fatal("INSERT codex with reasoning_effort='max' must violate CHECK constraint")
-	}
-	if _, err := s.db.Exec(`
-		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
-			created_at, updated_at, archived, mode, reasoning_effort)
 		VALUES ('t-claude-minimal', ?, 'Bad', 'claude', '/tmp', '', 1, 1, 0, 'chat', 'minimal')
 	`, defaultTestProjectID); err == nil {
 		t.Fatal("INSERT claude with reasoning_effort='minimal' must violate CHECK constraint")
 	}
+}
+
+func TestMigrationV19PreservesRowsAndWidensCodexReasoningEfforts(t *testing.T) {
+	db := migrateThrough(t, 18)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v19', '/tmp/v19', 'V19', 'blue', 7, 10, 11, 0)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (
+			id, project_id, title, provider, model, workspace_path, worktree_path,
+			branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+			fast_mode, context_window, auto_compact_standard_percent,
+			auto_compact_extended_percent, runtime_mode, last_token_usage, last_read_at,
+			pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+		) VALUES (
+			'thread-v19', 'project-v19', 'Preserve me', 'codex', 'gpt-5.5', '/tmp/v19', '/tmp/v19-wt',
+			'feature/v19', 'github:42', 'session-v19', 'fork-v19', 'plan', 'xhigh',
+			1, 272000, 65, 80, 'auto-accept-edits', '{"input_tokens":12}', 21,
+			22, 23, 24, 1, '["server-a"]'
+		)
+	`)
+	mustExec(t, db, `
+		INSERT INTO items (
+			id, thread_id, turn_index, item_index, kind, role, status, summary,
+			parent_id, is_background, completion_of, tool_name, decision, meta,
+			created_at, updated_at
+		) VALUES (
+			'item-v19', 'thread-v19', 1, 2, 'assistant_text', 'assistant', 'completed', 'kept',
+			'', 0, '', '', '', '{}', 25, 26
+		)
+	`)
+	mustExec(t, db, `
+		INSERT INTO chat_model_profiles (
+			provider, model, reasoning_effort, fast_mode, context_window,
+			auto_compact_standard_percent, auto_compact_extended_percent,
+			runtime_mode, updated_at
+		) VALUES ('codex', 'gpt-5.5', 'xhigh', 1, 272000, 60, 75, 'full-access', 27)
+	`)
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 19)); err != nil {
+		t.Fatalf("apply migration v19: %v", err)
+	}
+
+	var title, model, prRef, tokenUsage, disabledServers string
+	var fastMode, contextWindow, archived int
+	if err := db.QueryRow(`
+		SELECT title, model, pr_ref, last_token_usage, disabled_mcp_servers,
+		       fast_mode, context_window, archived
+		FROM threads WHERE id = 'thread-v19'
+	`).Scan(&title, &model, &prRef, &tokenUsage, &disabledServers, &fastMode, &contextWindow, &archived); err != nil {
+		t.Fatalf("read migrated thread: %v", err)
+	}
+	if title != "Preserve me" || model != "gpt-5.5" || prRef != "github:42" ||
+		tokenUsage != `{"input_tokens":12}` || disabledServers != `["server-a"]` ||
+		fastMode != 1 || contextWindow != 272000 || archived != 1 {
+		t.Fatalf("migrated thread lost data: title=%q model=%q pr_ref=%q usage=%q disabled=%q fast=%d context=%d archived=%d",
+			title, model, prRef, tokenUsage, disabledServers, fastMode, contextWindow, archived)
+	}
+
+	var itemSummary string
+	if err := db.QueryRow(`SELECT summary FROM items WHERE thread_id = 'thread-v19' AND id = 'item-v19'`).Scan(&itemSummary); err != nil {
+		t.Fatalf("read child item after thread rebuild: %v", err)
+	}
+	if itemSummary != "kept" {
+		t.Fatalf("item summary = %q, want kept", itemSummary)
+	}
+
+	var profileFastMode, profileContextWindow, profileUpdatedAt int
+	if err := db.QueryRow(`
+		SELECT fast_mode, context_window, updated_at
+		FROM chat_model_profiles WHERE provider = 'codex' AND model = 'gpt-5.5'
+	`).Scan(&profileFastMode, &profileContextWindow, &profileUpdatedAt); err != nil {
+		t.Fatalf("read migrated model profile: %v", err)
+	}
+	if profileFastMode != 1 || profileContextWindow != 272000 || profileUpdatedAt != 27 {
+		t.Fatalf("migrated profile lost data: fast=%d context=%d updated=%d", profileFastMode, profileContextWindow, profileUpdatedAt)
+	}
+
+	for _, index := range []string{"idx_threads_project", "idx_threads_updated", "idx_chat_model_profiles_updated"} {
+		var found string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after migration: %v", index, err)
+		}
+	}
+
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("foreign_key_check reported a violation after v19 rebuild")
+	}
+
+	mustExec(t, db, `UPDATE threads SET reasoning_effort = 'max' WHERE id = 'thread-v19'`)
+	mustExec(t, db, `UPDATE chat_model_profiles SET reasoning_effort = 'ultra' WHERE provider = 'codex' AND model = 'gpt-5.5'`)
 }
 
 func TestThreadsContextWindowCheck(t *testing.T) {
@@ -885,6 +975,27 @@ func TestChatBarFavoritesAndProfilesCHECK(t *testing.T) {
 		) VALUES ('claude', 'claude-opus-4-7', 'bogus', 0, 1000000, 'full-access', 1)`,
 	); err == nil {
 		t.Fatal("profile with invalid effort must violate CHECK")
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO chat_model_profiles (
+			provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
+		) VALUES ('codex', 'gpt-5.6-sol', 'max', 0, 272000, 'full-access', 1)`,
+	); err != nil {
+		t.Fatalf("codex profile with max effort must satisfy CHECK: %v", err)
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO chat_model_profiles (
+			provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
+		) VALUES ('codex', 'gpt-5.6-terra', 'ultra', 0, 272000, 'full-access', 1)`,
+	); err != nil {
+		t.Fatalf("codex profile with ultra effort must satisfy CHECK: %v", err)
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO chat_model_profiles (
+			provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
+		) VALUES ('claude', 'claude-opus-4-7', 'ultra', 0, 1000000, 'full-access', 1)`,
+	); err == nil {
+		t.Fatal("claude profile with codex-only effort 'ultra' must violate coupling CHECK")
 	}
 
 	// claude-tui shares claude's effort set and is a first-class provider on

@@ -2,7 +2,7 @@ import type { Thread } from '../types/models';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
 import {
   addPaneLayoutItem,
-  averagePaneRatio,
+  averagePaneWidthPx,
   getPaneLayoutItems,
   movePaneLayoutItem,
   removePaneLayoutItem,
@@ -58,7 +58,7 @@ function addThreadPaneToLayout(paneId: string, insertIndex?: number): void {
     id: paneId,
     paneId,
     kind: 'thread',
-    ratio: averagePaneRatio(),
+    widthPx: averagePaneWidthPx(),
   }, insertIndex, { persist: false });
 }
 

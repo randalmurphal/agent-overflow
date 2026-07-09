@@ -1309,6 +1309,7 @@ additionally:
 | `EventInit`                 | persist session_ref to thread; no item                                                                |
 | `EventThreadRenamed`        | persist title to thread; emit existing `thread:*` event; no item                                      |
 | `EventModelRerouted`        | persist model to thread; emit existing event; no item                                                 |
+| `EventModelFallback`        | persist warning notification; project session-scoped effective model; keep requested model unchanged |
 | `EventTokenUsage`           | emit `provider:usage` (for the meter)                                                                 |
 | `EventRateLimits`           | emit `provider:usage` (folded in)                                                                     |
 | `EventSessionStatus` (persistent failure) | emit `provider:status` for the banner (binary missing, auth fail). Transient — drop. |

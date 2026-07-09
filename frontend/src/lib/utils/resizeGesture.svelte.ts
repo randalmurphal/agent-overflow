@@ -39,6 +39,7 @@ export function createResizeGesture(readOptions: () => ResizeGestureOptions) {
   }
 
   function onPointerDown(event: PointerEvent): void {
+    if (event.button !== 0) return;
     const options = readOptions();
     event.preventDefault();
     window.getSelection()?.removeAllRanges();

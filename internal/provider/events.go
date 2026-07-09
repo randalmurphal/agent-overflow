@@ -47,9 +47,15 @@ const (
 	EventAPIRetry EventKind = "api_retry"
 
 	// Inline/system events that do not render as timeline rows.
-	EventCompactBoundary   EventKind = "compact_boundary"
-	EventRateLimits        EventKind = "rate_limits"
-	EventModelRerouted     EventKind = "model_rerouted"
+	EventCompactBoundary EventKind = "compact_boundary"
+	EventRateLimits      EventKind = "rate_limits"
+	EventModelRerouted   EventKind = "model_rerouted"
+	// EventModelFallback reports a provider safety/classifier fallback where
+	// the configured model remains the user's preference but the live session
+	// is now running another model. Unlike EventModelRerouted, triage must not
+	// overwrite threads.model; it persists the warning and projects the
+	// effective model as session-scoped live state.
+	EventModelFallback     EventKind = "model_fallback"
 	EventThreadRenamed     EventKind = "thread_renamed"
 	EventContentBlockStart EventKind = "content_block_start"
 	EventContentBlockStop  EventKind = "content_block_stop"
@@ -144,6 +150,7 @@ var AllEventKinds = []EventKind{
 	EventCompactBoundary,
 	EventRateLimits,
 	EventModelRerouted,
+	EventModelFallback,
 	EventThreadRenamed,
 	EventContentBlockStart,
 	EventContentBlockStop,

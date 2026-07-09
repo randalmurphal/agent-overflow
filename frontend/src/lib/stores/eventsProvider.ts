@@ -4,6 +4,7 @@
 // updates. Fan-in target of events.ts's setupEventListeners.
 import type {
   ApprovalEvent,
+  ModelFallbackEvent,
   ProviderAccountEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
@@ -35,6 +36,15 @@ import {
 import { parseTokenUsage } from './threadTurnProjection';
 import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { patchThreadDurableStatus, syncLatestTurnCompleted, syncThreadActivity, updateThreadUsageCache } from './eventsThreadRows';
+
+export function applyModelFallback(evt: ModelFallbackEvent): void {
+  if (!evt?.threadId) return;
+  for (const pane of iterPanes()) {
+    if (pane.threadId === evt.threadId) {
+      pane.applyEffectiveModel(evt.effectiveModel ?? '', evt.revision);
+    }
+  }
+}
 
 export function applyApprovalEvent(evt: ApprovalEvent): void {
   if (!evt) return;

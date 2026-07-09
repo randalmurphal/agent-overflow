@@ -93,7 +93,9 @@
     e.preventDefault();
     if (stopPropagation) e.stopPropagation();
     try {
-      await OpenInEditor(path, line, col, workspacePath);
+      // Empty editorID → the user's default editor. Inline path links
+      // never target a specific editor.
+      await OpenInEditor(path, line, col, workspacePath, '');
     } catch (err) {
       addToast('error', errString(err));
     }
