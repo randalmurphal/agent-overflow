@@ -525,6 +525,35 @@ the structured-envelope path produces, so triage's stash-drain ->
 parser fallback, the launch row stays `running` indefinitely. See
 `internal/provider/claude/CLAUDE.md` §Synthetic XML extraction.
 
+### Injected non-user content on the `isReplay` envelope (`<agent-message>`, …)
+
+`task-notification` is not the only thing the CLI injects into user-role
+content. Claude 2.1.x delivers a completed subagent's **final report**
+into the PARENT conversation as a `queued_command` attachment, echoed on
+the `user{isReplay:true}` envelope wrapped in
+`<agent-message from="…">…</agent-message>` (confirmed in the 2.1.202
+binary — the tag is `Uyr="agent-message"`, wrapped by the regexes
+`^<agent-message[^>]*>\n` / `\n<\/agent-message>$`; it is NOT in the
+local source copy). The 2.1.x binary defines several sibling injection
+tags in the same table — `teammate-message`, `<channel source="…">`,
+`cross-session-message`, `fork-boilerplate` — whose exact envelope shapes
+are not yet spiked.
+
+These are NOT user-authored. The canonical suppression set is
+`sessionfork.InjectedUserContentWrappers` (one list, shared by the
+live-wire parser `isClaudeInjectedReplayContent` and the fork-point
+detector `hasInjectedUserContentTag`, so it can never drift). `agent-message`
+is catalogued there and suppressed like `task-notification`/`system-reminder`.
+
+Defense in depth: even an *uncatalogued* future wrapper can no longer
+surface as a user message. Triage's `handleUserText` treats any top-level
+`isReplay` echo that matches no pending send as provider-injected context
+and persists it as a non-user `notification` row (`injected:wire:<uuid>`),
+never a `user_text` bubble. Cataloguing a wrapper suppresses it entirely;
+not cataloguing it makes it a visible-but-clearly-non-user row. Before
+this, an uncatalogued `<agent-message>` shipped three subagent reports as
+top-level `user:wire` user bubbles (incident 2026-07).
+
 ---
 
 ## Outbound `user` message + client-supplied `uuid` (`--replay-user-messages`)
@@ -565,6 +594,25 @@ summarized`), 3 turns in one persistent session:
 - **`parentUuid` is CLI-assigned.** The client supplies only `uuid`; the
   CLI assigns `parentUuid` itself, threading the entry onto the transcript.
 
+### Queued (mid-turn) sends honor the client uuid too (claude 2.1.202)
+
+Confirmed by isolated spike on 2026-07-09 against the installed binary,
+same base flag set: a second user envelope written to stdin **while a
+turn is running** (msg2 queued ~5 s into a ~20 s turn, its own minted
+uuid) is held by the CLI until the running turn finishes and then
+echoed back as `user{isReplay:true}` carrying the supplied uuid
+**verbatim** — at turn pickup, not enqueue time. Two consequences:
+
+- AO's flush-queue dispatch (`app_flush_queue.go`) mints a uuid per
+  queued item exactly like a direct send, and triage's pending-send
+  matching (`consumeMatchingPendingSend`) keys on it. No order-based
+  fallback is needed for Claude.
+- The echo can arrive an arbitrarily long time after the stdin write
+  (the whole remaining turn), so any Claude-injected `user{isReplay}`
+  envelope landing in that window (e.g. an `<agent-message>` subagent
+  report) interleaves with pending queued sends. Identity matching —
+  not FIFO position — is what keeps those from mispairing.
+
 ### Timing — the fast send→escape race window
 
 Same spike, each value measured from the stdin write of the envelope:
@@ -590,7 +638,11 @@ returns `ErrMessageNotFound` and falls back to the
 This is an **undocumented binary contract** pinned to the observed CLI
 version. If a future CLI stops honoring the supplied `uuid` (or starts
 canonicalizing / reassigning it), revert-by-uuid silently degrades to the
-ordinal walk. Re-spike per [`spike-policy.md`](spike-policy.md) before
+ordinal walk, and pending-send identity matching degrades loudly: the
+echo matches no expected id, triage logs the mismatch and persists it as
+an injected-context notification instead of confirming the send (the
+queued-message overlay would then stay visible — a loud failure, not a
+mispair). Re-spike per [`spike-policy.md`](spike-policy.md) before
 assuming it still holds; `claude/session.go` rejects non-canonical input
 up front so the row, checkpoint, envelope, and echoed JSONL `uuid` stay
 byte-identical.

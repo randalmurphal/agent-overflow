@@ -12,7 +12,7 @@ func TestRegisterAndConsumePendingSend_FIFO(t *testing.T) {
 	router.RegisterPendingSend("t1", "user:0", 0)
 	router.RegisterPendingSend("t1", "user:1", 1)
 
-	first, ok := router.consumePendingSendHead("t1")
+	first, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok {
 		t.Fatalf("expected first pending send to consume, got ok=false")
 	}
@@ -20,7 +20,7 @@ func TestRegisterAndConsumePendingSend_FIFO(t *testing.T) {
 		t.Fatalf("first pop: got %+v, want AOItemID=user:0 TurnIndex=0", first)
 	}
 
-	second, ok := router.consumePendingSendHead("t1")
+	second, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok {
 		t.Fatalf("expected second pending send to consume, got ok=false")
 	}
@@ -28,7 +28,7 @@ func TestRegisterAndConsumePendingSend_FIFO(t *testing.T) {
 		t.Fatalf("second pop: got %+v, want AOItemID=user:1 TurnIndex=1", second)
 	}
 
-	zero, ok := router.consumePendingSendHead("t1")
+	zero, ok := router.consumeMatchingPendingSend("t1", "")
 	if ok {
 		t.Fatalf("expected empty FIFO to return ok=false, got entry %+v", zero)
 	}
@@ -49,13 +49,13 @@ func TestPendingSendIsolatedPerThread(t *testing.T) {
 		t.Fatalf("t2 should NOT report has-pending — registers are thread-scoped")
 	}
 
-	zero, ok := router.consumePendingSendHead("t2")
+	zero, ok := router.consumeMatchingPendingSend("t2", "")
 	if ok {
 		t.Fatalf("consume on t2 should return ok=false, got entry %+v", zero)
 	}
 
 	// t1's entry must still be intact.
-	head, ok := router.consumePendingSendHead("t1")
+	head, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok || head.AOItemID != "user:0" {
 		t.Fatalf("t1 head after t2 consume attempt: got ok=%v entry=%+v", ok, head)
 	}
@@ -74,7 +74,7 @@ func TestHasPendingSendForThread(t *testing.T) {
 		t.Fatalf("expected has-pending after register")
 	}
 
-	if _, ok := router.consumePendingSendHead("t1"); !ok {
+	if _, ok := router.consumeMatchingPendingSend("t1", ""); !ok {
 		t.Fatalf("consume should succeed")
 	}
 
@@ -92,17 +92,17 @@ func TestClearPendingSendForFailure_RemovesMatchingEntry(t *testing.T) {
 
 	router.ClearPendingSendForFailure("t1", "user:1")
 
-	first, ok := router.consumePendingSendHead("t1")
+	first, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok || first.AOItemID != "user:0" {
 		t.Fatalf("first pop after clear: ok=%v entry=%+v want user:0", ok, first)
 	}
 
-	second, ok := router.consumePendingSendHead("t1")
+	second, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok || second.AOItemID != "user:2" {
 		t.Fatalf("second pop after clear: ok=%v entry=%+v want user:2", ok, second)
 	}
 
-	if _, ok := router.consumePendingSendHead("t1"); ok {
+	if _, ok := router.consumeMatchingPendingSend("t1", ""); ok {
 		t.Fatalf("queue should be empty after clearing one + consuming two")
 	}
 }
@@ -115,11 +115,11 @@ func TestClearPendingSendForFailure_NoMatch_NoOp(t *testing.T) {
 
 	router.ClearPendingSendForFailure("t1", "user:does-not-exist")
 
-	first, ok := router.consumePendingSendHead("t1")
+	first, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok || first.AOItemID != "user:0" {
 		t.Fatalf("first pop after no-op clear: ok=%v entry=%+v", ok, first)
 	}
-	second, ok := router.consumePendingSendHead("t1")
+	second, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok || second.AOItemID != "user:1" {
 		t.Fatalf("second pop after no-op clear: ok=%v entry=%+v", ok, second)
 	}
@@ -137,7 +137,7 @@ func TestClearPendingSendsForThread_SweepsAll(t *testing.T) {
 	if router.HasPendingSendForThread("t1") {
 		t.Fatalf("queue should be empty after sweep")
 	}
-	if _, ok := router.consumePendingSendHead("t1"); ok {
+	if _, ok := router.consumeMatchingPendingSend("t1", ""); ok {
 		t.Fatalf("consume should fail after sweep")
 	}
 }
@@ -182,7 +182,7 @@ func TestCleanupThread_SweepsPendingSendAndWireOnlySeen(t *testing.T) {
 	if router.HasPendingSendForThread("t1") {
 		t.Fatalf("CleanupThread should sweep pending sends")
 	}
-	if _, ok := router.consumePendingSendHead("t1"); ok {
+	if _, ok := router.consumeMatchingPendingSend("t1", ""); ok {
 		t.Fatalf("CleanupThread should leave consume returning ok=false")
 	}
 
@@ -248,7 +248,7 @@ func TestEagerPersistDeferredFlushSends_PersistsAndNilsDeferred(t *testing.T) {
 	}
 
 	// DeferredItem should be nil'd — echo takes stamp-only branch.
-	head, ok := router.consumePendingSendHead("t1")
+	head, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok {
 		t.Fatalf("expected pending send to be consumable")
 	}
@@ -284,7 +284,7 @@ func TestEagerPersistDeferredFlushSends_SkipsNonFlushPendingSends(t *testing.T) 
 	}
 
 	// The non-flush entry should still be consumable.
-	if _, ok := router.consumePendingSendHead("t1"); !ok {
+	if _, ok := router.consumeMatchingPendingSend("t1", ""); !ok {
 		t.Fatalf("non-flush pending send should survive eager persist")
 	}
 }
@@ -299,7 +299,7 @@ func TestClearPendingSendsByItemIDs(t *testing.T) {
 	router.ClearPendingSendsByItemIDs("t1", []string{"user:0:flush:1", "user:0:flush:2"})
 
 	// The non-flush entry should survive.
-	head, ok := router.consumePendingSendHead("t1")
+	head, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok {
 		t.Fatalf("expected surviving entry")
 	}
@@ -308,7 +308,7 @@ func TestClearPendingSendsByItemIDs(t *testing.T) {
 	}
 
 	// Queue should be empty after the one survivor is consumed.
-	if _, ok := router.consumePendingSendHead("t1"); ok {
+	if _, ok := router.consumeMatchingPendingSend("t1", ""); ok {
 		t.Fatalf("expected empty queue after consuming survivor")
 	}
 }
@@ -344,4 +344,73 @@ func TestClearPendingSendsByItemIDs_EmptyThread(t *testing.T) {
 	// Should not panic on empty thread.
 	router.ClearPendingSendsByItemIDs("t1", []string{"user:0:flush:1"})
 	router.ClearPendingSendsByItemIDs("", []string{"user:0:flush:1"})
+}
+
+// Identity matching: when entries carry an ExpectedProviderItemID, the echo's
+// provider_item_id selects the matching entry — not the FIFO head — and a
+// non-matching echo consumes nothing (it is provider-injected content).
+
+func TestConsumeMatchingPendingSend_IdentityMatchPopsByID(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	router.RegisterPendingSendExpecting("t1", "user:0", 0, "uuid-a")
+	router.RegisterPendingSendExpecting("t1", "user:1", 1, "uuid-b")
+
+	got, ok := router.consumeMatchingPendingSend("t1", "uuid-b")
+	if !ok || got.AOItemID != "user:1" {
+		t.Fatalf("consume by uuid-b: got ok=%v entry=%+v, want user:1", ok, got)
+	}
+
+	// user:0 must survive untouched as the remaining head.
+	head, ok := router.peekPendingSendHead("t1")
+	if !ok || head.AOItemID != "user:0" {
+		t.Fatalf("remaining head: got ok=%v entry=%+v, want user:0", ok, head)
+	}
+}
+
+func TestConsumeMatchingPendingSend_NoMatch_LeavesQueueIntact(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	router.RegisterPendingSendExpecting("t1", "user:0", 0, "uuid-a")
+	router.RegisterPendingSendExpecting("t1", "user:1", 1, "uuid-b")
+
+	got, ok := router.consumeMatchingPendingSend("t1", "uuid-injected")
+	if ok {
+		t.Fatalf("non-matching echo must not consume any entry, popped %+v", got)
+	}
+
+	// Both entries survive in order.
+	first, _ := router.consumeMatchingPendingSend("t1", "uuid-a")
+	second, _ := router.consumeMatchingPendingSend("t1", "uuid-b")
+	if first.AOItemID != "user:0" || second.AOItemID != "user:1" {
+		t.Fatalf("queue disturbed by non-matching echo: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestConsumeMatchingPendingSend_IDLessEchoPopsHead(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	// Head expects an id, but the echo carries none. The carve-out pops the
+	// head anyway so the id-less-echo diagnostics in handleUserText keep
+	// firing against a matched entry (injected content always carries a uuid,
+	// so an id-less echo can only be our own send on a degraded wire).
+	router.RegisterPendingSendExpecting("t1", "user:0", 0, "uuid-a")
+
+	got, ok := router.consumeMatchingPendingSend("t1", "")
+	if !ok || got.AOItemID != "user:0" {
+		t.Fatalf("id-less echo should pop head: got ok=%v entry=%+v", ok, got)
+	}
+}
+
+func TestConsumeMatchingPendingSend_HeadWithoutExpectedID_FIFOPop(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	// Codex compatibility: entries registered without an expected id keep
+	// order-based matching even when the echo carries a provider item id.
+	router.RegisterPendingSend("t1", "user:0", 0)
+
+	got, ok := router.consumeMatchingPendingSend("t1", "codex_item_7")
+	if !ok || got.AOItemID != "user:0" {
+		t.Fatalf("FIFO pop for id-less head: got ok=%v entry=%+v", ok, got)
+	}
 }

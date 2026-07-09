@@ -12,28 +12,39 @@ import (
 )
 
 // handleUserText routes the wire-confirmation envelope for a user message.
-// Three branches:
+// Four branches (pending-send matching is by IDENTITY when the entry was
+// registered with an expected wire id — Claude-family sends mint the uuid
+// the CLI echoes back — and FIFO otherwise; see consumeMatchingPendingSend):
 //
-//  1. AO-initiated direct send: a matching pending-send FIFO entry exists
+//  1. AO-initiated direct send: a matching pending-send entry exists
 //     for an already-persisted `user:<turnIndex>` row. Stamp
 //     `provider_item_id` onto that row, merging the new key into the
 //     existing meta so attachments / source-plan refs survive.
 //
-//  2. AO-initiated queued send: a matching pending-send FIFO entry carries
+//  2. AO-initiated queued send: a matching pending-send entry carries
 //     a deferred row. Persist the `user:<turnIndex>:flush:<n>` row only
 //     after the provider echo supplies a stable `provider_item_id`, so chat
 //     history does not get ahead of provider context.
 //
-//  3. Wire-only cascade injection: no pending-send match. The provider
-//     injected a user message into the agent's context (Claude
-//     `task_notification` echo today; future Codex MCP-injected user
-//     input). Persist a fresh row with id `user:wire:<provider_item_id>`
-//     so the timeline mirrors the agent's actual context at wire-arrival
-//     timing. Dedup via wireOnlyUserTextSeen so a session-resume replay
-//     doesn't double-write.
+//  3. Wire-only, PARENTED: a subagent's task prompt echoed as user-role
+//     content. No pending-send match (it isn't an AO send). Persist a
+//     nested `user:wire:<provider_item_id>` user_text row under its
+//     launching tool_call — genuine conversation content.
 //
-// An empty `provider_item_id` in the wire-only branch is a non-stable
-// envelope — skip rather than mint a non-stable id we can't dedup on.
+//  4. Wire-only, TOP-LEVEL: no pending-send match and no parent tool.
+//     The pending-send registry is the ground truth for "did WE send
+//     this", so an unmatched top-level echo is provider-injected context
+//     (an unrecognized CLI wrapper, a cascade injection), NOT
+//     user-authored. Persist it as a non-user `notification` row
+//     (`injected:wire:<provider_item_id>`), never a user bubble. This
+//     closes the class where an unrecognized wrapper (the 2.1.x
+//     `<agent-message>` subagent report) surfaced as a top-level user
+//     message — incident 2026-07.
+//
+// Both wire-only branches dedup via wireOnlyUserTextSeen so a
+// session-resume replay doesn't double-write. An empty
+// `provider_item_id` is a non-stable envelope — skip rather than mint a
+// non-stable id we can't dedup on.
 func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	if evt.ThreadID == "" {
 		return nil
@@ -41,11 +52,21 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	providerItemID := readProviderItemIDFromMeta(evt.Meta)
 
 	if eventParentID(evt) == "" {
-		if pending, ok := r.consumePendingSendHead(evt.ThreadID); ok {
+		if pending, ok := r.consumeMatchingPendingSend(evt.ThreadID, providerItemID); ok {
 			if pending.DeferredItem != nil {
 				return r.persistDeferredUserText(pending, providerItemID, evt)
 			}
 			return r.attachProviderItemIDToUserRow(evt.ThreadID, pending, providerItemID, evt)
+		}
+		if r.HasPendingSendForThread(evt.ThreadID) {
+			// Sends are outstanding but this echo matched none of their
+			// expected ids — either an injected envelope arriving during
+			// the queue-wait window (routed to the injected-context row
+			// below, working as intended) or, if it recurs for every
+			// send, Claude no longer honoring the supplied uuid
+			// (binary-contract drift; re-spike per
+			// docs/references/spike-policy.md).
+			log.Printf("triage: top-level wire user echo %s on %s matched no pending send while sends await confirmation — treating as provider-injected content", providerItemID, evt.ThreadID)
 		}
 	}
 
@@ -58,7 +79,16 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	if !r.markWireOnlyUserTextSeen(evt.ThreadID, providerItemID) {
 		return nil // duplicate — already persisted on prior arrival
 	}
-	return r.persistWireOnlyUserText(evt, providerItemID)
+	if eventParentID(evt) != "" {
+		// Parented: a subagent's task prompt echoed as user-role content,
+		// nested under its launching tool_call. Genuine conversation
+		// content — persist as the nested user_text row.
+		return r.persistWireOnlySubagentPrompt(evt, providerItemID)
+	}
+	// Top-level echo that matched no pending send: provider-injected
+	// context, NOT user-authored. Persist as a non-user notification so it
+	// can never masquerade as a user message.
+	return r.persistInjectedContextNotification(evt, providerItemID)
 }
 
 func (r *Router) persistDeferredUserText(pending pendingSend, providerItemID string, evt provider.ProviderEvent) error {
@@ -255,21 +285,24 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending pendingS
 	return nil
 }
 
-// persistWireOnlyUserText creates a fresh `user_text` row representing
-// a cascade-injected user message — Claude's `task_notification` echo
-// or future Codex MCP-injected user input. The id format
-// `user:wire:<provider_item_id>` is deterministic from the wire id so
-// repeated arrivals (session resume replay) upsert the same row even
-// if the in-memory dedup set has been swept. Turn index resolution
-// prefers the open turn (the wire-only envelope arrives mid-turn by
-// definition); LastTurnIndex is the defensive fallback for races
-// against clearOpenTurn.
-func (r *Router) persistWireOnlyUserText(evt provider.ProviderEvent, providerItemID string) error {
+// persistWireOnlySubagentPrompt creates a fresh nested `user_text` row
+// for a subagent's task prompt echoed as user-role content (parented by
+// its launching tool_call). The id format `user:wire:<provider_item_id>`
+// is deterministic from the wire id so repeated arrivals (session resume
+// replay) upsert the same row even if the in-memory dedup set has been
+// swept. Turn index resolution prefers the open turn (the wire-only
+// envelope arrives mid-turn by definition); LastTurnIndex is the
+// defensive fallback for races against clearOpenTurn.
+//
+// This is the PARENTED wire-only branch only. A top-level wire-only echo
+// (no parent) is not a subagent prompt and not an AO send — it is
+// provider-injected context, routed to persistInjectedContextNotification.
+func (r *Router) persistWireOnlySubagentPrompt(evt provider.ProviderEvent, providerItemID string) error {
 	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
 	if !ok {
 		last, err := r.store.LastTurnIndex(evt.ThreadID)
 		if err != nil {
-			return fmt.Errorf("triage: resolve turn index for wire-only user_text on %s: %w", evt.ThreadID, err)
+			return fmt.Errorf("triage: resolve turn index for wire-only subagent prompt on %s: %w", evt.ThreadID, err)
 		}
 		turnIndex = last
 	}
@@ -279,7 +312,7 @@ func (r *Router) persistWireOnlyUserText(evt provider.ProviderEvent, providerIte
 		"wire_only":        true,
 	})
 	if err != nil {
-		return fmt.Errorf("triage: encode wire-only user_text meta: %w", err)
+		return fmt.Errorf("triage: encode wire-only subagent prompt meta: %w", err)
 	}
 
 	now := eventTimestampMillis(evt)
@@ -297,4 +330,81 @@ func (r *Router) persistWireOnlyUserText(evt provider.ProviderEvent, providerIte
 		UpdatedAt: now,
 	}
 	return r.persistItem(item, nil)
+}
+
+// persistInjectedContextNotification creates a non-user `notification`
+// row for provider-injected context that reached the wire-only branch at
+// TOP LEVEL (no parent tool, no pending-send match). Such content was NOT
+// authored by the user — the pending-send registry is authoritative for
+// AO-initiated sends — so it must never persist as a `user_text` bubble.
+// This is the safety net that keeps any unrecognized CLI wrapper (a new
+// upstream `<...>` shape we don't yet catalogue) from masquerading as the
+// user: recognized noise is suppressed upstream in the provider parser;
+// whatever slips through surfaces here as a clearly-non-user row.
+//
+// Role is `system` and kind is `notification`, so the frontend renders it
+// through NotificationRow (a subtle system line), not the user bubble.
+// The id prefix `injected:wire:` (not `user:wire:`) keeps it out of the
+// user-message id space while staying deterministic from the wire id for
+// resume-replay idempotency. Summary is a rune-safe preview; the raw body
+// is duplicated in the subagent transcript for the known agent-report
+// case, and the provider-events log retains the full wire line for any
+// genuinely novel shape, so we do not stash a separate payload.
+func (r *Router) persistInjectedContextNotification(evt provider.ProviderEvent, providerItemID string) error {
+	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
+	if !ok {
+		last, err := r.store.LastTurnIndex(evt.ThreadID)
+		if err != nil {
+			return fmt.Errorf("triage: resolve turn index for injected context on %s: %w", evt.ThreadID, err)
+		}
+		turnIndex = last
+	}
+
+	metaBytes, err := json.Marshal(map[string]any{
+		"provider_item_id": providerItemID,
+		"wire_only":        true,
+		"injected":         true,
+	})
+	if err != nil {
+		return fmt.Errorf("triage: encode injected-context meta: %w", err)
+	}
+
+	now := eventTimestampMillis(evt)
+	item := store.Item{
+		ID:        fmt.Sprintf("injected:wire:%s", providerItemID),
+		ThreadID:  evt.ThreadID,
+		TurnIndex: turnIndex,
+		Kind:      string(provider.ItemNotification),
+		Role:      "system",
+		Status:    statusCompleted,
+		Summary:   injectedContextSummary(evt.Content),
+		Meta:      string(metaBytes),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	return r.persistItem(item, nil)
+}
+
+// injectedContextSummaryMaxRunes bounds the injected-context notification
+// summary. Injected bodies can be large (a full subagent report); the row
+// is a subtle single-line marker, so a rune-safe preview is enough.
+const injectedContextSummaryMaxRunes = 200
+
+// injectedContextSummary builds the notification summary for injected
+// content: a fixed label plus a rune-safe, single-line preview of the
+// body. Rune-safe (not byte-clipped) so a multi-byte character at the
+// cutoff is never split into an invalid rune.
+func injectedContextSummary(content string) string {
+	preview := strings.TrimSpace(content)
+	if i := strings.IndexByte(preview, '\n'); i >= 0 {
+		preview = strings.TrimSpace(preview[:i])
+	}
+	runes := []rune(preview)
+	if len(runes) > injectedContextSummaryMaxRunes {
+		preview = string(runes[:injectedContextSummaryMaxRunes]) + "…"
+	}
+	if preview == "" {
+		return "Injected provider context"
+	}
+	return "Injected provider context: " + preview
 }

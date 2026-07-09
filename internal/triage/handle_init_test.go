@@ -72,7 +72,7 @@ func TestHandleInit_PendingSendPresent_DoesNotConsumeIt(t *testing.T) {
 	if !router.HasPendingSendForThread("t1") {
 		t.Fatal("handleInit must NOT consume the pending-send marker — pop is owned by handleUserText")
 	}
-	head, ok := router.consumePendingSendHead("t1")
+	head, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok {
 		t.Fatalf("expected the pending-send entry to still be poppable after handleInit")
 	}

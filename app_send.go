@@ -327,8 +327,11 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// can otherwise race ahead of the marker and miss the
 	// pending-send-present branch in handleInit / handleUserText. The
 	// marker is consumed by handleUserText when the matching replay
-	// envelope arrives, or cleared on send failure below.
-	a.triage.RegisterPendingSend(threadID, userItem.ID, turnIndex)
+	// envelope arrives, or cleared on send failure below. sendUUID (set
+	// for Claude, empty for Codex) keys the match by identity: only the
+	// echo carrying this exact uuid consumes the entry, so a
+	// provider-injected user envelope can never mispair with it.
+	a.triage.RegisterPendingSendExpecting(threadID, userItem.ID, turnIndex, sendUUID)
 
 	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments, sendUUID); err != nil {
 		// Drop the pending-send marker before persisting the error row.

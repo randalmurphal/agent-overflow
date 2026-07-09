@@ -28,32 +28,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionfork"
 )
-
-// claudeInjectedXMLWrappers names the balanced XML wrappers Claude
-// injects into user-role message content. When a `user{isReplay:true}`
-// envelope's content contains both the open and close tag of any
-// pair, the envelope is treated as a Claude-injected attachment and
-// suppressed.
-//
-// The first entry's open is `<task-notification` (no closing `>`) so
-// it matches both the bare `<task-notification>` shape and any
-// future attribute-bearing variant. Every other entry uses the full
-// open tag.
-//
-// Drift surface — keep synced with upstream:
-//   - <task-notification>      claude-code-source-code/src/tasks/LocalShellTask/LocalShellTask.tsx:160-165
-//   - <system-reminder>        claude-code-source-code/src/utils/messages.ts (multiple sites; pervasive system-reminder wrapper)
-//   - <bash-input/-stdout/-stderr>  claude-code-source-code/src/services/processBashCommand.tsx
-//   - <local-command-stdout>   claude-code-source-code/src/services/processSlashCommand.tsx
-var claudeInjectedXMLWrappers = []struct{ open, close string }{
-	{"<task-notification", "</task-notification>"},
-	{"<system-reminder>", "</system-reminder>"},
-	{"<bash-input>", "</bash-input>"},
-	{"<bash-stdout>", "</bash-stdout>"},
-	{"<bash-stderr>", "</bash-stderr>"},
-	{"<local-command-stdout>", "</local-command-stdout>"},
-}
 
 // isReplayEnvelope reports whether a `user` envelope is the CLI's
 // replay echo of an AO-initiated user message — the wire signal we get
@@ -80,21 +56,25 @@ func isReplayEnvelope(raw map[string]json.RawMessage) bool {
 // to suppress the `EventUserText` emission so triage never persists
 // these as user-bubble rows.
 //
-// Detection MUST run at the parser layer because triage's
-// `consumePendingSendHead` is a destructive FIFO pop — late
-// detection would corrupt the queue-confirm path for any real user
-// message racing the suppression check.
+// Detection MUST run at the parser layer: triage's
+// `consumeMatchingPendingSend` matches by client-minted uuid, so an
+// injected envelope that reaches it no longer steals a pending send,
+// but it would still persist as a visible injected-context row. The
+// parser suppressing known shapes keeps the timeline clean; identity
+// matching downstream is the backstop for shapes this list misses.
 //
 // Two detection classes, both conservative (false positives would
 // silently drop real user content):
 //
 //  1. Balanced XML wrappers Claude injects into user-role content
-//     (see claudeInjectedXMLWrappers). Open AND close must both be
-//     present, so a single mention in real user text doesn't trigger.
-//     This is the load-bearing path: queued task-notification
+//     (see sessionfork.InjectedUserContentWrappers — the one canonical
+//     list, shared with the fork-point detector). Open AND close must
+//     both be present, so a single mention in real user text doesn't
+//     trigger. This is the load-bearing path: queued task-notification
 //     attachments wrap their body with `<task-notification>` XML and
 //     this catches every variant — wrapped, bare, attribute-bearing,
-//     statusless stall pings.
+//     statusless stall pings — as well as `<agent-message>` subagent
+//     reports injected into the parent conversation.
 //  2. Origin-prefix wraps from `wrapCommandText` for modes we don't
 //     support (coordinator, channel) — defensive only.
 //
@@ -127,8 +107,8 @@ func isClaudeInjectedReplayContent(content string) bool {
 		return true
 	}
 
-	for _, pair := range claudeInjectedXMLWrappers {
-		if strings.Contains(trimmed, pair.open) && strings.Contains(trimmed, pair.close) {
+	for _, w := range sessionfork.InjectedUserContentWrappers {
+		if strings.Contains(trimmed, w.Open) && strings.Contains(trimmed, w.Close) {
 			return true
 		}
 	}

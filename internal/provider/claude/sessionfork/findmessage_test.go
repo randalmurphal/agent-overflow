@@ -216,6 +216,27 @@ func TestFindUUIDBeforeUserTurn_SkipsInjectedXMLContent(t *testing.T) {
 	}
 }
 
+// TestFindUUIDBeforeUserTurn_SkipsAgentMessage guards the fork-point half
+// of the 2026-07 incident: a completed subagent's report injected into the
+// parent conversation as `<agent-message from="…">…</agent-message>` is
+// user-ROLE but not a real prompt. If it were counted as a user turn, a
+// fork/revert to a later message would slice a turn too far. Mirrors the
+// live-wire suppression via the shared InjectedUserContentWrappers set.
+func TestFindUUIDBeforeUserTurn_SkipsAgentMessage(t *testing.T) {
+	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first real prompt"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"response"}]}}
+{"type":"user","uuid":"am1","parentUuid":"a1","sessionId":"src","message":{"role":"user","content":"<agent-message from=\"general-purpose\">\n# Report\nbody\n</agent-message>"}}
+{"type":"user","uuid":"u2","parentUuid":"am1","sessionId":"src","message":{"role":"user","content":"second real prompt"}}
+`
+	got, err := FindUUIDBeforeUserTurn(strings.NewReader(src), 1)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != "am1" {
+		t.Errorf("got %q, want am1 (u2's parent — an <agent-message> report must not be counted as a user turn)", got)
+	}
+}
+
 // withSyntheticInterruptJSONL reproduces the revert-on-interrupt
 // off-by-one bug. A prior turn was interrupted, so Claude wrote a
 // `[Request interrupted by user]` entry into the JSONL: a

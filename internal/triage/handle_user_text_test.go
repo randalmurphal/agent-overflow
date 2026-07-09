@@ -224,7 +224,7 @@ func TestHandleUserText_InterruptPromotedFlush_EchoDoesNotRebump(t *testing.T) {
 	if err := router.PersistItemQuiet(flushRow, nil); err != nil {
 		t.Fatalf("quiet persist flush row: %v", err)
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:m1", flushRow, 4, now)
+	router.RegisterPendingQuietFlushSend("t1", "queue:m1", flushRow, 4, now, "")
 
 	// User interrupt → the promote anchors the row at the turn tail.
 	if promoted := router.PromoteQuietFlushSends("t1"); promoted != 1 {
@@ -310,7 +310,7 @@ func TestHandleUserText_EagerPersistedDeferredFlush_EchoDoesNotRebump(t *testing
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:m1", flushRow, now)
+	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:m1", flushRow, now, "")
 
 	// User interrupt → the deferred row is eagerly persisted at the tail.
 	persisted := router.EagerPersistDeferredFlushSends("t1")
@@ -414,7 +414,12 @@ func TestHandleUserText_PendingSendMatch_PreservesExistingMeta(t *testing.T) {
 	}
 }
 
-func TestHandleUserText_NoPending_PersistsWireOnlyRow(t *testing.T) {
+// A top-level EventUserText (no parent tool) that matches no pending send
+// is provider-injected context, NOT user-authored. It must persist as a
+// non-user `notification` row under an `injected:wire:` id — never a
+// `user_text` bubble. This is the fix for the incident where a 2.1.x
+// `<agent-message>` subagent report surfaced as a top-level user message.
+func TestHandleUserText_NoPending_TopLevel_PersistsInjectedNotification(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 2)
@@ -430,15 +435,20 @@ func TestHandleUserText_NoPending_PersistsWireOnlyRow(t *testing.T) {
 		t.Fatalf("Handle EventUserText: %v", err)
 	}
 
-	persisted, found, err := st.GetThreadItem("t1", "user:wire:codex_item_42")
+	// The old buggy id must NOT exist — no user bubble.
+	if _, found, _ := st.GetThreadItem("t1", "user:wire:codex_item_42"); found {
+		t.Fatalf("top-level injected content must not persist as a user:wire user_text row")
+	}
+
+	persisted, found, err := st.GetThreadItem("t1", "injected:wire:codex_item_42")
 	if err != nil || !found {
-		t.Fatalf("expected user:wire row to exist: found=%v err=%v", found, err)
+		t.Fatalf("expected injected:wire row to exist: found=%v err=%v", found, err)
 	}
-	if persisted.Kind != "user_text" {
-		t.Fatalf("Kind = %q, want user_text", persisted.Kind)
+	if persisted.Kind != "notification" {
+		t.Fatalf("Kind = %q, want notification", persisted.Kind)
 	}
-	if persisted.Role != "user" {
-		t.Fatalf("Role = %q, want user", persisted.Role)
+	if persisted.Role != "system" {
+		t.Fatalf("Role = %q, want system", persisted.Role)
 	}
 	if persisted.Status != "completed" {
 		t.Fatalf("Status = %q, want completed", persisted.Status)
@@ -446,8 +456,12 @@ func TestHandleUserText_NoPending_PersistsWireOnlyRow(t *testing.T) {
 	if persisted.TurnIndex != 2 {
 		t.Fatalf("TurnIndex = %d, want 2 (open turn)", persisted.TurnIndex)
 	}
-	if persisted.Summary != "task notification echo body" {
-		t.Fatalf("Summary = %q, want %q", persisted.Summary, "task notification echo body")
+	if persisted.ParentID != "" {
+		t.Fatalf("ParentID = %q, want empty (top-level)", persisted.ParentID)
+	}
+	if !strings.HasPrefix(persisted.Summary, "Injected provider context:") ||
+		!strings.Contains(persisted.Summary, "task notification echo body") {
+		t.Fatalf("Summary = %q, want an 'Injected provider context:' label carrying the body preview", persisted.Summary)
 	}
 	var meta map[string]any
 	if err := json.Unmarshal([]byte(persisted.Meta), &meta); err != nil {
@@ -459,13 +473,16 @@ func TestHandleUserText_NoPending_PersistsWireOnlyRow(t *testing.T) {
 	if wireOnly, _ := meta["wire_only"].(bool); !wireOnly {
 		t.Fatalf("meta.wire_only = %v, want true", meta["wire_only"])
 	}
+	if injected, _ := meta["injected"].(bool); !injected {
+		t.Fatalf("meta.injected = %v, want true", meta["injected"])
+	}
 	if after := readThreadUpdatedAt(t, st, "t1"); after != before {
-		t.Fatalf("threads.updated_at moved across wire-only EventUserText: before=%d after=%d", before, after)
+		t.Fatalf("threads.updated_at moved across injected-context EventUserText: before=%d after=%d", before, after)
 	}
 
-	upserts := itemUpsertEmissionsForID(emissions.snapshot(), "t1", "user:wire:codex_item_42")
+	upserts := itemUpsertEmissionsForID(emissions.snapshot(), "t1", "injected:wire:codex_item_42")
 	if len(upserts) != 1 {
-		t.Fatalf("expected one provider:item_event upsert for the wire-only row, got %d", len(upserts))
+		t.Fatalf("expected one provider:item_event upsert for the injected-context row, got %d", len(upserts))
 	}
 }
 
@@ -524,7 +541,7 @@ func TestHandleUserText_SubagentPromptDoesNotConsumePendingSend(t *testing.T) {
 		t.Fatalf("child ParentID = %q, want spawn-1", child.ParentID)
 	}
 
-	pending, ok := router.consumePendingSendHead("t1")
+	pending, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok {
 		t.Fatalf("pending send was consumed by child prompt")
 	}
@@ -558,12 +575,12 @@ func TestHandleUserText_NoPending_DedupsRepeatedProviderItemID(t *testing.T) {
 	}
 	wireRows := 0
 	for _, r := range rows {
-		if r.ID == "user:wire:dup_1" {
+		if r.ID == "injected:wire:dup_1" {
 			wireRows++
 		}
 	}
 	if wireRows != 1 {
-		t.Fatalf("expected exactly one user:wire:dup_1 row across two Handle calls, got %d (rows: %+v)", wireRows, rows)
+		t.Fatalf("expected exactly one injected:wire:dup_1 row across two Handle calls, got %d (rows: %+v)", wireRows, rows)
 	}
 }
 
@@ -885,7 +902,7 @@ func TestHandleUserText_PendingMatchWithMissingTargetRow_LogsAndReturns(t *testi
 	}
 
 	// Pending FIFO should be drained — consuming the head should fail.
-	if _, ok := router.consumePendingSendHead("t1"); ok {
+	if _, ok := router.consumeMatchingPendingSend("t1", ""); ok {
 		t.Fatalf("pending FIFO should be drained even when the row was missing")
 	}
 
@@ -1179,8 +1196,8 @@ func TestHandleUserText_DeferredFlush_BatchOrderingFIFO(t *testing.T) {
 		t.Fatalf("handle text delta: %v", err)
 	}
 
-	// Wire echoes arrive in registration order. The FIFO at
-	// consumePendingSendHead pops first the head, then the tail.
+	// Wire echoes arrive in registration order; with no expected ids
+	// registered, consumeMatchingPendingSend pops FIFO — head, then tail.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventUserText,
 		ThreadID:  "t1",
@@ -1232,5 +1249,146 @@ func TestHandleUserText_DeferredFlush_BatchOrderingFIFO(t *testing.T) {
 	}
 	if secondRow.ItemIndex <= firstRow.ItemIndex {
 		t.Fatalf("second queued ItemIndex %d must be greater than first queued %d (FIFO order)", secondRow.ItemIndex, firstRow.ItemIndex)
+	}
+}
+
+// TestHandleUserText_MismatchedEchoDoesNotConsumeIdentityPending is the
+// regression guard for the FIFO-mispair window: while a send awaits its echo,
+// a provider-injected user envelope (e.g. an <agent-message> subagent report
+// that slipped a parser denylist) arrives FIRST. Under order-based matching it
+// would steal the pending entry and stamp the user's row with the injection's
+// id; under identity matching it must consume nothing, land as an
+// injected-context notification, and leave the entry for the real echo.
+func TestHandleUserText_MismatchedEchoDoesNotConsumeIdentityPending(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	router.RegisterPendingSendExpecting("t1", "user:0", 0, "uuid-mine")
+	seedUserTextRow(t, st, "t1", 0, "hello world", "")
+
+	// Injected envelope arrives before our echo, with a different uuid.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "subagent final report body",
+		Meta:      json.RawMessage(`{"provider_item_id":"uuid-injected"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle injected EventUserText: %v", err)
+	}
+
+	// The user's row must be untouched — no provider_item_id stamp.
+	persisted, found, err := st.GetThreadItem("t1", "user:0")
+	if err != nil || !found {
+		t.Fatalf("user:0 row: found=%v err=%v", found, err)
+	}
+	if strings.Contains(persisted.Meta, "uuid-injected") {
+		t.Fatalf("injected echo stamped the user's row: meta=%q", persisted.Meta)
+	}
+
+	// The pending entry must survive for the real echo.
+	if !router.HasPendingSendForThread("t1") {
+		t.Fatalf("injected echo consumed the pending send entry")
+	}
+
+	// The injection lands as a notification row, never a user bubble.
+	if _, found, _ := st.GetThreadItem("t1", "user:wire:uuid-injected"); found {
+		t.Fatalf("injected echo persisted as a user:wire user_text row")
+	}
+	if _, found, _ := st.GetThreadItem("t1", "injected:wire:uuid-injected"); !found {
+		t.Fatalf("injected echo did not persist an injected:wire notification row")
+	}
+
+	// The real echo then matches by identity and stamps the row.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "hello world",
+		Meta:      json.RawMessage(`{"provider_item_id":"uuid-mine"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle real EventUserText: %v", err)
+	}
+	persisted, found, err = st.GetThreadItem("t1", "user:0")
+	if err != nil || !found {
+		t.Fatalf("user:0 row after real echo: found=%v err=%v", found, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(persisted.Meta), &meta); err != nil {
+		t.Fatalf("decode meta %q: %v", persisted.Meta, err)
+	}
+	if id, _ := meta["provider_item_id"].(string); id != "uuid-mine" {
+		t.Fatalf("meta.provider_item_id = %v, want uuid-mine", meta["provider_item_id"])
+	}
+	if router.HasPendingSendForThread("t1") {
+		t.Fatalf("real echo did not consume the pending send entry")
+	}
+}
+
+// TestHandleUserText_MismatchedEchoDoesNotPersistDeferredFlush covers the
+// deferred-flush variant of the mispair window: a queued message dispatched
+// mid-turn defers its row persist until the echo. An injected envelope with a
+// different uuid must not trigger that persist (the queued bubble would show
+// as delivered before the model saw it); only the matching echo may.
+func TestHandleUserText_MismatchedEchoDoesNotPersistDeferredFlush(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	queuedItem := store.Item{
+		ID:        "user:0:flush:0",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "queued follow-up",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:abc", queuedItem, 0, "uuid-mine")
+
+	// Injected envelope with a different uuid arrives first.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "subagent final report body",
+		Meta:      json.RawMessage(`{"provider_item_id":"uuid-injected"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle injected EventUserText: %v", err)
+	}
+
+	if _, found, _ := st.GetThreadItem("t1", queuedItem.ID); found {
+		t.Fatalf("injected echo persisted the deferred flush row")
+	}
+	if _, found, _ := st.GetThreadItem("t1", "injected:wire:uuid-injected"); !found {
+		t.Fatalf("injected echo did not persist an injected:wire notification row")
+	}
+	if !router.HasPendingSendForThread("t1") {
+		t.Fatalf("injected echo consumed the deferred flush entry")
+	}
+
+	// The matching echo persists the deferred row with the id stamped.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "queued follow-up",
+		Meta:      json.RawMessage(`{"provider_item_id":"uuid-mine"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle real EventUserText: %v", err)
+	}
+	persisted, found, err := st.GetThreadItem("t1", queuedItem.ID)
+	if err != nil || !found {
+		t.Fatalf("deferred flush row after real echo: found=%v err=%v", found, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(persisted.Meta), &meta); err != nil {
+		t.Fatalf("decode meta %q: %v", persisted.Meta, err)
+	}
+	if id, _ := meta["provider_item_id"].(string); id != "uuid-mine" {
+		t.Fatalf("meta.provider_item_id = %v, want uuid-mine", meta["provider_item_id"])
 	}
 }

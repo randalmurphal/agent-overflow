@@ -151,7 +151,7 @@ func SliceUUIDForLastKeptTurn(srcPath string, lastKeptTurn int) (string, error) 
 // claude-code-source-code/src/components/MessageSelector.tsx:767-792.
 // That filter rejects synthetic entries along three axes; this slice
 // (boolean flags) is one. The other two are the injected-XML wrappers
-// (injectedUserContentTagPairs, below) and the synthetic-content
+// (InjectedUserContentWrappers, below) and the synthetic-content
 // sentinels (syntheticUserContentMessages / isSyntheticUserContent,
 // below) — keep all three in mind when reconciling against upstream.
 var syntheticUserEntryFlags = []string{
@@ -195,13 +195,18 @@ var syntheticUserContentMessages = map[string]struct{}{
 	claudeNoResponseRequested:        {},
 }
 
-// injectedUserContentTagPairs names the balanced XML wrappers Claude
-// injects into user-role message content for non-user-authored
-// payloads. Content that contains BOTH the open and close tag of any
-// pair is a CLI injection, not a real prompt. The open-half of the
-// task-notification pair is the prefix `<task-notification` (no
-// closing `>`) so both the bare shape and any future attribute-bearing
-// variant land — every other pair uses the full open tag.
+// InjectedUserContentWrapper is one balanced XML wrapper Claude injects
+// into user-role message content for non-user-authored payloads.
+type InjectedUserContentWrapper struct{ Open, Close string }
+
+// InjectedUserContentWrappers is the CANONICAL set of balanced XML
+// wrappers Claude injects into user-role message content for
+// non-user-authored payloads. Content that contains BOTH the open and
+// close tag of any entry is a CLI injection, not a real prompt. The
+// open-half of an attribute-bearing wrapper (`task-notification`,
+// `agent-message`) is the prefix WITHOUT the closing `>` so both the
+// bare shape and any attribute-bearing variant land; fixed-shape
+// wrappers use the full open tag.
 //
 // Requiring BOTH halves is the load-bearing anti-false-positive
 // guard: a real user typing `<system-reminder>` in chat (or quoting
@@ -210,19 +215,24 @@ var syntheticUserContentMessages = map[string]struct{}{
 // suppression we want catches Claude's own wrapped payloads, which
 // always emit balanced.
 //
-// This pair list deliberately mirrors
-// `internal/provider/claude/parse_user_replay.go::claudeInjectedXMLWrappers`
-// — both files filter the same upstream wrapper set and must stay
-// in lockstep on both the entries and the balanced-matching contract.
-// If you extend one, extend the other.
+// This is the ONE definition. `parse_user_replay.go`'s live-wire
+// suppression (`isClaudeInjectedReplayContent`) and this package's
+// fork-point user-turn detection (`hasInjectedUserContentTag`) both
+// range over it, so the entry set can never drift between the two
+// paths again — an uncatalogued `agent-message` drifting across a
+// silent copy is exactly what shipped subagent reports as top-level
+// `user:wire` bubbles (incident 2026-07).
 //
-// Drift surface — keep synced with upstream:
+// Drift surface — keep synced with upstream. Confirmed against the
+// installed CLI binary (2.1.202); the local source copy lags:
 //   - <task-notification>      claude-code-source-code/src/tasks/LocalShellTask/LocalShellTask.tsx:160-165
+//   - <agent-message from=…>   2.1.202 binary — a subagent's final report injected into the parent as a `queued_command` attachment; NOT present in the local source copy
 //   - <system-reminder>        claude-code-source-code/src/utils/messages.ts (pervasive wrapper)
 //   - <bash-input/-stdout/-stderr>  claude-code-source-code/src/services/processBashCommand.tsx
 //   - <local-command-stdout>   claude-code-source-code/src/services/processSlashCommand.tsx
-var injectedUserContentTagPairs = []struct{ open, close string }{
+var InjectedUserContentWrappers = []InjectedUserContentWrapper{
 	{"<task-notification", "</task-notification>"},
+	{"<agent-message", "</agent-message>"},
 	{"<system-reminder>", "</system-reminder>"},
 	{"<bash-input>", "</bash-input>"},
 	{"<bash-stdout>", "</bash-stdout>"},
@@ -341,8 +351,8 @@ func isSyntheticUserContent(content []any) bool {
 }
 
 // hasInjectedUserContentTag reports whether s contains any of the
-// CLI-injected XML wrappers enumerated in injectedUserContentTagPairs.
-// Requires BOTH the open and close tag of a pair to be present
+// CLI-injected XML wrappers enumerated in InjectedUserContentWrappers.
+// Requires BOTH the open and close tag of an entry to be present
 // (mirrors parse_user_replay.go::isClaudeInjectedReplayContent's
 // balanced-matching contract) so a user typing a single tag-shaped
 // token in chat doesn't false-positive.
@@ -350,8 +360,8 @@ func hasInjectedUserContentTag(s string) bool {
 	if s == "" {
 		return false
 	}
-	for _, pair := range injectedUserContentTagPairs {
-		if strings.Contains(s, pair.open) && strings.Contains(s, pair.close) {
+	for _, w := range InjectedUserContentWrappers {
+		if strings.Contains(s, w.Open) && strings.Contains(s, w.Close) {
 			return true
 		}
 	}

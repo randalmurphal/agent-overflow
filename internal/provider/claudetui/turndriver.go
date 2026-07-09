@@ -252,8 +252,9 @@ func (r *reconstructor) beginAgentRequest(req *messagesRequest) *agentRequest {
 }
 
 // pushUserEcho records an AO Send so the next main request can confirm it with a
-// replay echo. uuid is a stable, non-empty handle (the caller mints one for
-// queued sends, whose flush path supplies none). Caller holds the session recMu.
+// replay echo. uuid is a stable, non-empty handle — the app-minted
+// UserMessageUUID, or Send's defensive fallback mint when a caller supplies
+// none. Caller holds the session recMu.
 func (r *reconstructor) pushUserEcho(content, uuid string) {
 	if len(r.userEchoes) >= maxUserEchoes {
 		r.userEchoes = r.userEchoes[1:]

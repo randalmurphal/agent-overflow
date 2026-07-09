@@ -106,9 +106,10 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		}
 	}
 	// Record the send so the reconstructor confirms it with a user{isReplay} echo
-	// on the next main request, consuming triage's pending-send FIFO. Direct sends
-	// carry an app-minted UserMessageUUID; queued sends (flush path) supply none,
-	// so mint a stable id here — persistDeferredUserText needs a non-empty
+	// on the next main request, consuming triage's pending-send queue. Direct and
+	// queued sends both carry an app-minted UserMessageUUID (which triage matches
+	// by identity); the mint below is a defensive fallback for a caller that
+	// supplies none — persistDeferredUserText needs a non-empty
 	// provider_item_id or the queued row never lands. Pushed only after the writes
 	// succeed so a write failure (which the caller turns into a pending-send clear)
 	// leaves the echo FIFO aligned with the pending-send FIFO. The echo carries the

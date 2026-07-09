@@ -60,6 +60,18 @@ type pendingSend struct {
 	EnqueuedAt   int64
 	DeferredItem *store.Item
 	QuietItem    *store.Item
+	// ExpectedProviderItemID is the wire id the send's echo will carry,
+	// when the app knows it at dispatch time. Claude-family sends mint a
+	// uuidv4 and pass it as the outbound envelope's top-level `uuid`; the
+	// CLI echoes it verbatim (verified for direct sends on 2.1.150 and
+	// for queued mid-turn sends on 2.1.202 — spike 2026-07-09, see
+	// claude-wire.md §Outbound user message). An entry carrying this id
+	// is consumed by ID EQUALITY only, so a provider-injected user
+	// envelope (whose uuid the CLI minted) can never pop it — the
+	// injection-during-queue-wait collision. Empty for Codex (item ids
+	// are provider-assigned, unknowable at send time), which keeps the
+	// FIFO head-pop semantics.
+	ExpectedProviderItemID string
 	// AnchoredAtInterrupt marks a flush entry whose row was already
 	// placed at its user-visible timeline position by the interrupt
 	// handler — either bumped to the turn tail (PromoteQuietFlushSends,
@@ -84,6 +96,10 @@ type PendingSendSnapshot struct {
 	AOItemID    string
 	TurnIndex   int
 	HasDeferred bool
+	// ExpectedProviderItemID is the client-minted uuid the provider echo must
+	// carry to consume this entry (empty when the send used FIFO matching).
+	// Integration tests fabricate echoes with this value.
+	ExpectedProviderItemID string
 }
 
 // PeekPendingSendHeadForTest returns a snapshot of the FIFO head for threadID.
@@ -95,39 +111,50 @@ func (r *Router) PeekPendingSendHeadForTest(threadID string) (PendingSendSnapsho
 		return PendingSendSnapshot{}, false
 	}
 	return PendingSendSnapshot{
-		AOItemID:    head.AOItemID,
-		TurnIndex:   head.TurnIndex,
-		HasDeferred: head.DeferredItem != nil,
+		AOItemID:               head.AOItemID,
+		TurnIndex:              head.TurnIndex,
+		HasDeferred:            head.DeferredItem != nil,
+		ExpectedProviderItemID: head.ExpectedProviderItemID,
 	}, true
 }
 
-// RegisterPendingSend appends a new entry to the per-thread FIFO. The
-// send path calls this synchronously so the queue mirrors user-typed
-// order. EnqueuedAt is stamped from time.Now here — Phase E uses it
-// for diagnostics on stranded entries and the wall clock at the
-// register call is the natural reference.
+// RegisterPendingSend appends a new entry to the per-thread FIFO with no
+// expected wire id (FIFO-consumed). Codex send paths use this — Codex
+// assigns its own item ids, so identity is unknowable at dispatch.
+// EnqueuedAt is stamped from time.Now here — Phase E uses it for
+// diagnostics on stranded entries and the wall clock at the register
+// call is the natural reference.
 func (r *Router) RegisterPendingSend(threadID, aoItemID string, turnIndex int) {
-	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil)
+	r.RegisterPendingSendExpecting(threadID, aoItemID, turnIndex, "")
+}
+
+// RegisterPendingSendExpecting registers a direct send whose wire echo
+// will carry expectedProviderItemID (the app-minted uuid Claude echoes
+// verbatim). The entry is consumed by id equality — see
+// pendingSend.ExpectedProviderItemID. Pass "" for providers with no
+// pre-known identity; that entry falls back to FIFO consumption.
+func (r *Router) RegisterPendingSendExpecting(threadID, aoItemID string, turnIndex int, expectedProviderItemID string) {
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expectedProviderItemID)
 }
 
 // RegisterPendingFlushSend registers a deferred user_text row whose
-// persistence is gated on the wire echo. The row's item_index is
-// recomputed at echo time (persistDeferredUserText) so the queued
-// message lands after content the model emitted between dispatch and
-// echo — see the pendingSend doc comment.
+// persistence is gated on the wire echo, with no expected wire id. The
+// row's item_index is recomputed at echo time (persistDeferredUserText)
+// so the queued message lands after content the model emitted between
+// dispatch and echo — see the pendingSend doc comment.
 func (r *Router) RegisterPendingFlushSend(threadID, queueItemID string, item store.Item) {
-	r.RegisterPendingFlushSendWithEnqueuedAt(threadID, queueItemID, item, 0)
+	r.RegisterPendingFlushSendWithEnqueuedAt(threadID, queueItemID, item, 0, "")
 }
 
-func (r *Router) RegisterPendingFlushSendWithEnqueuedAt(threadID, queueItemID string, item store.Item, enqueuedAt int64) {
-	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, enqueuedAt, &item, nil)
+func (r *Router) RegisterPendingFlushSendWithEnqueuedAt(threadID, queueItemID string, item store.Item, enqueuedAt int64, expectedProviderItemID string) {
+	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, enqueuedAt, &item, nil, expectedProviderItemID)
 }
 
-func (r *Router) RegisterPendingQuietFlushSend(threadID, queueItemID string, item store.Item, turnIndex int, enqueuedAt int64) {
-	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item)
+func (r *Router) RegisterPendingQuietFlushSend(threadID, queueItemID string, item store.Item, turnIndex int, enqueuedAt int64, expectedProviderItemID string) {
+	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item, expectedProviderItemID)
 }
 
-func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, enqueuedAt int64, deferredItem, quietItem *store.Item) {
+func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, enqueuedAt int64, deferredItem, quietItem *store.Item, expectedProviderItemID string) {
 	if threadID == "" || aoItemID == "" {
 		return
 	}
@@ -136,12 +163,13 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 	}
 	r.mu.Lock()
 	r.pendingByThread[threadID] = append(r.pendingByThread[threadID], pendingSend{
-		AOItemID:     aoItemID,
-		QueueItemID:  queueItemID,
-		TurnIndex:    turnIndex,
-		EnqueuedAt:   enqueuedAt,
-		DeferredItem: deferredItem,
-		QuietItem:    quietItem,
+		AOItemID:               aoItemID,
+		QueueItemID:            queueItemID,
+		TurnIndex:              turnIndex,
+		EnqueuedAt:             enqueuedAt,
+		DeferredItem:           deferredItem,
+		QuietItem:              quietItem,
+		ExpectedProviderItemID: expectedProviderItemID,
 	})
 	r.mu.Unlock()
 }
@@ -175,34 +203,72 @@ func (r *Router) peekPendingSendHead(threadID string) (pendingSend, bool) {
 	return queue[0], true
 }
 
-// consumePendingSendHead pops and returns the FIFO head for threadID.
-// Returns (zero, false) when no entry exists. Pure FIFO — Phase E
-// pairs this with the wire EventUserText that triggers it.
-func (r *Router) consumePendingSendHead(threadID string) (pendingSend, bool) {
+// consumeMatchingPendingSend pops the pending entry that corresponds to
+// a top-level wire user echo carrying providerItemID. Two consumption
+// modes, decided by how the entry was registered:
+//
+//   - Identity: an entry with ExpectedProviderItemID set (Claude-family
+//     sends — AO mints the uuid and the CLI echoes it verbatim; verified
+//     for direct sends on 2.1.150 and queued mid-turn sends on 2.1.202,
+//     spike 2026-07-09) is consumed ONLY when the echo's id equals it.
+//     A provider-injected user envelope carries a CLI-minted uuid that
+//     can never equal an AO-minted one, so an injection arriving while a
+//     queued send waits out a running turn (the collision window is the
+//     whole remaining turn — the CLI echoes queued sends at turn pickup,
+//     not enqueue) can no longer pop the real send's entry.
+//   - FIFO: an entry with no expected id (Codex — item ids are
+//     provider-assigned, unknowable at dispatch) pops at the head,
+//     preserving the original ordering semantics.
+//
+// Carve-out: an echo with NO providerItemID pops the head even in
+// identity mode. Injected envelopes always carry a top-level uuid, so an
+// id-less echo cannot be an injection — but it IS the shape both
+// downstream branches log loudly about (stuck queue-confirm, parser gap),
+// and consuming keeps those diagnostics reachable instead of stranding
+// the entry silently.
+//
+// Returns (zero, false) when nothing matches; handleUserText then routes
+// the echo to the wire-only paths (subagent prompt / injected context).
+func (r *Router) consumeMatchingPendingSend(threadID, providerItemID string) (pendingSend, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	queue := r.pendingByThread[threadID]
 	if len(queue) == 0 {
 		return pendingSend{}, false
 	}
-	head := queue[0]
-	rest := queue[1:]
-	if len(rest) == 0 {
-		delete(r.pendingByThread, threadID)
-	} else {
-		// Copy into a fresh slice so we don't pin the previous
-		// backing array (which still references the popped head)
-		// in the map. Pending-send queues are tiny, so the
-		// allocation is cheap and the GC behavior is obvious.
-		next := make([]pendingSend, len(rest))
-		copy(next, rest)
-		r.pendingByThread[threadID] = next
+	if queue[0].ExpectedProviderItemID == "" || providerItemID == "" {
+		return r.popPendingSendAtLocked(threadID, 0), true
 	}
-	return head, true
+	for i := range queue {
+		if queue[i].ExpectedProviderItemID == providerItemID {
+			return r.popPendingSendAtLocked(threadID, i), true
+		}
+	}
+	return pendingSend{}, false
+}
+
+// popPendingSendAtLocked removes and returns the entry at index i of
+// threadID's queue, preserving the relative order of the survivors.
+// Caller MUST hold r.mu and guarantee i is in range. Copies into a
+// fresh slice so the map doesn't pin the previous backing array (which
+// still references the popped entry) — queues are tiny, so the
+// allocation is cheap and the GC behavior is obvious.
+func (r *Router) popPendingSendAtLocked(threadID string, i int) pendingSend {
+	queue := r.pendingByThread[threadID]
+	entry := queue[i]
+	if len(queue) == 1 {
+		delete(r.pendingByThread, threadID)
+		return entry
+	}
+	next := make([]pendingSend, 0, len(queue)-1)
+	next = append(next, queue[:i]...)
+	next = append(next, queue[i+1:]...)
+	r.pendingByThread[threadID] = next
+	return entry
 }
 
 // ClearPendingSendForFailure removes a single matching entry from the
-// FIFO. Distinct from consumePendingSendHead because failure recovery
+// FIFO. Distinct from consumeMatchingPendingSend because failure recovery
 // is not necessarily head-of-queue: a later send may be the one that
 // failed (e.g. a provider write returned an error after queueing a
 // follow-up). Preserves relative order of surviving entries. Exported

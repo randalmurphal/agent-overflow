@@ -428,8 +428,8 @@ func initLine(sessionID, model, cwd, version string, tools []string) json.RawMes
 }
 
 // replayUserLine synthesizes the user{isReplay:true} echo for one AO Send. uuid
-// is the app-minted UserMessageUUID (direct sends) or a Send-minted id (queued
-// sends, whose flush path supplies none) — either way a stable handle triage
+// is the app-minted UserMessageUUID (or Send's fallback mint when a caller
+// supplied none) — either way a stable handle triage matches by identity and
 // stamps as provider_item_id. content is the user's text, used by the parser
 // only to tell genuine input from Claude-injected replay content; the
 // AO-persisted row summary stays authoritative once the pending send matches.

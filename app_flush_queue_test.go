@@ -1299,6 +1299,12 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 	if head.TurnIndex != 4 {
 		t.Errorf("pending send TurnIndex: got %d, want 4 (response turn)", head.TurnIndex)
 	}
+	// Claude flush dispatch mints the uuid the CLI will echo back; the
+	// fabricated echo below must carry it or identity matching rejects it.
+	if head.ExpectedProviderItemID == "" {
+		t.Fatalf("pending send has no ExpectedProviderItemID — Claude flush dispatch should mint one")
+	}
+	echoID := head.ExpectedProviderItemID
 
 	// provider:queue_flushed must have been emitted (Zone 1 → Zone 2 transition).
 	if !rec.hasEvent("provider:queue_flushed") {
@@ -1314,7 +1320,7 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 
 	// Simulate the provider echo — attachProviderItemIDToUserRow stamps
 	// provider_item_id and emits the upsert that clears Zone 2.
-	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-user-1"})
+	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": echoID})
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: thread.ID,
 		TurnIndex: 3, ItemID: flushRow.ID, Content: "queued follow-up",
@@ -1337,8 +1343,8 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 	if err := json.Unmarshal([]byte(stamped.Meta), &meta); err != nil {
 		t.Fatalf("unmarshal meta: %v", err)
 	}
-	if meta["provider_item_id"] != "wire-user-1" {
-		t.Errorf("provider_item_id after echo: got %v, want wire-user-1", meta["provider_item_id"])
+	if meta["provider_item_id"] != echoID {
+		t.Errorf("provider_item_id after echo: got %v, want %s", meta["provider_item_id"], echoID)
 	}
 	// On echo the eager flush row is repositioned to the turn tail
 	// (BumpItemToTurnEnd) so it lands AFTER any rows the model emitted
@@ -1461,7 +1467,13 @@ func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *
 	}
 
 	// The provider echo: Claude consumed the queued message after the tail.
-	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-user-1"})
+	// It must carry the uuid minted at dispatch or identity matching rejects it.
+	head, ok := app.triage.PeekPendingSendHeadForTest(thread.ID)
+	if !ok || head.ExpectedProviderItemID == "" {
+		t.Fatalf("no pending send with a minted uuid after dispatch (ok=%v)", ok)
+	}
+	echoID := head.ExpectedProviderItemID
+	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": echoID})
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: thread.ID,
 		TurnIndex: 3, ItemID: flushID, Content: "feel free to update",
@@ -1497,8 +1509,8 @@ func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *
 	if err := json.Unmarshal([]byte(flushRow.Meta), &meta); err != nil {
 		t.Fatalf("unmarshal flush meta: %v", err)
 	}
-	if meta["provider_item_id"] != "wire-user-1" {
-		t.Errorf("provider_item_id after echo: got %v, want wire-user-1", meta["provider_item_id"])
+	if meta["provider_item_id"] != echoID {
+		t.Errorf("provider_item_id after echo: got %v, want %s", meta["provider_item_id"], echoID)
 	}
 }
 
@@ -2095,7 +2107,7 @@ func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
 	if err := app.triage.PersistItemQuiet(quiet, nil); err != nil {
 		t.Fatalf("PersistItemQuiet: %v", err)
 	}
-	app.triage.RegisterPendingQuietFlushSend(thread.ID, "queue:quiet", quiet, 0, 10)
+	app.triage.RegisterPendingQuietFlushSend(thread.ID, "queue:quiet", quiet, 0, 10, "")
 	deferred := store.Item{
 		ID:        "user:1:flush:1",
 		ThreadID:  thread.ID,
@@ -2107,7 +2119,7 @@ func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
 		CreatedAt: now + 1,
 		UpdatedAt: now + 1,
 	}
-	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:deferred", deferred, 20)
+	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:deferred", deferred, 20, "")
 
 	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
 
@@ -2170,7 +2182,7 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 		Summary:   "pending richer copy",
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
-	}, 10)
+	}, 10, "")
 
 	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
 

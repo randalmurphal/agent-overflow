@@ -264,8 +264,9 @@ func TestParseUser_ReplayWithBothToolResultAndIsReplay(t *testing.T) {
 // `user{isReplay:true}` envelope. These are model-context payloads,
 // not real user input — persisting them as user_text rows is the
 // "background completion shows up as user message" bug. The
-// detection is done at the parser layer so triage's destructive
-// FIFO pop in `consumePendingSendHead` is never corrupted.
+// detection is done at the parser layer so these never reach triage
+// at all; identity matching in `consumeMatchingPendingSend` is the
+// downstream backstop for shapes this list misses.
 //
 // Wrap forms (upstream
 // `claude-code-source-code/src/utils/messages.ts:5496-5512`
@@ -536,6 +537,7 @@ func TestParseUser_Replay_DefensiveXMLWrappers(t *testing.T) {
 		content string
 	}{
 		{"system_reminder", "<system-reminder>This is an injected reminder.</system-reminder>"},
+		{"agent_message", `<agent-message from="general-purpose">report body</agent-message>`},
 		{"bash_input", "<bash-input>ls -la</bash-input>"},
 		{"bash_stdout", "<bash-stdout>file1\nfile2</bash-stdout>"},
 		{"bash_stderr", "<bash-stderr>permission denied</bash-stderr>"},
@@ -553,6 +555,28 @@ func TestParseUser_Replay_DefensiveXMLWrappers(t *testing.T) {
 				t.Fatalf("expected 0 events for %s wrapper, got %d: %+v", tc.name, len(events), events)
 			}
 		})
+	}
+}
+
+// TestParseUser_Replay_AgentMessage_Suppressed is the incident replica
+// (2026-07). Claude 2.1.x injects a completed subagent's final report
+// into the PARENT conversation as a `queued_command` attachment, echoed
+// on the `isReplay:true` user envelope wrapped in
+// `<agent-message from="…">…</agent-message>`. Before this wrapper was
+// catalogued it fell through to EventUserText and persisted as a
+// top-level user bubble. It must now suppress like every other injected
+// wrapper: zero events (it carries no `<task-notification>`, so there is
+// nothing to enrich either).
+func TestParseUser_Replay_AgentMessage_Suppressed(t *testing.T) {
+	parser := NewParser()
+	body := "<agent-message from=\"general-purpose\">\n# Research Report\n\nVerified best practices follow.\n\n## Section\n\nDetails.\n</agent-message>"
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"6958bdfb-8975-4779-860e-7a48c58b8ab2","message":{"role":"user","content":` + jsonString(body) + `}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events for an <agent-message> wrapper (must not emit EventUserText), got %d: %+v", len(events), events)
 	}
 }
 
@@ -736,9 +760,9 @@ func TestParseUser_Replay_MultipleWrappers_Suppressed(t *testing.T) {
 }
 
 // TestParseUser_Replay_AttributeFormTaskNotification_Suppressed pins
-// the design choice in claudeInjectedXMLWrappers: the open prefix
-// `<task-notification` (no closing `>`) is intentional so attribute-
-// bearing variants match. A future refactor that switches to a
+// the design choice in sessionfork.InjectedUserContentWrappers: the open
+// prefix `<task-notification` (no closing `>`) is intentional so
+// attribute-bearing variants match. A future refactor that switches to a
 // strict `<task-notification>` literal would silently break
 // attribute matching; this test fails loudly if that happens.
 func TestParseUser_Replay_AttributeFormTaskNotification_Suppressed(t *testing.T) {

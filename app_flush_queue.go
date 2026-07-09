@@ -16,7 +16,9 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
+
 	"agent-overflow/internal/usermessage"
+	"github.com/google/uuid"
 )
 
 // QueuedItem is the wire-side projection of a triage QueuedFlushItem.
@@ -615,6 +617,24 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		}
 	}
 
+	// Mint the queued message's wire id for Claude-family sessions, like
+	// app_send.go does for direct sends: Claude honors a client-supplied
+	// top-level uuid on QUEUED stdin messages too and echoes it verbatim
+	// at turn pickup (verified 2.1.202, spike 2026-07-09 — claude-wire.md
+	// §Outbound user message), and claudetui.Send uses a supplied
+	// UserMessageUUID for its reconstructed echo. Registering the pending
+	// send with this id makes the echo match identity-keyed, closing the
+	// injected-envelope-during-queue-wait mispair (the entry waits in the
+	// FIFO for the WHOLE remaining turn). The row meta is deliberately NOT
+	// pre-stamped: the echo-time merge must produce a meta change so
+	// attachProviderItemIDToUserRow emits the upsert that clears Zone 2.
+	// Codex assigns its own item ids — sendUUID stays empty and the entry
+	// keeps FIFO consumption.
+	var sendUUID string
+	if sess.codex == nil {
+		sendUUID = uuid.NewString()
+	}
+
 	flushItemID, err := a.nextFlushUserItemID(threadID, persistTurnIndex)
 	if err != nil {
 		return QueueFlushedItem{}, false, fmt.Errorf("allocate item id: %w", err)
@@ -654,10 +674,10 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// emits the provider:item_event upsert that clears Zone 2.
 		// resolveTurnIndexOnStart reads responseTurnIndex from the
 		// FIFO to open a new turn for the response.
-		a.triage.RegisterPendingQuietFlushSend(threadID, item.ID, userItem, responseTurnIndex, item.EnqueuedAt)
+		a.triage.RegisterPendingQuietFlushSend(threadID, item.ID, userItem, responseTurnIndex, item.EnqueuedAt, sendUUID)
 	} else {
 		// Deferred: row persists at echo time via persistDeferredUserText.
-		a.triage.RegisterPendingFlushSendWithEnqueuedAt(threadID, item.ID, userItem, item.EnqueuedAt)
+		a.triage.RegisterPendingFlushSendWithEnqueuedAt(threadID, item.ID, userItem, item.EnqueuedAt, sendUUID)
 	}
 	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
 		log.Printf("flush queue: delete draft for thread %s: %v", threadID, draftErr)
@@ -666,6 +686,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:     providerAttachments,
+		UserMessageUUID: sendUUID,
 	}
 
 	dispatchErr := a.dispatchFlushToProvider(sess, content, sendOpts)
@@ -689,7 +710,9 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			userItem.TurnIndex = responseTurnIndex
 			userItem.CreatedAt = time.Now().UnixMilli()
 			userItem.UpdatedAt = userItem.CreatedAt
-			a.triage.RegisterPendingFlushSendWithEnqueuedAt(threadID, item.ID, userItem, item.EnqueuedAt)
+			// Codex-only branch (IsNoActiveTurnRace) — sendUUID is empty
+			// here, so the re-registered entry keeps FIFO consumption.
+			a.triage.RegisterPendingFlushSendWithEnqueuedAt(threadID, item.ID, userItem, item.EnqueuedAt, sendUUID)
 			sess.liveness.bumpActivity(time.Now())
 			if sendErr := sess.codex.Send(context.Background(), content, sendOpts); sendErr != nil {
 				a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
