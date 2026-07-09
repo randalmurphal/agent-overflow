@@ -55,7 +55,7 @@
     });
   });
 
-  type Effort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  type Effort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
   const FALLBACK_EFFORTS: Array<ReasoningEffortOption> = [
     { slug: 'low', label: 'Low' },

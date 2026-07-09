@@ -138,6 +138,48 @@ func TestResolveTextGenerationConfig_KeepsUserModelWhenProviderUnchanged(t *test
 	}
 }
 
+func TestResolveTextGenerationConfig_CoercesEffortForKnownCodexModel(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	if _, err := app.settings.Update(map[string]any{
+		"textGenerationProvider":        "codex",
+		"textGenerationModel":           "gpt-5.5",
+		"textGenerationReasoningEffort": "ultra",
+	}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	app.lookPathFn = fakeLookPath("codex")
+
+	cfg := app.resolveTextGenerationConfig()
+	if cfg.Model != "gpt-5.5" {
+		t.Fatalf("model = %q, want gpt-5.5", cfg.Model)
+	}
+	if cfg.Effort != string(provider.EffortMedium) {
+		t.Fatalf("effort = %q, want medium (gpt-5.5 default)", cfg.Effort)
+	}
+}
+
+func TestResolveTextGenerationConfig_PreservesUltraForSol(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	if _, err := app.settings.Update(map[string]any{
+		"textGenerationProvider":        "codex",
+		"textGenerationModel":           "gpt-5.6-sol",
+		"textGenerationReasoningEffort": "ultra",
+	}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	app.lookPathFn = fakeLookPath("codex")
+
+	cfg := app.resolveTextGenerationConfig()
+	if cfg.Model != "gpt-5.6-sol" {
+		t.Fatalf("model = %q, want gpt-5.6-sol", cfg.Model)
+	}
+	if cfg.Effort != string(provider.EffortUltra) {
+		t.Fatalf("effort = %q, want ultra", cfg.Effort)
+	}
+}
+
 func TestResolveTextGenerationConfigFor_ReturnsFalseWhenBinaryMissing(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.lookPathFn = fakeLookPath("claude")

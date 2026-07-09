@@ -37,9 +37,12 @@ describe('displayModelLabel', () => {
     expect(displayModelLabel('claude', 'claude-opus-4-7', 'Claude Opus 4.7')).toBe('Opus 4.7');
   });
 
-  it('leaves non-Claude names alone', () => {
-    expect(displayModelLabel('codex', 'gpt-5.4-mini', 'GPT-5.4 Mini')).toBe('GPT-5.4 Mini');
-    expect(displayModelLabel('codex', 'gpt-5.4-mini')).toBe('gpt-5.4-mini');
+  it('formats Codex slugs and catalog names as friendly aliases', () => {
+    expect(displayModelLabel('codex', 'gpt-5.5', 'GPT-5.5')).toBe('GPT 5.5');
+    expect(displayModelLabel('codex', 'gpt-5.6-sol', 'GPT-5.6-Sol')).toBe('GPT 5.6 Sol');
+    expect(displayModelLabel('codex', 'gpt-5.4-mini')).toBe('GPT 5.4 Mini');
+    expect(displayModelLabel('codex', 'custom-model', 'Custom Model')).toBe('Custom Model');
+    expect(displayModelLabel('codex', 'GPTurbo', 'GPTurbo')).toBe('GPTurbo');
   });
 });
 
@@ -57,11 +60,12 @@ describe('displayUsageModelLabel', () => {
     expect(displayUsageModelLabel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5');
   });
 
-  it('title-cases GPT slugs to match the Codex catalog names', () => {
-    expect(displayUsageModelLabel('gpt-5.2-codex')).toBe('GPT-5.2 Codex');
-    expect(displayUsageModelLabel('gpt-5.5')).toBe('GPT-5.5');
-    expect(displayUsageModelLabel('gpt-5.4-mini')).toBe('GPT-5.4 Mini');
-    expect(displayUsageModelLabel('gpt-5.3-codex-spark')).toBe('GPT-5.3 Codex Spark');
+  it('formats GPT usage slugs with the same friendly aliases as the picker', () => {
+    expect(displayUsageModelLabel('gpt-5.2-codex')).toBe('GPT 5.2 Codex');
+    expect(displayUsageModelLabel('gpt-5.5')).toBe('GPT 5.5');
+    expect(displayUsageModelLabel('gpt-5.6-sol')).toBe('GPT 5.6 Sol');
+    expect(displayUsageModelLabel('gpt-5.4-mini')).toBe('GPT 5.4 Mini');
+    expect(displayUsageModelLabel('gpt-5.3-codex-spark')).toBe('GPT 5.3 Codex Spark');
   });
 
   it('passes unrecognized slugs through untouched', () => {

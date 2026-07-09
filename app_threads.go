@@ -117,15 +117,11 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		runtimeMode = string(parsedRuntimeMode)
 	}
 	if trimmed := strings.TrimSpace(opts.ReasoningEffort); trimmed != "" {
-		if !provider.ReasoningEffortSupportedForModel(providerName, model, trimmed) {
+		if !a.reasoningEffortSupportedForModel(providerName, model, trimmed) {
 			return store.Thread{}, fmt.Errorf("create thread: unsupported reasoning effort %q for %s/%s", trimmed, providerName, model)
 		}
 	} else {
-		effort = string(provider.CoerceReasoningEffortForModel(
-			providerName,
-			model,
-			provider.NormalizeReasoningEffort(effort),
-		))
+		effort = a.coerceReasoningEffortForModel(providerName, model, effort)
 	}
 	if fastMode && !a.supportsFastModeForModel(providerName, model) {
 		if opts.FastMode != nil {
@@ -372,11 +368,7 @@ func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error
 		model = trimmed
 	}
 	model = provider.NormalizeModelSlug(providerName, model)
-	effort := string(provider.CoerceReasoningEffortForModel(
-		providerName,
-		model,
-		provider.NormalizeReasoningEffort(seed.ReasoningEffort),
-	))
+	effort := a.coerceReasoningEffortForModel(providerName, model, seed.ReasoningEffort)
 	contextWindow := seed.ContextWindow
 	options := chatmodel.ContextWindowOptions(providerName, model)
 	if len(options) > 0 && !chatmodel.ContextWindowSupported(options, contextWindow) {
@@ -638,7 +630,7 @@ func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, erro
 		return store.Thread{}, err
 	}
 	normalized := strings.TrimSpace(effort)
-	if !provider.ReasoningEffortSupportedForModel(thread.Provider, thread.Model, normalized) {
+	if !a.reasoningEffortSupportedForModel(thread.Provider, thread.Model, normalized) {
 		return store.Thread{}, fmt.Errorf("update effort: unsupported reasoning effort %q for %s/%s", normalized, thread.Provider, thread.Model)
 	}
 	if err := a.store.UpdateReasoningEffort(id, normalized); err != nil {
@@ -678,25 +670,6 @@ func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
 	}
 	a.rememberChatModelProfile(refreshed)
 	return refreshed, nil
-}
-
-func (a *App) supportsFastModeForModel(providerName, model string) bool {
-	providerName = strings.TrimSpace(providerName)
-	model = provider.NormalizeModelSlug(providerName, strings.TrimSpace(model))
-	if candidate, found := provider.FindModel(providerName, model); found {
-		return chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
-	}
-	if providerName == string(provider.Codex) {
-		models, err := a.GetModelsForProvider(providerName)
-		if err == nil {
-			for _, candidate := range models {
-				if candidate.Slug == model {
-					return chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
-				}
-			}
-		}
-	}
-	return chatmodel.SupportsStoredFastMode(providerName, model)
 }
 
 // UpdateThreadContextWindow persists the context window size and

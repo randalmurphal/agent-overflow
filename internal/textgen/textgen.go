@@ -31,9 +31,8 @@ const (
 	JSONOutputLimit = 256 * 1024
 
 	// DefaultCodexModel / DefaultClaudeModel are the per-provider model
-	// defaults used when settings leaves them blank. Lifted verbatim
-	// from t3-code's RoutingTextGeneration.
-	DefaultCodexModel  = "gpt-5.4-mini"
+	// defaults used when settings leaves them blank.
+	DefaultCodexModel  = "gpt-5.6-sol"
 	DefaultClaudeModel = "claude-haiku-4-5"
 )
 

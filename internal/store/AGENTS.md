@@ -102,7 +102,8 @@ session already has the answer.
   of `"chat"` (was `"default"`). The CHECK constraint was rewritten in
   the same migration; older values are normalised in place.
 - Composer-context columns landed on the threads table:
-  `reasoning_effort` (low/medium/high/xhigh/max), `fast_mode` (bool),
+  `reasoning_effort` (provider-specific; Codex currently accepts
+  none/minimal/low/medium/high/xhigh/max/ultra), `fast_mode` (bool),
   `context_window`. The per-thread row is the source of truth;
   `SessionOptions` in `thread_view.go` translates it for the provider.
 

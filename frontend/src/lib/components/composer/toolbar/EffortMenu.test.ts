@@ -326,6 +326,8 @@ describe("<EffortMenu>", () => {
 
     await fireEvent.click(getByTestId("composer-effort-trigger"));
     expect(queryByRole("menuitem", { name: /^1m$/ })).toBeNull();
+    expect(queryByRole("menuitem", { name: /^Max$/ })).toBeNull();
+    expect(queryByRole("menuitem", { name: /^Ultra$/ })).toBeNull();
 
     resolveModels([
       {

@@ -31,7 +31,23 @@ const CLAUDE_CATALOG: ModelInfo[] = [
   { slug: "claude-opus-4-8", name: "Claude Opus 4.8", provider: "claude" },
 ];
 
+const CODEX_CATALOG: ModelInfo[] = [
+  { slug: "gpt-5.6-sol", name: "GPT-5.6-Sol", provider: "codex" },
+  { slug: "gpt-5.5", name: "GPT-5.5", provider: "codex" },
+];
+
 describe("<ProviderSettings> — model visibility toggles", () => {
+	it("renders friendly Codex model aliases", async () => {
+		await seed();
+		setBindingMock("GetModelsForProvider", async (provider: unknown) =>
+			provider === "codex" ? CODEX_CATALOG : [],
+		);
+		const { findByTestId } = render(ProviderSettings);
+
+		const chip = await findByTestId("settings-model-toggle-codex-gpt-5.6-sol");
+		expect(chip.textContent?.trim()).toBe("GPT 5.6 Sol");
+	});
+
   it("dispatches a hide patch when clicking a visible model chip", async () => {
     await seed();
     setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
@@ -104,7 +120,7 @@ describe("<ProviderSettings> — Text generation section", () => {
     await seed({ textGenerationProvider: "codex" });
     const { getByTestId } = render(ProviderSettings);
     const input = getByTestId("settings-textgen-model") as HTMLInputElement;
-    expect(input.placeholder).toContain("gpt-5.4-mini");
+    expect(input.placeholder).toContain("gpt-5.6-sol");
   });
 
   it("shows the claude default model in the placeholder when provider is claude", async () => {
@@ -140,7 +156,7 @@ describe("<ProviderSettings> — Text generation section", () => {
     expect(mock!.mock.calls[0][0]).toEqual({ textGenerationModel: "gpt-5.4" });
   });
 
-  it("lists codex reasoning-effort tiers without max", async () => {
+  it("lists codex reasoning-effort tiers", async () => {
     const { getByTestId } = render(ProviderSettings);
     const select = getByTestId("settings-textgen-effort") as HTMLSelectElement;
     const values = Array.from(select.options).map((o) => o.value);
@@ -151,6 +167,8 @@ describe("<ProviderSettings> — Text generation section", () => {
       "medium",
       "high",
       "xhigh",
+      "max",
+      "ultra",
     ]);
     const labels = Array.from(select.options).map((o) => o.textContent);
     expect(labels).toContain("xHigh");
@@ -169,20 +187,20 @@ describe("<ProviderSettings> — Text generation section", () => {
 
   it("resets incompatible text-generation effort when provider changes", async () => {
     await seed({
-      textGenerationProvider: "claude",
-      textGenerationReasoningEffort: "max",
+      textGenerationProvider: "codex",
+      textGenerationReasoningEffort: "ultra",
     });
     const { getByTestId } = render(ProviderSettings);
     const select = getByTestId(
       "settings-textgen-provider",
     ) as HTMLSelectElement;
-    select.value = "codex";
+    select.value = "claude";
     await fireEvent.change(select);
 
     const mock = getBindingMock("UpdateSettings");
     expect(mock).toBeDefined();
     expect(mock!.mock.calls[0][0]).toEqual({
-      textGenerationProvider: "codex",
+      textGenerationProvider: "claude",
       textGenerationReasoningEffort: "low",
     });
   });

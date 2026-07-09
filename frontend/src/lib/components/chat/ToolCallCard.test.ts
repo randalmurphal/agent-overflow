@@ -429,7 +429,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     const row = getByTestId("collab-tool-row");
 
     expect(row.textContent).toContain("Spawned Plato [default]");
-    expect(row.textContent).toContain("(gpt-5.5 low)");
+    expect(row.textContent).toContain("(GPT 5.5 low)");
     expect(row.textContent).toContain(
       "Run `sleep 20` and report the exit code",
     );

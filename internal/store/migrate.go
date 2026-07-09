@@ -509,6 +509,120 @@ CREATE INDEX idx_diff_review_comments_scope
 	ON diff_review_comments(thread_id, scope, source_key, status, file_path, old_line, new_line, created_at);
 `
 
+// rebuildCodexReasoningEffortsV19SQL widens the Codex reasoning-effort
+// CHECKs on threads and chat_model_profiles to admit the GPT-5.6 catalog's
+// max and ultra tiers. SQLite cannot alter a CHECK in place, so both tables
+// are rebuilt with explicit column lists. Runs with foreign_keys OFF (see
+// applyRebuildMigration) so DROP TABLE threads does not cascade-delete child
+// rows; ids are copied verbatim and foreign_key_check verifies integrity.
+const rebuildCodexReasoningEffortsV19SQL = `
+CREATE TABLE threads_new (
+    id                       TEXT    PRIMARY KEY,
+    project_id               TEXT    REFERENCES projects(id) ON DELETE CASCADE,
+    title                    TEXT    NOT NULL DEFAULT 'New Thread',
+    provider                 TEXT    NOT NULL CHECK(provider IN ('claude','codex','claude-tui')),
+    model                    TEXT    NOT NULL DEFAULT '',
+    workspace_path           TEXT    NOT NULL,
+    worktree_path            TEXT,
+    branch                   TEXT,
+    pr_ref                   TEXT    NOT NULL DEFAULT '',
+    session_ref              TEXT,
+    pending_fork_session_ref TEXT,
+    mode                     TEXT    NOT NULL DEFAULT 'chat'
+        CHECK(mode IN ('chat','plan','design','discussion','terminal')),
+    reasoning_effort         TEXT    NOT NULL DEFAULT 'high'
+        CHECK(
+            (provider = 'codex' AND reasoning_effort IN ('none','minimal','low','medium','high','xhigh','max','ultra'))
+            OR (provider = 'claude' AND reasoning_effort IN ('low','medium','high','xhigh','max'))
+            OR (provider = 'claude-tui' AND reasoning_effort IN ('low','medium','high','xhigh','max'))
+        ),
+    fast_mode                INTEGER NOT NULL DEFAULT 0 CHECK(fast_mode IN (0,1)),
+    context_window           INTEGER NOT NULL DEFAULT 1000000 CHECK(context_window > 0),
+    auto_compact_standard_percent INTEGER NOT NULL DEFAULT 0
+        CHECK(auto_compact_standard_percent BETWEEN 0 AND 90),
+    auto_compact_extended_percent INTEGER NOT NULL DEFAULT 0
+        CHECK(auto_compact_extended_percent BETWEEN 0 AND 90),
+    runtime_mode             TEXT    NOT NULL DEFAULT 'full-access'
+        CHECK(runtime_mode IN ('approval-required','auto-accept-edits','full-access')),
+    discussion_id            TEXT    REFERENCES channels(id) ON DELETE SET NULL,
+    parent_thread_id         TEXT    REFERENCES threads(id) ON DELETE SET NULL,
+    forked_from_thread_id    TEXT    REFERENCES threads(id) ON DELETE SET NULL,
+    last_token_usage         TEXT    NOT NULL DEFAULT ''
+        CHECK(last_token_usage = '' OR json_valid(last_token_usage)),
+    last_read_at             INTEGER,
+    pinned_at                INTEGER,
+    created_at               INTEGER NOT NULL,
+    updated_at               INTEGER NOT NULL,
+    archived                 INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
+    disabled_mcp_servers     TEXT NULL CHECK(disabled_mcp_servers IS NULL OR json_valid(disabled_mcp_servers))
+);
+
+INSERT INTO threads_new (
+    id, project_id, title, provider, model, workspace_path, worktree_path,
+    branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+    fast_mode, context_window, auto_compact_standard_percent,
+    auto_compact_extended_percent, runtime_mode, discussion_id,
+    parent_thread_id, forked_from_thread_id, last_token_usage, last_read_at,
+    pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+)
+SELECT
+    id, project_id, title, provider, model, workspace_path, worktree_path,
+    branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+    fast_mode, context_window, auto_compact_standard_percent,
+    auto_compact_extended_percent, runtime_mode, discussion_id,
+    parent_thread_id, forked_from_thread_id, last_token_usage, last_read_at,
+    pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+FROM threads;
+
+DROP TABLE threads;
+
+ALTER TABLE threads_new RENAME TO threads;
+
+CREATE INDEX idx_threads_forked_from ON threads(forked_from_thread_id);
+CREATE INDEX idx_threads_parent      ON threads(parent_thread_id);
+CREATE INDEX idx_threads_pinned_at   ON threads(pinned_at) WHERE pinned_at IS NOT NULL;
+CREATE INDEX idx_threads_project     ON threads(project_id, updated_at DESC);
+CREATE INDEX idx_threads_updated     ON threads(updated_at DESC);
+
+CREATE TABLE chat_model_profiles_new (
+    provider         TEXT    NOT NULL CHECK(provider IN ('claude','codex','claude-tui')),
+    model            TEXT    NOT NULL,
+    reasoning_effort TEXT    NOT NULL DEFAULT 'high'
+        CHECK(
+            (provider = 'codex' AND reasoning_effort IN ('none','minimal','low','medium','high','xhigh','max','ultra'))
+            OR (provider = 'claude' AND reasoning_effort IN ('low','medium','high','xhigh','max'))
+            OR (provider = 'claude-tui' AND reasoning_effort IN ('low','medium','high','xhigh','max'))
+        ),
+    fast_mode        INTEGER NOT NULL DEFAULT 0 CHECK(fast_mode IN (0,1)),
+    context_window   INTEGER NOT NULL DEFAULT 1000000 CHECK(context_window > 0),
+    auto_compact_standard_percent INTEGER NOT NULL DEFAULT 0
+        CHECK(auto_compact_standard_percent BETWEEN 0 AND 90),
+    auto_compact_extended_percent INTEGER NOT NULL DEFAULT 0
+        CHECK(auto_compact_extended_percent BETWEEN 0 AND 90),
+    runtime_mode     TEXT    NOT NULL DEFAULT 'full-access'
+        CHECK(runtime_mode IN ('approval-required','auto-accept-edits','full-access')),
+    updated_at       INTEGER NOT NULL,
+    PRIMARY KEY(provider, model)
+);
+
+INSERT INTO chat_model_profiles_new (
+    provider, model, reasoning_effort, fast_mode, context_window,
+    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
+    updated_at
+)
+SELECT
+    provider, model, reasoning_effort, fast_mode, context_window,
+    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
+    updated_at
+FROM chat_model_profiles;
+
+DROP TABLE chat_model_profiles;
+
+ALTER TABLE chat_model_profiles_new RENAME TO chat_model_profiles;
+
+CREATE INDEX idx_chat_model_profiles_updated ON chat_model_profiles(updated_at DESC);
+`
+
 // migrations is the ordered list of all schema migrations. Squashed
 // for v0.0.1: the prior 51-migration chain produced this schema; old
 // databases were rebaked into a single (1, 'initial_schema') row by
@@ -688,6 +802,12 @@ CREATE INDEX idx_usage_ledger_thread ON usage_ledger(thread_id, created_at);`,
 		Version: 18,
 		Name:    "diff_review_comment_pr_scope",
 		SQL:     rebuildDiffReviewCommentsV18SQL,
+		Rebuild: true,
+	},
+	{
+		Version: 19,
+		Name:    "codex_max_ultra_reasoning",
+		SQL:     rebuildCodexReasoningEffortsV19SQL,
 		Rebuild: true,
 	},
 }

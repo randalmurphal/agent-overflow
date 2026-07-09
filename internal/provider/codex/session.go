@@ -44,7 +44,7 @@ type Session struct {
 	activeTurnID       string // current active turn ID from turn/started; cleared on turn/completed
 	model              string // model name for cost calculation
 	reasoningEffort    string // per-turn reasoning effort override; empty means inherit thread default
-	serviceTier        string // per-turn service tier override; "fast" enables Codex fast mode
+	serviceTier        string // per-turn service tier override; "priority" enables Codex fast mode
 	approvalPolicy     string // per-turn approval override; empty means inherit thread default
 	sandbox            string // per-turn sandbox override; empty means inherit thread default
 	nextID             atomic.Int64
@@ -187,15 +187,15 @@ type Config struct {
 	MCPServers            map[string]any
 	ContextWindow         int
 	AutoCompactTokenLimit int
-	// ReasoningEffort is the Codex-native reasoning_effort enum value
-	// (none|minimal|low|medium|high|xhigh). Applied to the thread start
+	// ReasoningEffort is the Codex-native reasoning_effort enum value exposed
+	// by the selected model. Applied to the thread start
 	// handshake under `config.model_reasoning_effort`, and re-applied to
 	// every turn/start call under the `effort` parameter so per-thread
 	// tuning takes effect without a session restart.
 	ReasoningEffort string
-	// ServiceTier is Codex's native speed tier. "fast" is sent as
+	// ServiceTier is Codex's native speed tier. "priority" is sent as
 	// serviceTier on thread/start|resume and turn/start. It must not rewrite
-	// Model; GPT-5.5 fast mode is still GPT-5.5.
+	// Model; fast mode does not change the selected model.
 	ServiceTier string
 	EventLogger *logging.Logger
 }

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
@@ -87,7 +88,7 @@ func TestGetModelsForProvider(t *testing.T) {
 		t.Fatal("expected codex models")
 	}
 	if codexModels[0].Slug != "gpt-5.5" {
-		t.Fatalf("first codex model = %q, want gpt-5.5", codexModels[0].Slug)
+		t.Fatalf("first codex model = %q, want fake app-server gpt-5.5", codexModels[0].Slug)
 	}
 
 	unknown, err := app.GetModelsForProvider("unknown")
@@ -160,7 +161,7 @@ while IFS= read -r line; do
   if [[ "$line" == *'"method":"initialize"'* ]]; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
   elif [[ "$line" == *'"method":"model/list"'* ]]; then
-    printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"model":"gpt-5.5","displayName":"GPT-5.5","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","additionalSpeedTiers":["fast"]}],"nextCursor":null}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"model":"gpt-5.5","displayName":"GPT-5.5","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","serviceTiers":[{"id":"priority","name":"Fast","description":"1.5x speed, increased usage"}]}],"nextCursor":null}}\n' "$id"
   fi
 done
 `
@@ -185,7 +186,7 @@ while IFS= read -r line; do
   if [[ "$line" == *'"method":"initialize"'* ]]; then
     printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
   elif [[ "$line" == *'"method":"model/list"'* ]]; then
-    printf '{"jsonrpc":"2.0","id":%%s,"result":{"data":[{"model":%[2]q,"displayName":%[2]q,"hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","additionalSpeedTiers":["fast"]}],"nextCursor":null}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%%s,"result":{"data":[{"model":%[2]q,"displayName":%[2]q,"hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","serviceTiers":[{"id":"priority","name":"Fast","description":"1.5x speed, increased usage"}]}],"nextCursor":null}}\n' "$id"
   fi
 done
 `, counterPath, model)
@@ -958,6 +959,11 @@ func newTestAppWithStore(t *testing.T) *App {
 		gitWatchPumps:          make(map[string]*gitWatchPump),
 	}
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
+	app.codexModelCatalogOnce.Do(func() {
+		app.codexModelCatalog = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) {
+			return nil, errors.New("live Codex catalog disabled in App tests")
+		}, time.Now)
+	})
 	t.Cleanup(app.appCancel)
 	ensureDefaultTestProject(t, app)
 	return app

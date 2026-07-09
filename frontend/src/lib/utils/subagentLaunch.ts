@@ -1,5 +1,6 @@
 import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
+import { displayModelLabel } from './modelLabels';
 
 interface ParsedCodexSubagentInput {
   tool: string;
@@ -65,6 +66,11 @@ export function codexSubagentDisplayLabel(label: string, role: string, fallback:
   return role.trim() ? `${base} [${role.trim()}]` : base;
 }
 
+export function codexModelEffortAffix(model: string, reasoningEffort: string): string {
+  const modelLabel = model ? displayModelLabel('codex', model) : '';
+  return [modelLabel, reasoningEffort].filter(Boolean).join(' ');
+}
+
 /**
  * Codex's spawned-child launch is normalized as `toolName=collab_agent`.
  * Other collab controls use dedicated tool names (`send_input`, `wait_agent`,
@@ -88,7 +94,7 @@ export function codexSubagentLaunchInfo(item: Item): CodexSubagentLaunchInfo {
       ? `${parsed.receiverThreadIds.length} agents`
       : 'agent';
   const roleLabel = codexSubagentDisplayLabel(parsed.agentNickname, parsed.agentRole, fallbackLabel);
-  const modelAffix = [parsed.model, parsed.reasoningEffort].filter(Boolean).join(' ');
+  const modelAffix = codexModelEffortAffix(parsed.model, parsed.reasoningEffort);
   return {
     ...parsed,
     agentLabel: roleLabel,

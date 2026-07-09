@@ -14,8 +14,9 @@ func almostEqual(a, b, tolerance float64) bool {
 // (no cache) for every rate-table family at exactly 1M tokens each, so
 // each expected value is just Input+Output per the table above. This is
 // the arithmetic spot check across the whole table, including exact
-// entries (claude-sonnet-5, gpt-5.2-codex, gpt-5.1-codex, gpt-5-codex)
-// and family fallbacks (claude-sonnet, gpt-5, gpt-5.4, gpt-5.4-mini).
+// entries (claude-sonnet-5, gpt-5.2-codex, gpt-5.1-codex, gpt-5-codex,
+// gpt-5.6, gpt-5.6-terra, gpt-5.6-luna) and family fallbacks
+// (claude-sonnet, gpt-5, gpt-5.4, gpt-5.4-mini, gpt-5.6-sol).
 func TestPrice_AllFamiliesInputOutputOnly(t *testing.T) {
 	cases := []struct {
 		model       string
@@ -29,12 +30,16 @@ func TestPrice_AllFamiliesInputOutputOnly(t *testing.T) {
 		{"gpt-5.2-codex", 15.75},     // 1.75 + 14
 		{"gpt-5.1-codex", 15.75},
 		{"gpt-5-codex", 15.75},
-		{"gpt-5.5", 35.00},     // 5 + 30
-		{"gpt-5.4", 17.50},     // 2.5 + 15
-		{"gpt-5.4-mini", 5.25}, // 0.75 + 4.5
-		{"gpt-5", 11.25},       // 1.25 + 10
-		{"o3", 15.75},          // 1.75 + 14
-		{"o4-mini", 2.25},      // 0.25 + 2
+		{"gpt-5.6", 35.00},       // 5 + 30
+		{"gpt-5.6-sol", 35.00},   // trims to gpt-5.6
+		{"gpt-5.6-terra", 17.50}, // 2.5 + 15
+		{"gpt-5.6-luna", 7.00},   // 1 + 6
+		{"gpt-5.5", 35.00},       // 5 + 30
+		{"gpt-5.4", 17.50},       // 2.5 + 15
+		{"gpt-5.4-mini", 5.25},   // 0.75 + 4.5
+		{"gpt-5", 11.25},         // 1.25 + 10
+		{"o3", 15.75},            // 1.75 + 14
+		{"o4-mini", 2.25},        // 0.25 + 2
 	}
 	for _, c := range cases {
 		t.Run(c.model, func(t *testing.T) {
@@ -135,9 +140,10 @@ func TestPrice_ZeroUsageKnownModelStillOK(t *testing.T) {
 	}
 }
 
-// TestPrice_OpenAICacheWriteIsFree confirms OpenAI cache-write tokens
-// never contribute cost, since OpenAI does not bill cache writes.
-func TestPrice_OpenAICacheWriteIsFree(t *testing.T) {
+// TestPrice_OpenAICacheWriteIsFreeWithoutExplicitRate confirms older
+// OpenAI rows without a published cache-write price do not add cost for
+// cache-write tokens.
+func TestPrice_OpenAICacheWriteIsFreeWithoutExplicitRate(t *testing.T) {
 	withoutCacheWrite, ok := Price("gpt-5.4", 1_000_000, 1_000_000, 0, 0)
 	if !ok {
 		t.Fatal("Price(gpt-5.4) ok = false, want true")
@@ -148,6 +154,31 @@ func TestPrice_OpenAICacheWriteIsFree(t *testing.T) {
 	}
 	if !almostEqual(withoutCacheWrite, withCacheWrite, 0.001) {
 		t.Errorf("cache-write tokens changed cost: without=%f with=%f", withoutCacheWrite, withCacheWrite)
+	}
+}
+
+// TestPrice_GPT56CacheWriteUsesPublishedRates confirms the GPT-5.6
+// family bills cache-write tokens with its explicit 1.25x input rates.
+func TestPrice_GPT56CacheWriteUsesPublishedRates(t *testing.T) {
+	cases := []struct {
+		model       string
+		wantCostUSD float64
+	}{
+		{"gpt-5.6", 41.75},        // 5 + 30 + 0.5 + 6.25
+		{"gpt-5.6-sol", 41.75},    // trims to gpt-5.6
+		{"gpt-5.6-terra", 20.875}, // 2.5 + 15 + 0.25 + 3.125
+		{"gpt-5.6-luna", 8.35},    // 1 + 6 + 0.1 + 1.25
+	}
+	for _, c := range cases {
+		t.Run(c.model, func(t *testing.T) {
+			got, ok := Price(c.model, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
+			if !ok {
+				t.Fatalf("Price(%q) ok = false, want true", c.model)
+			}
+			if !almostEqual(got, c.wantCostUSD, 0.001) {
+				t.Errorf("Price(%q) = %f, want %f", c.model, got, c.wantCostUSD)
+			}
+		})
 	}
 }
 

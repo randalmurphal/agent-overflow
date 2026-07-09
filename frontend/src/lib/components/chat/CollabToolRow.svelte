@@ -14,6 +14,7 @@
   import { formatTimeOfDay } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import {
+	codexModelEffortAffix,
     codexSubagentLaunchInfo,
     isCodexSubagentLaunchItem,
   } from '../../utils/subagentLaunch';
@@ -98,7 +99,7 @@
     if (receiverDisplayLabels.length > 1) return `${receiverDisplayLabels.length} agents`;
     return '';
   });
-  let modelAffix = $derived(spawnInfo?.modelAffix ?? [model, effort].filter(Boolean).join(' '));
+  let modelAffix = $derived(spawnInfo?.modelAffix ?? codexModelEffortAffix(model, effort));
 
   let completionPreview = $derived.by(() => {
     if (item.kind !== 'tool_completion' || item.toolName !== 'collab_agent') return '';

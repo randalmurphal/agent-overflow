@@ -11,7 +11,8 @@ export type ReasoningEffort =
   | "medium"
   | "high"
   | "xhigh"
-  | "max";
+  | "max"
+  | "ultra";
 
 /**
  * ContextWindow mirrors the per-thread context-window token count.
@@ -112,7 +113,7 @@ export interface Settings {
   textGenerationProvider: ProviderID;
   /**
    * Text generation model id. Empty string = "use the per-provider
-   * default" (codex → gpt-5.4-mini, claude → claude-haiku-4-5).
+   * default" (codex → gpt-5.6-sol, claude → claude-haiku-4-5).
    */
   textGenerationModel: string;
   /** Text generation reasoning-effort tier. Defaults to "low" — these

@@ -105,13 +105,14 @@ var legalEfforts = map[string]struct{}{
 	"high":    {},
 	"xhigh":   {},
 	"max":     {},
+	"ultra":   {},
 }
 
 func legalEffortForProvider(providerName, effort string) bool {
 	switch providerName {
 	case "codex":
 		switch effort {
-		case "none", "minimal", "low", "medium", "high", "xhigh":
+		case "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
 			return true
 		default:
 			return false

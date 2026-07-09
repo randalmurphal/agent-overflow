@@ -7,6 +7,7 @@
   import { getSettings, updateSettingsPatch } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { hiddenModelSlugs, hiddenModelsSettingsKey } from '../../utils/hiddenModels';
+  import { displayModelLabel } from '../../utils/modelLabels';
   import type { ModelInfo } from '../../types/settings';
   import type { ProviderID } from '../../providers/catalog';
 
@@ -56,7 +57,7 @@
         data-hidden={isHidden}
         onclick={() => void toggleModelVisibility(model.slug)}
       >
-        {model.name || model.slug}
+		{displayModelLabel(provider, model.slug, model.name)}
       </button>
     {/each}
   </div>

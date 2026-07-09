@@ -16,6 +16,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
+  import { displayModelLabel } from '../../utils/modelLabels';
   import type { Thread } from '../../types/models';
 
   let archivedThreads: Thread[] = $state([]);
@@ -116,7 +117,7 @@
             <div class="min-w-0 flex-1">
               <p class="truncate text-[0.8125rem] font-medium text-fg">{thread.title || 'Untitled'}</p>
               <p class="mt-0.5 truncate text-[0.6875rem] text-fg-subtle">
-                {thread.provider}{thread.model ? ` · ${thread.model}` : ''}
+				{thread.provider}{thread.model ? ` · ${displayModelLabel(thread.provider, thread.model)}` : ''}
                 {#if thread.updatedAt}
                   <span class="text-fg-hint"> · {relativeTime(thread.updatedAt)}</span>
                 {/if}

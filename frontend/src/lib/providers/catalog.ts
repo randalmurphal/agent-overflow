@@ -136,7 +136,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
     shortLabel: 'X',
     badgeClass: 'bg-provider-codex/10 text-provider-codex',
     installActionLabel: 'Install Codex CLI',
-    textGenerationDefaultModel: 'gpt-5.4-mini',
+    textGenerationDefaultModel: 'gpt-5.6-sol',
     textGenerationEffortOptions: [
       { value: 'none', label: 'None' },
       { value: 'minimal', label: 'Minimal' },
@@ -144,6 +144,8 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       { value: 'medium', label: 'Medium' },
       { value: 'high', label: 'High' },
       { value: 'xhigh', label: 'xHigh' },
+      { value: 'max', label: 'Max' },
+      { value: 'ultra', label: 'Ultra' },
     ],
     contextLabels: {
       standard: '272k',

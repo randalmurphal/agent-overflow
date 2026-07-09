@@ -43,6 +43,25 @@ func TestGetContextSettingsReturnsStandardOnlyForCodexGPT55(t *testing.T) {
 	}
 }
 
+func TestGetContextSettingsReturnsGPT56Window(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		t.Run(model, func(t *testing.T) {
+			profile, err := app.GetContextSettings("codex", model)
+			if err != nil {
+				t.Fatalf("GetContextSettings(codex/%s): %v", model, err)
+			}
+			if profile.ContextWindow != provider.Codex56ContextWindow {
+				t.Fatalf("ContextWindow = %d, want %d", profile.ContextWindow, provider.Codex56ContextWindow)
+			}
+			if len(profile.ContextWindows) != 1 || profile.ContextWindows[0].Label != "372k" {
+				t.Fatalf("ContextWindows = %+v, want one 372k option", profile.ContextWindows)
+			}
+		})
+	}
+}
+
 func TestGetContextSettingsClampsStaleCodexGPT55Profile(t *testing.T) {
 	app := newTestAppWithStore(t)
 	if err := app.store.UpsertChatModelProfile(store.ChatModelProfile{

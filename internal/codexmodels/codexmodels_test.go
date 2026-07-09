@@ -118,20 +118,29 @@ func TestGet_SingleFlightsConcurrentCalls(t *testing.T) {
 	}
 }
 
-func TestGet_ErrorIsNotCached(t *testing.T) {
+func TestGet_ErrorIsCachedBriefly(t *testing.T) {
 	calls := 0
+	now := time.Unix(1000, 0)
 	cache := NewWith(time.Hour, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
 		calls++
 		return nil, errors.New("boom")
-	}, nil)
+	}, func() time.Time { return now })
 
 	for i := 0; i < 3; i++ {
 		if _, err := cache.Get(context.Background(), "codex"); err == nil {
 			t.Fatalf("iteration %d expected error", i)
 		}
 	}
-	if calls != 3 {
-		t.Fatalf("error should bypass cache: calls=%d, want 3", calls)
+	if calls != 1 {
+		t.Fatalf("error should be cached briefly: calls=%d, want 1", calls)
+	}
+
+	now = now.Add(DefaultErrorTTL + time.Second)
+	if _, err := cache.Get(context.Background(), "codex"); err == nil {
+		t.Fatal("post-expiry Get error = nil, want error")
+	}
+	if calls != 2 {
+		t.Fatalf("expired error should retry: calls=%d, want 2", calls)
 	}
 }
 

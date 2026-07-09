@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
@@ -58,6 +59,13 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	t, err := a.store.GetThread(threadID)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
+	}
+	sanitized := a.sanitizeThreadModelSettings(t)
+	if !chatmodel.SameModelFields(t, sanitized) {
+		if err := a.store.UpdateThread(sanitized); err != nil {
+			return fmt.Errorf("start session: persist live model settings: %w", err)
+		}
+		t = sanitized
 	}
 
 	sessionToken := uuid.NewString()

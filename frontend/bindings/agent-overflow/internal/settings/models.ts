@@ -308,7 +308,7 @@ export class Settings {
     /**
      * TextGenerationModel is the model id the text-generation CLI uses.
      * Empty string means "use the per-provider default" (codex ->
-     * gpt-5.4-mini, claude -> claude-haiku-4-5). We avoid forcing a
+     * gpt-5.6-sol, claude -> claude-haiku-4-5). We avoid forcing a
      * concrete default on the field itself because the right model
      * depends on which provider is selected, and a cross-provider
      * default would be wrong half the time.
@@ -317,8 +317,8 @@ export class Settings {
 
     /**
      * TextGenerationReasoningEffort controls the reasoning budget the
-     * text-generation CLI spends. Mirrors the five-tier thread-level
-     * enum. Default is "low" — commit/PR message generation benefits
+     * text-generation CLI spends. Mirrors the provider-specific reasoning
+     * effort enum. Default is "low" — commit/PR message generation benefits
      * more from speed than from heavy reasoning.
      */
     "textGenerationReasoningEffort": string;

@@ -238,8 +238,15 @@ func TestTextGenerationReasoningEffortIsProviderSpecific(t *testing.T) {
 	if _, err := svc.Update(map[string]any{
 		"textGenerationProvider":        "codex",
 		"textGenerationReasoningEffort": "max",
-	}); err == nil {
-		t.Fatal("codex max effort should be invalid")
+	}); err != nil {
+		t.Fatalf("codex max effort should be valid: %v", err)
+	}
+
+	if _, err := svc.Update(map[string]any{
+		"textGenerationProvider":        "codex",
+		"textGenerationReasoningEffort": "ultra",
+	}); err != nil {
+		t.Fatalf("codex ultra effort should be valid: %v", err)
 	}
 
 	if _, err := svc.Update(map[string]any{
@@ -254,6 +261,27 @@ func TestTextGenerationReasoningEffortIsProviderSpecific(t *testing.T) {
 		"textGenerationReasoningEffort": "minimal",
 	}); err == nil {
 		t.Fatal("claude minimal effort should be invalid")
+	}
+
+	if _, err := svc.Update(map[string]any{
+		"textGenerationProvider":        "claude",
+		"textGenerationReasoningEffort": "ultra",
+	}); err == nil {
+		t.Fatal("claude ultra effort should be invalid")
+	}
+}
+
+func TestTextGenerationReasoningEffortErrorListsUltraForCodex(t *testing.T) {
+	svc := NewService(t.TempDir())
+	_, err := svc.Update(map[string]any{
+		"textGenerationProvider":        "codex",
+		"textGenerationReasoningEffort": "turbo",
+	})
+	if err == nil {
+		t.Fatal("invalid Codex effort should fail")
+	}
+	if !strings.Contains(err.Error(), "ultra") {
+		t.Fatalf("validation error = %q, want allowed values to include ultra", err)
 	}
 }
 

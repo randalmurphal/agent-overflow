@@ -18,7 +18,7 @@ over stdio.
   resumed app-server sessions do not expose as raw events.
 - `server_requests.go` — server-initiated request dispatch:
   approvals, MCP elicitation, structured user input, and dynamic tools.
-- `turn_input.go` — outbound `message/send` / `turn/steer` user-input
+- `turn_input.go` — outbound `turn/start` / `turn/steer` user-input
   payload shaping.
 - `interactive_requests.go` — pending approval/user-input tracking,
   dedupe, response claiming, interrupt/close drain, and lost-prompt
@@ -75,11 +75,12 @@ over stdio.
 
 ## Methods we call
 
-- `thread/new`, `thread/resume`, `thread/fork`, `thread/rollback`.
+- `thread/start`, `thread/resume`, `thread/fork`, `thread/rollback`.
 - `thread/read` — on-reopen liveness probe. Called by `Session.Probe`
   to fetch the current `thread.status.type` so the app-layer reconciler
   can flip stale running background tool rows.
-- `message/send` — deliver a user turn.
+- `turn/start`, `turn/steer`, `turn/interrupt` — deliver, steer, and stop
+  user turns.
 - Sandbox/approval method family — `file/write`, `file/delete`,
   `file/mkdir`, `command/execute`, etc. These arrive as requests we
   must respond to.

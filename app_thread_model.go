@@ -90,26 +90,26 @@ func (a *App) chatModelProfileForSelection(providerName, model string) (store.Ch
 	if a.store != nil {
 		profile, err := a.store.GetChatModelProfile(providerName, model)
 		if err == nil {
-			return chatmodel.SanitizeProfile(profile), nil
+			return a.sanitizeChatModelProfile(profile), nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return store.ChatModelProfile{}, fmt.Errorf("load chat model profile: %w", err)
 		}
 	}
-	return chatmodel.FallbackProfile(providerName, model), nil
+	return a.sanitizeChatModelProfile(chatmodel.FallbackProfile(providerName, model)), nil
 }
 
 func (a *App) latestProviderProfileForSelection(providerName string) (store.ChatModelProfile, error) {
 	if a.store != nil {
 		profile, err := a.store.LatestChatModelProfileForProvider(providerName)
 		if err == nil {
-			return chatmodel.SanitizeProfile(profile), nil
+			return a.sanitizeChatModelProfile(profile), nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return store.ChatModelProfile{}, fmt.Errorf("load latest chat model profile for provider %s: %w", providerName, err)
 		}
 	}
-	return chatmodel.FallbackProfile(providerName, ""), nil
+	return a.sanitizeChatModelProfile(chatmodel.FallbackProfile(providerName, "")), nil
 }
 
 func threadWithModelSelectionProfile(thread store.Thread, profile store.ChatModelProfile) store.Thread {

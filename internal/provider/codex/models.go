@@ -17,6 +17,8 @@ const (
 	modelListLimit     = 100
 	modelListMaxPages  = 20
 	modelListMaxModels = 1000
+	fastServiceTier    = "priority"
+	legacyFastTier     = "fast"
 )
 
 type ModelListConfig struct {
@@ -37,7 +39,14 @@ type codexModel struct {
 	Hidden                    bool                        `json:"hidden"`
 	SupportedReasoningEfforts []codexReasoningEffortModel `json:"supportedReasoningEfforts"`
 	DefaultReasoningEffort    string                      `json:"defaultReasoningEffort"`
-	AdditionalSpeedTiers      []string                    `json:"additionalSpeedTiers"`
+	ServiceTiers              []codexModelServiceTier     `json:"serviceTiers"`
+	// Deprecated by Codex in favor of ServiceTiers. Keep decoding it so AO
+	// remains compatible with older app-server versions.
+	AdditionalSpeedTiers []string `json:"additionalSpeedTiers"`
+}
+
+type codexModelServiceTier struct {
+	ID string `json:"id"`
 }
 
 type codexReasoningEffortModel struct {
@@ -258,7 +267,7 @@ func mapCodexModel(model codexModel) provider.ModelInfo {
 	}
 
 	capabilities := []string(nil)
-	if slices.Contains(model.AdditionalSpeedTiers, "fast") {
+	if codexModelSupportsFastMode(model) {
 		capabilities = append(capabilities, provider.ModelCapabilityFastMode)
 	}
 
@@ -272,6 +281,18 @@ func mapCodexModel(model codexModel) provider.ModelInfo {
 	}
 }
 
+func codexModelSupportsFastMode(model codexModel) bool {
+	for _, tier := range model.ServiceTiers {
+		if tier.ID == fastServiceTier {
+			return true
+		}
+	}
+	if len(model.ServiceTiers) > 0 {
+		return false
+	}
+	return slices.Contains(model.AdditionalSpeedTiers, legacyFastTier)
+}
+
 func displayNameForCodexModel(model codexModel) string {
 	name := strings.TrimSpace(model.DisplayName)
 	if name != "" {
@@ -281,20 +302,28 @@ func displayNameForCodexModel(model codexModel) string {
 }
 
 func normalizeCodexDisplayName(name string) string {
-	if len(name) >= 3 && strings.EqualFold(name[:3], "gpt") {
-		name = "GPT" + name[3:]
-	}
-	var builder strings.Builder
-	builder.Grow(len(name))
-	upperNext := false
-	for _, char := range name {
-		if upperNext && char >= 'a' && char <= 'z' {
-			char = char - ('a' - 'A')
+	name = strings.TrimSpace(name)
+	if len(name) >= 3 && strings.EqualFold(name[:3], "gpt") &&
+		(len(name) == 3 || name[3] == '-' || name[3] == ' ') {
+		remainder := strings.TrimLeft(name[3:], "- ")
+		parts := strings.Fields(strings.ReplaceAll(remainder, "-", " "))
+		for i := range parts {
+			parts[i] = capitalizeCodexDisplayWord(parts[i])
 		}
-		builder.WriteRune(char)
-		upperNext = char == '-'
+		if len(parts) == 0 {
+			return "GPT"
+		}
+		return "GPT " + strings.Join(parts, " ")
 	}
-	return builder.String()
+
+	return name
+}
+
+func capitalizeCodexDisplayWord(word string) string {
+	if word == "" || word[0] < 'a' || word[0] > 'z' {
+		return word
+	}
+	return string(word[0]-('a'-'A')) + word[1:]
 }
 
 func mapCodexReasoningEfforts(model codexModel) []provider.ReasoningEffortOption {

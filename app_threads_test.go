@@ -297,15 +297,27 @@ func TestUpdateThreadReasoningEffortValidates(t *testing.T) {
 	}
 }
 
-func TestUpdateThreadReasoningEffortRejectsCodexMax(t *testing.T) {
+func TestUpdateThreadReasoningEffortAcceptsCodexMaxAndUltra(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread, err := createTestThread(t, app, "codex", "/tmp/tcmax", "gpt-5.5", "")
+	thread, err := createTestThread(t, app, "codex", "/tmp/tcmax", "gpt-5.6-sol", "")
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
 
-	if _, err := app.UpdateThreadReasoningEffort(thread.ID, "max"); err == nil {
-		t.Fatal("UpdateThreadReasoningEffort(max) error = nil, want validation error")
+	updated, err := app.UpdateThreadReasoningEffort(thread.ID, "max")
+	if err != nil {
+		t.Fatalf("UpdateThreadReasoningEffort(max): %v", err)
+	}
+	if updated.ReasoningEffort != "max" {
+		t.Fatalf("ReasoningEffort = %q, want max", updated.ReasoningEffort)
+	}
+
+	updated, err = app.UpdateThreadReasoningEffort(thread.ID, "ultra")
+	if err != nil {
+		t.Fatalf("UpdateThreadReasoningEffort(ultra): %v", err)
+	}
+	if updated.ReasoningEffort != "ultra" {
+		t.Fatalf("ReasoningEffort = %q, want ultra", updated.ReasoningEffort)
 	}
 }
 

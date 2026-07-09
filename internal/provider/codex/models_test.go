@@ -11,7 +11,7 @@ import (
 )
 
 func TestListModelsUsesCodexMetadataAndStaticContextWindows(t *testing.T) {
-	binary := writeModelListFakeCodex(t, `[{"model":"gpt-5.5","displayName":"gpt-5.5","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Fast responses with lighter reasoning"},{"reasoningEffort":"high","description":"Greater reasoning depth for complex problems"},{"reasoningEffort":"xhigh","description":"Extra high reasoning depth for complex problems"}],"defaultReasoningEffort":"high","additionalSpeedTiers":["fast"]},{"model":"legacy-hidden","displayName":"Legacy Hidden","hidden":true,"supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Low"}],"defaultReasoningEffort":"low","additionalSpeedTiers":[]}]`)
+	binary := writeModelListFakeCodex(t, `[{"model":"gpt-5.5","displayName":"gpt-5.5","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Fast responses with lighter reasoning"},{"reasoningEffort":"high","description":"Greater reasoning depth for complex problems"},{"reasoningEffort":"xhigh","description":"Extra high reasoning depth for complex problems"}],"defaultReasoningEffort":"high","serviceTiers":[{"id":"priority","name":"Fast","description":"1.5x speed, increased usage"}]},{"model":"legacy-hidden","displayName":"Legacy Hidden","hidden":true,"supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Low"}],"defaultReasoningEffort":"low","serviceTiers":[]}]`)
 
 	models, err := ListModels(context.Background(), ModelListConfig{
 		Binary:       binary,
@@ -28,8 +28,8 @@ func TestListModelsUsesCodexMetadataAndStaticContextWindows(t *testing.T) {
 	if model.Slug != "gpt-5.5" {
 		t.Fatalf("Slug = %q, want gpt-5.5", model.Slug)
 	}
-	if model.Name != "GPT-5.5" {
-		t.Errorf("Name = %q, want GPT-5.5", model.Name)
+	if model.Name != "GPT 5.5" {
+		t.Errorf("Name = %q, want GPT 5.5", model.Name)
 	}
 	if !contains(model.Capabilities, provider.ModelCapabilityFastMode) {
 		t.Errorf("Capabilities = %#v, want fast mode", model.Capabilities)
@@ -59,6 +59,34 @@ func TestListModelsUsesCodexMetadataAndStaticContextWindows(t *testing.T) {
 	}
 	if len(custom.ReasoningEfforts) != len(model.ReasoningEfforts) {
 		t.Errorf("custom reasoning efforts len = %d, want %d", len(custom.ReasoningEfforts), len(model.ReasoningEfforts))
+	}
+}
+
+func TestNormalizeCodexDisplayNameUsesFriendlyGPTAliases(t *testing.T) {
+	cases := map[string]string{
+		"gpt-5.5":             "GPT 5.5",
+		"GPT-5.6-Sol":         "GPT 5.6 Sol",
+		"GPT-5.4 Mini":        "GPT 5.4 Mini",
+		"gpt-5.3-codex-spark": "GPT 5.3 Codex Spark",
+		"o4-mini":             "o4-mini",
+		"GPTurbo":             "GPTurbo",
+	}
+	for input, want := range cases {
+		if got := normalizeCodexDisplayName(input); got != want {
+			t.Errorf("normalizeCodexDisplayName(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestCodexModelSupportsFastModeFallsBackToDeprecatedSpeedTiers(t *testing.T) {
+	if !codexModelSupportsFastMode(codexModel{AdditionalSpeedTiers: []string{"fast"}}) {
+		t.Fatal("legacy additionalSpeedTiers fast entry should remain supported")
+	}
+	if codexModelSupportsFastMode(codexModel{
+		ServiceTiers:         []codexModelServiceTier{{ID: "flex"}},
+		AdditionalSpeedTiers: []string{"fast"},
+	}) {
+		t.Fatal("canonical serviceTiers should take precedence over deprecated additionalSpeedTiers")
 	}
 }
 
@@ -125,9 +153,9 @@ while IFS= read -r line; do
   if [[ "$line" == *'"method":"initialize"'* ]]; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
   elif [[ "$line" == *'"cursor":"1"'* ]]; then
-    printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"model":"gpt-5.4-mini","displayName":"GPT-5.4 Mini","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","additionalSpeedTiers":[]}],"nextCursor":null}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"model":"gpt-5.4-mini","displayName":"GPT-5.4 Mini","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","serviceTiers":[]}],"nextCursor":null}}\n' "$id"
   elif [[ "$line" == *'"method":"model/list"'* ]]; then
-    printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"model":"gpt-5.4","displayName":"GPT-5.4","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","additionalSpeedTiers":["fast"]}],"nextCursor":"1"}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"model":"gpt-5.4","displayName":"GPT-5.4","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","serviceTiers":[{"id":"priority","name":"Fast","description":"1.5x speed, increased usage"}]}],"nextCursor":"1"}}\n' "$id"
   fi
 done
 `

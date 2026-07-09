@@ -1,5 +1,7 @@
 package provider
 
+import "slices"
+
 const (
 	// ModelCapabilityFastMode indicates a model supports fast-mode execution.
 	ModelCapabilityFastMode = "fast_mode"
@@ -14,6 +16,7 @@ const (
 	ClaudeStandardContextWindow = 200000
 	ClaudeExtendedContextWindow = 1000000
 	CodexStandardContextWindow  = 272000
+	Codex56ContextWindow        = 372000
 	CodexExtendedContextWindow  = 1000000
 	CodexSparkContextWindow     = 128000
 )
@@ -141,8 +144,32 @@ func withProvider(src []ModelInfo, providerName string) []ModelInfo {
 // OpenAI API models here.
 var CodexModels = []ModelInfo{
 	{
+		Slug:             "gpt-5.6-sol",
+		Name:             "GPT 5.6 Sol",
+		Provider:         "codex",
+		Capabilities:     []string{ModelCapabilityFastMode},
+		ContextWindows:   codex56ContextOptions(),
+		ReasoningEfforts: codexEffortOptions("low", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax, EffortUltra),
+	},
+	{
+		Slug:             "gpt-5.6-terra",
+		Name:             "GPT 5.6 Terra",
+		Provider:         "codex",
+		Capabilities:     []string{ModelCapabilityFastMode},
+		ContextWindows:   codex56ContextOptions(),
+		ReasoningEfforts: codexEffortOptions("medium", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax, EffortUltra),
+	},
+	{
+		Slug:             "gpt-5.6-luna",
+		Name:             "GPT 5.6 Luna",
+		Provider:         "codex",
+		Capabilities:     []string{ModelCapabilityFastMode},
+		ContextWindows:   codex56ContextOptions(),
+		ReasoningEfforts: codexEffortOptions("medium", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
+	},
+	{
 		Slug:             "gpt-5.5",
-		Name:             "GPT-5.5",
+		Name:             "GPT 5.5",
 		Provider:         "codex",
 		Capabilities:     []string{ModelCapabilityFastMode},
 		ContextWindows:   codexStandardContextOptions(),
@@ -150,7 +177,7 @@ var CodexModels = []ModelInfo{
 	},
 	{
 		Slug:             "gpt-5.4",
-		Name:             "GPT-5.4",
+		Name:             "GPT 5.4",
 		Provider:         "codex",
 		Capabilities:     []string{ModelCapabilityFastMode},
 		ContextWindows:   codexExtendedContextOptions(),
@@ -158,28 +185,28 @@ var CodexModels = []ModelInfo{
 	},
 	{
 		Slug:             "gpt-5.2",
-		Name:             "GPT-5.2",
+		Name:             "GPT 5.2",
 		Provider:         "codex",
 		ContextWindows:   codexStandardContextOptions(),
 		ReasoningEfforts: codexEffortOptions("medium"),
 	},
 	{
 		Slug:             "gpt-5.4-mini",
-		Name:             "GPT-5.4 Mini",
+		Name:             "GPT 5.4 Mini",
 		Provider:         "codex",
 		ContextWindows:   codexStandardContextOptions(),
 		ReasoningEfforts: codexEffortOptions("medium"),
 	},
 	{
 		Slug:             "gpt-5.3-codex",
-		Name:             "GPT-5.3 Codex",
+		Name:             "GPT 5.3 Codex",
 		Provider:         "codex",
 		ContextWindows:   codexStandardContextOptions(),
 		ReasoningEfforts: codexEffortOptions("medium"),
 	},
 	{
 		Slug:             "gpt-5.3-codex-spark",
-		Name:             "GPT-5.3 Codex Spark",
+		Name:             "GPT 5.3 Codex Spark",
 		Provider:         "codex",
 		ContextWindows:   codexSparkContextOptions(),
 		ReasoningEfforts: codexEffortOptions("high"),
@@ -277,16 +304,45 @@ func ReasoningEffortOptionsForModel(providerName, model string) []ReasoningEffor
 }
 
 func ReasoningEffortSupportedForModel(providerName, model, effort string) bool {
-	if _, found := FindModel(providerName, model); !found {
+	candidate, found := FindModel(providerName, model)
+	if !found {
 		return providerSupportsReasoningEffort(providerName, effort)
 	}
-	options := ReasoningEffortOptionsForModel(providerName, model)
-	for _, option := range options {
+	return ModelInfoSupportsReasoningEffort(candidate, effort)
+}
+
+// ModelInfoSupportsReasoningEffort reports whether model advertises a known
+// reasoning-effort slug. The enum check keeps live provider metadata from
+// accepting a value that the session configuration cannot preserve.
+func ModelInfoSupportsReasoningEffort(model ModelInfo, effort string) bool {
+	if !slices.Contains(AllReasoningEfforts, ReasoningEffort(effort)) {
+		return false
+	}
+	for _, option := range model.ReasoningEfforts {
 		if option.Slug == effort {
 			return true
 		}
 	}
 	return false
+}
+
+// CoerceReasoningEffortForModelInfo keeps an advertised effort, otherwise
+// choosing the model's advertised default and then its first known option.
+func CoerceReasoningEffortForModelInfo(model ModelInfo, effort ReasoningEffort) ReasoningEffort {
+	if ModelInfoSupportsReasoningEffort(model, string(effort)) {
+		return effort
+	}
+	for _, option := range model.ReasoningEfforts {
+		if option.Default && slices.Contains(AllReasoningEfforts, ReasoningEffort(option.Slug)) {
+			return ReasoningEffort(option.Slug)
+		}
+	}
+	for _, option := range model.ReasoningEfforts {
+		if slices.Contains(AllReasoningEfforts, ReasoningEffort(option.Slug)) {
+			return ReasoningEffort(option.Slug)
+		}
+	}
+	return providerDefaultReasoningEffort(model.Provider)
 }
 
 func DefaultReasoningEffortForModel(providerName, model string, fallback ReasoningEffort) ReasoningEffort {
@@ -340,7 +396,7 @@ func providerSupportsReasoningEffort(providerName, effort string) bool {
 	switch providerName {
 	case string(Codex):
 		switch effort {
-		case string(EffortNone), string(EffortMinimal), string(EffortLow), string(EffortMedium), string(EffortHigh), string(EffortXHigh):
+		case string(EffortNone), string(EffortMinimal), string(EffortLow), string(EffortMedium), string(EffortHigh), string(EffortXHigh), string(EffortMax), string(EffortUltra):
 			return true
 		default:
 			return false
@@ -437,13 +493,16 @@ func claudeEffortOptions(defaultSlug string, efforts ...ReasoningEffort) []Reaso
 	return options
 }
 
-func codexEffortOptions(defaultSlug string) []ReasoningEffortOption {
-	return []ReasoningEffortOption{
-		{Slug: "low", Label: "Low", Default: defaultSlug == "low"},
-		{Slug: "medium", Label: "Medium", Default: defaultSlug == "medium"},
-		{Slug: "high", Label: "High", Default: defaultSlug == "high"},
-		{Slug: "xhigh", Label: "xHigh", Default: defaultSlug == "xhigh"},
+func codexEffortOptions(defaultSlug string, efforts ...ReasoningEffort) []ReasoningEffortOption {
+	if len(efforts) == 0 {
+		efforts = []ReasoningEffort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}
 	}
+	options := make([]ReasoningEffortOption, 0, len(efforts))
+	for _, effort := range efforts {
+		slug := string(effort)
+		options = append(options, NewReasoningEffortOption(slug, slug == defaultSlug))
+	}
+	return options
 }
 
 func effortLabel(slug string) string {
@@ -462,6 +521,8 @@ func effortLabel(slug string) string {
 		return "xHigh"
 	case "max":
 		return "Max"
+	case "ultra":
+		return "Ultra"
 	default:
 		return slug
 	}
@@ -486,6 +547,14 @@ func codexStandardContextOptions() []ContextWindowOption {
 	return []ContextWindowOption{{
 		Tokens: CodexStandardContextWindow,
 		Label:  "272k",
+		Tier:   ContextTierStandard,
+	}}
+}
+
+func codex56ContextOptions() []ContextWindowOption {
+	return []ContextWindowOption{{
+		Tokens: Codex56ContextWindow,
+		Label:  "372k",
 		Tier:   ContextTierStandard,
 	}}
 }
