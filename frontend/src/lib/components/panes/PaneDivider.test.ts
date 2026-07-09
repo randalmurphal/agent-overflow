@@ -243,13 +243,14 @@ describe('PaneDivider', () => {
     firePointer(divider, 'pointerup', { clientX: 600 });
     expect(layoutWidths()).toEqual([900, 700]);
 
-    // Measured host the layout fits in: drag end re-anchors so the
-    // smallest pane sits at the density minimum (1600 total ≤ 1608
-    // host minus 2×4px divider strips). The measured widths track the
-    // first drag's result, as the pane ResizeObservers would republish.
+    // Measured host the layout fits in exactly (dividers are zero-width
+    // overlays, so 1600 of panes fills a 1600 host): drag end re-anchors
+    // so the smallest pane sits at the density minimum. The measured
+    // widths track the first drag's result, as the pane ResizeObservers
+    // would republish.
     setPaneWidth('a', 900);
     setPaneWidth('b', 700);
-    setPaneHostWidth(1608);
+    setPaneHostWidth(1600);
     firePointer(divider, 'pointerdown', { clientX: 500 });
     firePointer(divider, 'pointermove', { clientX: 500 });
     firePointer(divider, 'pointerup', { clientX: 500 });

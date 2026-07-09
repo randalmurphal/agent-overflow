@@ -1,7 +1,6 @@
 import {
   FALLBACK_PANE_WIDTH_PX,
   OVERFLOW_EPSILON_PX,
-  PANE_DIVIDER_WIDTH_PX,
   minAnchorPaneWidths,
   normalizePaneWidthPx,
   resolvePaneBoundaryDrag,
@@ -287,12 +286,13 @@ export function minAnchorPaneLayoutWidths(minPaneWidth: number): void {
   // the widths alone.
   const hostWidth = getPaneHostWidth();
   if (!Number.isFinite(hostWidth)) return;
-  const available = hostWidth - layoutItems.length * PANE_DIVIDER_WIDTH_PX;
+  // Dividers are zero-width overlays (see PaneDivider), so the panes'
+  // widths alone decide whether the strip fits the host.
   const total = layoutItems.reduce(
     (sum, item) => sum + normalizePaneWidthPx(item.widthPx),
     0,
   );
-  if (total > available + OVERFLOW_EPSILON_PX) return;
+  if (total > hostWidth + OVERFLOW_EPSILON_PX) return;
   const anchored = minAnchorPaneWidths(
     layoutItems.map((item) => item.widthPx),
     minPaneWidth,

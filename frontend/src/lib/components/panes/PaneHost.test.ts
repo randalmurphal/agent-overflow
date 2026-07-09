@@ -211,12 +211,35 @@ describe('PaneHost', () => {
     // The strip's right edge always carries the end handle for the last pane.
     expect(rendered.getByTestId('pane-end-handle')).toBeInTheDocument();
 
-    // Regression guard: the divider only fills height because its gap
-    // wrapper is a flex container. Drop the `flex` and the divider
-    // collapses to 0px tall — invisible and unclickable. jsdom does no
-    // layout, so class presence is the only automated tripwire here.
+    // Regression guards (jsdom does no layout, so class presence is the
+    // only automated tripwire):
+    // - the divider only fills height because its gap wrapper is a flex
+    //   container; drop the `flex` and it collapses to 0px tall.
+    // - the divider root must be zero-width (`w-0`): its strip/hit area
+    //   are absolute overlays. Giving dividers width adds it to
+    //   scrollWidth and an exactly-fitting layout grows a phantom
+    //   horizontal scrollbar.
     for (const gap of rendered.container.querySelectorAll<HTMLElement>('[data-pane-gap-index]')) {
       expect(gap.classList.contains('flex')).toBe(true);
+    }
+    for (const divider of rendered.container.querySelectorAll<HTMLElement>('[role="separator"]')) {
+      expect(divider.classList.contains('w-0')).toBe(true);
+    }
+    // The end handle is the LAST flex child: absolute children extending
+    // past its right edge count as scrollable overflow, so each overlay's
+    // leftward offset must cover its full width (right edge ≤ 0).
+    const spacingPx = (classes: string[], prefix: string): number => {
+      const cls = classes.find((candidate) => candidate.startsWith(prefix));
+      return cls ? Number(cls.slice(prefix.length)) * 4 : 0;
+    };
+    const endHandle = rendered.getByTestId('pane-end-handle');
+    const overlays = endHandle.querySelectorAll<HTMLElement>('div');
+    expect(overlays.length).toBeGreaterThan(0);
+    for (const overlay of overlays) {
+      const classes = [...overlay.classList];
+      const leftOffset = spacingPx(classes, '-left-');
+      const width = spacingPx(classes, 'w-');
+      expect(leftOffset).toBeGreaterThanOrEqual(width);
     }
   });
 

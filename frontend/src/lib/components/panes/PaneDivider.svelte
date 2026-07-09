@@ -10,7 +10,7 @@
     minAnchorPaneLayoutWidths,
   } from '../../stores/paneLayout.svelte';
   import { getPane } from '../../stores/panes.svelte';
-  import { MAX_PANE_WIDTH_PX, PANE_DIVIDER_WIDTH_PX } from '../../utils/paneWidths';
+  import { MAX_PANE_WIDTH_PX } from '../../utils/paneWidths';
   import { edgeAutoScrollVelocity, type HorizontalEdges } from './edgeAutoScroll';
 
   // Hand-rolled gesture rather than utils/resizeGesture.svelte.ts: that
@@ -185,11 +185,21 @@
   });
 </script>
 
-<!-- Must be rendered in a flex (or otherwise definite-height) parent:
-     this root has no intrinsic height — its only child is absolutely
-     positioned — so it relies on the parent's cross-axis stretch to
-     fill height instead of collapsing to 0px. PaneHost wraps it in a
-     `flex` gap div. -->
+<!-- Zero-width by design: the visible strip and the hit area are
+     absolute overlays painted over the adjacent pane edges, so dividers
+     contribute nothing to the strip's scrollWidth. Give them width and
+     N dividers push an exactly-fitting layout N*4px past the host —
+     a phantom horizontal scrollbar with no real overflow.
+
+     Two layout contracts follow from that:
+     - Must be rendered in a flex (or otherwise definite-height) parent:
+       the root has no intrinsic size at all, so it relies on the
+       parent's cross-axis stretch to fill height instead of collapsing.
+       PaneHost wraps it in a `flex` gap div.
+     - The end handle (no rightPaneId) is the LAST flex child: its
+       overlays must extend only leftward, over the last pane. Anything
+       absolutely positioned past the last child's right edge counts as
+       scrollable overflow and would resurrect the phantom scrollbar. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   role="separator"
@@ -198,12 +208,7 @@
   aria-valuenow={Math.round(leftPaneWidthPx)}
   aria-valuemin={getMinPaneWidth()}
   aria-valuemax={MAX_PANE_WIDTH_PX}
-  style={`width:${PANE_DIVIDER_WIDTH_PX}px`}
-  class={[
-    'relative z-20 shrink-0 cursor-col-resize select-none touch-none',
-    'bg-border-subtle/30 hover:bg-accent/40 transition-colors',
-    dragging ? 'bg-accent/60' : '',
-  ].join(' ')}
+  class="group relative z-20 w-0 shrink-0 cursor-col-resize select-none"
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
   onpointerup={endDrag}
@@ -212,6 +217,15 @@
   ondblclick={onDoubleClick}
   data-testid={rightPaneId ? 'pane-divider' : 'pane-end-handle'}
 >
+  <!-- Visible strip: centered on the boundary between panes, tucked
+       fully inside the last pane on the end handle. -->
+  <div
+    class={[
+      'absolute inset-y-0 w-1 touch-none transition-colors',
+      rightPaneId ? '-left-0.5' : '-left-1',
+      dragging ? 'bg-accent/60' : 'bg-border-subtle/30 group-hover:bg-accent/40',
+    ].join(' ')}
+  ></div>
   <!-- Widened invisible hit area; the visible strip stays slim. -->
-  <div class="absolute inset-y-0 -left-1 -right-1"></div>
+  <div class={['absolute inset-y-0 w-3 touch-none', rightPaneId ? '-left-1.5' : '-left-3'].join(' ')}></div>
 </div>

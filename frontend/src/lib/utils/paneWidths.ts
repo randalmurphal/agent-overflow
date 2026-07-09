@@ -24,12 +24,6 @@ export const FALLBACK_PANE_WIDTH_PX = PANE_DENSITY_MIN_WIDTHS.compact;
 // overflow as "fits".
 export const OVERFLOW_EPSILON_PX = 1;
 
-// Rendered width of each divider / end-handle strip, and its flex basis.
-// The fit-gate in paneLayout subtracts one strip per pane from the
-// measured host width, and PaneDivider renders exactly this width — a
-// single source so the estimate and the DOM cannot drift.
-export const PANE_DIVIDER_WIDTH_PX = 4;
-
 export function normalizePaneWidthPx(width: number): number {
   // Sub-1px widths are as much garbage as non-positive ones — nothing
   // in the app can legitimately produce them.

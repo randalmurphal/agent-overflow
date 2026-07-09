@@ -270,6 +270,21 @@ describe('paneLayout store', () => {
     expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 1120]);
   });
 
+  it('re-anchors a layout that fits the host exactly (dividers take no width)', () => {
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 1120 },
+      { id: 'b', paneId: 'b', kind: 'thread', widthPx: 2240 },
+    ]);
+
+    // Dividers are zero-width overlays, so an exactly-fitting total is
+    // fit mode — reserving per-pane strip width here would misread it
+    // as overflow and skip the anchor.
+    setPaneHostWidth(3360);
+    minAnchorPaneLayoutWidths(560);
+
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 1120]);
+  });
+
   it('never re-anchors an overflowing or unmeasured host', () => {
     setPaneLayoutItemsForTest([
       { id: 'a', paneId: 'a', kind: 'thread', widthPx: 1120 },

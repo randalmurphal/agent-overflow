@@ -26,6 +26,10 @@ contract explicit:
   (boundary drag, Alt zero-sum, end handle, fit-mode min-anchoring) are
   pure functions in `utils/paneWidths.ts`; `PaneDivider.svelte` owns the
   gesture (pointer capture, edge auto-scroll, double-click equalize).
+- Dividers are zero-width: their visible strip and hit area are absolute
+  overlays painted over the pane edges, so only pane widths contribute
+  to the strip's scrollWidth. Divider chrome that takes real width turns
+  an exactly-fitting layout into a phantom horizontal scrollbar.
 - Global app surfaces do not belong in the pane loop unless the feature
   is intentionally one-instance-per-pane.
 
