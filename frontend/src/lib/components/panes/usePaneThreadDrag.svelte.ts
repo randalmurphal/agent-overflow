@@ -23,12 +23,10 @@ import {
   THREAD_ROW_DRAG_MIME,
   type ThreadDropTarget,
 } from '../../utils/threadDragPayload';
+import { edgeAutoScrollVelocity } from './edgeAutoScroll';
 
 const PANE_SELECTOR = '[data-pane-id]';
 const PANE_GAP_SELECTOR = '[data-pane-gap-index]';
-const AUTO_SCROLL_EDGE_MAX_PX = 96;
-const AUTO_SCROLL_EDGE_FRACTION = 4;
-const AUTO_SCROLL_MAX_STEP_PX = 18;
 
 export interface PaneThreadDragOptions {
   getHostEl(): HTMLElement | undefined;
@@ -83,6 +81,14 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     if (gap?.dataset.paneGapIndex) {
       const insertIndex = Number(gap.dataset.paneGapIndex);
       if (!Number.isInteger(insertIndex)) return null;
+      // The end-handle wrapper carries the gap index past the last pane
+      // (== length). That is the append slot: normalize it to `end` so the
+      // preview positions after the last pane instead of falling through to
+      // the `gap` branch, where layoutItems[length] is undefined and the
+      // ghost would snap to the strip's left edge.
+      if (insertIndex >= layoutItems.length) {
+        return { kind: 'end', insertIndex: layoutItems.length };
+      }
       // The gap between a source pane and one of its companions is not a
       // valid slot (companions glue to their source): snap to the block's
       // right edge so the preview and the landing agree.
@@ -189,21 +195,7 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   function updateDragAutoScroll(clientX: number): void {
     const host = options.getHostEl();
     if (!host) return;
-    const rect = host.getBoundingClientRect();
-    const edgeSize = Math.min(AUTO_SCROLL_EDGE_MAX_PX, rect.width / AUTO_SCROLL_EDGE_FRACTION);
-    if (edgeSize <= 0) {
-      stopDragAutoScroll();
-      return;
-    }
-    const leftProximity = Math.max(0, edgeSize - (clientX - rect.left));
-    const rightProximity = Math.max(0, edgeSize - (rect.right - clientX));
-    if (leftProximity > 0) {
-      autoScrollVelocity = -Math.ceil((leftProximity / edgeSize) * AUTO_SCROLL_MAX_STEP_PX);
-    } else if (rightProximity > 0) {
-      autoScrollVelocity = Math.ceil((rightProximity / edgeSize) * AUTO_SCROLL_MAX_STEP_PX);
-    } else {
-      autoScrollVelocity = 0;
-    }
+    autoScrollVelocity = edgeAutoScrollVelocity(host.getBoundingClientRect(), clientX);
     if (autoScrollVelocity === 0) {
       stopDragAutoScroll();
       return;

@@ -123,7 +123,7 @@ function designFence(payload: unknown): string {
 }
 
 function seedThreadPaneLayout(paneId: string): void {
-  setPaneLayoutItemsForTest([{ id: paneId, paneId, kind: 'thread', ratio: 1 }]);
+  setPaneLayoutItemsForTest([{ id: paneId, paneId, kind: 'thread', widthPx: 1 }]);
 }
 
 describe('createThreadPane', () => {

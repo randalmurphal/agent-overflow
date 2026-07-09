@@ -43,11 +43,11 @@ export interface PaneLayoutPersistedPane {
   kind: "thread" | "plan" | "design-preview" | "review";
   threadId?: string;
   sourcePaneId?: string;
-  ratio: number;
+  widthPx: number;
 }
 
 export interface PaneLayoutPersistedSettings {
-  version: 2;
+  version: 3;
   panes: PaneLayoutPersistedPane[];
   focusedPaneId?: string | null;
 }

@@ -220,7 +220,7 @@ describe('review.toggle command', () => {
 
   it('toggles the review companion on the command context pane', () => {
     const pane = readyPane();
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     registerFixtureCommands(pane);
 
     expect(isCommandEnabled('review.toggle', makeCommandContext(pane, {}))).toBe(true);
@@ -1526,8 +1526,8 @@ describe('pane navigation into a terminal pane', () => {
     registerPaneForTest('main', left);
     registerPaneForTest('right', right);
     setPaneLayoutItemsForTest([
-      { id: 'i-main', paneId: 'main', kind: 'thread', ratio: 1 },
-      { id: 'i-right', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'i-main', paneId: 'main', kind: 'thread', widthPx: 1 },
+      { id: 'i-right', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
     focusPane('main');
     registerFixtureCommands(left);

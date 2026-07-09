@@ -130,7 +130,7 @@ describe('<ChatHeaderActions> badge gating', () => {
 
   it('clicking the workspace +/- opens review on the workspace scope', async () => {
     const pane = await buildPane();
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     installSubscribeMock(status({ insertions: 2, deletions: 0 }));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();

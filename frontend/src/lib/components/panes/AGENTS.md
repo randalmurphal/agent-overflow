@@ -20,6 +20,12 @@ contract explicit:
   `stores/layoutMetrics.svelte.ts` by pane id. Panel sizing and future
   split constraints should read those pane-scoped metrics, not
   `window.innerWidth` or total app-shell width.
+- Pane widths are absolute px (`PaneLayoutItem.widthPx`) rendered as the
+  flex basis: panes stretch proportionally when the window is wider than
+  their sum and horizontal-scroll when narrower. All resize semantics
+  (boundary drag, Alt zero-sum, end handle, fit-mode min-anchoring) are
+  pure functions in `utils/paneWidths.ts`; `PaneDivider.svelte` owns the
+  gesture (pointer capture, edge auto-scroll, double-click equalize).
 - Global app surfaces do not belong in the pane loop unless the feature
   is intentionally one-instance-per-pane.
 

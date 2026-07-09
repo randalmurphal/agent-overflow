@@ -5,7 +5,7 @@ import {
   flushPaneLayoutPersistence,
   getPaneLayoutItems,
   resetPaneLayoutForTest,
-  resizeAdjacentPaneLayoutItems,
+  applyPaneBoundaryDrag,
   setPaneLayoutItemsForTest,
 } from './paneLayout.svelte';
 import {
@@ -69,14 +69,14 @@ function makeThreadThatThrowsDuringSwitch(threadId: string): Thread {
 
 function makeSavedLayout(
   panes: Array<
-    | { paneId: string; threadId: string; ratio: number }
-    | { paneId: string; kind: 'thread'; threadId: string; ratio: number }
-    | { paneId: string; kind: 'plan' | 'design-preview' | 'review'; sourcePaneId: string; ratio: number }
+    | { paneId: string; threadId: string; widthPx: number }
+    | { paneId: string; kind: 'thread'; threadId: string; widthPx: number }
+    | { paneId: string; kind: 'plan' | 'design-preview' | 'review'; sourcePaneId: string; widthPx: number }
   >,
   focusedPaneId: string | null,
 ): PaneLayoutPersistedSettings {
   return {
-    version: 2,
+    version: 3,
     panes: panes.map((pane) => 'kind' in pane ? pane : { ...pane, kind: 'thread' }),
     focusedPaneId,
   };
@@ -136,10 +136,10 @@ describe('pane layout persistence', () => {
     seedPane('left', left);
     seedPane('right', right);
     setPaneLayoutItemsForTest([
-      { id: 'left', paneId: 'left', kind: 'thread', ratio: 0.75 },
-      { id: 'plan-left', paneId: 'plan-left', kind: 'plan', ratio: 0.5, sourcePaneId: 'left' },
-      { id: 'review-left', paneId: 'review-left', kind: 'review', ratio: 0.9, sourcePaneId: 'left' },
-      { id: 'right', paneId: 'right', kind: 'thread', ratio: 1.25 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 660 },
+      { id: 'plan-left', paneId: 'plan-left', kind: 'plan', widthPx: 590, sourcePaneId: 'left' },
+      { id: 'review-left', paneId: 'review-left', kind: 'review', widthPx: 720, sourcePaneId: 'left' },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1100 },
     ]);
     focusPane('right');
 
@@ -151,16 +151,16 @@ describe('pane layout persistence', () => {
     await loadPersistedPaneLayout([left, right]);
 
     expect(persistedPaneLayout()).toEqual(makeSavedLayout([
-      { paneId: 'left', threadId: 'left-thread', ratio: 0.75 },
-      { paneId: 'plan-left', kind: 'plan', sourcePaneId: 'left', ratio: 0.5 },
-      { paneId: 'review-left', kind: 'review', sourcePaneId: 'left', ratio: 0.9 },
-      { paneId: 'right', threadId: 'right-thread', ratio: 1.25 },
+      { paneId: 'left', threadId: 'left-thread', widthPx: 660 },
+      { paneId: 'plan-left', kind: 'plan', sourcePaneId: 'left', widthPx: 590 },
+      { paneId: 'review-left', kind: 'review', sourcePaneId: 'left', widthPx: 720 },
+      { paneId: 'right', threadId: 'right-thread', widthPx: 1100 },
     ], 'right'));
     expect(getPaneLayoutItems()).toEqual([
-      { id: 'left', paneId: 'left', kind: 'thread', ratio: 0.75 },
-      { id: 'plan-left', paneId: 'plan-left', kind: 'plan', ratio: 0.5, sourcePaneId: 'left' },
-      { id: 'review-left', paneId: 'review-left', kind: 'review', ratio: 0.9, sourcePaneId: 'left' },
-      { id: 'right', paneId: 'right', kind: 'thread', ratio: 1.25 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 660 },
+      { id: 'plan-left', paneId: 'plan-left', kind: 'plan', widthPx: 590, sourcePaneId: 'left' },
+      { id: 'review-left', paneId: 'review-left', kind: 'review', widthPx: 720, sourcePaneId: 'left' },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1100 },
     ]);
     expect(getAllPanes().get('left')?.threadId).toBe('left-thread');
     expect(getAllPanes().get('right')?.threadId).toBe('right-thread');
@@ -182,7 +182,7 @@ describe('pane layout persistence', () => {
     const restoredItem = makeItem({ id: 'restored-item', threadId: thread.id, summary: 'Loaded history' });
     installPaneMocks([restoredItem]);
     await installUIStateMock(makeSavedLayout([
-      { paneId: 'main', threadId: thread.id, ratio: 1 },
+      { paneId: 'main', threadId: thread.id, widthPx: 1 },
     ], 'main'));
 
     await loadPersistedPaneLayout([thread]);
@@ -190,7 +190,7 @@ describe('pane layout persistence', () => {
     expect(getAllPanes().get('main')?.items.map((item) => item.id)).toContain('restored-item');
   });
 
-  it('parses v1 persisted panes as thread panes', async () => {
+  it('parses v1 persisted panes as thread panes, migrating ratios to widths', async () => {
     const thread = makeThread({ id: 'v1-thread' });
     await installUIStateMock(makeSavedLayoutV1([
       { paneId: 'main', threadId: thread.id, ratio: 1.5 },
@@ -199,11 +199,68 @@ describe('pane layout persistence', () => {
 
     await loadPersistedPaneLayout([thread]);
 
+    // 1.5 x the compact density minimum (560).
     expect(getPaneLayoutItems()).toEqual([
-      { id: 'main', paneId: 'main', kind: 'thread', ratio: 1.5 },
+      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 840 },
     ]);
     expect(getAllPanes().get('main')?.threadId).toBe(thread.id);
     expect(getFocusedPaneId()).toBe('main');
+  });
+
+  it('falls back to the default width for corrupt v3 widthPx values', async () => {
+    const thread = makeThread({ id: 'corrupt-width-thread' });
+    await installUIStateMock({
+      version: 3,
+      focusedPaneId: 'main',
+      panes: [{ paneId: 'main', kind: 'thread', threadId: thread.id, widthPx: 'huge' }],
+    });
+    installPaneMocks();
+
+    await loadPersistedPaneLayout([thread]);
+
+    expect(getPaneLayoutItems()).toEqual([
+      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 560 },
+    ]);
+  });
+
+  it('migrates v2 persisted ratios to widths', async () => {
+    const thread = makeThread({ id: 'v2-thread' });
+    await installUIStateMock({
+      version: 2,
+      focusedPaneId: 'main',
+      panes: [{ paneId: 'main', kind: 'thread', threadId: thread.id, ratio: 2 }],
+    });
+    installPaneMocks();
+
+    await loadPersistedPaneLayout([thread]);
+
+    // 2 x the compact density minimum (560).
+    expect(getPaneLayoutItems()).toEqual([
+      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 1120 },
+    ]);
+  });
+
+  it('clamps oversized legacy ratios and falls back for invalid ones', async () => {
+    const big = makeThread({ id: 'big-ratio-thread' });
+    const bad = makeThread({ id: 'bad-ratio-thread' });
+    await installUIStateMock({
+      version: 2,
+      focusedPaneId: 'big',
+      panes: [
+        { paneId: 'big', kind: 'thread', threadId: big.id, ratio: 500 },
+        { paneId: 'bad', kind: 'thread', threadId: bad.id, ratio: -3 },
+      ],
+    });
+    installPaneMocks();
+
+    await loadPersistedPaneLayout([big, bad]);
+
+    // 500 caps to 100x min (56000), then normalizes down to the pane-width
+    // maximum; -3 is not a positive ratio so it degrades to the density min.
+    expect(getPaneLayoutItems()).toEqual([
+      { id: 'big', paneId: 'big', kind: 'thread', widthPx: 10000 },
+      { id: 'bad', paneId: 'bad', kind: 'thread', widthPx: 560 },
+    ]);
   });
 
   it('coalesces multiple resize persistence requests into one trailing write', async () => {
@@ -214,12 +271,19 @@ describe('pane layout persistence', () => {
     seedPane('left', left);
     seedPane('right', right);
     setPaneLayoutItemsForTest([
-      { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
 
-    resizeAdjacentPaneLayoutItems('left', 'right', 800, 800, 100, 560);
-    resizeAdjacentPaneLayoutItems('left', 'right', 900, 700, -100, 560);
+    const startWidths = new Map([['left', 800], ['right', 800]]);
+    applyPaneBoundaryDrag({
+      leftPaneId: 'left', rightPaneId: 'right', startWidths,
+      deltaPx: 100, minPaneWidth: 560, overflowPx: 0, zeroSum: true,
+    });
+    applyPaneBoundaryDrag({
+      leftPaneId: 'left', rightPaneId: 'right', startWidths,
+      deltaPx: -100, minPaneWidth: 560, overflowPx: 0, zeroSum: true,
+    });
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(199);
     expect(mocks.setUIState).not.toHaveBeenCalled();
@@ -240,11 +304,19 @@ describe('pane layout persistence', () => {
     seedPane('left', left);
     seedPane('right', right);
     setPaneLayoutItemsForTest([
-      { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-      { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
 
-    resizeAdjacentPaneLayoutItems('left', 'right', 800, 800, 120, 560);
+    applyPaneBoundaryDrag({
+      leftPaneId: 'left',
+      rightPaneId: 'right',
+      startWidths: new Map([['left', 800], ['right', 800]]),
+      deltaPx: 120,
+      minPaneWidth: 560,
+      overflowPx: 0,
+      zeroSum: true,
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.setUIState).not.toHaveBeenCalled();
 
@@ -257,8 +329,8 @@ describe('pane layout persistence', () => {
 
   it('drops saved panes whose threads are no longer returned by ListThreads', async () => {
     await installUIStateMock(makeSavedLayout([
-      { paneId: 'left', threadId: 'kept-thread', ratio: 1 },
-      { paneId: 'right', threadId: 'deleted-thread', ratio: 1 },
+      { paneId: 'left', threadId: 'kept-thread', widthPx: 1 },
+      { paneId: 'right', threadId: 'deleted-thread', widthPx: 1 },
     ], 'right'));
 
     installPaneMocks();
@@ -272,11 +344,11 @@ describe('pane layout persistence', () => {
   it('drops a companion whose source thread pane is missing from the snapshot', async () => {
     const kept = makeThread({ id: 'kept-thread' });
     await installUIStateMock({
-      version: 2,
+      version: 3,
       focusedPaneId: 'left',
       panes: [
-        { paneId: 'left', kind: 'thread', threadId: kept.id, ratio: 1 },
-        { paneId: 'plan-ghost', kind: 'plan', sourcePaneId: 'ghost', ratio: 1 },
+        { paneId: 'left', kind: 'thread', threadId: kept.id, widthPx: 1 },
+        { paneId: 'plan-ghost', kind: 'plan', sourcePaneId: 'ghost', widthPx: 1 },
       ],
     });
     installPaneMocks();
@@ -284,7 +356,7 @@ describe('pane layout persistence', () => {
     await loadPersistedPaneLayout([kept]);
 
     expect(getPaneLayoutItems()).toEqual([
-      { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
     ]);
     expect(getCompanionPane('plan-ghost')).toBeNull();
   });
@@ -292,15 +364,15 @@ describe('pane layout persistence', () => {
   it('drops design-preview companions when the restored source thread is not design-mode', async () => {
     const thread = makeThread({ id: 'chat-thread', mode: 'chat' });
     await installUIStateMock(makeSavedLayout([
-      { paneId: 'main', threadId: thread.id, ratio: 1 },
-      { paneId: 'design-preview-main', kind: 'design-preview', sourcePaneId: 'main', ratio: 0.8 },
+      { paneId: 'main', threadId: thread.id, widthPx: 1 },
+      { paneId: 'design-preview-main', kind: 'design-preview', sourcePaneId: 'main', widthPx: 700 },
     ], 'main'));
     installPaneMocks();
 
     await loadPersistedPaneLayout([thread]);
 
     expect(getPaneLayoutItems()).toEqual([
-      { id: 'main', paneId: 'main', kind: 'thread', ratio: 1 },
+      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 1 },
     ]);
     expect(getCompanionPane('design-preview-main')).toBeNull();
   });
@@ -313,7 +385,7 @@ describe('pane layout persistence', () => {
     resetAppStorageForTest();
     const mocks = await installUIStateMock(null);
     localStorage.setItem(LEGACY_KEY, JSON.stringify(makeSavedLayout([
-      { paneId: 'left', threadId: left.id, ratio: 1.5 },
+      { paneId: 'left', threadId: left.id, widthPx: 840 },
     ], 'left')));
     installPaneMocks();
 
@@ -321,10 +393,10 @@ describe('pane layout persistence', () => {
     await waitForPaneLayoutPersistenceForTest();
 
     expect(getPaneLayoutItems()).toEqual([
-      { id: 'left', paneId: 'left', kind: 'thread', ratio: 1.5 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 840 },
     ]);
     expect(persistedPaneLayout()).toEqual(makeSavedLayout([
-      { paneId: 'left', threadId: left.id, ratio: 1.5 },
+      { paneId: 'left', threadId: left.id, widthPx: 840 },
     ], 'left'));
     expect(mocks.setUIState).toHaveBeenCalledWith(
       expect.any(String),
@@ -338,8 +410,8 @@ describe('pane layout persistence', () => {
     const badThreadId = 'bad-thread';
     const bad = makeThreadThatThrowsDuringSwitch(badThreadId);
     await installUIStateMock(makeSavedLayout([
-      { paneId: 'good', threadId: good.id, ratio: 1 },
-      { paneId: 'bad', threadId: badThreadId, ratio: 1 },
+      { paneId: 'good', threadId: good.id, widthPx: 1 },
+      { paneId: 'bad', threadId: badThreadId, widthPx: 1 },
     ], 'bad'));
     installPaneMocks();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -360,10 +432,10 @@ describe('pane layout persistence', () => {
     const panes = Array.from({ length: 30 }, (_, index) => ({
       paneId: `pane-${index + 1}`,
       threadId: `thread-${index + 1}`,
-      ratio: 1,
+      widthPx: 1,
     }));
     await installUIStateMock(makeSavedLayout([
-      { paneId: 'bad"] [data-pane-id="x', threadId: 'bad-thread', ratio: 1 },
+      { paneId: 'bad"] [data-pane-id="x', threadId: 'bad-thread', widthPx: 1 },
       ...panes,
     ], 'bad"] [data-pane-id="x'));
     installPaneMocks();
@@ -382,13 +454,15 @@ describe('pane layout persistence', () => {
       null,
       { version: 3, panes: [], focusedPaneId: null },
       { version: 1, panes: 'bad', focusedPaneId: null },
+      // Unknown/newer schema version: reject rather than misread.
+      { version: 4, panes: [{ paneId: 'main', kind: 'thread', threadId: 'left-thread', widthPx: 900 }], focusedPaneId: 'main' },
     ];
     for (const paneLayout of cases) {
       resetPanesForTest();
       resetPaneLayoutForTest();
       resetAppStorageForTest();
       seedPane('left', makeThread({ id: 'left-thread' }));
-      setPaneLayoutItemsForTest([{ id: 'left', paneId: 'left', kind: 'thread', ratio: 1 }]);
+      setPaneLayoutItemsForTest([{ id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 }]);
       await installUIStateMock(paneLayout);
       installPaneMocks();
 
@@ -402,7 +476,7 @@ describe('pane layout persistence', () => {
 
   it('persists an explicit empty pane layout when saving an empty layout', async () => {
     await installUIStateMock(makeSavedLayout([
-      { paneId: 'left', threadId: 'thread-1', ratio: 1 },
+      { paneId: 'left', threadId: 'thread-1', widthPx: 1 },
     ], 'left'));
     setPaneLayoutItemsForTest([]);
 
@@ -414,7 +488,7 @@ describe('pane layout persistence', () => {
 
   it('treats write failures as best-effort', async () => {
     seedPane('left', makeThread({ id: 'left-thread' }));
-    setPaneLayoutItemsForTest([{ id: 'left', paneId: 'left', kind: 'thread', ratio: 1 }]);
+    setPaneLayoutItemsForTest([{ id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 }]);
     setBindingMock('SetUIState', async () => {
       throw new Error('ui state write failed');
     });

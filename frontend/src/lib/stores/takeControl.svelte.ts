@@ -23,7 +23,7 @@
 
 import {
   addPaneLayoutItem,
-  averagePaneRatio,
+  averagePaneWidthPx,
   getPaneLayoutItems,
   removePaneLayoutItem,
 } from './paneLayout.svelte';
@@ -85,7 +85,7 @@ export function openTakeControl(sourcePaneId: string): TakeControlPaneState | nu
   if (sourceIndex < 0) return null;
 
   const paneId = takeControlPaneIdFor(sourcePaneId);
-  const sourceRatio = layoutItems[sourceIndex].ratio;
+  const sourceWidthPx = layoutItems[sourceIndex].widthPx;
   // Take-control panes are ephemeral, so their layout item is never persisted
   // (buildSnapshot skips any layout item with no ThreadPane). persist:false
   // keeps the open from scheduling a settings write for an unpersistable item.
@@ -94,7 +94,7 @@ export function openTakeControl(sourcePaneId: string): TakeControlPaneState | nu
       id: paneId,
       paneId,
       kind: 'take-control',
-      ratio: sourceRatio > 0 ? sourceRatio : averagePaneRatio(),
+      widthPx: sourceWidthPx > 0 ? sourceWidthPx : averagePaneWidthPx(),
       sourcePaneId,
     },
     sourceIndex + 1,

@@ -145,9 +145,9 @@ describe('panes store', () => {
       const middle = createPane('middle');
       createPane('right');
       setPaneLayoutItemsForTest([
-        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-        { id: 'middle', paneId: 'middle', kind: 'thread', ratio: 1 },
-        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'middle', paneId: 'middle', kind: 'thread', widthPx: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
       ]);
       focusPane('right');
 
@@ -161,8 +161,8 @@ describe('panes store', () => {
       createPane('left');
       const right = createPane('right');
       setPaneLayoutItemsForTest([
-        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
       ]);
       focusPane('left');
 
@@ -250,9 +250,9 @@ describe('panes store', () => {
       createPane('middle');
       createPane('right');
       setPaneLayoutItemsForTest([
-        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-        { id: 'middle', paneId: 'middle', kind: 'thread', ratio: 1 },
-        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'middle', paneId: 'middle', kind: 'thread', widthPx: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
       ]);
       focusPane('middle');
 
@@ -273,8 +273,8 @@ describe('panes store', () => {
       createPane('left');
       createPane('right');
       setPaneLayoutItemsForTest([
-        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
       ]);
       focusPane('right');
 
@@ -289,8 +289,8 @@ describe('panes store', () => {
       createPane('left');
       createPane('right');
       setPaneLayoutItemsForTest([
-        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
       ]);
 
       const pane = await openThreadInNewPane(thread);
@@ -306,9 +306,9 @@ describe('panes store', () => {
       createPane('middle');
       createPane('right');
       setPaneLayoutItemsForTest([
-        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-        { id: 'middle', paneId: 'middle', kind: 'thread', ratio: 1 },
-        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'middle', paneId: 'middle', kind: 'thread', widthPx: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
       ]);
       focusPane('middle');
 
@@ -327,9 +327,9 @@ describe('panes store', () => {
       createPane('middle');
       createPane('right');
       setPaneLayoutItemsForTest([
-        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-        { id: 'middle', paneId: 'middle', kind: 'thread', ratio: 1 },
-        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'middle', paneId: 'middle', kind: 'thread', widthPx: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
       ]);
       focusPane('middle');
 
@@ -350,7 +350,7 @@ describe('panes store', () => {
       const left = createPane('left');
       await left.switchThread(thread);
       setPaneLayoutItemsForTest([
-        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
       ]);
 
       const focused = await openThreadInNewPane(thread);
@@ -366,9 +366,9 @@ describe('panes store', () => {
       createPane('middle');
       createPane('right');
       setPaneLayoutItemsForTest([
-        { id: 'left', paneId: 'left', kind: 'thread', ratio: 1 },
-        { id: 'middle', paneId: 'middle', kind: 'thread', ratio: 1 },
-        { id: 'right', paneId: 'right', kind: 'thread', ratio: 1 },
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'middle', paneId: 'middle', kind: 'thread', widthPx: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
       ]);
       focusPane('middle');
 
@@ -385,9 +385,9 @@ describe('panes store', () => {
       const left = createPane('left');
       const right = createPane('right');
       const untouched = createPane('untouched');
-      addPaneLayoutItem({ id: 'left', paneId: 'left', kind: 'thread', ratio: 1 });
-      addPaneLayoutItem({ id: 'right', paneId: 'right', kind: 'thread', ratio: 1 });
-      addPaneLayoutItem({ id: 'untouched', paneId: 'untouched', kind: 'thread', ratio: 1 });
+      addPaneLayoutItem({ id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 });
+      addPaneLayoutItem({ id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 });
+      addPaneLayoutItem({ id: 'untouched', paneId: 'untouched', kind: 'thread', widthPx: 1 });
 
       await left.replaceThread(thread);
       await right.replaceThread(thread);
@@ -408,8 +408,8 @@ describe('panes store', () => {
       const other = makeThread({ id: 'survivor-thread' });
       const left = createPane('left');
       const right = createPane('right');
-      addPaneLayoutItem({ id: 'left', paneId: 'left', kind: 'thread', ratio: 1 });
-      addPaneLayoutItem({ id: 'right', paneId: 'right', kind: 'thread', ratio: 1 });
+      addPaneLayoutItem({ id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 });
+      addPaneLayoutItem({ id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 });
 
       await left.replaceThread(other);
       await right.replaceThread(thread);
@@ -427,9 +427,9 @@ describe('panes store', () => {
       const left = createPane('left');
       const right = createPane('right');
       const untouched = createPane('untouched');
-      addPaneLayoutItem({ id: 'left', paneId: 'left', kind: 'thread', ratio: 1 });
-      addPaneLayoutItem({ id: 'right', paneId: 'right', kind: 'thread', ratio: 1 });
-      addPaneLayoutItem({ id: 'untouched', paneId: 'untouched', kind: 'thread', ratio: 1 });
+      addPaneLayoutItem({ id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 });
+      addPaneLayoutItem({ id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 });
+      addPaneLayoutItem({ id: 'untouched', paneId: 'untouched', kind: 'thread', widthPx: 1 });
 
       await left.replaceThread(first);
       await right.replaceThread(second);

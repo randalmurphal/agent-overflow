@@ -4,7 +4,11 @@ function initialViewportWidth(): number {
 
 let appShellWidth = $state(initialViewportWidth());
 let paneHostWidth = $state(Number.POSITIVE_INFINITY);
-let paneWidthById: Map<string, number> = $state(new Map());
+// Deliberately NOT reactive: every consumer reads it imperatively
+// (drag-start snapshots, drop-preview math), and ResizeObserver writes
+// land every frame during a resize drag — a clone-on-write $state Map
+// here would be pure GC churn.
+const paneWidthById: Map<string, number> = new Map();
 let appShellMeasured = $state(false);
 
 export function getAppShellWidth(): number {
@@ -34,14 +38,10 @@ export function getPaneWidth(paneId: string): number {
 
 export function setPaneWidth(paneId: string, width: number): void {
   if (!paneId || !Number.isFinite(width) || width <= 0) return;
-  const rounded = Math.round(width);
-  if (paneWidthById.get(paneId) === rounded) return;
-  paneWidthById = new Map(paneWidthById).set(paneId, rounded);
+  paneWidthById.set(paneId, Math.round(width));
 }
 
 export function clearPaneWidth(paneId: string): void {
-  if (!paneWidthById.has(paneId)) return;
-  paneWidthById = new Map(paneWidthById);
   paneWidthById.delete(paneId);
 }
 
@@ -49,5 +49,5 @@ export function resetLayoutMetricsForTest(): void {
   appShellWidth = initialViewportWidth();
   appShellMeasured = false;
   paneHostWidth = Number.POSITIVE_INFINITY;
-  paneWidthById = new Map();
+  paneWidthById.clear();
 }
