@@ -53,7 +53,7 @@
     });
   });
 
-  let currentModel = $derived(pane.thread?.model ?? '');
+  let currentModel = $derived(pane.activeModel);
   let isActiveProvider = $derived(pane.thread?.provider === provider);
   // Hidden models are dropped from the list, except the pane's active
   // model — a thread already riding a hidden model keeps its checkmark

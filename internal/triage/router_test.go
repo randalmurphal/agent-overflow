@@ -79,6 +79,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventCompactBoundary:            true,
 		provider.EventRateLimits:                 true,
 		provider.EventModelRerouted:              true,
+		provider.EventModelFallback:              true,
 		provider.EventThreadRenamed:              true,
 		provider.EventContentBlockStart:          true,
 		provider.EventContentBlockStop:           true,

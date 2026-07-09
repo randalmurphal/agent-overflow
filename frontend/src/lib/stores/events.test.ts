@@ -88,6 +88,7 @@ describe('setupEventListeners', () => {
   it('registers and unregisters the unified listener set', () => {
     expect(wailsListenerCount('provider:approval')).toBe(1);
     expect(wailsListenerCount('provider:usage')).toBe(1);
+    expect(wailsListenerCount('provider:model_fallback')).toBe(1);
     expect(wailsListenerCount('provider:status')).toBe(1);
     expect(wailsListenerCount('provider:item_event')).toBe(1);
     expect(wailsListenerCount('provider:turn_started')).toBe(1);
@@ -99,6 +100,7 @@ describe('setupEventListeners', () => {
 
     expect(wailsListenerCount('provider:approval')).toBe(0);
     expect(wailsListenerCount('provider:usage')).toBe(0);
+    expect(wailsListenerCount('provider:model_fallback')).toBe(0);
     expect(wailsListenerCount('provider:status')).toBe(0);
     expect(wailsListenerCount('provider:item_event')).toBe(0);
     expect(wailsListenerCount('provider:turn_started')).toBe(0);
@@ -1331,6 +1333,36 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.model).toBe('claude-opus-4-1');
     expect(getThreads()[0]?.lastReadAt).toBe(300);
     expect(getThreads()[0]?.latestTurnCompletedAt).toBe(300);
+  });
+
+  it('projects a model fallback without overwriting the requested model', async () => {
+    const pane = await buildPane(makeThread({
+      id: 'thread-1',
+      provider: 'claude',
+      model: 'claude-fable-5',
+    }));
+
+    emitWailsEvent('provider:model_fallback', {
+      threadId: 'thread-1',
+      requestedModel: 'claude-fable-5',
+      effectiveModel: 'claude-opus-4-8',
+      reason: 'Fable safeguards flagged this message.',
+      category: 'cyber',
+      revision: 1,
+    });
+
+    expect(pane.thread?.model).toBe('claude-fable-5');
+    expect(pane.activeModel).toBe('claude-opus-4-8');
+
+    emitWailsEvent('provider:model_fallback', { threadId: 'thread-1', revision: 2 });
+    expect(pane.activeModel).toBe('claude-fable-5');
+
+    emitWailsEvent('provider:model_fallback', {
+      threadId: 'thread-1',
+      effectiveModel: 'claude-opus-4-8',
+      revision: 1,
+    });
+    expect(pane.activeModel).toBe('claude-fable-5');
   });
 
   it('patches the sidebar row and every matching pane from thread:mode_changed, and toasts when needsReconnect', async () => {

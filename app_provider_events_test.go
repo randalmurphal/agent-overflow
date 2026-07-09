@@ -1,17 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/triage"
 )
 
 // TestUnregisterSessionRemovesSessionForMatchingToken covers the normal
 // disconnect path: the session stored with the same token is dropped.
 func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
 	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
 	thread := testThread("thread-unregister")
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -20,6 +23,14 @@ func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
 	app.sessions[thread.ID] = session{
 		provider: string(provider.Codex),
 		token:    "token-live",
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:     provider.EventModelFallback,
+		ThreadID: thread.ID,
+		ItemID:   "model-fallback:req-unregister",
+		Meta:     json.RawMessage(`{"fallbackModel":"claude-opus-4-8"}`),
+	}); err != nil {
+		t.Fatalf("seed model fallback: %v", err)
 	}
 
 	app.unregisterSession(thread.ID, "token-live")
@@ -30,6 +41,9 @@ func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
 	if present {
 		t.Fatal("expected session to be removed after unregisterSession")
 	}
+	if got := app.triage.LiveStateSnapshotForThread(thread.ID).EffectiveModel; got != "" {
+		t.Fatalf("effective model after unregister = %q", got)
+	}
 }
 
 // TestUnregisterSessionKeepsSessionWhenTokenIsStale protects against the
@@ -39,6 +53,7 @@ func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
 // TestStaleSessionDisconnectDoesNotRemoveReplacement for the broader path.
 func TestUnregisterSessionKeepsSessionWhenTokenIsStale(t *testing.T) {
 	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
 	thread := testThread("thread-unregister-stale")
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -47,6 +62,14 @@ func TestUnregisterSessionKeepsSessionWhenTokenIsStale(t *testing.T) {
 	app.sessions[thread.ID] = session{
 		provider: string(provider.Codex),
 		token:    "token-current",
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:     provider.EventModelFallback,
+		ThreadID: thread.ID,
+		ItemID:   "model-fallback:req-stale-unregister",
+		Meta:     json.RawMessage(`{"fallbackModel":"claude-opus-4-8"}`),
+	}); err != nil {
+		t.Fatalf("seed model fallback: %v", err)
 	}
 
 	app.unregisterSession(thread.ID, "token-previous")
@@ -59,6 +82,9 @@ func TestUnregisterSessionKeepsSessionWhenTokenIsStale(t *testing.T) {
 	}
 	if current.token != "token-current" {
 		t.Fatalf("token = %q, want token-current preserved", current.token)
+	}
+	if got := app.triage.LiveStateSnapshotForThread(thread.ID).EffectiveModel; got != "claude-opus-4-8" {
+		t.Fatalf("effective model after stale unregister = %q", got)
 	}
 }
 

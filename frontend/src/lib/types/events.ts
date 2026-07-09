@@ -125,6 +125,20 @@ export interface UserInputEvent {
   requestedAt?: number;
 }
 
+/**
+ * Claude safety/classifier fallback. `effectiveModel` is session-scoped;
+ * an empty value clears the override and returns the UI to Thread.model,
+ * which remains the user's requested model.
+ */
+export interface ModelFallbackEvent {
+  threadId: string;
+  requestedModel?: string;
+  effectiveModel?: string;
+  reason?: string;
+  category?: string;
+  revision: number;
+}
+
 export interface PendingInteractiveRequests {
   approvals: ApprovalRequest[];
   userInputs: UserInputRequest[];

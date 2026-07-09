@@ -288,6 +288,8 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		addHookNotificationMeta(meta, raw)
 	case sessionDiedNotificationKind:
 		addSessionDiedNotificationMeta(meta, raw)
+	case modelFallbackNotificationKind:
+		addModelFallbackNotificationMeta(meta, raw)
 	}
 
 	encoded, err := json.Marshal(meta)
@@ -295,6 +297,37 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		return `{}`
 	}
 	return string(encoded)
+}
+
+func addModelFallbackNotificationMeta(meta map[string]any, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var fallback modelFallbackMeta
+	if json.Unmarshal(raw, &fallback) != nil {
+		return
+	}
+	if value := strings.TrimSpace(fallback.OriginalModel); value != "" {
+		meta["originalModel"] = value
+	}
+	if value := strings.TrimSpace(fallback.FallbackModel); value != "" {
+		meta["fallbackModel"] = value
+	}
+	if value := strings.TrimSpace(fallback.Reason); value != "" {
+		meta["reason"] = value
+	}
+	if value := strings.TrimSpace(fallback.Category); value != "" {
+		meta["category"] = value
+	}
+	if value := strings.TrimSpace(fallback.Explanation); value != "" {
+		meta["explanation"] = value
+	}
+	if value := strings.TrimSpace(fallback.Trigger); value != "" {
+		meta["trigger"] = value
+	}
+	if value := strings.TrimSpace(fallback.RefusedUserMessageUUID); value != "" {
+		meta["refusedUserMessageUuid"] = value
+	}
 }
 
 // addSessionDiedNotificationMeta forwards the wire ProcessExitInfo

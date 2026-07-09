@@ -2708,7 +2708,8 @@ export function UpdateThreadContextSettings(threadID: string, update: $models.Co
 
 /**
  * UpdateThreadContextWindow persists the context window size and
- * restarts the session if one is live.
+ * reconciles a live session (context window is spawn-time config on both
+ * providers, so this restarts — deferred until the thread is quiet).
  */
 export function UpdateThreadContextWindow(id: string, tokens: number): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2456875639, id, tokens).then(($result: any) => {
@@ -2717,10 +2718,10 @@ export function UpdateThreadContextWindow(id: string, tokens: number): $Cancella
 }
 
 /**
- * UpdateThreadFastMode persists the fast-mode boolean and restarts the
- * session if one is live. Providers translate the same model into their
- * native fast execution mode at launch, so a running session won't pick up
- * the change without a restart.
+ * UpdateThreadFastMode persists the fast-mode boolean and reconciles a
+ * live session (Codex maps it to the per-turn serviceTier override; the
+ * Claude CLI only reads fast mode from launch settings, so a Claude
+ * session restarts — deferred until the thread is quiet).
  */
 export function UpdateThreadFastMode(id: string, on: boolean): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(4175109385, id, on).then(($result: any) => {
@@ -2787,8 +2788,9 @@ export function UpdateThreadProvider(id: string, providerName: string): $Cancell
 }
 
 /**
- * UpdateThreadReasoningEffort persists the effort tier and restarts the
- * session if one is live.
+ * UpdateThreadReasoningEffort persists the effort tier and reconciles a
+ * live session (Codex applies it on the next turn without a restart;
+ * Claude needs a restart, deferred until the thread is quiet).
  */
 export function UpdateThreadReasoningEffort(id: string, effort: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(892204206, id, effort).then(($result: any) => {
@@ -2797,8 +2799,9 @@ export function UpdateThreadReasoningEffort(id: string, effort: string): $Cancel
 }
 
 /**
- * UpdateThreadRuntimeMode persists the runtime mode and restarts the
- * session if one is live.
+ * UpdateThreadRuntimeMode persists the runtime mode and reconciles a live
+ * session (live on both providers, except escalating a Claude session to
+ * full access — that restarts, deferred until the thread is quiet).
  */
 export function UpdateThreadRuntimeMode(id: string, mode: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(325190827, id, mode).then(($result: any) => {

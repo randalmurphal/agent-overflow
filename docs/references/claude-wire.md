@@ -329,6 +329,30 @@ a convenience string only.
 
 Emits `EventInit`. Parser extracts model id for usage pricing.
 
+## `system/model_refusal_fallback`
+
+**Fires**: when Fable's safety classifier refuses a request and Claude Code
+retries it on Opus. The envelope is non-fatal: the turn continues on the
+fallback model.
+
+```json
+{"type":"system","subtype":"model_refusal_fallback",
+ "content":"Fable 5's safeguards flagged this message. ... Switched to Opus 4.8.",
+ "trigger":"refusal","originalModel":"claude-fable-5",
+ "fallbackModel":"claude-opus-4-8","apiRefusalCategory":"cyber",
+ "apiRefusalExplanation":null,
+ "refusedUserMessageUuid":"...","requestId":"req_..."}
+```
+
+The CLI also records an assistant snapshot for the same request whose sole
+content block is `{"type":"fallback","from":...,"to":...}`. Treat the
+system envelope as authoritative because it carries the user-facing reason,
+classifier category, and refused-message identity. Emit `EventModelFallback`,
+persist one warning notification, and project `fallbackModel` as live
+session state. Do not overwrite `threads.model`: that is the user's requested
+model and a later session may try it again. `GetThreadLiveState` hydrates the
+effective model after a frontend refresh; session cleanup clears it.
+
 ---
 
 ## `system/task_started`

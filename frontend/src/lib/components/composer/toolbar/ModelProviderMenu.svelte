@@ -10,6 +10,7 @@
     SetChatBarFavorite,
     StartDiscussionByID,
     GetThread,
+    ReconnectSession,
     UpdateThreadModelSelection,
   } from '../../../stores/bindings';
   import {
@@ -161,7 +162,8 @@
     if (!pane.thread || applying) return;
     const currentProvider = pane.thread.provider;
     const currentModel = pane.thread.model;
-    if (provider === currentProvider && slug === currentModel) {
+    const activeModel = pane.activeModel;
+    if (provider === currentProvider && slug === currentModel && slug === activeModel) {
       closeMenu();
       return;
     }
@@ -174,6 +176,14 @@
       }
       const threadId = pane.threadId;
       if (!threadId) return;
+      // Re-selecting the requested model while a fallback is active means
+      // "try my preferred model again". The durable selection is already
+      // correct, so restart the session instead of issuing a no-op update.
+      if (provider === currentProvider && slug === currentModel) {
+        await ReconnectSession(threadId);
+        pane.setEffectiveModel('');
+        return;
+      }
       const updated = (await UpdateThreadModelSelection(threadId, provider, slug)) as Thread;
       syncThread(updated);
     } catch (err) {
@@ -249,7 +259,7 @@
     }
   }
 
-  let modelLabel = $derived(displayModelLabel(pane.thread?.provider ?? '', pane.thread?.model ?? 'No model'));
+  let modelLabel = $derived(displayModelLabel(pane.thread?.provider ?? '', pane.activeModel || 'No model'));
 
   let isLocked = $derived(pane.isLocked);
   let isDiscussion = $derived(pane.thread?.mode === 'discussion');
@@ -307,7 +317,7 @@
     <ChatBarFavoritesSection
       favorites={visibleFavorites}
       {activeProvider}
-      currentModel={pane.thread?.model}
+      currentModel={pane.activeModel}
       onSelectModel={(provider, model) => void handleSelectModel(provider, model)}
       onSelectDiscussion={(favorite) => void startFavoriteDiscussion(favorite)}
     />

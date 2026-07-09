@@ -276,6 +276,9 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	if ps := removed.providerSession(); ps != nil {
 		a.releaseSessionProcess(ps.PID())
 	}
+	if a.triage != nil {
+		a.triage.ClearEffectiveModel(threadID)
+	}
 
 	a.teardownDesignThread(threadID)
 }

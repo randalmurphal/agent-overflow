@@ -2314,6 +2314,15 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("todo update: %v", err)
 	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventModelFallback,
+		ThreadID:  thread.ID,
+		ItemID:    "model-fallback:req-live-state",
+		Meta:      json.RawMessage(`{"originalModel":"claude-fable-5","fallbackModel":"claude-opus-4-8","reason":"safeguards flagged this message"}`),
+		Timestamp: time.UnixMilli(1_700_000_000_200),
+	}); err != nil {
+		t.Fatalf("model fallback: %v", err)
+	}
 	app.triage.RegisterPendingFlushSend(thread.ID, "queue-flushed", store.Item{
 		ID:        "user:7:flush:1",
 		ThreadID:  thread.ID,
@@ -2330,6 +2339,12 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 	}
 	if state.ThreadID != thread.ID {
 		t.Fatalf("ThreadID = %q, want %q", state.ThreadID, thread.ID)
+	}
+	if state.EffectiveModel != "claude-opus-4-8" {
+		t.Fatalf("EffectiveModel = %q, want claude-opus-4-8", state.EffectiveModel)
+	}
+	if state.EffectiveModelRevision == 0 {
+		t.Fatal("EffectiveModelRevision = 0, want live projection revision")
 	}
 	if state.ActiveTurn == nil || state.ActiveTurn.TurnID == "" || state.ActiveTurn.TurnIndex != 7 {
 		t.Fatalf("ActiveTurn = %+v, want live turn index 7", state.ActiveTurn)

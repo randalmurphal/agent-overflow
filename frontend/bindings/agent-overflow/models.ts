@@ -1725,6 +1725,8 @@ export class ThreadDefaults {
  */
 export class ThreadLiveState {
     "threadId": string;
+    "effectiveModel"?: string;
+    "effectiveModelRevision"?: number;
     "activeTurn"?: LiveStateActiveTurn | null;
     "queueItems": QueuedItem[];
     "flushedItems": QueueFlushedItem[];
@@ -1753,26 +1755,26 @@ export class ThreadLiveState {
      * Creates a new ThreadLiveState instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveState {
-        const $$createField1_0 = $$createType24;
-        const $$createField2_0 = $$createType26;
-        const $$createField3_0 = $$createType28;
-        const $$createField4_0 = $$createType29;
-        const $$createField5_0 = $$createType31;
+        const $$createField3_0 = $$createType24;
+        const $$createField4_0 = $$createType26;
+        const $$createField5_0 = $$createType28;
+        const $$createField6_0 = $$createType29;
+        const $$createField7_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("activeTurn" in $$parsedSource) {
-            $$parsedSource["activeTurn"] = $$createField1_0($$parsedSource["activeTurn"]);
+            $$parsedSource["activeTurn"] = $$createField3_0($$parsedSource["activeTurn"]);
         }
         if ("queueItems" in $$parsedSource) {
-            $$parsedSource["queueItems"] = $$createField2_0($$parsedSource["queueItems"]);
+            $$parsedSource["queueItems"] = $$createField4_0($$parsedSource["queueItems"]);
         }
         if ("flushedItems" in $$parsedSource) {
-            $$parsedSource["flushedItems"] = $$createField3_0($$parsedSource["flushedItems"]);
+            $$parsedSource["flushedItems"] = $$createField5_0($$parsedSource["flushedItems"]);
         }
         if ("interactive" in $$parsedSource) {
-            $$parsedSource["interactive"] = $$createField4_0($$parsedSource["interactive"]);
+            $$parsedSource["interactive"] = $$createField6_0($$parsedSource["interactive"]);
         }
         if ("todo" in $$parsedSource) {
-            $$parsedSource["todo"] = $$createField5_0($$parsedSource["todo"]);
+            $$parsedSource["todo"] = $$createField7_0($$parsedSource["todo"]);
         }
         return new ThreadLiveState($$parsedSource as Partial<ThreadLiveState>);
     }

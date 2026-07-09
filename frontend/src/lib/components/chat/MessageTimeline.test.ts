@@ -440,6 +440,32 @@ describe('<MessageTimeline>', () => {
     expect(queryByTestId('tool-call-card')).toBeNull();
   });
 
+  it('renders Claude model fallback reasons as a warning notification', async () => {
+    const reason = 'Fable 5 safeguards flagged this cybersecurity request. Switched to Opus 4.8.';
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'model-fallback:req-1',
+        kind: 'notification',
+        role: 'system',
+        toolName: 'model_refusal_fallback',
+        summary: reason,
+        meta: JSON.stringify({
+          kind: 'model_refusal_fallback',
+          originalModel: 'claude-fable-5',
+          fallbackModel: 'claude-opus-4-8',
+          category: 'cyber',
+        }),
+      }),
+    ]);
+
+    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+    const row = getByTestId('notification-row');
+    expect(row.textContent).toContain(reason);
+    expect(row.textContent).toContain('Reason: Cybersecurity safety classifier');
+    expect(row).toHaveAttribute('role', 'status');
+    expect(row.className).toContain('text-warning');
+  });
+
   it('renders one DiffFileBlock per file for multi-file tool_result rows', async () => {
     const pane = await buildPane(undefined, [
       makeItem({

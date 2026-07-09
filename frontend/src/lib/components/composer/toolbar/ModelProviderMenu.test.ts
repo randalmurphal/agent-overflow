@@ -72,6 +72,31 @@ describe('<ModelProviderMenu>', () => {
     expect(trigger.textContent ?? '').not.toMatch(/\bCodex\b/);
   });
 
+  it('shows the effective fallback model and retries the requested model when reselected', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-fable-5' }));
+    pane.setEffectiveModel('claude-opus-4-8');
+    setBindingMock('GetModelsForProvider', async (provider: unknown) => {
+      if (provider !== 'claude') return [];
+      return [
+        { slug: 'claude-fable-5', name: 'Fable 5', provider: 'claude', capabilities: [] },
+        { slug: 'claude-opus-4-8', name: 'Opus 4.8', provider: 'claude', capabilities: [] },
+      ];
+    });
+    const reconnect = setBindingMock('ReconnectSession', async () => {});
+
+    const { getByTestId, findByRole } = render(ModelProviderMenu, { props: { pane } });
+    expect(getByTestId('composer-model-menu-trigger').textContent).toContain('Opus 4.8');
+
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+    await fireEvent.click(await findByRole('menuitem', { name: /^Claude$/ }));
+    await fireEvent.click(await findByRole('menuitem', { name: /Fable 5/i }));
+
+    await waitFor(() => expect(reconnect).toHaveBeenCalledWith('thread-1'));
+    expect(pane.thread?.model).toBe('claude-fable-5');
+    expect(pane.activeModel).toBe('claude-fable-5');
+    expect(getBindingMock('UpdateThreadModelSelection')?.mock.calls.length ?? 0).toBe(0);
+  });
+
   // Per-picker provider brand glyph: Claude uses the Anthropic mark
   // painted in Anthropic's coral `#d97757`, Codex uses the OpenAI
   // rosette in the muted foreground. Both match t3-code's

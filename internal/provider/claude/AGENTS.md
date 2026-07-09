@@ -35,7 +35,7 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   as user aborts; same-goroutine state, no lock; see
   claude-wire.md §"Interrupted-turn result envelope").
 - `parse_system.go` — `system` envelopes (init metadata, compact_boundary,
-  task_started / task_updated / task_notification).
+  model_refusal_fallback, task_started / task_updated / task_notification).
 - `parse_assistant.go` — `assistant` envelopes (text deltas, tool_use
   blocks, thinking blocks, usage). Dispatches each content block to
   `appendTextEvent` / `appendToolUseEvent` / `appendThinkingEvent` /

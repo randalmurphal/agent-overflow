@@ -20,6 +20,7 @@
 import type {
   ApprovalEvent,
   ItemStreamEvent,
+  ModelFallbackEvent,
   ProviderAccountEvent,
   SystemStatsEvent,
   TodoUpdateEvent,
@@ -78,6 +79,7 @@ import {
   applySubagentNotification,
   applyTodoUpdate,
   applyDefaultSwapped,
+  applyModelFallback,
   type DefaultSwappedPayload,
 } from './eventsProvider';
 import {
@@ -152,6 +154,10 @@ export function setupEventListeners(): () => void {
   const cancelUserInput = wailsEventOn<UserInputEvent>('provider:user_input', applyUserInputEvent);
 
   const cancelUsage = wailsEventOn<UsageEvent>('provider:usage', applyUsageEvent);
+  const cancelModelFallback = wailsEventOn<ModelFallbackEvent>(
+    'provider:model_fallback',
+    applyModelFallback,
+  );
 
   const cancelProviderStatus = wailsEventOn<ProviderStatusEvent>('provider:status', applyProviderStatus);
 
@@ -351,6 +357,7 @@ export function setupEventListeners(): () => void {
     cancelApproval();
     cancelUserInput();
     cancelUsage();
+    cancelModelFallback();
     cancelProviderStatus();
     cancelProviderAccount();
     cancelSystemStats();

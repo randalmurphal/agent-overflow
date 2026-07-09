@@ -32,8 +32,13 @@ none fits.
   (open turns, interrupt queue, stopped-thread markers, turn span
   bookkeeping, cleanup paths).
 - `live_state.go` — refresh/reconnect snapshot of backend-owned live
-  session state (active wire round, queue, interactive prompts, live todo)
+  session state (active wire round, queue, interactive prompts, live todo,
+  effective fallback model)
   copied under one router lock for the App transport DTO.
+- `model_fallback.go` — provider classifier/safety fallback handling:
+  persists the bounded warning reason, projects the session-scoped effective
+  model without overwriting the requested thread model, and clears that live
+  projection when the provider session ends.
 - `tool_lifecycle.go` — tool-call launch/completion rows,
   background-task pairing (Claude), summary/status derivation.
 - `codex_background.go` — Codex-specific background projection.

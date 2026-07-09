@@ -11,11 +11,13 @@ import (
 // It is not persisted history; App converts it to transport DTOs for
 // refresh/reconnect hydration.
 type LiveStateSnapshot struct {
-	ActiveTurn   *ActiveTurnSnapshot
-	QueueItems   []QueuedFlushItem
-	FlushedItems []PendingFlushItemSnapshot
-	Interactive  provider.PendingInteractiveRequests
-	Todo         *LiveTodoSnapshot
+	ActiveTurn             *ActiveTurnSnapshot
+	QueueItems             []QueuedFlushItem
+	FlushedItems           []PendingFlushItemSnapshot
+	Interactive            provider.PendingInteractiveRequests
+	Todo                   *LiveTodoSnapshot
+	EffectiveModel         string
+	EffectiveModelRevision uint64
 }
 
 // LiveStateSnapshotForThread copies all frontend-visible live state for one
@@ -40,6 +42,9 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 		activeCopy := active
 		snapshot.ActiveTurn = &activeCopy
 	}
+
+	snapshot.EffectiveModel = r.effectiveModelByThread[threadID]
+	snapshot.EffectiveModelRevision = r.effectiveModelRevisions[threadID]
 
 	if queue := r.queuedFlushItems[threadID]; len(queue) > 0 {
 		snapshot.QueueItems = make([]QueuedFlushItem, len(queue))
