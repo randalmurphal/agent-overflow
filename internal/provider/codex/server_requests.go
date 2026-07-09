@@ -61,6 +61,13 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 	}
 
 	turnID, itemID := readRouteFields(params)
+	parentToolUseID := s.parentToolUseForProviderThread(providerThreadIDFromParams(params))
+	emit := func(evt provider.ProviderEvent) {
+		if parentToolUseID != "" {
+			evt.ParentToolUseID = parentToolUseID
+		}
+		s.onEvent(evt)
+	}
 
 	switch method {
 	case "item/commandExecution/requestApproval",
@@ -71,12 +78,12 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 
 		meta := buildApprovalMeta(s.threadID, turnID, method, rpcID, params)
 		s.trackPendingApproval(rpcID, provider.EventApprovalResolved)
-		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
+		emit(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "mcpServer/elicitation/request":
 		meta := buildElicitationMeta(s.threadID, turnID, rpcID, params)
 		s.trackPendingApproval(rpcID, provider.EventApprovalResolved)
-		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
+		emit(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "item/tool/call", "dynamicToolCall":
 		s.mu.Lock()
@@ -102,14 +109,14 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		meta := buildUserInputMetaFromQuestions(s.threadID, turnID, itemID, rpcID, questions)
 		s.trackPendingApproval(rpcID, provider.EventUserInputResolved)
 		if itemID != "" {
-			s.onEvent(buildUserInputToolStartEvent(s.threadID, turnID, itemID, questions, line))
+			emit(buildUserInputToolStartEvent(s.threadID, turnID, itemID, questions, line))
 		}
-		s.onEvent(buildUserInputEvent(s.threadID, turnID, itemID, meta, line))
+		emit(buildUserInputEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "item/permissions/requestApproval":
 		meta := buildPermissionMeta(s.threadID, turnID, rpcID, params)
 		s.trackPendingApproval(rpcID, provider.EventApprovalResolved)
-		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
+		emit(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	default:
 		if err := s.writeErrorResponse(rpcID, -32601, fmt.Sprintf("unsupported server request: %s", method)); err != nil {

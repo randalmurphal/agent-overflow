@@ -355,7 +355,7 @@ func (s *Session) dispatchLine(line []byte) {
 
 	// Server request: has both id and method (approval flow).
 	if msg.ID != nil && msg.Method != "" {
-		s.handleServerRequest(msg.Method, msg.ID, msg.Params, line)
+		s.dispatchServerRequest(msg.Method, msg.ID, msg.Params, line)
 		return
 	}
 

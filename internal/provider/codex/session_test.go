@@ -1208,17 +1208,16 @@ func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-provider-1","turn":{"id":"turn-child-1"}}}`))
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-provider-1","turn":{"id":"turn-child-1","status":"completed"}}}`))
 
-	if len(events) != 1 {
-		t.Fatalf("expected one child terminal status event, got %+v", events)
+	if len(events) != 2 {
+		t.Fatalf("expected running and terminal child status events, got %+v", events)
 	}
-	if events[0].Kind != provider.EventSubagentStatus {
-		t.Fatalf("kind = %q, want %q", events[0].Kind, provider.EventSubagentStatus)
-	}
-	if events[0].ItemID != "call-collab-1" {
-		t.Fatalf("ItemID = %q, want call-collab-1", events[0].ItemID)
+	for _, event := range events {
+		if event.Kind != provider.EventSubagentStatus || event.ItemID != "call-collab-1" {
+			t.Fatalf("unexpected child lifecycle event: %+v", event)
+		}
 	}
 	var meta map[string]string
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+	if err := json.Unmarshal(events[1].Meta, &meta); err != nil {
 		t.Fatalf("meta unmarshal: %v", err)
 	}
 	if meta["agent_path"] != "child-provider-1" || meta["status"] != "completed" {
@@ -3308,7 +3307,7 @@ func TestCodexHandleServerRequestUserInputV2TopLevelRouteFields(t *testing.T) {
 		"id":      31,
 		"method":  "item/tool/requestUserInput",
 		"params": map[string]any{
-			"threadId": "provider-thread",
+			"threadId": s.codexThreadID,
 			"turnId":   "turn-31",
 			"itemId":   "item-31",
 			"questions": []map[string]any{{

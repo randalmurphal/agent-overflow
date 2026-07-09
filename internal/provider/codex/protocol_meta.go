@@ -184,6 +184,15 @@ func collabAgentMetaExtras(item map[string]json.RawMessage) map[string]any {
 	if role := firstRawString(item, "newAgentRole", "agentRole", "agent_type", "agentType"); role != "" {
 		input["newAgentRole"] = role
 	}
+	if agentPath := firstRawString(item, "agentPath", "agent_path"); agentPath != "" {
+		input["agentPath"] = agentPath
+	}
+	if taskName := firstRawString(item, "taskName", "task_name"); taskName != "" {
+		input["taskName"] = taskName
+	}
+	if activityKind := firstRawString(item, "activityKind", "activity_kind"); activityKind != "" {
+		input["activityKind"] = activityKind
+	}
 	if receiverThreadIDs := readRawStringArray(item, "receiverThreadIds"); len(receiverThreadIDs) > 0 {
 		input["receiverThreadIds"] = receiverThreadIDs
 	}

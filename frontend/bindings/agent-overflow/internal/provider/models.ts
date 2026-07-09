@@ -520,6 +520,82 @@ export class ProviderStatus {
 }
 
 /**
+ * RateLimitEntry represents a single rate limit window.
+ */
+export class RateLimitEntry {
+    "limitId": string;
+    "limitName": string;
+    "usedPercent": number;
+    "windowMins": number;
+    "resetsAt": number;
+
+    /** Creates a new RateLimitEntry instance. */
+    constructor($$source: Partial<RateLimitEntry> = {}) {
+        if (!("limitId" in $$source)) {
+            this["limitId"] = "";
+        }
+        if (!("limitName" in $$source)) {
+            this["limitName"] = "";
+        }
+        if (!("usedPercent" in $$source)) {
+            this["usedPercent"] = 0;
+        }
+        if (!("windowMins" in $$source)) {
+            this["windowMins"] = 0;
+        }
+        if (!("resetsAt" in $$source)) {
+            this["resetsAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RateLimitEntry instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RateLimitEntry {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RateLimitEntry($$parsedSource as Partial<RateLimitEntry>);
+    }
+}
+
+/**
+ * RateLimitsSnapshot is a point-in-time view of all rate limits.
+ */
+export class RateLimitsSnapshot {
+    "provider": string;
+    "limits": RateLimitEntry[];
+    "updatedAt": number;
+
+    /** Creates a new RateLimitsSnapshot instance. */
+    constructor($$source: Partial<RateLimitsSnapshot> = {}) {
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("limits" in $$source)) {
+            this["limits"] = [];
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RateLimitsSnapshot instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RateLimitsSnapshot {
+        const $$createField1_0 = $$createType20;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("limits" in $$parsedSource) {
+            $$parsedSource["limits"] = $$createField1_0($$parsedSource["limits"]);
+        }
+        return new RateLimitsSnapshot($$parsedSource as Partial<RateLimitsSnapshot>);
+    }
+}
+
+/**
  * ReasoningEffortOption describes one selectable reasoning tier for a model.
  */
 export class ReasoningEffortOption {
@@ -584,7 +660,7 @@ export class UserInputQuestion {
      * Creates a new UserInputQuestion instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputQuestion {
-        const $$createField3_0 = $$createType20;
+        const $$createField3_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("options" in $$parsedSource) {
             $$parsedSource["options"] = $$createField3_0($$parsedSource["options"]);
@@ -665,7 +741,7 @@ export class UserInputRequest {
      * Creates a new UserInputRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputRequest {
-        const $$createField6_0 = $$createType22;
+        const $$createField6_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("questions" in $$parsedSource) {
             $$parsedSource["questions"] = $$createField6_0($$parsedSource["questions"]);
@@ -703,7 +779,7 @@ export class UserInputResponse {
      * Creates a new UserInputResponse instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputResponse {
-        const $$createField2_0 = $$createType23;
+        const $$createField2_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answers" in $$parsedSource) {
             $$parsedSource["answers"] = $$createField2_0($$parsedSource["answers"]);
@@ -732,8 +808,10 @@ const $$createType15 = NetworkPermissions.createFrom;
 const $$createType16 = $Create.Nullable($$createType15);
 const $$createType17 = FileSystemPermissions.createFrom;
 const $$createType18 = $Create.Nullable($$createType17);
-const $$createType19 = UserInputQuestionOption.createFrom;
+const $$createType19 = RateLimitEntry.createFrom;
 const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = UserInputQuestion.createFrom;
+const $$createType21 = UserInputQuestionOption.createFrom;
 const $$createType22 = $Create.Array($$createType21);
-const $$createType23 = $Create.Map($Create.Any, $Create.Any);
+const $$createType23 = UserInputQuestion.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = $Create.Map($Create.Any, $Create.Any);

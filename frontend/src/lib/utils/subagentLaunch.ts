@@ -10,6 +10,7 @@ interface ParsedCodexSubagentInput {
   receiverThreadIds: string[];
   agentNickname: string;
   agentRole: string;
+  agentPath: string;
 }
 
 export interface CodexSubagentLaunchInfo extends ParsedCodexSubagentInput {
@@ -58,7 +59,13 @@ function parseCodexSubagentInput(item: Item): ParsedCodexSubagentInput {
     receiverThreadIds: stringArray(input, 'receiverThreadIds'),
     agentNickname: stringValue(input, 'newAgentNickname', 'agentNickname', 'nickname'),
     agentRole: stringValue(input, 'newAgentRole', 'agentRole', 'agent_type', 'agentType'),
+    agentPath: stringValue(input, 'taskName', 'agentPath', 'task_name', 'agent_path'),
   };
+}
+
+function agentPathLabel(agentPath: string): string {
+  const segments = agentPath.split('/').map((segment) => segment.trim()).filter(Boolean);
+  return segments.at(-1) ?? '';
 }
 
 export function codexSubagentDisplayLabel(label: string, role: string, fallback: string): string {
@@ -88,11 +95,13 @@ export function codexSubagentLaunchInfo(item: Item): CodexSubagentLaunchInfo {
   const failedWithoutReceiver =
     parsed.receiverThreadIds.length === 0 &&
     (item.status === 'errored' || item.status === 'killed' || item.status === 'declined');
-  const fallbackLabel = parsed.receiverThreadIds.length === 1
-    ? 'Agent'
-    : parsed.receiverThreadIds.length > 1
-      ? `${parsed.receiverThreadIds.length} agents`
-      : 'agent';
+  const fallbackLabel = agentPathLabel(parsed.agentPath) || (
+    parsed.receiverThreadIds.length === 1
+      ? 'Agent'
+      : parsed.receiverThreadIds.length > 1
+        ? `${parsed.receiverThreadIds.length} agents`
+        : 'agent'
+  );
   const roleLabel = codexSubagentDisplayLabel(parsed.agentNickname, parsed.agentRole, fallbackLabel);
   const modelAffix = codexModelEffortAffix(parsed.model, parsed.reasoningEffort);
   return {

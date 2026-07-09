@@ -700,11 +700,14 @@ today:
 1. A typed `item/commandExecution/terminalInteraction` notification for an
    empty `write_stdin` poll targets the process, proving the model explicitly
    waited on a live background PTY. See [`codex-wire.md`](../references/codex-wire.md).
-2. `collabAgentToolCall` with `tool == "spawnAgent"` whose
-   `agentsStates` map reports a non-terminal child at the parent's
-   `turn/completed` boundary. The spawn row itself completes on the
-   wire immediately; backgrounding reflects that work continues on
-   the child thread past the parent's turn.
+2. Either collaboration version's typed spawn signal:
+   - MultiAgentV1 `collabAgentToolCall` with `tool == "spawnAgent"` whose
+     `agentsStates` reports a non-terminal child; or
+   - MultiAgentV2 `subAgentActivity` with `kind == "started"`, emitted only
+     after core successfully created and started `agentThreadId`.
+   The V2 adapter normalizes the latter into the same receiver + running-state
+   metadata consumed by triage. The spawn row closes on the parent wire while
+   work continues on the independently-running child thread.
 
 Heuristic classifiers ("assistant text after tool start", "turn still
 open while tool running", etc.) are forbidden as the AUTHORIZATION for
@@ -736,9 +739,11 @@ history.
 `spawn_agent` child threads live on their own `thread_id` and the
 parent's `spawn_agent` tool_call completes on the wire immediately. The
 `is_background` flag on the parent's tool_call row reflects that the
-referenced child thread may still be running — authorized by the
-wire's `agentsStates` map, not by any event-ordering heuristic.
-This was re-checked against `codex-cli 0.128.0` on 2026-05-04: the
+referenced child thread may still be running — authorized by V1's
+`agentsStates` or V2's canonical started activity, not by any event-ordering
+heuristic. V2 child output is quarantined until the typed ownership edge
+arrives, including recursively-spawned grandchildren.
+The lifecycle ordering was re-checked against `codex-cli 0.128.0` on 2026-05-04: the
 parent `turn/completed` arrived before the child thread's
 `turn/completed`, so no Codex soft-round-close path is needed.
 

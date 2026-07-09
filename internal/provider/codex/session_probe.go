@@ -99,11 +99,14 @@ func (s *Session) Resume(ctx context.Context) error {
 	if s.codexThreadID == "" {
 		return fmt.Errorf("codex: resume: session has no thread id")
 	}
-	if _, err := s.sendRequest(ctx, "thread/resume", map[string]any{
+	s.beginCollabHistoryGeneration()
+	resp, err := s.sendRequest(ctx, "thread/resume", map[string]any{
 		"threadId": s.codexThreadID,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("codex: thread/resume: %w", err)
 	}
+	s.rehydrateCollabOwnershipFromThreadResponse(resp)
 	return nil
 }
 

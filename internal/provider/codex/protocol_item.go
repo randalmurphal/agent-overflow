@@ -225,6 +225,9 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 	if itemType == "" {
 		return nil
 	}
+	if itemType == "subAgentActivity" {
+		return classifySubAgentActivityCompleted(threadID, params, now)
+	}
 	switch itemType {
 	case "contextCompaction":
 		return []provider.ProviderEvent{{
@@ -359,6 +362,133 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 		Timestamp: now,
 	})
 	return events
+}
+
+type subAgentActivity struct {
+	ItemID        string
+	Kind          string
+	AgentThreadID string
+	AgentPath     string
+}
+
+func decodeSubAgentActivity(method string, params json.RawMessage) (subAgentActivity, bool) {
+	if method != "item/completed" {
+		return subAgentActivity{}, false
+	}
+	return decodeSubAgentActivityItem(readNestedObject(params, "item"))
+}
+
+func decodeSubAgentActivityItem(item map[string]json.RawMessage) (subAgentActivity, bool) {
+	if item == nil || readRawString(item, "type") != "subAgentActivity" {
+		return subAgentActivity{}, false
+	}
+	activity := subAgentActivity{
+		ItemID:        strings.TrimSpace(readRawString(item, "id")),
+		Kind:          strings.TrimSpace(readRawString(item, "kind")),
+		AgentThreadID: strings.TrimSpace(readRawString(item, "agentThreadId")),
+		AgentPath:     strings.TrimSpace(readRawString(item, "agentPath")),
+	}
+	if activity.ItemID == "" || activity.AgentThreadID == "" {
+		return subAgentActivity{}, false
+	}
+	return activity, true
+}
+
+// classifySubAgentActivityCompleted normalizes MultiAgentV2's canonical
+// activity item onto the same provider contract used by V1
+// collabAgentToolCall items. V2 emits only item/completed for a successful
+// spawn, so Started expands to the begin/end pair the background projector
+// already understands. The typed activity supplies the authoritative child
+// thread and task path; raw function-call metadata can enrich prompt/role when
+// available but is not required for routing.
+func classifySubAgentActivityCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
+	activity, ok := decodeSubAgentActivity("item/completed", params)
+	if !ok {
+		return nil
+	}
+	turnID := readTopLevelString(params, "turnId")
+	switch activity.Kind {
+	case "started":
+		startMeta := subAgentActivityCollabMeta(params, activity, "spawnAgent", "inProgress", true)
+		completeMeta := subAgentActivityCollabMeta(params, activity, "spawnAgent", "completed", true)
+		return []provider.ProviderEvent{
+			{
+				Kind:      provider.EventToolStart,
+				ThreadID:  threadID,
+				TurnID:    turnID,
+				ItemID:    activity.ItemID,
+				ItemType:  "collab_agent",
+				Meta:      startMeta,
+				Timestamp: now,
+			},
+			{
+				Kind:      provider.EventToolComplete,
+				ThreadID:  threadID,
+				TurnID:    turnID,
+				ItemID:    activity.ItemID,
+				ItemType:  "collab_agent",
+				Meta:      completeMeta,
+				Timestamp: now,
+			},
+		}
+	case "interacted":
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventToolComplete,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			ItemID:    activity.ItemID,
+			ItemType:  "send_input",
+			Meta:      subAgentActivityCollabMeta(params, activity, "sendInput", "completed", false),
+			Timestamp: now,
+		}}
+	case "interrupted":
+		meta, err := json.Marshal(map[string]any{
+			"agent_path":       activity.AgentThreadID,
+			"canonical_path":   activity.AgentPath,
+			"status":           "interrupted",
+			"activity_call_id": activity.ItemID,
+		})
+		if err != nil {
+			return nil
+		}
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventSubagentStatus,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			ItemID:    activity.ItemID,
+			Meta:      meta,
+			Timestamp: now,
+		}}
+	default:
+		return nil
+	}
+}
+
+func subAgentActivityCollabMeta(params json.RawMessage, activity subAgentActivity, tool, status string, running bool) json.RawMessage {
+	item := map[string]any{
+		"id":                activity.ItemID,
+		"type":              "collabAgentToolCall",
+		"tool":              tool,
+		"status":            status,
+		"receiverThreadIds": []string{activity.AgentThreadID},
+		"agentPath":         activity.AgentPath,
+		"taskName":          activity.AgentPath,
+		"activityKind":      activity.Kind,
+	}
+	if running {
+		item["agentsStates"] = map[string]any{
+			activity.AgentThreadID: map[string]string{"status": "running"},
+		}
+	}
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		return nil
+	}
+	var rawItem map[string]json.RawMessage
+	if json.Unmarshal(encoded, &rawItem) != nil {
+		return nil
+	}
+	return enrichItemMetaFromItem(params, rawItem)
 }
 
 func codexToolResultContent(item map[string]json.RawMessage, itemType string) string {

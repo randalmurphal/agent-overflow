@@ -72,6 +72,7 @@ describe('setupEventListeners', () => {
     resetRateLimitsInfo();
     resetProviderStatuses();
     setBindingMock('AutoResumeThread', async () => {});
+    setBindingMock('GetRateLimitsSnapshots', async () => []);
     resetPanesForTest();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
@@ -109,6 +110,25 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('thread:updated')).toBe(0);
 
     cleanup = setupEventListeners();
+  });
+
+  it('hydrates rate limits retained before the frontend connected', async () => {
+    cleanup();
+    resetRateLimitsInfo();
+    setBindingMock('GetRateLimitsSnapshots', async () => [{
+      provider: 'codex',
+      limits: [
+        { limitId: 'codex', limitName: '', usedPercent: 31, windowMins: 300, resetsAt: 1783643306 },
+        { limitId: 'codex', limitName: '', usedPercent: 30, windowMins: 10080, resetsAt: 1784009268 },
+      ],
+      updatedAt: 1783629000000,
+    }]);
+
+    cleanup = setupEventListeners();
+    await vi.waitFor(() => {
+      expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(31);
+      expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(30);
+    });
   });
 
   it('routes item_event upserts only to the matching pane', async () => {
@@ -1865,6 +1885,14 @@ describe('setupEventListeners', () => {
         }),
       };
     });
+    setBindingMock('GetRateLimitsSnapshots', async () => [{
+      provider: 'codex',
+      limits: [
+        { limitId: 'codex', limitName: '', usedPercent: 47, windowMins: 300, resetsAt: 1783643306 },
+        { limitId: 'codex', limitName: '', usedPercent: 28, windowMins: 10080, resetsAt: 1784009268 },
+      ],
+      updatedAt: 1783629000000,
+    }]);
 
     emitWailsEvent(transportGapChannel, {
       channel: 'provider:usage',
@@ -1875,6 +1903,8 @@ describe('setupEventListeners', () => {
 
     expect(pane.contextWindow?.usedTokens).toBe(175000);
     expect(pane.contextWindow?.usedPercentage).toBe(87.5);
+    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(47);
+    expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(28);
   });
 
   it('preserves an explicit unread marker when thread:updated is stale', async () => {

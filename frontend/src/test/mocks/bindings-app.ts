@@ -149,6 +149,7 @@ export const GetPayloadChunk = dispatch('GetPayloadChunk');
 export const GetPayloadData = dispatch('GetPayloadData');
 export const ListItems = dispatch('ListItems');
 export const ListPayloadMetas = dispatch('ListPayloadMetas');
+export const GetRateLimitsSnapshots = dispatch('GetRateLimitsSnapshots');
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');

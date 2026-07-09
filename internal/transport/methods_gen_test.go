@@ -61,9 +61,10 @@ var wireSafeMethods = map[string]bool{
 	"SwitchThread":         true,
 	"GetThreadRuntimeMode": true,
 
-	// Usage accounting reads (append-only ledger aggregates: token
-	// counts + wire-reported cost; no credentials, no FS).
-	"GetUsageStats": true,
+	// Usage accounting reads (append-only ledger aggregates and the
+	// latest provider-reported quota windows; no credentials, no FS).
+	"GetUsageStats":          true,
+	"GetRateLimitsSnapshots": true,
 
 	// Per-client UI view state (ui_state table). Remote clients are
 	// the point: each presents an opaque client ID and can only touch

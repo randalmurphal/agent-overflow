@@ -23,6 +23,7 @@ import (
 // testEmitHook; it sees the same (name, data) pair the bus would have
 // published.
 func (a *App) emit(name string, data any) {
+	a.rememberRateLimitsEvent(name, data)
 	// Snapshot the bus pointer once so a concurrent SetEventBus cannot
 	// flip nil/non-nil between the guard and the Emit call.
 	bus := a.eventBus.Load()

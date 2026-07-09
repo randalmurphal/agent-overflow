@@ -139,6 +139,14 @@ type App struct {
 	// tests that don't need a real bus leave it nil and observe emissions
 	// via testEmitHook instead.
 	eventBus atomic.Pointer[transport.EventBus]
+	// rateLimitsByProvider retains the latest account-scoped snapshot so a
+	// freshly-mounted or reconnected frontend can hydrate explicitly instead
+	// of depending on having observed an earlier provider:usage event. The
+	// event bus is only a bounded replay buffer and a first connection has no
+	// prior channel sequence to request, so event-only ownership could leave
+	// the 5h/7d rings blank even after a successful startup probe.
+	rateLimitsMu         sync.RWMutex
+	rateLimitsByProvider map[string]provider.RateLimitsSnapshot
 	// transportServer is the Phase C HTTP+WS transport. Set by main.go
 	// via SetTransportServer before app.Run() so Shutdown can drain
 	// in-flight RPCs BEFORE App subsystems (store, telemetry, sessions)

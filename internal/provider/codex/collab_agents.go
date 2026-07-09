@@ -23,6 +23,7 @@ type collabLaunchMeta struct {
 	Prompt            string
 	Model             string
 	ReasoningEffort   string
+	AgentPath         string
 	ReceiverThreadIDs []string
 }
 
@@ -79,7 +80,16 @@ func isChildSuppressedThreadNotification(method string) bool {
 	switch method {
 	case "thread/tokenUsage/updated",
 		"thread/compacted",
-		"thread/name/updated":
+		"thread/name/updated",
+		"thread/started",
+		"thread/status/changed",
+		"thread/archived",
+		"thread/unarchived",
+		"thread/closed",
+		"model/rerouted",
+		"model/verification",
+		"account/rateLimits/updated",
+		"turn/plan/updated":
 		return true
 	default:
 		return false
@@ -100,14 +110,32 @@ func isChildSuppressedItemNotification(method string, params json.RawMessage) bo
 	}
 }
 
-func (s *Session) childLifecycleEvent(method string, params json.RawMessage, parentToolUseID string) *provider.ProviderEvent {
-	if method != "turn/completed" {
-		return nil
-	}
+func (s *Session) childLifecycleEvents(method string, params json.RawMessage, parentToolUseID string) []provider.ProviderEvent {
 	providerThreadID := providerThreadIDFromParams(params)
 	if providerThreadID == "" {
 		return nil
 	}
+	if method == "turn/started" {
+		meta, err := json.Marshal(map[string]string{
+			"agent_path": providerThreadID,
+			"status":     "running",
+		})
+		if err != nil {
+			return nil
+		}
+		return []provider.ProviderEvent{{
+			Kind:            provider.EventSubagentStatus,
+			ThreadID:        s.threadID,
+			ItemID:          parentToolUseID,
+			ParentToolUseID: parentToolUseID,
+			Meta:            meta,
+			Timestamp:       time.Now(),
+		}}
+	}
+	if method != "turn/completed" {
+		return nil
+	}
+	completed := decodeTurnCompletedParams(params)
 	status := codexSubagentStatusFromTurnCompleted(params)
 	if status == "" {
 		return nil
@@ -119,13 +147,57 @@ func (s *Session) childLifecycleEvent(method string, params json.RawMessage, par
 	if err != nil {
 		return nil
 	}
-	return &provider.ProviderEvent{
+	events := []provider.ProviderEvent{{
 		Kind:            provider.EventSubagentStatus,
 		ThreadID:        s.threadID,
 		ItemID:          parentToolUseID,
 		ParentToolUseID: parentToolUseID,
 		Meta:            meta,
 		Timestamp:       time.Now(),
+	}}
+	if status == "errored" {
+		if message := strings.TrimSpace(completed.Turn.Error.Message); message != "" {
+			events = append(events, provider.ProviderEvent{
+				Kind:            provider.EventError,
+				ThreadID:        s.threadID,
+				TurnID:          completed.Turn.ID,
+				ParentToolUseID: parentToolUseID,
+				Content:         message,
+				Meta:            json.RawMessage(`{"fatal":false,"source":"codex_child_turn"}`),
+				Timestamp:       time.Now(),
+			})
+		}
+	}
+	return events
+}
+
+// isUnsafeChildProjectionEvent is the second fail-closed layer after wire
+// thread ownership. These event kinds mutate thread-wide parent state or
+// correlate parent-owned user input, so they must never be projected from a
+// child even when the child itself is known. Transcript-bearing child events
+// (assistant text, thinking, tools, command output, diffs, warnings) remain
+// allowed and receive ParentToolUseID in the normal dispatch path.
+func isUnsafeChildProjectionEvent(kind provider.EventKind) bool {
+	switch kind {
+	case provider.EventInit,
+		provider.EventTurnStart,
+		provider.EventTurnComplete,
+		provider.EventSessionStatus,
+		provider.EventTokenUsage,
+		provider.EventRateLimits,
+		provider.EventModelRerouted,
+		provider.EventModelFallback,
+		provider.EventThreadRenamed,
+		provider.EventCompactBoundary,
+		provider.EventTodoUpdate,
+		provider.EventTaskCreate,
+		provider.EventTaskUpdate,
+		provider.EventAPIRetry,
+		provider.EventUserText,
+		provider.EventProposedPlan:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -140,6 +212,30 @@ func codexSubagentStatusFromTurnCompleted(params json.RawMessage) string {
 		return "interrupted"
 	default:
 		return ""
+	}
+}
+
+func (s *Session) childErrorStatusEvent(providerThreadID, parentToolUseID string) *provider.ProviderEvent {
+	providerThreadID = strings.TrimSpace(providerThreadID)
+	parentToolUseID = strings.TrimSpace(parentToolUseID)
+	if providerThreadID == "" || parentToolUseID == "" {
+		return nil
+	}
+	meta, err := json.Marshal(map[string]string{
+		"agent_path": providerThreadID,
+		"status":     "errored",
+	})
+	if err != nil {
+		log.Printf("codex: marshal child error status for %s: %v", providerThreadID, err)
+		return nil
+	}
+	return &provider.ProviderEvent{
+		Kind:            provider.EventSubagentStatus,
+		ThreadID:        s.threadID,
+		ItemID:          parentToolUseID,
+		ParentToolUseID: parentToolUseID,
+		Meta:            meta,
+		Timestamp:       time.Now(),
 	}
 }
 
@@ -161,16 +257,111 @@ func (s *Session) parentToolUseForAgentPath(agentPath string) string {
 	return s.childParentByAgentPath[agentPath]
 }
 
-func (s *Session) setParentToolUseForProviderThread(providerThreadID, parentToolUseID string) {
-	if providerThreadID == "" || parentToolUseID == "" {
-		return
+func (s *Session) providerThreadForAgentPath(agentPath, parentToolUseID string) string {
+	agentPath = strings.TrimSpace(agentPath)
+	parentToolUseID = strings.TrimSpace(parentToolUseID)
+	if agentPath == "" {
+		return ""
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	for providerThreadID, candidatePath := range s.agentPathByThread {
+		if candidatePath != agentPath {
+			continue
+		}
+		if parentToolUseID == "" || s.childParentByThread[providerThreadID] == parentToolUseID {
+			return providerThreadID
+		}
+	}
+	return ""
+}
+
+func (s *Session) setParentToolUseForProviderThread(providerThreadID, parentToolUseID string) bool {
+	return s.registerChildOwnership("", providerThreadID, "", parentToolUseID)
+}
+
+// registerChildOwnership is the single ownership mutation boundary for live
+// V1/V2 events, raw enrichment, and resume-history reconstruction. A provider
+// thread can never be its own child and an established thread/path edge cannot
+// be remapped to a different launch item by malformed or replayed input.
+func (s *Session) registerChildOwnership(sourceThreadID, childThreadID, agentPath, parentToolUseID string) bool {
+	sourceThreadID = strings.TrimSpace(sourceThreadID)
+	childThreadID = strings.TrimSpace(childThreadID)
+	agentPath = strings.TrimSpace(agentPath)
+	parentToolUseID = strings.TrimSpace(parentToolUseID)
+	if childThreadID == "" || parentToolUseID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if childThreadID == strings.TrimSpace(s.codexThreadID) || (sourceThreadID != "" && childThreadID == sourceThreadID) {
+		log.Printf("codex: reject self-referential child ownership source=%q child=%q item=%q", sourceThreadID, childThreadID, parentToolUseID)
+		return false
+	}
 	if s.childParentByThread == nil {
 		s.childParentByThread = make(map[string]string)
 	}
-	s.childParentByThread[providerThreadID] = parentToolUseID
-	s.mu.Unlock()
+	if existing := s.childParentByThread[childThreadID]; existing != "" && existing != parentToolUseID {
+		log.Printf("codex: reject conflicting child thread ownership %q: existing=%s incoming=%s", childThreadID, existing, parentToolUseID)
+		return false
+	}
+	if agentPath != "" {
+		if s.childParentByAgentPath == nil {
+			s.childParentByAgentPath = make(map[string]string)
+		}
+		if existing := s.childParentByAgentPath[agentPath]; existing != "" && existing != parentToolUseID {
+			log.Printf("codex: reject conflicting child path ownership %q: existing=%s incoming=%s", agentPath, existing, parentToolUseID)
+			return false
+		}
+		if s.agentPathByThread == nil {
+			s.agentPathByThread = make(map[string]string)
+		}
+		if existing := s.agentPathByThread[childThreadID]; existing != "" && existing != agentPath {
+			log.Printf("codex: reject conflicting canonical path for child %q: existing=%q incoming=%q", childThreadID, existing, agentPath)
+			return false
+		}
+	}
+	s.childParentByThread[childThreadID] = parentToolUseID
+	if agentPath != "" {
+		s.childParentByAgentPath[agentPath] = parentToolUseID
+		s.agentPathByThread[childThreadID] = agentPath
+	}
+	return true
+}
+
+func (s *Session) rememberSubAgentActivityOwnership(sourceThreadID string, activity subAgentActivity) []string {
+	if activity.Kind != "started" || activity.ItemID == "" || activity.AgentThreadID == "" {
+		return nil
+	}
+	if !s.registerChildOwnership(sourceThreadID, activity.AgentThreadID, activity.AgentPath, activity.ItemID) {
+		return nil
+	}
+	launchMeta := collabLaunchMeta{
+		AgentPath:         activity.AgentPath,
+		ReceiverThreadIDs: []string{activity.AgentThreadID},
+	}
+	s.scheduleCollabMetadataRead(activity.AgentThreadID, activity.ItemID, launchMeta)
+	return []string{activity.AgentThreadID}
+}
+
+func (s *Session) observeSubAgentActivityOwnership(method string, params json.RawMessage) []string {
+	activity, ok := decodeSubAgentActivity(method, params)
+	if !ok {
+		return nil
+	}
+	return s.rememberSubAgentActivityOwnership(providerThreadIDFromParams(params), activity)
+}
+
+func collabSpawnReceiverThreadIDs(method string, params json.RawMessage) []string {
+	if method != "item/completed" {
+		return nil
+	}
+	item := readNestedObject(params, "item")
+	if item == nil || readRawString(item, "type") != "collabAgentToolCall" ||
+		normalizeCollabToolName(readRawString(item, "tool")) != "spawn_agent" {
+		return nil
+	}
+	return readRawStringArray(item, "receiverThreadIds")
 }
 
 func (s *Session) rememberRawSpawnAgentIDForSubagentNotifications(agentID, parentToolUseID string) {
@@ -249,6 +440,10 @@ func collabReceiverMetaUpdateInput(meta collabReceiverMeta, launchMeta collabLau
 	if strings.TrimSpace(launchMeta.ReasoningEffort) != "" {
 		input["reasoningEffort"] = strings.TrimSpace(launchMeta.ReasoningEffort)
 	}
+	if strings.TrimSpace(launchMeta.AgentPath) != "" {
+		input["agentPath"] = strings.TrimSpace(launchMeta.AgentPath)
+		input["taskName"] = strings.TrimSpace(launchMeta.AgentPath)
+	}
 	return input
 }
 
@@ -267,16 +462,7 @@ func (s *Session) rememberAgentPathForProviderThread(providerThreadID, parentToo
 	if providerThreadID == "" || parentToolUseID == "" || agentPath == "" {
 		return
 	}
-	s.mu.Lock()
-	if s.childParentByAgentPath == nil {
-		s.childParentByAgentPath = make(map[string]string)
-	}
-	if s.agentPathByThread == nil {
-		s.agentPathByThread = make(map[string]string)
-	}
-	s.childParentByAgentPath[agentPath] = parentToolUseID
-	s.agentPathByThread[providerThreadID] = agentPath
-	s.mu.Unlock()
+	s.registerChildOwnership("", providerThreadID, agentPath, parentToolUseID)
 }
 
 func (s *Session) rememberAgentMetaForProviderThread(providerThreadID string, params json.RawMessage) {
@@ -302,6 +488,9 @@ func (s *Session) rememberAgentMetaForProviderThread(providerThreadID string, pa
 
 func providerThreadIDFromParams(params json.RawMessage) string {
 	if id := readTopLevelString(params, "threadId"); id != "" {
+		return id
+	}
+	if id := readTopLevelString(params, "conversationId"); id != "" {
 		return id
 	}
 	return readNestedString(params, "thread", "id")
@@ -364,9 +553,10 @@ func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.
 			ReceiverThreadIDs: append([]string(nil), receiverThreadIDs...),
 		}
 		for _, receiverThreadID := range receiverThreadIDs {
-			s.setParentToolUseForProviderThread(receiverThreadID, itemID)
-			go s.readChildThreadMetadata(receiverThreadID, itemID, launchMeta)
-			go s.resumeChildThread(receiverThreadID)
+			if !s.registerChildOwnership(providerThreadIDFromParams(params), receiverThreadID, "", itemID) {
+				continue
+			}
+			s.scheduleCollabMetadataRead(receiverThreadID, itemID, launchMeta)
 		}
 	case "close_agent":
 		for _, receiverThreadID := range receiverThreadIDs {
@@ -376,11 +566,23 @@ func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.
 }
 
 func (s *Session) maybeRewriteCollabControlItemID(evt *provider.ProviderEvent, params json.RawMessage) {
-	if evt == nil || evt.ItemType != "collab_agent" {
+	if evt == nil {
 		return
 	}
 	item := readNestedObject(params, "item")
-	if item == nil || readRawString(item, "type") != "collabAgentToolCall" {
+	if item == nil {
+		return
+	}
+	if readRawString(item, "type") == "subAgentActivity" &&
+		readRawString(item, "kind") == "interrupted" &&
+		evt.Kind == provider.EventSubagentStatus {
+		if parentToolUseID := s.parentToolUseForProviderThread(readRawString(item, "agentThreadId")); parentToolUseID != "" {
+			evt.ItemID = parentToolUseID
+			evt.ParentToolUseID = parentToolUseID
+		}
+		return
+	}
+	if evt.ItemType != "collab_agent" || readRawString(item, "type") != "collabAgentToolCall" {
 		return
 	}
 	switch normalizeCollabToolName(readRawString(item, "tool")) {
@@ -561,18 +763,7 @@ func (s *Session) collabReceiverMetadataForThreads(receiverThreadIDs []string) [
 	return agents
 }
 
-func (s *Session) resumeChildThread(providerThreadID string) {
-	if s.proc == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	_, _ = s.sendRequest(ctx, "thread/resume", map[string]any{
-		"threadId": providerThreadID,
-	})
-}
-
-func (s *Session) readChildThreadMetadata(providerThreadID, parentToolUseID string, launchMeta collabLaunchMeta) {
+func (s *Session) scheduleCollabMetadataRead(providerThreadID, parentToolUseID string, launchMeta collabLaunchMeta) {
 	if s.proc == nil || strings.TrimSpace(providerThreadID) == "" || strings.TrimSpace(parentToolUseID) == "" {
 		return
 	}
@@ -583,8 +774,19 @@ func (s *Session) readChildThreadMetadata(providerThreadID, parentToolUseID stri
 	if !s.acquireCollabMetadataRead(ctx) {
 		return
 	}
-	defer s.releaseCollabMetadataRead()
+	if !s.startCollabAsync(func() {
+		defer s.releaseCollabMetadataRead()
+		s.readChildThreadMetadata(providerThreadID, parentToolUseID, launchMeta)
+	}) {
+		s.releaseCollabMetadataRead()
+	}
+}
 
+func (s *Session) readChildThreadMetadata(providerThreadID, parentToolUseID string, launchMeta collabLaunchMeta) {
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	meta, ok, err := s.readChildThreadMetadataWithRetry(ctx, providerThreadID)
 	if err != nil {
 		log.Printf("codex: read child thread metadata for spawn %s: %v", parentToolUseID, err)
@@ -605,6 +807,11 @@ func (s *Session) acquireCollabMetadataRead(ctx context.Context) bool {
 	case s.collabMetadataReads <- struct{}{}:
 		return true
 	case <-ctx.Done():
+		return false
+	default:
+		// Metadata is display-only enrichment. Never block the JSON-RPC read
+		// loop behind slow thread/read calls; canonical activity metadata still
+		// carries the child id/path needed for routing and UI fallback labels.
 		return false
 	}
 }

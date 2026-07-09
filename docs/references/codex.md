@@ -62,6 +62,19 @@ Codex has no `run_in_background` flag, but it does background work via
   polled a running background terminal via `write_stdin` without
   input (the "Waited for background terminal" cell in Codex TUI).
 
+## MultiAgentV2 child routing
+
+Codex 0.144 can select `multi_agent_version:"v2"`. Its canonical spawn
+signal is an `item/completed` `subAgentActivity` with `kind:"started"`,
+`agentThreadId`, and `agentPath`; it is not a `collabAgentToolCall` spawn.
+Core can start the child before this parent-side activity is emitted, so any
+unmapped non-root provider thread must be quarantined rather than treated as
+the AO root. A started activity emitted on a child creates a nested ownership
+edge for a grandchild. Reopen recovery walks persisted descendant histories
+with bounded read-only `thread/read` calls and resumes only currently-active
+children for notification subscription. See
+[`codex-wire.md §Collab agent lifecycle`](codex-wire.md#collab-agent-lifecycle-multiagentv1-and-multiagentv2).
+
 ## Known upstream constraints
 
 **Per-row termination of model-initiated background terminals is

@@ -47,12 +47,12 @@ type Session struct {
 	// without a process restart. All five are guarded by mu: Send copies
 	// them per turn, ApplyLiveUpdate rewrites them, and the read loop reads
 	// model for usage attribution.
-	model           string // active model; also used for usage attribution
-	reasoningEffort string // per-turn reasoning effort override; empty means inherit thread default
-	serviceTier     string // per-turn service tier override; "priority" enables Codex fast mode
-	approvalPolicy  string // per-turn approval override; empty means inherit thread default
-	sandbox         string // per-turn sandbox override; empty means inherit thread default
-	nextID          atomic.Int64
+	model              string // active model; also used for usage attribution
+	reasoningEffort    string // per-turn reasoning effort override; empty means inherit thread default
+	serviceTier        string // per-turn service tier override; "priority" enables Codex fast mode
+	approvalPolicy     string // per-turn approval override; empty means inherit thread default
+	sandbox            string // per-turn sandbox override; empty means inherit thread default
+	nextID             atomic.Int64
 	mu                 sync.Mutex
 	pending            map[int64]chan json.RawMessage
 	onEvent            func(provider.ProviderEvent)
@@ -123,8 +123,31 @@ type Session struct {
 	collabMetadataReads       chan struct{}
 	rawToolCallsByID          map[string]rawToolCall
 	waitReceiverIDsByCall     map[string][]string
-	planBuffersByItemID       map[string]*planBuffer
-	planBuffersByTurnID       map[string]*planBuffer
+	// deferredChildWireEvents quarantines notifications and server requests
+	// from provider threads whose spawn ownership has not arrived yet. Codex
+	// MultiAgentV2 starts the child before it emits the parent's canonical
+	// subAgentActivity item, so child output can legitimately win that race.
+	// Nothing in this queue may reach the AO parent projection until a typed
+	// ownership edge maps the provider thread to its spawn card.
+	deferredChildWireEvents map[string][]deferredChildWireEvent
+	deferredChildWireCount  int
+	deferredChildWireBytes  int
+	deferredChildDeadlines  map[string]*time.Timer
+	childRoutingWarned      bool
+	// Collaboration metadata enrichment and reopen-history traversal run in
+	// session-scoped background work. collabAsyncMu closes the Add/Wait race;
+	// collabHistory* is guarded by mu and feeds one sequential traversal.
+	collabAsyncMu                 sync.Mutex
+	collabAsyncClosing            bool
+	collabAsyncWG                 sync.WaitGroup
+	collabHistoryQueue            []collabHistoryJob
+	collabHistoryRunning          bool
+	collabHistoryGeneration       uint64
+	collabHistoryVisited          map[string]uint64
+	collabHistoryAttempts         int
+	collabHistoryWarnedGeneration uint64
+	planBuffersByItemID           map[string]*planBuffer
+	planBuffersByTurnID           map[string]*planBuffer
 	// probeFn is a test-only override for Probe(). When non-nil, Probe
 	// skips the wire call and returns the result from this function.
 	// Production Session construction (NewSession) never sets it.
@@ -251,8 +274,19 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		collabMetadataReads:       make(chan struct{}, 4),
 		rawToolCallsByID:          make(map[string]rawToolCall),
 		waitReceiverIDsByCall:     make(map[string][]string),
+		deferredChildWireEvents:   make(map[string][]deferredChildWireEvent),
+		deferredChildDeadlines:    make(map[string]*time.Timer),
+		collabHistoryGeneration:   1,
+		collabHistoryVisited:      make(map[string]uint64),
 		planBuffersByItemID:       make(map[string]*planBuffer),
 		planBuffersByTurnID:       make(map[string]*planBuffer),
+	}
+	// On resume the root provider id is already durable in AO. Seed it before
+	// the read loop starts so child notifications racing the thread/resume
+	// response are quarantined instead of being mistaken for root events. A
+	// fresh thread cannot have children before NewSession returns.
+	if cfg.ResumeThreadID != "" {
+		s.codexThreadID = cfg.ResumeThreadID
 	}
 
 	// Start stdout reader goroutine before sending any requests.
@@ -299,13 +333,19 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 
 	// Extract the Codex thread ID from response.
 	s.threadID = threadID // our internal ID
-	s.codexThreadID = readNestedString(resp, "thread", "id")
-	if s.codexThreadID == "" {
+	responseThreadID := readNestedString(resp, "thread", "id")
+	if responseThreadID == "" {
 		log.Printf("codex: %s response missing thread.id; response: %s", method, string(resp))
 		s.Close()
 		return nil, fmt.Errorf("codex: %s: response did not contain a thread ID", method)
 	}
+	if s.codexThreadID != "" && s.codexThreadID != responseThreadID {
+		s.Close()
+		return nil, fmt.Errorf("codex: %s: response thread ID %q does not match requested thread %q", method, responseThreadID, s.codexThreadID)
+	}
+	s.codexThreadID = responseThreadID
 	if method == "thread/resume" {
+		s.rehydrateCollabOwnershipFromThreadResponse(resp)
 		s.startRolloutSubagentNotificationObserver(readNestedString(resp, "thread", "path"))
 	}
 
@@ -520,6 +560,9 @@ func (s *Session) PID() int {
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
 	s.closing.Store(true)
+	s.collabAsyncMu.Lock()
+	s.collabAsyncClosing = true
+	s.collabAsyncMu.Unlock()
 	s.clearPendingApprovals()
 	err := s.proc.Close()
 	s.cancel()
@@ -527,6 +570,7 @@ func (s *Session) Close() error {
 		<-s.readDone
 	}
 	s.rolloutObserverWG.Wait()
+	s.collabAsyncWG.Wait()
 	// Drop session-scoped maps so the closed Session doesn't hold onto
 	// per-turn / per-child-thread entries indefinitely. The dispatch
 	// goroutine and rollout observer have exited by this point, so no
@@ -536,6 +580,13 @@ func (s *Session) Close() error {
 	// the existing WriteLine-on-closed-proc path handles shutdown
 	// cleanly.
 	s.mu.Lock()
+	deferredChildEvents := 0
+	for _, queued := range s.deferredChildWireEvents {
+		deferredChildEvents += len(queued)
+	}
+	if deferredChildEvents > 0 {
+		log.Printf("codex: closing with %d quarantined child events whose spawn ownership never arrived", deferredChildEvents)
+	}
 	s.seenTurnStarts = nil
 	s.childParentByThread = nil
 	s.childParentByAgentPath = nil
@@ -544,6 +595,15 @@ func (s *Session) Close() error {
 	s.subagentNotificationDedup = nil
 	s.rawToolCallsByID = nil
 	s.waitReceiverIDsByCall = nil
+	s.deferredChildWireEvents = nil
+	s.deferredChildWireCount = 0
+	s.deferredChildWireBytes = 0
+	for _, timer := range s.deferredChildDeadlines {
+		timer.Stop()
+	}
+	s.deferredChildDeadlines = nil
+	s.collabHistoryQueue = nil
+	s.collabHistoryVisited = nil
 	s.mu.Unlock()
 	return err
 }

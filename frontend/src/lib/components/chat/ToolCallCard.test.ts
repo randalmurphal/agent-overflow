@@ -437,6 +437,27 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByTestId("subagent-group")).toBeNull();
   });
 
+  it("uses the MultiAgentV2 task path when spawn nickname metadata is hidden", async () => {
+    const pane = await buildPane(makeThread({ provider: "codex" }));
+    const item = makeItem({
+      id: "spawn-v2",
+      kind: "tool_call",
+      status: "running",
+      toolName: "collab_agent",
+      meta: JSON.stringify({
+        input: {
+          tool: "spawn_agent",
+          taskName: "/root/review_security",
+          receiverThreadIds: ["child-v2"],
+        },
+      }),
+    });
+
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    expect(getByTestId("collab-tool-row").textContent).toContain("Spawned review_security");
+  });
+
   it("renders terminal Codex spawn_agent failures without receivers as failed spawns", async () => {
     const pane = await buildPane(makeThread({ provider: "codex" }));
     const item = makeItem({

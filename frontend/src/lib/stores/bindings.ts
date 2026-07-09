@@ -65,6 +65,7 @@ export {
   // wire-true for Claude, table-priced at read time for Codex /
   // claude-tui — see internal/usagecost).
   GetUsageStats,
+  GetRateLimitsSnapshots,
 
   // Per-client UI view state (ui_state table) behind stores/appStorage.ts.
   GetUIState,

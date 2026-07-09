@@ -114,6 +114,7 @@ import {
 } from './eventsDiscussion';
 import { applyPRReviewUpdated } from './eventsPRReview';
 import { clearAllDiscussionLiveTail } from './discussionLiveTail';
+import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 
 /**
  * Frontend custom DOM event names live in `./eventNames` so consumers
@@ -154,6 +155,12 @@ export function setupEventListeners(): () => void {
   const cancelUserInput = wailsEventOn<UserInputEvent>('provider:user_input', applyUserInputEvent);
 
   const cancelUsage = wailsEventOn<UsageEvent>('provider:usage', applyUsageEvent);
+  // Startup probes can finish before a first websocket connection has any
+  // provider:usage sequence to replay. Install the live listener first, then
+  // hydrate the backend's retained last-known account snapshots.
+  void hydrateRateLimitsSnapshots().catch((error) => {
+    console.warn('events: hydrate rate-limit snapshots failed', error);
+  });
   const cancelModelFallback = wailsEventOn<ModelFallbackEvent>(
     'provider:model_fallback',
     applyModelFallback,
