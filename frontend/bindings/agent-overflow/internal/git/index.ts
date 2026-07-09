@@ -19,6 +19,5 @@ export {
     ReviewReplyTo,
     ReviewThread,
     ReviewVerdict,
-    SubmitReviewRequest,
-    Worktree
+    SubmitReviewRequest
 } from "./models.js";

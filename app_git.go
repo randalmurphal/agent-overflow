@@ -608,17 +608,28 @@ func (a *App) gitCore() *gitops.Core {
 // turn or background tool call is still in flight — the provider session is
 // bound to the cwd and changing it mid-turn would orphan output.
 func (a *App) ensureWorkspaceChangeAllowed(threadID string) error {
+	reason, err := a.threadActivityBlockReason(threadID)
+	if err != nil {
+		return err
+	}
+	if reason != "" {
+		return fmt.Errorf("cannot switch workspace while %s", reason)
+	}
+	return nil
+}
+
+func (a *App) threadActivityBlockReason(threadID string) (string, error) {
 	if turn, ok, err := a.store.GetActiveTurn(threadID); err != nil {
-		return fmt.Errorf("check active turn: %w", err)
+		return "", fmt.Errorf("check active turn: %w", err)
 	} else if ok {
-		return fmt.Errorf("cannot switch workspace while turn %d is active", turn.TurnIndex)
+		return fmt.Sprintf("turn %d is active", turn.TurnIndex), nil
 	}
 	running, err := a.store.ListRunningBackgroundToolCalls(threadID)
 	if err != nil {
-		return fmt.Errorf("check background tasks: %w", err)
+		return "", fmt.Errorf("check background tasks: %w", err)
 	}
 	if len(running) > 0 {
-		return fmt.Errorf("cannot switch workspace while %d background task(s) are running", len(running))
+		return fmt.Sprintf("%d background task(s) are running", len(running)), nil
 	}
-	return nil
+	return "", nil
 }

@@ -12,6 +12,10 @@ import (
 // instead of surfacing an error to the user.
 var ErrProjectPathInUse = errors.New("store: project path already in use")
 
+// ErrProjectHasThreads is returned when project deletion is attempted before
+// the app layer has explicitly torn down every contained thread.
+var ErrProjectHasThreads = errors.New("store: project still has threads")
+
 // ProjectWithCounts is the sidebar-lightweight view: the project row plus
 // its thread count and the timestamp of the most recently touched thread.
 // LastActive is 0 when the project has no active (non-archived) threads.
@@ -233,20 +237,40 @@ func (s *Store) UnarchiveProject(id string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: unarchive project %s", id))
 }
 
-// DeleteProject removes the project row. Threads cascade via the
-// ON DELETE CASCADE on threads.project_id.
+// DeleteProject removes the project row only when it contains no threads. The
+// app layer must tear threads down explicitly so provider processes and
+// per-thread resources are cleaned before their ownership rows disappear.
+// Keeping the emptiness predicate in the DELETE closes the race with a thread
+// inserted immediately before this statement.
 func (s *Store) DeleteProject(id string) error {
-	result, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, id)
+	result, err := s.db.Exec(
+		`DELETE FROM projects
+		  WHERE id = ?
+		    AND NOT EXISTS (SELECT 1 FROM threads WHERE project_id = ?)`,
+		id, id,
+	)
 	if err != nil {
 		return fmt.Errorf("store: delete project %s: %w", id, err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete project %s rows affected: %w", id, err)
+	}
+	if deleted == 0 {
+		var exists int
+		if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?)`, id).Scan(&exists); err != nil {
+			return fmt.Errorf("store: check project %s after guarded delete: %w", id, err)
+		}
+		if exists != 0 {
+			return fmt.Errorf("%w: %s", ErrProjectHasThreads, id)
+		}
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: delete project %s", id))
 }
 
-// ListThreadIDsForProject returns the ids of every thread that would be
-// cascaded away by DeleteProject. The binding layer uses this to build
-// the list of deleted thread ids it hands to the frontend so pane state
-// can prune.
+// ListThreadIDsForProject returns every thread owned by a project. The app
+// layer uses the list to tear each thread down and to tell the frontend which
+// pane state to prune after project deletion.
 func (s *Store) ListThreadIDsForProject(projectID string) ([]string, error) {
 	rows, err := s.db.Query(
 		`SELECT id FROM threads WHERE project_id = ?`, projectID,

@@ -530,3 +530,7 @@ export { Turn } from '../../../bindings/agent-overflow/internal/store/models.js'
 // instance (construct with `new UsageQuery({...})` — omitted fields
 // default to zero values / '') and returns `UsageBucket[]`.
 export { UsageBucket, UsageQuery } from '../../../bindings/agent-overflow/internal/store/models.js';
+
+// Picker-facing worktree model. Unlike the lower-level internal/git shape,
+// this includes backend-computed delete availability.
+export { WorktreeListItem } from '../../../bindings/agent-overflow/models.js';

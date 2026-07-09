@@ -1080,7 +1080,7 @@ export function GitListBranchesForProject(projectID: string): $CancellablePromis
 /**
  * GitListWorktrees lists worktrees for the thread's repository.
  */
-export function GitListWorktrees(threadID: string): $CancellablePromise<git$0.Worktree[]> {
+export function GitListWorktrees(threadID: string): $CancellablePromise<$models.WorktreeListItem[]> {
     return $Call.ByID(3232495403, threadID).then(($result: any) => {
         return $$createType52($result);
     });
@@ -1090,7 +1090,7 @@ export function GitListWorktrees(threadID: string): $CancellablePromise<git$0.Wo
  * GitListWorktreesForProject lists worktrees for a project without requiring
  * a thread row.
  */
-export function GitListWorktreesForProject(projectID: string): $CancellablePromise<git$0.Worktree[]> {
+export function GitListWorktreesForProject(projectID: string): $CancellablePromise<$models.WorktreeListItem[]> {
     return $Call.ByID(409101231, projectID).then(($result: any) => {
         return $$createType52($result);
     });
@@ -2925,7 +2925,7 @@ const $$createType47 = $models.GitWorkspaceState.createFrom;
 const $$createType48 = git$0.GitActionResult.createFrom;
 const $$createType49 = git$0.GitBranch.createFrom;
 const $$createType50 = $Create.Array($$createType49);
-const $$createType51 = git$0.Worktree.createFrom;
+const $$createType51 = $models.WorktreeListItem.createFrom;
 const $$createType52 = $Create.Array($$createType51);
 const $$createType53 = $models.GitStatusSubscriptionResult.createFrom;
 const $$createType54 = $models.WorktreeStatus.createFrom;

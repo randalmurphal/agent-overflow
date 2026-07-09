@@ -1208,6 +1208,22 @@ func TestRemoveOtherWorktreeRejectsActiveTurnOnSibling(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertTurn(): %v", err)
 	}
+	worktrees, err := app.GitListWorktrees(owner.ID)
+	if err != nil {
+		t.Fatalf("GitListWorktrees() error = %v", err)
+	}
+	foundWorktree := false
+	for _, worktree := range worktrees {
+		if samePath(worktree.Path, worktreePath) {
+			foundWorktree = true
+			if !worktree.DeleteBlocked {
+				t.Fatal("DeleteBlocked = false, want true for active attached sibling")
+			}
+		}
+	}
+	if !foundWorktree {
+		t.Fatalf("worktree %q not found in list: %+v", worktreePath, worktrees)
+	}
 
 	err = app.RemoveOtherWorktree(owner.ID, worktreePath, true)
 	if err == nil {
@@ -1228,6 +1244,50 @@ func TestRemoveOtherWorktreeRejectsActiveTurnOnSibling(t *testing.T) {
 	if !samePath(refreshedSibling.WorkspacePath, worktreePath) {
 		t.Errorf("sibling WorkspacePath = %q, want unchanged %q", refreshedSibling.WorkspacePath, worktreePath)
 	}
+}
+
+func TestGitListWorktreesMarksDeleteBlockedBySiblingBackgroundTask(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	owner := testThread("thread-list-background-owner")
+	owner.ProjectID = project.ID
+	owner.WorkspacePath = repo
+	if err := app.store.CreateThread(owner); err != nil {
+		t.Fatalf("CreateThread(owner): %v", err)
+	}
+	worktreePath, err := app.GitCreateWorktree(owner.ID, "feature/background-blocked")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+
+	sibling := testThread("thread-list-background-sibling")
+	sibling.ProjectID = project.ID
+	sibling.WorkspacePath = worktreePath
+	sibling.WorktreePath = worktreePath
+	sibling.Branch = "feature/background-blocked"
+	if err := app.store.CreateThread(sibling); err != nil {
+		t.Fatalf("CreateThread(sibling): %v", err)
+	}
+	insertRunningBackgroundToolCall(t, app.store, sibling.ID, "bg-list-worktree", 0, 0)
+
+	worktrees, err := app.GitListWorktrees(owner.ID)
+	if err != nil {
+		t.Fatalf("GitListWorktrees() error = %v", err)
+	}
+	for _, worktree := range worktrees {
+		if samePath(worktree.Path, worktreePath) {
+			if !worktree.DeleteBlocked {
+				t.Fatal("DeleteBlocked = false, want true for attached sibling background task")
+			}
+			return
+		}
+	}
+	t.Fatalf("worktree %q not found in list: %+v", worktreePath, worktrees)
 }
 
 func TestRemoveOtherWorktreeIgnoresObsoleteInflightTurnOnSibling(t *testing.T) {
@@ -1361,7 +1421,7 @@ func TestRemoveOtherWorktreeBroadcastsSiblingUpdates(t *testing.T) {
 	}
 }
 
-func containsWorktree(worktrees []gitops.Worktree, want string) bool {
+func containsWorktree(worktrees []WorktreeListItem, want string) bool {
 	for _, worktree := range worktrees {
 		if samePath(worktree.Path, want) {
 			return true

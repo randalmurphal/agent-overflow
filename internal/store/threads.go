@@ -419,6 +419,53 @@ func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
 	return refs, rows.Err()
 }
 
+// ListThreadWorkspaceRefsWithActivity returns the same ownership projection as
+// ListThreadWorkspaceRefs plus the activity state that blocks worktree removal.
+// The correlated checks keep picker hydration to one query without loading full
+// turn or item rows for every attached thread.
+func (s *Store) ListThreadWorkspaceRefsWithActivity() ([]ThreadWorkspaceRef, error) {
+	rows, err := s.db.Query(
+		`SELECT t.id, t.workspace_path, COALESCE(t.worktree_path, ''),
+		        CASE WHEN
+		          COALESCE((
+		            SELECT latest.completed_at IS NULL
+		              FROM turns latest
+		             WHERE latest.thread_id = t.id
+		             ORDER BY latest.turn_index DESC
+		             LIMIT 1
+		          ), 0)
+		          OR EXISTS(
+		            SELECT 1
+		              FROM items launch
+		             WHERE launch.thread_id = t.id
+		               AND launch.kind = 'tool_call'
+		               AND launch.status = 'running'
+		               AND launch.is_background = 1
+		               AND NOT EXISTS(
+		                 SELECT 1 FROM items completion
+		                  WHERE completion.thread_id = launch.thread_id
+		                    AND completion.completion_of = launch.id
+		               )
+		          )
+		        THEN 1 ELSE 0 END
+		   FROM threads t`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list thread workspace refs with activity: %w", err)
+	}
+	defer rows.Close()
+
+	var refs []ThreadWorkspaceRef
+	for rows.Next() {
+		var ref ThreadWorkspaceRef
+		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath, &ref.WorkspaceChangeBlocked); err != nil {
+			return nil, fmt.Errorf("store: scan thread workspace ref with activity: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	return refs, rows.Err()
+}
+
 const updateThreadSetSQL = `UPDATE threads SET project_id=?, title=?, provider=?, model=?,
     workspace_path=?, worktree_path=?, branch=?, pr_ref=?, session_ref=?, pending_fork_session_ref=?,
     mode=?, reasoning_effort=?, fast_mode=?, context_window=?,

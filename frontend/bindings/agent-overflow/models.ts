@@ -1855,6 +1855,45 @@ export class WorkspaceFileSearchResult {
 }
 
 /**
+ * WorktreeListItem is the picker-facing worktree shape. DeleteBlocked is true
+ * when at least one attached thread has an active turn or a running background
+ * task. Removal repeats the authoritative check while holding the thread locks;
+ * this field only keeps the UI affordance in sync with that backend rule.
+ */
+export class WorktreeListItem {
+    "path": string;
+    "branch": string;
+    "head": string;
+    "deleteBlocked": boolean;
+
+    /** Creates a new WorktreeListItem instance. */
+    constructor($$source: Partial<WorktreeListItem> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("branch" in $$source)) {
+            this["branch"] = "";
+        }
+        if (!("head" in $$source)) {
+            this["head"] = "";
+        }
+        if (!("deleteBlocked" in $$source)) {
+            this["deleteBlocked"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorktreeListItem instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorktreeListItem {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorktreeListItem($$parsedSource as Partial<WorktreeListItem>);
+    }
+}
+
+/**
  * WorktreeStatus describes a worktree's safety classification for the cleanup
  * UI: whether the working tree has uncommitted changes, whether the branch
  * has unpushed commits, whether an upstream is configured, and how many
