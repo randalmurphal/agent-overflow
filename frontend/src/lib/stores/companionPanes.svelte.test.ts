@@ -12,6 +12,7 @@ import {
 } from './paneLayout.svelte';
 import {
   closeCompanion,
+  closeCompanionsForSource,
   companionForSource,
   getCompanionPane,
   installCompanionPanes,
@@ -97,19 +98,56 @@ describe('companionPanes store', () => {
     expect(getPaneLayoutItems()).toEqual([threadItem('main')]);
   });
 
+  it('take-control hugs its source, ahead of open panel companions', () => {
+    setPaneLayoutItemsForTest([threadItem('main'), threadItem('right')]);
+    openCompanion('main', 'plan');
+
+    const takeControl = openCompanion('main', 'take-control');
+
+    expect(takeControl).toEqual({
+      paneId: 'take-control-main',
+      kind: 'take-control',
+      sourcePaneId: 'main',
+    });
+    // The shared top-border indicator reads source + terminal as one
+    // entity, so nothing may sit between them.
+    expect(paneIds()).toEqual(['main', 'take-control-main', 'plan-main', 'right']);
+
+    // A panel companion opened afterwards appends after the run and
+    // does not break the pairing.
+    openCompanion('main', 'review');
+    expect(paneIds()).toEqual(['main', 'take-control-main', 'plan-main', 'review-main', 'right']);
+  });
+
+  it('closes every companion for one source, leaving other sources alone', () => {
+    setPaneLayoutItemsForTest([threadItem('main'), threadItem('right')]);
+    openCompanion('main', 'plan');
+    openCompanion('main', 'review');
+    openCompanion('right', 'plan');
+
+    closeCompanionsForSource('main');
+
+    expect(isCompanionOpen('main', 'plan')).toBe(false);
+    expect(isCompanionOpen('main', 'review')).toBe(false);
+    expect(isCompanionOpen('right', 'plan')).toBe(true);
+    expect(paneIds()).toEqual(['main', 'right', 'plan-right']);
+  });
+
   it('cascade-closes companions when the source pane is destroyed', () => {
     setPaneLayoutItemsForTest([threadItem('p1')]);
     createPane('p1');
     openCompanion('p1', 'plan');
     openCompanion('p1', 'design-preview');
     openCompanion('p1', 'review');
-    expect(paneIds()).toEqual(['p1', 'plan-p1', 'design-preview-p1', 'review-p1']);
+    openCompanion('p1', 'take-control');
+    expect(paneIds()).toEqual(['p1', 'take-control-p1', 'plan-p1', 'design-preview-p1', 'review-p1']);
 
     destroyPane('p1');
 
     expect(isCompanionOpen('p1', 'plan')).toBe(false);
     expect(isCompanionOpen('p1', 'design-preview')).toBe(false);
     expect(isCompanionOpen('p1', 'review')).toBe(false);
+    expect(isCompanionOpen('p1', 'take-control')).toBe(false);
     expect(getPaneLayoutItems()).toEqual([]);
   });
 });

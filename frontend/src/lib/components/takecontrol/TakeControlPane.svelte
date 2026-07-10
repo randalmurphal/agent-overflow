@@ -1,15 +1,16 @@
 <script lang="ts">
-  // The take-control pane: a terminal mirror of the claude-tui session hosted by
-  // its paired source thread pane. This component owns the pairing lifecycle —
-  // it follows the source pane's current claude-tui thread, and closes itself
-  // the moment there is nothing live to mirror (source pane gone, source
-  // switched to a non-claude-tui thread, or the provider session died). The
-  // xterm surface + control-lease toggle are layered in by TakeControlTerminal.
+  // The take-control pane: a terminal mirror of the claude-tui session hosted
+  // by its paired source thread pane. The mirrored thread is PINNED at open —
+  // like every companion, a source-pane thread switch closes this pane
+  // (ThreadPane.commitIncomingThread → closeCompanionsForSource) instead of
+  // re-attaching it, because a terminal that silently swaps sessions risks
+  // keystrokes landing in the wrong one. The effects below are the defensive
+  // layer behind that store seam: close if the source pane disappears, stops
+  // showing the pinned thread, or the provider session dies. The xterm
+  // surface + control-lease toggle are layered in by TakeControlTerminal.
   import X from 'lucide-svelte/icons/x';
-  import {
-    closeTakeControlForLostSource,
-    sourcePaneForTakeControl,
-  } from '../../stores/takeControl.svelte';
+  import { closeCompanion, getCompanionPane } from '../../stores/companionPanes.svelte';
+  import { getPane } from '../../stores/panes.svelte';
   import { wailsEventOn } from '../../stores/wailsEvents';
   import type { SessionDiedEvent } from '../../types/events';
   import Icon from '../primitives/Icon.svelte';
@@ -19,14 +20,15 @@
 
   let { paneId }: { paneId: string } = $props();
 
-  // Reactively resolve the paired source pane and the claude-tui thread it
-  // currently hosts. This IS the "switch follows" contract: the terminal always
-  // mirrors whatever claude-tui session the source pane is showing right now.
-  let sourcePane = $derived(sourcePaneForTakeControl(paneId));
-  let sourceThread = $derived(sourcePane?.thread ?? null);
-  let targetThreadId = $derived(
-    sourceThread?.provider === 'claude-tui' ? sourcePane?.threadId ?? null : null,
-  );
+  // Captured at init: the pairing and the mirrored thread are fixed for this
+  // pane's lifetime. Any change that would invalidate them closes the pane
+  // rather than retargeting it.
+  // svelte-ignore state_referenced_locally
+  const sourcePaneId = getCompanionPane(paneId)?.sourcePaneId ?? null;
+  const targetThreadId = (() => {
+    const sourcePane = sourcePaneId ? getPane(sourcePaneId) : null;
+    return sourcePane?.thread?.provider === 'claude-tui' ? sourcePane.threadId : null;
+  })();
 
   // Close exactly once. Deferred to a microtask so we never mutate pane/layout
   // state synchronously from inside a reactive read (which would re-enter the
@@ -36,12 +38,18 @@
   function requestClose(): void {
     if (closing) return;
     closing = true;
-    queueMicrotask(() => closeTakeControlForLostSource(paneId));
+    queueMicrotask(() => closeCompanion(paneId));
   }
 
-  // Nothing live to mirror → close (no dangling pane on the side).
+  // Nothing live to mirror → close (no dangling pane on the side). The
+  // threadId comparison is defense in depth: the store seam closes this pane
+  // before the source pane commits a different thread, so a mismatch here
+  // means some new path bypassed it.
   $effect(() => {
-    if (!sourcePane || !targetThreadId) requestClose();
+    const sourcePane = sourcePaneId ? getPane(sourcePaneId) : null;
+    if (!sourcePane || !targetThreadId || sourcePane.threadId !== targetThreadId) {
+      requestClose();
+    }
   });
 
   // The provider session ending closes the pane too.
@@ -72,9 +80,7 @@
 
   <div class="flex-1 min-h-0">
     {#if targetThreadId}
-      {#key targetThreadId}
-        <TakeControlTerminal {paneId} threadId={targetThreadId} />
-      {/key}
+      <TakeControlTerminal {paneId} threadId={targetThreadId} />
     {:else}
       <div class="flex h-full items-center justify-center text-sm text-fg-muted">
         <span class="inline-flex items-center gap-2">

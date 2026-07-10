@@ -48,6 +48,7 @@ import { createThreadCheckpointState, type ThreadCheckpointState } from './threa
 import { createGitStatusSlot, type GitStatusSlot } from './gitStatus.svelte';
 import {
   closeCompanion,
+  closeCompanionsForSource,
   companionForSource,
   isCompanionOpen,
   openCompanion,
@@ -898,6 +899,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * Commit the incoming thread to the pane.
    */
   function commitIncomingThread(newThread: Thread): void {
+    // Companion panes (plan / design-preview / review / take-control)
+    // belong to the thread they were opened for. Switching this pane to
+    // a DIFFERENT thread closes them instead of retargeting them; a
+    // same-thread re-switch (revert-to-checkpoint reload) keeps them
+    // open. Closing
+    // happens synchronously, before any effect flush sees the new
+    // thread, so a mounted companion body never re-renders against a
+    // thread it wasn't opened for.
+    if (thread && thread.id !== newThread.id) {
+      closeCompanionsForSource(paneId);
+    }
     draftPlaceholder = null;
     thread = newThread;
     if (newThread.mode !== 'design') {
@@ -1587,6 +1599,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         closeDraftPlaceholderTerminals(draftPlaceholder.id);
         clearWorktreeIntent(draftPlaceholder.id);
       }
+      // Companions are per-thread surfaces; an emptied pane keeps none.
+      // Covers the explicit clear-pane command and startDraftPlaceholder
+      // ("+ New" on a pane that was showing a thread). destroyPane's
+      // cascade observer also lands here — second call is a no-op.
+      closeCompanionsForSource(paneId);
       thread = null;
       updateEffectiveModel('');
       draftPlaceholder = null;

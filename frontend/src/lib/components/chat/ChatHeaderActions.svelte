@@ -30,7 +30,7 @@
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
-  import { isTakeControlOpen, toggleTakeControl } from '../../stores/takeControl.svelte';
+  import { isCompanionOpen, toggleCompanion } from '../../stores/companionPanes.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -39,7 +39,7 @@
   // pane mirroring the live TUI session. Absent for other providers (an
   // unsupported control should not be shown rather than shown-and-disabled).
   let isClaudeTui = $derived(pane.thread?.provider === 'claude-tui');
-  let takeControlOpen = $derived(isTakeControlOpen(pane.paneId));
+  let takeControlOpen = $derived(isCompanionOpen(pane.paneId, 'take-control'));
 
   let terminalToggleChord = $derived(
     formatChord(keybindingForCommand('terminal.toggle') ?? 'mod+`'),
@@ -146,7 +146,7 @@
       pressed={takeControlOpen}
       ariaLabel="Toggle take-control terminal"
       title="Take control — open the live Claude TUI terminal"
-      onclick={() => void ensureThenToggle(() => toggleTakeControl(pane.paneId))}
+      onclick={() => void ensureThenToggle(() => toggleCompanion(pane.paneId, 'take-control'))}
       testId="take-control-toggle"
       class="shrink-0 w-6 px-0"
     >

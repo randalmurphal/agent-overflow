@@ -19,7 +19,7 @@ import {
 } from './paneLayout.svelte';
 import { getMinPaneWidth } from './paneDensity.svelte';
 import { FALLBACK_PANE_WIDTH_PX, normalizePaneWidthPx } from '../utils/paneWidths';
-import { restoreCompanion, type CompanionKind } from './companionPanes.svelte';
+import { restoreCompanion, type CompanionPanelKind } from './companionPanes.svelte';
 import {
   getAllPanes,
   getFocusedPaneId,
@@ -81,11 +81,12 @@ function isSafePersistedThreadId(threadId: string): boolean {
   return threadId.length > 0 && threadId.length <= MAX_THREAD_ID_LENGTH;
 }
 
-function isPersistedCompanionKind(kind: unknown): kind is CompanionKind {
+// take-control is deliberately absent: a live PTY mirror is never persisted.
+function isPersistedCompanionKind(kind: unknown): kind is CompanionPanelKind {
   return kind === 'plan' || kind === 'design-preview' || kind === 'review';
 }
 
-function companionPaneIdFor(sourcePaneId: string, kind: CompanionKind): string {
+function companionPaneIdFor(sourcePaneId: string, kind: CompanionPanelKind): string {
   return `${kind}-${sourcePaneId}`;
 }
 

@@ -1,8 +1,15 @@
-// Plan/design/review companion pane registry + lifecycle.
+// Companion pane registry + lifecycle for every pane paired to a source
+// thread pane: plan, design-preview, review, and take-control.
 //
-// These panes are paired to a source thread pane and snapped immediately to
-// its right by paneLayout.svelte.ts. Unlike take-control, they are persisted
-// and restored by paneLayoutPersistence.ts.
+// Companions are snapped immediately to the source pane's right by
+// paneLayout.svelte.ts, and they belong to the THREAD the source pane was
+// showing when they opened — ThreadPane closes them (closeCompanionsForSource)
+// whenever that thread changes.
+//
+// take-control differs from the panel kinds in two ways: it renders its own
+// surface (TakeControlPane, not a CompanionPane panel body), and it is never
+// persisted — a live PTY mirror cannot be restored across launches. The
+// other kinds are persisted and restored by paneLayoutPersistence.ts.
 
 import {
   addPaneLayoutItem,
@@ -10,10 +17,13 @@ import {
   getPaneLayoutItems,
   isCompanionKind,
   removePaneLayoutItem,
+  type CompanionPaneKind,
 } from './paneLayout.svelte';
 import { addPaneDestroyedObserver } from './panes.svelte';
 
-export type CompanionKind = 'plan' | 'design-preview' | 'review';
+export type CompanionKind = CompanionPaneKind;
+/** The kinds CompanionPane hosts as panel bodies (everything but take-control). */
+export type CompanionPanelKind = Exclude<CompanionKind, 'take-control'>;
 
 export interface CompanionPaneState {
   paneId: string;
@@ -86,7 +96,14 @@ export function openCompanion(
       widthPx: sourceWidthPx > 0 ? sourceWidthPx : averagePaneWidthPx(),
       sourcePaneId,
     },
-    companionInsertIndex(sourcePaneId),
+    // take-control hugs its source even past open panel companions: the
+    // shared top-border indicator reads the two panes as one entity, so
+    // nothing may sit between them. Panel companions append after the
+    // source's existing companion run.
+    kind === 'take-control' ? sourceIndex + 1 : companionInsertIndex(sourcePaneId),
+    // take-control is ephemeral — buildSnapshot skips it, so opening one
+    // must not schedule a settings write it can't contribute to.
+    { persist: kind !== 'take-control' },
   );
   const state: CompanionPaneState = { paneId, kind, sourcePaneId };
   registerCompanionPane(state);
@@ -94,9 +111,10 @@ export function openCompanion(
 }
 
 export function closeCompanion(paneId: string): void {
-  if (!companionPanes.has(paneId)) return;
+  const state = companionPanes.get(paneId);
+  if (!state) return;
   unregisterCompanionPane(paneId);
-  removePaneLayoutItem(paneId);
+  removePaneLayoutItem(paneId, { persist: state.kind !== 'take-control' });
 }
 
 export function toggleCompanion(sourcePaneId: string, kind: CompanionKind): boolean {
@@ -114,7 +132,7 @@ export function isCompanionOpen(sourcePaneId: string, kind: CompanionKind): bool
 
 export function restoreCompanion(
   sourcePaneId: string,
-  kind: CompanionKind,
+  kind: CompanionPanelKind,
   paneId: string,
 ): CompanionPaneState {
   const state: CompanionPaneState = { paneId, kind, sourcePaneId };
@@ -122,13 +140,23 @@ export function restoreCompanion(
   return state;
 }
 
+/**
+ * Close every companion paired to `sourcePaneId`. Companions belong to
+ * the thread they were opened for, not the pane slot: ThreadPane calls
+ * this when its thread changes (switch, clear, draft start), and the
+ * destroyed-pane cascade below funnels through it too.
+ */
+export function closeCompanionsForSource(sourcePaneId: string): void {
+  const paneIds = Array.from(companionPanes.values())
+    .filter((state) => state.sourcePaneId === sourcePaneId)
+    .map((state) => state.paneId);
+  for (const paneId of paneIds) closeCompanion(paneId);
+}
+
 // Only source panes can arrive here: companions are not ThreadPanes, so
 // destroyPane never targets them (same invariant takeControl relies on).
 function onSourcePaneDestroyed(destroyedPaneId: string): void {
-  const paneIds = Array.from(companionPanes.values())
-    .filter((state) => state.sourcePaneId === destroyedPaneId)
-    .map((state) => state.paneId);
-  for (const paneId of paneIds) closeCompanion(paneId);
+  closeCompanionsForSource(destroyedPaneId);
 }
 
 export function installCompanionPanes(): void {

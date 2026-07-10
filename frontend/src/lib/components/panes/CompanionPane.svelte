@@ -5,14 +5,17 @@
   import ReviewPane from '../review/ReviewPane.svelte';
   import {
     closeCompanion,
-    type CompanionKind,
+    type CompanionPanelKind,
   } from '../../stores/companionPanes.svelte';
   import { makePanelContext } from '../../stores/panelContext.svelte';
   import { getPane } from '../../stores/panes.svelte';
 
+  // take-control is a companion in the registry but not a panel body — it
+  // renders its own surface (TakeControlPane) through PaneHost's dedicated
+  // branch, so it never arrives here.
   interface Props {
     paneId: string;
-    kind: CompanionKind;
+    kind: CompanionPanelKind;
     sourcePaneId: string;
   }
 
@@ -25,7 +28,7 @@
     plan: { component: PlanSidebar },
     'design-preview': { component: DesignPreviewRhsPanel },
     review: { component: ReviewPane },
-  } satisfies Record<CompanionKind, CompanionRegistryEntry>;
+  } satisfies Record<CompanionPanelKind, CompanionRegistryEntry>;
 
   let { paneId, kind, sourcePaneId }: Props = $props();
   let sourcePane = $derived(getPane(sourcePaneId));

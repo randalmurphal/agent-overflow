@@ -42,7 +42,16 @@
   // body, and the selection survives rail tab switches.
   const activeExtensions = new SvelteSet<string>();
   let extensionsFilterDiff = $state(false);
-  let review = $derived(ctx.threadId ? reviewStateForPane(ctx.paneId, ctx.threadId, ctx.thread) : null);
+  // Captured at init, NOT $derived: ctx.threadId is fixed for this
+  // instance (CompanionPane keys the panel body on `${thread.id}:${kind}`,
+  // so a thread change remounts it), and reviewStateForPane is
+  // side-effectful — its thread-mismatch branch disposes the replaced
+  // state, which writes $state and is therefore illegal inside a derived
+  // (state_unsafe_mutation). As a derived, a source-pane thread switch
+  // could re-evaluate it on the OLD instance before the {#key} teardown
+  // and crash the render flush.
+  // svelte-ignore state_referenced_locally
+  const review = ctx.threadId ? reviewStateForPane(ctx.paneId, ctx.threadId, ctx.thread) : null;
   let branches: GitBranch[] = $state([]);
   let branchesError: string | null = $state(null);
   const storedTreeVisible = readTreeVisiblePref();
