@@ -837,6 +837,153 @@ describe('<AssistantMessage>', () => {
     });
   });
 
+  // Regression battery for the fence-seal fidelity hunk in
+  // `patches/svelte-streamdown@3.1.2.patch` (parse-incomplete-markdown.js,
+  // contextManager). While a fence streams, the volatile tail is sealed with
+  // an auto-appended closer. The original seal was always a flush-left ` ``` `,
+  // which is NOT a closer for a fence opened with indentation (list item) or
+  // a blockquote prefix — per CommonMark it terminates the enclosing container
+  // and OPENS a new top-level fence instead. That phantom fence rendered as a
+  // persistent empty code-block container under the streaming one, vanishing
+  // with a layout snap when the real closer arrived. The seal now replicates
+  // the opener's leading prefix, fence char, and run length, and drops a
+  // trailing half-streamed closer (a bare ` or `` line) so the close moment
+  // doesn't flicker.
+  it('renders exactly one code block for a streaming list-indented fence (no phantom empty block)', async () => {
+    const summary = [
+      'Two steps:',
+      '',
+      '1. First install it:',
+      '',
+      '   ```bash',
+      '   npm install foo',
+      '   npm run build',
+    ].join('\n');
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const hosts = body.querySelectorAll('[data-code-source]');
+      // Without the prefix-replicating seal this is 2: the real block plus
+      // an empty phantom opened by the flush-left ``` closer.
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].getAttribute('data-code-source')).toContain('npm install foo');
+    });
+  });
+
+  it('renders exactly one code block for a streaming blockquote-nested fence', async () => {
+    const summary = ['> From the docs:', '>', '> ```js', '> const x = 1'].join('\n');
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const hosts = body.querySelectorAll('[data-code-source]');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].getAttribute('data-code-source')).toContain('const x = 1');
+      // The block must live INSIDE the blockquote — a flush-left closer
+      // would strand a phantom fence outside it.
+      expect(hosts[0].closest('blockquote')).not.toBeNull();
+    });
+  });
+
+  // Pins the fence-char half of the seal: a streaming ~~~ fence must be
+  // sealed with ~~~, not ```. A ``` line appended inside an open ~~~ fence is
+  // CONTENT — the block stayed unsealed and the stray ``` showed up as a code
+  // line for a chunk.
+  it('seals a streaming tilde fence without leaking a ``` line into the code', async () => {
+    const summary = '~~~python\nprint(1)';
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const host = body.querySelector('[data-code-source]');
+      expect(host).not.toBeNull();
+      const src = host?.getAttribute('data-code-source') ?? '';
+      expect(src).toContain('print(1)');
+      expect(src).not.toContain('```');
+    });
+  });
+
+  // Pins the run-length half of the close toggle: inside a 4-backtick fence a
+  // bare ``` line is nested-example content, not a closer. The original
+  // any-run toggle treated it as a close, desyncing the seal from marked.
+  it('keeps a bare ``` line inside a streaming 4-backtick fence as content', async () => {
+    const summary = '````md\nExample fence:\n```js\nconst x = 1';
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const hosts = body.querySelectorAll('[data-code-source]');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].getAttribute('data-code-source')).toContain('```js');
+    });
+  });
+
+  // The half-streamed closer: the final ``` arrives a char at a time, and the
+  // lone ` / `` momentarily lexes as a code content line — a one-chunk
+  // grow-then-shrink flicker at every fence close. The seal now drops that
+  // trailing partial run before appending the real closer.
+  it('drops a half-streamed closing fence from the streamed code tail', async () => {
+    const summary = '```js\nconst x = 1\n``';
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const host = body.querySelector('[data-code-source]');
+      expect(host).not.toBeNull();
+      const src = host?.getAttribute('data-code-source') ?? '';
+      expect(src).toContain('const x = 1');
+      expect(src).not.toContain('``');
+    });
+  });
+
+  // Positive control: only the TRAILING partial run is dropped. A bare ``
+  // line mid-code (not the last line) is real content and must survive.
+  it('keeps a bare `` line inside streamed code when it is not the tail', async () => {
+    const summary = '```js\nconst a = 1\n``\nconst b = 2';
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const src =
+        body.querySelector('[data-code-source]')?.getAttribute('data-code-source') ?? '';
+      expect(src).toContain('const a = 1');
+      expect(src).toContain('``');
+      expect(src).toContain('const b = 2');
+    });
+  });
+
+  // Positive control: the seal only runs on the streaming volatile tail. A
+  // settled list-indented block parses with parseIncompleteMarkdown === false
+  // and must render one code block inside the list as before.
+  it('renders a settled list-indented code block normally', async () => {
+    const summary = [
+      '1. First install it:',
+      '',
+      '   ```bash',
+      '   npm install foo',
+      '   ```',
+      '',
+      '2. Then run it.',
+    ].join('\n');
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'completed', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const hosts = body.querySelectorAll('[data-code-source]');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].getAttribute('data-code-source')).toContain('npm install foo');
+      expect(hosts[0].closest('li')).not.toBeNull();
+    });
+  });
+
   it('wraps inline command flags instead of scrolling horizontally', async () => {
     const { getByTestId } = render(AssistantMessage, {
       props: {

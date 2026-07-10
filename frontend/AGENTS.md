@@ -260,6 +260,22 @@ corrupt every project on the machine. Use
       muted with the href as hover title. Disallowed absolute URLs
       (`javascript:` etc.) and network-path refs (`//host/x`) keep the
       tag. Regression: `ChatMarkdown.test.ts`. Upstream-PR candidate.
+  11. **fence-seal fidelity** (`utils/parse-incomplete-markdown.js`,
+      `contextManager`) — sealing a streamed open fence now replicates
+      the opener's leading prefix (list indentation, blockquote `>`
+      markers), fence char, and run length instead of always appending
+      a flush-left ` ``` `. A flush-left closer under a list-indented
+      fence is not a closer per CommonMark: it terminates the list and
+      opens a NEW top-level fence, which rendered as a persistent
+      phantom empty code-block container under the streaming one,
+      vanishing with a layout snap when the real closer arrived. Same
+      shape for blockquote-nested fences; `~~~` fences were sealed with
+      a mismatched ` ``` `. The close toggle is now char/length-aware
+      (a bare ``` inside a ```` fence is content, matching marked), and
+      the seal drops a trailing half-streamed closer (lone `` ` ``/
+      ` `` ` line) so the close moment doesn't grow-then-shrink by a
+      line. Streaming volatile-tail only. Upstream-PR candidate.
+      Regression: `AssistantMessage.test.ts` (fence-seal battery).
 
 ## References
 
