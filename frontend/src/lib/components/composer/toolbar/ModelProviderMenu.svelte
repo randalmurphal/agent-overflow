@@ -85,11 +85,14 @@
 
   // Unlike ensureFavorites there is no loaded-once flag: definitions can
   // be created in Settings mid-session, and this is a cheap local query,
-  // so every menu open refetches. A draft/unstarted thread (empty id)
-  // can't start a discussion at all, so the entry is simply hidden for
-  // it without a round-trip.
+  // so every menu open refetches. A draft placeholder can't start a
+  // discussion at all, so the entry is simply hidden for it without a
+  // round-trip. This must read pane.threadId (null until the draft
+  // materializes) — pane.thread.id is the synthetic `draft:…` id, which
+  // the backend rejects with a no-rows error, and that error would
+  // force the Discussions entry visible just to display it.
   async function ensureDiscussions(): Promise<void> {
-    const threadID = pane.thread?.id ?? '';
+    const threadID = pane.threadId ?? '';
     if (threadID === '') {
       discussionDefs = [];
       discussionDefsError = null;

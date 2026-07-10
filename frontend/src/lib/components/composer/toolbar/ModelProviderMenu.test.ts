@@ -554,6 +554,42 @@ describe('<ModelProviderMenu>', () => {
     expect(listDiscussions).not.toHaveBeenCalled();
   });
 
+  // Regression: a draft placeholder has a non-empty synthetic id
+  // (`draft:<paneId>:<projectId>:<mode>:<ts>`), so the old empty-id guard
+  // in ensureDiscussions let the fetch through. The backend's GetThread
+  // then failed with "sql: no rows in result set", and the error branch
+  // of showDiscussions forced the Discussions entry visible just to
+  // display that error. The guard must key on pane.threadId (null for
+  // placeholders), not pane.thread.id.
+  it('hides the Discussions entry for a draft placeholder without calling the binding', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }));
+    pane.startDraftPlaceholder({
+      id: 'project-1',
+      path: '/tmp',
+      name: 'Project One',
+      sortPosition: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    });
+    expect(pane.thread?.id ?? '').toMatch(/^draft:/);
+    setBindingMock('GetModelsForProvider', async () => []);
+    const listDiscussions = setBindingMock('ListDiscussionsForThread', async () => {
+      throw new Error('store: get thread draft:...: sql: no rows in result set');
+    });
+
+    const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+
+    await findByRole('menuitem', { name: /^Claude$/ });
+    await waitFor(() => {
+      expect(queryByRole('menuitem', { name: /Discussions/i })).toBeNull();
+    });
+    expect(listDiscussions).not.toHaveBeenCalled();
+  });
+
   it('a discussion favorite is hidden when definitions are empty and visible once they exist', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-7' }));
     setBindingMock('GetModelsForProvider', async () => []);
