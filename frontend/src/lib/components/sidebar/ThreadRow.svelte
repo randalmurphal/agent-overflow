@@ -469,15 +469,20 @@
         >
           {sidebarTimeLabel(thread.updatedAt)}
         </span>
+        <!--
+          Hover actions stay unmounted while the jump-hint pill is up —
+          otherwise the absolutely-positioned archive/delete button paints
+          over the ctrl+# pill on the hovered row.
+        -->
+        <div
+          class="absolute inset-y-0 right-0 flex items-center opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto"
+        >
+          <ThreadRowActions
+            onArchive={isTerminal ? undefined : handleArchive}
+            onDelete={isTerminal ? handleDelete : undefined}
+          />
+        </div>
       {/if}
-      <div
-        class="absolute inset-y-0 right-0 flex items-center opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto"
-      >
-        <ThreadRowActions
-          onArchive={isTerminal ? undefined : handleArchive}
-          onDelete={isTerminal ? handleDelete : undefined}
-        />
-      </div>
     </div>
   {/if}
   </div>
