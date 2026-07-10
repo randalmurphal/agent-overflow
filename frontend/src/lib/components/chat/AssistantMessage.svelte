@@ -76,7 +76,7 @@
   </div>
   {#if hasVisibleBody}
     <div
-      class="mt-1.5 flex items-center gap-1.5 text-[0.625rem] text-fg-hint/70"
+      class="mt-1.5 flex items-center gap-1.5 text-[0.625rem] text-fg-hint"
       data-testid="assistant-message-meta"
     >
       <time class="tabular-nums" datetime={isoTime}>

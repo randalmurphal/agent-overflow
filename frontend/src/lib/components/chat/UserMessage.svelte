@@ -193,7 +193,7 @@
         <p class="whitespace-pre-wrap break-words">{visibleSummary}</p>
       {/if}
     </div>
-    <div class="mt-1 flex items-center justify-end gap-1.5 pr-1 text-[0.625rem] text-fg-hint/70">
+    <div class="mt-1 flex items-center justify-end gap-1.5 pr-1 text-[0.625rem] text-fg-hint">
       {#if showMessageActions && pane}
         <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
           <IconButton
