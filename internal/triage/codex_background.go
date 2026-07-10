@@ -1085,6 +1085,29 @@ func (r *Router) CountLiveCodexBackgroundTasks(threadID string) int {
 	return count
 }
 
+// ThreadIDsWithLiveCodexBackgroundTasks snapshots the threads that currently
+// own top-level transient unified-exec tasks. Callers that need project-wide
+// availability can take one router lock instead of probing every historical
+// thread independently.
+func (r *Router) ThreadIDsWithLiveCodexBackgroundTasks() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var ids []string
+	for threadID, state := range r.codexBackground {
+		if state == nil {
+			continue
+		}
+		for _, tracker := range state.unifiedExec {
+			if tracker != nil && strings.TrimSpace(tracker.parentID) == "" {
+				ids = append(ids, threadID)
+				break
+			}
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 func (r *Router) ClearLiveCodexBackgroundTasks(threadID string) {
 	r.mu.Lock()
 	delete(r.codexBackground, threadID)

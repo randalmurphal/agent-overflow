@@ -419,47 +419,94 @@ func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
 	return refs, rows.Err()
 }
 
-// ListThreadWorkspaceRefsWithActivity returns the same ownership projection as
-// ListThreadWorkspaceRefs plus the activity state that blocks worktree removal.
-// The correlated checks keep picker hydration to one query without loading full
-// turn or item rows for every attached thread.
-func (s *Store) ListThreadWorkspaceRefsWithActivity() ([]ThreadWorkspaceRef, error) {
+// ListThreadWorkspaceRefsForProject is the project-scoped counterpart used by
+// app-layer transient activity overlays. It intentionally reads only thread
+// identity and paths, never item history.
+func (s *Store) ListThreadWorkspaceRefsForProject(projectID string) ([]ThreadWorkspaceRef, error) {
 	rows, err := s.db.Query(
-		`SELECT t.id, t.workspace_path, COALESCE(t.worktree_path, ''),
-		        CASE WHEN
-		          COALESCE((
-		            SELECT latest.completed_at IS NULL
-		              FROM turns latest
-		             WHERE latest.thread_id = t.id
-		             ORDER BY latest.turn_index DESC
-		             LIMIT 1
-		          ), 0)
-		          OR EXISTS(
-		            SELECT 1
-		              FROM items launch
-		             WHERE launch.thread_id = t.id
-		               AND launch.kind = 'tool_call'
-		               AND launch.status = 'running'
-		               AND launch.is_background = 1
-		               AND NOT EXISTS(
-		                 SELECT 1 FROM items completion
-		                  WHERE completion.thread_id = launch.thread_id
-		                    AND completion.completion_of = launch.id
-		               )
-		          )
-		        THEN 1 ELSE 0 END
-		   FROM threads t`,
+		`SELECT id, workspace_path, COALESCE(worktree_path, '')
+		   FROM threads
+		  WHERE project_id = ?`,
+		projectID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("store: list thread workspace refs with activity: %w", err)
+		return nil, fmt.Errorf("store: list thread workspace refs for project %s: %w", projectID, err)
 	}
 	defer rows.Close()
 
 	var refs []ThreadWorkspaceRef
 	for rows.Next() {
 		var ref ThreadWorkspaceRef
-		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath, &ref.WorkspaceChangeBlocked); err != nil {
-			return nil, fmt.Errorf("store: scan thread workspace ref with activity: %w", err)
+		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
+			return nil, fmt.Errorf("store: scan project thread workspace ref: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	return refs, rows.Err()
+}
+
+const blockedThreadWorkspaceRefsForProjectSQL = `SELECT t.id, t.workspace_path, COALESCE(t.worktree_path, '')
+  FROM threads t
+ WHERE t.project_id = ?
+   AND (
+     COALESCE((
+       SELECT latest.completed_at IS NULL
+         FROM turns latest
+        WHERE latest.thread_id = t.id
+        ORDER BY latest.turn_index DESC
+        LIMIT 1
+     ), 0)
+     OR EXISTS(
+       SELECT 1
+         FROM items launch INDEXED BY idx_items_live_background
+        WHERE launch.thread_id = t.id
+          AND launch.kind = 'tool_call'
+          AND launch.status = 'running'
+          AND launch.is_background = 1
+          AND launch.parent_id = ''
+          AND COALESCE(json_extract(launch.meta, '$.live_background_active'), 1) != 0
+          AND NOT EXISTS(
+            SELECT 1 FROM items completion INDEXED BY idx_items_completion_of
+             WHERE completion.thread_id = launch.thread_id
+               AND completion.completion_of = launch.id
+               AND completion.completion_of <> ''
+          )
+     )
+     OR EXISTS(
+       SELECT 1
+         FROM items subagent INDEXED BY idx_items_live_codex_subagent
+        WHERE subagent.thread_id = t.id
+          AND t.provider = 'codex'
+          AND subagent.kind = 'tool_call'
+          AND subagent.status = 'completed'
+          AND subagent.tool_name = 'collab_agent'
+          AND subagent.is_background = 1
+          AND COALESCE(json_extract(subagent.meta, '$.live_background_active'), 1) != 0
+          AND json_extract(subagent.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
+          AND NOT EXISTS(
+            SELECT 1 FROM items completion INDEXED BY idx_items_completion_of
+             WHERE completion.thread_id = subagent.thread_id
+               AND completion.completion_of = subagent.id
+               AND completion.completion_of <> ''
+          )
+     )
+   )`
+
+// ListBlockedThreadWorkspaceRefsForProject returns workspace pointers only for
+// threads whose persisted activity currently blocks worktree removal. It is
+// scoped to one project so opening a picker never scans unrelated history.
+func (s *Store) ListBlockedThreadWorkspaceRefsForProject(projectID string) ([]ThreadWorkspaceRef, error) {
+	rows, err := s.db.Query(blockedThreadWorkspaceRefsForProjectSQL, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list blocked thread workspace refs for project %s: %w", projectID, err)
+	}
+	defer rows.Close()
+
+	var refs []ThreadWorkspaceRef
+	for rows.Next() {
+		var ref ThreadWorkspaceRef
+		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
+			return nil, fmt.Errorf("store: scan blocked thread workspace ref: %w", err)
 		}
 		refs = append(refs, ref)
 	}

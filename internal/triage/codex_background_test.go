@@ -2544,11 +2544,17 @@ func TestClearLiveCodexBackgroundTasksDropsTransientTrayRows(t *testing.T) {
 	if count := router.CountLiveCodexBackgroundTasks("t1"); count != 1 {
 		t.Fatalf("count before clear = %d, want 1", count)
 	}
+	if ids := router.ThreadIDsWithLiveCodexBackgroundTasks(); len(ids) != 1 || ids[0] != "t1" {
+		t.Fatalf("live thread ids before clear = %v, want [t1]", ids)
+	}
 
 	router.ClearLiveCodexBackgroundTasks("t1")
 
 	if count := router.CountLiveCodexBackgroundTasks("t1"); count != 0 {
 		t.Fatalf("count after clear = %d, want 0", count)
+	}
+	if ids := router.ThreadIDsWithLiveCodexBackgroundTasks(); len(ids) != 0 {
+		t.Fatalf("live thread ids after clear = %v, want empty", ids)
 	}
 	if live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0); len(live) != 0 {
 		t.Fatalf("live tracker survived clear: %+v", live)

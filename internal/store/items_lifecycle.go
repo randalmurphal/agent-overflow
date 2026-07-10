@@ -71,7 +71,7 @@ func (s *Store) CountLiveRunningBackgroundToolCalls(threadID string) (int, error
 	var count int
 	if err := s.db.QueryRow(
 		`SELECT COUNT(*)
-		   FROM items
+		   FROM items INDEXED BY idx_items_live_background
 		  WHERE thread_id = ?
 		    AND kind = 'tool_call'
 		    AND status = 'running'
@@ -79,9 +79,10 @@ func (s *Store) CountLiveRunningBackgroundToolCalls(threadID string) (int, error
 		    AND parent_id = ''
 		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
 		    AND NOT EXISTS (
-		      SELECT 1 FROM items c
+		      SELECT 1 FROM items c INDEXED BY idx_items_completion_of
 		       WHERE c.thread_id = items.thread_id
 		         AND c.completion_of = items.id
+		         AND c.completion_of <> ''
 		    )`,
 		threadID,
 	).Scan(&count); err != nil {
@@ -122,7 +123,7 @@ func (s *Store) CountLiveCodexSubagentLaunches(threadID string) (int, error) {
 	var count int
 	if err := s.db.QueryRow(
 		`SELECT COUNT(*)
-		   FROM items
+		   FROM items INDEXED BY idx_items_live_codex_subagent
 		   JOIN threads ON threads.id = items.thread_id
 		  WHERE items.thread_id = ?
 		    AND threads.provider = 'codex'
@@ -133,9 +134,10 @@ func (s *Store) CountLiveCodexSubagentLaunches(threadID string) (int, error) {
 		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
 		    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
 		    AND NOT EXISTS (
-		      SELECT 1 FROM items c
+		      SELECT 1 FROM items c INDEXED BY idx_items_completion_of
 		       WHERE c.thread_id = items.thread_id
 		         AND c.completion_of = items.id
+		         AND c.completion_of <> ''
 		    )`,
 		threadID,
 	).Scan(&count); err != nil {

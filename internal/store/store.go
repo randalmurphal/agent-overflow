@@ -152,10 +152,9 @@ type ThreadContextSettings struct {
 // ownership checks. It deliberately includes archived threads because archived
 // rows can be restored later and must not point at a removed worktree.
 type ThreadWorkspaceRef struct {
-	ID                     string
-	WorkspacePath          string
-	WorktreePath           string
-	WorkspaceChangeBlocked bool
+	ID            string
+	WorkspacePath string
+	WorktreePath  string
 }
 
 // Project represents a user-defined grouping of threads rooted at a

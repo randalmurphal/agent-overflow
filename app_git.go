@@ -624,12 +624,12 @@ func (a *App) threadActivityBlockReason(threadID string) (string, error) {
 	} else if ok {
 		return fmt.Sprintf("turn %d is active", turn.TurnIndex), nil
 	}
-	running, err := a.store.ListRunningBackgroundToolCalls(threadID)
+	count, err := a.countRunningBackgroundTasks(threadID)
 	if err != nil {
 		return "", fmt.Errorf("check background tasks: %w", err)
 	}
-	if len(running) > 0 {
-		return fmt.Sprintf("%d background task(s) are running", len(running)), nil
+	if count > 0 {
+		return fmt.Sprintf("%d background task(s) are running", count), nil
 	}
 	return "", nil
 }

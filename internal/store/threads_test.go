@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -123,6 +124,149 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 	}
 	if got.ForkedFromThreadID != thr.ForkedFromThreadID {
 		t.Errorf("ForkedFromThreadID: got %q, want %q", got.ForkedFromThreadID, thr.ForkedFromThreadID)
+	}
+}
+
+func TestListBlockedThreadWorkspaceRefsForProject(t *testing.T) {
+	s := newTestStore(t)
+	project := newTestProject(t, s, "project-blocked-refs", "/repo")
+	otherProject := newTestProject(t, s, "project-blocked-refs-other", "/other")
+
+	createThread := func(id, projectID, workspace string) {
+		t.Helper()
+		thread := makeThread(id, "claude")
+		thread.ProjectID = projectID
+		thread.WorkspacePath = workspace
+		thread.WorktreePath = workspace
+		if err := s.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread(%s): %v", id, err)
+		}
+	}
+	createThread("idle", project.ID, "/repo-idle")
+	createThread("active", project.ID, "/repo-active")
+	createThread("background", project.ID, "/repo-background")
+	createThread("completed-background", project.ID, "/repo-completed-background")
+	createThread("other-active", otherProject.ID, "/other-active")
+	codexSubagent := makeThread("codex-subagent", "codex")
+	codexSubagent.ProjectID = project.ID
+	codexSubagent.WorkspacePath = "/repo-codex-subagent"
+	codexSubagent.WorktreePath = codexSubagent.WorkspacePath
+	if err := s.CreateThread(codexSubagent); err != nil {
+		t.Fatalf("CreateThread(codex-subagent): %v", err)
+	}
+
+	for _, threadID := range []string{"active", "other-active"} {
+		if err := s.InsertTurn(Turn{
+			TurnID:    "turn-" + threadID,
+			ThreadID:  threadID,
+			TurnIndex: 0,
+			StartedAt: 1,
+		}); err != nil {
+			t.Fatalf("InsertTurn(%s): %v", threadID, err)
+		}
+	}
+	now := time.Now().UnixMilli()
+	if _, err := s.AppendItem(Item{
+		ID:           "bg-running",
+		ThreadID:     "background",
+		TurnIndex:    0,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "running",
+		IsBackground: true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("AppendItem(background): %v", err)
+	}
+	if _, err := s.AppendItem(Item{
+		ID:           "bg-completed-launch",
+		ThreadID:     "completed-background",
+		TurnIndex:    0,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "running",
+		IsBackground: true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("AppendItem(completed background launch): %v", err)
+	}
+	if _, err := s.AppendItem(Item{
+		ID:           "bg-completed-result",
+		ThreadID:     "completed-background",
+		TurnIndex:    0,
+		ItemIndex:    1,
+		Kind:         "tool_completion",
+		Role:         "assistant",
+		Status:       "completed",
+		CompletionOf: "bg-completed-launch",
+		CreatedAt:    now + 1,
+		UpdatedAt:    now + 1,
+	}); err != nil {
+		t.Fatalf("AppendItem(completed background result): %v", err)
+	}
+	if _, err := s.AppendItem(Item{
+		ID:           "spawn-codex-subagent",
+		ThreadID:     "codex-subagent",
+		TurnIndex:    0,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "completed",
+		ToolName:     "collab_agent",
+		IsBackground: true,
+		Meta:         `{"live_background_active":true,"input":{"tool":"spawn_agent"}}`,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("AppendItem(codex subagent): %v", err)
+	}
+
+	refs, err := s.ListBlockedThreadWorkspaceRefsForProject(project.ID)
+	if err != nil {
+		t.Fatalf("ListBlockedThreadWorkspaceRefsForProject(): %v", err)
+	}
+	if len(refs) != 3 {
+		t.Fatalf("blocked refs = %+v, want active, background, and Codex subagent", refs)
+	}
+	got := map[string]bool{}
+	for _, ref := range refs {
+		got[ref.ID] = true
+	}
+	if !got["active"] || !got["background"] || !got["codex-subagent"] {
+		t.Fatalf("blocked ref ids = %v, want active, background, and Codex subagent", got)
+	}
+	if got["idle"] || got["completed-background"] || got["other-active"] {
+		t.Fatalf("blocked ref ids leaked idle or another project: %v", got)
+	}
+
+	planRows, err := s.db.Query("EXPLAIN QUERY PLAN "+blockedThreadWorkspaceRefsForProjectSQL, project.ID)
+	if err != nil {
+		t.Fatalf("EXPLAIN QUERY PLAN: %v", err)
+	}
+	defer planRows.Close()
+	var usedBackgroundIndex, usedSubagentIndex, usedCompletionIndex bool
+	for planRows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := planRows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatalf("scan query plan: %v", err)
+		}
+		usedBackgroundIndex = usedBackgroundIndex || strings.Contains(detail, "idx_items_live_background")
+		usedSubagentIndex = usedSubagentIndex || strings.Contains(detail, "idx_items_live_codex_subagent")
+		usedCompletionIndex = usedCompletionIndex || strings.Contains(detail, "idx_items_completion_of")
+	}
+	if err := planRows.Err(); err != nil {
+		t.Fatalf("iterate query plan: %v", err)
+	}
+	if !usedBackgroundIndex || !usedSubagentIndex || !usedCompletionIndex {
+		t.Fatalf(
+			"query plan missing background/subagent/completion indexes: background=%v subagent=%v completion=%v",
+			usedBackgroundIndex, usedSubagentIndex, usedCompletionIndex,
+		)
 	}
 }
 

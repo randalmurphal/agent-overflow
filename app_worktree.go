@@ -682,7 +682,7 @@ func (a *App) GitListWorktrees(threadID string) ([]WorktreeListItem, error) {
 		return nil, err
 	}
 
-	return a.listWorktreesForPicker(project)
+	return a.listWorktreesForPicker(thread.ProjectID, project)
 }
 
 // GitListWorktreesForProject lists worktrees for a project without requiring
@@ -692,17 +692,35 @@ func (a *App) GitListWorktreesForProject(projectID string) ([]WorktreeListItem, 
 	if err != nil {
 		return nil, err
 	}
-	return a.listWorktreesForPicker(project)
+	return a.listWorktreesForPicker(projectID, project)
 }
 
-func (a *App) listWorktreesForPicker(project string) ([]WorktreeListItem, error) {
+func (a *App) listWorktreesForPicker(projectID, project string) ([]WorktreeListItem, error) {
 	worktrees, err := a.gitCore().ListWorktrees(project)
 	if err != nil {
 		return nil, err
 	}
-	refs, err := a.store.ListThreadWorkspaceRefsWithActivity()
+	refs, err := a.store.ListBlockedThreadWorkspaceRefsForProject(projectID)
 	if err != nil {
 		return nil, err
+	}
+	if a.triage != nil {
+		liveThreadIDs := a.triage.ThreadIDsWithLiveCodexBackgroundTasks()
+		if len(liveThreadIDs) > 0 {
+			liveThreads := make(map[string]struct{}, len(liveThreadIDs))
+			for _, threadID := range liveThreadIDs {
+				liveThreads[threadID] = struct{}{}
+			}
+			projectRefs, err := a.store.ListThreadWorkspaceRefsForProject(projectID)
+			if err != nil {
+				return nil, err
+			}
+			for _, ref := range projectRefs {
+				if _, live := liveThreads[ref.ID]; live {
+					refs = append(refs, ref)
+				}
+			}
+		}
 	}
 
 	items := make([]WorktreeListItem, len(worktrees))
@@ -719,9 +737,6 @@ func (a *App) listWorktreesForPicker(project string) ([]WorktreeListItem, error)
 		itemByPath[gitops.CanonicalPath(items[i].Path)] = i
 	}
 	for _, ref := range refs {
-		if !ref.WorkspaceChangeBlocked {
-			continue
-		}
 		for _, path := range []string{ref.WorktreePath, ref.WorkspacePath} {
 			if strings.TrimSpace(path) == "" {
 				continue
