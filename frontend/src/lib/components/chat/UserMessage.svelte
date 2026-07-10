@@ -66,11 +66,11 @@
   // per message lifetime — when the per-message checkpoint is captured —
   // and then stays stable. Deliberately does NOT gate on getActiveTurn:
   // unmounting the toolbar at turn-started / re-mounting at turn-completed
-  // toggles the bubble's footer width (no min-width on the bubble), which
-  // shows up as visible jitter on the just-sent user message. Race
-  // prevention during an active turn is handled by `actionsTurnLocked`,
-  // which renders the buttons as `visibility:hidden` — still in layout,
-  // no pointer events — instead of removing them from the DOM.
+  // would collapse the footer row's height (the icon buttons are taller
+  // than the timestamp text), which reads as jitter on the just-sent
+  // message. Race prevention during an active turn is handled by
+  // `actionsTurnLocked`, which disables the buttons — grayed out via the
+  // IconButton disabled styling — instead of removing them from the DOM.
   const showMessageActions = $derived(
     pane !== undefined
       && pane.checkpoints.loaded
@@ -79,10 +79,8 @@
       && !isWireOnlyUserMessage,
   );
 
-  // True while a turn is in flight on this pane's thread. Drives a
-  // `visibility:hidden` class on the action button wrappers so the
-  // bubble width stays constant across turn-started/turn-completed
-  // transitions and the buttons stay non-interactive during the turn.
+  // True while a turn is in flight on this pane's thread. Disables the
+  // action buttons so revert/fork/review can't race the active turn.
   const actionsTurnLocked = $derived(
     pane !== undefined && getActiveTurn(pane.threadId) !== null,
   );
@@ -120,7 +118,7 @@
   const isoTime = $derived(new Date(item.createdAt).toISOString());
 
   async function requestRevert(): Promise<void> {
-    if (!canRequestRevert || revertBusy) return;
+    if (!canRequestRevert || revertBusy || actionsTurnLocked) return;
     if (revertPopoverOpen) {
       actions?.onCancelRevertMessage?.();
       return;
@@ -134,12 +132,12 @@
   }
 
   async function requestFork(): Promise<void> {
-    if (!canRequestFork || forkBusy) return;
+    if (!canRequestFork || forkBusy || actionsTurnLocked) return;
     await actions?.onForkMessage?.(item);
   }
 
   function openCheckpointReview(): void {
-    if (!pane?.threadId) return;
+    if (!pane?.threadId || actionsTurnLocked) return;
     void openReviewCompanion(pane.paneId, pane.threadId, {
       scope: 'turn',
       checkpointUserItemId: item.id,
@@ -148,60 +146,61 @@
 </script>
 
 <div class="group mb-5 flex justify-end">
-  <div
-    class="max-w-[82%] rounded-[18px] rounded-br-[8px] border border-border-subtle bg-surface-2/60
-           px-3.5 py-2 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet"
-    class:user-message-target-flash-a={targetFlash && targetFlashNonce % 2 === 0}
-    class:user-message-target-flash-b={targetFlash && targetFlashNonce % 2 === 1}
-    data-target-flash={targetFlash ? 'true' : undefined}
-  >
-    {#if attachments.length > 0}
-      <div
-        class="mb-2 grid max-w-[420px] grid-cols-2 gap-2"
-        data-testid="user-message-attachments"
-      >
-        {#each attachments as attachment, index (attachment.id)}
-          {@const preview = attachmentPreviews.previewFor(attachment.id)}
-          <button
-            type="button"
-            aria-label={`Preview ${attachment.filename}`}
-            class="relative overflow-hidden rounded-lg border border-border bg-surface-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-            onclick={() => expandAttachment(attachment.id)}
-          >
-            {#if preview}
-              <img
-                src={preview.url}
-                alt={attachment.filename}
-                class="aspect-[4/3] w-full object-cover"
-              />
-            {:else}
-              <span class="flex aspect-[4/3] w-full items-center justify-center px-2 text-center text-xs text-text-secondary">
-                {attachment.filename}
-              </span>
-            {/if}
-            <span
-              class="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-white"
-              aria-label={`Image ${index + 1}`}
-            >
-              #{index + 1}
-            </span>
-          </button>
-        {/each}
-      </div>
-    {/if}
-    {#if visibleSummary}
-      <p class="whitespace-pre-wrap break-words">{visibleSummary}</p>
-    {/if}
-    <div class="mt-1.5 flex items-center justify-end gap-1.5 text-[0.625rem] text-fg-hint/70">
-      {#if showMessageActions && pane}
-        <span
-          class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100"
-          class:invisible={actionsTurnLocked}
+  <div class="flex max-w-[82%] flex-col items-end">
+    <div
+      class="rounded-[18px] rounded-br-[8px] border border-border-subtle bg-surface-2/60
+             px-4 py-2.5 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet"
+      class:user-message-target-flash-a={targetFlash && targetFlashNonce % 2 === 0}
+      class:user-message-target-flash-b={targetFlash && targetFlashNonce % 2 === 1}
+      data-target-flash={targetFlash ? 'true' : undefined}
+      data-testid="user-message-bubble"
+    >
+      {#if attachments.length > 0}
+        <div
+          class="mb-2 grid max-w-[420px] grid-cols-2 gap-2"
+          data-testid="user-message-attachments"
         >
+          {#each attachments as attachment, index (attachment.id)}
+            {@const preview = attachmentPreviews.previewFor(attachment.id)}
+            <button
+              type="button"
+              aria-label={`Preview ${attachment.filename}`}
+              class="relative overflow-hidden rounded-lg border border-border bg-surface-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              onclick={() => expandAttachment(attachment.id)}
+            >
+              {#if preview}
+                <img
+                  src={preview.url}
+                  alt={attachment.filename}
+                  class="aspect-[4/3] w-full object-cover"
+                />
+              {:else}
+                <span class="flex aspect-[4/3] w-full items-center justify-center px-2 text-center text-xs text-text-secondary">
+                  {attachment.filename}
+                </span>
+              {/if}
+              <span
+                class="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-white"
+                aria-label={`Image ${index + 1}`}
+              >
+                #{index + 1}
+              </span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+      {#if visibleSummary}
+        <p class="whitespace-pre-wrap break-words">{visibleSummary}</p>
+      {/if}
+    </div>
+    <div class="mt-1 flex items-center justify-end gap-1.5 pr-1 text-[0.625rem] text-fg-hint/70">
+      {#if showMessageActions && pane}
+        <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
           <IconButton
             label="Open checkpoint in review pane"
             size="sm"
             variant="ghost"
+            disabled={actionsTurnLocked}
             onClick={openCheckpointReview}
           >
             {#snippet children()}
@@ -213,13 +212,12 @@
           <span
             bind:this={revertAnchor}
             class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100"
-            class:invisible={actionsTurnLocked}
           >
             <IconButton
               label="Revert to this message"
               size="sm"
               variant="ghost"
-              disabled={revertBusy}
+              disabled={revertBusy || actionsTurnLocked}
               ariaHaspopup="menu"
               ariaExpanded={revertPopoverOpen}
               onClick={() => void requestRevert()}
@@ -231,15 +229,12 @@
           </span>
         {/if}
         {#if canRequestFork}
-          <span
-            class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100"
-            class:invisible={actionsTurnLocked}
-          >
+          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
             <IconButton
               label="Fork from this message"
               size="sm"
               variant="ghost"
-              disabled={forkBusy}
+              disabled={forkBusy || actionsTurnLocked}
               onClick={() => void requestFork()}
             >
               {#snippet children()}

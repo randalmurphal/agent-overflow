@@ -71,6 +71,23 @@ describe('<UserMessage>', () => {
     expect(time?.className).not.toContain('group-hover:opacity-100');
   });
 
+  it('renders the timestamp footer outside the message bubble', () => {
+    const { container, getByTestId } = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'hello',
+        }),
+      },
+    });
+
+    const bubble = getByTestId('user-message-bubble');
+    const time = container.querySelector('time');
+    expect(time).not.toBeNull();
+    expect(bubble.contains(time)).toBe(false);
+  });
+
   it('alternates target flash classes so repeated jumps restart the glow animation', async () => {
     const item = makeItem({
       kind: 'user_text',
@@ -170,14 +187,14 @@ describe('<UserMessage>', () => {
     expect(getByLabelText('Fork from this message')).toBeInTheDocument();
   });
 
-  it('keeps the action toolbar in the layout (visibility:hidden) during an active turn so bubble width stays stable', async () => {
-    // Regression for the "bubble snaps wider after the agent responds"
-    // glitch: the toolbar used to unmount on getActiveTurn≠null and
-    // remount on turn-completed, which toggled the footer width as
-    // turns started/ended. The buttons now stay rendered (just
-    // invisible) so the bubble width is invariant across turn
-    // boundaries; race prevention is handled by visibility:hidden
-    // blocking pointer events.
+  it('keeps the action toolbar mounted but disabled (grayed out) during an active turn', async () => {
+    // Regression for the "footer snaps after the agent responds" glitch:
+    // the toolbar used to unmount on getActiveTurn≠null and remount on
+    // turn-completed, which toggled the footer geometry as turns started
+    // and ended. The buttons now stay rendered but disabled — grayed out
+    // via the IconButton disabled styling — so the footer is invariant
+    // across turn boundaries and race prevention comes from the native
+    // disabled attribute blocking activation.
     const pane = makeCheckpointedPane();
     const item = makeItem({
       id: 'user:1',
@@ -187,8 +204,9 @@ describe('<UserMessage>', () => {
       role: 'user',
       summary: 'commit',
     });
+    const onRevertMessage = vi.fn(async () => {});
     const actions: UserMessageActions = {
-      onRevertMessage: vi.fn(),
+      onRevertMessage,
       onForkMessage: vi.fn(),
     };
 
@@ -196,28 +214,33 @@ describe('<UserMessage>', () => {
       props: { pane, item, actions },
     });
 
+    const reviewButton = getByLabelText('Open checkpoint in review pane');
     const revertButton = getByLabelText('Revert to this message');
     const forkButton = getByLabelText('Fork from this message');
-    const revertWrapper = revertButton.parentElement;
-    const forkWrapper = forkButton.parentElement;
-    expect(revertWrapper?.className).not.toContain('invisible');
-    expect(forkWrapper?.className).not.toContain('invisible');
+    expect(reviewButton).not.toBeDisabled();
+    expect(revertButton).not.toBeDisabled();
+    expect(forkButton).not.toBeDisabled();
 
     projectTurnStarted('thread-1', 'turn-1', 1, 1000);
     await tick();
 
     expect(container.contains(revertButton)).toBe(true);
     expect(container.contains(forkButton)).toBe(true);
-    expect(revertWrapper?.className).toContain('invisible');
-    expect(forkWrapper?.className).toContain('invisible');
+    expect(reviewButton).toBeDisabled();
+    expect(revertButton).toBeDisabled();
+    expect(forkButton).toBeDisabled();
+
+    await fireEvent.click(revertButton);
+    expect(onRevertMessage).not.toHaveBeenCalled();
 
     projectTurnCompleted('thread-1', 'turn-1');
     await tick();
 
     expect(container.contains(revertButton)).toBe(true);
     expect(container.contains(forkButton)).toBe(true);
-    expect(revertWrapper?.className).not.toContain('invisible');
-    expect(forkWrapper?.className).not.toContain('invisible');
+    expect(reviewButton).not.toBeDisabled();
+    expect(revertButton).not.toBeDisabled();
+    expect(forkButton).not.toBeDisabled();
   });
 
   it('requests message revert through the parent-owned handler', async () => {
