@@ -4311,7 +4311,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.escapedFromLock).toBe(false);
 
       // 4. Streaming chunks (3 in a row). The combined 600px chase runs
-      // at the hard velocity cap (~18px/frame), so it needs ~45 frames
+      // at the hard velocity cap (27px/frame), so it needs ~23 frames
       // plus the arrival tail — budget accordingly.
       for (let i = 0; i < 3; i++) {
         geom.scrollHeight += 200;

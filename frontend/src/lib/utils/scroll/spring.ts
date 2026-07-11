@@ -15,6 +15,7 @@
 // deps.
 
 import { springGateIsOpen, withinArrivalBand } from './resolver';
+import { installDocumentResumeTracking, msSinceDocumentResume } from './documentResume';
 import { nowMs } from './time';
 import { trace } from './trace';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
@@ -90,16 +91,52 @@ const ARRIVAL_VELOCITY_THRESHOLD = 0.5;
 // while parked within the same chase — so the machinery was dead weight
 // and the fixed ceiling is all that ever ran.
 const SPRING_CARRY_VELOCITY_CEILING = 4;
-// Hard cap on chase speed, in px per 60Hz frame (18 ≈ 1080 px/s). Large
+// Hard cap on chase speed, in px per 60Hz frame (27 ≈ 1620 px/s). Large
 // distances — a command block appended mid-prose, a several-hundred-px
 // correction routed through the spring — glide at a bounded constant
 // speed instead of a distance-proportional zoom (~3000 px/s for a 400px
 // jump), trading a few hundred ms of extra follow latency for motion
-// that stays readable. Deliberately above the end-of-stream drain's peak
-// content growth rate (~900 px/s) so steady-state follow never
-// accumulates lag; genuine bulk layout corrections bypass the spring
-// entirely (resolver decline tier / instant pins) and still snap.
-const SPRING_MAX_VELOCITY_PX_PER_FRAME = 18;
+// that stays readable.
+//
+// INVARIANT: this cap must stay comfortably ABOVE the peak reveal-driven
+// content growth rate (~900 px/s — the end-of-stream drain under
+// MAX_ADAPTIVE_CHARS_PER_SEC, markdown/smoothing/PerItemSmoother.ts).
+// The follower being faster than the growth is what keeps steady-state
+// follow lag-free at ANY wire speed — reveal rate-limits rendered
+// height, not the wire. Raising reveal rates requires raising this in
+// step.
+const SPRING_MAX_VELOCITY_PX_PER_FRAME = 27;
+// Bound on how far a RESUMED chase may animate, in viewports. When a
+// tick finds the target more than one viewport away AND one of the
+// discontinuity signals below says rendering genuinely paused, the
+// glide's start point jumps forward so exactly one viewport of smooth
+// motion remains — the far span cuts, the last screenful glides in as
+// visible, intentional catch-up (~0.55s of motion at the velocity cap).
+// Without it, returning to an occluded/minimized window mid-turn paid
+// the entire backlog as a multi-second bounded-speed glide ("catching
+// up on the whole scroll distance from when you left").
+//
+// Distance alone is deliberately NOT proof of a stall: a >viewport
+// structural mount (a huge diff card, a fat command-output flush) is
+// spring-routed by design during live follow (resolver.ts
+// positiveWillPin) and must keep its full bounded glide — clamping it
+// would be an unintentional mid-stream cut. So the clamp additionally
+// requires an OBSERVED discontinuity, either signal sufficing:
+//   - this tick's real rAF gap ≥ STALL_RESUME_GAP_MS (occlusion or
+//     minimize froze rAF mid-chase / mid-sentinel; the first resumed
+//     tick carries the whole gap), or
+//   - the document returned to visibility within
+//     RESUME_CLAMP_WINDOW_MS (a chase starting FRESH right after
+//     resume has no prior tick to carry the gap; visibilitychange →
+//     visible also snaps the text smoothers to the wire in one frame,
+//     which is exactly what creates the backlog).
+// Failure is self-limiting in both directions: a missed signal
+// degrades to the old full-distance bounded glide; a spurious signal
+// still needs a >viewport jump to do anything and then produces a
+// bounded cut plus a screenful of motion — never a teleport-to-bottom.
+const SPRING_MAX_CHASE_DISTANCE_VIEWPORTS = 1;
+const STALL_RESUME_GAP_MS = 1000;
+const RESUME_CLAMP_WINDOW_MS = 2000;
 // Deceleration envelope: max chase speed as a fraction of the REMAINING
 // distance (per 60Hz frame), never squeezed below the _MIN below and
 // capped at SPRING_MAX. This shapes the perceived ease-out — speed
@@ -112,7 +149,7 @@ const SPRING_MAX_VELOCITY_PX_PER_FRAME = 18;
 // 0.11 sits just under the spring's natural quasi-steady follow ratio
 // (≈ 0.145·remaining at 60Hz), so it binds gently rather than fighting
 // the integrator. Large chases cruise at SPRING_MAX until the envelope
-// takes over below ≈ 164px remaining, giving big glides a progressive
+// takes over below ≈ 245px remaining, giving big glides a progressive
 // slowdown instead of cruise-until-stop.
 //
 // The tail below the envelope is the spring's own decay, rendered
@@ -175,6 +212,7 @@ interface ChaseTelemetry {
   maxGapMs: number;
   gapBuckets: number[];
   catchupClamps: number;
+  distanceJumps: number;
   targetChanges: number;
   sentinelEntries: number;
   longTasks: number;
@@ -306,6 +344,9 @@ export interface SpringChase {
 }
 
 export function createSpringChase(deps: SpringChaseDeps): SpringChase {
+  // Idempotent: the chase-distance clamp's visibility-resume signal
+  // needs one document-level listener per page, not per controller.
+  installDocumentResumeTracking();
   let velocity = 0;
   let accumulated = 0;
   let lastTickAt: number | null = null;
@@ -358,6 +399,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       maxGapMs: 0,
       gapBuckets: new Array<number>(CHASE_GAP_BUCKET_BOUNDS_MS.length + 1).fill(0),
       catchupClamps: 0,
+      distanceJumps: 0,
       targetChanges: 0,
       sentinelEntries: 0,
       longTasks: 0,
@@ -425,6 +467,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // [<9, 9–13, 13–18, 18–26, 26–42, >42] ms.
       gapBuckets: stats.gapBuckets,
       catchupClamps: stats.catchupClamps,
+      distanceJumps: stats.distanceJumps,
       targetChanges: stats.targetChanges,
       sentinelEntries: stats.sentinelEntries,
       longTasks: stats.longTasks,
@@ -551,8 +594,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
 
       // Cache per-tick. `targetScrollTop()` reads `scrollHeight` /
       // `clientHeight` — both force layout. Compute once per frame.
+      // (`current` is re-read after a catch-up jump write below.)
       const target = deps.targetScrollTop();
-      const current = el.scrollTop;
+      let current = el.scrollTop;
       deps.arrival.invalidateStale(target);
 
       // Reduced motion (OS preference or the app's low-power setting)
@@ -609,6 +653,38 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         } else {
           deps.arrival.clear();
           sentinelEntryTarget = -1;
+          // Chase-distance clamp (see SPRING_MAX_CHASE_DISTANCE_VIEWPORTS
+          // for the full gating rationale): only on a >viewport backlog
+          // paired with an OBSERVED discontinuity — this tick's real rAF
+          // gap, or a just-resumed document. Jump the glide's start point
+          // so exactly one viewport of motion remains, entering at cruise
+          // speed so the remaining glide reads as catch-up already in
+          // flight (the deceleration envelope still shapes the landing).
+          // Layout is clean here (targetScrollTop just read it), so
+          // clientHeight doesn't reflow. Skip when unmeasured
+          // (clientHeight 0): a zero limit would degrade every chase into
+          // a snap.
+          const chaseLimitPx = el.clientHeight * SPRING_MAX_CHASE_DISTANCE_VIEWPORTS;
+          const tickGapMs = previousTickAt === null ? 0 : now - previousTickAt;
+          const resumedFromDiscontinuity =
+            tickGapMs >= STALL_RESUME_GAP_MS
+            || msSinceDocumentResume() <= RESUME_CLAMP_WINDOW_MS;
+          if (
+            resumedFromDiscontinuity
+            && chaseLimitPx > 0
+            && Math.abs(target - current) > chaseLimitPx
+          ) {
+            const chasingDown = target > current;
+            const entry = chasingDown ? target - chaseLimitPx : target + chaseLimitPx;
+            deps.writeScrollTop('spring.catchupJump', entry);
+            // Re-read: the engine may round the written value.
+            current = el.scrollTop;
+            accumulated = 0;
+            velocity = chasingDown
+              ? SPRING_MAX_VELOCITY_PX_PER_FRAME
+              : -SPRING_MAX_VELOCITY_PX_PER_FRAME;
+            if (chaseTelemetry) chaseTelemetry.distanceJumps += 1;
+          }
           if (integrationFrames > 0) {
             let remainingFrames = integrationFrames;
             while (remainingFrames > 0) {

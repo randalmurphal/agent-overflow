@@ -76,7 +76,11 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     key/touch listeners, escape and re-stick, restore-snap consent, and
     programmatic-write tagging. Intent is never geometry-inferred.
   - `spring.ts` — chase kinematics: HOW a spring advances scrollTop
-    frame to frame once the controller decides one runs.
+    frame to frame once the controller decides one runs. Also owns the
+    chase-distance clamp: after an observed rAF discontinuity (tick gap
+    ≥1s, or document visibility resumed ≤2s ago) a chase more than one
+    viewport behind jump-enters the glide (`spring.catchupJump` write)
+    so exactly one viewport animates — distance alone never clamps.
   - `observers.ts` — the content-geometry delivery pipeline, the warm-up
     (quiescence) gate, and resize classification. Two sources feed the
     one pipeline: engine-sourced samples in chat
@@ -808,10 +812,13 @@ Useful trace records:
   cancel; chases under 3 ticks are skipped): tick counts (write /
   sentinel), a frame-gap histogram (`gapBuckets`, bounds
   `[<9, 9–13, 13–18, 18–26, 26–42, >42]` ms — see
-  `CHASE_GAP_BUCKET_BOUNDS_MS`), `maxGapMs`, catch-up clamp count,
-  target changes, sentinel entries (stop/restart cycles), and long-task
-  count/duration during the chase (Chromium `longtask` observer; absent
-  under WebKit). This — not the 1-in-12 sampled `spring.tick` spacing —
+  `CHASE_GAP_BUCKET_BOUNDS_MS`), `maxGapMs`, catch-up clamp count
+  (`catchupClamps`), chase-distance jumps (`distanceJumps` — the
+  `spring.catchupJump` write that, after an observed rAF discontinuity,
+  re-enters the glide one viewport from the target instead of animating
+  the whole frozen-tab backlog), target changes, sentinel entries
+  (stop/restart cycles), and long-task count/duration during the chase
+  (Chromium `longtask` observer; absent under WebKit). This — not the 1-in-12 sampled `spring.tick` spacing —
   is how to judge whether a chase actually dropped frames; see the
   telemetry footgun note in
   [`settle-flicker-analysis.md`](settle-flicker-analysis.md).

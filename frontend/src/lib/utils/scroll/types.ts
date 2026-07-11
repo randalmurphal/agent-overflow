@@ -23,6 +23,7 @@ export type ScrollWriteCaller =
   | 'spring.overshoot'
   | 'spring.arrive'
   | 'spring.oscillationSnap'
+  | 'spring.catchupJump'
   | 'notifyContentMaybeGrew'
   | 'notifyLiveContentMaybeGrew'
   | 'notifyLiveContentMaybeGrew.arrive'

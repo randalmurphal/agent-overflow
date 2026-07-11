@@ -9,6 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSpringChase, type ArrivalReadback, type SpringChaseDeps } from './spring';
+import { setDocumentResumeAtForTest } from './documentResume';
 import { ARRIVAL_DISTANCE_PX } from './resolver';
 import {
   clearUiRenderTrace,
@@ -45,8 +46,12 @@ interface Harness {
  * rounded value. The default (fractional storage) keeps the kinematic
  * assertions exact; the quantized variant exercises the
  * remainder-carry path (which is inert when writes store exactly).
+ *
+ * `clientHeight` (default 0 = unmeasured) arms the chase-distance clamp;
+ * the kinematic tests leave it off so their long-glide assertions stay
+ * exact.
  */
-function makeHarness(opts: { quantize?: boolean } = {}): Harness {
+function makeHarness(opts: { quantize?: boolean; clientHeight?: number } = {}): Harness {
   let scrollTop = 0;
   let target = 0;
   let animationMode: 'spring' | 'instant' = 'spring';
@@ -59,6 +64,9 @@ function makeHarness(opts: { quantize?: boolean } = {}): Harness {
   const el = {
     get scrollTop() {
       return scrollTop;
+    },
+    get clientHeight() {
+      return opts.clientHeight ?? 0;
     },
   } as unknown as HTMLElement;
 
@@ -126,6 +134,7 @@ function displacements(h: Harness, frames: number): number[] {
 beforeEach(() => {
   now = 0;
   rafQueue = [];
+  setDocumentResumeAtForTest(null);
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
     rafQueue.push(cb);
     return rafQueue.length;
@@ -150,14 +159,14 @@ describe('spring velocity cap', () => {
     h.spring.markTargetChanged();
     h.spring.start();
 
-    const moves = displacements(h, 60);
+    const moves = displacements(h, 40);
     // Uncapped, a 900px chase peaks near ~0.12·D ≈ 100px/frame. The cap
-    // holds every frame to SPRING_MAX_VELOCITY_PX_PER_FRAME (18) — small
+    // holds every frame to SPRING_MAX_VELOCITY_PX_PER_FRAME (27) — small
     // epsilon for the fractional-step integration.
     for (const move of moves) {
-      expect(move).toBeLessThanOrEqual(18.5);
+      expect(move).toBeLessThanOrEqual(27.5);
     }
-    // Still actually gets there: 900px at ≤18px/frame needs ≥50 frames.
+    // Still actually gets there: 900px at ≤27px/frame needs ≥33 frames.
     expect(h.getScrollTop()).toBeGreaterThan(700);
   });
 
@@ -171,10 +180,10 @@ describe('spring velocity cap', () => {
     const before = h.getScrollTop();
     frame(100); // stall: dtFrames = 6, clamped to SPRING_MAX_CATCHUP_STEPS (3)
     const move = h.getScrollTop() - before;
-    // Three capped steps: ≤ 3 × 18px (+ integration epsilon), far short of
-    // the remaining ~700px gap — a blocked frame never becomes a teleport.
-    expect(move).toBeLessThanOrEqual(54.5);
-    expect(move).toBeGreaterThan(36); // multiple steps actually ran
+    // Three capped steps: ≤ 3 × 27px (+ integration epsilon), far short of
+    // the remaining ~600px gap — a blocked frame never becomes a teleport.
+    expect(move).toBeLessThanOrEqual(81.5);
+    expect(move).toBeGreaterThan(54); // multiple steps actually ran
   });
 
   it('caps downward (shrink-follow) chases symmetrically', () => {
@@ -182,7 +191,7 @@ describe('spring velocity cap', () => {
     h.setTarget(900);
     h.spring.markTargetChanged();
     h.spring.start();
-    for (let i = 0; i < 80; i++) frame();
+    for (let i = 0; i < 60; i++) frame();
     expect(h.getScrollTop()).toBeGreaterThan(850);
 
     // Content shrinks far below the current position mid-follow.
@@ -190,8 +199,121 @@ describe('spring velocity cap', () => {
     h.spring.markTargetChanged();
     const moves = displacements(h, 40);
     for (const move of moves) {
-      expect(move).toBeGreaterThanOrEqual(-18.5);
+      expect(move).toBeGreaterThanOrEqual(-27.5);
     }
+  });
+});
+
+describe('chase-distance clamp', () => {
+  function catchupJumps(h: Harness): { caller: string; value: number }[] {
+    return h.writes.filter((write) => write.caller === 'spring.catchupJump');
+  }
+
+  it('a live >viewport structural mount NEVER clamps — full bounded glide (hard requirement)', () => {
+    const h = makeHarness({ clientHeight: 600 });
+    // A huge diff card mounts in one frame mid-follow: rAF is ticking
+    // normally and the document never went hidden. Distance alone must
+    // not be read as a stall.
+    h.setTarget(5000);
+    h.spring.markTargetChanged();
+    h.spring.start();
+
+    const moves = displacements(h, 200);
+    expect(catchupJumps(h)).toHaveLength(0);
+    for (const move of moves) {
+      expect(move).toBeLessThanOrEqual(27.5);
+    }
+    expect(h.getScrollTop()).toBeGreaterThan(4700);
+  });
+
+  it('clamps to one viewport of glide when the tick carries a real rAF stall gap', () => {
+    const h = makeHarness({ clientHeight: 600 });
+    h.setTarget(300);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    frame();
+    frame(); // chase established; lastTickAt is live
+
+    // Occlusion: rAF frozen for 5s while content grew far past the
+    // viewport. The first resumed tick carries the whole gap.
+    h.setTarget(6000);
+    h.spring.markTargetChanged();
+    frame(5000);
+
+    const jumps = catchupJumps(h);
+    expect(jumps).toHaveLength(1);
+    expect(jumps[0].value).toBe(5400); // target − one viewport
+    // The cut is instant; everything after it is bounded glide.
+    const moves = displacements(h, 40);
+    for (const move of moves) {
+      expect(move).toBeLessThanOrEqual(27.5);
+    }
+    expect(h.getScrollTop()).toBeGreaterThan(5900);
+  });
+
+  it('clamps a fresh chase started shortly after the document resumed visibility', () => {
+    const h = makeHarness({ clientHeight: 600 });
+    // visibilitychange → visible fired just now (text smoothers snapped
+    // to the wire, creating the backlog); the chase starts fresh with no
+    // prior tick to carry the rAF gap.
+    setDocumentResumeAtForTest(now);
+    h.setTarget(5000);
+    h.spring.markTargetChanged();
+    h.spring.start();
+
+    frame();
+    expect(catchupJumps(h)[0]?.value).toBe(4400);
+  });
+
+  it('never engages on a sub-viewport backlog even under a stall gap', () => {
+    const h = makeHarness({ clientHeight: 600 });
+    h.setTarget(100);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    frame();
+
+    h.setTarget(500);
+    h.spring.markTargetChanged();
+    frame(5000);
+    for (let i = 0; i < 60; i++) frame();
+    expect(catchupJumps(h)).toHaveLength(0);
+    expect(h.getScrollTop()).toBeGreaterThan(450);
+  });
+
+  it('clamps a shrink-follow backlog symmetrically', () => {
+    const h = makeHarness({ clientHeight: 600 });
+    h.setTarget(900);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 60; i++) frame();
+    expect(h.getScrollTop()).toBeGreaterThan(850);
+
+    // Content collapses far above the current position while rAF was
+    // frozen (stall gap on the resumed tick).
+    h.setTarget(100);
+    h.spring.markTargetChanged();
+    frame(5000);
+    expect(catchupJumps(h)[0]?.value).toBe(700); // target + one viewport
+    const moves = displacements(h, 40);
+    for (const move of moves) {
+      expect(move).toBeGreaterThanOrEqual(-27.5);
+    }
+  });
+
+  it('stays inert when the viewport is unmeasured (clientHeight 0)', () => {
+    const h = makeHarness();
+    h.setTarget(300);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    frame();
+
+    h.setTarget(5000);
+    h.spring.markTargetChanged();
+    frame(5000);
+    for (let i = 0; i < 8; i++) frame();
+    expect(catchupJumps(h)).toHaveLength(0);
+    // Old behavior preserved: bounded glide from the original position.
+    expect(h.getScrollTop()).toBeLessThan(600);
   });
 });
 
