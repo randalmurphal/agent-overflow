@@ -1,9 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createPane,
   destroyPane,
+  focusPane,
+  getFocusedPaneId,
   resetPanesForTest,
 } from './panes.svelte';
+import { REVEAL_PANE_EVENT } from './eventNames';
 import {
   getPaneLayoutItems,
   resetPaneLayoutForTest,
@@ -131,6 +134,60 @@ describe('companionPanes store', () => {
     expect(isCompanionOpen('main', 'review')).toBe(false);
     expect(isCompanionOpen('right', 'plan')).toBe(true);
     expect(paneIds()).toEqual(['main', 'right', 'plan-right']);
+  });
+
+  it('a focused companion hands focus back to its source on close', () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    openCompanion('main', 'review');
+    focusPane('review-main');
+    expect(getFocusedPaneId()).toBe('review-main');
+
+    closeCompanion('review-main');
+
+    expect(getFocusedPaneId()).toBe('main');
+  });
+
+  it('closing an unfocused companion leaves focus alone', () => {
+    setPaneLayoutItemsForTest([threadItem('main'), threadItem('right')]);
+    createPane('main');
+    createPane('right');
+    openCompanion('main', 'plan');
+    focusPane('right');
+
+    closeCompanion('plan-main');
+
+    expect(getFocusedPaneId()).toBe('right');
+  });
+
+  it('destroying a source whose companion holds focus falls back to a surviving pane', () => {
+    setPaneLayoutItemsForTest([threadItem('p1'), threadItem('p2')]);
+    createPane('p1');
+    createPane('p2');
+    openCompanion('p1', 'review');
+    focusPane('review-p1');
+
+    destroyPane('p1');
+
+    // The companion cascade-closed with its source; focus cannot dangle
+    // on the dead companion id.
+    expect(getFocusedPaneId()).toBe('p2');
+  });
+
+  it('opening a companion reveals it without moving focus', () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    focusPane('main');
+    const onReveal = vi.fn();
+    window.addEventListener(REVEAL_PANE_EVENT, onReveal);
+    try {
+      openCompanion('main', 'plan');
+      expect(getFocusedPaneId()).toBe('main');
+      expect(onReveal).toHaveBeenCalledTimes(1);
+      expect((onReveal.mock.calls[0][0] as CustomEvent<{ paneId: string }>).detail.paneId).toBe('plan-main');
+    } finally {
+      window.removeEventListener(REVEAL_PANE_EVENT, onReveal);
+    }
   });
 
   it('cascade-closes companions when the source pane is destroyed', () => {

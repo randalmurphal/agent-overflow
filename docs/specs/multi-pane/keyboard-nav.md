@@ -27,7 +27,7 @@ Vim-style `H` / `L` bindings are alternates to the arrow-key forms; both must be
 
 - **Focus nav stops at the row edges.** No wrap-around. `Alt+ArrowRight` from the rightmost pane is a no-op.
 - **Move-pane clamps** at the first or last position. `Alt+Shift+ArrowRight` from the rightmost pane is a no-op.
-- **Focus onto off-screen pane** (due to overflow scroll) → pane row auto-scrolls to bring the newly focused pane into view. Reuses the same scroll-into-view helper used by [thread-routing.md](./thread-routing.md) and [attention-indicators.md](./attention-indicators.md).
+- **Focus onto off-screen pane** (due to overflow scroll) → pane row auto-scrolls to bring the newly focused pane into view. The reveal belongs to the nav command, not to focus itself: `focusPane` never scrolls, and explicit-intent sites (keyboard nav, thread opens, click focus transitions) pair it with `revealPane`. Reuses the same scroll-into-view helper used by [thread-routing.md](./thread-routing.md) and [attention-indicators.md](./attention-indicators.md).
 
 ## Why `Alt`
 
@@ -39,8 +39,9 @@ This convention also leaves `Ctrl/Cmd+1` … `Ctrl/Cmd+9` available for other us
 
 - All bindings register through the existing keybinding registry.
 - The handlers all funnel into store actions on `panes.svelte.ts`:
-  - `focusPane(direction)` for `Alt+arrow/H/L`
-  - `movePane(direction)` for `Alt+Shift+arrow/H/L`
-  - `closePane(paneId)` for `Ctrl+W`
+  - `focusAdjacentPane(direction)` for `Alt+arrow/H/L` — every mounted
+    pane is a stop, companions and take-control terminals included
+  - `moveFocusedPane(direction)` for `Alt+Shift+arrow/H/L`
+  - `closeFocusedPaneOrCompanion()` (companionPanes.svelte.ts) for `Ctrl+W`
   - `openThreadInNewPane(...)` for `Ctrl+Shift+N`
 - Verify no collisions with existing bindings (e.g. composer's text-input shortcuts, the palette opener). The chat-composer keybindings live in the composer component and are scoped to composer focus — they should not collide.

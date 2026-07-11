@@ -10,6 +10,7 @@ import {
   findPaneShowingThread,
   focusPane,
   openThreadIdInNewPane,
+  revealPane,
 } from '../../stores/panes.svelte';
 import {
   movePaneLayoutItemToIndex,
@@ -238,7 +239,10 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     if (!threadId) return;
     const existing = findPaneShowingThread(threadId);
     if (existing) {
+      // Dropping a thread that's already open is navigation intent:
+      // focus AND reveal the pane showing it.
       focusPane(existing.paneId);
+      revealPane(existing.paneId);
       return;
     }
     if (!target) return;

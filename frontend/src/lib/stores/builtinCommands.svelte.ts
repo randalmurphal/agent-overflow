@@ -18,15 +18,17 @@ import { closeThreadPicker, isThreadPickerOpen, openThreadPicker } from './threa
 import { addToast } from './toast.svelte';
 import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
-  closeFocusedPane,
   focusAdjacentPane,
-  getFocusedPaneId,
+  getFocusedThreadPaneId,
+  getPane,
   moveFocusedPane,
   openThreadFromNavigation,
   openThreadInNewPane,
   openThreadInPane,
   syncThread,
 } from './panes.svelte';
+import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
+import type { PaneLayoutItem } from './paneLayout.svelte';
 import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
@@ -251,11 +253,23 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: '!terminalFocus',
     editableReachable: true,
     run: () => {
-      closeFocusedPane();
-      const nextFocused = getFocusedPaneId();
+      closeFocusedPaneOrCompanion();
+      const nextFocused = getFocusedThreadPaneId();
       if (nextFocused) focusPaneComposerIfEditableActive(nextFocused);
     },
   });
+
+  // Landing on a thread pane moves DOM focus with the logical focus: latch
+  // a terminal-mode thread's xterm, otherwise carry an editing caret to the
+  // pane's composer. Companion / take-control stops keep logical focus only —
+  // they have no composer, and yanking the caret out of one would surprise.
+  function followPaneNavDomFocus(item: PaneLayoutItem): void {
+    if (item.kind !== 'thread') return;
+    const nextPane = getPane(item.paneId);
+    if (!nextPane) return;
+    if (nextPane.thread?.mode === 'terminal') nextPane.requestTerminalFocus();
+    else focusPaneComposerIfEditableActive(nextPane.paneId);
+  }
 
   // Pane navigation stays reachable from inside a focused terminal: the default
   // vim chords (alt+h/l, alt+shift+h/l) are un-gated here AND in the Go
@@ -268,11 +282,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     editableReachable: true,
     run: () => {
       const next = focusAdjacentPane(-1);
-      if (!next) return;
-      // Into a terminal pane: latch focus so the xterm grabs the keyboard — a
-      // terminal has no composer for focusPaneComposerIfEditableActive to hit.
-      if (next.thread?.mode === 'terminal') next.requestTerminalFocus();
-      else focusPaneComposerIfEditableActive(next.paneId);
+      if (next) followPaneNavDomFocus(next);
     },
   });
 
@@ -283,9 +293,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     editableReachable: true,
     run: () => {
       const next = focusAdjacentPane(1);
-      if (!next) return;
-      if (next.thread?.mode === 'terminal') next.requestTerminalFocus();
-      else focusPaneComposerIfEditableActive(next.paneId);
+      if (next) followPaneNavDomFocus(next);
     },
   });
 

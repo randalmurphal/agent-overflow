@@ -30,7 +30,13 @@ export function focusPaneComposerIfEditableActive(paneId: string): void {
 export function focusPaneComposer(paneId: string): boolean {
   const textarea = findPaneComposer(paneId);
   if (!textarea) return false;
-  textarea.focus();
+  // preventScroll is load-bearing: a bare focus() instantly scrolls every
+  // scrollable ancestor (the horizontal pane strip included) to the
+  // textarea, and it runs synchronously while PaneHost's smooth reveal is
+  // still one rAF away — turning pane-nav onto an off-screen pane into a
+  // snap. Strip reveal belongs to revealPane/PaneHost alone; DOM focus
+  // must never scroll. (xterm's Terminal.focus() already does the same.)
+  textarea.focus({ preventScroll: true });
   return true;
 }
 

@@ -11,7 +11,7 @@
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
   import { getPaneLayoutItems, isCompanionKind } from '../../stores/paneLayout.svelte';
   import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
-  import { REVEAL_PANE_EVENT } from '../../stores/events';
+  import { REVEAL_PANE_EVENT } from '../../stores/eventNames';
   import PaneDivider from './PaneDivider.svelte';
   import { measurePane } from './measurePane';
   import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
@@ -106,6 +106,13 @@
     const publishScrollPosition = (): void => {
       scrollLeft = el.scrollLeft;
     };
+    // A horizontal wheel/trackpad gesture over the strip is user scroll
+    // intent — it wins over an in-flight reveal glide. Vertical wheel
+    // (timeline scrolling inside a pane) bubbles here too and must NOT
+    // cancel, or reveals would abort whenever content is scrolled mid-glide.
+    const cancelGlideOnUserScroll = (event: WheelEvent): void => {
+      if (event.deltaX !== 0 || event.shiftKey) cancelStripGlide();
+    };
     const obs = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (entry) setPaneHostWidth(entry.contentRect.width);
@@ -115,8 +122,10 @@
     setPaneHostWidth(el.getBoundingClientRect().width);
     publishHostGeometry();
     el.addEventListener('scroll', publishScrollPosition, { passive: true });
+    el.addEventListener('wheel', cancelGlideOnUserScroll, { passive: true });
     return () => {
       el.removeEventListener('scroll', publishScrollPosition);
+      el.removeEventListener('wheel', cancelGlideOnUserScroll);
       obs.disconnect();
     };
   });
@@ -133,7 +142,10 @@
   });
 
   $effect(() => {
-    return () => drag.destroy();
+    return () => {
+      drag.destroy();
+      cancelStripGlide();
+    };
   });
 
   // After a layout-order change (alt+shift+h/l, drag-and-drop reorder),
@@ -170,17 +182,113 @@
     };
   });
 
+  // Always deferred one frame: reveal is requested in the same tick as the
+  // layout mutation it follows (pane open/reorder/destroy), so a synchronous
+  // scrollIntoView would measure pre-flush geometry — an unmounted <section>
+  // on open, stale offsets after moveFocusedPane's insertBefore reorder or a
+  // neighbor's unmount. By rAF time Svelte has flushed and layout is
+  // current. Same-frame requests coalesce to the latest target.
+  let pendingScrollPaneId: string | null = null;
   function requestPaneScroll(paneId: string): void {
-    paneElementById(paneId)?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'nearest',
-      inline: 'nearest',
+    const alreadyScheduled = pendingScrollPaneId !== null;
+    pendingScrollPaneId = paneId;
+    if (alreadyScheduled) return;
+    requestAnimationFrame(() => {
+      const target = pendingScrollPaneId;
+      pendingScrollPaneId = null;
+      if (!target) return;
+      const paneEl = paneElementById(target);
+      if (paneEl) scrollPaneIntoView(paneEl);
     });
   }
 
-  function handlePaneFocus(paneId: string): void {
+  // The strip reveal animation is self-owned rather than native
+  // scrollIntoView({ behavior: 'smooth' }): browsers restart an interrupted
+  // smooth scrollIntoView from stale animation bookkeeping, so chained
+  // reveals (alt+h/l held across several panes) visibly rewound the strip
+  // before re-animating. An exponential approach retargets from the CURRENT
+  // position on every request, so chained reveals read as one continuous
+  // motion. Position is mirrored as a float because scrollLeft reads back
+  // rounded, which would stall the tail of the ease.
+  const GLIDE_TIME_CONSTANT_MS = 90; // ~95% of the distance covered in ~270ms
+  // Stalled-frame clamp: resuming mid-glide advances at glide pace instead
+  // of paying the whole gap in one alpha≈1 write (an unintentional snap).
+  const GLIDE_MAX_FRAME_MS = 40;
+  let glideTargetLeft: number | null = null;
+  let glideCurrentLeft = 0;
+  let glideLastTs: number | null = null;
+  let glideFrame = 0;
+
+  function cancelStripGlide(): void {
+    if (glideFrame) cancelAnimationFrame(glideFrame);
+    glideFrame = 0;
+    glideTargetLeft = null;
+    glideLastTs = null;
+  }
+
+  function stepStripGlide(ts: number): void {
+    const el = hostEl;
+    if (!el || glideTargetLeft === null) {
+      glideFrame = 0;
+      return;
+    }
+    const dt = glideLastTs === null
+      ? 16
+      : Math.min(GLIDE_MAX_FRAME_MS, Math.max(0, ts - glideLastTs));
+    glideLastTs = ts;
+    const alpha = 1 - Math.exp(-dt / GLIDE_TIME_CONSTANT_MS);
+    glideCurrentLeft += (glideTargetLeft - glideCurrentLeft) * alpha;
+    if (Math.abs(glideTargetLeft - glideCurrentLeft) < 0.75) {
+      el.scrollLeft = glideTargetLeft;
+      cancelStripGlide();
+      return;
+    }
+    el.scrollLeft = glideCurrentLeft;
+    glideFrame = requestAnimationFrame(stepStripGlide);
+  }
+
+  function glideStripTo(target: number): void {
+    const el = hostEl;
+    if (!el) return;
+    const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+    glideTargetLeft = Math.max(0, Math.min(maxLeft, target));
+    if (glideFrame) return; // retargeted mid-flight — the running loop picks it up
+    glideCurrentLeft = el.scrollLeft;
+    glideLastTs = null;
+    glideFrame = requestAnimationFrame(stepStripGlide);
+  }
+
+  function scrollPaneIntoView(paneEl: HTMLElement): void {
+    const el = hostEl;
+    if (!el) return;
+    const paneLeft = paneEl.offsetLeft;
+    const paneRight = paneLeft + paneEl.offsetWidth;
+    // Judge visibility against where the strip is HEADED (the in-flight
+    // glide target), not just where it is: revealing a pane that is
+    // visible now but not at the destination must retarget the glide, not
+    // silently let it carry the pane off-screen.
+    const viewLeft = glideTargetLeft ?? el.scrollLeft;
+    const viewRight = viewLeft + el.clientWidth;
+    if (paneLeft >= viewLeft && paneRight <= viewRight) return;
+    glideStripTo(paneLeft < viewLeft ? paneLeft : paneRight - el.clientWidth);
+  }
+
+  // Pointer focus: reveal only on an actual focus TRANSITION (clicking an
+  // unfocused, partially visible pane slides it fully into view). Clicking
+  // inside the already-focused pane never moves the strip — selecting text
+  // or grabbing a scrollbar in a half-visible pane must not snap it.
+  function handlePanePointerDown(paneId: string): void {
+    const isTransition = focusedPaneId !== paneId;
     focusPane(paneId);
-    requestPaneScroll(paneId);
+    if (isTransition) requestPaneScroll(paneId);
+  }
+
+  // DOM focus tracks logical focus but NEVER reveals: window re-activation
+  // and focus-trap restores re-fire focusin on the previously focused
+  // element, and scrolling on those yanked the strip away from wherever
+  // the user had scrolled (they usually re-assert the same pane anyway).
+  function handlePaneFocusIn(paneId: string): void {
+    focusPane(paneId);
   }
 
   // flex-grow = widthPx stretches panes proportionally to their base
@@ -215,36 +323,37 @@
     </section>
   {:else}
     {#each layoutItems as item, index (item.id)}
-      {#if item.kind === 'take-control'}
-        <!-- Take-control terminal pane: mirrors a claude-tui session's PTY. Not
-             a ThreadPane — it owns its own surface and is bound to its source
-             pane via TakeControlPane. No thread-drop/focus wiring; it can't host
-             a thread. The shared top border marks the pairing on both halves. -->
-        <section
-          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
-          style={paneSectionStyle(item.widthPx)}
-          class="take-control-pair-top flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70"
-          data-pane-id={item.paneId}
-          data-pane-kind={item.kind}
-          data-pane-min-width={minPaneWidth}
-          data-pane-width={item.widthPx}
-        >
-          <TakeControlPane paneId={item.paneId} />
-        </section>
-      {:else if isCompanionKind(item.kind)}
+      {#if isCompanionKind(item.kind)}
+        <!-- Companion panes (plan/design-preview/review panels + the
+             take-control PTY mirror) are not ThreadPanes: no thread-drop
+             wiring, and they hold their own logical focus — pane-scoped
+             commands (close/move) act on the companion, thread-scoped
+             commands resolve to the source via getFocusedPaneOrNull.
+             take-control differs only in surface (its own terminal, not a
+             CompanionPane panel body) and in the shared top border that
+             marks the pairing on both halves. -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <section
           use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
           style={paneSectionStyle(item.widthPx)}
-          class="flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70"
+          class={[
+            item.kind === 'take-control' ? 'take-control-pair-top' : '',
+            'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70',
+            focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
+          ].join(' ')}
           data-pane-id={item.paneId}
           data-pane-kind={item.kind}
           data-pane-min-width={minPaneWidth}
           data-pane-width={item.widthPx}
-          onpointerdown={() => handlePaneFocus(item.sourcePaneId!)}
-          onfocusin={() => handlePaneFocus(item.sourcePaneId!)}
+          data-pane-focused={focusedPaneId === item.paneId}
+          onpointerdown={() => handlePanePointerDown(item.paneId)}
+          onfocusin={() => handlePaneFocusIn(item.paneId)}
         >
-          <CompanionPane paneId={item.paneId} kind={item.kind} sourcePaneId={item.sourcePaneId!} />
+          {#if item.kind === 'take-control'}
+            <TakeControlPane paneId={item.paneId} />
+          {:else}
+            <CompanionPane paneId={item.paneId} kind={item.kind} sourcePaneId={item.sourcePaneId!} />
+          {/if}
         </section>
       {:else}
         {@const pane = getPane(item.paneId)}
@@ -267,8 +376,8 @@
             data-pane-width={item.widthPx}
             data-pane-focused={focusedPaneId === item.paneId}
             data-pane-paired={paired}
-            onpointerdown={() => handlePaneFocus(item.paneId)}
-            onfocusin={() => handlePaneFocus(item.paneId)}
+            onpointerdown={() => handlePanePointerDown(item.paneId)}
+            onfocusin={() => handlePaneFocusIn(item.paneId)}
             ondrop={(event) => drag.onPaneDrop(event, item.paneId)}
             ondragend={drag.onPaneDragEnd}
           >

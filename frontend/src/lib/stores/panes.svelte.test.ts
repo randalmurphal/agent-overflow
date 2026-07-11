@@ -1,14 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createPane,
   closePanesShowingThread,
   closePanesShowingThreads,
   destroyPane,
   ensureMainPane,
+  focusAdjacentPane,
   focusPane,
   getAllPanes,
   getFocusedPane,
   getFocusedPaneId,
+  getFocusedThreadPaneId,
   getMainPane,
   getPaneActivation,
   isThreadVisible,
@@ -21,8 +23,10 @@ import {
   panesShowingThread,
   registerPaneForTest,
   resetPanesForTest,
+  revealPane,
   syncThread,
 } from './panes.svelte';
+import { REVEAL_PANE_EVENT } from './eventNames';
 import { createThreadPane } from './thread.svelte';
 import {
   getThreads,
@@ -361,6 +365,74 @@ describe('panes store', () => {
       expect(getFocusedPaneId()).toBe('left');
     });
 
+    it('focusPane sets logical focus without dispatching a reveal', () => {
+      createPane('left');
+      createPane('right');
+      setPaneLayoutItemsForTest([
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
+      ]);
+      const onReveal = vi.fn();
+      window.addEventListener(REVEAL_PANE_EVENT, onReveal);
+      try {
+        focusPane('right');
+        expect(getFocusedPaneId()).toBe('right');
+        expect(onReveal).not.toHaveBeenCalled();
+
+        revealPane('right');
+        expect(onReveal).toHaveBeenCalledTimes(1);
+      } finally {
+        window.removeEventListener(REVEAL_PANE_EVENT, onReveal);
+      }
+    });
+
+    it('a focused companion resolves to its source for thread-scoped consumers', () => {
+      const source = createPane('source');
+      setPaneLayoutItemsForTest([
+        { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
+        { id: 'review-source', paneId: 'review-source', kind: 'review', widthPx: 1, sourcePaneId: 'source' },
+      ]);
+
+      focusPane('review-source');
+
+      expect(getFocusedPaneId()).toBe('review-source');
+      expect(getFocusedThreadPaneId()).toBe('source');
+      expect(getFocusedPane()).toBe(source);
+    });
+
+    it('focusPane rejects ids that are neither registered panes nor layout items', () => {
+      createPane('only');
+      setPaneLayoutItemsForTest([
+        { id: 'only', paneId: 'only', kind: 'thread', widthPx: 1 },
+      ]);
+      focusPane('only');
+
+      focusPane('ghost');
+
+      expect(getFocusedPaneId()).toBe('only');
+    });
+
+    it('focusAdjacentPane stops on companion panes in layout order', () => {
+      createPane('left');
+      createPane('right');
+      setPaneLayoutItemsForTest([
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'review-left', paneId: 'review-left', kind: 'review', widthPx: 1, sourcePaneId: 'left' },
+        { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
+      ]);
+      focusPane('left');
+
+      const first = focusAdjacentPane(1);
+      expect(first?.paneId).toBe('review-left');
+      expect(first?.kind).toBe('review');
+      expect(getFocusedPaneId()).toBe('review-left');
+
+      const second = focusAdjacentPane(1);
+      expect(second?.paneId).toBe('right');
+      expect(focusAdjacentPane(1)).toBeNull();
+      expect(getFocusedPaneId()).toBe('right');
+    });
+
     it('moves the focused pane through the layout order and clamps at edges', () => {
       createPane('left');
       createPane('middle');
@@ -377,6 +449,28 @@ describe('panes store', () => {
       moveFocusedPane(1);
 
       expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'middle', 'right']);
+    });
+
+    it('moveFocusedPane with a focused companion moves the whole source block', () => {
+      createPane('left');
+      createPane('source');
+      setPaneLayoutItemsForTest([
+        { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
+        { id: 'review-source', paneId: 'review-source', kind: 'review', widthPx: 1, sourcePaneId: 'source' },
+      ]);
+      focusPane('review-source');
+
+      moveFocusedPane(-1);
+
+      // The [source + companion] block steps past 'left' as one unit —
+      // a companion can never be separated from its source.
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([
+        'source',
+        'review-source',
+        'left',
+      ]);
+      expect(getFocusedPaneId()).toBe('review-source');
     });
 
     it('destroys every pane showing a removed thread', async () => {

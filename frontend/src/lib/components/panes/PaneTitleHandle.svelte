@@ -35,6 +35,10 @@
     inputTestId = 'pane-title-input',
   }: Props = $props();
 
+  // Deliberately the RAW focused pane id (not getFocusedThreadPaneId): the
+  // accent ring marks the pane that literally holds focus. When a companion
+  // is focused its ring lives on the companion, so the source thread's
+  // title must NOT light up too.
   let isFocusedPane = $derived(getFocusedPaneId() === pane.paneId);
 
   // Inline-rename state: a local string buffer + editing toggle so the input

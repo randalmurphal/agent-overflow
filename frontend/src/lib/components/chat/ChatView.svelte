@@ -24,7 +24,7 @@
     RevertToMessageCheckpointWithOptions,
   } from '../../stores/bindings';
   import { prependThread, updateThreadReadState } from '../../stores/threads.svelte';
-  import { focusPane, getFocusedPaneId, openThreadInPane } from '../../stores/panes.svelte';
+  import { getFocusedThreadPaneId, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
@@ -243,11 +243,13 @@
     // Only the focused pane auto-clears unread/completed state. A turn
     // completing on a thread that's mounted in a background pane must
     // leave the "Completed" attention dot in place so the user can see
-    // it from the other pane and decide when to switch over. Reading
-    // getFocusedPaneId() here registers a reactive dep, so the effect
-    // re-runs (and can fire the read-mark) the moment the user focuses
-    // this pane.
-    if (getFocusedPaneId() !== pane.paneId) return;
+    // it from the other pane and decide when to switch over. The gate
+    // uses the RESOLVED focus (a focused companion counts as its source
+    // thread pane — working in a review pane means viewing the thread).
+    // Reading getFocusedThreadPaneId() here registers a reactive dep, so
+    // the effect re-runs (and can fire the read-mark) the moment the
+    // user focuses this pane.
+    if (getFocusedThreadPaneId() !== pane.paneId) return;
     const marker = [
       thread.id,
       thread.latestTurnCompletedAt ?? '',
@@ -295,7 +297,7 @@
     if (!threadId) return;
     // Same focus gate as the read-mark effect — background panes
     // should not silently clear error/interrupted attention either.
-    if (getFocusedPaneId() !== pane.paneId) return;
+    if (getFocusedThreadPaneId() !== pane.paneId) return;
     // Dependency read: rerun when attention status changes while this thread
     // is already active. projectThreadViewed owns the exact clear policy so
     // masked flags still clear without duplicating priority rules here.
@@ -519,11 +521,8 @@
 </script>
 
 {#snippet chatColumnBody()}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={chatColumn}
-    onpointerdown={() => focusPane(pane.paneId)}
-    onfocusin={() => focusPane(pane.paneId)}
     class="relative flex flex-col min-h-0 flex-1 min-w-0"
     style="--composer-height: {composerHeight}px;"
   >

@@ -1,10 +1,13 @@
-// PaneCloseButton stops a click on the X from triggering pane-level focus /
-// reveal. The pane section (PaneHost) and chat column (ChatView) both focus —
-// and thereby scroll-into-view — the pane on focusin and pointerdown. The
-// button takes focus on click, so without stopping focusin, closing a
-// partially-scrolled pane first smooth-scrolls it on-screen and then closes:
-// a jarring shift the user reported. These tests lock both propagation stops
-// (pointerdown was already handled; focusin was the gap) and the destroy.
+// PaneCloseButton stops a click on the X from triggering pane-level focus
+// side effects. The pane section (PaneHost) focuses the pane on pointerdown
+// and — when that click is a focus transition — scrolls it into view;
+// without the pointerdown stop, closing an unfocused, partially-scrolled
+// pane first smooth-scrolls it on-screen and then closes. The focusin stop
+// matters on Chromium-engine webviews (buttons take focus on mousedown):
+// without it, logical focus lands on the dying pane and destroyPane's
+// dangling-focus fixup then focuses + reveals its neighbor, stealing focus
+// from wherever the user was working. These tests lock both stops and the
+// destroy.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
@@ -18,7 +21,7 @@ describe('<PaneCloseButton>', () => {
     resetPanesForTest();
   });
 
-  it('stops focusin and pointerdown from reaching the pane focus/reveal handlers', async () => {
+  it('stops focusin and pointerdown from reaching the pane focus handlers', async () => {
     const onAncestorFocusIn = vi.fn();
     const onAncestorPointerDown = vi.fn();
     const { getByTestId } = render(PaneCloseButtonHarness, {

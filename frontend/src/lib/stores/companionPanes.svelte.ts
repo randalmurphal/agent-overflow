@@ -19,7 +19,13 @@ import {
   removePaneLayoutItem,
   type CompanionPaneKind,
 } from './paneLayout.svelte';
-import { addPaneDestroyedObserver } from './panes.svelte';
+import {
+  addPaneDestroyedObserver,
+  closeFocusedPane,
+  focusPane,
+  getFocusedPaneId,
+  revealPane,
+} from './panes.svelte';
 
 export type CompanionKind = CompanionPaneKind;
 /** The kinds CompanionPane hosts as panel bodies (everything but take-control). */
@@ -107,6 +113,10 @@ export function openCompanion(
   );
   const state: CompanionPaneState = { paneId, kind, sourcePaneId };
   registerCompanionPane(state);
+  // Opening is explicit intent: scroll the new companion into view. Focus
+  // deliberately stays on the source thread — the user opts into the
+  // companion by clicking or pane-navigating into it.
+  revealPane(paneId);
   return state;
 }
 
@@ -115,6 +125,26 @@ export function closeCompanion(paneId: string): void {
   if (!state) return;
   unregisterCompanionPane(paneId);
   removePaneLayoutItem(paneId, { persist: state.kind !== 'take-control' });
+  // A focused companion hands focus back to its source. During a source-pane
+  // destroy cascade the source is already gone — focusPane no-ops on the
+  // missing id and destroyPane's own dangling-focus fixup takes over.
+  if (getFocusedPaneId() === paneId) focusPane(state.sourcePaneId);
+}
+
+/**
+ * Pane-scoped close for whatever holds focus. A focused companion closes
+ * ITSELF (never the thread it's paired to — closeCompanion hands focus
+ * back to the source); anything else destroys the focused thread pane.
+ * This is the single owner of the companion-vs-thread close branch —
+ * `pane.close` routes here. It lives in this store because
+ * panes.svelte.ts must not depend on companion stores, while the reverse
+ * dependency is the sanctioned direction.
+ */
+export function closeFocusedPaneOrCompanion(): void {
+  const focusedId = getFocusedPaneId();
+  const companion = focusedId ? companionPanes.get(focusedId) : null;
+  if (companion) closeCompanion(companion.paneId);
+  else closeFocusedPane();
 }
 
 export function toggleCompanion(sourcePaneId: string, kind: CompanionKind): boolean {

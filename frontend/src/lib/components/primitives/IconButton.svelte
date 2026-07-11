@@ -17,6 +17,11 @@
      *  controls can migrate to this primitive without losing their test hook. */
     testId?: string;
     onClick?: (e: MouseEvent) => void;
+    /** Raw pointerdown passthrough. Close-the-pane affordances use it to
+     *  stopPropagation so PaneHost's pointer-focus handler doesn't treat
+     *  the click as a focus transition — which would smooth-scroll a pane
+     *  that is about to be destroyed (see PaneCloseButton's rationale). */
+    onPointerDown?: (e: PointerEvent) => void;
     size?: 'sm' | 'md';
     variant?: 'ghost' | 'subtle';
     ariaHaspopup?: 'dialog' | 'menu' | 'listbox' | 'tree' | 'grid' | boolean;
@@ -29,6 +34,7 @@
     disabled = false,
     testId,
     onClick,
+    onPointerDown,
     size = 'md',
     variant = 'ghost',
     ariaHaspopup,
@@ -66,6 +72,7 @@
   aria-expanded={ariaExpanded}
   title={label}
   onclick={handleClick}
+  onpointerdown={onPointerDown}
   class={[
     'inline-flex items-center justify-center rounded-md text-text-secondary',
     'transition-colors cursor-pointer',

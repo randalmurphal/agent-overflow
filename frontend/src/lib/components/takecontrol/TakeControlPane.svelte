@@ -70,7 +70,12 @@
     <span class="font-medium text-fg">Claude TUI</span>
     <span class="opacity-70">terminal</span>
     <div class="ml-auto">
-      <IconButton label="Close take-control terminal" size="sm" onClick={requestClose}>
+      <IconButton
+        label="Close take-control terminal"
+        size="sm"
+        onClick={requestClose}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
         {#snippet children()}
           <Icon icon={X} size={14} />
         {/snippet}

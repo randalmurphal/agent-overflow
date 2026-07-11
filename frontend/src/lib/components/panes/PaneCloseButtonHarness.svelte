@@ -1,11 +1,11 @@
 <!--
   Test harness for <PaneCloseButton>. It wraps the button in an ancestor
-  that mirrors the real pane chrome: both the pane section (PaneHost) and the
-  chat column (ChatView) listen for focusin / pointerdown to focus + reveal
-  the pane. The close button must stop both so closing a partially-scrolled
-  pane doesn't first scroll it into view. The spies stand in for those
-  ancestor handlers; Svelte's delegated dispatch honours stopPropagation, so
-  a stopped event never reaches them.
+  that mirrors the real pane chrome: the pane section (PaneHost) listens
+  for pointerdown (focus + transition reveal) and focusin (logical focus).
+  The close button must stop both so closing an unfocused pane neither
+  scrolls it into view nor moves logical focus onto the dying pane. The
+  spies stand in for those ancestor handlers; Svelte's delegated dispatch
+  honours stopPropagation, so a stopped event never reaches them.
 -->
 <script lang="ts">
   import PaneCloseButton from './PaneCloseButton.svelte';

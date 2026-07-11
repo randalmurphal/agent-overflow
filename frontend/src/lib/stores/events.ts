@@ -130,7 +130,6 @@ export {
   RENAME_THREAD_EVENT,
   OPEN_SHIP_CHANGES_EVENT,
   OPEN_SETTINGS_EVENT,
-  REVEAL_PANE_EVENT,
 } from './eventNames';
 
 // wailsEventOn is defined in ./wailsEvents (a leaf module) and re-exported here

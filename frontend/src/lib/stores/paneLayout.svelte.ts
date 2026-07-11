@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import {
   FALLBACK_PANE_WIDTH_PX,
   OVERFLOW_EPSILON_PX,
@@ -91,6 +92,34 @@ function cloneLayoutItem(item: PaneLayoutItem): PaneLayoutItem {
 
 export function getPaneLayoutItems(): PaneLayoutItem[] {
   return layoutItems;
+}
+
+// Membership + pairing identity of the layout, independent of widths.
+// Divider drags reassign `layoutItems` every frame with only widthPx
+// changed; a $derived whose recomputed value is unchanged stops
+// propagation, so routing pairing lookups through this string key keeps
+// width churn from re-running reactive consumers (e.g. ChatView's
+// read-mark gates via getFocusedThreadPaneId).
+const paneMembershipKey = $derived(
+  layoutItems.map((item) => `${item.paneId}<${item.sourcePaneId ?? ''}`).join('\n'),
+);
+
+const sourcePaneIdByPaneId = $derived.by(() => {
+  paneMembershipKey;
+  return untrack(() => {
+    const bySource = new Map<string, string | null>();
+    for (const item of layoutItems) bySource.set(item.paneId, item.sourcePaneId ?? null);
+    return bySource;
+  });
+});
+
+/**
+ * `sourcePaneId` of a mounted layout pane: the paired source thread pane
+ * for companions, null for thread panes and unmounted ids. Reactive reads
+ * track layout membership/pairing only — never pane widths.
+ */
+export function sourcePaneIdOf(paneId: string): string | null {
+  return sourcePaneIdByPaneId.get(paneId) ?? null;
 }
 
 export function addPaneLayoutItem(

@@ -6,6 +6,8 @@ import {
   getPaneLayoutItems,
   movePaneLayoutItem,
   removePaneLayoutItem,
+  sourcePaneIdOf,
+  type PaneLayoutItem,
 } from './paneLayout.svelte';
 import { getThreadById, replaceThread as replaceThreadInRegistry } from './threads.svelte';
 import { REVEAL_PANE_EVENT } from './eventNames';
@@ -41,7 +43,16 @@ function requestPanePersistence(): void {
   panePersistenceHandler?.();
 }
 
-function requestPaneReveal(paneId: string): void {
+/**
+ * Ask PaneHost to horizontally scroll the pane into view. Reveal is
+ * deliberately decoupled from focus: `focusPane` never scrolls, and only
+ * explicit-intent sites (keyboard pane nav, sidebar/palette thread opens,
+ * drag-drop, pane reorder, companion open, click on an unfocused pane)
+ * call this. DOM `focusin` must never reach it — window re-activation and
+ * focus-trap restores re-fire focus events, and revealing on those yanked
+ * the strip away from wherever the user had scrolled.
+ */
+export function revealPane(paneId: string): void {
   if (typeof window === 'undefined' || !paneId) return;
   window.dispatchEvent(new CustomEvent(REVEAL_PANE_EVENT, {
     detail: { paneId },
@@ -81,7 +92,7 @@ export function ensurePaneInLayout(paneId: string): void {
   if (hasLayoutPane(paneId)) return;
   addThreadPaneToLayout(paneId);
   focusedPaneId = paneId;
-  requestPaneReveal(paneId);
+  revealPane(paneId);
   requestPanePersistence();
 }
 
@@ -148,16 +159,45 @@ export function getFocusedPane(): ThreadPane {
   return pane;
 }
 
-export function getFocusedPaneOrNull(): ThreadPane | null {
-  return focusedPaneId ? panes.get(focusedPaneId) ?? null : null;
+// Resolve a layout pane id to the thread pane that owns it: thread panes
+// resolve to themselves, companion panes (plan/review/design-preview/
+// take-control) to their sourcePaneId. Resolution goes through the layout
+// store's membership-keyed lookup — never the raw items array — so this
+// store never depends on companion stores AND reactive callers (ChatView's
+// per-frame read-mark gates) don't re-run on divider-drag width churn.
+function resolveThreadPaneId(paneId: string | null): string | null {
+  if (!paneId) return null;
+  if (panes.has(paneId)) return paneId;
+  return sourcePaneIdOf(paneId);
 }
 
+/**
+ * The ThreadPane that thread-scoped actions (composer targeting, thread
+ * opens, command context) should act on. When a companion pane is focused
+ * this resolves to its source thread pane — the companion belongs to that
+ * thread. Pane-scoped commands (close/move) must use the raw
+ * `getFocusedPaneId()` instead so they act on the companion itself.
+ */
+export function getFocusedPaneOrNull(): ThreadPane | null {
+  const threadPaneId = resolveThreadPaneId(focusedPaneId);
+  return threadPaneId ? panes.get(threadPaneId) ?? null : null;
+}
+
+/** `getFocusedPaneOrNull()`'s pane id, without requiring the pane object. */
+export function getFocusedThreadPaneId(): string | null {
+  return resolveThreadPaneId(focusedPaneId);
+}
+
+/**
+ * Set logical focus. Accepts any mounted layout pane — thread panes and
+ * companions alike. Never scrolls: callers that represent genuine
+ * navigation intent pair this with `revealPane`.
+ */
 export function focusPane(id: string): void {
   if (focusedPaneId === id) return;
-  if (!panes.has(id)) return;
+  if (!panes.has(id) && !hasLayoutPane(id)) return;
   focusedPaneId = id;
   requestPanePersistence();
-  requestPaneReveal(id);
 }
 
 export function getFocusedPaneId(): string | null {
@@ -214,14 +254,16 @@ export function destroyPane(id: string): void {
   paneActivationById = new Map(paneActivationById);
   paneActivationById.delete(id);
   removePaneLayoutItem(id, { persist: false });
-  if (focusedPaneId === id) {
-    focusedPaneId = nextFocusId;
-    if (nextFocusId) requestPaneReveal(nextFocusId);
-  }
   // Cascade: paired companion panes close with their source. Fired after the
   // source pane is fully torn down so observers see consistent registry/layout
   // state.
   for (const observer of paneDestroyedObservers) observer(id);
+  // Focus fixup AFTER the cascade: focus may have pointed at this pane OR
+  // at one of its just-closed companions — both leave a dangling id.
+  if (focusedPaneId && !panes.has(focusedPaneId) && !hasLayoutPane(focusedPaneId)) {
+    focusedPaneId = nextFocusId;
+    if (nextFocusId) revealPane(nextFocusId);
+  }
   requestPanePersistence();
 }
 
@@ -243,6 +285,13 @@ export function closePanesShowingThreads(threadIds: Iterable<string>): void {
   for (const id of toDestroy) destroyPane(id);
 }
 
+/**
+ * Destroy the focused THREAD pane. A focused companion resolves to its
+ * source thread pane here (via getFocusedPaneOrNull), so this closes the
+ * thread — callers that want "close whatever holds focus, companion
+ * included" must route through
+ * companionPanes.svelte#closeFocusedPaneOrCompanion instead.
+ */
 export function closeFocusedPane(): void {
   const pane = getFocusedPaneOrNull();
   if (!pane) return;
@@ -345,7 +394,7 @@ export async function replaceThreadInPane(
   }
   addThreadPaneToLayout(target.paneId);
   focusedPaneId = target.paneId;
-  requestPaneReveal(target.paneId);
+  revealPane(target.paneId);
   await target.switchThread(thread);
   requestPanePersistence();
   return target;
@@ -356,7 +405,7 @@ export async function revealThreadIfOpen(thread: Thread): Promise<ThreadPane | n
   if (!pane) return null;
   focusedPaneId = pane.paneId;
   requestPanePersistence();
-  requestPaneReveal(pane.paneId);
+  revealPane(pane.paneId);
   return pane;
 }
 
@@ -410,9 +459,8 @@ export function openEmptyPane(insertIndex?: number): ThreadPane {
   const paneId = nextPaneId();
   const pane = createPane(paneId);
   addThreadPaneToLayout(paneId, resolveNewPaneInsertIndex(insertIndex));
-  registerPane(paneId, pane, 'committed');
   focusedPaneId = paneId;
-  requestPaneReveal(paneId);
+  revealPane(paneId);
   requestPanePersistence();
   return pane;
 }
@@ -423,7 +471,7 @@ export async function openThreadIdInNewPane(threadId: string, insertIndex?: numb
     commitPanePreview(existing.paneId);
     focusedPaneId = existing.paneId;
     requestPanePersistence();
-    requestPaneReveal(existing.paneId);
+    revealPane(existing.paneId);
     return existing;
   }
   const thread = getThreadById(threadId);
@@ -431,22 +479,32 @@ export async function openThreadIdInNewPane(threadId: string, insertIndex?: numb
   return openThreadInNewPane(thread, insertIndex);
 }
 
-export function focusAdjacentPane(direction: -1 | 1): ThreadPane | null {
-  const order = orderedPaneIds();
-  const index = focusedPaneId ? order.indexOf(focusedPaneId) : -1;
+/**
+ * Move logical focus one pane left/right in LAYOUT order — every mounted
+ * pane is a stop, companions and take-control terminals included. Returns
+ * the layout item now focused (callers branch on `kind` for follow-up like
+ * composer/terminal DOM focus), or null at the strip's edge.
+ */
+export function focusAdjacentPane(direction: -1 | 1): PaneLayoutItem | null {
+  const items = getPaneLayoutItems();
+  const index = focusedPaneId
+    ? items.findIndex((item) => item.paneId === focusedPaneId)
+    : -1;
   if (index < 0) return null;
-  const nextId = order[index + direction];
-  if (!nextId) return null;
-  focusedPaneId = nextId;
+  const next = items[index + direction];
+  if (!next) return null;
+  focusedPaneId = next.paneId;
   requestPanePersistence();
-  requestPaneReveal(nextId);
-  return panes.get(nextId) ?? null;
+  revealPane(next.paneId);
+  return next;
 }
 
 export function moveFocusedPane(direction: -1 | 1): void {
-  if (!focusedPaneId || !panes.has(focusedPaneId)) return;
+  if (!focusedPaneId || !hasLayoutPane(focusedPaneId)) return;
+  // A focused companion moves its whole [source + companions] block —
+  // movePaneLayoutItem resolves the block from any member pane.
   movePaneLayoutItem(focusedPaneId, direction);
-  requestPaneReveal(focusedPaneId);
+  revealPane(focusedPaneId);
 }
 
 /**

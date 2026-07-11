@@ -21,8 +21,10 @@ import { getMinPaneWidth } from './paneDensity.svelte';
 import { FALLBACK_PANE_WIDTH_PX, normalizePaneWidthPx } from '../utils/paneWidths';
 import { restoreCompanion, type CompanionPanelKind } from './companionPanes.svelte';
 import {
+  focusPane,
   getAllPanes,
   getFocusedPaneId,
+  getFocusedThreadPaneId,
   hydrateRestoredPaneRegistry,
   resetPaneRegistry,
   setPanePersistenceHandler,
@@ -77,6 +79,17 @@ function isSafePersistedPaneId(paneId: string): boolean {
     SAFE_PANE_ID_PATTERN.test(paneId);
 }
 
+// A THREAD pane whose persisted id is shaped like a companion id would
+// collide with the deterministic id minted when that companion later opens
+// for a same-named source pane (companionPaneIdFor('main','plan') ===
+// 'plan-main'), so reject it at the parse edge. Real companion entries
+// keep the shape — this guard applies to thread panes only.
+const COMPANION_SHAPED_PANE_ID = /^(?:plan|design-preview|review|take-control)-/;
+
+function isSafePersistedThreadPaneId(paneId: string): boolean {
+  return isSafePersistedPaneId(paneId) && !COMPANION_SHAPED_PANE_ID.test(paneId);
+}
+
 function isSafePersistedThreadId(threadId: string): boolean {
   return threadId.length > 0 && threadId.length <= MAX_THREAD_ID_LENGTH;
 }
@@ -112,7 +125,7 @@ function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
     for (const item of record.panes) {
       if (!item || typeof item !== 'object') continue;
       const pane = item as Record<string, unknown>;
-      if (typeof pane.paneId !== 'string' || !isSafePersistedPaneId(pane.paneId)) continue;
+      if (typeof pane.paneId !== 'string' || !isSafePersistedThreadPaneId(pane.paneId)) continue;
       if (typeof pane.threadId !== 'string' || !isSafePersistedThreadId(pane.threadId)) continue;
       if (seenPaneIds.has(pane.paneId) || seenThreadIds.has(pane.threadId)) continue;
       seenPaneIds.add(pane.paneId);
@@ -135,7 +148,7 @@ function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
     if (!item || typeof item !== 'object') continue;
     const pane = item as Record<string, unknown>;
     if (pane.kind !== 'thread') continue;
-    if (typeof pane.paneId !== 'string' || !isSafePersistedPaneId(pane.paneId)) continue;
+    if (typeof pane.paneId !== 'string' || !isSafePersistedThreadPaneId(pane.paneId)) continue;
     if (typeof pane.threadId !== 'string' || !isSafePersistedThreadId(pane.threadId)) continue;
     if (firstPassPaneIds.has(pane.paneId) || firstPassThreadIds.has(pane.threadId)) continue;
     firstPassPaneIds.add(pane.paneId);
@@ -151,6 +164,7 @@ function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
     if (typeof pane.paneId !== 'string' || !isSafePersistedPaneId(pane.paneId)) continue;
     if (seenPaneIds.has(pane.paneId)) continue;
     if (pane.kind === 'thread') {
+      if (!isSafePersistedThreadPaneId(pane.paneId)) continue;
       if (typeof pane.threadId !== 'string' || !isSafePersistedThreadId(pane.threadId)) continue;
       if (seenThreadIds.has(pane.threadId)) continue;
       seenPaneIds.add(pane.paneId);
@@ -214,13 +228,18 @@ function buildSnapshot(): PersistedPaneLayout {
       });
     }
   }
+  // Focus persists as-is when the focused pane itself is in the snapshot
+  // (thread panes and panel companions). A focused take-control pane is
+  // ephemeral — fall back to its source thread pane, then to the first pane.
   const focusedPaneId = getFocusedPaneId();
+  const focusedThreadPaneId = getFocusedThreadPaneId();
+  const persistableFocusId = [focusedPaneId, focusedThreadPaneId].find(
+    (candidate) => candidate && panes.some((pane) => pane.paneId === candidate),
+  ) ?? null;
   return {
     version: PANE_LAYOUT_SETTINGS_VERSION,
     panes,
-    focusedPaneId: focusedPaneId && panes.some((pane) => pane.paneId === focusedPaneId)
-      ? focusedPaneId
-      : panes[0]?.paneId ?? null,
+    focusedPaneId: persistableFocusId ?? panes[0]?.paneId ?? null,
   };
 }
 
@@ -320,6 +339,17 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
     if (companions) restoredLayoutItems.push(...companions);
   }
   setPaneLayoutItems(restoredLayoutItems);
+
+  // A persisted focused COMPANION id can only be honored now — the hydrate
+  // above validated against thread panes and fell back to one of those.
+  // Upgrade to the companion once its layout item exists.
+  if (
+    persisted.focusedPaneId &&
+    persisted.focusedPaneId !== getFocusedPaneId() &&
+    restoredLayoutItems.some((item) => item.paneId === persisted.focusedPaneId)
+  ) {
+    focusPane(persisted.focusedPaneId);
+  }
 }
 
 export function persistPaneLayout(): void {

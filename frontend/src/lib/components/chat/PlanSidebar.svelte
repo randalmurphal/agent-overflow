@@ -228,6 +228,7 @@
           size="sm"
           testId="plan-sidebar-close"
           onClick={() => ctx.close()}
+          onPointerDown={(event) => event.stopPropagation()}
         >
           {#snippet children()}<Icon icon={X} size={14} />{/snippet}
         </IconButton>

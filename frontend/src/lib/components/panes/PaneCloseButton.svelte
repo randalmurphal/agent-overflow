@@ -5,13 +5,16 @@
   // Shared by ChatHeader and the terminal pane header so both get identical
   // markup, sizing, and the propagation stops that keep pane-level handlers
   // from reacting to a click on the X:
-  //   - pointerdown: stops a header drag from starting on the button.
-  //   - focusin: the button takes focus on click, and both the pane section
-  //     (PaneHost) and the chat column (ChatView) focus the pane on focusin —
-  //     focusing reveals (scroll-into-view) the pane. Without this stop,
-  //     closing a partially-scrolled pane first smooth-scrolls it on-screen
-  //     and then closes it, a jarring shift. Stopping focusin lets the click
-  //     destroy the pane in place.
+  //   - pointerdown: stops a header drag from starting on the button, and
+  //     keeps PaneHost's pointer-focus handler from treating the click as a
+  //     focus transition — closing an unfocused, partially-scrolled pane
+  //     must destroy it in place, not smooth-scroll it on-screen first.
+  //   - focusin: Chromium-engine webviews focus buttons on mousedown, so
+  //     without this stop the X's focusin would move LOGICAL focus onto the
+  //     pane being destroyed, and destroyPane's dangling-focus fixup would
+  //     then focus + reveal its neighbor — stealing focus from the pane the
+  //     user was actually working in. (focusin no longer scrolls anywhere;
+  //     this stop is purely about keeping logical focus off the dying pane.)
   import X from 'lucide-svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import { destroyPane } from '../../stores/panes.svelte';

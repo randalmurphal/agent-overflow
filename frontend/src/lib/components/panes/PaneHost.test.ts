@@ -179,6 +179,58 @@ describe('PaneHost', () => {
     throw new Error(`expected pane for thread ${threadId}`);
   }
 
+  // Deterministic rAF pump for the reveal path: PaneHost defers reveals one
+  // frame and then runs its own glide animation over subsequent frames, so
+  // tests drive frames manually with explicit timestamps instead of racing
+  // wall-clock rAF. Install BEFORE render so mount-scheduled frames are
+  // captured too.
+  function installFramePump() {
+    let nextId = 1;
+    let now = 0;
+    const pending = new Map<number, FrameRequestCallback>();
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      const id = nextId;
+      nextId += 1;
+      pending.set(id, cb);
+      return id;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+      pending.delete(id);
+    });
+    return {
+      frame(dtMs = 50): void {
+        now += dtMs;
+        const callbacks = Array.from(pending.values());
+        pending.clear();
+        for (const cb of callbacks) cb(now);
+      },
+      pumpUntilIdle(maxFrames = 100): void {
+        for (let i = 0; i < maxFrames && pending.size > 0; i += 1) this.frame();
+      },
+    };
+  }
+
+  // happy-dom reports zero geometry, so reveal tests stub the strip's
+  // horizontal metrics and each pane's offsets explicitly.
+  function stubStripGeometry(host: HTMLElement, clientWidth: number, scrollWidth: number): () => number {
+    let left = 0;
+    Object.defineProperty(host, 'clientWidth', { configurable: true, get: () => clientWidth });
+    Object.defineProperty(host, 'scrollWidth', { configurable: true, get: () => scrollWidth });
+    Object.defineProperty(host, 'scrollLeft', {
+      configurable: true,
+      get: () => left,
+      set: (value: number) => {
+        left = value;
+      },
+    });
+    return () => left;
+  }
+
+  function stubPaneOffsets(paneEl: HTMLElement, offsetLeft: number, offsetWidth: number): void {
+    Object.defineProperty(paneEl, 'offsetLeft', { configurable: true, get: () => offsetLeft });
+    Object.defineProperty(paneEl, 'offsetWidth', { configurable: true, get: () => offsetWidth });
+  }
+
   it('renders the empty workspace surface when layout has no panes', () => {
     setPaneLayoutItemsForTest([]);
 
@@ -272,10 +324,7 @@ describe('PaneHost', () => {
     expect(rendered.getByTestId('companion-pane-broken')).toHaveTextContent('Companion pane unavailable.');
   });
 
-  it('clicking a companion pane focuses its source pane', async () => {
-    // jsdom has no scrollIntoView; handlePaneFocus scrolls the target
-    // pane into view after focusing it.
-    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  it('clicking a companion pane focuses and reveals the companion itself, not its source', async () => {
     registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
     registerPaneForTest('other', createThreadPane({ paneId: 'other' }));
     setPaneLayoutItemsForTest([
@@ -285,12 +334,107 @@ describe('PaneHost', () => {
     ]);
     focusPane('other');
 
+    const pump = installFramePump();
     const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const scrollLeftOf = stubStripGeometry(host, 400, 1200);
+    const source = rendered.container.querySelector<HTMLElement>('[data-pane-id="source"]');
     const companion = rendered.container.querySelector<HTMLElement>('[data-pane-id="review-source"]');
-    if (!companion) throw new Error('expected companion pane');
+    if (!source || !companion) throw new Error('expected source and companion panes');
+    stubPaneOffsets(source, 0, 400);
+    stubPaneOffsets(companion, 400, 400);
 
     await fireEvent.pointerDown(companion);
-    expect(getFocusedPaneId()).toBe('source');
+    expect(getFocusedPaneId()).toBe('review-source');
+    pump.pumpUntilIdle();
+    // The companion (400..800) right-edge aligns at 400. Had the reveal
+    // resolved to the SOURCE (0..400, already fully visible at 0), the
+    // strip would not have moved at all.
+    expect(scrollLeftOf()).toBe(400);
+  });
+
+  it('pointerdown reveals only on a focus transition; focusin never reveals', async () => {
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
+    ]);
+    focusPane('left');
+
+    const pump = installFramePump();
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const scrollLeftOf = stubStripGeometry(host, 400, 800);
+    const left = rendered.container.querySelector<HTMLElement>('[data-pane-id="left"]');
+    const right = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
+    if (!left || !right) throw new Error('expected both panes');
+    stubPaneOffsets(left, 0, 400);
+    stubPaneOffsets(right, 400, 400);
+
+    // Clicking inside the already-focused pane must not move the strip
+    // (text selection / scrollbar grabs in a half-visible pane).
+    await fireEvent.pointerDown(left);
+    expect(getFocusedPaneId()).toBe('left');
+    pump.pumpUntilIdle();
+    expect(scrollLeftOf()).toBe(0);
+
+    // focusin tracks logical focus but never reveals — window
+    // re-activation and focus-trap restores re-fire it — even though
+    // 'right' (400..800) is entirely off-screen here.
+    await fireEvent.focusIn(right);
+    expect(getFocusedPaneId()).toBe('right');
+    pump.pumpUntilIdle();
+    expect(scrollLeftOf()).toBe(0);
+
+    // Pointer focus TRANSITIONS do reveal: back to the visible left pane
+    // (no movement needed), then to the off-screen right pane, which
+    // glides the strip until 'right' is right-edge aligned.
+    await fireEvent.pointerDown(left);
+    await fireEvent.pointerDown(right);
+    expect(getFocusedPaneId()).toBe('right');
+    pump.pumpUntilIdle();
+    expect(scrollLeftOf()).toBe(400);
+  });
+
+  it('chained reveals retarget the glide from the current position without rewinding', async () => {
+    registerPaneForTest('a', createThreadPane({ paneId: 'a' }));
+    registerPaneForTest('b', createThreadPane({ paneId: 'b' }));
+    registerPaneForTest('c', createThreadPane({ paneId: 'c' }));
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 1 },
+      { id: 'b', paneId: 'b', kind: 'thread', widthPx: 1 },
+      { id: 'c', paneId: 'c', kind: 'thread', widthPx: 1 },
+    ]);
+    focusPane('a');
+
+    const pump = installFramePump();
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const scrollLeftOf = stubStripGeometry(host, 400, 1200);
+    const b = rendered.container.querySelector<HTMLElement>('[data-pane-id="b"]');
+    const c = rendered.container.querySelector<HTMLElement>('[data-pane-id="c"]');
+    if (!b || !c) throw new Error('expected panes b and c');
+    stubPaneOffsets(b, 400, 400);
+    stubPaneOffsets(c, 800, 400);
+
+    // Reveal 'b' and let the glide advance partway (deferred reveal frame,
+    // then one animation step).
+    await fireEvent.pointerDown(b);
+    pump.frame();
+    pump.frame();
+    const partial = scrollLeftOf();
+    expect(partial).toBeGreaterThan(0);
+    expect(partial).toBeLessThan(400);
+
+    // Retarget to 'c' mid-flight: the glide must continue forward from the
+    // current position — the regression this guards is the native smooth
+    // scrollIntoView restart, which rewound toward the original origin.
+    await fireEvent.pointerDown(c);
+    pump.frame();
+    expect(scrollLeftOf()).toBeGreaterThanOrEqual(partial);
+    pump.pumpUntilIdle();
+    expect(scrollLeftOf()).toBe(800);
   });
 
   it('publishes and clears measured widths by pane id', () => {
