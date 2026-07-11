@@ -1227,6 +1227,17 @@ export class Turn {
     "tokenUsageJson"?: string;
     "errorMessage"?: string;
 
+    /**
+     * ProviderTurnID is the provider-assigned wire turn id (Codex
+     * `turn/started`), or "" when the provider has none on the wire
+     * (Claude — TurnID is then a synthesized `<threadID>:<turnIndex>`).
+     * Kept separate from the TurnID PRIMARY KEY because forked threads
+     * carry cloned copies of their source's turns under fresh row ids
+     * while preserving this value — it is the `thread/fork` lastTurnId
+     * anchor the Codex revert/fork flows cut history on.
+     */
+    "providerTurnId"?: string;
+
     /** Creates a new Turn instance. */
     constructor($$source: Partial<Turn> = {}) {
         if (!("turnId" in $$source)) {

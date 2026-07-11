@@ -2051,13 +2051,20 @@ export function ReconfigureObservability(prev: settings$0.Settings, next: settin
  * ReconnectSession tears down the current session and starts a fresh one using
  * the thread's stored resume cursor.
  * 
- * Single-flight across the stop-then-start pair: a second concurrent caller
- * returns nil without doing any work. Without the gate, a second call's
- * stopSession can yank the new session out from under the first call's
- * in-flight startSession (runSessionStart serialises starts but not stops),
- * leaving the thread with no live session despite both calls completing
- * "successfully". This matters for the auto-reconnect path racing a manual
- * click on the banner Reconnect button.
+ * Two guards compose here, in order:
+ * 
+ *  1. Single-flight across the stop-then-start pair: a second concurrent
+ *     caller returns nil without doing any work. Without the gate, a
+ *     second call's stopSession can yank the new session out from under
+ *     the first call's in-flight startSession (runSessionStart serialises
+ *     starts but not stops). This matters for the auto-reconnect path
+ *     racing a manual click on the banner Reconnect button, and it runs
+ *     BEFORE the lock so the no-op answer stays immediate.
+ *  2. The per-thread action lock, so the stop-then-start pair cannot
+ *     interleave with a revert's stop-and-repoint sequence (a reconnect
+ *     landing mid-revert would resume the pre-revert cursor and clear the
+ *     stopped-thread gate). Callers already holding the lock (workspace-
+ *     change restarts) use reconnectSessionLocked instead.
  */
 export function ReconnectSession(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(1420075138, threadID);
@@ -2449,6 +2456,13 @@ export function StartDiscussionByID(threadID: string, discussionID: string): $Ca
  * provider subprocess up." The sendMessage path also calls
  * startSessionNow via runSessionStart when a thread has no active
  * session yet.
+ * 
+ * Takes the per-thread action lock: an unserialized start racing a
+ * revert can read the pre-revert SessionRef, clear the stopped-thread
+ * gate mid-revert (MarkThreadActive), and register a session bound to
+ * the old provider thread after the revert repointed the row. Internal
+ * callers that already hold the lock (sends, deferred config restarts)
+ * go through a.startSession / runSessionStart directly.
  */
 export function StartSession(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(2850159713, threadID);
