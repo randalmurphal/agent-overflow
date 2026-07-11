@@ -125,6 +125,14 @@ jobs:
           git diff --exit-code
 
       - name: Build macOS app bundle
+        env:
+          # actool in Xcode 26.4-26.6 crashes on Icon Composer .icon bundles
+          # ("attempt to insert nil object", Apple regression FB20183399;
+          # see expo/expo#46121). wails3 generate icons compiles
+          # build/appicon.icon with /usr/bin/actool, which resolves through
+          # DEVELOPER_DIR. Verified on this runner image: 26.0-26.3 compile
+          # it fine, 26.4+ crash. Drop the pin once a fixed Xcode ships.
+          DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
         run: |
           VERSION="$VERSION" wails3 task darwin:package
           mkdir -p "dist/release/$VERSION"
