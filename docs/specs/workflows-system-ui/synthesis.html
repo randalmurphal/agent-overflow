@@ -1,0 +1,1677 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthesis — Workflows UI</title>
+<style>
+/* ============================================================
+   Agent Overflow tokens (mirrored from frontend/src/app.css +
+   src/styles/tokens.css — dark lens only).
+   ============================================================ */
+:root {
+  --surface-0: oklch(0.145 0.014 285.82);
+  --surface-1: oklch(0.178 0.014 285.82);
+  --surface-2: oklch(0.215 0.014 285.82);
+  --code-inline-bg: oklch(0.275 0.014 285.82);
+  --border: oklch(0.3 0.014 285.82);
+  --border-strong: oklch(0.52 0.014 285.82);
+  --text-primary: oklch(0.95 0.006 285.82);
+  --text-secondary: oklch(0.7 0.006 285.82);
+  --accent: oklch(0.58 0.19 276);
+  --info: oklch(0.62 0.17 250);
+  --success: oklch(0.7 0.17 150);
+  --error: oklch(0.63 0.2 25);
+  --warning: oklch(0.75 0.15 75);
+  --overlay: oklch(0 0 0 / 60%);
+
+  --fg: var(--text-primary);
+  --fg-muted: color-mix(in oklab, var(--text-primary) 80%, transparent);
+  --fg-subtle: color-mix(in oklab, var(--text-primary) 55%, transparent);
+  --fg-hint: color-mix(in oklab, var(--text-primary) 30%, transparent);
+  --border-subtle: color-mix(in oklab, var(--border) 55%, transparent);
+  --card: var(--surface-1);
+
+  --text-micro: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+
+  --radius-field: 6px;
+  --radius-control: 10px;
+  --radius-card: 16px;
+  --radius-composer: 20px;
+
+  --shadow-menu: 0 8px 24px -12px color-mix(in oklab, black 40%, transparent);
+  --shadow-modal: 0 40px 80px -30px color-mix(in oklab, black 60%, transparent);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+
+  /* Canonical project identities (brief). */
+  --proj-ao: var(--info);
+  --proj-m32: oklch(0.72 0.15 55);
+  --proj-dsp: var(--success);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--surface-0); color: var(--text-primary);
+  font-family: var(--font-sans); font-size: var(--text-sm);
+  -webkit-font-smoothing: antialiased; overflow: hidden;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--border) 78%, transparent);
+  border: 2px solid transparent; border-radius: 999px; background-clip: padding-box;
+}
+::-webkit-scrollbar-track { background: transparent; }
+button { font: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; }
+input, textarea, select { font: inherit; color: var(--fg); }
+kbd {
+  font-family: var(--font-mono); font-size: 0.625rem; color: var(--fg-subtle);
+  border: 1px solid var(--border-subtle); border-radius: 4px; padding: 0 3px;
+  background: var(--surface-2); line-height: 1.4;
+}
+
+/* ============================================================
+   Mockup chrome: fixed header naming the concept + moment nav.
+   ============================================================ */
+.topbar {
+  position: fixed; inset: 0 0 auto 0; height: 40px; z-index: 100;
+  display: flex; align-items: center; gap: 10px; padding: 0 12px;
+  background: var(--surface-1); border-bottom: 1px solid var(--border-subtle);
+}
+.topbar .brand { font-size: var(--text-sm); font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; }
+.topbar .brand span { color: var(--fg-hint); font-weight: 400; margin-left: 8px; font-size: var(--text-micro); }
+@media (max-width: 1560px) { .topbar .brand span { display: none; } }
+.m-tabs { display: flex; gap: 2px; margin-left: 8px; }
+.m-tab {
+  font-size: var(--text-micro); color: var(--fg-subtle); padding: 3px 8px;
+  border-radius: var(--radius-field); white-space: nowrap;
+}
+.m-tab:hover { color: var(--fg); background: color-mix(in oklab, var(--surface-2) 40%, transparent); }
+.m-tab.on { color: var(--fg); background: color-mix(in oklab, var(--accent) 15%, transparent); }
+.m-tab .n { color: var(--fg-hint); font-family: var(--font-mono); font-size: 0.625rem; margin-right: 4px; }
+.m-desc { margin-left: auto; font-size: var(--text-micro); color: var(--fg-hint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notes-btn {
+  display: flex; align-items: center; gap: 5px; font-size: var(--text-micro);
+  color: var(--fg-subtle); padding: 3px 8px; border-radius: var(--radius-field);
+  border: 1px solid var(--border-subtle); white-space: nowrap;
+}
+.notes-btn:hover { color: var(--fg); }
+body.notes .notes-btn { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 45%, transparent); }
+.i-dot {
+  width: 12px; height: 12px; border-radius: 999px; display: inline-flex; align-items: center;
+  justify-content: center; font-size: 9px; font-style: italic; font-weight: 700; font-family: Georgia, serif;
+  background: color-mix(in oklab, var(--accent) 30%, transparent); color: var(--fg);
+}
+
+/* Annotations (hidden unless body.notes). Inline-flow so they never occlude UI. */
+.ann { display: none; }
+body.notes .ann {
+  display: flex; gap: 6px; align-items: flex-start;
+  margin: 6px 0; padding: 6px 8px; font-size: var(--text-micro); line-height: 1.5;
+  color: var(--fg-subtle); background: color-mix(in oklab, var(--accent) 6%, var(--surface-1));
+  border: 1px solid color-mix(in oklab, var(--accent) 25%, transparent); border-radius: var(--radius-field);
+}
+.ann .i-dot { flex-shrink: 0; margin-top: 1px; }
+.ann b { color: var(--fg-muted); font-weight: 600; }
+
+/* ============================================================
+   App shell
+   ============================================================ */
+.shell { position: fixed; inset: 40px 0 0 0; display: flex; }
+
+/* ---------- Sidebar ---------- */
+.sidebar {
+  width: 250px; flex-shrink: 0; display: flex; flex-direction: column;
+  border-right: 1px solid var(--border-subtle);
+}
+.sb-search { padding: 8px 8px 6px; }
+.sb-search .box {
+  display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-control);
+  color: var(--fg-hint); font-size: var(--text-xs);
+}
+.sb-head {
+  display: flex; align-items: center; padding: 6px 10px 4px;
+  font-size: var(--text-micro); font-weight: 500; text-transform: uppercase;
+  letter-spacing: 0.18em; color: var(--fg-subtle);
+}
+.sb-scroll { flex: 1; overflow-y: auto; padding: 0 6px 8px; }
+.sb-foot {
+  border-top: 1px solid var(--border-subtle); padding: 6px 12px;
+  display: flex; align-items: center; gap: 8px; font-size: var(--text-micro); color: var(--fg-subtle);
+}
+
+.proj { margin-top: 3px; }
+.proj-row {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+  border-radius: var(--radius-field); cursor: default;
+}
+.proj-row:hover { background: color-mix(in oklab, var(--surface-2) 40%, transparent); }
+.proj-row .chev { color: var(--fg-subtle); font-size: 9px; transform: rotate(90deg); display: inline-block; width: 10px; }
+.proj-row .folder { color: color-mix(in oklab, var(--accent) 80%, transparent); font-size: 11px; }
+.proj-row .pname { font-size: 0.78125rem; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail { margin-left: 8px; padding-left: 0; border-left: 1px solid color-mix(in oklab, var(--border-subtle) 60%, transparent); display: flex; flex-direction: column; gap: 1px; }
+
+/* Normal thread rows — matches ThreadRow.svelte anatomy. */
+.trow {
+  display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 4px 0 24px;
+  border-radius: var(--radius-field); font-size: var(--text-xs); color: var(--fg-muted); cursor: pointer;
+  position: relative;
+}
+.trow:hover { background: color-mix(in oklab, var(--surface-2) 30%, transparent); color: var(--fg); }
+.trow.active { background: color-mix(in oklab, var(--accent) 10%, transparent); color: var(--fg); }
+.trow .tt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow .tm { font-size: 0.625rem; color: var(--fg-hint); font-variant-numeric: tabular-nums; }
+.sdot { width: 6px; height: 6px; border-radius: 999px; flex-shrink: 0; }
+.slabel { font-size: 0.625rem; font-weight: 500; white-space: nowrap; flex-shrink: 0; }
+.s-warn { color: var(--warning); } .s-warn-bg { background: var(--warning); }
+.s-err { color: var(--error); } .s-err-bg { background: var(--error); }
+.s-ok { color: var(--success); } .s-ok-bg { background: var(--success); }
+
+/* Workflows section head — the whole workflows presence when quiet. */
+.wfhead {
+  display: flex; align-items: center; gap: 6px; height: 22px; padding: 0 6px 0 10px;
+  margin-top: 1px; border-radius: var(--radius-field); cursor: pointer;
+  font-size: 0.625rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--fg-hint);
+}
+.wfhead:hover { background: color-mix(in oklab, var(--surface-2) 30%, transparent); color: var(--fg-subtle); }
+.wfhead .chev { font-size: 8px; width: 8px; display: inline-block; transition: transform 0.12s; color: var(--fg-hint); }
+.wfhead.open .chev { transform: rotate(90deg); }
+.wfhead .roll { margin-left: auto; display: flex; align-items: center; gap: 5px; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+.wfhead .roll .cnt { color: var(--fg-hint); }
+.wfhead .roll .need { color: var(--warning); font-weight: 600; }
+
+/* Run rows in the sidebar — same skeleton as thread rows; one signal max. */
+.jrow {
+  display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 4px 0 14px;
+  border-radius: var(--radius-field); font-size: var(--text-xs); color: var(--fg-muted); cursor: pointer;
+  position: relative;
+}
+.jrow:hover { background: color-mix(in oklab, var(--surface-2) 30%, transparent); color: var(--fg); }
+.jrow.active { background: color-mix(in oklab, var(--accent) 10%, transparent); color: var(--fg); }
+.jrow .jt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jrow .jm { font-size: 0.625rem; color: var(--fg-hint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.jrow.dim { color: var(--fg-subtle); }
+
+/* Pending-attention glow — AO's existing status-glow-warning, stepped. */
+.glow-warn { position: relative; }
+.glow-warn::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  border: 1px solid var(--warning);
+  animation: glowp 2.5s steps(5, jump-none) infinite;
+}
+@keyframes glowp {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; opacity: 0.7; }
+  50% { box-shadow: 0 0 0 2px color-mix(in oklab, var(--warning) 22%, transparent); opacity: 1; }
+}
+.pulse { animation: pl 2s steps(8, jump-none) infinite; }
+@keyframes pl { 50% { opacity: 0.5; } }
+
+/* Phase rows (run detail + sidebar-quiet variants share the anatomy). */
+.phrow {
+  display: flex; align-items: center; gap: 6px; height: 21px; padding: 0 6px;
+  border-radius: var(--radius-field); font-size: var(--text-micro); color: var(--fg-subtle);
+}
+.phrow .g { width: 10px; text-align: center; font-size: 9px; color: var(--fg-hint); }
+.phrow.done .g { color: var(--fg-subtle); }
+.phrow.run { color: var(--fg-muted); cursor: pointer; }
+.phrow.run:hover { background: color-mix(in oklab, var(--surface-2) 35%, transparent); color: var(--fg); }
+.phrow.run .g { color: var(--success); }
+.phrow .pl { flex-shrink: 0; }
+.phrow .plive { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-hint); font-style: italic; }
+.phrow .pt { margin-left: auto; color: var(--fg-hint); font-size: 0.625rem; }
+
+/* ---------- Pane row ---------- */
+.panes { flex: 1; display: flex; min-width: 0; }
+.pane {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  border-right: 1px solid color-mix(in oklab, var(--border-subtle) 70%, transparent);
+}
+.pane:last-child { border-right: none; }
+.pane.slide-in { animation: slidein 0.2s ease-out; }
+@keyframes slidein { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+.pane-head {
+  height: 36px; flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+  padding: 0 8px; border-bottom: 1px solid var(--border-subtle);
+}
+.pane-title {
+  font-size: var(--text-sm); font-weight: 500; padding: 2px 6px; border-radius: var(--radius-field);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.pane-title.focused { background: color-mix(in oklab, var(--accent) 15%, transparent); box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 40%, transparent); }
+.pane-x { margin-left: auto; color: var(--fg-hint); font-size: 12px; padding: 2px 6px; border-radius: var(--radius-field); }
+.pane-x:hover { color: var(--fg); background: color-mix(in oklab, var(--surface-2) 40%, transparent); }
+.pill { display: inline-flex; align-items: center; gap: 5px; font-size: 0.625rem; font-weight: 500; }
+
+/* Stacked drill-down chrome: back chevron + crumbs in the pane head. */
+.bk { color: var(--fg-subtle); font-size: 15px; line-height: 1; padding: 1px 7px 3px; border-radius: var(--radius-field); flex-shrink: 0; }
+.bk:hover { color: var(--fg); background: color-mix(in oklab, var(--surface-2) 40%, transparent); }
+.crumb { font-size: var(--text-sm); color: var(--fg-subtle); white-space: nowrap; flex-shrink: 0; padding: 2px 2px; border-radius: var(--radius-field); }
+.crumb:hover { color: var(--fg); text-decoration: underline; }
+.csep { color: var(--fg-hint); font-size: var(--text-xs); flex-shrink: 0; }
+.lvl { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.lvl.slide-in { animation: slidein 0.2s ease-out; }
+
+/* Overview pane controls */
+.ov-ctl { display: flex; align-items: center; gap: 10px; margin-left: auto; min-width: 0; }
+.q-toggle {
+  display: flex; align-items: center; gap: 6px; font-size: var(--text-micro); color: var(--fg-subtle);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-control); padding: 2px 9px; white-space: nowrap;
+}
+.q-toggle:hover { color: var(--fg); }
+.q-toggle .g { font-size: 8px; }
+.slots { display: flex; align-items: center; gap: 5px; font-size: var(--text-micro); color: var(--fg-hint); font-variant-numeric: tabular-nums; }
+.slots .sd { width: 5px; height: 5px; border-radius: 999px; background: var(--border-strong); opacity: 0.5; }
+.slots .sd.busy { background: var(--fg-subtle); opacity: 1; }
+.flt { font-size: var(--text-micro); color: var(--fg-subtle); padding: 2px 8px; border-radius: var(--radius-field); white-space: nowrap; }
+.flt:hover { color: var(--fg); background: color-mix(in oklab, var(--surface-2) 40%, transparent); }
+.newrun { font-size: var(--text-micro); color: var(--fg-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); padding: 2px 9px; white-space: nowrap; }
+.newrun:hover { color: var(--fg); border-color: var(--border); }
+
+/* Workflow-centric overview: sections of workflow rows + the global up-next strip. */
+.ov-body { flex: 1; overflow-y: auto; padding: 12px 14px; }
+.sec-head {
+  display: flex; align-items: center; gap: 6px; padding: 0 4px 7px;
+  font-size: var(--text-micro); font-weight: 500; text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--fg-subtle);
+}
+.sec-head .cnt { color: var(--fg-hint); letter-spacing: 0; font-variant-numeric: tabular-nums; }
+.sec-gap { height: 14px; }
+.wfrow {
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-control);
+  background: color-mix(in oklab, var(--card) 40%, transparent);
+  padding: 9px 12px; margin-bottom: 8px; cursor: pointer;
+}
+.wfrow:hover { border-color: var(--border); background: color-mix(in oklab, var(--card) 70%, transparent); }
+.wfrow .r1 { display: flex; align-items: baseline; gap: 10px; }
+.wfrow .wn { font-size: var(--text-sm); font-weight: 500; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wfrow .agg { margin-left: auto; font-size: var(--text-micro); color: var(--fg-hint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wfrow .agg .need { color: var(--warning); font-weight: 600; }
+.wfrow .agg .need:hover { text-decoration: underline; }
+.wfrow .w2 { margin-top: 3px; font-size: var(--text-micro); color: var(--fg-hint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Up-next strip: the queue is global and cross-workflow. */
+.uprow {
+  display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 8px;
+  border-radius: var(--radius-field); font-size: var(--text-xs); color: var(--fg-muted); cursor: grab;
+}
+.uprow:hover { background: color-mix(in oklab, var(--surface-2) 30%, transparent); }
+.uprow:active { cursor: grabbing; }
+.uprow .grip { opacity: 0; color: var(--fg-hint); font-size: 9px; letter-spacing: 1px; }
+.uprow:hover .grip { opacity: 1; }
+.uprow .qpos { font-size: 0.625rem; color: var(--fg-hint); font-variant-numeric: tabular-nums; width: 16px; }
+.uprow .ut { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uprow .um { font-size: 0.625rem; color: var(--fg-hint); white-space: nowrap; }
+.uprow.dragging { opacity: 0.35; }
+.uprow.over-b { box-shadow: 0 -2px 0 0 var(--accent); }
+.uprow.over-a { box-shadow: 0 2px 0 0 var(--accent); }
+
+/* Workflow level: live runs + history + notes. */
+.dt-body { flex: 1; overflow-y: auto; padding: 12px 14px; }
+.dt-sub { font-size: var(--text-micro); color: var(--fg-hint); padding: 0 4px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rrow {
+  display: flex; align-items: center; gap: 7px; min-height: 26px; padding: 3px 8px;
+  border-radius: var(--radius-field); font-size: var(--text-xs); color: var(--fg-muted); cursor: pointer;
+  position: relative;
+}
+.rrow:hover { background: color-mix(in oklab, var(--surface-2) 30%, transparent); color: var(--fg); }
+.rrow .rt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rrow .rm { font-size: var(--text-micro); color: var(--fg-hint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rrow .rm .w { color: var(--warning); }
+.rrow .rm .e { color: var(--error); }
+.rrow.dim { color: var(--fg-subtle); }
+.rlive {
+  margin: -1px 0 2px 22px; font-size: var(--text-micro); color: var(--fg-hint); font-style: italic;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rxl { opacity: 0; font-size: var(--text-micro); color: var(--fg-hint); padding: 1px 6px; border-radius: var(--radius-field); flex-shrink: 0; }
+.rrow:hover .rxl { opacity: 1; }
+.rxl:hover { color: var(--error); background: color-mix(in oklab, var(--error) 12%, transparent); }
+.rxl.armed { opacity: 1; color: var(--error); background: color-mix(in oklab, var(--error) 15%, transparent); }
+.hrow {
+  display: flex; align-items: center; gap: 8px; height: 23px; padding: 0 8px;
+  font-size: var(--text-micro); color: var(--fg-subtle);
+}
+.hrow .ht { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hrow .hm { color: var(--fg-hint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.nextrun {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-control);
+  font-size: var(--text-xs); color: var(--fg-muted);
+}
+
+/* Run level: digest + evidence + the action row, inside the same pane. */
+.rd-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 0; }
+.rd-head .cproj { display: flex; align-items: center; gap: 5px; font-size: var(--text-micro); color: var(--fg-hint); }
+.rd-count { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: var(--text-micro); color: var(--fg-hint); font-variant-numeric: tabular-nums; }
+.rd-count .dots { display: flex; gap: 4px; }
+.rd-count .dt { width: 5px; height: 5px; border-radius: 999px; background: var(--border-strong); opacity: 0.5; }
+.rd-count .dt.now { background: var(--fg-subtle); opacity: 1; }
+.rd-count .dt.res { background: var(--success); opacity: 0.8; }
+.rd-title { font-size: 1rem; font-weight: 600; padding: 6px 16px 2px; line-height: 1.35; }
+.rd-sub { font-size: var(--text-micro); color: var(--fg-hint); padding: 0 16px 8px; }
+.rd-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 16px 14px; }
+.rd-ann { padding: 0 16px; }
+.m-state { font-size: var(--text-micro); font-weight: 600; }
+
+/* Chat pane mock (normal thread) */
+.chat { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+.toolrow {
+  display: flex; align-items: center; gap: 8px; font-size: var(--text-xs);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-control);
+  background: color-mix(in oklab, var(--card) 25%, transparent); padding: 6px 10px; color: var(--fg-subtle);
+}
+.toolrow .ico { font-size: 11px; }
+.toolrow .mono { font-family: var(--font-mono); font-size: var(--text-micro); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toolrow .tr-meta { margin-left: auto; font-size: 0.625rem; color: var(--fg-hint); white-space: nowrap; }
+.ico-file { color: oklch(0.72 0.16 305); }
+.ico-term { color: oklch(0.78 0.12 195); }
+.amsg { font-size: var(--text-sm); line-height: 1.65; color: var(--fg-muted); max-width: 62ch; }
+.amsg .caret { display: inline-block; width: 7px; height: 14px; background: var(--fg-subtle); vertical-align: -2px; animation: pl 1s steps(2, jump-none) infinite; }
+.umsg {
+  align-self: flex-end; max-width: 75%; background: var(--surface-2);
+  border-radius: var(--radius-control); padding: 8px 12px; font-size: var(--text-sm); line-height: 1.55;
+}
+.ctxchip {
+  display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-micro);
+  border: 1px solid color-mix(in oklab, var(--accent) 40%, transparent);
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  border-radius: var(--radius-field); padding: 2px 8px; margin-bottom: 6px; color: var(--fg-muted);
+}
+.composer {
+  margin: 0 14px 14px; border: 1px solid var(--border); border-radius: var(--radius-composer);
+  background: var(--surface-1); padding: 10px 14px; flex-shrink: 0;
+  display: flex; align-items: center; gap: 10px;
+}
+.composer .ph { flex: 1; color: var(--fg-hint); font-size: var(--text-sm); }
+.composer .send {
+  width: 24px; height: 24px; border-radius: 999px; background: color-mix(in oklab, var(--accent) 70%, transparent);
+  color: white; display: flex; align-items: center; justify-content: center; font-size: 12px;
+}
+
+/* ============================================================
+   Overlay scaffolding (intake) + shared evidence blocks
+   ============================================================ */
+.ovl { position: fixed; inset: 0; background: var(--overlay); z-index: 200; }
+.mwrap { position: fixed; inset: 0; z-index: 201; display: flex; align-items: flex-start; justify-content: center; padding-top: 9vh; pointer-events: none; }
+.mdl {
+  pointer-events: auto; width: min(640px, calc(100vw - 48px)); max-height: 78vh; overflow-y: auto;
+  background: var(--surface-1); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card); box-shadow: var(--shadow-modal);
+  animation: mpop 0.16s ease-out;
+}
+@keyframes mpop { from { opacity: 0; transform: scale(0.985) translateY(4px); } to { opacity: 1; transform: none; } }
+.m-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px 0; }
+.m-x { margin-left: auto; color: var(--fg-hint); padding: 2px 6px; border-radius: var(--radius-field); font-size: 12px; }
+.m-x:hover { color: var(--fg); background: color-mix(in oklab, var(--surface-2) 60%, transparent); }
+.m-body { padding: 4px 16px 14px; }
+.m-actions {
+  display: flex; align-items: center; gap: 8px; padding: 12px 16px 14px;
+  border-top: 1px solid var(--border-subtle); flex-shrink: 0;
+}
+.m-actions .sp { flex: 1; }
+.dig { display: grid; grid-template-columns: 86px 1fr; gap: 6px 12px; margin-bottom: 12px; }
+.dig .dk { font-size: 0.625rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-hint); padding-top: 2px; }
+.dig .dv { font-size: var(--text-xs); color: var(--fg-muted); line-height: 1.55; }
+.evid { border-top: 1px solid var(--border-subtle); padding-top: 10px; }
+.checks { display: flex; gap: 14px; flex-wrap: wrap; font-size: var(--text-micro); color: var(--fg-subtle); margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+.checks .t { color: var(--fg-hint); }
+.checks .x { color: var(--error); }
+.dfile {
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: var(--radius-field);
+  font-family: var(--font-mono); font-size: var(--text-micro); color: var(--fg-subtle); cursor: pointer;
+}
+.dfile:hover { background: color-mix(in oklab, var(--surface-2) 40%, transparent); color: var(--fg-muted); }
+.dfile .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dfile .a { color: var(--success); } .dfile .d { color: var(--error); }
+.dfile .fc { font-size: 8px; color: var(--fg-hint); transition: transform 0.12s; }
+.dfile.open .fc { transform: rotate(90deg); }
+.dhunk {
+  margin: 2px 0 8px 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-field);
+  font-family: var(--font-mono); font-size: var(--text-micro); line-height: 1.6; overflow-x: auto;
+  background: color-mix(in oklab, var(--surface-0) 60%, transparent);
+}
+.dl { padding: 0 10px; white-space: pre; }
+.dl.add { background: color-mix(in oklab, var(--success) 10%, transparent); color: color-mix(in oklab, var(--success) 80%, var(--fg)); }
+.dl.del { background: color-mix(in oklab, var(--error) 10%, transparent); color: color-mix(in oklab, var(--error) 80%, var(--fg)); }
+.dl.ctx { color: var(--fg-subtle); }
+.qblock {
+  border-left: 3px solid var(--border); padding: 2px 0 2px 12px; margin: 4px 0 10px;
+  font-size: var(--text-sm); line-height: 1.55; color: var(--fg-muted);
+}
+.sugg { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.sugg button {
+  font-size: var(--text-xs); color: var(--fg-muted); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control); padding: 4px 10px;
+}
+.sugg button:hover { border-color: color-mix(in oklab, var(--accent) 50%, transparent); color: var(--fg); }
+.ansrow { display: flex; gap: 8px; }
+.ansrow input {
+  flex: 1; background: var(--surface-0); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control); padding: 6px 10px; font-size: var(--text-xs); outline: none;
+}
+.ansrow input:focus { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+.diag {
+  font-size: var(--text-micro); color: var(--fg-subtle); font-style: italic; line-height: 1.55;
+  border-left: 3px solid var(--border); padding-left: 12px; margin-top: 6px;
+}
+.btn {
+  font-size: var(--text-xs); padding: 5px 12px; border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle); background: color-mix(in oklab, var(--surface-2) 60%, transparent);
+  color: var(--fg-muted); display: inline-flex; align-items: center; gap: 6px;
+}
+.btn:hover { color: var(--fg); border-color: var(--border); }
+.btn.primary { background: color-mix(in oklab, var(--accent) 80%, transparent); border-color: transparent; color: white; }
+.btn.primary:hover { background: var(--accent); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--fg-subtle); }
+.btn.ghost:hover { color: var(--fg); background: color-mix(in oklab, var(--surface-2) 50%, transparent); }
+.btn.danger { background: transparent; border-color: transparent; color: color-mix(in oklab, var(--error) 80%, var(--fg)); }
+.btn.danger:hover { background: color-mix(in oklab, var(--error) 12%, transparent); }
+.res-line {
+  display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); color: var(--fg-muted);
+  padding: 8px 12px; border-radius: var(--radius-control);
+  background: color-mix(in oklab, var(--success) 8%, transparent);
+  border: 1px solid color-mix(in oklab, var(--success) 25%, transparent);
+}
+.res-line .g { color: var(--success); }
+.allclear { text-align: center; padding: 30px 20px 26px; }
+.allclear .big { font-size: var(--text-base); font-weight: 600; margin: 10px 0 4px; }
+.allclear .sum { font-size: var(--text-micro); color: var(--fg-hint); }
+.seg { display: inline-flex; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); overflow: hidden; }
+.seg button { font-size: var(--text-micro); padding: 3px 10px; color: var(--fg-subtle); display: inline-flex; align-items: center; gap: 5px; }
+.seg button.on { background: color-mix(in oklab, var(--surface-2) 80%, transparent); color: var(--fg); }
+.kv { display: grid; grid-template-columns: 92px 1fr; gap: 4px 12px; font-size: var(--text-micro); margin: 8px 0; }
+.kv .k { color: var(--fg-hint); }
+.kv .v { color: var(--fg-muted); }
+.mono { font-family: var(--font-mono); }
+.notesblk { margin-top: 12px; border-top: 1px solid var(--border-subtle); padding-top: 10px; }
+.notes-line { display: flex; align-items: center; gap: 8px; font-size: var(--text-micro); color: var(--fg-subtle); cursor: pointer; padding: 2px 0; }
+.notes-line:hover { color: var(--fg-muted); }
+.notes-line .fc { font-size: 8px; color: var(--fg-hint); transition: transform 0.12s; }
+.notes-line.open .fc { transform: rotate(90deg); }
+.notes-body {
+  margin-top: 6px; font-size: var(--text-xs); line-height: 1.6; color: var(--fg-muted);
+  background: color-mix(in oklab, var(--surface-0) 60%, transparent);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-field); padding: 8px 12px; white-space: pre-line;
+}
+.prblk { margin-top: 4px; }
+.prrow { display: flex; align-items: center; gap: 10px; font-size: var(--text-xs); color: var(--fg-muted); padding: 4px 0; }
+.prrow a { color: var(--accent); text-decoration: none; cursor: pointer; }
+.prrow a:hover { text-decoration: underline; }
+.prc { border-left: 3px solid var(--border); padding: 2px 0 2px 12px; margin: 6px 0; font-size: var(--text-micro); color: var(--fg-subtle); line-height: 1.55; }
+.prc .f { font-family: var(--font-mono); color: var(--fg-hint); }
+
+/* Intake modal */
+.intake { width: min(560px, calc(100vw - 48px)); }
+.frow { margin-bottom: 12px; }
+.frow label { display: block; font-size: 0.625rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-hint); margin-bottom: 5px; }
+.frow input[type=text], .frow textarea, .frow select {
+  width: 100%; background: var(--surface-0); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control); padding: 6px 10px; font-size: var(--text-xs); outline: none; resize: none;
+}
+.frow input:focus, .frow textarea:focus { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+.wfpick { display: flex; gap: 8px; }
+.wfopt {
+  flex: 1; text-align: left; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); padding: 8px 10px;
+}
+.wfopt:hover { border-color: var(--border); }
+.wfopt.on { border-color: color-mix(in oklab, var(--accent) 55%, transparent); background: color-mix(in oklab, var(--accent) 6%, transparent); }
+.wfopt .wn { font-size: var(--text-xs); font-weight: 600; margin-bottom: 3px; }
+.wfopt .wp { font-size: var(--text-micro); color: var(--fg-subtle); line-height: 1.5; }
+.wfopt .ws { font-size: 0.625rem; color: var(--fg-hint); margin-top: 3px; }
+.inputs2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.chat-hint { border-top: 1px solid var(--border-subtle); margin-top: 4px; padding: 10px 0 0; }
+.chat-hint .lead { font-size: var(--text-micro); color: var(--fg-hint); margin-bottom: 8px; }
+.cc {
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-control); padding: 8px 12px;
+  background: color-mix(in oklab, var(--surface-0) 50%, transparent);
+}
+.cc .u { font-size: var(--text-micro); color: var(--fg-subtle); font-style: italic; margin-bottom: 6px; }
+.cc .qt { font-size: var(--text-xs); font-weight: 600; margin-bottom: 4px; }
+.cc .ln { font-size: var(--text-micro); color: var(--fg-subtle); }
+.cc .acts { display: flex; gap: 6px; margin-top: 8px; }
+
+/* Toast */
+.toast {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(8px);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-control);
+  box-shadow: var(--shadow-menu); padding: 7px 14px; font-size: var(--text-xs); color: var(--fg-muted);
+  opacity: 0; transition: opacity 0.15s, transform 0.15s; z-index: 300; pointer-events: none; max-width: 70vw;
+}
+.toast.show { opacity: 1; transform: translateX(-50%); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">Synthesis<span>background workflows, quiet by default</span></div>
+  <nav class="m-tabs" id="tabs"></nav>
+  <div class="m-desc" id="mdesc"></div>
+  <button class="notes-btn" id="notesBtn" title="Toggle design annotations (i)"><span class="i-dot">i</span>notes <kbd>i</kbd></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <div class="sb-search"><div class="box">⌕&ensp;Search threads…</div></div>
+    <div class="sb-head">Projects</div>
+    <div class="sb-scroll" id="sbScroll"></div>
+    <div class="sb-foot">⚙&ensp;Settings</div>
+  </aside>
+  <main class="panes" id="panes"></main>
+</div>
+
+<div id="modalRoot"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+
+/* ============================ Data ============================ */
+const PROJ = {
+  ao:  { name: 'agent-overflow', color: 'var(--proj-ao)' },
+  m32: { name: 'm32rimm',        color: 'var(--proj-m32)' },
+  dsp: { name: 'dispatch',       color: 'var(--proj-dsp)' },
+};
+const THREADS = {
+  ao:  [['pane focus refactor notes', '2h'], ['ws reconnect repro session', '5h']],
+  m32: [['session pooling design chat', '1d']],
+  dsp: [['profile loader sketch', '2d']],
+};
+/* Runs (the canonical items, reframed as runs OF a workflow — CI-style). */
+const ITEMS = {
+  1: { proj: 'ao', title: 'Fix WebSocket reconnect dropping queued sends', wf: 'build-and-validate',
+       state: 'running', phn: 2, of: 5, phase: 'implement', elapsed: '14m', cost: '$1.84',
+       live: 'Editing internal/transport/wsclient.go',
+       happened: 'plan settled on a bounded resend buffer keyed by send seq; implement is mid-edit in the transport package.',
+       needs: 'Nothing — watch it, steer it, or leave it alone.',
+       phases: [
+         { n: 'plan', s: 'done', t: '4m' },
+         { n: 'implement', s: 'run' },
+         { n: 'check', s: 'wait' },
+         { n: 'review', s: 'wait' },
+         { n: 'docs', s: 'wait' },
+       ] },
+  2: { proj: 'ao', title: 'Add retention settings UI', wf: 'build-and-validate',
+       state: 'gate', phase: 'review', phn: 4, of: 5, parked: '7h', cost: '$3.10',
+       happened: 'Implemented the retention pane behind Settings → Data. The store type widened from a bare day-count to a policy (days + auto-trim). All checks green on the first pass.',
+       needs: 'A human eye on the store-shape change before docs runs — the review gate always parks for you.',
+       checks: [['build', '9s'], ['test', '21s'], ['check', '4s']],
+       diff: { add: 34, del: 12, files: [
+         { p: 'internal/settings/store.go', a: 9, d: 6, hunk: [
+           ['ctx', ' type Settings struct {'],
+           ['ctx', '   Theme     string'],
+           ['del', '-  Retention int'],
+           ['add', '+  Retention RetentionPolicy'],
+           ['ctx', ' }'],
+           ['add', '+'],
+           ['add', '+type RetentionPolicy struct {'],
+           ['add', '+  Days     int'],
+           ['add', '+  AutoTrim bool'],
+           ['add', '+}'],
+         ] },
+         { p: 'internal/settings/retention.go', a: 14, d: 2, hunk: [
+           ['del', '-func TrimHistory(days int) error {'],
+           ['add', '+func TrimHistory(p RetentionPolicy) error {'],
+           ['add', '+  if !p.AutoTrim {'],
+           ['add', '+    return nil'],
+           ['add', '+  }'],
+         ] },
+         { p: 'frontend/src/lib/components/settings/RetentionSection.svelte', a: 8, d: 1, hunk: [
+           ['add', '+<NumberField label="Keep history (days)" bind:value={days} />'],
+           ['add', '+<Toggle label="Trim automatically" bind:checked={autoTrim} />'],
+         ] },
+         { p: 'frontend/src/lib/stores/settings.svelte.ts', a: 3, d: 3, hunk: [
+           ['del', '-  retention: number;'],
+           ['add', '+  retention: { days: number; autoTrim: boolean };'],
+         ] },
+       ] } },
+  3: { proj: 'm32', title: 'Refactor session pooling', wf: 'build-and-validate',
+       state: 'question', phase: 'implement', phn: 2, of: 5, parked: '9h', cost: '$1.12',
+       happened: 'implement mapped the pooling code and stopped before consolidating — it found two coexisting implementations and won’t guess which one is load-bearing.',
+       needs: 'One decision. The answer goes straight in and the phase picks up where it yielded — nothing restarts.',
+       q: 'Two pool implementations exist (v1 in pool.go, v2 in session_pool.go) — consolidate on v2 or keep both behind the flag?',
+       sugg: ['Consolidate on v2, delete v1', 'Keep both behind the flag'] },
+  4: { proj: 'dsp', title: 'Bump Tailwind v4.1 + fix tokens', wf: 'build-and-validate',
+       state: 'done', parked: '2h', cost: '$0.92', branch: 'wf/bump-tailwind-v41',
+       happened: 'Tailwind 4.0 → 4.1; three renamed theme tokens fixed. All five phases green, checks clean on the first pass.',
+       needs: 'A disposition — the branch and worktree wait for you.',
+       checks: [['pnpm build + check', '34s'], ['visual smoke — tokens render', '9s']] },
+  5: { proj: 'ao', title: 'Flaky test hunt in triage router', wf: 'build-and-validate',
+       state: 'failed', parked: '11h', cost: '$6.40',
+       happened: 'check went red three times; each loop-back carried the diagnosis forward, and every diagnosis called the failure genuine — the triage router drops events under parallel dispatch. Retries exhausted.',
+       needs: 'A direction, not a click. The worktree and all three attempts are intact.',
+       fail: 'go test ./internal/triage — TestParallelDispatch  ×3 · genuine',
+       diag: '“fan-out drops events when two dispatchers claim one slot — not flake; ordering bug in claim()”' },
+  6: { proj: 'm32', title: 'Poll Jira → triage new tickets', wf: 'jira-poll',
+       state: 'queued', via: 'jira-poll', every: '6h', ago: '6m',
+       happened: 'Spawned by the jira-poll schedule at 12:02. Starts when a slot frees; it reads the workflow’s continuity notes on start.',
+       needs: 'Nothing.' },
+  7: { proj: 'dsp', title: 'Migrate config loader to profiles', wf: 'build-and-validate',
+       state: 'queued', ago: '3h' },
+};
+/* The sweep cycle: gate, question, failed — plus done-awaiting-disposition
+   (D11 amendment: joins the cycle, stays neutral in the sidebar). */
+const PARKED = [2, 3, 5, 4];
+const RUNS = { ao: [2, 5, 1], m32: [3, 6], dsp: [4, 7] };
+
+/* Workflows — the overview level's first-class objects (pipelines → runs). */
+const WFS = {
+  bv: { name: 'build-and-validate', scope: 'shared', chain: 'plan → implement → check → review → docs',
+        meta: '5 phases · 1 human gate', runs: [2, 3, 5, 1, 4, 7],
+        history: [
+          { t: 'Spike: virtualized diff renderer', m: 'cancelled · yesterday · worktree kept' },
+          { t: 'Debounce project search', m: 'merged · 2d · $1.75' },
+          { t: 'Harden worktree cleanup on crash', m: 'PR #209 merged · 3d · $2.40' },
+        ] },
+  jp: { name: 'jira-poll', scope: 'm32', chain: 'poll → triage → spawn runs',
+        meta: 'automation · every 6h', runs: [6],
+        next: 'today 18:02', nextIn: 'in 3h 40m',
+        notes: 'Seen through M32-94. M32-91 reopened twice — flag as recurring if it shows again.\nSkip tickets labeled infra (platform team owns those).',
+        history: [
+          { t: 'ran 12:02', m: 'spawned the queued run · $0.14' },
+          { t: 'ran 06:01', m: 'no new tickets — noop · $0.09' },
+          { t: 'ran yesterday 18:03', m: 'spawned 2 runs, both merged · $0.31' },
+        ] },
+  mlr: { name: 'multi-lens-review', scope: 'shared', chain: '3× reviewers ⇉ synthesize → fix',
+         meta: 'fan-out ×3 · read-only lenses', runs: [],
+         last: 'last run 3d ago', total: 12,
+         history: [
+           { t: 'Review: transport reconnect series', m: 'finished · 3d · $4.10' },
+           { t: 'Review: settings retention series', m: 'finished · 5d · $3.85' },
+         ] },
+};
+const WFKEY = { 'build-and-validate': 'bv', 'jira-poll': 'jp', 'multi-lens-review': 'mlr' };
+
+/* Quiet-morning variant — the same runs later that day, nothing needing anyone. */
+const QUIET = {
+  ao:  [{ t: ITEMS[1].title, m: '4/5 · 1h58m' }, { t: ITEMS[2].title, m: '5/5 · docs' }],
+  m32: [{ t: ITEMS[3].title, m: '2/5 · 32m' }, { t: ITEMS[6].title, m: 'queued' }],
+  dsp: [{ t: ITEMS[7].title, m: 'queued' }],
+};
+
+const MOMENTS = [
+  { n: 1,  key: '1', tab: 'Quiet',      desc: 'the normal-view test — nothing needs you, workflows are one hint-toned line' },
+  { n: 2,  key: '2', tab: 'Overview',   desc: 'workflow-centric — pipelines, not items; queue toggle, slots, up-next order' },
+  { n: 3,  key: '3', tab: 'Detail',     desc: 'drill in — a workflow’s live runs, history, schedule; back pops the stack' },
+  { n: 4,  key: '4', tab: 'Needs you',  desc: 'run detail absorbs the sweep — j/k step needs-attention, a/r/t act' },
+  { n: 5,  key: '5', tab: 'Gate review',desc: 'diff-first gate — files expand in place, checks + cost alongside' },
+  { n: 6,  key: '6', tab: 'Intake',     desc: 'one run shape — explicit form, or a confirm card from any chat' },
+  { n: 7,  key: '7', tab: 'Phase thread', desc: 'a run’s phase opens as a normal thread pane, from run detail' },
+  { n: 8,  key: '8', tab: 'Scheduled',  desc: 'an automation workflow — next run, spawn history, continuity notes' },
+  { n: 9,  key: '9', tab: 'Done · PR',  desc: 'disposition + PR affordances + the auto-merge receipt' },
+  { n: 10, key: '0', tab: 'Hand-off',   desc: 'continue with agent — run detail to pre-seeded thread, context travels' },
+];
+
+/* ============================ State ============================ */
+const S = {
+  m: 1, quiet: false, queueActive: true, filter: 'all', qorder: [6, 7],
+  wfOpen: { ao: false, m32: false, dsp: false },
+  panes: ['thread'],
+  stack: [{ v: 'ov' }], /* ov → wf → run | clear; ONE pane, stacked levels (D11 amendment 2) */
+  diffOpen: {}, resolved: {}, doneView: 'manual', pr: false, prOpen: false, wfNotesOpen: false,
+  cancelArm: false, handoff: null, extraThread: null, phaseCfg: null,
+  intake: false, intakeWf: 'bv', intakeProj: 'ao',
+  _slide: false,
+};
+
+/* Resolutions: how each action rewrites a run everywhere. */
+const RES = {
+  approve:   { col: 'run',    rowMeta: '5/5 · docs',      cardMeta: 'docs · 5/5', live: 'Writing docs/settings-retention.md', line: 'Approved — routing to docs' },
+  reject:    { col: 'run',    rowMeta: '2/5 · implement', cardMeta: 'implement · 2/5', live: 'Applying your review note', line: 'Changes requested — looping back to implement with your note' },
+  takeover2: { col: 'run',    rowMeta: 'yours · review',  cardMeta: 'review · taken over', live: 'You have the thread', line: 'Taken over — the review thread is yours' },
+  answer:    { col: 'run',    rowMeta: '2/5 · resuming',  cardMeta: 'implement · 2/5', live: 'Consolidating on v2', line: 'Answered — the phase resumes its turn' },
+  takeover3: { col: 'run',    rowMeta: 'yours · implement', cardMeta: 'implement · taken over', live: 'You have the thread', line: 'Taken over — the implement thread is yours' },
+  reenqueue: { col: 'queue',  rowMeta: 'queued',          cardMeta: 'requeued with the diagnosis as guidance', line: 'Re-enqueued with the diagnosis as guidance — position 3' },
+  discard5:  { col: null,     line: 'Discarded — branch dropped, record kept' },
+  handoff:   { col: null,     line: 'Continuing with agent — thread opened in the run’s worktree' },
+  merge:     { col: 'settled', rowMeta: 'merged',         cardMeta: 'merged · fast-forward 3af92c1', line: 'Merged to main — fast-forward 3af92c1 · worktree cleaned' },
+  discard4:  { col: 'settled', rowMeta: 'discarded',      cardMeta: 'discarded · record kept', line: 'Discarded — branch and worktree dropped, record kept' },
+  prfix:     { col: 'run',    rowMeta: 'PR #214 · fixing', cardMeta: 'PR #214 · addressing 2 comments', live: 'Applying review comments', line: '2 comments sent — fix turn running in the run’s worktree' },
+};
+const RES_LABELS = {
+  approve: 'approved', reject: 'sent back', answer: 'answered', takeover2: 'taken over',
+  takeover3: 'taken over', reenqueue: 're-enqueued', discard5: 'discarded', handoff: 'handed off',
+  merge: 'merged', discard4: 'discarded', prfix: 'sent to PR fix',
+};
+
+/* ============================ Utilities ============================ */
+let toastTimer = null;
+function toast(msg) {
+  const t = $('#toast'); t.innerHTML = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+function eff(id) { const r = S.resolved[id]; return r ? RES[r] : null; }
+function needsIds() { return PARKED.filter((id) => !S.resolved[id]); }
+function attnCount(ids) { return ids.filter((id) => !S.resolved[id] && ['gate', 'question', 'failed'].includes(ITEMS[id].state)).length; }
+function ann(txt) { return '<div class="ann"><span class="i-dot">i</span><span>' + txt + '</span></div>'; }
+function pdot(pid) { return '<span class="sdot" style="width:6px;height:6px;border-radius:2px;background:' + PROJ[pid].color + '"></span>'; }
+
+/* colOf: a run's effective lane. */
+function colOf(id) {
+  const r = eff(id);
+  if (r) return r.col;
+  const it = ITEMS[id];
+  if (!it) return null;
+  const st = it.state;
+  if (st === 'gate' || st === 'question' || st === 'failed') return 'attn';
+  if (st === 'running') return 'run';
+  if (st === 'queued') return 'queue';
+  return 'settled';
+}
+
+/* ---------- stack navigation (D11 amendment 2) ---------- */
+function stkTop() { return S.stack[S.stack.length - 1]; }
+function curRun() {
+  const t = stkTop();
+  return S.panes.includes('wf') && t.v === 'run' ? t.id : null;
+}
+function resetLevelState() {
+  S.diffOpen = {}; S.pr = false; S.prOpen = false; S.doneView = 'manual'; S.cancelArm = false;
+}
+function setRun(id) {
+  S.stack = [{ v: 'ov' }, { v: 'wf', wf: WFKEY[ITEMS[id].wf] }, { v: 'run', id }];
+  resetLevelState();
+  render();
+}
+function openRun(id) {
+  if (!S.panes.includes('wf')) S.panes = S.panes.concat('wf');
+  S._slide = true;
+  setRun(id);
+}
+function pushWf(wf) {
+  S.stack = [{ v: 'ov' }, { v: 'wf', wf }];
+  S.wfNotesOpen = false; resetLevelState();
+  S._slide = true;
+  render();
+}
+function goBack() {
+  if (S.stack.length <= 1) return;
+  S.stack.pop();
+  resetLevelState();
+  render();
+}
+function popTo(i) {
+  S.stack = S.stack.slice(0, i + 1);
+  resetLevelState();
+  render();
+}
+function lvlLabel(lv) {
+  if (lv.v === 'ov') return 'Workflows';
+  if (lv.v === 'wf') return WFS[lv.wf].name;
+  if (lv.v === 'run') return ITEMS[lv.id].title;
+  return 'All clear';
+}
+
+/* ============================ Sidebar ============================ */
+function runRowSidebar(id) {
+  const it = ITEMS[id];
+  const r = eff(id);
+  if (r && r.col === null) return '';
+  let signal = '', meta = '', cls = '';
+  if (r) { meta = r.rowMeta; cls = ' dim'; }
+  else if (it.state === 'gate' || it.state === 'question') {
+    signal = '<span class="sdot s-warn-bg pulse"></span><span class="slabel s-warn">Needs you</span>';
+    meta = it.parked; cls = ' glow-warn';
+  } else if (it.state === 'failed') {
+    signal = '<span class="sdot s-err-bg"></span><span class="slabel s-err">Failed</span>';
+    meta = it.parked;
+  } else if (it.state === 'running') {
+    meta = it.phn + '/' + it.of + ' · ' + it.elapsed;
+  } else if (it.state === 'queued') { meta = 'queued'; cls = ' dim'; }
+  else if (it.state === 'done') { meta = 'done'; cls = ' dim'; }
+  else if (it.state === 'cancelled') return '';
+  if (curRun() === id) cls += ' active';
+  return '<div class="jrow' + cls + '" data-item="' + id + '" title="' + it.title + '">' +
+    signal + '<span class="jt">' + it.title + '</span><span class="jm">' + meta + '</span></div>';
+}
+
+function wfSection(pid) {
+  const open = S.wfOpen[pid];
+  let roll = '';
+  if (S.quiet) {
+    roll = '<span class="cnt">' + QUIET[pid].length + '</span>';
+  } else if (!open) {
+    const need = attnCount(RUNS[pid]);
+    const total = RUNS[pid].filter((id) => { const r = eff(id); return !(r && r.col === null) && ITEMS[id].state !== 'cancelled'; }).length;
+    roll = need > 0
+      ? '<span class="sdot s-warn-bg"></span><span class="need">' + need + '</span>'
+      : '<span class="cnt">' + total + '</span>';
+  }
+  let h = '<div class="wfhead' + (open ? ' open' : '') + '" data-wfsec="' + pid + '">' +
+    '<span class="chev">▶</span><span>Workflows</span><span class="roll">' + roll + '</span></div>';
+  if (open) {
+    if (S.quiet) {
+      for (const q of QUIET[pid]) h += '<div class="jrow dim"><span class="jt">' + q.t + '</span><span class="jm">' + q.m + '</span></div>';
+    } else {
+      for (const id of RUNS[pid]) h += runRowSidebar(id);
+    }
+  }
+  return h;
+}
+
+function renderSidebar() {
+  let h = '';
+  for (const pid of ['ao', 'm32', 'dsp']) {
+    h += '<div class="proj"><div class="proj-row"><span class="chev">▶</span><span class="folder">▣</span><span class="pname">' + PROJ[pid].name + '</span></div>';
+    h += '<div class="rail">';
+    for (const [t, tm] of THREADS[pid]) {
+      const active = S.panes.includes('thread') && pid === 'ao' && t === THREADS.ao[0][0];
+      h += '<div class="trow' + (active ? ' active' : '') + '"><span class="tt">' + t + '</span><span class="tm">' + tm + '</span></div>';
+    }
+    if (pid === 'ao' && S.extraThread) {
+      h += '<div class="trow"><span class="sdot s-ok-bg pulse"></span><span class="slabel s-ok">Working</span><span class="tt">' + S.extraThread + '</span><span class="tm">now</span></div>';
+    }
+    h += wfSection(pid);
+    if (pid === 'ao') {
+      h += S.quiet
+        ? ann('<b>The normal-view test.</b> Nothing needs you, so workflows are one hint-toned line per project — no badges, no color, no count that begs. The sidebar is still about your threads.')
+        : ann('<b>One signal per row.</b> Amber (with AO’s existing glow) only when a human unblocks it; red only on failed. Running, queued, done are typographic — color is reserved for “needs you.” Done-awaiting-disposition stays neutral here (D11 amendment). A row click lands on the run’s detail level, not a summary.');
+    }
+    if (pid === 'm32' && !S.quiet && !S.wfOpen.m32) {
+      h += ann('Collapsed projects roll up to a <b>single amber count</b> — glanceable across many repos without expanding anything.');
+    }
+    h += '</div></div>';
+  }
+  $('#sbScroll').innerHTML = h;
+}
+
+/* ============================ Overview level ============================ */
+function wfVisible(wf) {
+  if (S.filter === 'all') return true;
+  if (WFS[wf].scope === 'shared') return true;
+  return WFS[wf].scope === S.filter;
+}
+function wfAggregate(wf) {
+  const w = WFS[wf];
+  if (wf === 'jp') {
+    const q = w.runs.filter((id) => colOf(id) === 'queue').length;
+    return '<span>next run ' + w.next + '</span>' + (q ? ' · ' + q + ' queued' : '');
+  }
+  if (wf === 'mlr') return 'idle · ' + w.last;
+  const need = attnCount(w.runs);
+  const dispose = w.runs.filter((id) => ITEMS[id] && ITEMS[id].state === 'done' && !S.resolved[id]).length;
+  const running = w.runs.filter((id) => colOf(id) === 'run').length;
+  const queued = w.runs.filter((id) => colOf(id) === 'queue').length;
+  const parts = [];
+  if (running) parts.push(running + ' running');
+  if (queued) parts.push(queued + ' queued');
+  if (dispose) parts.push(dispose + ' to dispose');
+  const neutral = parts.length ? parts.join(' · ') : 'idle';
+  return (need > 0 ? '<span class="need" data-sweep title="Step through what needs you (j/k)">' + need + ' need you</span> · ' : '') + neutral;
+}
+function wfRow(wf) {
+  if (!wfVisible(wf)) return '';
+  const w = WFS[wf];
+  const second = wf === 'jp'
+    ? PROJ.m32.name + ' · ' + w.meta + ' · ' + w.nextIn
+    : w.scope + ' · ' + w.meta + ' · ' + w.chain;
+  return '<div class="wfrow" data-wf-open="' + wf + '">' +
+    '<div class="r1"><span class="wn">' + w.name + '</span><span class="agg">' + wfAggregate(wf) + '</span></div>' +
+    '<div class="w2">' + second + '</div></div>';
+}
+function upNextIds() {
+  const ids = S.qorder.filter((id) => colOf(id) === 'queue');
+  if (colOf(5) === 'queue') ids.push(5);
+  return ids;
+}
+function upRow(id, pos) {
+  const it = ITEMS[id];
+  if (S.filter !== 'all' && it.proj !== S.filter) return '';
+  const r = eff(id);
+  const held = !S.queueActive ? ' · held' : '';
+  const meta = r ? 'requeued · with guidance' + held
+    : (it.via ? 'spawned ' + it.ago + ' ago' + held : 'queued ' + it.ago + held);
+  return '<div class="uprow" draggable="true" data-qid="' + id + '" data-item="' + id + '">' +
+    '<span class="grip">⠿</span><span class="qpos">#' + pos + '</span>' + pdot(it.proj) +
+    '<span class="ut">' + it.title + '</span>' +
+    '<span class="um">' + it.wf + ' · ' + meta + '</span></div>';
+}
+function ovControls() {
+  const filterLabel = S.filter === 'all' ? 'All projects' : PROJ[S.filter].name;
+  return '<div class="ov-ctl">' +
+    '<button class="q-toggle" id="qToggle" title="Pause stops new starts; running items finish">' +
+      (S.queueActive ? '<span class="g">❚❚</span> Active' : '<span class="g">▶</span> Paused') + '</button>' +
+    '<span class="slots" title="2 of 3 concurrency slots in use"><span class="sd busy"></span><span class="sd busy"></span><span class="sd"></span>2/3</span>' +
+    '<button class="flt" id="fltBtn" title="Filter by project">' + filterLabel + ' ▾</button>' +
+    '<button class="newrun" id="newRun">+ New run</button>' +
+    '</div>';
+}
+function ovBody() {
+  let h = '<div class="ov-body">';
+  h += '<div class="sec-head">Active</div>' + wfRow('bv');
+  h += ann('<b>One pane, stacked levels (D11 amendment 2):</b> overview › workflow › run, back at every depth. The surface lists pipelines, not items — a run is to a workflow what a build is to CI. One amber aggregate per row; everything else is typographic. Click a row to drill in; the amber count jumps straight to the sweep.');
+  h += '<div class="sec-gap"></div><div class="sec-head">Scheduled</div>' + wfRow('jp');
+  h += ann('A scheduled automation reads as a <b>next-run time</b>, not a badge. Its spawned runs queue like any other.');
+  h += '<div class="sec-gap"></div><div class="sec-head">Idle</div>' + wfRow('mlr');
+
+  const up = upNextIds();
+  if (up.length) {
+    h += '<div class="sec-gap"></div><div class="sec-head">Up next <span class="cnt">' + up.length + '</span></div>';
+    h += up.map((id, i) => upRow(id, i + 1)).join('');
+    h += ann('<b>The queue is global and cross-workflow</b>, so its order lives here — drag to reprioritize (grip on hover). Queue is a toggle, not a session (D3.1): pause stops new starts, running items finish. This list layout is already single-column, so narrow panes need no special collapse (ratified flag).');
+  }
+  h += '</div>';
+  return h;
+}
+
+/* ============================ Workflow level ============================ */
+function runRowDetail(id) {
+  const it = ITEMS[id];
+  const r = eff(id);
+  let signal = '', meta = '', cls = '', extra = '', below = '';
+  if (r) {
+    if (r.col === null) return '';
+    cls = ' dim'; meta = r.cardMeta;
+    if (r.col === 'run' && r.live) below = '<div class="rlive">' + r.live + '</div>';
+  } else if (it.state === 'gate') {
+    signal = '<span class="sdot s-warn-bg pulse"></span><span class="slabel s-warn">Needs you</span>';
+    meta = '<span class="w">review gate</span> · +' + it.diff.add + ' −' + it.diff.del + ' · checks ✓ · ' + it.parked;
+  } else if (it.state === 'question') {
+    signal = '<span class="sdot s-warn-bg pulse"></span><span class="slabel s-warn">Needs you</span>';
+    meta = '<span class="w">asks</span> — v1 vs v2 · ' + it.parked;
+  } else if (it.state === 'failed') {
+    signal = '<span class="sdot s-err-bg"></span><span class="slabel s-err">Failed</span>';
+    meta = 'check ×3 · genuine · ' + it.parked;
+  } else if (it.state === 'running') {
+    meta = it.phase + ' · ' + it.phn + '/' + it.of + ' · ' + it.elapsed + ' · ' + it.cost;
+    extra = '<button class="rxl' + (S.cancelArm ? ' armed' : '') + '" data-cancel="' + id + '">' + (S.cancelArm ? 'stop this run?' : '✕') + '</button>';
+    below = '<div class="rlive">' + it.live + '</div>';
+  } else if (it.state === 'queued') {
+    const up = upNextIds(); const pos = up.indexOf(id) + 1;
+    cls = ' dim';
+    meta = 'queued' + (pos ? ' · #' + pos : '') + (it.via ? ' · spawned ' + it.ago + ' ago' : '');
+  } else if (it.state === 'done') {
+    cls = ' dim';
+    meta = 'done · to dispose · ' + it.cost + ' · ' + it.parked;
+  } else if (it.state === 'cancelled') {
+    cls = ' dim'; meta = 'cancelled · worktree kept';
+  } else return '';
+  return '<div class="rrow' + cls + '" data-item="' + id + '" title="' + it.title + '">' +
+    pdot(it.proj) + signal + '<span class="rt">' + it.title + '</span><span class="rm">' + meta + '</span>' + extra + '</div>' + below;
+}
+
+function wfBody(wf) {
+  const w = WFS[wf];
+  let h = '<div class="dt-body">';
+  h += '<div class="dt-sub">' + (wf === 'jp' ? PROJ.m32.name : w.scope) + ' · ' + w.meta + ' · ' + w.chain + '</div>';
+
+  if (wf === 'jp') {
+    h += '<div class="nextrun">◷&ensp;Next run ' + w.next + ' <span style="color:var(--fg-hint)">· ' + w.nextIn + '</span></div>';
+  }
+
+  const live = w.runs.filter((id) => colOf(id) !== null);
+  if (live.length) {
+    h += '<div class="sec-head" style="padding-top:8px">Runs <span class="cnt">' + live.length + '</span></div>';
+    h += live.map(runRowDetail).join('');
+  } else {
+    h += '<div class="sec-head" style="padding-top:8px">Runs</div><div class="hrow"><span class="ht" style="color:var(--fg-hint)">no live runs</span></div>';
+  }
+  if (wf === 'bv') {
+    h += ann('<b>The drill-down is the browsing path</b> — the crumb walks back out. Rows keep sidebar anatomy, one signal max; click a run for its detail (phases, evidence, actions). Cancel is hover-revealed, two-step. Only threads escape the pane.');
+  }
+
+  h += '<div class="sec-gap"></div><div class="sec-head">History' + (w.total ? ' <span class="cnt">' + w.total + ' runs</span>' : '') + '</div>';
+  h += w.history.map((e) => '<div class="hrow"><span class="ht">' + e.t + '</span><span class="hm">' + e.m + '</span></div>').join('');
+  if (wf === 'bv') h += ann('History rows are <b>receipts over the persisted run record</b> (§10) — not live objects, no actions.');
+
+  if (w.notes !== undefined) {
+    h += '<div class="notesblk"><div class="notes-line' + (S.wfNotesOpen ? ' open' : '') + '" data-wfnotes>' +
+      '<span class="fc">▶</span>Continuity notes — carried across runs<span style="color:var(--fg-hint)">· rewritten after last run</span></div>';
+    if (S.wfNotesOpen) {
+      h += '<div class="notes-body" contenteditable="true" spellcheck="false">' + w.notes + '</div>' +
+        '<div style="font-size:0.625rem; color:var(--fg-hint); margin-top:4px">editable — the next run reads this; a terminal phase may rewrite it</div>';
+    }
+    h += ann('<b>Continuity notes (D12), at their natural home:</b> one quiet, expandable line on the workflow — a notes file per workflow, not a memory system. Spawned runs read them on start.') + '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+/* ============================ Run level ============================ */
+function stateWord(id) {
+  const st = ITEMS[id].state;
+  if (st === 'gate') return '<span class="m-state s-warn">Review gate</span>';
+  if (st === 'question') return '<span class="m-state s-warn">Question</span>';
+  if (st === 'failed') return '<span class="m-state s-err">Failed</span>';
+  if (st === 'done') return '<span class="m-state" style="color:var(--fg-subtle)">Done</span>';
+  if (st === 'queued') return '<span class="m-state" style="color:var(--fg-subtle)">Queued</span>';
+  if (st === 'running') return '<span class="m-state" style="color:var(--fg-subtle)">Running</span>';
+  if (st === 'cancelled') return '<span class="m-state" style="color:var(--fg-subtle)">Cancelled</span>';
+  return '';
+}
+function subLine(id) {
+  const it = ITEMS[id];
+  const bits = [];
+  if (it.wf) bits.push(it.wf);
+  if (it.phase) bits.push(it.phase + ' ' + it.phn + '/' + it.of);
+  if (it.via) bits.push('spawned by ' + it.via + ' · every ' + it.every);
+  if (it.parked && it.state !== 'done') bits.push('parked ' + it.parked);
+  if (it.state === 'done') bits.push('finished ' + it.parked + ' ago');
+  if (it.cost) bits.push(it.cost);
+  return bits.join(' · ');
+}
+function digest(id) {
+  const it = ITEMS[id];
+  if (!it.happened) return '';
+  return '<div class="dig"><span class="dk">What happened</span><span class="dv">' + it.happened +
+    '</span><span class="dk">What it needs</span><span class="dv">' + it.needs + '</span></div>';
+}
+function checksRow(id) {
+  const it = ITEMS[id];
+  if (!it.checks) return '';
+  return '<div class="checks">' + it.checks.map(([n, t]) => '✓ ' + n + ' <span class="t">' + t + '</span>').join('') + '</div>';
+}
+
+function gateBody(id) {
+  const it = ITEMS[id];
+  let h = digest(id) + '<div class="evid">' + checksRow(id);
+  it.diff.files.forEach((f, i) => {
+    const open = !!S.diffOpen[i];
+    h += '<div class="dfile' + (open ? ' open' : '') + '" data-dfile="' + i + '"><span class="fc">▶</span><span class="p">' + f.p +
+      '</span><span class="a">+' + f.a + '</span><span class="d">−' + f.d + '</span></div>';
+    if (open) h += '<div class="dhunk">' + f.hunk.map(([k, l]) => '<div class="dl ' + k + '">' + l.replace(/</g, '&lt;') + '</div>').join('') + '</div>';
+  });
+  h += ann('<b>Gate review leads with the evidence</b> (D4.4): diff summary, checks, cost. File rows expand in place — the full review, if you want it, is the phase thread itself. No envelope, no gate trace, no variables (D11).');
+  h += '</div>';
+  return h;
+}
+function gateActions() {
+  return '<button class="btn primary" data-act="approve">Approve → docs <kbd style="color:inherit">a</kbd></button>' +
+    '<button class="btn" data-act="reject">Request changes <kbd>r</kbd></button>' +
+    '<button class="btn ghost" data-act="takeover">Take over <kbd>t</kbd></button><span class="sp"></span>';
+}
+function questionBody(id) {
+  const it = ITEMS[id];
+  return digest(id) + '<div class="evid"><div class="qblock">' + it.q + '</div>' +
+    '<div class="sugg">' + it.sugg.map((s, i) => '<button data-sugg="' + s + '"><kbd>' + (i + 1) + '</kbd> ' + s + '</button>').join('') + '</div>' +
+    '<div class="ansrow"><input id="ansin" placeholder="Answer — the phase resumes where it yielded  (a to focus, ↵ to send)"><button class="btn primary" data-act="answer">Send</button></div>' +
+    ann('<b>Answering is the cheap path</b> (§7): the turn is already yielded, so the answer goes straight in — no interrupt, no restart. Quick answers are lifted from the question itself.') +
+    '</div>';
+}
+function questionActions() {
+  return '<button class="btn ghost" data-act="takeover">Take over instead <kbd>t</kbd></button><span class="sp"></span>';
+}
+function failedBody(id) {
+  const it = ITEMS[id];
+  return digest(id) + '<div class="evid"><div class="checks"><span class="x">✗</span>&nbsp;' + it.fail + '</div>' +
+    '<div class="diag">diagnosis #3: ' + it.diag + '</div>' +
+    ann('<b>“Continue with agent” is the primary affordance on stuck/failed</b> (D11): it hands the run record, diff, and diagnoses to a fresh thread you drive. Re-enqueue and discard are the quieter exits.') +
+    '</div>';
+}
+function failedActions() {
+  return '<button class="btn primary" data-act="handoff">Continue with agent <kbd style="color:inherit">t</kbd></button>' +
+    '<button class="btn" data-act="reenqueue">Re-enqueue with guidance <kbd>a</kbd></button>' +
+    '<span class="sp"></span><button class="btn danger" data-act="discard">Discard <kbd>r</kbd></button>';
+}
+function doneBody(id) {
+  const it = ITEMS[id];
+  let h = digest(id) + '<div class="evid">' + checksRow(id);
+  h += '<div style="display:flex; align-items:center; gap:8px; margin:6px 0 10px">' +
+    '<span style="font-size:0.625rem; text-transform:uppercase; letter-spacing:0.14em; color:var(--fg-hint)">Viewing as</span>' +
+    '<span class="seg"><button data-view="manual" class="' + (S.doneView === 'manual' ? 'on' : '') + '">manual (default)</button>' +
+    '<button data-view="auto" class="' + (S.doneView === 'auto' ? 'on' : '') + '">auto-merge opt-in</button></span></div>';
+  if (S.doneView === 'auto') {
+    h += '<div class="res-line"><span class="g">✓</span>Merged automatically · today 06:12</div>' +
+      '<div class="kv"><span class="k">merge</span><span class="v mono">' + it.branch + ' → main · fast-forward · 3af92c1</span>' +
+      '<span class="k">policy</span><span class="v">dispatch opted in; a conflict or dirty base parks for you instead</span>' +
+      '<span class="k">undo</span><span class="v mono">git revert 3af92c1</span></div>' +
+      ann('<b>The auto-merge read is a receipt, not a surprise</b> (D3.3): commit, policy source, undo. It never entered “Needs you.” Production projects stay manual.');
+  } else if (S.pr) {
+    h += '<div class="prblk"><div class="prrow"><span style="color:var(--success)">⎇</span><b>PR #214</b><span class="mono" style="color:var(--fg-hint)">' + it.branch + '</span><a data-open-pr>open ↗</a></div>' +
+      '<div class="prrow"><a data-pr-comments>Review comments (2)</a></div>';
+    if (S.prOpen) {
+      h += '<div class="prc"><span class="f">frontend/src/app.css:212</span> — “token alias for --color-surface-2 reads backwards here”</div>' +
+        '<div class="prc"><span class="f">frontend/patches/README:8</span> — “bump the patch note for 4.1 too”</div>' +
+        '<div style="margin:8px 0 2px"><button class="btn" data-act="sendcomments">Send comments to the agent</button></div>';
+    }
+    h += ann('<b>PR affordances reuse AO’s review UI</b> (D11): open it, read the comments, or hand them straight to the agent — the run returns to Running with a fix turn.') + '</div>';
+  } else {
+    h += ann('<b>Disposition is the human decision</b> (D3.3): merge, PR, or discard. It joins the sweep cycle (D11 amendment) but never turns amber. Merge refuses on conflict or dirty base and parks for you — never forced, never silent.');
+  }
+  h += '</div>';
+  return h;
+}
+function doneActions() {
+  if (S.doneView === 'auto') return '<span class="sp"></span><button class="btn ghost" data-act="continue4">Continue in a fresh thread ↗</button>';
+  if (S.pr) return '<span class="sp"></span><button class="btn ghost" data-act="continue4">Continue with agent ↗ <kbd>t</kbd></button>';
+  return '<button class="btn primary" data-act="merge">Merge to main <kbd style="color:inherit">a</kbd></button>' +
+    '<button class="btn" data-act="pr">Create PR</button>' +
+    '<span class="sp"></span>' +
+    '<button class="btn ghost" data-act="continue4">Continue with agent ↗ <kbd>t</kbd></button>' +
+    '<button class="btn danger" data-act="discard">Discard <kbd>r</kbd></button>';
+}
+function queuedBody(id) {
+  return digest(id) +
+    (id === 6 ? ann('The spawned run stays lean — its <b>continuity notes live on the workflow</b> (jira-poll, one level up), not on every run.') : '');
+}
+function runningBody(id) {
+  const it = ITEMS[id];
+  let h = digest(id) + '<div class="evid">';
+  for (const ph of it.phases) {
+    if (ph.s === 'done') h += '<div class="phrow done" style="height:22px"><span class="g">✓</span><span class="pl">' + ph.n + '</span><span class="pt">' + ph.t + '</span></div>';
+    else if (ph.s === 'run') h += '<div class="phrow run" data-phase-open="' + id + '" style="height:22px" title="Open this phase as a thread pane"><span class="g">●</span><span class="pl">' + ph.n + '</span><span class="plive">' + it.live + '</span></div>';
+    else h += '<div class="phrow" style="height:22px"><span class="g">○</span><span class="pl">' + ph.n + '</span></div>';
+  }
+  h += ann('The run’s phases, with the live one-liner on the running phase — which <b>opens as a normal thread pane</b>. Watching is passive; a message takes the turn (§7).');
+  return h + '</div>';
+}
+
+function runLevel(id) {
+  const it = ITEMS[id];
+  const r = S.resolved[id];
+  let counter = '';
+  if (PARKED.includes(id)) {
+    const idx = PARKED.indexOf(id);
+    counter = '<span class="rd-count"><span>' + (idx + 1) + ' of ' + PARKED.length + '</span><span class="dots">' +
+      PARKED.map((pid, i) => '<span class="dt' + (S.resolved[pid] ? ' res' : (i === idx ? ' now' : '')) + '"></span>').join('') +
+      '</span><kbd>j</kbd><kbd>k</kbd></span>';
+  }
+  let body = '', actions = '';
+  if (r) {
+    body = digest(id) + '<div class="res-line"><span class="g">✓</span>' + RES[r].line + '</div>';
+    actions = '<span class="sp"></span><button class="btn ghost" data-back>Back <kbd>esc</kbd></button>';
+  }
+  else if (it.state === 'gate') { body = gateBody(id); actions = gateActions(); }
+  else if (it.state === 'question') { body = questionBody(id); actions = questionActions(); }
+  else if (it.state === 'failed') { body = failedBody(id); actions = failedActions(); }
+  else if (it.state === 'done') { body = doneBody(id); actions = doneActions(); }
+  else if (it.state === 'queued') { body = queuedBody(id); actions = '<span class="sp"></span><button class="btn danger" data-act="dequeue">Remove from queue</button>'; }
+  else if (it.state === 'running') { body = runningBody(id); actions = '<button class="btn" data-phase-open="' + id + '">Open phase thread</button><span class="sp"></span><button class="btn danger" data-act="cancelrun">Stop this run</button>'; }
+  else if (it.state === 'cancelled') { body = digest(id) + '<div class="hrow" style="padding:0"><span class="ht" style="color:var(--fg-hint)">cancelled · worktree kept</span></div>'; actions = '<span class="sp"></span><button class="btn ghost" data-back>Back <kbd>esc</kbd></button>'; }
+
+  return '<div class="rd-head"><span class="cproj">' + pdot(it.proj) + PROJ[it.proj].name + '</span>' + stateWord(id) + counter + '</div>' +
+    '<div class="rd-title">' + it.title + '</div>' +
+    '<div class="rd-sub">' + subLine(id) + '</div>' +
+    (PARKED.includes(id) && !r
+      ? '<div class="rd-ann">' + ann('<b>Run detail absorbs the sweep (D11 amendment 2):</b> j/k or arrows step the parked set — gate, question, failed, plus done-awaiting-disposition — a/r/t act, esc steps back out. The morning sweep is inbox-zero without a separate surface.') + '</div>'
+      : '') +
+    '<div class="rd-body">' + body + '</div>' +
+    '<div class="m-actions">' + actions + '</div>';
+}
+
+function clearLevel(lv) {
+  return '<div class="rd-body"><div class="allclear">' +
+    '<div style="font-size:1.4rem; color:var(--success)">✓</div>' +
+    '<div class="big">Nothing needs you</div>' +
+    '<div class="sum">' + lv.sum + '</div>' +
+    '<div style="margin-top:14px"><button class="btn ghost" data-crumb="0">Back to workflows <kbd>esc</kbd></button></div>' +
+    '</div>' + ann('<b>The sweep ends inside the pane:</b> inbox-zero, then straight back to the overview. No separate surface was opened, so there is nothing to dismiss.') + '</div>';
+}
+
+/* ============================ Workflows pane (the single stacked pane) ============================ */
+function paneWF(focused) {
+  const st = S.stack;
+  const depth = st.length - 1;
+  const lv = st[depth];
+
+  let head = '<div class="pane-head">';
+  if (depth > 0) head += '<button class="bk" data-back title="Back (esc)">‹</button>';
+  st.slice(0, depth).forEach((a, i) => {
+    head += '<button class="crumb" data-crumb="' + i + '">' + lvlLabel(a) + '</button><span class="csep">›</span>';
+  });
+  head += '<span class="pane-title' + (focused ? ' focused' : '') + '">' + lvlLabel(lv) + '</span>';
+  if (depth === 0) head += ovControls();
+  head += '<button class="pane-x" title="Close pane">✕</button></div>';
+
+  let body = '';
+  if (lv.v === 'ov') body = ovBody();
+  else if (lv.v === 'wf') body = wfBody(lv.wf);
+  else if (lv.v === 'run') body = runLevel(lv.id);
+  else body = clearLevel(lv);
+
+  const slide = S._slide ? ' slide-in' : '';
+  S._slide = false;
+  return '<div class="pane">' + head + '<div class="lvl' + slide + '">' + body + '</div></div>';
+}
+
+/* ============================ Chat panes ============================ */
+function chatPane(cfg, focused) {
+  let h = '<div class="pane' + (cfg.slide ? ' slide-in' : '') + '"><div class="pane-head">';
+  if (cfg.pill) h += '<span class="pill s-ok"><span class="sdot s-ok-bg pulse"></span>Working</span>';
+  h += '<span class="pane-title' + (focused ? ' focused' : '') + '">' + cfg.title + '</span>' +
+    '<button class="pane-x" title="Close pane">✕</button></div><div class="chat">';
+  h += cfg.body;
+  h += '</div><div class="composer"><span class="ph">' + (cfg.ph || 'Message…') + '</span><span class="send">↑</span></div></div>';
+  return h;
+}
+
+function paneThread(focused) {
+  return chatPane({
+    title: 'pane focus refactor notes',
+    body:
+      '<div class="amsg">The pane focus decoupling looks right — reveal no longer implies focus, and the companion keeps its own focus ring. Two follow-ups worth a look: the owned-strip glide easing, and whether F12 should also bind in the connect shell.</div>' +
+      '<div class="toolrow"><span class="ico ico-file">✎</span><span class="mono">frontend/src/lib/stores/panes.svelte.ts</span><span class="tr-meta">read</span></div>' +
+      '<div class="amsg">Both are small. Want me to sketch the easing change first?</div>' +
+      ann('<b>Moment 1 is the argument:</b> this is the whole app when no run needs you. A normal thread, a quiet sidebar — the workflows system is invisible until it has a reason not to be.'),
+  }, focused);
+}
+
+function panePhase(focused) {
+  const t = S.phaseCfg || { title: 'implement — ws reconnect fix' };
+  return chatPane({
+    title: t.title, pill: true, slide: true,
+    body:
+      '<div class="toolrow"><span class="ico ico-file">✎</span><span class="mono">internal/transport/wsclient.go</span><span class="tr-meta">+12 −3</span></div>' +
+      '<div class="toolrow"><span class="ico ico-term">❯_</span><span class="mono">go test ./internal/transport/</span><span class="tr-meta">ok · 1.2s</span></div>' +
+      '<div class="amsg">The reconnect path drops sends queued while the socket is CLOSING. Adding a bounded resend buffer keyed by send seq, flushed after the handshake settles <span class="caret"></span></div>' +
+      ann('<b>A phase thread is a normal thread</b> — same pill, same tool rows, same composer. Watching is passive; sending a message takes the turn over (§7). Nothing here is workflow-flavored chrome.'),
+    ph: 'Message…',
+  }, focused);
+}
+
+function paneHandoff(focused) {
+  const cfg = S.handoff || {
+    title: 'triage: flaky test hunt',
+    chip: 'flaky-test-hunt — run record · diff · 3 diagnoses',
+    msg: 'Continue this run. check failed 3×; the diagnosis points at claim() ordering in the triage router fan-out. Take it from here.',
+    reply: 'Reading the run record and the three diagnoses. The claim() race is visible in the second attempt’s log — two dispatchers acquire the same slot before the seq fence. I’ll reproduce it with a stress loop first <span class="caret"></span>',
+  };
+  return chatPane({
+    title: cfg.title, pill: true, slide: true,
+    body:
+      '<div class="umsg"><div><span class="ctxchip">⛁ ' + cfg.chip + '</span></div>' + cfg.msg + '</div>' +
+      '<div class="amsg">' + cfg.reply + '</div>' +
+      ann('<b>The hand-off:</b> one action on the failed run became a pre-seeded thread in the run’s worktree — the record travels as a context chip, and you just talk. The run row resolved in place; a normal thread row took over.'),
+    ph: 'Message…',
+  }, focused);
+}
+
+function renderPanes() {
+  let h = '';
+  const last = S.panes[S.panes.length - 1];
+  for (const p of S.panes) {
+    const focused = p === last;
+    if (p === 'thread') h += paneThread(focused);
+    else if (p === 'wf') h += paneWF(focused);
+    else if (p === 'phase') h += panePhase(focused);
+    else if (p === 'handoff') h += paneHandoff(focused);
+  }
+  $('#panes').innerHTML = h;
+  bindDnD();
+}
+
+/* ============================ Intake ============================ */
+function renderIntake() {
+  if (!S.intake) return;
+  const wfBv = S.intakeWf !== 'mlr';
+  $('#modalRoot').innerHTML = '<div class="ovl" data-close></div><div class="mwrap"><div class="mdl intake">' +
+    '<div class="m-head"><span class="m-state" style="color:var(--fg-subtle)">New run</span><button class="m-x" data-close>✕</button></div>' +
+    '<div class="m-body" style="padding-top:10px">' +
+    '<div class="frow"><label>Project</label><div class="seg" id="projSeg">' +
+      ['ao', 'm32', 'dsp'].map((p) => '<button data-proj="' + p + '" class="' + (S.intakeProj === p ? 'on' : '') + '">' + pdot(p) + PROJ[p].name + '</button>').join('') +
+    '</div></div>' +
+    '<div class="frow"><label>Goal</label><textarea rows="2">Debounce sidebar search input and drop the per-keystroke thread query</textarea></div>' +
+    '<div class="frow"><label>Workflow</label><div class="wfpick">' +
+      '<button class="wfopt' + (wfBv ? ' on' : '') + '" data-wf="bv"><div class="wn">build-and-validate</div><div class="wp">plan → implement → check → review → docs</div><div class="ws">5 phases · 1 human gate</div></button>' +
+      '<button class="wfopt' + (!wfBv ? ' on' : '') + '" data-wf="mlr"><div class="wn">multi-lens-review</div><div class="wp">3× reviewers ⇉ synthesize → fix</div><div class="ws">fan-out ×3 · read-only lenses</div></button>' +
+    '</div></div>' +
+    '<div class="frow"><div class="inputs2">' +
+      '<div><label>Base branch</label><input type="text" class="mono" value="main"></div>' +
+      (wfBv
+        ? '<div><label>Ticket <span style="letter-spacing:0; text-transform:none; color:var(--fg-hint)">optional</span></label><input type="text" placeholder="AO-…"></div>'
+        : '<div><label>Lenses</label><input type="text" class="mono" value="perf, security, consistency"></div>') +
+    '</div></div>' +
+    ann('<b>One run shape from every producer</b> (§8): project, goal, workflow, base. The workflow’s typed inputs render as plain form fields — there is no “variables” surface anywhere in the human UI (D11, ratified).') +
+    '<div class="chat-hint"><div class="lead">…or queue it from any chat — the agent proposes, a confirm card commits:</div>' +
+    '<div class="cc"><div class="u">“ugh, the retry logic in the poller is duplicated too — queue a fix for that separately”</div>' +
+    '<div class="qt">Queue this run?</div>' +
+    '<div class="ln">' + pdot('m32') + ' m32rimm · Deduplicate poller retry logic · build-and-validate · main</div>' +
+    '<div class="acts"><button class="btn primary" data-act="chatqueue" style="padding:3px 10px">Queue it</button><button class="btn ghost" style="padding:3px 10px">Edit</button><button class="btn ghost" style="padding:3px 10px">Dismiss</button></div></div>' +
+    ann('Conversation shapes the run; the card commits it. Same shape, same queue — chat never enqueues silently.') +
+    '</div></div>' +
+    '<div class="m-actions"><button class="btn primary" data-act="enqueue">Queue — position 3</button><button class="btn ghost" data-close>Cancel</button><span class="sp"></span></div>' +
+    '</div></div>';
+}
+
+/* ============================ Moments ============================ */
+function setMoment(n) {
+  S.m = n; S.intake = false; S.cancelArm = false;
+  S.quiet = (n === 1);
+  switch (n) {
+    case 1:
+      S.panes = ['thread']; S.wfOpen = { ao: false, m32: false, dsp: false };
+      S.stack = [{ v: 'ov' }];
+      break;
+    case 2:
+      S.panes = ['wf']; S.wfOpen = { ao: true, m32: false, dsp: false };
+      S.stack = [{ v: 'ov' }];
+      break;
+    case 3:
+      S.panes = ['wf']; S.wfOpen = { ao: true, m32: false, dsp: false };
+      S.stack = [{ v: 'ov' }, { v: 'wf', wf: 'bv' }];
+      break;
+    case 4: {
+      S.panes = ['wf']; S.wfOpen = { ao: true, m32: false, dsp: false };
+      const first = needsIds()[0] ?? PARKED[0];
+      S.stack = [{ v: 'ov' }, { v: 'wf', wf: WFKEY[ITEMS[first].wf] }, { v: 'run', id: first }];
+      S.diffOpen = {};
+      break;
+    }
+    case 5:
+      S.panes = ['wf']; S.wfOpen = { ao: true, m32: false, dsp: false };
+      S.stack = [{ v: 'ov' }, { v: 'wf', wf: 'bv' }, { v: 'run', id: 2 }];
+      S.diffOpen = { 0: true };
+      break;
+    case 6:
+      S.panes = ['wf']; S.wfOpen = { ao: true, m32: false, dsp: false };
+      S.stack = [{ v: 'ov' }];
+      S.intake = true; S.intakeWf = 'bv'; S.intakeProj = 'ao';
+      break;
+    case 7:
+      S.panes = ['wf', 'phase']; S.wfOpen = { ao: true, m32: false, dsp: false };
+      S.stack = [{ v: 'ov' }, { v: 'wf', wf: 'bv' }, { v: 'run', id: 1 }];
+      S.phaseCfg = null;
+      break;
+    case 8:
+      S.panes = ['wf']; S.wfOpen = { ao: false, m32: true, dsp: false };
+      S.stack = [{ v: 'ov' }, { v: 'wf', wf: 'jp' }];
+      S.wfNotesOpen = true;
+      break;
+    case 9:
+      S.panes = ['wf']; S.wfOpen = { ao: false, m32: false, dsp: true };
+      S.stack = [{ v: 'ov' }, { v: 'wf', wf: 'bv' }, { v: 'run', id: 4 }];
+      S.doneView = 'manual';
+      break;
+    case 10:
+      S.panes = ['wf', 'handoff']; S.wfOpen = { ao: true, m32: false, dsp: false };
+      S.stack = [{ v: 'ov' }, { v: 'wf', wf: 'bv' }, { v: 'run', id: 5 }];
+      if (!S.resolved[5]) { S.resolved[5] = 'handoff'; S.extraThread = 'triage: flaky test hunt'; }
+      S.handoff = null;
+      break;
+  }
+  location.hash = 'm' + n;
+  render();
+}
+
+function render() {
+  $$('#tabs .m-tab').forEach((t) => t.classList.toggle('on', +t.dataset.m === S.m));
+  $('#mdesc').textContent = S.m + ' · ' + MOMENTS[S.m - 1].desc;
+  renderSidebar();
+  renderPanes();
+  if (S.intake) renderIntake(); else $('#modalRoot').innerHTML = '';
+}
+
+/* ============================ Actions ============================ */
+function resolve(id, kind) {
+  S.resolved[id] = kind;
+  render();
+  const t = stkTop();
+  if (t.v === 'run' && t.id === id && PARKED.includes(id)) {
+    setTimeout(() => {
+      const t2 = stkTop();
+      if (!(t2.v === 'run' && t2.id === id) || !S.panes.includes('wf')) return;
+      const rest = needsIds();
+      if (rest.length === 0) {
+        const parts = PARKED.map((pid) => '1 ' + (RES_LABELS[S.resolved[pid]] || S.resolved[pid]));
+        S.stack = [{ v: 'ov' }, { v: 'clear', sum: PARKED.length + ' resolved — ' + parts.join(' · ') + ' · $11.54 reviewed' }];
+        render();
+      } else {
+        const idx = PARKED.indexOf(id);
+        const next = PARKED.slice(idx + 1).concat(PARKED.slice(0, idx)).find((pid) => !S.resolved[pid]);
+        setRun(next);
+      }
+    }, 650);
+  }
+}
+function stepTo(dir) {
+  const t = stkTop();
+  if (t.v !== 'run' || !PARKED.includes(t.id)) return;
+  const idx = PARKED.indexOf(t.id);
+  setRun(PARKED[(idx + dir + PARKED.length) % PARKED.length]);
+}
+function openHandoff(cfg, extraThreadTitle) {
+  S.handoff = cfg;
+  if (extraThreadTitle) S.extraThread = extraThreadTitle;
+  S.panes = S.panes.filter((p) => p !== 'phase' && p !== 'handoff').concat('handoff');
+  render();
+}
+function openPhasePane(cfg) {
+  S.phaseCfg = cfg || null;
+  S.panes = S.panes.filter((p) => p !== 'handoff' && p !== 'phase').concat('phase');
+  render();
+}
+
+function runAct(act) {
+  const id = curRun();
+  if (act === 'approve' && id === 2) resolve(2, 'approve');
+  else if (act === 'reject' && id === 2) resolve(2, 'reject');
+  else if (act === 'takeover' && id === 2) {
+    S.resolved[2] = 'takeover2'; render();
+    setTimeout(() => openPhasePane({ title: 'review — retention settings' }), 400);
+    toast('Turn interrupted — the review thread is yours to steer (§7)');
+  }
+  else if (act === 'answer' && id === 3) {
+    const v = ($('#ansin') && $('#ansin').value.trim()) || ITEMS[3].sugg[0];
+    RES.answer.line = 'Answered — “' + v + '” · the phase resumes its turn';
+    resolve(3, 'answer');
+  }
+  else if (act === 'takeover' && id === 3) {
+    S.resolved[3] = 'takeover3'; render();
+    setTimeout(() => openPhasePane({ title: 'implement — session pooling' }), 400);
+    toast('Turn is already yielded — thread opens for free-form steering (§7)');
+  }
+  else if (act === 'reenqueue' && id === 5) resolve(5, 'reenqueue');
+  else if (act === 'discard' && id === 5) resolve(5, 'discard5');
+  else if (act === 'handoff' && id === 5) {
+    S.resolved[5] = 'handoff';
+    openHandoff(null, 'triage: flaky test hunt');
+  }
+  else if (act === 'merge' && id === 4) resolve(4, 'merge');
+  else if (act === 'discard' && id === 4) resolve(4, 'discard4');
+  else if (act === 'pr' && id === 4) { S.pr = true; render(); toast('PR #214 created from wf/bump-tailwind-v41'); }
+  else if (act === 'sendcomments' && id === 4) {
+    resolve(4, 'prfix');
+    toast('2 comments sent — fix turn queued in the run’s worktree');
+  }
+  else if (act === 'continue4') {
+    openHandoff({
+      title: 'continue: tailwind bump',
+      chip: 'bump-tailwind-v41 — run record · diff · branch',
+      msg: 'Pick this up — same worktree. I want the token aliases double-checked against the light theme before it merges.',
+      reply: 'On it. Diffing the three renamed tokens against the light-mode block now <span class="caret"></span>',
+    }, 'continue: tailwind bump');
+  }
+  else if (act === 'dequeue') { goBack(); toast('Removed from queue' + (id === 6 ? ' — jira-poll will propose it again next cycle' : '')); }
+  else if (act === 'cancelrun') {
+    ITEMS[1].state = 'cancelled'; S.cancelArm = false;
+    const t = stkTop();
+    if (t.v === 'run' && t.id === 1) goBack(); else render();
+    toast('Teardown — turn stopped, locks released, worktree kept');
+  }
+  else if (act === 'enqueue') { S.intake = false; render(); toast('Queued — position 3 · starts when a slot frees'); }
+  else if (act === 'chatqueue') { S.intake = false; render(); toast('Queued from chat — same shape, same queue'); }
+}
+
+/* ============================ Events ============================ */
+document.addEventListener('click', (e) => {
+  const tab = e.target.closest('.m-tab');
+  if (tab) { setMoment(+tab.dataset.m); return; }
+  if (e.target.closest('#notesBtn')) { document.body.classList.toggle('notes'); return; }
+
+  const close = e.target.closest('[data-close]');
+  if (close) { S.intake = false; render(); return; }
+
+  const dfile = e.target.closest('[data-dfile]');
+  if (dfile) { const i = +dfile.dataset.dfile; S.diffOpen[i] = !S.diffOpen[i]; render(); return; }
+
+  const sugg = e.target.closest('[data-sugg]');
+  if (sugg) { const inp = $('#ansin'); if (inp) inp.value = sugg.dataset.sugg; return; }
+
+  const view = e.target.closest('[data-view]');
+  if (view) { S.doneView = view.dataset.view; render(); return; }
+
+  const prc = e.target.closest('[data-pr-comments]');
+  if (prc) { S.prOpen = !S.prOpen; render(); return; }
+  if (e.target.closest('[data-open-pr]')) { toast('Opens the PR in the browser'); return; }
+
+  const wfn = e.target.closest('[data-wfnotes]');
+  if (wfn) { S.wfNotesOpen = !S.wfNotesOpen; render(); return; }
+
+  const act = e.target.closest('[data-act]');
+  if (act) { e.stopPropagation(); runAct(act.dataset.act); return; }
+
+  const cancel = e.target.closest('[data-cancel]');
+  if (cancel) {
+    e.stopPropagation();
+    if (S.cancelArm) runAct('cancelrun');
+    else { S.cancelArm = true; render(); }
+    return;
+  }
+
+  const phase = e.target.closest('[data-phase-open]');
+  if (phase) { e.stopPropagation(); openPhasePane(null); return; }
+
+  const wfsec = e.target.closest('[data-wfsec]');
+  if (wfsec) { const p = wfsec.dataset.wfsec; S.wfOpen[p] = !S.wfOpen[p]; render(); return; }
+
+  const sweep = e.target.closest('[data-sweep]');
+  if (sweep) {
+    e.stopPropagation();
+    const first = needsIds()[0];
+    if (first) openRun(first);
+    return;
+  }
+
+  const bk = e.target.closest('[data-back]');
+  if (bk) { goBack(); return; }
+
+  const crumb = e.target.closest('[data-crumb]');
+  if (crumb) { popTo(+crumb.dataset.crumb); return; }
+
+  const wfrow = e.target.closest('[data-wf-open]');
+  if (wfrow) { pushWf(wfrow.dataset.wfOpen); return; }
+
+  const row = e.target.closest('[data-item]');
+  if (row) { openRun(+row.dataset.item); return; }
+
+  if (e.target.closest('#qToggle')) {
+    S.queueActive = !S.queueActive; render();
+    toast(S.queueActive ? 'Queue active — draining by priority' : 'Paused — running items finish; nothing new starts');
+    return;
+  }
+  if (e.target.closest('#fltBtn')) {
+    const order = ['all', 'ao', 'm32', 'dsp'];
+    S.filter = order[(order.indexOf(S.filter) + 1) % order.length];
+    render(); return;
+  }
+  if (e.target.closest('#newRun')) { S.intake = true; S.intakeWf = 'bv'; S.intakeProj = 'ao'; render(); return; }
+
+  const wf = e.target.closest('[data-wf]');
+  if (wf) { S.intakeWf = wf.dataset.wf; renderIntake(); return; }
+  const pj = e.target.closest('[data-proj]');
+  if (pj && S.intake) { S.intakeProj = pj.dataset.proj; renderIntake(); return; }
+});
+
+document.addEventListener('keydown', (e) => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
+  if (typing) {
+    if (e.key === 'Escape') e.target.blur();
+    else if (e.key === 'Enter' && e.target.id === 'ansin') { e.preventDefault(); runAct('answer'); }
+    return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  const id = curRun();
+  const st = id ? ITEMS[id].state : null;
+  const live = id && !S.resolved[id] && !S.intake;
+  const questionOpen = live && st === 'question';
+
+  if (/^[0-9]$/.test(e.key)) {
+    if (questionOpen) {
+      if (e.key === '1' || e.key === '2') {
+        const inp = $('#ansin'); if (inp) inp.value = ITEMS[3].sugg[+e.key - 1];
+        runAct('answer');
+      }
+      return;
+    }
+    setMoment(e.key === '0' ? 10 : +e.key); return;
+  }
+  if (e.key === 'i') { document.body.classList.toggle('notes'); return; }
+  if (e.key === 'Escape') {
+    if (S.cancelArm) { S.cancelArm = false; render(); return; }
+    if (S.intake) { S.intake = false; render(); return; }
+    if (S.panes.includes('wf')) goBack();
+    return;
+  }
+  if (e.key === 'Backspace') { if (!S.intake && S.panes.includes('wf')) goBack(); return; }
+  if (S.intake || !id) return;
+
+  if (PARKED.includes(id) && (e.key === 'j' || e.key === 'ArrowRight' || e.key === 'ArrowDown')) { stepTo(1); return; }
+  if (PARKED.includes(id) && (e.key === 'k' || e.key === 'ArrowLeft' || e.key === 'ArrowUp')) { stepTo(-1); return; }
+  if (S.resolved[id]) return;
+  if (st === 'gate') {
+    if (e.key === 'a') runAct('approve');
+    else if (e.key === 'r') runAct('reject');
+    else if (e.key === 't') runAct('takeover');
+    else if (e.key === 'Enter') { S.diffOpen[0] = !S.diffOpen[0]; render(); }
+  } else if (st === 'question') {
+    if (e.key === 'a') { e.preventDefault(); const inp = $('#ansin'); if (inp) inp.focus(); }
+    else if (e.key === 't') runAct('takeover');
+  } else if (st === 'failed') {
+    if (e.key === 'a') runAct('reenqueue');
+    else if (e.key === 'r') runAct('discard');
+    else if (e.key === 't') runAct('handoff');
+  } else if (st === 'done') {
+    if (e.key === 'a') runAct('merge');
+    else if (e.key === 'r') runAct('discard');
+    else if (e.key === 't') runAct('continue4');
+  }
+});
+
+/* ---------- drag-reorder the global up-next strip ---------- */
+let dragEl = null;
+function bindDnD() {
+  $$('.uprow').forEach((row) => {
+    row.addEventListener('dragstart', () => { dragEl = row; row.classList.add('dragging'); });
+    row.addEventListener('dragend', () => {
+      if (dragEl) dragEl.classList.remove('dragging');
+      $$('.uprow').forEach((c) => c.classList.remove('over-b', 'over-a'));
+      dragEl = null;
+    });
+    row.addEventListener('dragover', (e) => {
+      if (!dragEl || dragEl === row) return;
+      e.preventDefault();
+      const before = e.offsetY < row.offsetHeight / 2;
+      row.classList.toggle('over-b', before);
+      row.classList.toggle('over-a', !before);
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('over-b', 'over-a'));
+    row.addEventListener('drop', (e) => {
+      if (!dragEl || dragEl === row) return;
+      e.preventDefault();
+      const a = +dragEl.dataset.qid, b = +row.dataset.qid;
+      if (!S.qorder.includes(a) || !S.qorder.includes(b)) { dragEl = null; return; }
+      const before = e.offsetY < row.offsetHeight / 2;
+      S.qorder = S.qorder.filter((x) => x !== a);
+      const bi = S.qorder.indexOf(b);
+      S.qorder.splice(before ? bi : bi + 1, 0, a);
+      dragEl = null;
+      render();
+      toast('Priority reordered — the drain picks it up immediately');
+    });
+  });
+}
+
+/* ============================ Boot ============================ */
+$('#tabs').innerHTML = MOMENTS.map((m) =>
+  '<button class="m-tab" data-m="' + m.n + '"><span class="n">' + m.key + '</span>' + m.tab + '</button>').join('');
+window.addEventListener('hashchange', () => {
+  const h = /^#m(10|[1-9])$/.exec(location.hash);
+  if (h && +h[1] !== S.m) setMoment(+h[1]);
+});
+const boot = /^#m(10|[1-9])$/.exec(location.hash);
+setMoment(boot ? +boot[1] : 1);
+</script>
+</body>
+</html>

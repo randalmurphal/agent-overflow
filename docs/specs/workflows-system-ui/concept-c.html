@@ -1,0 +1,1872 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concept C — Mode switch · Workflows UI</title>
+<style>
+/* ============================================================
+   Tokens — mirrored from frontend/src/app.css + styles/tokens.css
+   (dark theme values; this mockup is dark-only by brief).
+   ============================================================ */
+:root {
+  color-scheme: dark;
+  --surface-0: oklch(0.145 0.014 285.82);
+  --surface-1: oklch(0.178 0.014 285.82);
+  --surface-2: oklch(0.215 0.014 285.82);
+  --code-inline-bg: oklch(0.275 0.014 285.82);
+  --border: oklch(0.3 0.014 285.82);
+  --border-strong: oklch(0.52 0.014 285.82);
+  --border-subtle: color-mix(in oklab, var(--border) 55%, transparent);
+  --text-primary: oklch(0.95 0.006 285.82);
+  --text-secondary: oklch(0.7 0.006 285.82);
+  --fg-muted: color-mix(in oklab, var(--text-primary) 80%, transparent);
+  --fg-subtle: color-mix(in oklab, var(--text-primary) 55%, transparent);
+  --fg-hint: color-mix(in oklab, var(--text-primary) 30%, transparent);
+  --accent: oklch(0.58 0.19 276);
+  --info: oklch(0.62 0.17 250);
+  --success: oklch(0.7 0.17 150);
+  --error: oklch(0.63 0.2 25);
+  --warning: oklch(0.75 0.15 75);
+  --card: var(--surface-1);
+  --shadow-menu: 0 8px 24px -12px color-mix(in oklab, black 40%, transparent);
+
+  --text-micro: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+  --radius-field: 6px;
+  --radius-control: 10px;
+  --radius-card: 16px;
+
+  --font-sans: 'Geist Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+
+  /* Project identity colors (brief: AO blue, m32rimm orange, dispatch green)
+     — mapped onto AO's existing hue anchors (info / provider-codex / success). */
+  --p-ao: oklch(0.62 0.17 250);
+  --p-m32: oklch(0.72 0.15 55);
+  --p-disp: oklch(0.7 0.17 150);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--border) 78%, transparent);
+  border: 2px solid transparent; border-radius: 999px; background-clip: padding-box;
+}
+::-webkit-scrollbar-track { background: transparent; }
+::selection { background: color-mix(in oklab, var(--accent) 28%, transparent); }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 0; }
+input, textarea, select { font: inherit; color: var(--text-primary); }
+kbd {
+  font-family: var(--font-mono); font-size: 0.625rem; line-height: 1;
+  padding: 2px 4px; border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 4px; background: var(--surface-2); color: var(--fg-subtle);
+}
+code { font-family: var(--font-mono); font-size: 0.9em; background: var(--code-inline-bg);
+  padding: 0.05rem 0.3rem; border-radius: 4px; }
+
+/* ============================================================
+   Demo chrome — fixed header naming the concept + moment nav
+   ============================================================ */
+.demo-header {
+  position: fixed; inset: 0 0 auto 0; height: 44px; z-index: 100;
+  display: flex; align-items: center; gap: 12px; padding: 0 12px;
+  background: color-mix(in oklab, var(--surface-1) 92%, black);
+  border-bottom: 1px solid var(--border);
+}
+.concept-tag {
+  display: flex; align-items: baseline; gap: 8px; white-space: nowrap;
+}
+.concept-tag .c-badge {
+  font-family: var(--font-mono); font-size: 0.625rem; font-weight: 700;
+  letter-spacing: 0.08em; color: var(--surface-0);
+  background: var(--accent); border-radius: 4px; padding: 3px 6px;
+}
+.concept-tag .c-name { font-size: var(--text-sm); font-weight: 600; }
+.concept-tag .c-sub { font-size: var(--text-micro); color: var(--fg-subtle); }
+.m-tabs { display: flex; gap: 2px; margin-left: auto; }
+.m-tab {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--text-xs); color: var(--fg-subtle);
+  padding: 5px 9px; border-radius: var(--radius-field);
+  border: 1px solid transparent;
+}
+.m-tab:hover { color: var(--fg-muted); background: var(--surface-2); }
+.m-tab.on { color: var(--text-primary); background: var(--surface-2); border-color: var(--border); }
+.m-tab .n {
+  font-family: var(--font-mono); font-size: 0.625rem; color: var(--fg-hint);
+}
+.m-tab.on .n { color: var(--accent); font-weight: 700; }
+.hdr-right { display: flex; align-items: center; gap: 8px; margin-left: 8px; }
+.hdr-hint { font-size: var(--text-micro); color: var(--fg-hint); white-space: nowrap; }
+.note-toggle {
+  display: flex; align-items: center; gap: 5px;
+  font-size: var(--text-xs); color: var(--fg-subtle);
+  border: 1px dashed var(--border-strong); border-radius: var(--radius-field);
+  padding: 4px 8px;
+}
+.note-toggle .i-glyph {
+  display: inline-flex; width: 13px; height: 13px; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1px solid currentColor;
+  font-size: 9px; font-style: italic; font-family: Georgia, serif;
+}
+body.notes .note-toggle { color: var(--accent); border-color: var(--accent); background: color-mix(in oklab, var(--accent) 12%, transparent); }
+
+/* ============================================================
+   App shell — sidebar + pane row
+   ============================================================ */
+.shell { display: flex; height: 100vh; padding-top: 44px; }
+
+/* ---------- Sidebar ---------- */
+.sb {
+  width: 302px; flex-shrink: 0; display: flex; flex-direction: column;
+  border-right: 1px solid var(--border-subtle); position: relative;
+}
+.mode-switch {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 2px;
+  margin: 8px 8px 6px; padding: 2px;
+  background: var(--surface-1); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+}
+.mode-btn {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  font-size: var(--text-xs); font-weight: 500; color: var(--fg-subtle);
+  padding: 5px 0; border-radius: 8px; position: relative;
+}
+.mode-btn:hover { color: var(--fg-muted); }
+.mode-btn.on {
+  color: var(--text-primary); background: var(--surface-2);
+  box-shadow: 0 1px 2px color-mix(in oklab, black 20%, transparent);
+}
+.mode-btn .cnt {
+  font-family: var(--font-mono); font-size: 0.625rem; font-weight: 700;
+  min-width: 15px; height: 15px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px; background: var(--warning); color: var(--surface-0);
+}
+.mode-btn.on .cnt { background: var(--warning); }
+
+/* Queue header — persistent in Work mode */
+.qhead {
+  margin: 0 8px 4px; padding: 8px 10px 9px;
+  background: var(--surface-1); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control); cursor: pointer; position: relative;
+}
+.qhead:hover { border-color: var(--border); }
+.qhead .row1 { display: flex; align-items: center; gap: 7px; }
+.qhead .qdot { width: 7px; height: 7px; border-radius: 50%; background: var(--success);
+  animation: pulse 2s steps(8, jump-none) infinite; }
+body.q-paused .qhead .qdot { background: var(--warning); animation: none; }
+.qhead .qtitle { font-size: var(--text-xs); font-weight: 600; }
+.qhead .qstate { font-size: var(--text-micro); color: var(--fg-subtle); }
+.qhead .row2 {
+  display: flex; align-items: center; gap: 8px; margin-top: 6px;
+  font-size: var(--text-micro); color: var(--fg-subtle);
+}
+.slotpips { display: inline-flex; gap: 3px; align-items: center; }
+.slotpips .pip {
+  width: 14px; height: 5px; border-radius: 2px;
+  background: var(--surface-2); border: 1px solid var(--border-subtle);
+}
+.slotpips .pip.full { background: var(--accent); border-color: var(--accent); }
+.slotpips .pip.releasing {
+  background: color-mix(in oklab, var(--accent) 40%, transparent);
+  border-color: color-mix(in oklab, var(--accent) 50%, transparent);
+}
+body.q-paused .slotpips .pip.full,
+body.q-paused .slotpips .pip.releasing { background: var(--fg-hint); border-color: transparent; }
+.drain-note { font-size: var(--text-micro); color: var(--fg-hint); margin-top: 5px; display: none; }
+body.q-paused .drain-note { display: block; color: color-mix(in oklab, var(--warning) 80%, var(--text-primary)); }
+
+/* Toggle switch */
+.tgl {
+  margin-left: auto; width: 26px; height: 15px; border-radius: 999px;
+  background: var(--success); position: relative; flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+.tgl::after {
+  content: ''; position: absolute; top: 2px; left: 13px;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: white; transition: left 0.15s ease;
+}
+body.q-paused .tgl { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); }
+body.q-paused .tgl::after { left: 2px; background: var(--fg-subtle); }
+
+/* ---------- Work-mode item tree ---------- */
+.sb-scroll { flex: 1; overflow-y: auto; padding: 2px 8px 8px; }
+.sec-h {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--text-micro); font-weight: 600; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--fg-subtle);
+  padding: 9px 4px 4px; user-select: none;
+}
+.sec-h .sc { color: var(--fg-hint); font-weight: 500; }
+.sec-h .sec-act {
+  margin-left: auto; font-size: var(--text-micro); text-transform: none;
+  letter-spacing: 0; color: var(--accent); font-weight: 500;
+  padding: 1px 5px; border-radius: 4px;
+}
+.sec-h .sec-act:hover { background: color-mix(in oklab, var(--accent) 14%, transparent); }
+.itm {
+  position: relative; border-radius: var(--radius-field);
+  padding: 5px 7px 6px; cursor: pointer; border: 1px solid transparent;
+}
+.itm:hover { background: var(--surface-1); }
+.itm.sel { background: var(--surface-2); border-color: var(--border); }
+.itm .l1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.itm .ttl {
+  font-size: var(--text-xs); flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.itm .l2 {
+  display: flex; align-items: center; gap: 6px; margin-top: 2px; padding-left: 14px;
+  font-size: var(--text-micro); color: var(--fg-hint); white-space: nowrap; overflow: hidden;
+}
+.itm.dim .ttl { color: var(--fg-subtle); }
+.pdot { width: 8px; height: 8px; border-radius: 3px; flex-shrink: 0; }
+.pdot.ao { background: var(--p-ao); }
+.pdot.m32 { background: var(--p-m32); }
+.pdot.disp { background: var(--p-disp); }
+.pslug { font-family: var(--font-mono); font-size: 0.625rem; color: var(--fg-hint); flex-shrink: 0; }
+
+/* State badges */
+.bdg {
+  display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+  font-size: 0.625rem; font-weight: 600; font-family: var(--font-mono);
+  padding: 1px 5px; border-radius: 4px; letter-spacing: 0.02em;
+}
+.bdg.gate    { color: var(--warning); background: color-mix(in oklab, var(--warning) 14%, transparent); }
+.bdg.question{ color: var(--info); background: color-mix(in oklab, var(--info) 14%, transparent); }
+.bdg.failed  { color: var(--error); background: color-mix(in oklab, var(--error) 14%, transparent); }
+.bdg.running { color: var(--accent); background: color-mix(in oklab, var(--accent) 16%, transparent); }
+.bdg.done    { color: var(--success); background: color-mix(in oklab, var(--success) 14%, transparent); }
+.bdg.queued  { color: var(--fg-subtle); background: var(--surface-2); }
+.bdg.auto    { color: var(--p-m32); background: color-mix(in oklab, var(--p-m32) 13%, transparent); }
+.bdg.cancelled { color: var(--fg-hint); background: var(--surface-2); }
+
+/* Attention glow — same treatment as AO's status-glow-warning */
+.itm.glow { border-color: color-mix(in oklab, var(--warning) 55%, transparent); }
+.itm.glow::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  border: 1px solid var(--warning); opacity: 0.5;
+  animation: glowp 2.5s steps(5, jump-none) infinite;
+}
+@keyframes glowp {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; opacity: 0.4; }
+  50% { box-shadow: 0 0 0 2px color-mix(in oklab, var(--warning) 22%, transparent); opacity: 0.85; }
+}
+@keyframes pulse { 50% { opacity: 0.45; } }
+
+/* Working dot for running rows */
+.wdot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  flex-shrink: 0; animation: pulse 2s steps(8, jump-none) infinite; }
+
+/* Expand chevron + phase sub-rows */
+.chev {
+  width: 12px; height: 12px; flex-shrink: 0; color: var(--fg-hint);
+  transition: transform 0.12s ease; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 8px;
+}
+.itm.open .chev { transform: rotate(90deg); }
+.phases { display: none; margin: 1px 0 3px 13px; padding-left: 9px;
+  border-left: 1px solid var(--border-subtle); }
+.itm-wrap.open .phases { display: block; }
+.itm-wrap.open > .itm .chev { transform: rotate(90deg); }
+.ph {
+  display: flex; align-items: center; gap: 6px; padding: 2.5px 6px;
+  font-size: var(--text-micro); color: var(--fg-subtle);
+  border-radius: 4px; cursor: pointer;
+}
+.ph:hover { background: var(--surface-1); color: var(--fg-muted); }
+.ph.sel { background: var(--surface-2); color: var(--text-primary); }
+.ph .st { width: 11px; flex-shrink: 0; text-align: center; font-size: 9px; }
+.ph .st.ok { color: var(--success); }
+.ph .st.run { color: var(--accent); }
+.ph .st.pend { color: var(--fg-hint); }
+.ph .pm { margin-left: auto; font-family: var(--font-mono); font-size: 0.625rem; color: var(--fg-hint); }
+.ph-live {
+  font-family: var(--font-mono); font-size: 0.625rem; color: var(--fg-hint);
+  padding: 0 6px 3px 23px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Drag affordance on queued rows */
+.grip {
+  color: var(--fg-hint); cursor: grab; flex-shrink: 0; font-size: 10px;
+  letter-spacing: -1px; opacity: 0; transition: opacity 0.12s;
+  user-select: none; line-height: 1;
+}
+.itm:hover .grip { opacity: 1; }
+.itm.dragging { opacity: 0.45; }
+.itm.dragover { border-top: 2px solid var(--accent); }
+
+/* Sidebar footer CTA — the stepper entry */
+.sb-cta {
+  margin: 6px 8px 8px; padding: 7px 10px;
+  display: flex; align-items: center; gap: 8px;
+  background: color-mix(in oklab, var(--warning) 9%, var(--surface-1));
+  border: 1px solid color-mix(in oklab, var(--warning) 35%, transparent);
+  border-radius: var(--radius-control); cursor: pointer;
+  font-size: var(--text-xs); color: var(--fg-muted);
+}
+.sb-cta:hover { border-color: color-mix(in oklab, var(--warning) 60%, transparent); }
+.sb-cta b { color: var(--text-primary); font-weight: 600; }
+.sb-cta kbd { margin-left: auto; }
+
+/* Threads-mode list (the toggle's other face) */
+.threads-list { display: none; }
+body.mode-threads .threads-list { display: block; }
+body.mode-threads .work-tree, body.mode-threads .qhead, body.mode-threads .sb-cta { display: none; }
+.trow { display: flex; align-items: center; gap: 6px; padding: 4px 7px;
+  font-size: var(--text-xs); color: var(--fg-muted); border-radius: var(--radius-field); cursor: pointer; }
+.trow:hover { background: var(--surface-1); }
+.trow .tt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trow .tm { font-size: 0.625rem; color: var(--fg-hint); font-family: var(--font-mono); }
+.proj-h { display: flex; align-items: center; gap: 6px; padding: 7px 4px 3px;
+  font-size: var(--text-xs); font-weight: 600; color: var(--fg-muted); }
+.threads-note {
+  margin: 10px 4px; padding: 8px 10px; font-size: var(--text-micro);
+  color: var(--fg-subtle); border: 1px dashed var(--border); border-radius: var(--radius-field);
+  line-height: 1.5;
+}
+.threads-note b { color: var(--fg-muted); }
+
+/* ============================================================
+   Pane row
+   ============================================================ */
+.panes { flex: 1; min-width: 0; display: flex; overflow: hidden; }
+.moment { display: none; flex: 1; min-width: 0; overflow: hidden; }
+.moment.on { display: flex; }
+.pane {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  border-right: 1px solid var(--border-subtle); position: relative;
+}
+.pane:last-child { border-right: none; }
+.pane-h {
+  height: 38px; flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+  padding: 0 12px; border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in oklab, var(--surface-1) 55%, transparent);
+}
+.pane-h .pt { font-size: var(--text-xs); font-weight: 600; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.pane-h .pm { font-size: var(--text-micro); color: var(--fg-hint); white-space: nowrap; }
+.pane-h .px { margin-left: auto; color: var(--fg-hint); font-size: 13px; padding: 2px 6px;
+  border-radius: 4px; flex-shrink: 0; }
+.pane-h .px:hover { background: var(--surface-2); color: var(--fg-muted); }
+.pane-b { flex: 1; overflow-y: auto; padding: 14px; position: relative; }
+
+.card {
+  background: var(--card); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control); padding: 12px; position: relative;
+}
+.card + .card { margin-top: 10px; }
+.card .c-h { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.card .c-t { font-size: var(--text-xs); font-weight: 600; }
+.microlbl {
+  font-size: var(--text-micro); font-weight: 600; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--fg-subtle);
+}
+.meta-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-size: var(--text-micro); color: var(--fg-subtle); }
+.meta-row .sep { color: var(--fg-hint); }
+.mono { font-family: var(--font-mono); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--text-xs); font-weight: 500;
+  padding: 5px 11px; border-radius: var(--radius-field);
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--fg-muted);
+  white-space: nowrap;
+}
+.btn:hover { border-color: var(--border-strong); color: var(--text-primary); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+.btn.primary:hover { background: color-mix(in oklab, var(--accent) 88%, white); }
+.btn.good { background: color-mix(in oklab, var(--success) 22%, var(--surface-2));
+  border-color: color-mix(in oklab, var(--success) 45%, transparent); color: var(--success); }
+.btn.good:hover { border-color: var(--success); }
+.btn.bad { color: var(--error); border-color: color-mix(in oklab, var(--error) 40%, transparent); background: transparent; }
+.btn.bad:hover { background: color-mix(in oklab, var(--error) 12%, transparent); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--fg-subtle); }
+.btn.ghost:hover { background: var(--surface-2); color: var(--fg-muted); }
+.btn kbd { border-color: color-mix(in oklab, currentColor 30%, transparent); background: transparent; color: inherit; opacity: 0.75; }
+
+/* Phase progress segments (running pulse) */
+.seg-row { display: flex; align-items: center; gap: 4px; }
+.seg { flex: 1; height: 4px; border-radius: 2px; background: var(--surface-2); position: relative; overflow: hidden; }
+.seg.done { background: var(--success); opacity: 0.65; }
+.seg.act { background: color-mix(in oklab, var(--accent) 35%, var(--surface-2)); }
+.seg.act::before {
+  content: ''; position: absolute; inset: 0; width: 50%;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--accent) 85%, transparent), transparent);
+  animation: shimmer 1.6s ease-in-out infinite alternate;
+}
+@keyframes shimmer { from { transform: translateX(-50%); } to { transform: translateX(150%); } }
+.live-line {
+  display: flex; align-items: center; gap: 7px;
+  font-family: var(--font-mono); font-size: var(--text-micro); color: var(--fg-subtle);
+  background: var(--surface-0); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-field); padding: 6px 9px;
+  white-space: nowrap; overflow: hidden;
+}
+.live-line .cur { display: inline-block; width: 6px; height: 11px; background: var(--accent);
+  animation: pulse 1.2s steps(2, jump-none) infinite; flex-shrink: 0; }
+
+/* Phase detail list rows */
+.phrow {
+  display: flex; align-items: center; gap: 9px; padding: 6px 8px;
+  border-radius: var(--radius-field); font-size: var(--text-xs);
+}
+.phrow:hover { background: var(--surface-2); }
+.phrow .pi { width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 9px;
+  border: 1px solid var(--border); color: var(--fg-hint); background: var(--surface-0); }
+.phrow .pi.ok { border-color: color-mix(in oklab, var(--success) 55%, transparent); color: var(--success); }
+.phrow .pi.run { border-color: var(--accent); color: var(--accent); }
+.phrow .pn { font-weight: 500; width: 86px; flex-shrink: 0; }
+.phrow .pk { font-size: var(--text-micro); color: var(--fg-hint); flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.phrow .pv { font-size: var(--text-micro); color: var(--fg-subtle); font-family: var(--font-mono);
+  white-space: nowrap; }
+.phrow .plink { font-size: var(--text-micro); color: var(--accent); opacity: 0;
+  white-space: nowrap; flex-shrink: 0; }
+.phrow:hover .plink { opacity: 1; }
+.phrow.cur { background: color-mix(in oklab, var(--accent) 8%, transparent); }
+.phrow.cur:hover { background: color-mix(in oklab, var(--accent) 12%, transparent); }
+
+/* Slot cards (queue pane) */
+.slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.slot {
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-field);
+  padding: 8px 10px; background: var(--surface-0); min-height: 62px;
+}
+.slot .s-h { display: flex; align-items: center; gap: 6px; font-size: var(--text-micro);
+  color: var(--fg-hint); margin-bottom: 5px; font-family: var(--font-mono); }
+.slot .s-t { font-size: var(--text-xs); color: var(--fg-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot .s-m { font-size: var(--text-micro); color: var(--fg-hint); margin-top: 2px; }
+.slot.free { border-style: dashed; }
+.slot.free .s-t { color: var(--fg-hint); }
+
+/* ============================================================
+   Stepper (moment 3)
+   ============================================================ */
+.stepper { display: flex; flex: 1; min-height: 0; }
+.step-rail {
+  width: 232px; flex-shrink: 0; border-right: 1px solid var(--border-subtle);
+  padding: 12px 10px; overflow-y: auto;
+}
+.rail-h { font-size: var(--text-micro); color: var(--fg-subtle); margin: 2px 4px 8px;
+  display: flex; align-items: baseline; gap: 6px; }
+.rail-h .big { font-size: 1.05rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.srow {
+  display: flex; align-items: center; gap: 7px; padding: 6px 8px; margin-bottom: 2px;
+  border-radius: var(--radius-field); cursor: pointer; border: 1px solid transparent;
+  font-size: var(--text-xs);
+}
+.srow:hover { background: var(--surface-1); }
+.srow.cur { background: var(--surface-2); border-color: var(--border); }
+.srow .stt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.srow.res { opacity: 0.5; }
+.srow.res .stt { text-decoration: line-through; text-decoration-color: var(--fg-hint); }
+.srow .rmark { color: var(--success); font-size: 10px; flex-shrink: 0; }
+.step-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 16px 18px; }
+.step-card {
+  max-width: 640px; width: 100%; margin: 0 auto;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 16px 18px 14px; position: relative;
+}
+.step-card .sc-top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.step-card h2 { font-size: var(--text-base); font-weight: 600; margin: 0; flex: 1; min-width: 0; }
+.digest { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; }
+.digest .dg {
+  background: var(--surface-0); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-field); padding: 8px 10px;
+}
+.digest .dg .lbl { font-size: var(--text-micro); font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--fg-hint); margin-bottom: 4px; }
+.digest .dg p { margin: 0; font-size: var(--text-xs); line-height: 1.5; color: var(--fg-muted); }
+.q-text {
+  font-size: var(--text-sm); line-height: 1.55; color: var(--text-primary);
+  background: color-mix(in oklab, var(--info) 7%, var(--surface-0));
+  border: 1px solid color-mix(in oklab, var(--info) 25%, transparent);
+  border-radius: var(--radius-field); padding: 10px 12px; margin: 10px 0;
+}
+.quick-answers { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.qa-chip {
+  font-size: var(--text-xs); padding: 5px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--fg-muted);
+}
+.qa-chip:hover, .qa-chip.hot { border-color: var(--info); color: var(--text-primary);
+  background: color-mix(in oklab, var(--info) 14%, transparent); }
+.answer-box { display: flex; gap: 6px; margin-top: 6px; }
+.answer-box textarea {
+  flex: 1; resize: none; height: 54px; background: var(--surface-0);
+  border: 1px solid var(--border); border-radius: var(--radius-field);
+  padding: 7px 9px; font-size: var(--text-xs); line-height: 1.4;
+}
+.answer-box textarea:focus { outline: none; border-color: var(--accent); }
+.act-row { display: flex; align-items: center; gap: 7px; margin-top: 12px; flex-wrap: wrap; }
+.act-row .spacer { flex: 1; }
+.resolved-note {
+  display: flex; align-items: center; gap: 8px;
+  font-size: var(--text-xs); color: var(--success);
+  background: color-mix(in oklab, var(--success) 9%, transparent);
+  border: 1px solid color-mix(in oklab, var(--success) 30%, transparent);
+  border-radius: var(--radius-field); padding: 8px 11px; margin-top: 12px;
+}
+.resolved-note .undo { margin-left: auto; color: var(--fg-subtle); font-size: var(--text-micro); }
+.resolved-note .undo:hover { color: var(--fg-muted); text-decoration: underline; }
+.alldone {
+  max-width: 520px; margin: 48px auto; text-align: center; display: none;
+}
+.alldone .big-ok {
+  width: 44px; height: 44px; margin: 0 auto 14px; border-radius: 50%;
+  background: color-mix(in oklab, var(--success) 18%, transparent);
+  color: var(--success); display: flex; align-items: center; justify-content: center;
+  font-size: 20px; border: 1px solid color-mix(in oklab, var(--success) 40%, transparent);
+}
+.alldone h2 { font-size: 1rem; margin: 0 0 6px; }
+.alldone p { font-size: var(--text-xs); color: var(--fg-subtle); margin: 0; line-height: 1.6; }
+
+/* ============================================================
+   Gate review (moment 4) — diff-first
+   ============================================================ */
+.verdict-strip {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 9px 12px; border-radius: var(--radius-control);
+  background: color-mix(in oklab, var(--success) 6%, var(--surface-1));
+  border: 1px solid color-mix(in oklab, var(--success) 25%, transparent);
+  margin-bottom: 10px;
+}
+.vfact { display: flex; align-items: center; gap: 6px; font-size: var(--text-xs); color: var(--fg-muted); }
+.vfact .ok { color: var(--success); }
+.vfact b { color: var(--text-primary); font-weight: 600; }
+.diffstat-add { color: var(--success); font-family: var(--font-mono); font-size: var(--text-micro); }
+.diffstat-del { color: var(--error); font-family: var(--font-mono); font-size: var(--text-micro); }
+.ptabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-subtle); margin-bottom: 10px; }
+.ptab {
+  font-size: var(--text-xs); color: var(--fg-subtle); padding: 6px 10px;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.ptab:hover { color: var(--fg-muted); }
+.ptab.on { color: var(--text-primary); border-bottom-color: var(--accent); font-weight: 500; }
+.ptab .tcnt { font-size: 0.625rem; color: var(--fg-hint); font-family: var(--font-mono); margin-left: 3px; }
+.tabpane { display: none; }
+.tabpane.on { display: block; }
+.dfile { border: 1px solid var(--border-subtle); border-radius: var(--radius-field);
+  overflow: hidden; margin-bottom: 8px; background: var(--surface-0); }
+.dfile .df-h {
+  display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+  background: var(--surface-1); font-family: var(--font-mono); font-size: var(--text-micro);
+  color: var(--fg-muted); cursor: pointer;
+}
+.dfile .df-h:hover { color: var(--text-primary); }
+.dfile .df-h .dchev { color: var(--fg-hint); font-size: 8px; transition: transform 0.12s; }
+.dfile.open .df-h .dchev { transform: rotate(90deg); }
+.dfile .df-b { display: none; }
+.dfile.open .df-b { display: block; }
+.dl { display: flex; font-family: var(--font-mono); font-size: 0.71875rem; line-height: 1.5; white-space: pre; }
+.dl .ln { width: 34px; flex-shrink: 0; text-align: right; padding-right: 8px;
+  color: var(--fg-hint); user-select: none; font-size: 0.625rem; line-height: 1.65; }
+.dl .lc { flex: 1; padding-right: 10px; overflow: hidden; text-overflow: ellipsis; }
+.dl.add { background: color-mix(in oklab, var(--success) 10%, transparent); }
+.dl.add .lc { color: color-mix(in oklab, var(--success) 55%, var(--text-primary)); }
+.dl.del { background: color-mix(in oklab, var(--error) 10%, transparent); }
+.dl.del .lc { color: color-mix(in oklab, var(--error) 50%, var(--text-primary)); text-decoration: none; }
+.dl.ctx .lc { color: var(--fg-subtle); }
+.dl.hunk { background: var(--surface-1); }
+.dl.hunk .lc { color: var(--info); font-size: 0.65rem; }
+.gate-actions {
+  position: sticky; bottom: 0; margin-top: 12px; padding: 10px 12px;
+  display: flex; align-items: center; gap: 8px;
+  background: color-mix(in oklab, var(--surface-1) 94%, black);
+  border: 1px solid var(--border); border-radius: var(--radius-control);
+  box-shadow: var(--shadow-menu);
+}
+.gate-note-inp { flex: 1; background: var(--surface-0); border: 1px solid var(--border);
+  border-radius: var(--radius-field); font-size: var(--text-xs); padding: 6px 9px; }
+.gate-note-inp:focus { outline: none; border-color: var(--accent); }
+.gate-banner {
+  display: none; align-items: center; gap: 8px; margin-bottom: 10px;
+  padding: 8px 12px; border-radius: var(--radius-field); font-size: var(--text-xs);
+}
+.gate-banner.ok { display: flex; color: var(--success);
+  background: color-mix(in oklab, var(--success) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--success) 32%, transparent); }
+.gate-banner.no { display: flex; color: var(--error);
+  background: color-mix(in oklab, var(--error) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--error) 32%, transparent); }
+.checkline { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono);
+  font-size: var(--text-micro); color: var(--fg-muted); padding: 3px 0; }
+.checkline .ok { color: var(--success); }
+.kv { display: grid; grid-template-columns: 180px 64px 1fr; gap: 0 12px; font-size: var(--text-micro);
+  padding: 4px 0; border-bottom: 1px solid var(--border-subtle); align-items: baseline; }
+.kv:last-child { border-bottom: none; }
+.kv .k { font-family: var(--font-mono); color: var(--fg-muted); }
+.kv .ty { color: var(--fg-hint); font-family: var(--font-mono); font-size: 0.625rem; }
+.kv .v { color: var(--fg-subtle); font-family: var(--font-mono); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+
+/* ============================================================
+   Intake (moment 5)
+   ============================================================ */
+.intake-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 14px;
+  max-width: 980px; }
+.f { margin-bottom: 12px; }
+.f > label { display: block; font-size: var(--text-micro); font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-subtle); margin-bottom: 5px; }
+.f input[type=text], .f textarea, .f select {
+  width: 100%; background: var(--surface-0); border: 1px solid var(--border);
+  border-radius: var(--radius-field); padding: 7px 10px; font-size: var(--text-xs);
+}
+.f input:focus, .f textarea:focus, .f select:focus { outline: none; border-color: var(--accent); }
+.f textarea { resize: vertical; min-height: 60px; line-height: 1.5; }
+.f .hint { font-size: var(--text-micro); color: var(--fg-hint); margin-top: 4px; }
+.proj-opts { display: flex; gap: 6px; }
+.proj-opt {
+  display: flex; align-items: center; gap: 6px; font-size: var(--text-xs);
+  padding: 6px 11px; border-radius: var(--radius-field);
+  border: 1px solid var(--border); color: var(--fg-subtle); background: var(--surface-0);
+}
+.proj-opt.on { border-color: var(--accent); color: var(--text-primary);
+  background: color-mix(in oklab, var(--accent) 10%, transparent); }
+.wf-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.wf-card {
+  text-align: left; border: 1px solid var(--border); border-radius: var(--radius-control);
+  padding: 10px 12px; background: var(--surface-0);
+}
+.wf-card.on { border-color: var(--accent); background: color-mix(in oklab, var(--accent) 8%, transparent); }
+.wf-card .wn { font-size: var(--text-xs); font-weight: 600; font-family: var(--font-mono); }
+.wf-card .wp { display: flex; align-items: center; gap: 3px; margin-top: 7px;
+  font-size: 0.625rem; color: var(--fg-subtle); flex-wrap: wrap; }
+.wf-card .wp .wph { background: var(--surface-2); border-radius: 3px; padding: 1px 5px;
+  font-family: var(--font-mono); }
+.wf-card .wp .arr { color: var(--fg-hint); }
+.wf-card .wsc { font-size: 0.625rem; color: var(--fg-hint); margin-top: 6px; }
+.seedvars { border: 1px solid var(--border-subtle); border-radius: var(--radius-field);
+  background: var(--surface-0); padding: 4px 10px; }
+.opt-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.chk { display: flex; align-items: center; gap: 6px; font-size: var(--text-xs); color: var(--fg-muted); }
+.chk input { accent-color: var(--accent); }
+.chat-mock { border: 1px solid var(--border-subtle); border-radius: var(--radius-control);
+  background: var(--surface-0); padding: 12px; }
+.chat-msg { font-size: var(--text-xs); line-height: 1.55; color: var(--fg-muted); margin-bottom: 10px; }
+.chat-msg .who { font-size: var(--text-micro); color: var(--fg-hint); display: block; margin-bottom: 2px; }
+.confirm-card {
+  border: 1px solid color-mix(in oklab, var(--accent) 45%, transparent);
+  border-radius: var(--radius-control); overflow: hidden;
+  background: color-mix(in oklab, var(--accent) 6%, var(--surface-1));
+}
+.confirm-card .cc-h { display: flex; align-items: center; gap: 7px; padding: 8px 11px;
+  font-size: var(--text-xs); font-weight: 600;
+  border-bottom: 1px solid color-mix(in oklab, var(--accent) 25%, transparent); }
+.confirm-card .cc-b { padding: 9px 11px; }
+.confirm-card .cc-kv { display: flex; gap: 8px; font-size: var(--text-micro);
+  padding: 2.5px 0; align-items: baseline; }
+.confirm-card .cc-kv .k { color: var(--fg-hint); width: 70px; flex-shrink: 0; }
+.confirm-card .cc-kv .v { color: var(--fg-muted); font-family: var(--font-mono); }
+.confirm-card .cc-a { display: flex; gap: 7px; padding: 9px 11px 11px; }
+
+/* ============================================================
+   Phase thread pane (moment 6) — normal AO chat pane mock
+   ============================================================ */
+.pane.slide-in { animation: slidein 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); }
+@keyframes slidein { from { transform: translateX(28px); opacity: 0; } to { transform: none; opacity: 1; } }
+.wi-strip {
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  font-size: var(--text-micro); color: var(--fg-muted);
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--accent) 25%, transparent);
+}
+.wi-strip .wi-back { color: var(--accent); }
+.wi-strip .wi-back:hover { text-decoration: underline; }
+.chat-body { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.crow-user {
+  align-self: flex-end; max-width: 85%; background: var(--surface-2);
+  border-radius: 12px 12px 4px 12px; padding: 7px 11px; font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+.crow-sys {
+  display: flex; align-items: center; gap: 7px; font-size: var(--text-micro); color: var(--fg-subtle);
+  background: var(--surface-1); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-field); padding: 6px 10px; cursor: pointer;
+}
+.crow-sys:hover { color: var(--fg-muted); }
+.crow-asst { font-size: var(--text-sm); line-height: 1.6; color: var(--fg-muted); max-width: 640px; }
+.toolrow {
+  display: flex; align-items: center; gap: 8px; max-width: 640px;
+  border: 1px solid var(--border-subtle); background: color-mix(in oklab, var(--card) 25%, transparent);
+  border-radius: var(--radius-control); padding: 6px 10px;
+  font-size: var(--text-xs); color: var(--fg-muted);
+}
+.toolrow .tico { font-size: 11px; width: 15px; text-align: center; }
+.toolrow .tname { font-weight: 600; font-size: var(--text-micro); }
+.toolrow .targ { font-family: var(--font-mono); font-size: var(--text-micro); color: var(--fg-subtle);
+  flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toolrow .tstat { font-size: 0.625rem; font-family: var(--font-mono); color: var(--fg-hint); }
+.working-dots { display: inline-flex; gap: 3px; align-items: center; padding: 2px 0; }
+.working-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+  animation: pulse 1.4s steps(4, jump-none) infinite; }
+.working-dots i:nth-child(2) { animation-delay: 0.2s; }
+.working-dots i:nth-child(3) { animation-delay: 0.4s; }
+.composer {
+  margin: 10px 12px 12px; border: 1px solid var(--border); border-radius: var(--radius-card);
+  background: var(--surface-1); padding: 9px 12px;
+}
+.composer .cp-inp { width: 100%; background: transparent; border: none; font-size: var(--text-xs);
+  color: var(--text-primary); }
+.composer .cp-inp:focus { outline: none; }
+.composer .cp-meta { display: flex; align-items: center; gap: 8px; margin-top: 7px;
+  font-size: var(--text-micro); color: var(--fg-hint); }
+.takeover-warn { color: var(--warning); }
+
+/* ============================================================
+   Disposition (moment 7)
+   ============================================================ */
+.disp-toggle { display: inline-flex; gap: 2px; background: var(--surface-1); padding: 2px;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-field); margin-bottom: 12px; }
+.disp-toggle button { font-size: var(--text-micro); padding: 4px 10px; border-radius: 4px; color: var(--fg-subtle); }
+.disp-toggle button.on { background: var(--surface-2); color: var(--text-primary); }
+.disp-variant { display: none; }
+.disp-variant.on { display: block; }
+.merge-preview { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono);
+  font-size: var(--text-micro); color: var(--fg-subtle); background: var(--surface-0);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-field); padding: 7px 10px; }
+.merge-preview .ok { color: var(--success); }
+.auto-merged-card {
+  border: 1px solid color-mix(in oklab, var(--success) 30%, transparent);
+  background: color-mix(in oklab, var(--success) 5%, var(--surface-1));
+}
+
+/* ============================================================
+   Annotations
+   ============================================================ */
+.note {
+  display: none; position: absolute; z-index: 60; max-width: 250px;
+  font-size: var(--text-micro); line-height: 1.45; color: var(--text-primary);
+  text-transform: none; letter-spacing: normal; font-weight: 400; text-align: left;
+  background: color-mix(in oklab, var(--accent) 14%, var(--surface-1));
+  border: 1px dashed color-mix(in oklab, var(--accent) 65%, transparent);
+  border-radius: var(--radius-field); padding: 6px 9px 7px;
+  box-shadow: var(--shadow-menu); pointer-events: none;
+}
+body.notes .note { display: block; }
+.note::before {
+  content: 'i'; color: var(--accent); font-weight: 700; margin-right: 5px;
+  display: inline-flex; width: 11px; height: 11px; align-items: center; justify-content: center;
+  border: 1px solid var(--accent); border-radius: 50%; font-size: 8px;
+  font-family: Georgia, serif; font-style: italic; vertical-align: 1px;
+}
+.note b { color: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}
+</style>
+</head>
+<body data-m="1">
+
+<!-- ================= Demo chrome ================= -->
+<header class="demo-header">
+  <div class="concept-tag">
+    <span class="c-badge">CONCEPT C</span>
+    <span class="c-name">Mode switch</span>
+    <span class="c-sub">sidebar toggles Threads ⇄ Work · panes host detail</span>
+  </div>
+  <nav class="m-tabs" id="mtabs">
+    <button class="m-tab on" data-go="1"><span class="n">1</span>Queue</button>
+    <button class="m-tab" data-go="2"><span class="n">2</span>Running</button>
+    <button class="m-tab" data-go="3"><span class="n">3</span>Stepper</button>
+    <button class="m-tab" data-go="4"><span class="n">4</span>Gate</button>
+    <button class="m-tab" data-go="5"><span class="n">5</span>Intake</button>
+    <button class="m-tab" data-go="6"><span class="n">6</span>Phase thread</button>
+    <button class="m-tab" data-go="7"><span class="n">7</span>Disposition</button>
+  </nav>
+  <div class="hdr-right">
+    <span class="hdr-hint">keys <kbd>1</kbd>–<kbd>7</kbd></span>
+    <button class="note-toggle" id="noteToggle" title="Toggle design annotations (i)">
+      <span class="i-glyph">i</span> notes
+    </button>
+  </div>
+</header>
+
+<div class="shell">
+
+<!-- ================= Sidebar ================= -->
+<aside class="sb" id="sidebar">
+  <div class="mode-switch" style="position:relative">
+    <button class="mode-btn" id="modeThreads">Threads</button>
+    <button class="mode-btn on" id="modeWork">Work <span class="cnt">4</span></button>
+    <div class="note" style="top:0; left:100%; margin-left:12px; width:250px;"><b>The concept.</b> One sidebar, two lenses over the same projects. Threads = conversations; Work = the queue. The badge is the only Work presence in Threads mode — phase threads never leak into the thread list (D3.4).</div>
+  </div>
+
+  <!-- Threads mode (the toggle's other face) -->
+  <div class="threads-list sb-scroll">
+    <div class="proj-h"><span class="pdot ao"></span> agent-overflow</div>
+    <div class="trow"><span class="tt">scroll spring tuning notes</span><span class="tm">2h</span></div>
+    <div class="trow"><span class="tt">codex mailbox delivery follow-ups</span><span class="tm">5h</span></div>
+    <div class="trow"><span class="tt">pane reveal focus discussion</span><span class="tm">1d</span></div>
+    <div class="proj-h"><span class="pdot m32"></span> m32rimm</div>
+    <div class="trow"><span class="tt">firmware upload flow</span><span class="tm">3d</span></div>
+    <div class="proj-h"><span class="pdot disp"></span> dispatch</div>
+    <div class="trow"><span class="tt">profile schema sketch</span><span class="tm">4d</span></div>
+    <div class="threads-note" style="position:relative">
+      <b>Nothing workflow-shaped lives here.</b> Items, phases, and the queue exist only behind the Work toggle. A running drain never rearranges your conversation list.
+    </div>
+  </div>
+
+  <!-- Work mode -->
+  <button class="qhead" id="qhead" title="Open queue overview">
+    <div class="row1">
+      <span class="qdot"></span>
+      <span class="qtitle">Queue</span>
+      <span class="qstate" id="qstate">active · draining</span>
+      <span class="tgl" id="qtgl" role="switch" aria-checked="true" title="Pause queue"></span>
+    </div>
+    <div class="row2">
+      <span class="slotpips"><span class="pip full"></span><span class="pip releasing"></span><span class="pip"></span></span>
+      <span class="num">2/3 slots</span>
+      <span>·</span>
+      <span id="qqueued">2 queued</span>
+    </div>
+    <div class="drain-note">Paused — in-flight phases finish; nothing new starts.</div>
+    <div class="note" style="top:76px; left:100%; margin-left:12px; width:250px;"><b>Queue is a toggle, not a session</b> (D3.1). It never leaves the top of Work mode: state, slots, and drain progress are always one glance away. Click opens the queue pane.</div>
+  </button>
+
+  <div class="sb-scroll work-tree" id="workTree">
+
+    <!-- NEEDS YOU -->
+    <div class="sec-h" style="position:relative">Needs you <span class="sc">3</span>
+      <button class="sec-act" data-go-m="3">resolve ▸</button>
+      <div class="note" style="top:22px; right:0;"><b>State-first, not project-first.</b> The tree orders by "what needs me now" across all projects — project identity is the colored dot + slug, not the grouping. A drain is global; triage should be too.</div>
+    </div>
+
+    <div class="itm glow" id="sb-i2" data-sel="m4">
+      <div class="l1"><span class="pdot ao" title="agent-overflow"></span>
+        <span class="ttl">Add retention settings UI</span>
+        <span class="bdg gate" id="sb-i2-bdg">GATE</span></div>
+      <div class="l2"><span>review · 4/5</span><span class="sep">·</span>
+        <span class="diffstat-add">+34</span><span class="diffstat-del">−12</span>
+        <span class="sep">·</span><span>checks ✓</span><span class="sep">·</span><span class="num">$3.10</span></div>
+    </div>
+
+    <div class="itm glow" id="sb-i3">
+      <div class="l1"><span class="pdot m32" title="m32rimm"></span>
+        <span class="ttl">Refactor session pooling</span>
+        <span class="bdg question">QUESTION</span></div>
+      <div class="l2"><span>implement paused — needs an answer</span></div>
+    </div>
+
+    <div class="itm" id="sb-i5">
+      <div class="l1"><span class="pdot ao" title="agent-overflow"></span>
+        <span class="ttl">Flaky test hunt in triage router</span>
+        <span class="bdg failed">FAILED ·×3</span></div>
+      <div class="l2"><span>retries exhausted · diagnosis: genuine</span><span class="sep">·</span><span class="num">$6.40</span></div>
+    </div>
+
+    <!-- RUNNING -->
+    <div class="sec-h">Running <span class="sc">1</span></div>
+    <div class="itm-wrap open" id="sb-i1w">
+      <div class="itm" id="sb-i1" data-sel="m2">
+        <div class="l1"><span class="chev">▶</span><span class="pdot ao" title="agent-overflow"></span>
+          <span class="ttl">Fix WebSocket reconnect dropping queued sends</span>
+          <span class="wdot"></span></div>
+        <div class="l2" style="padding-left:32px"><span class="bdg running">2/5 implement</span>
+          <span class="num">14m</span><span class="sep">·</span><span class="num">$1.84</span></div>
+      </div>
+      <div class="phases" style="position:relative">
+        <div class="ph"><span class="st ok">✓</span> plan <span class="pm">3m · $0.42</span></div>
+        <div class="ph sel" id="sb-ph-impl"><span class="st run">●</span> implement <span class="pm">11m · live</span></div>
+        <div class="ph-live">▸ Editing internal/transport/wsclient.go</div>
+        <div class="ph"><span class="st pend">○</span> check <span class="pm">script</span></div>
+        <div class="ph"><span class="st pend">○</span> review <span class="pm">read-only</span></div>
+        <div class="ph"><span class="st pend">○</span> docs</div>
+        <div class="note" style="top:100%; left:6px; margin-top:2px; width:236px;"><b>Items expand to phases.</b> Every phase is a normal AO thread (§7) — click one and it opens in the pane row like any thread. The live line under the running phase is the sidebar-scale pulse.</div>
+      </div>
+    </div>
+
+    <!-- QUEUED -->
+    <div class="sec-h" style="position:relative">Queued <span class="sc">2</span>
+      <span class="sec-act" style="color:var(--fg-hint); cursor:default">drag to reorder</span>
+    </div>
+    <div class="itm" id="sb-i6" draggable="true" data-dnd="q">
+      <div class="l1"><span class="grip">⣿</span><span class="pdot m32" title="m32rimm"></span>
+        <span class="ttl">Poll Jira → triage new tickets</span>
+        <span class="bdg auto">AUTO · jira-poll</span></div>
+      <div class="l2" style="padding-left:26px"><span>next — starting when slot 2 releases</span></div>
+    </div>
+    <div class="itm" id="sb-i7" draggable="true" data-dnd="q">
+      <div class="l1"><span class="grip">⣿</span><span class="pdot disp" title="dispatch"></span>
+        <span class="ttl">Migrate config loader to profiles</span>
+        <span class="bdg queued">QUEUED</span></div>
+      <div class="l2" style="padding-left:26px"><span>manual · multi-lens-review</span></div>
+    </div>
+
+    <!-- DONE -->
+    <div class="sec-h">Done <span class="sc">1</span></div>
+    <div class="itm" id="sb-i4" data-sel="m7">
+      <div class="l1"><span class="pdot disp" title="dispatch"></span>
+        <span class="ttl">Bump Tailwind v4.1 + fix tokens</span>
+        <span class="bdg done">DISPOSE</span></div>
+      <div class="l2"><span>5/5 ✓ · checks ✓</span><span class="sep">·</span><span class="num">$0.92</span><span class="sep">·</span><span>merge / PR / discard</span></div>
+    </div>
+
+    <!-- RECENT -->
+    <div class="sec-h">Recent <span class="sc">1</span></div>
+    <div class="itm dim" id="sb-i8">
+      <div class="l1"><span class="pdot ao" title="agent-overflow"></span>
+        <span class="ttl">Spike: virtualized diff renderer</span>
+        <span class="bdg cancelled">CANCELLED</span></div>
+      <div class="l2"><span>yesterday · worktree kept</span></div>
+    </div>
+  </div>
+
+  <button class="sb-cta" id="sbCta" data-go-m="3" style="position:relative">
+    ⚡ <span><b>4 need you</b> — step through</span> <kbd>s</kbd>
+    <div class="note" style="bottom:100%; left:8px; margin-bottom:4px;"><b>The throughput surface is one key away.</b> Attention = parked + failed + awaiting-disposition (D4.3). The board orients; the stepper resolves — so the stepper gets the permanent shortcut, not the board.</div>
+  </button>
+</aside>
+
+<!-- ================= Pane row ================= -->
+<main class="panes">
+
+<!-- ========== Moment 1 · Queue overview ========== -->
+<section class="moment on" id="m1">
+  <div class="pane">
+    <div class="pane-h">
+      <span class="pt">Queue</span>
+      <span class="pm">global · drains by priority (§6)</span>
+      <span class="px" title="Close pane">✕</span>
+    </div>
+    <div class="pane-b">
+
+      <div class="card" style="position:relative">
+        <div class="c-h"><span class="c-t">Slots</span>
+          <span class="meta-row" style="margin-left:auto"><span class="num" id="qpaneState">Active — 2/3 in use</span></span></div>
+        <div class="slots">
+          <div class="slot">
+            <div class="s-h"><span class="wdot"></span> SLOT 1</div>
+            <div class="s-t">Fix WebSocket reconnect dropping queued sends</div>
+            <div class="s-m">implement · 14m · $1.84</div>
+          </div>
+          <div class="slot">
+            <div class="s-h">◐ SLOT 2 · releasing</div>
+            <div class="s-t">Add retention settings UI</div>
+            <div class="s-m">parked at review gate — teardown freeing the slot</div>
+          </div>
+          <div class="slot free">
+            <div class="s-h">SLOT 3</div>
+            <div class="s-t">free</div>
+            <div class="s-m">next up: Poll Jira → triage new tickets</div>
+          </div>
+        </div>
+        <div class="note" style="top:100%; right:6px; margin-top:6px;"><b>Slots are honest.</b> A parked item doesn't silently hold capacity — you can watch its slot release (the §12 teardown path) and the next queued item claim it. No magic numbers.</div>
+      </div>
+
+      <div class="card">
+        <div class="c-h"><span class="c-t">Next up</span>
+          <span class="meta-row" style="margin-left:auto">priority order · drag to reorder</span></div>
+        <div class="itm" draggable="true" data-dnd="q2" id="qp-i6">
+          <div class="l1"><span class="grip" style="opacity:1">⣿</span><span class="pdot m32"></span>
+            <span class="ttl">Poll Jira → triage new tickets</span>
+            <span class="bdg auto">AUTO · jira-poll</span></div>
+          <div class="l2" style="padding-left:26px"><span>enqueued by automation 12m ago · workflow: poll-jira-and-start</span></div>
+        </div>
+        <div class="itm" draggable="true" data-dnd="q2" id="qp-i7">
+          <div class="l1"><span class="grip" style="opacity:1">⣿</span><span class="pdot disp"></span>
+            <span class="ttl">Migrate config loader to profiles</span>
+            <span class="bdg queued">QUEUED</span></div>
+          <div class="l2" style="padding-left:26px"><span>manual · multi-lens-review · base main</span></div>
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px;">
+        <div class="card" style="margin-top:0; position:relative">
+          <div class="c-h"><span class="c-t">Drain</span></div>
+          <label class="chk" style="margin-bottom:6px"><input type="radio" name="drain" checked> Drain to empty</label>
+          <label class="chk"><input type="radio" name="drain"> Process <input type="text" value="5" style="width:34px; text-align:center; background:var(--surface-0); border:1px solid var(--border); border-radius:4px; font-size:0.6875rem; padding:1px 2px"> then pause</label>
+          <div class="meta-row" style="margin-top:10px"><span>On pause / drained → one coalesced summary notification (§10)</span></div>
+          <div class="note" style="bottom:100%; left:10px; margin-bottom:4px;"><b>"Run" is not a session</b> (D3.1). Active/paused + an optional bound replaces start/stop ceremony. The bound survives as a checkbox, not a mode.</div>
+        </div>
+        <div class="card" style="margin-top:0">
+          <div class="c-h"><span class="c-t">Today</span></div>
+          <div class="meta-row" style="gap:14px">
+            <span><b style="color:var(--text-primary)" class="num">4</b> settled</span>
+            <span style="color:var(--success)" class="num">1 done</span>
+            <span style="color:var(--warning)" class="num">2 need you</span>
+            <span style="color:var(--error)" class="num">1 failed</span>
+          </div>
+          <div class="meta-row" style="margin-top:8px"><span class="num">$12.26 spent · 1 cancelled yesterday</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="c-h"><span class="c-t">Feeding this queue</span>
+          <span class="meta-row" style="margin-left:auto">automations (§11)</span></div>
+        <div class="meta-row" style="gap:8px">
+          <span class="bdg auto">jira-poll</span>
+          <span class="mono">cron */5m</span><span class="sep">·</span>
+          <span>last tick 2m ago</span><span class="sep">·</span>
+          <span>cursor <span class="mono">2026-07-11T14:35Z</span></span><span class="sep">·</span>
+          <span>enqueued 1 today</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ========== Moment 2 · Running card ========== -->
+<section class="moment" id="m2">
+  <div class="pane">
+    <div class="pane-h">
+      <span class="pdot ao"></span><span class="pslug">agent-overflow</span>
+      <span class="pt">Fix WebSocket reconnect dropping queued sends</span>
+      <span class="bdg running">RUNNING</span>
+      <span class="px" title="Close pane">✕</span>
+    </div>
+    <div class="pane-b" style="max-width:760px; margin-inline:auto; width:100%">
+
+      <div class="card" style="position:relative">
+        <div class="c-h">
+          <span class="c-t">Phase 2/5 · implement</span>
+          <span class="meta-row" style="margin-left:auto; gap:12px">
+            <span class="num">elapsed <b style="color:var(--text-primary)">14m</b></span>
+            <span class="num">cost <b style="color:var(--text-primary)">$1.84</b></span>
+            <button class="btn bad">■ Cancel item</button>
+          </span>
+        </div>
+        <div class="seg-row" style="margin:4px 0 10px">
+          <span class="seg done"></span><span class="seg act"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span>
+        </div>
+        <div class="live-line"><span class="cur"></span> Editing internal/transport/wsclient.go</div>
+        <div class="note" style="top:8px; right:120px;"><b>Cancel is a first-class kill button</b> (§12) — teardown, locks released, item reads <i>cancelled</i>, worktree kept. Distinct from <i>failed</i> on purpose.</div>
+      </div>
+
+      <div class="card" style="position:relative">
+        <div class="c-h"><span class="c-t">build-and-validate</span>
+          <span class="meta-row" style="margin-left:auto">snapshot pinned at start (§8)</span></div>
+        <div class="phrow">
+          <span class="pi ok">✓</span><span class="pn">plan</span>
+          <span class="pk">agent · read-only → plan.approach: buffer sends while CONNECTING, flush on open</span>
+          <span class="pv">3m · $0.42</span>
+          <button class="plink">envelope ▸</button>
+        </div>
+        <div class="phrow cur">
+          <span class="pi run">●</span><span class="pn">implement</span>
+          <span class="pk">agent · write · turn streaming</span>
+          <span class="pv">11m · live</span>
+          <button class="plink" data-go-m="6">open thread ▸</button>
+        </div>
+        <div class="phrow">
+          <span class="pi">3</span><span class="pn">check</span>
+          <span class="pk">script · make check (profile-bound)</span>
+          <span class="pv">—</span>
+        </div>
+        <div class="phrow">
+          <span class="pi">4</span><span class="pn">review</span>
+          <span class="pk">agent · read-only → human gate</span>
+          <span class="pv">—</span>
+        </div>
+        <div class="phrow">
+          <span class="pi">5</span><span class="pn">docs</span>
+          <span class="pk">agent · write</span>
+          <span class="pv">—</span>
+        </div>
+        <div class="note" style="bottom:52px; right:10px;"><b>Detail is a pane, not a page.</b> The item opens in the pane row next to whatever thread you're in — watching a drain and coding are not separate app modes.</div>
+      </div>
+
+      <div class="card">
+        <div class="c-h"><span class="c-t">Worktree</span></div>
+        <div class="meta-row" style="gap:8px">
+          <span class="mono">wt/ao-ws-reconnect</span><span class="sep">·</span>
+          <span class="mono">branch item/ws-reconnect-sends</span><span class="sep">·</span>
+          <span>base <span class="mono">main</span></span><span class="sep">·</span>
+          <span>persists through every terminal state (§9)</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ========== Moment 3 · Morning-after stepper ========== -->
+<section class="moment" id="m3">
+  <div class="pane">
+    <div class="pane-h">
+      <span class="pt">Needs attention</span>
+      <span class="pm">j/k step · a approve · r reject · t take over</span>
+      <span class="px" title="Close pane">✕</span>
+    </div>
+    <div class="stepper">
+      <div class="step-rail" style="position:relative">
+        <div class="rail-h"><span class="big" id="railCount">4</span> to resolve</div>
+        <div class="srow cur" data-step="0" id="sr0">
+          <span class="pdot ao"></span><span class="stt">Add retention settings UI</span>
+          <span class="bdg gate">GATE</span>
+        </div>
+        <div class="srow" data-step="1" id="sr1">
+          <span class="pdot m32"></span><span class="stt">Refactor session pooling</span>
+          <span class="bdg question">Q</span>
+        </div>
+        <div class="srow" data-step="2" id="sr2">
+          <span class="pdot ao"></span><span class="stt">Flaky test hunt in triage router</span>
+          <span class="bdg failed">FAIL</span>
+        </div>
+        <div class="srow" data-step="3" id="sr3">
+          <span class="pdot disp"></span><span class="stt">Bump Tailwind v4.1 + fix tokens</span>
+          <span class="bdg done">DISP</span>
+        </div>
+        <div class="note" style="top:196px; left:8px;"><b>One item at a time.</b> The rail is orientation only — focus stays on the card. Resolving auto-advances; the morning backlog becomes a rhythm: read digest → press a key → next.</div>
+      </div>
+
+      <div class="step-main">
+
+        <!-- Step 0: gate -->
+        <div class="step-card" data-step="0" id="stc0">
+          <div class="sc-top">
+            <span class="pdot ao"></span><span class="pslug">agent-overflow</span>
+            <h2>Add retention settings UI</h2>
+            <span class="bdg gate">GATE · review 4/5</span>
+          </div>
+          <div class="meta-row">
+            <span class="diffstat-add">+34</span><span class="diffstat-del">−12</span>
+            <span>4 files</span><span class="sep">·</span><span>checks ✓ green</span>
+            <span class="sep">·</span><span class="num">$3.10</span>
+            <span class="sep">·</span><span>build-and-validate</span>
+          </div>
+          <div class="digest">
+            <div class="dg"><div class="lbl">What happened</div>
+              <p>plan → implement → check → review all completed. Checks green; reviewer found nothing blocking, flagged copy ambiguity on "0 = keep forever".</p></div>
+            <div class="dg"><div class="lbl">What it needs</div>
+              <p>Your approval on the review gate. Approve routes to docs (5/5); reject loops implement with your note as feedback.</p></div>
+          </div>
+          <div class="act-row" data-actions>
+            <button class="btn good" data-act="approve">Approve <kbd>a</kbd></button>
+            <button class="btn bad" data-act="reject">Reject <kbd>r</kbd></button>
+            <button class="btn" data-act="takeover">Take over <kbd>t</kbd></button>
+            <span class="spacer"></span>
+            <button class="btn ghost" data-go-m="4">Full review — diff first ▸</button>
+          </div>
+          <div class="note" style="top:10px; right:-8px;"><b>Digest is generated, decisions are cheap.</b> Enough context to act without opening the thread; the full gate surface (moment 4) is one click when the diff itself needs eyes.</div>
+        </div>
+
+        <!-- Step 1: question -->
+        <div class="step-card" data-step="1" id="stc1" style="display:none">
+          <div class="sc-top">
+            <span class="pdot m32"></span><span class="pslug">m32rimm</span>
+            <h2>Refactor session pooling</h2>
+            <span class="bdg question">QUESTION</span>
+          </div>
+          <div class="meta-row"><span>implement · phase yielded, session waiting (§7)</span></div>
+          <div class="q-text">Two pool implementations exist (v1 in <code>pool.go</code>, v2 in <code>session_pool.go</code>) — consolidate on v2 or keep both behind the flag?</div>
+          <div class="quick-answers">
+            <button class="qa-chip hot" data-act="answer" data-ans="Consolidate on v2">Consolidate on v2 <kbd>a</kbd></button>
+            <button class="qa-chip" data-act="answer" data-ans="Keep both behind the flag">Keep both behind the flag</button>
+          </div>
+          <div class="answer-box">
+            <textarea placeholder="…or answer in your own words. The answer injects as a variable; the phase resumes its own schema'd turn — no interrupt, no finalize."></textarea>
+            <button class="btn primary" data-act="answer" data-ans="(custom)">Send</button>
+          </div>
+          <div class="act-row" data-actions>
+            <button class="btn" data-act="takeover">Take over <kbd>t</kbd></button>
+            <span class="spacer"></span>
+            <button class="btn ghost">Open phase thread ▸</button>
+          </div>
+          <div class="note" style="top:64px; right:-8px;"><b>Answers are the fast path.</b> The agent's own either/or becomes one-tap chips; <kbd>a</kbd> accepts the highlighted one. Typing is the fallback, not the default.</div>
+        </div>
+
+        <!-- Step 2: failed -->
+        <div class="step-card" data-step="2" id="stc2" style="display:none">
+          <div class="sc-top">
+            <span class="pdot ao"></span><span class="pslug">agent-overflow</span>
+            <h2>Flaky test hunt in triage router</h2>
+            <span class="bdg failed">FAILED · retries-exhausted</span>
+          </div>
+          <div class="meta-row"><span>check failed ×3</span><span class="sep">·</span>
+            <span>diagnosis: <b style="color:var(--error)">genuine ×3</b> — not flake/infra</span>
+            <span class="sep">·</span><span class="num">$6.40 spent</span></div>
+          <div class="digest">
+            <div class="dg"><div class="lbl">What happened</div>
+              <p>Three implement→check loops; the diagnosis phase classified every failure genuine (§4). Loop bound exhausted — the workflow won't spend more without you.</p></div>
+            <div class="dg"><div class="lbl">What it needs</div>
+              <p>A human call. Worktree and all three diagnosis reports are intact; a triage thread pre-seeds run record + envelopes + diff (D4.2).</p></div>
+          </div>
+          <div class="act-row" data-actions>
+            <button class="btn primary" data-act="takeover">Take over <kbd>t</kbd></button>
+            <button class="btn" data-act="reenqueue">Re-enqueue fresh</button>
+            <button class="btn" data-act="triage">Open triage thread</button>
+            <span class="spacer"></span>
+            <button class="btn bad" data-act="discard">Discard <kbd>r</kbd></button>
+          </div>
+        </div>
+
+        <!-- Step 3: disposition -->
+        <div class="step-card" data-step="3" id="stc3" style="display:none">
+          <div class="sc-top">
+            <span class="pdot disp"></span><span class="pslug">dispatch</span>
+            <h2>Bump Tailwind v4.1 + fix tokens</h2>
+            <span class="bdg done">DONE · awaiting disposition</span>
+          </div>
+          <div class="meta-row"><span>5/5 phases ✓</span><span class="sep">·</span><span>checks ✓ green</span>
+            <span class="sep">·</span><span class="num">$0.92</span><span class="sep">·</span>
+            <span class="mono">item/tailwind-v41 → main</span><span class="sep">·</span>
+            <span style="color:var(--success)">merges clean</span></div>
+          <div class="digest">
+            <div class="dg"><div class="lbl">What happened</div>
+              <p>Full build-and-validate run, no human stops. Token fixes verified by the check phase; docs updated.</p></div>
+            <div class="dg"><div class="lbl">What it needs</div>
+              <p>Disposition only (D3.3): merge locally, open a PR, or discard the worktree.</p></div>
+          </div>
+          <div class="act-row" data-actions>
+            <button class="btn good" data-act="merge">Merge to main <kbd>a</kbd></button>
+            <button class="btn" data-act="pr">Create PR</button>
+            <span class="spacer"></span>
+            <button class="btn ghost" data-go-m="7">Details ▸</button>
+            <button class="btn bad" data-act="discard">Discard <kbd>r</kbd></button>
+          </div>
+        </div>
+
+        <!-- All resolved -->
+        <div class="alldone" id="alldone">
+          <div class="big-ok">✓</div>
+          <h2>Nothing needs you</h2>
+          <p>Queue keeps draining: 1 running · 2 queued.<br>
+            Resolved 4 in this pass — approvals routed, answer injected, disposition taken.</p>
+          <p style="margin-top:10px"><button class="btn ghost" id="resetStepper">reset demo ↺</button></p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== Moment 4 · Gate review ========== -->
+<section class="moment" id="m4">
+  <div class="pane">
+    <div class="pane-h">
+      <span class="pdot ao"></span><span class="pslug">agent-overflow</span>
+      <span class="pt">Add retention settings UI — review gate</span>
+      <span class="bdg gate">4/5</span>
+      <span class="pm">build-and-validate</span>
+      <span class="px" title="Close pane">✕</span>
+    </div>
+    <div class="pane-b" style="max-width:860px; margin-inline:auto; width:100%">
+
+      <div class="gate-banner" id="gateBanner"></div>
+
+      <div class="verdict-strip" style="position:relative">
+        <span class="vfact"><span class="ok">✓</span> checks <b>green</b></span>
+        <span class="vfact"><span class="diffstat-add">+34</span><span class="diffstat-del">−12</span> · <b>4 files</b></span>
+        <span class="vfact">cost <b class="num">$3.10</b></span>
+        <span class="vfact">reviewer: <b>nothing blocking</b>, 1 nit</span>
+        <div class="note" style="top:100%; right:8px; margin-top:4px;"><b>Verdict before evidence.</b> Checks, diffstat, cost — the three numbers that decide most gates — before a single diff line. Then the diff itself, first tab, already open.</div>
+      </div>
+
+      <div class="ptabs">
+        <button class="ptab on" data-tab="diff">Diff <span class="tcnt">4</span></button>
+        <button class="ptab" data-tab="checks">Checks</button>
+        <button class="ptab" data-tab="envelope">Envelope</button>
+        <button class="ptab" data-tab="vars">Variables</button>
+        <button class="ptab" data-tab="narrative">Narrative</button>
+      </div>
+
+      <div class="tabpane on" data-tabpane="diff" style="position:relative">
+        <div class="dfile open">
+          <div class="df-h"><span class="dchev">▶</span>frontend/src/lib/components/settings/RetentionSettings.svelte
+            <span style="margin-left:auto"><span class="diffstat-add">+18</span> <span class="diffstat-del">−2</span></span></div>
+          <div class="df-b">
+            <div class="dl hunk"><span class="ln"></span><span class="lc">@@ -12,8 +12,24 @@ settings → data retention</span></div>
+            <div class="dl ctx"><span class="ln">12</span><span class="lc">  let retention = $derived(getRetentionSettings());</span></div>
+            <div class="dl del"><span class="ln">13</span><span class="lc">- const OPTIONS = [7, 30, 90];</span></div>
+            <div class="dl add"><span class="ln">13</span><span class="lc">+ const OPTIONS = [7, 30, 90, 180, 0]; // 0 = keep forever</span></div>
+            <div class="dl add"><span class="ln">14</span><span class="lc">+</span></div>
+            <div class="dl add"><span class="ln">15</span><span class="lc">+ function labelFor(days: number): string {</span></div>
+            <div class="dl add"><span class="ln">16</span><span class="lc">+   return days === 0 ? 'Keep forever' : `${days} days`;</span></div>
+            <div class="dl add"><span class="ln">17</span><span class="lc">+ }</span></div>
+            <div class="dl ctx"><span class="ln">18</span><span class="lc">  </span></div>
+            <div class="dl add"><span class="ln">19</span><span class="lc">+ async function apply(days: number): Promise&lt;void&gt; {</span></div>
+            <div class="dl add"><span class="ln">20</span><span class="lc">+   await SetRetentionDays(days);</span></div>
+            <div class="dl add"><span class="ln">21</span><span class="lc">+   addToast({ kind: 'success', text: 'Retention updated' });</span></div>
+            <div class="dl add"><span class="ln">22</span><span class="lc">+ }</span></div>
+            <div class="dl ctx"><span class="ln">23</span><span class="lc">  &lt;/script&gt;</span></div>
+          </div>
+        </div>
+        <div class="dfile">
+          <div class="df-h"><span class="dchev">▶</span>frontend/src/lib/stores/settings.svelte.ts
+            <span style="margin-left:auto"><span class="diffstat-add">+9</span> <span class="diffstat-del">−4</span></span></div>
+          <div class="df-b"><div class="dl ctx"><span class="ln"></span><span class="lc">  (collapsed)</span></div></div>
+        </div>
+        <div class="dfile">
+          <div class="df-h"><span class="dchev">▶</span>internal/settings/retention.go
+            <span style="margin-left:auto"><span class="diffstat-add">+5</span> <span class="diffstat-del">−6</span></span></div>
+          <div class="df-b"><div class="dl ctx"><span class="ln"></span><span class="lc">  (collapsed)</span></div></div>
+        </div>
+        <div class="dfile">
+          <div class="df-h"><span class="dchev">▶</span>frontend/src/lib/components/settings/SettingsPane.svelte
+            <span style="margin-left:auto"><span class="diffstat-add">+2</span> <span class="diffstat-del">−0</span></span></div>
+          <div class="df-b"><div class="dl ctx"><span class="ln"></span><span class="lc">  (collapsed)</span></div></div>
+        </div>
+        <div class="note" style="top:170px; left:44%;"><b>Diff-first is the gate contract</b> (D4.4). Envelope, variables, and narrative exist — demoted to tabs. You review a change, not a workflow's paperwork.</div>
+      </div>
+
+      <div class="tabpane" data-tabpane="checks">
+        <div class="card" style="margin-top:0">
+          <div class="checkline"><span class="ok">✓</span> make go-build <span style="margin-left:auto" class="num">4.2s</span></div>
+          <div class="checkline"><span class="ok">✓</span> make go-test <span style="margin-left:auto" class="num">31s</span></div>
+          <div class="checkline"><span class="ok">✓</span> pnpm run check <span style="margin-left:auto" class="num">11s</span></div>
+          <div class="checkline"><span class="ok">✓</span> pnpm run build <span style="margin-left:auto" class="num">18s</span></div>
+          <div class="meta-row" style="margin-top:8px"><span>check phase (script, profile-bound commands) — the deterministic backstop, not the agent's claim (§3)</span></div>
+        </div>
+      </div>
+
+      <div class="tabpane" data-tabpane="envelope">
+        <div class="card" style="margin-top:0">
+          <pre class="mono" style="margin:0; font-size:0.71875rem; line-height:1.6; color:var(--fg-muted); background:transparent; white-space:pre-wrap">{
+  "status": "done",
+  "outputs": {
+    "verdict": "approve",
+    "concerns": ["'0 = keep forever' copy may read ambiguous in the picker"],
+    "notes_path": "phases/review/notes.md"
+  }
+}</pre>
+          <div class="meta-row" style="margin-top:8px"><span>constrained final message of the review turn — schema-validated, fail-closed (D2)</span></div>
+        </div>
+      </div>
+
+      <div class="tabpane" data-tabpane="vars">
+        <div class="card" style="margin-top:0">
+          <div class="kv"><span class="k">goal</span><span class="ty">string</span><span class="v">Add retention settings UI</span></div>
+          <div class="kv"><span class="k">plan.approach</span><span class="ty">string</span><span class="v">picker in Settings → Data, store-backed, Go setting endpoint</span></div>
+          <div class="kv"><span class="k">implement.files_changed</span><span class="ty">array</span><span class="v">[4 paths]</span></div>
+          <div class="kv"><span class="k">check.result</span><span class="ty">enum</span><span class="v">pass</span></div>
+          <div class="kv"><span class="k">review.verdict</span><span class="ty">enum</span><span class="v">approve</span></div>
+        </div>
+      </div>
+
+      <div class="tabpane" data-tabpane="narrative">
+        <div class="card" style="margin-top:0">
+          <div class="meta-row" style="margin-bottom:8px"><span class="mono">…/items/8f2c/phases/review/narrative.md</span></div>
+          <p style="font-size:var(--text-xs); line-height:1.6; color:var(--fg-muted); margin:0">Reviewed the retention picker against the existing settings patterns. Store wiring matches <span class="mono">settings.svelte.ts</span> conventions; the Go endpoint validates bounds server-side. One nit: "0 = keep forever" is only explained in a code comment — suggested surfacing it in the picker label, which implement already did via <span class="mono">labelFor()</span>.</p>
+        </div>
+      </div>
+
+      <div class="gate-actions" style="position:sticky">
+        <button class="btn good" id="gateApprove">Approve → docs <kbd>a</kbd></button>
+        <button class="btn bad" id="gateReject">Reject <kbd>r</kbd></button>
+        <input class="gate-note-inp" placeholder="optional note — a reject loops implement with this as feedback (§4)">
+        <button class="btn ghost">Take over <kbd>t</kbd></button>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ========== Moment 5 · Intake ========== -->
+<section class="moment" id="m5">
+  <div class="pane">
+    <div class="pane-h">
+      <span class="pt">New work item</span>
+      <span class="pm">project + goal + workflow + base + seeds (§8)</span>
+      <span class="px" title="Close pane">✕</span>
+    </div>
+    <div class="pane-b">
+      <div class="intake-grid">
+        <div>
+          <div class="f" style="position:relative">
+            <label>Project</label>
+            <div class="proj-opts">
+              <button class="proj-opt on"><span class="pdot ao"></span>agent-overflow</button>
+              <button class="proj-opt"><span class="pdot m32"></span>m32rimm</button>
+              <button class="proj-opt"><span class="pdot disp"></span>dispatch</button>
+            </div>
+          </div>
+          <div class="f">
+            <label>Goal</label>
+            <textarea>Debounce sidebar search input — it filters on every keystroke and re-renders the full project tree.</textarea>
+          </div>
+          <div class="f" style="position:relative">
+            <label>Workflow</label>
+            <div class="wf-cards">
+              <button class="wf-card on">
+                <span class="wn">build-and-validate</span>
+                <span class="wp"><span class="wph">plan</span><span class="arr">→</span><span class="wph">implement</span><span class="arr">→</span><span class="wph">check</span><span class="arr">→</span><span class="wph">review</span><span class="arr">→</span><span class="wph">docs</span></span>
+                <span class="wsc">shared · 5 phases · 1 human gate</span>
+              </button>
+              <button class="wf-card">
+                <span class="wn">multi-lens-review</span>
+                <span class="wp"><span class="wph">3× reviewers</span><span class="arr">⇉</span><span class="wph">synthesize</span><span class="arr">→</span><span class="wph">fix</span></span>
+                <span class="wsc">shared · fan-out 3 → join · read-only lenses</span>
+              </button>
+            </div>
+            <div class="hint">Workflow is chosen explicitly at enqueue — you curate the queue (§8). Dry-run validates the graph before accept.</div>
+            <div class="note" style="top:0; right:-8px;"><b>Pipelines drawn, not named.</b> The phase chain on the card is the workflow's actual graph — picking a workflow means seeing what will run.</div>
+          </div>
+          <div class="f" style="display:grid; grid-template-columns:1fr 1fr; gap:10px">
+            <div>
+              <label>Base branch</label>
+              <input type="text" value="main">
+              <div class="hint">from project profile · overridable</div>
+            </div>
+            <div>
+              <label>Budget <span style="opacity:0.6">(optional)</span></label>
+              <input type="text" placeholder="$ ceiling, e.g. 10">
+              <div class="hint">exceed → parks needs-human (§12)</div>
+            </div>
+          </div>
+          <div class="f" style="position:relative">
+            <label>Seed variables — from the workflow's typed inputs</label>
+            <div class="seedvars">
+              <div class="kv"><span class="k">goal</span><span class="ty">string ·req</span><span class="v" style="color:var(--fg-hint)">↑ bound to Goal above</span></div>
+              <div class="kv"><span class="k">ticket_key</span><span class="ty">string ·opt</span><span class="v"><input type="text" placeholder="AO-—" style="background:transparent; border:none; width:100%; font-size:0.6875rem; padding:0"></span></div>
+              <div class="kv"><span class="k">context_paths</span><span class="ty">path[] ·opt</span><span class="v"><input type="text" placeholder="frontend/src/lib/components/sidebar/" style="background:transparent; border:none; width:100%; font-size:0.6875rem; padding:0"></span></div>
+            </div>
+            <div class="note" style="top:-6px; left:55%;"><b>The form is generated.</b> These rows render from the workflow's <span class="mono">inputs:</span> declarations (D2) — a different workflow, a different form. Required inputs gate the Enqueue button.</div>
+          </div>
+          <div class="f opt-row">
+            <label style="margin:0; display:inline">Options</label>
+            <label class="chk"><input type="checkbox"> Step mode — park at every gate (D4.7)</label>
+            <label class="chk"><input type="checkbox" checked> Notify on park/fail</label>
+          </div>
+          <div class="act-row">
+            <button class="btn primary">Enqueue ⏎</button>
+            <span class="meta-row"><span>queue active · starts when a slot frees — position #3</span></span>
+          </div>
+        </div>
+
+        <div style="position:relative">
+          <div class="microlbl" style="margin-bottom:8px">…or from any chat thread</div>
+          <div class="chat-mock">
+            <div class="chat-msg"><span class="who">you · thread "scroll spring tuning notes"</span>
+              this search lag is the same class of bug — queue a fix for it</div>
+            <div class="chat-msg"><span class="who">assistant</span>
+              Queued it as a work item — confirm below.</div>
+            <div class="confirm-card">
+              <div class="cc-h">⚡ Queue this from chat?</div>
+              <div class="cc-b">
+                <div class="cc-kv"><span class="k">project</span><span class="v">agent-overflow <span style="color:var(--fg-hint)">(from thread)</span></span></div>
+                <div class="cc-kv"><span class="k">goal</span><span class="v" style="font-family:var(--font-sans)">Debounce sidebar search input…</span></div>
+                <div class="cc-kv"><span class="k">workflow</span><span class="v">build-and-validate</span></div>
+                <div class="cc-kv"><span class="k">base</span><span class="v">main</span></div>
+              </div>
+              <div class="cc-a">
+                <button class="btn primary">Enqueue</button>
+                <button class="btn">Edit in intake ▸</button>
+                <button class="btn ghost">Dismiss</button>
+              </div>
+            </div>
+          </div>
+          <div class="note" style="top:100%; left:10px; margin-top:8px;"><b>Same item shape, two producers</b> (§8, D4.5). The agent's enqueue tool emits exactly what this form emits; the confirm card is the human veto. "Edit in intake" hands off to the full form with fields pre-filled.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== Moment 6 · Opening a phase thread ========== -->
+<section class="moment" id="m6">
+  <!-- Left: the item detail the user came from (condensed) -->
+  <div class="pane" style="max-width:380px; flex:0 0 380px">
+    <div class="pane-h">
+      <span class="pdot ao"></span>
+      <span class="pt">Fix WebSocket reconnect…</span>
+      <span class="bdg running">2/5</span>
+      <span class="px">✕</span>
+    </div>
+    <div class="pane-b" style="position:relative">
+      <div class="card">
+        <div class="c-h"><span class="c-t">build-and-validate</span></div>
+        <div class="phrow"><span class="pi ok">✓</span><span class="pn">plan</span><span class="pv">3m · $0.42</span></div>
+        <div class="phrow cur" style="outline:1px solid var(--accent); outline-offset:-1px">
+          <span class="pi run">●</span><span class="pn">implement</span>
+          <span class="pk">← you clicked this</span>
+          <span class="pv">live</span>
+        </div>
+        <div class="phrow"><span class="pi">3</span><span class="pn">check</span><span class="pv">—</span></div>
+        <div class="phrow"><span class="pi">4</span><span class="pn">review</span><span class="pv">—</span></div>
+        <div class="phrow"><span class="pi">5</span><span class="pn">docs</span><span class="pv">—</span></div>
+      </div>
+      <div class="note" style="top:120px; left:14px;"><b>Zero new machinery to "open".</b> A phase row click reveals a pane to the right — the identical gesture that opens any AO thread. Item detail stays put; you never lose the map.</div>
+    </div>
+  </div>
+
+  <!-- Right: the phase thread, a normal AO chat pane -->
+  <div class="pane slide-in" id="phaseThreadPane">
+    <div class="pane-h">
+      <span class="pt">implement — Fix WebSocket reconnect dropping queued sends</span>
+      <span class="bdg running">LIVE</span>
+      <span class="pm mono">wt/ao-ws-reconnect</span>
+      <span class="px">✕</span>
+    </div>
+    <div class="wi-strip" style="position:relative">
+      <span>⚙ workflow item</span><span>·</span>
+      <span>build-and-validate · phase <b>2/5 implement</b></span><span>·</span>
+      <span>write access</span>
+      <span style="margin-left:auto"></span>
+      <button class="wi-back">← back to item</button>
+      <div class="note" style="top:100%; left:24%; margin-top:4px;"><b>One strip is the only delta</b> from a normal thread pane. Below it: the same timeline, same tool rows, same composer. Viewing is passive (§7) — watch it stream.</div>
+    </div>
+    <div class="chat-body">
+      <button class="crow-sys">▸ phase prompt · assembled from template + variables · 1.2k tokens</button>
+      <div class="crow-asst">The reconnect path drops sends that were queued while the socket sat in <code>CONNECTING</code>. I'll buffer them on the client and flush on <code>open</code>, mirroring how the event ring already replays.</div>
+      <div class="toolrow"><span class="tico" style="color:var(--ico-file, #b48ce8)">✎</span><span class="tname">Edit</span>
+        <span class="targ">internal/transport/wsclient.go</span><span class="tstat">+14 −3</span></div>
+      <div class="toolrow"><span class="tico" style="color:#7ac0cf">❯_</span><span class="tname">Bash</span>
+        <span class="targ">go test ./internal/transport/</span><span class="tstat">running…</span></div>
+      <div class="working-dots"><i></i><i></i><i></i></div>
+    </div>
+    <div class="composer" style="position:relative">
+      <input class="cp-inp" placeholder="Message implement…">
+      <div class="cp-meta">
+        <span class="takeover-warn">⚠ sending interrupts the turn and takes over (§7)</span>
+        <span style="margin-left:auto">finish with Complete · or discard + re-run</span>
+      </div>
+      <div class="note" style="bottom:100%; right:10px; margin-bottom:6px;"><b>Takeover is the composer itself.</b> No special "intervene" button — the universal AO rule (message ⇒ interrupt ⇒ steer) applies unchanged inside a workflow phase.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== Moment 7 · Done disposition ========== -->
+<section class="moment" id="m7">
+  <div class="pane">
+    <div class="pane-h">
+      <span class="pdot disp"></span><span class="pslug">dispatch</span>
+      <span class="pt">Bump Tailwind v4.1 + fix tokens</span>
+      <span class="bdg done">DONE</span>
+      <span class="px">✕</span>
+    </div>
+    <div class="pane-b" style="max-width:720px; margin-inline:auto; width:100%">
+
+      <div class="disp-toggle" style="position:relative">
+        <button class="on" data-dv="manual">Manual disposition (default)</button>
+        <button data-dv="auto">Preview: project opted into auto-merge</button>
+        <div class="note" style="left:100%; top:0; margin-left:8px;"><b>Demo toggle</b> — same item, both policies. In the app the policy lives on the project profile (D3.3); dispatch is a side project, the natural opt-in.</div>
+      </div>
+
+      <!-- Variant A: manual -->
+      <div class="disp-variant on" id="dvManual">
+        <div class="card" style="position:relative">
+          <div class="c-h"><span class="c-t">Run complete</span>
+            <span class="meta-row" style="margin-left:auto; gap:10px">
+              <span>5/5 phases ✓</span><span>checks ✓</span><span class="num">$0.92 · 22m</span>
+            </span></div>
+          <div class="seg-row" style="margin:2px 0 10px">
+            <span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span>
+          </div>
+          <div class="merge-preview">
+            <span class="mono">item/tailwind-v41</span> → <span class="mono">main</span>
+            <span class="ok">✓ merges clean</span>
+            <span style="margin-left:auto">9 files · <span class="diffstat-add">+141</span> <span class="diffstat-del">−97</span></span>
+          </div>
+          <div class="act-row">
+            <button class="btn good" id="dispMerge">Merge to main</button>
+            <button class="btn">Create PR</button>
+            <button class="btn ghost">Open diff</button>
+            <button class="btn ghost">Continue in thread</button>
+            <span class="spacer"></span>
+            <button class="btn bad">Discard worktree</button>
+          </div>
+          <div class="meta-row" style="margin-top:9px">
+            <span>Worktree persists until you choose — cleanup is a disposition, never automatic (§9)</span>
+          </div>
+          <div class="note" style="top:8px; right:8px;"><b>Merge machinery is in-app</b> (D3.3): local merge, PR via <span class="mono">gh</span>, or discard. "Continue in thread" forks a fresh thread in the same worktree for follow-ups.</div>
+        </div>
+      </div>
+
+      <!-- Variant B: auto-merge (after the fact) -->
+      <div class="disp-variant" id="dvAuto">
+        <div class="card auto-merged-card" style="position:relative">
+          <div class="c-h">
+            <span class="bdg done">MERGED · AUTO</span>
+            <span class="c-t">Merged automatically at 08:42</span>
+            <span class="meta-row" style="margin-left:auto"><span class="num">$0.92 · 22m</span></span>
+          </div>
+          <div class="meta-row" style="gap:8px; margin-bottom:8px">
+            <span>clean merge from green terminal state</span><span class="sep">·</span>
+            <span class="mono">item/tailwind-v41 → main @ 1f3ca2d</span><span class="sep">·</span>
+            <span>worktree cleaned</span>
+          </div>
+          <div class="meta-row" style="gap:8px">
+            <span>project <b style="color:var(--text-primary)">dispatch</b> has auto-merge-on-done enabled</span>
+            <span class="sep">·</span><button class="btn ghost" style="padding:2px 7px">Revert merge</button>
+            <span class="sep">·</span><button class="btn ghost" style="padding:2px 7px">View run record</button>
+          </div>
+          <div class="note" style="top:100%; left:10px; margin-top:6px;"><b>Auto-merge reads as a receipt, not a surprise.</b> Commit, time, policy source, and an undo — everything needed to trust it after the fact. A conflict or dirty base would instead park <span class="mono">needs-human(disposition)</span> with a pre-seeded triage thread; never forced, never silent.</div>
+        </div>
+        <div class="card" style="border-style:dashed; background:transparent">
+          <div class="meta-row"><span>Sidebar effect: the item skips DISPOSE and lands directly in <b>Recent</b> as <span class="bdg done" style="display:inline-flex">MERGED</span> — nothing demanded your attention, so nothing glows.</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+</main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (s, r) => (r || document).querySelector(s);
+  const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+
+  /* ---------- Moment navigation (hash routing) ---------- */
+  const MOMENTS = 7;
+  // Which sidebar row reads as "selected" per moment.
+  const SEL = { 1: null, 2: 'sb-i1', 3: null, 4: 'sb-i2', 5: null, 6: 'sb-i1', 7: 'sb-i4' };
+
+  function go(m) {
+    m = Math.min(MOMENTS, Math.max(1, m | 0));
+    document.body.dataset.m = String(m);
+    $$('.moment').forEach((el) => el.classList.toggle('on', el.id === 'm' + m));
+    $$('.m-tab').forEach((t) => t.classList.toggle('on', t.dataset.go === String(m)));
+    $$('.itm').forEach((i) => i.classList.remove('sel'));
+    if (SEL[m]) { const row = $('#' + SEL[m]); if (row) row.classList.add('sel'); }
+    // Peeking at Threads mode ends when navigating.
+    setMode('work');
+    // Replay the phase-thread slide-in each visit so the transition is visible.
+    if (m === 6) {
+      const p = $('#phaseThreadPane');
+      p.classList.remove('slide-in'); void p.offsetWidth; p.classList.add('slide-in');
+    }
+    if (location.hash !== '#m' + m) history.replaceState(null, '', '#m' + m);
+  }
+  $$('.m-tab').forEach((t) => t.addEventListener('click', () => go(+t.dataset.go)));
+  $$('[data-go-m]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation(); go(+b.dataset.goM);
+  }));
+  $('#qhead').addEventListener('click', (e) => {
+    if (e.target.id !== 'qtgl') go(1);
+  });
+
+  /* ---------- Annotations toggle ---------- */
+  const noteBtn = $('#noteToggle');
+  function toggleNotes() { document.body.classList.toggle('notes'); }
+  noteBtn.addEventListener('click', toggleNotes);
+
+  /* ---------- Sidebar mode switch ---------- */
+  function setMode(mode) {
+    document.body.classList.toggle('mode-threads', mode === 'threads');
+    $('#modeThreads').classList.toggle('on', mode === 'threads');
+    $('#modeWork').classList.toggle('on', mode !== 'threads');
+  }
+  $('#modeThreads').addEventListener('click', () => setMode('threads'));
+  $('#modeWork').addEventListener('click', () => setMode('work'));
+
+  /* ---------- Queue active/paused toggle ---------- */
+  $('#qtgl').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const paused = document.body.classList.toggle('q-paused');
+    $('#qtgl').setAttribute('aria-checked', String(!paused));
+    $('#qstate').textContent = paused ? 'paused' : 'active · draining';
+    const qp = $('#qpaneState');
+    if (qp) qp.textContent = paused ? 'Paused — 2 finishing, 0 will start' : 'Active — 2/3 in use';
+  });
+
+  /* ---------- Sidebar item expansion ---------- */
+  $('#sb-i1').addEventListener('click', function (e) {
+    if (e.target.closest('[data-go-m]')) return;
+    // Row click both selects (moment 2) and keeps the expand toggle on the chevron.
+    if (e.target.closest('.chev')) { $('#sb-i1w').classList.toggle('open'); return; }
+    go(2);
+  });
+  $('#sb-i2').addEventListener('click', () => go(4));
+  $('#sb-i3').addEventListener('click', () => { go(3); showStep(1); });
+  $('#sb-i5').addEventListener('click', () => { go(3); showStep(2); });
+  $('#sb-i4').addEventListener('click', () => go(7));
+  $('#sb-ph-impl').addEventListener('click', (e) => { e.stopPropagation(); go(6); });
+  $$('.wi-back').forEach((b) => b.addEventListener('click', () => go(2)));
+
+  /* ---------- Drag reorder (queued rows; sidebar + queue pane) ---------- */
+  function wireDnd(sel) {
+    const rows = $$(sel);
+    rows.forEach((row) => {
+      row.addEventListener('dragstart', (e) => {
+        row.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      row.addEventListener('dragend', () => {
+        rows.forEach((r) => r.classList.remove('dragging', 'dragover'));
+      });
+      row.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        if (!row.classList.contains('dragging')) row.classList.add('dragover');
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('dragover'));
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const dragged = rows.find((r) => r.classList.contains('dragging'));
+        if (dragged && dragged !== row) row.parentNode.insertBefore(dragged, row);
+        rows.forEach((r) => r.classList.remove('dragging', 'dragover'));
+      });
+    });
+  }
+  wireDnd('[data-dnd="q"]');
+  wireDnd('[data-dnd="q2"]');
+
+  /* ---------- Gate review tabs + actions (moment 4) ---------- */
+  $$('.ptab').forEach((t) => t.addEventListener('click', () => {
+    $$('.ptab').forEach((x) => x.classList.toggle('on', x === t));
+    $$('.tabpane').forEach((p) => p.classList.toggle('on', p.dataset.tabpane === t.dataset.tab));
+  }));
+  $$('.dfile .df-h').forEach((h) => h.addEventListener('click', () => {
+    h.parentElement.classList.toggle('open');
+  }));
+  function gateDecide(ok) {
+    const b = $('#gateBanner');
+    b.className = 'gate-banner ' + (ok ? 'ok' : 'no');
+    b.innerHTML = ok
+      ? '✓ Approved — gate routed to <b>docs (5/5)</b>. Item resumes running; slot re-acquired.'
+      : '✕ Rejected — looping back to <b>implement</b> with your note as feedback (bounded, §4).';
+    const sbBdg = $('#sb-i2-bdg');
+    sbBdg.className = 'bdg ' + (ok ? 'running' : 'running');
+    sbBdg.textContent = ok ? '5/5 docs' : '2/5 retry';
+    $('#sb-i2').classList.remove('glow');
+    b.scrollIntoView({ block: 'nearest' });
+  }
+  $('#gateApprove').addEventListener('click', () => gateDecide(true));
+  $('#gateReject').addEventListener('click', () => gateDecide(false));
+
+  /* ---------- Stepper (moment 3) ---------- */
+  const RESOLVE_TEXT = {
+    approve:   '✓ Approved — resuming. Gate routed to docs (5/5).',
+    reject:    '✕ Rejected — implement loops with your note as feedback.',
+    answer:    '✓ Answer sent — injected as a variable; the phase resumes its own turn.',
+    takeover:  '⇥ Taking over — opening the phase thread in a pane…',
+    reenqueue: '↺ Re-enqueued fresh — seeded from the recorded input envelope (§7).',
+    triage:    '⇥ Triage thread opened — run record, envelopes, diff pre-seeded (D4.2).',
+    discard:   '✕ Discarded — worktree dropped after confirm.',
+    merge:     '✓ Merged to main — worktree cleaned.',
+    pr:        '✓ PR created via gh — branch pushed.',
+  };
+  const steps = [0, 1, 2, 3].map((i) => ({
+    card: $('#stc' + i), row: $('#sr' + i), resolved: false,
+  }));
+  let cur = 0;
+
+  function showStep(i) {
+    cur = Math.min(steps.length - 1, Math.max(0, i));
+    steps.forEach((s, idx) => {
+      s.card.style.display = idx === cur ? 'block' : 'none';
+      s.row.classList.toggle('cur', idx === cur);
+    });
+    $('#alldone').style.display = 'none';
+  }
+  function railRefresh() {
+    const left = steps.filter((s) => !s.resolved).length;
+    $('#railCount').textContent = String(left);
+    const cta = $('#sbCta');
+    if (left > 0) {
+      cta.querySelector('b').textContent = left + ' need you';
+    } else {
+      cta.querySelector('b').textContent = 'all clear';
+    }
+  }
+  function resolve(i, kind) {
+    const s = steps[i];
+    if (s.resolved) return;
+    s.resolved = true;
+    s.row.classList.add('res');
+    s.row.querySelector('.bdg').outerHTML = '<span class="rmark">✓</span>';
+    const acts = s.card.querySelector('[data-actions]');
+    const note = document.createElement('div');
+    note.className = 'resolved-note';
+    note.innerHTML = '<span>' + RESOLVE_TEXT[kind] + '</span><button class="undo">undo</button>';
+    note.querySelector('.undo').addEventListener('click', () => unresolve(i, note));
+    acts.after(note);
+    acts.style.display = 'none';
+    // Sync the sidebar story for the two rows the other moments also touch.
+    if (i === 0) { $('#sb-i2').classList.remove('glow'); $('#sb-i2-bdg').className = 'bdg running'; $('#sb-i2-bdg').textContent = '5/5 docs'; }
+    if (i === 1) { $('#sb-i3').classList.remove('glow'); $('#sb-i3 .bdg').className = 'bdg running'; $('#sb-i3 .bdg').textContent = '2/3'; }
+    railRefresh();
+    window.setTimeout(() => advance(), 420);
+  }
+  function unresolve(i, noteEl) {
+    const s = steps[i];
+    s.resolved = false;
+    s.row.classList.remove('res');
+    s.row.querySelector('.rmark').outerHTML =
+      ['<span class="bdg gate">GATE</span>', '<span class="bdg question">Q</span>',
+       '<span class="bdg failed">FAIL</span>', '<span class="bdg done">DISP</span>'][i];
+    noteEl.previousElementSibling.style.display = '';
+    noteEl.remove();
+    railRefresh();
+    showStep(i);
+  }
+  function advance() {
+    const next = steps.findIndex((s, idx) => idx > cur && !s.resolved);
+    const anyLeft = steps.some((s) => !s.resolved);
+    if (next !== -1) return showStep(next);
+    const firstLeft = steps.findIndex((s) => !s.resolved);
+    if (firstLeft !== -1) return showStep(firstLeft);
+    if (!anyLeft) {
+      steps.forEach((s) => { s.card.style.display = 'none'; s.row.classList.remove('cur'); });
+      $('#alldone').style.display = 'block';
+    }
+  }
+  steps.forEach((s, i) => {
+    s.row.addEventListener('click', () => showStep(i));
+    $$('[data-act]', s.card).forEach((btn) =>
+      btn.addEventListener('click', () => resolve(i, btn.dataset.act)));
+  });
+  $('#resetStepper').addEventListener('click', () => location.reload());
+
+  /* ---------- Disposition variant toggle (moment 7) ---------- */
+  $$('.disp-toggle button').forEach((b) => b.addEventListener('click', () => {
+    $$('.disp-toggle button').forEach((x) => x.classList.toggle('on', x === b));
+    $('#dvManual').classList.toggle('on', b.dataset.dv === 'manual');
+    $('#dvAuto').classList.toggle('on', b.dataset.dv === 'auto');
+  }));
+
+  /* ---------- Keyboard ---------- */
+  // Stepper key → per-card action kind. a = the card's primary positive,
+  // r = its destructive/reject, t = take over (universal).
+  const STEP_KEYS = {
+    a: ['approve', 'answer', 'takeover', 'merge'],
+    r: ['reject', null, 'discard', 'discard'],
+    t: ['takeover', 'takeover', 'takeover', 'takeover'],
+  };
+  document.addEventListener('keydown', (e) => {
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key;
+    if (k >= '1' && k <= '7') return go(+k);
+    if (k === 'i' || k === '?') return toggleNotes();
+    if (k === 's') return go(3);
+    const m = +document.body.dataset.m;
+    if (m === 3) {
+      if (k === 'j') { e.preventDefault(); return showStep(Math.min(steps.length - 1, cur + 1)); }
+      if (k === 'k') { e.preventDefault(); return showStep(Math.max(0, cur - 1)); }
+      if (STEP_KEYS[k]) { e.preventDefault(); const kind = STEP_KEYS[k][cur]; if (kind) resolve(cur, kind); return; }
+    }
+    if (m === 4) {
+      if (k === 'a') return gateDecide(true);
+      if (k === 'r') return gateDecide(false);
+    }
+  });
+
+  /* ---------- Boot from hash ---------- */
+  const h = /^#m([1-7])$/.exec(location.hash);
+  go(h ? +h[1] : 1);
+  window.addEventListener('hashchange', () => {
+    const hh = /^#m([1-7])$/.exec(location.hash);
+    if (hh) go(+hh[1]);
+  });
+})();
+</script>
+</body>
+</html>
