@@ -130,8 +130,13 @@ jobs:
           # ("attempt to insert nil object", Apple regression FB20183399;
           # see expo/expo#46121). wails3 generate icons compiles
           # build/appicon.icon with /usr/bin/actool, which resolves through
-          # DEVELOPER_DIR. Verified on this runner image: 26.0-26.3 compile
-          # it fine, 26.4+ crash. Drop the pin once a fixed Xcode ships.
+          # DEVELOPER_DIR, so pin the newest Xcode whose actool works.
+          # Verified per-version on this runner image (spike 2026-07-11):
+          # 26.0-26.3 compile the bundle, 26.4+ crash. Related: the bundle's
+          # icon.json must not carry a `translucency` key — the headless
+          # icon renderer dies with "Icon export exited with status 255"
+          # on it (bisected in the same spike). Drop the pin once a fixed
+          # Xcode ships.
           DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
         run: |
           VERSION="$VERSION" wails3 task darwin:package

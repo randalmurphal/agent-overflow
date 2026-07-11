@@ -35,10 +35,7 @@
         "kind" : "neutral",
         "opacity" : 0.5
       },
-      "specular" : true,
-      "translucency" : {
-        "enabled" : false
-      }
+      "specular" : true
     }
   ],
   "supported-platforms" : {
