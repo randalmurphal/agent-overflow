@@ -85,6 +85,32 @@ export function buildReviewTree(
 }
 
 /**
+ * Compare two file paths in tree display order: directories before
+ * files at every level, alphabetical within each group — the exact
+ * order `buildReviewTree` + `flattenReviewTree` render. Sorting the
+ * flat file list with this comparator makes the diff body's file
+ * sequence match the tree's top-to-bottom reading order.
+ */
+export function comparePathsTreeOrder(a: string, b: string): number {
+  const aParts = a.split('/');
+  const bParts = b.split('/');
+  const shared = Math.min(aParts.length, bParts.length);
+  for (let i = 0; i < shared; i += 1) {
+    const aIsDir = i < aParts.length - 1;
+    const bIsDir = i < bParts.length - 1;
+    if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+    if (aParts[i] !== bParts[i]) return aParts[i].localeCompare(bParts[i]);
+  }
+  return aParts.length - bParts.length;
+}
+
+/** Copy of `files` sorted into tree display order (input untouched —
+ * parse results are shared immutable arrays). */
+export function sortFilesTreeOrder(files: readonly PatchFile[]): PatchFile[] {
+  return [...files].sort((a, b) => comparePathsTreeOrder(a.path, b.path));
+}
+
+/**
  * Type-filter chip label for a file: the extension (`.ts`, `.svelte`),
  * or the whole basename when there is none — for `Makefile` or
  * `.gitignore` the name IS the type.

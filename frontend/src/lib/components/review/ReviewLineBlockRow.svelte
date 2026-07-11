@@ -4,10 +4,11 @@
   import { dispatchInlineFileTokens } from '../chat/diffInlineTokenize';
   import { getDiffTheme } from '../../stores/diffTheme.svelte';
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
+  import { DIFF_CONTEXT_EXPAND_STEP, type ExpandDirection } from '../../utils/diffContextExpansion';
   import type { DiffTheme } from '../../utils/diffHighlighterPool';
   import { languageFromPath } from '../../utils/diffLanguage';
-  import { lineTintClass } from '../../utils/diffLineTint';
-  import { stripPatchLinePrefix, type PatchDisplayRow, type PatchLine, type SplitDisplayRow } from '../../utils/patchFiles';
+  import { gutterTintClass, lineTintClass } from '../../utils/diffLineTint';
+  import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type PatchLine, type SplitDisplayRow } from '../../utils/patchFiles';
   import { REVIEW_LINE_HEIGHT_PX } from '../../utils/reviewRows';
   import type { LineToken } from '../../utils/tokenCache';
   import { getCachedTokensForLine } from '../../utils/tokenCacheReactive.svelte';
@@ -36,9 +37,11 @@
     onAddComment?: (anchor: CommentAnchor) => void;
     /** Conflict view only: expands the fold row's hidden lines. */
     onExpandFold?: (path: string, foldId: number) => void;
+    /** Diff view only: fetches a hunk gap's hidden context lines. */
+    onExpandGap?: (path: string, gap: DiffGap, dir: ExpandDirection) => void;
   }
 
-  let { rows, splitRows, path, threadId, wordWrap, gutterCh, onAddComment, onExpandFold }: Props = $props();
+  let { rows, splitRows, path, threadId, wordWrap, gutterCh, onAddComment, onExpandFold, onExpandGap }: Props = $props();
 
   let theme: DiffTheme = $derived(getDiffTheme());
   let lang = $derived(languageFromPath(path));
@@ -47,8 +50,8 @@
     const t = theme;
     const l = lang;
     const id = threadId;
-    // Marker/fold rows render plain — no point queueing them for Shiki.
-    const lines = rows.map((row) => row.line).filter((line) => line.type !== 'marker');
+    // Marker/fold/gap rows render plain — no point queueing them for Shiki.
+    const lines = rows.filter((row) => row.line.type !== 'marker' && !row.gap).map((row) => row.line);
     untrack(() => {
       void dispatchInlineFileTokens(lines, id, l, t);
     });
@@ -86,20 +89,35 @@
       selectedText: stripPatchLinePrefix(row.line),
     };
   }
+
+  function gapLabel(gap: DiffGap): string {
+    if (gap.hidden < 0) return 'unchanged lines';
+    return gap.hidden === 1 ? '1 unchanged line' : `${gap.hidden} unchanged lines`;
+  }
+
+  // A gap one fetch fully covers gets a single expand-all band;
+  // larger (or unknown-size) gaps step directionally, GitHub-style.
+  function isSmallGap(gap: DiffGap): boolean {
+    return gap.hidden >= 0 && gap.hidden <= DIFF_CONTEXT_EXPAND_STEP;
+  }
 </script>
 
-{#snippet addButton(anchor: CommentAnchor, side: string)}
-  {#if onAddComment}
-    <button
-      type="button"
-      class="absolute left-0 top-0 z-[1] flex h-full w-5 items-center justify-center bg-surface-1/95 text-[0.6875rem] font-semibold text-fg-muted opacity-0 shadow-sm hover:text-fg group-hover:opacity-100 focus:opacity-100 focus:outline-none"
-      aria-label={`Add ${side} comment`}
-      data-testid="review-add-comment"
-      onclick={() => onAddComment?.(anchor)}
-    >
-      +
-    </button>
-  {/if}
+<!-- Reserved action column: a real cell at the row's left edge, so
+     the hover affordance never paints over the line numbers. -->
+{#snippet actionCell(anchor: CommentAnchor, side: string)}
+  <span class="flex w-5 shrink-0 items-center justify-center">
+    {#if onAddComment}
+      <button
+        type="button"
+        class="flex size-4 items-center justify-center rounded-[3px] bg-accent text-[0.6875rem] font-semibold leading-none text-white opacity-0 transition-opacity duration-75 group-hover:opacity-100 focus-visible:opacity-100 hover:brightness-110 focus:outline-none"
+        aria-label={`Add ${side} comment`}
+        data-testid="review-add-comment"
+        onclick={() => onAddComment?.(anchor)}
+      >
+        +
+      </button>
+    {/if}
+  </span>
 {/snippet}
 
 {#snippet foldRow(fold: { id: number; lines: number })}
@@ -116,16 +134,71 @@
   </button>
 {/snippet}
 
+<!-- Hunk-gap band. Exact-height contract applies: the band is one
+     display row at REVIEW_LINE_HEIGHT_PX, no vertical padding/borders.
+     Direction semantics match GitHub: ↓ reveals the TOP of the gap
+     (extends the hunk above downward), ↑ reveals the BOTTOM (extends
+     the hunk below upward) — so a leading gap offers only ↑ and a
+     trailing gap only ↓. -->
+{#snippet gapRow(gap: DiffGap)}
+  {#if isSmallGap(gap) && onExpandGap}
+    <button
+      type="button"
+      class="flex w-full cursor-pointer items-center gap-2 bg-accent/[0.07] px-8 text-left text-[0.6875rem] text-fg-muted hover:bg-accent/15 hover:text-fg"
+      style:height={wordWrap ? undefined : lineHeight}
+      data-testid="review-gap-expand-all"
+      aria-label="Expand {gapLabel(gap)}"
+      onclick={() => onExpandGap?.(path, gap, 'all')}
+    >
+      <span class="text-accent" aria-hidden="true">↕</span>
+      <span>{gapLabel(gap)}</span>
+    </button>
+  {:else}
+    <div
+      class="flex w-full items-center bg-accent/[0.07] text-[0.6875rem] text-fg-muted"
+      style:height={wordWrap ? undefined : lineHeight}
+      data-testid="review-gap"
+    >
+      {#if onExpandGap}
+        <span class="flex shrink-0 items-center gap-0.5 pl-1.5">
+          {#if gap.location !== 'trailing'}
+            <button
+              type="button"
+              class="flex size-4 items-center justify-center rounded-[3px] text-accent hover:bg-accent/20 focus-visible:bg-accent/20 focus:outline-none"
+              aria-label="Expand up"
+              data-testid="review-gap-expand-up"
+              onclick={() => onExpandGap?.(path, gap, 'up')}
+            >↑</button>
+          {/if}
+          {#if gap.location !== 'leading'}
+            <button
+              type="button"
+              class="flex size-4 items-center justify-center rounded-[3px] text-accent hover:bg-accent/20 focus-visible:bg-accent/20 focus:outline-none"
+              aria-label="Expand down"
+              data-testid="review-gap-expand-down"
+              onclick={() => onExpandGap?.(path, gap, 'down')}
+            >↓</button>
+          {/if}
+        </span>
+      {/if}
+      <span class="pl-3">⋯ {gapLabel(gap)}</span>
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet gutter(lineNo: number)}
   <span
-    class="shrink-0 select-none pr-1 text-right tabular-nums text-fg-subtle"
+    class="shrink-0 select-none pr-1 text-right tabular-nums"
     style:width="{gutterCh + 1}ch"
     aria-hidden="true"
   >{lineNo > 0 ? lineNo : ''}</span>
 {/snippet}
 
+<!-- `hoverRow` composes with the tint backgrounds via a pointer-inert
+     ::before overlay — a hover bg class would just replace the add/del
+     wash instead of layering on it. -->
 <div
-  class="font-mono text-xs"
+  class="bg-surface-1 font-mono text-xs text-fg"
   style:line-height={lineHeight}
   data-testid="review-line-block"
   data-path={path}
@@ -136,20 +209,23 @@
         <!-- Fold rows span both sides (buildSplitDisplayRows mirrors
              context-like rows, so left === right here). -->
         {@render foldRow(pair.left.line.fold)}
+      {:else if pair.left?.gap}
+        <!-- Gap bands span both sides too (context-like mirror row). -->
+        {@render gapRow(pair.left.gap)}
       {:else}
       <div class={lineClass} style:height={wordWrap ? undefined : lineHeight}>
-        <div class="group relative flex w-1/2 min-w-0 {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/30'}">
+        <div class="group relative flex w-1/2 min-w-0 before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.left ? lineTintClass(pair.left.line.type) : 'bg-surface-0/40'}">
           {#if pair.left}
-            {@render addButton(sideAnchor(pair.left, 'old'), 'old-line')}
-            {@render gutter(pair.left.oldLine)}
-            <span class="min-w-0 flex-1 {contentClass} pl-1 pr-2"><DiffLineContent line={pair.left.line} tokens={getTokens(pair.left.line)} /></span>
+            {@render actionCell(sideAnchor(pair.left, 'old'), 'old-line')}
+            <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}">{@render gutter(pair.left.oldLine)}</span>
+            <span class="min-w-0 flex-1 {contentClass} pl-2 pr-2"><DiffLineContent line={pair.left.line} tokens={getTokens(pair.left.line)} intraline={pair.left.intraline ?? null} /></span>
           {/if}
         </div>
-        <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/30'}">
+        <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'}">
           {#if pair.right}
-            {@render addButton(sideAnchor(pair.right, 'new'), 'new-line')}
-            {@render gutter(pair.right.newLine)}
-            <span class="min-w-0 flex-1 {contentClass} pl-1 pr-2"><DiffLineContent line={pair.right.line} tokens={getTokens(pair.right.line)} /></span>
+            {@render actionCell(sideAnchor(pair.right, 'new'), 'new-line')}
+            <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}">{@render gutter(pair.right.newLine)}</span>
+            <span class="min-w-0 flex-1 {contentClass} pl-2 pr-2"><DiffLineContent line={pair.right.line} tokens={getTokens(pair.right.line)} intraline={pair.right.intraline ?? null} /></span>
           {/if}
         </div>
       </div>
@@ -159,15 +235,19 @@
     {#each rows as row (row.id)}
       {#if row.line.fold}
         {@render foldRow(row.line.fold)}
+      {:else if row.gap}
+        {@render gapRow(row.gap)}
       {:else}
         <div
-          class="group relative {lineClass} {lineTintClass(row.line.type)}"
+          class="group relative {lineClass} {lineTintClass(row.line.type)} before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04]"
           style:height={wordWrap ? undefined : lineHeight}
         >
-          {@render addButton(stackedAnchor(row), 'line')}
-          {@render gutter(row.oldLine)}
-          {@render gutter(row.newLine)}
-          <span class="min-w-0 flex-1 {contentClass} pl-2 pr-3"><DiffLineContent line={row.line} tokens={getTokens(row.line)} /></span>
+          {@render actionCell(stackedAnchor(row), 'line')}
+          <span class="flex shrink-0 {gutterTintClass(row.line.type)}">
+            {@render gutter(row.oldLine)}
+            {@render gutter(row.newLine)}
+          </span>
+          <span class="min-w-0 flex-1 {contentClass} pl-2 pr-3"><DiffLineContent line={row.line} tokens={getTokens(row.line)} intraline={row.intraline ?? null} /></span>
         </div>
       {/if}
     {/each}

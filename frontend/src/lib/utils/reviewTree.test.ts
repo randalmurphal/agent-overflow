@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { PatchFile } from './patchFiles';
 import {
   buildReviewTree,
+  comparePathsTreeOrder,
   fileExtensionLabel,
   filterReviewFiles,
   flattenReviewTree,
+  sortFilesTreeOrder,
 } from './reviewTree';
 
 function file(path: string, additions = 0, deletions = 0, kind = 'modified'): PatchFile {
@@ -98,6 +100,52 @@ describe('reviewTree', () => {
         ],
       },
     ]);
+  });
+});
+
+describe('sortFilesTreeOrder', () => {
+  it('sorts dirs-first at every level, root files last', () => {
+    // Git patch order is plain lexicographic: root files interleave
+    // between directories (src/ < stack.config < tests/).
+    const gitOrder = [
+      file('docs/data-topology.md'),
+      file('infra/config.yaml'),
+      file('src/core/config.py'),
+      file('src/runtime.py'),
+      file('stack.config.example.json'),
+      file('tests/unit/test_runtime.py'),
+    ];
+    const sorted = sortFilesTreeOrder(gitOrder);
+    expect(sorted.map((f) => f.path)).toEqual([
+      'docs/data-topology.md',
+      'infra/config.yaml',
+      'src/core/config.py',
+      'src/runtime.py',
+      'tests/unit/test_runtime.py',
+      'stack.config.example.json',
+    ]);
+    // Input untouched — parse results are shared immutable arrays.
+    expect(gitOrder[4].path).toBe('stack.config.example.json');
+  });
+
+  it('matches the tree render order exactly', () => {
+    const files = sortFilesTreeOrder([
+      file('b.md'),
+      file('src/z/deep.ts'),
+      file('src/a.ts'),
+      file('a/nested.ts'),
+      file('src/z/aaa.ts'),
+    ]);
+    const rendered = flattenReviewTree(buildReviewTree(files), new Set())
+      .filter((entry) => entry.node.kind === 'file')
+      .map((entry) => entry.node.path);
+    expect(files.map((f) => f.path)).toEqual(rendered);
+  });
+
+  it('orders a directory before a same-named file', () => {
+    expect(comparePathsTreeOrder('a/b/c.ts', 'a/b')).toBeLessThan(0);
+    expect(comparePathsTreeOrder('a/b', 'a/b/c.ts')).toBeGreaterThan(0);
+    expect(comparePathsTreeOrder('a/b', 'a/b')).toBe(0);
   });
 });
 

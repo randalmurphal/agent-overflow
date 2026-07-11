@@ -450,6 +450,102 @@ export class DesignWorkdirInfo {
 }
 
 /**
+ * DiffContextRequest identifies one hunk-gap slice of a review diff's
+ * NEW side (expanded context is unchanged on both sides, so the new
+ * side is the only source needed). Scope mirrors the review pane's
+ * scope selector; the extra fields disambiguate the new-side source
+ * where the scope alone can't: UserItemID for turn scope (the
+ * checkpoint the loaded diff targets), HeadSHA for pr scope (the
+ * fetched head commit).
+ */
+export class DiffContextRequest {
+    "scope": string;
+    "userItemId": string;
+    "headSHA": string;
+    "path": string;
+
+    /**
+     * 1-based inclusive line range on the new side.
+     */
+    "startLine": number;
+    "endLine": number;
+
+    /** Creates a new DiffContextRequest instance. */
+    constructor($$source: Partial<DiffContextRequest> = {}) {
+        if (!("scope" in $$source)) {
+            this["scope"] = "";
+        }
+        if (!("userItemId" in $$source)) {
+            this["userItemId"] = "";
+        }
+        if (!("headSHA" in $$source)) {
+            this["headSHA"] = "";
+        }
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("startLine" in $$source)) {
+            this["startLine"] = 0;
+        }
+        if (!("endLine" in $$source)) {
+            this["endLine"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiffContextRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DiffContextRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DiffContextRequest($$parsedSource as Partial<DiffContextRequest>);
+    }
+}
+
+export class DiffContextResult {
+    "lines": string[];
+    "startLine": number;
+
+    /**
+     * EOF: the range reached (or passed) the file's last line, so the
+     * frontend can retire a trailing gap whose size it couldn't know.
+     */
+    "eof": boolean;
+    "totalLines": number;
+
+    /** Creates a new DiffContextResult instance. */
+    constructor($$source: Partial<DiffContextResult> = {}) {
+        if (!("lines" in $$source)) {
+            this["lines"] = [];
+        }
+        if (!("startLine" in $$source)) {
+            this["startLine"] = 0;
+        }
+        if (!("eof" in $$source)) {
+            this["eof"] = false;
+        }
+        if (!("totalLines" in $$source)) {
+            this["totalLines"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiffContextResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DiffContextResult {
+        const $$createField0_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("lines" in $$parsedSource) {
+            $$parsedSource["lines"] = $$createField0_0($$parsedSource["lines"]);
+        }
+        return new DiffContextResult($$parsedSource as Partial<DiffContextResult>);
+    }
+}
+
+/**
  * Draft is the composer draft state. AttachmentIDs reference rows inserted
  * by UploadAttachment; terminal chips are snippets captured from the
  * terminal drawer. SourceProposedPlan, when non-nil, links the draft to a

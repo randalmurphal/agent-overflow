@@ -302,7 +302,7 @@
       {#if hasBody}
         <div class="ml-5 border-l border-border-subtle bg-surface-0/35 relative">
           <div
-            class="font-mono text-xs leading-tight py-1"
+            class="font-mono text-xs leading-tight py-1 text-fg"
             data-testid="diff-file-body"
             style="--gutter-w: {gutterChars + 1}ch"
           >

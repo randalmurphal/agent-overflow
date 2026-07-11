@@ -19,7 +19,7 @@ import { registerComposerDraft, resetComposerDraftRegistryForTest } from './comp
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import type { DiffReviewComment, PRDetail, Thread } from '../types/models';
 import { diffSourceKey } from '../utils/diffSourceKey';
-import { parsePatchFilesCached } from '../utils/patchFiles';
+import { filePatchDisplayRows, parsePatchFilesCached } from '../utils/patchFiles';
 import { buildReviewRows } from '../utils/reviewRows';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
@@ -896,7 +896,7 @@ describe('reviewPane store — PR scope', () => {
       expandedPRThreadIds: new Set(),
     }).rows;
 
-    expect(rows.map((row) => row.kind)).toEqual(['file-header', 'line-block']);
+    expect(rows.map((row) => row.kind)).toEqual(['file-header', 'line-block', 'surface-end']);
     expect(rows.some((row) => row.kind === 'comment-thread' || row.kind === 'draft-editor' || row.kind === 'pr-thread')).toBe(false);
   });
 
@@ -1194,5 +1194,175 @@ describe('reviewPane store — PR scope', () => {
     setActive.mockClear();
     await state.setScope('pr');
     expect(setActive).toHaveBeenCalledWith('sub-1', false);
+  });
+});
+
+describe('hunk-gap context expansion', () => {
+  // Leading gap 1..9; trailing gap of unknown size starting at 12.
+  const gappedPatch = `diff --git a/src/app.ts b/src/app.ts
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -10,2 +10,2 @@
+ ctx
+-old
++new
+`;
+
+  it('fetches the gap slice and merges it into the derived files', async () => {
+    setBindingMock('GetWorkspaceCurrentDiff', async () => gappedPatch);
+    const fetchLines = setBindingMock('GetDiffContextLines', async (_threadId, req) => {
+      const { startLine, endLine } = req as { startLine: number; endLine: number };
+      return {
+        lines: Array.from({ length: endLine - startLine + 1 }, (_, i) => `src ${startLine + i}`),
+        startLine,
+        eof: false,
+        totalLines: 0,
+      };
+    });
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    const leading = filePatchDisplayRows(state.files[0]).find((row) => row.gap)?.gap;
+    expect(leading).toMatchObject({ location: 'leading', startNew: 1, endNew: 9 });
+
+    await state.expandDiffContext('src/app.ts', leading!, 'all');
+    expect(fetchLines).toHaveBeenCalledWith('thread-1', expect.objectContaining({
+      scope: 'workspace',
+      path: 'src/app.ts',
+      startLine: 1,
+      endLine: 9,
+    }));
+
+    const rows = filePatchDisplayRows(state.files[0]);
+    expect(rows.some((row) => row.gap?.location === 'leading')).toBe(false);
+    expect(rows.find((row) => row.newLine === 1)?.line.content).toBe(' src 1');
+    expect(state.error).toBeNull();
+  });
+
+  it('retires the trailing gap on an EOF response', async () => {
+    setBindingMock('GetWorkspaceCurrentDiff', async () => gappedPatch);
+    setBindingMock('GetDiffContextLines', async () => ({
+      lines: ['src 12', 'src 13', 'src 14'],
+      startLine: 12,
+      eof: true,
+      totalLines: 14,
+    }));
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    const trailing = filePatchDisplayRows(state.files[0])
+      .find((row) => row.gap?.location === 'trailing')?.gap;
+    expect(trailing).toMatchObject({ startNew: 12, endNew: -1 });
+
+    await state.expandDiffContext('src/app.ts', trailing!, 'down');
+
+    const rows = filePatchDisplayRows(state.files[0]);
+    expect(state.files[0].newSideTotal).toBe(14);
+    expect(rows.some((row) => row.gap)).toBe(true); // leading gap remains
+    expect(rows.some((row) => row.gap?.location === 'trailing')).toBe(false);
+    expect(rows.at(-1)).toMatchObject({ oldLine: 14, newLine: 14 });
+  });
+
+  it('surfaces a fetch failure and clears expansions on reload', async () => {
+    setBindingMock('GetWorkspaceCurrentDiff', async () => gappedPatch);
+    setBindingMock('GetDiffContextLines', async () => {
+      throw new Error('no clone available');
+    });
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    const leading = filePatchDisplayRows(state.files[0]).find((row) => row.gap)?.gap;
+
+    await state.expandDiffContext('src/app.ts', leading!, 'all');
+    expect(state.error).toBe('no clone available');
+
+    // A successful expansion then a reload: the merged lines must not
+    // survive into the fresh patch (numbering may have shifted).
+    setBindingMock('GetDiffContextLines', async () => ({
+      lines: Array.from({ length: 9 }, (_, i) => `src ${i + 1}`),
+      startLine: 1,
+      eof: false,
+      totalLines: 0,
+    }));
+    await state.expandDiffContext('src/app.ts', leading!, 'all');
+    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap?.location === 'leading')).toBe(false);
+
+    await state.reload();
+    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap?.location === 'leading')).toBe(true);
+  });
+});
+
+describe('collapse overrides across reloads', () => {
+  it('keeps user collapse/expand choices through a reload, resets on scope switch', async () => {
+    setBindingMock('GetWorkspaceCurrentDiff', async () => patchFor('src/app.ts', 2));
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    expect(state.collapsedPaths.has('src/app.ts')).toBe(false);
+
+    state.toggleCollapsed('src/app.ts');
+    expect(state.collapsedPaths.has('src/app.ts')).toBe(true);
+
+    await state.reload();
+    expect(state.collapsedPaths.has('src/app.ts')).toBe(true);
+
+    // Overrides beat fresh defaults in BOTH directions: a lockfile-ish
+    // file the user expanded stays expanded after reload.
+    setBindingMock('GetWorkspaceCurrentDiff', async () => patchFor('go.sum', 2));
+    await state.reload();
+    expect(state.collapsedPaths.has('go.sum')).toBe(true); // default
+    state.toggleCollapsed('go.sum');
+    await state.reload();
+    expect(state.collapsedPaths.has('go.sum')).toBe(false); // override held
+
+    // Scope switch is a new subject: overrides reset, defaults return.
+    await state.setScope('session');
+    setBindingMock('GetSessionAgentDiff', async () => patchFor('go.sum', 2));
+    await state.reload();
+    expect(state.collapsedPaths.has('go.sum')).toBe(true);
+  });
+});
+
+describe('comments-only PR refresh', () => {
+  it('refreshes detail + threads without reloading the diff', async () => {
+    installPRMocks();
+    const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
+    setBindingMock('GetPRDetail', async () => prDetailStub());
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(diff).toHaveBeenCalledTimes(1);
+
+    const threads = setBindingMock('ListPRReviewThreads', async () => [
+      { id: 't-1', path: 'src/app.ts', line: 1, comments: [] },
+    ]);
+    await state.refreshPRThreads();
+
+    expect(threads).toHaveBeenCalledTimes(1);
+    expect(state.prThreads.map((thread) => thread.id)).toEqual(['t-1']);
+    expect(diff).toHaveBeenCalledTimes(1); // the diff was NOT re-fetched
+    expect(state.prStale).toBe(false);
+  });
+
+  it('a moved head raises the stale banner instead of swapping the diff', async () => {
+    installPRMocks();
+    const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
+    setBindingMock('GetPRDetail', async () => prDetailStub({ headSHA: 'sha-b' }));
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+
+    await state.refreshPRThreads();
+
+    expect(state.prStale).toBe(true);
+    expect(state.prHeadSHA).toBe('sha-b');
+    expect(diff).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op outside pr scope', async () => {
+    const detail = setBindingMock('GetPRDetail', async () => prDetailStub());
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.refreshPRThreads();
+    expect(detail).not.toHaveBeenCalled();
   });
 });

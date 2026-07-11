@@ -122,7 +122,9 @@ diff --git a/notes.txt b/notes.txt
 +added
 `);
 
-    const rows = buildPatchDisplayRows(file.lines);
+    // Gap rows (hidden-context affordances) carry no anchors; drop them
+    // here — their emission has its own suite below.
+    const rows = buildPatchDisplayRows(file.lines).filter((row) => !row.gap);
 
     expect(rows.map((row) => ({
       content: row.line.content,
@@ -242,5 +244,105 @@ describe('parsePatchFilesCached', () => {
     const bAfter = parsePatchFilesCached(b);
     expect(bAfter).not.toBe(bFirst);
     expect(bAfter).toEqual(bFirst);
+  });
+});
+
+describe('hunk gap rows', () => {
+  // Hunk 1 nets +2, so hunk 2's new side runs 2 ahead of its old side
+  // (a real diff's between-gap hides EQUAL old/new line counts).
+  const midFilePatch = `diff --git a/app.ts b/app.ts
+--- a/app.ts
++++ b/app.ts
+@@ -10,2 +10,4 @@ function first()
+ ctx1
+-old1
++new1
++extra1
++extra2
+@@ -40,2 +42,2 @@ function second()
+ ctx2
+-old2
++new2
+`;
+
+  function gapsOf(rows: ReturnType<typeof buildPatchDisplayRows>) {
+    return rows.filter((row) => row.gap).map((row) => row.gap!);
+  }
+
+  it('emits leading, between, and trailing gaps for a mid-file diff', () => {
+    const [file] = parsePatchFiles(midFilePatch);
+    const gaps = gapsOf(buildPatchDisplayRows(file.lines));
+    expect(gaps).toEqual([
+      expect.objectContaining({ location: 'leading', startNew: 1, endNew: 9, hidden: 9 }),
+      expect.objectContaining({ location: 'between', startNew: 14, endNew: 41, hidden: 28 }),
+      expect.objectContaining({ location: 'trailing', startNew: 44, endNew: -1, hidden: -1 }),
+    ]);
+  });
+
+  it('gap rows render as blank context lines for non-gap-aware consumers', () => {
+    const [file] = parsePatchFiles(midFilePatch);
+    const gapRow = buildPatchDisplayRows(file.lines).find((row) => row.gap);
+    expect(gapRow).toMatchObject({
+      line: { content: '', type: 'context' },
+      oldLine: 0,
+      newLine: 0,
+      side: 'context',
+    });
+  });
+
+  it('sizes the trailing gap once the new-side total is known', () => {
+    const [file] = parsePatchFiles(midFilePatch);
+    const gaps = gapsOf(buildPatchDisplayRows(file.lines, 50));
+    expect(gaps.at(-1)).toMatchObject({ location: 'trailing', startNew: 44, endNew: 50, hidden: 7 });
+  });
+
+  it('retires the trailing gap when the last hunk reaches EOF', () => {
+    const [file] = parsePatchFiles(midFilePatch);
+    const gaps = gapsOf(buildPatchDisplayRows(file.lines, 43));
+    expect(gaps.map((gap) => gap.location)).toEqual(['leading', 'between']);
+  });
+
+  it('emits no gaps for added or deleted files', () => {
+    const [added] = parsePatchFiles(`diff --git a/new.ts b/new.ts
+new file mode 100644
+--- /dev/null
++++ b/new.ts
+@@ -0,0 +1,3 @@
++a
++b
++c
+`);
+    expect(gapsOf(buildPatchDisplayRows(added.lines))).toEqual([]);
+
+    const [deleted] = parsePatchFiles(`diff --git a/gone.ts b/gone.ts
+deleted file mode 100644
+--- a/gone.ts
++++ /dev/null
+@@ -1,3 +0,0 @@
+-a
+-b
+-c
+`);
+    expect(gapsOf(buildPatchDisplayRows(deleted.lines))).toEqual([]);
+  });
+
+  it('suppresses gaps in conflict pseudo-files', () => {
+    // Conflict pseudo-files carry marker/fold rows and represent hidden
+    // runs as their own folds — hunk gaps would double up.
+    const lines = [
+      { content: '@@ -10,3 +10,3 @@', type: 'meta' as const },
+      { content: '<<<<<<< ours', type: 'marker' as const },
+      { content: '-ours line', type: 'del' as const },
+      { content: '+theirs line', type: 'add' as const },
+      { content: '>>>>>>> theirs', type: 'marker' as const },
+    ];
+    expect(gapsOf(buildPatchDisplayRows(lines))).toEqual([]);
+  });
+
+  it('mirrors gap rows across both split-view sides', () => {
+    const [file] = parsePatchFiles(midFilePatch);
+    const splitRows = buildSplitDisplayRows(buildPatchDisplayRows(file.lines));
+    const gapPair = splitRows.find((pair) => pair.left?.gap);
+    expect(gapPair?.right).toBe(gapPair?.left);
   });
 });

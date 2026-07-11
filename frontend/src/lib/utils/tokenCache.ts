@@ -70,15 +70,16 @@ export interface TokenCache {
   readonly size: number;
 }
 
-// 5000 entries × ~1 KB/entry (key + LineTokens array + Map overhead) ≈
-// 5 MB worst case. The per-thread partition + `evictThread` on switch
-// is what bounds long-session memory; the cap exists only to absorb
-// repeat-visit cache pressure within a single thread. Keep it large
-// enough that a multi-thousand-line diff doesn't self-evict during
-// initial render — re-tokenizing visible lines on scroll-back shows
-// as a brief flash of unstyled code, which is the worst case to
-// avoid.
-const DEFAULT_CAP = 5000;
+// 10000 entries × ~1 KB/entry worst case (key + LineTokens array + Map
+// overhead) ≈ 10 MB ceiling, typically far less. The per-thread
+// partition + `evictThread` on switch is what bounds long-session
+// memory; the cap exists only to absorb repeat-visit cache pressure
+// within a single thread. Keep it large enough that scrolling a
+// multi-thousand-line review diff (lines + context routinely clear
+// 5k) doesn't self-evict mid-pass — re-tokenizing visible lines on
+// scroll-back shows as a brief flash of unstyled code, which is the
+// worst case to avoid.
+const DEFAULT_CAP = 10000;
 
 export function createTokenCache(cap = DEFAULT_CAP): TokenCache {
   const store = new Map<string, LineTokens>();

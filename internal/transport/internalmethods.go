@@ -188,6 +188,9 @@ var LocalOnlyMethods = map[string]bool{
 	"ListThreadCheckpoints":          true,
 	"GetWorkingTreeDiff":             true,
 	"GetWorkspaceCurrentDiff":        true,
+	// GetDiffContextLines reads arbitrary workspace/ref file content by
+	// line range (review hunk-gap expansion) — same bulk-content class.
+	"GetDiffContextLines": true,
 	"ListDiffReviewComments":         true,
 	"CreateDiffReviewComment":        true,
 	"UpdateDiffReviewComment":        true,

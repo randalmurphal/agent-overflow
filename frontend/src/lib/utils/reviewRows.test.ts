@@ -5,6 +5,7 @@ import {
   REVIEW_FILE_HEADER_PX,
   REVIEW_LINE_BLOCK_MAX_LINES,
   REVIEW_LINE_HEIGHT_PX,
+  REVIEW_SURFACE_END_PX,
   buildReviewRows,
   reviewRowEstimate,
   type CommentAnchor,
@@ -81,7 +82,8 @@ describe('buildReviewRows', () => {
     const blocks = lineBlocks(result.rows);
     expect(blocks.map((block) => block.rows.length)).toEqual([32, 1]);
     expect(result.rowKeys[0]).toBe('h:src/file.ts');
-    expect(result.rowKeys.slice(1).every((key) => key.startsWith('b:src/file.ts:'))).toBe(true);
+    expect(result.rowKeys.slice(1, -1).every((key) => key.startsWith('b:src/file.ts:'))).toBe(true);
+    expect(result.rowKeys.at(-1)).toBe('end');
     expect(new Set(result.rowKeys).size).toBe(result.rowKeys.length);
   });
 
@@ -102,6 +104,7 @@ describe('buildReviewRows', () => {
       'comment-thread',
       'draft-editor',
       'line-block',
+      'surface-end',
     ]);
     expect(lineBlocks(result.rows).map((block) => [block.startLine, block.rows.length])).toEqual([
       [1, 10],
@@ -200,7 +203,9 @@ describe('buildReviewRows', () => {
     });
 
     expect(result.rowKeys).toContain('t:orphan-1');
-    expect(result.rowKeys.indexOf('t:orphan-1')).toBe(result.rowKeys.length - 1);
+    // Last content row — only the surface-end closer follows it.
+    expect(result.rowKeys.indexOf('t:orphan-1')).toBe(result.rowKeys.length - 2);
+    expect(result.rowKeys.at(-1)).toBe('end');
   });
 
   it('places anchored PR threads after the line block containing the anchor', () => {
@@ -215,7 +220,7 @@ describe('buildReviewRows', () => {
       expandedPRThreadIds: new Set(),
     });
 
-    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'line-block', 'pr-thread', 'line-block']);
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'line-block', 'pr-thread', 'line-block', 'surface-end']);
     const row = result.rows[2];
     expect(row.kind).toBe('pr-thread');
     if (row.kind === 'pr-thread') expect(row.orphaned).toBe(false);
@@ -236,7 +241,7 @@ describe('buildReviewRows', () => {
       expandedPRThreadIds: new Set(),
     });
 
-    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'pr-thread', 'pr-thread', 'line-block']);
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'pr-thread', 'pr-thread', 'line-block', 'surface-end']);
     const prRows = result.rows.filter((row): row is Extract<ReviewRow, { kind: 'pr-thread' }> => row.kind === 'pr-thread');
     expect(prRows.map((row) => row.orphaned)).toEqual([true, true]);
   });
@@ -291,7 +296,7 @@ describe('buildReviewRows', () => {
     });
 
     expect(expanded.rowKeys[0]).toBe('h:src/file.ts');
-    expect(collapsed.rowKeys).toEqual(['h:src/file.ts']);
+    expect(collapsed.rowKeys).toEqual(['h:src/file.ts', 'end']);
     expect(expandedAgain.rowKeys).toEqual(expanded.rowKeys);
   });
 
@@ -309,8 +314,9 @@ describe('buildReviewRows', () => {
       'file-header',
       'line-block',
       'file-header',
+      'surface-end',
     ]);
-    expect(result.fileOfRow).toEqual([0, 0, 1]);
+    expect(result.fileOfRow).toEqual([0, 0, 1, 1]);
     expect(result.firstRowOfFile).toEqual([0, 2]);
   });
 
@@ -347,16 +353,20 @@ describe('reviewRowEstimate', () => {
       'comment-thread',
       'line-block',
       'draft-editor',
+      'surface-end',
     ]);
     expect(plain.at(0)).toBe(REVIEW_FILE_HEADER_PX);
     expect(plain.at(1)).toBe(REVIEW_LINE_HEIGHT_PX);
     expect(plain.at(2)).toBe(120);
+    expect(plain.at(5)).toBe(REVIEW_SURFACE_END_PX);
     expect(plain.isExact?.(0)).toBe(true);
     expect(plain.isExact?.(1)).toBe(true);
     expect(plain.isExact?.(2)).toBe(false);
     expect(wrapped.at(1)).toBe(REVIEW_LINE_HEIGHT_PX);
     expect(wrapped.isExact?.(0)).toBe(false);
     expect(wrapped.isExact?.(1)).toBe(false);
+    // Word wrap never changes the closer's fixed height.
+    expect(wrapped.isExact?.(5)).toBe(true);
   });
 
   it('renders a collapsed file as its header row alone', () => {
@@ -370,7 +380,7 @@ describe('reviewRowEstimate', () => {
     });
 
     const estimate = reviewRowEstimate(result, false);
-    expect(result.rows.map((row) => row.kind)).toEqual(['file-header']);
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'surface-end']);
     expect(estimate.at(0)).toBe(REVIEW_FILE_HEADER_PX);
     expect(estimate.isExact?.(0)).toBe(true);
   });

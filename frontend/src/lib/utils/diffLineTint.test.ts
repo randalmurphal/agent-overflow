@@ -1,21 +1,38 @@
 import { describe, expect, it } from 'vitest';
-import { fontStyleClass, lineTintClass } from './diffLineTint';
+import { fontStyleClass, gutterTintClass, lineTintClass, prefixTintClass } from './diffLineTint';
 
 describe('lineTintClass', () => {
-  it('maps add to success bg + fg', () => {
-    expect(lineTintClass('add')).toBe('bg-success/20 text-success');
-  });
-
-  it('maps del to error bg + fg', () => {
-    expect(lineTintClass('del')).toBe('bg-error/20 text-error');
+  it('tints add/del backgrounds only — text keeps the normal fg', () => {
+    expect(lineTintClass('add')).toBe('bg-success/12');
+    expect(lineTintClass('del')).toBe('bg-error/12');
   });
 
   it('maps meta to dimmed accent fg', () => {
     expect(lineTintClass('meta')).toBe('text-accent/70');
   });
 
-  it('maps context to text-text-secondary', () => {
-    expect(lineTintClass('context')).toBe('text-text-secondary');
+  it('leaves context untinted', () => {
+    expect(lineTintClass('context')).toBe('');
+  });
+});
+
+describe('gutterTintClass', () => {
+  it('tints changed-row gutters a step stronger than the row wash', () => {
+    expect(gutterTintClass('add')).toBe('bg-success/20 text-success/75');
+    expect(gutterTintClass('del')).toBe('bg-error/20 text-error/75');
+  });
+
+  it('keeps context gutters subtle', () => {
+    expect(gutterTintClass('context')).toBe('text-fg-subtle');
+    expect(gutterTintClass('meta')).toBe('text-fg-subtle');
+  });
+});
+
+describe('prefixTintClass', () => {
+  it('colors only the +/- prefix', () => {
+    expect(prefixTintClass('add')).toBe('text-success');
+    expect(prefixTintClass('del')).toBe('text-error');
+    expect(prefixTintClass('context')).toBe('');
   });
 });
 

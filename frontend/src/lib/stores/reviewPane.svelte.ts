@@ -1,11 +1,13 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import {
   GetBranchBaseDiff,
+  GetDiffContextLines,
   GetGitStatus,
   GetMessageCheckpointDiff,
   GetMergeConflictFile,
   GetPRCIJobLog,
   GetPRCIJobs,
+  GetPRDetail,
   GetPRDiff,
   GetPRMergeConflicts,
   GetThread,
@@ -56,11 +58,20 @@ import { conflictPatchFile } from '../utils/conflictFile';
 import { hunkExcerptForComment } from '../utils/prHunkExcerpt';
 import { prRefFromThread, prRefFromUrl, prScopeLabel, type PRRef } from '../utils/prReference';
 import {
-  buildPatchDisplayRows,
+  applyContextExpansion,
+  expansionFetchRange,
+  nextExpansionVersion,
+  type ContextExpansionState,
+  type ExpandDirection,
+} from '../utils/diffContextExpansion';
+import {
+  filePatchDisplayRows,
   parsePatchFilesCached,
+  type DiffGap,
   type PatchFile,
 } from '../utils/patchFiles';
 import { anchorKey, type CommentAnchor } from '../utils/reviewRows';
+import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { CommentListItem } from '../utils/reviewComments';
 
 export type ReviewScope = DiffReviewScope;
@@ -90,6 +101,7 @@ export interface ReviewPaneState {
   readonly prThreads: readonly ReviewThread[];
   readonly prHeadSHA: string;
   readonly prStale: boolean;
+  readonly refreshingPRData: boolean;
   readonly conflictView: boolean;
   readonly conflicts: PRMergeConflictsView | null;
   readonly conflictsLoading: boolean;
@@ -147,6 +159,9 @@ export interface ReviewPaneState {
   sendPRThreadToAgent(thread: ReviewThread): Promise<void>;
   replyErrorFor(threadId: string): string | null;
   sendingReply(threadId: string): boolean;
+  /** PR scope: re-fetches detail + review threads WITHOUT reloading the
+   * diff. A moved head raises the stale banner like the poll pump. */
+  refreshPRThreads(): Promise<void>;
   openConflictView(): Promise<void>;
   closeConflictView(): void;
   toggleConflictCollapsed(path: string): Promise<void>;
@@ -157,6 +172,8 @@ export interface ReviewPaneState {
   refreshCILog(): Promise<void>;
   saveCILog(): Promise<string | null>;
   sendCILogToChat(): Promise<void>;
+  /** Fetches hidden hunk-gap context and merges it into the diff. */
+  expandDiffContext(path: string, gap: DiffGap, dir: ExpandDirection): Promise<void>;
   toggleCollapsed(path: string): void;
   toggleCollapseAll(): Promise<void>;
   setViewMode(mode: 'stacked' | 'split'): void;
@@ -300,6 +317,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   let prThreads: ReviewThread[] = $state([]);
   let prHeadSHA = $state('');
   let prStale = $state(false);
+  let refreshingPRData = $state(false);
   let subscriptionId: string | null = null;
   let conflictView = $state(false);
   let conflicts: PRMergeConflictsView | null = $state(null);
@@ -336,6 +354,15 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   let patchText = $state('');
   let loading = $state(false);
   let error: string | null = $state(null);
+  // Hunk-gap expansions, per file path. The map itself is plain state:
+  // merges mutate entries in place and bump the version counter, which
+  // is the sole reactive signal the `files` derived reads.
+  const contextExpansions = new Map<string, ContextExpansionState>();
+  let contextExpansionVersion = $state(0);
+  // The checkpoint userItemId the loaded turn diff actually targets —
+  // "Latest" leaves selectedCheckpointUserItemId null, but expansion
+  // must read the same commit the diff was computed against.
+  let turnCheckpointUserItemId: string | null = null;
   let sendingComments = $state(false);
   let openEditors: CommentAnchor[] = $state([]);
   // Draft-editor text lives HERE, not in the row component: editor rows
@@ -347,6 +374,11 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   // it re-enters the render buffer would steal focus mid-scroll.
   let pendingEditorFocusKey: string | null = null;
   let collapsedPaths: SvelteSet<string> = $state(new SvelteSet<string>());
+  // Explicit user collapse/expand choices, by path. Reloads re-derive
+  // the DEFAULT collapse set from the fresh patch but must not undo
+  // what the user deliberately opened or closed mid-read; overrides
+  // reset when the scope (and therefore the diff's subject) changes.
+  const collapseOverrides = new Map<string, boolean>();
   let viewMode: 'stacked' | 'split' = $state('stacked');
   let wordWrap = $state(getSettings().diffWordWrap);
   let loadSeq = 0;
@@ -358,7 +390,17 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     }
     return patchText ? diffSourceKey(patchText) : '';
   });
-  const files = $derived(parsePatchFilesCached(patchText));
+  // Tree display order (dirs first, alphabetical), so the diff body,
+  // rail tree, j/k nav, and comment grouping all read top-to-bottom in
+  // the same sequence. Git's raw patch order is plain lexicographic,
+  // which interleaves root files between directories. Hunk-gap
+  // expansions overlay per file, keyed by the version counter.
+  const files = $derived.by(() => {
+    void contextExpansionVersion;
+    const parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));
+    if (contextExpansions.size === 0) return parsed;
+    return parsed.map((file) => applyContextExpansion(file, contextExpansions.get(file.path)));
+  });
   const conflictFiles = $derived.by(() => {
     if (!conflicts) return [];
     const { baseLabel, headLabel, notes } = conflicts;
@@ -510,12 +552,14 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     }
     openEditors = [];
     draftBodies.clear();
+    collapseOverrides.clear();
     persistScope(threadId, scope, baseBranch);
     await reload();
   }
 
   async function selectCheckpoint(userItemId: string | null): Promise<void> {
     selectedCheckpointUserItemId = userItemId;
+    collapseOverrides.clear();
     resetConflictState();
     if (scope === 'pr') await unsubscribePR();
     if (scope !== 'turn') scope = 'turn';
@@ -568,8 +612,17 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
         subscriptionId = loaded.subscriptionId;
         registerPRReviewState(subscriptionId, { applyPRUpdate });
       }
+      turnCheckpointUserItemId = loaded.turnCheckpointUserItemId ?? null;
+      clearContextExpansions();
       patchText = loaded.patchText;
-      collapsedPaths = defaultCollapsedPaths(parsePatchFilesCached(loaded.patchText));
+      // Fresh defaults for the new patch, with the user's explicit
+      // collapse/expand choices layered back on top.
+      const nextCollapsed = defaultCollapsedPaths(parsePatchFilesCached(loaded.patchText));
+      for (const [path, collapsed] of collapseOverrides) {
+        if (collapsed) nextCollapsed.add(path);
+        else nextCollapsed.delete(path);
+      }
+      collapsedPaths = nextCollapsed;
       if (scope === 'pr') {
         prStale = false;
         void loadCIJobs();
@@ -595,6 +648,8 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
       }
     } catch (err) {
       if (seq !== loadSeq) return;
+      turnCheckpointUserItemId = null;
+      clearContextExpansions();
       patchText = '';
       openEditors = [];
       draftBodies.clear();
@@ -607,6 +662,45 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   }
 
   void reload();
+
+  function clearContextExpansions(): void {
+    if (contextExpansions.size === 0) return;
+    contextExpansions.clear();
+    contextExpansionVersion += 1;
+  }
+
+  async function expandDiffContext(path: string, gap: DiffGap, dir: ExpandDirection): Promise<void> {
+    const range = expansionFetchRange(gap, dir);
+    if (!range) return;
+    const seq = loadSeq;
+    try {
+      const result = await GetDiffContextLines(threadId, {
+        scope,
+        userItemId: scope === 'turn' ? (turnCheckpointUserItemId ?? '') : '',
+        headSHA: scope === 'pr' ? prHeadSHA : '',
+        path,
+        startLine: range.start,
+        endLine: range.end,
+      });
+      // The diff reloaded underneath the fetch — its line numbering may
+      // no longer be the one this slice was addressed against.
+      if (seq !== loadSeq || disposed) return;
+      const state = contextExpansions.get(path)
+        ?? { lines: new Map<number, string>(), eofLine: null, version: 0 };
+      const lines = result.lines ?? [];
+      for (let index = 0; index < lines.length; index += 1) {
+        state.lines.set(result.startLine + index, lines[index]);
+      }
+      if (result.eof) state.eofLine = result.totalLines;
+      state.version = nextExpansionVersion();
+      contextExpansionVersion += 1;
+      contextExpansions.set(path, state);
+      error = null;
+    } catch (err) {
+      if (seq !== loadSeq || disposed) return;
+      error = userFacingError(err);
+    }
+  }
 
   function openDraftEditor(anchor: CommentAnchor): void {
     const key = anchorKey(anchor);
@@ -745,6 +839,34 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     }
   }
 
+  // Comments-only refresh: PR detail + review threads, WITHOUT touching
+  // the diff (they are fetched by separate calls, so this never reloads
+  // or re-renders the patch). A moved head raises the stale banner the
+  // same way the poll pump does — the diff never swaps mid-read.
+  async function refreshPRThreads(): Promise<void> {
+    if (scope !== 'pr' || !prRef || refreshingPRData) return;
+    refreshingPRData = true;
+    try {
+      const pr = prReference(prRef);
+      const [detail, threads] = await Promise.all([
+        GetPRDetail(pr) as Promise<PRDetail>,
+        ListPRReviewThreads(pr) as Promise<ReviewThread[] | null>,
+      ]);
+      if (disposed || scope !== 'pr') return;
+      const headSHA = String(detail?.headSHA ?? '');
+      if (headSHA && prHeadSHA && headSHA !== prHeadSHA) prStale = true;
+      prDetail = detail;
+      prThreads = threads ?? [];
+      if (headSHA) prHeadSHA = headSHA;
+      error = null;
+    } catch (err) {
+      if (disposed) return;
+      error = userFacingError(err);
+    } finally {
+      refreshingPRData = false;
+    }
+  }
+
   async function sendPRThreadReply(thread: ReviewThread): Promise<void> {
     if (!prRef) return;
     const body = (replyBodies.get(thread.id) ?? '').trim();
@@ -864,8 +986,12 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     }
     if (allCollapsed) {
       collapsedPaths.clear();
+      for (const file of files) collapseOverrides.set(file.path, false);
     } else {
-      for (const file of files) collapsedPaths.add(file.path);
+      for (const file of files) {
+        collapsedPaths.add(file.path);
+        collapseOverrides.set(file.path, true);
+      }
     }
   }
 
@@ -1035,6 +1161,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     get prThreads() { return prThreads; },
     get prHeadSHA() { return prHeadSHA; },
     get prStale() { return prStale; },
+    get refreshingPRData() { return refreshingPRData; },
     get conflictView() { return conflictView; },
     get conflicts() { return conflicts; },
     get conflictsLoading() { return conflictsLoading; },
@@ -1118,6 +1245,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     setReplyBody(prThreadId: string, body: string): void {
       replyBodies.set(prThreadId, body);
     },
+    refreshPRThreads,
     sendPRThreadReply,
     sendPRThreadToAgent,
     replyErrorFor(prThreadId: string): string | null {
@@ -1136,9 +1264,12 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     refreshCILog,
     saveCILog,
     sendCILogToChat,
+    expandDiffContext,
     toggleCollapsed(path: string): void {
-      if (collapsedPaths.has(path)) collapsedPaths.delete(path);
-      else collapsedPaths.add(path);
+      const collapsed = !collapsedPaths.has(path);
+      if (collapsed) collapsedPaths.add(path);
+      else collapsedPaths.delete(path);
+      collapseOverrides.set(path, collapsed);
     },
     toggleCollapseAll,
     setViewMode(mode: 'stacked' | 'split'): void {
@@ -1155,6 +1286,9 @@ interface LoadedPatch {
   patchText: string;
   checkpoints?: Checkpoint[];
   selectedCheckpointUserItemId?: string | null;
+  /** Turn scope: the checkpoint the diff was actually computed against
+   * ("Latest" resolves to a concrete checkpoint here). */
+  turnCheckpointUserItemId?: string;
   prDetail?: PRDetail;
   prThreads?: ReviewThread[];
   prHeadSHA?: string;
@@ -1188,6 +1322,7 @@ async function loadPatch(
         patchText: ((await GetMessageCheckpointDiff(threadId, checkpoint.userItemId)) ?? '') as string,
         checkpoints,
         selectedCheckpointUserItemId: selected ? selected.userItemId : null,
+        turnCheckpointUserItemId: checkpoint.userItemId,
       };
     }
     case 'session':
@@ -1257,7 +1392,7 @@ async function defaultBaseBranch(threadId: string): Promise<string> {
 function defaultCollapsedPaths(files: readonly PatchFile[]): SvelteSet<string> {
   const collapsed = new SvelteSet<string>();
   for (const file of files) {
-    if (isLockfileish(file.path) || buildPatchDisplayRows(file.lines).length > 400) {
+    if (isLockfileish(file.path) || filePatchDisplayRows(file).length > 400) {
       collapsed.add(file.path);
     }
   }
@@ -1284,8 +1419,9 @@ export function draftAnchorExists(files: readonly PatchFile[], comment: DiffRevi
   if (comment.side === 'file') return files.some((file) => file.path === comment.filePath);
   const file = files.find((candidate) => candidate.path === comment.filePath);
   if (!file) return false;
-  const rows = buildPatchDisplayRows(file.lines);
+  const rows = filePatchDisplayRows(file);
   return rows.some((row) => {
+    if (row.gap) return false;
     if (comment.side === 'old') return row.side === 'old' && row.oldLine === comment.oldLine;
     if (comment.side === 'new') return row.side === 'new' && row.newLine === comment.newLine;
     return row.oldLine === comment.oldLine && row.newLine === comment.newLine;

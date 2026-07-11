@@ -1,7 +1,7 @@
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 import {
-  buildPatchDisplayRows,
   buildSplitDisplayRows,
+  filePatchDisplayRows,
   type PatchDisplayRow,
   type PatchFile,
   type SplitDisplayRow,
@@ -11,11 +11,16 @@ import type { RowEstimate } from './virtual/types';
 export const REVIEW_LINE_HEIGHT_PX = 20;
 // The file-header row paints the between-files separation gap INSIDE its
 // exact height (gap band + header bar), so the estimate table stays
-// truthful: header row = GAP + BAR. The sticky overlay renders the bar
-// alone.
-export const REVIEW_FILE_GAP_PX = 16;
+// truthful: header row = GAP + BAR. The gap band also paints the
+// PREVIOUS file's closing hairline at its top edge (files render as
+// slabs on the darker page background). The sticky overlay renders the
+// bar alone.
+export const REVIEW_FILE_GAP_PX = 24;
 export const REVIEW_FILE_HEADER_BAR_PX = 36;
 export const REVIEW_FILE_HEADER_PX = REVIEW_FILE_GAP_PX + REVIEW_FILE_HEADER_BAR_PX;
+// Trailing row closing the LAST file's slab (every other file is closed
+// by the next header's gap band).
+export const REVIEW_SURFACE_END_PX = 8;
 export const REVIEW_LINE_BLOCK_MAX_LINES = 32;
 const REVIEW_COMMENT_ESTIMATE_PX = 120;
 
@@ -32,7 +37,8 @@ export type ReviewRow =
   | { kind: 'line-block'; fileIndex: number; rows: PatchDisplayRow[]; splitRows?: SplitDisplayRow[]; startLine: number }
   | { kind: 'draft-editor'; fileIndex: number; anchor: CommentAnchor }
   | { kind: 'comment-thread'; fileIndex: number; threadKey: string; anchor: CommentAnchor }
-  | { kind: 'pr-thread'; fileIndex: number; thread: ReviewThread; anchor: CommentAnchor; collapsed: boolean; orphaned: boolean };
+  | { kind: 'pr-thread'; fileIndex: number; thread: ReviewThread; anchor: CommentAnchor; collapsed: boolean; orphaned: boolean }
+  | { kind: 'surface-end'; fileIndex: number };
 
 export interface ReviewRowsInput {
   files: PatchFile[];
@@ -86,7 +92,7 @@ export function buildReviewRows(input: ReviewRowsInput): ReviewRowsResult {
 
     const inserts = insertsByFile.get(file.path);
     pushFileLevelInserts(push, fileIndex, inserts);
-    const displayRows = buildPatchDisplayRows(file.lines);
+    const displayRows = filePatchDisplayRows(file);
     pushLineBlocks(push, fileIndex, file.path, displayRows, input.viewMode, inserts);
     // Anchors whose line no longer exists in the diff (the source moved
     // under a draft) still render — flushed after the file's blocks, never
@@ -95,6 +101,11 @@ export function buildReviewRows(input: ReviewRowsInput): ReviewRowsResult {
       for (const insert of bucket) pushInsert(push, fileIndex, insert);
     }
     inserts?.clear();
+  }
+
+  if (input.files.length > 0) {
+    const lastFile = input.files.length - 1;
+    push({ kind: 'surface-end', fileIndex: lastFile }, 'end', lastFile);
   }
 
   return { rows, rowKeys, fileOfRow, firstRowOfFile };
@@ -106,14 +117,16 @@ export function reviewRowEstimate(result: ReviewRowsResult, wordWrap: boolean): 
       const row = result.rows[index];
       if (!row) return REVIEW_LINE_HEIGHT_PX;
       if (row.kind === 'file-header') return REVIEW_FILE_HEADER_PX;
+      if (row.kind === 'surface-end') return REVIEW_SURFACE_END_PX;
       // Split view renders side pairs, so the visual row count is
       // splitRows.length, not the stacked display-row count.
       if (row.kind === 'line-block') return (row.splitRows ?? row.rows).length * REVIEW_LINE_HEIGHT_PX;
       return REVIEW_COMMENT_ESTIMATE_PX;
     },
     isExact(index: number): boolean {
-      if (wordWrap) return false;
       const row = result.rows[index];
+      if (row?.kind === 'surface-end') return true;
+      if (wordWrap) return false;
       return row?.kind === 'file-header' || row?.kind === 'line-block';
     },
   };
@@ -129,7 +142,7 @@ function buildInsertsByFile(
   const byFile = new Map<string, Map<number, InsertRow[]>>();
   const displayRowsByFile = new Map<string, PatchDisplayRow[]>();
   for (const file of files) {
-    displayRowsByFile.set(file.path, buildPatchDisplayRows(file.lines));
+    displayRowsByFile.set(file.path, filePatchDisplayRows(file));
   }
 
   function add(filePath: string, line: number, row: InsertRow): void {

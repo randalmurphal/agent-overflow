@@ -853,6 +853,32 @@ func (s *Store) HasHeadCommit(ctx context.Context, workspace string) (bool, erro
 	return code == 0, nil
 }
 
+// ShowFileAtRef returns the full content of a file as captured at a
+// checkpoint ref. Backs review-diff hunk-gap expansion for the turn
+// scope, where the diff's new side is the checkpoint commit rather
+// than the worktree. The path is `:`-joined into a single rev-parse
+// argument, so it cannot be interpreted as a flag.
+func (s *Store) ShowFileAtRef(ctx context.Context, workspace, ref, path string) (string, error) {
+	if strings.ContainsRune(path, '\x00') {
+		return "", fmt.Errorf("checkpoint: show file: path must not contain NUL")
+	}
+	oid, err := s.resolveRefCommit(ctx, workspace, ref)
+	if err != nil {
+		return "", err
+	}
+	if oid == "" {
+		return "", fmt.Errorf("checkpoint: ref %q is unavailable", ref)
+	}
+	stdout, stderr, code, err := runGit(ctx, workspace, nil, true, "show", oid+":"+path)
+	if err != nil {
+		return "", fmt.Errorf("checkpoint: show %s:%s: %w", ref, path, err)
+	}
+	if code != 0 {
+		return "", fmt.Errorf("checkpoint: show %s:%s: %s", ref, path, strings.TrimSpace(stderr))
+	}
+	return stdout, nil
+}
+
 // resolveRefCommit returns the commit OID a ref points at, or "" if missing.
 func (s *Store) resolveRefCommit(ctx context.Context, workspace, ref string) (string, error) {
 	stdout, _, code, err := runGit(ctx, workspace, nil, true,

@@ -5,10 +5,17 @@
   import ReviewLineBlockRow from './ReviewLineBlockRow.svelte';
   import { createReviewScrollOwner, reviewScrollKey } from './reviewScroll';
   import type { DiffReviewComment, ReviewThread } from '../../types/models';
-  import type { PatchFile } from '../../utils/patchFiles';
+  import type { ExpandDirection } from '../../utils/diffContextExpansion';
+  import type { DiffGap, PatchFile } from '../../utils/patchFiles';
+  import {
+    captureReadingAnchor,
+    resolveReadingAnchor,
+    type ReadingAnchor,
+  } from '../../utils/reviewAnchor';
   import {
     buildReviewRows,
     REVIEW_FILE_GAP_PX,
+    REVIEW_SURFACE_END_PX,
     reviewRowEstimate,
     type CommentAnchor,
     type ReviewRow,
@@ -57,6 +64,8 @@
     onAddComment?: (anchor: CommentAnchor) => void;
     /** Conflict view only: expands a fold row's hidden lines. */
     onExpandFold?: (path: string, foldId: number) => void;
+    /** Diff view only: fetches a hunk gap's hidden context lines. */
+    onExpandGap?: (path: string, gap: DiffGap, dir: ExpandDirection) => void;
     jumpToFilePath?: string | null;
     onJumpConsumed?: () => void;
     /** Row-key jump (comments list): scrolls to the exact row and
@@ -83,6 +92,7 @@
     prThread,
     onAddComment,
     onExpandFold,
+    onExpandGap,
     jumpToFilePath = null,
     onJumpConsumed,
     jumpToRowKey = null,
@@ -144,6 +154,11 @@
   // ------------------------------------------------------------------
   let stickyFileIndex = $state(-1);
   let topFileIndex = $state(-1);
+  // The overlay must stop short of the scroll container's scrollbar —
+  // `inset-x-0` on the outer wrapper would paint over it. Classic
+  // scrollbars report their width via offsetWidth − clientWidth;
+  // overlay scrollbars report 0 and need no inset.
+  let scrollbarInset = $state(0);
 
   function setTopFileIndex(fileIndex: number): void {
     if (topFileIndex === fileIndex) return;
@@ -152,6 +167,8 @@
   }
 
   function updateSticky(offset: number): void {
+    const el = scrollEl;
+    if (el) scrollbarInset = el.offsetWidth - el.clientWidth;
     const ref = listRef;
     if (!ref || built.rows.length === 0) {
       stickyFileIndex = -1;
@@ -172,11 +189,57 @@
     stickyFileIndex = fileIndex >= 0 && passedHeader ? fileIndex : -1;
   }
 
+  // ------------------------------------------------------------------
+  // Reading anchor: never move the reader unintentionally
+  // ------------------------------------------------------------------
+  // The top-of-viewport position is tracked as (file, line, pixel
+  // delta) on every scroll (math in utils/reviewAnchor.ts). When the
+  // row model rebuilds because the CONTENT changed under the same
+  // scroll key — a diff reload, a gap expansion, a PR poll replacing
+  // thread rows — the anchor is re-located in the new geometry and
+  // scrollTop restored to it, so the line being read stays put however
+  // much content above it grew or shrank. scrollTop 0 is deliberately
+  // unanchored: at the top, the top stays the top. User-driven
+  // rebuilds (collapse toggles, opening editors) do NOT re-anchor —
+  // files/prThreads identity is unchanged there.
+  let readingAnchor: ReadingAnchor | null = null;
+
+  function captureAnchor(offset: number): void {
+    const ref = listRef;
+    readingAnchor = ref ? captureReadingAnchor(built, files, ref, offset, wordWrap) : null;
+  }
+
+  function restoreAnchor(target: ReadingAnchor): void {
+    const ref = listRef;
+    if (!ref) return;
+    const top = resolveReadingAnchor(built, files, ref, target, wordWrap);
+    if (top !== null) scroll.applyScrollTarget(top);
+  }
+
   // Geometry can change without a scroll event (collapse toggle above
-  // the viewport, reload): re-read against the current offset.
+  // the viewport, reload): re-read against the current offset. Content
+  // identity changes additionally restore the reading anchor first.
+  // Initial-value captures are deliberate: these are change trackers,
+  // re-assigned on every effect run.
+  // svelte-ignore state_referenced_locally
+  let prevFiles = files;
+  // svelte-ignore state_referenced_locally
+  let prevPrThreads: readonly ReviewThread[] = prThreads;
+  // svelte-ignore state_referenced_locally
+  let prevScrollKey = scrollKey;
   $effect(() => {
     void built;
-    untrack(() => updateSticky(scrollEl?.scrollTop ?? 0));
+    untrack(() => {
+      const contentChanged = files !== prevFiles || prThreads !== prevPrThreads;
+      const keyChanged = scrollKey !== prevScrollKey;
+      prevFiles = files;
+      prevPrThreads = prThreads;
+      prevScrollKey = scrollKey;
+      if (contentChanged && !keyChanged && readingAnchor) restoreAnchor(readingAnchor);
+      const offset = scrollEl?.scrollTop ?? 0;
+      updateSticky(offset);
+      captureAnchor(offset);
+    });
   });
 
   $effect(() => {
@@ -316,7 +379,8 @@
 <div class="relative h-full min-h-0 min-w-0 flex-1" data-testid="review-diff-body">
   {#if stickyFile}
     <div
-      class="absolute inset-x-0 top-0 z-10 shadow-[0_1px_4px_rgba(0,0,0,0.25)]"
+      class="absolute left-0 top-0 z-10 shadow-[0_1px_4px_rgba(0,0,0,0.25)]"
+      style:right="{scrollbarInset}px"
       data-testid="review-sticky-header"
     >
       <ReviewFileHeaderRow
@@ -330,7 +394,7 @@
   {/if}
   <div
     bind:this={scrollEl}
-    class="h-full overflow-y-auto focus:outline-none"
+    class="h-full overflow-y-auto bg-surface-0 focus:outline-none"
     style:overflow-anchor="none"
     tabindex="0"
     role="grid"
@@ -348,7 +412,7 @@
         renderAll={IS_TEST}
         applyScrollTarget={scroll.applyScrollTarget}
         onCompensation={scroll.applyCompensation}
-        onscroll={updateSticky}
+        onscroll={(offset) => { updateSticky(offset); captureAnchor(offset); }}
         onscrollend={() => scroll.savePosition(scrollKey)}
       >
         {#snippet children(row: ReviewRow, rowIndex: number)}
@@ -361,7 +425,14 @@
               {file}
               collapsed={collapsedPaths.has(file.path)}
               onToggle={() => onToggleCollapsed(file.path)}
+              first={row.fileIndex === 0}
             />
+          {:else if row.kind === 'surface-end'}
+            <!-- Closing hairline for the last file's slab (exact height:
+                 REVIEW_SURFACE_END_PX). -->
+            <div style:height="{REVIEW_SURFACE_END_PX}px">
+              <div class="h-px bg-border/60"></div>
+            </div>
           {:else if row.kind === 'line-block'}
             <ReviewLineBlockRow
               rows={row.rows}
@@ -372,15 +443,20 @@
               gutterCh={gutterChars.get(row.fileIndex) ?? 2}
               {onAddComment}
               {onExpandFold}
+              {onExpandGap}
             />
           {:else if row.kind === 'draft-editor'}
-            {@render draftEditor?.(row.anchor)}
+            <!-- bg-surface-1 keeps the file slab continuous behind the
+                 inserted rows (the page behind is darker surface-0). -->
+            <div class="bg-surface-1">
+              {@render draftEditor?.(row.anchor)}
+            </div>
           {:else if row.kind === 'comment-thread'}
-            <div class="transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
+            <div class="bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
               {@render commentThread?.(row.threadKey, row.anchor)}
             </div>
           {:else}
-            <div class="transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
+            <div class="bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
               {@render prThread?.(row.thread, row.anchor, row.collapsed, row.orphaned)}
             </div>
           {/if}

@@ -69,7 +69,25 @@ state registry); the row model in `utils/reviewRows.ts`.
   painted INSIDE the header row (`REVIEW_FILE_GAP_PX` band +
   `REVIEW_FILE_HEADER_BAR_PX` bar = `REVIEW_FILE_HEADER_PX`); the sticky
   overlay renders the bar alone (`overlay` prop) and appears only once
-  the BAR — not the gap — passes the viewport top.
+  the BAR — not the gap — passes the viewport top. The last file's slab
+  closes with an exact-height `surface-end` row (`REVIEW_SURFACE_END_PX`
+  hairline). Hunk-gap bands are ordinary display rows inside line blocks
+  (one line tall, no borders) — same exactness rules.
+- **Hunk-gap expansion**: `buildPatchDisplayRows` emits `gap` rows
+  (leading/between/trailing, new-side coordinates) for the unchanged
+  runs hidden between hunks; conflict pseudo-files suppress them (their
+  folds already cover this). Expand clicks flow
+  `ReviewLineBlockRow.onExpandGap` → `store.expandDiffContext` →
+  `GetDiffContextLines` (new side only — expanded context is identical
+  on both sides; per-scope source resolution lives in
+  `app_diff_context.go`) → `utils/diffContextExpansion.ts` merges the
+  fetched lines into the parsed file as context rows and rewrites hunk
+  headers. Expansion state is per pane and CLEARED on every reload (a
+  fresh patch can renumber everything); version stamps come from
+  `nextExpansionVersion()` because the identity caches are keyed by the
+  SHARED parsed arrays from `parsePatchFilesCached`. Always derive rows
+  via `filePatchDisplayRows(file)` (carries `newSideTotal`, one memo
+  entry per file) and skip `row.gap` in anchor/excerpt walks.
 - **Estimate coherence**: `ReviewDiffBody` hands the engine a stable
   wrapper that reads the current `$derived` build; `viewMode`/`wordWrap`
   changes remount the virtualizer via `{#key}` (exactness is
@@ -77,6 +95,22 @@ state registry); the row model in `utils/reviewRows.ts`.
 - **Scroll ownership**: `reviewScroll.ts` is the only scrollTop writer.
   It deliberately does NOT use `utils/scroll/` (no springs/bottom-pin
   here); see its header comment and `frontend-scroll.md`.
+- **Reading anchor — content never moves the reader**: refreshes are
+  opt-in (refresh button, PR stale banner; there is NO auto-reload on
+  workspace change — only a stale dot on the refresh button fed by the
+  source pane's gitwatch slot), and when content DOES change under the
+  same scroll key (reload, gap expansion, PR poll replacing thread
+  rows) `ReviewDiffBody` restores the top-of-viewport anchor — (file,
+  line, pixel delta), math in `utils/reviewAnchor.ts` — instead of
+  keeping the raw scrollTop. scrollTop 0 is unanchored by design (the
+  top stays the top). User-driven rebuilds (collapse toggles, editor
+  opens) re-anchor nothing: they're detected by files/prThreads
+  identity, which those don't change. User collapse choices are
+  overrides (`collapseOverrides` in the store) that survive reloads;
+  defaults only apply to untouched paths and overrides reset on scope
+  switch. PR scope additionally has two partial refreshes that leave
+  the diff alone: `refreshPRThreads` (detail + review threads; a moved
+  head raises the stale banner) and `loadCIJobs` (CI chips button).
 - **Row state must survive windowing**: rows unmount ~1800px offscreen.
   Draft-editor text lives in the store (`draftBodyFor`/`setDraftBody`),
   focus is a one-shot store request (`consumeDraftEditorFocus`). Never

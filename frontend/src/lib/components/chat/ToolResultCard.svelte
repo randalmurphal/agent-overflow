@@ -264,7 +264,7 @@
             {:else if expansion.error}
               <p class="text-xs text-error" role="alert">Failed to load patch: {expansion.error}</p>
             {:else if patchLines}
-              <pre class="max-h-[32em] overflow-auto font-mono text-xs leading-tight {wrapClass}">{#each patchLines as line}<span
+              <pre class="max-h-[32em] overflow-auto font-mono text-xs leading-tight text-fg {wrapClass}">{#each patchLines as line}<span
                   class={lineTintClass(line.type)}
                 >{line.content}
 </span>{/each}</pre>

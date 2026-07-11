@@ -1,6 +1,8 @@
 <script lang="ts">
+  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import ReviewCIChips from './ReviewCIChips.svelte';
+  import Icon from '../primitives/Icon.svelte';
   import { OpenExternalURL } from '../../stores/bindings';
   import type { CIJob, CIPipeline, PRDetail } from '../../types/models';
 
@@ -12,6 +14,8 @@
     ciLoading?: boolean;
     ciError?: string | null;
     onOpenCIJob?: (stageName: string, job: CIJob) => void;
+    /** Re-polls CI status alone — no diff or thread refresh. */
+    onRefreshCI?: () => void;
   }
 
   let {
@@ -22,6 +26,7 @@
     ciLoading = false,
     ciError = null,
     onOpenCIJob,
+    onRefreshCI,
   }: Props = $props();
 
   async function openURL(url: string | undefined): Promise<void> {
@@ -63,6 +68,19 @@
           error={ciError}
           onOpenJob={onOpenCIJob}
         />
+        {#if onRefreshCI}
+          <button
+            type="button"
+            class="inline-flex size-5 items-center justify-center rounded text-fg-subtle hover:bg-surface-2 hover:text-fg disabled:opacity-50"
+            aria-label="Refresh CI status"
+            title="Refresh CI status"
+            data-testid="review-ci-refresh"
+            disabled={ciLoading}
+            onclick={onRefreshCI}
+          >
+            <Icon icon={RefreshCw} size={12} class={ciLoading ? 'animate-spin' : ''} />
+          </button>
+        {/if}
       {/if}
     </div>
   </div>

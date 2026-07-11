@@ -60,11 +60,16 @@ export async function dispatchInlineFileTokens(
     const pool = getSharedDiffHighlighterPool();
     const sourceKeys = Array.from(seen.keys());
     const lineTexts = Array.from(seen.values());
-    const tokens = await pool.tokenize({ lines: lineTexts, lang, theme });
+    const tokens = await tokenizeWithRetry(pool, { lines: lineTexts, lang, theme });
     for (let i = 0; i < sourceKeys.length; i += 1) {
       const sk = sourceKeys[i];
       const lineTokens = tokens[i];
-      if (sk !== undefined && lineTokens !== undefined) {
+      // Never cache an empty token list for a non-empty line: it would
+      // pin the plain-text fallback forever (dispatch skips cache hits),
+      // turning a transient worker hiccup into a permanently uncolored
+      // line. Empty input lines are filtered before dispatch, so a
+      // healthy response always carries ≥1 token per line.
+      if (sk !== undefined && lineTokens !== undefined && lineTokens.length > 0) {
         cache.set(tokenCacheKeyFromSig(threadId, theme, lang, sk), lineTokens);
       }
     }
@@ -76,6 +81,24 @@ export async function dispatchInlineFileTokens(
     reportInlineTokenizeFailure(lang, err);
   } finally {
     for (const key of claimed) inFlightKeys.delete(key);
+  }
+}
+
+/**
+ * One retry on batch failure. The dominant failure mode is a worker
+ * death (error event or idle-termination race) rejecting every
+ * in-flight batch — the next tokenize() boots a fresh worker, so a
+ * single retry recovers the whole batch. Persistent failures (grammar
+ * bugs) still reject and surface through the caller's toast.
+ */
+async function tokenizeWithRetry(
+  pool: ReturnType<typeof getSharedDiffHighlighterPool>,
+  req: { lines: string[]; lang: string; theme: DiffTheme },
+) {
+  try {
+    return await pool.tokenize(req);
+  } catch {
+    return await pool.tokenize(req);
   }
 }
 

@@ -1,4 +1,5 @@
 import type { LineTintType } from './diffLineTint';
+import { intralineRanges, type IntralineRange } from './intralineDiff';
 
 export interface PatchLine {
   content: string;
@@ -8,12 +9,37 @@ export interface PatchLine {
   fold?: { id: number; lines: number };
 }
 
+/** One hidden run of unchanged lines between (or around) hunks,
+ * expandable GitHub-style. Line coordinates are NEW-side. */
+export interface DiffGap {
+  /** Per-file ordinal, stable within one display-row build. */
+  id: number;
+  /** First hidden new-side line. */
+  startNew: number;
+  /** Last hidden new-side line; -1 when unknown (trailing gap on a
+   * file whose length hasn't been learned from an expansion yet). */
+  endNew: number;
+  /** Hidden line count; -1 when unknown. */
+  hidden: number;
+  /** Which edges have an adjacent hunk: a leading gap can only expand
+   * up (no hunk above it), a trailing gap only down. */
+  location: 'leading' | 'between' | 'trailing';
+}
+
 export interface PatchDisplayRow {
   id: string;
   line: PatchLine;
   oldLine: number;
   newLine: number;
   side: 'old' | 'new' | 'context';
+  /** Intraline changed range (offsets into the prefix-stripped source
+   * text) when this add/del row pairs with a counterpart in the
+   * adjacent run. Absent when the pair is mostly different. */
+  intraline?: IntralineRange;
+  /** Present on synthetic gap rows standing in for the unchanged
+   * lines hidden between hunks. `line` is an empty context line so
+   * non-gap-aware consumers render a blank instead of crashing. */
+  gap?: DiffGap;
 }
 
 export interface SplitDisplayRow {
@@ -32,6 +58,15 @@ export interface PatchFile {
   /** Structural-conflict badge for `kind === 'conflict'` pseudo-files
    * with no textual regions, e.g. "modify/delete". */
   conflictLabel?: string;
+  /** New-side file length, learned from a context-expansion response.
+   * Sizes (or retires) the trailing hunk gap. Absent on plain parses. */
+  newSideTotal?: number;
+}
+
+/** Display rows for a PatchFile — the canonical call shape, so every
+ * consumer shares one memo entry per file (see buildPatchDisplayRows). */
+export function filePatchDisplayRows(file: PatchFile): PatchDisplayRow[] {
+  return buildPatchDisplayRows(file.lines, file.newSideTotal);
 }
 
 export function patchFileRowId(file: Pick<PatchFile, 'path'>, index: number): string {
@@ -178,16 +213,73 @@ export function extractPatchFile(patch: string, filePath: string): string | null
   return flush();
 }
 
-export function buildPatchDisplayRows(lines: PatchLine[]): PatchDisplayRow[] {
+// Identity-keyed memo: the review surface derives display rows for
+// every file on every row-model rebuild (buildReviewRows AND
+// buildInsertsByFile AND anchor checks), always from the same parsed
+// `lines` arrays (parsePatchFilesCached returns shared results). One
+// build per lines identity also means the intraline pass runs once,
+// not per rebuild. `newSideTotal` (learned from a context-expansion
+// response) participates in the key: it changes the trailing gap.
+const displayRowsCache = new WeakMap<
+  PatchLine[],
+  { newSideTotal: number | undefined; rows: PatchDisplayRow[] }
+>();
+
+export function buildPatchDisplayRows(lines: PatchLine[], newSideTotal?: number): PatchDisplayRow[] {
+  const cached = displayRowsCache.get(lines);
+  if (cached && cached.newSideTotal === newSideTotal) return cached.rows;
+  const rows = buildPatchDisplayRowsUncached(lines, newSideTotal);
+  attachIntralineRanges(rows);
+  displayRowsCache.set(lines, { newSideTotal, rows });
+  return rows;
+}
+
+function buildPatchDisplayRowsUncached(lines: PatchLine[], newSideTotal?: number): PatchDisplayRow[] {
   const rows: PatchDisplayRow[] = [];
   let oldLine = 0;
   let newLine = 0;
   let fallbackIndex = 0;
+  // Conflict pseudo-files represent hidden runs as their own fold rows
+  // (utils/conflictFile.ts) — emitting hunk gaps there would double up.
+  const emitGaps = !lines.some((line) => line.fold !== undefined || line.type === 'marker');
+  let gapId = 0;
+  let sawHunk = false;
+  // oldStart of the first hunk: 0 marks an added file (fully present,
+  // nothing to expand at either end).
+  let firstOldStart = 0;
+  let lastNewStart = 0;
+
+  function pushGap(startNew: number, endNew: number, hidden: number, location: DiffGap['location']): void {
+    rows.push({
+      id: `gap:${gapId}:${startNew}`,
+      line: { content: '', type: 'context' },
+      oldLine: 0,
+      newLine: 0,
+      side: 'context',
+      gap: { id: gapId, startNew, endNew, hidden, location },
+    });
+    gapId += 1;
+  }
 
   for (const line of lines) {
     if (line.type === 'meta') {
       const hunk = parseHunkHeader(line.content);
       if (hunk) {
+        if (emitGaps) {
+          if (!sawHunk) {
+            firstOldStart = hunk.oldStart;
+            // Leading gap: unchanged lines above the first hunk.
+            if (hunk.oldStart > 1 && hunk.newStart > 1) {
+              pushGap(1, hunk.newStart - 1, hunk.newStart - 1, 'leading');
+            }
+          } else if (hunk.newStart > 0 && hunk.newStart > newLine) {
+            // Between-hunks gap. Old/new hidden counts are equal here
+            // (only unchanged lines separate hunks).
+            pushGap(newLine, hunk.newStart - 1, hunk.newStart - newLine, 'between');
+          }
+          sawHunk = true;
+          lastNewStart = hunk.newStart;
+        }
         oldLine = hunk.oldStart;
         newLine = hunk.newStart;
       }
@@ -238,7 +330,53 @@ export function buildPatchDisplayRows(lines: PatchLine[]): PatchDisplayRow[] {
     fallbackIndex += 1;
   }
 
+  // Trailing gap: a modified file usually continues past its last
+  // hunk. Skipped for added files (fully present), deleted files (no
+  // new side), and once a known total says the last hunk reached EOF.
+  if (emitGaps && sawHunk && firstOldStart > 0 && lastNewStart > 0) {
+    if (newSideTotal === undefined) {
+      pushGap(newLine, -1, -1, 'trailing');
+    } else if (newSideTotal >= newLine) {
+      pushGap(newLine, newSideTotal, newSideTotal - newLine + 1, 'trailing');
+    }
+  }
+
   return rows;
+}
+
+/**
+ * Pair the i-th deleted line with the i-th added line inside each
+ * del-run → add-run block (split view's pairing) and stamp intraline
+ * changed ranges onto both rows. Runs once per display-row build.
+ */
+function attachIntralineRanges(rows: PatchDisplayRow[]): void {
+  let index = 0;
+  while (index < rows.length) {
+    if (rows[index]?.line.type !== 'del') {
+      index += 1;
+      continue;
+    }
+    const dels: PatchDisplayRow[] = [];
+    while (rows[index]?.line.type === 'del') {
+      dels.push(rows[index]);
+      index += 1;
+    }
+    const adds: PatchDisplayRow[] = [];
+    while (rows[index]?.line.type === 'add') {
+      adds.push(rows[index]);
+      index += 1;
+    }
+    const pairs = Math.min(dels.length, adds.length);
+    for (let k = 0; k < pairs; k += 1) {
+      const ranges = intralineRanges(
+        stripPatchLinePrefix(dels[k].line),
+        stripPatchLinePrefix(adds[k].line),
+      );
+      if (!ranges) continue;
+      if (ranges.del.end > ranges.del.start) dels[k].intraline = ranges.del;
+      if (ranges.add.end > ranges.add.start) adds[k].intraline = ranges.add;
+    }
+  }
 }
 
 export function buildSplitDisplayRows(rows: PatchDisplayRow[]): SplitDisplayRow[] {
@@ -289,7 +427,7 @@ function cleanPath(raw: string): string {
   return raw.replace(/^"|"$/g, '').replace(/^[ab]\//, '');
 }
 
-function parseHunkHeader(line: string): { oldStart: number; newStart: number } | null {
+export function parseHunkHeader(line: string): { oldStart: number; newStart: number } | null {
   const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
   if (!match) return null;
   return {

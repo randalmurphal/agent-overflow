@@ -67,6 +67,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetChannelState", ID: 3664812883},                      // main.App.GetChannelState
 	{Name: "GetContextSettings", ID: 3416004963},                   // main.App.GetContextSettings
 	{Name: "GetDesignWorkdirInfo", ID: 2179885147},                 // main.App.GetDesignWorkdirInfo
+	{Name: "GetDiffContextLines", ID: 1590634674},                  // main.App.GetDiffContextLines
 	{Name: "GetDiscussion", ID: 1924583939},                        // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146},                              // main.App.GetDraft
 	{Name: "GetEditorSettings", ID: 1655853383},                    // main.App.GetEditorSettings

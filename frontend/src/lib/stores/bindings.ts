@@ -214,6 +214,7 @@ export {
   GetBranchBaseDiff,
   GetSessionAgentDiff,
   GetWorkspaceCurrentDiff,
+  GetDiffContextLines,
   RevertToMessageCheckpoint,
   RevertToMessageCheckpointWithOptions,
   ListThreadCheckpoints,

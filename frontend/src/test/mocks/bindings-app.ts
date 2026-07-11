@@ -352,6 +352,7 @@ export const GetMessageCheckpointRevertDiff = dispatch('GetMessageCheckpointReve
 export const GetBranchBaseDiff = dispatch('GetBranchBaseDiff');
 export const GetSessionAgentDiff = dispatch('GetSessionAgentDiff');
 export const GetWorkspaceCurrentDiff = dispatch('GetWorkspaceCurrentDiff');
+export const GetDiffContextLines = dispatch('GetDiffContextLines');
 export const RevertToMessageCheckpoint = dispatch('RevertToMessageCheckpoint');
 export const RevertToMessageCheckpointWithOptions = dispatch('RevertToMessageCheckpointWithOptions');
 export const ForkThreadFromMessage = dispatch('ForkThreadFromMessage');

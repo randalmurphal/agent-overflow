@@ -82,8 +82,11 @@ describe('<ReviewPane>', () => {
     // The lockfile default-collapses to its header alone; the source
     // file renders its lines.
     expect(view.getAllByTestId('review-line-block')).toHaveLength(1);
-    expect(view.getByText('+new')).toBeInTheDocument();
-    expect(view.getByText('-old')).toBeInTheDocument();
+    // The +/- prefix renders in its own tinted span, so match on the
+    // row's combined text rather than a single text node.
+    const blockText = view.getAllByTestId('review-line-block')[0]!.textContent ?? '';
+    expect(blockText).toContain('+new');
+    expect(blockText).toContain('-old');
 
     await fireEvent.click(view.getAllByTestId('review-file-header-path')[0]!);
     expect(view.queryAllByTestId('review-line-block')).toHaveLength(0);

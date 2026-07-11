@@ -16,6 +16,8 @@ export {
     CreateThreadOptions,
     DesignOptionSet,
     DesignWorkdirInfo,
+    DiffContextRequest,
+    DiffContextResult,
     Draft,
     EditorInfo,
     GeneratedCommitMessage,

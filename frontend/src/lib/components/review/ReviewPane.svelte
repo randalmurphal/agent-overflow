@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import ChevronsDownUp from 'lucide-svelte/icons/chevrons-down-up';
   import ChevronsUpDown from 'lucide-svelte/icons/chevrons-up-down';
   import Columns2 from 'lucide-svelte/icons/columns-2';
   import ListTree from 'lucide-svelte/icons/list-tree';
+  import MessagesSquare from 'lucide-svelte/icons/messages-square';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import WrapText from 'lucide-svelte/icons/wrap-text';
   import ReviewCILogView from './ReviewCILogView.svelte';
@@ -22,7 +23,8 @@
     type ReviewScope,
   } from '../../stores/reviewPane.svelte';
   import { GitListBranches } from '../../stores/bindings';
-  import type { GitBranch } from '../../types/git';
+  import { getPane } from '../../stores/panes.svelte';
+  import type { GitBranch, GitStatus } from '../../types/git';
   import type { DiffReviewComment } from '../../types/models';
   import {
     buildCommentGroups,
@@ -185,6 +187,55 @@
     if (raw === 'false') return false;
     return null;
   }
+
+  // ------------------------------------------------------------------
+  // Working-tree staleness hint
+  // ------------------------------------------------------------------
+  // The source chat pane already owns a live gitwatch slot; reading its
+  // status here costs nothing extra. A signature captured when the diff
+  // finished loading, diverging from the live one, means the loaded
+  // patch no longer matches the working tree — surfaced as a dot on the
+  // refresh button, NEVER as an automatic reload (the diff must not
+  // move under the reader).
+  function gitStatusSignature(status: GitStatus | null): string | null {
+    if (!status?.isRepo) return null;
+    return [
+      status.branch,
+      status.fileCount,
+      status.insertions,
+      status.deletions,
+      status.aheadCount,
+      status.behindCount,
+    ].join(':');
+  }
+
+  const liveGitSignature = $derived(
+    gitStatusSignature(getPane(ctx.paneId)?.gitStatus.status ?? null),
+  );
+  let loadedGitSignature = $state<string | null>(null);
+  let wasLoading = false;
+  $effect(() => {
+    const loading = review?.loading ?? false;
+    const live = liveGitSignature;
+    untrack(() => {
+      if (wasLoading && !loading) {
+        // A load just completed: the diff corresponds to this status.
+        loadedGitSignature = live;
+      } else if (loadedGitSignature === null && live !== null) {
+        // The diff loaded before the gitwatch slot produced its first
+        // status; adopt it as the baseline instead of flagging stale.
+        loadedGitSignature = live;
+      }
+      wasLoading = loading;
+    });
+  });
+  const WORKTREE_SCOPES: readonly ReviewScope[] = ['workspace', 'session', 'branch'];
+  const diffStale = $derived(
+    !!review && !review.loading && !review.conflictView
+      && WORKTREE_SCOPES.includes(review.scope)
+      && loadedGitSignature !== null && liveGitSignature !== null
+      && liveGitSignature !== loadedGitSignature,
+  );
 </script>
 
 <section bind:this={rootEl} class="flex h-full min-h-0 flex-col bg-surface-1" data-testid="review-pane">
@@ -322,16 +373,42 @@
       <Icon icon={review?.allCollapsed ? ChevronsUpDown : ChevronsDownUp} size={14} />
     </button>
 
+    {#if review?.scope === 'pr'}
+      <button
+        type="button"
+        class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
+        aria-label="Refresh PR comments"
+        title="Refresh comments (diff stays put)"
+        data-testid="review-refresh-comments"
+        disabled={review.refreshingPRData || review.loading}
+        onclick={() => { void review?.refreshPRThreads(); }}
+      >
+        {#if review.refreshingPRData}
+          <Icon icon={RefreshCw} size={14} class="animate-spin" />
+        {:else}
+          <Icon icon={MessagesSquare} size={14} />
+        {/if}
+      </button>
+    {/if}
+
     <button
       type="button"
-      class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
+      class="relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
       aria-label="Reload review diff"
-      title="Reload"
+      title={diffStale ? 'Workspace changed — reload' : 'Reload'}
       data-testid="review-reload"
+      data-stale={diffStale ? 'true' : undefined}
       disabled={!review || review.loading}
       onclick={() => { void review?.reload(); }}
     >
       <Icon icon={RefreshCw} size={14} class={review?.loading ? 'animate-spin' : ''} />
+      {#if diffStale}
+        <span
+          class="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-warning ring-2 ring-surface-1"
+          data-testid="review-stale-dot"
+          aria-hidden="true"
+        ></span>
+      {/if}
     </button>
   </div>
 
@@ -373,6 +450,7 @@
         ciLoading={review.ciLoading}
         ciError={review.ciError}
         onOpenCIJob={(stageName, job) => { void review?.openCIJobLog(stageName, job); }}
+        onRefreshCI={() => { void review?.loadCIJobs(); }}
       />
     {/if}
     {#if review.ciLogView}
@@ -482,6 +560,7 @@
           prThreads={review.prThreads}
           expandedPRThreadIds={review.expandedPRThreadIds}
           onAddComment={(anchor) => review?.openDraftEditor(anchor)}
+          onExpandGap={(path, gap, dir) => { void review?.expandDiffContext(path, gap, dir); }}
           jumpToFilePath={jumpFilePath ?? review.pendingJumpFilePath}
           onJumpConsumed={onJumpConsumed}
           jumpToRowKey={review.pendingJumpRowKey}

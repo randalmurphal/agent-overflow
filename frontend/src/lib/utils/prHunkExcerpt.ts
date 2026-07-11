@@ -1,5 +1,5 @@
 import {
-  buildPatchDisplayRows,
+  filePatchDisplayRows,
   type PatchDisplayRow,
   type PatchFile,
 } from './patchFiles';
@@ -12,7 +12,9 @@ export function hunkExcerptForComment(
 ): string {
   const file = files.find((candidate) => candidate.path === comment.filePath);
   if (!file) return '';
-  const rows = buildPatchDisplayRows(file.lines);
+  // Gap rows are UI affordances, not content — an excerpt line for one
+  // would render as a blank row in the posted comment.
+  const rows = filePatchDisplayRows(file).filter((row) => !row.gap);
   const index = rows.findIndex((row) => rowMatchesComment(row, comment));
   if (index < 0) return '';
   const start = Math.max(0, index - context);
