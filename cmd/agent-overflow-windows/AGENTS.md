@@ -75,8 +75,11 @@ is a GUI-subsystem exe. When debugging, look here (all under
   `rotateChromeDebugLog` preserves the prior session as
   `chrome_debug.previous.log` — after a webview crash, the autopsy is
   in `previous.log`, not the live file.
-- **DevTools** — dev builds expose remote debugging on
-  `127.0.0.1:9223`.
+- **DevTools** — dev builds bind F12 to the WebView2 devtools window
+  (`uikeys.WithDevTools`, gated on `launcherMode == "dev"` because dev
+  and prod ship the same .exe) and expose remote debugging on
+  `127.0.0.1:9223`. WebView2's own F12 accelerator is dead in all
+  builds — Wails sets `PutAreBrowserAcceleratorKeysEnabled(false)`.
 
 The WebView2 user-data dirs are pinned via `WebviewUserDataPath`
 (`webviewDataDir`) because the default derives from the exe name and

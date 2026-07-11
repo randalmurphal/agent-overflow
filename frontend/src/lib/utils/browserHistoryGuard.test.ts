@@ -86,19 +86,95 @@ describe('installBrowserHistoryGuard', () => {
     expect(seen).toHaveBeenCalledTimes(1);
   });
 
-  it('prevents the native browser context menu without blocking app handlers', () => {
-    cleanup = installBrowserHistoryGuard();
-    const seen = vi.fn();
-    on('contextmenu', seen);
+  describe('context menu policy', () => {
+    const mounted: Element[] = [];
 
-    const event = new MouseEvent('contextmenu', {
-      bubbles: true,
-      cancelable: true,
-      button: 2,
+    afterEach(() => {
+      for (const el of mounted.splice(0)) el.remove();
     });
 
-    expect(document.dispatchEvent(event)).toBe(false);
-    expect(event.defaultPrevented).toBe(true);
-    expect(seen).toHaveBeenCalledTimes(1);
+    function mount<T extends HTMLElement>(el: T): T {
+      document.body.appendChild(el);
+      mounted.push(el);
+      return el;
+    }
+
+    function rightClick(target: EventTarget, init?: MouseEventInit): MouseEvent {
+      const event = new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+        ...init,
+      });
+      target.dispatchEvent(event);
+      return event;
+    }
+
+    it('suppresses the native menu on non-editable surfaces without blocking app handlers', () => {
+      cleanup = installBrowserHistoryGuard();
+      const seen = vi.fn();
+      on('contextmenu', seen);
+
+      const event = rightClick(mount(document.createElement('div')));
+      expect(event.defaultPrevented).toBe(true);
+      expect(seen).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows the native menu in writable textareas and text inputs', () => {
+      cleanup = installBrowserHistoryGuard();
+
+      expect(rightClick(mount(document.createElement('textarea'))).defaultPrevented).toBe(false);
+
+      const input = mount(document.createElement('input'));
+      input.type = 'text';
+      expect(rightClick(input).defaultPrevented).toBe(false);
+    });
+
+    it('suppresses the native menu on non-text and disabled inputs', () => {
+      cleanup = installBrowserHistoryGuard();
+
+      const checkbox = mount(document.createElement('input'));
+      checkbox.type = 'checkbox';
+      expect(rightClick(checkbox).defaultPrevented).toBe(true);
+
+      const disabled = mount(document.createElement('textarea'));
+      disabled.disabled = true;
+      expect(rightClick(disabled).defaultPrevented).toBe(true);
+    });
+
+    it('allows read-only fields only when text is selected', () => {
+      cleanup = installBrowserHistoryGuard();
+
+      const readonly = mount(document.createElement('textarea'));
+      readonly.readOnly = true;
+      readonly.value = 'some text';
+      expect(rightClick(readonly).defaultPrevented).toBe(true);
+
+      readonly.setSelectionRange(0, 4);
+      expect(rightClick(readonly).defaultPrevented).toBe(false);
+    });
+
+    it('allows the native menu in contentEditable elements', () => {
+      cleanup = installBrowserHistoryGuard();
+
+      const editable = mount(document.createElement('div'));
+      editable.contentEditable = 'true';
+      expect(rightClick(editable).defaultPrevented).toBe(false);
+    });
+
+    it('allows the native menu only when the click lands on selected text', () => {
+      cleanup = installBrowserHistoryGuard();
+      const div = mount(document.createElement('div'));
+
+      const rect = { left: 10, right: 110, top: 20, bottom: 40 };
+      vi.spyOn(window, 'getSelection').mockReturnValue({
+        isCollapsed: false,
+        rangeCount: 1,
+        getRangeAt: () => ({ getClientRects: () => [rect] }),
+      } as unknown as Selection);
+
+      expect(rightClick(div, { clientX: 50, clientY: 30 }).defaultPrevented).toBe(false);
+      expect(rightClick(div, { clientX: 200, clientY: 30 }).defaultPrevented).toBe(true);
+    });
   });
 });

@@ -866,26 +866,41 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	})
 	a.wails = app
 
+	// Without KeyBindings the WebView2 swallows zoom/reload/fullscreen
+	// and there's no menu bar to fall back on. `make dev-wsl` makes
+	// this the only window the user touches, so the missing bindings
+	// were the most user-visible symptom. BrowserWithReload reads
+	// a.backendURL on each reload so Ctrl+R re-navigates with the
+	// bootstrap token after the SPA scrubs it from window.location —
+	// see uikeys.BrowserWithReload.
+	//
+	// F12 devtools is gated on launcherMode because dev and prod ship
+	// the same .exe (only this ldflags string differs) and Wails
+	// compiles WebView2 devtools in unconditionally — the binding is
+	// the only thing standing between prod users and an inspector.
+	keyBindings := uikeys.BrowserWithReload(a.currentBackendURL)
+	if launcherMode == "dev" {
+		keyBindings = uikeys.WithDevTools(keyBindings)
+	}
+	// Context-menu policy lives in the frontend guard
+	// (browserHistoryGuard.ts): native menu allowed in editable fields
+	// and on selected text, suppressed elsewhere. Don't set
+	// DefaultContextMenuDisabled — on WebView2 it would hard-disable
+	// the allowed menus below the JS layer. (The picker/loading pages
+	// keep their native menu; they're plain trusted HTML with nothing
+	// to hide.)
 	opts := application.WebviewWindowOptions{
-		Title:                      title,
-		Width:                      1280,
-		Height:                     800,
-		MinWidth:                   800,
-		MinHeight:                  600,
-		BackgroundColour:           application.NewRGBA(22, 22, 30, 255),
-		DefaultContextMenuDisabled: true,
+		Title:            title,
+		Width:            1280,
+		Height:           800,
+		MinWidth:         800,
+		MinHeight:        600,
+		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
 		// Picker / loading first; once Launch returns we SetURL to
 		// the WSL backend's localhost port. We can't use the WSL URL
 		// up front because we don't know the port until after Launch.
-		URL: initialURL,
-		// Without this the WebView2 swallows zoom/reload/fullscreen
-		// and there's no menu bar to fall back on. `make dev-wsl`
-		// makes this the only window the user touches, so the
-		// missing bindings were the most user-visible symptom.
-		// BrowserWithReload reads a.backendURL on each reload so
-		// Ctrl+R re-navigates with the bootstrap token after the SPA
-		// scrubs it from window.location — see uikeys.BrowserWithReload.
-		KeyBindings: uikeys.BrowserWithReload(a.currentBackendURL),
+		URL:         initialURL,
+		KeyBindings: keyBindings,
 	}
 	// Reopen where we left off last. The window is created here — on
 	// ApplicationStarted — rather than before app.Run() so it materializes

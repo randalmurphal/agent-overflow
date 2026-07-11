@@ -76,3 +76,15 @@ func BrowserWithReload(reloadURL func() string) map[string]func(application.Wind
 		"Ctrl+Command+F":    toggleFullscreen,
 	}
 }
+
+// WithDevTools adds the F12 → OpenDevTools binding to bindings and
+// returns it. Opt-in rather than part of Browser because the caller
+// decides whether devtools should exist at runtime: the native desktop
+// and --connect windows add it unconditionally (production builds
+// compile OpenDevTools to a no-op via Wails build tags), while the WSL
+// launcher ships one .exe for dev and prod with devtools always
+// compiled in, so it adds the binding only in dev launcher mode.
+func WithDevTools(bindings map[string]func(application.Window)) map[string]func(application.Window) {
+	bindings["F12"] = func(window application.Window) { window.OpenDevTools() }
+	return bindings
+}

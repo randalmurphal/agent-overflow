@@ -105,6 +105,26 @@ func TestBrowserWithReloadFallsThroughOnEmpty(t *testing.T) {
 	}
 }
 
+// TestWithDevTools pins the opt-in devtools binding: F12 is added to
+// the given map (not a copy — callers layer it onto Browser*'s fresh
+// map) and routes to Window.OpenDevTools.
+func TestWithDevTools(t *testing.T) {
+	m := Browser()
+	got := WithDevTools(m)
+	fn, ok := got["F12"]
+	if !ok {
+		t.Fatal("WithDevTools did not add an F12 binding")
+	}
+	if _, ok := m["F12"]; !ok {
+		t.Fatal("WithDevTools returned a copy; callers expect in-place layering")
+	}
+	fw := &fakeWindow{}
+	fn(fw)
+	if fw.openDevToolsCount != 1 {
+		t.Fatalf("F12 binding called OpenDevTools %d times, want 1", fw.openDevToolsCount)
+	}
+}
+
 func keys(m map[string]func(application.Window)) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -121,9 +141,10 @@ func keys(m map[string]func(application.Window)) []string {
 // are reached.
 type fakeWindow struct {
 	application.Window
-	setURLCalls      []string
-	reloadCount      int
-	forceReloadCount int
+	setURLCalls       []string
+	reloadCount       int
+	forceReloadCount  int
+	openDevToolsCount int
 }
 
 func (f *fakeWindow) SetURL(s string) application.Window {
@@ -131,5 +152,6 @@ func (f *fakeWindow) SetURL(s string) application.Window {
 	return f
 }
 
-func (f *fakeWindow) Reload()      { f.reloadCount++ }
-func (f *fakeWindow) ForceReload() { f.forceReloadCount++ }
+func (f *fakeWindow) Reload()       { f.reloadCount++ }
+func (f *fakeWindow) ForceReload()  { f.forceReloadCount++ }
+func (f *fakeWindow) OpenDevTools() { f.openDevToolsCount++ }

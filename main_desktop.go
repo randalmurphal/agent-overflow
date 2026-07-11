@@ -74,15 +74,14 @@ func runClient(rawURL string) {
 	})
 
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:                      title,
-		Width:                      1280,
-		Height:                     800,
-		MinWidth:                   800,
-		MinHeight:                  600,
-		BackgroundColour:           application.NewRGBA(22, 22, 30, 255),
-		URL:                        stub.AppURL(),
-		DefaultContextMenuDisabled: true,
-		KeyBindings:                uikeys.BrowserWithReload(stub.AppURL),
+		Title:            title,
+		Width:            1280,
+		Height:           800,
+		MinWidth:         800,
+		MinHeight:        600,
+		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
+		URL:              stub.AppURL(),
+		KeyBindings:      uikeys.WithDevTools(uikeys.BrowserWithReload(stub.AppURL)),
 	})
 
 	runErr := app.Run()
@@ -157,16 +156,22 @@ func runDesktop(listenAddr string) {
 	}
 	reloadURL := func() string { return withClientID(srv.AppURL()) }
 
+	// Context-menu policy lives in the frontend guard
+	// (browserHistoryGuard.ts): native menu allowed in editable fields
+	// and on selected text, suppressed elsewhere. Don't set
+	// DefaultContextMenuDisabled — it would hard-disable the allowed
+	// menus below the JS layer (on the platforms where it does
+	// anything at all). F12 devtools is a compiled no-op in production
+	// builds, so WithDevTools is safe unconditionally here.
 	opts := application.WebviewWindowOptions{
-		Title:                      title,
-		Width:                      1280,
-		Height:                     800,
-		MinWidth:                   800,
-		MinHeight:                  600,
-		BackgroundColour:           application.NewRGBA(22, 22, 30, 255),
-		URL:                        withClientID(appURL),
-		DefaultContextMenuDisabled: true,
-		KeyBindings:                uikeys.BrowserWithReload(reloadURL),
+		Title:            title,
+		Width:            1280,
+		Height:           800,
+		MinWidth:         800,
+		MinHeight:        600,
+		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
+		URL:              withClientID(appURL),
+		KeyBindings:      uikeys.WithDevTools(uikeys.BrowserWithReload(reloadURL)),
 	}
 	// Reopen where we left off last. The window is created on ApplicationStarted
 	// (not here) so it materializes synchronously against a live app loop — that
