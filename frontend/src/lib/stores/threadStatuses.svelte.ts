@@ -567,6 +567,72 @@ export function projectTurnCompleted(
   recalculateThreadStatus(threadId);
 }
 
+/**
+ * Settle every live-status signal for a thread after a successful
+ * revert (`user_message:reverted` / `checkpoint:reverted`). A revert
+ * means "that send never happened": the backend stopped or rolled the
+ * provider session, truncated SQLite, and put the message back in the
+ * composer — so nothing on this thread is working, queued, or awaiting
+ * a turn signal anymore.
+ *
+ * This is the structural fix for the resend-after-revert race: the
+ * revert can land while `provider:turn_completed` for the aborted turn
+ * is still in flight (or was dropped by the backend's stopped-thread
+ * gate, invariant 29). Without this settle, the stale active-turn box
+ * routes the next send down the queue path, and any Zone 2 flushed
+ * chip whose provider confirm died with the session flickers below the
+ * new turn's output forever. The active turn id is marked completed so
+ * an already-emitted turn_started replay for the reverted turn cannot
+ * resurrect the box.
+ *
+ * Pending approval / user-input registries clear too: the session those
+ * prompts belonged to is dead, and its lost-prompt resolution events
+ * can be dropped by the backend's stopped-thread gate (they'd otherwise
+ * pin the sidebar on pending-approval forever). Any in-flight
+ * GetThreadLiveState hydration is invalidated the same way — its
+ * snapshot describes the pre-revert session and must not repopulate
+ * the state this settle just cleared.
+ */
+export function projectThreadReverted(threadId: string): void {
+  if (!threadId) return;
+  const turnBox = activeTurnBoxByThread.get(threadId);
+  const active = turnBox?.current ?? null;
+  if (active) markCompletedTurnID(threadId, active.turnId);
+  if (turnBox) turnBox.current = null;
+  pendingSendThreads.delete(threadId);
+  interruptedThreads.delete(threadId);
+  errorThreads.delete(threadId);
+  planReadyThreads.delete(threadId);
+  for (const requestIdSet of [
+    approvalIDsByThread.get(threadId),
+    awaitingInputIDsByThread.get(threadId),
+  ]) {
+    if (!requestIdSet) continue;
+    for (const requestId of requestIdSet) {
+      approvalThreadByID.delete(requestId);
+    }
+  }
+  approvalIDsByThread.delete(threadId);
+  awaitingInputIDsByThread.delete(threadId);
+  // Invalidate in-flight live-state hydrations: bump the token so a
+  // snapshot requested before the revert fails its currency check on
+  // resolve. The hydrating flag clears here because the stale
+  // hydration's own finish call no-ops on the token mismatch.
+  if (liveStateHydrationTokenByThread.has(threadId)) {
+    liveStateHydrationTokenByThread.set(
+      threadId,
+      (liveStateHydrationTokenByThread.get(threadId) ?? 0) + 1,
+    );
+  }
+  if (liveStateHydratingThreads.has(threadId)) {
+    const next = new Set(liveStateHydratingThreads);
+    next.delete(threadId);
+    liveStateHydratingThreads = next;
+  }
+  clearSendQueueForThread(threadId);
+  recalculateThreadStatus(threadId);
+}
+
 function markCompletedTurnID(threadId: string, turnId: string): void {
   let completed = completedTurnIDsByThread.get(threadId);
   if (!completed) {

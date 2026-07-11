@@ -83,6 +83,12 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 			cleanups.Run(),
 		)
 	}
+	if err := a.store.CloneThreadTurns(source.ID, fork.ID, atTurnIndex); err != nil {
+		return store.Thread{}, errors.Join(
+			fmt.Errorf("fork thread: clone turns: %w", err),
+			cleanups.Run(),
+		)
+	}
 
 	sessionRef, pendingForkRef, uuidMap, providerCleanup, err := a.resolveForkResumeState(source, atTurnIndex)
 	if err != nil {
@@ -168,6 +174,12 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 		if _, err := a.store.CloneThreadItems(source.ID, fork.ID, lastKeptTurnPtr); err != nil {
 			return store.Thread{}, errors.Join(
 				fmt.Errorf("fork thread from message: clone timeline: %w", err),
+				cleanups.Run(),
+			)
+		}
+		if err := a.store.CloneThreadTurns(source.ID, fork.ID, lastKeptTurnPtr); err != nil {
+			return store.Thread{}, errors.Join(
+				fmt.Errorf("fork thread from message: clone turns: %w", err),
 				cleanups.Run(),
 			)
 		}
@@ -316,44 +328,83 @@ func (a *App) resolveMessageForkResumeState(source store.Thread, checkpointRow s
 }
 
 // forkCodexThread creates a new Codex thread that mirrors the source up
-// to atTurnIndex (or the tail when atTurnIndex == nil). Issues
-// thread/fork on the source's session, then thread/rollback against the
-// returned fork ID over the same stdio session — verified by the spike
-// at /tmp/spike-codex-fork that the rollback writes only to the FORK's
-// rollout file, leaving the source byte-stable.
+// to atTurnIndex (or the tail when atTurnIndex == nil). One
+// `thread/fork` with the resolved lastTurnId anchor does the whole cut
+// (Codex >= 0.143); the source thread is untouched. Returns "" (no
+// error) when the kept prefix has no provider-backed turns at all —
+// the fork then starts a fresh provider thread on its first send, the
+// same contract as resolveMessageForkResumeState's turn-0 branch.
 func (a *App) forkCodexThread(source store.Thread, atTurnIndex *int) (string, error) {
 	const op = "fork codex thread"
-	if source.SessionRef == "" {
-		return "", fmt.Errorf("%s: source thread %q is missing a Codex thread reference", op, source.ID)
-	}
-
-	numRollback := 0
+	lastTurnID := ""
 	if atTurnIndex != nil {
-		lastTurn, err := a.store.LastTurnIndex(source.ID)
-		if err != nil {
-			return "", fmt.Errorf("%s: load last turn index: %w", op, err)
-		}
-		numRollback = lastTurn - *atTurnIndex
-		if numRollback < 0 {
-			return "", fmt.Errorf("%s: atTurnIndex %d > lastTurnIndex %d", op, *atTurnIndex, lastTurn)
-		}
-	}
-
-	if activeSession, ok := a.activeCodexSession(source.ID); ok {
-		forkedID, err := activeSession.Fork(context.Background())
+		anchor, found, err := a.resolveCodexForkAnchor(source.ID, *atTurnIndex)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", op, err)
 		}
-		if numRollback > 0 {
-			result, err := activeSession.RollbackThread(context.Background(), forkedID, numRollback)
-			if err != nil {
-				return "", fmt.Errorf("%s: truncate fork: %w", op, err)
-			}
-			if err := a.validateCodexRollbackSurvivors(source.ID, op, result, *atTurnIndex+1); err != nil {
-				return "", fmt.Errorf("%s: truncate fork: %w", op, err)
-			}
+		if !found {
+			log.Printf("%s: thread %s has no provider-backed turns at or before %d — fork starts a fresh provider thread", op, source.ID, *atTurnIndex)
+			return "", nil
 		}
-		return forkedID, nil
+		lastTurnID = anchor
+	}
+	// Required only once a provider fork is actually happening: an
+	// anchored fork of a local-only prefix returned fresh above, so
+	// reaching here with no thread reference is an inconsistent row
+	// (tail fork of a never-connected thread, or provider-backed turns
+	// on a thread that lost its ref).
+	if source.SessionRef == "" {
+		return "", fmt.Errorf("%s: source thread %q is missing a Codex thread reference", op, source.ID)
+	}
+	forkedID, err := a.forkCodexThreadAt(source, lastTurnID)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", op, err)
+	}
+	return forkedID, nil
+}
+
+// resolveCodexForkAnchor picks the `thread/fork` lastTurnId for a cut
+// that keeps turns <= lastKeptTurnIndex: the provider turn id of the
+// LATEST provider-backed turn at or before that index. Walking down
+// (instead of taking lastKeptTurnIndex verbatim) skips AO turn indexes
+// that never became provider turns — failed sends that errored before
+// the wire, and any turn whose row predates provider-id stamping.
+//
+// (found=false, err=nil) means the kept prefix holds no provider-backed
+// turns at all; the caller starts a fresh provider thread. That answer
+// is only trusted when the ITEMS agree — a prefix that carries
+// provider-confirmed user messages but no provider turn ids is a
+// legacy-data hole (a fork cloned before turns rows were copied), and
+// silently discarding its provider history would be worse than failing.
+func (a *App) resolveCodexForkAnchor(threadID string, lastKeptTurnIndex int) (string, bool, error) {
+	for idx := lastKeptTurnIndex; idx >= 0; idx-- {
+		turn, found, err := a.store.GetTurnByThreadIndex(threadID, idx)
+		if err != nil {
+			return "", false, fmt.Errorf("resolve codex fork anchor: %w", err)
+		}
+		if found && turn.ProviderTurnID != "" {
+			return turn.ProviderTurnID, true, nil
+		}
+	}
+	providerBacked, err := a.knownCodexProviderTurnCountBefore(threadID, lastKeptTurnIndex+1)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve codex fork anchor: %w", err)
+	}
+	if providerBacked > 0 {
+		return "", false, fmt.Errorf(
+			"resolve codex fork anchor: thread %s has %d provider-backed turns at or before %d but no recorded provider turn id — likely a fork created before turn rows were cloned; fork the thread again from the desired message",
+			threadID, providerBacked, lastKeptTurnIndex,
+		)
+	}
+	return "", false, nil
+}
+
+// forkCodexThreadAt issues `thread/fork` (cut at lastTurnID, or full
+// history when "") through the thread's live app-server session, or a
+// throwaway resume session when none is active.
+func (a *App) forkCodexThreadAt(source store.Thread, lastTurnID string) (string, error) {
+	if activeSession, ok := a.activeCodexSession(source.ID); ok {
+		return activeSession.ForkAt(context.Background(), lastTurnID)
 	}
 
 	tempSession, err := codex.NewSession(context.Background(), source.ID, codex.Config{
@@ -364,26 +415,11 @@ func (a *App) forkCodexThread(source store.Thread, atTurnIndex *int) (string, er
 		EventLogger:    a.logger,
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
-		return "", fmt.Errorf("%s: resume source thread: %w", op, err)
+		return "", fmt.Errorf("resume source thread: %w", err)
 	}
 	defer tempSession.Close()
 
-	forkedID, err := tempSession.Fork(context.Background())
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", op, err)
-	}
-	if numRollback > 0 {
-		// Same stdio session — Codex's app-server routes thread/rollback
-		// by threadId to the fork's rollout. See spike for verification.
-		result, err := tempSession.RollbackThread(context.Background(), forkedID, numRollback)
-		if err != nil {
-			return "", fmt.Errorf("%s: truncate fork: %w", op, err)
-		}
-		if err := a.validateCodexRollbackSurvivors(source.ID, op, result, *atTurnIndex+1); err != nil {
-			return "", fmt.Errorf("%s: truncate fork: %w", op, err)
-		}
-	}
-	return forkedID, nil
+	return tempSession.ForkAt(context.Background(), lastTurnID)
 }
 
 // forkClaudeThread wires Claude's resume state for the new fork.

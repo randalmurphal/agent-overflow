@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -688,7 +687,15 @@ func TestInterruptAndRevertIfCleanRevertsWithSynthesizedCheckpoint(t *testing.T)
 	}
 }
 
-func TestInterruptAndRevertIfCleanCodexWaitsForActiveTurnAndRollsBackLiveSession(t *testing.T) {
+// TestInterruptAndRevertIfCleanCodexStopsSessionWithActiveTurn: the
+// Esc auto-revert with a turn still in flight. The fork-at-turn revert
+// does NOT wait for the interrupted turn to settle — it stops the
+// session immediately, which flips the stopped-thread gate (invariant
+// 29) so any straggler wire events from the aborted turn are dropped
+// instead of landing on the truncated timeline. Reverting the first
+// message needs no fork; SessionRef clears for a fresh thread on the
+// next send.
+func TestInterruptAndRevertIfCleanCodexStopsSessionWithActiveTurn(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
@@ -699,16 +706,20 @@ func TestInterruptAndRevertIfCleanCodexWaitsForActiveTurnAndRollsBackLiveSession
 		t.Fatalf("update thread: %v", err)
 	}
 	if err := app.store.InsertTurn(store.Turn{
-		TurnID:    "turn-active",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		StartedAt: time.Now().UnixMilli(),
+		TurnID:         "turn-active",
+		ProviderTurnID: "turn-active",
+		ThreadID:       thread.ID,
+		TurnIndex:      0,
+		StartedAt:      time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("insert active turn: %v", err)
 	}
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "codex prompt")
 
-	binary := writeCodexRollbackBinary(t, "provider-codex-interrupt", 0)
+	binary := writeCodexForkAtBinary(t, codexForkMock{
+		resumedThreadID: "provider-codex-interrupt",
+		forkedThreadID:  "forked-provider-thread",
+	})
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
 		Binary:         binary,
 		Model:          "test-model",
@@ -725,26 +736,25 @@ func TestInterruptAndRevertIfCleanCodexWaitsForActiveTurnAndRollsBackLiveSession
 		codex:    sess,
 	})
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		time.Sleep(75 * time.Millisecond)
-		_ = app.store.UpdateTurnCompleted("turn-active", time.Now().UnixMilli(), "interrupt", "", "", "")
-	}()
-
 	result, err := app.InterruptAndRevertIfClean(thread.ID)
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}
-	<-done
 	if !result.Reverted {
 		t.Fatalf("expected Reverted=true, got Reverted=false reason=%q", result.Reason)
 	}
 	if result.UserItemID != "u:0" || result.TurnIndex != 0 {
 		t.Fatalf("result = %+v, want reverted u:0 turn 0", result)
 	}
-	if _, ok := app.activeCodexSession(thread.ID); !ok {
-		t.Fatal("active Codex session missing after interrupt rollback")
+	if _, ok := app.activeCodexSession(thread.ID); ok {
+		t.Fatal("Codex session still active after interrupt revert; revert must stop it")
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef != "" {
+		t.Fatalf("SessionRef = %q, want cleared for turn-zero revert", updated.SessionRef)
 	}
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {
@@ -793,7 +803,7 @@ func TestInterruptAndRevertIfCleanCodexMarksCompletionDuringInterruptAsReverted(
 		t.Fatalf("turn start: %v", err)
 	}
 
-	binary := writeCodexRollbackBinaryWithInterruptComplete(t, "provider-codex-marker", "turn-active", 0)
+	binary := writeCodexInterruptCompleteBinary(t, "provider-codex-marker", "turn-active")
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
 		Binary:         binary,
 		Model:          "test-model",
@@ -989,13 +999,12 @@ func TestResolveRevertCheckpointSynthesizesProviderUserMessageID(t *testing.T) {
 	}
 }
 
-func writeCodexRollbackBinaryWithInterruptComplete(t *testing.T, threadID, turnID string, survivingTurns int) string {
+// writeCodexInterruptCompleteBinary mocks an app-server that emits the
+// turn/completed notification synchronously while answering the
+// turn/interrupt request — the ordering that forces MarkTurnReverted
+// to run before the provider interrupt.
+func writeCodexInterruptCompleteBinary(t *testing.T, threadID, turnID string) string {
 	t.Helper()
-	turns := make([]string, 0, survivingTurns)
-	for i := 0; i < survivingTurns; i++ {
-		turns = append(turns, fmt.Sprintf(`{"id":"turn-%d"}`, i))
-	}
-	turnsJSON := "[" + strings.Join(turns, ",") + "]"
 	script := fmt.Sprintf(`#!/bin/sh
 while IFS= read -r line; do
     id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
@@ -1015,14 +1024,10 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
         continue
     fi
-    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/rollback"'; then
-        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":%s}}}\n' "$id"
-        continue
-    fi
 done
-`, threadID, threadID, turnID, threadID, turnsJSON)
+`, threadID, threadID, turnID)
 
-	path := filepath.Join(t.TempDir(), "codex-rollback-interrupt-complete.sh")
+	path := filepath.Join(t.TempDir(), "codex-interrupt-complete.sh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write mock codex binary: %v", err)
 	}

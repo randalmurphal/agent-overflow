@@ -140,7 +140,7 @@ type Router struct {
 	// family task list. Survives any number of Parser recreations
 	// within the process lifetime so a TaskUpdate against an id
 	// created before session resume still routes correctly. Cleared
-	// by CleanupThread and ResetThreadForRollback. Bounded by
+	// by CleanupThread. Bounded by
 	// maxTasksPerThread on insert (cap-and-reject).
 	tasksByThread map[string]*threadTasks
 	// turnSpans holds the active span for each in-flight turn so we can
@@ -282,7 +282,7 @@ type Router struct {
 	// that has no new path-shaped tokens) short-circuits cheaply.
 	// Keyed by streamPersistKey(threadID,itemID); cleared at
 	// doSettleStreamingText, clearActiveStreamBlocksForTurnLocked,
-	// CleanupThread, and ResetThreadForRollback so a torn-down
+	// and CleanupThread so a torn-down
 	// streaming row can't leak its last-seen hash into the next
 	// turn or session.
 	streamingPathRefsLast map[string]string

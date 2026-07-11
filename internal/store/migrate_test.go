@@ -1556,3 +1556,52 @@ func TestTurnsInflightPartialIndex(t *testing.T) {
 		t.Fatalf("idx_turns_inflight lost its partial predicate: %s", indexSQL)
 	}
 }
+
+// TestMigrationV20BackfillsProviderTurnID pins the provider_turn_id
+// backfill rule: Codex turns rows use the wire turn id verbatim as
+// their PK (never contains ':'), so they backfill provider_turn_id =
+// turn_id; Claude rows synthesize `<threadID>:<turnIndex>` PKs (always
+// contain ':') and must stay '' — Claude has no wire turn id.
+func TestMigrationV20BackfillsProviderTurnID(t *testing.T) {
+	db := migrateThrough(t, 19)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v20', '/tmp/v20', 'V20', 'blue', 7, 10, 11, 0)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, created_at, updated_at)
+		VALUES ('thread-v20', 'project-v20', 'T', 'codex', '/tmp/v20', 1, 1)
+	`)
+	mustExec(t, db, `
+		INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at)
+		VALUES ('codex-wire-turn-1', 'thread-v20', 0, 1, 2),
+		       ('thread-v20:1', 'thread-v20', 1, 3, 4)
+	`)
+
+	if err := applyMigration(db, migrationByVersion(t, 20)); err != nil {
+		t.Fatalf("apply migration v20: %v", err)
+	}
+
+	rows := map[string]string{}
+	res, err := db.Query(`SELECT turn_id, provider_turn_id FROM turns WHERE thread_id = 'thread-v20'`)
+	if err != nil {
+		t.Fatalf("query turns: %v", err)
+	}
+	defer res.Close()
+	for res.Next() {
+		var turnID, providerTurnID string
+		if err := res.Scan(&turnID, &providerTurnID); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		rows[turnID] = providerTurnID
+	}
+	if err := res.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if rows["codex-wire-turn-1"] != "codex-wire-turn-1" {
+		t.Errorf("codex row provider_turn_id = %q, want backfilled wire id", rows["codex-wire-turn-1"])
+	}
+	if rows["thread-v20:1"] != "" {
+		t.Errorf("claude row provider_turn_id = %q, want empty", rows["thread-v20:1"])
+	}
+}

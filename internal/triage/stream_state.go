@@ -620,7 +620,7 @@ func extractPathRefsFromTexts(workspacePath string, sources []string) []pathlink
 // for a single (threadID, itemID). Called when a streaming row
 // transitions out of streaming state (doSettleStreamingText) so the
 // cache doesn't outlive the row. Per-thread sweeps in
-// CleanupThread / ResetThreadForRollback / clearActiveStreamBlocksForTurnLocked
+// CleanupThread / clearActiveStreamBlocksForTurnLocked
 // cover the broader teardown paths.
 func (r *Router) clearStreamingPathRefs(threadID, itemID string) {
 	if threadID == "" || itemID == "" {

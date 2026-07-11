@@ -120,7 +120,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 	// Resolve a checkpoint for the provider-revert helpers. When the
 	// at-send capture failed (e.g. workspace is not a git repo), we
 	// synthesize a record carrying just the turn index — Claude
-	// session-fork and Codex thread/rollback only read TurnIndex.
+	// session-fork and Codex fork-at-turn only read TurnIndex.
 	record := a.resolveRevertCheckpoint(threadID, userItem)
 
 	err = a.revertConversationLocked(revertConversationLockedArgs{

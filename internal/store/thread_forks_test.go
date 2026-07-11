@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -367,5 +368,88 @@ func TestBuildForkedThreadCopiesEverythingButSessionState(t *testing.T) {
 	}
 	if fork.CreatedAt == 0 || fork.CreatedAt != fork.UpdatedAt {
 		t.Errorf("CreatedAt/UpdatedAt = (%d, %d), want non-zero and equal", fork.CreatedAt, fork.UpdatedAt)
+	}
+}
+
+// TestCloneThreadTurnsSynthesizesIDsAndPreservesProviderTurnID pins the
+// turns-clone contract: cloned rows get `<targetThreadID>:<turn_index>`
+// PKs (turn_id is globally unique; Codex forks keep the source's wire
+// turn ids, so copying them verbatim would collide) while
+// provider_turn_id carries the wire id across — that's what lets a
+// revert inside the fork resolve its lastTurnId anchor after the
+// source thread is gone.
+func TestCloneThreadTurnsSynthesizesIDsAndPreservesProviderTurnID(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	for _, id := range []string{"t-turns-src", "t-turns-dst", "t-turns-dst-full"} {
+		if err := s.CreateThread(Thread{
+			ID: id, ProjectID: defaultTestProjectID, Title: "T",
+			Provider: "codex", WorkspacePath: "/tmp",
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create thread %s: %v", id, err)
+		}
+	}
+
+	for i, wireID := range []string{"wire-turn-0", "wire-turn-1", "wire-turn-2"} {
+		if err := s.InsertTurn(Turn{
+			TurnID:         wireID,
+			ProviderTurnID: wireID,
+			ThreadID:       "t-turns-src",
+			TurnIndex:      i,
+			StartedAt:      int64(i + 1),
+		}); err != nil {
+			t.Fatalf("InsertTurn %s: %v", wireID, err)
+		}
+		if err := s.UpdateTurnCompleted(wireID, int64(i+2), "end_turn", "", "", ""); err != nil {
+			t.Fatalf("UpdateTurnCompleted %s: %v", wireID, err)
+		}
+	}
+
+	// Slice through turn 1.
+	throughOne := 1
+	if err := s.CloneThreadTurns("t-turns-src", "t-turns-dst", &throughOne); err != nil {
+		t.Fatalf("CloneThreadTurns sliced: %v", err)
+	}
+	for i, wantWire := range []string{"wire-turn-0", "wire-turn-1"} {
+		turn, found, err := s.GetTurnByThreadIndex("t-turns-dst", i)
+		if err != nil {
+			t.Fatalf("GetTurnByThreadIndex(%d): %v", i, err)
+		}
+		if !found {
+			t.Fatalf("cloned turn %d missing", i)
+		}
+		if wantID := fmt.Sprintf("t-turns-dst:%d", i); turn.TurnID != wantID {
+			t.Errorf("cloned turn %d id = %q, want synthesized %q", i, turn.TurnID, wantID)
+		}
+		if turn.ProviderTurnID != wantWire {
+			t.Errorf("cloned turn %d provider_turn_id = %q, want %q", i, turn.ProviderTurnID, wantWire)
+		}
+	}
+	if _, found, err := s.GetTurnByThreadIndex("t-turns-dst", 2); err != nil {
+		t.Fatalf("GetTurnByThreadIndex(2): %v", err)
+	} else if found {
+		t.Error("sliced clone leaked turn_index 2 (cap was 1)")
+	}
+
+	// nil throughTurnIndex clones every turn.
+	if err := s.CloneThreadTurns("t-turns-src", "t-turns-dst-full", nil); err != nil {
+		t.Fatalf("CloneThreadTurns full: %v", err)
+	}
+	last, found, err := s.GetTurnByThreadIndex("t-turns-dst-full", 2)
+	if err != nil || !found {
+		t.Fatalf("full clone turn 2: found=%v err=%v", found, err)
+	}
+	if last.ProviderTurnID != "wire-turn-2" {
+		t.Errorf("full clone turn 2 provider_turn_id = %q, want wire-turn-2", last.ProviderTurnID)
+	}
+
+	// The source is untouched.
+	src, found, err := s.GetTurnByThreadIndex("t-turns-src", 0)
+	if err != nil || !found {
+		t.Fatalf("source turn 0: found=%v err=%v", found, err)
+	}
+	if src.TurnID != "wire-turn-0" {
+		t.Errorf("source turn 0 id = %q, want wire-turn-0", src.TurnID)
 	}
 }

@@ -14,130 +14,109 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// TestCodexRollbackMathIgnoresCompactionAndSteer is the regression
-// guard for the Codex `numTurns` computation in
-// `revertProviderConversationToMessage`
-// (`app_checkpoint.go::numTurns := lastTurn - checkpoint.TurnIndex + 1`).
+// TestResolveCodexForkAnchorPicksLatestProviderBackedTurn locks the
+// anchor-resolution contract for the `thread/fork` lastTurnId cut:
+// the anchor for "keep turns <= K" is the provider turn id of the
+// LATEST provider-backed turn at or before K.
 //
-// The math stays correct as long as AO's `items.turn_index` advances
-// by exactly one per Codex user-turn segment. Two properties matter:
-//
-//  1. **Steered messages share a turn segment.** The Codex
-//     app-server's `is_user_turn_boundary` collapses consecutive
-//     user messages within an active turn into one segment for
-//     `drop_last_n_user_turns` purposes. AO's `app_steer.go`
-//     mirrors this by reusing the active turn's `turnIndex` when
-//     persisting a steered user_text row.
-//
-//  2. **Compaction is not a user turn.** Codex's
-//     `RolloutItem::Compacted` is server-side; AO never persists a
-//     `turn_index` bump for it. The fixture below has no
-//     compaction row because compaction is invisible to AO's
-//     timeline — that absence is exactly the property under test.
-//
-// If either property regresses, `LastTurnIndex` would over-count
-// and the Codex `thread/rollback` arg would drop too many turns.
-// The test fails loudly so the change author has to justify the
-// new invariant break before merging.
-func TestCodexRollbackMathIgnoresCompactionAndSteer(t *testing.T) {
+// The fixture's one-turn-row-per-index shape is itself a property
+// under test: steered messages share a turn segment (app_steer.go
+// reuses the active turnIndex), and Codex compaction never bumps
+// turn_index, so AO's turns table stays 1:1 with the app-server's
+// user-turn segments. If either property regresses, the anchor picked
+// here would cut the fork at the wrong turn.
+func TestResolveCodexForkAnchorPicksLatestProviderBackedTurn(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "codex-math", "codex", t.TempDir())
+	thread := createCheckpointTestThread(t, app, "codex-anchor", "codex", t.TempDir())
 
-	// 3 logical Codex user turns. Turn 1 has TWO AO user_text rows —
-	// a steer scenario where the user sent a follow-up before the
-	// model started responding. Both rows MUST share turn_index=1.
-	insertUserItem(t, app.store, thread.ID, "u:0", 0, "first")
-	insertUserItem(t, app.store, thread.ID, "u:1a", 1, "second")
-	insertUserItem(t, app.store, thread.ID, "u:1b", 1, "steered follow-up")
-	insertUserItem(t, app.store, thread.ID, "u:2", 2, "third")
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
+	insertCodexTurn(t, app.store, thread.ID, 2, "turn-c")
 
-	lastTurn, err := app.store.LastTurnIndex(thread.ID)
-	if err != nil {
-		t.Fatalf("LastTurnIndex: %v", err)
-	}
-	if lastTurn != 2 {
-		t.Fatalf("LastTurnIndex = %d, want 2 (steered messages MUST share turn_index)", lastTurn)
-	}
-
-	// Lock the formula AO uses in revertProviderConversationToMessage
-	// (app_checkpoint.go). Each case asserts: rollback to checkpoint
-	// turn K drops `lastTurn - K + 1` turns on the wire.
 	cases := []struct {
-		checkpointTurn int
-		wantNumTurns   int
+		lastKept   int
+		wantAnchor string
 	}{
-		{checkpointTurn: 2, wantNumTurns: 1}, // drop just the last turn
-		{checkpointTurn: 1, wantNumTurns: 2}, // drop steered turn + last turn
-		{checkpointTurn: 0, wantNumTurns: 3}, // drop everything
+		{lastKept: 2, wantAnchor: "turn-c"},
+		{lastKept: 1, wantAnchor: "turn-b"},
+		{lastKept: 0, wantAnchor: "turn-a"},
 	}
 	for _, c := range cases {
-		if got := lastTurn - c.checkpointTurn + 1; got != c.wantNumTurns {
-			t.Errorf("numTurns(checkpoint=%d) = %d, want %d", c.checkpointTurn, got, c.wantNumTurns)
+		anchor, found, err := app.resolveCodexForkAnchor(thread.ID, c.lastKept)
+		if err != nil {
+			t.Fatalf("resolveCodexForkAnchor(%d): %v", c.lastKept, err)
+		}
+		if !found || anchor != c.wantAnchor {
+			t.Errorf("resolveCodexForkAnchor(%d) = (%q, %v), want (%q, true)", c.lastKept, anchor, found, c.wantAnchor)
 		}
 	}
 }
 
-// TestCodexRollbackMathAfterSendFailureStaysSelfConsistent locks in
-// the current behaviour around `recordSendFailureAndCompleteTurn`
-// (`app_send.go`). AO bumps `turn_index` inside `SendMessage` BEFORE
-// the provider send returns; on failure, the error row is persisted
-// at the bumped index and `turn_index` is NOT decremented. The
-// next successful send bumps it again.
-//
-// That's "benign in practice" per the plan because:
-//   - The failed turn never reached the Codex server, so it isn't
-//     in the server's turn count.
-//   - AO surfaces the error to the user and clears pending_send
-//     before any revert UI is enabled.
-//
-// This test makes the contract explicit. If someone refactors
-// `recordSendFailureAndCompleteTurn` to decrement turn_index (or
-// to skip persisting the failed-turn marker), the math invariant
-// here breaks and the test fails — forcing them to think through
-// the implications for in-flight reverts.
-func TestCodexRollbackMathAfterSendFailureStaysSelfConsistent(t *testing.T) {
+// TestResolveCodexForkAnchorSkipsTurnsWithoutProviderID covers the
+// failed-send hole: `SendMessage` bumps turn_index BEFORE the provider
+// send returns, so a send that errors pre-wire occupies an AO turn
+// index that the Codex server never saw (no turns row, or a row with
+// no provider id). The anchor walk must skip it and land on the
+// previous provider-backed turn instead of failing or anchoring on a
+// turn the server doesn't know.
+func TestResolveCodexForkAnchorSkipsTurnsWithoutProviderID(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "codex-fail", "codex", t.TempDir())
+	thread := createCheckpointTestThread(t, app, "codex-anchor-skip", "codex", t.TempDir())
 
-	// Successful turn 0.
-	insertUserItem(t, app.store, thread.ID, "u:0", 0, "first")
-	// Failed send at turn 1 — only the error marker exists at this
-	// turn_index (no successful user_text). In real code path
-	// recordSendFailureAndCompleteTurn persists both an error item
-	// and a turn-complete row. For the rollback math, the relevant
-	// fact is just "turn_index 1 is occupied" — we model it with a
-	// user_text marker so LastTurnIndex sees it.
-	insertUserItem(t, app.store, thread.ID, "u:1-failed", 1, "second (send failed)")
-	// Next successful send bumps to turn 2.
-	insertUserItem(t, app.store, thread.ID, "u:2", 2, "third")
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+	// Turn 1 failed before the wire — no turns row at all.
+	insertCodexTurn(t, app.store, thread.ID, 2, "turn-c")
 
-	lastTurn, err := app.store.LastTurnIndex(thread.ID)
+	anchor, found, err := app.resolveCodexForkAnchor(thread.ID, 1)
 	if err != nil {
-		t.Fatalf("LastTurnIndex: %v", err)
+		t.Fatalf("resolveCodexForkAnchor(1): %v", err)
 	}
-	if lastTurn != 2 {
-		t.Fatalf("LastTurnIndex = %d, want 2 (failed-send turn stays counted)", lastTurn)
-	}
-
-	// Rollback to checkpoint turn 0 means "redo turn 0 and everything
-	// after," so AO drops turns 0, 1, AND 2 (numTurns=3, formula
-	// `lastTurn - K + 1` = 2 - 0 + 1 = 3). The Codex server only
-	// saw turn 0 and turn 2 (turn 1 was the failed send that never
-	// reached the wire), so numTurns=3 over-counts by 1 — but the
-	// server's `drop_last_n_user_turns` clamps at "no more user
-	// turns" and the over-count is harmless. The test asserts the
-	// math returns 3 here, NOT 2 — i.e. AO does not silently
-	// discount the failed turn. If we ever want to fix the
-	// over-count, it has to be a deliberate change, not an
-	// incidental edit.
-	if got := lastTurn - 0 + 1; got != 3 {
-		t.Fatalf("numTurns(checkpoint=0) = %d, want 3 (lastTurn=2 includes failed turn)", got)
+	if !found || anchor != "turn-a" {
+		t.Fatalf("resolveCodexForkAnchor(1) = (%q, %v), want (turn-a, true)", anchor, found)
 	}
 }
 
-func TestRevertToMessageCheckpointCodexUsesActiveSessionAndKeepsItAlive(t *testing.T) {
+// TestResolveCodexForkAnchorFreshWhenNoProviderTurns: a prefix with no
+// provider-backed turns AND no provider-confirmed user items resolves
+// to (found=false, nil) — the caller starts a fresh provider thread.
+func TestResolveCodexForkAnchorFreshWhenNoProviderTurns(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	thread := createCheckpointTestThread(t, app, "codex-anchor-fresh", "codex", t.TempDir())
+
+	// A local-only failed send is the only occupant of the prefix.
+	insertUserItem(t, app.store, thread.ID, "u:0-failed", 0, "failed before provider")
+
+	anchor, found, err := app.resolveCodexForkAnchor(thread.ID, 0)
+	if err != nil {
+		t.Fatalf("resolveCodexForkAnchor(0): %v", err)
+	}
+	if found || anchor != "" {
+		t.Fatalf("resolveCodexForkAnchor(0) = (%q, %v), want fresh-session miss", anchor, found)
+	}
+}
+
+// TestResolveCodexForkAnchorRejectsLegacyDataHole: provider-confirmed
+// user items with NO recorded provider turn ids means the turns rows
+// went missing (a fork cloned before turn rows were copied). Silently
+// answering "fresh session" would discard provider history, so the
+// resolver must fail loudly instead.
+func TestResolveCodexForkAnchorRejectsLegacyDataHole(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	thread := createCheckpointTestThread(t, app, "codex-anchor-hole", "codex", t.TempDir())
+
+	insertUserItemWithMeta(t, app.store, thread.ID, "user:0", 0, "first", `{"provider_item_id":"provider-user-0"}`)
+
+	_, _, err := app.resolveCodexForkAnchor(thread.ID, 0)
+	if err == nil || !strings.Contains(err.Error(), "no recorded provider turn id") {
+		t.Fatalf("resolveCodexForkAnchor error = %v, want legacy-data-hole error", err)
+	}
+}
+
+func TestRevertToMessageCheckpointCodexForksAtAnchorAndStopsSession(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	workspace := t.TempDir()
@@ -148,9 +127,21 @@ func TestRevertToMessageCheckpointCodexUsesActiveSessionAndKeepsItAlive(t *testi
 	}
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
 	saveCodexCheckpoint(t, app.store, thread, "chk-active", "user:1", 1)
 
-	binary := writeCodexRollbackBinary(t, "provider-active-revert", 1)
+	requestLog := filepath.Join(t.TempDir(), "fork-requests.jsonl")
+	binary := writeCodexForkAtBinary(t, codexForkMock{
+		resumedThreadID: "provider-active-revert",
+		forkedThreadID:  "forked-provider-thread",
+		requestLogPath:  requestLog,
+	})
+	// The revert stops the live session BEFORE forking, so the fork
+	// always runs through a temp resume session spawned from settings.
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
 		Binary:         binary,
 		Model:          "test-model",
@@ -166,20 +157,25 @@ func TestRevertToMessageCheckpointCodexUsesActiveSessionAndKeepsItAlive(t *testi
 		token:    "active-revert-token",
 		codex:    sess,
 	})
-	stopCalls := 0
-	app.stopSessionFn = func(string) error {
-		stopCalls++
-		return nil
-	}
 
 	if err := app.RevertToMessageCheckpoint(thread.ID, "user:1", RevertModeConversationOnly); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
-	if stopCalls != 0 {
-		t.Fatalf("stopSession calls = %d, want 0", stopCalls)
+	// The stop is load-bearing (invariant 29): straggler wire events
+	// from the pre-revert thread must hit the stopped-thread gate.
+	if _, ok := app.activeCodexSession(thread.ID); ok {
+		t.Fatal("Codex session still active after revert; revert must stop it")
 	}
-	if _, ok := app.activeCodexSession(thread.ID); !ok {
-		t.Fatal("active Codex session missing after rollback")
+	forkRequest := readCodexForkRequest(t, requestLog)
+	if !strings.Contains(forkRequest, `"threadId":"provider-active-revert"`) || !strings.Contains(forkRequest, `"lastTurnId":"turn-a"`) {
+		t.Fatalf("fork request = %s, want cut of provider-active-revert at turn-a", forkRequest)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef != "forked-provider-thread" {
+		t.Fatalf("SessionRef = %q, want forked-provider-thread", updated.SessionRef)
 	}
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {
@@ -190,7 +186,7 @@ func TestRevertToMessageCheckpointCodexUsesActiveSessionAndKeepsItAlive(t *testi
 	}
 }
 
-func TestRevertToMessageCheckpointCodexStartsStoppedSessionAndKeepsItAlive(t *testing.T) {
+func TestRevertToMessageCheckpointCodexForksThroughTempSessionWhenStopped(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	workspace := t.TempDir()
@@ -201,9 +197,16 @@ func TestRevertToMessageCheckpointCodexStartsStoppedSessionAndKeepsItAlive(t *te
 	}
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
 	saveCodexCheckpoint(t, app.store, thread, "chk-stopped", "user:1", 1)
 
-	binary := writeCodexRollbackBinary(t, "provider-stopped-revert", 1)
+	requestLog := filepath.Join(t.TempDir(), "fork-requests.jsonl")
+	binary := writeCodexForkAtBinary(t, codexForkMock{
+		resumedThreadID: "provider-stopped-revert",
+		forkedThreadID:  "forked-provider-thread",
+		requestLogPath:  requestLog,
+	})
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatalf("update settings: %v", err)
 	}
@@ -211,13 +214,23 @@ func TestRevertToMessageCheckpointCodexStartsStoppedSessionAndKeepsItAlive(t *te
 	if err := app.RevertToMessageCheckpoint(thread.ID, "user:1", RevertModeConversationOnly); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
-	defer app.StopSession(thread.ID)
-	if _, ok := app.activeCodexSession(thread.ID); !ok {
-		t.Fatal("active Codex session missing after rollback")
+	if _, ok := app.activeCodexSession(thread.ID); ok {
+		t.Fatal("temp fork session must not survive the revert")
+	}
+	forkRequest := readCodexForkRequest(t, requestLog)
+	if !strings.Contains(forkRequest, `"lastTurnId":"turn-a"`) {
+		t.Fatalf("fork request = %s, want lastTurnId turn-a", forkRequest)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef != "forked-provider-thread" {
+		t.Fatalf("SessionRef = %q, want forked-provider-thread", updated.SessionRef)
 	}
 }
 
-func TestRevertToMessageCheckpointCodexRejectsRollbackTurnCountMismatch(t *testing.T) {
+func TestRevertToMessageCheckpointCodexRejectsForkTailMismatch(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	workspace := t.TempDir()
@@ -228,17 +241,22 @@ func TestRevertToMessageCheckpointCodexRejectsRollbackTurnCountMismatch(t *testi
 	}
 	insertUserItemWithMeta(t, app.store, thread.ID, "user:0", 0, "first", `{"provider_item_id":"provider-user-0"}`)
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
 	saveCodexCheckpoint(t, app.store, thread, "chk-mismatch", "user:1", 1)
 
-	binary := writeCodexRollbackBinary(t, "provider-mismatch-revert", 0)
+	binary := writeCodexForkAtBinary(t, codexForkMock{
+		resumedThreadID: "provider-mismatch-revert",
+		forkedThreadID:  "forked-provider-thread",
+		forkTailTurnID:  "turn-wrong",
+	})
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatalf("update settings: %v", err)
 	}
 
 	err := app.RevertToMessageCheckpoint(thread.ID, "user:1", RevertModeConversationOnly)
-	defer app.StopSession(thread.ID)
-	if err == nil || !strings.Contains(err.Error(), "surviving turns") {
-		t.Fatalf("revert error = %v, want surviving-turn mismatch", err)
+	if err == nil || !strings.Contains(err.Error(), "expected anchor") {
+		t.Fatalf("revert error = %v, want fork tail mismatch", err)
 	}
 	items, listErr := app.store.ListItems(thread.ID)
 	if listErr != nil {
@@ -247,9 +265,16 @@ func TestRevertToMessageCheckpointCodexRejectsRollbackTurnCountMismatch(t *testi
 	if len(items) != 2 {
 		t.Fatalf("items after failed revert = %+v, want original rows preserved", items)
 	}
+	updated, getErr := app.store.GetThread(thread.ID)
+	if getErr != nil {
+		t.Fatalf("get thread: %v", getErr)
+	}
+	if updated.SessionRef != "provider-mismatch-revert" {
+		t.Fatalf("SessionRef = %q, want untouched provider-mismatch-revert", updated.SessionRef)
+	}
 }
 
-func TestRevertToMessageCheckpointCodexAllowsLocalOnlyFailedTurnBeforeTarget(t *testing.T) {
+func TestRevertToMessageCheckpointCodexAnchorSkipsLocalOnlyFailedTurn(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	workspace := t.TempDir()
@@ -261,9 +286,17 @@ func TestRevertToMessageCheckpointCodexAllowsLocalOnlyFailedTurnBeforeTarget(t *
 	insertUserItemWithMeta(t, app.store, thread.ID, "user:0", 0, "first", `{"provider_item_id":"provider-user-0"}`)
 	insertUserItem(t, app.store, thread.ID, "user:1-failed-local", 1, "failed before provider")
 	insertUserItemWithMeta(t, app.store, thread.ID, "user:2", 2, "third", `{"provider_item_id":"provider-user-2"}`)
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+	// Turn 1 never reached the wire — no turns row.
+	insertCodexTurn(t, app.store, thread.ID, 2, "turn-c")
 	saveCodexCheckpoint(t, app.store, thread, "chk-local-only", "user:2", 2)
 
-	binary := writeCodexRollbackBinary(t, "provider-local-only-revert", 1)
+	requestLog := filepath.Join(t.TempDir(), "fork-requests.jsonl")
+	binary := writeCodexForkAtBinary(t, codexForkMock{
+		resumedThreadID: "provider-local-only-revert",
+		forkedThreadID:  "forked-provider-thread",
+		requestLogPath:  requestLog,
+	})
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatalf("update settings: %v", err)
 	}
@@ -271,13 +304,112 @@ func TestRevertToMessageCheckpointCodexAllowsLocalOnlyFailedTurnBeforeTarget(t *
 	if err := app.RevertToMessageCheckpoint(thread.ID, "user:2", RevertModeConversationOnly); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
-	defer app.StopSession(thread.ID)
+	forkRequest := readCodexForkRequest(t, requestLog)
+	if !strings.Contains(forkRequest, `"lastTurnId":"turn-a"`) {
+		t.Fatalf("fork request = %s, want anchor turn-a (local-only turn 1 skipped)", forkRequest)
+	}
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {
 		t.Fatalf("list items: %v", err)
 	}
 	if len(items) != 2 || items[0].ID != "user:0" || items[1].ID != "user:1-failed-local" {
 		t.Fatalf("items after revert = %+v, want provider turn plus local-only failed turn", items)
+	}
+}
+
+// TestRevertToMessageCheckpointCodexTurnZeroClearsSessionRef: reverting
+// the very first message needs no fork — SessionRef clears, the session
+// stops, and the next send starts a fresh Codex thread.
+func TestRevertToMessageCheckpointCodexTurnZeroClearsSessionRef(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	workspace := t.TempDir()
+	thread := createCheckpointTestThread(t, app, "codex-turn-zero-revert", "codex", workspace)
+	thread.SessionRef = "provider-turn-zero-revert"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+	saveCodexCheckpoint(t, app.store, thread, "chk-zero", "user:0", 0)
+
+	requestLog := filepath.Join(t.TempDir(), "fork-requests.jsonl")
+	binary := writeCodexForkAtBinary(t, codexForkMock{
+		resumedThreadID: "provider-turn-zero-revert",
+		forkedThreadID:  "forked-provider-thread",
+		requestLogPath:  requestLog,
+	})
+	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Binary:         binary,
+		Model:          "test-model",
+		WorkDir:        workspace,
+		ResumeThreadID: thread.SessionRef,
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	app.sessionManager().put(thread.ID, session{
+		provider: string(provider.Codex),
+		token:    "turn-zero-token",
+		codex:    sess,
+	})
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "user:0", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if _, ok := app.activeCodexSession(thread.ID); ok {
+		t.Fatal("Codex session still active after turn-zero revert")
+	}
+	if _, err := os.Stat(requestLog); !os.IsNotExist(err) {
+		t.Fatalf("turn-zero revert must not issue thread/fork (stat err = %v)", err)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef != "" {
+		t.Fatalf("SessionRef = %q, want cleared", updated.SessionRef)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items after revert = %+v, want empty", items)
+	}
+}
+
+// TestRevertToMessageCheckpointCodexLocalOnlyThreadNeedsNoSessionRef:
+// a thread whose sends all failed before reaching the provider has no
+// SessionRef and no provider-backed turns. Reverting past turn 0 must
+// take the fresh-thread path (no fork, cursor stays empty) instead of
+// failing on the missing thread reference.
+func TestRevertToMessageCheckpointCodexLocalOnlyThreadNeedsNoSessionRef(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	workspace := t.TempDir()
+	thread := createCheckpointTestThread(t, app, "codex-local-only-thread", "codex", workspace)
+	insertUserItem(t, app.store, thread.ID, "user:0-failed", 0, "first (send failed)")
+	insertUserItem(t, app.store, thread.ID, "user:1-failed", 1, "second (send failed)")
+	saveCodexCheckpoint(t, app.store, thread, "chk-no-ref", "user:1-failed", 1)
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "user:1-failed", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef != "" {
+		t.Fatalf("SessionRef = %q, want empty", updated.SessionRef)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "user:0-failed" {
+		t.Fatalf("items after revert = %+v, want only the first failed send", items)
 	}
 }
 
@@ -290,21 +422,69 @@ func saveCodexCheckpoint(t *testing.T, st *store.Store, thread store.Thread, id,
 		TurnIndex:  turnIndex,
 		RefName:    checkpoint.ThreadRefPrefix(thread.ID) + "message/" + id,
 		CapturedAt: 1,
-		// Codex rollback uses turn index, not provider user message id, but
-		// the checkpoint still carries the workspace for shared validation.
+		// Codex fork-at-turn uses turn index, not provider user message id,
+		// but the checkpoint still carries the workspace for shared validation.
 		WorkspacePath: thread.WorkspacePath,
 	}); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
 	}
 }
 
-func writeCodexRollbackBinary(t *testing.T, threadID string, survivingTurns int) string {
+// insertCodexTurn seeds a settled provider-backed turns row the way
+// the live triage path does for Codex: wire turn id as both row id and
+// provider_turn_id, completed so it doesn't trip the active-turn
+// revert guard.
+func insertCodexTurn(t *testing.T, st *store.Store, threadID string, turnIndex int, providerTurnID string) {
 	t.Helper()
-	turns := make([]string, 0, survivingTurns)
-	for i := 0; i < survivingTurns; i++ {
-		turns = append(turns, fmt.Sprintf(`{"id":"turn-%d"}`, i))
+	if err := st.InsertTurn(store.Turn{
+		TurnID:         providerTurnID,
+		ProviderTurnID: providerTurnID,
+		ThreadID:       threadID,
+		TurnIndex:      turnIndex,
+		StartedAt:      int64(turnIndex + 1),
+	}); err != nil {
+		t.Fatalf("insert codex turn %s: %v", providerTurnID, err)
 	}
-	turnsJSON := "[" + strings.Join(turns, ",") + "]"
+	if err := st.UpdateTurnCompleted(providerTurnID, int64(turnIndex+2), "end_turn", "", "", ""); err != nil {
+		t.Fatalf("complete codex turn %s: %v", providerTurnID, err)
+	}
+}
+
+func readCodexForkRequest(t *testing.T, requestLogPath string) string {
+	t.Helper()
+	data, err := os.ReadFile(requestLogPath)
+	if err != nil {
+		t.Fatalf("read fork request log: %v", err)
+	}
+	request := strings.TrimSpace(string(data))
+	if request == "" || strings.Contains(request, "\n") {
+		t.Fatalf("fork request log = %q, want exactly one thread/fork request", request)
+	}
+	return request
+}
+
+// codexForkMock configures writeCodexForkAtBinary. The mock answers
+// `thread/fork` by echoing the requested lastTurnId back as the fork's
+// tail turn (the shape a real cut returns); forkTailTurnID overrides
+// that echo to simulate a server whose fork survives through a
+// different turn than the requested anchor.
+type codexForkMock struct {
+	resumedThreadID string
+	forkedThreadID  string
+	requestLogPath  string
+	forkTailTurnID  string
+}
+
+func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
+	t.Helper()
+	logForkRequest := ":"
+	if mock.requestLogPath != "" {
+		logForkRequest = fmt.Sprintf(`/bin/echo "$line" >> '%s'`, mock.requestLogPath)
+	}
+	tailExpr := `"$cut"`
+	if mock.forkTailTurnID != "" {
+		tailExpr = fmt.Sprintf(`'%s'`, mock.forkTailTurnID)
+	}
 	script := fmt.Sprintf(`#!/bin/sh
 while IFS= read -r line; do
     id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
@@ -319,10 +499,6 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[]}}}\n' "$id"
         continue
     fi
-    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then
-        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[]}}}\n' "$id"
-        continue
-    fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/read"'; then
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"status":{"type":"idle"}}}}\n' "$id"
         continue
@@ -331,14 +507,21 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
         continue
     fi
-    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/rollback"'; then
-        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":%s}}}\n' "$id"
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/fork"'; then
+        %s
+        cut=$(/bin/echo "$line" | /usr/bin/grep -o '"lastTurnId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
+        tail=%s
+        if [ -n "$tail" ]; then
+            printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[{"id":"%%s"}]}}}\n' "$id" "$tail"
+        else
+            printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[]}}}\n' "$id"
+        fi
         continue
     fi
 done
-`, threadID, threadID, threadID, turnsJSON)
+`, mock.resumedThreadID, logForkRequest, tailExpr, mock.forkedThreadID, mock.forkedThreadID)
 
-	path := filepath.Join(t.TempDir(), "codex-rollback.sh")
+	path := filepath.Join(t.TempDir(), "codex-fork-at.sh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write mock codex binary: %v", err)
 	}

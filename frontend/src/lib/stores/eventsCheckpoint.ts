@@ -11,6 +11,7 @@ import type {
 } from '../types/checkpoint';
 import { iterPanes } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
+import { projectThreadReverted } from './threadStatuses.svelte';
 
 export function applyCheckpointCaptured(payload: CheckpointCapturedEvent | null): void {
   for (const pane of iterPanes()) {
@@ -31,6 +32,14 @@ export function applyCheckpointError(payload: CheckpointErrorEvent | null): void
 }
 
 export function applyCheckpointReverted(payload: CheckpointRevertedEvent | null): void {
+  // A successful revert-to-message means nothing on the thread is
+  // working, queued, or awaiting turn signals anymore — settle the
+  // live-status projection before the panes redraw their timelines.
+  // Global (not per-pane): the send queue and active-turn registry are
+  // thread-scoped, so the settle applies even with no pane mounted.
+  if (payload?.threadId) {
+    projectThreadReverted(payload.threadId);
+  }
   for (const pane of iterPanes()) {
     pane.applyCheckpointReverted(payload);
   }
@@ -55,6 +64,12 @@ export function applyCheckpointReverted(payload: CheckpointRevertedEvent | null)
 export function applyUserMessageReverted(payload: UserMessageRevertedEvent | null): void {
   if (!payload?.threadId || !payload.userItemId) return;
   if (typeof payload.turnIndex !== 'number') return;
+  // Same global settle as applyCheckpointReverted: clear the active
+  // turn, pending send, and both send-queue zones so an immediate
+  // resend takes the direct-send path instead of queueing behind the
+  // reverted turn — and so no orphaned Zone 2 chip (whose provider
+  // confirm died with the reverted session) lingers under new output.
+  projectThreadReverted(payload.threadId);
   for (const pane of iterPanes()) {
     if (pane.threadId !== payload.threadId) continue;
     pane.removeItemsFromTurn(payload.turnIndex);

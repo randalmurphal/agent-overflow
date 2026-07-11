@@ -7,7 +7,12 @@ import (
 	"strings"
 )
 
-const minimumCodexCLIVersion = "0.37.0"
+// minimumCodexCLIVersion gates the Codex provider on `thread/fork`
+// accepting `lastTurnId` (added in 0.143.0), which every revert / fork
+// flow relies on since the `thread/rollback` migration — upstream
+// deprecated rollback in 0.144 and will remove it. Older CLIs lack any
+// non-rollback way to cut history at a turn boundary.
+const minimumCodexCLIVersion = "0.143.0"
 
 var codexVersionPattern = regexp.MustCompile(`\bv?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)\b`)
 

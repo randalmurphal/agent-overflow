@@ -32,13 +32,21 @@ type Turn struct {
 	AssistantMessageID string `json:"assistantMessageId,omitempty"`
 	TokenUsageJSON     string `json:"tokenUsageJson,omitempty"`
 	ErrorMessage       string `json:"errorMessage,omitempty"`
+	// ProviderTurnID is the provider-assigned wire turn id (Codex
+	// `turn/started`), or "" when the provider has none on the wire
+	// (Claude — TurnID is then a synthesized `<threadID>:<turnIndex>`).
+	// Kept separate from the TurnID PRIMARY KEY because forked threads
+	// carry cloned copies of their source's turns under fresh row ids
+	// while preserving this value — it is the `thread/fork` lastTurnId
+	// anchor the Codex revert/fork flows cut history on.
+	ProviderTurnID string `json:"providerTurnId,omitempty"`
 }
 
 // turnColumns is the canonical SELECT projection for scanTurnRow. Keep in
 // sync with the Turn struct and every INSERT/UPDATE site in this file so
 // the column order is defined in exactly one place.
 const turnColumns = `turn_id, thread_id, turn_index, started_at, completed_at,
-    stop_reason, assistant_message_id, token_usage_json, error_message`
+    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id`
 
 // scanTurnRow hydrates one Turn from a *sql.Row or *sql.Rows. completed_at
 // is scanned via sql.NullInt64 so we can preserve NULL as `*int64 == nil`
@@ -49,6 +57,7 @@ func scanTurnRow(scanner interface{ Scan(...any) error }) (Turn, error) {
 	if err := scanner.Scan(
 		&t.TurnID, &t.ThreadID, &t.TurnIndex, &t.StartedAt, &completedAt,
 		&t.StopReason, &t.AssistantMessageID, &t.TokenUsageJSON, &t.ErrorMessage,
+		&t.ProviderTurnID,
 	); err != nil {
 		return Turn{}, err
 	}
@@ -73,9 +82,9 @@ func (s *Store) InsertTurn(turn Turn) error {
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
-		    stop_reason, assistant_message_id, token_usage_json, error_message)
-		 VALUES (?, ?, ?, ?, NULL, '', '', '', '')`,
-		turn.TurnID, turn.ThreadID, turn.TurnIndex, turn.StartedAt,
+		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
+		 VALUES (?, ?, ?, ?, NULL, '', '', '', '', ?)`,
+		turn.TurnID, turn.ThreadID, turn.TurnIndex, turn.StartedAt, turn.ProviderTurnID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert turn %s: %w", turn.TurnID, err)

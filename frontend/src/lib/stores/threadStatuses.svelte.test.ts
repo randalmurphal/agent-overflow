@@ -2,11 +2,15 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { flushSync } from 'svelte';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
+  beginThreadLiveStateHydration,
   clearPendingSend,
   clearThreadStatus,
+  finishThreadLiveStateHydration,
   getActiveTurn,
   getThreadStatus,
   hasPendingSend,
+  isThreadLiveStateHydrating,
+  isThreadLiveStateHydrationCurrent,
   isThreadWorking,
   projectApprovalRequest,
   projectApprovalResolution,
@@ -16,6 +20,7 @@ import {
   projectSendStarted,
   projectThreadViewed,
   projectThreadItem,
+  projectThreadReverted,
   projectTurnCompleted,
   projectTurnStarted,
   projectUserInputRequest,
@@ -24,7 +29,9 @@ import {
   sameActiveTurn,
 } from './threadStatuses.svelte';
 import {
+  getFlushedForThread,
   getQueueForThread,
+  markItemsFlushed,
   replaceQueueForThread,
   resetForTest as resetSendQueueForTest,
   type QueueItem,
@@ -714,6 +721,82 @@ describe('threadStatuses store', () => {
       } finally {
         turn.dispose();
       }
+    });
+  });
+  describe('projectThreadReverted', () => {
+    it('settles active turn, pending send, and both queue zones', () => {
+      projectSendStarted('thread-1');
+      projectTurnStarted('thread-1', 'turn-1', 0, 1000);
+      seedQueueItem('thread-1', { id: 'queue:1', message: 'queued follow-up' });
+      markItemsFlushed('thread-1', [
+        { queueItemId: 'queue:2', userItemId: 'user:2', message: 'flushed, unconfirmed' },
+      ]);
+      expect(isThreadWorking('thread-1')).toBe(true);
+
+      projectThreadReverted('thread-1');
+
+      expect(isThreadWorking('thread-1')).toBe(false);
+      expect(getActiveTurn('thread-1')).toBeNull();
+      expect(hasPendingSend('thread-1')).toBe(false);
+      expect(getQueueForThread('thread-1')).toHaveLength(0);
+      expect(getFlushedForThread('thread-1')).toHaveLength(0);
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
+    it('blocks a late turn_started replay of the reverted turn', () => {
+      projectTurnStarted('thread-1', 'turn-1', 0, 1000);
+      projectThreadReverted('thread-1');
+
+      // A turn_started already emitted before the backend's stopped-
+      // thread gate flipped can still arrive after the revert; the
+      // reverted turn id must not resurrect the working indicator.
+      projectTurnStarted('thread-1', 'turn-1', 0, 1000);
+      expect(getActiveTurn('thread-1')).toBeNull();
+      expect(isThreadWorking('thread-1')).toBe(false);
+
+      // A genuinely new turn (the resend) still lands normally.
+      projectTurnStarted('thread-1', 'turn-2', 0, 2000);
+      expect(getActiveTurn('thread-1')?.turnId).toBe('turn-2');
+    });
+
+    it('clears interrupted and error attention states', () => {
+      projectTurnStarted('thread-1', 'turn-1', 0, 1000);
+      projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
+      expect(getThreadStatus('thread-1')).toBe('interrupted');
+
+      projectThreadReverted('thread-1');
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
+    it('clears pending approval and user-input registries', () => {
+      projectApprovalRequest('thread-1', 'req-1');
+      projectUserInputRequest('thread-1', 'req-2');
+      expect(getThreadStatus('thread-1')).toBe('pending-approval');
+
+      projectThreadReverted('thread-1');
+
+      expect(getThreadStatus('thread-1')).toBe('idle');
+      // The reverse requestId -> thread map is gone too: a late
+      // resolution for the dead prompt must be a no-op, not a
+      // resurrection via the fallback lookup.
+      projectApprovalResolution(null, 'req-1');
+      projectUserInputResolution(null, 'req-2');
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
+    it('invalidates in-flight live-state hydrations', () => {
+      const token = beginThreadLiveStateHydration('thread-1');
+      expect(isThreadLiveStateHydrationCurrent('thread-1', token)).toBe(true);
+
+      projectThreadReverted('thread-1');
+
+      // The pre-revert snapshot must fail its currency check when it
+      // resolves, and the hydrating flag must not leak (its own finish
+      // call will no-op on the token mismatch).
+      expect(isThreadLiveStateHydrationCurrent('thread-1', token)).toBe(false);
+      expect(isThreadLiveStateHydrating('thread-1')).toBe(false);
+      finishThreadLiveStateHydration('thread-1', token);
+      expect(isThreadLiveStateHydrating('thread-1')).toBe(false);
     });
   });
 });

@@ -40,8 +40,9 @@ over stdio.
 - `session_probe.go` — `thread/read` liveness probe used on reopen to
   reconcile stale running rows. `session_probe_testhelpers.go` hosts
   the fake probe reply harness.
-- `session_fork.go` / `session_rollback.go` — the `thread/fork` and
-  `thread/rollback` RPC call wrappers.
+- `session_fork.go` — the `thread/fork` RPC wrapper (`Fork` / `ForkAt`);
+  a `lastTurnId` cut (Codex >= 0.143) is the history-truncation
+  primitive that replaced the deprecated `thread/rollback`.
 - `protocol.go` — top-level notification dispatch plus small shared
   notification helpers.
 - `protocol_item.go` — `item/*` lifecycle, tool completion, item type
@@ -79,7 +80,9 @@ over stdio.
 
 ## Methods we call
 
-- `thread/start`, `thread/resume`, `thread/fork`, `thread/rollback`.
+- `thread/start`, `thread/resume`, `thread/fork` (optionally cut at a
+  `lastTurnId` anchor — the revert/fork history primitive; upstream
+  deprecated `thread/rollback` and AO no longer calls it).
 - `thread/read` — on-reopen liveness probe. Called by `Session.Probe`
   to fetch the current `thread.status.type` so the app-layer reconciler
   can flip stale running background tool rows.

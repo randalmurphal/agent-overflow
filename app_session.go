@@ -38,13 +38,20 @@ const codexReopenReconcileTimeout = 30 * time.Second
 // provider subprocess up." The sendMessage path also calls
 // startSessionNow via runSessionStart when a thread has no active
 // session yet.
+//
+// Takes the per-thread action lock: an unserialized start racing a
+// revert can read the pre-revert SessionRef, clear the stopped-thread
+// gate mid-revert (MarkThreadActive), and register a session bound to
+// the old provider thread after the revert repointed the row. Internal
+// callers that already hold the lock (sends, deferred config restarts)
+// go through a.startSession / runSessionStart directly.
 func (a *App) StartSession(threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
-	return a.runSessionStart(threadID, func() error {
-		return a.startSessionNow(threadID)
-	})
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	return a.startSession(threadID)
 }
 
 // startSessionNow builds the provider-specific launch config, stops

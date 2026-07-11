@@ -51,14 +51,42 @@ func (a *App) resumeThreadAfterFocus(_ store.Thread) {}
 // ReconnectSession tears down the current session and starts a fresh one using
 // the thread's stored resume cursor.
 //
-// Single-flight across the stop-then-start pair: a second concurrent caller
-// returns nil without doing any work. Without the gate, a second call's
-// stopSession can yank the new session out from under the first call's
-// in-flight startSession (runSessionStart serialises starts but not stops),
-// leaving the thread with no live session despite both calls completing
-// "successfully". This matters for the auto-reconnect path racing a manual
-// click on the banner Reconnect button.
+// Two guards compose here, in order:
+//
+//  1. Single-flight across the stop-then-start pair: a second concurrent
+//     caller returns nil without doing any work. Without the gate, a
+//     second call's stopSession can yank the new session out from under
+//     the first call's in-flight startSession (runSessionStart serialises
+//     starts but not stops). This matters for the auto-reconnect path
+//     racing a manual click on the banner Reconnect button, and it runs
+//     BEFORE the lock so the no-op answer stays immediate.
+//  2. The per-thread action lock, so the stop-then-start pair cannot
+//     interleave with a revert's stop-and-repoint sequence (a reconnect
+//     landing mid-revert would resume the pre-revert cursor and clear the
+//     stopped-thread gate). Callers already holding the lock (workspace-
+//     change restarts) use reconnectSessionLocked instead.
 func (a *App) ReconnectSession(threadID string) error {
+	if a.shuttingDown.Load() {
+		return ErrShuttingDown
+	}
+	if !a.acquireReconnect(threadID) {
+		return nil
+	}
+	defer a.releaseReconnect(threadID)
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	if err := a.stopSession(threadID); err != nil {
+		return err
+	}
+	return a.startSession(threadID)
+}
+
+// reconnectSessionLocked is the reconnect body for callers that already
+// hold the per-thread action lock. Same single-flight gate as
+// ReconnectSession; when an unlocked reconnect holds the gate while
+// waiting on this caller's lock, the no-op answer here matches the old
+// ReconnectSession-vs-ReconnectSession behavior.
+func (a *App) reconnectSessionLocked(threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}

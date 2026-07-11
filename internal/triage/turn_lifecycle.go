@@ -44,6 +44,10 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
+		// Wire-supplied only (Codex): the fork/revert anchor resolver
+		// keys on this, and Claude's synthesized turn id must not
+		// masquerade as a provider id there.
+		ProviderTurnID: strings.TrimSpace(evt.TurnID),
 	})
 
 	// Open the first wire round for this logical turn. Frontend
@@ -1355,80 +1359,6 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		}
 	}
 	return true
-}
-
-// ResetThreadForRollback clears session-local routing state after the provider
-// has accepted a conversation rollback while the provider session remains live.
-// Unlike CleanupThread, it must not mark the thread stopped and must not
-// synthesize a turn-complete: any required turn completion has already arrived
-// before rollback is allowed.
-func (r *Router) ResetThreadForRollback(threadID string) {
-	if err := r.flushStreamingThread(threadID); err != nil {
-		log.Printf("triage: rollback flush stream buffers for thread %s: %v", threadID, err)
-	}
-
-	r.mu.Lock()
-	var orphanSpan trace.Span
-	if span, ok := r.turnSpans[threadID]; ok {
-		orphanSpan = span
-		delete(r.turnSpans, threadID)
-	}
-	delete(r.openTurns, threadID)
-	delete(r.interruptQueue, threadID)
-	delete(r.streamingItemCounts, threadID)
-	deleteByPrefix(r.streamingScopeCounts, threadID+"|")
-	delete(r.workspacePathByThread, threadID)
-	for key, pending := range r.pendingCommandDiffs {
-		if pending.ThreadID == threadID {
-			delete(r.pendingCommandDiffs, key)
-		}
-	}
-	deleteByPrefix(r.pendingToolPaths, threadID+"|")
-	approvalPrefix := threadID + ":"
-	deleteByPrefix(r.pendingApprovals, approvalPrefix)
-	deleteByPrefix(r.pendingApprovalItems, approvalPrefix)
-	deleteByPrefix(r.pendingUserInputs, approvalPrefix)
-	delete(r.pendingApprovalOrder, threadID)
-	delete(r.pendingUserInputOrder, threadID)
-	prefix := threadID + "|"
-	deleteByPrefix(r.segmentIndexByScope, prefix)
-	deleteByPrefix(r.blockIndexByScope, prefix)
-	deleteByPrefix(r.activeTextBlocks, prefix)
-	deleteByPrefix(r.activeThinkingBlocks, prefix)
-	deleteByPrefix(r.activeTextBlockRefs, prefix)
-	deleteByPrefix(r.activeThinkingBlockRefs, prefix)
-	deleteByPrefix(r.errorSeqByScope, prefix)
-	deleteByPrefix(r.compactionSeqByScope, prefix)
-	deleteByPrefix(r.notificationSeqByScope, prefix)
-	for key := range r.streamPersistBuffers {
-		if strings.HasPrefix(key, prefix) {
-			if buffer := r.streamPersistBuffers[key]; buffer != nil && buffer.timer != nil {
-				buffer.timer.Stop()
-			}
-			delete(r.streamPersistBuffers, key)
-		}
-	}
-	deleteByPrefix(r.streamingPathRefsLast, prefix)
-	deleteByPrefix(r.terminalInteractionSeq, prefix)
-	deleteByPrefix(r.settledTurns, prefix)
-	delete(r.currentRoundByThread, threadID)
-	delete(r.latestTodoByThread, threadID)
-	delete(r.tasksByThread, threadID)
-	delete(r.openAPIRetryRows, threadID)
-	r.clearPendingSendsLocked(threadID)
-	r.clearWireOnlyUserTextLocked(threadID)
-	r.clearFlushQueueLocked(threadID)
-	delete(r.revertedTurns, threadID)
-	pendingUsage, hasPendingUsage := r.takeUsageEmitPendingLocked(threadID)
-	delete(r.usageEmitThrottles, threadID)
-	r.mu.Unlock()
-
-	if hasPendingUsage {
-		r.emit("provider:usage", pendingUsage)
-	}
-	if orphanSpan != nil {
-		orphanSpan.End()
-	}
 }
 
 // isThreadStopped returns true when CleanupThread has been called for

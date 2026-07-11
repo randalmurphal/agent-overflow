@@ -151,3 +151,33 @@ func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughT
 	}
 	return idMap, nil
 }
+
+// CloneThreadTurns copies the source thread's turns rows (<=
+// *throughTurnIndex when non-nil, everything when nil) into the target
+// thread. turn_id is a global PRIMARY KEY, so cloned rows get a fresh
+// synthesized `<targetThreadID>:<turn_index>` id — the same convention
+// Claude turns use — while provider_turn_id is preserved verbatim.
+// That preserved wire id is the point of the clone: a Codex
+// `thread/fork` keeps the source's turn ids, so the cloned row is what
+// lets a later revert/fork inside the forked thread resolve its
+// `lastTurnId` anchor without reaching back to the (possibly deleted)
+// source thread.
+func (s *Store) CloneThreadTurns(sourceThreadID, targetThreadID string, throughTurnIndex *int) error {
+	cut := -1
+	if throughTurnIndex != nil {
+		cut = *throughTurnIndex
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
+		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
+		 SELECT ? || ':' || turn_index, ?, turn_index, started_at, completed_at,
+		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id
+		 FROM turns
+		 WHERE thread_id = ? AND (? < 0 OR turn_index <= ?)`,
+		targetThreadID, targetThreadID, sourceThreadID, cut, cut,
+	)
+	if err != nil {
+		return fmt.Errorf("store: clone turns into thread %s: %w", targetThreadID, err)
+	}
+	return nil
+}

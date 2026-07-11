@@ -570,7 +570,9 @@ func (a *App) restartWorkspaceSession(threadID string) error {
 	if !a.hasActiveSession(threadID) {
 		return nil
 	}
-	return a.ReconnectSession(threadID)
+	// Callers reach here holding the per-thread action lock (the
+	// workspace-change bindings), so use the locked reconnect body.
+	return a.reconnectSessionLocked(threadID)
 }
 
 // UpdateThreadProvider switches to the provider's latest remembered profile

@@ -810,6 +810,21 @@ CREATE INDEX idx_usage_ledger_thread ON usage_ledger(thread_id, created_at);`,
 		SQL:     rebuildCodexReasoningEffortsV19SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 20,
+		Name:    "turns_provider_turn_id",
+		// Provider-assigned turn id, decoupled from the PRIMARY KEY so
+		// forked threads can carry copies of their source's turns (a
+		// Codex fork keeps the source's turn ids, so the copy is what
+		// makes a cloned turn usable as a `thread/fork` lastTurnId
+		// anchor — see Store.CloneThreadTurns). Backfill: Codex rows
+		// store the wire id verbatim in turn_id; Claude rows use the
+		// synthesized `<threadID>:<turnIndex>` form, recognizable by
+		// the ':' that never appears in a Codex turn id.
+		SQL: `ALTER TABLE turns ADD COLUMN provider_turn_id TEXT NOT NULL DEFAULT '';
+
+UPDATE turns SET provider_turn_id = turn_id WHERE turn_id NOT LIKE '%:%';`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
