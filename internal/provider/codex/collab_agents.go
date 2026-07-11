@@ -336,12 +336,21 @@ func (s *Session) rememberSubAgentActivityOwnership(sourceThreadID string, activ
 	if !s.registerChildOwnership(sourceThreadID, activity.AgentThreadID, activity.AgentPath, activity.ItemID) {
 		return nil
 	}
+	model, reasoningEffort := s.activeCollabModel()
 	launchMeta := collabLaunchMeta{
+		Model:             model,
+		ReasoningEffort:   reasoningEffort,
 		AgentPath:         activity.AgentPath,
 		ReceiverThreadIDs: []string{activity.AgentThreadID},
 	}
 	s.scheduleCollabMetadataRead(activity.AgentThreadID, activity.ItemID, launchMeta)
 	return []string{activity.AgentThreadID}
+}
+
+func (s *Session) activeCollabModel() (string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.model, s.reasoningEffort
 }
 
 func (s *Session) observeSubAgentActivityOwnership(method string, params json.RawMessage) []string {

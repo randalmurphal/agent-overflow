@@ -201,9 +201,11 @@ func formatAgentCompletionMessage(result agentTerminalResult, totalChildren int)
 // completion once every child in the spawn is terminal. EventSubagentStatus is
 // status-only live-state evidence and does not synthesize transcript rows.
 type codexSubagentSignalMeta struct {
-	AgentPath string `json:"agent_path"`
-	Status    string `json:"status"`
-	Message   string `json:"message"`
+	AgentPath       string `json:"agent_path"`
+	Status          string `json:"status"`
+	Message         string `json:"message"`
+	MailboxDelivery bool   `json:"mailbox_delivery"`
+	DeliveryID      string `json:"delivery_id"`
 }
 
 func decodeCodexSubagentSignalMeta(raw json.RawMessage) codexSubagentSignalMeta {

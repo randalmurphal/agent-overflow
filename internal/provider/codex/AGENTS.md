@@ -166,14 +166,18 @@ for the wire sequence. Key points:
   completed) when the spawn request is accepted; child runs on a
   separate `thread_id`.
 - Parent's `turn/completed` does NOT wait for spawned children.
-- Child completion signals the parent via either explicit `wait`
-  tool OR a mailbox-delivered raw message carrying a
-  `<subagent_notification>` XML tag. Current Codex exposes that marker
+- Child completion changes launch live state, but transcript presentation waits
+  until Codex delivers the result into parent model context. MultiAgentV2 records
+  that boundary as a parent-rollout `inter_agent_communication` containing a strict
+  `Message Type: FINAL_ANSWER` envelope. Agent Overflow emits the flat completion
+  row only from that record. Legacy flows use either explicit `wait` or a
+  mailbox-delivered raw message carrying a `<subagent_notification>` XML tag.
+  Codex exposes the legacy marker
   as contextual `role:"user"` input. Fresh `thread/start` sessions can
   expose it through `rawResponseItem/completed` when raw events are
   enabled; resumed sessions cannot opt into that raw stream, so
   Agent Overflow also tails the active rollout JSONL from EOF and parses
-  appended `response_item` records for the same standalone shape. Traces
+  appended `inter_agent_communication` records. Traces
   and older flows can expose the same marker inside a serialized
   `InterAgentCommunication` assistant/commentary message or a standalone
   user-message carrier.

@@ -195,7 +195,8 @@ func readRolloutAppend(path string, offset int64) ([]byte, int64, error) {
 }
 
 func (s *Session) emitSubagentNotificationsFromRolloutLine(line []byte) bool {
-	if len(line) == 0 || !bytes.Contains(line, []byte("subagent_notification")) {
+	if len(line) == 0 || (!bytes.Contains(line, []byte("subagent_notification")) &&
+		!bytes.Contains(line, []byte(interAgentFinalAnswerMarker))) {
 		return false
 	}
 
@@ -206,8 +207,19 @@ func (s *Session) emitSubagentNotificationsFromRolloutLine(line []byte) bool {
 	if err := json.Unmarshal(line, &record); err != nil {
 		return false
 	}
-	if record.Type != "response_item" || record.Payload == nil {
+	if record.Payload == nil {
 		return false
 	}
-	return s.emitResolvedSubagentNotificationsFromRawMessageItem(record.Payload)
+	switch record.Type {
+	case "response_item":
+		return s.emitResolvedSubagentNotificationsFromRawMessageItem(record.Payload)
+	case "inter_agent_communication":
+		notification, ok := extractSubagentCompletionFromInterAgentCommunication(record.Payload)
+		if !ok {
+			return false
+		}
+		return s.emitResolvedSubagentNotifications([]subagentNotification{notification}, "", true)
+	default:
+		return false
+	}
 }

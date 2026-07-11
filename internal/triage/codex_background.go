@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -129,6 +130,7 @@ type persistedCodexSpawnLaunch struct {
 type codexBackgroundCompletionOptions struct {
 	sharedPayloadID string
 	waitCarrierID   string
+	completionID    string
 }
 
 const (
@@ -1482,11 +1484,11 @@ func (r *Router) findPersistedCodexSpawnLaunchForStatus(threadID, launchID, chil
 	if err != nil || !found {
 		return persistedCodexSpawnLaunch{}, false, err
 	}
-	if launch.Kind != itemKindToolCall || launch.ToolName != "collab_agent" || !launch.IsBackground {
+	if launch.Kind != itemKindToolCall || launch.ToolName != "collab_agent" {
 		return persistedCodexSpawnLaunch{}, false, nil
 	}
 	meta := decodeCodexItemMeta(json.RawMessage(launch.Meta))
-	if !containsString(meta.ReceiverThreadIDs, childID) {
+	if strings.TrimSpace(childID) != "" && !containsString(meta.ReceiverThreadIDs, childID) {
 		return persistedCodexSpawnLaunch{}, false, nil
 	}
 	return persistedCodexSpawnLaunch{item: launch, meta: meta}, true, nil
@@ -1603,7 +1605,20 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 		status = "completed"
 	}
 
-	launches, err := r.persistedSubagentNotificationLaunches(threadID, strings.TrimSpace(evt.ItemID), parsed.AgentPath)
+	var launches []persistedCodexSpawnLaunch
+	var err error
+	if parsed.MailboxDelivery && strings.TrimSpace(evt.ItemID) != "" {
+		var launch persistedCodexSpawnLaunch
+		var found bool
+		// The provider already resolved the canonical agent path to this launch
+		// ID. Stored receiverThreadIds are provider thread UUIDs, not paths.
+		launch, found, err = r.findPersistedCodexSpawnLaunchForStatus(threadID, strings.TrimSpace(evt.ItemID), "")
+		if found {
+			launches = []persistedCodexSpawnLaunch{launch}
+		}
+	} else {
+		launches, err = r.persistedSubagentNotificationLaunches(threadID, strings.TrimSpace(evt.ItemID), parsed.AgentPath)
+	}
 	if err != nil {
 		return err
 	}
@@ -1613,6 +1628,11 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 		childID, ok := codexNotificationChildID(launch.meta, parsed.AgentPath)
 		if !ok {
 			continue
+		}
+		if parsed.MailboxDelivery {
+			if recorded := strings.TrimSpace(decodeCodexChildTerminalStatuses(json.RawMessage(launch.item.Meta))[childID]); recorded != "" {
+				status = recorded
+			}
 		}
 		allTerminal, aggregateStatus, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status)
 		if err != nil {
@@ -1634,7 +1654,11 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 			Meta:      subagentStatusToItemStatusMeta(aggregateStatus),
 			Timestamp: time.Now(),
 		}
-		if err := r.synthesizeCodexBackgroundCompletion(evt, launch.item.ID, codexBackgroundCompletionOptions{}); err != nil {
+		completionID := ""
+		if parsed.MailboxDelivery {
+			completionID = codexMailboxCompletionID(launch.item.ID, parsed.DeliveryID)
+		}
+		if err := r.synthesizeCodexBackgroundCompletion(evt, launch.item.ID, codexBackgroundCompletionOptions{completionID: completionID}); err != nil {
 			log.Printf("triage: codex-background subagent completion %s: %v", launch.item.ID, err)
 			if firstErr == nil {
 				firstErr = err
@@ -1642,6 +1666,15 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 		}
 	}
 	return firstErr
+}
+
+func codexMailboxCompletionID(launchID, deliveryID string) string {
+	deliveryID = strings.TrimSpace(deliveryID)
+	if deliveryID == "" {
+		return nextToolCompletionID(launchID)
+	}
+	digest := sha256.Sum256([]byte(deliveryID))
+	return fmt.Sprintf("complete:%s:delivery:%x", launchID, digest[:8])
 }
 
 func codexNotificationChildID(meta codexItemMeta, agentPath string) (string, bool) {
@@ -1736,7 +1769,10 @@ func (r *Router) synthesizeCodexBackgroundCompletion(evt provider.ProviderEvent,
 
 	now := eventTimestampMillis(evt)
 
-	completionID := nextToolCompletionID(launch.ID)
+	completionID := strings.TrimSpace(opts.completionID)
+	if completionID == "" {
+		completionID = nextToolCompletionID(launch.ID)
+	}
 	completion := store.Item{
 		ID:           completionID,
 		ThreadID:     evt.ThreadID,

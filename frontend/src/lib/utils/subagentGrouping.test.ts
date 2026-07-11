@@ -1068,6 +1068,40 @@ describe('groupItemsBySubagent', () => {
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
   });
 
+  it('keeps mailbox-delivered agent completions flat after the waited row', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({
+        id: 'wait-child',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+        status: 'completed',
+        meta: codexWaitAgentMeta(),
+      }),
+      mkItem({
+        id: 'complete-wait-child',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'wait_agent',
+        completionOf: 'wait-child',
+      }),
+      mkItem({
+        id: 'complete-spawn-1',
+        itemIndex: 2,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        completionOf: 'spawn-1',
+      }),
+    ]);
+
+    expect(nodes).toHaveLength(2);
+    const waited = expectWaitGroup(nodes[0]);
+    expect(waited.parent.id).toBe('wait-child');
+    expect(waited.completion?.id).toBe('complete-wait-child');
+    expect(waited.children).toHaveLength(0);
+    expect(expectLeaf(nodes[1]).item.id).toBe('complete-spawn-1');
+  });
+
   it('folds a childless timeout wait completion into the wait group as the header', () => {
     // The no-children case (timeout / re-wait / partial / untracked launch):
     // carrier (a) + completion (b), no collab_agent children. (b) is the ONLY

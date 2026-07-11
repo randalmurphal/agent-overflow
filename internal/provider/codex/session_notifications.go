@@ -172,7 +172,17 @@ func (s *Session) emitSubagentNotificationsFromRawMailboxCarrier(
 }
 
 func (s *Session) emitResolvedSubagentNotificationsFromRawMessageItem(item map[string]json.RawMessage) bool {
-	if item == nil || readRawString(item, "type") != "message" {
+	if item == nil {
+		return false
+	}
+	if readRawString(item, "type") == "agent_message" {
+		notification, ok := extractSubagentCompletionFromRawAgentMessageItem(item)
+		if !ok {
+			return false
+		}
+		return s.emitResolvedSubagentNotifications([]subagentNotification{notification}, "", true)
+	}
+	if readRawString(item, "type") != "message" {
 		return false
 	}
 
@@ -260,8 +270,23 @@ func (s *Session) prepareNotificationEvent(evt *provider.ProviderEvent, method s
 	s.maybeRewriteCollabControlItemID(evt, params)
 	s.maybeRememberCollabReceiverThreads(method, params)
 	s.enrichRawToolCallMetadata(evt)
+	s.enrichSubAgentActivitySpawnMetadata(evt)
 	s.preserveWaitAgentReceiverTargets(evt)
 	s.enrichCollabReceiverMetadata(evt)
+}
+
+func (s *Session) enrichSubAgentActivitySpawnMetadata(evt *provider.ProviderEvent) {
+	if evt == nil || evt.ItemType != "collab_agent" {
+		return
+	}
+	model, reasoningEffort := s.activeCollabModel()
+	mutateEventMetaInput(evt, false, func(input map[string]json.RawMessage) {
+		if readRawString(input, "tool") != "spawn_agent" {
+			return
+		}
+		setRawStringIfMissing(input, "model", model)
+		setRawStringIfMissing(input, "reasoningEffort", reasoningEffort)
+	})
 }
 
 func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {

@@ -1874,7 +1874,7 @@ func TestCodexSubagentNotificationAfterLifecycleStatusCarriesFinalOutput(t *test
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
-	spawnMeta := buildSpawnAgentMeta(t, "child-franklin", "running")
+	spawnMeta := buildSpawnAgentMeta(t, "child-provider-franklin", "running")
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-franklin",
 		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
@@ -1891,8 +1891,8 @@ func TestCodexSubagentNotificationAfterLifecycleStatusCarriesFinalOutput(t *test
 	}
 
 	statusMeta, _ := json.Marshal(map[string]any{
-		"agent_path": "child-franklin",
-		"status":     "completed",
+		"agent_path": "child-provider-franklin",
+		"status":     "errored",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-franklin",
@@ -1903,11 +1903,20 @@ func TestCodexSubagentNotificationAfterLifecycleStatusCarriesFinalOutput(t *test
 	if completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-franklin")); err != nil || found {
 		t.Fatalf("lifecycle status completion = %+v found=%v err=%v, want none", completion, found, err)
 	}
+	launchAfterStatus, found, err := st.GetThreadItem("t1", "spawn-franklin")
+	if err != nil || !found {
+		t.Fatalf("spawn after lifecycle status: found=%v err=%v", found, err)
+	}
+	if got := decodeCodexChildTerminalStatuses(json.RawMessage(launchAfterStatus.Meta))["child-provider-franklin"]; got != "errored" {
+		t.Fatalf("persisted lifecycle status = %q, want errored; meta=%s", got, launchAfterStatus.Meta)
+	}
 
 	notifyMeta, _ := json.Marshal(map[string]any{
-		"agent_path": "child-franklin",
-		"status":     "completed",
-		"message":    "Franklin final answer",
+		"agent_path":       "/root/franklin",
+		"status":           "completed",
+		"mailbox_delivery": true,
+		"delivery_id":      "child-turn-1",
+		"message":          "Franklin final answer",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventSubagentNotification, ThreadID: "t1", ItemID: "spawn-franklin",
@@ -1916,12 +1925,15 @@ func TestCodexSubagentNotificationAfterLifecycleStatusCarriesFinalOutput(t *test
 		t.Fatalf("subagent notification: %v", err)
 	}
 
-	completion, found, err := st.GetThreadItem("t1", nextToolCompletionID("spawn-franklin"))
+	completion, found, err := st.GetThreadItem("t1", codexMailboxCompletionID("spawn-franklin", "child-turn-1"))
 	if err != nil || !found {
 		t.Fatalf("notification completion missing: found=%v err=%v", found, err)
 	}
 	if completion.PayloadKind != payloadKindToolCallResult {
 		t.Fatalf("payload kind = %q, want %s", completion.PayloadKind, payloadKindToolCallResult)
+	}
+	if completion.Status != statusErrored {
+		t.Fatalf("completion status = %q, want preserved lifecycle status %q", completion.Status, statusErrored)
 	}
 	data, err := st.GetPayloadData(completion.PayloadID)
 	if err != nil {
@@ -1929,6 +1941,27 @@ func TestCodexSubagentNotificationAfterLifecycleStatusCarriesFinalOutput(t *test
 	}
 	if string(data) != "Franklin final answer" {
 		t.Fatalf("payload = %q, want notification output", string(data))
+	}
+
+	secondNotifyMeta, _ := json.Marshal(map[string]any{
+		"agent_path":       "/root/franklin",
+		"status":           "completed",
+		"mailbox_delivery": true,
+		"delivery_id":      "child-turn-2",
+		"message":          "Franklin follow-up answer",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentNotification, ThreadID: "t1", ItemID: "spawn-franklin",
+		Meta: secondNotifyMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second mailbox delivery: %v", err)
+	}
+	second, found, err := st.GetThreadItem("t1", codexMailboxCompletionID("spawn-franklin", "child-turn-2"))
+	if err != nil || !found {
+		t.Fatalf("second delivery completion missing: found=%v err=%v", found, err)
+	}
+	if second.CompletionOf != "spawn-franklin" || second.ID == completion.ID {
+		t.Fatalf("second completion = %+v, first id = %s", second, completion.ID)
 	}
 }
 

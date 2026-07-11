@@ -62,6 +62,8 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
+	s.model = "gpt-5.4"
+	s.reasoningEffort = "high"
 
 	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 
@@ -85,6 +87,8 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 			Input struct {
 				Tool              string                     `json:"tool"`
 				AgentPath         string                     `json:"agentPath"`
+				Model             string                     `json:"model"`
+				ReasoningEffort   string                     `json:"reasoningEffort"`
 				ReceiverThreadIDs []string                   `json:"receiverThreadIds"`
 				AgentsStates      map[string]json.RawMessage `json:"agentsStates"`
 			} `json:"input"`
@@ -93,6 +97,7 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 			t.Fatalf("decode event meta: %v", err)
 		}
 		if meta.Input.Tool != "spawn_agent" || meta.Input.AgentPath != "/root/reviewer" ||
+			meta.Input.Model != "gpt-5.4" || meta.Input.ReasoningEffort != "high" ||
 			len(meta.Input.ReceiverThreadIDs) != 1 || meta.Input.ReceiverThreadIDs[0] != "child-a" ||
 			len(meta.Input.AgentsStates) != 1 {
 			t.Fatalf("normalized meta = %+v", meta.Input)

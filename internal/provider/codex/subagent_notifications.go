@@ -1,16 +1,18 @@
 package codex
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"regexp"
 	"strings"
 )
 
-// subagentNotification is the parsed shape of a single
-// <subagent_notification>{...}</subagent_notification> tag that Codex
-// core delivers to the parent mailbox when a detached child agent has
-// reached a terminal state without a parent `wait` outstanding. See
+// subagentNotification is the common child-result signal emitted when Codex
+// delivers a result into parent model context. Legacy Codex sends a
+// <subagent_notification>{...}</subagent_notification> tag; MultiAgentV2 sends
+// an agent_message FINAL_ANSWER envelope. See
 // codex-source's `core/src/context/subagent_notification.rs` for the
 // tag constants and `core/tests/suite/subagent_notifications.rs` for
 // the canonical wire shape.
@@ -30,9 +32,113 @@ import (
 // backward compatibility with any pre-rename builds; `agent_path` is
 // the fast path and what we forward on.
 type subagentNotification struct {
-	AgentPath string         `json:"agent_path"`
-	Status    string         `json:"status"`
-	Extra     map[string]any `json:"-"`
+	AgentPath       string         `json:"agent_path"`
+	Status          string         `json:"status"`
+	Message         string         `json:"-"`
+	MailboxDelivery bool           `json:"-"`
+	DeliveryID      string         `json:"-"`
+	Extra           map[string]any `json:"-"`
+}
+
+const (
+	interAgentFinalAnswerMarker = "Message Type: FINAL_ANSWER"
+	interAgentFinalAnswerPrefix = interAgentFinalAnswerMarker + "\n"
+)
+
+// extractSubagentCompletionFromRawAgentMessageItem parses the MultiAgentV2
+// rollout item Codex records when a child's final answer is drained from the
+// parent mailbox into model context. Child turn/completed is intentionally not
+// enough: this record is the exact transcript presentation boundary.
+func extractSubagentCompletionFromRawAgentMessageItem(item map[string]json.RawMessage) (subagentNotification, bool) {
+	if strings.TrimSpace(readRawString(item, "type")) != "agent_message" {
+		return subagentNotification{}, false
+	}
+	text, ok := rawMessageSingleTextOfType(item, "input_text")
+	if !ok {
+		return subagentNotification{}, false
+	}
+	notification, ok := parseSubagentFinalAnswer(
+		readRawString(item, "author"),
+		readRawString(item, "recipient"),
+		text,
+	)
+	if !ok {
+		return subagentNotification{}, false
+	}
+	notification.DeliveryID = interAgentDeliveryID(item)
+	if notification.DeliveryID == "" {
+		notification.DeliveryID = interAgentContentDeliveryID(notification)
+	}
+	return notification, true
+}
+
+func extractSubagentCompletionFromInterAgentCommunication(payload map[string]json.RawMessage) (subagentNotification, bool) {
+	var triggerTurn *bool
+	if raw, ok := payload["trigger_turn"]; ok {
+		_ = json.Unmarshal(raw, &triggerTurn)
+	}
+	if triggerTurn == nil || *triggerTurn {
+		return subagentNotification{}, false
+	}
+	notification, ok := parseSubagentFinalAnswer(
+		readRawString(payload, "author"),
+		readRawString(payload, "recipient"),
+		readRawString(payload, "content"),
+	)
+	if !ok {
+		return subagentNotification{}, false
+	}
+	notification.DeliveryID = interAgentDeliveryID(payload)
+	if notification.DeliveryID == "" {
+		notification.DeliveryID = interAgentContentDeliveryID(notification)
+	}
+	return notification, true
+}
+
+func interAgentContentDeliveryID(notification subagentNotification) string {
+	digest := sha256.Sum256([]byte(notification.AgentPath + "\x00" + notification.Message))
+	return "content:" + hex.EncodeToString(digest[:])
+}
+
+func interAgentDeliveryID(item map[string]json.RawMessage) string {
+	raw := item["internal_chat_message_metadata_passthrough"]
+	var metadata struct {
+		TurnID string `json:"turn_id"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &metadata) != nil {
+		return ""
+	}
+	return strings.TrimSpace(metadata.TurnID)
+}
+
+func parseSubagentFinalAnswer(author, recipient, text string) (subagentNotification, bool) {
+	author = strings.TrimSpace(author)
+	recipient = strings.TrimSpace(recipient)
+	if author == "" || recipient != "/root" || !strings.HasPrefix(text, interAgentFinalAnswerPrefix) {
+		return subagentNotification{}, false
+	}
+
+	rest := strings.TrimPrefix(text, interAgentFinalAnswerPrefix)
+	taskLine, rest, ok := strings.Cut(rest, "\n")
+	if !ok || strings.TrimSpace(strings.TrimPrefix(taskLine, "Task name:")) != recipient ||
+		!strings.HasPrefix(taskLine, "Task name:") {
+		return subagentNotification{}, false
+	}
+	senderLine, rest, ok := strings.Cut(rest, "\n")
+	if !ok || !strings.HasPrefix(senderLine, "Sender:") ||
+		strings.TrimSpace(strings.TrimPrefix(senderLine, "Sender:")) != author {
+		return subagentNotification{}, false
+	}
+	payloadHeader, payload, ok := strings.Cut(rest, "\n")
+	if !ok || strings.TrimSpace(payloadHeader) != "Payload:" {
+		return subagentNotification{}, false
+	}
+	return subagentNotification{
+		AgentPath:       author,
+		Status:          "completed",
+		Message:         strings.TrimSpace(payload),
+		MailboxDelivery: true,
+	}, true
 }
 
 // subagentNotificationPattern matches a single
@@ -92,7 +198,7 @@ func parseSubagentNotificationsWithCarrierRemainder(text string) ([]subagentNoti
 		if agentPath == "" {
 			agentPath, _ = raw["agent_id"].(string)
 		}
-		status, message, hasMessage := normalizeSubagentStatus(raw["status"])
+		status, statusMessage, hasStatusMessage := normalizeSubagentStatus(raw["status"])
 		if agentPath == "" || status == "" {
 			continue
 		}
@@ -101,14 +207,21 @@ func parseSubagentNotificationsWithCarrierRemainder(text string) ([]subagentNoti
 		delete(raw, "agent_path")
 		delete(raw, "agent_id")
 		delete(raw, "status")
-		if hasMessage {
-			if _, exists := raw["message"]; !exists {
-				raw["message"] = message
+		message, messageIsString := raw["message"].(string)
+		if messageIsString {
+			delete(raw, "message")
+		}
+		if message == "" && hasStatusMessage {
+			if text, ok := statusMessage.(string); ok {
+				message = text
+			} else if _, exists := raw["message"]; !exists {
+				raw["message"] = statusMessage
 			}
 		}
 		notifications = append(notifications, subagentNotification{
 			AgentPath: agentPath,
 			Status:    status,
+			Message:   message,
 			Extra:     raw,
 		})
 	}
@@ -342,6 +455,15 @@ func buildSubagentNotificationMeta(n subagentNotification) json.RawMessage {
 	}
 	fields["agent_path"] = n.AgentPath
 	fields["status"] = n.Status
+	if n.Message != "" {
+		fields["message"] = n.Message
+	}
+	if n.MailboxDelivery {
+		fields["mailbox_delivery"] = true
+	}
+	if n.DeliveryID != "" {
+		fields["delivery_id"] = n.DeliveryID
+	}
 	meta, err := json.Marshal(fields)
 	if err != nil {
 		// Fallback to a minimal payload so the frontend still gets the

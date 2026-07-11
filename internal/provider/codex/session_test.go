@@ -4944,15 +4944,15 @@ func TestParseSubagentNotifications_WhitespaceLenient(t *testing.T) {
 // compatibility: when Codex adds fields inside the notification JSON,
 // we preserve them on the Extra map so downstream can opt into richer
 // rendering without a parser update. The load-bearing `agent_path` and
-// `status` keys are stripped from Extra (they have their own fields).
+// `status` and `message` keys are stripped from Extra (they have their own fields).
 func TestParseSubagentNotifications_PreservesExtraFields(t *testing.T) {
 	text := `<subagent_notification>{"agent_path":"child-1","status":"completed","message":"ok","duration_ms":1234}</subagent_notification>`
 	got := parseSubagentNotifications(text)
 	if len(got) != 1 {
 		t.Fatalf("len=%d, want 1", len(got))
 	}
-	if got[0].Extra["message"] != "ok" {
-		t.Errorf("Extra.message: got %v, want %q", got[0].Extra["message"], "ok")
+	if got[0].Message != "ok" {
+		t.Errorf("Message: got %v, want %q", got[0].Message, "ok")
 	}
 	// JSON numbers decode as float64 in map[string]any.
 	if got[0].Extra["duration_ms"].(float64) != 1234 {
@@ -4973,10 +4973,10 @@ func TestParseSubagentNotifications_ObjectStatus(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len=%d, want 2 (got=%+v)", len(got), got)
 	}
-	if got[0].Status != "completed" || got[0].Extra["message"] != "done" {
+	if got[0].Status != "completed" || got[0].Message != "done" {
 		t.Errorf("entry 0: got %+v, want completed with message", got[0])
 	}
-	if got[1].Status != "errored" || got[1].Extra["message"] != "boom" {
+	if got[1].Status != "errored" || got[1].Message != "boom" {
 		t.Errorf("entry 1: got %+v, want errored with message", got[1])
 	}
 }
@@ -5945,8 +5945,9 @@ func TestBuildSubagentNotificationMetaIncludesExtra(t *testing.T) {
 	n := subagentNotification{
 		AgentPath: "child-extra",
 		Status:    "completed",
+		Message:   "ok",
 		Extra: map[string]any{
-			"message":     "ok",
+			"message":     "clobber-attempt",
 			"duration_ms": float64(1234),
 			// Attempted collision — the canonical fields must win.
 			"agent_path": "clobber-attempt",

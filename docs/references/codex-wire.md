@@ -480,13 +480,36 @@ target list, especially when the wait times out and the typed
 
 When the wait observes completion, the raw output has
 `"timed_out":false` and `status` carries the terminal child result.
-The typed `item/completed` usually also carries `agentsStates`, and
-that typed state remains the source used to synthesize the indented
-spawn-agent completion row. V2 deliberately completes with empty
-`receiverThreadIds` and `agentsStates`; child `turn/completed` still updates
-the launch's live status, and the scoped child transcript provides its result.
+The typed `item/completed` usually also carries `agentsStates`, and that typed
+state remains the V1 source used to synthesize its completion row. V2 completes
+with empty `receiverThreadIds` and `agentsStates`; child `turn/completed`
+updates only the launch's live status. Its result does not enter parent history
+until the mailbox is drained into parent context.
 
-**(b) Implicit via `<subagent_notification>`**: When a detached
+MultiAgentV2 persists that delivery in the parent rollout as an
+`inter_agent_communication` record:
+
+```json
+{
+  "type": "inter_agent_communication",
+  "payload": {
+    "author": "/root/reviewer",
+    "recipient": "/root",
+    "content": "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/reviewer\nPayload:\n<child result>",
+    "internal_chat_message_metadata_passthrough": {"turn_id": "child-turn"},
+    "trigger_turn": false
+  }
+}
+```
+
+That record—not child `turn/completed` and not `wait_agent` returning—is the
+MultiAgentV2 transcript-completion boundary. Agent Overflow emits one flat
+completion row per delivered child turn. Fresh sessions see the model-input
+projection as a raw `agent_message` response item; resumed sessions see the
+durable record above. Older rollouts that persisted the projected response item
+remain supported.
+
+**(b) Legacy implicit via `<subagent_notification>`**: When a detached
 child finishes and the parent has NO `wait` outstanding, Codex core
 enqueues a mailbox notification for the parent. The parent sees it when
 the mailbox item is accepted into pending input for a later parent turn.
