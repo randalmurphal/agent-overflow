@@ -22,6 +22,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.5 reliability | `m2/p25-reliability` | `~/repos/ao-lanes/p25` | gpt-5.6-sol / **xhigh** | run1 `019f556f-851a-79c0-8910-2c3ba63ff505` (dead on arrival — usage limit); run2 `019f5601-046a-7d11-96ce-38b7df0d666d` | **merged** |
 | P2.6 workspace isolation | `m2/p26-workspace-isolation` | `~/repos/ao-lanes/p26` | gpt-5.6-sol / **xhigh** | `019f5635-3455-7483-9849-9a35a0805bb4` | **merged** |
 | P2.7 harness workflows | `m2/p27-harness-workflows` | `~/repos/ao-lanes/p27` | gpt-5.6-sol / **xhigh** | `019f566e-6df8-7e71-9f2d-843f7b228a5d` | **merged** |
+| P0.3 rev2 OS notifications | `m3/p03r2-os-notifications` | `~/repos/ao-lanes/p03r2` | gpt-5.6-sol / **xhigh** | `019f56ae-e129-7612-be10-c9c677757ed9` | dispatched (base `653514c6`) |
 
 ## Events
 
@@ -423,3 +424,16 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   bug confirmed still present at alpha2.117). **NO upstream PR opened;
   standing constraint holds: PR only with explicit user approval.**
   agent-overflow pin bumped (`a63891ac`), go-build + go-test green.
+- **P0.3 rev2 dispatched** into `~/repos/ao-lanes/p03r2` (branch
+  `m3/p03r2-os-notifications`, base `653514c6` = post-pin-bump main).
+  Lane frontend-bootstrapped; full pre-dispatch baseline green including
+  the packet's two new gates (GOOS=windows full cross-build; frontend
+  vitest 362/5236) plus go-build, go-test, frontend check, e2e 10/10.
+  Banner verified sol/**xhigh**, session
+  `019f56ae-e129-7612-be10-c9c677757ed9`, no usage-limit DOA. Review
+  inputs banked: dismissal must never emit `notification:activated`
+  (fork fix consumed, not re-implemented); launcher WS client must be
+  unit-tested against a stub transport server; `NotificationActivated`
+  classified LocalOnly; pending-activation queue cap 8 with vitest;
+  OS-presentation surfaces stated as explicitly unverified. Log: session
+  scratchpad `p03r2-codex.log`.
