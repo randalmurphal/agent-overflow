@@ -450,7 +450,10 @@ during the chat rewrite before we formalized the cleanup rule.
 
 **Enforcement.** `internal/triage/AGENTS.md` documents the current
 set and the rule. Adding a new map requires documenting its cleanup
-in the same commit.
+in the same commit. The App turn-observer registry in
+`app_turn_observers.go` removes an observer when its idempotent unsubscribe
+function runs and deletes empty per-thread buckets; the built-in global
+discussion observer intentionally has the App lifetime.
 
 **Test.** `TestCapturedTurnsClearOnTurnComplete` and
 `TestUnknownSessionStatusLoggedStaysBounded` in

@@ -7,14 +7,14 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 
 | Packet | Branch | Lane | Model / effort | Session id | Status |
 |---|---|---|---|---|---|
-| P0.1 turn-observer registry | `m0/p01-turn-observers` | `~/repos/ao-lanes/p01` | gpt-5.6-sol / high | run1 `019f5435-f377…` (BLOCKED, valid); run2 `019f545b-1d9d-7f41-be57-997dd740ddfe` | redispatched on `bc1d28b9` |
+| P0.1 turn-observer registry | `m0/p01-turn-observers` | `~/repos/ao-lanes/p01` | gpt-5.6-sol / high | run1 `019f5435-f377…` (BLOCKED, valid); run2 `019f545b-1d9d-7f41-be57-997dd740ddfe` | **merged** |
 | P0.2 project slugs + config dirs | `m0/p02-project-slugs` | `~/repos/ao-lanes/p02` | gpt-5.6-sol / high | `019f5436-71b2-7c21-becc-69506f21bc46` | **merged** |
 | P0.3 OS notifications | `m0/p03-os-notifications` | `~/repos/ao-lanes/p03` | gpt-5.6-sol / high | `019f5437-1334-7ad1-9d71-4b04bb7b8439` | PARKED (valid BLOCKED) |
 | P0.4 docs hygiene | `m0/p04-docs-hygiene` | `~/repos/ao-lanes/p04` | gpt-5.6-sol / high | `019f5434-5f98-7ba2-9bea-3b89c2d30656` | **merged** |
 | P1.1 `internal/workflow/def` | `m1/p11-workflow-def` | `~/repos/ao-lanes/p11` | gpt-5.6-sol / high | `019f545e-ab3a-78f2-a7bc-66e4f65a8164` | **merged** |
 | P1.2 `internal/workflow/profile` | `m1/p12-profile` | `~/repos/ao-lanes/p12` | gpt-5.6-sol / high | `019f5478-b246-7863-b9ac-80977313ffc5` | **merged** |
 | P1.3 `ao` CLI skeleton | `m1/p13-ao-cli` | `~/repos/ao-lanes/p13` | gpt-5.6-sol / high | `019f5478-bdb3-75c0-b1c4-4ee5139ae19a` | **merged** |
-| P1.4 starters + `ao workflow new` | `m1/p14-starters` | `~/repos/ao-lanes/p14` | gpt-5.6-sol / high | _pending_ | authored |
+| P1.4 starters + `ao workflow new` | `m1/p14-starters` | `~/repos/ao-lanes/p14` | gpt-5.6-sol / high | `019f548e-a038-7f82-87ab-750b8b20957d` | dispatched (base `e0900405`) |
 
 ## Events
 
@@ -135,11 +135,15 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   chain; two live copies of a platform-subtle resolution invites drift.
   Follow-up folded into P1.4: `ao workflow validate --project` should load
   the project profile as def.Bindings now that P1.2 is merged.
-- **P0.1 run2 completed; adjudication in progress.** Registry + discussion
-  migration reviewed (dispatch point exactly after triage.Handle; snapshot
-  under RLock, invoke outside; idempotent unsubscribe; discussion logic
-  byte-preserved). One flag: its first final `make test-race` FAILED with
-  the specific diagnostic lost to codex-side log truncation (honestly
-  disclosed), passed on exact retry (626s). Claude running an independent
-  full test-race in the lane before merge — retry-pass alone is not
-  acceptance evidence for a possible race.
+- **P0.1 run2 reviewed + merged.** Registry + discussion migration reviewed
+  (dispatch point exactly after triage.Handle; snapshot under RLock, invoke
+  outside; idempotent unsubscribe with empty-bucket cleanup; inline `[4]`
+  fast path; discussion logic + emitWireErrorToThread text byte-preserved;
+  installDiscussionTurnObserver via sync.Once in NewApp with a defensive
+  call in sessionEventHandler). One flag: its first final `make test-race`
+  FAILED with the diagnostic lost to codex-side log truncation (honestly
+  disclosed), passed on exact retry (626s). Adjudicated as environment
+  flake, not a race: Claude ran an independent FULL `make test-race` in the
+  lane — green end to end (root package 799s, no FAIL/DATA RACE lines),
+  on top of codex's focused -race observer runs and its retry pass. Report
+  at `reports/P0.1-report.md`.

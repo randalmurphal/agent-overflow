@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"sync/atomic"
 	"time"
@@ -13,6 +12,11 @@ import (
 )
 
 func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) func(provider.ProviderEvent) {
+	// NewApp installs built-in observers during App construction. Keep the
+	// once-guarded install here as well for tests and other internal callers
+	// that intentionally construct a bare App before starting a session.
+	a.installDiscussionTurnObserver()
+
 	// deathReported flips true if the read loop emits a session_status
 	// "error" — the wire-typed signal for an abnormal exit (signal, crash,
 	// clean exit-0 we didn't initiate). Captured in the closure so the
@@ -65,6 +69,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 				log.Printf("triage: %v", err)
 			}
 		}
+		a.dispatchTurnObservers(threadID, evt)
 
 		// Dead-on-arrival reap: a wire error result before this session
 		// ever reached init means startup failed and the process is
@@ -85,15 +90,6 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		}
 
 		if evt.Kind == provider.EventTurnComplete {
-			if err := a.syncDiscussionTurn(threadID); err != nil {
-				log.Printf("discussion runtime: %v", err)
-				// Emit an error event so the UI knows the discussion sync
-				// failed. The turn-complete event still propagates (we can't
-				// block it), but the error should be visible. Wire variant:
-				// this fires on the read loop in response to a wire frame,
-				// so it must drop with the rest of a stopped thread's tail.
-				a.emitWireErrorToThread(threadID, fmt.Sprintf("discussion sync failed: %v", err))
-			}
 			// Rate-limit refresh on turn completion: piggy-back on the
 			// event the user already triggered so the rings reflect the
 			// cost of the turn that just finished. Fires in a goroutine

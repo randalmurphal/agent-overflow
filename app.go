@@ -73,15 +73,24 @@ type App struct {
 	// ServiceStartup in desktop mode (app_desktop.go); left nil in the
 	// headless WSL backend, where there is no native window to attach a
 	// dialog to and the frontend uses a download fallback instead.
-	saveDialog  savePayloadPicker
-	store       *store.Store
-	git         *gitops.Core
-	gitWatch    *gitwatch.Manager
-	settings    *settings.Service
-	triage      *triage.Router
-	checkpoints *checkpoint.Store
-	registry    *discussion.Registry
-	channels    *discussion.ChannelService
+	saveDialog savePayloadPicker
+	store      *store.Store
+	git        *gitops.Core
+	gitWatch   *gitwatch.Manager
+	settings   *settings.Service
+	triage     *triage.Router
+	// turnObservers fan provider events out to internal App features after
+	// triage handling has been attempted. Each registration lives until its
+	// returned unsubscribe function runs; the built-in discussion observer
+	// lives for the App lifetime. turnObserversMu is deliberately independent
+	// of mu so callbacks can safely enter other App coordination paths.
+	turnObserversMu            sync.RWMutex
+	turnObservers              map[string]map[uint64]turnObserver
+	nextTurnObserverID         uint64
+	discussionTurnObserverOnce sync.Once
+	checkpoints                *checkpoint.Store
+	registry                   *discussion.Registry
+	channels                   *discussion.ChannelService
 	// designWorkdir owns each thread's per-thread {main,options}
 	// directory layout. The base directory is the HTTP file server's
 	// StripPrefix target — designServer below mounts it at /design/
@@ -502,17 +511,20 @@ func (s session) providerSession() provider.Session {
 }
 
 func NewApp() *App {
-	return &App{
+	app := &App{
 		sessions:               make(map[string]session),
 		threadActionLocks:      newThreadActionLocks(),
 		startingSessions:       make(map[string]*sessionStart),
 		reconnectingThreads:    make(map[string]bool),
 		autoReconnectAttempted: make(map[string]bool),
+		turnObservers:          make(map[string]map[uint64]turnObserver),
 		threadSystemPrompts:    make(map[string]string),
 		deliberations:          make(map[string]*discussion.Deliberation),
 		gitWatchPumps:          make(map[string]*gitWatchPump),
 		prUpdatePumps:          make(map[string]*prUpdatePump),
 	}
+	app.installDiscussionTurnObserver()
+	return app
 }
 
 // SetEventBus wires the Phase C transport event bus into the App so
