@@ -136,3 +136,57 @@ M0 packets are independent (parallel lanes). M1 depends only on P0.2 (slugs) for
 P1.2's dir layout. M2 gates on M1 (def/profile) and P0.1 (observer registry).
 M3 gates on M2's channels/methods but its pure-presentation packets can start
 against fixtures earlier. M4/M5 gate on M2; M5's scheduler is independent of M3.
+
+## M3 packets (decomposition settled at the M2→M3 boundary)
+
+Sequenced after P0.3 rev2 (notifications pipe) merges; one lane at a time —
+backend packets touch overlapping app/transport/frontend-store files, so no
+parallel dispatch. UI-SPEC (`workflows-system-ui/UI-SPEC.md`) is the binding
+surface spec; the decisions log wins where they disagree.
+
+- **P3.1 — Backend: thread modes, take-over, hand-off, studio/triage
+  threads.** New `threads.mode` values `workflow-studio` / `workflow-triage`
+  (migration if the v23 CHECK enumerates modes — append-only), principled
+  listing exclusion (already mode-based for `workflow`). Take-over of a live
+  phase turn: interactive send into a workflow thread routes through the
+  runner's schema registration (P2.4 carry-forward (b)) and detaches the run
+  per WHAT-spec §7. Hand-off ("Continue with agent", D4.2): triage thread in
+  the run's worktree, seeded context chip + immediate kickoff. Triage agent
+  thread (D4.9) open/resume. Includes P2.4 carry-forward (a): a settings
+  workflow-concurrency update must reset any live process-N bound
+  (maxStarts) cleanly.
+- **P3.2 — Backend: disposition (D3.3).** Merge-to-main (ff or merge per
+  profile; refuse on conflict/dirty base → park `needs-human(disposition)`),
+  PR creation, discard-worktree via the existing guarded removal, receipts
+  data (sha, mode, policy), `workflow:*` events for disposition state.
+  Reuses `internal/git`; no forced merges, no silent failure.
+- **P3.3 — Backend: UI data + notification senders.** Per-item park/fail
+  notifications + coalesced drain summary through the P0.3 rev2 pipe with
+  deep-link targets (run detail / triage agent); D4.3 digest fields on run
+  detail RPCs; D12 continuity notes storage + read/write RPC; intake
+  support (workflow list with dry-run validation errors, predicted queue
+  position); `WorkflowRemoveQueuedItem` (P2.2 carry-forward); enqueue RPC
+  goes fire-and-forget for UI callers (P2.6 carry-forward — stop attaching
+  runner-start futures to the enqueue/set-queue command responses; errors
+  ride `workflow:error` events).
+- **P3.4 — Frontend: workflows pane skeleton.** `PaneLayoutKind
+  'workflows'` singleton + persistence, stacked navigation
+  (overview › workflow › run), `workflowsPane.svelte.ts`,
+  `eventsWorkflow.ts` fan-out (P2.4 carry-forward: `workflow:*`
+  subscriptions in events.ts), read-only rendering of all three levels +
+  states per UI-SPEC §§3–5 (R1 two-hue rule, R2 no internals), data-testids.
+- **P3.5 — Frontend: actions, sweep, intake.** Action rows per state,
+  gate/question/failed/done flows, needs-attention sweep (j/k, all-clear),
+  intake dialog + chat confirm card (D4.5), queue drag-reorder, queued-item
+  removal affordance (carry-forward), keyboard bindings (§9), toasts.
+- **P3.6 — Frontend: sidebar, footer, exclusions, ReviewPane, remote.**
+  `WorkflowsSection.svelte` + `WorkflowsFooter.svelte`, thread-mode
+  exclusions in pickers/lists, ReviewPane companion integration (§5.7),
+  notification deep-link handling (§10), remote view-only posture (§12).
+- **P3.7 — e2e + polish.** Playwright specs per surface on the harness
+  workflow seeds (P2.7), UI-SPEC conformance audit, fable-agent taste pass
+  on final polish (reserved per campaign plan).
+
+Automation-driven chrome (Scheduled section, next-run banner, enable/disable,
+Run now) ships with inert data paths — M5's scheduler populates them; the
+components render only when automation data exists.
