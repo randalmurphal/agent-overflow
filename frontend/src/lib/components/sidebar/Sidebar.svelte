@@ -18,6 +18,7 @@
   import UsageFooter from './UsageFooter.svelte';
   import SystemStatsFooter from './SystemStatsFooter.svelte';
   import SettingsFooter from './SettingsFooter.svelte';
+  import WorkflowsFooter from './WorkflowsFooter.svelte';
   import SidebarResizer from './SidebarResizer.svelte';
   import ThreadFromPRDialog from './ThreadFromPRDialog.svelte';
 
@@ -72,6 +73,7 @@
   <ProjectsSection {pane} />
   <UsageFooter />
   <SystemStatsFooter />
+  <WorkflowsFooter />
   <SettingsFooter {onOpenSettings} />
   <SidebarResizer
     width={getSidebarWidth()}

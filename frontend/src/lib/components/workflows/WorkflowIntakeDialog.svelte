@@ -8,11 +8,13 @@
   import { addToast } from '../../stores/toast.svelte';
   import { compactWorkflowSeeds, workflowIntakeError } from '../../stores/workflowIntake';
   import { userFacingError } from '../../utils/userFacingError';
+  import { isViewOnlySession } from '../../transport/runMode';
   import {
     getWorkflowDefinitions,
     getWorkflowIntakePrefill,
     loadWorkflowOverview,
   } from '../../stores/workflowsPane.svelte';
+  import { refreshWorkflowsSidebar } from '../../stores/workflowsSidebar.svelte';
 
   interface Props { open: boolean; onClose: () => void }
   let { open, onClose }: Props = $props();
@@ -25,6 +27,7 @@
   let baseBranch = $state('');
   let stepMode = $state(false);
   let submitting = $state(false);
+  let viewOnly = $derived(isViewOnlySession());
   let pathPickerFor: string | null = $state(null);
   let wasOpen = false;
 
@@ -86,7 +89,7 @@
   function updateSeed(name: string, value: unknown): void { seeds = { ...seeds, [name]: value }; }
 
   async function submit(): Promise<void> {
-    if (!selected || validationError || submitting) return;
+    if (viewOnly || !selected || validationError || submitting) return;
     submitting = true;
     try {
       await WorkflowEnqueueItem(
@@ -95,6 +98,7 @@
       );
       addToast('success', `Queued — position ${predictedPosition} · starts when a slot frees`);
       onClose();
+      refreshWorkflowsSidebar();
       await loadWorkflowOverview();
     } catch (error) {
       addToast('error', userFacingError(error, 'Could not queue the run.'));
@@ -153,7 +157,7 @@
             <label class="text-xs text-fg-muted">{input.name}{input.required ? '' : ' · optional'}
               <div class="mt-1 flex gap-1">
                 <input type={input.type === 'number' ? 'number' : 'text'} value={String(seeds[input.name] ?? '')} oninput={(event) => { const raw = (event.currentTarget as HTMLInputElement).value; updateSeed(input.name, input.type === 'number' && raw !== '' ? Number(raw) : raw); }} class="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm" data-testid={`wf-seed-${input.name}`} />
-                {#if input.format === 'path'}<button type="button" class="rounded-md border border-border-subtle px-2 text-xs" onclick={() => { pathPickerFor = pathPickerFor === input.name ? null : input.name; }} data-testid={`wf-seed-${input.name}-pick`}>Browse</button>{/if}
+                {#if input.format === 'path'}<button type="button" class="rounded-md border border-border-subtle px-2 text-xs disabled:opacity-45" disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} onclick={() => { pathPickerFor = pathPickerFor === input.name ? null : input.name; }} data-testid={`wf-seed-${input.name}-pick`}>Browse</button>{/if}
               </div>
             </label>
           {/if}
@@ -169,7 +173,7 @@
     {#if validationError}<p class="text-xs text-error" data-testid="wf-intake-error">{validationError}</p>{/if}
     <div class="flex justify-end gap-2 border-t border-border-subtle pt-3">
       <button type="button" class="rounded-md border border-border-subtle px-3 py-1.5 text-xs" onclick={onClose} data-testid="wf-intake-cancel">Cancel</button>
-      <button class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-45" disabled={Boolean(validationError) || submitting} data-testid="wf-intake-submit">Queue — position {predictedPosition}</button>
+      <button class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-45" disabled={viewOnly || Boolean(validationError) || submitting} title={viewOnly ? 'Local only' : undefined} data-testid="wf-intake-submit">Queue — position {predictedPosition}</button>
     </div>
   </form>
 </Modal>

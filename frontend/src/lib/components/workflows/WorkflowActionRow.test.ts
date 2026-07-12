@@ -1,8 +1,9 @@
 import { render } from '@testing-library/svelte';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { WorkflowItemDetail } from '../../types/workflow';
 import { resetWorkflowsPane } from '../../stores/workflowsPane.svelte';
 import WorkflowActionRow from './WorkflowActionRow.svelte';
+import { __resetRunModeForTest } from '../../transport/runMode';
 
 function detail(state: string, reason = '', disposition = ''): WorkflowItemDetail {
   return {
@@ -12,7 +13,16 @@ function detail(state: string, reason = '', disposition = ''): WorkflowItemDetai
 }
 
 describe('WorkflowActionRow', () => {
-  beforeEach(resetWorkflowsPane);
+  beforeEach(() => {
+    resetWorkflowsPane();
+    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
+    __resetRunModeForTest();
+  });
+
+  afterEach(() => {
+    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
+    __resetRunModeForTest();
+  });
 
   it.each([
     [detail('needs-human', 'gate'), 'wf-approve'],
@@ -36,5 +46,22 @@ describe('WorkflowActionRow', () => {
     expect(view.getByTestId('wf-disposition-receipt')).toHaveTextContent('fast-forward · abc');
     expect(view.getByTestId('wf-disposition-receipt')).toHaveTextContent('policy · manual');
     expect(view.queryByTestId('wf-merge')).not.toBeInTheDocument();
+  });
+
+  it('disables mutating action controls but keeps plain phase navigation live remotely', () => {
+    (globalThis as { __AO_BOOTSTRAP__?: { remote: boolean } }).__AO_BOOTSTRAP__ = { remote: true };
+    __resetRunModeForTest();
+
+    const gate = render(WorkflowActionRow, { detail: detail('needs-human', 'gate') });
+    for (const testId of ['wf-approve', 'wf-request-changes', 'wf-take-over']) {
+      const control = gate.getByTestId(testId) as HTMLButtonElement;
+      expect(control.disabled).toBe(true);
+      expect(control.title).toBe('Local only');
+    }
+    gate.unmount();
+
+    const running = render(WorkflowActionRow, { detail: detail('running') });
+    expect((running.getByTestId('wf-open-phase') as HTMLButtonElement).disabled).toBe(false);
+    expect((running.getByTestId('wf-stop-run') as HTMLButtonElement).disabled).toBe(true);
   });
 });

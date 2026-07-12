@@ -261,9 +261,10 @@ var LocalOnlyMethods = map[string]bool{
 	// methods_gen_test.go's wireSafeMethods, which called out exactly
 	// this re-audit trigger.
 	"PostChannelMessage": true,
-	// Workflow control drives autonomous full-access provider sessions and
-	// persists local queue/settings state. Keep the complete control plane
-	// loopback-only as one session-control class.
+	// Workflow mutations drive autonomous full-access provider sessions or
+	// persist local queue/settings state. Keep that control plane loopback-only.
+	// The five pure workflow reads live in methods_gen_test.go's wireSafeMethods
+	// so remote workflow surfaces can render without gaining mutation access.
 	"WorkflowEnqueueItem":      true,
 	"WorkflowCancelItem":       true,
 	"WorkflowResumeItem":       true,
@@ -271,9 +272,6 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowResolveGate":      true,
 	"WorkflowReorderQueue":     true,
 	"WorkflowSetQueue":         true,
-	"WorkflowListItems":        true,
-	"WorkflowListItemCosts":    true,
-	"WorkflowGetItem":          true,
 	"WorkflowCompleteTakeover": true,
 	"WorkflowOpenTriageThread": true,
 	"WorkflowOpenTriageAgent":  true,
@@ -281,9 +279,7 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowMergeItem":        true,
 	"WorkflowCreateItemPR":     true,
 	"WorkflowDiscardItem":      true,
-	"WorkflowGetJobNotes":      true,
 	"WorkflowSetJobNotes":      true,
-	"WorkflowListDefinitions":  true,
 	"WorkflowRemoveQueuedItem": true,
 	// ConcludeDiscussion is lifecycle control over the deliberation's
 	// provider-session turn loop — same class as PostChannelMessage: it

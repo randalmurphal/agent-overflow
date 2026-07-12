@@ -17,6 +17,7 @@
     workflowThreadFromWire,
   } from '../../stores/workflowsPane.svelte';
   import WorkflowJobNotes from './WorkflowJobNotes.svelte';
+  import { isViewOnlySession } from '../../transport/runMode';
 
   interface Props { level: Extract<WorkflowPaneLevel, { kind: 'workflow' }> }
   let { level }: Props = $props();
@@ -29,6 +30,7 @@
   let project = $derived(getProjects().find((entry) => entry.project.id === level.projectId)?.project);
   let armed = $derived(getWorkflowArmedAction());
   const hasAutomation = false;
+  let viewOnly = $derived(isViewOnlySession());
 
   function openRun(item: WorkItem): void {
     pushWorkflowLevel({
@@ -67,6 +69,7 @@
   }
 
   async function editWorkflow(): Promise<void> {
+    if (viewOnly) return;
     try {
       const thread = await WorkflowOpenStudioThread(level.projectId, level.workflowId);
       await openThreadInNewPane(workflowThreadFromWire(thread));
@@ -77,6 +80,7 @@
 
   async function cancelRun(item: WorkItem, event: MouseEvent): Promise<void> {
     event.stopPropagation();
+    if (viewOnly) return;
     const key = `cancel:${item.id}`;
     if (armed !== key) { setWorkflowArmedAction(key); return; }
     try {
@@ -94,7 +98,7 @@
     <div class="min-w-0 flex-1">
       <p class="truncate text-xs text-fg-muted">{project?.name ?? level.projectId} · {definition?.definition.scope ?? 'workflow'} · {definition?.definition.phaseCount ?? 0} phases · {definition?.definition.phases.map((phase) => phase.id).join(' → ')}</p>
     </div>
-    <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2" onclick={editWorkflow} data-testid="wf-edit-workflow">Edit</button>
+    <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={editWorkflow} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-edit-workflow">Edit</button>
   </div>
 
   <section class="space-y-2" data-testid="wf-live-runs">
@@ -112,7 +116,7 @@
         <button class="min-w-0 flex-1 truncate text-left text-sm font-medium" onclick={() => openRun(item)} data-testid="wf-run-open">{item.goal}</button>
         <span class="shrink-0 text-xs text-fg-muted">{meta(item)}</span>
         {#if item.state === 'running'}
-          <button class="rounded px-1.5 py-1 text-xs text-error opacity-0 group-hover:opacity-100" onclick={(event) => cancelRun(item, event)} data-testid="wf-run-cancel">{armed === `cancel:${item.id}` ? 'stop this run?' : '✕'}</button>
+          <button class="rounded px-1.5 py-1 text-xs text-error opacity-0 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40" onclick={(event) => cancelRun(item, event)} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-run-cancel">{armed === `cancel:${item.id}` ? 'stop this run?' : '✕'}</button>
         {/if}
       </div>
     {/each}

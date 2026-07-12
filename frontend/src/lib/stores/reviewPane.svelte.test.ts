@@ -10,6 +10,7 @@ import {
   applyPRUpdatedEvent,
   draftAnchorExists,
   disposeReviewStateForPane,
+  getReviewCompanionTarget,
   openReviewCompanion,
   reviewStateForPane,
   reviewLineCommentForDraft,
@@ -231,6 +232,21 @@ describe('reviewPane store', () => {
     expect(same.pendingJumpFilePath).toBe('src/app.ts');
     same.consumePendingJumpFilePath();
     expect(same.pendingJumpFilePath).toBeNull();
+  });
+
+  it('records a render target for a workflows source pane without a ThreadPane', async () => {
+    setPaneLayoutItemsForTest([{ id: 'workflows', paneId: 'workflows', kind: 'workflows', widthPx: 500 }]);
+    const state = await openReviewCompanion('workflows', 'thread-1', {
+      scope: 'branch',
+      baseBranch: 'release',
+      workspacePath: '/tmp/run',
+    });
+    expect(state).not.toBeNull();
+    expect(getReviewCompanionTarget('workflows')).toEqual({
+      threadId: 'thread-1', thread: null, workspacePath: '/tmp/run',
+    });
+    expect(state?.scope).toBe('branch');
+    expect(state?.baseBranch).toBe('release');
   });
 
   it('collapses lockfile-ish and large files once per load', async () => {

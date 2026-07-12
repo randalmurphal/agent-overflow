@@ -205,6 +205,12 @@ interface PRMergeConflictsView {
 }
 
 const statesBySourcePane = new Map<string, ReviewPaneState>();
+export interface ReviewCompanionTarget {
+  threadId: string;
+  thread: Thread | null;
+  workspacePath?: string;
+}
+let companionTargetsBySourcePane: Map<string, ReviewCompanionTarget> = $state(new Map());
 const prStatesBySubscription = new Map<string, { applyPRUpdate(event: PRUpdatedEvent): void }>();
 
 export interface PRUpdatedEvent {
@@ -258,7 +264,12 @@ if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', handleReviewVisibilityChange);
 }
 
-export function reviewStateForPane(sourcePaneId: string, threadId: string, thread?: Thread | null): ReviewPaneState {
+export function reviewStateForPane(
+  sourcePaneId: string,
+  threadId: string,
+  thread?: Thread | null,
+  opts: { deferInitialLoad?: boolean } = {},
+): ReviewPaneState {
   const existing = statesBySourcePane.get(sourcePaneId);
   // Thread mismatch replaces rather than reuses: the CompanionPane {#key}
   // remount usually disposes the old state first, but correctness must not
@@ -267,14 +278,24 @@ export function reviewStateForPane(sourcePaneId: string, threadId: string, threa
   // The replaced state may own a live PR-update subscription; drop it or
   // the Go-side poll pump outlives the state that could unsubscribe it.
   existing?.dispose();
-  const state = createReviewPaneState(sourcePaneId, threadId, thread ?? null);
+  const state = createReviewPaneState(sourcePaneId, threadId, thread ?? null, opts.deferInitialLoad ?? false);
   statesBySourcePane.set(sourcePaneId, state);
   return state;
 }
 
-export function disposeReviewStateForPane(sourcePaneId: string): void {
-  statesBySourcePane.get(sourcePaneId)?.dispose?.();
+export function disposeReviewStateForPane(sourcePaneId: string, expectedThreadId?: string): void {
+  const current = statesBySourcePane.get(sourcePaneId);
+  if (expectedThreadId && current?.threadId !== expectedThreadId) return;
+  current?.dispose?.();
   statesBySourcePane.delete(sourcePaneId);
+  if (companionTargetsBySourcePane.has(sourcePaneId)) {
+    companionTargetsBySourcePane = new Map(companionTargetsBySourcePane);
+    companionTargetsBySourcePane.delete(sourcePaneId);
+  }
+}
+
+export function getReviewCompanionTarget(sourcePaneId: string): ReviewCompanionTarget | null {
+  return companionTargetsBySourcePane.get(sourcePaneId) ?? null;
 }
 
 export async function openReviewCompanion(
@@ -284,11 +305,23 @@ export async function openReviewCompanion(
     scope?: ReviewScope;
     checkpointUserItemId?: string | null;
     filePath?: string;
+    workspacePath?: string;
+    baseBranch?: string;
   } = {},
 ): Promise<ReviewPaneState | null> {
+  companionTargetsBySourcePane = new Map(companionTargetsBySourcePane).set(sourcePaneId, {
+    threadId,
+    thread: null,
+    workspacePath: opts.workspacePath,
+  });
   const companion = openCompanion(sourcePaneId, 'review');
-  if (!companion) return null;
-  const state = reviewStateForPane(sourcePaneId, threadId);
+  if (!companion) {
+    companionTargetsBySourcePane = new Map(companionTargetsBySourcePane);
+    companionTargetsBySourcePane.delete(sourcePaneId);
+    return null;
+  }
+  const hasExplicitSelection = opts.scope !== undefined || opts.checkpointUserItemId !== undefined;
+  const state = reviewStateForPane(sourcePaneId, threadId, null, { deferInitialLoad: hasExplicitSelection });
   if (opts.filePath) {
     state.pendingJumpFilePath = opts.filePath;
   }
@@ -296,6 +329,8 @@ export async function openReviewCompanion(
     if (opts.scope === 'turn') {
       state.selectedCheckpointUserItemId = opts.checkpointUserItemId ?? null;
       await state.setScope('turn');
+    } else if (opts.scope === 'branch') {
+      await state.setScope('branch', { baseBranch: opts.baseBranch });
     } else {
       await state.setScope(opts.scope);
     }
@@ -305,7 +340,12 @@ export async function openReviewCompanion(
   return state;
 }
 
-function createReviewPaneState(sourcePaneId: string, threadId: string, initialThread: Thread | null): ReviewPaneState {
+function createReviewPaneState(
+  sourcePaneId: string,
+  threadId: string,
+  initialThread: Thread | null,
+  deferInitialLoad: boolean,
+): ReviewPaneState {
   const persisted = readPersistedScope(threadId);
   const initialPRRef = prRefFromThread(initialThread ?? {});
   let prRef: PRRef | null = $state(initialPRRef);
@@ -661,7 +701,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     }
   }
 
-  void reload();
+  if (!deferInitialLoad) void reload();
 
   function clearContextExpansions(): void {
     if (contextExpansions.size === 0) return;
@@ -1471,6 +1511,7 @@ function userFacingError(err: unknown): string {
 
 export function __resetReviewPaneStateForTest(): void {
   statesBySourcePane.clear();
+  companionTargetsBySourcePane = new Map();
   prStatesBySubscription.clear();
 }
 

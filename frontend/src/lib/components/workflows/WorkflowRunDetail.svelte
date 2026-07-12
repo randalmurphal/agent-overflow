@@ -9,6 +9,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import {
+    WORKFLOWS_PANE_ID,
     getWorkflowDetail,
     getWorkflowDiffError,
     getWorkflowDiffFiles,
@@ -22,6 +23,8 @@
   } from '../../stores/workflowsPane.svelte';
   import WorkflowActionRow from './WorkflowActionRow.svelte';
   import WorkflowDiff from './WorkflowDiff.svelte';
+  import { isViewOnlySession } from '../../transport/runMode';
+  import { openReviewCompanion } from '../../stores/reviewPane.svelte';
 
   interface Props { level: Extract<WorkflowPaneLevel, { kind: 'run' }> }
   let { level }: Props = $props();
@@ -34,6 +37,7 @@
   let project = $derived(getProjects().find((entry) => entry.project.id === level.projectId)?.project);
   let sweep = $derived(getWorkflowSweep());
   let expandFirst = $state(false);
+  let viewOnly = $derived(isViewOnlySession());
 
   function formatDuration(startedAt: number, endedAt?: number): string {
     const millis = Math.max(0, (endedAt || Date.now()) - startedAt);
@@ -78,8 +82,20 @@
   }
 
   async function toggleFirstDiff(): Promise<void> {
+    if (viewOnly) return;
     if (files.length === 0) await loadWorkflowDiff();
     expandFirst = !expandFirst;
+  }
+
+  async function openFullReview(): Promise<void> {
+    if (viewOnly || !detail) return;
+    const newestPhase = [...detail.phases].reverse().find((phase) => Boolean(phase.threadId));
+    if (!newestPhase?.threadId) return;
+    await openReviewCompanion(WORKFLOWS_PANE_ID, newestPhase.threadId, {
+      scope: 'branch',
+      baseBranch: detail.item.baseBranch,
+      workspacePath: detail.item.worktreePath,
+    });
   }
 </script>
 
@@ -117,11 +133,14 @@
         {:else if diffLoading}
           <p class="text-xs text-fg-muted" data-testid="wf-diff-loading">Loading changes…</p>
         {:else if diffError}
-          <button class="text-xs text-error hover:underline" onclick={loadWorkflowDiff} data-testid="wf-diff-retry">Changes unavailable · retry</button>
+          <button class="text-xs text-error hover:underline disabled:cursor-not-allowed disabled:opacity-50" onclick={loadWorkflowDiff} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-diff-retry">Changes unavailable · retry</button>
         {:else if diffLoaded}
           <p class="text-xs text-fg-muted" data-testid="wf-diff-empty">No changes.</p>
         {:else}
-          <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2" onclick={loadWorkflowDiff} data-testid="wf-diff-load">Load changes</button>
+          <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={loadWorkflowDiff} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-diff-load">Load changes</button>
+        {/if}
+        {#if detail.phases.some((phase) => Boolean(phase.threadId))}
+          <button class="mt-2 rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={openFullReview} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-open-full-review">Open full review</button>
         {/if}
       {/if}
 

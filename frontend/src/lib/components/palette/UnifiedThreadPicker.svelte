@@ -12,6 +12,7 @@
   import { getProviderDefinition } from '../../providers/catalog';
   import { resolveThreadStatusPill } from '../../utils/threadStatusPill';
   import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/events';
+  import { isHiddenThreadMode } from '../../utils/threadModes';
 
   interface Props {
     open: boolean;
@@ -39,7 +40,9 @@
 
   // Non-archived threads are the only candidates. Archived threads live
   // behind their own filter in the sidebar and shouldn't clutter the picker.
-  let visibleThreads: Thread[] = $derived(getThreads().filter((t) => !t.archived));
+  let visibleThreads: Thread[] = $derived(
+    getThreads().filter((thread) => !thread.archived && !isHiddenThreadMode(thread.mode)),
+  );
 
   let matches: Ranked[] = $derived.by(() => {
     const q = query.trim().toLowerCase();

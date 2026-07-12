@@ -20,8 +20,9 @@ import (
 // so a LAN bind serves a LAN-reachable URL, not the loopback string
 // the server resolved at bind time.
 type Bootstrap struct {
-	WSURL string `json:"wsUrl"`
-	Token string `json:"token"`
+	WSURL  string `json:"wsUrl"`
+	Token  string `json:"token"`
+	Remote bool   `json:"remote,omitempty"`
 }
 
 // MaxRetainedFormerSrvs caps how many retired http.Servers Rebind keeps
@@ -607,6 +608,9 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		// internal addr might say "0.0.0.0:port" (unconnectable).
 		WSURL: deriveWSURL(r),
 		Token: s.token,
+		// Use the exact predicate captured by handleWS before upgrade so
+		// the client posture cannot disagree with LocalOnly enforcement.
+		Remote: !remoteAddrIsLoopback(r.RemoteAddr),
 	})
 }
 

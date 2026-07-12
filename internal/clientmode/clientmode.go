@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -349,19 +350,28 @@ func buildInjectedIndex(assets fs.FS, wsURL, token, clientID string) ([]byte, er
 	// panels (Network bind toggle, Remote endpoints list) inspect this
 	// field and render a "edit from your local install" placeholder
 	// instead of letting the user mutate the *remote* server's settings
-	// through it. The transport's Bootstrap (server.go) does NOT carry
-	// this field; defaultBootstrap in wsClient.ts treats absence as
-	// "local".
+	// through it. The transport's Bootstrap (server.go) does not carry mode;
+	// defaultBootstrap in wsClient.ts treats its absence as "local". The
+	// separate remote bit is derived below from the upstream endpoint, matching
+	// the locality bit a browser receives from the transport bootstrap.
+	parsedWSURL, err := url.Parse(wsURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse bootstrap websocket URL: %w", err)
+	}
+	remote := !isLoopbackEndpointHost(parsedWSURL.Host)
+
 	bootstrapJSON, err := json.Marshal(struct {
 		WSURL    string `json:"wsUrl"`
 		Token    string `json:"token"`
 		Mode     string `json:"mode"`
 		ClientID string `json:"clientId,omitempty"`
+		Remote   bool   `json:"remote,omitempty"`
 	}{
 		WSURL:    wsURL,
 		Token:    token,
 		Mode:     "client",
 		ClientID: clientID,
+		Remote:   remote,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal bootstrap: %w", err)
@@ -390,4 +400,30 @@ func buildInjectedIndex(assets fs.FS, wsURL, token, clientID string) ([]byte, er
 	out = append(out, snippet...)
 	out = append(out, raw[insertAt:]...)
 	return out, nil
+}
+
+// isLoopbackEndpointHost classifies a client-configured upstream URL with
+// the same netip loopback semantics used for the transport peer address.
+// It intentionally differs from the stricter IsLoopbackHost policy used to
+// defend this stub's HTTP listener from DNS rebinding.
+func isLoopbackEndpointHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	hostOnly, _, err := net.SplitHostPort(host)
+	if err != nil {
+		if strings.Contains(host, ":") {
+			if !(strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]")) {
+				return false
+			}
+			hostOnly = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+		} else {
+			hostOnly = host
+		}
+	}
+	if strings.EqualFold(hostOnly, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(hostOnly)
+	return err == nil && addr.IsLoopback()
 }

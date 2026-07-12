@@ -24,13 +24,22 @@ export interface Thread {
   prRef?: string;
   /**
    * Canonical mode column.
-   * "chat" | "plan" | "design" | "discussion" | "terminal".
+   * "chat" | "plan" | "design" | "discussion" | "terminal" plus the
+   * workflow-owned modes, which listing surfaces exclude by mode.
    * Optional in the TS layer so older fixtures omit it cleanly; new UI
    * code defaults to "chat" when missing. "terminal" threads are
    * persistent terminal panes — no provider session, rendered by
    * TerminalView instead of the chat surface.
    */
-  mode?: "chat" | "plan" | "design" | "discussion" | "terminal";
+  mode?:
+    | "chat"
+    | "plan"
+    | "design"
+    | "discussion"
+    | "terminal"
+    | "workflow"
+    | "workflow-studio"
+    | "workflow-triage";
   /**
    * Reasoning effort tier. The selected provider/model controls which
    * subset is valid.

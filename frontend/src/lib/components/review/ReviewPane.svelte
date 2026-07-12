@@ -25,7 +25,7 @@
   import { GitListBranches } from '../../stores/bindings';
   import { getPane } from '../../stores/panes.svelte';
   import type { GitBranch, GitStatus } from '../../types/git';
-  import type { DiffReviewComment } from '../../types/models';
+  import type { DiffReviewComment, Thread } from '../../types/models';
   import {
     buildCommentGroups,
     commentCountsByFile,
@@ -34,11 +34,21 @@
   import { fileExtensionLabel } from '../../utils/reviewTree';
   import Icon from '../primitives/Icon.svelte';
 
-  interface Props {
-    ctx: PanelContext;
+  interface ReviewPaneSource {
+    paneId: string;
+    threadId: string;
+    thread?: Thread | null;
+    workspacePath?: string;
   }
 
-  let { ctx }: Props = $props();
+  interface Props { ctx?: PanelContext; source?: ReviewPaneSource }
+
+  let { ctx, source }: Props = $props();
+  const initialProps = untrack(() => ({ ctx, source }));
+  const sourcePaneId = initialProps.ctx?.paneId ?? initialProps.source?.paneId ?? '';
+  const sourceThreadId = initialProps.ctx?.threadId ?? initialProps.source?.threadId ?? null;
+  const sourceThread = initialProps.ctx?.thread ?? initialProps.source?.thread ?? null;
+  let sourceWorkspacePath = $derived(ctx?.workspacePath ?? source?.workspacePath);
   // Extension-filter state is owned here (not in the tree) so the
   // dropdown's "Apply filter to diff" toggle can also narrow the diff
   // body, and the selection survives rail tab switches.
@@ -53,7 +63,7 @@
   // could re-evaluate it on the OLD instance before the {#key} teardown
   // and crash the render flush.
   // svelte-ignore state_referenced_locally
-  const review = ctx.threadId ? reviewStateForPane(ctx.paneId, ctx.threadId, ctx.thread) : null;
+  const review = sourceThreadId ? reviewStateForPane(sourcePaneId, sourceThreadId, sourceThread) : null;
   let branches: GitBranch[] = $state([]);
   let branchesError: string | null = $state(null);
   const storedTreeVisible = readTreeVisiblePref();
@@ -120,7 +130,7 @@
   });
 
   $effect(() => {
-    const threadId = ctx.threadId;
+    const threadId = sourceThreadId;
     const scope = review?.scope;
     if (!threadId || scope !== 'branch') return;
     let cancelled = false;
@@ -141,7 +151,7 @@
   });
 
   onDestroy(() => {
-    disposeReviewStateForPane(ctx.paneId);
+    disposeReviewStateForPane(sourcePaneId, sourceThreadId ?? undefined);
   });
 
   function setScope(value: string): void {
@@ -210,7 +220,7 @@
   }
 
   const liveGitSignature = $derived(
-    gitStatusSignature(getPane(ctx.paneId)?.gitStatus.status ?? null),
+    gitStatusSignature(getPane(sourcePaneId)?.gitStatus.status ?? null),
   );
   let loadedGitSignature = $state<string | null>(null);
   let wasLoading = false;
@@ -248,7 +258,7 @@
       onchange={(event) => setScope(event.currentTarget.value)}
       disabled={!review}
     >
-      {#if ctx.workspacePath}
+      {#if sourceWorkspacePath}
         <option value="turn">Turn</option>
         <option value="session">Session</option>
         <option value="workspace">Workspace</option>
@@ -412,7 +422,7 @@
     </button>
   </div>
 
-  {#if !ctx.threadId}
+  {#if !sourceThreadId}
     <div class="p-3 text-sm text-fg-muted">No thread selected.</div>
   {:else if review}
     {#if review.error}
@@ -444,7 +454,7 @@
     {#if review.scope === 'pr' && review.prDetail}
       <ReviewPRHeader
         detail={review.prDetail}
-        hasWorkspace={!!ctx.workspacePath}
+        hasWorkspace={!!sourceWorkspacePath}
         onViewConflicts={() => { void review?.openConflictView(); }}
         ciPipeline={review.ciPipeline}
         ciLoading={review.ciLoading}

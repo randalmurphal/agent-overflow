@@ -98,6 +98,19 @@ describe('buildSidebarThreadTree', () => {
     expect(tree.map((n) => n.sortGroup)).toEqual(['running', 'running', 'running', 'running']);
   });
 
+  it('excludes workflow-owned modes before building parent-child relationships', () => {
+    const tree = buildSidebarThreadTree({
+      threads: [
+        mkThread('chat', { mode: 'chat' }),
+        mkThread('phase', { mode: 'workflow' }),
+        mkThread('studio', { mode: 'workflow-studio', parentThreadId: 'chat' }),
+        mkThread('triage', { mode: 'workflow-triage' }),
+      ],
+    });
+    expect(tree.map((node) => node.thread.id)).toEqual(['chat']);
+    expect(tree[0].children).toEqual([]);
+  });
+
   it('puts durable interrupted and plan-ready rows in the needs-attention tier', () => {
     const interrupted = mkThread('interrupted', { updatedAt: 1000, hasIncompleteTurn: true });
     const planReady = mkThread('plan-ready', { updatedAt: 2000, hasActionableProposedPlan: true });

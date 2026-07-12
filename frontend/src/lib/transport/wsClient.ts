@@ -28,6 +28,8 @@
 // Anything that needs the WS goes through this module's exported
 // `wsClient` singleton — there is no second path.
 
+import { setViewOnlySessionFromBootstrap } from './runMode';
+
 // Test-visible exports for the bound constants. We keep the const
 // names for the production code paths (clearer at the call site than
 // a member-access) and re-export the values so tests can derive
@@ -97,6 +99,7 @@ interface Bootstrap {
   wsUrl: string;
   token: string;
   mode?: RunMode;
+  remote?: boolean;
   /**
    * Durable UI-state client identity minted by the local shell
    * (--connect injection only; the embedded-webview paths carry it as
@@ -321,7 +324,9 @@ async function defaultBootstrap(): Promise<Bootstrap> {
   const injected = (globalThis as { __AO_BOOTSTRAP__?: Bootstrap }).__AO_BOOTSTRAP__;
   if (injected && typeof injected.wsUrl === 'string' && typeof injected.token === 'string') {
     validateWsUrl(injected.wsUrl);
-    return { ...injected, mode: normalizeRunMode(injected.mode) };
+    const normalized = { ...injected, mode: normalizeRunMode(injected.mode), remote: injected.remote === true };
+    setViewOnlySessionFromBootstrap(normalized.remote);
+    return normalized;
   }
   const search = typeof window !== 'undefined' ? window.location.search : '';
   const params = new URLSearchParams(search);
@@ -351,6 +356,8 @@ async function defaultBootstrap(): Promise<Bootstrap> {
   }
   validateWsUrl(data.wsUrl);
   data.mode = normalizeRunMode(data.mode);
+  data.remote = data.remote === true;
+  setViewOnlySessionFromBootstrap(data.remote);
   // Stash the server-confirmed token so the tab survives reloads once
   // the URL is scrubbed below.
   writeStoredToken(data.token);

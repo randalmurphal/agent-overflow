@@ -118,8 +118,8 @@ import { clearAllDiscussionLiveTail } from './discussionLiveTail';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import {
   applyNotificationActivated,
-  type NotificationTarget,
 } from './eventsNotification';
+import { parseNotificationTarget } from './notificationActivationQueue';
 import type {
   WorkflowErrorEvent,
   WorkflowItemStateEvent,
@@ -168,9 +168,13 @@ export function setupEventListeners(): () => void {
   resetItemEventQueue();
 
   const cancelApproval = wailsEventOn<ApprovalEvent>('provider:approval', applyApprovalEvent);
-  const cancelNotificationActivated = wailsEventOn<NotificationTarget>(
+  const cancelNotificationActivated = wailsEventOn<unknown>(
     'notification:activated',
-    applyNotificationActivated,
+    (value) => {
+      const target = parseNotificationTarget(value);
+      if (target) applyNotificationActivated(target);
+      else console.warn('notification:activated: invalid target', value);
+    },
   );
   const cancelUserInput = wailsEventOn<UserInputEvent>('provider:user_input', applyUserInputEvent);
 

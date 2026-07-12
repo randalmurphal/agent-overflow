@@ -5,6 +5,13 @@ import { addProjectLocal, getProjects, resetProjectsForTest } from '../../stores
 import { activateWorkflowsPane, getWorkflowDefinitions, getWorkflowError, loadWorkflowOverview, resetWorkflowsPane } from '../../stores/workflowsPane.svelte';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import WorkflowIntakeDialog from './WorkflowIntakeDialog.svelte';
+import { __resetRunModeForTest } from '../../transport/runMode';
+import {
+  getProjectWorkflowRuns,
+  initializeWorkflowsSidebar,
+  resetWorkflowsSidebarForTest,
+} from '../../stores/workflowsSidebar.svelte';
+import type { WorkItem } from '../../types/workflow';
 
 const project: Project = {
   id: 'p', name: 'Project', path: '/tmp/p', sortPosition: 0,
@@ -13,9 +20,12 @@ const project: Project = {
 
 describe('WorkflowIntakeDialog', () => {
   beforeEach(() => {
+    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
+    __resetRunModeForTest();
     resetBindingMocks();
     resetProjectsForTest();
     resetWorkflowsPane();
+    resetWorkflowsSidebarForTest();
     addProjectLocal(project);
     setBindingMock('WorkflowListItems', async () => []);
     setBindingMock('WorkflowListItemCosts', async () => ({}));
@@ -37,7 +47,12 @@ describe('WorkflowIntakeDialog', () => {
     setBindingMock('WorkflowEnqueueItem', async () => ({ id: 'queued' }));
   });
 
-  afterEach(resetBindingMocks);
+  afterEach(() => {
+    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
+    __resetRunModeForTest();
+    resetWorkflowsSidebarForTest();
+    resetBindingMocks();
+  });
 
   it('renders typed fields from the catalog fixture', async () => {
     expect(getProjects()).toHaveLength(1);
@@ -78,5 +93,36 @@ describe('WorkflowIntakeDialog', () => {
     ]);
     expect(JSON.parse(args[4] as string)).toEqual({ title: 'Release', mode: 'safe', approved: false });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses intake submission in a view-only session', async () => {
+    (globalThis as { __AO_BOOTSTRAP__?: { remote: boolean } }).__AO_BOOTSTRAP__ = { remote: true };
+    __resetRunModeForTest();
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    const view = render(WorkflowIntakeDialog, { open: true, onClose: vi.fn() });
+    const submit = await view.findByTestId('wf-intake-submit');
+    expect(submit).toBeDisabled();
+    expect(submit).toHaveAttribute('title', 'Local only');
+    await fireEvent.submit(view.getByTestId('wf-intake-dialog'));
+    expect(getBindingMock('WorkflowEnqueueItem')).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the independent sidebar after enqueue while the queue is paused', async () => {
+    let listedItems: WorkItem[] = [];
+    setBindingMock('WorkflowListItems', async () => listedItems);
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    await initializeWorkflowsSidebar();
+    const view = render(WorkflowIntakeDialog, { open: true, onClose: vi.fn() });
+    await fireEvent.click(await view.findByTestId('wf-intake-workflow'));
+    await fireEvent.input(view.getByTestId('wf-intake-goal'), { target: { value: 'Ship it' } });
+    await fireEvent.input(view.getByTestId('wf-seed-title'), { target: { value: 'Release' } });
+    listedItems = [{
+      id: 'queued', projectId: 'p', workflowId: 'wf', workflowScope: 'shared', goal: 'Ship it',
+      state: 'queued', reason: '', sortPosition: 1, stepMode: false, source: 'manual', createdAt: 1,
+    } as WorkItem];
+    await fireEvent.click(view.getByTestId('wf-intake-submit'));
+    await waitFor(() => expect(getProjectWorkflowRuns('p').map((item) => item.id)).toEqual(['queued']));
   });
 });

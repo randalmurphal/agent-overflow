@@ -158,6 +158,12 @@ var wireSafeMethods = map[string]bool{
 	// Host environment probe (no FS read, no credential).
 	"IsWSL": true,
 
+	"WorkflowListItems":       true,
+	"WorkflowGetItem":         true,
+	"WorkflowListItemCosts":   true,
+	"WorkflowListDefinitions": true,
+	"WorkflowGetJobNotes":     true,
+
 	// Build version string.
 	"Version": true,
 }

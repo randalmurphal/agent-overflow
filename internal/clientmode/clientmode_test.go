@@ -143,7 +143,7 @@ func TestServe_InjectsBootstrap(t *testing.T) {
 	// The SPA inspects mode === "client" to hide local-only settings
 	// panels (Network bind, Remote endpoints) which would otherwise
 	// edit the *remote* backend's state.
-	wantSnippet := `window.__AO_BOOTSTRAP__ = {"wsUrl":"ws://upstream:1234/","token":"tok-abc","mode":"client"};`
+	wantSnippet := `window.__AO_BOOTSTRAP__ = {"wsUrl":"ws://upstream:1234/","token":"tok-abc","mode":"client","remote":true};`
 	if !strings.Contains(bodyStr, wantSnippet) {
 		t.Fatalf("bootstrap snippet missing.\nwant: %s\nbody: %s", wantSnippet, bodyStr)
 	}
@@ -186,9 +186,70 @@ func TestServe_InjectsClientIDWhenSet(t *testing.T) {
 	// backend's per-client ui_state bucket stays stable across
 	// launches. TestServe_InjectsBootstrap covers the omitted case —
 	// its expected snippet has no clientId key (json omitempty).
-	wantSnippet := `window.__AO_BOOTSTRAP__ = {"wsUrl":"ws://upstream:1234/","token":"tok-abc","mode":"client","clientId":"11111111-2222-3333-4444-555555555555"};`
+	wantSnippet := `window.__AO_BOOTSTRAP__ = {"wsUrl":"ws://upstream:1234/","token":"tok-abc","mode":"client","clientId":"11111111-2222-3333-4444-555555555555","remote":true};`
 	if !strings.Contains(string(body), wantSnippet) {
 		t.Fatalf("bootstrap snippet missing clientId.\nwant: %s\nbody: %s", wantSnippet, string(body))
+	}
+}
+
+func TestServe_LoopbackUpstreamIsNotRemote(t *testing.T) {
+	srv, err := Serve(Config{
+		WSURL:  "ws://127.0.0.1:1234/ws",
+		Token:  "tok-abc",
+		Assets: fakeAssets(),
+	})
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+
+	resp, err := http.Get(srv.AppURL())
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	wantSnippet := `window.__AO_BOOTSTRAP__ = {"wsUrl":"ws://127.0.0.1:1234/ws","token":"tok-abc","mode":"client"};`
+	if !strings.Contains(string(body), wantSnippet) {
+		t.Fatalf("loopback bootstrap snippet mismatch.\nwant: %s\nbody: %s", wantSnippet, string(body))
+	}
+}
+
+func TestServe_LoopbackRangeUpstreamIsNotRemote(t *testing.T) {
+	srv, err := Serve(Config{
+		WSURL:  "ws://127.0.0.2:1234/ws",
+		Token:  "tok-abc",
+		Assets: fakeAssets(),
+	})
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+
+	resp, err := http.Get(srv.AppURL())
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	wantSnippet := `window.__AO_BOOTSTRAP__ = {"wsUrl":"ws://127.0.0.2:1234/ws","token":"tok-abc","mode":"client"};`
+	if !strings.Contains(string(body), wantSnippet) {
+		t.Fatalf("loopback-range bootstrap snippet mismatch.\nwant: %s\nbody: %s", wantSnippet, string(body))
 	}
 }
 

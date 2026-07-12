@@ -28,6 +28,7 @@ import {
   TransportError,
   transportGapChannel,
 } from './wsClient';
+import { __resetRunModeForTest, isViewOnlySession } from './runMode';
 
 // MockWebSocket is a hand-rolled fake that exposes the same shape as
 // the WSLike interface the wsClient depends on. Tests drive it via
@@ -131,9 +132,13 @@ describe('WSClient', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
+    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
+    __resetRunModeForTest();
   });
 
   afterEach(() => {
+    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
+    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -567,9 +572,10 @@ describe('WSClient', () => {
       throw new Error('fetch should not be called');
     });
     vi.stubGlobal('fetch', fetchMock);
-    (globalThis as { __AO_BOOTSTRAP__?: { wsUrl: string; token: string } }).__AO_BOOTSTRAP__ = {
+    (globalThis as { __AO_BOOTSTRAP__?: { wsUrl: string; token: string; remote?: boolean } }).__AO_BOOTSTRAP__ = {
       wsUrl: 'ws://injected/',
       token: 'inj',
+      remote: true,
     };
 
     try {
@@ -581,6 +587,7 @@ describe('WSClient', () => {
       const ws = MockWebSocket.instances[0]!;
       expect(ws.url).toContain('ws://injected/');
       expect(ws.url).toContain('token=inj');
+      expect(isViewOnlySession()).toBe(true);
 
       ws.acceptOpen();
       await flushMicrotasks();
@@ -590,6 +597,27 @@ describe('WSClient', () => {
       client.close();
     } finally {
       delete (globalThis as { __AO_BOOTSTRAP__?: { wsUrl: string; token: string } }).__AO_BOOTSTRAP__;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('publishes fetched bootstrap locality to the view-only helper', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ wsUrl: 'ws://example/ws', token: 'abc123', remote: true }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor });
+    try {
+      const unsubscribe = client.subscribe('workflow:item-state', () => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+      expect(isViewOnlySession()).toBe(true);
+      unsubscribe();
+    } finally {
+      client.close();
       vi.unstubAllGlobals();
     }
   });

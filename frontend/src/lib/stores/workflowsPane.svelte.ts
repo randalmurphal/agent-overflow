@@ -30,11 +30,13 @@ import { addToast } from './toast.svelte';
 import { getSettings } from './settings.svelte';
 import {
   mergeWorkflowProjectLoads,
+  loadWorkflowProject,
   nextWorkflowSweepIndex,
   patchWorkflowItems,
   workflowSweepItems,
   type WorkflowProjectLoad,
 } from './workflowData';
+import { closeCompanionsForSource } from './companionPanes.svelte';
 
 export const WORKFLOWS_PANE_ID = 'workflows';
 
@@ -64,7 +66,7 @@ let intakePrefill: WorkflowIntakePrefill | null = $state(null);
 let armedAction: string | null = $state(null);
 let requestVersion = 0;
 let autoAdvanceTimer: ReturnType<typeof setTimeout> | null = null;
-let paneActive = false;
+let paneActive = $state(false);
 let diffLoading = $state(false);
 let diffError: string | null = $state(null);
 let diffRequestedItemId: string | null = null;
@@ -98,6 +100,7 @@ export function getWorkflowReceipts(): ReadonlyMap<string, WorkflowResolvedRecei
 export function isWorkflowIntakeOpen(): boolean { return intakeOpen; }
 export function getWorkflowIntakePrefill(): WorkflowIntakePrefill | null { return intakePrefill; }
 export function getWorkflowArmedAction(): string | null { return armedAction; }
+export function isWorkflowsPaneActive(): boolean { return paneActive; }
 
 export function setWorkflowsPanePersistenceHandler(handler: (() => void) | null): void {
   persistenceHandler = handler;
@@ -116,6 +119,7 @@ export function activateWorkflowsPane(): boolean {
 export function deactivateWorkflowsPane(): void {
   if (!paneActive) return;
   paneActive = false;
+  closeCompanionsForSource(WORKFLOWS_PANE_ID);
   requestVersion += 1;
   runRefreshQueued = false;
   if (autoAdvanceTimer) clearTimeout(autoAdvanceTimer);
@@ -138,6 +142,7 @@ export function deactivateWorkflowsPane(): void {
 }
 
 function resetLevelTransientState(): void {
+  closeCompanionsForSource(WORKFLOWS_PANE_ID);
   armedAction = null;
   diffFiles = [];
   diffLoading = false;
@@ -252,19 +257,13 @@ export async function loadWorkflowOverview(): Promise<void> {
   loading = true;
   error = null;
   try {
-    const loads = await Promise.all(selectedProjectIds().map(async (projectId): Promise<WorkflowProjectLoad> => {
-      const [projectItems, projectCosts, catalog] = await Promise.all([
-        WorkflowListItems(projectId),
-        WorkflowListItemCosts(projectId),
-        WorkflowListDefinitions(projectId),
-      ]);
-      return {
-        projectId,
-        items: projectItems as unknown as WorkItem[],
-        costs: projectCosts,
-        catalog,
-      };
-    }));
+    const loads = await Promise.all(selectedProjectIds().map((projectId): Promise<WorkflowProjectLoad> =>
+      loadWorkflowProject(projectId, {
+        listItems: async (id) => WorkflowListItems(id) as unknown as Promise<WorkItem[]>,
+        listItemCosts: WorkflowListItemCosts,
+        listDefinitions: WorkflowListDefinitions,
+      }),
+    ));
     if (version !== requestVersion) return;
     const merged = mergeWorkflowProjectLoads(loads);
     items = merged.items;
@@ -403,6 +402,7 @@ export function getWorkflowSweep(): { items: WorkItem[]; index: number } {
 }
 
 export function stepWorkflowSweep(direction: -1 | 1, skipResolved = false): boolean {
+  closeCompanionsForSource(WORKFLOWS_PANE_ID);
   const sweep = workflowSweepItems(items, receipts);
   const current = getWorkflowSweep().index;
   const next = nextWorkflowSweepIndex(sweep, current < 0 ? 0 : current, direction, receipts, skipResolved);

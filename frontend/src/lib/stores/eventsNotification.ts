@@ -5,6 +5,9 @@
 // module only binds them to the real thread and pane stores.
 import { getThreadById } from './threads.svelte';
 import { openThreadInPane } from './panes.svelte';
+import { GetThread, WorkflowGetItem, WorkflowOpenTriageAgent } from './bindings';
+import { addToast } from './toast.svelte';
+import { openWorkflowsPane, workflowThreadFromWire } from './workflowsPane.svelte';
 import {
   createNotificationActivationQueue,
   type NotificationTarget,
@@ -16,11 +19,29 @@ export type { NotificationTarget } from './notificationActivationQueue';
 // time: suites that partially vi.mock the pane/thread stores (e.g.
 // TerminalView.test.ts) import this module transitively via events.ts, and
 // vitest mock proxies throw on touching an export the mock factory omitted.
-const notificationActivationQueue = createNotificationActivationQueue({
-  getThreadById: (id) => getThreadById(id),
-  openThread: (thread) => openThreadInPane(thread),
-  console,
-});
+function createAppNotificationActivationQueue() {
+  return createNotificationActivationQueue({
+    getThreadById: (id) => getThreadById(id),
+    loadThreadById: async (id) => workflowThreadFromWire(await GetThread(id)),
+    getWorkflowItem: async (id) => WorkflowGetItem(id),
+    createWorkflowTriageAgent: async (projectId) =>
+      workflowThreadFromWire(await WorkflowOpenTriageAgent(projectId)),
+    openThread: (thread) => openThreadInPane(thread),
+    openWorkflowItem: (detail) => openWorkflowsPane({
+      kind: 'sweep-at-run',
+      projectId: detail.item.projectId,
+      workflowId: detail.item.workflowId,
+      itemId: detail.item.id,
+      workflowLabel: detail.item.workflowId,
+      label: detail.item.goal,
+    }),
+    openWorkflowsOverview: () => openWorkflowsPane({ kind: 'overview' }),
+    showError: (message) => addToast('error', message),
+    console,
+  });
+}
+
+let notificationActivationQueue = createAppNotificationActivationQueue();
 
 export function applyNotificationActivated(target: NotificationTarget): void {
   notificationActivationQueue.receive(target);
@@ -28,4 +49,8 @@ export function applyNotificationActivated(target: NotificationTarget): void {
 
 export async function markNotificationHydrated(): Promise<void> {
   await notificationActivationQueue.markHydrated();
+}
+
+export function resetNotificationActivationForTest(): void {
+  notificationActivationQueue = createAppNotificationActivationQueue();
 }

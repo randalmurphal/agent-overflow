@@ -1,8 +1,15 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { runMode, isClientMode, __resetRunModeForTest } from './runMode';
+import {
+  runMode,
+  isClientMode,
+  isViewOnlySession,
+  setViewOnlySessionFromBootstrap,
+  __resetRunModeForTest,
+} from './runMode';
 
 interface InjectedBootstrap {
   mode?: unknown;
+  remote?: unknown;
 }
 
 function setInjected(value: InjectedBootstrap | undefined): void {
@@ -77,5 +84,22 @@ describe('runMode', () => {
 
     __resetRunModeForTest();
     expect(runMode()).toBe('local');
+  });
+
+  it('is view-only only when bootstrap explicitly marks the peer remote', () => {
+    setInjected({ mode: 'client', remote: true });
+    expect(isViewOnlySession()).toBe(true);
+
+    setInjected({ mode: 'client', remote: false });
+    expect(isViewOnlySession()).toBe(false);
+
+    setInjected({ mode: 'client', remote: 'true' });
+    expect(isViewOnlySession()).toBe(false);
+  });
+
+  it('accepts the validated asynchronous bootstrap update', () => {
+    expect(isViewOnlySession()).toBe(false);
+    setViewOnlySessionFromBootstrap(true);
+    expect(isViewOnlySession()).toBe(true);
   });
 });

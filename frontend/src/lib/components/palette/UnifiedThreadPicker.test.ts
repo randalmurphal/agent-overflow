@@ -96,6 +96,24 @@ describe('<UnifiedThreadPicker> — visibility', () => {
     expect(queryByTestId('thread-picker-hit-gone')).toBeNull();
   });
 
+  it('excludes workflow-owned thread modes', async () => {
+    await seedThreads([
+      makeThread({ id: 'visible', title: 'Visible' }),
+      makeThread({ id: 'phase', title: 'Phase', mode: 'workflow' }),
+      makeThread({ id: 'studio', title: 'Studio', mode: 'workflow-studio' }),
+      makeThread({ id: 'triage', title: 'Triage', mode: 'workflow-triage' }),
+    ]);
+    const { getByTestId, queryByTestId } = render(UnifiedThreadPicker, {
+      open: true,
+      pane: makePane(),
+      onClose: vi.fn(),
+    });
+    expect(getByTestId('thread-picker-hit-visible')).toBeInTheDocument();
+    expect(queryByTestId('thread-picker-hit-phase')).toBeNull();
+    expect(queryByTestId('thread-picker-hit-studio')).toBeNull();
+    expect(queryByTestId('thread-picker-hit-triage')).toBeNull();
+  });
+
   it('shows an empty-state message when the store has no visible threads', async () => {
     await seedThreads([]);
     const pane = makePane();

@@ -43,4 +43,9 @@ describe('threadMatchesQuery', () => {
     expect(threadMatchesQuery(makeThread({ title: 'Deploy' }), 'DEPLOY')).toBe(false);
     expect(threadMatchesQuery(makeThread({ title: 'Deploy' }), 'deploy')).toBe(true);
   });
+
+  it.each(['workflow', 'workflow-studio', 'workflow-triage'] as const)('never matches %s threads', (mode) => {
+    expect(threadMatchesQuery(makeThread({ mode, title: 'Exact match' }), '')).toBe(false);
+    expect(threadMatchesQuery(makeThread({ mode, title: 'Exact match' }), 'exact')).toBe(false);
+  });
 });

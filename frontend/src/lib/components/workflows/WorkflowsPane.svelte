@@ -22,6 +22,7 @@
   import WorkflowRunDetail from './WorkflowRunDetail.svelte';
   import WorkflowAllClear from './WorkflowAllClear.svelte';
   import WorkflowIntakeDialog from './WorkflowIntakeDialog.svelte';
+  import { closeCompanionsForSource } from '../../stores/companionPanes.svelte';
 
   interface Props { paneId: string }
   let { paneId }: Props = $props();
@@ -52,6 +53,7 @@
   function closePane(): void {
     const items = getPaneLayoutItems();
     const index = items.findIndex((item) => item.paneId === paneId);
+    closeCompanionsForSource(paneId);
     removePaneLayoutItem(paneId);
     const next = items[index - 1] ?? items[index + 1];
     if (next) focusPane(next.paneId);

@@ -35,6 +35,7 @@ import {
   type ThreadStatusPill,
 } from './threadStatusPill';
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
+import { isHiddenThreadMode } from './threadModes';
 
 export const DEFAULT_SIDEBAR_TREE_MAX_DEPTH = 2;
 
@@ -251,10 +252,11 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
  */
 export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): SidebarTreeNode[] {
   const maxDepth = input.maxDepth ?? DEFAULT_SIDEBAR_TREE_MAX_DEPTH;
-  const threadsById = new Map(input.threads.map((t) => [t.id, t] as const));
+  const visibleThreads = input.threads.filter((thread) => !isHiddenThreadMode(thread.mode));
+  const threadsById = new Map(visibleThreads.map((t) => [t.id, t] as const));
   const childIdsByParent = new Map<string, string[]>();
 
-  for (const thread of input.threads) {
+  for (const thread of visibleThreads) {
     const parentId = thread.parentThreadId;
     if (!parentId) continue;
     if (!threadsById.has(parentId)) continue;
@@ -294,7 +296,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
     };
   };
 
-  const topLevel = input.threads.filter((thread) => {
+  const topLevel = visibleThreads.filter((thread) => {
     const parentId = thread.parentThreadId;
     if (!parentId) return true;
     return !threadsById.has(parentId);

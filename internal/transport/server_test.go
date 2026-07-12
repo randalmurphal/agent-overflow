@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -176,6 +177,66 @@ func TestServer_BootstrapEndpoint(t *testing.T) {
 	// real client gives that client's resolved host back.
 	if !strings.Contains(b.WSURL, f.srv.Addr()) {
 		t.Fatalf("wsUrl should reflect request Host, got %q (server addr %q)", b.WSURL, f.srv.Addr())
+	}
+	if b.Remote {
+		t.Fatal("loopback bootstrap marked remote")
+	}
+}
+
+func TestServer_BootstrapRemoteUsesPeerLocality(t *testing.T) {
+	f := newServerFixture(t)
+
+	for _, tc := range []struct {
+		name       string
+		remoteAddr string
+		wantRemote bool
+	}{
+		{name: "loopback", remoteAddr: "127.0.0.1:54321", wantRemote: false},
+		{name: "non-loopback", remoteAddr: "192.168.1.25:54321", wantRemote: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://example.test/bootstrap.json?t=test-token", nil)
+			req.RemoteAddr = tc.remoteAddr
+			recorder := httptest.NewRecorder()
+
+			f.srv.handleBootstrap(recorder, req)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+			}
+			var bootstrap Bootstrap
+			if err := json.NewDecoder(recorder.Body).Decode(&bootstrap); err != nil {
+				t.Fatalf("decode bootstrap: %v", err)
+			}
+			if bootstrap.Remote != tc.wantRemote {
+				t.Fatalf("Remote = %v, want %v", bootstrap.Remote, tc.wantRemote)
+			}
+		})
+	}
+}
+
+func TestDispatcher_WorkflowReadsAreRemoteSafe(t *testing.T) {
+	d := NewDispatcher()
+	if _, err := d.Register(&privilegedApp{}, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	for _, name := range []string{
+		"WorkflowListItems",
+		"WorkflowGetItem",
+		"WorkflowListItemCosts",
+		"WorkflowListDefinitions",
+		"WorkflowGetJobNotes",
+	} {
+		if _, frameErr := d.ResolveForOrigin(0, name, false); frameErr != nil {
+			t.Errorf("non-loopback resolve %s: %+v", name, frameErr)
+		}
+	}
+
+	if _, frameErr := d.ResolveForOrigin(0, "WorkflowSetQueue", false); frameErr == nil {
+		t.Fatal("non-loopback peer resolved WorkflowSetQueue mutation")
+	} else if frameErr.Code != ErrCodeMethodNotFound {
+		t.Fatalf("WorkflowSetQueue error code = %q, want %q", frameErr.Code, ErrCodeMethodNotFound)
 	}
 }
 

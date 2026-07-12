@@ -20,6 +20,44 @@ export interface WorkflowMergedLoad {
   definitions: WorkflowDefinitionView[];
 }
 
+export interface WorkflowDataBindings {
+  listItems(projectId: string): Promise<WorkItem[]>;
+  listItemCosts(projectId: string): Promise<Record<string, number | undefined>>;
+  listDefinitions(projectId: string): Promise<WorkflowDefinitionCatalog>;
+}
+
+export async function loadWorkflowProject(
+  projectId: string,
+  bindings: WorkflowDataBindings,
+): Promise<WorkflowProjectLoad> {
+  const [items, costs, catalog] = await Promise.all([
+    bindings.listItems(projectId),
+    bindings.listItemCosts(projectId),
+    bindings.listDefinitions(projectId),
+  ]);
+  return { projectId, items, costs, catalog };
+}
+
+export async function loadWorkflowSidebar(
+  bindings: Pick<WorkflowDataBindings, 'listItems' | 'listDefinitions'>,
+): Promise<WorkflowMergedLoad> {
+  const items = await bindings.listItems('');
+  const itemsByProject = new Map<string, WorkItem[]>();
+  for (const item of items) {
+    if (!item.projectId || !isWorkflowSidebarRun(item)) continue;
+    const projectItems = itemsByProject.get(item.projectId);
+    if (projectItems) projectItems.push(item);
+    else itemsByProject.set(item.projectId, [item]);
+  }
+  const loads = await Promise.all([...itemsByProject].map(async ([projectId, projectItems]): Promise<WorkflowProjectLoad> => ({
+    projectId,
+    items: projectItems,
+    costs: {},
+    catalog: await bindings.listDefinitions(projectId),
+  })));
+  return mergeWorkflowProjectLoads(loads);
+}
+
 export function mergeWorkflowProjectLoads(loads: WorkflowProjectLoad[]): WorkflowMergedLoad {
   const items = loads.flatMap((load) => load.items);
   const costs: Record<string, number> = {};
@@ -46,6 +84,30 @@ export function isWorkflowParked(item: WorkItem): boolean {
   return item.state === 'needs-human'
     || item.state === 'failed'
     || (item.state === 'done' && parseWorkflowDisposition(item.disposition) === null);
+}
+
+export function isWorkflowSidebarRun(item: WorkItem): boolean {
+  return item.state !== 'cancelled' && (item.state !== 'done' || isWorkflowParked(item));
+}
+
+function sidebarStateRank(item: WorkItem): number {
+  if (item.state === 'needs-human') return 0;
+  if (item.state === 'failed') return 1;
+  if (item.state === 'running') return 2;
+  if (item.state === 'queued') return 3;
+  return 4;
+}
+
+export function workflowSidebarRuns(items: WorkItem[], projectId: string): WorkItem[] {
+  return items
+    .filter((item) => item.projectId === projectId && isWorkflowSidebarRun(item))
+    .sort((left, right) => {
+      const rank = sidebarStateRank(left) - sidebarStateRank(right);
+      if (rank !== 0) return rank;
+      const leftAt = left.endedAt || left.startedAt || left.createdAt;
+      const rightAt = right.endedAt || right.startedAt || right.createdAt;
+      return leftAt - rightAt || left.sortPosition - right.sortPosition;
+    });
 }
 
 export function workflowSweepItems(

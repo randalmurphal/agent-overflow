@@ -10,6 +10,11 @@ import {
   applyWorkflowPhaseState,
   applyWorkflowQueueState,
 } from './workflowsPane.svelte';
+import {
+  applyWorkflowSidebarItemState,
+  applyWorkflowSidebarPhaseState,
+  applyWorkflowSidebarQueueState,
+} from './workflowsSidebar.svelte';
 
 const MAX_ERROR_DEDUPE_KEYS = 100;
 const shownErrors = new Set<string>();
@@ -17,16 +22,19 @@ const shownErrors = new Set<string>();
 export function applyWorkflowItemStateEvent(event: WorkflowItemStateEvent): void {
   if (!event?.itemId || !event.to) return;
   applyWorkflowItemState(event);
+  applyWorkflowSidebarItemState(event);
 }
 
 export function applyWorkflowQueueStateEvent(event: WorkflowQueueStateEvent): void {
   if (!event || typeof event.active !== 'boolean' || !Number.isFinite(event.globalConcurrency)) return;
   applyWorkflowQueueState(event);
+  applyWorkflowSidebarQueueState();
 }
 
 export function applyWorkflowPhaseStateEvent(event: WorkflowPhaseStateEvent): void {
   if (!event?.itemId || !event.phaseId || !Number.isFinite(event.attempt) || !event.status) return;
   applyWorkflowPhaseState(event);
+  applyWorkflowSidebarPhaseState(event);
 }
 
 export function applyWorkflowErrorEvent(event: WorkflowErrorEvent): void {

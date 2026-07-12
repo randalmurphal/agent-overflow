@@ -12,6 +12,7 @@
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { isWorkflowParked } from '../../stores/workflowData';
+  import { isViewOnlySession } from '../../transport/runMode';
   import {
     applyWorkflowQueueState,
     getWorkflowCosts,
@@ -29,6 +30,7 @@
     setWorkflowProjectFilter,
     workflowThreadFromWire,
   } from '../../stores/workflowsPane.svelte';
+  import { refreshWorkflowsSidebar } from '../../stores/workflowsSidebar.svelte';
 
   let definitions = $derived(getWorkflowDefinitions());
   let items = $derived(getWorkflowItems());
@@ -38,6 +40,7 @@
   let projects = $derived(getProjects());
   let draggedId: string | null = $state(null);
   let armed = $derived(getWorkflowArmedAction());
+  let viewOnly = $derived(isViewOnlySession());
 
   let runsByWorkflow = $derived.by(() => {
     const grouped = new Map<string, WorkItem[]>();
@@ -120,6 +123,7 @@
   }
 
   async function openStudio(workflowId = ''): Promise<void> {
+    if (viewOnly) return;
     const projectId = targetProjectId();
     if (!projectId) { addToast('error', 'Add a project first'); return; }
     try {
@@ -131,6 +135,7 @@
   }
 
   async function openTriage(): Promise<void> {
+    if (viewOnly) return;
     const projectId = targetProjectId();
     if (!projectId) { addToast('error', 'Add a project first'); return; }
     try {
@@ -142,6 +147,7 @@
   }
 
   async function toggleQueue(): Promise<void> {
+    if (viewOnly) return;
     const active = !queue.active;
     await updateSetting('workflowQueueActive', active);
     if (getSettings().workflowQueueActive === active) {
@@ -151,6 +157,7 @@
   }
 
   async function dropBefore(target: WorkItem): Promise<void> {
+    if (viewOnly) return;
     if (!draggedId || draggedId === target.id || target.projectId !== queued.find((item) => item.id === draggedId)?.projectId) return;
     const projectItems = queued.filter((item) => item.projectId === target.projectId);
     const from = projectItems.findIndex((item) => item.id === draggedId);
@@ -164,6 +171,7 @@
     draggedId = null;
     try {
       await WorkflowReorderQueue(target.projectId, ids);
+      refreshWorkflowsSidebar();
       addToast('success', 'Priority reordered — the drain picks it up immediately');
     } catch (error) {
       addToast('error', userFacingError(error, 'Could not reorder the queue.'));
@@ -172,6 +180,7 @@
   }
 
   async function cancelQueued(item: WorkItem): Promise<void> {
+    if (viewOnly) return;
     const key = `queue-cancel:${item.id}`;
     if (armed !== key) { setWorkflowArmedAction(key); return; }
     try {
@@ -186,7 +195,7 @@
 
 <div class="space-y-5 p-4" data-testid="wf-overview">
   <div class="flex flex-wrap items-center gap-2" data-testid="wf-overview-controls">
-    <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2" onclick={toggleQueue} title="Pause stops new starts; running items finish" data-testid="wf-queue-toggle">
+    <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={toggleQueue} disabled={viewOnly} title={viewOnly ? 'Local only' : 'Pause stops new starts; running items finish'} data-testid="wf-queue-toggle">
       {queue.active ? '❚❚ Active' : '▶ Paused'}
     </button>
     <span class="hidden items-center gap-1 text-xs text-fg-muted sm:inline-flex" title={`${runningCount} of ${queue.globalConcurrency} concurrency slots in use`} data-testid="wf-slots">
@@ -200,9 +209,9 @@
       {/each}
     </select>
     <div class="ml-auto hidden flex-wrap gap-1.5 sm:flex">
-      <button class="rounded-md bg-accent px-2.5 py-1.5 text-xs font-medium text-white hover:bg-accent/90" onclick={() => openWorkflowIntake()} data-testid="wf-new-run">+ New run</button>
-      <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2" onclick={() => openStudio()} data-testid="wf-new-workflow">+ New workflow</button>
-      <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2" onclick={openTriage} data-testid="wf-triage">Triage</button>
+      <button class="rounded-md bg-accent px-2.5 py-1.5 text-xs font-medium text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openWorkflowIntake()} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-new-run">+ New run</button>
+      <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openStudio()} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-new-workflow">+ New workflow</button>
+      <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={openTriage} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-triage">Triage</button>
     </div>
     <details class="relative ml-auto sm:hidden" data-testid="wf-overflow">
       <summary class="cursor-pointer list-none rounded-md border border-border-subtle px-2.5 py-1.5 text-xs" data-testid="wf-overflow-toggle">⋯</summary>
@@ -212,9 +221,9 @@
           <option value="">All projects</option>
           {#each projects as project}<option value={project.project.id}>{project.project.name}</option>{/each}
         </select>
-        <button class="rounded-md bg-accent px-2.5 py-1.5 text-left text-xs font-medium text-white" onclick={() => openWorkflowIntake()} data-testid="wf-new-run-mobile">+ New run</button>
-        <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-left text-xs" onclick={() => openStudio()} data-testid="wf-new-workflow-mobile">+ New workflow</button>
-        <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-left text-xs" onclick={openTriage} data-testid="wf-triage-mobile">Triage</button>
+        <button class="rounded-md bg-accent px-2.5 py-1.5 text-left text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openWorkflowIntake()} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-new-run-mobile">+ New run</button>
+        <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-left text-xs disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openStudio()} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-new-workflow-mobile">+ New workflow</button>
+        <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-left text-xs disabled:cursor-not-allowed disabled:opacity-50" onclick={openTriage} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-triage-mobile">Triage</button>
       </div>
     </details>
   </div>
@@ -222,7 +231,7 @@
   {#if definitions.length === 0}
     <div class="rounded-lg border border-dashed border-border-subtle px-4 py-8 text-center" data-testid="wf-empty">
       <p class="text-sm text-fg-muted">No workflows defined.</p>
-      <button class="mt-3 rounded-md border border-border-subtle px-3 py-1.5 text-xs hover:bg-surface-2" onclick={() => openStudio()} data-testid="wf-empty-new-workflow">+ New workflow</button>
+      <button class="mt-3 rounded-md border border-border-subtle px-3 py-1.5 text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openStudio()} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-empty-new-workflow">+ New workflow</button>
     </div>
   {:else}
     {#each [{ label: 'Active', rows: active }, { label: 'Idle', rows: idle }] as section}
@@ -257,12 +266,12 @@
     <section class="space-y-2" data-testid="wf-up-next">
       <h2 class="text-[11px] font-semibold uppercase tracking-wider text-fg-muted">Up next · {queued.length}</h2>
       {#each queued as item, index (item.id)}
-        <div role="listitem" draggable="true" ondragstart={() => { draggedId = item.id; }} ondragover={(event) => event.preventDefault()} ondrop={() => dropBefore(item)} class="group flex items-center gap-2 rounded-md border border-border-subtle px-2.5 py-2 hover:bg-surface-2/50" data-testid="wf-queue-row">
-          <span class="cursor-grab text-fg-muted opacity-0 group-hover:opacity-100" data-testid="wf-queue-grip">⠿</span>
+        <div role="listitem" draggable={!viewOnly} ondragstart={() => { if (!viewOnly) draggedId = item.id; }} ondragover={(event) => { if (!viewOnly) event.preventDefault(); }} ondrop={() => dropBefore(item)} class="group flex items-center gap-2 rounded-md border border-border-subtle px-2.5 py-2 hover:bg-surface-2/50" data-testid="wf-queue-row">
+          {#if !viewOnly}<span class="cursor-grab text-fg-muted opacity-0 group-hover:opacity-100" data-testid="wf-queue-grip">⠿</span>{/if}
           <span class="w-6 text-xs text-fg-muted">#{index + 1}</span>
           <button class="min-w-0 flex-1 truncate text-left text-sm" onclick={() => openRun(item)} data-testid="wf-queue-open">{item.goal}</button>
           <span class="text-xs text-fg-muted">{projectName(item.projectId)} · {item.workflowId}{queue.active ? '' : ' · held'} · ${(costs[item.id] ?? 0).toFixed(2)}</span>
-          <button class="rounded px-1.5 py-1 text-xs text-error opacity-0 group-hover:opacity-100" onclick={() => cancelQueued(item)} data-testid="wf-queue-cancel">{armed === `queue-cancel:${item.id}` ? 'cancel?' : '✕'}</button>
+          <button class="rounded px-1.5 py-1 text-xs text-error opacity-0 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40" onclick={() => cancelQueued(item)} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-queue-cancel">{armed === `queue-cancel:${item.id}` ? 'cancel?' : '✕'}</button>
         </div>
       {/each}
     </section>
