@@ -16,7 +16,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P1.3 `ao` CLI skeleton | `m1/p13-ao-cli` | `~/repos/ao-lanes/p13` | gpt-5.6-sol / high | `019f5478-bdb3-75c0-b1c4-4ee5139ae19a` | **merged** |
 | P1.4 starters + `ao workflow new` | `m1/p14-starters` | `~/repos/ao-lanes/p14` | gpt-5.6-sol / high | `019f548e-a038-7f82-87ab-750b8b20957d` | **merged** |
 | P2.1 workflow persistence | `m2/p21-workflow-persistence` | `~/repos/ao-lanes/p21` | gpt-5.6-sol / high | run1 `019f549e-e74f-7721-98dd-9abcb4fc730b` (dead on arrival); run2 `019f54ee-a5e8-7b41-8825-6ccb1b790a3b` | **merged** |
-| P2.2 engine core | — | — | — | _pending_ | authored; gates on P2.1 merge |
+| P2.2 engine core | `m2/p22-engine-core` | `~/repos/ao-lanes/p22` | gpt-5.6-sol / **xhigh** | `019f5505-71d3-73d0-89d5-f5e55b7230a9` | dispatched (base `f75761ab`) |
 | P2.3 provider envelope wiring | `m2/p23-provider-envelope` | `~/repos/ao-lanes/p23` | gpt-5.6-sol / high | `019f54ee-b30b-72d1-b57e-58f8456c56d0` | **merged** |
 
 ## Events
