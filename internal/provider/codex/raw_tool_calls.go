@@ -148,7 +148,7 @@ func (s *Session) handleRawExecCommandOutput(call rawToolCall, params json.RawMe
 	}
 	providerThreadID := providerThreadIDFromParams(params)
 	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
-	s.onEvent(provider.ProviderEvent{
+	s.emitEvent(provider.ProviderEvent{
 		Kind:            provider.EventCodexExecResult,
 		ThreadID:        s.threadID,
 		TurnID:          readTopLevelString(params, "turnId"),

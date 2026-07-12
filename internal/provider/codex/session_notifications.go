@@ -79,9 +79,7 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 			return
 		}
 		if isChildTurnLifecycleNotification(method) {
-			for _, evt := range s.childLifecycleEvents(method, params, parentToolUseID) {
-				s.onEvent(evt)
-			}
+			s.emitChildLifecycleEvents(method, params, parentToolUseID)
 			return
 		}
 	}
@@ -120,12 +118,10 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 		s.updateNotificationState(evt)
 		// No heuristic background classification here (invariant 25). The
 		// wire-typed signals are exposed in evt.Meta; triage owns projection.
-		s.onEvent(*evt)
+		s.emitEvent(*evt)
 	}
 	if parentToolUseID != "" && method == "error" && !readTopLevelBool(params, "willRetry") {
-		if evt := s.childErrorStatusEvent(providerThreadID, parentToolUseID); evt != nil {
-			s.onEvent(*evt)
-		}
+		s.emitChildErrorStatusEvent(providerThreadID, parentToolUseID)
 	}
 
 	// V1 establishes ownership from collabAgentToolCall spawn completion in
@@ -239,7 +235,7 @@ func (s *Session) emitSubagentNotification(n subagentNotification, requireKnownP
 	if !s.claimSubagentNotification(parentItemID, meta) {
 		return false
 	}
-	s.onEvent(provider.ProviderEvent{
+	s.emitEvent(provider.ProviderEvent{
 		Kind:      provider.EventSubagentNotification,
 		ThreadID:  s.threadID,
 		ItemID:    parentItemID,

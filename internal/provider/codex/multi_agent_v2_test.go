@@ -17,6 +17,8 @@ func newMultiAgentV2RoutingSession(t *testing.T, onEvent func(provider.ProviderE
 		onEvent:                   onEvent,
 		childParentByThread:       make(map[string]string),
 		childParentByAgentPath:    make(map[string]string),
+		childThreadByAgentPath:    make(map[string]string),
+		childPathOwnerLive:        make(map[string]bool),
 		agentPathByThread:         make(map[string]string),
 		agentMetaByThread:         make(map[string]collabReceiverMeta),
 		subagentNotificationDedup: make(map[subagentNotificationDedupKey]struct{}),
@@ -355,6 +357,96 @@ func TestMultiAgentV2OwnershipRejectsSelfAndConflictingRemap(t *testing.T) {
 	}
 }
 
+func TestMultiAgentV2OwnershipAllowsPathReuseByNewChildAfterRestart(t *testing.T) {
+	s := newMultiAgentV2RoutingSession(t, nil)
+	if !s.registerHistoricalChildOwnership("root-provider-thread", "child-old", "/root/review", "spawn-old") {
+		t.Fatal("register historical child ownership")
+	}
+	if !s.registerChildOwnership("root-provider-thread", "child-new", "/root/review", "spawn-new") {
+		t.Fatal("new child could not replace historical path ownership")
+	}
+
+	if got := s.parentToolUseForProviderThread("child-old"); got != "spawn-old" {
+		t.Fatalf("historical thread ownership = %q, want spawn-old", got)
+	}
+	if got := s.parentToolUseForProviderThread("child-new"); got != "spawn-new" {
+		t.Fatalf("new thread ownership = %q, want spawn-new", got)
+	}
+	if got := s.parentToolUseForAgentPath("/root/review"); got != "spawn-new" {
+		t.Fatalf("current path ownership = %q, want spawn-new", got)
+	}
+	if got := s.providerThreadForAgentPath("/root/review", "spawn-new"); got != "child-new" {
+		t.Fatalf("current provider thread = %q, want child-new", got)
+	}
+	if got := s.providerThreadForAgentPath("/root/review", "spawn-old"); got != "" {
+		t.Fatalf("historical provider thread still owns reused path: %q", got)
+	}
+	if s.registerChildOwnership("root-provider-thread", "child-old", "/root/review", "spawn-old") {
+		t.Fatal("superseded child reclaimed reused path through replay")
+	}
+	if got := s.providerThreadForAgentPath("/root/review", "spawn-new"); got != "child-new" {
+		t.Fatalf("replayed ownership changed current provider thread to %q", got)
+	}
+	if s.registerChildOwnership("root-provider-thread", "child-malicious", "/root/review", "spawn-malicious") {
+		t.Fatal("unseen live child replaced an existing live path owner")
+	}
+}
+
+func TestMultiAgentV2HistoryCannotReplaceLivePathOwner(t *testing.T) {
+	s := newMultiAgentV2RoutingSession(t, nil)
+	if !s.registerChildOwnership("root-provider-thread", "child-new", "/root/review", "spawn-new") {
+		t.Fatal("register live child ownership")
+	}
+	if !s.registerHistoricalChildOwnership("root-provider-thread", "child-old", "/root/review", "spawn-old") {
+		t.Fatal("register old historical child ownership")
+	}
+	if !s.registerHistoricalChildOwnership("root-provider-thread", "child-new", "/root/review", "spawn-new") {
+		t.Fatal("register current child history")
+	}
+
+	if got := s.providerThreadForAgentPath("/root/review", "spawn-new"); got != "child-new" {
+		t.Fatalf("history replaced live provider thread with %q", got)
+	}
+	if !s.childPathOwnerLive["/root/review"] {
+		t.Fatal("history downgraded live path ownership provenance")
+	}
+}
+
+func TestMultiAgentV2PathReuseDrainsBufferedChildCompletion(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
+		events = append(events, event)
+	})
+	if !s.registerHistoricalChildOwnership("root-provider-thread", "child-old", "/root/review", "spawn-old") {
+		t.Fatal("register historical child ownership")
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-new","turn":{"id":"child-turn","status":"inProgress"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-new","turn":{"id":"child-turn","status":"completed","error":null}}}`))
+	if len(events) != 0 {
+		t.Fatalf("unowned child lifecycle leaked before spawn: %+v", events)
+	}
+
+	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-new", "started", "child-new", "/root/review"))
+	if len(events) != 4 {
+		t.Fatalf("events after reused-path spawn = %+v", events)
+	}
+	if events[2].Kind != provider.EventSubagentStatus || events[2].ParentToolUseID != "spawn-new" ||
+		events[3].Kind != provider.EventSubagentStatus || events[3].ParentToolUseID != "spawn-new" {
+		t.Fatalf("buffered lifecycle was not drained under new spawn: %+v", events)
+	}
+	var terminalMeta struct {
+		AgentPath string `json:"agent_path"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(events[3].Meta, &terminalMeta); err != nil {
+		t.Fatalf("decode terminal status: %v", err)
+	}
+	if terminalMeta.AgentPath != "child-new" || terminalMeta.Status != "completed" {
+		t.Fatalf("terminal status = %+v", terminalMeta)
+	}
+}
+
 func TestMultiAgentV2LegacyConversationApprovalUsesChildScope(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
@@ -429,5 +521,114 @@ func TestCollabHistoryOwnershipsSupportV1AndV2(t *testing.T) {
 	}
 	if ownerships[1].ParentItemID != "spawn-v2" || ownerships[1].ChildThreadID != "child-v2" || ownerships[1].AgentPath != "/root/review" {
 		t.Fatalf("v2 ownership = %+v", ownerships[1])
+	}
+}
+
+func TestCollabHistoryTerminalReconciliation(t *testing.T) {
+	tests := []struct {
+		name       string
+		response   json.RawMessage
+		wantStatus string
+	}{
+		{
+			name:       "completed idle child",
+			response:   json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"idle"},"turns":[{"id":"turn-a","status":"completed"}]}}`),
+			wantStatus: "completed",
+		},
+		{
+			name:       "failed idle child",
+			response:   json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"idle"},"turns":[{"id":"turn-a","status":"failed"}]}}`),
+			wantStatus: "errored",
+		},
+		{
+			name:       "interrupted idle child",
+			response:   json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"idle"},"turns":[{"id":"turn-a","status":"interrupted"}]}}`),
+			wantStatus: "interrupted",
+		},
+		{
+			name:     "active child with previous completed turn",
+			response: json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"active"},"turns":[{"id":"turn-a","status":"completed"}]}}`),
+		},
+		{
+			name:     "idle child with in-progress turn",
+			response: json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"idle"},"turns":[{"id":"turn-a","status":"inProgress"}]}}`),
+		},
+		{
+			name:       "system error child",
+			response:   json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"systemError"},"turns":[{"id":"turn-a","status":"completed"}]}}`),
+			wantStatus: "errored",
+		},
+		{
+			name:       "not loaded child",
+			response:   json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"notLoaded"},"turns":[{"id":"turn-a","status":"completed"}]}}`),
+			wantStatus: "completed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var events []provider.ProviderEvent
+			s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
+				events = append(events, event)
+			})
+			_, err := s.reconcileCollabHistoryTerminal(collabHistoryJob{Ownership: collabHistoryOwnership{
+				ParentItemID:  "spawn-a",
+				ChildThreadID: "child-a",
+			}}, tt.response, 0)
+			if err != nil {
+				t.Fatalf("reconcile terminal history: %v", err)
+			}
+
+			if tt.wantStatus == "" {
+				if len(events) != 0 {
+					t.Fatalf("unexpected recovery event: %+v", events)
+				}
+				return
+			}
+			if len(events) != 1 || events[0].Kind != provider.EventSubagentStatus ||
+				events[0].ItemID != "spawn-a" || events[0].ParentToolUseID != "spawn-a" {
+				t.Fatalf("recovery event = %+v", events)
+			}
+			var meta struct {
+				AgentPath string `json:"agent_path"`
+				Status    string `json:"status"`
+			}
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("decode recovery status: %v", err)
+			}
+			if meta.AgentPath != "child-a" || meta.Status != tt.wantStatus {
+				t.Fatalf("recovery status = %+v, want child-a/%s", meta, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestCollabHistoryTerminalReconciliationRejectsStaleAndMismatchedSnapshots(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
+		events = append(events, event)
+	})
+	job := collabHistoryJob{Ownership: collabHistoryOwnership{
+		ParentItemID:  "spawn-a",
+		ChildThreadID: "child-a",
+	}}
+	completed := json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"idle"},"turns":[{"id":"turn-a","status":"completed"}]}}`)
+
+	revisionBeforeRead := s.childLifecycleRevisionForThread("child-a")
+	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/review", "spawn-a") {
+		t.Fatal("register child ownership")
+	}
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-a","turn":{"id":"turn-b","status":"inProgress"}}}`))
+	events = nil
+	if _, err := s.reconcileCollabHistoryTerminal(job, completed, revisionBeforeRead); err != nil {
+		t.Fatalf("reconcile stale snapshot: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("stale snapshot overwrote live lifecycle: %+v", events)
+	}
+
+	mismatched := json.RawMessage(`{"thread":{"id":"child-other","status":{"type":"idle"},"turns":[{"status":"completed"}]}}`)
+	if _, err := s.reconcileCollabHistoryTerminal(job, mismatched, s.childLifecycleRevisionForThread("child-a")); err == nil {
+		t.Fatal("accepted terminal history for a different child thread")
 	}
 }

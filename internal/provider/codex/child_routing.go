@@ -188,7 +188,7 @@ func (s *Session) warnChildRoutingOverflow(providerThreadID, method string, requ
 	if err != nil {
 		meta = json.RawMessage(`{"kind":"warning","title":"Subagent routing warning"}`)
 	}
-	s.onEvent(provider.ProviderEvent{
+	s.emitEvent(provider.ProviderEvent{
 		Kind:      provider.EventNotification,
 		ThreadID:  s.threadID,
 		Content:   message,

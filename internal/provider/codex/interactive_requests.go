@@ -109,7 +109,7 @@ func (s *Session) drainPendingApprovals(decisionWord string, closeSession bool, 
 			metaFields["answers"] = map[string]any{}
 		}
 		meta, _ := json.Marshal(metaFields)
-		s.onEvent(provider.ProviderEvent{
+		s.emitEvent(provider.ProviderEvent{
 			Kind:      p.resolveKind,
 			ThreadID:  s.threadID,
 			ItemID:    requestID,

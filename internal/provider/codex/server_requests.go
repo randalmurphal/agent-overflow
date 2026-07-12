@@ -66,7 +66,7 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		if parentToolUseID != "" {
 			evt.ParentToolUseID = parentToolUseID
 		}
-		s.onEvent(evt)
+		s.emitEvent(evt)
 	}
 
 	switch method {
