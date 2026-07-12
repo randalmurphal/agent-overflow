@@ -176,6 +176,21 @@ func (e *Engine) recoverTerminal(item *runtimeItem, phase store.WorkItemPhase) e
 	if err := decodeJSON(phase.GateTrace, &trace); err != nil {
 		return err
 	}
+	if trace.Decision.Kind == def.DecisionAdvance || trace.Decision.Kind == def.DecisionLoop {
+		vars, _, err := e.variableContext(item, phase.OutputEnvelope)
+		if err != nil {
+			return err
+		}
+		note := ""
+		if len(phase.Intervention) > 0 {
+			var intervention HumanIntervention
+			if err := decodeJSON(phase.Intervention, &intervention); err != nil {
+				return fmt.Errorf("decode recovered intervention: %w", err)
+			}
+			note = intervention.Note
+		}
+		item.feedback = feedbackFor(vars, trace.Decision.Feedback, note)
+	}
 	return e.recoverDecision(item, trace.Decision)
 }
 

@@ -144,9 +144,13 @@ func validateWorkflowOutputs(workflow Workflow, phaseIndex map[string]int) []Fin
 			findings = append(findings, finding("workflow-output.name", element, "name must match [a-z0-9-]+"))
 		}
 		parts := strings.Split(output.From, ".")
-		_, producer, ok := resolveReference(workflow, phaseIndex, output.From)
+		resolved, producer, ok := resolveReference(workflow, phaseIndex, output.From)
 		if !ok || producer < 0 || len(parts) < 2 {
 			findings = append(findings, finding("workflow-output.ref", element, fmt.Sprintf("source %q does not resolve", output.From)))
+		} else if output.Artifact {
+			if resolved.Schema.Type != "string" {
+				findings = append(findings, finding("workflow-output.artifact-type", element, "artifact source must resolve to a string path"))
+			}
 		}
 	}
 	return findings

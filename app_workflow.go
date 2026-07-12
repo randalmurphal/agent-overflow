@@ -155,7 +155,7 @@ func (a *App) requireWorkflowEngine() (*engine.Engine, error) {
 	return a.workflowEngine, nil
 }
 
-func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget) (store.WorkItem, error) {
+func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget, stepMode bool) (store.WorkItem, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return store.WorkItem{}, err
@@ -195,7 +195,8 @@ func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal str
 		ID: uuid.NewString(), ProjectID: projectID, Goal: goal,
 		WorkflowID: workflowID, WorkflowScope: string(scope),
 		State: string(engine.StateQueued), SortPosition: sortPosition,
-		Seeds: append(json.RawMessage(nil), seeds...), Budget: encodedBudget, Source: "manual",
+		Seeds: append(json.RawMessage(nil), seeds...), Budget: encodedBudget,
+		StepMode: stepMode, Source: "manual",
 		CreatedAt: time.Now().UnixMilli(),
 	}
 	if err := workflowEngine.Enqueue(item); err != nil {
@@ -276,8 +277,9 @@ func (a *App) WorkflowListItems(projectID string) ([]store.WorkItem, error) {
 }
 
 type WorkflowItemDetail struct {
-	Item   store.WorkItem        `json:"item"`
-	Phases []store.WorkItemPhase `json:"phases"`
+	Item      store.WorkItem        `json:"item"`
+	Phases    []store.WorkItemPhase `json:"phases"`
+	Artifacts []WorkflowArtifact    `json:"artifacts"`
 }
 
 func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetail, error) {
@@ -292,5 +294,9 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetail, error) {
 	if err != nil {
 		return WorkflowItemDetail{}, err
 	}
-	return WorkflowItemDetail{Item: item, Phases: phases}, nil
+	artifacts, err := listWorkflowArtifacts(a.workflowDataRoot(), itemID)
+	if err != nil {
+		return WorkflowItemDetail{}, err
+	}
+	return WorkflowItemDetail{Item: item, Phases: phases, Artifacts: artifacts}, nil
 }

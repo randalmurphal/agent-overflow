@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/workflow/def"
 )
@@ -55,6 +56,54 @@ func TestEngineInstanceCannotRestartAfterClose(t *testing.T) {
 	}
 	if err := h.engine.Start(context.Background()); err == nil {
 		t.Fatal("expected one-shot engine restart rejection")
+	}
+}
+
+func TestRunnerStartupDoesNotBlockEngineCancellation(t *testing.T) {
+	workflow := onePhaseWorkflow("slow-start", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"slow-start": workflow}, []string{"project"}, nil)
+	item := testItem("slow", "project", "slow-start", 0)
+	if err := h.engine.Enqueue(item); err != nil {
+		t.Fatal(err)
+	}
+	block := make(chan struct{})
+	queuedBlock := make(chan struct{})
+	h.runner.startWait[item.ID] = block
+	h.runner.startWait["queued"] = queuedBlock
+	if err := h.engine.Enqueue(testItem("queued", "project", "slow-start", 1)); err != nil {
+		t.Fatal(err)
+	}
+	startResult := make(chan error, 1)
+	go func() { startResult <- h.engine.SetQueue(true, 0, 1) }()
+	deadline := time.Now().Add(time.Second)
+	for len(h.runner.started()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(h.runner.started()) == 0 {
+		t.Fatal("runner startup did not begin")
+	}
+	cancelResult := make(chan error, 1)
+	go func() { cancelResult <- h.engine.Cancel(item.ID) }()
+	select {
+	case err := <-cancelResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel blocked behind runner startup")
+	}
+	select {
+	case err := <-startResult:
+		if err != nil {
+			t.Fatalf("stale cancelled start returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("startup caller did not settle after cancellation")
+	}
+	requireItemState(t, h.store, item.ID, StateCancelled, ReasonInterrupted)
+	close(queuedBlock)
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
 	}
 }
 

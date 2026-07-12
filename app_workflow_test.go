@@ -40,7 +40,7 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 	budgetTokens := int64(1_000_000)
 	item, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "packet-flow", "shared", "exercise workflow",
-		json.RawMessage(`{"goal":"exercise workflow"}`), &profile.Budget{Tokens: &budgetTokens},
+		json.RawMessage(`{"goal":"exercise workflow"}`), &profile.Budget{Tokens: &budgetTokens}, false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +64,13 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 	}
 	if len(questionDetail.Phases) != 2 || questionDetail.Phases[1].PhaseID != "finish" || questionDetail.Phases[1].ThreadID == "" {
 		t.Fatalf("question detail = %+v", questionDetail)
+	}
+	firstThread, err := app.store.GetThread(questionDetail.Phases[0].ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstThread.WorkspacePath != projectRow.Path || firstThread.WorktreePath != "" {
+		t.Fatalf("read-only workflow thread workspace = %+v, want project root %q", firstThread, projectRow.Path)
 	}
 	if questionDetail.Phases[0].ThreadID == questionDetail.Phases[1].ThreadID {
 		t.Fatalf("ordinary phase transition reused thread %q", questionDetail.Phases[0].ThreadID)
@@ -106,7 +113,7 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 	}
 	invalidItem, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "packet-flow", "shared", "invalid envelope",
-		json.RawMessage(`{"goal":"invalid envelope"}`), nil,
+		json.RawMessage(`{"goal":"invalid envelope"}`), nil, false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +220,7 @@ cleanup: manual
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
 	item, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "codex-flow", "shared", "check codex schema",
-		json.RawMessage(`{"goal":"check codex schema"}`), nil,
+		json.RawMessage(`{"goal":"check codex schema"}`), nil, false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -329,7 +336,7 @@ cleanup: manual
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
 	item, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "retry-flow", "shared", "recover envelope",
-		json.RawMessage(`{"goal":"recover envelope"}`), nil,
+		json.RawMessage(`{"goal":"recover envelope"}`), nil, false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -573,7 +580,7 @@ func TestWorkflowRunnerRejectsUnsupportedPhasesAndStopsUnknownRuns(t *testing.T)
 		{ID: "tool", Driver: def.DriverTool, Shape: def.ShapeSingle},
 		{ID: "fan", Driver: def.DriverAgent, Shape: def.ShapeFanOut},
 	} {
-		err := runner.Start(context.Background(), engine.RunRequest{Phase: phase}, func(engine.Outcome) {})
+		err := runner.Start(context.Background(), engine.RunRequest{Phase: phase}, func() {}, func(engine.Outcome) {})
 		if err == nil {
 			t.Fatalf("unsupported phase %+v succeeded", phase)
 		}

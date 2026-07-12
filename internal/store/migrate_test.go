@@ -1696,6 +1696,15 @@ func TestMigrationV22CreatesWorkflowPersistence(t *testing.T) {
 	if !columns["work_item_id"] {
 		t.Fatal("usage_ledger.work_item_id missing")
 	}
+	itemColumns, err := tableColumns(db, "work_items")
+	if err != nil {
+		t.Fatalf("work_items columns: %v", err)
+	}
+	for _, column := range []string{"step_mode", "worktree_path", "branch", "base_branch"} {
+		if !itemColumns[column] {
+			t.Fatalf("work_items.%s missing", column)
+		}
+	}
 	for _, index := range []string{
 		"idx_work_items_project_state_sort", "idx_work_items_project_sort",
 		"idx_work_item_phases_item_started", "idx_automations_project",

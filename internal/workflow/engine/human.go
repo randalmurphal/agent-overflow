@@ -88,6 +88,40 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 		return err
 	}
 	if trace.Decision.Kind != def.DecisionHuman {
+		if item.item.StepMode && stepModeAutomaticDecision(trace.Decision.Kind) && len(current.Intervention) == 0 {
+			if choice == HumanReject {
+				return fmt.Errorf("resolve human gate %q: step gates support approve; use cancel, resume, or take over", itemID)
+			}
+			intervention, err := json.Marshal(HumanIntervention{Decision: choice, Note: note})
+			if err != nil {
+				return err
+			}
+			phaseStatus := "completed"
+			if trace.Decision.Kind == def.DecisionFailed {
+				phaseStatus = "failed"
+			}
+			if err := e.store.CompleteWorkItemPhase(
+				itemID, item.phaseID, item.attempt, current.OutputEnvelope,
+				current.GateTrace, phaseStatus, e.timestamp(),
+			); err != nil {
+				return err
+			}
+			// Complete the phase before recording approval. If the first write
+			// lands alone, approval can be retried. Once intervention exists,
+			// startup recovery may safely execute the persisted decision because
+			// downstream variable reconstruction can see the completed phase.
+			if err := e.store.UpdateWorkItemPhaseIntervention(itemID, item.phaseID, item.attempt, intervention); err != nil {
+				return err
+			}
+			e.emitter.Emit("workflow:phase-state", PhaseEvent{
+				ItemID: itemID, PhaseID: item.phaseID, Attempt: item.attempt, Status: phaseStatus,
+			})
+			if err := e.transition(item, StateRunning, ""); err != nil {
+				return err
+			}
+			e.items[itemID] = item
+			return e.continueHumanDecision(item, trace.Decision, feedbackFor(vars, trace.Decision.Feedback, note))
+		}
 		if len(current.Intervention) == 0 {
 			return fmt.Errorf("resolve human gate %q: persisted decision is %q without a human intervention", itemID, trace.Decision.Kind)
 		}
@@ -193,7 +227,9 @@ func (e *Engine) isHumanGate(item *runtimeItem) (bool, error) {
 	if err := decodeJSON(current.GateTrace, &trace); err != nil {
 		return false, err
 	}
-	return trace.Decision.Kind == def.DecisionHuman || len(current.Intervention) > 0, nil
+	return trace.Decision.Kind == def.DecisionHuman ||
+		item.item.StepMode && stepModeAutomaticDecision(trace.Decision.Kind) ||
+		len(current.Intervention) > 0, nil
 }
 
 func (e *Engine) continuePersistedHumanDecision(item *runtimeItem, current store.WorkItemPhase, decision def.RouteDecision, vars map[string]any) error {

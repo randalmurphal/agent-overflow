@@ -85,6 +85,16 @@ func (e *Engine) transition(item *runtimeItem, to State, reason Reason) error {
 func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 	var errs []error
 	output := request.output
+	if item.runnerStarting {
+		if item.runnerStartCancel != nil {
+			item.runnerStartCancel()
+		}
+		item.runnerStarting = false
+		item.runnerStartCancel = nil
+		if _, err := e.runner.Stop(e.ctx, RunKey{ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt}); err != nil {
+			errs = append(errs, fmt.Errorf("stop starting runner: %w", err))
+		}
+	}
 	if item.runnerActive {
 		partial, err := e.runner.Stop(e.ctx, RunKey{ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt})
 		if err != nil {
@@ -128,6 +138,11 @@ func (e *Engine) complete(key RunKey, outcome Outcome) error {
 	if !ok || item.phaseID != key.PhaseID || item.attempt != key.Attempt || State(item.item.State) != StateRunning {
 		return nil // A completion racing a persisted teardown is stale, not an error.
 	}
+	if item.runnerStartCancel != nil {
+		item.runnerStartCancel()
+	}
+	item.runnerStarting = false
+	item.runnerStartCancel = nil
 	item.runnerActive = false
 	switch outcome.Kind {
 	case OutcomeDone:
@@ -187,6 +202,12 @@ func (e *Engine) completeDone(item *runtimeItem, envelope json.RawMessage) error
 }
 
 func (e *Engine) finishDecision(item *runtimeItem, decision def.RouteDecision, envelope, gateTrace json.RawMessage, vars map[string]any) error {
+	if item.item.StepMode && stepModeAutomaticDecision(decision.Kind) {
+		return e.teardown(item, teardownRequest{
+			output: envelope, gateTrace: gateTrace, phaseStatus: "parked",
+			nextState: StateNeedsHuman, reason: ReasonGate,
+		})
+	}
 	switch decision.Kind {
 	case def.DecisionAdvance, def.DecisionLoop:
 		if err := e.teardown(item, teardownRequest{output: envelope, gateTrace: gateTrace, phaseStatus: "completed"}); err != nil {
@@ -209,6 +230,15 @@ func (e *Engine) finishDecision(item *runtimeItem, decision def.RouteDecision, e
 		return e.teardown(item, teardownRequest{output: envelope, gateTrace: gateTrace, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError})
 	default:
 		return e.teardown(item, teardownRequest{output: envelope, gateTrace: gateTrace, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError})
+	}
+}
+
+func stepModeAutomaticDecision(kind def.DecisionKind) bool {
+	switch kind {
+	case def.DecisionAdvance, def.DecisionLoop, def.DecisionDone, def.DecisionFailed:
+		return true
+	default:
+		return false
 	}
 }
 

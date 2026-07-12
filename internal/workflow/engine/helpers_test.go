@@ -78,12 +78,14 @@ type fakeRunner struct {
 	partials  map[string]json.RawMessage
 	startErrs map[string]error
 	stopErrs  map[string]error
+	startWait map[string]<-chan struct{}
 }
 
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{
 		callbacks: make(map[string]func(Outcome)), partials: make(map[string]json.RawMessage),
 		startErrs: make(map[string]error), stopErrs: make(map[string]error),
+		startWait: make(map[string]<-chan struct{}),
 	}
 }
 
@@ -91,12 +93,22 @@ func runMapKey(key RunKey) string {
 	return fmt.Sprintf("%s/%s/%d", key.ItemID, key.PhaseID, key.Attempt)
 }
 
-func (f *fakeRunner) Start(_ context.Context, request RunRequest, complete func(Outcome)) error {
+func (f *fakeRunner) Start(ctx context.Context, request RunRequest, entered func(), complete func(Outcome)) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.starts = append(f.starts, request)
 	f.callbacks[request.Key.ItemID] = complete
-	return f.startErrs[request.Key.ItemID]
+	wait := f.startWait[request.Key.ItemID]
+	err := f.startErrs[request.Key.ItemID]
+	f.mu.Unlock()
+	entered()
+	if wait != nil {
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
 }
 
 func (f *fakeRunner) Stop(_ context.Context, key RunKey) (json.RawMessage, error) {

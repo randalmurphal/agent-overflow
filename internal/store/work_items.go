@@ -181,6 +181,19 @@ func (s *Store) UpdateWorkItemRunStart(id string, snapshot json.RawMessage, work
 	return requireRowsAffected(result, fmt.Sprintf("store: update work item run start %s", id))
 }
 
+// UpdateWorkItemWorkspace records a successfully provisioned workspace. The
+// runner calls this only after worktree creation and setup hooks complete.
+func (s *Store) UpdateWorkItemWorkspace(id, worktreePath, branch, baseBranch string) error {
+	result, err := s.db.Exec(
+		`UPDATE work_items SET worktree_path = ?, branch = ?, base_branch = ? WHERE id = ?`,
+		worktreePath, branch, baseBranch, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update work item workspace %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update work item workspace %s", id))
+}
+
 // ReorderQueuedWorkItems assigns dense positions to the project's complete
 // queued set. Rejecting partial or duplicate sets prevents ambiguous positions.
 func (s *Store) ReorderQueuedWorkItems(projectID string, orderedIDs []string) error {

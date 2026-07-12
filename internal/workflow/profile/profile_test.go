@@ -27,6 +27,9 @@ func TestParseValidFixture(t *testing.T) {
 	if got.BaseBranch != "main" || got.Disposition != DispositionAutoPR {
 		t.Fatalf("profile defaults/scalars = %+v", got)
 	}
+	if got.WorktreeSetup.Timeout != "15m" {
+		t.Fatalf("worktree setup timeout = %q", got.WorktreeSetup.Timeout)
+	}
 	if !got.HasCheck("test") || !got.HasCapacity("live-stack") || !got.HasCommand("report-issue") {
 		t.Fatalf("profile does not expose expected bindings: %+v", got)
 	}
@@ -96,8 +99,9 @@ func TestValidationFindingsGolden(t *testing.T) {
 		},
 		MCPServers: []string{"", "github", "github"},
 		WorktreeSetup: WorktreeSetup{
-			Copy: []string{" "},
-			Run:  [][]string{{}},
+			Copy:    []string{" "},
+			Run:     [][]string{{}},
+			Timeout: "never",
 		},
 	}
 	result := Validate(profile)
@@ -114,6 +118,22 @@ func TestValidationFindingsGolden(t *testing.T) {
 	}
 	if actual.String() != string(want) {
 		t.Fatalf("validation findings:\n%s\nwant:\n%s", actual.String(), want)
+	}
+}
+
+func TestWorktreeSetupTimeoutDefaultsAndValidates(t *testing.T) {
+	parsed, err := ParseBytes([]byte("worktree_setup:\n  run: [[make, install]]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.WorktreeSetup.Timeout != DefaultWorktreeSetupTimeout {
+		t.Fatalf("default timeout = %q", parsed.WorktreeSetup.Timeout)
+	}
+	for _, timeout := range []Duration{"0s", "-1s", "later"} {
+		result := Validate(Profile{Disposition: DispositionManual, WorktreeSetup: WorktreeSetup{Timeout: timeout}})
+		if result.Valid() {
+			t.Fatalf("timeout %q validated", timeout)
+		}
 	}
 }
 

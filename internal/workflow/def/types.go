@@ -22,7 +22,9 @@ type Workflow struct {
 	Cleanup         CleanupPolicy             `yaml:"cleanup,omitempty" json:"cleanup,omitempty"`
 }
 
-// CleanupPolicy controls terminal-state worktree cleanup.
+// CleanupPolicy records the requested terminal-state worktree cleanup.
+// Execution for writing workflows is deferred until disposition lands; v1
+// keeps every unlanded worktree regardless of this value.
 type CleanupPolicy string
 
 const (

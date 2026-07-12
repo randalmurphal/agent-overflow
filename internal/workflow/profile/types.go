@@ -56,22 +56,25 @@ type Secret struct {
 // WorktreeSetup describes files to copy and argv commands to run before phases.
 // This package validates the declaration but never executes it.
 type WorktreeSetup struct {
-	Copy []string   `yaml:"copy,omitempty" json:"copy,omitempty"`
-	Run  [][]string `yaml:"run,omitempty" json:"run,omitempty"`
+	Copy    []string   `yaml:"copy,omitempty" json:"copy,omitempty"`
+	Run     [][]string `yaml:"run,omitempty" json:"run,omitempty"`
+	Timeout Duration   `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 }
 
 // Default returns the documented profile used when profile.yaml is absent.
 func Default() Profile {
 	return Profile{
-		Disposition: DispositionManual,
-		Reliability: ReliabilityDefaults{Backoff: DefaultBackoff()},
+		Disposition:   DispositionManual,
+		Reliability:   ReliabilityDefaults{Backoff: DefaultBackoff()},
+		WorktreeSetup: WorktreeSetup{Timeout: DefaultWorktreeSetupTimeout},
 	}
 }
 
 const (
-	DefaultBackoffFirst  = "30s"
-	DefaultBackoffSecond = "2m"
-	DefaultBackoffThird  = "5m"
+	DefaultWorktreeSetupTimeout = "10m"
+	DefaultBackoffFirst         = "30s"
+	DefaultBackoffSecond        = "2m"
+	DefaultBackoffThird         = "5m"
 )
 
 // DefaultBackoff returns an isolated copy of the documented transient retry

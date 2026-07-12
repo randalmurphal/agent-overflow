@@ -139,6 +139,9 @@ func TestValidateStructuralGoldenErrors(t *testing.T) {
 			r.Workflow.Phases[0].Outputs["approach"] = Variable{Schema: JSONSchema{Type: "string", MinLength: &negative}}
 		}},
 		{"workflow output source", "workflow-output.ref", "output \"changed\"", func(r *ResolvedWorkflow) { r.Workflow.Outputs["changed"] = WorkflowOutput{From: "goal"} }},
+		{"workflow artifact source type", "workflow-output.artifact-type", "output \"changed\"", func(r *ResolvedWorkflow) {
+			r.Workflow.Outputs["changed"] = WorkflowOutput{From: "review.ok", Artifact: true}
+		}},
 		{"fan-out structure", "phase.fan-out", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Shape = ShapeFanOut }},
 		{"access", "phase.access", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Access = "root" }},
 		{"driver", "phase.driver", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Driver = "script" }},

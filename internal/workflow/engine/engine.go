@@ -15,16 +15,18 @@ import (
 const commandBuffer = 256
 
 type runtimeItem struct {
-	item          store.WorkItem
-	workflow      def.Workflow
-	phaseID       string
-	attempt       int
-	runnerActive  bool
-	waiting       bool
-	acquired      []string
-	slot          bool
-	feedback      *Feedback
-	priorThreadID string
+	item              store.WorkItem
+	workflow          def.Workflow
+	phaseID           string
+	attempt           int
+	runnerActive      bool
+	runnerStarting    bool
+	runnerStartCancel context.CancelFunc
+	waiting           bool
+	acquired          []string
+	slot              bool
+	feedback          *Feedback
+	priorThreadID     string
 }
 
 type resourceKey struct {
@@ -60,6 +62,8 @@ type Engine struct {
 	queueActive     bool
 	startsRemaining int
 	lastTimestamp   int64
+	commandStarts   []*runnerStartFuture
+	inflightStarts  map[*runnerStartFuture]struct{}
 }
 
 func New(store persistence, runner Runner, emitter Emitter, definitions DefinitionSource, profiles ProfileSource, spend SpendSource, config Config) (*Engine, error) {
@@ -74,6 +78,7 @@ func New(store persistence, runner Runner, emitter Emitter, definitions Definiti
 		profiles: profiles, spend: spend, config: config, now: time.Now,
 		commands: make(chan any, commandBuffer), done: make(chan struct{}),
 		items: make(map[string]*runtimeItem), holders: make(map[resourceKey]int),
+		inflightStarts:  make(map[*runnerStartFuture]struct{}),
 		startsRemaining: -1,
 	}, nil
 }
@@ -102,7 +107,9 @@ func (e *Engine) Start(ctx context.Context) error {
 }
 
 // Close stops the command goroutine. Active persisted attempts intentionally
-// remain running so the next Start performs the specified interrupted sweep.
+// remain running so the next Start performs the specified interrupted sweep;
+// in-flight startup workers are cancelled because they cannot report a result
+// after the command loop exits.
 func (e *Engine) Close() error {
 	e.lifeMu.Lock()
 	if !e.started {
@@ -170,7 +177,15 @@ func (e *Engine) SetQueue(active bool, maxStarts, concurrency int) error {
 // Sync waits until every command enqueued before it has been processed.
 func (e *Engine) Sync() error { return e.request(syncCommand{}) }
 
-type response struct{ err error }
+type response struct {
+	err    error
+	starts []*runnerStartFuture
+}
+
+type runnerStartFuture struct {
+	key  RunKey
+	done chan response
+}
 type initCommand struct{ reply chan response }
 type closeCommand struct{ reply chan response }
 type syncCommand struct{ reply chan response }
@@ -212,6 +227,11 @@ type humanGateCommand struct {
 type completionCommand struct {
 	key     RunKey
 	outcome Outcome
+}
+type runnerStartCommand struct {
+	key    RunKey
+	future *runnerStartFuture
+	err    error
 }
 
 func (e *Engine) request(command any) error {
@@ -262,12 +282,53 @@ func (e *Engine) request(command any) error {
 		return fmt.Errorf("workflow engine: unsupported command %T", command)
 	}
 	e.lifeMu.Unlock()
-	return (<-reply).err
+	return waitEngineResponse(<-reply)
+}
+
+func waitEngineResponse(result response) error {
+	errs := []error{result.err}
+	for _, start := range result.starts {
+		errs = append(errs, waitEngineResponse(<-start.done))
+	}
+	return errors.Join(errs...)
+}
+
+func (e *Engine) commandResponse(err error) response {
+	starts := append([]*runnerStartFuture(nil), e.commandStarts...)
+	e.commandStarts = nil
+	return response{err: err, starts: starts}
+}
+
+func (e *Engine) itemCommandResponse(itemID string, err error) response {
+	starts := make([]*runnerStartFuture, 0, len(e.commandStarts))
+	for _, start := range e.commandStarts {
+		if start.key.ItemID == itemID {
+			starts = append(starts, start)
+		}
+	}
+	e.commandStarts = nil
+	return response{err: err, starts: starts}
+}
+
+func (e *Engine) syncResponse() response {
+	starts := make([]*runnerStartFuture, 0, len(e.inflightStarts))
+	for start := range e.inflightStarts {
+		starts = append(starts, start)
+	}
+	return response{starts: starts}
+}
+
+func settleRunnerStart(start *runnerStartFuture, result response) {
+	select {
+	case start.done <- result:
+	default:
+	}
 }
 
 func (e *Engine) loop() {
 	defer close(e.done)
 	for command := range e.commands {
+		e.commandStarts = nil
 		var err error
 		switch command := command.(type) {
 		case initCommand:
@@ -275,22 +336,23 @@ func (e *Engine) loop() {
 			if err == nil {
 				err = e.schedule()
 			}
-			command.reply <- response{err}
+			command.reply <- e.commandResponse(err)
 		case enqueueCommand:
 			err = e.enqueue(command.item)
-			command.reply <- response{err}
+			command.reply <- e.itemCommandResponse(command.item.ID, err)
 		case cancelCommand:
 			err = e.cancel(command.itemID)
-			command.reply <- response{err}
+			e.commandStarts = nil
+			command.reply <- response{err: err}
 		case resumeCommand:
 			err = e.resume(command.itemID, command.targetPhase)
-			command.reply <- response{err}
+			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case answerCommand:
 			err = e.answer(command.itemID, command.answer)
-			command.reply <- response{err}
+			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case reorderCommand:
 			err = e.reorder(command.projectID, command.orderedIDs)
-			command.reply <- response{err}
+			command.reply <- e.commandResponse(err)
 		case queueCommand:
 			if command.concurrency < 1 || command.concurrency > MaxGlobalConcurrency {
 				err = fmt.Errorf("set workflow queue: concurrency must be between 1 and %d", MaxGlobalConcurrency)
@@ -306,19 +368,37 @@ func (e *Engine) loop() {
 					err = e.schedule()
 				}
 			}
-			command.reply <- response{err}
+			command.reply <- e.commandResponse(err)
 		case humanGateCommand:
 			e.removePendingHuman(command.itemID)
 			err = errors.Join(e.resolveHumanGate(command.itemID, command.decision, command.note), e.schedule())
-			command.reply <- response{err}
+			command.reply <- e.itemCommandResponse(command.itemID, err)
+		case runnerStartCommand:
+			err = e.finishRunnerStart(command)
+			if err != nil {
+				e.emitError(command.key.ItemID, err)
+			}
+			_ = e.schedule() // schedule reports item-scoped failures itself.
+			delete(e.inflightStarts, command.future)
+			e.commandStarts = nil
+			settleRunnerStart(command.future, response{err: err})
 		case completionCommand:
 			if err = e.complete(command.key, command.outcome); err != nil {
 				e.emitError(command.key.ItemID, err)
 			}
 			_ = e.schedule() // schedule emits item-scoped asynchronous errors itself.
 		case syncCommand:
-			command.reply <- response{}
+			command.reply <- e.syncResponse()
 		case closeCommand:
+			for _, item := range e.items {
+				if item.runnerStarting && item.runnerStartCancel != nil {
+					item.runnerStartCancel()
+				}
+			}
+			for start := range e.inflightStarts {
+				settleRunnerStart(start, response{err: fmt.Errorf("workflow engine closed before runner startup settled")})
+				delete(e.inflightStarts, start)
+			}
 			command.reply <- response{}
 			return
 		}

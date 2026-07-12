@@ -2896,8 +2896,8 @@ export function WorkflowCancelItem(itemID: string): $CancellablePromise<void> {
     return $Call.ByID(4158962817, itemID);
 }
 
-export function WorkflowEnqueueItem(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null): $CancellablePromise<store$0.WorkItem> {
-    return $Call.ByID(683191625, projectID, workflowID, workflowScope, goal, seeds, budget).then(($result: any) => {
+export function WorkflowEnqueueItem(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
+    return $Call.ByID(683191625, projectID, workflowID, workflowScope, goal, seeds, budget, stepMode).then(($result: any) => {
         return $$createType100($result);
     });
 }

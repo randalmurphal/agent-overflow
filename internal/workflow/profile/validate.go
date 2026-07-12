@@ -56,6 +56,9 @@ func Validate(profile Profile) ValidationResult {
 	for index, argv := range profile.WorktreeSetup.Run {
 		validateArgv(argv, fmt.Sprintf("profile worktree_setup.run[%d]", index), "worktree-setup.run", &findings)
 	}
+	if profile.WorktreeSetup.Timeout != "" {
+		validatePositiveDuration(profile.WorktreeSetup.Timeout, "profile worktree_setup.timeout", "worktree-setup.timeout", &findings)
+	}
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Element == findings[j].Element {
 			return findings[i].Code < findings[j].Code

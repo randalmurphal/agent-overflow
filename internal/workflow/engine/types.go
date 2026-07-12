@@ -3,11 +3,17 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/profile"
 )
+
+// ErrSetupFailed marks runner startup failures caused by workspace
+// provisioning or setup hooks. The engine maps wrapped instances to the
+// setup-failed reason instead of reporting an agent failure.
+var ErrSetupFailed = errors.New("workflow setup failed")
 
 type State string
 
@@ -96,10 +102,13 @@ type HumanIntervention struct {
 	Note     string        `json:"note,omitempty"`
 }
 
-// Runner starts provider work without blocking the engine goroutine. Stop is
-// idempotent and returns any partial control envelope available at teardown.
+// Runner starts provider work on an engine-owned worker goroutine. Start must
+// call entered exactly once, immediately on entry and before any blocking work.
+// Start may then block while provisioning; its result is serialized back
+// through the engine command loop. Stop is idempotent and returns any partial
+// control envelope.
 type Runner interface {
-	Start(context.Context, RunRequest, func(Outcome)) error
+	Start(context.Context, RunRequest, func(), func(Outcome)) error
 	Stop(context.Context, RunKey) (json.RawMessage, error)
 }
 

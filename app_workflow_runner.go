@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
@@ -43,6 +44,8 @@ type workflowAttempt struct {
 	threadID             string
 	schema               json.RawMessage
 	phase                def.Phase
+	workflow             def.Workflow
+	workspace            string
 	complete             func(engine.Outcome)
 	unsubscribe          func()
 	envelopeRetryUsed    bool
@@ -71,7 +74,8 @@ func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSour
 	}
 }
 
-func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest, complete func(engine.Outcome)) error {
+func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest, entered func(), complete func(engine.Outcome)) error {
+	entered()
 	if request.Phase.Driver != def.DriverAgent {
 		return fmt.Errorf("workflow runner: phase %q uses unsupported driver %q; only agent is available", request.Phase.ID, request.Phase.Driver)
 	}
@@ -86,6 +90,14 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 	if err != nil {
 		return err
 	}
+	preparedWorkspace, err := r.prepareWorkspace(ctx, request)
+	if err != nil {
+		return errors.Join(engine.ErrSetupFailed, err)
+	}
+	workspace := preparedWorkspace.path
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("workflow runner: startup cancelled: %w", err)
+	}
 	narrativePath, err := workflowrunner.NarrativePath(r.dataRoot, request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt)
 	if err != nil {
 		return err
@@ -97,14 +109,20 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 	threadID := request.PriorThreadID
 	createdThread := false
 	if threadID == "" {
-		thread, createErr := r.app.createWorkflowThread(request)
+		thread, createErr := r.app.createWorkflowThread(request, workspace, preparedWorkspace.project)
 		if createErr != nil {
 			return createErr
 		}
 		threadID = thread.ID
 		createdThread = true
-	} else if err := r.validatePriorThread(request, threadID); err != nil {
+	} else if err := r.validatePriorThread(request, threadID, workspace); err != nil {
 		return err
+	}
+	if err := ctx.Err(); err != nil {
+		if createdThread {
+			err = errors.Join(err, r.app.store.DeleteThread(threadID))
+		}
+		return fmt.Errorf("workflow runner: startup cancelled: %w", err)
 	}
 	if err := r.app.store.AttachWorkItemPhaseRun(
 		request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt, threadID, narrativePath,
@@ -122,6 +140,7 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 	attempt := &workflowAttempt{
 		key: request.Key, threadID: threadID,
 		schema: append(json.RawMessage(nil), schema...), phase: request.Phase, complete: complete,
+		workflow: request.Workflow, workspace: workspace,
 		currentPrompt: prompt, watchdog: watchdog, backoff: backoff,
 	}
 	key := workflowRunKey(request.Key)
@@ -138,6 +157,13 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 	r.runs[key] = attempt
 	r.workItems[threadID] = request.Key.ItemID
 	r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		r.detach(key)
+		if createdThread {
+			err = errors.Join(err, r.app.store.DeleteThread(threadID))
+		}
+		return fmt.Errorf("workflow runner: startup cancelled: %w", err)
+	}
 
 	if _, err := r.sendIfActive(key, prompt, schema); err != nil {
 		r.finish(key, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
@@ -383,6 +409,13 @@ func (r *workflowAppRunner) finish(runKey string, outcome engine.Outcome) {
 	}
 	attempt.sendMu.Lock()
 	attempt.sendMu.Unlock()
+	if outcome.Kind == engine.OutcomeDone {
+		go func() {
+			r.captureArtifacts(attempt, outcome.Envelope)
+			attempt.complete(outcome)
+		}()
+		return
+	}
 	attempt.complete(outcome)
 }
 
@@ -406,7 +439,7 @@ func findingsForEnvelopeError(err error) []def.EnvelopeFinding {
 	return []def.EnvelopeFinding{{Path: "$", Message: err.Error()}}
 }
 
-func (r *workflowAppRunner) validatePriorThread(request engine.RunRequest, threadID string) error {
+func (r *workflowAppRunner) validatePriorThread(request engine.RunRequest, threadID, workspace string) error {
 	thread, err := r.app.store.GetThread(threadID)
 	if err != nil {
 		return fmt.Errorf("workflow runner: load prior thread %q: %w", threadID, err)
@@ -417,14 +450,13 @@ func (r *workflowAppRunner) validatePriorThread(request engine.RunRequest, threa
 	if thread.Provider != request.Phase.Provider || thread.Model != provider.NormalizeModelSlug(request.Phase.Provider, request.Phase.Model) {
 		return fmt.Errorf("workflow runner: prior thread %q provider/model no longer matches phase %s/%s", threadID, request.Phase.Provider, request.Phase.Model)
 	}
+	if !filepath.IsAbs(workspace) || !filepath.IsAbs(thread.WorkspacePath) || !gitops.SameFilesystemPath(thread.WorkspacePath, workspace) {
+		return fmt.Errorf("workflow runner: prior thread %q workspace %q no longer matches item workspace %q", threadID, thread.WorkspacePath, workspace)
+	}
 	return nil
 }
 
-func (a *App) createWorkflowThread(request engine.RunRequest) (store.Thread, error) {
-	project, err := a.store.GetProject(request.Item.ProjectID)
-	if err != nil {
-		return store.Thread{}, fmt.Errorf("workflow runner: load project %q: %w", request.Item.ProjectID, err)
-	}
+func (a *App) createWorkflowThread(request engine.RunRequest, workspace string, project store.Project) (store.Thread, error) {
 	seed := a.seedChatModelProfile(request.Phase.Provider, request.Phase.Model)
 	now := time.Now().UnixMilli()
 	title := request.Phase.Name
@@ -435,10 +467,18 @@ func (a *App) createWorkflowThread(request engine.RunRequest) (store.Thread, err
 		ID: uuid.NewString(), ProjectID: project.ID, ProjectPath: project.Path,
 		Title: "Workflow: " + title, Provider: request.Phase.Provider,
 		Model:         provider.NormalizeModelSlug(request.Phase.Provider, request.Phase.Model),
-		WorkspacePath: project.Path, Mode: "workflow",
+		WorkspacePath: workspace, Mode: "workflow",
 		ReasoningEffort: seed.ReasoningEffort, FastMode: seed.FastMode,
 		ContextWindow: seed.ContextWindow, RuntimeMode: string(provider.RuntimeFullAccess),
 		CreatedAt: now, UpdatedAt: now,
+	}
+	if !gitops.SameFilesystemPath(workspace, project.Path) {
+		thread.WorktreePath = workspace
+		current, err := a.store.GetWorkItem(request.Key.ItemID)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("workflow runner: reload item workspace: %w", err)
+		}
+		thread.Branch = current.Branch
 	}
 	thread = a.sanitizeThreadModelSettings(thread)
 	thread.RuntimeMode = string(provider.RuntimeFullAccess)

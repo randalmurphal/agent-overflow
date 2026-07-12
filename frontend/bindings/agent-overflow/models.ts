@@ -1914,9 +1914,47 @@ export class UpdateAvailability {
     }
 }
 
+/**
+ * WorkflowArtifact is one app-managed file deliverable copied from a phase
+ * workspace. Files are discovered from the deterministic per-item directory.
+ */
+export class WorkflowArtifact {
+    "name": string;
+    "path": string;
+    "size": number;
+    "mtime": number;
+
+    /** Creates a new WorkflowArtifact instance. */
+    constructor($$source: Partial<WorkflowArtifact> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("size" in $$source)) {
+            this["size"] = 0;
+        }
+        if (!("mtime" in $$source)) {
+            this["mtime"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowArtifact instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowArtifact {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowArtifact($$parsedSource as Partial<WorkflowArtifact>);
+    }
+}
+
 export class WorkflowItemDetail {
     "item": store$0.WorkItem;
     "phases": store$0.WorkItemPhase[];
+    "artifacts": WorkflowArtifact[];
 
     /** Creates a new WorkflowItemDetail instance. */
     constructor($$source: Partial<WorkflowItemDetail> = {}) {
@@ -1925,6 +1963,9 @@ export class WorkflowItemDetail {
         }
         if (!("phases" in $$source)) {
             this["phases"] = [];
+        }
+        if (!("artifacts" in $$source)) {
+            this["artifacts"] = [];
         }
 
         Object.assign(this, $$source);
@@ -1936,12 +1977,16 @@ export class WorkflowItemDetail {
     static createFrom($$source: any = {}): WorkflowItemDetail {
         const $$createField0_0 = $$createType32;
         const $$createField1_0 = $$createType34;
+        const $$createField2_0 = $$createType36;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
         }
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField1_0($$parsedSource["phases"]);
+        }
+        if ("artifacts" in $$parsedSource) {
+            $$parsedSource["artifacts"] = $$createField2_0($$parsedSource["artifacts"]);
         }
         return new WorkflowItemDetail($$parsedSource as Partial<WorkflowItemDetail>);
     }
@@ -1974,7 +2019,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType36;
+        const $$createField0_0 = $$createType38;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -2109,5 +2154,7 @@ const $$createType31 = $Create.Nullable($$createType30);
 const $$createType32 = store$0.WorkItem.createFrom;
 const $$createType33 = store$0.WorkItemPhase.createFrom;
 const $$createType34 = $Create.Array($$createType33);
-const $$createType35 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType35 = WorkflowArtifact.createFrom;
 const $$createType36 = $Create.Array($$createType35);
+const $$createType37 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType38 = $Create.Array($$createType37);

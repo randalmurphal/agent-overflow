@@ -73,6 +73,27 @@ func TestWorkItemCRUDListAndTransitions(t *testing.T) {
 	}
 }
 
+func TestUpdateWorkItemWorkspace(t *testing.T) {
+	s := newTestStore(t)
+	item := testWorkItem("workspace", "project-a", "running", 0, 1)
+	if err := s.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateWorkItemWorkspace(item.ID, "/tmp/worktree", "ao-workflow-build", "main"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetWorkItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WorktreePath != "/tmp/worktree" || got.Branch != "ao-workflow-build" || got.BaseBranch != "main" {
+		t.Fatalf("workspace fields = (%q, %q, %q)", got.WorktreePath, got.Branch, got.BaseBranch)
+	}
+	if err := s.UpdateWorkItemWorkspace("missing", "/tmp/worktree", "branch", "main"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing workspace update error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestWorkItemSummaryAndNextSortPosition(t *testing.T) {
 	s := newTestStore(t)
 	first := testWorkItem("first", "project-a", "queued", 4, 1)

@@ -10,7 +10,8 @@ resolution for the workflow system.
 - Loading never resolves secrets. Callers opt into `ResolveSecrets` immediately
   before use and register every returned mask before persisting untrusted text.
 - Secret values must never enter errors, logs, or string renderings.
-- Worktree setup is authoring data only here; execution belongs to the engine.
+- Worktree setup is authoring data only here; execution belongs to the
+  app-owned runner before its first phase turn, never the engine goroutine.
 
 ## Files
 

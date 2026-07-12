@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -217,20 +218,61 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 		Item: item.item, Workflow: item.workflow, Phase: phase, Vars: vars,
 		Feedback: cloneFeedback(item.feedback), PriorThreadID: item.priorThreadID,
 	}
-	item.runnerActive = true
-	err := e.runner.Start(e.ctx, request, func(outcome Outcome) {
-		select {
-		case e.commands <- completionCommand{key: request.Key, outcome: outcome}:
-		case <-e.done:
-		}
-	})
+	startCtx, cancel := context.WithCancel(e.ctx)
+	future := &runnerStartFuture{key: request.Key, done: make(chan response, 1)}
+	item.runnerStarting = true
+	item.runnerStartCancel = cancel
+	e.commandStarts = append(e.commandStarts, future)
+	e.inflightStarts[future] = struct{}{}
 	item.feedback = nil
 	item.priorThreadID = ""
-	if err != nil {
-		item.runnerActive = false
-		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonAgentError}), err)
-	}
+	entered := make(chan struct{})
+	go func() {
+		err := e.runner.Start(startCtx, request, func() { close(entered) }, func(outcome Outcome) {
+			select {
+			case e.commands <- completionCommand{key: request.Key, outcome: outcome}:
+			case <-e.done:
+			}
+		})
+		result := runnerStartCommand{key: request.Key, future: future, err: err}
+		select {
+		case e.commands <- result:
+		case <-e.done:
+			settleRunnerStart(future, response{err: fmt.Errorf(
+				"start runner %s/%s/%d: engine closed before startup settled",
+				request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt,
+			)})
+		}
+	}()
+	// Wait only until the worker enters Runner.Start. Provisioning and every
+	// other blocking operation happen after this acknowledgement on the worker.
+	<-entered
 	return nil
+}
+
+func (e *Engine) finishRunnerStart(command runnerStartCommand) error {
+	item, ok := e.items[command.key.ItemID]
+	if !ok || item.phaseID != command.key.PhaseID || item.attempt != command.key.Attempt ||
+		State(item.item.State) != StateRunning || !item.runnerStarting {
+		return nil
+	}
+	if item.runnerStartCancel != nil {
+		item.runnerStartCancel()
+	}
+	item.runnerStarting = false
+	item.runnerStartCancel = nil
+	if command.err == nil {
+		item.runnerActive = true
+		return nil
+	}
+	reason := ReasonAgentError
+	if errors.Is(command.err, ErrSetupFailed) {
+		reason = ReasonSetupFailed
+	}
+	return errors.Join(
+		e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason}),
+		command.err,
+	)
 }
 
 func cloneFeedback(feedback *Feedback) *Feedback {

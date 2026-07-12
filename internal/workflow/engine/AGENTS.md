@@ -25,6 +25,14 @@ resource semaphores, and startup recovery.
 - Per-item budgets are checked before every phase attempt. Item overrides win
   over live profile defaults; token/USD spend comes through `SpendSource`, and
   wall clock uses the engine clock against the persisted item start time.
+- Worktree provisioning, setup hooks, artifact copying, and cleanup execution
+  stay runner/app-owned. The engine only maps typed setup failures and parks
+  step-mode automatic decisions without rewriting their persisted gate trace.
+- `Runner.Start` runs on a worker goroutine. Its keyed result re-enters the
+  command loop before mutating FSM state, while the initiating API caller waits
+  outside the owner loop so cancellation and unrelated commands remain live.
+- Cleanup policy is plumbing only until disposition lands: read-only workflows
+  have no worktree, and writing workflows retain theirs in every terminal state.
 
 ## Boundaries
 

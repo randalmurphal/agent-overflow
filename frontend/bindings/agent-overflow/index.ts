@@ -55,6 +55,7 @@ export {
     ThreadDefaults,
     ThreadLiveState,
     UpdateAvailability,
+    WorkflowArtifact,
     WorkflowItemDetail,
     WorkspaceFileSearchResult,
     WorktreeListItem,
