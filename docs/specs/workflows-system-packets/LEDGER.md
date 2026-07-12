@@ -25,7 +25,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P0.3 rev2 OS notifications | `m3/p03r2-os-notifications` | `~/repos/ao-lanes/p03r2` | gpt-5.6-sol / **xhigh** | `019f56ae-e129-7612-be10-c9c677757ed9` | **merged** `6cb823f4` |
 | P3.1 thread modes + take-over | `m3/p31-thread-modes` | `~/repos/ao-lanes/p31` | gpt-5.6-sol / **xhigh** | run1 `019f56fc-e0c2-78e0-acf4-6979f21e303e` (dead on arrival — usage limit); run2 `019f5714-98e5-77f2-8d0a-cc289a6bf374` | **merged `3ee937f8`** (workflows-system) |
 | P3.2 disposition + UI data + notifications | `m3/p32-disposition-uidata` | `~/repos/ao-lanes/p32` | gpt-5.6-sol / **xhigh** | `019f576c-444e-70b3-9bd5-0afadd50c1de` | **merged `6d329261`** (workflows-system) |
-| P3.4+P3.5 workflows pane frontend | `m3/p345-workflows-pane` | `~/repos/ao-lanes/p345` | gpt-5.6-sol / **xhigh** | `019f57c7-df07-70c3-b29f-0af4eb40af07` | dispatched |
+| P3.4+P3.5 workflows pane frontend | `m3/p345-workflows-pane` | `~/repos/ao-lanes/p345` | gpt-5.6-sol / **xhigh** | `019f57c7-df07-70c3-b29f-0af4eb40af07` | **merged `a4640596`** (workflows-system) |
 
 ## Events
 
@@ -735,3 +735,32 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   `p345-codex-resume3.log`, xhigh restated. Notably the run is
   self-auditing against the packet's binding decisions before its gate
   battery — the 907k-token session found this, not my review.
+
+- **P3.4+P3.5 verdict: merged `a4640596` (workflows-system), not
+  gamed.** Review: full diff in four splits (backend / stores /
+  components / generated), report read in full, gaming audits on both
+  in-flight amendments, R2 + curly-quote sweeps clean, settings-default
+  parity verified, key-dispatch double-fire analysis (safe — workflow
+  commands are not `editableReachable`, so App.svelte's editable branch
+  suppresses bare keys while typing). Amendment 3 implemented strictly
+  per ruling: blanking tests extended, not weakened. Suspected
+  "Re-enqueue with guidance sends empty guidance" defect dissolved —
+  the brief's binding decision 7 ruled `WorkflowResumeItem(id, "")`
+  with the engine carrying the diagnosis; receipt copy is accurate.
+  Three riders (commit `80c8c3f0` on lane, in the squash): (1) deleted
+  the dead `dispatchWorkflowKey`/`workflowCommandForKey` parallel
+  key-dispatch path (zero production callers; tests exercised the dead
+  path) and rewrote coverage against the production
+  registry/dispatchKey pipeline incl. an `editableReachable`-absence
+  pin and an Escape-blur component test; (2) `resetWorkflowsPaneForTest`
+  → `resetWorkflowsPane` (production `emptyLayout()` calls it — the
+  full reset there is correct, the name wasn't); (3)
+  `registerRuntimeKeybindingDefaults` accepts `readonly` rules.
+  Unmounted `WorkflowConfirmCard` and `hasAutomation = false` JobNotes
+  gate accepted as disclosed placeholders (producers land M4/M5).
+  Independent 8-gate battery green on workflows-system post-squash
+  (go-build, go-test, race incl. git/notify, GOOS=windows, fe-check,
+  fe-test 5323+, fe-build, e2e 11/11). User's `7908a227` (pane
+  horizontal geometry) merged after the battery as `f525265b` —
+  conflict-free; frontend + e2e gates re-run post-merge. Lane p345
+  pruned.
