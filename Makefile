@@ -206,8 +206,13 @@ build-wsl:
 	@if [ -n "$(WSL_FORCE_RELINK)" ]; then rm -f bin/agent-overflow.exe bin/agent-overflow-linux; fi
 	WSL_LAUNCHER_MODE="$$(case "$(WSL_BUILD_MODE)" in build:dev) echo dev ;; *) echo prod ;; esac)" VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
 
+ifeq ($(shell uname -s),Darwin)
+build:
+	VERSION="$(VERSION)" wails3 task darwin:package
+else
 build:
 	VERSION="$(VERSION)" wails3 build
+endif
 
 test:
 	$(MAKE) go-test
