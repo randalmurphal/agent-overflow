@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "name": "codex-basic",
+  "description": "Codex turn that streams an agentMessage via deltas, then completes. The zero-config default for codex mocks.",
+  "provider": "codex",
+  "turns": [
+    {
+      "label": "streamed-reply",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-${TURN}\",\"status\":\"inProgress\",\"text\":\"\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"itemId\":\"msg-${TURN}\",\"delta\":\"Hello! \"}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"itemId\":\"msg-${TURN}\",\"delta\":\"This reply is streaming from the mock Codex provider (turn ${TURN}).\"}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-${TURN}\",\"status\":\"completed\",\"text\":\"Hello! This reply is streaming from the mock Codex provider (turn ${TURN}).\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"completed\"}}}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

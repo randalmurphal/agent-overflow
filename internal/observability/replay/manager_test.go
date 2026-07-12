@@ -62,7 +62,7 @@ func TestManagerEnqueueWhenEnabledWrites(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := m.waitForDrain(ctx); err != nil {
+	if err := m.WaitForDrain(ctx); err != nil {
 		t.Fatalf("waitForDrain: %v", err)
 	}
 
@@ -127,6 +127,42 @@ func TestManagerDropsWhenQueueFullAndInvokesHook(t *testing.T) {
 		t.Errorf("accepted=%d drops=%d flood=%d; some records disappeared",
 			accepted, drops.Load(), flood)
 	}
+	// Every queue-full drop also counts toward LostCount — the signal
+	// harness recordings use to refuse a lossy capture window.
+	if lost := m.LostCount(); lost != drops.Load() {
+		t.Errorf("LostCount = %d, want %d (one per drop)", lost, drops.Load())
+	}
+}
+
+// TestManagerLostCountsWriteFailures: a record that reaches the drain
+// loop but cannot be written (writer open failure) must count as lost,
+// not vanish behind a log line.
+func TestManagerLostCountsWriteFailures(t *testing.T) {
+	base := t.TempDir()
+	blocker := filepath.Join(base, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	m := NewManager(ManagerConfig{
+		// RootDir sits under a regular file: every writer open fails.
+		RootDir: filepath.Join(blocker, "replay"),
+		Enabled: true,
+	})
+	defer m.Shutdown(context.Background())
+
+	rec, _ := NewRecord(time.Unix(0, 0), "t-1", "k", nil)
+	if !m.Enqueue(rec) {
+		t.Fatal("Enqueue rejected the record before the write path")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := m.WaitForDrain(ctx); err != nil {
+		t.Fatalf("WaitForDrain: %v", err)
+	}
+	if lost := m.LostCount(); lost != 1 {
+		t.Fatalf("LostCount = %d, want 1 for the failed write", lost)
+	}
 }
 
 func TestManagerReaperClosesIdleWriters(t *testing.T) {
@@ -148,7 +184,7 @@ func TestManagerReaperClosesIdleWriters(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	if err := m.waitForDrain(ctx); err != nil {
+	if err := m.WaitForDrain(ctx); err != nil {
 		t.Fatalf("waitForDrain: %v", err)
 	}
 
@@ -190,7 +226,7 @@ func TestManagerSetEnabledToggle(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := m.waitForDrain(ctx); err != nil {
+	if err := m.WaitForDrain(ctx); err != nil {
 		t.Fatalf("waitForDrain: %v", err)
 	}
 
@@ -228,7 +264,7 @@ func TestManagerShutdownClosesAllWriters(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = m.waitForDrain(ctx)
+	_ = m.WaitForDrain(ctx)
 
 	if got := m.openCount(); got != 3 {
 		t.Fatalf("openCount before shutdown = %d, want 3", got)
@@ -288,7 +324,7 @@ func TestManagerShutdownHonoursContextTimeout(t *testing.T) {
 	// waitForDrain closes the window by blocking until inflight == 0.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer drainCancel()
-	_ = m.waitForDrain(drainCtx)
+	_ = m.WaitForDrain(drainCtx)
 }
 
 func TestManagerEnqueueRoundTrip(t *testing.T) {
@@ -309,7 +345,7 @@ func TestManagerEnqueueRoundTrip(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := m.waitForDrain(ctx); err != nil {
+	if err := m.WaitForDrain(ctx); err != nil {
 		t.Fatalf("waitForDrain: %v", err)
 	}
 
@@ -369,7 +405,7 @@ func TestManagerConcurrentEnqueueAllWritten(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := m.waitForDrain(ctx); err != nil {
+	if err := m.WaitForDrain(ctx); err != nil {
 		t.Fatalf("waitForDrain: %v", err)
 	}
 
@@ -420,7 +456,7 @@ func TestRemoveThreadLogRemovesFileAndClosesWriter(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := m.waitForDrain(ctx); err != nil {
+	if err := m.WaitForDrain(ctx); err != nil {
 		t.Fatalf("waitForDrain: %v", err)
 	}
 

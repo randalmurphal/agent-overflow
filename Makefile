@@ -1,4 +1,4 @@
-.PHONY: install dev dev-wsl build build-wsl test check verify release go-build go-test test-race
+.PHONY: install dev dev-wsl build build-wsl test check verify release go-build go-test test-race mockprovider harness-build harness e2e
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing and raw provider
@@ -208,6 +208,38 @@ build-wsl:
 
 build:
 	VERSION="$(VERSION)" wails3 build
+
+# ---- Agent test harness (docs/architecture/agent-harness.md) ----
+#
+# HARNESS_DATA_DIR defaults to a stable per-checkout scratch dir so a
+# re-run reuses seeded state; pass HARNESS_DATA_DIR=$(mktemp -d) for a
+# throwaway. `make harness` prints the __AO_HARNESS__ bootstrap line
+# (URL + token + paths) on stdout — everything an agent or Playwright
+# MCP session needs to attach. The checkout-path suffix keeps two
+# worktrees from sharing a DB / generated workspaces (each boot rewrites
+# the provider settings to its own mock binary — a shared dir would
+# point one harness at the other's).
+HARNESS_DATA_DIR ?= /tmp/agent-overflow-harness$(subst /,-,$(CURDIR))
+
+mockprovider:
+	go build -o bin/ao-mockprovider ./cmd/ao-mockprovider
+
+# harness-build produces bin/agent-overflow with the production SPA
+# embedded, plus the sibling ao-mockprovider the harness resolves by
+# default. UI_TRACE=1 bakes the render-trace instrumentation into the
+# SPA (see the flag docs at the top of this file).
+harness-build: mockprovider
+	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run build
+	go build -o bin/agent-overflow .
+
+harness: harness-build
+	bin/agent-overflow --harness --data-dir "$(HARNESS_DATA_DIR)"
+
+# e2e runs the Playwright harness suite (e2e/) against a fresh
+# harness-build. Chromium comes from `make install`'s playwright cache.
+e2e: harness-build
+	cd e2e && pnpm install
+	cd e2e && pnpm test
 
 test:
 	$(MAKE) go-test

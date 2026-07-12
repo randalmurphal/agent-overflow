@@ -1,0 +1,17 @@
+{
+  "name": "agent-overflow-e2e",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@types/node": "24.10.9",
+    "typescript": "6.0.2"
+  }
+}

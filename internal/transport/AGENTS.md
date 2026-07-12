@@ -43,6 +43,24 @@ re-check origin; adding a new App method that touches FS / process /
 settings / credentials must add the name to `LocalOnlyMethods` (and
 the `methods_gen_test.go` integrity test catches drift).
 
+## Additional receivers
+
+`Dispatcher.Register` accepts more than one receiver. The only second
+receiver today is the agent test harness's `Harness` type, registered
+solely by the `--harness` boot path with
+`RegisterOptions{LocalOnly: true}` — the whole receiver is refused for
+non-loopback peers, and outside harness mode its methods don't exist
+on the wire at all. Rules for any future receiver:
+
+- Registration must be gated by the boot path that needs it; a
+  receiver that exists on every boot belongs on `App` instead.
+- Method names must not collide with `App` methods (name-based
+  dispatch shares one namespace) — use a distinctive prefix, as
+  `Harness*` does.
+- Receiver-level `LocalOnly` is coarse by design. If a future receiver
+  needs per-method classification, extend `internalmethods.go` rather
+  than re-checking origin in method bodies.
+
 ## Wire frames
 
 - **Client → Server**:

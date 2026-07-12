@@ -63,6 +63,38 @@ func TestGetProviderStatusesUsesConfiguredBinaryPaths(t *testing.T) {
 	}
 }
 
+func TestProviderBinaryPathHarnessOverrideWinsOverSettings(t *testing.T) {
+	app := &App{settings: settings.NewService(t.TempDir())}
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": "/real/claude",
+		"codexBinaryPath":  "/real/codex",
+	}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	app.providerBinaryOverride = "/harness/ao-mockprovider"
+	for _, name := range []string{string(provider.Claude), string(provider.ClaudeTUI), string(provider.Codex)} {
+		if got := app.providerBinaryPath(name); got != "/harness/ao-mockprovider" {
+			t.Fatalf("providerBinaryPath(%s) = %q, want the harness override", name, got)
+		}
+	}
+
+	// A post-boot settings update (the UpdateSettings RPC path) must not
+	// repoint spawns at a real binary while the override is pinned.
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": "/tampered/claude"}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	if got := app.providerBinaryPath(string(provider.Claude)); got != "/harness/ao-mockprovider" {
+		t.Fatalf("providerBinaryPath after settings update = %q, want the harness override", got)
+	}
+
+	// Without the override (every non-harness boot), settings win as before.
+	app.providerBinaryOverride = ""
+	if got := app.providerBinaryPath(string(provider.Claude)); got != "/tampered/claude" {
+		t.Fatalf("providerBinaryPath without override = %q, want the settings value", got)
+	}
+}
+
 func TestGetProviderStatusesFallsBackToDefaultsWithoutSettingsService(t *testing.T) {
 	app := &App{}
 

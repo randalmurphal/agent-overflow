@@ -33,6 +33,9 @@ Ubuntu 23.04+ / Debian 13+).
 - `make test` — `make go-test` + `cd frontend && pnpm test`
 - `make verify` — full release gate
 - `make release` — builds direct-install artifacts in `dist/release/<version>/`
+- `make harness` — boots the agent test harness (real app, isolated data
+  dir, mocked providers); `make e2e` runs the Playwright suite against it.
+  See [docs/architecture/agent-harness.md](docs/architecture/agent-harness.md).
 
 Every task must leave `make go-build`, `make go-test`,
 `cd frontend && pnpm run check`, and `cd frontend && pnpm run build` passing.
@@ -95,9 +98,10 @@ Guardrails:
 ```
 /                             root guides (this file)
 /main.go, /app.go, /app_*.go  Wails entry + bound methods
-/cmd/                         alternative entry-point binaries (Windows WSL launcher)
+/cmd/                         alternative entry-point binaries (Windows WSL launcher, ao-mockprovider)
 /internal/                    Go packages (see internal/AGENTS.md)
 /frontend/                    Svelte 5 app (see frontend/AGENTS.md)
+/e2e/                         Playwright suite for the agent test harness (see e2e/AGENTS.md)
 /docs/architecture/           deep-dive design docs
 /docs/references/             external reference repos + spike policy
 /docs/archive/                historical specs + ralph-loop artifacts

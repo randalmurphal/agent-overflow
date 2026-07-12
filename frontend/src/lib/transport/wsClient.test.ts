@@ -481,6 +481,66 @@ describe('WSClient', () => {
     }
   });
 
+  it('stashes the URL token and falls back to it once the URL is scrubbed', async () => {
+    // First load carries ?t=; defaultBootstrap must scrub it from the
+    // URL, stash it in sessionStorage, and serve a tokenless "reload"
+    // (second client, scrubbed URL) from the stash.
+    window.history.replaceState(null, '', '/?t=abc123');
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ wsUrl: 'ws://example/ws', token: 'abc123' }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const first = createWSClient({ WebSocketCtor: FakeCtor });
+      void first.callByID(1, []).catch(() => {});
+      await flushMicrotasks();
+      expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json?t=abc123', expect.anything());
+      expect(window.sessionStorage.getItem('ao:bootstrap-token')).toBe('abc123');
+      expect(window.location.search).toBe('');
+      first.close();
+
+      const second = createWSClient({ WebSocketCtor: FakeCtor });
+      void second.callByID(1, []).catch(() => {});
+      await flushMicrotasks();
+      expect(fetchMock).toHaveBeenLastCalledWith('/bootstrap.json?t=abc123', expect.anything());
+      second.close();
+    } finally {
+      window.sessionStorage.clear();
+      window.history.replaceState(null, '', '/');
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('clears a stashed token the server refuses', async () => {
+    // A stale stash (backend restarted, new token minted) must not be
+    // re-presented forever — one 404 drops it.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    window.sessionStorage.setItem('ao:bootstrap-token', 'stale');
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 404 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor });
+      let caught: unknown;
+      try {
+        await client.callByID(1, []);
+      } catch (err) {
+        caught = err;
+      }
+      expect((caught as Error).message).toMatch(/HTTP 404/);
+      expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json?t=stale', expect.anything());
+      expect(window.sessionStorage.getItem('ao:bootstrap-token')).toBeNull();
+      client.close();
+    } finally {
+      window.sessionStorage.clear();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('omits methodId when caller passes 0 (sentinel for ByName fallback)', async () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
 

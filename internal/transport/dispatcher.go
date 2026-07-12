@@ -38,9 +38,12 @@ type Method struct {
 	ID           uint32
 	NeedsContext bool
 	IsVariadic   bool
-	fn           reflect.Value
-	inputTypes   []reflect.Type
-	outputTypes  []reflect.Type
+	// LocalOnly refuses the method for non-loopback peers regardless of
+	// the LocalOnlyMethods name set. Set via RegisterOptions.LocalOnly.
+	LocalOnly   bool
+	fn          reflect.Value
+	inputTypes  []reflect.Type
+	outputTypes []reflect.Type
 }
 
 // RegisterOptions controls Register's filtering behavior.
@@ -63,6 +66,14 @@ type RegisterOptions struct {
 	// names. Used by methodgen to lock the dispatcher to exactly the
 	// methods the binding generator emitted.
 	AllowList map[string]bool
+
+	// LocalOnly marks every method on this receiver as loopback-only,
+	// independent of the name-keyed LocalOnlyMethods set (which is
+	// integrity-tested against the generated App method list and so can
+	// only hold App methods). The harness receiver registers with this
+	// set: its entire surface is state injection and must never be
+	// reachable from a non-loopback peer.
+	LocalOnly bool
 }
 
 var ctxType = reflect.TypeOf((*context.Context)(nil)).Elem()
@@ -144,6 +155,7 @@ func (d *Dispatcher) Register(receiver any, opts RegisterOptions) ([]*Method, er
 			ID:           fnvHash(fqn),
 			NeedsContext: needsCtx,
 			IsVariadic:   methodType.IsVariadic(),
+			LocalOnly:    opts.LocalOnly,
 			fn:           methodValue,
 			inputTypes:   inputTypes,
 			outputTypes:  outputTypes,
@@ -246,7 +258,7 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 			Message: "method not registered",
 		}
 	}
-	if !isLoopback && LocalOnlyMethods[method.Name] {
+	if !isLoopback && (LocalOnlyMethods[method.Name] || method.LocalOnly) {
 		// Wire shape matches an unrelated method-not-found rather than a
 		// distinct "forbidden" code. A probing client can't tell whether
 		// the method exists and is privileged, or simply doesn't exist —

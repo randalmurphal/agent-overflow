@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "name": "file-edit",
+  "description": "Claude turn that writes a real file into the workspace (mock cwd) alongside Write tool frames — diffs, git status, and checkpoints see an actual change.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "write-notes",
+      "steps": [
+        {
+          "emit": {
+            "lines": [
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-write-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-write-${TURN}\",\"name\":\"Write\",\"input\":{\"file_path\":\"${CWD}/notes.md\",\"content\":\"# Notes\\n\\nWritten by the mock provider (turn ${TURN}).\\n\"}}]}}"
+            ]
+          }
+        },
+        {
+          "writeFile": {
+            "path": "notes.md",
+            "content": "# Notes\n\nWritten by the mock provider (turn ${TURN}).\n"
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 60,
+            "lines": [
+              "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-write-${TURN}\",\"content\":\"File created successfully at: ${CWD}/notes.md\"}]}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-done-${TURN}\",\"role\":\"assistant\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"I created notes.md in the workspace.\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-done-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"I created notes.md in the workspace.\"}]}}",
+              "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "name": "step-gated",
+  "description": "Claude turn where every frame group waits for a HarnessMockCommand advance — frame-accurate stepping for pixel-level assertions (flicker, transient states) between events.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "gated-frames",
+      "steps": [
+        {"waitSignal": {"name": "block-start"}},
+        {
+          "emit": {
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-${TURN}\",\"role\":\"assistant\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}"
+            ]
+          }
+        },
+        {"waitSignal": {"name": "first-delta"}},
+        {
+          "emit": {
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"First chunk. \"}}}"
+            ]
+          }
+        },
+        {"waitSignal": {"name": "second-delta"}},
+        {
+          "emit": {
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Second chunk.\"}}}"
+            ]
+          }
+        },
+        {"waitSignal": {"name": "finish"}},
+        {
+          "emit": {
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"First chunk. Second chunk.\"}]}}",
+              "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "session-death",
+  "description": "Claude turn that starts streaming text, then the process dies with exit code 1 mid-turn. Exercises crash recovery, error surfacing, and stale-turn settling.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "die-mid-stream",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-${TURN}\",\"role\":\"assistant\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"I was in the middle of expl\"}}}"
+            ]
+          }
+        },
+        {
+          "exit": {"code": 1, "flushDelayMs": 100}
+        }
+      ]
+    }
+  ]
+}

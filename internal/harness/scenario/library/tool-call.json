@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "name": "tool-call",
+  "description": "Claude turn with a Bash tool_use, its tool_result, then a text summary. Exercises the tool_call item lifecycle without approvals.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "bash-tool",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 80,
+            "lines": [
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-tool-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-${TURN}\",\"name\":\"Bash\",\"input\":{\"command\":\"ls -la\"}}]}}",
+              "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-${TURN}\",\"content\":\"total 8\\ndrwxr-xr-x 2 mock mock 4096 .\\n-rw-r--r-- 1 mock mock   12 README.md\"}]}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-sum-${TURN}\",\"role\":\"assistant\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"The directory contains a README.md file.\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-sum-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"The directory contains a README.md file.\"}]}}",
+              "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

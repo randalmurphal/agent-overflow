@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "name": "thinking-then-text",
+  "description": "Claude turn that streams a thinking block, then a text reply. Exercises the thinking item kind and its payload lazy-load.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "think-then-answer",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 40,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-${TURN}\",\"role\":\"assistant\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"The user asked a question. \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"I should answer it directly.\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Here is the answer after thinking (turn ${TURN}).\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":1}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user asked a question. I should answer it directly.\"},{\"type\":\"text\",\"text\":\"Here is the answer after thinking (turn ${TURN}).\"}]}}",
+              "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

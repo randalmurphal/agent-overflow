@@ -389,13 +389,27 @@ type App struct {
 	// nil and the probe uses the package-level singleton; tests assign
 	// a client pointing at a local httptest server.
 	rateLimitProbeClientOverride *http.Client
-	// userConfigDirOverride is a test-only injection seam for the data
-	// directory root that initStores otherwise resolves via
-	// os.UserConfigDir(). Production leaves it empty. Tests set it to a
-	// t.TempDir() so the path is deterministic across OSes —
-	// os.UserConfigDir() ignores XDG on macOS (it returns
-	// $HOME/Library/Application Support), which env overrides can't redirect.
-	userConfigDirOverride string
+	// dataDirOverride overrides the data directory root that initStores
+	// otherwise resolves via os.UserConfigDir(). The app's data lives in
+	// <root>/agent-overflow. Set by the --data-dir CLI flag (harness mode
+	// requires it) and by tests, which use a t.TempDir() so the path is
+	// deterministic across OSes — os.UserConfigDir() ignores XDG on macOS
+	// (it returns $HOME/Library/Application Support), which env overrides
+	// can't redirect.
+	dataDirOverride string
+	// providerExtraEnv is merged into every provider spawn's environment.
+	// Harness mode uses it to hand ao-mockprovider its control-channel
+	// address + token without exporting those credentials process-wide
+	// (terminals, git hooks, and other children must not inherit them).
+	// Set once before Start; never mutated afterwards.
+	providerExtraEnv map[string]string
+	// providerBinaryOverride, when non-empty, wins over the settings-
+	// backed provider binary paths in providerBinaryPath. Harness mode
+	// points it at ao-mockprovider so the "providers are always mocked"
+	// guarantee holds structurally — a settings update (RPC or UI) can
+	// no longer repoint a spawn at a real claude/codex binary. Set once
+	// before Start; never mutated afterwards.
+	providerBinaryOverride string
 	// idleReaperNowFn is a test-only clock injection for the reaper.
 	// Production leaves it nil and reaperNow reads time.Now directly.
 	idleReaperNowFn func() time.Time

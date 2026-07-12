@@ -71,6 +71,13 @@ type Manager struct {
 	// fully written to disk. waitForDrain uses this to tell tests "all
 	// records are on disk, you can now open the file."
 	inflight atomic.Int64
+
+	// lost counts records that were accepted for logging but never made
+	// it to disk — queue-full drops and write failures alike. The
+	// harness recording flow compares LostCount across its capture
+	// window: a drained queue only proves everything *queued* was
+	// written, not that nothing was lost on the way in.
+	lost atomic.Int64
 }
 
 // ManagerConfig tunes manager behaviour.
@@ -235,11 +242,22 @@ func (m *Manager) Enqueue(rec Record) bool {
 		return true
 	default:
 		m.inflight.Add(-1)
+		m.lost.Add(1)
 		if m.dropHook != nil {
 			m.dropHook()
 		}
 		return false
 	}
+}
+
+// LostCount reports how many records have been lost since construction —
+// queue-full drops plus write failures. Monotonic; capture flows compare
+// values across a window to detect loss.
+func (m *Manager) LostCount() int64 {
+	if m == nil {
+		return 0
+	}
+	return m.lost.Load()
 }
 
 // QueueLen returns the current queue depth. Primarily used in tests.
@@ -335,14 +353,18 @@ func (m *Manager) drain(ctx context.Context) {
 }
 
 // writeRecord looks up or creates the writer for rec.ThreadID and writes.
-// Errors are logged, not returned — the drain loop is fire-and-forget.
+// Errors are logged, not returned — the drain loop is fire-and-forget —
+// but every failure counts toward LostCount so capture flows can tell a
+// complete log from a lossy one.
 func (m *Manager) writeRecord(rec Record) {
 	w, err := m.writerFor(rec.ThreadID)
 	if err != nil {
+		m.lost.Add(1)
 		log.Printf("replay: open writer for thread %s: %v", rec.ThreadID, err)
 		return
 	}
 	if err := w.Write(rec); err != nil {
+		m.lost.Add(1)
 		log.Printf("replay: write thread %s: %v", rec.ThreadID, err)
 	}
 }
@@ -453,10 +475,12 @@ func (m *Manager) RemoveThreadLog(threadID string) error {
 	return nil
 }
 
-// waitForDrain blocks until either (a) the queue is empty AND no record is
+// WaitForDrain blocks until either (a) the queue is empty AND no record is
 // mid-write, or (b) ctx is cancelled. Used by tests to let the background
-// goroutine finish processing before inspecting the on-disk file.
-func (m *Manager) waitForDrain(ctx context.Context) error {
+// goroutine finish processing before inspecting the on-disk file, and by
+// the harness recording flow to guarantee a captured bundle contains every
+// event emitted before the capture point.
+func (m *Manager) WaitForDrain(ctx context.Context) error {
 	tick := time.NewTicker(2 * time.Millisecond)
 	defer tick.Stop()
 	for {

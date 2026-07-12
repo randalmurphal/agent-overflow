@@ -133,7 +133,7 @@ func (a *App) Start(ctx context.Context) error {
 // leak an open DB file on startup error; the close error is joined onto
 // the logger error so tests see both causes.
 func (a *App) initStores() (string, *store.Store, error) {
-	dataDir := a.userConfigDirOverride
+	dataDir := a.dataDirOverride
 	if dataDir == "" {
 		var err error
 		dataDir, err = os.UserConfigDir()

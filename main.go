@@ -64,6 +64,12 @@ var version = "dev"
 // embedded assets even if FRONTEND_DEVSERVER_URL leaks in from a dirty shell.
 var nativeMode = "prod"
 
+// dataDirRoot mirrors the --data-dir flag for the boot-time readers that
+// run before App.Start (bootSettingsDir, ensureClientID). Set once in
+// main() right after parseFlags, read-only afterwards. Empty means "use
+// the OS default config dir" — the pre-flag behaviour.
+var dataDirRoot string
+
 func main() {
 	// The orphan-reaper sidecar (macOS) re-execs this binary with the
 	// __reap subcommand. Short-circuit before any other startup — flag
@@ -88,6 +94,7 @@ func main() {
 	if err != nil {
 		fatalf("%v", err)
 	}
+	dataDirRoot = flags.dataDir
 
 	// Move off any Windows drive mount the launcher left us on (the
 	// translated /mnt/c install dir) before any subsystem spawns a child
@@ -102,6 +109,8 @@ func main() {
 	switch {
 	case flags.connect != "":
 		runClient(flags.connect)
+	case flags.harness:
+		runHarness(flags)
 	case flags.headless:
 		runHeadless(flags.listenAddr, flags.printURLFD)
 	default:
@@ -110,7 +119,11 @@ func main() {
 }
 
 func shouldSyncShellEnv(flags cliFlags) bool {
-	return flags.connect == ""
+	// --connect has no local backend, so no subprocess ever resolves a
+	// binary. Harness mode spawns only the mock provider (an absolute
+	// path) and git (system PATH); skipping the probe keeps boot fast
+	// and deterministic.
+	return flags.connect == "" && !flags.harness
 }
 
 func syncShellEnvForBoot() {
@@ -129,16 +142,26 @@ func syncShellEnvForBoot() {
 	logBootPhase("shellenv.sync", started)
 }
 
-// cliFlags carries the parsed command-line state. Three modes are
+// cliFlags carries the parsed command-line state. Four modes are
 // mutually exclusive: --connect (Phase F remote-client), --print-url-fd
-// (Phase D headless), and the default desktop boot. parseFlags
-// enforces "at most one of --connect / --print-url-fd" so mode
+// (Phase D headless), --harness (agent test harness), and the default
+// desktop boot. parseFlags enforces the pairwise conflicts so mode
 // selection is unambiguous.
 type cliFlags struct {
 	listenAddr string
 	printURLFD int
 	headless   bool
 	connect    string
+	// dataDir overrides the data directory root (app data lives in
+	// <dataDir>/agent-overflow). Usable with any local-backend mode;
+	// required by --harness so a harness can never touch real data.
+	dataDir string
+	// harness boots the agent test harness: headless transport, isolated
+	// data dir + HOME, mock providers, and the Harness RPC surface.
+	harness bool
+	// mockProvider optionally overrides where --harness finds the
+	// ao-mockprovider binary (default: next to this executable).
+	mockProvider string
 }
 
 // parseFlags pulls the command-line flags. The flag set is independent
@@ -156,17 +179,45 @@ func parseFlags(args []string) (cliFlags, error) {
 	listen := flagSet.String("listen", "", "transport bind address (e.g. 127.0.0.1:0). Empty means use the default loopback + ephemeral port.")
 	fdFlag := flagSet.String("print-url-fd", "", "run headless and write {port,token} to this file descriptor as JSON. Falls back to a stdout sentinel when the fd isn't open.")
 	connect := flagSet.String("connect", "", "Phase F remote client mode: attach the desktop window to a remote backend at ws://host:port/?token=<value>. Skips local transport boot.")
+	dataDir := flagSet.String("data-dir", "", "data directory root override; app data lives in <data-dir>/agent-overflow. Required by --harness.")
+	harness := flagSet.Bool("harness", false, "agent test harness mode: headless boot on an isolated --data-dir with mock providers and the Harness RPC surface. See docs/architecture/agent-harness.md.")
+	mockProvider := flagSet.String("mock-provider", "", "harness mode only: path to the ao-mockprovider binary (default: alongside this executable).")
 	if err := flagSet.Parse(args); err != nil {
 		return cliFlags{}, fmt.Errorf("parse flags: %w", err)
 	}
 
 	out := cliFlags{
-		listenAddr: *listen,
-		connect:    *connect,
+		listenAddr:   *listen,
+		connect:      *connect,
+		dataDir:      *dataDir,
+		harness:      *harness,
+		mockProvider: *mockProvider,
 	}
 
 	if out.connect != "" && *fdFlag != "" {
 		return cliFlags{}, errors.New("cannot combine --connect with --print-url-fd")
+	}
+	if out.harness {
+		if out.connect != "" {
+			return cliFlags{}, errors.New("cannot combine --harness with --connect")
+		}
+		if *fdFlag != "" {
+			// Harness mode prints its own bootstrap line (the harness JSON
+			// includes strictly more than {port,token}); a second bootstrap
+			// channel would just be a divergence risk.
+			return cliFlags{}, errors.New("cannot combine --harness with --print-url-fd")
+		}
+		if out.dataDir == "" {
+			return cliFlags{}, errors.New("--harness requires --data-dir (the harness refuses to run against real app data)")
+		}
+	}
+	if out.dataDir != "" && out.connect != "" {
+		// --connect has no local backend, so a --data-dir would be
+		// silently ignored. Reject so the operator notices.
+		return cliFlags{}, errors.New("cannot combine --data-dir with --connect")
+	}
+	if out.mockProvider != "" && !out.harness {
+		return cliFlags{}, errors.New("--mock-provider requires --harness")
 	}
 	if out.connect != "" && out.listenAddr != "" {
 		// --listen configures the *local* transport bind. In --connect
@@ -211,6 +262,16 @@ func parseFlags(args []string) (cliFlags, error) {
 type bootTransportOptions struct {
 	LoadPersistedBindAll     bool
 	RequireReadyForBootstrap bool
+	// HarnessReceiver, when non-nil, is registered on the dispatcher as
+	// a second RPC receiver under "main.Harness.<Method>". Only harness
+	// mode sets this — in every other boot the harness surface does not
+	// exist on the wire at all.
+	HarnessReceiver any
+	// AllowDevServerAssets honors FRONTEND_DEVSERVER_URL even in a
+	// production-stamped binary. Only harness mode sets this: --harness
+	// is an explicit operator opt-in, so the "dirty shell must not
+	// replace release assets" rule that gates dev builds doesn't apply.
+	AllowDevServerAssets bool
 }
 
 func bootTransport(appService *App, listenAddr string, opts bootTransportOptions) *transport.Server {
@@ -228,13 +289,24 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		fatalf("transport: register App methods: %v", err)
 	}
 	log.Printf("transport: registered %d methods", len(methods))
+	if opts.HarnessReceiver != nil {
+		harnessMethods, err := dispatcher.Register(opts.HarnessReceiver, transport.RegisterOptions{
+			Package:   "main",
+			TypeName:  "Harness",
+			LocalOnly: true,
+		})
+		if err != nil {
+			fatalf("transport: register Harness methods: %v", err)
+		}
+		log.Printf("transport: registered %d harness methods", len(harnessMethods))
+	}
 	logBootPhase("transport.register", phaseStarted)
 
 	bus := transport.NewEventBus(0)
 	appService.SetEventBus(bus)
 
 	phaseStarted = time.Now()
-	assetHandler, err := buildAssetHandler(assets)
+	assetHandler, err := buildAssetHandler(assets, isNativeDevMode() || opts.AllowDevServerAssets)
 	if err != nil {
 		fatalf("transport: build asset handler: %v", err)
 	}
@@ -313,7 +385,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 // and MarkReady releases the WebView navigation. That separates "WSL
 // process has published a port" from "backend is ready to render."
 func runHeadless(listenAddr string, printURLFD int) {
-	appService := NewApp()
+	appService := newApp()
 	// Headless mode honors only the explicit --listen flag — the
 	// Windows launcher always passes 127.0.0.1:0, so the persisted
 	// LAN-bind preference is irrelevant here. The Windows-side
@@ -525,15 +597,28 @@ func fatalf(format string, args ...any) {
 // later writes. Returns "" when neither base dir is resolvable; callers treat
 // that as "no persisted preference".
 func bootSettingsDir() string {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return ""
+	base := dataDirRoot
+	if base == "" {
+		var err error
+		base, err = os.UserConfigDir()
+		if err != nil {
+			home, homeErr := os.UserHomeDir()
+			if homeErr != nil {
+				return ""
+			}
+			base = home
 		}
-		base = home
 	}
 	return filepath.Join(base, "agent-overflow")
+}
+
+// newApp constructs the App for a local-backend boot, threading the
+// --data-dir override through so initStores resolves the same root the
+// boot-time readers (bootSettingsDir) already use.
+func newApp() *App {
+	appService := NewApp()
+	appService.dataDirOverride = dataDirRoot
+	return appService
 }
 
 // ensureClientID loads (or mints and persists) this installation's
@@ -594,17 +679,19 @@ func loadPersistedNetworkSettings() settings.NetworkSettings {
 // buildAssetHandler returns the http.Handler that the transport mounts
 // at "/" for non-RPC requests. Two cases:
 //
-//   - Dev build + FRONTEND_DEVSERVER_URL set: `wails3 dev` is running
-//     the Vite dev server. We proxy every request through so HMR's
-//     WebSocket and module fetches reach the live bundler. Production
-//     binaries deliberately ignore the env var so a dirty shell cannot
-//     replace the embedded release assets.
+//   - allowDevAssets + FRONTEND_DEVSERVER_URL set: a Vite dev server is
+//     running (either `wails3 dev`, which stamps nativeMode=dev, or
+//     harness mode's explicit opt-in). We proxy every request through so
+//     HMR's WebSocket and module fetches reach the live bundler.
+//     Production binaries outside harness mode deliberately ignore the
+//     env var so a dirty shell cannot replace the embedded release
+//     assets.
 //   - Otherwise: production / `wails3 build` path.
 //     Serve the embedded frontend/dist bundle. http.FS over fs.Sub is
 //     the safe pairing — http.Dir would expose path traversal of the
 //     developer's local filesystem.
-func buildAssetHandler(embeddedAssets embed.FS) (http.Handler, error) {
-	if devURL := os.Getenv("FRONTEND_DEVSERVER_URL"); devURL != "" && isNativeDevMode() {
+func buildAssetHandler(embeddedAssets embed.FS, allowDevAssets bool) (http.Handler, error) {
+	if devURL := os.Getenv("FRONTEND_DEVSERVER_URL"); devURL != "" && allowDevAssets {
 		parsed, err := url.Parse(devURL)
 		if err != nil {
 			return nil, fmt.Errorf("parse FRONTEND_DEVSERVER_URL %q: %w", devURL, err)

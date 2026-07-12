@@ -261,9 +261,45 @@ function clampString(value: string, max = LOG_STRING_MAX): string {
   return `${value.slice(0, max)}…`;
 }
 
+// Session-scoped stash for the bootstrap token. The token arrives once
+// as `?t=` and is immediately scrubbed from the URL (see replaceState
+// below), so without this stash any reload — browser F5, the Ctrl+R
+// uikeys binding in the embedded webview, a Playwright page.reload() —
+// loses the token and every subsequent /bootstrap.json fetch 404s.
+// sessionStorage is per-tab and dies with it, matching the token's
+// soft-secret posture. Access is fault-tolerant: sandboxed frames and
+// some embeddings throw on storage access, and a broken stash must
+// degrade to "reload needs the tokened URL again", not a crash.
+const TOKEN_STORAGE_KEY = 'ao:bootstrap-token';
+
+function readStoredToken(): string {
+  try {
+    return window.sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function writeStoredToken(token: string): void {
+  try {
+    window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } catch {
+    // Stash unavailable — reloads will need the tokened URL again.
+  }
+}
+
+function clearStoredToken(): void {
+  try {
+    window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // Nothing to clear if the stash itself is unreadable.
+  }
+}
+
 // Default bootstrap fetcher: read from window.__AO_BOOTSTRAP__ (set by
 // Phase F's `--connect` flow) or fall back to `/bootstrap.json?t=<token>`
-// where the token comes from `?t=` in window.location.search. This runs
+// where the token comes from `?t=` in window.location.search, or — on a
+// reload, after the URL was scrubbed — from sessionStorage. This runs
 // the first time anyone calls `ensureConnected`; subsequent calls reuse
 // the cached promise.
 async function defaultBootstrap(): Promise<Bootstrap> {
@@ -275,9 +311,16 @@ async function defaultBootstrap(): Promise<Bootstrap> {
   const search = typeof window !== 'undefined' ? window.location.search : '';
   const params = new URLSearchParams(search);
   const urlToken = params.get('t') ?? '';
-  const url = `/bootstrap.json?t=${encodeURIComponent(urlToken)}`;
+  const token = urlToken !== '' ? urlToken : readStoredToken();
+  const url = `/bootstrap.json?t=${encodeURIComponent(token)}`;
   const resp = await fetch(url, { credentials: 'same-origin' });
   if (!resp.ok) {
+    if (urlToken === '' && token !== '') {
+      // The stashed token was refused — stale after a backend restart
+      // (tokens are minted per boot). Drop it so retries surface the
+      // real "no valid token" state instead of re-presenting it.
+      clearStoredToken();
+    }
     throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
   }
   const contentType = resp.headers.get('content-type') ?? '';
@@ -293,6 +336,9 @@ async function defaultBootstrap(): Promise<Bootstrap> {
   }
   validateWsUrl(data.wsUrl);
   data.mode = normalizeRunMode(data.mode);
+  // Stash the server-confirmed token so the tab survives reloads once
+  // the URL is scrubbed below.
+  writeStoredToken(data.token);
   // Removes the token from history, Referer, and Performance Resource
   // Timing entries. Same-origin redirects and tab-history scrubbing both
   // benefit. Skip when history.replaceState isn't available (older

@@ -412,6 +412,7 @@ func (a *App) forkCodexThreadAt(source store.Thread, lastTurnID string) (string,
 		Model:          source.Model,
 		WorkDir:        source.WorkspacePath,
 		ResumeThreadID: source.SessionRef,
+		Env:            a.mergeProviderEnv(nil),
 		EventLogger:    a.logger,
 	}, func(provider.ProviderEvent) {})
 	if err != nil {

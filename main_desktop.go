@@ -100,7 +100,7 @@ func runClient(rawURL string) {
 // macOS/Linux/Windows native builds. The Windows binary that proxies
 // into WSL is a separate cmd/ — see cmd/agent-overflow-windows.
 func runDesktop(listenAddr string) {
-	appService := NewApp()
+	appService := newApp()
 	// window + its tracker flush are created on the ApplicationStarted handler
 	// goroutine (see below) and read by the single-instance callback and the
 	// post-Run backstop, so guard both.

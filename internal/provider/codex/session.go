@@ -225,6 +225,11 @@ type Config struct {
 	// serviceTier on thread/start|resume and turn/start. It must not rewrite
 	// Model; fast mode does not change the selected model.
 	ServiceTier string
+	// Env carries per-session environment variables for the spawned
+	// app-server process, merged over the inherited environment. The
+	// agent test harness scopes its mock-provider control credentials
+	// to provider spawns through this instead of the process env.
+	Env         map[string]string
 	EventLogger *logging.Logger
 }
 
@@ -242,6 +247,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		Binary:           binary,
 		Args:             []string{"app-server"},
 		Dir:              cfg.WorkDir,
+		Env:              cfg.Env,
 		EventLogger:      cfg.EventLogger,
 		EventLogRedactor: newCodexProviderEventLogRedactor(),
 		ThreadID:         threadID,

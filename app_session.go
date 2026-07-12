@@ -312,6 +312,23 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	return a.closeProviderSession(threadID, existing)
 }
 
+// mergeProviderEnv folds providerExtraEnv into a session config's Env
+// map, allocating only when there is something to merge. Extra env wins
+// on key conflicts — it exists precisely to override for this boot mode.
+func (a *App) mergeProviderEnv(env map[string]string) map[string]string {
+	if len(a.providerExtraEnv) == 0 {
+		return env
+	}
+	merged := make(map[string]string, len(env)+len(a.providerExtraEnv))
+	for k, v := range env {
+		merged[k] = v
+	}
+	for k, v := range a.providerExtraEnv {
+		merged[k] = v
+	}
+	return merged
+}
+
 // spawnProviderSession builds the provider-specific Config via
 // ConfigFromOptions + per-provider ancillary wiring (binary path, MCP
 // servers for Codex, event logger) and calls the provider's NewSession
@@ -334,6 +351,7 @@ func (a *App) spawnProviderSession(
 	case string(provider.Claude):
 		cfg := claude.ConfigFromOptions(opts)
 		cfg.Binary = a.providerBinaryPath(t.Provider)
+		cfg.Env = a.mergeProviderEnv(cfg.Env)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
@@ -351,6 +369,7 @@ func (a *App) spawnProviderSession(
 	case string(provider.Codex):
 		cfg := codex.ConfigFromOptions(opts)
 		cfg.Binary = a.providerBinaryPath(t.Provider)
+		cfg.Env = a.mergeProviderEnv(cfg.Env)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)

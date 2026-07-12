@@ -136,6 +136,11 @@ func (a *App) codexModels() *codexmodels.Cache {
 }
 
 func (a *App) providerBinaryPath(providerName string) string {
+	// Harness mode pins every provider spawn to ao-mockprovider,
+	// regardless of what the (mutable) settings say — see the field doc.
+	if a.providerBinaryOverride != "" {
+		return a.providerBinaryOverride
+	}
 	cfg := a.currentSettings()
 
 	switch providerName {

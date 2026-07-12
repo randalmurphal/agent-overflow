@@ -51,7 +51,7 @@ func TestInitStoresRepairsAppOwnedPermissions(t *testing.T) {
 	// Inject the data-dir root so the test is deterministic across OSes;
 	// os.UserConfigDir() ignores XDG on macOS, so an env override wouldn't
 	// redirect it there.
-	app.userConfigDirOverride = configRoot
+	app.dataDirOverride = configRoot
 	gotDir, st, err := app.initStores()
 	if err != nil {
 		t.Fatalf("initStores: %v", err)

@@ -12,11 +12,7 @@ var testAssets embed.FS
 func TestBuildAssetHandlerIgnoresDevServerEnvInProductionBinary(t *testing.T) {
 	t.Setenv("FRONTEND_DEVSERVER_URL", "http://127.0.0.1:9")
 
-	originalMode := nativeMode
-	t.Cleanup(func() { nativeMode = originalMode })
-	nativeMode = "prod"
-
-	handler, err := buildAssetHandler(testAssets)
+	handler, err := buildAssetHandler(testAssets, false)
 	if err != nil {
 		t.Fatalf("buildAssetHandler: %v", err)
 	}
@@ -25,18 +21,14 @@ func TestBuildAssetHandlerIgnoresDevServerEnvInProductionBinary(t *testing.T) {
 	}
 }
 
-func TestBuildAssetHandlerUsesDevServerForDevMode(t *testing.T) {
+func TestBuildAssetHandlerUsesDevServerWhenAllowed(t *testing.T) {
 	t.Setenv("FRONTEND_DEVSERVER_URL", "http://127.0.0.1:9")
 
-	originalMode := nativeMode
-	t.Cleanup(func() { nativeMode = originalMode })
-	nativeMode = "dev"
-
-	handler, err := buildAssetHandler(testAssets)
+	handler, err := buildAssetHandler(testAssets, true)
 	if err != nil {
 		t.Fatalf("buildAssetHandler: %v", err)
 	}
 	if _, ok := handler.(*httputil.ReverseProxy); !ok {
-		t.Fatal("dev binary should proxy FRONTEND_DEVSERVER_URL")
+		t.Fatal("dev/harness asset handler should proxy FRONTEND_DEVSERVER_URL")
 	}
 }

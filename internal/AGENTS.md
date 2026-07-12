@@ -30,6 +30,7 @@ one closest to what you're touching.
 | `sysstat/` | Host CPU + memory sampler (gopsutil wrapper) backing the sidebar system-stats footer. Pure read-only; cadence + emission owned by `app_sysstat.go`. |
 | `workspacefiles/` | Workspace-scoped file search for @-mention completion. |
 | `testutil/` | Shared test helpers (mock provider scripts, git repo, project fixtures). |
+| `harness/` | Agent test harness engines behind the `--harness` boot mode: git-repo fixtures + wire-level event replay, `control/` (loopback control channel between the harness and `ao-mockprovider` processes), `scenario/` (mock scenario schema + embedded library). Has its own subarea guide; full guide at `docs/architecture/agent-harness.md`. |
 | `stringsx/` | Tiny stdlib-only string helpers. |
 | `slicesx/` | Tiny stdlib-only slice helpers. `OrEmpty[T](s)` coalesces nil to an allocated empty slice so JSON encoders emit `[]` instead of `null`. |
 | `workspacepath/` | `NormalizeRelative(rel)` validates a user-supplied workspace-relative path (rejects empty/absolute/parent-escaping) and returns the OS-cleaned form callers can safely join under a workspace root. |

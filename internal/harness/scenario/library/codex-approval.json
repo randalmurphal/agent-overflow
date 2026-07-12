@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "name": "codex-approval",
+  "description": "Codex turn that requests command approval; allow streams the commandExecution items and a summary, deny completes with an apology. Exercises the Codex approval round trip.",
+  "provider": "codex",
+  "turns": [
+    {
+      "label": "gated-command",
+      "steps": [
+        {
+          "emit": {
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}"
+            ]
+          }
+        },
+        {
+          "approval": {
+            "toolName": "commandExecution",
+            "input": {"command": "rm -rf build/"},
+            "onAllow": [
+              {
+                "emit": {
+                  "delayBetweenMs": 60,
+                  "lines": [
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"item/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"commandExecution\",\"id\":\"cmd-${TURN}\",\"status\":\"inProgress\",\"command\":\"rm -rf build/\"}}}",
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"commandExecution\",\"id\":\"cmd-${TURN}\",\"status\":\"completed\",\"command\":\"rm -rf build/\",\"aggregatedOutput\":\"\",\"exitCode\":0}}}",
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"item/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-${TURN}\",\"status\":\"inProgress\",\"text\":\"\"}}}",
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"itemId\":\"msg-${TURN}\",\"delta\":\"Removed the build directory.\"}}",
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-${TURN}\",\"status\":\"completed\",\"text\":\"Removed the build directory.\"}}}",
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"completed\"}}}"
+                  ]
+                }
+              }
+            ],
+            "onDeny": [
+              {
+                "emit": {
+                  "delayBetweenMs": 60,
+                  "lines": [
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"item/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-${TURN}\",\"status\":\"inProgress\",\"text\":\"\"}}}",
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"itemId\":\"msg-${TURN}\",\"delta\":\"Understood, I won't run that command.\"}}",
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-${TURN}\",\"status\":\"completed\",\"text\":\"Understood, I won't run that command.\"}}}",
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"completed\"}}}"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}
