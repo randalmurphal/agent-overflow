@@ -27,7 +27,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P3.2 disposition + UI data + notifications | `m3/p32-disposition-uidata` | `~/repos/ao-lanes/p32` | gpt-5.6-sol / **xhigh** | `019f576c-444e-70b3-9bd5-0afadd50c1de` | **merged `6d329261`** (workflows-system) |
 | P3.4+P3.5 workflows pane frontend | `m3/p345-workflows-pane` | `~/repos/ao-lanes/p345` | gpt-5.6-sol / **xhigh** | `019f57c7-df07-70c3-b29f-0af4eb40af07` | **merged `a4640596`** (workflows-system) |
 | P3.6 sidebar + exclusions + deep links + remote | `m3/p36-sidebar-remote` | `~/repos/ao-lanes/p36` | gpt-5.6-sol / **xhigh** | `019f583e-5348-7251-a18d-d31e8c6b9c2b` | **merged `481fa3de`** (workflows-system) |
-| P3.7 e2e UI specs per surface | `m3/p37-e2e` | `~/repos/ao-lanes/p37` | gpt-5.6-sol / **xhigh** | — | authored |
+| P3.7 e2e UI specs per surface | `m3/p37-e2e` | `~/repos/ao-lanes/p37` | gpt-5.6-sol / **xhigh** | `019f5893-e1ef-76a0-a603-b79d249b40e0` | dispatched |
 
 ## Events
 
@@ -840,3 +840,8 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   (P3.6 lesson): all cited paths and testids verified present. The
   UI-SPEC conformance audit + fable taste pass remain Claude-side
   after this merges.
+
+- **P3.7 dispatched.** Lane `p37` off `a86157fb` (post-P3.6 merge),
+  bootstrap: pnpm install (frontend + e2e) + frontend build, baseline
+  `make e2e` green in-lane (11/11) before dispatch. sol/xhigh banner
+  verified, log `p37-codex.log`.
