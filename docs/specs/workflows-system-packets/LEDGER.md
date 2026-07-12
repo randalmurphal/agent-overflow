@@ -845,3 +845,29 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   bootstrap: pnpm install (frontend + e2e) + frontend build, baseline
   `make e2e` green in-lane (11/11) before dispatch. sol/xhigh banner
   verified, log `p37-codex.log`.
+
+- **P3.7 BLOCKED (valid — the app-bug protocol working as designed) →
+  two shipped bugs fixed → Scope Amendment 1 → resumed.** Codex's first
+  UI-driving spec (sidebar) exposed that the workflows sidebar NEVER
+  populated: `WorkflowListItems("")` — the P3.6 sidebar store's
+  app-wide boot fetch — matched zero rows because
+  `internal/store/work_items.go` applied `WHERE project_id = ?`
+  unconditionally; the "empty = all projects" contract cited by the
+  P3.6 packet (carried from a P3.4+5 note) never existed backend-side.
+  Second find: the Up-next queued-row cancel called
+  `WorkflowCancelItem`, which the engine rejects for queued items
+  (cancel is running-only; `WorkflowRemoveQueuedItem` is the queued
+  path). Both were invisible to the 5384-test vitest suite because
+  component tests mock bindings — exactly the gap P3.7's
+  real-backend specs exist to close. Adjudicator fixed both on
+  `workflows-system` (`9ee636db`: store filter + test, overview RPC
+  swap + honest toast copy, component-test update), all four fix gates
+  green, amendment committed (`3c4d009f`), fast-forward merged into
+  the lane, and codex's sidebar spec re-run as verification: the two
+  blocking tests pass; the third fails only at its own
+  cancel-a-queued-seed setup, ruled a spec-side error in Amendment 1.
+  Resumed same session, xhigh restated, log `p37-codex-resume.log`.
+  Lesson: packet context claims about wire contracts must be verified
+  against the implementation, not prior packet prose — the P3.6
+  pre-dispatch walk checked paths and testids but trusted an RPC
+  contract stated in an earlier amendment.
