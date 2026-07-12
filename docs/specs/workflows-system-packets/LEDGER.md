@@ -699,3 +699,20 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   cross-cutting requirement (classification, registration test), walk
   the allowlist against each requirement's file touch-set before
   dispatch.
+
+- **P3.4+P3.5 second BLOCKED (valid) → Scope Amendment 2 → resumed.**
+  Codex found the transport classification gate requires every new
+  bound method in exactly one of LocalOnlyMethods / `wireSafeMethods`
+  (`methods_gen_test.go`), and P2's NOT-LocalOnly directive pointed at
+  a test file no ruling permitted. Adjudication REVERSED P2 instead of
+  granting the requested wireSafeMethods edit: P2's premise was wrong —
+  every existing workflow read (WorkflowListItems / WorkflowGetItem /
+  WorkflowListDefinitions) is LocalOnly today, and a lone wire-safe
+  cost map serves no remote renderer when the item lists it annotates
+  are refused. WorkflowListItemCosts goes LocalOnly with its siblings
+  (Amendment 1's internalmethods.go allowance widens to exactly two
+  additions); methods_gen_test.go untouched. **Recorded for the P3.6
+  brief: §12 remote view-only requires re-classifying the workflow
+  read set as one coherent decision** — today's all-LocalOnly state
+  means remote renders no workflows, acceptable until P3.6. Committed
+  `2132c5cf`; resume log `p345-codex-resume2.log`, xhigh restated.
