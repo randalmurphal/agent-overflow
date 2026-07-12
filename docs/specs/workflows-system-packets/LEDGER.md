@@ -24,7 +24,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.7 harness workflows | `m2/p27-harness-workflows` | `~/repos/ao-lanes/p27` | gpt-5.6-sol / **xhigh** | `019f566e-6df8-7e71-9f2d-843f7b228a5d` | **merged** |
 | P0.3 rev2 OS notifications | `m3/p03r2-os-notifications` | `~/repos/ao-lanes/p03r2` | gpt-5.6-sol / **xhigh** | `019f56ae-e129-7612-be10-c9c677757ed9` | **merged** `6cb823f4` |
 | P3.1 thread modes + take-over | `m3/p31-thread-modes` | `~/repos/ao-lanes/p31` | gpt-5.6-sol / **xhigh** | run1 `019f56fc-e0c2-78e0-acf4-6979f21e303e` (dead on arrival — usage limit); run2 `019f5714-98e5-77f2-8d0a-cc289a6bf374` | **merged `3ee937f8`** (workflows-system) |
-| P3.2 disposition + UI data + notifications | `m3/p32-disposition-uidata` | `~/repos/ao-lanes/p32` | gpt-5.6-sol / **xhigh** | `019f576c-444e-70b3-9bd5-0afadd50c1de` | resumed after valid BLOCKED (Scope Amendment 1) |
+| P3.2 disposition + UI data + notifications | `m3/p32-disposition-uidata` | `~/repos/ao-lanes/p32` | gpt-5.6-sol / **xhigh** | `019f576c-444e-70b3-9bd5-0afadd50c1de` | **merged `6d329261`** (workflows-system) |
 
 ## Events
 
@@ -604,3 +604,61 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   Session resumed in place (context is the asset): same id
   `019f576c-444e-70b3-9bd5-0afadd50c1de`, xhigh restated, log
   `p32-codex-resume.log`.
+
+- **P3.2 verdict: MERGED `6d329261` (workflows-system).** Review split
+  five ways (git / disposition / notifications+digest / data+engine /
+  store+transport), line-level on the correctness cores. Git merge
+  machinery CLEAN: revision-expression rejection (`main~0` refused),
+  double clean-tree checks, exact-branch verification post-checkout,
+  non-mutating conflict preflight, no force flags anywhere, refusal
+  tests assert non-mutation (HEAD + branch + untracked file unchanged).
+  Disposition STRONG: receipt-or-park exhaustive; manual/auto race
+  returns the existing receipt as success; cleanup:auto only after
+  durable receipt; auto worker serialized + drained at shutdown. The
+  no-retry-merge-from-disposition-park question resolved against
+  UI-SPEC §5.3 — spec defines no such path (triage thread → discard /
+  re-enqueue); accepted gap, not a rider. Notifications/digest CLEAN:
+  template digest persisted synchronously BEFORE event publication;
+  bounded async upgrade (2 slots, staleness = state+reason+digest
+  bytes); heavy work all off the engine loop. Scope Amendment 1 gaming
+  audit: NOT GAMED — strictly stronger (park + both events with typed
+  cause + inline-validation probe retained; engine test covers all
+  three detached surfaces + preserved Sync()). Store/transport: v26
+  additive ADD COLUMN + JSON CHECK proven both ways; predicted queue
+  position is a global rank matching the engine's drain order; all 7
+  RPCs LocalOnly-classified. ONE rider: reverted a re-introduced
+  `''`→`”` smart-quote mangle in migrate_test.go — same line as the
+  P3.1 rider; codex's editor smart-quotes comments in files it touches;
+  **standing review check: sweep every codex diff for curly quotes in
+  Go files**. Independent 7-gate battery green on the merged branch
+  (report relocated to `reports/P3.2-report.md` with rider addendum).
+  Lane p32 pruned.
+
+- **origin/main merged again** (`8b4233e2`): user's
+  `e8d658b5 fix(codex): reconcile completed v2 agents` — clean merge,
+  go-build + go-test re-verified. (Recovery note: a `git stash` /
+  `stash pop` pair around the merge popped a PRE-EXISTING user stash
+  (`settle-flicker` on main) because the stash step had nothing to
+  save; the pop conflict was reverted file-for-file and the user's
+  stash entry is intact. Protocol fixed: never pop without confirming
+  the entry is ours.)
+
+- **P3.4+P3.5 authored (combined per the approved larger-chunk
+  cadence):** `P3.4-5-workflows-pane-frontend.md` — the complete
+  workflows pane (skeleton + read-only levels per UI-SPEC §§2–5/§11,
+  then actions/sweep/intake per §5.3/§5.4/§7/§9). Backend preamble
+  bounded to four items the UI can't render without: P1 usage on
+  WorkflowGetItem, P2 WorkflowListItemCosts grouped query (NOT
+  LocalOnly — remote view-only reads it), P3 WorkflowListDefinitions →
+  WorkflowDefinitionCatalog wrapper (baseBranch + hoisted
+  predictedQueuePosition + per-listing typed `inputs` for §7.1 seeds;
+  API-shape ruling: zero consumers yet, P3.2 shape tests updated at
+  equal rigor), P4 WorkflowOpenStudioThread create-or-resume (the
+  §3.1 "+ New workflow" / §4 Edit affordances had NO backend — gap
+  found during authoring). Key bindings: queue toggle uses the
+  settings path (WorkflowSetQueue would clobber process-N); one
+  R1 classifier module table-tested like threadStatusPill; diff
+  evidence via GetBranchBaseDiff + utils/diff.ts (ReviewPane is
+  P3.6); chat confirm card ships prefill-capable but unmounted if no
+  clean timeline seam exists (M4 owns the producer); exclusions
+  (sidebar/footer/pickers/deep-links/remote gating) are P3.6.
