@@ -1,6 +1,6 @@
 import { cleanup, render, waitFor } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/svelte';
-import { tick } from 'svelte';
+import { createRawSnippet, tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../chat/ChatView.svelte', async () => ({
@@ -20,6 +20,7 @@ import PaneHost from './PaneHost.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { getPaneWidth, resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
 import {
+  destroyPane,
   focusPane,
   getAllPanes,
   getFocusedPaneId,
@@ -27,8 +28,10 @@ import {
   resetPanesForTest,
 } from '../../stores/panes.svelte';
 import {
+  addPaneLayoutItem,
   getPaneLayoutItems,
   movePaneLayoutItem,
+  removePaneLayoutItem,
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
 } from '../../stores/paneLayout.svelte';
@@ -224,6 +227,41 @@ describe('PaneHost', () => {
       },
     });
     return () => left;
+  }
+
+  function stubMutableStripGeometry(
+    host: HTMLElement,
+    initial: { clientWidth: number; scrollWidth: () => number; scrollLeft: number },
+  ) {
+    let clientWidth = initial.clientWidth;
+    let scrollLeft = initial.scrollLeft;
+    let scrollLeftWrites = 0;
+    Object.defineProperty(host, 'clientWidth', { configurable: true, get: () => clientWidth });
+    Object.defineProperty(host, 'scrollWidth', { configurable: true, get: initial.scrollWidth });
+    Object.defineProperty(host, 'scrollLeft', {
+      configurable: true,
+      get: () => scrollLeft,
+      // Deliberately do not clamp here. This models the macOS WebKit
+      // failure where a content shrink leaves scrollLeft beyond the new
+      // maximum until the next user-initiated horizontal scroll.
+      set: (value: number) => {
+        scrollLeftWrites += 1;
+        scrollLeft = value;
+      },
+    });
+    return {
+      scrollLeft: () => scrollLeft,
+      setScrollLeft: (value: number) => {
+        scrollLeft = value;
+      },
+      setClientWidth: (value: number) => {
+        clientWidth = value;
+      },
+      scrollLeftWrites: () => scrollLeftWrites,
+      clearScrollLeftWrites: () => {
+        scrollLeftWrites = 0;
+      },
+    };
   }
 
   function stubPaneOffsets(paneEl: HTMLElement, offsetLeft: number, offsetWidth: number): void {
@@ -567,6 +605,212 @@ describe('PaneHost', () => {
 
     expect(leftObserve).toHaveBeenCalledWith('host-layout');
     expect(rightObserve).toHaveBeenCalledWith('host-layout');
+  });
+
+  it('clamps obsolete right-edge scroll after closing a pane', async () => {
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('middle', createThreadPane({ paneId: 'middle' }));
+    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 600 },
+      { id: 'middle', paneId: 'middle', kind: 'thread', widthPx: 600 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 600 },
+    ]);
+    focusPane('right');
+
+    const pump = installFramePump();
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const geometry = stubMutableStripGeometry(host, {
+      clientWidth: 1000,
+      scrollWidth: () => getPaneLayoutItems().length * 600,
+      scrollLeft: 800,
+    });
+    const left = rendered.container.querySelector<HTMLElement>('[data-pane-id="left"]');
+    const middle = rendered.container.querySelector<HTMLElement>('[data-pane-id="middle"]');
+    if (!left || !middle) throw new Error('expected surviving panes');
+    stubPaneOffsets(left, 0, 600);
+    stubPaneOffsets(middle, 600, 600);
+
+    // Closing the focused right pane requests a reveal of the middle pane
+    // in the same tick. Geometry reconciliation must clamp the impossible
+    // 800px position to the new 200px maximum before that reveal resolves.
+    destroyPane('right');
+    await tick();
+    pump.pumpUntilIdle();
+    expect(geometry.scrollLeft()).toBe(200);
+  });
+
+  it('preserves a valid horizontal position after a pane closes', async () => {
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('middle', createThreadPane({ paneId: 'middle' }));
+    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 600 },
+      { id: 'middle', paneId: 'middle', kind: 'thread', widthPx: 600 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 600 },
+    ]);
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const geometry = stubMutableStripGeometry(host, {
+      clientWidth: 1000,
+      scrollWidth: () => getPaneLayoutItems().length * 600,
+      scrollLeft: 100,
+    });
+    geometry.clearScrollLeftWrites();
+
+    removePaneLayoutItem('right');
+    await tick();
+    expect(geometry.scrollLeft()).toBe(100);
+    expect(geometry.scrollLeftWrites()).toBe(0);
+  });
+
+  it('retargets an active reveal with the same alignment after a pane to its left disappears', async () => {
+    for (const paneId of ['a', 'b', 'c', 'd']) {
+      registerPaneForTest(paneId, createThreadPane({ paneId }));
+    }
+    setPaneLayoutItemsForTest(
+      ['a', 'b', 'c', 'd'].map((paneId) => ({
+        id: paneId,
+        paneId,
+        kind: 'thread' as const,
+        widthPx: 600,
+      })),
+    );
+    focusPane('a');
+
+    const pump = installFramePump();
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const geometry = stubMutableStripGeometry(host, {
+      clientWidth: 1000,
+      scrollWidth: () => getPaneLayoutItems().length * 600,
+      scrollLeft: 0,
+    });
+    const c = rendered.container.querySelector<HTMLElement>('[data-pane-id="c"]');
+    if (!c) throw new Error('expected pane c');
+    Object.defineProperty(c, 'offsetLeft', {
+      configurable: true,
+      get: () => getPaneLayoutItems().findIndex((item) => item.paneId === 'c') * 600,
+    });
+    Object.defineProperty(c, 'offsetWidth', { configurable: true, get: () => 600 });
+
+    // Start toward C at 1200..1800: right-edge alignment targets 800.
+    await fireEvent.pointerDown(c);
+    pump.frame();
+    pump.frame();
+    expect(geometry.scrollLeft()).toBeGreaterThan(0);
+    expect(geometry.scrollLeft()).toBeLessThan(800);
+
+    // Removing A shifts C to 600..1200. Preserve the original right-edge
+    // alignment, moving its destination from 800 to 200; inferring a new
+    // edge from the stale numeric target would incorrectly flip to 600.
+    removePaneLayoutItem('a');
+    await tick();
+    pump.pumpUntilIdle();
+    expect(geometry.scrollLeft()).toBe(200);
+  });
+
+  it('preserves active reveal alignment for a pane wider than the viewport', async () => {
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('wide', createThreadPane({ paneId: 'wide' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 400 },
+      { id: 'wide', paneId: 'wide', kind: 'thread', widthPx: 1000 },
+    ]);
+    focusPane('left');
+
+    const pump = installFramePump();
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const geometry = stubMutableStripGeometry(host, {
+      clientWidth: 600,
+      scrollWidth: () => getPaneLayoutItems().reduce((sum, item) => sum + item.widthPx, 0),
+      scrollLeft: 0,
+    });
+    const wide = rendered.container.querySelector<HTMLElement>('[data-pane-id="wide"]');
+    if (!wide) throw new Error('expected wide pane');
+    stubPaneOffsets(wide, 400, 1000);
+
+    // A rightward reveal aligns the wide pane's end at 800. Appending a
+    // pane does not move it; structural reconciliation must retain that
+    // edge instead of flipping to its 400px start because full containment
+    // is impossible for an oversized pane.
+    await fireEvent.pointerDown(wide);
+    pump.frame();
+    pump.frame();
+    addPaneLayoutItem({ id: 'after', paneId: 'after', kind: 'thread', widthPx: 400 });
+    await tick();
+    pump.pumpUntilIdle();
+    expect(geometry.scrollLeft()).toBe(800);
+  });
+
+  it('clamps when a global surface replaces an overflowing pane strip', async () => {
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 800 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 800 },
+    ]);
+    const globalSurface = createRawSnippet(() => ({
+      render: () => '<div data-testid="test-global-surface">Settings</div>',
+    }));
+    const pump = installFramePump();
+    const rendered = render(PaneHost, { globalSurface: undefined });
+    const host = rendered.getByTestId('pane-host');
+    const geometry = stubMutableStripGeometry(host, {
+      clientWidth: 1000,
+      scrollWidth: () => host.querySelector('[data-testid="global-pane-surface"]') ? 1000 : 1600,
+      scrollLeft: 0,
+    });
+    const right = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
+    if (!right) throw new Error('expected right pane');
+    stubPaneOffsets(right, 800, 800);
+
+    await fireEvent.pointerDown(right);
+    pump.frame();
+    pump.frame();
+    expect(geometry.scrollLeft()).toBeGreaterThan(0);
+    expect(geometry.scrollLeft()).toBeLessThan(600);
+
+    await rendered.rerender({ globalSurface });
+
+    expect(rendered.getByTestId('test-global-surface')).toBeInTheDocument();
+    expect(geometry.scrollLeft()).toBe(0);
+    const writesAfterClamp = geometry.scrollLeftWrites();
+    pump.pumpUntilIdle();
+    expect(geometry.scrollLeft()).toBe(0);
+    expect(geometry.scrollLeftWrites()).toBe(writesAfterClamp);
+  });
+
+  it('clamps after host widening and completed pane equalization', async () => {
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1000 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1000 },
+    ]);
+    const pump = installFramePump();
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const geometry = stubMutableStripGeometry(host, {
+      clientWidth: 800,
+      scrollWidth: () => getPaneLayoutItems().reduce((sum, item) => sum + item.widthPx, 0),
+      scrollLeft: 1200,
+    });
+
+    geometry.setClientWidth(1400);
+    FireableResizeObserver.instances.find((ro) => ro.observed === host)?.trigger(1400);
+    expect(geometry.scrollLeft()).toBe(600);
+
+    // Double-click equalization is the width-only shrink path: pane IDs do
+    // not change, so structural reconciliation cannot cover it.
+    geometry.setClientWidth(800);
+    geometry.setScrollLeft(1200);
+    await fireEvent.dblClick(rendered.getByTestId('pane-end-handle'));
+    await tick();
+    pump.pumpUntilIdle();
+    expect(geometry.scrollLeft()).toBe(320);
   });
 
   it('auto-scrolls near the row edge during thread drag and cancels on drag end', async () => {
