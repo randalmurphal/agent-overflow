@@ -22,7 +22,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -44,7 +46,7 @@ type ProcessConfig struct {
 	Shell string // absolute path; empty means /bin/sh
 	Args  []string
 	Cwd   string
-	Env   []string // if nil, inherit os.Environ()
+	Env   []string // if nil, inherit os.Environ(); terminal capabilities are normalized
 	Rows  uint16
 	Cols  uint16
 }
@@ -86,9 +88,7 @@ func Start(cfg ProcessConfig) (*Process, error) {
 
 	cmd := exec.Command(shell, args...)
 	cmd.Dir = cfg.Cwd
-	if cfg.Env != nil {
-		cmd.Env = cfg.Env
-	}
+	cmd.Env = normalizeTerminalEnv(cfg.Env)
 
 	ws := &pty.Winsize{Rows: rows, Cols: cols}
 	f, err := pty.StartWithSize(cmd, ws)
@@ -107,6 +107,33 @@ func Start(cfg ProcessConfig) (*Process, error) {
 	go p.awaitExit()
 
 	return p, nil
+}
+
+// normalizeTerminalEnv returns a private environment slice that accurately
+// describes the PTY xterm.js renders. Desktop app launches commonly inherit no
+// TERM (or TERM=dumb), especially from Finder/launchd on macOS; interactive
+// shells then disable the cursor movement and line-clearing sequences their
+// editors need, leaving stale prompt glyphs smeared across the screen.
+//
+// Always replacing these two keys is intentional. Values inherited from the
+// process that launched Agent Overflow (for example screen-256color from tmux)
+// describe that parent terminal, not this PTY. xterm.js supports the
+// xterm-256color capability set and true color on every platform where this
+// POSIX implementation runs. The Windows launcher uses process_windows.go and
+// never reaches this path; its terminals run in the WSL-side Linux backend.
+func normalizeTerminalEnv(base []string) []string {
+	if base == nil {
+		base = os.Environ()
+	}
+	out := make([]string, 0, len(base)+2)
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && (key == "TERM" || key == "COLORTERM") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "TERM=xterm-256color", "COLORTERM=truecolor")
 }
 
 // Output returns the channel from which PTY output chunks are delivered.
