@@ -67,7 +67,9 @@ describe("<WaitGroup>", () => {
     expect(getByText(/Finished waiting/)).toBeInTheDocument();
     expect(queryByText(/Waiting for agents/)).not.toBeInTheDocument();
     // Receivers line carries labels only — no status, no final message.
-    expect(getByText("Galileo [explorer]")).toBeInTheDocument();
+    expect(getByTestId("collab-tool-row-receivers")).toHaveTextContent(
+      "└ Galileo [explorer]",
+    );
     expect(queryByText(/completed - done/)).not.toBeInTheDocument();
     // Child rail still renders the nested target completion.
     expect(getByText(/Spawned Galileo -> done/)).toBeInTheDocument();

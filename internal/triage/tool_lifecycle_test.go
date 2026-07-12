@@ -20,6 +20,17 @@ func findUpsertedItems(emissions []emitted) []store.Item {
 	return filterItemEventUpserts(emissions)
 }
 
+func TestToolInputPreviewIgnoresMultiAgentV2Prompt(t *testing.T) {
+	input := json.RawMessage(`{"activityKind":"interacted","prompt":"gAAAA-encrypted"}`)
+	if got := toolInputPreview(input); got != "" {
+		t.Fatalf("toolInputPreview = %q, want empty for MultiAgentV2 activity", got)
+	}
+	legacy := json.RawMessage(`{"prompt":"Review the parser"}`)
+	if got := toolInputPreview(legacy); got != "Review the parser" {
+		t.Fatalf("legacy toolInputPreview = %q", got)
+	}
+}
+
 // findItemsByKind returns persisted items of the given kind for a thread.
 // Convenience wrapper over ListItems used by every lifecycle test.
 func findItemsByKind(t *testing.T, st *store.Store, threadID, kind string) []store.Item {
@@ -960,6 +971,141 @@ func TestToolCompletionPreservesCodexWaitStartReceiversSeparatelyOnReplay(t *tes
 	agentsStates, ok := input["agentsStates"].(map[string]any)
 	if !ok || len(agentsStates) != 1 {
 		t.Fatalf("agentsStates = %#v, want only completed child state", input["agentsStates"])
+	}
+}
+
+func TestCodexWaitStartSnapshotsActiveReceiversWhenWireTargetsAreMissing(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := st.UpdateProvider("t1", "codex"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+
+	seedLaunch := func(id, parentID, meta string, itemIndex int) {
+		t.Helper()
+		if err := st.InsertItem(store.Item{
+			ID: id, ThreadID: "t1", TurnIndex: 0, ItemIndex: itemIndex,
+			Kind: itemKindToolCall, Role: "assistant", Status: statusCompleted,
+			ParentID: parentID, ToolName: "collab_agent", IsBackground: true,
+			Meta: meta, CreatedAt: int64(1000 + itemIndex), UpdatedAt: int64(1000 + itemIndex),
+		}); err != nil {
+			t.Fatalf("seed launch %s: %v", id, err)
+		}
+	}
+	seedLaunch("spawn-a", "", `{"live_background_active":true,"input":{"tool":"spawn_agent","receiverThreadIds":["child-a"],"newAgentNickname":"Ada","newAgentRole":"reviewer"}}`, 0)
+	seedLaunch("spawn-multi", "", `{"live_background_active":true,"codex_child_terminal_statuses":{"child-b":"completed"},"input":{"tool":"spawn_agent","receiverThreadIds":["child-b","child-c"],"receiverAgents":[{"threadId":"child-c","agentNickname":"Curie","agentRole":"default"}]}}`, 1)
+	seedLaunch("spawn-duplicate", "", `{"live_background_active":true,"input":{"tool":"spawn_agent","receiverThreadIds":["child-c"]}}`, 2)
+	seedLaunch("spawn-nested", "parent-launch", `{"live_background_active":true,"input":{"tool":"spawn_agent","receiverThreadIds":["nested-child"]}}`, 3)
+
+	startMeta := json.RawMessage(`{"toolName":"wait_agent","input":{"tool":"wait_agent"}}`)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-root",
+		ItemType: "wait_agent", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("root wait start: %v", err)
+	}
+
+	rootWait, found, err := st.GetThreadItem("t1", "wait-root")
+	if err != nil || !found {
+		t.Fatalf("root wait missing: found=%v err=%v", found, err)
+	}
+	if got, want := receiverThreadIDsFromItemMeta(json.RawMessage(rootWait.Meta)), []string{"child-a", "child-c"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("root wait snapshot = %+v, want %+v", got, want)
+	}
+	if got, want := receiverAgentsFromItemMeta(json.RawMessage(rootWait.Meta)), []codexWaitReceiverAgent{
+		{ThreadID: "child-a", AgentNickname: "Ada", AgentRole: "reviewer"},
+		{ThreadID: "child-c", AgentNickname: "Curie", AgentRole: "default"},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("root wait receiver labels = %+v, want %+v", got, want)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-nested",
+		ItemType: "wait_agent", ParentToolUseID: "parent-launch", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("nested wait start: %v", err)
+	}
+	nestedWait, found, err := st.GetThreadItem("t1", "wait-nested")
+	if err != nil || !found {
+		t.Fatalf("nested wait missing: found=%v err=%v", found, err)
+	}
+	if got, want := receiverThreadIDsFromItemMeta(json.RawMessage(nestedWait.Meta)), []string{"nested-child"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("nested wait snapshot = %+v, want %+v", got, want)
+	}
+
+	completeMeta := json.RawMessage(`{"toolName":"wait_agent","item_status":"completed","input":{"tool":"wait_agent","receiverThreadIds":["child-a"],"agentsStates":{"child-a":{"status":"completed"}}}}`)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-root",
+		ItemType: "wait_agent", Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("root wait complete: %v", err)
+	}
+	rootWait, _, _ = st.GetThreadItem("t1", "wait-root")
+	var persisted struct {
+		Input struct {
+			ReceiverThreadIDs          []string                 `json:"receiverThreadIds"`
+			RequestedReceiverThreadIDs []string                 `json:"requestedReceiverThreadIds"`
+			RequestedReceiverAgents    []codexWaitReceiverAgent `json:"requestedReceiverAgents"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(rootWait.Meta), &persisted); err != nil {
+		t.Fatalf("decode completed root wait: %v", err)
+	}
+	if got, want := persisted.Input.ReceiverThreadIDs, []string{"child-a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("completion receivers = %+v, want %+v", got, want)
+	}
+	if got, want := persisted.Input.RequestedReceiverThreadIDs, []string{"child-a", "child-c"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("requested receiver snapshot = %+v, want %+v", got, want)
+	}
+	if got, want := persisted.Input.RequestedReceiverAgents, []codexWaitReceiverAgent{
+		{ThreadID: "child-a", AgentNickname: "Ada", AgentRole: "reviewer"},
+		{ThreadID: "child-c", AgentNickname: "Curie", AgentRole: "default"},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("requested receiver labels = %+v, want %+v", got, want)
+	}
+}
+
+func TestCodexWaitStartDoesNotOverwriteExplicitReceiverTargets(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := st.UpdateProvider("t1", "codex"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	if err := st.InsertItem(store.Item{
+		ID: "spawn-active", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0,
+		Kind: itemKindToolCall, Role: "assistant", Status: statusCompleted,
+		ToolName: "collab_agent", IsBackground: true,
+		Meta:      `{"live_background_active":true,"input":{"tool":"spawn_agent","receiverThreadIds":["inferred-child"]}}`,
+		CreatedAt: 1000, UpdatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("seed active launch: %v", err)
+	}
+
+	startMeta := json.RawMessage(`{"toolName":"wait_agent","input":{"tool":"wait_agent","requestedReceiverThreadIds":["explicit-child"]}}`)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-explicit",
+		ItemType: "wait_agent", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait start: %v", err)
+	}
+	item, found, err := st.GetThreadItem("t1", "wait-explicit")
+	if err != nil || !found {
+		t.Fatalf("wait missing: found=%v err=%v", found, err)
+	}
+	var persisted struct {
+		Input struct {
+			ReceiverThreadIDs          []string `json:"receiverThreadIds"`
+			RequestedReceiverThreadIDs []string `json:"requestedReceiverThreadIds"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(item.Meta), &persisted); err != nil {
+		t.Fatalf("decode wait: %v", err)
+	}
+	if len(persisted.Input.ReceiverThreadIDs) != 0 {
+		t.Fatalf("inferred receivers overwrote explicit targets: %+v", persisted.Input.ReceiverThreadIDs)
+	}
+	if got, want := persisted.Input.RequestedReceiverThreadIDs, []string{"explicit-child"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("requested receivers = %+v, want %+v", got, want)
 	}
 }
 

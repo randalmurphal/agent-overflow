@@ -2156,6 +2156,24 @@ func TestCodexProviderEventLogRedactorRedactsWriteStdinEvents(t *testing.T) {
 	}
 }
 
+func TestCodexProviderEventLogRedactorRedactsEncryptedCollaborationMessages(t *testing.T) {
+	redact := newCodexProviderEventLogRedactor()
+	for _, line := range [][]byte{
+		[]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"item":{"type":"function_call","namespace":"collaboration","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"task_name\":\"reviewer\",\"message\":\"gAAAA-spawn\"}"}}}`),
+		[]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"item":{"type":"function_call","namespace":"collaboration","name":"send_message","call_id":"send-1","arguments":"{\"target\":\"/root/reviewer\",\"message\":\"gAAAA-send\"}"}}}`),
+		[]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"item":{"type":"function_call","namespace":"collaboration","name":"followup_task","call_id":"followup-1","arguments":"{\"target\":\"/root/reviewer\",\"message\":\"gAAAA-followup\"}"}}}`),
+		[]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"item":{"type":"function_call","namespace":"collaboration","name":"spawn_agent","call_id":"malformed-1","arguments":"malformed-gAAAA"}}}`),
+	} {
+		got := redact("in", line)
+		if strings.Contains(string(got), "gAAAA") {
+			t.Fatalf("encrypted collaboration message survived redaction: %s", got)
+		}
+		if !strings.Contains(string(got), `[redacted]`) {
+			t.Fatalf("redaction marker missing: %s", got)
+		}
+	}
+}
+
 func TestDispatchLineSubagentNotificationUsesAgentPathMapping(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{

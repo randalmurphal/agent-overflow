@@ -241,6 +241,45 @@ describe('<TakeControlTerminal>', () => {
     );
   });
 
+  it('waits for the in-flight input write before sending later keystrokes', async () => {
+    mocks.ProviderTerminalReplay.mockResolvedValue({
+      data: '',
+      fromSequence: 0,
+      throughSequence: 0,
+    });
+    const firstWrite = deferred<void>();
+    mocks.ProviderTerminalInput
+      .mockReturnValueOnce(firstWrite.promise)
+      .mockResolvedValue(undefined);
+
+    const { getByRole } = render(TakeControlTerminal, {
+      props: { paneId: 'tc-1', threadId: 'thread-1' },
+    });
+    await waitFor(() => expect(mocks.getLastTerminal()?.dataHandler).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: 'Take control' }));
+    await waitFor(() => expect(getByRole('button', { name: 'Release control' })).toBeTruthy());
+
+    const handler = mocks.getLastTerminal()!.dataHandler!;
+    handler('a');
+    handler('b');
+
+    expect(mocks.ProviderTerminalInput).toHaveBeenCalledTimes(1);
+    expect(mocks.ProviderTerminalInput).toHaveBeenCalledWith(
+      'thread-1',
+      encodeTerminalInput('a'),
+    );
+
+    firstWrite.resolve();
+    await firstWrite.promise;
+    await Promise.resolve();
+
+    expect(mocks.ProviderTerminalInput).toHaveBeenCalledTimes(2);
+    expect(mocks.ProviderTerminalInput).toHaveBeenLastCalledWith(
+      'thread-1',
+      encodeTerminalInput('b'),
+    );
+  });
+
   it('releases the lease and re-gates input when control is dropped', async () => {
     mocks.ProviderTerminalReplay.mockResolvedValue({
       data: '',
@@ -268,6 +307,49 @@ describe('<TakeControlTerminal>', () => {
     mocks.ProviderTerminalInput.mockClear();
     term.dataHandler!('z');
     expect(mocks.ProviderTerminalInput).not.toHaveBeenCalled();
+  });
+
+  it('drains accepted input before releasing control and drops input typed during release', async () => {
+    mocks.ProviderTerminalReplay.mockResolvedValue({
+      data: '',
+      fromSequence: 0,
+      throughSequence: 0,
+    });
+    const activeWrite = deferred<void>();
+    mocks.ProviderTerminalInput.mockReturnValueOnce(activeWrite.promise);
+
+    const { getByRole } = render(TakeControlTerminal, {
+      props: { paneId: 'tc-1', threadId: 'thread-1' },
+    });
+    await waitFor(() => expect(mocks.getLastTerminal()?.dataHandler).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: 'Take control' }));
+    await waitFor(() => expect(getByRole('button', { name: 'Release control' })).toBeTruthy());
+
+    const handler = mocks.getLastTerminal()!.dataHandler!;
+    handler('a');
+    handler('b');
+    const releaseClick = fireEvent.click(getByRole('button', { name: 'Release control' }));
+
+    await waitFor(() => expect(getByRole('button', { name: 'Take control' })).toBeDisabled());
+    handler('c');
+    expect(mocks.ProviderTerminalSetControl).not.toHaveBeenLastCalledWith('thread-1', false);
+    expect(mocks.ProviderTerminalInput).toHaveBeenCalledTimes(1);
+
+    // A second click during the transition cannot start a competing acquire.
+    await fireEvent.click(getByRole('button', { name: 'Take control' }));
+    expect(mocks.ProviderTerminalSetControl).toHaveBeenCalledTimes(1);
+
+    activeWrite.resolve();
+    await activeWrite.promise;
+    await releaseClick;
+    await waitFor(() =>
+      expect(mocks.ProviderTerminalSetControl).toHaveBeenLastCalledWith('thread-1', false),
+    );
+    expect(mocks.ProviderTerminalInput).toHaveBeenCalledTimes(2);
+    expect(mocks.ProviderTerminalInput).toHaveBeenLastCalledWith(
+      'thread-1',
+      encodeTerminalInput('b'),
+    );
   });
 
   it('surfaces a toggle failure and leaves the lease unchanged', async () => {
@@ -313,6 +395,36 @@ describe('<TakeControlTerminal>', () => {
 
     unmount();
     expect(mocks.ProviderTerminalDetach).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('compensates when an acquire completes after the pane is destroyed', async () => {
+    mocks.ProviderTerminalReplay.mockResolvedValue({
+      data: '',
+      fromSequence: 0,
+      throughSequence: 0,
+    });
+    const acquire = deferred<void>();
+    mocks.ProviderTerminalSetControl
+      .mockReturnValueOnce(acquire.promise)
+      .mockResolvedValue(undefined);
+
+    const { getByRole, unmount } = render(TakeControlTerminal, {
+      props: { paneId: 'tc-1', threadId: 'thread-1' },
+    });
+    await waitFor(() => expect(mocks.getLastTerminal()?.dataHandler).toBeTruthy());
+    const acquireClick = fireEvent.click(getByRole('button', { name: 'Take control' }));
+    await waitFor(() =>
+      expect(mocks.ProviderTerminalSetControl).toHaveBeenCalledWith('thread-1', true),
+    );
+
+    unmount();
+    expect(mocks.ProviderTerminalDetach).toHaveBeenCalledWith('thread-1');
+    acquire.resolve();
+    await acquireClick;
+
+    await waitFor(() =>
+      expect(mocks.ProviderTerminalSetControl).toHaveBeenLastCalledWith('thread-1', false),
+    );
   });
 
   it('surfaces an attach failure instead of mounting a terminal', async () => {

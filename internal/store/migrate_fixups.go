@@ -2,7 +2,9 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/itemmeta"
 )
@@ -49,6 +51,118 @@ func trimCollabAgentStateMessagesMetaFixup(tx *sql.Tx) error {
 			return itemmeta.TrimCollabAgentStateMessages(meta)
 		},
 	)
+}
+
+// trimCodexV2EncryptedCollabPromptsFixup removes opaque model-service
+// ciphertext that older adapters copied from raw MultiAgentV2 function-call
+// arguments into meta.input.prompt. V2 rows are identified by their canonical
+// activityKind field; legacy V1 rows keep their plaintext prompt previews.
+// Summaries proven to contain the removed prompt preview are rebuilt without
+// it while preserving any terminal status suffix.
+func trimCodexV2EncryptedCollabPromptsFixup(tx *sql.Tx) error {
+	type update struct {
+		rowID    int64
+		threadID string
+		id       string
+		summary  string
+		meta     string
+	}
+	const batchSize = 128
+	var lastRowID int64
+	for {
+		rows, err := tx.Query(`SELECT rowid, thread_id, id, tool_name, summary, meta FROM items
+			WHERE rowid > ? AND meta LIKE '%"activityKind"%' AND meta LIKE '%"prompt"%'
+			ORDER BY rowid LIMIT ?`, lastRowID, batchSize)
+		if err != nil {
+			return fmt.Errorf("scan Codex V2 collaboration prompts: %w", err)
+		}
+
+		updates := make([]update, 0, batchSize)
+		scanned := 0
+		for rows.Next() {
+			var candidate update
+			var toolName, meta string
+			if err := rows.Scan(&candidate.rowID, &candidate.threadID, &candidate.id, &toolName, &candidate.summary, &meta); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan Codex V2 collaboration prompt row: %w", err)
+			}
+			scanned++
+			lastRowID = candidate.rowID
+			prompt := encryptedPromptFromMeta(meta)
+			rewritten, changed := itemmeta.TrimEncryptedCollabPrompt([]byte(meta))
+			if !changed {
+				continue
+			}
+			candidate.meta = string(rewritten)
+			if repaired, changed := summaryWithoutEncryptedPrompt(candidate.summary, toolName, prompt); changed {
+				candidate.summary = repaired
+			}
+			updates = append(updates, candidate)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("iterate Codex V2 collaboration prompt rows: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close Codex V2 collaboration prompt scan: %w", err)
+		}
+
+		for _, candidate := range updates {
+			if _, err := tx.Exec(
+				`UPDATE items SET meta = ?, summary = ? WHERE rowid = ?`,
+				candidate.meta, candidate.summary, candidate.rowID,
+			); err != nil {
+				return fmt.Errorf("rewrite Codex V2 collaboration prompt %s/%s: %w", candidate.threadID, candidate.id, err)
+			}
+		}
+		if scanned < batchSize {
+			return nil
+		}
+	}
+}
+
+func encryptedPromptFromMeta(meta string) string {
+	var decoded struct {
+		Input struct {
+			Prompt string `json:"prompt"`
+		} `json:"input"`
+	}
+	if json.Unmarshal([]byte(meta), &decoded) != nil {
+		return ""
+	}
+	return strings.TrimSpace(decoded.Input.Prompt)
+}
+
+func summaryWithoutEncryptedPrompt(summary, toolName, prompt string) (string, bool) {
+	if prompt == "" {
+		return summary, false
+	}
+	name := strings.TrimSpace(toolName)
+	if name == "" {
+		name = "tool"
+	}
+	prefix := name + ": "
+	if !strings.HasPrefix(summary, prefix) {
+		return summary, false
+	}
+	detail, suffix := splitToolCompletionSuffix(strings.TrimPrefix(summary, prefix))
+	preview := strings.TrimSuffix(detail, "…")
+	if preview == "" || !strings.HasPrefix(prompt, preview) {
+		return summary, false
+	}
+	return name + suffix, true
+}
+
+func splitToolCompletionSuffix(detail string) (string, string) {
+	for _, suffix := range []string{" (error)", " (failed)", " (errored)", " (killed)", " (declined)"} {
+		if strings.HasSuffix(detail, suffix) {
+			return strings.TrimSuffix(detail, suffix), suffix
+		}
+	}
+	if exitStart := strings.LastIndex(detail, " (exit "); exitStart >= 0 && strings.HasSuffix(detail, ")") {
+		return detail[:exitStart], detail[exitStart:]
+	}
+	return detail, ""
 }
 
 // rewriteItemMetas scans items matching the LIKE pre-filter, applies

@@ -4,11 +4,71 @@ package terminal
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestNormalizeTerminalEnvReplacesInheritedCapabilities(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	t.Setenv("COLORTERM", "old-value")
+	t.Setenv("AO_TERMINAL_ENV_TEST", "preserved")
+
+	got := normalizeTerminalEnv(nil)
+	for _, want := range []string{
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+		"AO_TERMINAL_ENV_TEST=preserved",
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("normalized environment missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{"TERM=dumb", "COLORTERM=old-value"} {
+		if slices.Contains(got, unwanted) {
+			t.Errorf("normalized environment retained %q", unwanted)
+		}
+	}
+}
+
+func TestNormalizeTerminalEnvCopiesExplicitEnvironment(t *testing.T) {
+	base := []string{"PATH=/custom/bin", "TERM=screen-256color", "COLORTERM=legacy"}
+	got := normalizeTerminalEnv(base)
+
+	want := []string{
+		"PATH=/custom/bin",
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("normalizeTerminalEnv() = %q, want %q", got, want)
+	}
+	if base[1] != "TERM=screen-256color" {
+		t.Fatalf("normalizeTerminalEnv mutated caller input: %q", base)
+	}
+}
+
+func TestProcessStartNormalizesTerminalCapabilities(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	t.Setenv("COLORTERM", "legacy")
+
+	p, err := Start(ProcessConfig{
+		Shell: "/bin/sh",
+		Args:  []string{"-c", `printf 'TERM=%s COLORTERM=%s\n' "$TERM" "$COLORTERM"`},
+		Cwd:   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Kill() })
+
+	got := drainOutput(t, p.Output(), 2*time.Second)
+	if !strings.Contains(got, "TERM=xterm-256color COLORTERM=truecolor") {
+		t.Fatalf("PTY child environment = %q", got)
+	}
+}
 
 // TestProcessStartEcho spawns `sh -c 'echo hi; exit 0'` and asserts we
 // receive the "hi" output, the process exits cleanly, and the output channel

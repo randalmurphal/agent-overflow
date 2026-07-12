@@ -36,6 +36,12 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 			Method: method,
 			Params: params,
 		}) {
+			// MultiAgentV2 creates the child thread before it emits the parent-side
+			// subAgentActivity ownership item. Keep routing fail-closed, but retain
+			// display metadata only after the bounded quarantine accepts the event.
+			if method == "thread/started" {
+				s.rememberAgentMetaForProviderThread(providerThreadID, params)
+			}
 			return
 		}
 		s.warnChildRoutingOverflow(providerThreadID, method, nil)
@@ -271,22 +277,36 @@ func (s *Session) prepareNotificationEvent(evt *provider.ProviderEvent, method s
 	s.maybeRewriteCollabControlItemID(evt, params)
 	s.maybeRememberCollabReceiverThreads(method, params)
 	s.enrichRawToolCallMetadata(evt)
-	s.enrichSubAgentActivitySpawnMetadata(evt)
+	s.enrichSubAgentActivitySpawnMetadata(evt, params)
 	s.preserveWaitAgentReceiverTargets(evt)
 	s.enrichCollabReceiverMetadata(evt)
 }
 
-func (s *Session) enrichSubAgentActivitySpawnMetadata(evt *provider.ProviderEvent) {
+func (s *Session) enrichSubAgentActivitySpawnMetadata(evt *provider.ProviderEvent, params json.RawMessage) {
 	if evt == nil || evt.ItemType != "collab_agent" {
 		return
 	}
-	model, reasoningEffort := s.activeCollabModel()
+	model, reasoningEffort := s.collabProfileForThread(providerThreadIDFromParams(params))
 	mutateEventMetaInput(evt, false, func(input map[string]json.RawMessage) {
 		if readRawString(input, "tool") != "spawn_agent" {
 			return
 		}
 		setRawStringIfMissing(input, "model", model)
 		setRawStringIfMissing(input, "reasoningEffort", reasoningEffort)
+		receiverThreadIDs := readRawStringArray(input, "receiverThreadIds")
+		receiverMetadata := s.collabReceiverMetadataForThreads(receiverThreadIDs)
+		if len(receiverMetadata) == 1 {
+			setRawStringIfMissing(input, "newAgentNickname", receiverMetadata[0].AgentNickname)
+			setRawStringIfMissing(input, "newAgentRole", receiverMetadata[0].AgentRole)
+		}
+		setRawStringIfMissing(input, "newAgentRole", "default")
+		for _, receiverThreadID := range receiverThreadIDs {
+			s.rememberCollabProfile(
+				receiverThreadID,
+				readRawString(input, "model"),
+				readRawString(input, "reasoningEffort"),
+			)
+		}
 	})
 }
 

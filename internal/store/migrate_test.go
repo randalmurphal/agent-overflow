@@ -1606,8 +1606,8 @@ func TestMigrationV20BackfillsProviderTurnID(t *testing.T) {
 	}
 }
 
-func TestMigrationV21BackfillsDeterministicProjectSlugs(t *testing.T) {
-	db := migrateThrough(t, 20)
+func TestMigrationV22BackfillsDeterministicProjectSlugs(t *testing.T) {
+	db := migrateThrough(t, 21)
 	for _, row := range []struct {
 		id        string
 		path      string
@@ -1624,8 +1624,8 @@ func TestMigrationV21BackfillsDeterministicProjectSlugs(t *testing.T) {
 		`, row.id, row.path, row.name, row.createdAt, row.createdAt)
 	}
 
-	if err := applyMigration(db, migrationByVersion(t, 21)); err != nil {
-		t.Fatalf("apply migration v21: %v", err)
+	if err := applyMigration(db, migrationByVersion(t, 22)); err != nil {
+		t.Fatalf("apply migration v22: %v", err)
 	}
 
 	want := map[string]string{
@@ -1669,10 +1669,10 @@ func TestMigrationV21BackfillsDeterministicProjectSlugs(t *testing.T) {
 	}
 }
 
-func TestMigrationV22CreatesWorkflowPersistence(t *testing.T) {
-	db := migrateThrough(t, 21)
-	if err := applyMigration(db, migrationByVersion(t, 22)); err != nil {
-		t.Fatalf("apply migration v22: %v", err)
+func TestMigrationV23CreatesWorkflowPersistence(t *testing.T) {
+	db := migrateThrough(t, 22)
+	if err := applyMigration(db, migrationByVersion(t, 23)); err != nil {
+		t.Fatalf("apply migration v23: %v", err)
 	}
 
 	for _, table := range []string{
@@ -1772,17 +1772,17 @@ func TestMigrationV22CreatesWorkflowPersistence(t *testing.T) {
 	}
 }
 
-func TestMigrationV23PreservesThreadsAndAcceptsWorkflowMode(t *testing.T) {
-	db := migrateThrough(t, 22)
+func TestMigrationV24PreservesThreadsAndAcceptsWorkflowMode(t *testing.T) {
+	db := migrateThrough(t, 23)
 	mustExec(t, db, `INSERT INTO projects
 		(id, path, name, slug, created_at, updated_at)
-		VALUES ('project-v23', '/tmp/v23', 'V23', 'v23', 1, 1)`)
+		VALUES ('project-v24', '/tmp/v24', 'V24', 'v24', 1, 1)`)
 	mustExec(t, db, `INSERT INTO threads
 		(id, project_id, title, provider, workspace_path, created_at, updated_at)
-		VALUES ('root-v23', 'project-v23', 'Root', 'codex', '/tmp/v23', 1, 1)`)
+		VALUES ('root-v24', 'project-v24', 'Root', 'codex', '/tmp/v24', 1, 1)`)
 	mustExec(t, db, `INSERT INTO channels
 		(id, thread_id, type, status, max_turns, created_at, updated_at)
-		VALUES ('channel-v23', 'root-v23', 'deliberation', 'open', 8, 1, 1)`)
+		VALUES ('channel-v24', 'root-v24', 'deliberation', 'open', 8, 1, 1)`)
 	mustExec(t, db, `INSERT INTO threads
 		(id, project_id, title, provider, model, workspace_path, worktree_path,
 		 branch, pr_ref, session_ref, pending_fork_session_ref, mode,
@@ -1791,44 +1791,44 @@ func TestMigrationV23PreservesThreadsAndAcceptsWorkflowMode(t *testing.T) {
 		 runtime_mode, discussion_id, parent_thread_id, forked_from_thread_id,
 		 last_token_usage, last_read_at, pinned_at, created_at, updated_at,
 		 archived, disabled_mcp_servers)
-		VALUES ('thread-v23', 'project-v23', 'Preserved', 'codex', 'gpt', '/tmp/v23', '/tmp/v23-wt',
-		 'ao/v23', 'pr-23', 'session-23', 'fork-session-23', 'discussion',
-		 'ultra', 1, 123456, 45, 55, 'auto-accept-edits', 'channel-v23',
-		 'root-v23', 'root-v23', '{"inputTokens":1}', 6, 7, 2, 3, 1, '["server"]')`)
+		VALUES ('thread-v24', 'project-v24', 'Preserved', 'codex', 'gpt', '/tmp/v24', '/tmp/v24-wt',
+		 'ao/v24', 'pr-23', 'session-23', 'fork-session-23', 'discussion',
+		 'ultra', 1, 123456, 45, 55, 'auto-accept-edits', 'channel-v24',
+		 'root-v24', 'root-v24', '{"inputTokens":1}', 6, 7, 2, 3, 1, '["server"]')`)
 	mustExec(t, db, `INSERT INTO items
 		(id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at)
-		VALUES ('item-v23', 'thread-v23', 0, 0, 'user_text', 'user', 'completed', 'keep me', 2, 2)`)
+		VALUES ('item-v24', 'thread-v24', 0, 0, 'user_text', 'user', 'completed', 'keep me', 2, 2)`)
 	if _, err := db.Exec(`INSERT INTO threads
 		(id, project_id, title, provider, workspace_path, mode, created_at, updated_at)
-		VALUES ('workflow-before-v23', 'project-v23', 'Workflow', 'codex', '/tmp/v23', 'workflow', 4, 4)`); err == nil {
-		t.Fatal("pre-v23 threads table accepted workflow mode")
+		VALUES ('workflow-before-v24', 'project-v24', 'Workflow', 'codex', '/tmp/v24', 'workflow', 4, 4)`); err == nil {
+		t.Fatal("pre-v24 threads table accepted workflow mode")
 	}
 
-	if err := applyRebuildMigration(db, migrationByVersion(t, 23)); err != nil {
-		t.Fatalf("apply migration v23: %v", err)
+	if err := applyRebuildMigration(db, migrationByVersion(t, 24)); err != nil {
+		t.Fatalf("apply migration v24: %v", err)
 	}
 
 	var preserved int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM threads
-		WHERE id = 'thread-v23' AND project_id = 'project-v23'
+		WHERE id = 'thread-v24' AND project_id = 'project-v24'
 		  AND title = 'Preserved' AND provider = 'codex' AND model = 'gpt'
-		  AND workspace_path = '/tmp/v23' AND worktree_path = '/tmp/v23-wt'
-		  AND branch = 'ao/v23' AND pr_ref = 'pr-23' AND session_ref = 'session-23'
+		  AND workspace_path = '/tmp/v24' AND worktree_path = '/tmp/v24-wt'
+		  AND branch = 'ao/v24' AND pr_ref = 'pr-23' AND session_ref = 'session-23'
 		  AND pending_fork_session_ref = 'fork-session-23' AND mode = 'discussion'
 		  AND reasoning_effort = 'ultra' AND fast_mode = 1 AND context_window = 123456
 		  AND auto_compact_standard_percent = 45 AND auto_compact_extended_percent = 55
-		  AND runtime_mode = 'auto-accept-edits' AND discussion_id = 'channel-v23'
-		  AND parent_thread_id = 'root-v23' AND forked_from_thread_id = 'root-v23'
+		  AND runtime_mode = 'auto-accept-edits' AND discussion_id = 'channel-v24'
+		  AND parent_thread_id = 'root-v24' AND forked_from_thread_id = 'root-v24'
 		  AND last_token_usage = '{"inputTokens":1}' AND last_read_at = 6 AND pinned_at = 7
 		  AND created_at = 2 AND updated_at = 3 AND archived = 1
 		  AND disabled_mcp_servers = '["server"]'`).Scan(&preserved); err != nil {
 		t.Fatalf("read preserved thread: %v", err)
 	}
 	if preserved != 1 {
-		t.Fatal("v23 rebuild did not preserve the complete thread row")
+		t.Fatal("v24 rebuild did not preserve the complete thread row")
 	}
 	var childRows int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE thread_id = 'thread-v23'`).Scan(&childRows); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE thread_id = 'thread-v24'`).Scan(&childRows); err != nil {
 		t.Fatalf("count child rows: %v", err)
 	}
 	if childRows != 1 {
@@ -1845,14 +1845,14 @@ func TestMigrationV23PreservesThreadsAndAcceptsWorkflowMode(t *testing.T) {
 		t.Fatalf("read foreign_keys: %v", err)
 	}
 	if foreignKeys != 1 {
-		t.Fatalf("foreign_keys = %d after v23, want 1", foreignKeys)
+		t.Fatalf("foreign_keys = %d after v24, want 1", foreignKeys)
 	}
 	if _, err := db.Exec(`INSERT INTO threads
 		(id, project_id, title, provider, workspace_path, created_at, updated_at)
-		VALUES ('bad-fk-v23', 'missing-project', 'Bad FK', 'codex', '/tmp/v23', 4, 4)`); err == nil {
-		t.Fatal("foreign key enforcement was not restored after v23")
+		VALUES ('bad-fk-v24', 'missing-project', 'Bad FK', 'codex', '/tmp/v24', 4, 4)`); err == nil {
+		t.Fatal("foreign key enforcement was not restored after v24")
 	}
 	mustExec(t, db, `INSERT INTO threads
 		(id, project_id, title, provider, workspace_path, mode, created_at, updated_at)
-		VALUES ('workflow-after-v23', 'project-v23', 'Workflow', 'codex', '/tmp/v23', 'workflow', 4, 4)`)
+		VALUES ('workflow-after-v24', 'project-v24', 'Workflow', 'codex', '/tmp/v24', 'workflow', 4, 4)`)
 }

@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => {
   let lastTerminal: FakeTerminal | null = null;
   class FakeTerminal {
     options: Record<string, unknown>;
+    dataHandler: ((data: string) => void) | null = null;
     // Captured so a test can invoke the registered handler directly.
     keyEventHandler: ((event: KeyboardEvent) => boolean) | null = null;
     // Clipboard surface: a test sets `selection`, and `pastes` records every
@@ -62,7 +63,8 @@ const mocks = vi.hoisted(() => {
       resizes.push([columns, rows]);
       timeline.push(`resize:${columns}x${rows}`);
     }
-    onData(): { dispose(): void } {
+    onData(handler: (data: string) => void): { dispose(): void } {
+      this.dataHandler = handler;
       return { dispose(): void {} };
     }
     focus(): void {}
@@ -417,6 +419,51 @@ describe('TerminalBody Shift+Enter newline', () => {
     expect(handler!(enterEvent({ shiftKey: true, metaKey: true }))).toBe(true);
 
     expect(mocks.WriteTerminal).not.toHaveBeenCalled();
+  });
+});
+
+describe('TerminalBody input ordering', () => {
+  beforeEach(() => {
+    mocks.GetTerminalReplay.mockReset();
+    mocks.WriteTerminal.mockReset();
+  });
+
+  afterEach(() => cleanup());
+
+  it('waits for the in-flight write before sending later keystrokes', async () => {
+    let resolveFirst!: () => void;
+    const firstWrite = new Promise<void>((resolve) => {
+      resolveFirst = resolve;
+    });
+    mocks.WriteTerminal
+      .mockReturnValueOnce(firstWrite)
+      .mockResolvedValue(undefined);
+
+    const { resolveReplay } = await mountWithPendingReplay('t-ordered-input');
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await tick();
+    await Promise.resolve();
+
+    const handler = mocks.getLastTerminal()?.dataHandler;
+    expect(handler).toBeTypeOf('function');
+    handler!('a');
+    handler!('b');
+
+    expect(mocks.WriteTerminal).toHaveBeenCalledTimes(1);
+    expect(mocks.WriteTerminal).toHaveBeenCalledWith(
+      't-ordered-input',
+      encodeTerminalInput('a'),
+    );
+
+    resolveFirst();
+    await firstWrite;
+    await Promise.resolve();
+
+    expect(mocks.WriteTerminal).toHaveBeenCalledTimes(2);
+    expect(mocks.WriteTerminal).toHaveBeenLastCalledWith(
+      't-ordered-input',
+      encodeTerminalInput('b'),
+    );
   });
 });
 

@@ -59,13 +59,13 @@ root `CLAUDE.md` principle 3.
   alone always reports `UnpricedRows=0` — that field is populated by
   `GetUsageStats` after merging in the rate-table lookup, and now means
   "rows whose model the rate table doesn't recognize" rather than
-  "rows with no wire cost." Migration v22 adds denormalized
+  "rows with no wire cost." Migration v23 adds denormalized
   `work_item_id`; `QueryWorkItemUsage` supplies the raw token and
   wire-cost sum used for workflow budget checks, while
   `QueryWorkItemUsageDetail` groups the same rows by model/cost source so the
   app can add query-time `usagecost` estimates for rows without wire cost.
 - `work_items.go` / `work_item_phases.go` / `work_item_effects.go` — bare
-  workflow run-record CRUD (migration v22). Project, thread, and item ids
+  workflow run-record CRUD (migration v23). Project, thread, and item ids
   are intentionally denormalized without FKs so run history survives
   deletion. State-machine validation and scheduling belong to
   `internal/workflow`, not this package.
@@ -84,7 +84,8 @@ root `CLAUDE.md` principle 3.
 - `migrate_fixups.go` — Go-side data fixups referenced by `Fix`
   migrations in `migrate.go`, built on the shared `rewriteItemMetas`
   scan/rewrite helper (v8 trims persisted tool_result echo, v9 trims
-  collab agentsStates messages out of `items.meta`).
+  collab agentsStates messages out of `items.meta`, v21 removes encrypted
+  MultiAgentV2 prompt blobs and repairs their summaries).
 - `sqlutil.go` — shared SQL helpers.
 
 ## Responsibility boundary
@@ -139,14 +140,14 @@ session already has the answer.
 - Payload bindings return raw data only. Rendering is a frontend projection
   based on item/payload kind.
 
-## Recent schema changes (v22-v23) — workflow persistence
+## Recent schema changes (v23-v24) — workflow persistence
 
 - `work_items`, `work_item_phases`, and `work_item_effects` persist workflow
   run history without project/thread/item FKs; `automations` and
   `automation_cursors` persist trigger definitions and watermarks.
 - `usage_ledger.work_item_id` attributes phase-thread usage to a run and is
   indexed for budget sums.
-- `threads.mode` accepts `workflow` for phase threads. The v23 rebuild
+- `threads.mode` accepts `workflow` for phase threads. The v24 rebuild
   preserves every existing thread column and index.
 
 ## Extension points

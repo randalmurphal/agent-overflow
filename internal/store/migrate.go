@@ -623,10 +623,10 @@ ALTER TABLE chat_model_profiles_new RENAME TO chat_model_profiles;
 CREATE INDEX idx_chat_model_profiles_updated ON chat_model_profiles(updated_at DESC);
 `
 
-// rebuildThreadsWorkflowModeV23SQL extends threads.mode with the workflow
+// rebuildThreadsWorkflowModeV24SQL extends threads.mode with the workflow
 // value used by phase threads. It preserves the complete v22 table shape and
 // recreates every threads index dropped with the old table.
-const rebuildThreadsWorkflowModeV23SQL = `
+const rebuildThreadsWorkflowModeV24SQL = `
 CREATE TABLE threads_new (
     id                       TEXT    PRIMARY KEY,
     project_id               TEXT    REFERENCES projects(id) ON DELETE CASCADE,
@@ -900,12 +900,17 @@ UPDATE turns SET provider_turn_id = turn_id WHERE turn_id NOT LIKE '%:%';`,
 	},
 	{
 		Version: 21,
+		Name:    "trim_codex_v2_encrypted_collab_prompts",
+		Fix:     trimCodexV2EncryptedCollabPromptsFixup,
+	},
+	{
+		Version: 22,
 		Name:    "project_slugs",
 		SQL:     `ALTER TABLE projects ADD COLUMN slug TEXT NOT NULL DEFAULT '';`,
 		Fix:     backfillProjectSlugsFixup,
 	},
 	{
-		Version: 22,
+		Version: 23,
 		Name:    "workflow_persistence",
 		SQL: `CREATE TABLE work_items (
     id             TEXT    PRIMARY KEY,
@@ -996,9 +1001,9 @@ CREATE INDEX idx_usage_ledger_work_item
   ON usage_ledger(work_item_id, created_at);`,
 	},
 	{
-		Version: 23,
+		Version: 24,
 		Name:    "thread_workflow_mode",
-		SQL:     rebuildThreadsWorkflowModeV23SQL,
+		SQL:     rebuildThreadsWorkflowModeV24SQL,
 		Rebuild: true,
 	},
 }

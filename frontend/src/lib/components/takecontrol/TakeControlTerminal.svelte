@@ -27,6 +27,10 @@
   } from '../../types/terminal';
   import { getXtermTheme } from '../terminal/terminalTheme';
   import { buildTerminal } from '../terminal/terminalXterm';
+  import {
+    createTerminalInputWriter,
+    createTerminalResizeWriter,
+  } from '../terminal/terminalIoQueue';
   import { notifyTerminalFocus } from '../terminal/terminalStore.svelte';
   import { wailsEventOn } from '../../stores/wailsEvents';
   import { addToast } from '../../stores/toast.svelte';
@@ -49,8 +53,18 @@
   // until the user acquires control, so AO's programmatic Send and the human
   // never drive the PTY at once.
   let controlHeld = $state(false);
+  let controlTransitionPending = $state(false);
   let attaching = $state(true);
   let attachError = $state<string | null>(null);
+
+  const inputWriter = createTerminalInputWriter(
+    (data) => ProviderTerminalInput(threadId, encodeTerminalInput(data)),
+    (err) => console.error('take-control: ProviderTerminalInput failed', err),
+  );
+  const resizeWriter = createTerminalResizeWriter(
+    (rows, cols) => ProviderTerminalResize(threadId, rows, cols),
+    (err) => console.error('take-control: ProviderTerminalResize failed', err),
+  );
 
   // Output buffered during the replay round-trip, drained in order afterward.
   // Mirrors TerminalBody's replay/drain hazard: chunks that land mid-hydrate
@@ -68,9 +82,7 @@
     // Read-only attach: drop keystrokes entirely rather than round-trip to a
     // backend that would reject them.
     if (!controlHeld || destroyed) return;
-    ProviderTerminalInput(threadId, encodeTerminalInput(data)).catch((err) => {
-      console.error('take-control: ProviderTerminalInput failed', err);
-    });
+    inputWriter.write(data);
   }
 
   function handleOutput(payload: TerminalOutputEventPayload): void {
@@ -197,9 +209,7 @@
       try {
         fit.fit();
         const { rows, cols } = term;
-        ProviderTerminalResize(threadId, rows, cols).catch((err) => {
-          console.error('take-control: ProviderTerminalResize failed', err);
-        });
+        resizeWriter.resize(rows, cols);
       } catch (err) {
         console.error('take-control: fit failed', err);
       }
@@ -214,13 +224,45 @@
   });
 
   async function toggleControl(): Promise<void> {
+    if (controlTransitionPending) return;
+    controlTransitionPending = true;
     const next = !controlHeld;
+    const releasing = !next;
     try {
+      if (releasing) {
+        // Close the local gate before waiting: the transport executes unrelated
+        // RPCs concurrently, so the lease-release call must not overtake an
+        // earlier input write or accept more keystrokes while that write drains.
+        controlHeld = false;
+        await inputWriter.idle();
+        if (destroyed) return;
+      }
       await ProviderTerminalSetControl(threadId, next);
+      if (destroyed) {
+        // Detach normally releases the lease, but an acquire RPC that was
+        // already in flight can complete after detach and re-establish it.
+        // Issue a compensating release after that response so false is the
+        // deterministic final backend state for an unmounted pane.
+        if (next) {
+          try {
+            await ProviderTerminalSetControl(threadId, false);
+          } catch (err) {
+            console.error('take-control: late lease release failed', err);
+          }
+        }
+        return;
+      }
       controlHeld = next;
       if (next) term?.focus();
     } catch (err) {
-      addToast('error', `Take control failed: ${errString(err)}`);
+      if (destroyed) {
+        console.error('take-control: control transition failed after destroy', err);
+      } else {
+        if (releasing) controlHeld = true;
+        addToast('error', `Take control failed: ${errString(err)}`);
+      }
+    } finally {
+      controlTransitionPending = false;
     }
   }
 
@@ -247,6 +289,8 @@
     });
     dataDisposable?.dispose();
     dataDisposable = null;
+    inputWriter.dispose();
+    resizeWriter.dispose();
     resizeObserver?.disconnect();
     resizeObserver = null;
     term?.dispose();
@@ -269,7 +313,7 @@
         ? 'Release control — return the terminal to read-only'
         : 'Take control — drive the live Claude TUI'}
       onclick={() => void toggleControl()}
-      disabled={attaching || attachError !== null}
+      disabled={attaching || attachError !== null || controlTransitionPending}
     >
       {#snippet leading()}
         <Icon icon={controlHeld ? Hand : Eye} size={12} strokeWidth={2} />

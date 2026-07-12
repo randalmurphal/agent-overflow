@@ -14,7 +14,7 @@
   import { formatTimeOfDay } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import {
-	codexModelEffortAffix,
+    codexModelEffortAffix,
     codexSubagentLaunchInfo,
     isCodexSubagentLaunchItem,
   } from '../../utils/subagentLaunch';
@@ -77,7 +77,8 @@
   let receivers = $derived(receiverIdsForTool(tool, input, spawnInfo));
   let usesRequestedWaitReceivers = $derived(usesRequestedWaitReceiversForTool(tool, input));
   let labelByReceiver = $derived(receiverLabelMap(input, usesRequestedWaitReceivers));
-  let prompt = $derived(spawnInfo?.prompt ?? stringValue(input, 'prompt'));
+  let activityKind = $derived(stringValue(input, 'activityKind'));
+  let prompt = $derived(activityKind ? '' : (spawnInfo?.prompt ?? stringValue(input, 'prompt')));
   let promptPreview = $derived(previewText(prompt));
   let model = $derived(stringValue(input, 'model'));
   let effort = $derived(stringValue(input, 'reasoningEffort'));
@@ -98,6 +99,11 @@
     if (receiverDisplayLabels.length === 1) return receiverDisplayLabels[0];
     if (receiverDisplayLabels.length > 1) return `${receiverDisplayLabels.length} agents`;
     return '';
+  });
+  let waitAgentLabel = $derived.by(() => {
+    if (receiverDisplayLabels.length === 1) return 'Agent';
+    if (receiverDisplayLabels.length > 1) return `${receiverDisplayLabels.length} agents`;
+    return 'agents';
   });
   let modelAffix = $derived(spawnInfo?.modelAffix ?? codexModelEffortAffix(model, effort));
 
@@ -122,7 +128,7 @@
     if (tool === 'send_input') return `Sent input to ${agentLabel || 'agent'}`;
     if (tool === 'wait_agent') {
       if (item.kind === 'tool_completion') return 'Finished waiting';
-      return `Waiting for ${agentLabel || 'agents'}`;
+      return `Waiting for ${waitAgentLabel}`;
     }
     if (tool === 'close_agent') return `Closed ${agentLabel || 'agent'}`;
     if (tool === 'resume_agent') {
@@ -251,7 +257,6 @@
     {completionPreview}
     expanded={expansion?.expanded ?? false}
     {tool}
-    isCompletion={item.kind === 'tool_completion'}
     {receiverDisplayLabels}
     expansion={hasExpandableOutput ? expansion : null}
   />

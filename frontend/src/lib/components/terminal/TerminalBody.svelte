@@ -15,6 +15,10 @@
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
   import { buildTerminal } from './terminalXterm';
+  import {
+    createTerminalInputWriter,
+    createTerminalResizeWriter,
+  } from './terminalIoQueue';
 
   interface Props {
     handle: ThreadTerminalStateHandle;
@@ -47,6 +51,15 @@
   // effect. Reactive so flipping it re-runs the effect to drain what queued.
   let hydrated = $state(false);
 
+  const inputWriter = createTerminalInputWriter(
+    (data) => WriteTerminal(terminalID, encodeTerminalInput(data)),
+    (err) => console.error('terminal: WriteTerminal failed', err),
+  );
+  const resizeWriter = createTerminalResizeWriter(
+    (rows, cols) => ResizeTerminal(terminalID, rows, cols),
+    (err) => console.error('terminal: ResizeTerminal failed', err),
+  );
+
   function handleFocusIn(): void {
     if (focusCounted) return;
     focusCounted = true;
@@ -64,9 +77,7 @@
   // manager. Passed to buildTerminal as `onInput` and wired to term.onData so a
   // single path owns input.
   function writeInput(data: string): void {
-    WriteTerminal(terminalID, encodeTerminalInput(data)).catch((err) => {
-      console.error('terminal: WriteTerminal failed', err);
-    });
+    inputWriter.write(data);
   }
 
   async function hydrate() {
@@ -162,9 +173,7 @@
       try {
         fit.fit();
         const { rows, cols } = term;
-        ResizeTerminal(terminalID, rows, cols).catch((err) => {
-          console.error('terminal: ResizeTerminal failed', err);
-        });
+        resizeWriter.resize(rows, cols);
       } catch (err) {
         console.error('terminal: fit failed', err);
       }
@@ -210,6 +219,8 @@
     }
     dataDisposable?.dispose();
     dataDisposable = null;
+    inputWriter.dispose();
+    resizeWriter.dispose();
     resizeObserver?.disconnect();
     resizeObserver = null;
     term?.dispose();
