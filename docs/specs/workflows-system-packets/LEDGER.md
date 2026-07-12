@@ -22,7 +22,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.5 reliability | `m2/p25-reliability` | `~/repos/ao-lanes/p25` | gpt-5.6-sol / **xhigh** | run1 `019f556f-851a-79c0-8910-2c3ba63ff505` (dead on arrival — usage limit); run2 `019f5601-046a-7d11-96ce-38b7df0d666d` | **merged** |
 | P2.6 workspace isolation | `m2/p26-workspace-isolation` | `~/repos/ao-lanes/p26` | gpt-5.6-sol / **xhigh** | `019f5635-3455-7483-9849-9a35a0805bb4` | **merged** |
 | P2.7 harness workflows | `m2/p27-harness-workflows` | `~/repos/ao-lanes/p27` | gpt-5.6-sol / **xhigh** | `019f566e-6df8-7e71-9f2d-843f7b228a5d` | **merged** |
-| P0.3 rev2 OS notifications | `m3/p03r2-os-notifications` | `~/repos/ao-lanes/p03r2` | gpt-5.6-sol / **xhigh** | `019f56ae-e129-7612-be10-c9c677757ed9` | dispatched (base `653514c6`) |
+| P0.3 rev2 OS notifications | `m3/p03r2-os-notifications` | `~/repos/ao-lanes/p03r2` | gpt-5.6-sol / **xhigh** | `019f56ae-e129-7612-be10-c9c677757ed9` | **merged** `6cb823f4` |
 
 ## Events
 
@@ -437,3 +437,45 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   classified LocalOnly; pending-activation queue cap 8 with vitest;
   OS-presentation surfaces stated as explicitly unverified. Log: session
   scratchpad `p03r2-codex.log`.
+- **P0.3 rev2 verdict: ACCEPT, merged `6cb823f4`.** All seven gates re-run
+  independently over the post-rider tree: go-build, go-test, GOOS=windows
+  full cross-build, frontend check, vitest (363 files / 5243 tests),
+  frontend build (zero dynamic-import warnings), e2e 11/11 including the
+  new notifications spec. Every banked review input verified in code:
+  dismissal cannot emit `notification:activated` (default-action-only
+  filter on both native paths; the desktop test asserts against the
+  literal macOS dismiss identifier); launcher WS client unit-tested
+  against a stub transport server (token auth + raw/URL-escaped
+  redaction, subscribe shape, replay checkpoints across reconnects,
+  activation RPC round-trip, sequence-gap checkpoint preservation);
+  `NotificationActivated` classified LocalOnly; pending-activation queue
+  cap 8 with vitest; OS presentation stated explicitly unverified. Scope
+  clean: the `internal/transport/` breadth is the minimal principled
+  mechanism the bridge needs — bounded opt-in `subscribe` frame,
+  per-subscriber channel filters (no subscribe → all visible channels,
+  SPA contract untouched), replay-completion marker (replay and live pump
+  share writeMu, so strict-order consumers need a buffer boundary),
+  loopback-only visibility for both notification channels. go.mod delta
+  is the known indirect go-toast dep (accepted in rev1 review). All seven
+  report assumptions accepted; notably assumption 2 (headless+transport
+  publishes into the ring instead of erroring when no launcher subscriber
+  exists) is the better design — ring replay delivers to a
+  late-connecting launcher, so a zero-subscriber moment is not a failure
+  — and assumption 5 (no activation RPC retry after a write attempt)
+  preserves one-click-≤-one-event. Riders (Claude): (1) new
+  `internal/notify` package deduplicating the wire contract codex had
+  copied into `internal/wsllauncher` (the launcher can't import main; a
+  shared internal package is the right fix — validator drift across the
+  process boundary would silently drop notifications); bindings
+  regenerated; (2) pure `notificationActivationQueue.ts` factory split
+  out of `eventsNotification.ts`, replacing assumption 7's dynamic-import
+  isolation with static imports + call-time closures — the first vitest
+  gate run surfaced the real constraint (mock proxies throw on eval-time
+  access to exports a partial vi.mock factory omits, via
+  TerminalView.test.ts), and closures defer the access to activation
+  time while killing both INEFFECTIVE_DYNAMIC_IMPORT warnings; (3)
+  e2e/AGENTS.md documents notifications.spec.ts. Report at
+  `reports/P0.3-rev2-report.md`. Remaining user-assisted items: real
+  Windows toast click-through (incl. cold `-Embedding` launch), real
+  macOS presentation/authorization, real Linux desktop click/dismiss.
+  Lane pruned.
