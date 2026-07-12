@@ -16,7 +16,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P1.3 `ao` CLI skeleton | `m1/p13-ao-cli` | `~/repos/ao-lanes/p13` | gpt-5.6-sol / high | `019f5478-bdb3-75c0-b1c4-4ee5139ae19a` | **merged** |
 | P1.4 starters + `ao workflow new` | `m1/p14-starters` | `~/repos/ao-lanes/p14` | gpt-5.6-sol / high | `019f548e-a038-7f82-87ab-750b8b20957d` | **merged** |
 | P2.1 workflow persistence | `m2/p21-workflow-persistence` | `~/repos/ao-lanes/p21` | gpt-5.6-sol / high | run1 `019f549e-e74f-7721-98dd-9abcb4fc730b` (dead on arrival); run2 `019f54ee-a5e8-7b41-8825-6ccb1b790a3b` | **merged** |
-| P2.2 engine core | `m2/p22-engine-core` | `~/repos/ao-lanes/p22` | gpt-5.6-sol / **xhigh** | `019f5505-71d3-73d0-89d5-f5e55b7230a9` | dispatched (base `f75761ab`) |
+| P2.2 engine core | `m2/p22-engine-core` | `~/repos/ao-lanes/p22` | gpt-5.6-sol / **xhigh** | `019f5505-71d3-73d0-89d5-f5e55b7230a9` | **merged** |
 | P2.3 provider envelope wiring | `m2/p23-provider-envelope` | `~/repos/ao-lanes/p23` | gpt-5.6-sol / high | `019f54ee-b30b-72d1-b57e-58f8456c56d0` | **merged** |
 
 ## Events
@@ -206,3 +206,34 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   persist `cost_source='none'` with zero wire cost, so the reliability
   packet must compose `internal/usagecost` estimates for USD budget checks
   (tokens/wall-clock budgets unaffected).
+- **P2.2 reviewed + merged.** Line-level review of every correctness core
+  (evaluator, fsm, semaphores, drain, human, rebuild, engine loop) — all
+  sound, no rider needed. D5-exact evaluator: ordered first-match with
+  short-circuit, exhausted loop max falls through (traced in
+  `ExhaustedLoops`), post-exhaustion list end → retries-exhausted vs plain
+  no-match → wiring-error; `big.Rat` exact numeric comparison; strict
+  decode (UseNumber + trailing-value rejection); JSON null optionals are
+  absent from lookup, `exists` is the only presence-observing leaf. D9
+  teardown is one function (stop → release → persist → transition → emit)
+  and the sole releaseResources caller; crash sweep parks interrupted
+  in-flight items; teardown-window terminal recovery replays persisted
+  envelopes/traces. Live-profile semaphore capacity at acquire, canonical
+  sorted all-or-nothing. Crash-idempotent human gates persist
+  intervention + rewritten trace before transitioning. Claude re-ran full
+  go-build/go-test + `go test -race ./internal/workflow/...`
+  independently: 86 packages ok, engine race 36.5s, zero failures.
+  Report at `reports/P2.2-report.md`.
+- **Carried forward to P2.4 authoring (from P2.2 review):** (a) genuine
+  seam gap — question-answer flow has no payload path (`Resume(itemID)`
+  starts a fresh attempt; spec §7 wants the answer delivered as the next
+  turn in the SAME provider session) — P2.4 must add an additive engine
+  extension (answer-carrying Resume or a dedicated Answer command);
+  (b) Runner.Stop must tolerate unknown RunKeys — the crash sweep calls
+  Stop for runs the post-restart runner never started; (c) Resume and
+  ResolveHumanGate error when global concurrency is full — the app layer
+  must surface/retry, not drop; (d) Cancel only acts on running items —
+  M3 needs a queued-item removal affordance; (e) engine.Enqueue creates
+  the store row itself — bound methods pass params, not pre-created rows;
+  (f) Settings gains WorkflowQueueActive/WorkflowConcurrency in P2.4.
+  Degraded-but-correct (optional): loop feedback is rebuilt without the
+  human note after a crash inside the human-decision window.

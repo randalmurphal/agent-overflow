@@ -1,0 +1,224 @@
+package engine
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/workflow/def"
+)
+
+const maxHumanNoteBytes = 16 * 1024
+
+func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note string) error {
+	if choice != HumanApprove && choice != HumanReject {
+		return fmt.Errorf("resolve human gate %q: decision must be approve or reject", itemID)
+	}
+	if len(note) > maxHumanNoteBytes {
+		return fmt.Errorf("resolve human gate %q: note is %d bytes; maximum is %d", itemID, len(note), maxHumanNoteBytes)
+	}
+	if e.activeSlots >= e.config.GlobalConcurrency {
+		return fmt.Errorf("resolve human gate %q: global concurrency is full", itemID)
+	}
+	item, err := e.loadParked(itemID)
+	if err != nil {
+		return err
+	}
+	if Reason(item.item.Reason) != ReasonGate {
+		return fmt.Errorf("resolve human gate %q: item reason is %q, want %q", itemID, item.item.Reason, ReasonGate)
+	}
+	phase, ok := findPhase(item.workflow, item.phaseID)
+	if !ok {
+		return fmt.Errorf("resolve human gate %q: phase %q is absent from snapshot", itemID, item.phaseID)
+	}
+	phases, err := e.store.ListWorkItemPhases(itemID)
+	if err != nil {
+		return err
+	}
+	current, ok := phaseAttempt(phases, item.phaseID, item.attempt)
+	if !ok || len(current.GateTrace) == 0 {
+		return fmt.Errorf("resolve human gate %q: parked phase trace is missing", itemID)
+	}
+	var trace def.GateTrace
+	if err := decodeJSON(current.GateTrace, &trace); err != nil {
+		return fmt.Errorf("resolve human gate %q trace: %w", itemID, err)
+	}
+	vars, _, err := e.variableContext(item, current.OutputEnvelope)
+	if err != nil {
+		return err
+	}
+	if trace.Decision.Kind != def.DecisionHuman {
+		if len(current.Intervention) == 0 {
+			return fmt.Errorf("resolve human gate %q: persisted decision is %q without a human intervention", itemID, trace.Decision.Kind)
+		}
+		return e.continuePersistedHumanDecision(item, current, trace.Decision, vars)
+	}
+	if trace.Decision.RouteIndex < 0 || trace.Decision.RouteIndex >= len(phase.Gate.Routes) {
+		return fmt.Errorf("resolve human gate %q: persisted decision is not a valid human route", itemID)
+	}
+	route := phase.Gate.Routes[trace.Decision.RouteIndex]
+	if route.Human == nil || route.Human.Reject == nil {
+		return fmt.Errorf("resolve human gate %q: route %d has no complete human decision", itemID, trace.Decision.RouteIndex)
+	}
+
+	decision := decisionForTarget(route.Human.Approve, trace.Decision.RouteIndex)
+	if choice == HumanReject {
+		reject := route.Human.Reject
+		edge := def.GateEdgeKey(phase.ID, trace.Decision.RouteIndex)
+		counts, err := loopCounts(phases)
+		if err != nil {
+			return err
+		}
+		if counts[edge] >= reject.Max {
+			decision = def.RouteDecision{Kind: def.DecisionRetriesExhausted, RouteIndex: -1}
+		} else {
+			decision = def.RouteDecision{
+				Kind: def.DecisionLoop, RouteIndex: trace.Decision.RouteIndex,
+				Target: reject.Loop, Feedback: append([]string(nil), reject.Feedback...),
+				LoopEdge: edge, Max: reject.Max,
+			}
+		}
+	}
+	intervention, err := json.Marshal(HumanIntervention{Decision: choice, Note: note})
+	if err != nil {
+		return err
+	}
+	if err := e.store.UpdateWorkItemPhaseIntervention(itemID, item.phaseID, item.attempt, intervention); err != nil {
+		return err
+	}
+	trace.Decision = decision
+	encodedTrace, err := json.Marshal(trace)
+	if err != nil {
+		return err
+	}
+	phaseStatus := "completed"
+	if decision.Kind == def.DecisionRetriesExhausted {
+		phaseStatus = "parked"
+	}
+	if err := e.store.CompleteWorkItemPhase(
+		itemID, item.phaseID, item.attempt, current.OutputEnvelope,
+		encodedTrace, phaseStatus, e.timestamp(),
+	); err != nil {
+		return err
+	}
+	e.emitter.Emit("workflow:phase-state", PhaseEvent{ItemID: itemID, PhaseID: item.phaseID, Attempt: item.attempt, Status: phaseStatus})
+
+	if err := e.transition(item, StateRunning, ""); err != nil {
+		return err
+	}
+	e.items[itemID] = item
+	return e.continueHumanDecision(item, decision, feedbackFor(vars, decision.Feedback, note))
+}
+
+func (e *Engine) recoverPersistedHumanDecision(itemID string) (bool, error) {
+	item, err := e.loadParked(itemID)
+	if err != nil {
+		return false, err
+	}
+	phases, err := e.store.ListWorkItemPhases(itemID)
+	if err != nil {
+		return false, err
+	}
+	current, ok := phaseAttempt(phases, item.phaseID, item.attempt)
+	if !ok || len(current.GateTrace) == 0 {
+		return false, nil
+	}
+	var trace def.GateTrace
+	if err := decodeJSON(current.GateTrace, &trace); err != nil {
+		return false, err
+	}
+	if trace.Decision.Kind == def.DecisionHuman {
+		return false, nil
+	}
+	if len(current.Intervention) == 0 {
+		return false, nil
+	}
+	vars, _, err := e.variableContext(item, current.OutputEnvelope)
+	if err != nil {
+		return false, err
+	}
+	return true, e.continuePersistedHumanDecision(item, current, trace.Decision, vars)
+}
+
+func (e *Engine) isHumanGate(item *runtimeItem) (bool, error) {
+	phases, err := e.store.ListWorkItemPhases(item.item.ID)
+	if err != nil {
+		return false, err
+	}
+	current, ok := phaseAttempt(phases, item.phaseID, item.attempt)
+	if !ok || len(current.GateTrace) == 0 {
+		return false, nil
+	}
+	var trace def.GateTrace
+	if err := decodeJSON(current.GateTrace, &trace); err != nil {
+		return false, err
+	}
+	return trace.Decision.Kind == def.DecisionHuman || len(current.Intervention) > 0, nil
+}
+
+func (e *Engine) continuePersistedHumanDecision(item *runtimeItem, current store.WorkItemPhase, decision def.RouteDecision, vars map[string]any) error {
+	var intervention HumanIntervention
+	if len(current.Intervention) > 0 {
+		if err := decodeJSON(current.Intervention, &intervention); err != nil {
+			return fmt.Errorf("continue human gate %q intervention: %w", item.item.ID, err)
+		}
+	}
+	if err := e.transition(item, StateRunning, ""); err != nil {
+		return err
+	}
+	e.items[item.item.ID] = item
+	return e.continueHumanDecision(item, decision, feedbackFor(vars, decision.Feedback, intervention.Note))
+}
+
+func (e *Engine) continueHumanDecision(item *runtimeItem, decision def.RouteDecision, feedback *Feedback) error {
+	switch decision.Kind {
+	case def.DecisionAdvance, def.DecisionLoop:
+		item.phaseID = decision.Target
+		item.attempt = 0
+		item.feedback = feedback
+		waitingErr := e.startWaiting()
+		return errors.Join(waitingErr, e.enterPhase(item))
+	case def.DecisionDone:
+		return e.transition(item, StateDone, "")
+	case def.DecisionFailed:
+		return e.transition(item, StateFailed, ReasonCheckFailedGenuine)
+	case def.DecisionRetriesExhausted:
+		return e.transition(item, StateNeedsHuman, ReasonRetriesExhausted)
+	default:
+		return fmt.Errorf("continue human gate %q: unsupported decision %q", item.item.ID, decision.Kind)
+	}
+}
+
+func decisionForTarget(target string, routeIndex int) def.RouteDecision {
+	switch target {
+	case "done":
+		return def.RouteDecision{Kind: def.DecisionDone, RouteIndex: routeIndex}
+	case "failed":
+		return def.RouteDecision{Kind: def.DecisionFailed, RouteIndex: routeIndex}
+	default:
+		return def.RouteDecision{Kind: def.DecisionAdvance, RouteIndex: routeIndex, Target: target}
+	}
+}
+
+func feedbackFor(vars map[string]any, refs []string, note string) *Feedback {
+	if len(refs) == 0 && note == "" {
+		return nil
+	}
+	feedback := &Feedback{Note: note, Values: make(map[string]any, len(refs))}
+	for _, ref := range refs {
+		if value, ok := def.LookupVariable(vars, ref); ok {
+			feedback.Values[ref] = value
+		}
+	}
+	return feedback
+}
+
+func phaseAttempt(phases []store.WorkItemPhase, phaseID string, attempt int) (store.WorkItemPhase, bool) {
+	for _, phase := range phases {
+		if phase.PhaseID == phaseID && phase.Attempt == attempt {
+			return phase, true
+		}
+	}
+	return store.WorkItemPhase{}, false
+}
