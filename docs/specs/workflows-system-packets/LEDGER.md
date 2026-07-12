@@ -23,7 +23,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.6 workspace isolation | `m2/p26-workspace-isolation` | `~/repos/ao-lanes/p26` | gpt-5.6-sol / **xhigh** | `019f5635-3455-7483-9849-9a35a0805bb4` | **merged** |
 | P2.7 harness workflows | `m2/p27-harness-workflows` | `~/repos/ao-lanes/p27` | gpt-5.6-sol / **xhigh** | `019f566e-6df8-7e71-9f2d-843f7b228a5d` | **merged** |
 | P0.3 rev2 OS notifications | `m3/p03r2-os-notifications` | `~/repos/ao-lanes/p03r2` | gpt-5.6-sol / **xhigh** | `019f56ae-e129-7612-be10-c9c677757ed9` | **merged** `6cb823f4` |
-| P3.1 thread modes + take-over | `m3/p31-thread-modes` | `~/repos/ao-lanes/p31` | gpt-5.6-sol / **xhigh** | run1 `019f56fc-e0c2-78e0-acf4-6979f21e303e` (dead on arrival — usage limit); run2 `019f5714-98e5-77f2-8d0a-cc289a6bf374` | dispatched (base `c3a34919`) |
+| P3.1 thread modes + take-over | `m3/p31-thread-modes` | `~/repos/ao-lanes/p31` | gpt-5.6-sol / **xhigh** | run1 `019f56fc-e0c2-78e0-acf4-6979f21e303e` (dead on arrival — usage limit); run2 `019f5714-98e5-77f2-8d0a-cc289a6bf374` | **merged `3ee937f8`** (workflows-system) |
 
 ## Events
 
@@ -515,3 +515,42 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   Session resumed in place (context is the asset — specs read, baseline
   done): same id `019f5714-98e5-77f2-8d0a-cc289a6bf374`, xhigh restated,
   log `p31-codex-resume.log`.
+
+- **Campaign moved off `main` onto `workflows-system` (user request,
+  2026-07-12).** The user pushed trunk changes from another machine
+  (PTY normalization `6e8f8dc4`, codex v2 collab cleanup `3c22d149`,
+  macOS packaging `b726e877`) and asked that main be reset and all
+  workflow work continue on a branch. Local `main` (49 campaign
+  commits) was branched as `workflows-system`, `main` hard-reset to
+  `origin/main`, and origin merged into the branch (`9d59a1b2`).
+  **Migration collision found and resolved:** trunk's new v21
+  (`trim_codex_v2_encrypted_collab_prompts`) collided with the
+  campaign's unpublished v21–v23. Trunk numbering wins (renumbering the
+  published side would skip DDL on the user's other machine's DB):
+  project_slugs 21→22, workflow_persistence 22→23, thread_workflow_mode
+  23→24; tests + schema docs renumbered; full `make go-test` green on
+  the merged branch. All future packet merges target `workflows-system`;
+  pushing/PRing the branch is the user's call.
+- **P3.1 reviewed + merged `3ee937f8` with three riders.** Report
+  (24k, high quality) verified; diff split five ways (store / engine /
+  take-over core / triage / modes+transport) and line-level reviewed.
+  Highlights confirmed: v25 migration derivation is drift-proof and
+  preserves both pre-existing work_items indexes; `takeoverFinalize`
+  lives only on the tracked runtime item so every park evicts it
+  (resume-is-fresh is structural); intervention-persist failure still
+  tears down resources (test-proven); `StopForTakeover` restores the
+  attempt + backoff timer on failed yield; interrupt path takes no
+  thread lock (live-interrupt integration test would deadlock
+  otherwise); triage seeding is injection-hardened (ASCII-quoted,
+  delimiter-escaped, rune-bounded) and provably excludes gate traces;
+  transport delta is exactly Scope Amendment 1's allowance. Gaming
+  audit: all existing-test changes additive. Riders: (1) lane migration
+  renumbered v24→v25 atop the trunk merge; (2) reverted a cosmetic
+  `''`→`”` comment mangle in migrate_test.go; (3) fixed a real stuck
+  state — a failed Claude schema-restart during finalize left
+  `takeovers[thread].transitioning=true` forever, rejecting all further
+  steering sends until app restart; Start now cancels the transition on
+  error (regression `TestFailedFinalizeStartClearsTakeoverTransition`).
+  Accepted as documented assumptions: Complete fails fast at full
+  concurrency; 15s bounded engine-loop wait for takeover yield.
+  Independent full gate battery re-run post-merge on `workflows-system`.
