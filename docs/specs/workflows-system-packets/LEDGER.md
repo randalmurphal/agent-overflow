@@ -20,6 +20,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.3 provider envelope wiring | `m2/p23-provider-envelope` | `~/repos/ao-lanes/p23` | gpt-5.6-sol / high | `019f54ee-b30b-72d1-b57e-58f8456c56d0` | **merged** |
 | P2.4 phase runner + app wiring | `m2/p24-phase-runner` | `~/repos/ao-lanes/p24` | gpt-5.6-sol / **xhigh** | `019f553e-41c5-76d1-9bb2-433541267c0b` | **merged** |
 | P2.5 reliability | `m2/p25-reliability` | `~/repos/ao-lanes/p25` | gpt-5.6-sol / **xhigh** | run1 `019f556f-851a-79c0-8910-2c3ba63ff505` (dead on arrival — usage limit); run2 `019f5601-046a-7d11-96ce-38b7df0d666d` | **merged** |
+| P2.6 workspace isolation | `m2/p26-workspace-isolation` | `~/repos/ao-lanes/p26` | gpt-5.6-sol / **xhigh** | `019f5635-3455-7483-9849-9a35a0805bb4` | dispatched (base `cbcf8b63`) |
 
 ## Events
 
@@ -309,3 +310,12 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   cost_source='none' model has no usagecost rate — loud-over-silent wins,
   but adding a new model to the rate table unparks such items. Revisit only
   if it bites in practice.
+- **P2.6 dispatched** into `~/repos/ao-lanes/p26` (branch
+  `m2/p26-workspace-isolation`, base `cbcf8b63` = P2.5 merge). Lane
+  frontend-bootstrapped; full pre-dispatch baseline green (go-build,
+  go-test, frontend check, `make e2e` 5/5). Banner verified sol/**xhigh**,
+  session `019f5635-3455-7483-9849-9a35a0805bb4`, no usage-limit DOA.
+  Review inputs banked: artifact path deliberately deviates from D13's
+  illustrative `runs/<run-id>/` (must appear in codex's report as a noted
+  deviation); cleanup policy is plumbing-only — execution must NOT be
+  implemented. Log: session scratchpad `p26-codex.log`.
