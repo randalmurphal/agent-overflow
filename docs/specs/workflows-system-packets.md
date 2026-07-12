@@ -96,39 +96,39 @@ new` scaffold. Content packet; validated by P1.1's validator in CI.
   job notes injection/update, coalesced summaries, artifact store (D13) if not
   already landed with M2 envelope work.
 
-## Dev harness (user-owned, M0-adjacent)
+## Dev harness (BUILT — commit 6c2bfcbb; docs/architecture/agent-harness.md)
 
-A headless/dev harness the user is building before/alongside M0-M1. The milestones
-consume it as follows — these are the interface expectations that make it maximally
-useful to this work:
+The harness exists: real backend + real SPA headless on an isolated `--data-dir`
+(app-config dir and `$HOME` included — harness-local workflow definitions and
+profiles per D1/D6), both providers pointed at `cmd/ao-mockprovider` (a real
+subprocess speaking both stdio protocols — spawn/env/parser/triage all exercised),
+JSON scenarios (deltas, tool calls, approval branches, `waitSignal` gates, stalls,
+crashes, turn completion **with or without an envelope** — the D2a absent-payload
+case is just omitting the field), wire-level fixture replay through the real
+adapter + triage, record/replay bundles (wire + DB snapshot; not filesystem),
+declarative `HarnessSeed` (real generated git repos) + `HarnessReset`, and a
+Playwright suite (`e2e/`; `make harness` / `make e2e`).
 
-1. **Isolated state:** `--db`/env override for the SQLite path AND the app-config
-   dir (workflow definitions + profiles live there per D1/D6 — a harness scenario
-   must be able to ship its own workflows/profiles, not read the user's).
-2. **Stub provider sessions:** a fake `provider.Session` implementation selectable
-   per-thread/env — accepts Send/Interrupt, emits scripted provider events
-   (streaming deltas, tool calls, turn-complete with/without `structured_output`).
-   This is the piece that makes M2's phase-runner testable without live CLIs:
-   question→answer→continue flows, envelope-absent (the D2a Claude failure mode),
-   mid-turn interrupts. Pure replay can't do interactive flows; a stub session can.
-3. **Event replay at the provider-event boundary** (post-adapter, pre-triage),
-   reusing the existing `docs/references/fixtures/` NDJSON format — deterministic
-   reproduction of session death, overload errors, backgrounded-task edge cases
-   for M2 reliability tests (watchdog, transient allowlist, crash sweep).
-4. **Browser-reachable frontend:** the transport already serves HTTP+WS, so
-   Playwright drives the real frontend without the native webview. Stable
-   `data-testid`s on new workflow surfaces become a UI-SPEC implementation
-   requirement (M3), so delegated UI agents can self-verify against seeded states.
-5. **Scenario seeding:** a dev-only path ("seed N runs in states X across
-   projects") so M3 UI work and screenshots don't require executing real runs.
-6. **Time control where cheap:** configurable-short watchdog/backoff values in the
-   harness profile beat a fake clock; M2 tests need "T elapsed with no events"
-   without waiting 15 real minutes.
+**Obligations this places on the milestones:**
 
-Consumers: M2 integration tests (stub sessions + replay + crash-kill scenarios),
-M3 UI verification (seeded states + Playwright), M4 `ao` CLI tests (isolated
-config dir + running harness app). M0/M1 do NOT depend on it and can proceed in
-parallel with its construction.
+- **M2:** (a) watchdog / backoff / budget values MUST be config/profile-driven so
+  harness profiles can shrink them (mock `stall` + `afterTurns:"silent"` produce
+  "T elapsed, no events" deterministically); (b) extend `HarnessSeed` with a
+  `workflows:` section ("N runs in states X") once migrations land — seeding goes
+  through production paths, never raw side doors; (c) **known gap:** the mock acks
+  `interrupt` but doesn't abort the in-flight scenario turn — extend the mock's
+  engine (the adapter/engine split was built for it) when phase-runner
+  interrupt→abort→terminal-frame flows are tested; (d) gate tests use
+  `waitSignal` + `HarnessMockCommand({type:"advance"})` + `harness:mock` events —
+  zero-sleep determinism for runs parked at human gates.
+- **M3:** stable `data-testid`s on every new workflow surface (UI-SPEC
+  requirement); e2e specs follow `e2e/tests/harness.spec.ts` conventions — never
+  sleep, await `harness:mock` / `provider:turn_completed` / `harness:replay`
+  events; backend setup through RPCs, not the UI.
+- **M4:** `ao` CLI tests run against a booted harness (isolated config dir).
+- **All packets touching harness/transport/mock/provider parsing:** `make e2e`
+  passes alongside the standard gates. New `Harness*` methods stay on the Harness
+  receiver (inherits the registration gate + LocalOnly marking).
 
 ## Sequencing
 
