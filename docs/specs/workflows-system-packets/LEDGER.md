@@ -788,3 +788,17 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   and bound sidebar-store init to the always-mounted footer because
   App.svelte is off-list. Workflow event channels verified already
   remote-visible (event_visibility.go), so no event work needed.
+
+- **P3.6 BLOCKED (valid, packet authoring gap) → Scope Amendment 1 →
+  resumed.** All eight baseline gates green; codex implemented the
+  in-scope work, then stopped on the §6.3 picker: the allowlist placed
+  `UnifiedThreadPicker.svelte` under `components/sidebar/` but it lives
+  under `components/palette/`. It correctly reverted its two palette
+  edits rather than treating the mismatch as an assumption, and left
+  the rest dirty. Amendment 1 (committed `37af3d47`, mirrored to the
+  lane copy) permits exactly the palette picker + its test. Resumed in
+  place, xhigh restated, log `p36-codex-resume.log`. Lesson sharpened:
+  the pre-dispatch allowlist walk checked requirement coverage but the
+  picker path was written from memory — also `ls` every allowlisted
+  path so a file that moved (or never lived there) bounces on Claude's
+  desk, not codex's.
