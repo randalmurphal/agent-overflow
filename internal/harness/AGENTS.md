@@ -31,6 +31,9 @@ this file covers the package boundaries.
 - `control` and `scenario` are shared with `cmd/ao-mockprovider` — the
   mock binary is the other consumer. Changing a wire shape or scenario
   field means checking both sides plus `e2e/`.
+- The mock engine reports `turn_interrupted` when a provider interrupt wins an
+  active scenario turn. This is the deterministic assertion surface for cancel
+  and watchdog tests; adapter terminal frames remain provider stdout traffic.
 
 ## Invariants
 

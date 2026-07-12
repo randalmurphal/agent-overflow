@@ -98,12 +98,31 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		n, vars := a.e.beginTurn()
 		a.respond(id, method, vars)
 		a.e.enqueueTurn(n)
+	case "turn/interrupt":
+		// The real app-server replies when TurnAborted arrives, immediately
+		// before publishing turn/completed{status:interrupted}. Preserve that
+		// observable order while the engine owns the shared abort behavior.
+		a.respond(id, method, a.e.currentVars())
+		a.e.interruptTurn(readParamString(params, "turnId"))
 	default:
 		if _, known := a.responses[method]; !known {
 			log.Printf("codex: request method %q has no scenario response; answering with empty result", method)
 		}
 		a.respond(id, method, a.e.currentVars())
 	}
+}
+
+func (a *codexAdapter) sendInterruptedTurn(vars scenario.Vars) {
+	a.w.writeLine(mustJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "turn/completed",
+		"params": map[string]any{
+			"threadId": vars["THREAD_ID"],
+			"turn": map[string]any{
+				"id": vars["TURN_ID"], "items": []any{}, "status": "interrupted", "error": nil,
+			},
+		},
+	}), 0, 0)
 }
 
 func (a *codexAdapter) respond(id json.RawMessage, method string, vars scenario.Vars) {

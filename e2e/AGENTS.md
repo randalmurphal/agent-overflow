@@ -16,6 +16,9 @@ headless, isolated data dir, mocked providers. Full harness guide:
   `harness.reset()`.
 - `tests/harness.spec.ts` — the reference specs: boot, seeded history,
   live mock turn, frame-by-frame `step-gated` stepping, reset.
+- `tests/workflows.spec.ts` — RPC/event-only workflow coverage: two-phase
+  drain, human gate approval, same-session question answer, watchdog stall,
+  and cancel/interrupt.
 
 ## Running
 
@@ -27,7 +30,8 @@ chromium` on a fresh machine).
 ## Writing specs
 
 - **Never sleep.** Await `harness.waitForEvent('harness:mock', ...)` /
-  `'harness:replay'` / `'provider:turn_completed'` for backend
+  `'harness:replay'` / `'provider:turn_completed'` /
+  `'workflow:item-state'` for backend
   progress, and Playwright's auto-waiting locators for the DOM.
 - **Backend setup goes through RPCs** (`HarnessSeed`,
   `HarnessSetScenario`, `SendMessage`, ...), not the UI, unless the UI

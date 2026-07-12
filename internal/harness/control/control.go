@@ -75,9 +75,9 @@ const (
 // Report is a progress event from mock to backend. The backend wraps
 // it (with MockID, Cwd) into a harness:mock bus event.
 type Report struct {
-	// Kind: "registered", "turn_started", "step_started",
-	// "step_completed", "waiting_signal", "approval_pending",
-	// "approval_decided", "scenario_done", "exiting".
+	// Kind: "registered", "turn_started", "turn_interrupted",
+	// "step_started", "step_completed", "waiting_signal",
+	// "approval_pending", "approval_decided", "scenario_done", "exiting".
 	Kind string `json:"kind"`
 	// Turn is the 1-based user-turn index (0 for lifecycle reports).
 	Turn int `json:"turn,omitempty"`
@@ -93,6 +93,7 @@ type Report struct {
 const (
 	ReportRegistered      = "registered"
 	ReportTurnStarted     = "turn_started"
+	ReportTurnInterrupted = "turn_interrupted"
 	ReportStepStarted     = "step_started"
 	ReportStepCompleted   = "step_completed"
 	ReportWaitingSignal   = "waiting_signal"

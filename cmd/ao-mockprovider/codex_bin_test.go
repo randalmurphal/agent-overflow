@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"agent-overflow/internal/harness/scenario"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 )
 
 // --- codex mode ---
@@ -64,6 +66,61 @@ func TestCodexHandshakeAndScenarioTurn(t *testing.T) {
 		t.Fatalf("unknown-method response = %q", got)
 	}
 
+	p.closeStdinAndExpectExit(0, testTimeout)
+}
+
+func TestCodexInterruptAbortsWaitSignalTurn(t *testing.T) {
+	sc := &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "codex-interrupt",
+		Provider: scenario.ProviderCodex,
+		Turns: []scenario.Turn{{Steps: []scenario.Step{
+			{Emit: &scenario.EmitStep{Lines: []string{
+				`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}`,
+			}}},
+			{WaitSignal: &scenario.WaitSignalStep{Name: "hold"}},
+			{Emit: &scenario.EmitStep{Lines: []string{`{"jsonrpc":"2.0","method":"must/not/run"}`}}},
+		}}},
+	}
+	p := startMock(t, []string{"app-server"}, writeScenarioFile(t, sc, ""), t.TempDir())
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"thread/start","params":{}}`)
+	p.expectLineContaining(`"id":1`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"turn/start","params":{"threadId":"mock-codex-thread","input":[]}}`)
+	p.expectLineContaining(`"id":2`, testTimeout)
+	p.expectLineContaining(`"method":"turn/started"`, testTimeout)
+
+	p.send(`{"jsonrpc":"2.0","id":3,"method":"turn/interrupt","params":{"threadId":"mock-codex-thread","turnId":"turn-1"}}`)
+	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":3,"result":{}}` {
+		t.Fatalf("turn/interrupt response = %q", got)
+	}
+	completed := p.expectLine(testTimeout)
+	if !strings.Contains(completed, `"method":"turn/completed"`) ||
+		!strings.Contains(completed, `"status":"interrupted"`) ||
+		!strings.Contains(completed, `"id":"turn-1"`) {
+		t.Fatalf("interrupted turn/completed = %q", completed)
+	}
+	var notification struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(completed), &notification); err != nil {
+		t.Fatalf("decode interrupted notification: %v", err)
+	}
+	events := codex.ClassifyNotification("thread-interrupt", notification.Method, notification.Params)
+	if len(events) != 1 {
+		t.Fatalf("interrupted completion events = %+v", events)
+	}
+	meta, ok := events[0].TurnComplete.(*provider.WireTurnCompleteMeta)
+	if events[0].Kind != provider.EventTurnComplete || !ok ||
+		!meta.Aborted || meta.StopReason != "interrupted" || meta.ErrorMessage != "" {
+		t.Fatalf("interrupted completion events = %+v", events)
+	}
+
+	// The next request response must not be preceded by the skipped marker.
+	p.send(`{"jsonrpc":"2.0","id":4,"method":"thread/read","params":{}}`)
+	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":4,"result":{}}` {
+		t.Fatalf("line after interrupted completion = %q; remaining scenario step ran", got)
+	}
 	p.closeStdinAndExpectExit(0, testTimeout)
 }
 

@@ -24,13 +24,23 @@ type protocolAdapter interface {
 	// when the app responds; cancel unregisters the waiter after a
 	// timeout so a late response is dropped instead of leaking.
 	sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (decision <-chan bool, cancel func(), err error)
+	// sendInterruptedTurn writes the protocol-native terminal frame for an
+	// interrupted turn. The adapter has already acknowledged the inbound
+	// interrupt before this is called.
+	sendInterruptedTurn(vars scenario.Vars)
 }
 
 // gate is one open waitSignal/stall block. An unnamed gate matches any
 // advance; a named gate matches advances with the same name or none.
 type gate struct {
+	turn int
 	name string
 	ch   chan struct{}
+}
+
+type scenarioTurn struct {
+	abort   chan struct{}
+	aborted bool
 }
 
 // engine executes scenario steps. One goroutine (run) owns step
@@ -49,6 +59,8 @@ type engine struct {
 	mu              sync.Mutex
 	base            scenario.Vars // SESSION_ID / THREAD_ID / CWD
 	turnSeq         int           // last begun user-turn number (1-based)
+	activeTurn      int           // turn currently executing scenario steps
+	turns           map[int]*scenarioTurn
 	doneReported    bool
 	gate            *gate
 	pendingAdvances []string
@@ -65,6 +77,7 @@ func newEngine(sc *scenario.Scenario, fixtureRoot, cwd string, w *lineWriter, re
 		rep:         rep,
 		exitFn:      os.Exit,
 		base:        base,
+		turns:       make(map[int]*scenarioTurn),
 		turnCh:      make(chan int, turnQueueCap),
 	}
 }
@@ -77,6 +90,7 @@ func (e *engine) beginTurn() (int, scenario.Vars) {
 	e.mu.Lock()
 	e.turnSeq++
 	n := e.turnSeq
+	e.turns[n] = &scenarioTurn{abort: make(chan struct{})}
 	e.mu.Unlock()
 	return n, e.varsForTurn(n)
 }
@@ -117,6 +131,9 @@ func (e *engine) enqueueTurn(n int) {
 	select {
 	case e.turnCh <- n:
 	default:
+		e.mu.Lock()
+		delete(e.turns, n)
+		e.mu.Unlock()
 		log.Printf("turn queue full; dropping turn %d — scenario and app are out of sync", n)
 	}
 }
@@ -134,6 +151,9 @@ func (e *engine) run() {
 }
 
 func (e *engine) runTurn(n int) {
+	e.startTurn(n)
+	defer e.finishTurn(n)
+
 	turns := e.sc.Turns
 	var steps []scenario.Step
 	var label string
@@ -144,6 +164,11 @@ func (e *engine) runTurn(n int) {
 		switch e.sc.AfterTurns {
 		case "silent":
 			e.rep.report(control.Report{Kind: control.ReportTurnStarted, Turn: n, Detail: "afterTurns:silent"})
+			// Silent is an intentionally hung provider turn, not a completed
+			// empty scenario. Keep ownership until interrupt so the adapter can
+			// emit the same terminal sequence as any other in-flight turn.
+			<-e.turnAbortSignal(n)
+			e.adapter.sendInterruptedTurn(e.varsForTurn(n))
 			return
 		case "exit":
 			e.rep.report(control.Report{Kind: control.ReportTurnStarted, Turn: n, Detail: "afterTurns:exit"})
@@ -158,10 +183,90 @@ func (e *engine) runTurn(n int) {
 		}
 	}
 	e.rep.report(control.Report{Kind: control.ReportTurnStarted, Turn: n, Detail: label})
-	e.runSteps(e.varsForTurn(n), n, steps, true)
+	vars := e.varsForTurn(n)
+	if e.runSteps(vars, n, steps, true) {
+		e.adapter.sendInterruptedTurn(vars)
+		return
+	}
 	if n >= len(turns) {
 		e.reportScenarioDone(n)
 	}
+}
+
+func (e *engine) startTurn(n int) {
+	e.mu.Lock()
+	if e.turns[n] == nil {
+		// Unit tests may execute runTurn directly instead of going through
+		// beginTurn. Production turns always arrive through beginTurn.
+		e.turns[n] = &scenarioTurn{abort: make(chan struct{})}
+	}
+	e.activeTurn = n
+	e.mu.Unlock()
+}
+
+func (e *engine) finishTurn(n int) {
+	e.mu.Lock()
+	if e.activeTurn == n {
+		e.activeTurn = 0
+	}
+	delete(e.turns, n)
+	e.mu.Unlock()
+}
+
+// interruptTurn marks the current scenario turn aborted and releases a gate
+// blocked by waitSignal or stall. An interrupt received while no turn exists is
+// an out-of-band no-op and cannot poison the next turn. A non-empty turnID must
+// match the selected Codex turn.
+func (e *engine) interruptTurn(turnID string) bool {
+	e.mu.Lock()
+	n := e.activeTurn
+	if n == 0 {
+		for candidate := 1; candidate <= e.turnSeq; candidate++ {
+			if e.turns[candidate] != nil {
+				n = candidate
+				break
+			}
+		}
+	}
+	if n == 0 || (turnID != "" && turnID != "turn-"+strconv.Itoa(n)) {
+		e.mu.Unlock()
+		return false
+	}
+	turn := e.turns[n]
+	if turn == nil || turn.aborted {
+		e.mu.Unlock()
+		return false
+	}
+	turn.aborted = true
+	close(turn.abort)
+	if g := e.gate; g != nil && g.turn == n {
+		e.gate = nil
+		close(g.ch)
+	}
+	e.mu.Unlock()
+	e.rep.report(control.Report{Kind: control.ReportTurnInterrupted, Turn: n})
+	return true
+}
+
+func (e *engine) turnAborted(n int) bool {
+	if n == 0 {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	turn := e.turns[n]
+	return turn != nil && turn.aborted
+}
+
+func (e *engine) turnAbortSignal(n int) <-chan struct{} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	turn := e.turns[n]
+	if turn == nil {
+		turn = &scenarioTurn{abort: make(chan struct{})}
+		e.turns[n] = turn
+	}
+	return turn.abort
 }
 
 func (e *engine) reportScenarioDone(turn int) {
@@ -210,9 +315,12 @@ func (e *engine) advance(name string) {
 // openGate registers a gate for the engine goroutine to block on. A
 // buffered matching advance is consumed instead (nil return = don't
 // block).
-func (e *engine) openGate(name string) <-chan struct{} {
+func (e *engine) openGate(turn int, name string) <-chan struct{} {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if state := e.turns[turn]; state != nil && state.aborted {
+		return nil
+	}
 	for i, pending := range e.pendingAdvances {
 		if gateMatches(name, pending) {
 			e.pendingAdvances = append(e.pendingAdvances[:i], e.pendingAdvances[i+1:]...)
@@ -223,7 +331,7 @@ func (e *engine) openGate(name string) <-chan struct{} {
 		// Steps run on one goroutine, so two open gates means a bug here.
 		log.Printf("BUG: opening gate %q while gate %q is already open", name, e.gate.name)
 	}
-	g := &gate{name: name, ch: make(chan struct{})}
+	g := &gate{turn: turn, name: name, ch: make(chan struct{})}
 	e.gate = g
 	return g.ch
 }

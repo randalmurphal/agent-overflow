@@ -78,8 +78,8 @@ One WebSocket carries everything:
 |---|---|
 | `HarnessInfo()` | Identity + evidence paths (DB, event-log dir, UI trace, frontend error log). |
 | `HarnessEmit(channel, payload)` | Publish a raw event on the bus — escape hatch for injecting one-off frames at the frontend. |
-| `HarnessSeed(spec)` | Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history. Returns created ids. |
-| `HarnessReset()` | Blank slate without a reboot: stop sessions, settle in-flight turns, delete projects through the production cascade, remove generated seed workspaces, and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). Recorded bundles survive. Reload the page after. |
+| `HarnessSeed(spec)` | Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, plus project-scoped workflow definitions/profile/items. Returns created ids. |
+| `HarnessReset()` | Blank slate without a reboot: pause/drain workflow queue ownership, stop sessions, settle in-flight turns, delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). Recorded bundles survive. Reload the page after. |
 | `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` scope). Validated at set time. |
 | `HarnessClearScenarios()` / `HarnessListScenarios()` | Drop rules / list library + active rules. |
 | `HarnessListMocks()` | Registered mock processes in spawn order. |
@@ -100,10 +100,45 @@ while one is still pending errors instead of silently coalescing.
 
 ### Seeding vs. live turns
 
-`HarnessSeed` writes *completed history* — the rows the app itself
-would have persisted after the fact. Live behaviour (streaming,
-approvals, turn lifecycle) is the mock provider's job: create a thread,
-`SendMessage`, and let the scenario stream.
+`HarnessSeed` writes ordinary thread *completed history* — the rows the app
+itself would have persisted after the fact. Workflow items are different: the
+seeder writes definitions/profile files to the production project config layout
+and calls `WorkflowEnqueueItem`; non-queued targets run through the real engine
+and mock provider. It never inserts work-item or phase rows directly.
+
+The project-level workflow seed shape is:
+
+```json
+{
+  "workflows": {
+    "definitions": [{
+      "name": "review-flow",
+      "yaml": "id: review-flow\n...",
+      "prompts": {"review-flow.md": "Review the change..."}
+    }],
+    "profile": "reliability:\n  watchdog: 100ms\n  backoff: [1ms]\n",
+    "items": [{
+      "workflow": "review-flow", "goal": "Review this change",
+      "seeds": {"goal": "Review this change"},
+      "stepMode": false, "count": 2, "target": "done"
+    }]
+  }
+}
+```
+
+Definition `name` is a filename stem; YAML retains the authoritative workflow
+id. Prompt keys are confined sibling-relative paths. `count` defaults to one,
+and `target` defaults to `queued`; supported targets are `queued`,
+`needs-human`, and `done`. A spec expands to at most 100 workflow items.
+Seeding pauses the queue, drives non-queued targets
+one at a time from `workflow:item-state`, and restores the caller's active/
+concurrency settings. A queued target requires the caller's queue already be
+inactive, because restoring an active queue would immediately invalidate that
+resting state.
+
+Live ordinary-thread behaviour (streaming, approvals, turn lifecycle) remains
+the mock provider's job: create a thread, `SendMessage`, and let the scenario
+stream.
 
 **Gotcha:** `App.ListThreads` hides draft threads (no items yet) from
 the sidebar. A seeded thread with no turns — or a live thread before
@@ -135,6 +170,15 @@ list consumed per user message), and `afterTurns`
 
 Lines substitute `${SESSION_ID}`, `${THREAD_ID}`, `${TURN}`,
 `${TURN_ID}`, `${REQUEST_ID}`, `${CWD}`.
+
+An inbound provider interrupt aborts the active scenario in the shared engine.
+It releases a blocked `waitSignal`/indefinite `stall`, skips all remaining
+steps at the next boundary, reports `turn_interrupted`, and then writes the
+provider-native terminal sequence: Claude's successful control ack followed by
+`result{subtype:error_during_execution, terminal_reason:aborted_streaming}`;
+Codex's successful RPC response followed by
+`turn/completed{turn.status:interrupted}`. An interrupt received with no active
+or dispatching turn is a no-op and cannot poison the next turn.
 
 The embedded library (`internal/harness/scenario/library/*.json`)
 ships ready-made scripts — `streaming-text` (Claude default),
@@ -176,7 +220,7 @@ process-wide — terminals, git hooks, and other harness children don't
 inherit the control credentials. The mock then long-polls for
 commands and posts progress reports — `registered`, `turn_started`,
 `step_started`, `step_completed`, `waiting_signal`,
-`approval_pending`, `approval_decided`, `scenario_done`, `exiting` —
+`approval_pending`, `approval_decided`, `turn_interrupted`, `scenario_done`, `exiting` —
 which the harness re-emits as `harness:mock` events
 (`{mockId, protocol, cwd, scenario, report}`). Tests await these
 instead of sleeping. A mock that reported `exiting` refuses further
@@ -223,8 +267,9 @@ consumes its match, so two identical waits observe two distinct
 occurrences), `reset()`, and `close()`. `e2e/tests/fixtures.ts` shares one backend per
 Playwright worker and resets between tests. `e2e/tests/harness.spec.ts`
 covers boot, seeded rendering, a full live mock turn, frame-by-frame
-`step-gated` advancement, and reset — read it as the reference for new
-specs.
+`step-gated` advancement, and reset. `e2e/tests/workflows.spec.ts` covers
+two-phase drain, human gate approval, same-session question answering,
+watchdog stall, and cancellation. Read both as references for new specs.
 
 ```
 make e2e          # harness-build + playwright test
@@ -242,11 +287,13 @@ accumulates under the paths `HarnessInfo` reports.
 - Harness RPCs exist on the wire **only** under `--harness`; keep new
   harness methods on the `Harness` receiver (name-prefixed `Harness*`)
   so they inherit the registration gate and `LocalOnly` marking.
-- The harness never fabricates app state through side doors: seeding
-  runs through `CreateProject`/`CreateThread`, resets through the
-  production delete cascade, live turns through real sessions +
-  triage. If the harness needs a new capability, it wraps the
-  production path.
+- The harness never fabricates app state through side doors: projects and
+  threads run through `CreateProject`/`CreateThread`, workflow items through
+  `WorkflowEnqueueItem`, resets through the production delete cascade, and live
+  turns through real sessions + triage. Direct store writes are reserved for
+  completed ordinary-thread history—the rows production would already have
+  persisted after a finished turn. If the harness needs a new capability, it
+  wraps the production path.
 - Claude scenarios never emit `system/init`; assistant text/thinking
   requires a prior `message_start` with the same id (enforced by
   `internal/harness/scenario/library_test.go`).

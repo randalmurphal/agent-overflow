@@ -47,6 +47,8 @@ func (s *stubAdapter) sendApproval(*scenario.ApprovalStep, scenario.Vars) (<-cha
 	return ch, func() {}, nil
 }
 
+func (s *stubAdapter) sendInterruptedTurn(scenario.Vars) {}
+
 func newUnitEngine(t *testing.T, buf *bytes.Buffer) *engine {
 	t.Helper()
 	sc := &scenario.Scenario{Version: scenario.CurrentVersion, Name: "unit", Provider: scenario.ProviderClaude}
@@ -289,6 +291,50 @@ func TestWaitSignalConsumesBufferedAdvance(t *testing.T) {
 	}
 }
 
+func TestWaitSignalInterruptBeforeGateOpenDoesNotBlock(t *testing.T) {
+	var buf bytes.Buffer
+	e := newUnitEngine(t, &buf)
+	e.adapter = &stubAdapter{}
+	e.startTurn(1)
+	defer e.finishTurn(1)
+	if !e.interruptTurn("") {
+		t.Fatal("active turn was not interrupted")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		e.runWaitSignal(1, &scenario.WaitSignalStep{Name: "late-gate"})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitSignal installed a gate after the turn was interrupted")
+	}
+}
+
+func TestApprovalInterruptDoesNotBlockOnStoppedTimer(t *testing.T) {
+	var buf bytes.Buffer
+	e := newUnitEngine(t, &buf)
+	e.adapter = &stubAdapter{respond: false}
+	e.startTurn(1)
+	defer e.finishTurn(1)
+
+	done := make(chan struct{})
+	go func() {
+		e.runApproval(e.varsForTurn(1), 1, &scenario.ApprovalStep{ToolName: "Bash", TimeoutMs: 5_000})
+		close(done)
+	}()
+	if !e.interruptTurn("") {
+		t.Fatal("approval turn was not interrupted")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("approval interrupt blocked while stopping its timer")
+	}
+}
+
 func TestAfterTurnsPolicies(t *testing.T) {
 	turnLines := []string{`turn ${TURN}`}
 	base := func() *scenario.Scenario {
@@ -317,10 +363,36 @@ func TestAfterTurnsPolicies(t *testing.T) {
 	t.Run("silent", func(t *testing.T) {
 		var buf bytes.Buffer
 		e := newUnitEngine(t, &buf)
+		e.adapter = &stubAdapter{}
 		sc := base()
 		sc.AfterTurns = "silent"
 		e.sc = sc
-		e.runTurn(2)
+		done := make(chan struct{})
+		go func() {
+			e.runTurn(2)
+			close(done)
+		}()
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			e.mu.Lock()
+			active := e.activeTurn == 2
+			e.mu.Unlock()
+			if active {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("silent turn never became active")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if !e.interruptTurn("") {
+			t.Fatal("silent turn was not interruptible")
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("silent turn did not finish after interrupt")
+		}
 		if got := outputLines(&buf); len(got) != 0 {
 			t.Fatalf("silent output = %q", got)
 		}

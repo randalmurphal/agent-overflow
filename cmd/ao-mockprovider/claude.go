@@ -97,6 +97,9 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		// turn — matches the real CLI's out-of-band handling of
 		// interrupt / set_permission_mode / set_model / mcp_*.
 		writeClaudeControlAck(a.w, env.RequestID, env.Request.Subtype)
+		if env.Request.Subtype == "interrupt" {
+			a.e.interruptTurn("")
+		}
 	case "control_response":
 		allow := env.Response.Subtype == "success" && env.Response.Response.Behavior == "allow"
 		a.deliverDecision(env.Response.RequestID, allow)
@@ -113,6 +116,30 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		a.echoUserEnvelope(line)
 		a.e.enqueueTurn(n)
 	}
+}
+
+// sendInterruptedTurn emits the real Claude Code interrupted-result shape
+// captured from 2.1.170. handleLine writes the interrupt control_response first
+// so AO's parser can correlate that ack with this error_during_execution result.
+func (a *claudeAdapter) sendInterruptedTurn(vars scenario.Vars) {
+	a.w.writeLine(mustJSON(map[string]any{
+		"type":               "result",
+		"subtype":            "error_during_execution",
+		"duration_ms":        0,
+		"duration_api_ms":    0,
+		"is_error":           true,
+		"num_turns":          1,
+		"stop_reason":        nil,
+		"session_id":         vars["SESSION_ID"],
+		"total_cost_usd":     0,
+		"usage":              map[string]any{"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0},
+		"modelUsage":         map[string]any{},
+		"permission_denials": []any{},
+		"terminal_reason":    "aborted_streaming",
+		"fast_mode_state":    "off",
+		"uuid":               "mock-interrupt-" + vars["TURN"],
+		"errors":             []string{"[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"},
+	}), 0, 0)
 }
 
 // writeInit emits the per-turn system/init line. Built with

@@ -44,5 +44,10 @@ export interface HarnessMockEvent {
 }
 
 export interface SeedResult {
-  projects: Array<{ projectId: string; path: string; threadIds: string[] }>;
+  projects: Array<{
+    projectId: string;
+    path: string;
+    threadIds: string[];
+    workItemIds: string[];
+  }>;
 }

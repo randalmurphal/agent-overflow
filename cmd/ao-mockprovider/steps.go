@@ -17,16 +17,23 @@ import (
 // top-level onStart/turn steps (harness tests await those boundaries);
 // approval branch steps run unreported — approval_decided already marks
 // the boundary.
-func (e *engine) runSteps(vars scenario.Vars, turn int, steps []scenario.Step, reportSteps bool) {
+func (e *engine) runSteps(vars scenario.Vars, turn int, steps []scenario.Step, reportSteps bool) bool {
 	for i, step := range steps {
+		if e.turnAborted(turn) {
+			return true
+		}
 		if reportSteps {
 			e.rep.report(control.Report{Kind: control.ReportStepStarted, Turn: turn, Step: i + 1, Detail: stepName(step)})
 		}
 		e.runStep(vars, turn, step)
+		if e.turnAborted(turn) {
+			return true
+		}
 		if reportSteps {
 			e.rep.report(control.Report{Kind: control.ReportStepCompleted, Turn: turn, Step: i + 1, Detail: stepName(step)})
 		}
 	}
+	return false
 }
 
 func (e *engine) runStep(vars scenario.Vars, turn int, step scenario.Step) {
@@ -186,13 +193,22 @@ func (e *engine) runApproval(vars scenario.Vars, turn int, ap *scenario.Approval
 		select {
 		case allow = <-decisionCh:
 			timer.Stop()
+		case <-e.turnAbortSignal(turn):
+			timer.Stop()
+			cancel()
+			return
 		case <-timer.C:
 			cancel()
 			detail = "timeout"
 			log.Printf("approval step: no %s decision within %dms (running onDeny)", ap.ToolName, ap.TimeoutMs)
 		}
 	} else {
-		allow = <-decisionCh
+		select {
+		case allow = <-decisionCh:
+		case <-e.turnAbortSignal(turn):
+			cancel()
+			return
+		}
 	}
 	if allow {
 		detail = "allow"
@@ -208,7 +224,7 @@ func (e *engine) runApproval(vars scenario.Vars, turn int, ap *scenario.Approval
 
 func (e *engine) runWaitSignal(turn int, ws *scenario.WaitSignalStep) {
 	e.rep.report(control.Report{Kind: control.ReportWaitingSignal, Turn: turn, Detail: ws.Name})
-	if ch := e.openGate(ws.Name); ch != nil {
+	if ch := e.openGate(turn, ws.Name); ch != nil {
 		<-ch
 	}
 }
@@ -220,7 +236,7 @@ func (e *engine) runStall(turn int, st *scenario.StallStep) {
 	}
 	// DurationMs 0: stall until a control advance (or process close).
 	e.rep.report(control.Report{Kind: control.ReportWaitingSignal, Turn: turn, Detail: "stall"})
-	if ch := e.openGate(""); ch != nil {
+	if ch := e.openGate(turn, ""); ch != nil {
 		<-ch
 	}
 }

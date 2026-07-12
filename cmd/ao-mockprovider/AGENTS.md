@@ -23,6 +23,11 @@ waitSignal/stall/exit per `internal/harness/scenario` — posting
 progress reports and long-polling live commands when a control channel
 exists. Without one, the binary still works standalone.
 
+Interrupt handling belongs in `engine.go`, once for both adapters. It marks the
+active turn aborted, releases `waitSignal`/indefinite `stall`, skips remaining
+steps at the next boundary, and reports `turn_interrupted`. The adapters only
+own their genuine terminal frames and write the interrupt ack/response first.
+
 ## Claude adapter contract
 
 `claude.go` owns two protocol behaviours the real CLI exhibits, so
@@ -40,6 +45,11 @@ Scenario lines own assistant content framing (`message_start` before
 text/thinking, `message_stop` after). When touching either side,
 verify against a real fixture or a spike (`docs/references/claude.md`,
 `docs/references/spike-policy.md`) — do not guess wire behaviour.
+
+Claude interrupted turns end with the verified 2.1.170
+`result{subtype:error_during_execution,is_error:true,
+terminal_reason:aborted_streaming}` shape. Codex interrupted turns end with
+`turn/completed{turn.status:interrupted}` per the upstream v2 protocol.
 
 ## Testing
 

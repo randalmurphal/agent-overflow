@@ -1,16 +1,15 @@
 // app_harness_seed.go — HarnessSeed / HarnessReset: declarative
 // database + workspace fixtures for the agent test harness.
 //
-// Seeding runs through the production paths wherever they exist
-// (App.CreateProject, App.CreateThread) and writes history rows
-// (turns, items, payloads) directly through the store — history is
-// exactly what the app itself writes after the fact, so direct rows
-// are faithful; live behaviour (streaming, approvals) is the mock
-// provider's job, not the seeder's.
+// Seeding runs through production paths for projects, threads, and workflow
+// items. Completed ordinary-thread history writes the rows the app would have
+// persisted after the fact; workflow definitions/profile/item driving live in
+// app_harness_workflows.go and never write workflow persistence directly.
 package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -20,6 +19,7 @@ import (
 
 	"agent-overflow/internal/harness"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/workflow/engine"
 
 	"github.com/google/uuid"
 )
@@ -40,6 +40,9 @@ type HarnessSeedProject struct {
 	// <dataRoot>/workspaces/<Name>.
 	Repo    *harness.RepoSpec   `json:"repo,omitempty"`
 	Threads []HarnessSeedThread `json:"threads,omitempty"`
+	// Workflows installs project-scoped definitions/profile data and creates
+	// work items through WorkflowEnqueueItem.
+	Workflows *HarnessSeedWorkflows `json:"workflows,omitempty"`
 }
 
 // HarnessSeedThread creates one thread plus optional pre-baked history.
@@ -54,9 +57,9 @@ type HarnessSeedThread struct {
 	RuntimeMode string `json:"runtimeMode,omitempty"`
 	// SessionRef pre-binds a provider session cursor (pair with a
 	// seeded ~/.claude session file to exercise resume flows).
-	SessionRef string             `json:"sessionRef,omitempty"`
-	Archived   bool               `json:"archived,omitempty"`
-	Turns      []HarnessSeedTurn  `json:"turns,omitempty"`
+	SessionRef string            `json:"sessionRef,omitempty"`
+	Archived   bool              `json:"archived,omitempty"`
+	Turns      []HarnessSeedTurn `json:"turns,omitempty"`
 }
 
 // HarnessSeedTurn is one completed exchange: the user message plus the
@@ -100,26 +103,70 @@ type HarnessSeedResult struct {
 
 // HarnessSeedProjectResult pairs created ids with their workspace path.
 type HarnessSeedProjectResult struct {
-	ProjectID string   `json:"projectId"`
-	Path      string   `json:"path"`
-	ThreadIDs []string `json:"threadIds"`
+	ProjectID   string   `json:"projectId"`
+	Path        string   `json:"path"`
+	ThreadIDs   []string `json:"threadIds"`
+	WorkItemIDs []string `json:"workItemIds"`
 }
 
 // HarnessSeed applies the spec. Not transactional across projects: a
 // mid-spec failure returns the error with earlier projects already
 // created — HarnessReset is the recovery tool, and partial state plus a
 // loud error beats a bespoke rollback engine inside a test harness.
-func (h *Harness) HarnessSeed(spec HarnessSeedSpec) (HarnessSeedResult, error) {
+func (h *Harness) HarnessSeed(spec HarnessSeedSpec) (result HarnessSeedResult, err error) {
 	if len(spec.Projects) == 0 {
 		return HarnessSeedResult{}, fmt.Errorf("seed spec has no projects")
 	}
-	var result HarnessSeedResult
+	workflowSeed := specHasWorkflowSeed(spec)
+	var queueSnapshot harnessWorkflowQueueSnapshot
+	if workflowSeed {
+		if err := validateWorkflowSeedPlan(spec); err != nil {
+			return HarnessSeedResult{}, err
+		}
+		if _, requireErr := h.app.requireWorkflowEngine(); requireErr != nil {
+			return HarnessSeedResult{}, fmt.Errorf("seed workflows: %w", requireErr)
+		}
+		queueSnapshot, err = h.workflowQueueSnapshot()
+		if err != nil {
+			return HarnessSeedResult{}, fmt.Errorf("seed workflows: snapshot queue: %w", err)
+		}
+		if queueSnapshot.active && specHasQueuedWorkflowTarget(spec) {
+			return HarnessSeedResult{}, fmt.Errorf("seed workflows target %q requires the caller's workflow queue to be inactive so the restored queue configuration cannot immediately drain it", engine.StateQueued)
+		}
+		if err := h.app.WorkflowSetQueue(false, 0, queueSnapshot.concurrency); err != nil {
+			return HarnessSeedResult{}, fmt.Errorf("seed workflows: pause queue: %w", err)
+		}
+		defer func() {
+			restoreErr := h.app.WorkflowSetQueue(queueSnapshot.active, queueSnapshot.maxStarts, queueSnapshot.concurrency)
+			if restoreErr != nil {
+				err = errors.Join(err, fmt.Errorf("seed workflows: restore queue: %w", restoreErr))
+			}
+		}()
+		if specHasDrivenWorkflowTarget(spec) {
+			projects, listErr := h.app.store.ListProjects()
+			if listErr != nil {
+				return HarnessSeedResult{}, fmt.Errorf("seed workflows: list existing projects: %w", listErr)
+			}
+			queued, listErr := h.queuedWorkflowItems(projects)
+			if listErr != nil {
+				return HarnessSeedResult{}, listErr
+			}
+			if len(queued) > 0 {
+				return HarnessSeedResult{}, fmt.Errorf("seed workflows: cannot drive a non-queued target while %d pre-existing workflow item(s) are queued", len(queued))
+			}
+		}
+	}
 	for pi, project := range spec.Projects {
 		created, err := h.seedProject(project)
 		if err != nil {
 			return result, fmt.Errorf("seed project %d (%s): %w", pi+1, project.Name, err)
 		}
 		result.Projects = append(result.Projects, created)
+	}
+	if workflowSeed {
+		if err := h.seedWorkflowItemsInTargetOrder(spec, &result); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }
@@ -146,18 +193,30 @@ func (h *Harness) seedProject(spec HarnessSeedProject) (HarnessSeedProjectResult
 		}
 	}
 
-	project, err := h.app.CreateProject(path)
+	projectRow, err := h.app.CreateProject(path)
 	if err != nil {
 		return HarnessSeedProjectResult{}, fmt.Errorf("create project: %w", err)
 	}
-	out := HarnessSeedProjectResult{ProjectID: project.ID, Path: project.Path}
+	// CreateProject returns the caller-built row; reload the persisted row so
+	// migration/store-owned fields such as the project slug are available to
+	// the production config-dir helper below.
+	projectRow, err = h.app.store.GetProject(projectRow.ID)
+	if err != nil {
+		return HarnessSeedProjectResult{}, fmt.Errorf("reload project: %w", err)
+	}
+	out := HarnessSeedProjectResult{ProjectID: projectRow.ID, Path: projectRow.Path}
 
 	for ti, threadSpec := range spec.Threads {
-		threadID, err := h.seedThread(project.ID, threadSpec)
+		threadID, err := h.seedThread(projectRow.ID, threadSpec)
 		if err != nil {
 			return out, fmt.Errorf("thread %d: %w", ti+1, err)
 		}
 		out.ThreadIDs = append(out.ThreadIDs, threadID)
+	}
+	if spec.Workflows != nil {
+		if err := h.seedProjectWorkflowFiles(projectRow, *spec.Workflows); err != nil {
+			return out, err
+		}
 	}
 	return out, nil
 }
@@ -327,7 +386,7 @@ func (h *Harness) seedItem(threadID string, turnIndex, itemIndex int, at int64, 
 // DB rows. Recorded bundles survive: they are captured artifacts, not
 // test state. The caller reloads the page afterwards; DB-derived
 // frontend state rebuilds from zero.
-func (h *Harness) HarnessReset() error {
+func (h *Harness) HarnessReset() (err error) {
 	// Harness-owned state first: a running replay emits events and an
 	// in-flight recording holds a capture window — both must die before
 	// the state they reference does.
@@ -346,6 +405,19 @@ func (h *Harness) HarnessReset() error {
 		}
 		log.Printf("harness: reset: discarded in-flight recording %q", recording.Name)
 	}
+
+	restoreQueue, err := h.prepareWorkflowReset()
+	if err != nil {
+		if restoreQueue != nil {
+			err = errors.Join(err, restoreQueue())
+		}
+		return err
+	}
+	defer func() {
+		if restoreQueue != nil {
+			err = errors.Join(err, restoreQueue())
+		}
+	}()
 
 	threads, err := h.app.store.ListThreads()
 	if err != nil {
@@ -387,6 +459,15 @@ func (h *Harness) HarnessReset() error {
 	// are elsewhere and untouched.
 	if err := os.RemoveAll(filepath.Join(h.paths.DataRoot, "workspaces")); err != nil {
 		return fmt.Errorf("remove generated workspaces: %w", err)
+	}
+	for _, dir := range []string{
+		filepath.Join(h.paths.DataDir, "projects"),
+		filepath.Join(h.paths.DataDir, "workflows"),
+		filepath.Join(h.paths.DataDir, "workflow-runs"),
+	} {
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("remove workflow harness state %q: %w", dir, err)
+		}
 	}
 	return nil
 }

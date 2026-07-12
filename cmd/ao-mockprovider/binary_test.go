@@ -16,6 +16,8 @@ import (
 
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 )
 
 // mockBin is the ao-mockprovider binary built once per test run by
@@ -332,6 +334,67 @@ func TestClaudeHappyPathTurnsAndInterruptAck(t *testing.T) {
 	p.send(`{"type":"control_request","request_id":"so-2","request":{"subtype":"set_permission_mode","mode":"plan"}}`)
 	p.expectLineContaining(`"request_id":"so-2"`, testTimeout)
 
+	p.closeStdinAndExpectExit(0, testTimeout)
+	validateClaudeFrames(t, p.all)
+}
+
+func TestClaudeInterruptAbortsWaitSignalTurn(t *testing.T) {
+	sc := &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "claude-interrupt",
+		Provider: scenario.ProviderClaude,
+		Turns: []scenario.Turn{{Steps: []scenario.Step{
+			{Emit: &scenario.EmitStep{Lines: []string{
+				`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg-interrupt","role":"assistant"}}}`,
+				`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+				`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"working"}}}`,
+			}}},
+			{WaitSignal: &scenario.WaitSignalStep{Name: "hold"}},
+			{Emit: &scenario.EmitStep{Lines: []string{`{"mock":"must-not-run"}`}}},
+		}}},
+	}
+	p := startMock(t, claudeSessionArgs, writeScenarioFile(t, sc, ""), t.TempDir())
+	p.send(userLine)
+	p.expectLineContaining(`"subtype":"init"`, testTimeout)
+	p.expectLineContaining(`"isReplay":true`, testTimeout)
+	if got := p.expectLine(testTimeout); !strings.Contains(got, `"id":"msg-interrupt"`) {
+		t.Fatalf("pre-interrupt line = %q", got)
+	}
+	p.expectLineContaining(`"content_block_start"`, testTimeout)
+	p.expectLineContaining(`"text":"working"`, testTimeout)
+
+	p.send(`{"type":"control_request","request_id":"stop-1","request":{"subtype":"interrupt"}}`)
+	if got := p.expectLine(testTimeout); got != `{"type":"control_response","response":{"subtype":"success","request_id":"stop-1","response":{}}}` {
+		t.Fatalf("interrupt ack = %q", got)
+	}
+	result := p.expectLine(testTimeout)
+	if !strings.Contains(result, `"subtype":"error_during_execution"`) ||
+		!strings.Contains(result, `"terminal_reason":"aborted_streaming"`) ||
+		!strings.Contains(result, `"is_error":true`) {
+		t.Fatalf("interrupted result = %q", result)
+	}
+	parser := claude.NewParser()
+	t.Cleanup(parser.Close)
+	parser.MarkInterruptAcked()
+	events, err := parser.ParseLine("thread-interrupt", []byte(result))
+	if err != nil {
+		t.Fatalf("parse interrupted result: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("interrupted result events = %+v", events)
+	}
+	meta, ok := events[0].TurnComplete.(*provider.WireTurnCompleteMeta)
+	if events[0].Kind != provider.EventTurnComplete || !ok ||
+		!meta.Aborted || meta.StopReason != "interrupted" || meta.ErrorMessage != "" {
+		t.Fatalf("interrupted result events = %+v", events)
+	}
+
+	// A later out-of-band request must be the next line. If the engine ran
+	// the post-gate step, its marker would appear first and fail this check.
+	p.send(`{"type":"control_request","request_id":"mode-1","request":{"subtype":"set_permission_mode"}}`)
+	if got := p.expectLine(testTimeout); !strings.Contains(got, `"request_id":"mode-1"`) {
+		t.Fatalf("line after interrupted result = %q; remaining scenario step ran", got)
+	}
 	p.closeStdinAndExpectExit(0, testTimeout)
 	validateClaudeFrames(t, p.all)
 }
