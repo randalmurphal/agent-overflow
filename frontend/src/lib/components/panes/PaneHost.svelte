@@ -23,6 +23,7 @@
   }
 
   const PANE_SELECTOR = '[data-pane-id]';
+  type PaneRevealAlignment = 'start' | 'end';
 
   let { globalSurface }: Props = $props();
   let layoutItems = $derived(getPaneLayoutItems());
@@ -96,14 +97,51 @@
     }
   }
 
+  function reconcilePaneHostGeometry(): void {
+    const el = hostEl;
+    if (!el) return;
+
+    const maxScrollLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+    const nextScrollLeft = Math.max(0, Math.min(maxScrollLeft, el.scrollLeft));
+    if (nextScrollLeft !== el.scrollLeft) el.scrollLeft = nextScrollLeft;
+    const appliedScrollLeft = el.scrollLeft;
+    scrollLeft = appliedScrollLeft;
+    scrollClientWidth = el.clientWidth;
+
+    // A structural change can move the pane an active reveal is targeting
+    // even when the old numeric destination remains legal. Re-resolve from
+    // the target pane's current offset; if it disappeared (close/global
+    // surface), stop the glide rather than writing stale geometry back.
+    if (glideTargetLeft !== null) {
+      const targetPane = glideTargetPaneId ? paneElementById(glideTargetPaneId) : null;
+      if (!targetPane || glideTargetAlignment === null) {
+        cancelStripGlide();
+      } else {
+        const resolvedTarget = alignedPaneScrollLeft(targetPane, glideTargetAlignment);
+        glideTargetLeft = Math.max(
+          0,
+          Math.min(maxScrollLeft, resolvedTarget),
+        );
+        glideCurrentLeft = appliedScrollLeft;
+        if (Math.abs(glideTargetLeft - glideCurrentLeft) < 0.75) cancelStripGlide();
+      }
+    }
+
+    publishPaneOffsets();
+  }
+
+  let geometryReconcileFrame = 0;
+  function schedulePaneHostGeometryReconcile(): void {
+    if (geometryReconcileFrame) return;
+    geometryReconcileFrame = requestAnimationFrame(() => {
+      geometryReconcileFrame = 0;
+      reconcilePaneHostGeometry();
+    });
+  }
+
   $effect(() => {
     const el = hostEl;
     if (!el) return;
-    const publishHostGeometry = (): void => {
-      scrollLeft = el.scrollLeft;
-      scrollClientWidth = el.clientWidth;
-      publishPaneOffsets();
-    };
     const publishScrollPosition = (): void => {
       scrollLeft = el.scrollLeft;
     };
@@ -117,11 +155,11 @@
     const obs = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (entry) setPaneHostWidth(entry.contentRect.width);
-      publishHostGeometry();
+      reconcilePaneHostGeometry();
     });
     obs.observe(el);
     setPaneHostWidth(el.getBoundingClientRect().width);
-    publishHostGeometry();
+    reconcilePaneHostGeometry();
     el.addEventListener('scroll', publishScrollPosition, { passive: true });
     el.addEventListener('wheel', cancelGlideOnUserScroll, { passive: true });
     return () => {
@@ -146,17 +184,19 @@
     return () => {
       drag.destroy();
       cancelStripGlide();
+      if (geometryReconcileFrame) cancelAnimationFrame(geometryReconcileFrame);
     };
   });
 
-  // After a layout-order change (alt+shift+h/l, drag-and-drop reorder),
-  // the moved pane's <section> is repositioned via insertBefore. The
-  // browser can transiently report bad scroll geometry for inactive
-  // timelines, leaving the engine's rendered range out of sync with the
-  // pane's scrollTop. Wait for layout to settle, then ask each timeline
-  // to reconcile its virtualizer against the host layout. This is not a
-  // content-growth path: the transcript did not change.
-  const paneOrderKey = $derived(layoutItems.map((item) => item.paneId).join('|'));
+  // Pane add/remove/reorder and global-surface transitions all change the
+  // scrollable strip without resizing the host itself, so they share the
+  // immediate horizontal geometry reconciliation below. An order change can
+  // additionally leave an inactive timeline's virtualizer out of sync while
+  // its <section> moves via insertBefore; wait for that layout to settle, then
+  // ask every mounted timeline to reconcile. The transcript did not change.
+  const paneStructureKey = $derived(
+    `${globalSurface ? 'global' : 'panes'}:${layoutItems.map((item) => item.paneId).join('|')}`,
+  );
 
   function reconcilePaneHostLayout(): void {
     for (const item of layoutItems) {
@@ -167,7 +207,12 @@
   }
 
   $effect(() => {
-    paneOrderKey; // dep
+    paneStructureKey; // dep
+    // Svelte has flushed the keyed pane sections before this effect runs.
+    // Force current scroll geometry now so WebKit cannot paint a frame at an
+    // offset beyond the shrunken strip; timeline reconciliation still waits
+    // for its separate two-frame settle below.
+    reconcilePaneHostGeometry();
     if (typeof requestAnimationFrame === 'undefined') {
       const handle = setTimeout(reconcilePaneHostLayout, 32);
       return () => clearTimeout(handle);
@@ -216,6 +261,8 @@
   // of paying the whole gap in one alpha≈1 write (an unintentional snap).
   const GLIDE_MAX_FRAME_MS = 40;
   let glideTargetLeft: number | null = null;
+  let glideTargetPaneId: string | null = null;
+  let glideTargetAlignment: PaneRevealAlignment | null = null;
   let glideCurrentLeft = 0;
   let glideLastTs: number | null = null;
   let glideFrame = 0;
@@ -224,6 +271,8 @@
     if (glideFrame) cancelAnimationFrame(glideFrame);
     glideFrame = 0;
     glideTargetLeft = null;
+    glideTargetPaneId = null;
+    glideTargetAlignment = null;
     glideLastTs = null;
   }
 
@@ -248,30 +297,58 @@
     glideFrame = requestAnimationFrame(stepStripGlide);
   }
 
-  function glideStripTo(target: number): void {
+  function glideStripTo(
+    target: number,
+    paneId: string,
+    alignment: PaneRevealAlignment,
+  ): void {
     const el = hostEl;
     if (!el) return;
     const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
     glideTargetLeft = Math.max(0, Math.min(maxLeft, target));
+    glideTargetPaneId = paneId;
+    glideTargetAlignment = alignment;
     if (glideFrame) return; // retargeted mid-flight — the running loop picks it up
     glideCurrentLeft = el.scrollLeft;
     glideLastTs = null;
     glideFrame = requestAnimationFrame(stepStripGlide);
   }
 
+  function alignedPaneScrollLeft(
+    paneEl: HTMLElement,
+    alignment: PaneRevealAlignment,
+  ): number {
+    return alignment === 'start'
+      ? paneEl.offsetLeft
+      : paneEl.offsetLeft + paneEl.offsetWidth - (hostEl?.clientWidth ?? 0);
+  }
+
+  function paneRevealTarget(
+    paneEl: HTMLElement,
+    viewLeft: number,
+  ): { left: number; alignment: PaneRevealAlignment } | null {
+    const el = hostEl;
+    if (!el) return null;
+    const paneLeft = paneEl.offsetLeft;
+    const paneRight = paneLeft + paneEl.offsetWidth;
+    const viewRight = viewLeft + el.clientWidth;
+    if (paneLeft >= viewLeft && paneRight <= viewRight) return null;
+    const alignment: PaneRevealAlignment = paneLeft < viewLeft ? 'start' : 'end';
+    return { left: alignedPaneScrollLeft(paneEl, alignment), alignment };
+  }
+
   function scrollPaneIntoView(paneEl: HTMLElement): void {
     const el = hostEl;
     if (!el) return;
-    const paneLeft = paneEl.offsetLeft;
-    const paneRight = paneLeft + paneEl.offsetWidth;
     // Judge visibility against where the strip is HEADED (the in-flight
     // glide target), not just where it is: revealing a pane that is
     // visible now but not at the destination must retarget the glide, not
     // silently let it carry the pane off-screen.
     const viewLeft = glideTargetLeft ?? el.scrollLeft;
-    const viewRight = viewLeft + el.clientWidth;
-    if (paneLeft >= viewLeft && paneRight <= viewRight) return;
-    glideStripTo(paneLeft < viewLeft ? paneLeft : paneRight - el.clientWidth);
+    const target = paneRevealTarget(paneEl, viewLeft);
+    if (target === null) return;
+    const paneId = paneEl.dataset.paneId;
+    if (paneId) glideStripTo(target.left, paneId, target.alignment);
   }
 
   // Pointer focus: reveal only on an actual focus TRANSITION (clicking an
@@ -423,7 +500,7 @@
             rightPaneId={layoutItems[index + 1].paneId}
             leftPaneWidthPx={item.widthPx}
             getHostEl={() => hostEl}
-            onDragEnd={publishPaneOffsets}
+            onDragEnd={schedulePaneHostGeometryReconcile}
           />
         </div>
       {/if}
@@ -436,7 +513,7 @@
         leftPaneId={layoutItems[layoutItems.length - 1].paneId}
         leftPaneWidthPx={layoutItems[layoutItems.length - 1].widthPx}
         getHostEl={() => hostEl}
-        onDragEnd={publishPaneOffsets}
+        onDragEnd={schedulePaneHostGeometryReconcile}
       />
     </div>
     {#if drag.threadDropTarget}
