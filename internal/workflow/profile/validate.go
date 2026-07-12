@@ -90,31 +90,53 @@ func validateReliability(reliability ReliabilityDefaults, findings *[]Finding) {
 	if reliability.Watchdog != "" {
 		validatePositiveDuration(reliability.Watchdog, "profile reliability.watchdog", "reliability.watchdog", findings)
 	}
+	if reliability.Backoff != nil {
+		if len(reliability.Backoff) == 0 {
+			*findings = append(*findings, Finding{Code: "reliability.backoff", Element: "profile reliability.backoff", Message: "must contain at least one retry delay"})
+		}
+		for index, delay := range reliability.Backoff {
+			validatePositiveDuration(delay, fmt.Sprintf("profile reliability.backoff[%d]", index), "reliability.backoff", findings)
+		}
+	}
 	if reliability.PerItemBudget == nil {
 		return
 	}
-	budget := reliability.PerItemBudget
-	element := "profile reliability.per_item_budget"
+	*findings = append(*findings, validateBudget(reliability.PerItemBudget, "profile reliability.per_item_budget")...)
+}
+
+// ValidateBudget validates an optional item-level budget using the same
+// exactly-one-field contract as profile reliability defaults.
+func ValidateBudget(budget *Budget) ValidationResult {
+	findings := validateBudget(budget, "work item budget")
+	return ValidationResult{Findings: findings}
+}
+
+func validateBudget(budget *Budget, element string) []Finding {
+	if budget == nil {
+		return nil
+	}
+	var findings []Finding
 	set := 0
 	if budget.Tokens != nil {
 		set++
 		if *budget.Tokens < 1 {
-			*findings = append(*findings, Finding{Code: "reliability.budget-tokens", Element: element + ".tokens", Message: "must be at least 1"})
+			findings = append(findings, Finding{Code: "reliability.budget-tokens", Element: element + ".tokens", Message: "must be at least 1"})
 		}
 	}
 	if budget.USD != nil {
 		set++
 		if *budget.USD <= 0 || math.IsNaN(*budget.USD) || math.IsInf(*budget.USD, 0) {
-			*findings = append(*findings, Finding{Code: "reliability.budget-usd", Element: element + ".usd", Message: "must be a finite value greater than 0"})
+			findings = append(findings, Finding{Code: "reliability.budget-usd", Element: element + ".usd", Message: "must be a finite value greater than 0"})
 		}
 	}
 	if budget.WallClock != nil {
 		set++
-		validatePositiveDuration(*budget.WallClock, element+".wall_clock", "reliability.budget-wall-clock", findings)
+		validatePositiveDuration(*budget.WallClock, element+".wall_clock", "reliability.budget-wall-clock", &findings)
 	}
 	if set != 1 {
-		*findings = append(*findings, Finding{Code: "reliability.budget", Element: element, Message: "exactly one of tokens, usd, or wall_clock must be set"})
+		findings = append(findings, Finding{Code: "reliability.budget", Element: element, Message: "exactly one of tokens, usd, or wall_clock must be set"})
 	}
+	return findings
 }
 
 func validatePositiveDuration(value Duration, element, code string, findings *[]Finding) {

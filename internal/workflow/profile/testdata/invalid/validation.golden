@@ -8,6 +8,8 @@ command.name | profile command "Bad_Command" | name must match [a-z0-9-]+
 disposition.value | profile disposition | must be manual, auto-pr, or auto-merge
 mcp-server.value | profile mcp_servers[0] | server name must not be empty
 mcp-server.duplicate | profile mcp_servers[2] | server "github" is duplicated
+reliability.backoff | profile reliability.backoff[0] | must be greater than 0
+reliability.backoff | profile reliability.backoff[1] | must be a time.ParseDuration-compatible string
 reliability.budget | profile reliability.per_item_budget | exactly one of tokens, usd, or wall_clock must be set
 reliability.budget-tokens | profile reliability.per_item_budget.tokens | must be at least 1
 reliability.budget-usd | profile reliability.per_item_budget.usd | must be a finite value greater than 0

@@ -7,6 +7,7 @@ commands:
   report-issue: [gh, issue, create, --title, "{{ title }}"]
 reliability:
   watchdog: 15m
+  backoff: [30s, 2m, 5m]
   per_item_budget:
     usd: 25
 disposition: auto-pr

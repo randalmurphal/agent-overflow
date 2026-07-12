@@ -40,11 +40,13 @@ const (
 type OutcomeKind string
 
 const (
-	OutcomeDone             OutcomeKind = "done"
-	OutcomeQuestion         OutcomeKind = "question"
-	OutcomeStuck            OutcomeKind = "stuck"
-	OutcomeExecutionFailure OutcomeKind = "execution-failure"
-	OutcomeStopped          OutcomeKind = "stopped"
+	OutcomeDone               OutcomeKind = "done"
+	OutcomeQuestion           OutcomeKind = "question"
+	OutcomeStuck              OutcomeKind = "stuck"
+	OutcomeStalled            OutcomeKind = "stalled"
+	OutcomeTransientExhausted OutcomeKind = "transient-exhausted"
+	OutcomeExecutionFailure   OutcomeKind = "execution-failure"
+	OutcomeStopped            OutcomeKind = "stopped"
 )
 
 // Outcome is a runner completion. Envelope has already passed provider-facing
@@ -119,6 +121,17 @@ type ProfileSource interface {
 	Profile(context.Context, string) (*profile.Profile, error)
 }
 
+// Spend is the attributed provider spend accumulated by one work item.
+type Spend struct {
+	Tokens int64   `json:"tokens"`
+	USD    float64 `json:"usd"`
+}
+
+// SpendSource supplies token and composed wire-plus-estimated USD spend.
+type SpendSource interface {
+	ItemSpend(context.Context, string) (Spend, error)
+}
+
 // Config supplies startup queue state. Process-N is deliberately absent: it is
 // an in-memory SetQueue bound and never survives an engine restart.
 type Config struct {
@@ -156,9 +169,11 @@ type PhaseEvent struct {
 }
 
 type ErrorEvent struct {
-	ItemID string `json:"itemId,omitempty"`
-	Error  string `json:"error"`
-	detail error
+	ItemID          string `json:"itemId,omitempty"`
+	Error           string `json:"error"`
+	Spend           *Spend `json:"spend,omitempty"`
+	WallClockMillis int64  `json:"wallClockMillis,omitempty"`
+	detail          error
 }
 
 func (e ErrorEvent) Cause() error { return e.detail }

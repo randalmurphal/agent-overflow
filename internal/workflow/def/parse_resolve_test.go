@@ -33,7 +33,7 @@ func TestParseValidFixtureAndPublishedSchemaStayInLockstep(t *testing.T) {
 	}
 	defs := published["$defs"].(map[string]any)
 	phase := defs["phase"].(map[string]any)["properties"].(map[string]any)
-	for _, key := range []string{"id", "driver", "shape", "provider", "model", "prompt", "inputs", "outputs", "check", "command", "resources", "commands", "capabilities", "mcp", "access", "fan_out", "join", "gate"} {
+	for _, key := range []string{"id", "driver", "shape", "provider", "model", "prompt", "watchdog", "inputs", "outputs", "check", "command", "resources", "commands", "capabilities", "mcp", "access", "fan_out", "join", "gate"} {
 		if _, ok := phase[key]; !ok {
 			t.Errorf("published schema lacks phase key %q used by Go format", key)
 		}

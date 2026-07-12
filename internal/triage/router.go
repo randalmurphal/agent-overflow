@@ -46,6 +46,8 @@ type TurnMetrics struct {
 type Router struct {
 	store                   *store.Store
 	emit                    func(eventName string, data any) // wraps app.Event.Emit
+	usageResolverMu         sync.RWMutex
+	usageWorkItemResolver   func(threadID string) string
 	tracer                  trace.Tracer
 	metrics                 TurnMetrics
 	mu                      sync.Mutex
@@ -301,6 +303,15 @@ type Router struct {
 	// CleanupThread so the final reading always reaches the frontend.
 	// Keyed by threadID.
 	usageEmitThrottles map[string]*usageEmitThrottle
+}
+
+// SetUsageWorkItemResolver wires live workflow thread attribution. The app
+// runner owns the bounded registration lifecycle; triage only consults it at
+// the usage-ledger persistence boundary.
+func (r *Router) SetUsageWorkItemResolver(resolve func(threadID string) string) {
+	r.usageResolverMu.Lock()
+	r.usageWorkItemResolver = resolve
+	r.usageResolverMu.Unlock()
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a

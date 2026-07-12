@@ -45,6 +45,7 @@
         "id": {"type": "string", "pattern": "^[a-z0-9-]+$"}, "name": {"type": "string"},
         "driver": {"enum": ["agent", "tool"]}, "shape": {"enum": ["single", "fan-out"]},
         "provider": {"type": "string"}, "model": {"type": "string"}, "prompt": {"type": "string"},
+        "watchdog": {"type": "string"},
         "inputs": {"$ref": "#/$defs/variables"}, "outputs": {"$ref": "#/$defs/variables"},
         "check": {"type": "string"}, "command": {"type": "string"},
         "resources": {"type": "array", "items": {"type": "string"}},

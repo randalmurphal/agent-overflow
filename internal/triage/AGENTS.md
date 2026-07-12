@@ -104,8 +104,10 @@ none fits.
   (`appendUsageLedger`, called from BOTH settle paths — settleTurnRow
   and persistLateTurnPayload — which is additive-correct because
   providers emit deltas). Attribution (provider family, project) is
-  read from the thread row at write time; ledger append failure is
-  error-logged, never dropped silently.
+  read from the thread row at write time. The optional app-wired live workflow
+  resolver stamps `work_item_id`; registrations exist only while a phase turn
+  can settle, so ordinary threads remain unattributed. Ledger append failure
+  is error-logged, never dropped silently.
 - `meta.go` — shared JSON-inspection helpers.
 - `maps.go` — generic map utilities (currently just `deleteByPrefix`).
 

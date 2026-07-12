@@ -72,6 +72,41 @@ func TestTurnCompleteAppendsUsageLedgerRows(t *testing.T) {
 	}
 }
 
+func TestWorkflowTurnUsageStampsLiveWorkItemAttribution(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "workflow-thread")
+	router.SetUsageWorkItemResolver(func(threadID string) string {
+		if threadID == "workflow-thread" {
+			return "work-item-1"
+		}
+		return ""
+	})
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "workflow-thread", TurnIndex: 0,
+		Timestamp: time.UnixMilli(1_700_000_000_000),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "workflow-thread",
+		TurnComplete: usageTurnCompleteMeta(provider.ModelTokenUsage{
+			Model:      "claude-haiku-4-5",
+			TokenUsage: provider.TokenUsage{InputTokens: 7, OutputTokens: 3, TotalCostUSD: 0.02},
+		}),
+		Timestamp: time.UnixMilli(1_700_000_001_000),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := st.QueryWorkItemUsage("work-item-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.TotalTokens != 10 || usage.CostUSD != 0.02 {
+		t.Fatalf("attributed usage = %+v", usage)
+	}
+}
+
 // TestLateTurnPayloadAppendsUsageLedger — a soft round-close settles the
 // turn with no usage; the trailing wire result folds late and must still
 // append ledger rows (the turns row keeps first-write-wins separately).

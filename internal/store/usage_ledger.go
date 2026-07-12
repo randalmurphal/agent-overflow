@@ -100,7 +100,7 @@ type WorkItemUsage struct {
 
 // QueryWorkItemUsage sums all ledger rows attributed to a work item. Missing
 // items naturally return zero totals through COALESCE. An empty id is
-// rejected: '' is the unattributed marker on every non-workflow row, so
+// rejected: the empty string is the unattributed marker on every non-workflow row, so
 // summing it would silently report the whole ledger as one item's spend.
 func (s *Store) QueryWorkItemUsage(workItemID string) (WorkItemUsage, error) {
 	if workItemID == "" {
@@ -115,7 +115,7 @@ func (s *Store) QueryWorkItemUsage(workItemID string) (WorkItemUsage, error) {
 		 COALESCE(SUM(cache_creation_input_tokens), 0),
 		 COALESCE(SUM(reasoning_output_tokens), 0),
 		 COALESCE(SUM(input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens), 0),
-		 COALESCE(SUM(cost_usd), 0)
+		 COALESCE(SUM(CASE WHEN cost_source = 'wire' THEN cost_usd ELSE 0 END), 0)
 		 FROM usage_ledger WHERE work_item_id = ?`, workItemID,
 	).Scan(
 		&usage.InputTokens, &usage.OutputTokens, &usage.CacheReadInputTokens,
@@ -126,6 +126,46 @@ func (s *Store) QueryWorkItemUsage(workItemID string) (WorkItemUsage, error) {
 		return WorkItemUsage{}, fmt.Errorf("store: query work item usage %s: %w", workItemID, err)
 	}
 	return usage, nil
+}
+
+// QueryWorkItemUsageDetail groups one work item's ledger rows by model and
+// cost source. Callers use the cost_source='none' groups for query-time USD
+// estimation while QueryWorkItemUsage remains the authoritative token and
+// wire-cost aggregate.
+func (s *Store) QueryWorkItemUsageDetail(workItemID string) ([]UsageDetailRow, error) {
+	if workItemID == "" {
+		return nil, fmt.Errorf("store: query work item usage detail: empty work item id")
+	}
+	rows, err := s.db.Query(
+		`SELECT model, cost_source,
+		 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
+		 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
+		 SUM(cost_usd), COUNT(*)
+		 FROM usage_ledger WHERE work_item_id = ?
+		 GROUP BY model, cost_source ORDER BY model, cost_source`, workItemID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query work item usage detail %s: %w", workItemID, err)
+	}
+	defer rows.Close()
+
+	result := make([]UsageDetailRow, 0)
+	for rows.Next() {
+		var detail UsageDetailRow
+		if err := rows.Scan(
+			&detail.Model, &detail.CostSource,
+			&detail.InputTokens, &detail.OutputTokens,
+			&detail.CacheReadInputTokens, &detail.CacheCreationInputTokens,
+			&detail.ReasoningOutputTokens, &detail.CostUSD, &detail.Rows,
+		); err != nil {
+			return nil, fmt.Errorf("store: query work item usage detail %s: scan: %w", workItemID, err)
+		}
+		result = append(result, detail)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: query work item usage detail %s: iterate: %w", workItemID, err)
+	}
+	return result, nil
 }
 
 // UsageQuery filters and shapes an aggregation over the ledger.

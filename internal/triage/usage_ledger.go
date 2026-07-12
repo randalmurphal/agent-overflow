@@ -42,6 +42,13 @@ func (r *Router) appendUsageLedger(evt provider.ProviderEvent, turnID string, me
 		// unattributed rather than dropping spend.
 		log.Printf("triage: usage ledger attribution for %s: %v", evt.ThreadID, err)
 	}
+	r.usageResolverMu.RLock()
+	resolveWorkItem := r.usageWorkItemResolver
+	r.usageResolverMu.RUnlock()
+	workItemID := ""
+	if resolveWorkItem != nil {
+		workItemID = resolveWorkItem(evt.ThreadID)
+	}
 
 	rows := make([]store.UsageLedgerRow, 0, len(meta.ModelUsage))
 	for _, m := range meta.ModelUsage {
@@ -49,6 +56,7 @@ func (r *Router) appendUsageLedger(evt provider.ProviderEvent, turnID string, me
 			CreatedAt:                now,
 			ThreadID:                 evt.ThreadID,
 			ProjectID:                attribution.ProjectID,
+			WorkItemID:               workItemID,
 			TurnID:                   turnID,
 			Provider:                 provider.UsageProviderFamily(attribution.Provider),
 			Model:                    m.Model,

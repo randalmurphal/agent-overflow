@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflow/profile"
 )
 
 func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
@@ -36,12 +37,16 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 	})
 
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
+	budgetTokens := int64(1_000_000)
 	item, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "packet-flow", "shared", "exercise workflow",
-		json.RawMessage(`{"goal":"exercise workflow"}`),
+		json.RawMessage(`{"goal":"exercise workflow"}`), &profile.Budget{Tokens: &budgetTokens},
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(item.Budget) == 0 {
+		t.Fatal("enqueue did not persist the optional item budget")
 	}
 	waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonQuestion)
 
@@ -101,7 +106,7 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 	}
 	invalidItem, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "packet-flow", "shared", "invalid envelope",
-		json.RawMessage(`{"goal":"invalid envelope"}`),
+		json.RawMessage(`{"goal":"invalid envelope"}`), nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -208,7 +213,7 @@ cleanup: manual
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
 	item, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "codex-flow", "shared", "check codex schema",
-		json.RawMessage(`{"goal":"check codex schema"}`),
+		json.RawMessage(`{"goal":"check codex schema"}`), nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -324,7 +329,7 @@ cleanup: manual
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
 	item, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "retry-flow", "shared", "recover envelope",
-		json.RawMessage(`{"goal":"recover envelope"}`),
+		json.RawMessage(`{"goal":"recover envelope"}`), nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -551,7 +556,7 @@ func TestWorkflowSessionRequiresRegisteredSchema(t *testing.T) {
 	if _, err := app.UpdateThreadMode(thread.ID, "chat"); err == nil {
 		t.Fatal("workflow thread interaction mode was mutable")
 	}
-	runner := newWorkflowAppRunner(app, t.TempDir())
+	runner := newWorkflowAppRunner(app, t.TempDir(), nil)
 	runner.schemas[thread.ID] = json.RawMessage(`{"type":"object"}`)
 	app.workflowRunner = runner
 	if schema, err := app.workflowSchemaForSession(thread); err != nil || len(schema) == 0 {
@@ -560,7 +565,7 @@ func TestWorkflowSessionRequiresRegisteredSchema(t *testing.T) {
 }
 
 func TestWorkflowRunnerRejectsUnsupportedPhasesAndStopsUnknownRuns(t *testing.T) {
-	runner := newWorkflowAppRunner(&App{}, t.TempDir())
+	runner := newWorkflowAppRunner(&App{}, t.TempDir(), nil)
 	if _, err := runner.Stop(context.Background(), engine.RunKey{ItemID: "missing", PhaseID: "phase", Attempt: 1}); err != nil {
 		t.Fatalf("Stop unknown run = %v", err)
 	}

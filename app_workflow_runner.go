@@ -24,31 +24,54 @@ import (
 type workflowAppRunner struct {
 	app      *App
 	dataRoot string
+	profiles engine.ProfileSource
+	now      func() time.Time
+	newTimer func(time.Duration, func()) workflowTimer
 
 	mu      sync.Mutex
 	runs    map[string]*workflowAttempt
 	schemas map[string]json.RawMessage
+	// workItems attributes usage only while a phase thread can emit a live
+	// turn. Startup crash recovery parks orphan attempts before any session
+	// resumes, so no durable thread-to-item registry is needed after restart.
+	workItems map[string]string
 }
 
 type workflowAttempt struct {
-	sendMu      sync.Mutex
-	key         engine.RunKey
-	threadID    string
-	schema      json.RawMessage
-	phase       def.Phase
-	complete    func(engine.Outcome)
-	unsubscribe func()
-	retried     bool
+	sendMu               sync.Mutex
+	key                  engine.RunKey
+	threadID             string
+	schema               json.RawMessage
+	phase                def.Phase
+	complete             func(engine.Outcome)
+	unsubscribe          func()
+	envelopeRetryUsed    bool
+	currentPrompt        string
+	watchdog             time.Duration
+	backoff              []time.Duration
+	transientRetryCount  int
+	turnStarted          bool
+	pendingTransient     bool
+	pendingSessionDeath  bool
+	awaitingRetryStart   bool
+	claudeTransientRetry bool
+	timer                workflowTimer
+	timerMode            workflowTimerMode
+	timerDeadline        time.Time
 }
 
-func newWorkflowAppRunner(app *App, dataRoot string) *workflowAppRunner {
+func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSource) *workflowAppRunner {
 	return &workflowAppRunner{
-		app: app, dataRoot: dataRoot,
+		app: app, dataRoot: dataRoot, profiles: profiles, now: time.Now,
+		newTimer: func(delay time.Duration, callback func()) workflowTimer {
+			return time.AfterFunc(delay, callback)
+		},
 		runs: make(map[string]*workflowAttempt), schemas: make(map[string]json.RawMessage),
+		workItems: make(map[string]string),
 	}
 }
 
-func (r *workflowAppRunner) Start(_ context.Context, request engine.RunRequest, complete func(engine.Outcome)) error {
+func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest, complete func(engine.Outcome)) error {
 	if request.Phase.Driver != def.DriverAgent {
 		return fmt.Errorf("workflow runner: phase %q uses unsupported driver %q; only agent is available", request.Phase.ID, request.Phase.Driver)
 	}
@@ -58,6 +81,10 @@ func (r *workflowAppRunner) Start(_ context.Context, request engine.RunRequest, 
 	schema, err := def.EnvelopeSchema(request.Phase)
 	if err != nil {
 		return fmt.Errorf("workflow runner: build phase %q envelope schema: %w", request.Phase.ID, err)
+	}
+	watchdog, backoff, err := r.reliability(ctx, request)
+	if err != nil {
+		return err
 	}
 	narrativePath, err := workflowrunner.NarrativePath(r.dataRoot, request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt)
 	if err != nil {
@@ -95,6 +122,7 @@ func (r *workflowAppRunner) Start(_ context.Context, request engine.RunRequest, 
 	attempt := &workflowAttempt{
 		key: request.Key, threadID: threadID,
 		schema: append(json.RawMessage(nil), schema...), phase: request.Phase, complete: complete,
+		currentPrompt: prompt, watchdog: watchdog, backoff: backoff,
 	}
 	key := workflowRunKey(request.Key)
 	attempt.unsubscribe = r.app.subscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {
@@ -108,6 +136,7 @@ func (r *workflowAppRunner) Start(_ context.Context, request engine.RunRequest, 
 	}
 	r.schemas[threadID] = append(json.RawMessage(nil), schema...)
 	r.runs[key] = attempt
+	r.workItems[threadID] = request.Key.ItemID
 	r.mu.Unlock()
 
 	if _, err := r.sendIfActive(key, prompt, schema); err != nil {
@@ -118,18 +147,9 @@ func (r *workflowAppRunner) Start(_ context.Context, request engine.RunRequest, 
 
 func (r *workflowAppRunner) Stop(_ context.Context, key engine.RunKey) (json.RawMessage, error) {
 	runKey := workflowRunKey(key)
-	r.mu.Lock()
-	attempt, ok := r.runs[runKey]
-	if ok {
-		delete(r.runs, runKey)
-		delete(r.schemas, attempt.threadID)
-	}
-	r.mu.Unlock()
+	attempt, ok := r.detach(runKey)
 	if !ok {
 		return nil, nil
-	}
-	if attempt.unsubscribe != nil {
-		attempt.unsubscribe()
 	}
 	attempt.sendMu.Lock()
 	attempt.sendMu.Unlock()
@@ -143,25 +163,112 @@ func (r *workflowAppRunner) Stop(_ context.Context, key engine.RunKey) (json.Raw
 }
 
 func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent) {
-	if event.Kind == provider.EventError && workflowTurnErrorIsTerminal(event.Meta) {
-		r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
-		return
-	}
-	if event.Kind == provider.EventSessionStatus && (event.Content == "error" || event.Content == "disconnected") {
-		r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
-		return
-	}
-	if event.Kind != provider.EventTurnComplete {
-		return
-	}
-
 	r.mu.Lock()
 	attempt := r.runs[runKey]
 	if attempt == nil {
 		r.mu.Unlock()
 		return
 	}
+	if attempt.timerMode == workflowTimerBackoff {
+		r.mu.Unlock()
+		return
+	}
+	if attempt.awaitingRetryStart {
+		if event.Kind == provider.EventSessionStatus && strings.TrimSpace(event.Content) == "error" {
+			attempt.awaitingRetryStart = false
+			attempt.pendingSessionDeath = true
+			r.mu.Unlock()
+			return
+		}
+		if !workflowProviderTurnStarted(attempt.phase.Provider, event) {
+			r.mu.Unlock()
+			return
+		}
+		attempt.awaitingRetryStart = false
+	}
+	if workflowProviderTurnStarted(attempt.phase.Provider, event) {
+		attempt.turnStarted = true
+		attempt.pendingTransient = false
+		attempt.claudeTransientRetry = false
+		r.armWatchdogLocked(runKey, attempt)
+		r.mu.Unlock()
+		return
+	}
+	if attempt.turnStarted {
+		r.resetWatchdogLocked(attempt)
+	}
+	if event.Kind == provider.EventSessionStatus {
+		content := strings.TrimSpace(event.Content)
+		if content == "error" {
+			r.disarmTimerLocked(attempt)
+			attempt.turnStarted = false
+			attempt.pendingSessionDeath = true
+			r.mu.Unlock()
+			return
+		}
+		if content == "disconnected" {
+			if attempt.pendingSessionDeath {
+				r.mu.Unlock()
+				return
+			}
+			r.mu.Unlock()
+			r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
+			return
+		}
+	}
+	if event.Kind == provider.EventAPIRetry && attempt.phase.Provider == string(provider.Claude) {
+		if workflowClaudeTransientAPIRetry(event) {
+			attempt.claudeTransientRetry = true
+		}
+		r.mu.Unlock()
+		return
+	}
+	if event.Kind == provider.EventError {
+		transient, waitsForCompletion := workflowTransientError(
+			attempt.phase.Provider, event, attempt.claudeTransientRetry,
+		)
+		if transient && waitsForCompletion {
+			attempt.pendingTransient = true
+			r.mu.Unlock()
+			return
+		}
+		if transient {
+			exhausted := r.scheduleTransientLocked(runKey, attempt)
+			r.mu.Unlock()
+			if exhausted {
+				r.stopAndFinish(runKey, engine.Outcome{Kind: engine.OutcomeTransientExhausted})
+			}
+			return
+		}
+		if workflowTurnErrorIsTerminal(event.Meta) {
+			r.mu.Unlock()
+			r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
+			return
+		}
+	}
+	if event.Kind != provider.EventTurnComplete {
+		r.mu.Unlock()
+		return
+	}
+	r.disarmTimerLocked(attempt)
+	attempt.turnStarted = false
+	attempt.claudeTransientRetry = false
 	payload := append(json.RawMessage(nil), event.StructuredOutput...)
+	if len(payload) == 0 && (attempt.pendingTransient || workflowTransientTurnComplete(attempt.phase.Provider, event)) {
+		attempt.pendingTransient = false
+		exhausted := r.scheduleTransientLocked(runKey, attempt)
+		r.mu.Unlock()
+		if exhausted {
+			r.stopAndFinish(runKey, engine.Outcome{Kind: engine.OutcomeTransientExhausted})
+		}
+		return
+	}
+	attempt.pendingTransient = false
+	if len(payload) == 0 && workflowTurnCompletedWithError(event) {
+		r.mu.Unlock()
+		r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
+		return
+	}
 	validationErr := def.ValidateEnvelope(attempt.phase, payload)
 	if validationErr == nil {
 		r.mu.Unlock()
@@ -173,29 +280,51 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 		r.finish(runKey, outcome)
 		return
 	}
-	if attempt.retried {
+	if attempt.envelopeRetryUsed {
 		r.mu.Unlock()
 		r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Envelope: payload})
 		return
 	}
-	attempt.retried = true
+	attempt.envelopeRetryUsed = true
 	schema := append(json.RawMessage(nil), attempt.schema...)
+	attempt.currentPrompt = workflowrunner.RetryMessage(findingsForEnvelopeError(validationErr))
+	message := attempt.currentPrompt
 	r.mu.Unlock()
-
-	var envelopeErr *def.EnvelopeValidationError
-	var findings []def.EnvelopeFinding
-	if errors.As(validationErr, &envelopeErr) {
-		findings = envelopeErr.Findings
-	} else {
-		findings = []def.EnvelopeFinding{{Path: "$", Message: validationErr.Error()}}
-	}
-	message := workflowrunner.RetryMessage(findings)
 	go func() {
 		sent, err := r.sendIfActive(runKey, message, schema)
 		if sent && err != nil {
 			r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Envelope: payload})
 		}
 	}()
+}
+
+// sessionDisconnected advances subprocess-death retry only after the dead
+// session has been removed from App's registry. That ordering prevents a
+// millisecond harness backoff from sending into the session being reaped.
+func (r *workflowAppRunner) sessionDisconnected(threadID string) {
+	var exhaustedKey string
+	r.mu.Lock()
+	for runKey, attempt := range r.runs {
+		if attempt.threadID != threadID || !attempt.pendingSessionDeath {
+			continue
+		}
+		attempt.pendingSessionDeath = false
+		if r.scheduleTransientLocked(runKey, attempt) {
+			exhaustedKey = runKey
+		}
+		break
+	}
+	r.mu.Unlock()
+	if exhaustedKey != "" {
+		r.stopAndFinish(exhaustedKey, engine.Outcome{Kind: engine.OutcomeTransientExhausted})
+	}
+}
+
+func workflowProviderTurnStarted(providerName string, event provider.ProviderEvent) bool {
+	if event.Kind == provider.EventTurnStart {
+		return true
+	}
+	return providerName == string(provider.Claude) && event.Kind == provider.EventInit
 }
 
 // sendIfActive serializes sends with Stop and rechecks ownership after taking
@@ -217,7 +346,23 @@ func (r *workflowAppRunner) sendIfActive(runKey, message string, schema json.Raw
 	if !active {
 		return false, nil
 	}
-	return true, r.app.sendWorkflowMessage(attempt.threadID, message, schema)
+	err := r.app.sendWorkflowMessage(attempt.threadID, message, schema)
+	if err != nil || attempt.phase.Provider != string(provider.Claude) {
+		return true, err
+	}
+
+	// Claude has no per-turn EventTurnStart. A successful send is therefore
+	// the start signal when an existing session emits no fresh EventInit (for
+	// example, the envelope-feedback turn and a transient sub-attempt).
+	r.mu.Lock()
+	if r.runs[runKey] == attempt && !attempt.turnStarted && !attempt.pendingSessionDeath && attempt.timerMode != workflowTimerBackoff {
+		attempt.turnStarted = true
+		attempt.pendingTransient = false
+		attempt.claudeTransientRetry = false
+		r.armWatchdogLocked(runKey, attempt)
+	}
+	r.mu.Unlock()
+	return true, nil
 }
 
 func workflowTurnErrorIsTerminal(meta json.RawMessage) bool {
@@ -232,18 +377,9 @@ func workflowTurnErrorIsTerminal(meta json.RawMessage) bool {
 }
 
 func (r *workflowAppRunner) finish(runKey string, outcome engine.Outcome) {
-	r.mu.Lock()
-	attempt, ok := r.runs[runKey]
-	if ok {
-		delete(r.runs, runKey)
-		delete(r.schemas, attempt.threadID)
-	}
-	r.mu.Unlock()
+	attempt, ok := r.detach(runKey)
 	if !ok {
 		return
-	}
-	if attempt.unsubscribe != nil {
-		attempt.unsubscribe()
 	}
 	attempt.sendMu.Lock()
 	attempt.sendMu.Unlock()
@@ -254,6 +390,20 @@ func (r *workflowAppRunner) schemaForThread(threadID string) json.RawMessage {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append(json.RawMessage(nil), r.schemas[threadID]...)
+}
+
+func (r *workflowAppRunner) workItemForThread(threadID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.workItems[threadID]
+}
+
+func findingsForEnvelopeError(err error) []def.EnvelopeFinding {
+	var envelopeErr *def.EnvelopeValidationError
+	if errors.As(err, &envelopeErr) {
+		return envelopeErr.Findings
+	}
+	return []def.EnvelopeFinding{{Path: "$", Message: err.Error()}}
 }
 
 func (r *workflowAppRunner) validatePriorThread(request engine.RunRequest, threadID string) error {

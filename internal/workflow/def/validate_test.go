@@ -144,6 +144,8 @@ func TestValidateStructuralGoldenErrors(t *testing.T) {
 		{"driver", "phase.driver", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Driver = "script" }},
 		{"agent model", "phase.model", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Model = "" }},
 		{"shape", "phase.shape", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Shape = "nested" }},
+		{"watchdog syntax", "phase.watchdog", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Watchdog = "eventually" }},
+		{"watchdog positive", "phase.watchdog", "phase \"plan\"", func(r *ResolvedWorkflow) { r.Workflow.Phases[0].Watchdog = "0s" }},
 		{"human reject feedback", "gate.feedback", "phase \"review\" route 0", func(r *ResolvedWorkflow) {
 			r.Workflow.Phases[2].Gate.Routes[0] = Route{Human: &HumanRoute{
 				Approve: "done",

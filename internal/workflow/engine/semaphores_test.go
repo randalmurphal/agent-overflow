@@ -18,6 +18,8 @@ func TestSemaphoreReleaseOnEveryImplementedExitPath(t *testing.T) {
 		{"success", []def.Route{{To: "done"}}, completeWith(OutcomeDone, doneEnvelope(true)), StateDone, ""},
 		{"question", []def.Route{{To: "done"}}, completeWith(OutcomeQuestion, questionEnvelope()), StateNeedsHuman, ReasonQuestion},
 		{"stuck", []def.Route{{To: "done"}}, completeWith(OutcomeStuck, stuckEnvelope()), StateNeedsHuman, ReasonStuck},
+		{"stalled", []def.Route{{To: "done"}}, completeWith(OutcomeStalled, nil), StateNeedsHuman, ReasonStalled},
+		{"transient retries exhausted", []def.Route{{To: "done"}}, completeWith(OutcomeTransientExhausted, nil), StateNeedsHuman, ReasonRetriesExhausted},
 		{"execution failure", []def.Route{{To: "done"}}, completeWith(OutcomeExecutionFailure, nil), StateNeedsHuman, ReasonAgentError},
 		{"runner stopped", []def.Route{{To: "done"}}, completeWith(OutcomeStopped, nil), StateNeedsHuman, ReasonInterrupted},
 		{"unknown outcome", []def.Route{{To: "done"}}, completeWith(OutcomeKind("unknown"), nil), StateNeedsHuman, ReasonAgentError},

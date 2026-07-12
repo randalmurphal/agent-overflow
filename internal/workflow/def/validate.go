@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Validate performs a complete dry-run over a resolved workflow.
@@ -76,6 +77,14 @@ func Validate(resolved ResolvedWorkflow, bindings Bindings) ValidationResult {
 		}
 		if phase.Driver == DriverAgent && (strings.TrimSpace(phase.Provider) == "" || strings.TrimSpace(phase.Model) == "") {
 			add(finding("phase.model", phaseElement, "agent driver requires provider and model"))
+		}
+		if phase.Watchdog != "" {
+			duration, err := time.ParseDuration(phase.Watchdog)
+			if err != nil {
+				add(finding("phase.watchdog", phaseElement, "watchdog must be a time.ParseDuration-compatible string"))
+			} else if duration <= 0 {
+				add(finding("phase.watchdog", phaseElement, "watchdog must be greater than 0"))
+			}
 		}
 		if phase.Driver == DriverTool && phase.Check == "" && phase.Command == "" {
 			add(finding("phase.tool", phaseElement, "tool driver requires a check or command binding"))

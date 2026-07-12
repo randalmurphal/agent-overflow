@@ -61,7 +61,9 @@ root `CLAUDE.md` principle 3.
   "rows whose model the rate table doesn't recognize" rather than
   "rows with no wire cost." Migration v22 adds denormalized
   `work_item_id`; `QueryWorkItemUsage` supplies the raw token and
-  wire-cost sum used for workflow budget checks.
+  wire-cost sum used for workflow budget checks, while
+  `QueryWorkItemUsageDetail` groups the same rows by model/cost source so the
+  app can add query-time `usagecost` estimates for rows without wire cost.
 - `work_items.go` / `work_item_phases.go` / `work_item_effects.go` — bare
   workflow run-record CRUD (migration v22). Project, thread, and item ids
   are intentionally denormalized without FKs so run history survives

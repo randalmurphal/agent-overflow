@@ -52,6 +52,7 @@ type Phase struct {
 	Provider     string              `yaml:"provider,omitempty" json:"provider,omitempty"`
 	Model        string              `yaml:"model,omitempty" json:"model,omitempty"`
 	Prompt       string              `yaml:"prompt,omitempty" json:"prompt,omitempty"`
+	Watchdog     string              `yaml:"watchdog,omitempty" json:"watchdog,omitempty"`
 	Inputs       map[string]Variable `yaml:"inputs,omitempty" json:"inputs,omitempty"`
 	Outputs      map[string]Variable `yaml:"outputs,omitempty" json:"outputs,omitempty"`
 	Check        string              `yaml:"check,omitempty" json:"check,omitempty"`

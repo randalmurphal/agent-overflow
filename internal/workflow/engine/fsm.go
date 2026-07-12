@@ -136,6 +136,10 @@ func (e *Engine) complete(key RunKey, outcome Outcome) error {
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonQuestion})
 	case OutcomeStuck:
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonStuck})
+	case OutcomeStalled:
+		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonStalled})
+	case OutcomeTransientExhausted:
+		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonRetriesExhausted})
 	case OutcomeExecutionFailure:
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonAgentError})
 	case OutcomeStopped:

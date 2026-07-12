@@ -29,6 +29,26 @@ type fakeProfiles struct {
 	profiles map[string]*profile.Profile
 }
 
+type fakeSpendSource struct {
+	mu     sync.Mutex
+	spends map[string]Spend
+	errs   map[string]error
+	calls  []string
+}
+
+func (f *fakeSpendSource) ItemSpend(_ context.Context, itemID string) (Spend, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, itemID)
+	return f.spends[itemID], f.errs[itemID]
+}
+
+func (f *fakeSpendSource) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
 func (f *fakeProfiles) Profile(_ context.Context, projectID string) (*profile.Profile, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -151,12 +171,26 @@ func (f *fakeEmitter) phaseEvents(itemID string) []PhaseEvent {
 	return result
 }
 
+func (f *fakeEmitter) errorEvents(itemID string) []ErrorEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var result []ErrorEvent
+	for _, event := range f.events {
+		value, ok := event.payload.(ErrorEvent)
+		if event.name == "workflow:error" && ok && value.ItemID == itemID {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
 type testHarness struct {
 	store    *store.Store
 	engine   *Engine
 	runner   *fakeRunner
 	emitter  *fakeEmitter
 	profiles *fakeProfiles
+	spend    *fakeSpendSource
 }
 
 func newHarness(t *testing.T, config Config, workflows map[string]def.Workflow, projectIDs []string, beforeStart func(*store.Store)) *testHarness {
@@ -180,10 +214,11 @@ func newHarness(t *testing.T, config Config, workflows map[string]def.Workflow, 
 	runner := newFakeRunner()
 	emitter := &fakeEmitter{}
 	profiles := &fakeProfiles{profiles: make(map[string]*profile.Profile)}
+	spend := &fakeSpendSource{spends: make(map[string]Spend), errs: make(map[string]error)}
 	for _, projectID := range projectIDs {
 		profiles.profiles[projectID] = &profile.Profile{Capacities: make(map[string]int)}
 	}
-	engine, err := New(database, runner, emitter, &fakeDefinitions{workflows: workflows}, profiles, config)
+	engine, err := New(database, runner, emitter, &fakeDefinitions{workflows: workflows}, profiles, spend, config)
 	if err != nil {
 		database.Close()
 		t.Fatal(err)
@@ -201,7 +236,7 @@ func newHarness(t *testing.T, config Config, workflows map[string]def.Workflow, 
 			t.Errorf("close store: %v", err)
 		}
 	})
-	return &testHarness{store: database, engine: engine, runner: runner, emitter: emitter, profiles: profiles}
+	return &testHarness{store: database, engine: engine, runner: runner, emitter: emitter, profiles: profiles, spend: spend}
 }
 
 func testItem(id, projectID, workflowID string, position int) store.WorkItem {

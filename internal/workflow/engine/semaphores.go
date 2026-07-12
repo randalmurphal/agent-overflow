@@ -110,6 +110,14 @@ func (e *Engine) startWaiting() error {
 		}
 		item.acquired = canonicalResources(phase.Resources)
 		item.waiting = false
+		halted, err := e.enforceBudget(item)
+		if halted {
+			if err != nil {
+				e.emitError(item.item.ID, err)
+				errs = append(errs, err)
+			}
+			continue
+		}
 		vars, _, err := e.variableContext(item, nil)
 		if err != nil {
 			combined := errors.Join(err, e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}))

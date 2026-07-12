@@ -110,6 +110,9 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
 			a.unregisterSession(threadID, sessionToken)
+			if a.workflowRunner != nil {
+				a.workflowRunner.sessionDisconnected(threadID)
+			}
 			if deathReported {
 				go a.attemptAutoReconnect(threadID)
 			}

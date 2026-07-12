@@ -175,6 +175,9 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 			fmt.Errorf("phase %q is absent from item %q snapshot", item.phaseID, item.item.ID),
 		)
 	}
+	if halted, err := e.enforceBudget(item); halted {
+		return err
+	}
 	vars, priorPhases, err := e.variableContext(item, nil)
 	if err != nil {
 		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}), err)

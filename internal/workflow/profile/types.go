@@ -34,8 +34,9 @@ type Profile struct {
 
 // ReliabilityDefaults supplies project-level watchdog and runaway ceilings.
 type ReliabilityDefaults struct {
-	Watchdog      Duration `yaml:"watchdog,omitempty" json:"watchdog,omitempty"`
-	PerItemBudget *Budget  `yaml:"per_item_budget,omitempty" json:"perItemBudget,omitempty"`
+	Watchdog      Duration   `yaml:"watchdog,omitempty" json:"watchdog,omitempty"`
+	Backoff       []Duration `yaml:"backoff,omitempty" json:"backoff,omitempty"`
+	PerItemBudget *Budget    `yaml:"per_item_budget,omitempty" json:"perItemBudget,omitempty"`
 }
 
 // Budget is one optional per-item ceiling. Exactly one field must be set.
@@ -61,7 +62,22 @@ type WorktreeSetup struct {
 
 // Default returns the documented profile used when profile.yaml is absent.
 func Default() Profile {
-	return Profile{Disposition: DispositionManual}
+	return Profile{
+		Disposition: DispositionManual,
+		Reliability: ReliabilityDefaults{Backoff: DefaultBackoff()},
+	}
+}
+
+const (
+	DefaultBackoffFirst  = "30s"
+	DefaultBackoffSecond = "2m"
+	DefaultBackoffThird  = "5m"
+)
+
+// DefaultBackoff returns an isolated copy of the documented transient retry
+// schedule. Callers may safely retain or modify the returned slice.
+func DefaultBackoff() []Duration {
+	return []Duration{DefaultBackoffFirst, DefaultBackoffSecond, DefaultBackoffThird}
 }
 
 // HasCheck reports whether a named deterministic check is bound.

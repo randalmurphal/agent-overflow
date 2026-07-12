@@ -22,11 +22,15 @@ resource semaphores, and startup recovery.
 - `Answer` is valid only for `needs-human(question)`. It persists a new phase
   attempt whose feedback carries the answer and sets `RunRequest.PriorThreadID`
   from the parked attempt so the runner continues the same provider session.
+- Per-item budgets are checked before every phase attempt. Item overrides win
+  over live profile defaults; token/USD spend comes through `SpendSource`, and
+  wall clock uses the engine clock against the persisted item start time.
 
 ## Boundaries
 
 - Provider and app/channel implementations live behind `Runner` and `Emitter`.
 - Workflow resolution and project-profile loading live behind their narrow
   sources. The frozen `Snapshot` pins definitions, never profile capacities.
-- No timers, watchdogs, retry backoff, worktree setup, budget enforcement, or
-  transport/app wiring belongs in this packet/package yet.
+- No timers, watchdogs, retry backoff, worktree setup, or transport/app wiring
+  belongs in this package. Reliability timers and sub-attempt retries are
+  runner-owned; the engine only checks phase-boundary budgets and maps outcomes.

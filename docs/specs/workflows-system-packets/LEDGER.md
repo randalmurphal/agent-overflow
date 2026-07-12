@@ -19,7 +19,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.2 engine core | `m2/p22-engine-core` | `~/repos/ao-lanes/p22` | gpt-5.6-sol / **xhigh** | `019f5505-71d3-73d0-89d5-f5e55b7230a9` | **merged** |
 | P2.3 provider envelope wiring | `m2/p23-provider-envelope` | `~/repos/ao-lanes/p23` | gpt-5.6-sol / high | `019f54ee-b30b-72d1-b57e-58f8456c56d0` | **merged** |
 | P2.4 phase runner + app wiring | `m2/p24-phase-runner` | `~/repos/ao-lanes/p24` | gpt-5.6-sol / **xhigh** | `019f553e-41c5-76d1-9bb2-433541267c0b` | **merged** |
-| P2.5 reliability | `m2/p25-reliability` | `~/repos/ao-lanes/p25` | gpt-5.6-sol / **xhigh** | run1 `019f556f-851a-79c0-8910-2c3ba63ff505` (dead on arrival — usage limit); run2 `019f5601-046a-7d11-96ce-38b7df0d666d` | dispatched (base `12dadab0`) |
+| P2.5 reliability | `m2/p25-reliability` | `~/repos/ao-lanes/p25` | gpt-5.6-sol / **xhigh** | run1 `019f556f-851a-79c0-8910-2c3ba63ff505` (dead on arrival — usage limit); run2 `019f5601-046a-7d11-96ce-38b7df0d666d` | **merged** |
 
 ## Events
 
@@ -285,3 +285,27 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   (correct but a UX dead-end until the takeover/finalize flow exists);
   (c) tool-driver and fan-out/join phases: runner rejects with a clear
   error → agent-error park; needs its own packet post-M2.
+- **P2.5 reviewed + merged.** No rider — second consecutive zero-rider
+  packet. Three triggers press the ONE teardown: budget checked at phase
+  entry AND re-checked after resource waits; OutcomeStalled /
+  OutcomeTransientExhausted map to existing typed reasons; SpendSource is a
+  required engine seam. Runner: single timer slot per attempt with
+  deadline-recheck-on-fire; watchdog armed on codex EventTurnStart / claude
+  EventInit-or-successful-send (claude has no per-turn start signal);
+  backoff-mode event suppression closes the stale-terminal window;
+  process-death backoff starts only AFTER the app unregisters the dead
+  session; Stop aborts backoff via the same detach path. Classifier is
+  provider-scoped and closed (claude rate_limit, 529/ECONNRESET-precursor +
+  server_error pairing, network_error terminal; codex tagged-union
+  variants); ambiguous parks immediately. Attribution: triage gains a
+  func-seam resolver (boundary intact, no workflow imports); aggregate
+  wire-USD isolated from estimated rows; composition prices
+  cost_source='none' groups via usagecost with LOUD failure on unknown
+  models. Codex self-found and fixed six real races/holes pre-gate. Claude
+  re-ran the full gate set independently plus -race over triage+store
+  (392s/394s): green. Report at `reports/P2.5-report.md`.
+- **Known nuance (accepted, from P2.5 review):** SpendSource returns one
+  complete composition, so a TOKEN-budgeted item parks setup-failed if a
+  cost_source='none' model has no usagecost rate — loud-over-silent wins,
+  but adding a new model to the rate table unparks such items. Revisit only
+  if it bites in practice.

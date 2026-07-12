@@ -39,6 +39,7 @@ type Engine struct {
 	emitter     Emitter
 	definitions DefinitionSource
 	profiles    ProfileSource
+	spend       SpendSource
 	config      Config
 	now         func() time.Time
 
@@ -61,16 +62,16 @@ type Engine struct {
 	lastTimestamp   int64
 }
 
-func New(store persistence, runner Runner, emitter Emitter, definitions DefinitionSource, profiles ProfileSource, config Config) (*Engine, error) {
-	if store == nil || runner == nil || emitter == nil || definitions == nil || profiles == nil {
-		return nil, fmt.Errorf("workflow engine: store, runner, emitter, definition source, and profile source are required")
+func New(store persistence, runner Runner, emitter Emitter, definitions DefinitionSource, profiles ProfileSource, spend SpendSource, config Config) (*Engine, error) {
+	if store == nil || runner == nil || emitter == nil || definitions == nil || profiles == nil || spend == nil {
+		return nil, fmt.Errorf("workflow engine: store, runner, emitter, definition source, profile source, and spend source are required")
 	}
 	if config.GlobalConcurrency < 1 || config.GlobalConcurrency > MaxGlobalConcurrency {
 		return nil, fmt.Errorf("workflow engine: global concurrency must be between 1 and %d", MaxGlobalConcurrency)
 	}
 	return &Engine{
 		store: store, runner: runner, emitter: emitter, definitions: definitions,
-		profiles: profiles, config: config, now: time.Now,
+		profiles: profiles, spend: spend, config: config, now: time.Now,
 		commands: make(chan any, commandBuffer), done: make(chan struct{}),
 		items: make(map[string]*runtimeItem), holders: make(map[resourceKey]int),
 		startsRemaining: -1,

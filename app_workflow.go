@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usagecost"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/profile"
@@ -46,6 +47,38 @@ type workflowDefinitionSource struct {
 	profiles   workflowProfileSource
 }
 
+type workflowSpendSource struct{ store *store.Store }
+
+func (s workflowSpendSource) ItemSpend(_ context.Context, itemID string) (engine.Spend, error) {
+	usage, err := s.store.QueryWorkItemUsage(itemID)
+	if err != nil {
+		return engine.Spend{}, err
+	}
+	details, err := s.store.QueryWorkItemUsageDetail(itemID)
+	if err != nil {
+		return engine.Spend{}, err
+	}
+	cost := usage.CostUSD
+	for _, detail := range details {
+		switch detail.CostSource {
+		case "wire":
+			// QueryWorkItemUsage already includes the wire-reported sum.
+		case "none":
+			estimate, ok := usagecost.Price(
+				detail.Model, detail.InputTokens, detail.OutputTokens,
+				detail.CacheReadInputTokens, detail.CacheCreationInputTokens,
+			)
+			if !ok {
+				return engine.Spend{}, fmt.Errorf("workflow spend: model %q has no USD rate", detail.Model)
+			}
+			cost += estimate
+		default:
+			return engine.Spend{}, fmt.Errorf("workflow spend: unexpected cost_source %q for model %q", detail.CostSource, detail.Model)
+		}
+	}
+	return engine.Spend{Tokens: usage.TotalTokens, USD: cost}, nil
+}
+
 func (s workflowDefinitionSource) Resolve(ctx context.Context, item store.WorkItem) (def.Workflow, error) {
 	projectRow, err := s.store.GetProject(item.ProjectID)
 	if err != nil {
@@ -76,19 +109,35 @@ func (s workflowDefinitionSource) Resolve(ctx context.Context, item store.WorkIt
 
 func (a *App) initWorkflowEngine(dataRoot string) error {
 	settingsSnapshot := a.currentSettings()
-	runner := newWorkflowAppRunner(a, dataRoot)
 	profiles := workflowProfileSource{store: a.store, configRoot: dataRoot}
+	runner := newWorkflowAppRunner(a, dataRoot, profiles)
+	// Live workflow turns are the only turns that need work-item usage
+	// attribution. Crash recovery parks every orphan running item before new
+	// sessions can start, so there are no post-crash live turns requiring a
+	// durable registry; the runner's bounded process-local map is sufficient.
+	// Bare internal test apps may intentionally omit triage; production startup
+	// always installs it before the workflow engine.
+	if a.triage != nil {
+		a.triage.SetUsageWorkItemResolver(runner.workItemForThread)
+	}
 	definitions := workflowDefinitionSource{store: a.store, configRoot: dataRoot, profiles: profiles}
 	workflowEngine, err := engine.New(
 		a.store, runner, workflowEmitter{emit: a.emitWithReplay()}, definitions, profiles,
+		workflowSpendSource{store: a.store},
 		engine.Config{Active: settingsSnapshot.WorkflowQueueActive, GlobalConcurrency: settingsSnapshot.WorkflowConcurrency},
 	)
 	if err != nil {
+		if a.triage != nil {
+			a.triage.SetUsageWorkItemResolver(nil)
+		}
 		return fmt.Errorf("initialize workflow engine: %w", err)
 	}
 	a.workflowRunner = runner
 	a.workflowEngine = workflowEngine
 	if err := workflowEngine.Start(a.lifeCtx()); err != nil {
+		if a.triage != nil {
+			a.triage.SetUsageWorkItemResolver(nil)
+		}
 		a.workflowEngine = nil
 		a.workflowRunner = nil
 		return fmt.Errorf("start workflow engine: %w", err)
@@ -106,7 +155,7 @@ func (a *App) requireWorkflowEngine() (*engine.Engine, error) {
 	return a.workflowEngine, nil
 }
 
-func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage) (store.WorkItem, error) {
+func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget) (store.WorkItem, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return store.WorkItem{}, err
@@ -121,6 +170,20 @@ func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal str
 	if scope != def.ScopeProject && scope != def.ScopeShared {
 		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: scope must be project or shared")
 	}
+	if validation := profile.ValidateBudget(budget); !validation.Valid() {
+		messages := make([]string, 0, len(validation.Findings))
+		for _, finding := range validation.Findings {
+			messages = append(messages, finding.Error())
+		}
+		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %s", strings.Join(messages, "; "))
+	}
+	var encodedBudget json.RawMessage
+	if budget != nil {
+		encodedBudget, err = json.Marshal(budget)
+		if err != nil {
+			return store.WorkItem{}, fmt.Errorf("enqueue workflow item: encode budget: %w", err)
+		}
+	}
 	if _, err := a.store.GetProject(projectID); err != nil {
 		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %w", err)
 	}
@@ -132,7 +195,7 @@ func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal str
 		ID: uuid.NewString(), ProjectID: projectID, Goal: goal,
 		WorkflowID: workflowID, WorkflowScope: string(scope),
 		State: string(engine.StateQueued), SortPosition: sortPosition,
-		Seeds: append(json.RawMessage(nil), seeds...), Source: "manual",
+		Seeds: append(json.RawMessage(nil), seeds...), Budget: encodedBudget, Source: "manual",
 		CreatedAt: time.Now().UnixMilli(),
 	}
 	if err := workflowEngine.Enqueue(item); err != nil {

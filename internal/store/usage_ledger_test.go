@@ -347,3 +347,28 @@ func TestQueryWorkItemUsage(t *testing.T) {
 		t.Fatal("empty work item id must be rejected, '' marks unattributed rows")
 	}
 }
+
+func TestQueryWorkItemUsageDetail(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AppendUsage([]UsageLedgerRow{
+		{CreatedAt: 1, ThreadID: "t1", WorkItemID: "item-1", TurnID: "turn-1", Provider: "codex", Model: "gpt-5.2-codex", InputTokens: 10, OutputTokens: 2, CostSource: "none"},
+		{CreatedAt: 2, ThreadID: "t1", WorkItemID: "item-1", TurnID: "turn-2", Provider: "codex", Model: "gpt-5.2-codex", InputTokens: 20, CacheReadInputTokens: 4, CostSource: "none"},
+		{CreatedAt: 3, ThreadID: "t2", WorkItemID: "item-1", TurnID: "turn-3", Provider: "claude", Model: "claude-opus-4-7", OutputTokens: 5, CostUSD: 0.25, CostSource: "wire"},
+		{CreatedAt: 4, ThreadID: "t3", WorkItemID: "other", TurnID: "turn-4", Provider: "codex", Model: "gpt-5.2-codex", InputTokens: 999, CostSource: "none"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	details, err := s.QueryWorkItemUsageDetail("item-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(details) != 2 {
+		t.Fatalf("details = %+v", details)
+	}
+	if details[0].Model != "claude-opus-4-7" || details[0].CostSource != "wire" || details[0].CostUSD != 0.25 || details[0].Rows != 1 {
+		t.Fatalf("wire detail = %+v", details[0])
+	}
+	if details[1].Model != "gpt-5.2-codex" || details[1].CostSource != "none" || details[1].InputTokens != 30 || details[1].OutputTokens != 2 || details[1].CacheReadInputTokens != 4 || details[1].Rows != 2 {
+		t.Fatalf("estimated detail = %+v", details[1])
+	}
+}

@@ -37,12 +37,39 @@ func TestParseValidFixture(t *testing.T) {
 
 func TestDefaultAndNilBindings(t *testing.T) {
 	got := Default()
-	if got.Disposition != DispositionManual || got.Checks != nil || got.Capacities != nil || got.Commands != nil || got.Secrets != nil {
+	if got.Disposition != DispositionManual || got.Checks != nil || got.Capacities != nil || got.Commands != nil || got.Secrets != nil ||
+		!reflect.DeepEqual(got.Reliability.Backoff, DefaultBackoff()) {
 		t.Fatalf("Default = %+v", got)
 	}
 	var nilProfile *Profile
 	if nilProfile.HasCheck("x") || nilProfile.HasCapacity("x") || nilProfile.HasCommand("x") {
 		t.Fatal("nil profile exposes bindings")
+	}
+}
+
+func TestParseAppliesDefaultBackoffWhenAbsent(t *testing.T) {
+	got, err := ParseBytes([]byte("reliability:\n  watchdog: 1m\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Reliability.Backoff, DefaultBackoff()) {
+		t.Fatalf("backoff = %v, want %v", got.Reliability.Backoff, DefaultBackoff())
+	}
+
+	explicit, err := ParseBytes([]byte("reliability:\n  backoff: [1ms, 2ms]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Duration{"1ms", "2ms"}; !reflect.DeepEqual(explicit.Reliability.Backoff, want) {
+		t.Fatalf("explicit backoff = %v, want %v", explicit.Reliability.Backoff, want)
+	}
+
+	empty, err := ParseBytes([]byte("reliability:\n  backoff: []\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := Validate(empty); result.Valid() || len(result.Findings) != 1 || result.Findings[0].Code != "reliability.backoff" {
+		t.Fatalf("empty backoff findings = %+v", result.Findings)
 	}
 }
 
@@ -55,6 +82,7 @@ func TestValidationFindingsGolden(t *testing.T) {
 		Disposition: "ship-it",
 		Reliability: ReliabilityDefaults{
 			Watchdog: "eventually",
+			Backoff:  []Duration{"0s", "later"},
 			PerItemBudget: &Budget{
 				Tokens:    pointer(int64(-1)),
 				USD:       pointer(math.NaN()),
@@ -98,7 +126,7 @@ func TestValidatePositiveReliabilityVariants(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			got := Validate(Profile{
 				Disposition: DispositionManual,
-				Reliability: ReliabilityDefaults{Watchdog: "15m", PerItemBudget: budget},
+				Reliability: ReliabilityDefaults{Watchdog: "15m", Backoff: []Duration{"30s", "2m", "5m"}, PerItemBudget: budget},
 			})
 			if !got.Valid() {
 				t.Fatalf("Validate findings = %+v", got.Findings)
@@ -116,6 +144,17 @@ func TestValidateBudgetTracksAuthoredZeroFields(t *testing.T) {
 	})
 	if len(result.Findings) != 2 || result.Findings[0].Code != "reliability.budget" || result.Findings[1].Code != "reliability.budget-tokens" {
 		t.Fatalf("Validate findings = %+v", result.Findings)
+	}
+}
+
+func TestValidateBudgetForWorkItemParameter(t *testing.T) {
+	if result := ValidateBudget(nil); !result.Valid() {
+		t.Fatalf("nil optional budget findings = %+v", result.Findings)
+	}
+	zero := int64(0)
+	result := ValidateBudget(&Budget{Tokens: &zero})
+	if result.Valid() || len(result.Findings) != 1 || result.Findings[0].Code != "reliability.budget-tokens" || result.Findings[0].Element != "work item budget.tokens" {
+		t.Fatalf("invalid item budget findings = %+v", result.Findings)
 	}
 }
 
