@@ -25,6 +25,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P0.3 rev2 OS notifications | `m3/p03r2-os-notifications` | `~/repos/ao-lanes/p03r2` | gpt-5.6-sol / **xhigh** | `019f56ae-e129-7612-be10-c9c677757ed9` | **merged** `6cb823f4` |
 | P3.1 thread modes + take-over | `m3/p31-thread-modes` | `~/repos/ao-lanes/p31` | gpt-5.6-sol / **xhigh** | run1 `019f56fc-e0c2-78e0-acf4-6979f21e303e` (dead on arrival — usage limit); run2 `019f5714-98e5-77f2-8d0a-cc289a6bf374` | **merged `3ee937f8`** (workflows-system) |
 | P3.2 disposition + UI data + notifications | `m3/p32-disposition-uidata` | `~/repos/ao-lanes/p32` | gpt-5.6-sol / **xhigh** | `019f576c-444e-70b3-9bd5-0afadd50c1de` | **merged `6d329261`** (workflows-system) |
+| P3.4+P3.5 workflows pane frontend | `m3/p345-workflows-pane` | `~/repos/ao-lanes/p345` | gpt-5.6-sol / **xhigh** | `019f57c7-df07-70c3-b29f-0af4eb40af07` | dispatched |
 
 ## Events
 
@@ -662,3 +663,21 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   P3.6); chat confirm card ships prefill-capable but unmounted if no
   clean timeline seam exists (M4 owns the producer); exclusions
   (sidebar/footer/pickers/deep-links/remote gating) are P3.6.
+
+- **P3.4+P3.5 dispatched** into `~/repos/ao-lanes/p345` (branch
+  `m3/p345-workflows-pane`, base `c5fb1bc6` on `workflows-system` —
+  includes the `8b4233e2` origin/main merge). Lane bootstrapped (pnpm
+  frontend+e2e, frontend dist built for the go:embed, lane
+  `make go-build` green). Banner verified sol/**xhigh**, session
+  `019f57c7-df07-70c3-b29f-0af4eb40af07`. Review emphases banked:
+  backend preamble stays inside its four named items (P1–P4) — any
+  drift beyond them is a scope violation, not initiative; the P3.2
+  listing-shape test update must keep every store/validation assertion
+  at equal rigor (only the wrapper shape changes); R1 classifier must
+  be table-tested incl. done-awaiting-disposition neutrality; R2 grep
+  the diff for snapshot/envelope/gateTrace renders and the word
+  "variables" in copy; queue toggle must NOT call WorkflowSetQueue
+  (process-N clobber); singleton pane reuse must be test-proven;
+  sweep order/wrap/skip semantics per §5.4; curly-quote sweep on Go
+  files (P3.1/P3.2 recurrence). Log: session scratchpad
+  `p345-codex.log`.
