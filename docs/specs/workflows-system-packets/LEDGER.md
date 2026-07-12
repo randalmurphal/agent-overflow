@@ -7,10 +7,11 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 
 | Packet | Branch | Lane | Model / effort | Session id | Status |
 |---|---|---|---|---|---|
-| P0.1 turn-observer registry | `m0/p01-turn-observers` | `~/repos/ao-lanes/p01` | gpt-5.6-sol / high | `019f5435-f377-7cf3-a60f-54a6ca10a902` | BLOCKED (baseline test-race) |
+| P0.1 turn-observer registry | `m0/p01-turn-observers` | `~/repos/ao-lanes/p01` | gpt-5.6-sol / high | run1 `019f5435-f377…` (BLOCKED, valid); run2 `019f545b-1d9d-7f41-be57-997dd740ddfe` | redispatched on `bc1d28b9` |
 | P0.2 project slugs + config dirs | `m0/p02-project-slugs` | `~/repos/ao-lanes/p02` | gpt-5.6-sol / high | `019f5436-71b2-7c21-becc-69506f21bc46` | **merged** |
 | P0.3 OS notifications | `m0/p03-os-notifications` | `~/repos/ao-lanes/p03` | gpt-5.6-sol / high | `019f5437-1334-7ad1-9d71-4b04bb7b8439` | PARKED (valid BLOCKED) |
 | P0.4 docs hygiene | `m0/p04-docs-hygiene` | `~/repos/ao-lanes/p04` | gpt-5.6-sol / high | `019f5434-5f98-7ba2-9bea-3b89c2d30656` | **merged** |
+| P1.1 `internal/workflow/def` | `m1/p11-workflow-def` | `~/repos/ao-lanes/p11` | gpt-5.6-sol / high | _pending_ | authored |
 
 ## Events
 
@@ -45,6 +46,33 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   indirect `go-toast` dep pulled by the mandated wails package — not a
   violation. Rev2 packet to be authored (target: M3 boundary) with the
   bridge decision, fork patch, async auth, activation queue.
+- **User rulings on P0.3 (mid-campaign):** (1) if the Windows launcher
+  needs the remote/bridge changes, do them — rev2 scope includes the
+  launcher↔backend notification bridge rather than deferring it. (2) Wails
+  fork changes must be logged as upstream candidates once fully verified —
+  user wants to submit fix PRs upstream. **Upstream verification DONE for
+  the dismiss-vs-click bug:** identical code in `wailsapp/wails` master at
+  `v3/pkg/services/notifications/notifications_linux.go:658` — dbus
+  `NotificationClosed` reason 2 (user dismissed, per freedesktop spec)
+  synthesizes a `NotificationResponse` with `DefaultActionIdentifier`,
+  indistinguishable from a real click (real clicks arrive via
+  `ActionInvoked`, line 566/576). Apps navigate on dismiss. macOS
+  distinguishes these (`UNNotificationDismissActionIdentifier`), so the
+  cross-platform surface is inconsistent too. → UPSTREAM PR CANDIDATE.
+  **STANDING CONSTRAINT (user, verbatim intent): may fix the issue and
+  create the branch off latest upstream, but do NOT open the upstream PR
+  until the user has explicitly approved it.**
+- **P0.1 root-cause CONFIRMED (not a load flake):** `make test-race` fails
+  identically on a quiet machine — the root package hits the 600s per-binary
+  `-timeout` with tests still progressing (same test reached at panic in
+  both runs = deterministic order + honest slowness, no hang). The harness
+  commit (6c2bfcbb) grew the root package's -race runtime past the budget.
+  Fix: measure honest runtime (`go test -race -timeout 1800s .` timing run),
+  raise the Makefile `test-race` timeout with margin for parallel-lane load,
+  land on main, reset the p01 lane, fresh dispatch (per skill: tree reset
+  under a session → fresh, not resume; it had produced only BLOCKED.md).
+  Observed debt (not fixed now): root-package -race runtime >10min deserves
+  a test-speed pass someday.
 - **P0.2 flagged an internal packet contradiction** (standing rules ban all
   git ops; a gate asked for `git diff --stat` output) — resolved
   conservatively, no git run. Future packets: standing rules should permit
