@@ -24,6 +24,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.7 harness workflows | `m2/p27-harness-workflows` | `~/repos/ao-lanes/p27` | gpt-5.6-sol / **xhigh** | `019f566e-6df8-7e71-9f2d-843f7b228a5d` | **merged** |
 | P0.3 rev2 OS notifications | `m3/p03r2-os-notifications` | `~/repos/ao-lanes/p03r2` | gpt-5.6-sol / **xhigh** | `019f56ae-e129-7612-be10-c9c677757ed9` | **merged** `6cb823f4` |
 | P3.1 thread modes + take-over | `m3/p31-thread-modes` | `~/repos/ao-lanes/p31` | gpt-5.6-sol / **xhigh** | run1 `019f56fc-e0c2-78e0-acf4-6979f21e303e` (dead on arrival — usage limit); run2 `019f5714-98e5-77f2-8d0a-cc289a6bf374` | **merged `3ee937f8`** (workflows-system) |
+| P3.2 disposition + UI data + notifications | `m3/p32-disposition-uidata` | `~/repos/ao-lanes/p32` | gpt-5.6-sol / **xhigh** | `019f576c-444e-70b3-9bd5-0afadd50c1de` | dispatched (base `dc591c52`, workflows-system) |
 
 ## Events
 
@@ -554,3 +555,36 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   Accepted as documented assumptions: Complete fails fast at full
   concurrency; 15s bounded engine-loop wait for takeover yield.
   Independent full gate battery re-run post-merge on `workflows-system`.
+
+- **P3.2 authored (combined P3.2+P3.3 per the approved larger-chunk
+  cadence) + dispatched** into `~/repos/ao-lanes/p32` (branch
+  `m3/p32-disposition-uidata`, base `dc591c52` on `workflows-system`).
+  Scope: disposition D3.3 (WorkflowMergeItem / WorkflowCreateItemPR /
+  WorkflowDiscardItem via internal/git + forge layer; refusal parks
+  needs-human(disposition); receipts JSON on the item; auto-pr/auto-merge
+  policy shares the manual core; D6 cleanup gating); migration v26 (ADD
+  COLUMN disposition + digest, rebuild fallback if CHECK-on-ADD fails);
+  D4.3 digests (synchronous deterministic template at park — never
+  blocks — async textgen upgrade via threadtitle/commitmsg precedent);
+  notification senders on the app emit seam through the P0.3 pipe
+  (per-item park/fail + coalesced drain summary; done-awaiting-
+  disposition rides the summary only; notify.Target gains workflow-item /
+  workflow-triage-agent kinds, additive, launcher-opaque); D12 notes
+  RPCs over automations.notes; WorkflowListDefinitions intake listing
+  (dry-run validity + first error + profile cross-check + predicted
+  queue position); WorkflowRemoveQueuedItem (queued-only, loses politely
+  to a racing start); fire-and-forget enqueue (P2.6 carry-forward —
+  synchronous validation stays, only triggered starts detach; resume/
+  answer/gate-resolve contracts unchanged). All new RPCs pre-classified
+  LocalOnly in the brief (P3.1 BLOCKED lesson baked in). Lane
+  bootstrapped (pnpm frontend+e2e, frontend dist built for the go:embed,
+  lane make go-build green). Banner verified sol/**xhigh**, session
+  `019f576c-444e-70b3-9bd5-0afadd50c1de`. Review emphases banked: merge
+  refusal paths (dirty base / conflict / missing branch) must be
+  test-proven and receipt-less; no forced git flags anywhere (grep
+  --force / checkout -f); digest template must not leak internals
+  (variables/gate traces); Target extension round-trip through
+  TargetToMap/FromMap + launcher opacity; fire-and-forget must not break
+  engine Sync() test semantics; drain-summary tally reset on restart is
+  an accepted documented assumption. Log: session scratchpad
+  `p32-codex.log`.
