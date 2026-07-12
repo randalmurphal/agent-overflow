@@ -41,6 +41,7 @@ const (
 	ReasonDisposition        Reason = "disposition"
 	ReasonSetupFailed        Reason = "setup-failed"
 	ReasonInterrupted        Reason = "interrupted"
+	ReasonTakenOver          Reason = "taken-over"
 )
 
 type OutcomeKind string
@@ -71,13 +72,14 @@ type RunKey struct {
 
 // RunRequest contains the immutable workflow snapshot plus phase-local input.
 type RunRequest struct {
-	Key           RunKey         `json:"key"`
-	Item          store.WorkItem `json:"item"`
-	Workflow      def.Workflow   `json:"workflow"`
-	Phase         def.Phase      `json:"phase"`
-	Vars          map[string]any `json:"vars"`
-	Feedback      *Feedback      `json:"feedback,omitempty"`
-	PriorThreadID string         `json:"priorThreadId,omitempty"`
+	Key              RunKey         `json:"key"`
+	Item             store.WorkItem `json:"item"`
+	Workflow         def.Workflow   `json:"workflow"`
+	Phase            def.Phase      `json:"phase"`
+	Vars             map[string]any `json:"vars"`
+	Feedback         *Feedback      `json:"feedback,omitempty"`
+	PriorThreadID    string         `json:"priorThreadId,omitempty"`
+	FinalizeTakeover bool           `json:"finalizeTakeover,omitempty"`
 }
 
 type Feedback struct {
@@ -102,6 +104,11 @@ type HumanIntervention struct {
 	Note     string        `json:"note,omitempty"`
 }
 
+type TakeoverIntervention struct {
+	Kind string `json:"kind"`
+	At   int64  `json:"at"`
+}
+
 // Runner starts provider work on an engine-owned worker goroutine. Start must
 // call entered exactly once, immediately on entry and before any blocking work.
 // Start may then block while provisioning; its result is serialized back
@@ -110,6 +117,7 @@ type HumanIntervention struct {
 type Runner interface {
 	Start(context.Context, RunRequest, func(), func(Outcome)) error
 	Stop(context.Context, RunKey) (json.RawMessage, error)
+	StopForTakeover(context.Context, RunKey) (json.RawMessage, error)
 }
 
 // Emitter is implemented by the later app/channel wiring packet. Emit runs on

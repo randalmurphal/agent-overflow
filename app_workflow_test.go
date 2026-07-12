@@ -571,6 +571,57 @@ func TestWorkflowSessionRequiresRegisteredSchema(t *testing.T) {
 	}
 }
 
+func TestDeadWorkflowSessionCanRegisterSchemaLessTakeover(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("workflow-dead-takeover")
+	thread.Mode = "workflow"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	phase := def.Phase{
+		ID: "work", Driver: def.DriverAgent, Provider: "codex", Model: "gpt-5",
+		Outputs: map[string]def.Variable{"ok": {Schema: def.JSONSchema{Type: "boolean"}}},
+	}
+	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{ID: "flow", Phases: []def.Phase{phase}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := store.WorkItem{
+		ID: "taken-over", ProjectID: defaultTestProjectID, Goal: "goal",
+		WorkflowID: "flow", WorkflowScope: "shared", Snapshot: snapshot,
+		State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonTakenOver),
+		Source: "manual", CreatedAt: 1,
+	}
+	if err := app.store.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.CreateWorkItemPhase(store.WorkItemPhase{
+		ItemID: item.ID, PhaseID: phase.ID, Attempt: 1, ThreadID: thread.ID,
+		Status: "parked", StartedAt: 1, EndedAt: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner := newWorkflowAppRunner(app, t.TempDir(), nil)
+	app.workflowRunner = runner
+	if err := runner.registerTakeover(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := app.workflowSchemaForSession(thread)
+	if err != nil {
+		t.Fatalf("schema-less takeover session registration failed: %v", err)
+	}
+	if len(schema) != 0 || runner.workItemForThread(thread.ID) != item.ID {
+		t.Fatalf("schema/item registration = %s/%q, want schema-less/%q", schema, runner.workItemForThread(thread.ID), item.ID)
+	}
+	app.sessionManager().put(thread.ID, session{})
+	if err := runner.registerTakeover(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if runner.takeovers[thread.ID].schemaAttached {
+		t.Fatal("a later registration mistook the live schema-less session for a schema-attached Claude session")
+	}
+}
+
 func TestWorkflowRunnerRejectsUnsupportedPhasesAndStopsUnknownRuns(t *testing.T) {
 	runner := newWorkflowAppRunner(&App{}, t.TempDir(), nil)
 	if _, err := runner.Stop(context.Background(), engine.RunKey{ItemID: "missing", PhaseID: "phase", Attempt: 1}); err != nil {

@@ -89,6 +89,12 @@ func decodeJSON(payload []byte, target any) error {
 func loopCounts(phases []store.WorkItemPhase) (map[string]int, error) {
 	counts := make(map[string]int)
 	for _, phase := range phases {
+		if len(phase.Intervention) > 0 {
+			var takeover TakeoverIntervention
+			if decodeJSON(phase.Intervention, &takeover) == nil && takeover.Kind == "taken-over" {
+				continue
+			}
+		}
 		if len(phase.GateTrace) == 0 {
 			continue
 		}

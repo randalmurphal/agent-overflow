@@ -108,13 +108,15 @@ func (s *Store) SearchThreadItems(threadID, query string, limit int) ([]ThreadMe
 // searchTitleHits returns one hit per thread whose title matches — no per-item
 // fan-out. Most-recently-active threads first.
 func (s *Store) searchTitleHits(pattern string, limit int) ([]ThreadMessageHit, error) {
+	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
+	args := append([]any{pattern}, hiddenArgs...)
 	rows, err := s.db.Query(`
 		SELECT id, title, provider
 		FROM threads
-		WHERE LOWER(title) LIKE ? ESCAPE '\'
+		WHERE LOWER(title) LIKE ? ESCAPE '\' AND `+hiddenClause+`
 		ORDER BY updated_at DESC
 		`+limitSuffix(limit),
-		pattern,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: search thread titles: %w", err)
@@ -161,15 +163,17 @@ func mergeTitleFirst(titleHits, itemHits []ThreadMessageHit, limit int) []Thread
 // matches, newest-first. Item summaries only — title matches come from
 // searchTitleHits and are merged in by SearchThreadMessages.
 func (s *Store) searchGlobalItemHits(pattern string, limit int) ([]ThreadMessageHit, error) {
+	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
+	args := append([]any{pattern}, hiddenArgs...)
 	rows, err := s.db.Query(`
 		SELECT t.id, t.title, t.provider,
 			i.id, i.turn_index, i.kind, i.role, i.summary
 		FROM items i
 		JOIN threads t ON t.id = i.thread_id
-		WHERE LOWER(i.summary) LIKE ? ESCAPE '\'
+		WHERE LOWER(i.summary) LIKE ? ESCAPE '\' AND `+hiddenClause+`
 		ORDER BY i.created_at DESC
 		`+limitSuffix(limit),
-		pattern,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: search item summaries: %w", err)

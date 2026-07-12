@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
+	"agent-overflow/internal/workflow/engine"
 
 	"github.com/google/uuid"
 )
@@ -194,6 +195,18 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		}
 	}
 
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: load thread: %w", err)
+	}
+	if len(opts.OutputSchema) == 0 {
+		if thread.Mode == threadmode.ModeWorkflow {
+			if err := a.prepareWorkflowTakeoverSendLocked(thread); err != nil {
+				return store.Item{}, fmt.Errorf("send message: %w", err)
+			}
+		}
+	}
+
 	// implemented_at is durable UI/history state, not a send-time lock.
 	// An explicit source-plan send is still valid after the plan is marked
 	// accepted, including restored drafts after a conversation revert.
@@ -214,7 +227,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	sourcePlan := resolved.sourcePlan
 	userMeta := resolved.userMessageMeta
 
-	thread, restoreImplementMode, err := a.beginImplementModeSwitch(threadID, sourcePlan)
+	thread, restoreImplementMode, err := a.beginImplementModeSwitch(thread, sourcePlan)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
@@ -350,10 +363,47 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// Codex from `turn/started`. There is no synthetic EventTurnStart
 	// emission here.
 
-	if thread.Mode != "workflow" {
+	if !threadmode.IsSagaOwned(thread.Mode) {
 		a.maybeGenerateThreadTitleWithAttachments(thread, content, hasPriorItems, persistedAttachments)
 	}
 	return userItem, nil
+}
+
+func (a *App) prepareWorkflowTakeoverSendLocked(thread store.Thread) error {
+	workflowEngine, err := a.requireWorkflowEngine()
+	if err != nil {
+		return err
+	}
+	item, err := a.store.GetWorkItemByPhaseThread(thread.ID)
+	if err != nil {
+		return fmt.Errorf("workflow takeover: %w", err)
+	}
+	if item.State != string(engine.StateRunning) && item.State != string(engine.StateNeedsHuman) {
+		return fmt.Errorf("workflow takeover: item %s has no live or parked attempt", item.ID)
+	}
+	phases, err := a.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		return fmt.Errorf("workflow takeover: list phase attempts: %w", err)
+	}
+	current, ok := currentWorkflowPhaseAttempt(phases)
+	if !ok || current.ThreadID != thread.ID {
+		return fmt.Errorf("workflow takeover: thread %s is not the current attempt for item %s", thread.ID, item.ID)
+	}
+	if item.State == string(engine.StateNeedsHuman) && item.Reason == string(engine.ReasonTakenOver) {
+		if _, active, activeErr := a.store.GetActiveTurn(thread.ID); activeErr != nil {
+			return fmt.Errorf("workflow takeover: inspect steering turn: %w", activeErr)
+		} else if active {
+			return fmt.Errorf("workflow takeover: the prior turn must yield before steering again")
+		}
+		return a.workflowRunner.registerTakeover(item.ID, thread.ID)
+	}
+	if err := workflowEngine.TakeOver(item.ID); err != nil {
+		return fmt.Errorf("workflow takeover: detach item: %w", err)
+	}
+	if err := a.workflowRunner.registerTakeover(item.ID, thread.ID); err != nil {
+		return fmt.Errorf("workflow takeover: register schema-less steering: %w", err)
+	}
+	return nil
 }
 
 func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, sendErr error) {
@@ -592,22 +642,18 @@ func (a *App) appendPlanRevisionCommentsToContent(threadID, content, planItemID 
 // Keeping the flip+restore here and out of sendMessageWithOptions
 // means the send pipe stays single-purpose: it persists, sends,
 // and synthesizes; it does not own transactional mode coordination.
-func (a *App) beginImplementModeSwitch(threadID string, sourcePlan *SourceProposedPlan) (store.Thread, func(), error) {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return store.Thread{}, func() {}, fmt.Errorf("get thread: %w", err)
-	}
+func (a *App) beginImplementModeSwitch(thread store.Thread, sourcePlan *SourceProposedPlan) (store.Thread, func(), error) {
 	if sourcePlan == nil || thread.Mode != "plan" {
 		return thread, func() {}, nil
 	}
 	prevMode := thread.Mode
-	if _, err := a.UpdateThreadMode(threadID, "chat"); err != nil {
+	if _, err := a.UpdateThreadMode(thread.ID, "chat"); err != nil {
 		return store.Thread{}, func() {}, fmt.Errorf("switch mode for plan implementation: %w", err)
 	}
 	thread.Mode = "chat"
 	restore := func() {
-		if _, err := a.UpdateThreadMode(threadID, prevMode); err != nil {
-			log.Printf("send message: revert mode after implement failure for thread %s: %v", threadID, err)
+		if _, err := a.UpdateThreadMode(thread.ID, prevMode); err != nil {
+			log.Printf("send message: revert mode after implement failure for thread %s: %v", thread.ID, err)
 		}
 	}
 	return thread, restore, nil

@@ -22,6 +22,12 @@ resource semaphores, and startup recovery.
 - `Answer` is valid only for `needs-human(question)`. It persists a new phase
   attempt whose feedback carries the answer and sets `RunRequest.PriorThreadID`
   from the parked attempt so the runner continues the same provider session.
+- `TakeOver` parks a live or parked attempt as `needs-human(taken-over)` through
+  teardown, releasing resources and runner timers without touching its
+  worktree/provider history. `CompleteTakeover` creates one finalize attempt on
+  that same thread; validation exhaustion re-parks as `taken-over`.
+- `SetQueue` explicitly replaces the transient process-N budget. Settings-only
+  changes use `UpdateQueueSettings`, which preserves that live budget.
 - Per-item budgets are checked before every phase attempt. Item overrides win
   over live profile defaults; token/USD spend comes through `SpendSource`, and
   wall clock uses the engine clock against the persisted item start time.

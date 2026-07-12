@@ -2908,6 +2908,14 @@ export function WorkflowCancelItem(itemID: string): $CancellablePromise<void> {
     return $Call.ByID(4158962817, itemID);
 }
 
+/**
+ * WorkflowCompleteTakeover runs one schema-attached finalize turn on the
+ * phase thread currently parked under human control.
+ */
+export function WorkflowCompleteTakeover(itemID: string): $CancellablePromise<void> {
+    return $Call.ByID(3393508470, itemID);
+}
+
 export function WorkflowEnqueueItem(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(683191625, projectID, workflowID, workflowScope, goal, seeds, budget, stepMode).then(($result: any) => {
         return $$createType100($result);
@@ -2923,6 +2931,28 @@ export function WorkflowGetItem(itemID: string): $CancellablePromise<$models.Wor
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
         return $$createType102($result);
+    });
+}
+
+/**
+ * WorkflowOpenTriageAgent opens or returns the per-project singleton triage
+ * shell. The absence of a work_items.triage_thread_id link distinguishes this
+ * shell durably from item hand-off threads.
+ */
+export function WorkflowOpenTriageAgent(projectID: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(1552981489, projectID).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
+ * WorkflowOpenTriageThread opens or returns the item-linked hand-off thread,
+ * seeding a newly created thread as its first user turn so work starts
+ * immediately.
+ */
+export function WorkflowOpenTriageThread(itemID: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(3525577760, itemID).then(($result: any) => {
+        return $$createType1($result);
     });
 }
 

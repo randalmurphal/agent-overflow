@@ -140,7 +140,7 @@ session already has the answer.
 - Payload bindings return raw data only. Rendering is a frontend projection
   based on item/payload kind.
 
-## Recent schema changes (v23-v24) — workflow persistence
+## Recent schema changes (v23-v25) — workflow persistence
 
 - `work_items`, `work_item_phases`, and `work_item_effects` persist workflow
   run history without project/thread/item FKs; `automations` and
@@ -149,6 +149,9 @@ session already has the answer.
   indexed for budget sums.
 - `threads.mode` accepts `workflow` for phase threads. The v24 rebuild
   preserves every existing thread column and index.
+- The v25 rebuild adds `workflow-studio` / `workflow-triage`, extends typed
+  work-item reasons with `taken-over`, and persists item hand-off ownership in
+  `work_items.triage_thread_id`.
 
 ## Extension points
 

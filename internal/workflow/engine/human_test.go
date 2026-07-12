@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"agent-overflow/internal/workflow/def"
@@ -109,5 +110,141 @@ func TestPersistedGateTraceDecodePreservesLargeInteger(t *testing.T) {
 	}
 	if !bytes.Contains(reencoded, []byte("9007199254740993")) {
 		t.Fatalf("large integer changed during trace round trip: %s", reencoded)
+	}
+}
+
+func TestTakeoverDetachesAndCompleteRoutesThroughGate(t *testing.T) {
+	workflow := onePhaseWorkflow("takeover", []string{"writer"}, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"takeover": workflow}, []string{"project"}, nil)
+	h.profiles.setCapacity("project", "writer", 1)
+	item := testItem("item", "project", "takeover", 0)
+	if err := h.engine.Enqueue(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOver(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
+	if h.runner.stopCount() != 1 {
+		t.Fatalf("runner stops = %d, want 1", h.runner.stopCount())
+	}
+	phases, err := h.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phases[0].Status != "parked" {
+		t.Fatalf("phase status = %q, want parked", phases[0].Status)
+	}
+	var intervention TakeoverIntervention
+	if err := json.Unmarshal(phases[0].Intervention, &intervention); err != nil {
+		t.Fatal(err)
+	}
+	if intervention.Kind != "taken-over" || intervention.At == 0 {
+		t.Fatalf("intervention = %+v", intervention)
+	}
+
+	if err := h.engine.CompleteTakeover(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	if len(starts) != 2 || !starts[1].FinalizeTakeover || starts[1].PriorThreadID != "thread-one" {
+		t.Fatalf("finalize start = %+v", starts)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateDone, "")
+}
+
+type failingInterventionPersistence struct {
+	persistence
+	err error
+}
+
+func (f failingInterventionPersistence) UpdateWorkItemPhaseIntervention(string, string, int, json.RawMessage) error {
+	return f.err
+}
+
+func TestTakeoverInterventionFailureStillParksAndReleases(t *testing.T) {
+	workflow := onePhaseWorkflow("takeover-failure", []string{"writer"}, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"takeover-failure": workflow}, []string{"project"}, nil)
+	h.profiles.setCapacity("project", "writer", 1)
+	item := testItem("item", "project", "takeover-failure", 0)
+	if err := h.engine.Enqueue(item); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("intervention write failed")
+	h.engine.store = failingInterventionPersistence{persistence: h.store, err: wantErr}
+	if err := h.engine.TakeOver(item.ID); !errors.Is(err, wantErr) {
+		t.Fatalf("takeover error = %v, want %v", err, wantErr)
+	}
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
+	if h.engine.activeSlots != 0 || len(h.engine.holders) != 0 {
+		t.Fatalf("takeover failure retained resources: slots=%d holders=%v", h.engine.activeSlots, h.engine.holders)
+	}
+	phases, err := h.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(phases) != 1 || phases[0].Status != "parked" {
+		t.Fatalf("phase after intervention failure = %+v", phases)
+	}
+}
+
+func TestTakeoverFinalizeValidationFailureReparksAndResumeIsFresh(t *testing.T) {
+	workflow := onePhaseWorkflow("takeover", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"takeover": workflow}, []string{"project"}, nil)
+	item := testItem("item", "project", "takeover", 0)
+	if err := h.engine.Enqueue(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOver(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.CompleteTakeover(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeExecutionFailure})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
+	if err := h.engine.Resume(item.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	last := starts[len(starts)-1]
+	if last.FinalizeTakeover || last.PriorThreadID != "" {
+		t.Fatalf("fresh resume start = %+v", last)
+	}
+}
+
+func TestTakeoverOfParkedQuestionLeavesAnswerPathUntouchedUntilTakeover(t *testing.T) {
+	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	item := testItem("item", "project", "question", 0)
+	if err := h.engine.Enqueue(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOver(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
+	if err := h.engine.Answer(item.ID, "too late"); err == nil {
+		t.Fatal("question answer succeeded after explicit takeover")
 	}
 }

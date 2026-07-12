@@ -151,3 +151,28 @@ func TestParseOptionalRuntime_PresentInvalid(t *testing.T) {
 		t.Fatal("present should be false on error")
 	}
 }
+
+func TestWorkflowModesAreLegalSagaOwnedAndHidden(t *testing.T) {
+	for _, mode := range []string{ModeWorkflow, ModeWorkflowStudio, ModeWorkflowTriage} {
+		if !IsLegal(mode) || !IsSagaOwned(mode) || !IsHidden(mode) {
+			t.Fatalf("mode %q legal/saga-owned/hidden = %v/%v/%v", mode, IsLegal(mode), IsSagaOwned(mode), IsHidden(mode))
+		}
+		if _, err := ValidateCreate(mode); err == nil {
+			t.Fatalf("ValidateCreate(%q) succeeded", mode)
+		}
+		if _, err := ValidateSet(mode); err == nil {
+			t.Fatalf("ValidateSet(%q) succeeded", mode)
+		}
+	}
+	if IsHidden(ModeDiscussion) || !IsSagaOwned(ModeDiscussion) {
+		t.Fatalf("discussion hidden/saga-owned = %v/%v", IsHidden(ModeDiscussion), IsSagaOwned(ModeDiscussion))
+	}
+	if IsHidden(ModeTerminal) || !IsLegal(ModeTerminal) {
+		t.Fatalf("terminal hidden/legal = %v/%v", IsHidden(ModeTerminal), IsLegal(ModeTerminal))
+	}
+	got := HiddenModes()
+	got[0] = "mutated"
+	if !IsHidden(ModeWorkflow) {
+		t.Fatal("HiddenModes exposed mutable package state")
+	}
+}

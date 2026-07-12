@@ -1457,6 +1457,7 @@ export class WorkItem {
     "budget"?: json$0.RawMessage;
     "source": string;
     "sourceRef"?: string;
+    "triageThreadId"?: string;
     "createdAt": number;
     "startedAt"?: number;
     "endedAt"?: number;

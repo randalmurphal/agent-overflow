@@ -12,6 +12,100 @@ import (
 
 const maxHumanNoteBytes = 16 * 1024
 
+func (e *Engine) takeOver(itemID string) error {
+	item, tracked := e.items[itemID]
+	if tracked {
+		if State(item.item.State) != StateRunning {
+			return fmt.Errorf("take over item %q: invalid state %s", itemID, item.item.State)
+		}
+	} else {
+		var err error
+		item, err = e.loadParked(itemID)
+		if err != nil {
+			return err
+		}
+	}
+	if item.phaseID == "" || item.attempt < 1 {
+		return fmt.Errorf("take over item %q: current phase attempt is missing", itemID)
+	}
+	var partial json.RawMessage
+	if tracked {
+		if item.runnerStarting {
+			return fmt.Errorf("take over item %q: phase runner is still starting", itemID)
+		}
+		if item.runnerActive {
+			var stopErr error
+			partial, stopErr = e.runner.StopForTakeover(e.ctx, RunKey{ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt})
+			if stopErr != nil {
+				return fmt.Errorf("take over item %q: stop live attempt: %w", itemID, stopErr)
+			}
+			item.runnerActive = false
+		}
+	}
+	intervention, err := json.Marshal(TakeoverIntervention{Kind: "taken-over", At: e.timestamp()})
+	if err != nil {
+		return fmt.Errorf("take over item %q: encode intervention: %w", itemID, err)
+	}
+	interventionErr := e.store.UpdateWorkItemPhaseIntervention(itemID, item.phaseID, item.attempt, intervention)
+	if tracked {
+		teardownErr := e.teardown(item, teardownRequest{
+			output: partial, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonTakenOver,
+		})
+		if interventionErr != nil {
+			interventionErr = fmt.Errorf("take over item %q: persist intervention: %w", itemID, interventionErr)
+		}
+		return errors.Join(interventionErr, teardownErr)
+	}
+	if interventionErr != nil {
+		return fmt.Errorf("take over item %q: persist intervention: %w", itemID, interventionErr)
+	}
+	endedAt := item.item.EndedAt
+	if endedAt == 0 {
+		endedAt = e.timestamp()
+	}
+	if err := e.store.UpdateWorkItemState(itemID, string(StateNeedsHuman), string(ReasonTakenOver), endedAt); err != nil {
+		return fmt.Errorf("take over item %q: persist parked state: %w", itemID, err)
+	}
+	item.item.Reason = string(ReasonTakenOver)
+	item.item.EndedAt = endedAt
+	e.emitter.Emit("workflow:item-state", StateEvent{
+		ItemID: itemID, From: StateNeedsHuman, To: StateNeedsHuman, Reason: ReasonTakenOver,
+	})
+	return nil
+}
+
+func (e *Engine) completeTakeover(itemID string) error {
+	if e.activeSlots >= e.config.GlobalConcurrency {
+		return fmt.Errorf("complete takeover %q: global concurrency is full", itemID)
+	}
+	item, err := e.loadParked(itemID)
+	if err != nil {
+		return err
+	}
+	if Reason(item.item.Reason) != ReasonTakenOver {
+		return fmt.Errorf("complete takeover %q: item reason is %q, want %q", itemID, item.item.Reason, ReasonTakenOver)
+	}
+	phases, err := e.store.ListWorkItemPhases(itemID)
+	if err != nil {
+		return fmt.Errorf("complete takeover %q phases: %w", itemID, err)
+	}
+	current, ok := phaseAttempt(phases, item.phaseID, item.attempt)
+	if !ok || current.ThreadID == "" {
+		return fmt.Errorf("complete takeover %q: parked attempt thread is missing", itemID)
+	}
+	if err := e.transition(item, StateRunning, ""); err != nil {
+		return err
+	}
+	item.priorThreadID = current.ThreadID
+	item.takeoverFinalize = true
+	item.attempt = 0
+	e.items[itemID] = item
+	if err := e.enterPhase(item); err != nil {
+		return err
+	}
+	return e.schedule()
+}
+
 func (e *Engine) answer(itemID, answer string) error {
 	if strings.TrimSpace(answer) == "" {
 		return fmt.Errorf("answer question %q: answer cannot be empty", itemID)

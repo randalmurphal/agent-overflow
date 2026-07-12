@@ -218,7 +218,106 @@ func (a *App) WorkflowResumeItem(itemID, targetPhase string) error {
 	if err != nil {
 		return err
 	}
-	return workflowEngine.Resume(itemID, targetPhase)
+	item, itemErr := a.store.GetWorkItem(itemID)
+	if itemErr != nil {
+		return itemErr
+	}
+	if item.Reason == string(engine.ReasonTakenOver) {
+		phase, phaseErr := a.currentWorkflowPhaseAttempt(itemID)
+		if phaseErr != nil {
+			return fmt.Errorf("resume workflow takeover %s: %w", itemID, phaseErr)
+		}
+		unlock := a.threadLocks().Lock(phase.ThreadID)
+		if _, active, activeErr := a.store.GetActiveTurn(phase.ThreadID); activeErr != nil {
+			unlock()
+			return fmt.Errorf("resume workflow takeover %s: inspect active turn: %w", itemID, activeErr)
+		} else if active {
+			unlock()
+			return fmt.Errorf("resume workflow takeover %s: the steering turn must yield first", itemID)
+		}
+		if err := a.workflowRunner.beginTakeoverTransition(itemID, phase.ThreadID); err != nil {
+			unlock()
+			return err
+		}
+		unlock()
+		if err := workflowEngine.Resume(itemID, targetPhase); err != nil {
+			a.workflowRunner.cancelTakeoverTransition(itemID, phase.ThreadID)
+			return err
+		}
+		a.workflowRunner.clearTakeover(itemID)
+		return nil
+	}
+	if err := workflowEngine.Resume(itemID, targetPhase); err != nil {
+		return err
+	}
+	return nil
+}
+
+// WorkflowCompleteTakeover runs one schema-attached finalize turn on the
+// phase thread currently parked under human control.
+func (a *App) WorkflowCompleteTakeover(itemID string) error {
+	workflowEngine, err := a.requireWorkflowEngine()
+	if err != nil {
+		return err
+	}
+	item, err := a.store.GetWorkItem(itemID)
+	if err != nil {
+		return err
+	}
+	if item.State != string(engine.StateNeedsHuman) || item.Reason != string(engine.ReasonTakenOver) {
+		return fmt.Errorf("complete workflow takeover %s: item is %s(%s), want needs-human(taken-over)", itemID, item.State, item.Reason)
+	}
+	phase, err := a.currentWorkflowPhaseAttempt(itemID)
+	if err != nil {
+		return fmt.Errorf("complete workflow takeover %s: %w", itemID, err)
+	}
+	threadID := phase.ThreadID
+	unlock := a.threadLocks().Lock(threadID)
+	if _, active, err := a.store.GetActiveTurn(threadID); err != nil {
+		unlock()
+		return fmt.Errorf("complete workflow takeover %s: inspect active turn: %w", itemID, err)
+	} else if active {
+		unlock()
+		return fmt.Errorf("complete workflow takeover %s: the steering turn must yield first", itemID)
+	}
+	if a.workflowRunner == nil {
+		unlock()
+		return fmt.Errorf("complete workflow takeover %s: runner unavailable", itemID)
+	}
+	if err := a.workflowRunner.beginTakeoverTransition(itemID, threadID); err != nil {
+		unlock()
+		return err
+	}
+	unlock()
+	if err := workflowEngine.CompleteTakeover(itemID); err != nil {
+		a.workflowRunner.cancelTakeoverTransition(itemID, threadID)
+		return err
+	}
+	return nil
+}
+
+func (a *App) currentWorkflowPhaseAttempt(itemID string) (store.WorkItemPhase, error) {
+	phases, err := a.store.ListWorkItemPhases(itemID)
+	if err != nil {
+		return store.WorkItemPhase{}, err
+	}
+	current, ok := currentWorkflowPhaseAttempt(phases)
+	if !ok || current.ThreadID == "" {
+		return store.WorkItemPhase{}, fmt.Errorf("parked phase thread is missing")
+	}
+	return current, nil
+}
+
+func currentWorkflowPhaseAttempt(phases []store.WorkItemPhase) (store.WorkItemPhase, bool) {
+	for index := len(phases) - 1; index >= 0; index-- {
+		if phases[index].Status == "running" {
+			return phases[index], true
+		}
+	}
+	if len(phases) == 0 {
+		return store.WorkItemPhase{}, false
+	}
+	return phases[len(phases)-1], true
 }
 
 func (a *App) WorkflowAnswerQuestion(itemID, answer string) error {

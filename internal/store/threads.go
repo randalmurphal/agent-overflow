@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+
+	"agent-overflow/internal/threadmode"
 )
 
 // threadColumns lists every column in the order scanThread expects. The
@@ -85,18 +88,6 @@ var (
 	// thread's provider after timeline items have been persisted.
 	ErrThreadProviderLocked = errors.New("store: thread provider locked")
 )
-
-// legalModes maps every valid mode value to struct{}{} so membership
-// checks are constant-time. Kept in sync with the CHECK constraint on
-// threads.mode (see migrate.go rebuildThreadsV5SQL).
-var legalModes = map[string]struct{}{
-	"chat":       {},
-	"plan":       {},
-	"design":     {},
-	"discussion": {},
-	"terminal":   {},
-	"workflow":   {},
-}
 
 var legalEfforts = map[string]struct{}{
 	"none":    {},
@@ -192,30 +183,51 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 }
 
 func (s *Store) CreateThread(t Thread) error {
+	prepared, lastReadAtArg, err := prepareThreadForCreate(t)
+	if err != nil {
+		return err
+	}
+	if err := insertThread(s.db, prepared, lastReadAtArg); err != nil {
+		return fmt.Errorf("store: create thread: %w", err)
+	}
+	return nil
+}
+
+type threadExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func prepareThreadForCreate(t Thread) (Thread, any, error) {
 	t.Mode = normalizeMode(t.Mode)
+	if !threadmode.IsLegal(t.Mode) {
+		return Thread{}, nil, fmt.Errorf("%w: %q", ErrInvalidMode, t.Mode)
+	}
 	t.RuntimeMode = normalizeRuntimeMode(t.RuntimeMode)
 	t.ReasoningEffort = normalizeEffort(t.ReasoningEffort)
 	if !legalEffortForProvider(t.Provider, t.ReasoningEffort) {
-		return fmt.Errorf("%w: %s/%s", ErrInvalidEffort, t.Provider, t.ReasoningEffort)
+		return Thread{}, nil, fmt.Errorf("%w: %s/%s", ErrInvalidEffort, t.Provider, t.ReasoningEffort)
 	}
 	if t.ContextWindow == 0 {
 		t.ContextWindow = 1000000
 	}
 	if !validContextWindow(t.ContextWindow) {
-		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, t.ContextWindow)
+		return Thread{}, nil, fmt.Errorf("%w: %d", ErrInvalidContextWindow, t.ContextWindow)
 	}
 	if !validAutoCompactPercent(t.AutoCompactStandardPercent) {
-		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactStandardPercent)
+		return Thread{}, nil, fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactStandardPercent)
 	}
 	if !validAutoCompactPercent(t.AutoCompactExtendedPercent) {
-		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactExtendedPercent)
+		return Thread{}, nil, fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactExtendedPercent)
 	}
 	lastReadAt := t.LastReadAt
 	if lastReadAt == nil {
 		lastReadAt = &t.CreatedAt
 	}
-	lastReadAtArg := nullableInt64(lastReadAt)
-	_, err := s.db.Exec(
+	return t, nullableInt64(lastReadAt), nil
+}
+
+func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
+	_, err := execer.Exec(
 		`INSERT INTO threads (id, project_id, title, provider, model,
 		    workspace_path, worktree_path, branch, pr_ref, session_ref, pending_fork_session_ref,
 		    mode, reasoning_effort, fast_mode, context_window,
@@ -232,10 +244,7 @@ func (s *Store) CreateThread(t Thread) error {
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived), lastReadAtArg, marshalDisabledMcpServers(t.DisabledMcpServers),
 	)
-	if err != nil {
-		return fmt.Errorf("store: create thread: %w", err)
-	}
-	return nil
+	return err
 }
 
 func (s *Store) GetThread(id string) (Thread, error) {
@@ -277,9 +286,10 @@ func (s *Store) ListThreads() ([]Thread, error) {
 // included: they are first-class sidebar fixtures that never carry items or
 // drafts, so the item/draft gates would otherwise hide them.
 func (s *Store) ListThreadsWithItems() ([]Thread, error) {
+	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	rows, err := s.db.Query(
-		`SELECT ` + threadColumns + ` FROM threads
-		 WHERE archived = 0 AND mode != 'workflow'
+		`SELECT `+threadColumns+` FROM threads
+		 WHERE archived = 0 AND `+hiddenClause+`
 		   AND (
 		       threads.mode = 'terminal'
 		    OR EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id)
@@ -289,7 +299,7 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 		            AND thread_drafts.has_content = 1
 		       )
 		   )
-		 ORDER BY updated_at DESC`,
+		 ORDER BY updated_at DESC`, hiddenArgs...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads with items: %w", err)
@@ -311,9 +321,10 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 // Used by the settings panel to surface threads that have been hidden from
 // the sidebar so the user can unarchive or permanently delete them.
 func (s *Store) ListArchivedThreads() ([]Thread, error) {
+	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	rows, err := s.db.Query(
-		`SELECT ` + threadColumns + ` FROM threads
-		 WHERE archived = 1 AND mode != 'workflow' ORDER BY updated_at DESC`,
+		`SELECT `+threadColumns+` FROM threads
+		 WHERE archived = 1 AND `+hiddenClause+` ORDER BY updated_at DESC`, hiddenArgs...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list archived threads: %w", err)
@@ -335,11 +346,13 @@ func (s *Store) ListArchivedThreads() ([]Thread, error) {
 // project, newest-touched first. Used by the sidebar to render the threads
 // nested under a project row.
 func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
+	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
+	args := append([]any{projectID}, hiddenArgs...)
 	rows, err := s.db.Query(
 		`SELECT `+threadColumns+` FROM threads
-		 WHERE project_id = ? AND archived = 0 AND mode != 'workflow'
+		 WHERE project_id = ? AND archived = 0 AND `+hiddenClause+`
 		 ORDER BY updated_at DESC`,
-		projectID,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads for project %s: %w", projectID, err)
@@ -355,6 +368,38 @@ func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
 		threads = append(threads, t)
 	}
 	return threads, rows.Err()
+}
+
+// FindWorkflowTriageAgentThread returns the oldest live project-level triage
+// shell. Item hand-off threads are excluded by their persisted work-item link.
+func (s *Store) FindWorkflowTriageAgentThread(projectID string) (Thread, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT `+threadColumns+` FROM threads
+		 WHERE project_id = ? AND mode = ? AND archived = 0
+		   AND NOT EXISTS (
+		       SELECT 1 FROM work_items WHERE work_items.triage_thread_id = threads.id
+		   )
+		 ORDER BY created_at ASC LIMIT 1`,
+		projectID, threadmode.ModeWorkflowTriage,
+	)
+	thread, err := scanThread(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Thread{}, false, nil
+	}
+	if err != nil {
+		return Thread{}, false, fmt.Errorf("store: find workflow triage agent thread for project %s: %w", projectID, err)
+	}
+	return thread, true, nil
+}
+
+func hiddenThreadModesClause(column string) (string, []any) {
+	modes := threadmode.HiddenModes()
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(modes)), ",")
+	args := make([]any, len(modes))
+	for index, mode := range modes {
+		args[index] = mode
+	}
+	return column + " NOT IN (" + placeholders + ")", args
 }
 
 // ListChildThreads returns a parent's child threads ordered by
@@ -964,7 +1009,7 @@ func (s *Store) UpdateProvider(threadID, prov string) error {
 // which restricts the reachable set to chat/plan.
 func (s *Store) UpdateMode(threadID, mode string) error {
 	mode = normalizeMode(mode)
-	if _, ok := legalModes[mode]; !ok {
+	if !threadmode.IsLegal(mode) {
 		return fmt.Errorf("%w: %q", ErrInvalidMode, mode)
 	}
 	result, err := s.db.Exec(`UPDATE threads SET mode = ? WHERE id = ?`,
@@ -1108,7 +1153,7 @@ func (s *Store) UpdateRuntimeMode(threadID, mode string) error {
 
 // normalizeMode coerces empty strings to the schema default "chat" and
 // returns anything else verbatim. Callers that need strict validation
-// run the legalModes check separately.
+// run the threadmode.IsLegal check separately.
 func normalizeMode(mode string) string {
 	if mode == "" {
 		return "chat"

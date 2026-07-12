@@ -118,6 +118,10 @@ func (f *fakeRunner) Stop(_ context.Context, key RunKey) (json.RawMessage, error
 	return append(json.RawMessage(nil), f.partials[runMapKey(key)]...), f.stopErrs[key.ItemID]
 }
 
+func (f *fakeRunner) StopForTakeover(ctx context.Context, key RunKey) (json.RawMessage, error) {
+	return f.Stop(ctx, key)
+}
+
 func (f *fakeRunner) complete(t *testing.T, itemID string, outcome Outcome) {
 	t.Helper()
 	f.mu.Lock()

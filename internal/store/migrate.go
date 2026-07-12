@@ -696,6 +696,75 @@ CREATE INDEX idx_threads_project     ON threads(project_id, updated_at DESC);
 CREATE INDEX idx_threads_updated     ON threads(updated_at DESC);
 `
 
+// rebuildThreadsWorkflowModesV25SQL preserves the complete v24 rebuild text
+// and changes only the enumerated mode CHECK. Deriving it from the shipped v24
+// SQL makes accidental column/index drift impossible.
+var rebuildThreadsWorkflowModesV25SQL = strings.Replace(
+	rebuildThreadsWorkflowModeV24SQL,
+	"CHECK(mode IN ('chat','plan','design','discussion','terminal','workflow'))",
+	"CHECK(mode IN ('chat','plan','design','discussion','terminal','workflow','workflow-studio','workflow-triage'))",
+	1,
+)
+
+// rebuildWorkItemsTakeoverTriageV25SQL adds the durable triage-thread link and
+// extends the typed reason CHECK for takeover parks. SQLite cannot alter a
+// CHECK constraint in place, so the established table-rebuild pattern is
+// required. Run-record tables intentionally have no work_items foreign keys.
+const rebuildWorkItemsTakeoverTriageV25SQL = `
+CREATE TABLE work_items_new (
+    id               TEXT    PRIMARY KEY,
+    project_id       TEXT    NOT NULL,
+    goal             TEXT    NOT NULL,
+    workflow_id      TEXT    NOT NULL,
+    workflow_scope   TEXT    NOT NULL CHECK(workflow_scope IN ('project','shared')),
+    snapshot         TEXT    NOT NULL DEFAULT '' CHECK(snapshot = '' OR json_valid(snapshot)),
+    state            TEXT    NOT NULL CHECK(state IN ('queued','running','needs-human','done','failed','cancelled')),
+    reason           TEXT    NOT NULL DEFAULT '' CHECK(reason IN ('','gate','question','stuck','stalled','budget-exhausted','retries-exhausted','check-failed-genuine','agent-error','wiring-error','disposition','setup-failed','interrupted','taken-over')),
+    sort_position    INTEGER NOT NULL,
+    seeds            TEXT    NOT NULL DEFAULT '' CHECK(seeds = '' OR json_valid(seeds)),
+    step_mode        INTEGER NOT NULL DEFAULT 0 CHECK(step_mode IN (0,1)),
+    worktree_path    TEXT    NOT NULL DEFAULT '',
+    branch           TEXT    NOT NULL DEFAULT '',
+    base_branch      TEXT    NOT NULL DEFAULT '',
+    budget           TEXT    NOT NULL DEFAULT '' CHECK(budget = '' OR json_valid(budget)),
+    source           TEXT    NOT NULL CHECK(source IN ('manual','agent','automation')),
+    source_ref       TEXT    NOT NULL DEFAULT '',
+    triage_thread_id TEXT    NOT NULL DEFAULT '',
+    created_at       INTEGER NOT NULL,
+    started_at       INTEGER NOT NULL DEFAULT 0,
+    ended_at         INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT INTO work_items_new (
+    id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+    sort_position, seeds, step_mode, worktree_path, branch, base_branch, budget,
+    source, source_ref, triage_thread_id, created_at, started_at, ended_at
+)
+SELECT
+    id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+    sort_position, seeds, step_mode, worktree_path, branch, base_branch, budget,
+    source, source_ref, '', created_at, started_at, ended_at
+FROM work_items;
+
+DROP TABLE work_items;
+
+ALTER TABLE work_items_new RENAME TO work_items;
+
+CREATE INDEX idx_work_items_project_state_sort
+  ON work_items(project_id, state, sort_position, created_at);
+
+CREATE INDEX idx_work_items_project_sort
+  ON work_items(project_id, sort_position, created_at);
+
+CREATE INDEX idx_work_items_triage_thread
+  ON work_items(triage_thread_id)
+  WHERE triage_thread_id <> '';
+
+CREATE INDEX idx_work_item_phases_thread
+  ON work_item_phases(thread_id, started_at DESC, attempt DESC)
+  WHERE thread_id <> '';
+`
+
 // migrations is the ordered list of all schema migrations. Squashed
 // for v0.0.1: the prior 51-migration chain produced this schema; old
 // databases were rebaked into a single (1, 'initial_schema') row by
@@ -1004,6 +1073,12 @@ CREATE INDEX idx_usage_ledger_work_item
 		Version: 24,
 		Name:    "thread_workflow_mode",
 		SQL:     rebuildThreadsWorkflowModeV24SQL,
+		Rebuild: true,
+	},
+	{
+		Version: 25,
+		Name:    "thread_workflow_modes_takeover_triage",
+		SQL:     rebuildThreadsWorkflowModesV25SQL + rebuildWorkItemsTakeoverTriageV25SQL,
 		Rebuild: true,
 	},
 }

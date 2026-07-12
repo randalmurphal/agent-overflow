@@ -133,6 +133,42 @@ func TestStartupIgnoresParkedSetupFailureUntilResume(t *testing.T) {
 	requireItemState(t, h.store, "setup-failed", StateRunning, "")
 }
 
+func TestStartupRebuildKeepsTakenOverItemParkedAndCompletable(t *testing.T) {
+	workflow := onePhaseWorkflow("taken-over", nil, []def.Route{{To: "done"}})
+	snapshot, err := json.Marshal(Snapshot{Workflow: workflow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"taken-over": workflow}, []string{"project"}, func(database *store.Store) {
+		item := testItem("taken-over", "project", "taken-over", 0)
+		item.Snapshot = snapshot
+		item.State = string(StateNeedsHuman)
+		item.Reason = string(ReasonTakenOver)
+		item.StartedAt = 20
+		item.EndedAt = 22
+		if err := database.CreateWorkItem(item); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.CreateWorkItemPhase(store.WorkItemPhase{
+			ItemID: item.ID, PhaseID: "work", Attempt: 1, ThreadID: "takeover-thread",
+			InputEnvelope: json.RawMessage(`{"vars":{}}`), Status: "parked", StartedAt: 21, EndedAt: 22,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	requireItemState(t, h.store, "taken-over", StateNeedsHuman, ReasonTakenOver)
+	if len(h.runner.started()) != 0 || h.runner.stopCount() != 0 {
+		t.Fatalf("startup touched taken-over item: starts=%+v stops=%d", h.runner.started(), h.runner.stopCount())
+	}
+	if err := h.engine.CompleteTakeover("taken-over"); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	if len(starts) != 1 || !starts[0].FinalizeTakeover || starts[0].PriorThreadID != "takeover-thread" {
+		t.Fatalf("rebuilt takeover finalize = %+v", starts)
+	}
+}
+
 func TestStartupCompletesPersistedTeardownWindow(t *testing.T) {
 	workflow := onePhaseWorkflow("window", nil, []def.Route{{Human: &def.HumanRoute{Approve: "done"}}})
 	tests := []struct {

@@ -26,6 +26,7 @@ func TestWorkflowBoundMethodsRegisteredOnApp(t *testing.T) {
 		"WorkflowEnqueueItem", "WorkflowCancelItem", "WorkflowResumeItem",
 		"WorkflowAnswerQuestion", "WorkflowResolveGate", "WorkflowReorderQueue",
 		"WorkflowSetQueue", "WorkflowListItems", "WorkflowGetItem",
+		"WorkflowCompleteTakeover", "WorkflowOpenTriageThread", "WorkflowOpenTriageAgent",
 	} {
 		if _, ok := appType.MethodByName(name); !ok {
 			t.Errorf("App method %s is not registered", name)

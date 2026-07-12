@@ -1856,3 +1856,85 @@ func TestMigrationV24PreservesThreadsAndAcceptsWorkflowMode(t *testing.T) {
 		(id, project_id, title, provider, workspace_path, mode, created_at, updated_at)
 		VALUES ('workflow-after-v24', 'project-v24', 'Workflow', 'codex', '/tmp/v24', 'workflow', 4, 4)`)
 }
+
+func TestMigrationV25AddsWorkflowModesTakeoverAndTriageLink(t *testing.T) {
+	db := migrateThrough(t, 24)
+	mustExec(t, db, `INSERT INTO projects
+		(id, path, name, slug, created_at, updated_at)
+		VALUES ('project-v25', '/tmp/v25', 'V25', 'v25', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads
+		(id, project_id, title, provider, model, workspace_path, worktree_path,
+		 branch, session_ref, mode, reasoning_effort, fast_mode, context_window,
+		 runtime_mode, created_at, updated_at)
+		VALUES ('thread-v25', 'project-v25', 'Preserved', 'codex', 'gpt', '/tmp/v25', '/tmp/v25-wt',
+		 'ao-v25', 'session-v25', 'workflow', 'ultra', 1, 123456,
+		 'auto-accept-edits', 2, 3)`)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+		 sort_position, seeds, step_mode, worktree_path, branch, base_branch, budget,
+		 source, source_ref, created_at, started_at, ended_at)
+		VALUES ('item-v25', 'project-v25', 'keep goal', 'wf', 'project', '{}',
+		 'needs-human', 'question', 7, '{}', 1, '/tmp/v25-wt', 'ao-v25', 'main', '{}',
+		 'manual', 'source-v25', 4, 5, 6)`)
+
+	if _, err := db.Exec(`INSERT INTO threads
+		(id, project_id, title, provider, workspace_path, mode, created_at, updated_at)
+		VALUES ('studio-before-v25', 'project-v25', 'Studio', 'codex', '/tmp/v25', 'workflow-studio', 4, 4)`); err == nil {
+		t.Fatal("pre-v25 threads table accepted workflow-studio")
+	}
+	if _, err := db.Exec(`UPDATE work_items SET reason = 'taken-over' WHERE id = 'item-v25'`); err == nil {
+		t.Fatal("pre-v25 work_items accepted taken-over")
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 25)); err != nil {
+		t.Fatalf("apply migration v25: %v", err)
+	}
+
+	columns, err := tableColumns(db, "work_items")
+	if err != nil {
+		t.Fatalf("work_items columns: %v", err)
+	}
+	if !columns["triage_thread_id"] {
+		t.Fatal("work_items.triage_thread_id missing")
+	}
+	var preserved int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM threads
+		WHERE id = 'thread-v25' AND project_id = 'project-v25' AND title = 'Preserved'
+		  AND provider = 'codex' AND model = 'gpt' AND workspace_path = '/tmp/v25'
+		  AND worktree_path = '/tmp/v25-wt' AND branch = 'ao-v25'
+		  AND session_ref = 'session-v25' AND mode = 'workflow'
+		  AND reasoning_effort = 'ultra' AND fast_mode = 1 AND context_window = 123456
+		  AND runtime_mode = 'auto-accept-edits' AND created_at = 2 AND updated_at = 3`).Scan(&preserved); err != nil {
+		t.Fatalf("read preserved thread: %v", err)
+	}
+	if preserved != 1 {
+		t.Fatal("v25 rebuild did not preserve the thread row")
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_items
+		WHERE id = 'item-v25' AND project_id = 'project-v25' AND goal = 'keep goal'
+		  AND workflow_id = 'wf' AND workflow_scope = 'project' AND snapshot = '{}'
+		  AND state = 'needs-human' AND reason = 'question' AND sort_position = 7
+		  AND seeds = '{}' AND step_mode = 1 AND worktree_path = '/tmp/v25-wt'
+		  AND branch = 'ao-v25' AND base_branch = 'main' AND budget = '{}'
+		  AND source = 'manual' AND source_ref = 'source-v25' AND triage_thread_id = ''
+		  AND created_at = 4 AND started_at = 5 AND ended_at = 6`).Scan(&preserved); err != nil {
+		t.Fatalf("read preserved work item: %v", err)
+	}
+	if preserved != 1 {
+		t.Fatal("v25 rebuild did not preserve the work item row")
+	}
+	for _, mode := range []string{"workflow-studio", "workflow-triage"} {
+		mustExec(t, db, `INSERT INTO threads
+			(id, project_id, title, provider, workspace_path, mode, created_at, updated_at)
+			VALUES (?, 'project-v25', 'Mode', 'codex', '/tmp/v25', ?, 8, 8)`, "thread-"+mode, mode)
+	}
+	mustExec(t, db, `UPDATE work_items SET reason = 'taken-over', triage_thread_id = 'thread-workflow-triage' WHERE id = 'item-v25'`)
+	for _, index := range []string{
+		"idx_threads_forked_from", "idx_threads_parent", "idx_threads_pinned_at",
+		"idx_threads_project", "idx_threads_updated",
+		"idx_work_items_project_state_sort", "idx_work_items_project_sort",
+		"idx_work_items_triage_thread", "idx_work_item_phases_thread",
+	} {
+		readIndexSQL(t, db, index)
+	}
+}

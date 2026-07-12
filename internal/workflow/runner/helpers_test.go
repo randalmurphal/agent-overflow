@@ -73,6 +73,16 @@ func TestOutcomeFromEnvelope(t *testing.T) {
 	}
 }
 
+func TestBuildTakeoverFinalizePrompt(t *testing.T) {
+	prompt, err := BuildTakeoverFinalizePrompt(filepath.Join(t.TempDir(), "narrative.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "Do not redo the original phase") || !strings.Contains(prompt, "final workflow control envelope") {
+		t.Fatalf("finalize prompt = %q", prompt)
+	}
+}
+
 func TestRetryMessage(t *testing.T) {
 	got := RetryMessage([]def.EnvelopeFinding{{Path: "$.outputs.ok", Message: "property is required"}})
 	if !strings.Contains(got, "- $.outputs.ok: property is required") {

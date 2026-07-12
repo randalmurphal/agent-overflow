@@ -264,15 +264,18 @@ var LocalOnlyMethods = map[string]bool{
 	// Workflow control drives autonomous full-access provider sessions and
 	// persists local queue/settings state. Keep the complete control plane
 	// loopback-only as one session-control class.
-	"WorkflowEnqueueItem":    true,
-	"WorkflowCancelItem":     true,
-	"WorkflowResumeItem":     true,
-	"WorkflowAnswerQuestion": true,
-	"WorkflowResolveGate":    true,
-	"WorkflowReorderQueue":   true,
-	"WorkflowSetQueue":       true,
-	"WorkflowListItems":      true,
-	"WorkflowGetItem":        true,
+	"WorkflowEnqueueItem":      true,
+	"WorkflowCancelItem":       true,
+	"WorkflowResumeItem":       true,
+	"WorkflowAnswerQuestion":   true,
+	"WorkflowResolveGate":      true,
+	"WorkflowReorderQueue":     true,
+	"WorkflowSetQueue":         true,
+	"WorkflowListItems":        true,
+	"WorkflowGetItem":          true,
+	"WorkflowCompleteTakeover": true,
+	"WorkflowOpenTriageThread": true,
+	"WorkflowOpenTriageAgent":  true,
 	// ConcludeDiscussion is lifecycle control over the deliberation's
 	// provider-session turn loop — same class as PostChannelMessage: it
 	// removes the in-memory FSM (a.deliberations) and can race an

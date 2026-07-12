@@ -217,6 +217,7 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 		Key:  RunKey{ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt},
 		Item: item.item, Workflow: item.workflow, Phase: phase, Vars: vars,
 		Feedback: cloneFeedback(item.feedback), PriorThreadID: item.priorThreadID,
+		FinalizeTakeover: item.takeoverFinalize,
 	}
 	startCtx, cancel := context.WithCancel(e.ctx)
 	future := &runnerStartFuture{key: request.Key, done: make(chan response, 1)}

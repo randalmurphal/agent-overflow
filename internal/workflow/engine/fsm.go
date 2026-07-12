@@ -34,7 +34,7 @@ func reasonAllowed(reason Reason) bool {
 	case ReasonGate, ReasonQuestion, ReasonStuck, ReasonStalled,
 		ReasonBudgetExhausted, ReasonRetriesExhausted,
 		ReasonCheckFailedGenuine, ReasonAgentError, ReasonWiringError,
-		ReasonDisposition, ReasonSetupFailed, ReasonInterrupted:
+		ReasonDisposition, ReasonSetupFailed, ReasonInterrupted, ReasonTakenOver:
 		return true
 	default:
 		return false
@@ -146,6 +146,7 @@ func (e *Engine) complete(key RunKey, outcome Outcome) error {
 	item.runnerActive = false
 	switch outcome.Kind {
 	case OutcomeDone:
+		item.takeoverFinalize = false
 		return e.completeDone(item, outcome.Envelope)
 	case OutcomeQuestion:
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonQuestion})
@@ -156,6 +157,9 @@ func (e *Engine) complete(key RunKey, outcome Outcome) error {
 	case OutcomeTransientExhausted:
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonRetriesExhausted})
 	case OutcomeExecutionFailure:
+		if item.takeoverFinalize {
+			return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonTakenOver})
+		}
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonAgentError})
 	case OutcomeStopped:
 		return e.teardown(item, teardownRequest{output: outcome.Envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonInterrupted})

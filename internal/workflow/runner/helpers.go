@@ -41,6 +41,17 @@ func BuildPrompt(phase def.Phase, vars map[string]any, narrativePath string, fee
 	return strings.TrimRight(body, "\n") + "\n\n" + suffix, nil
 }
 
+// BuildTakeoverFinalizePrompt asks the existing phase session to summarize the
+// human-steered result into the normal workflow envelope without replaying the
+// phase's original task.
+func BuildTakeoverFinalizePrompt(narrativePath string) (string, error) {
+	suffix, err := PromptSuffix(narrativePath, nil)
+	if err != nil {
+		return "", err
+	}
+	return "Review the work completed during this human takeover. Do not redo the original phase. Validate the current workspace state, update the narrative, and return the phase's final workflow control envelope.\n\n" + suffix, nil
+}
+
 // PromptSuffix renders the system-owned instructions appended to every phase
 // prompt. Feedback is included only when the request carries it.
 func PromptSuffix(narrativePath string, feedback *engine.Feedback) (string, error) {

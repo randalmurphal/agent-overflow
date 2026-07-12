@@ -11,15 +11,16 @@ import (
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 )
 
 // rememberChatModelProfile persists the thread's chat-model setup as
 // the "last used" profile so the chat bar can rehydrate without
 // rebuilding from scratch. No-ops on discussion threads (the
 // deliberation runtime picks its own provider/model per participant)
-// or workflow threads and when the thread carries no usable provider/model pair.
+// or workflow-saga threads and when the thread carries no usable provider/model pair.
 func (a *App) rememberChatModelProfile(thread store.Thread) {
-	if a.store == nil || thread.Mode == "discussion" || thread.Mode == "workflow" {
+	if a.store == nil || threadmode.IsSagaOwned(thread.Mode) {
 		return
 	}
 	if strings.TrimSpace(thread.Provider) == "" || strings.TrimSpace(thread.Model) == "" {

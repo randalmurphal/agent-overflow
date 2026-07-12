@@ -189,6 +189,38 @@ func TestDrainPriorityCapPauseAndProcessBound(t *testing.T) {
 	}
 }
 
+func TestSettingsQueueUpdatePreservesProcessBound(t *testing.T) {
+	workflow := onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
+	for index, id := range []string{"one", "two", "three"} {
+		if err := h.engine.Enqueue(testItem(id, "project", "basic", index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.engine.SetQueue(true, 2, 1); err != nil {
+		t.Fatal(err)
+	}
+	active := true
+	if err := h.engine.UpdateQueueSettings(&active, 1); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, "one", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, "two", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.UpdateQueueSettings(nil, 2); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	if len(starts) != 2 || starts[0].Key.ItemID != "one" || starts[1].Key.ItemID != "two" {
+		t.Fatalf("starts after settings update = %+v, want process bound preserved at two", starts)
+	}
+}
+
 func TestAnswerQuestionContinuesPriorThread(t *testing.T) {
 	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
 	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)

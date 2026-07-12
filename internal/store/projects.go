@@ -141,6 +141,7 @@ func (s *Store) ListProjects() ([]Project, error) {
 // the sidebar — only real activity (first message send and onward,
 // gated by MarkThreadActivity) counts.
 func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
+	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
 	rows, err := s.db.Query(
 		`SELECT p.id, p.path, p.name, p.slug, p.color, p.sort_position,
 		        p.created_at, p.updated_at, p.archived,
@@ -153,10 +154,10 @@ func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 		          0
 		        ) AS last_active
 		 FROM projects p
-		 LEFT JOIN threads t ON t.project_id = p.id AND t.archived = 0
+		 LEFT JOIN threads t ON t.project_id = p.id AND t.archived = 0 AND `+hiddenClause+`
 		 WHERE p.archived = 0
 		 GROUP BY p.id
-		 ORDER BY p.name ASC`,
+		 ORDER BY p.name ASC`, hiddenArgs...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list projects with counts: %w", err)

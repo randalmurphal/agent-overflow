@@ -4,30 +4,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"agent-overflow/internal/threadmode"
 )
 
 // WorkItem is one persisted workflow run record.
 type WorkItem struct {
-	ID            string          `json:"id"`
-	ProjectID     string          `json:"projectId"`
-	Goal          string          `json:"goal"`
-	WorkflowID    string          `json:"workflowId"`
-	WorkflowScope string          `json:"workflowScope"`
-	Snapshot      json.RawMessage `json:"snapshot,omitempty"`
-	State         string          `json:"state"`
-	Reason        string          `json:"reason,omitempty"`
-	SortPosition  int             `json:"sortPosition"`
-	Seeds         json.RawMessage `json:"seeds,omitempty"`
-	StepMode      bool            `json:"stepMode"`
-	WorktreePath  string          `json:"worktreePath,omitempty"`
-	Branch        string          `json:"branch,omitempty"`
-	BaseBranch    string          `json:"baseBranch,omitempty"`
-	Budget        json.RawMessage `json:"budget,omitempty"`
-	Source        string          `json:"source"`
-	SourceRef     string          `json:"sourceRef,omitempty"`
-	CreatedAt     int64           `json:"createdAt"`
-	StartedAt     int64           `json:"startedAt,omitempty"`
-	EndedAt       int64           `json:"endedAt,omitempty"`
+	ID             string          `json:"id"`
+	ProjectID      string          `json:"projectId"`
+	Goal           string          `json:"goal"`
+	WorkflowID     string          `json:"workflowId"`
+	WorkflowScope  string          `json:"workflowScope"`
+	Snapshot       json.RawMessage `json:"snapshot,omitempty"`
+	State          string          `json:"state"`
+	Reason         string          `json:"reason,omitempty"`
+	SortPosition   int             `json:"sortPosition"`
+	Seeds          json.RawMessage `json:"seeds,omitempty"`
+	StepMode       bool            `json:"stepMode"`
+	WorktreePath   string          `json:"worktreePath,omitempty"`
+	Branch         string          `json:"branch,omitempty"`
+	BaseBranch     string          `json:"baseBranch,omitempty"`
+	Budget         json.RawMessage `json:"budget,omitempty"`
+	Source         string          `json:"source"`
+	SourceRef      string          `json:"sourceRef,omitempty"`
+	TriageThreadID string          `json:"triageThreadId,omitempty"`
+	CreatedAt      int64           `json:"createdAt"`
+	StartedAt      int64           `json:"startedAt,omitempty"`
+	EndedAt        int64           `json:"endedAt,omitempty"`
 }
 
 // WorkItemListFilter narrows ListWorkItems by project and optional states.
@@ -38,11 +41,13 @@ type WorkItemListFilter struct {
 
 const workItemColumns = `id, project_id, goal, workflow_id, workflow_scope,
 snapshot, state, reason, sort_position, seeds, step_mode, worktree_path,
-branch, base_branch, budget, source, source_ref, created_at, started_at, ended_at`
+branch, base_branch, budget, source, source_ref, triage_thread_id,
+created_at, started_at, ended_at`
 
 const workItemSummaryColumns = `id, project_id, goal, workflow_id, workflow_scope,
 '', state, reason, sort_position, '', step_mode, worktree_path,
-branch, base_branch, '', source, source_ref, created_at, started_at, ended_at`
+branch, base_branch, '', source, source_ref, triage_thread_id,
+created_at, started_at, ended_at`
 
 func jsonText(value json.RawMessage) string {
 	if len(value) == 0 {
@@ -59,7 +64,7 @@ func scanWorkItem(scanner interface{ Scan(...any) error }) (WorkItem, error) {
 		&item.ID, &item.ProjectID, &item.Goal, &item.WorkflowID, &item.WorkflowScope,
 		&snapshot, &item.State, &item.Reason, &item.SortPosition, &seeds, &stepMode,
 		&item.WorktreePath, &item.Branch, &item.BaseBranch, &budget, &item.Source,
-		&item.SourceRef, &item.CreatedAt, &item.StartedAt, &item.EndedAt,
+		&item.SourceRef, &item.TriageThreadID, &item.CreatedAt, &item.StartedAt, &item.EndedAt,
 	); err != nil {
 		return WorkItem{}, err
 	}
@@ -73,12 +78,12 @@ func scanWorkItem(scanner interface{ Scan(...any) error }) (WorkItem, error) {
 func (s *Store) CreateWorkItem(item WorkItem) error {
 	_, err := s.db.Exec(
 		`INSERT INTO work_items (`+workItemColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ProjectID, item.Goal, item.WorkflowID, item.WorkflowScope,
 		jsonText(item.Snapshot), item.State, item.Reason, item.SortPosition,
 		jsonText(item.Seeds), boolToInt(item.StepMode), item.WorktreePath, item.Branch,
 		item.BaseBranch, jsonText(item.Budget), item.Source, item.SourceRef,
-		item.CreatedAt, item.StartedAt, item.EndedAt,
+		item.TriageThreadID, item.CreatedAt, item.StartedAt, item.EndedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create work item %s: %w", item.ID, err)
@@ -92,6 +97,26 @@ func (s *Store) GetWorkItem(id string) (WorkItem, error) {
 	))
 	if err != nil {
 		return WorkItem{}, fmt.Errorf("store: get work item %s: %w", id, err)
+	}
+	return item, nil
+}
+
+// GetWorkItemByPhaseThread resolves the workflow item that owns a phase
+// thread. A phase thread may be reused by later attempts, so the newest phase
+// row is only the lookup anchor; ownership remains item-scoped.
+func (s *Store) GetWorkItemByPhaseThread(threadID string) (WorkItem, error) {
+	item, err := scanWorkItem(s.db.QueryRow(
+		`SELECT `+workItemColumns+` FROM work_items
+		 WHERE id = (
+		     SELECT item_id FROM work_item_phases
+		      WHERE thread_id = ?
+		      ORDER BY started_at DESC, attempt DESC
+		      LIMIT 1
+		 )`,
+		threadID,
+	))
+	if err != nil {
+		return WorkItem{}, fmt.Errorf("store: get work item for phase thread %s: %w", threadID, err)
 	}
 	return item, nil
 }
@@ -192,6 +217,53 @@ func (s *Store) UpdateWorkItemWorkspace(id, worktreePath, branch, baseBranch str
 		return fmt.Errorf("store: update work item workspace %s: %w", id, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: update work item workspace %s", id))
+}
+
+// UpdateWorkItemTriageThread persists the open-or-return association used by
+// item hand-off triage threads. Thread lifetime is deliberately independent,
+// so deletion leaves the id as a stale pointer that the app replaces on the
+// next open.
+func (s *Store) UpdateWorkItemTriageThread(id, threadID string) error {
+	result, err := s.db.Exec(
+		`UPDATE work_items SET triage_thread_id = ? WHERE id = ?`, threadID, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update work item triage thread %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update work item triage thread %s", id))
+}
+
+// CreateWorkItemTriageThread makes the hand-off thread and its durable item
+// association visible in one transaction. The project-level triage singleton
+// is identified by the absence of this link, so a partially linked hand-off
+// thread must never be observable after a crash.
+func (s *Store) CreateWorkItemTriageThread(itemID string, thread Thread) error {
+	if thread.Mode != threadmode.ModeWorkflowTriage {
+		return fmt.Errorf("store: create work item triage thread: mode is %q", thread.Mode)
+	}
+	prepared, lastReadAtArg, err := prepareThreadForCreate(thread)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: create work item triage thread: begin: %w", err)
+	}
+	defer tx.Rollback()
+	if err := insertThread(tx, prepared, lastReadAtArg); err != nil {
+		return fmt.Errorf("store: create work item triage thread: insert thread: %w", err)
+	}
+	result, err := tx.Exec(`UPDATE work_items SET triage_thread_id = ? WHERE id = ?`, prepared.ID, itemID)
+	if err != nil {
+		return fmt.Errorf("store: create work item triage thread: link item %s: %w", itemID, err)
+	}
+	if err := requireRowsAffected(result, fmt.Sprintf("store: create work item triage thread: link item %s", itemID)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: create work item triage thread: commit: %w", err)
+	}
+	return nil
 }
 
 // ReorderQueuedWorkItems assigns dense positions to the project's complete

@@ -19,6 +19,36 @@ import (
 // interaction mode keep working.
 const DefaultCreateMode = "chat"
 
+const (
+	ModeChat           = "chat"
+	ModePlan           = "plan"
+	ModeDesign         = "design"
+	ModeDiscussion     = "discussion"
+	ModeTerminal       = "terminal"
+	ModeWorkflow       = "workflow"
+	ModeWorkflowStudio = "workflow-studio"
+	ModeWorkflowTriage = "workflow-triage"
+)
+
+var legalModes = map[string]struct{}{
+	ModeChat: {}, ModePlan: {}, ModeDesign: {}, ModeDiscussion: {},
+	ModeTerminal: {}, ModeWorkflow: {}, ModeWorkflowStudio: {}, ModeWorkflowTriage: {},
+}
+
+var sagaOwnedModes = map[string]struct{}{
+	ModeDiscussion: {}, ModeWorkflow: {}, ModeWorkflowStudio: {}, ModeWorkflowTriage: {},
+}
+
+var hiddenModes = []string{ModeWorkflow, ModeWorkflowStudio, ModeWorkflowTriage}
+
+var hiddenModeSet = func() map[string]struct{} {
+	set := make(map[string]struct{}, len(hiddenModes))
+	for _, mode := range hiddenModes {
+		set[mode] = struct{}{}
+	}
+	return set
+}()
+
 // ManualSelectionModes is the set the UI / new-thread flow is allowed
 // to set at creation time. "discussion" is intentionally excluded —
 // those threads come through StartDiscussion because they require a
@@ -26,9 +56,9 @@ const DefaultCreateMode = "chat"
 // set "discussion" directly would produce orphan threads the discussion
 // runtime never knows about.
 var ManualSelectionModes = map[string]struct{}{
-	"chat":   {},
-	"plan":   {},
-	"design": {},
+	ModeChat:   {},
+	ModePlan:   {},
+	ModeDesign: {},
 }
 
 // PostCreationModes is the set the UI is allowed to mutate into via
@@ -40,8 +70,35 @@ var ManualSelectionModes = map[string]struct{}{
 // (sendMessage's plan→chat saga, proposed-plan revisions) only ever
 // move between chat and plan.
 var PostCreationModes = map[string]struct{}{
-	"chat": {},
-	"plan": {},
+	ModeChat: {},
+	ModePlan: {},
+}
+
+// IsLegal reports whether mode is accepted by thread persistence. Ownership
+// restrictions are intentionally separate: saga-owned values are legal rows
+// but are rejected by ValidateCreate and ValidateSet.
+func IsLegal(mode string) bool {
+	_, ok := legalModes[strings.TrimSpace(mode)]
+	return ok
+}
+
+// IsSagaOwned reports whether only a coordinating saga may create the mode.
+func IsSagaOwned(mode string) bool {
+	_, ok := sagaOwnedModes[strings.TrimSpace(mode)]
+	return ok
+}
+
+// IsHidden reports whether normal thread listings, global search, and pickers
+// must exclude the mode.
+func IsHidden(mode string) bool {
+	_, ok := hiddenModeSet[strings.TrimSpace(mode)]
+	return ok
+}
+
+// HiddenModes returns a stable copy for persistence queries. The slice is a
+// projection of the same hidden-mode definition used by IsHidden.
+func HiddenModes() []string {
+	return append([]string(nil), hiddenModes...)
 }
 
 // ValidateCreate normalises the mode for CreateThread. An empty

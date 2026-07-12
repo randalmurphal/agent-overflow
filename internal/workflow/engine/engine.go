@@ -27,6 +27,7 @@ type runtimeItem struct {
 	slot              bool
 	feedback          *Feedback
 	priorThreadID     string
+	takeoverFinalize  bool
 }
 
 type resourceKey struct {
@@ -159,6 +160,18 @@ func (e *Engine) Answer(itemID, answer string) error {
 	return e.request(answerCommand{itemID: itemID, answer: answer})
 }
 
+// TakeOver detaches a running or parked phase attempt from engine control and
+// parks it for schema-less human steering.
+func (e *Engine) TakeOver(itemID string) error {
+	return e.request(takeoverCommand{itemID: itemID})
+}
+
+// CompleteTakeover starts one schema-attached finalize turn on the phase
+// thread that was taken over.
+func (e *Engine) CompleteTakeover(itemID string) error {
+	return e.request(completeTakeoverCommand{itemID: itemID})
+}
+
 func (e *Engine) ResolveHumanGate(itemID string, decision HumanDecision, note string) error {
 	return e.request(humanGateCommand{itemID: itemID, decision: decision, note: note})
 }
@@ -171,7 +184,19 @@ func (e *Engine) Reorder(projectID string, orderedIDs []string) error {
 // means unbounded; a positive value pauses after that many new item starts and
 // is never persisted.
 func (e *Engine) SetQueue(active bool, maxStarts, concurrency int) error {
-	return e.request(queueCommand{active: active, maxStarts: maxStarts, concurrency: concurrency})
+	return e.request(queueCommand{active: active, maxStarts: maxStarts, setMaxStarts: true, concurrency: concurrency})
+}
+
+// UpdateQueueSettings changes persisted queue settings without altering the
+// transient process-N budget owned by the most recent explicit SetQueue call.
+// A nil active value is a concurrency-only update.
+func (e *Engine) UpdateQueueSettings(active *bool, concurrency int) error {
+	command := queueCommand{concurrency: concurrency}
+	if active != nil {
+		command.active = *active
+		command.setActive = true
+	}
+	return e.request(command)
 }
 
 // Sync waits until every command enqueued before it has been processed.
@@ -207,16 +232,26 @@ type answerCommand struct {
 	answer string
 	reply  chan response
 }
+type takeoverCommand struct {
+	itemID string
+	reply  chan response
+}
+type completeTakeoverCommand struct {
+	itemID string
+	reply  chan response
+}
 type reorderCommand struct {
 	projectID  string
 	orderedIDs []string
 	reply      chan response
 }
 type queueCommand struct {
-	active      bool
-	maxStarts   int
-	concurrency int
-	reply       chan response
+	active       bool
+	setActive    bool
+	maxStarts    int
+	setMaxStarts bool
+	concurrency  int
+	reply        chan response
 }
 type humanGateCommand struct {
 	itemID   string
@@ -266,6 +301,12 @@ func (e *Engine) request(command any) error {
 		command.reply = reply
 		e.commands <- command
 	case answerCommand:
+		command.reply = reply
+		e.commands <- command
+	case takeoverCommand:
+		command.reply = reply
+		e.commands <- command
+	case completeTakeoverCommand:
 		command.reply = reply
 		e.commands <- command
 	case reorderCommand:
@@ -350,6 +391,14 @@ func (e *Engine) loop() {
 		case answerCommand:
 			err = e.answer(command.itemID, command.answer)
 			command.reply <- e.itemCommandResponse(command.itemID, err)
+		case takeoverCommand:
+			e.removePendingHuman(command.itemID)
+			err = errors.Join(e.takeOver(command.itemID), e.schedule())
+			e.commandStarts = nil
+			command.reply <- response{err: err}
+		case completeTakeoverCommand:
+			err = e.completeTakeover(command.itemID)
+			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case reorderCommand:
 			err = e.reorder(command.projectID, command.orderedIDs)
 			command.reply <- e.commandResponse(err)
@@ -358,13 +407,18 @@ func (e *Engine) loop() {
 				err = fmt.Errorf("set workflow queue: concurrency must be between 1 and %d", MaxGlobalConcurrency)
 			} else {
 				e.config.GlobalConcurrency = command.concurrency
-				e.queueActive = command.active
-				e.startsRemaining = -1
-				if command.active && command.maxStarts > 0 {
-					e.startsRemaining = command.maxStarts
+				if command.setActive || command.setMaxStarts {
+					e.queueActive = command.active && e.startsRemaining != 0
+				}
+				if command.setMaxStarts {
+					e.startsRemaining = -1
+					if command.active && command.maxStarts > 0 {
+						e.startsRemaining = command.maxStarts
+					}
+					e.queueActive = command.active
 				}
 				e.emitQueue()
-				if command.active {
+				if e.queueActive {
 					err = e.schedule()
 				}
 			}

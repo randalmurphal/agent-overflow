@@ -2,8 +2,9 @@
 
 Pure validators and parsers for the two thread-mode axes:
 
-- **Interaction mode** — `chat`, `plan`, `design` (or engine-owned
-  `discussion` / `workflow`, which are set only by their owning sagas). Controls the UX shell and how
+- **Interaction mode** — `chat`, `plan`, `design` (or saga-owned
+  `discussion` / `workflow` / `workflow-studio` / `workflow-triage`, which are
+  set only by their owning sagas). Controls the UX shell and how
   user input is routed.
 - **Runtime mode** — `approval-required`, `auto-accept-edits`,
   `full-access`. Controls how the provider session treats tool calls.
@@ -18,9 +19,13 @@ and `app_runtime_mode.go`, which compose this package's pieces.
 
 | Function | Purpose |
 |---|---|
-| `ValidateCreate(mode) (string, error)` | Normalises an interaction mode for `CreateThread`. Empty → `DefaultCreateMode` ("chat"). Accepts `chat`/`plan`/`design`. Rejects `discussion` / `workflow` (their owning sagas create them directly) and unknown values. |
-| `ValidateSet(mode) (string, error)` | Normalises an interaction mode for `UpdateThreadMode`. Accepts `chat`/`plan` only — `design`, `discussion`, and `workflow` are immutable thread *types* set by their owners. Rejects empty (UpdateThreadMode is always an explicit user action). |
+| `ValidateCreate(mode) (string, error)` | Normalises an interaction mode for `CreateThread`. Empty → `DefaultCreateMode` ("chat"). Accepts `chat`/`plan`/`design`. Rejects every saga-owned mode (`discussion` and all workflow modes) and unknown values. |
+| `ValidateSet(mode) (string, error)` | Normalises an interaction mode for `UpdateThreadMode`. Accepts `chat`/`plan` only — immutable thread types (`design`, `discussion`, and all workflow modes) stay owned by their sagas. Rejects empty (UpdateThreadMode is always an explicit user action). |
 | `IsPostCreationMode(mode) bool` | Reports whether a *current* mode is one the UI is allowed to flip post-creation. Used to gate `UpdateThreadMode` on threads whose type is immutable. |
+| `IsLegal(mode) bool` | Reports whether persistence accepts the mode. |
+| `IsSagaOwned(mode) bool` | Reports whether creation belongs to a coordinating saga. |
+| `IsHidden(mode) bool` | Single definition for exclusion from normal listings, global search, and pickers. |
+| `HiddenModes() []string` | Stable copy of the hidden set for SQL query construction. |
 | `ParseRuntime(mode) (provider.RuntimeMode, error)` | Validates a runtime-mode string. Empty is rejected — use `ParseOptionalRuntime` for the optional case. |
 | `ParseOptionalRuntime(mode) (provider.RuntimeMode, bool, error)` | Optional-input variant: empty returns `("", false, nil)` so callers can branch on "no value supplied" without sentinel checks. |
 
@@ -29,7 +34,7 @@ and `app_runtime_mode.go`, which compose this package's pieces.
 - `DefaultCreateMode = "chat"` — what an empty `mode` field in
   `CreateThread` normalises to.
 - `ManualSelectionModes` — the set the UI is allowed to set at creation
-  time. Excludes engine-owned `discussion` and `workflow`.
+  time. Excludes all saga-owned modes.
 - `PostCreationModes` — the set the UI is allowed to mutate into via the
   agent-mode toggle. Only `chat` and `plan`.
 
@@ -40,8 +45,9 @@ and `app_runtime_mode.go`, which compose this package's pieces.
 - The validators are pure: same inputs always produce the same outputs,
   no clocks, no globals, no I/O. That keeps the active-session restart
   orchestration in the main package easy to test against fixed inputs.
-- Discussion and workflow threads are intentionally not validated here. The
+- Saga-owned threads are intentionally not accepted by the public validators. The
   `StartDiscussion` saga creates discussion-mode threads directly via
   the store; routing those through `ValidateCreate` would let any UI
   caller produce orphaned discussion shells with no deliberation channel.
-  Workflow phase threads similarly require an engine run record and schema.
+  Workflow phase threads similarly require an engine run record and schema;
+  studio and triage threads require their owning workflow entry points.

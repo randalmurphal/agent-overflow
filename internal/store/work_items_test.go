@@ -73,6 +73,51 @@ func TestWorkItemCRUDListAndTransitions(t *testing.T) {
 	}
 }
 
+func TestWorkItemTriageAssociationAndPhaseThreadLookup(t *testing.T) {
+	s := newTestStore(t)
+	item := testWorkItem("triage-link", defaultTestProjectID, "needs-human", 0, 1)
+	item.Reason = "taken-over"
+	if err := s.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateWorkItemPhase(WorkItemPhase{
+		ItemID: item.ID, PhaseID: "work", Attempt: 1, ThreadID: "phase-thread",
+		Status: "parked", StartedAt: 2, EndedAt: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	triageThread := Thread{
+		ID: "triage-thread", ProjectID: defaultTestProjectID, Title: "Triage",
+		Provider: "codex", Model: "gpt-5", WorkspacePath: "/tmp/project",
+		Mode: "workflow-triage", CreatedAt: 4, UpdatedAt: 4,
+	}
+	if err := s.CreateWorkItemTriageThread(item.ID, triageThread); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetWorkItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TriageThreadID != "triage-thread" || got.Reason != "taken-over" {
+		t.Fatalf("work item link = %+v", got)
+	}
+	owner, err := s.GetWorkItemByPhaseThread("phase-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner.ID != item.ID || owner.TriageThreadID != "triage-thread" {
+		t.Fatalf("phase thread owner = %+v", owner)
+	}
+	orphan := triageThread
+	orphan.ID = "orphan-triage-thread"
+	if err := s.CreateWorkItemTriageThread("missing-item", orphan); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing item atomic create error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := s.GetThread(orphan.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("atomic rollback left orphan thread: %v", err)
+	}
+}
+
 func TestUpdateWorkItemWorkspace(t *testing.T) {
 	s := newTestStore(t)
 	item := testWorkItem("workspace", "project-a", "running", 0, 1)

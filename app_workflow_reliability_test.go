@@ -68,6 +68,44 @@ func TestWorkflowReliabilityResolutionPrecedenceAndDefaults(t *testing.T) {
 	}
 }
 
+func TestFailedTakeoverStopRestoresBackoffTimer(t *testing.T) {
+	app := newTestAppWithStore(t)
+	runner := newWorkflowAppRunner(app, t.TempDir(), staticWorkflowProfileSource{value: &profile.Profile{}})
+	now := time.Unix(100, 0)
+	runner.now = func() time.Time { return now }
+	var restored *fakeWorkflowTimer
+	runner.newTimer = func(delay time.Duration, callback func()) workflowTimer {
+		restored = &fakeWorkflowTimer{callback: callback, delay: delay, active: true}
+		return restored
+	}
+	key := engine.RunKey{ItemID: "item", PhaseID: "phase", Attempt: 1}
+	runKey := workflowRunKey(key)
+	deadline := now.Add(45 * time.Second)
+	originalTimer := &fakeWorkflowTimer{active: true}
+	attempt := &workflowAttempt{
+		key: key, threadID: "thread", schema: json.RawMessage(`{"type":"object"}`),
+		watchdog: time.Minute, timer: originalTimer, timerMode: workflowTimerBackoff,
+		timerDeadline: deadline, unsubscribe: func() {},
+	}
+	runner.runs[runKey] = attempt
+	runner.schemas[attempt.threadID] = attempt.schema
+	runner.workItems[attempt.threadID] = key.ItemID
+	app.sessions[attempt.threadID] = session{provider: "unknown", token: "test"}
+
+	if _, err := runner.StopForTakeover(t.Context(), key); err == nil {
+		t.Fatal("StopForTakeover error = nil, want missing provider error")
+	}
+	runner.mu.Lock()
+	restoredAttempt := runner.runs[runKey]
+	runner.mu.Unlock()
+	if restoredAttempt != attempt || attempt.timerMode != workflowTimerBackoff || !attempt.timerDeadline.Equal(deadline) {
+		t.Fatalf("restored attempt timer = mode %v deadline %v", attempt.timerMode, attempt.timerDeadline)
+	}
+	if originalTimer.active || restored == nil || restored.delay != 45*time.Second || !restored.active {
+		t.Fatalf("timer restore originalActive=%v restored=%+v", originalTimer.active, restored)
+	}
+}
+
 func TestWorkflowTransientSignalAllowlist(t *testing.T) {
 	tests := []struct {
 		name      string
