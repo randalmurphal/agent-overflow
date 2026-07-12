@@ -88,6 +88,19 @@ type App struct {
 	triage          *triage.Router
 	workflowEngine  *engine.Engine
 	workflowRunner  *workflowAppRunner
+	// workflowDispositionMu serializes local git/forge disposition actions.
+	// They are rare, mutate shared repository metadata, and must not race an
+	// automatic policy against a manual click.
+	workflowDispositionMu       sync.Mutex
+	workflowAutoDispositionMu   sync.Mutex
+	workflowAutoDispositionWG   sync.WaitGroup
+	workflowAutoDispositionIDs  []string
+	workflowAutoDispositionBusy bool
+	workflowNotificationsMu     sync.Mutex
+	workflowNotificationTallies map[string]workflowNotificationTally
+	workflowQueueActive         bool
+	workflowDigestSlots         chan struct{}
+	generateWorkflowDigestFn    func(context.Context, store.WorkItem, WorkflowDigest) (WorkflowDigest, error)
 	// turnObservers fan provider events out to internal App features after
 	// triage handling has been attempted. Each registration lives until its
 	// returned unsubscribe function runs; the built-in discussion observer

@@ -13,6 +13,8 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   rename. Worktree CRUD (`CreateWorktree*`, `RemoveWorktree*`,
   `ListWorktrees`) lives in `core.go` next to the `Worktree` struct
   it returns.
+- `disposition.go` — clean ff-or-merge-commit disposition with conflict
+  preflight and durable-result SHA reporting.
 - `stash.go` — `git stash` helpers (push, apply-by-message,
   drop-by-message) used by the worktree carry-over and branch-from
   destructive flows in the app layer. Also `RandomStashSuffix()` —

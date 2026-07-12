@@ -3,12 +3,105 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/workflow/def"
 )
+
+func TestRemoveQueuedItemCancelsRecordAndLosesRaceToStart(t *testing.T) {
+	workflow := onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
+	queued := testItem("queued", "project", "basic", 0)
+	if err := h.engine.Enqueue(queued); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.RemoveQueued(queued.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, queued.ID, StateCancelled, ReasonInterrupted)
+	if events := h.emitter.stateEvents(queued.ID); len(events) != 1 || events[0].From != StateQueued || events[0].To != StateCancelled {
+		t.Fatalf("remove events = %+v", events)
+	}
+
+	running := testItem("running", "project", "basic", 1)
+	if err := h.engine.Enqueue(running); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.SetQueue(true, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.RemoveQueued(running.ID); err == nil {
+		t.Fatal("remove queued item succeeded after start won the race")
+	}
+}
+
+func TestDetachedEnqueueReportsProvisioningFailureThroughEventsAndSync(t *testing.T) {
+	workflow := onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
+	item := testItem("detached", "project", "basic", 0)
+	block := make(chan struct{})
+	h.runner.startWait[item.ID] = block
+	h.runner.startErrs[item.ID] = errors.Join(ErrSetupFailed, errors.New("provision failed"))
+	enqueueResult := make(chan error, 1)
+	go func() { enqueueResult <- h.engine.EnqueueDetachedStarts(item) }()
+	var enqueueErr error
+	select {
+	case enqueueErr = <-enqueueResult:
+	case <-time.After(time.Second):
+		close(block)
+		t.Fatal("detached enqueue waited for runner provisioning")
+	}
+	if enqueueErr != nil {
+		t.Fatalf("detached enqueue returned provisioning error: %v", enqueueErr)
+	}
+	close(block)
+	if err := h.engine.Sync(); !errors.Is(err, ErrSetupFailed) {
+		t.Fatalf("Sync error = %v, want setup failure", err)
+	}
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonSetupFailed)
+	if got := h.emitter.errorEvents(item.ID); len(got) == 0 {
+		t.Fatal("detached provisioning failure did not emit workflow:error")
+	}
+
+	unresolvable := testItem("detached-unresolvable", "project", "missing", 1)
+	if err := h.engine.EnqueueDetachedStarts(unresolvable); err != nil {
+		t.Fatalf("detached enqueue returned triggered definition error: %v", err)
+	}
+	requireItemState(t, h.store, unresolvable.ID, StateNeedsHuman, ReasonSetupFailed)
+	if got := h.emitter.errorEvents(unresolvable.ID); len(got) == 0 {
+		t.Fatal("detached definition failure did not emit workflow:error")
+	}
+
+	paused := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{}, []string{"project"}, nil)
+	queued := testItem("detached-queue-start", "project", "missing", 0)
+	if err := paused.engine.Enqueue(queued); err != nil {
+		t.Fatal(err)
+	}
+	if err := paused.engine.SetQueueDetachedStarts(true, 0, 1); err != nil {
+		t.Fatalf("detached queue activation returned triggered definition error: %v", err)
+	}
+	requireItemState(t, paused.store, queued.ID, StateNeedsHuman, ReasonSetupFailed)
+	if got := paused.emitter.errorEvents(queued.ID); len(got) == 0 {
+		t.Fatal("detached queue activation did not emit workflow:error")
+	}
+
+	settings := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{}, []string{"project"}, nil)
+	settingsItem := testItem("detached-settings-start", "project", "missing", 0)
+	if err := settings.engine.Enqueue(settingsItem); err != nil {
+		t.Fatal(err)
+	}
+	active := true
+	if err := settings.engine.UpdateQueueSettingsDetachedStarts(&active, 1); err != nil {
+		t.Fatalf("detached settings activation returned triggered definition error: %v", err)
+	}
+	requireItemState(t, settings.store, settingsItem.ID, StateNeedsHuman, ReasonSetupFailed)
+	if got := settings.emitter.errorEvents(settingsItem.ID); len(got) == 0 {
+		t.Fatal("detached settings activation did not emit workflow:error")
+	}
+}
 
 func TestFSMTransitionsPersistBeforeEmitting(t *testing.T) {
 	workflow := onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})

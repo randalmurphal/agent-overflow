@@ -722,6 +722,13 @@ func (p *privilegedApp) WorkflowGetItem() string                { return "ok" }
 func (p *privilegedApp) WorkflowCompleteTakeover() string       { return "ok" }
 func (p *privilegedApp) WorkflowOpenTriageThread() string       { return "ok" }
 func (p *privilegedApp) WorkflowOpenTriageAgent() string        { return "ok" }
+func (p *privilegedApp) WorkflowMergeItem() string              { return "ok" }
+func (p *privilegedApp) WorkflowCreateItemPR() string           { return "ok" }
+func (p *privilegedApp) WorkflowDiscardItem() string            { return "ok" }
+func (p *privilegedApp) WorkflowGetJobNotes() string            { return "ok" }
+func (p *privilegedApp) WorkflowSetJobNotes() string            { return "ok" }
+func (p *privilegedApp) WorkflowListDefinitions() string        { return "ok" }
+func (p *privilegedApp) WorkflowRemoveQueuedItem() string       { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string               { return "ok" }
 func (p *privilegedApp) UpdateThreadProvider() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadModel() string              { return "ok" }

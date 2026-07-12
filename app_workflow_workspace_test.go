@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,7 +98,8 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 		{name: "timeout", command: "[/bin/sleep, 1]", timeout: "20ms"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			app, _ := setupE2EApp(t)
+			app, bus := setupE2EApp(t)
+			app.testEmitHook = bus.emit
 			configRoot := t.TempDir()
 			repo := testutil.InitGitRepo(t)
 			projectRow := testutil.EnsureProject(t, app.store, repo)
@@ -108,6 +110,9 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 				t.Fatal(err)
 			}
 			startWorkflowEngineForTest(t, app, configRoot)
+			if err := app.WorkflowSetQueue(true, 0, 0); err == nil {
+				t.Fatal("invalid queue concurrency did not return synchronously")
+			}
 			if err := app.WorkflowSetQueue(false, 0, 1); err != nil {
 				t.Fatal(err)
 			}
@@ -115,10 +120,11 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := app.WorkflowSetQueue(true, 0, 1); err == nil {
-				t.Fatal("setup failure was not returned")
+			if err := app.WorkflowSetQueue(true, 0, 1); err != nil {
+				t.Fatalf("fire-and-forget queue start returned provisioning failure inline: %v", err)
 			}
 			item = waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonSetupFailed)
+			assertWorkflowSetupFailureEvents(t, bus, item.ID)
 			if item.WorktreePath != "" || item.Branch != "" || item.BaseBranch != "" {
 				t.Fatalf("failed setup persisted workspace = %+v", item)
 			}
@@ -138,6 +144,38 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 				t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, item.WorktreePath, true) })
 			}
 		})
+	}
+}
+
+func assertWorkflowSetupFailureEvents(t *testing.T, bus *capturedEventBus, itemID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	foundState, foundError := false, false
+	for !foundState || !foundError {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("setup failure events incomplete: item-state=%v workflow:error=%v", foundState, foundError)
+		}
+		event := bus.next(t, remaining)
+		switch event.Name {
+		case "workflow:item-state":
+			state, ok := event.Data.(engine.StateEvent)
+			if ok && state.ItemID == itemID && state.From == engine.StateRunning &&
+				state.To == engine.StateNeedsHuman && state.Reason == engine.ReasonSetupFailed {
+				foundState = true
+			}
+		case "workflow:error":
+			workflowErr, ok := event.Data.(engine.ErrorEvent)
+			if ok && workflowErr.ItemID == itemID {
+				if !errors.Is(workflowErr.Cause(), engine.ErrSetupFailed) {
+					t.Fatalf("workflow:error cause = %v, want setup failure", workflowErr.Cause())
+				}
+				if workflowErr.Error == "" {
+					t.Fatal("workflow:error omitted user-facing message")
+				}
+				foundError = true
+			}
+		}
 	}
 }
 

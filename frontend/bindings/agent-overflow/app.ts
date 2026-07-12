@@ -2916,21 +2916,68 @@ export function WorkflowCompleteTakeover(itemID: string): $CancellablePromise<vo
     return $Call.ByID(3393508470, itemID);
 }
 
+/**
+ * WorkflowCreateItemPR pushes a done item's branch and creates a PR/MR through
+ * the repository's existing forge integration.
+ */
+export function WorkflowCreateItemPR(itemID: string): $CancellablePromise<$models.WorkflowDispositionReceipt> {
+    return $Call.ByID(1792283305, itemID).then(($result: any) => {
+        return $$createType100($result);
+    });
+}
+
+/**
+ * WorkflowDiscardItem removes an eligible item's worktree through the existing
+ * guarded removal path and keeps the durable run record.
+ */
+export function WorkflowDiscardItem(itemID: string): $CancellablePromise<$models.WorkflowDispositionReceipt> {
+    return $Call.ByID(2163033761, itemID).then(($result: any) => {
+        return $$createType100($result);
+    });
+}
+
 export function WorkflowEnqueueItem(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(683191625, projectID, workflowID, workflowScope, goal, seeds, budget, stepMode).then(($result: any) => {
-        return $$createType100($result);
+        return $$createType101($result);
     });
 }
 
 export function WorkflowGetItem(itemID: string): $CancellablePromise<$models.WorkflowItemDetail> {
     return $Call.ByID(70120675, itemID).then(($result: any) => {
-        return $$createType101($result);
+        return $$createType102($result);
+    });
+}
+
+/**
+ * WorkflowGetJobNotes reads the continuity notes stored on an automation.
+ */
+export function WorkflowGetJobNotes(automationID: string): $CancellablePromise<string> {
+    return $Call.ByID(3798011060, automationID);
+}
+
+/**
+ * WorkflowListDefinitions returns resolved project/shared definitions with the
+ * existing dry-run validator's first finding and binding cross-check.
+ */
+export function WorkflowListDefinitions(projectID: string): $CancellablePromise<$models.WorkflowDefinitionListing[]> {
+    return $Call.ByID(2064216126, projectID).then(($result: any) => {
+        return $$createType104($result);
     });
 }
 
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
-        return $$createType102($result);
+        return $$createType105($result);
+    });
+}
+
+/**
+ * WorkflowMergeItem cleanly lands a done item's branch on the live profile's
+ * base branch. Refusals park the run for human disposition.
+ */
+export function WorkflowMergeItem(itemID: string): $CancellablePromise<$models.WorkflowDispositionReceipt> {
+    return $Call.ByID(3006532931, itemID).then(($result: any) => {
+        return $$createType100($result);
     });
 }
 
@@ -2956,6 +3003,14 @@ export function WorkflowOpenTriageThread(itemID: string): $CancellablePromise<st
     });
 }
 
+/**
+ * WorkflowRemoveQueuedItem keeps the record but prevents a not-yet-started run
+ * from being provisioned.
+ */
+export function WorkflowRemoveQueuedItem(itemID: string): $CancellablePromise<void> {
+    return $Call.ByID(2004111234, itemID);
+}
+
 export function WorkflowReorderQueue(projectID: string, orderedIDs: string[]): $CancellablePromise<void> {
     return $Call.ByID(1214686266, projectID, orderedIDs);
 }
@@ -2966,6 +3021,13 @@ export function WorkflowResolveGate(itemID: string, decision: string, note: stri
 
 export function WorkflowResumeItem(itemID: string, targetPhase: string): $CancellablePromise<void> {
     return $Call.ByID(3138507556, itemID, targetPhase);
+}
+
+/**
+ * WorkflowSetJobNotes replaces one automation's bounded continuity notes.
+ */
+export function WorkflowSetJobNotes(automationID: string, notes: string): $CancellablePromise<void> {
+    return $Call.ByID(1934298592, automationID, notes);
 }
 
 export function WorkflowSetQueue(active: boolean, maxStarts: number, concurrency: number): $CancellablePromise<void> {
@@ -3091,6 +3153,9 @@ const $$createType96 = $models.WorkspaceFileSearchResult.createFrom;
 const $$createType97 = $models.SubmitPRReviewResult.createFrom;
 const $$createType98 = $models.PRUpdateSubscriptionResult.createFrom;
 const $$createType99 = $models.MCPAuthInitResult.createFrom;
-const $$createType100 = store$0.WorkItem.createFrom;
-const $$createType101 = $models.WorkflowItemDetail.createFrom;
-const $$createType102 = $Create.Array($$createType100);
+const $$createType100 = $models.WorkflowDispositionReceipt.createFrom;
+const $$createType101 = store$0.WorkItem.createFrom;
+const $$createType102 = $models.WorkflowItemDetail.createFrom;
+const $$createType103 = $models.WorkflowDefinitionListing.createFrom;
+const $$createType104 = $Create.Array($$createType103);
+const $$createType105 = $Create.Array($$createType101);

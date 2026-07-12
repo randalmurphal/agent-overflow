@@ -270,14 +270,21 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowAnswerQuestion", ID: 4150249282},               // main.App.WorkflowAnswerQuestion
 	{Name: "WorkflowCancelItem", ID: 4158962817},                   // main.App.WorkflowCancelItem
 	{Name: "WorkflowCompleteTakeover", ID: 3393508470},             // main.App.WorkflowCompleteTakeover
+	{Name: "WorkflowCreateItemPR", ID: 1792283305},                 // main.App.WorkflowCreateItemPR
+	{Name: "WorkflowDiscardItem", ID: 2163033761},                  // main.App.WorkflowDiscardItem
 	{Name: "WorkflowEnqueueItem", ID: 683191625},                   // main.App.WorkflowEnqueueItem
 	{Name: "WorkflowGetItem", ID: 70120675},                        // main.App.WorkflowGetItem
+	{Name: "WorkflowGetJobNotes", ID: 3798011060},                  // main.App.WorkflowGetJobNotes
+	{Name: "WorkflowListDefinitions", ID: 2064216126},              // main.App.WorkflowListDefinitions
 	{Name: "WorkflowListItems", ID: 3037887964},                    // main.App.WorkflowListItems
+	{Name: "WorkflowMergeItem", ID: 3006532931},                    // main.App.WorkflowMergeItem
 	{Name: "WorkflowOpenTriageAgent", ID: 1552981489},              // main.App.WorkflowOpenTriageAgent
 	{Name: "WorkflowOpenTriageThread", ID: 3525577760},             // main.App.WorkflowOpenTriageThread
+	{Name: "WorkflowRemoveQueuedItem", ID: 2004111234},             // main.App.WorkflowRemoveQueuedItem
 	{Name: "WorkflowReorderQueue", ID: 1214686266},                 // main.App.WorkflowReorderQueue
 	{Name: "WorkflowResolveGate", ID: 3348479803},                  // main.App.WorkflowResolveGate
 	{Name: "WorkflowResumeItem", ID: 3138507556},                   // main.App.WorkflowResumeItem
+	{Name: "WorkflowSetJobNotes", ID: 1934298592},                  // main.App.WorkflowSetJobNotes
 	{Name: "WorkflowSetQueue", ID: 3526159695},                     // main.App.WorkflowSetQueue
 	{Name: "WriteTerminal", ID: 146795716},                         // main.App.WriteTerminal
 	{Name: "WriteThreadWorkspaceFile", ID: 3895036895},             // main.App.WriteThreadWorkspaceFile

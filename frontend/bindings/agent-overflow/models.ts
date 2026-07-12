@@ -1951,6 +1951,119 @@ export class WorkflowArtifact {
     }
 }
 
+export class WorkflowDefinitionListing {
+    "id": string;
+    "name": string;
+    "scope": string;
+    "phaseCount": number;
+    "phases": WorkflowDefinitionPhase[];
+    "defaultStepMode": boolean;
+    "valid": boolean;
+    "firstValidationError"?: string;
+    "allBindingsAvailable": boolean;
+    "predictedQueuePosition": number;
+
+    /** Creates a new WorkflowDefinitionListing instance. */
+    constructor($$source: Partial<WorkflowDefinitionListing> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("scope" in $$source)) {
+            this["scope"] = "";
+        }
+        if (!("phaseCount" in $$source)) {
+            this["phaseCount"] = 0;
+        }
+        if (!("phases" in $$source)) {
+            this["phases"] = [];
+        }
+        if (!("defaultStepMode" in $$source)) {
+            this["defaultStepMode"] = false;
+        }
+        if (!("valid" in $$source)) {
+            this["valid"] = false;
+        }
+        if (!("allBindingsAvailable" in $$source)) {
+            this["allBindingsAvailable"] = false;
+        }
+        if (!("predictedQueuePosition" in $$source)) {
+            this["predictedQueuePosition"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowDefinitionListing instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowDefinitionListing {
+        const $$createField4_0 = $$createType33;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("phases" in $$parsedSource) {
+            $$parsedSource["phases"] = $$createField4_0($$parsedSource["phases"]);
+        }
+        return new WorkflowDefinitionListing($$parsedSource as Partial<WorkflowDefinitionListing>);
+    }
+}
+
+export class WorkflowDefinitionPhase {
+    "id": string;
+    "provider"?: string;
+    "model"?: string;
+
+    /** Creates a new WorkflowDefinitionPhase instance. */
+    constructor($$source: Partial<WorkflowDefinitionPhase> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowDefinitionPhase instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowDefinitionPhase {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowDefinitionPhase($$parsedSource as Partial<WorkflowDefinitionPhase>);
+    }
+}
+
+export class WorkflowDispositionReceipt {
+    "action": string;
+    "mode"?: string;
+    "sha"?: string;
+    "prRef"?: string;
+    "policy": string;
+    "at": number;
+
+    /** Creates a new WorkflowDispositionReceipt instance. */
+    constructor($$source: Partial<WorkflowDispositionReceipt> = {}) {
+        if (!("action" in $$source)) {
+            this["action"] = "";
+        }
+        if (!("policy" in $$source)) {
+            this["policy"] = "";
+        }
+        if (!("at" in $$source)) {
+            this["at"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowDispositionReceipt instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowDispositionReceipt {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowDispositionReceipt($$parsedSource as Partial<WorkflowDispositionReceipt>);
+    }
+}
+
 export class WorkflowItemDetail {
     "item": store$0.WorkItem;
     "phases": store$0.WorkItemPhase[];
@@ -1975,9 +2088,9 @@ export class WorkflowItemDetail {
      * Creates a new WorkflowItemDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowItemDetail {
-        const $$createField0_0 = $$createType32;
-        const $$createField1_0 = $$createType34;
-        const $$createField2_0 = $$createType36;
+        const $$createField0_0 = $$createType34;
+        const $$createField1_0 = $$createType36;
+        const $$createField2_0 = $$createType38;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
@@ -2019,7 +2132,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType38;
+        const $$createField0_0 = $$createType40;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -2151,10 +2264,12 @@ const $$createType28 = $Create.Array($$createType27);
 const $$createType29 = provider$0.PendingInteractiveRequests.createFrom;
 const $$createType30 = LiveStateTodo.createFrom;
 const $$createType31 = $Create.Nullable($$createType30);
-const $$createType32 = store$0.WorkItem.createFrom;
-const $$createType33 = store$0.WorkItemPhase.createFrom;
-const $$createType34 = $Create.Array($$createType33);
-const $$createType35 = WorkflowArtifact.createFrom;
+const $$createType32 = WorkflowDefinitionPhase.createFrom;
+const $$createType33 = $Create.Array($$createType32);
+const $$createType34 = store$0.WorkItem.createFrom;
+const $$createType35 = store$0.WorkItemPhase.createFrom;
 const $$createType36 = $Create.Array($$createType35);
-const $$createType37 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType37 = WorkflowArtifact.createFrom;
 const $$createType38 = $Create.Array($$createType37);
+const $$createType39 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType40 = $Create.Array($$createType39);

@@ -121,7 +121,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 		return nil
 	}())
 	if a.workflowEngine != nil {
-		record("close workflow engine", a.workflowEngine.Close())
+		engineErr := a.workflowEngine.Close()
+		// No new done events can arrive after the engine closes. Let the
+		// single auto-disposition worker finish before SQLite closes so a
+		// landed branch cannot lose its durable receipt during shutdown.
+		a.workflowAutoDispositionWG.Wait()
+		record("close workflow engine", engineErr)
 	}
 
 	// Step 2: drain the triage reactor. Any Handle() calls currently

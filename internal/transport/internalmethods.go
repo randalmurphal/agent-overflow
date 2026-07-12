@@ -276,6 +276,13 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowCompleteTakeover": true,
 	"WorkflowOpenTriageThread": true,
 	"WorkflowOpenTriageAgent":  true,
+	"WorkflowMergeItem":        true,
+	"WorkflowCreateItemPR":     true,
+	"WorkflowDiscardItem":      true,
+	"WorkflowGetJobNotes":      true,
+	"WorkflowSetJobNotes":      true,
+	"WorkflowListDefinitions":  true,
+	"WorkflowRemoveQueuedItem": true,
 	// ConcludeDiscussion is lifecycle control over the deliberation's
 	// provider-session turn loop — same class as PostChannelMessage: it
 	// removes the in-memory FSM (a.deliberations) and can race an

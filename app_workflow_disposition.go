@@ -1,0 +1,336 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+	"time"
+
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/workflow/def"
+	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflow/profile"
+)
+
+type WorkflowDispositionReceipt struct {
+	Action string `json:"action"`
+	Mode   string `json:"mode,omitempty"`
+	SHA    string `json:"sha,omitempty"`
+	PRRef  string `json:"prRef,omitempty"`
+	Policy string `json:"policy"`
+	At     int64  `json:"at"`
+}
+
+type workflowDispositionAction string
+
+const (
+	workflowDispositionMerge   workflowDispositionAction = "merged"
+	workflowDispositionPR      workflowDispositionAction = "pr"
+	workflowDispositionDiscard workflowDispositionAction = "discarded"
+)
+
+// WorkflowMergeItem cleanly lands a done item's branch on the live profile's
+// base branch. Refusals park the run for human disposition.
+func (a *App) WorkflowMergeItem(itemID string) (WorkflowDispositionReceipt, error) {
+	return a.runWorkflowDisposition(itemID, workflowDispositionMerge, profile.DispositionManual)
+}
+
+// WorkflowCreateItemPR pushes a done item's branch and creates a PR/MR through
+// the repository's existing forge integration.
+func (a *App) WorkflowCreateItemPR(itemID string) (WorkflowDispositionReceipt, error) {
+	return a.runWorkflowDisposition(itemID, workflowDispositionPR, profile.DispositionManual)
+}
+
+// WorkflowDiscardItem removes an eligible item's worktree through the existing
+// guarded removal path and keeps the durable run record.
+func (a *App) WorkflowDiscardItem(itemID string) (WorkflowDispositionReceipt, error) {
+	return a.runWorkflowDisposition(itemID, workflowDispositionDiscard, profile.DispositionManual)
+}
+
+func (a *App) runWorkflowDisposition(itemID string, action workflowDispositionAction, policy profile.Disposition) (WorkflowDispositionReceipt, error) {
+	a.workflowDispositionMu.Lock()
+	defer a.workflowDispositionMu.Unlock()
+
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition: item id is required")
+	}
+	item, err := a.store.GetWorkItem(itemID)
+	if err != nil {
+		return WorkflowDispositionReceipt{}, err
+	}
+	if err := validateWorkflowDispositionState(item, action); err != nil {
+		return WorkflowDispositionReceipt{}, err
+	}
+	if len(item.Disposition) > 0 {
+		if policy != profile.DispositionManual {
+			var receipt WorkflowDispositionReceipt
+			if err := json.Unmarshal(item.Disposition, &receipt); err != nil {
+				return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s decode existing receipt: %w", itemID, err)
+			}
+			return receipt, nil
+		}
+		return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s: item already has a receipt", itemID)
+	}
+
+	receipt, dispositionErr := a.applyWorkflowDisposition(item, action, policy)
+	if dispositionErr != nil && receipt.Action == "" && item.State == string(engine.StateDone) {
+		workflowEngine, engineErr := a.requireWorkflowEngine()
+		if engineErr == nil {
+			engineErr = workflowEngine.ParkDisposition(item.ID)
+		}
+		return WorkflowDispositionReceipt{}, errors.Join(dispositionErr, engineErr)
+	}
+	return receipt, dispositionErr
+}
+
+func validateWorkflowDispositionState(item store.WorkItem, action workflowDispositionAction) error {
+	state := engine.State(item.State)
+	switch action {
+	case workflowDispositionMerge, workflowDispositionPR:
+		if state != engine.StateDone {
+			return fmt.Errorf("workflow disposition %s: %s requires item state done, got %s", item.ID, action, state)
+		}
+	case workflowDispositionDiscard:
+		if state != engine.StateDone && state != engine.StateFailed && state != engine.StateCancelled && state != engine.StateNeedsHuman {
+			return fmt.Errorf("workflow disposition %s: discard is invalid from state %s", item.ID, state)
+		}
+	default:
+		return fmt.Errorf("workflow disposition %s: unknown action %q", item.ID, action)
+	}
+	return nil
+}
+
+func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispositionAction, policy profile.Disposition) (WorkflowDispositionReceipt, error) {
+	projectRow, err := a.validateWorkflowDispositionWorktree(item)
+	if err != nil {
+		return WorkflowDispositionReceipt{}, err
+	}
+	cleanupAuto := false
+	if action != workflowDispositionDiscard {
+		cleanupAuto, err = a.workflowCleanupAuto(item)
+		if err != nil {
+			return WorkflowDispositionReceipt{}, err
+		}
+	}
+	receipt := WorkflowDispositionReceipt{
+		Action: string(action), Policy: string(policy), At: time.Now().UnixMilli(),
+	}
+	core := a.gitCore()
+	switch action {
+	case workflowDispositionMerge:
+		projectProfile, err := a.workflowProjectProfile(item.ProjectID)
+		if err != nil {
+			return WorkflowDispositionReceipt{}, err
+		}
+		baseBranch := strings.TrimSpace(projectProfile.BaseBranch)
+		if baseBranch == "" {
+			baseBranch = strings.TrimSpace(item.BaseBranch)
+		}
+		if baseBranch == "" {
+			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s: base branch is unavailable", item.ID)
+		}
+		merged, err := core.MergeBranch(projectRow.Path, baseBranch, item.Branch)
+		if err != nil {
+			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s refused: %w", item.ID, err)
+		}
+		receipt.Mode = merged.Mode
+		receipt.SHA = merged.SHA
+	case workflowDispositionPR:
+		sha, err := core.HeadSHA(item.WorktreePath)
+		if err != nil {
+			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s read PR head: %w", item.ID, err)
+		}
+		if err := core.Push(item.WorktreePath); err != nil {
+			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s push: %w", item.ID, err)
+		}
+		prRef, err := core.CreatePR(
+			item.WorktreePath, item.Goal,
+			fmt.Sprintf("Created from Agent Overflow workflow %s.", item.WorkflowID), false,
+		)
+		if err != nil {
+			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s create PR: %w", item.ID, err)
+		}
+		receipt.PRRef = prRef
+		receipt.SHA = sha
+	case workflowDispositionDiscard:
+		if _, err := a.RemoveOtherWorktreeForProject(item.ProjectID, "", item.WorktreePath, false); err != nil {
+			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s discard: %w", item.ID, err)
+		}
+		if err := a.store.UpdateWorkItemWorkspace(item.ID, "", "", ""); err != nil {
+			return receipt, err
+		}
+	}
+
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		return receipt, fmt.Errorf("workflow disposition %s encode receipt: %w", item.ID, err)
+	}
+	if err := a.store.UpdateWorkItemDisposition(item.ID, encoded); err != nil {
+		return receipt, err
+	}
+	cleanupErr := error(nil)
+	if cleanupAuto {
+		if _, err := a.RemoveOtherWorktreeForProject(item.ProjectID, "", item.WorktreePath, false); err != nil {
+			cleanupErr = fmt.Errorf("workflow disposition %s landed but automatic cleanup failed: %w", item.ID, err)
+		} else if err := a.store.UpdateWorkItemWorkspace(item.ID, "", "", ""); err != nil {
+			cleanupErr = err
+		}
+	}
+	a.emit("workflow:item-state", engine.StateEvent{
+		ItemID: item.ID, From: engine.State(item.State), To: engine.State(item.State),
+	})
+	return receipt, cleanupErr
+}
+
+func (a *App) validateWorkflowDispositionWorktree(item store.WorkItem) (store.Project, error) {
+	projectRow, err := a.store.GetProject(item.ProjectID)
+	if err != nil {
+		return store.Project{}, err
+	}
+	if strings.TrimSpace(item.WorktreePath) == "" || strings.TrimSpace(item.Branch) == "" {
+		return store.Project{}, fmt.Errorf("workflow disposition %s: item branch or worktree is missing", item.ID)
+	}
+	info, err := os.Stat(item.WorktreePath)
+	if err != nil {
+		return store.Project{}, fmt.Errorf("workflow disposition %s: inspect worktree: %w", item.ID, err)
+	}
+	if !info.IsDir() {
+		return store.Project{}, fmt.Errorf("workflow disposition %s: worktree is not a directory", item.ID)
+	}
+	worktree, found, err := a.findWorktree(projectRow.Path, item.WorktreePath)
+	if err != nil {
+		return store.Project{}, err
+	}
+	if !found || worktree.Branch != item.Branch {
+		return store.Project{}, fmt.Errorf("workflow disposition %s: worktree is not registered on branch %q", item.ID, item.Branch)
+	}
+	changes, err := a.gitCore().CountWorkingTreeChanges(item.WorktreePath)
+	if err != nil {
+		return store.Project{}, fmt.Errorf("workflow disposition %s: inspect item worktree: %w", item.ID, err)
+	}
+	if changes > 0 {
+		return store.Project{}, fmt.Errorf("workflow disposition %s: item worktree is dirty (%d changed files)", item.ID, changes)
+	}
+	return projectRow, nil
+}
+
+func (a *App) workflowProjectProfile(projectID string) (*profile.Profile, error) {
+	source := workflowProfileSource{store: a.store, configRoot: a.workflowDataRoot()}
+	return source.Profile(a.lifeCtx(), projectID)
+}
+
+func (a *App) workflowCleanupAuto(item store.WorkItem) (bool, error) {
+	if len(item.Snapshot) == 0 || item.WorktreePath == "" {
+		return false, nil
+	}
+	var snapshot engine.Snapshot
+	if err := json.Unmarshal(item.Snapshot, &snapshot); err != nil {
+		return false, fmt.Errorf("workflow disposition %s: decode cleanup policy: %w", item.ID, err)
+	}
+	return snapshot.Workflow.Cleanup == def.CleanupAuto, nil
+}
+
+func (a *App) queueAutoDisposition(itemID string) {
+	a.workflowAutoDispositionMu.Lock()
+	a.workflowAutoDispositionIDs = append(a.workflowAutoDispositionIDs, itemID)
+	if a.workflowAutoDispositionBusy {
+		a.workflowAutoDispositionMu.Unlock()
+		return
+	}
+	a.workflowAutoDispositionBusy = true
+	a.workflowAutoDispositionWG.Add(1)
+	a.workflowAutoDispositionMu.Unlock()
+	go a.runAutoDispositionQueue()
+}
+
+func (a *App) runAutoDispositionQueue() {
+	defer a.workflowAutoDispositionWG.Done()
+	for {
+		a.workflowAutoDispositionMu.Lock()
+		if len(a.workflowAutoDispositionIDs) == 0 {
+			a.workflowAutoDispositionBusy = false
+			a.workflowAutoDispositionMu.Unlock()
+			a.flushWorkflowDrainSummariesIfIdle()
+			return
+		}
+		itemID := a.workflowAutoDispositionIDs[0]
+		a.workflowAutoDispositionIDs[0] = ""
+		a.workflowAutoDispositionIDs = a.workflowAutoDispositionIDs[1:]
+		a.workflowAutoDispositionMu.Unlock()
+
+		a.autoDisposeWorkflowItem(itemID)
+		item, err := a.store.GetWorkItem(itemID)
+		if err != nil {
+			log.Printf("workflow notification %s: load final disposition outcome: %v", itemID, err)
+			continue
+		}
+		if item.State == string(engine.StateDone) {
+			a.recordWorkflowNotificationOutcome(item.ProjectID, engine.StateDone)
+		}
+	}
+}
+
+func (a *App) workflowAutoDispositionPending() bool {
+	a.workflowAutoDispositionMu.Lock()
+	defer a.workflowAutoDispositionMu.Unlock()
+	return a.workflowAutoDispositionBusy
+}
+
+func (a *App) autoDisposeWorkflowItem(itemID string) {
+	item, err := a.store.GetWorkItem(itemID)
+	if err != nil {
+		log.Printf("workflow auto-disposition %s: load item: %v", itemID, err)
+		if workflowEngine, engineErr := a.requireWorkflowEngine(); engineErr == nil {
+			if parkErr := workflowEngine.ParkDisposition(itemID); parkErr != nil {
+				log.Printf("workflow auto-disposition %s: park after load failure: %v", itemID, parkErr)
+			}
+		}
+		a.emit("workflow:error", engine.ErrorEvent{
+			ItemID: itemID,
+			Error:  "automatic workflow disposition failed; inspect the item's disposition state",
+		})
+		return
+	}
+	if item.State != string(engine.StateDone) || item.WorktreePath == "" || len(item.Disposition) > 0 {
+		return
+	}
+	projectProfile, err := a.workflowProjectProfile(item.ProjectID)
+	if err != nil {
+		failure := fmt.Errorf("load live workflow profile: %w", err)
+		workflowEngine, engineErr := a.requireWorkflowEngine()
+		if engineErr != nil {
+			failure = errors.Join(failure, engineErr)
+		} else if parkErr := workflowEngine.ParkDisposition(item.ID); parkErr != nil {
+			failure = errors.Join(failure, fmt.Errorf("park disposition: %w", parkErr))
+		}
+		log.Printf("workflow auto-disposition %s: %v", itemID, failure)
+		a.emit("workflow:error", engine.ErrorEvent{
+			ItemID: itemID,
+			Error:  "automatic workflow disposition failed; inspect the item's disposition state",
+		})
+		return
+	}
+	var action workflowDispositionAction
+	switch projectProfile.Disposition {
+	case profile.DispositionManual, "":
+		return
+	case profile.DispositionAutoPR:
+		action = workflowDispositionPR
+	case profile.DispositionAutoMerge:
+		action = workflowDispositionMerge
+	default:
+		log.Printf("workflow auto-disposition %s: unsupported policy %q", itemID, projectProfile.Disposition)
+		return
+	}
+	if _, err := a.runWorkflowDisposition(itemID, action, projectProfile.Disposition); err != nil {
+		log.Printf("workflow auto-disposition %s (%s): %v", itemID, projectProfile.Disposition, err)
+		a.emit("workflow:error", engine.ErrorEvent{
+			ItemID: itemID,
+			Error:  "automatic workflow disposition failed; inspect the item's disposition state",
+		})
+	}
+}

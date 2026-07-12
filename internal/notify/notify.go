@@ -23,16 +23,20 @@ const (
 // Content limits enforced by the backend before publication and re-checked
 // by the launcher before presentation.
 const (
-	MaxThreadIDBytes = 256
-	MaxTitleBytes    = 4 * 1024
-	MaxBodyBytes     = 64 * 1024
+	MaxThreadIDBytes   = 256
+	MaxWorkItemIDBytes = 256
+	MaxProjectIDBytes  = 256
+	MaxTitleBytes      = 4 * 1024
+	MaxBodyBytes       = 64 * 1024
 )
 
-// Target is the typed deep link carried by every OS notification. Workflows
-// consume this pipe later, but do not extend its wire shape.
+// Target is the typed deep link carried by every OS notification. Thread and
+// workflow routes share this contract across the backend and launcher.
 type Target struct {
-	Kind     string `json:"kind"`
-	ThreadID string `json:"threadId,omitempty"`
+	Kind       string `json:"kind"`
+	ThreadID   string `json:"threadId,omitempty"`
+	WorkItemID string `json:"workItemId,omitempty"`
+	ProjectID  string `json:"projectId,omitempty"`
 }
 
 // Send is the backend-to-launcher wire payload. ID is allocated before
@@ -52,8 +56,9 @@ func NewID(sequence uint64) string {
 	return fmt.Sprintf("agent-overflow-%d-%d", time.Now().UnixNano(), sequence)
 }
 
-// ValidateTarget rejects targets that are not exactly one of the two wire
-// shapes: {kind:"thread", threadId} or {kind:"none"}.
+// ValidateTarget rejects targets that are not exactly one supported wire
+// shape. Each kind owns one identifier so stale or ambiguous deep links never
+// cross the launcher boundary.
 func ValidateTarget(target Target) error {
 	switch target.Kind {
 	case "thread":
@@ -63,12 +68,35 @@ func ValidateTarget(target Target) error {
 		if len(target.ThreadID) > MaxThreadIDBytes {
 			return fmt.Errorf("notification thread target threadId exceeds %d bytes", MaxThreadIDBytes)
 		}
+		if target.WorkItemID != "" || target.ProjectID != "" {
+			return errors.New("notification thread target must not include workflow identifiers")
+		}
+	case "workflow-item":
+		if target.WorkItemID == "" {
+			return errors.New("notification workflow-item target requires workItemId")
+		}
+		if len(target.WorkItemID) > MaxWorkItemIDBytes {
+			return fmt.Errorf("notification workflow-item target workItemId exceeds %d bytes", MaxWorkItemIDBytes)
+		}
+		if target.ThreadID != "" || target.ProjectID != "" {
+			return errors.New("notification workflow-item target must include only workItemId")
+		}
+	case "workflow-triage-agent":
+		if target.ProjectID == "" {
+			return errors.New("notification workflow-triage-agent target requires projectId")
+		}
+		if len(target.ProjectID) > MaxProjectIDBytes {
+			return fmt.Errorf("notification workflow-triage-agent target projectId exceeds %d bytes", MaxProjectIDBytes)
+		}
+		if target.ThreadID != "" || target.WorkItemID != "" {
+			return errors.New("notification workflow-triage-agent target must include only projectId")
+		}
 	case "none":
-		if target.ThreadID != "" {
-			return errors.New("notification none target must not include threadId")
+		if target.ThreadID != "" || target.WorkItemID != "" || target.ProjectID != "" {
+			return errors.New("notification none target must not include identifiers")
 		}
 	default:
-		return fmt.Errorf("notification target kind %q must be thread or none", target.Kind)
+		return fmt.Errorf("notification target kind %q is unsupported", target.Kind)
 	}
 	return nil
 }

@@ -140,6 +140,13 @@ func (e *Engine) Close() error {
 }
 
 func (e *Engine) Enqueue(item store.WorkItem) error {
+	return e.request(enqueueCommand{item: item, waitForStarts: true})
+}
+
+// EnqueueDetachedStarts validates and persists synchronously, but does not
+// attach runner provisioning futures to the caller's response. Async startup
+// failures still park the item and emit workflow:error.
+func (e *Engine) EnqueueDetachedStarts(item store.WorkItem) error {
 	return e.request(enqueueCommand{item: item})
 }
 
@@ -184,6 +191,12 @@ func (e *Engine) Reorder(projectID string, orderedIDs []string) error {
 // means unbounded; a positive value pauses after that many new item starts and
 // is never persisted.
 func (e *Engine) SetQueue(active bool, maxStarts, concurrency int) error {
+	return e.request(queueCommand{active: active, maxStarts: maxStarts, setMaxStarts: true, concurrency: concurrency, waitForStarts: true})
+}
+
+// SetQueueDetachedStarts applies queue state synchronously while leaving any
+// starts it triggers to report through workflow events.
+func (e *Engine) SetQueueDetachedStarts(active bool, maxStarts, concurrency int) error {
 	return e.request(queueCommand{active: active, maxStarts: maxStarts, setMaxStarts: true, concurrency: concurrency})
 }
 
@@ -191,6 +204,17 @@ func (e *Engine) SetQueue(active bool, maxStarts, concurrency int) error {
 // transient process-N budget owned by the most recent explicit SetQueue call.
 // A nil active value is a concurrency-only update.
 func (e *Engine) UpdateQueueSettings(active *bool, concurrency int) error {
+	command := queueCommand{concurrency: concurrency, waitForStarts: true}
+	if active != nil {
+		command.active = *active
+		command.setActive = true
+	}
+	return e.request(command)
+}
+
+// UpdateQueueSettingsDetachedStarts is the settings-bound counterpart to
+// SetQueueDetachedStarts and preserves the current process-N budget.
+func (e *Engine) UpdateQueueSettingsDetachedStarts(active *bool, concurrency int) error {
 	command := queueCommand{concurrency: concurrency}
 	if active != nil {
 		command.active = *active
@@ -215,10 +239,19 @@ type initCommand struct{ reply chan response }
 type closeCommand struct{ reply chan response }
 type syncCommand struct{ reply chan response }
 type enqueueCommand struct {
-	item  store.WorkItem
-	reply chan response
+	item          store.WorkItem
+	waitForStarts bool
+	reply         chan response
 }
 type cancelCommand struct {
+	itemID string
+	reply  chan response
+}
+type removeQueuedCommand struct {
+	itemID string
+	reply  chan response
+}
+type parkDispositionCommand struct {
 	itemID string
 	reply  chan response
 }
@@ -246,12 +279,13 @@ type reorderCommand struct {
 	reply      chan response
 }
 type queueCommand struct {
-	active       bool
-	setActive    bool
-	maxStarts    int
-	setMaxStarts bool
-	concurrency  int
-	reply        chan response
+	active        bool
+	setActive     bool
+	maxStarts     int
+	setMaxStarts  bool
+	concurrency   int
+	waitForStarts bool
+	reply         chan response
 }
 type humanGateCommand struct {
 	itemID   string
@@ -295,6 +329,12 @@ func (e *Engine) request(command any) error {
 		command.reply = reply
 		e.commands <- command
 	case cancelCommand:
+		command.reply = reply
+		e.commands <- command
+	case removeQueuedCommand:
+		command.reply = reply
+		e.commands <- command
+	case parkDispositionCommand:
 		command.reply = reply
 		e.commands <- command
 	case resumeCommand:
@@ -379,10 +419,23 @@ func (e *Engine) loop() {
 			}
 			command.reply <- e.commandResponse(err)
 		case enqueueCommand:
-			err = e.enqueue(command.item)
-			command.reply <- e.itemCommandResponse(command.item.ID, err)
+			err = e.enqueue(command.item, command.waitForStarts)
+			if command.waitForStarts {
+				command.reply <- e.itemCommandResponse(command.item.ID, err)
+			} else {
+				e.commandStarts = nil
+				command.reply <- response{err: err}
+			}
 		case cancelCommand:
 			err = e.cancel(command.itemID)
+			e.commandStarts = nil
+			command.reply <- response{err: err}
+		case removeQueuedCommand:
+			err = e.removeQueued(command.itemID)
+			e.commandStarts = nil
+			command.reply <- response{err: err}
+		case parkDispositionCommand:
+			err = e.parkDisposition(command.itemID)
 			e.commandStarts = nil
 			command.reply <- response{err: err}
 		case resumeCommand:
@@ -419,10 +472,18 @@ func (e *Engine) loop() {
 				}
 				e.emitQueue()
 				if e.queueActive {
-					err = e.schedule()
+					startErr := e.schedule()
+					if command.waitForStarts {
+						err = startErr
+					}
 				}
 			}
-			command.reply <- e.commandResponse(err)
+			if command.waitForStarts {
+				command.reply <- e.commandResponse(err)
+			} else {
+				e.commandStarts = nil
+				command.reply <- response{err: err}
+			}
 		case humanGateCommand:
 			e.removePendingHuman(command.itemID)
 			err = errors.Join(e.resolveHumanGate(command.itemID, command.decision, command.note), e.schedule())
@@ -459,7 +520,7 @@ func (e *Engine) loop() {
 	}
 }
 
-func (e *Engine) enqueue(item store.WorkItem) error {
+func (e *Engine) enqueue(item store.WorkItem, reportStartErrors bool) error {
 	if State(item.State) != StateQueued {
 		return fmt.Errorf("enqueue item %q: state must be queued, got %q", item.ID, item.State)
 	}
@@ -484,7 +545,11 @@ func (e *Engine) enqueue(item store.WorkItem) error {
 	runtime := &runtimeItem{item: item}
 	e.items[item.ID] = runtime
 	e.insertQueued(runtime)
-	return e.schedule()
+	startErr := e.schedule()
+	if reportStartErrors {
+		return startErr
+	}
+	return nil
 }
 
 func (e *Engine) cancel(itemID string) error {

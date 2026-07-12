@@ -20,9 +20,20 @@ import (
 	"agent-overflow/internal/workflow/profile"
 )
 
-type workflowEmitter struct{ emit func(string, any) }
+type workflowEmitter struct {
+	app  *App
+	emit func(string, any)
+}
 
-func (e workflowEmitter) Emit(name string, payload any) { e.emit(name, payload) }
+func (e workflowEmitter) Emit(name string, payload any) {
+	if e.app != nil {
+		e.app.prepareWorkflowEngineEvent(name, payload)
+	}
+	e.emit(name, payload)
+	if e.app != nil {
+		e.app.afterWorkflowEngineEvent(name, payload)
+	}
+}
 
 type workflowProfileSource struct {
 	store      *store.Store
@@ -122,7 +133,7 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 	}
 	definitions := workflowDefinitionSource{store: a.store, configRoot: dataRoot, profiles: profiles}
 	workflowEngine, err := engine.New(
-		a.store, runner, workflowEmitter{emit: a.emitWithReplay()}, definitions, profiles,
+		a.store, runner, workflowEmitter{app: a, emit: a.emitWithReplay()}, definitions, profiles,
 		workflowSpendSource{store: a.store},
 		engine.Config{Active: settingsSnapshot.WorkflowQueueActive, GlobalConcurrency: settingsSnapshot.WorkflowConcurrency},
 	)
@@ -187,6 +198,16 @@ func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal str
 	if _, err := a.store.GetProject(projectID); err != nil {
 		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %w", err)
 	}
+	// Definition/profile errors are synchronous validation failures, not
+	// provisioning failures. Resolve before persistence so an unknown or broken
+	// workflow never enters the queue under the fire-and-forget start contract.
+	profiles := workflowProfileSource{store: a.store, configRoot: a.workflowDataRoot()}
+	definitions := workflowDefinitionSource{store: a.store, configRoot: a.workflowDataRoot(), profiles: profiles}
+	if _, err := definitions.Resolve(a.lifeCtx(), store.WorkItem{
+		ProjectID: projectID, WorkflowID: workflowID, WorkflowScope: string(scope),
+	}); err != nil {
+		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %w", err)
+	}
 	sortPosition, err := a.store.NextWorkItemSortPosition(projectID)
 	if err != nil {
 		return store.WorkItem{}, err
@@ -199,7 +220,7 @@ func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal str
 		StepMode: stepMode, Source: "manual",
 		CreatedAt: time.Now().UnixMilli(),
 	}
-	if err := workflowEngine.Enqueue(item); err != nil {
+	if err := workflowEngine.EnqueueDetachedStarts(item); err != nil {
 		return store.WorkItem{}, err
 	}
 	return a.store.GetWorkItem(item.ID)
@@ -358,7 +379,7 @@ func (a *App) WorkflowSetQueue(active bool, maxStarts, concurrency int) error {
 	}); err != nil {
 		return err
 	}
-	if err := workflowEngine.SetQueue(active, maxStarts, concurrency); err != nil {
+	if err := workflowEngine.SetQueueDetachedStarts(active, maxStarts, concurrency); err != nil {
 		_, rollbackErr := a.settings.Update(map[string]any{
 			"workflowQueueActive": previous.WorkflowQueueActive,
 			"workflowConcurrency": previous.WorkflowConcurrency,

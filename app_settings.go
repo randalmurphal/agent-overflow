@@ -92,7 +92,7 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 		if workflowActiveChanged {
 			active = &next.WorkflowQueueActive
 		}
-		if err := a.workflowEngine.UpdateQueueSettings(active, next.WorkflowConcurrency); err != nil {
+		if err := a.workflowEngine.UpdateQueueSettingsDetachedStarts(active, next.WorkflowConcurrency); err != nil {
 			rollback, rollbackBuildErr := settingsRollbackPatch(prev, patch)
 			var rollbackErr error
 			if rollbackBuildErr == nil {

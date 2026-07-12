@@ -1458,6 +1458,8 @@ export class WorkItem {
     "source": string;
     "sourceRef"?: string;
     "triageThreadId"?: string;
+    "disposition"?: json$0.RawMessage;
+    "digest"?: json$0.RawMessage;
     "createdAt": number;
     "startedAt"?: number;
     "endedAt"?: number;

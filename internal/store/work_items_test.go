@@ -56,13 +56,22 @@ func TestWorkItemCRUDListAndTransitions(t *testing.T) {
 	if err := s.UpdateWorkItemState("queued-first", "needs-human", "gate", 50); err != nil {
 		t.Fatalf("set needs-human: %v", err)
 	}
+	disposition := json.RawMessage(`{"action":"merged","policy":"manual","at":50}`)
+	digest := json.RawMessage(`{"whatHappened":"Paused.","whatItNeeds":"Review."}`)
+	if err := s.UpdateWorkItemDisposition("queued-first", disposition); err != nil {
+		t.Fatalf("set disposition: %v", err)
+	}
+	if err := s.UpdateWorkItemDigest("queued-first", digest); err != nil {
+		t.Fatalf("set digest: %v", err)
+	}
 	got, err := s.GetWorkItem("queued-first")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	if got.State != "needs-human" || got.Reason != "gate" || got.EndedAt != 50 ||
 		got.WorktreePath != "/tmp/wt" || got.Branch != "ao/item" || got.BaseBranch != "main" ||
-		got.StartedAt != 40 || string(got.Snapshot) != string(snapshot) || !got.StepMode {
+		got.StartedAt != 40 || string(got.Snapshot) != string(snapshot) || !got.StepMode ||
+		string(got.Disposition) != string(disposition) || string(got.Digest) != string(digest) {
 		t.Fatalf("updated item = %#v", got)
 	}
 	if err := s.UpdateWorkItemState("missing", "done", "", 60); !errors.Is(err, sql.ErrNoRows) {
@@ -70,6 +79,9 @@ func TestWorkItemCRUDListAndTransitions(t *testing.T) {
 	}
 	if err := s.UpdateWorkItemRunStart("missing", snapshot, "/tmp/wt", "ao/item", "main", 40); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing run-start update error = %v, want sql.ErrNoRows", err)
+	}
+	if count, err := s.CountWorkItemsInStates("queued", "running"); err != nil || count != 3 {
+		t.Fatalf("queued/running count = %d err=%v, want 3", count, err)
 	}
 }
 

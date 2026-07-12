@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -106,6 +108,23 @@ func (s *Store) ListWorkItemPhases(itemID string) ([]WorkItemPhase, error) {
 		return nil, fmt.Errorf("store: list work item phases %s: iterate: %w", itemID, err)
 	}
 	return phases, nil
+}
+
+// GetLatestWorkItemPhase returns only the newest attempt for attention-state
+// summaries. It avoids materializing a run's full envelope history on the
+// workflow engine's synchronous event path.
+func (s *Store) GetLatestWorkItemPhase(itemID string) (WorkItemPhase, bool, error) {
+	phase, err := scanWorkItemPhase(s.db.QueryRow(
+		`SELECT `+workItemPhaseColumns+` FROM work_item_phases
+		 WHERE item_id = ? ORDER BY started_at DESC, phase_id DESC, attempt DESC LIMIT 1`, itemID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkItemPhase{}, false, nil
+	}
+	if err != nil {
+		return WorkItemPhase{}, false, fmt.Errorf("store: get latest work item phase %s: %w", itemID, err)
+	}
+	return phase, true, nil
 }
 
 // GetCurrentWorkItemPhase returns the highest attempt number for a phase.

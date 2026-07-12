@@ -1938,3 +1938,48 @@ func TestMigrationV25AddsWorkflowModesTakeoverAndTriageLink(t *testing.T) {
 		readIndexSQL(t, db, index)
 	}
 }
+
+func TestMigrationV26AddsDispositionAndDigest(t *testing.T) {
+	db := migrateThrough(t, 25)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+		 sort_position, seeds, step_mode, worktree_path, branch, base_branch, budget,
+		 source, source_ref, triage_thread_id, created_at, started_at, ended_at)
+		VALUES ('item-v26', 'project', 'keep goal', 'wf', 'shared', '{}', 'done', '',
+		 3, '{}', 0, '/tmp/wt', 'item-branch', 'main', '{}', 'manual', '', '', 4, 5, 6)`)
+
+	if err := applyMigration(db, migrationByVersion(t, 26)); err != nil {
+		t.Fatalf("apply migration v26: %v", err)
+	}
+	columns, err := tableColumns(db, "work_items")
+	if err != nil {
+		t.Fatalf("work_items columns: %v", err)
+	}
+	for _, column := range []string{"disposition", "digest"} {
+		if !columns[column] {
+			t.Fatalf("work_items.%s missing", column)
+		}
+	}
+	var indexName string
+	if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_work_items_state_sort'`).Scan(&indexName); err != nil {
+		t.Fatalf("state-leading work item index missing: %v", err)
+	}
+	var disposition, digest string
+	if err := db.QueryRow(`SELECT disposition, digest FROM work_items WHERE id = 'item-v26'`).Scan(&disposition, &digest); err != nil {
+		t.Fatalf("read migrated row: %v", err)
+	}
+	if disposition != "" || digest != "" {
+		t.Fatalf("new defaults = disposition %q digest %q, want empty", disposition, digest)
+	}
+	for name, statement := range map[string]string{
+		"disposition": `UPDATE work_items SET disposition = '{' WHERE id = 'item-v26'`,
+		"digest":      `UPDATE work_items SET digest = '{' WHERE id = 'item-v26'`,
+	} {
+		if _, err := db.Exec(statement); err == nil {
+			t.Errorf("invalid %s JSON unexpectedly succeeded", name)
+		}
+	}
+	mustExec(t, db, `UPDATE work_items
+		SET disposition = '{"action":"merged"}', digest = '{"whatHappened":"done","whatItNeeds":"nothing"}'
+		WHERE id = 'item-v26'`)
+}

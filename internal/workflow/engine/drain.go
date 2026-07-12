@@ -113,6 +113,19 @@ func (e *Engine) compactQueued() {
 	e.queueHead = 0
 }
 
+func (e *Engine) removeQueuedRuntime(itemID string) {
+	e.compactQueued()
+	for index, item := range e.queued {
+		if item == nil || item.item.ID != itemID {
+			continue
+		}
+		copy(e.queued[index:], e.queued[index+1:])
+		e.queued[len(e.queued)-1] = nil
+		e.queued = e.queued[:len(e.queued)-1]
+		return
+	}
+}
+
 func (e *Engine) startItem(item *runtimeItem) error {
 	workflow, err := e.definitions.Resolve(e.ctx, item.item)
 	if err != nil {

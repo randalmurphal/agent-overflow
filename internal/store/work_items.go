@@ -28,6 +28,8 @@ type WorkItem struct {
 	Source         string          `json:"source"`
 	SourceRef      string          `json:"sourceRef,omitempty"`
 	TriageThreadID string          `json:"triageThreadId,omitempty"`
+	Disposition    json.RawMessage `json:"disposition,omitempty"`
+	Digest         json.RawMessage `json:"digest,omitempty"`
 	CreatedAt      int64           `json:"createdAt"`
 	StartedAt      int64           `json:"startedAt,omitempty"`
 	EndedAt        int64           `json:"endedAt,omitempty"`
@@ -42,12 +44,12 @@ type WorkItemListFilter struct {
 const workItemColumns = `id, project_id, goal, workflow_id, workflow_scope,
 snapshot, state, reason, sort_position, seeds, step_mode, worktree_path,
 branch, base_branch, budget, source, source_ref, triage_thread_id,
-created_at, started_at, ended_at`
+disposition, digest, created_at, started_at, ended_at`
 
 const workItemSummaryColumns = `id, project_id, goal, workflow_id, workflow_scope,
 '', state, reason, sort_position, '', step_mode, worktree_path,
 branch, base_branch, '', source, source_ref, triage_thread_id,
-created_at, started_at, ended_at`
+'', '', created_at, started_at, ended_at`
 
 func jsonText(value json.RawMessage) string {
 	if len(value) == 0 {
@@ -58,19 +60,22 @@ func jsonText(value json.RawMessage) string {
 
 func scanWorkItem(scanner interface{ Scan(...any) error }) (WorkItem, error) {
 	var item WorkItem
-	var snapshot, seeds, budget string
+	var snapshot, seeds, budget, disposition, digest string
 	var stepMode int
 	if err := scanner.Scan(
 		&item.ID, &item.ProjectID, &item.Goal, &item.WorkflowID, &item.WorkflowScope,
 		&snapshot, &item.State, &item.Reason, &item.SortPosition, &seeds, &stepMode,
 		&item.WorktreePath, &item.Branch, &item.BaseBranch, &budget, &item.Source,
-		&item.SourceRef, &item.TriageThreadID, &item.CreatedAt, &item.StartedAt, &item.EndedAt,
+		&item.SourceRef, &item.TriageThreadID, &disposition, &digest,
+		&item.CreatedAt, &item.StartedAt, &item.EndedAt,
 	); err != nil {
 		return WorkItem{}, err
 	}
 	item.Snapshot = json.RawMessage(snapshot)
 	item.Seeds = json.RawMessage(seeds)
 	item.Budget = json.RawMessage(budget)
+	item.Disposition = json.RawMessage(disposition)
+	item.Digest = json.RawMessage(digest)
 	item.StepMode = stepMode != 0
 	return item, nil
 }
@@ -78,12 +83,13 @@ func scanWorkItem(scanner interface{ Scan(...any) error }) (WorkItem, error) {
 func (s *Store) CreateWorkItem(item WorkItem) error {
 	_, err := s.db.Exec(
 		`INSERT INTO work_items (`+workItemColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ProjectID, item.Goal, item.WorkflowID, item.WorkflowScope,
 		jsonText(item.Snapshot), item.State, item.Reason, item.SortPosition,
 		jsonText(item.Seeds), boolToInt(item.StepMode), item.WorktreePath, item.Branch,
 		item.BaseBranch, jsonText(item.Budget), item.Source, item.SourceRef,
-		item.TriageThreadID, item.CreatedAt, item.StartedAt, item.EndedAt,
+		item.TriageThreadID, jsonText(item.Disposition), jsonText(item.Digest),
+		item.CreatedAt, item.StartedAt, item.EndedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create work item %s: %w", item.ID, err)
@@ -177,6 +183,27 @@ func (s *Store) NextWorkItemSortPosition(projectID string) (int, error) {
 	return position, nil
 }
 
+// PredictWorkItemQueuePosition returns the one-based global insertion rank for
+// a new project item using the scheduler's sort-position and creation-time
+// ordering. Existing items created in the same millisecond sort first; the
+// final UUID tie-break is unknowable until enqueue allocates the item ID.
+func (s *Store) PredictWorkItemQueuePosition(projectID string, createdAt int64) (int, error) {
+	sortPosition, err := s.NextWorkItemSortPosition(projectID)
+	if err != nil {
+		return 0, err
+	}
+	var before int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM work_items
+		 WHERE state = 'queued'
+		   AND (sort_position < ? OR (sort_position = ? AND created_at <= ?))`,
+		sortPosition, sortPosition, createdAt,
+	).Scan(&before); err != nil {
+		return 0, fmt.Errorf("store: predict work item queue position: %w", err)
+	}
+	return before + 1, nil
+}
+
 // UpdateWorkItemState writes the transition result atomically. Transition
 // validity belongs to the workflow engine; the store enforces only schema
 // constraints.
@@ -217,6 +244,49 @@ func (s *Store) UpdateWorkItemWorkspace(id, worktreePath, branch, baseBranch str
 		return fmt.Errorf("store: update work item workspace %s: %w", id, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: update work item workspace %s", id))
+}
+
+// UpdateWorkItemDisposition persists the durable receipt for a completed
+// disposition action. The schema validates the JSON representation.
+func (s *Store) UpdateWorkItemDisposition(id string, disposition json.RawMessage) error {
+	result, err := s.db.Exec(
+		`UPDATE work_items SET disposition = ? WHERE id = ?`, jsonText(disposition), id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update work item disposition %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update work item disposition %s", id))
+}
+
+// UpdateWorkItemDigest replaces the human-facing run digest. Template and
+// generated upgrades share this one persistence path.
+func (s *Store) UpdateWorkItemDigest(id string, digest json.RawMessage) error {
+	result, err := s.db.Exec(
+		`UPDATE work_items SET digest = ? WHERE id = ?`, jsonText(digest), id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update work item digest %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update work item digest %s", id))
+}
+
+// CountWorkItemsInStates returns the global count for the supplied lifecycle
+// states without materializing run records.
+func (s *Store) CountWorkItemsInStates(states ...string) (int, error) {
+	if len(states) == 0 {
+		return 0, nil
+	}
+	query := `SELECT COUNT(*) FROM work_items WHERE state IN (` +
+		strings.TrimRight(strings.Repeat("?,", len(states)), ",") + `)`
+	args := make([]any, len(states))
+	for index, state := range states {
+		args[index] = state
+	}
+	var count int
+	if err := s.db.QueryRow(query, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("store: count work items in states: %w", err)
+	}
+	return count, nil
 }
 
 // UpdateWorkItemTriageThread persists the open-or-return association used by

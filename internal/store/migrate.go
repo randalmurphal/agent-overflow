@@ -1081,6 +1081,18 @@ CREATE INDEX idx_usage_ledger_work_item
 		SQL:     rebuildThreadsWorkflowModesV25SQL + rebuildWorkItemsTakeoverTriageV25SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 26,
+		Name:    "work_item_disposition_digest",
+		SQL: `ALTER TABLE work_items ADD COLUMN disposition TEXT NOT NULL DEFAULT ''
+CHECK(disposition = '' OR json_valid(disposition));
+
+ALTER TABLE work_items ADD COLUMN digest TEXT NOT NULL DEFAULT ''
+CHECK(digest = '' OR json_valid(digest));
+
+CREATE INDEX idx_work_items_state_sort
+  ON work_items(state, sort_position, created_at, id);`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

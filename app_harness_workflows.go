@@ -484,6 +484,12 @@ func (h *Harness) prepareWorkflowReset() (func() error, error) {
 			}
 		}
 	}
+	// Queue mutation RPCs intentionally detach runner provisioning. Reset must
+	// still wait for those workers before enumerating/deleting threads, or a
+	// late phase-thread create can race the project deletion snapshot.
+	if err := h.app.workflowEngine.Sync(); err != nil {
+		log.Printf("harness: reset: detached workflow startup settled with error: %v", err)
+	}
 	return restore, nil
 }
 

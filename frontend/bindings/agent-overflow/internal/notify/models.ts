@@ -6,12 +6,14 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
- * Target is the typed deep link carried by every OS notification. Workflows
- * consume this pipe later, but do not extend its wire shape.
+ * Target is the typed deep link carried by every OS notification. Thread and
+ * workflow routes share this contract across the backend and launcher.
  */
 export class Target {
     "kind": string;
     "threadId"?: string;
+    "workItemId"?: string;
+    "projectId"?: string;
 
     /** Creates a new Target instance. */
     constructor($$source: Partial<Target> = {}) {

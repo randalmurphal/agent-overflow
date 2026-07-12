@@ -28,6 +28,8 @@ resource semaphores, and startup recovery.
   that same thread; validation exhaustion re-parks as `taken-over`.
 - `SetQueue` explicitly replaces the transient process-N budget. Settings-only
   changes use `UpdateQueueSettings`, which preserves that live budget.
+- Queued removal and done-item disposition parking are item lifecycle actions
+  in `item_actions.go`; both stay serialized through the command loop.
 - Per-item budgets are checked before every phase attempt. Item overrides win
   over live profile defaults; token/USD spend comes through `SpendSource`, and
   wall clock uses the engine clock against the persisted item start time.

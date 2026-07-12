@@ -152,6 +152,8 @@ session already has the answer.
 - The v25 rebuild adds `workflow-studio` / `workflow-triage`, extends typed
   work-item reasons with `taken-over`, and persists item hand-off ownership in
   `work_items.triage_thread_id`.
+- Migration v26 adds JSON-checked `work_items.disposition` receipts and
+  `work_items.digest` human-facing run summaries.
 
 ## Extension points
 
