@@ -400,3 +400,26 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   artifacts → crash sweep. Next: M3 boundary items — P0.3 rev2 brief,
   UI packets (carry-forwards logged above), post-M2 tool-driver +
   fan-out/join packet.
+- **P0.3 rev2 authored** (`a7f37cc5`) at the M3 boundary, superseding the
+  parked rev1. Scope per the mid-campaign user rulings: in-process
+  notifications service (async authorization — startup never blocks on the
+  180s macOS grant), Windows launcher↔backend bridge over the EXISTING
+  transport (backend notifyOS publishes `notification:send`; the launcher —
+  which already holds {port, token} from the bootstrap line — subscribes
+  via a minimal WS client, presents, and posts activations back through a
+  new LocalOnly `NotificationActivated` RPC; backend emits
+  `notification:activated` to the SPA on both paths), bounded frontend
+  pending-activation queue (cap 8) draining post-hydration with a vitest
+  test, HarnessNotify + e2e per rev1. rev1 partial kept as reference only
+  (predates slugs/M1/M2). New gates dry-run green on base: GOOS=windows
+  full-repo cross-build; frontend vitest (362 files / 5236 tests).
+- **Wails fork fix executed (Claude-owned rev2 prerequisite).** Linux
+  `NotificationClosed` reason 2 no longer synthesizes a
+  DefaultActionIdentifier response (dismiss ≠ click); map cleanup retained
+  for all close reasons. Verified: build + vet + package tests green.
+  Pushed to the pinned branch (`ao-webview2-dpi-hardening` @ `b7d0bcc96`)
+  and cherry-picked cleanly onto an upstream-candidate branch
+  (`fix/linux-notification-dismiss-vs-click` off wailsapp/wails master —
+  bug confirmed still present at alpha2.117). **NO upstream PR opened;
+  standing constraint holds: PR only with explicit user approval.**
+  agent-overflow pin bumped (`a63891ac`), go-build + go-test green.
