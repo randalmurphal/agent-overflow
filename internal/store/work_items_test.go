@@ -1,0 +1,118 @@
+package store
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"testing"
+)
+
+func testWorkItem(id, projectID, state string, sortPosition int, createdAt int64) WorkItem {
+	return WorkItem{
+		ID: id, ProjectID: projectID, Goal: "ship it", WorkflowID: "build",
+		WorkflowScope: "project", State: state, SortPosition: sortPosition,
+		Seeds: json.RawMessage(`{"ticket":"AO-1"}`), StepMode: true,
+		Budget: json.RawMessage(`{"kind":"tokens","limit":1000}`),
+		Source: "manual", CreatedAt: createdAt,
+	}
+}
+
+func TestWorkItemCRUDListAndTransitions(t *testing.T) {
+	s := newTestStore(t)
+	items := []WorkItem{
+		testWorkItem("queued-later", "project-a", "queued", 2, 20),
+		testWorkItem("running", "project-a", "running", 0, 10),
+		testWorkItem("queued-first", "project-a", "queued", 1, 30),
+		testWorkItem("other-project", "project-b", "queued", 0, 1),
+	}
+	for _, item := range items {
+		if err := s.CreateWorkItem(item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+	}
+
+	queued, err := s.ListWorkItems(WorkItemListFilter{ProjectID: "project-a", States: []string{"queued"}})
+	if err != nil {
+		t.Fatalf("list queued: %v", err)
+	}
+	if len(queued) != 2 || queued[0].ID != "queued-first" || queued[1].ID != "queued-later" {
+		t.Fatalf("queued order = %#v", queued)
+	}
+	all, err := s.ListWorkItems(WorkItemListFilter{ProjectID: "project-a"})
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("all project-a items = %d, want 3", len(all))
+	}
+
+	snapshot := json.RawMessage(`{"id":"build","version":1}`)
+	if err := s.UpdateWorkItemRunStart("queued-first", snapshot, "/tmp/wt", "ao/item", "main", 40); err != nil {
+		t.Fatalf("run start: %v", err)
+	}
+	if err := s.UpdateWorkItemState("queued-first", "running", "", 0); err != nil {
+		t.Fatalf("set running: %v", err)
+	}
+	if err := s.UpdateWorkItemState("queued-first", "needs-human", "gate", 50); err != nil {
+		t.Fatalf("set needs-human: %v", err)
+	}
+	got, err := s.GetWorkItem("queued-first")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.State != "needs-human" || got.Reason != "gate" || got.EndedAt != 50 ||
+		got.WorktreePath != "/tmp/wt" || got.Branch != "ao/item" || got.BaseBranch != "main" ||
+		got.StartedAt != 40 || string(got.Snapshot) != string(snapshot) || !got.StepMode {
+		t.Fatalf("updated item = %#v", got)
+	}
+	if err := s.UpdateWorkItemState("missing", "done", "", 60); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing state update error = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.UpdateWorkItemRunStart("missing", snapshot, "/tmp/wt", "ao/item", "main", 40); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing run-start update error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestReorderQueuedWorkItemsIsAtomic(t *testing.T) {
+	s := newTestStore(t)
+	for _, item := range []WorkItem{
+		testWorkItem("one", "project-a", "queued", 5, 1),
+		testWorkItem("two", "project-a", "queued", 6, 2),
+		testWorkItem("running", "project-a", "running", 7, 3),
+	} {
+		if err := s.CreateWorkItem(item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+	}
+	if err := s.ReorderQueuedWorkItems("project-a", []string{"two", "one"}); err != nil {
+		t.Fatalf("reorder: %v", err)
+	}
+	got, err := s.ListWorkItems(WorkItemListFilter{ProjectID: "project-a", States: []string{"queued"}})
+	if err != nil {
+		t.Fatalf("list reordered: %v", err)
+	}
+	if got[0].ID != "two" || got[0].SortPosition != 0 || got[1].ID != "one" || got[1].SortPosition != 1 {
+		t.Fatalf("reordered items = %#v", got)
+	}
+
+	if err := s.ReorderQueuedWorkItems("project-a", []string{"one", "running"}); err == nil {
+		t.Fatal("reorder including running item succeeded")
+	}
+	one, err := s.GetWorkItem("one")
+	if err != nil {
+		t.Fatalf("get one after rollback: %v", err)
+	}
+	if one.SortPosition != 1 {
+		t.Fatalf("failed reorder partially committed position %d, want 1", one.SortPosition)
+	}
+	if err := s.ReorderQueuedWorkItems("project-a", []string{"one", "one"}); err == nil {
+		t.Fatal("reorder with duplicate ids succeeded")
+	}
+	one, err = s.GetWorkItem("one")
+	if err != nil {
+		t.Fatalf("get one after duplicate rejection: %v", err)
+	}
+	if one.SortPosition != 1 {
+		t.Fatalf("duplicate reorder mutated position %d, want 1", one.SortPosition)
+	}
+}

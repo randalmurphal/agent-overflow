@@ -9,7 +9,7 @@ the migrations win.
 | Table | Purpose |
 |---|---|
 | `projects` | User-defined grouping of threads rooted at a directory. `path` (UNIQUE), `name`, immutable `slug` (UNIQUE, filesystem-safe; keys per-project app config under `<config-root>/projects/<slug>/`), `color`, `sort_position`, `archived`. Each thread belongs to exactly one project. |
-| `threads` | One row per conversation. Provider, session_ref, workspace/project paths, model, `mode` (chat/plan/design/discussion), `reasoning_effort`, `fast_mode`, `context_window`, per-tier auto-compact percentages (`auto_compact_standard_percent`, `auto_compact_extended_percent`), `runtime_mode`, archived flag, fork lineage (`parent_thread_id`, `pending_fork_session_ref`, `forked_from_thread_id`), discussion membership (`discussion_id`), `last_token_usage`. |
+| `threads` | One row per conversation. Provider, session_ref, workspace/project paths, model, `mode` (chat/plan/design/discussion/terminal/workflow), `reasoning_effort`, `fast_mode`, `context_window`, per-tier auto-compact percentages (`auto_compact_standard_percent`, `auto_compact_extended_percent`), `runtime_mode`, archived flag, fork lineage (`parent_thread_id`, `pending_fork_session_ref`, `forked_from_thread_id`), discussion membership (`discussion_id`), `last_token_usage`. Workflow mode identifies phase threads so normal thread listings can exclude them without a naming convention. |
 | `items` | Timeline items per thread. `turn_index`, `item_index`, `kind`, `role`, `status`, `summary` (always-loaded preview), `payload_id`, `parent_id` (subagent / nested-tool correlation), `is_background`, `completion_of` (back-reference from tool_completion to its launch), `tool_name`, `decision`, `meta`. |
 | `payloads` | Heavy content. `kind`, `meta` (JSON, loaded with items), `data` (base BLOB, on-demand). |
 | `payload_chunks` | Append-only payload data for live streaming payloads. Rows are keyed by `(payload_id, chunk_index)` and carry `start_offset` so chunk reads can jump to the requested byte range. `ON DELETE CASCADE` keeps lifecycle owned by `payloads`. |
@@ -27,8 +27,13 @@ the migrations win.
 | `chat_model_profiles` | Last-used composer settings per provider/model: reasoning effort, fast mode, context window, per-tier auto-compact percentages, runtime mode, and `updated_at` for seeding new chats. |
 | `new_thread_mcp_defaults` | Provider/workspace-scoped MCP disabled-server snapshots for future chat/plan thread creation. Existing threads keep their own `threads.disabled_mcp_servers` snapshot. |
 | `pending_background_task_terminals` | Per-task stash of Claude `task_updated` terminals whose chat-side `tool_completion` sibling has not been written yet. PK `(thread_id, task_id)`; carries `tool_use_id`, `status`, `exit_code`, `output_file`, `end_time`, `source` (`task_updated`), `created_at`. The tray query `ListLiveBackgroundTasks` joins against this table to hide launches whose host process exited but whose agent observation has not arrived. Drained when `task_notification` / TaskOutput observation lands. The startup sweep for recoverable Claude launches writes the `tool_completion` sibling directly (with `source="session_died"` recorded on the sibling's meta) and never stages a stash row. |
-| `usage_ledger` | Append-only per-turn per-model token/cost accounting (migration v14). One row per (settled turn, model): `created_at`, attribution columns `thread_id` / `project_id` / `turn_id` / `provider` / `model` (denormalized, DELIBERATELY no FKs so lifetime totals survive thread/project deletion), token columns (`input_tokens` = non-cached input for both providers, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `reasoning_output_tokens`), `cost_usd` (wire-reported only), `cost_source` (`wire`\|`none`). Values are per-turn deltas computed by the provider parsers — summing any slice of rows is safe. Written by `triage/usage_ledger.go`; aggregated by `store.QueryUsage` behind the `GetUsageStats` binding. |
+| `usage_ledger` | Append-only per-turn per-model token/cost accounting (migration v14; workflow attribution in v22). One row per (settled turn, model): `created_at`, attribution columns `thread_id` / `project_id` / `work_item_id` / `turn_id` / `provider` / `model` (denormalized, DELIBERATELY no FKs so lifetime totals survive thread/project deletion), token columns (`input_tokens` = non-cached input for both providers, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `reasoning_output_tokens`), `cost_usd` (wire-reported only), `cost_source` (`wire`\|`none`). Values are per-turn deltas computed by the provider parsers — summing any slice of rows is safe. Written by `triage/usage_ledger.go`; aggregated by `store.QueryUsage`, with per-workflow-run totals from `store.QueryWorkItemUsage`. |
 | `ui_state` | Persisted per-client UI view state (migration v15). PK `(scope, key)`; `scope` is an opaque namespace — `client:<uuid>` today, `user:<id>` reserved for when identities exist — and `value` is an opaque string (frontend JSON-encodes structured values). Exists because webview localStorage is not durable (the transport's ephemeral port changes the origin every launch). Backs the frontend `appStorage` module via the `GetUIState`/`SetUIState`/`DeleteUIState` bindings; hydrated once at boot. |
+| `work_items` | Durable workflow run records (migration v22): denormalized project/workflow identity, goal and seeds, frozen workflow snapshot, queue order, lifecycle state + typed reason, step mode, worktree/branch metadata, budget, source attribution, and timestamps. No project/thread FK: history outlives either row. |
+| `work_item_phases` | One row per workflow phase attempt, unique on `(item_id, phase_id, attempt)`. Stores denormalized phase-thread id, input/output envelopes, evaluated gate trace, intervention record, narrative path, status, and timestamps. No run/thread FK; loop counts derive from attempt rows. |
+| `work_item_effects` | Idempotency ledger for surfaced phase-tool effects, unique on `(item_id, phase_id, tool, payload_hash)`, with the JSON payload and creation time. No run FK so history remains independently durable. |
+| `automations` | Scheduled/internal-event workflow definitions: project and workflow identity/scope, name, enable flag, trigger/condition JSON, seed template, continuity notes, and timestamps. |
+| `automation_cursors` | Per-automation source watermarks keyed by `(automation_id, source_key)`. Cursors cascade with their owning automation; they are scheduler state, not run history. |
 
 Plan implementation and revision source references are stored on the user
 message `items.meta` as `sourceProposedPlan` and
@@ -71,6 +76,11 @@ implementation markers and revision parent links.
 - `idx_pending_terminals_tool_use` on `pending_background_task_terminals(thread_id, tool_use_id) WHERE tool_use_id <> ''` — partial index backing the tray query's `NOT EXISTS` join. The PK on `(thread_id, task_id)` already covers thread-prefix lookups.
 - `idx_usage_ledger_created` on `usage_ledger(created_at)` — time-range usage aggregation.
 - `idx_usage_ledger_thread` on `usage_ledger(thread_id, created_at)` — per-thread usage aggregation.
+- `idx_usage_ledger_work_item` on `usage_ledger(work_item_id, created_at)` — per-run token and wire-cost budget aggregation.
+- `idx_work_items_project_state_sort` on `work_items(project_id, state, sort_position, created_at)` — filtered queue/history listings in deterministic manual order.
+- `idx_work_items_project_sort` on `work_items(project_id, sort_position, created_at)` — full project listings in deterministic manual order when no state filter is applied.
+- `idx_work_item_phases_item_started` on `work_item_phases(item_id, started_at, phase_id, attempt)` — chronological run-detail and phase-attempt reads.
+- `idx_automations_project` on `automations(project_id, created_at)` — project automation listings.
 
 ## Migration Policy
 
@@ -89,7 +99,8 @@ implementation markers and revision parent links.
 
 - **In**: timeline items, payloads, thread metadata, projects, channels/messages,
   discussion templates, design artifact metadata, attachment metadata, composer
-  favorites, and last-used model profile seeds.
+  favorites, last-used model profile seeds, workflow run records, and automation
+  definitions/cursors.
 - **Not in**: live per-turn provider state (the provider owns it),
   transient UI state (frontend $state), logs (observability package has
   its own NDJSON logger).

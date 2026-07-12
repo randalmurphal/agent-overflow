@@ -59,7 +59,17 @@ root `CLAUDE.md` principle 3.
   alone always reports `UnpricedRows=0` — that field is populated by
   `GetUsageStats` after merging in the rate-table lookup, and now means
   "rows whose model the rate table doesn't recognize" rather than
-  "rows with no wire cost."
+  "rows with no wire cost." Migration v22 adds denormalized
+  `work_item_id`; `QueryWorkItemUsage` supplies the raw token and
+  wire-cost sum used for workflow budget checks.
+- `work_items.go` / `work_item_phases.go` / `work_item_effects.go` — bare
+  workflow run-record CRUD (migration v22). Project, thread, and item ids
+  are intentionally denormalized without FKs so run history survives
+  deletion. State-machine validation and scheduling belong to
+  `internal/workflow`, not this package.
+- `automations.go` — automation definition, continuity-note, and
+  per-source cursor CRUD. Cursors are dependent scheduler state and
+  cascade when an automation is deleted.
 - `ui_state.go` — persisted per-client UI view state (`ui_state`
   table, migration v15). `(scope, key) → value` where scope is an
   opaque namespace (`client:<uuid>` now, `user:<id>` reserved) and
@@ -80,7 +90,8 @@ root `CLAUDE.md` principle 3.
 - What BELONGS here:
   - Timeline items, payloads, thread metadata, channels / messages,
     discussion templates, attachment metadata, projects, composer
-    favorites, last-used model profile seeds.
+    favorites, last-used model profile seeds, workflow run records, and
+    automation definitions/cursors.
   - Migrations, indices, CHECK constraints.
   - Query helpers that return typed rows.
 - What does NOT belong here:
@@ -125,6 +136,16 @@ session already has the answer.
   rather than for every provider token. No render cache is written.
 - Payload bindings return raw data only. Rendering is a frontend projection
   based on item/payload kind.
+
+## Recent schema changes (v22-v23) — workflow persistence
+
+- `work_items`, `work_item_phases`, and `work_item_effects` persist workflow
+  run history without project/thread/item FKs; `automations` and
+  `automation_cursors` persist trigger definitions and watermarks.
+- `usage_ledger.work_item_id` attributes phase-thread usage to a run and is
+  indexed for budget sums.
+- `threads.mode` accepts `workflow` for phase threads. The v23 rebuild
+  preserves every existing thread column and index.
 
 ## Extension points
 

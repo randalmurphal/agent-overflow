@@ -316,3 +316,34 @@ func TestUsageLedger_SurvivesThreadDeletion(t *testing.T) {
 		t.Fatalf("ledger rows lost on thread deletion: %+v", buckets)
 	}
 }
+
+func TestQueryWorkItemUsage(t *testing.T) {
+	s := newTestStore(t)
+	rows := []UsageLedgerRow{
+		{CreatedAt: 1, ThreadID: "t1", WorkItemID: "item-1", Provider: "claude", Model: "m", InputTokens: 10, OutputTokens: 5, CacheReadInputTokens: 3, CacheCreationInputTokens: 2, ReasoningOutputTokens: 1, CostUSD: 0.25},
+		{CreatedAt: 2, ThreadID: "t2", WorkItemID: "item-1", Provider: "codex", Model: "m", InputTokens: 20, OutputTokens: 7, CostUSD: 0.5},
+		{CreatedAt: 3, ThreadID: "t3", WorkItemID: "item-2", Provider: "claude", Model: "m", InputTokens: 100, OutputTokens: 100, CostUSD: 10},
+	}
+	if err := s.AppendUsage(rows); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	usage, err := s.QueryWorkItemUsage("item-1")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if usage.InputTokens != 30 || usage.OutputTokens != 12 ||
+		usage.CacheReadInputTokens != 3 || usage.CacheCreationInputTokens != 2 ||
+		usage.ReasoningOutputTokens != 1 || usage.TotalTokens != 47 || usage.CostUSD != 0.75 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	empty, err := s.QueryWorkItemUsage("missing")
+	if err != nil {
+		t.Fatalf("query missing: %v", err)
+	}
+	if empty.TotalTokens != 0 || empty.CostUSD != 0 {
+		t.Fatalf("missing usage = %#v, want zero", empty)
+	}
+	if _, err := s.QueryWorkItemUsage(""); err == nil {
+		t.Fatal("empty work item id must be rejected, '' marks unattributed rows")
+	}
+}

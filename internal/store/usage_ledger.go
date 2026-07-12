@@ -19,6 +19,7 @@ type UsageLedgerRow struct {
 	CreatedAt                int64   `json:"createdAt"`
 	ThreadID                 string  `json:"threadId"`
 	ProjectID                string  `json:"projectId"`
+	WorkItemID               string  `json:"workItemId,omitempty"`
 	TurnID                   string  `json:"turnId"`
 	Provider                 string  `json:"provider"`
 	Model                    string  `json:"model"`
@@ -53,11 +54,11 @@ func (s *Store) AppendUsage(rows []UsageLedgerRow) error {
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.Prepare(`INSERT INTO usage_ledger (
-        created_at, thread_id, project_id, turn_id, provider, model,
+        created_at, thread_id, project_id, work_item_id, turn_id, provider, model,
         input_tokens, output_tokens, cache_read_input_tokens,
         cache_creation_input_tokens, reasoning_output_tokens,
         cost_usd, cost_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("store: usage append prepare: %w", err)
 	}
@@ -73,7 +74,7 @@ func (s *Store) AppendUsage(rows []UsageLedgerRow) error {
 			}
 		}
 		if _, err := stmt.Exec(
-			row.CreatedAt, row.ThreadID, row.ProjectID, row.TurnID,
+			row.CreatedAt, row.ThreadID, row.ProjectID, row.WorkItemID, row.TurnID,
 			row.Provider, row.Model,
 			row.InputTokens, row.OutputTokens, row.CacheReadInputTokens,
 			row.CacheCreationInputTokens, row.ReasoningOutputTokens,
@@ -83,6 +84,48 @@ func (s *Store) AppendUsage(rows []UsageLedgerRow) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// WorkItemUsage is the persisted token and wire-cost total for one workflow
+// run. Token components remain separate so callers can explain the aggregate.
+type WorkItemUsage struct {
+	InputTokens              int64   `json:"inputTokens"`
+	OutputTokens             int64   `json:"outputTokens"`
+	CacheReadInputTokens     int64   `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens int64   `json:"cacheCreationInputTokens"`
+	ReasoningOutputTokens    int64   `json:"reasoningOutputTokens"`
+	TotalTokens              int64   `json:"totalTokens"`
+	CostUSD                  float64 `json:"costUsd"`
+}
+
+// QueryWorkItemUsage sums all ledger rows attributed to a work item. Missing
+// items naturally return zero totals through COALESCE. An empty id is
+// rejected: '' is the unattributed marker on every non-workflow row, so
+// summing it would silently report the whole ledger as one item's spend.
+func (s *Store) QueryWorkItemUsage(workItemID string) (WorkItemUsage, error) {
+	if workItemID == "" {
+		return WorkItemUsage{}, fmt.Errorf("store: query work item usage: empty work item id")
+	}
+	var usage WorkItemUsage
+	err := s.db.QueryRow(
+		`SELECT
+		 COALESCE(SUM(input_tokens), 0),
+		 COALESCE(SUM(output_tokens), 0),
+		 COALESCE(SUM(cache_read_input_tokens), 0),
+		 COALESCE(SUM(cache_creation_input_tokens), 0),
+		 COALESCE(SUM(reasoning_output_tokens), 0),
+		 COALESCE(SUM(input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens), 0),
+		 COALESCE(SUM(cost_usd), 0)
+		 FROM usage_ledger WHERE work_item_id = ?`, workItemID,
+	).Scan(
+		&usage.InputTokens, &usage.OutputTokens, &usage.CacheReadInputTokens,
+		&usage.CacheCreationInputTokens, &usage.ReasoningOutputTokens,
+		&usage.TotalTokens, &usage.CostUSD,
+	)
+	if err != nil {
+		return WorkItemUsage{}, fmt.Errorf("store: query work item usage %s: %w", workItemID, err)
+	}
+	return usage, nil
 }
 
 // UsageQuery filters and shapes an aggregation over the ledger.

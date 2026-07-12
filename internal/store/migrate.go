@@ -623,6 +623,79 @@ ALTER TABLE chat_model_profiles_new RENAME TO chat_model_profiles;
 CREATE INDEX idx_chat_model_profiles_updated ON chat_model_profiles(updated_at DESC);
 `
 
+// rebuildThreadsWorkflowModeV23SQL extends threads.mode with the workflow
+// value used by phase threads. It preserves the complete v22 table shape and
+// recreates every threads index dropped with the old table.
+const rebuildThreadsWorkflowModeV23SQL = `
+CREATE TABLE threads_new (
+    id                       TEXT    PRIMARY KEY,
+    project_id               TEXT    REFERENCES projects(id) ON DELETE CASCADE,
+    title                    TEXT    NOT NULL DEFAULT 'New Thread',
+    provider                 TEXT    NOT NULL CHECK(provider IN ('claude','codex','claude-tui')),
+    model                    TEXT    NOT NULL DEFAULT '',
+    workspace_path           TEXT    NOT NULL,
+    worktree_path            TEXT,
+    branch                   TEXT,
+    pr_ref                   TEXT    NOT NULL DEFAULT '',
+    session_ref              TEXT,
+    pending_fork_session_ref TEXT,
+    mode                     TEXT    NOT NULL DEFAULT 'chat'
+        CHECK(mode IN ('chat','plan','design','discussion','terminal','workflow')),
+    reasoning_effort         TEXT    NOT NULL DEFAULT 'high'
+        CHECK(
+            (provider = 'codex' AND reasoning_effort IN ('none','minimal','low','medium','high','xhigh','max','ultra'))
+            OR (provider = 'claude' AND reasoning_effort IN ('low','medium','high','xhigh','max'))
+            OR (provider = 'claude-tui' AND reasoning_effort IN ('low','medium','high','xhigh','max'))
+        ),
+    fast_mode                INTEGER NOT NULL DEFAULT 0 CHECK(fast_mode IN (0,1)),
+    context_window           INTEGER NOT NULL DEFAULT 1000000 CHECK(context_window > 0),
+    auto_compact_standard_percent INTEGER NOT NULL DEFAULT 0
+        CHECK(auto_compact_standard_percent BETWEEN 0 AND 90),
+    auto_compact_extended_percent INTEGER NOT NULL DEFAULT 0
+        CHECK(auto_compact_extended_percent BETWEEN 0 AND 90),
+    runtime_mode             TEXT    NOT NULL DEFAULT 'full-access'
+        CHECK(runtime_mode IN ('approval-required','auto-accept-edits','full-access')),
+    discussion_id            TEXT    REFERENCES channels(id) ON DELETE SET NULL,
+    parent_thread_id         TEXT    REFERENCES threads(id) ON DELETE SET NULL,
+    forked_from_thread_id    TEXT    REFERENCES threads(id) ON DELETE SET NULL,
+    last_token_usage         TEXT    NOT NULL DEFAULT ''
+        CHECK(last_token_usage = '' OR json_valid(last_token_usage)),
+    last_read_at             INTEGER,
+    pinned_at                INTEGER,
+    created_at               INTEGER NOT NULL,
+    updated_at               INTEGER NOT NULL,
+    archived                 INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
+    disabled_mcp_servers     TEXT NULL CHECK(disabled_mcp_servers IS NULL OR json_valid(disabled_mcp_servers))
+);
+
+INSERT INTO threads_new (
+    id, project_id, title, provider, model, workspace_path, worktree_path,
+    branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+    fast_mode, context_window, auto_compact_standard_percent,
+    auto_compact_extended_percent, runtime_mode, discussion_id,
+    parent_thread_id, forked_from_thread_id, last_token_usage, last_read_at,
+    pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+)
+SELECT
+    id, project_id, title, provider, model, workspace_path, worktree_path,
+    branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+    fast_mode, context_window, auto_compact_standard_percent,
+    auto_compact_extended_percent, runtime_mode, discussion_id,
+    parent_thread_id, forked_from_thread_id, last_token_usage, last_read_at,
+    pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+FROM threads;
+
+DROP TABLE threads;
+
+ALTER TABLE threads_new RENAME TO threads;
+
+CREATE INDEX idx_threads_forked_from ON threads(forked_from_thread_id);
+CREATE INDEX idx_threads_parent      ON threads(parent_thread_id);
+CREATE INDEX idx_threads_pinned_at   ON threads(pinned_at) WHERE pinned_at IS NOT NULL;
+CREATE INDEX idx_threads_project     ON threads(project_id, updated_at DESC);
+CREATE INDEX idx_threads_updated     ON threads(updated_at DESC);
+`
+
 // migrations is the ordered list of all schema migrations. Squashed
 // for v0.0.1: the prior 51-migration chain produced this schema; old
 // databases were rebaked into a single (1, 'initial_schema') row by
@@ -830,6 +903,103 @@ UPDATE turns SET provider_turn_id = turn_id WHERE turn_id NOT LIKE '%:%';`,
 		Name:    "project_slugs",
 		SQL:     `ALTER TABLE projects ADD COLUMN slug TEXT NOT NULL DEFAULT '';`,
 		Fix:     backfillProjectSlugsFixup,
+	},
+	{
+		Version: 22,
+		Name:    "workflow_persistence",
+		SQL: `CREATE TABLE work_items (
+    id             TEXT    PRIMARY KEY,
+    project_id     TEXT    NOT NULL,
+    goal           TEXT    NOT NULL,
+    workflow_id    TEXT    NOT NULL,
+    workflow_scope TEXT    NOT NULL CHECK(workflow_scope IN ('project','shared')),
+    snapshot       TEXT    NOT NULL DEFAULT '' CHECK(snapshot = '' OR json_valid(snapshot)),
+    state          TEXT    NOT NULL CHECK(state IN ('queued','running','needs-human','done','failed','cancelled')),
+    reason         TEXT    NOT NULL DEFAULT '' CHECK(reason IN ('','gate','question','stuck','stalled','budget-exhausted','retries-exhausted','check-failed-genuine','agent-error','wiring-error','disposition','setup-failed','interrupted')),
+    sort_position  INTEGER NOT NULL,
+    seeds          TEXT    NOT NULL DEFAULT '' CHECK(seeds = '' OR json_valid(seeds)),
+    step_mode      INTEGER NOT NULL DEFAULT 0 CHECK(step_mode IN (0,1)),
+    worktree_path  TEXT    NOT NULL DEFAULT '',
+    branch         TEXT    NOT NULL DEFAULT '',
+    base_branch    TEXT    NOT NULL DEFAULT '',
+    budget         TEXT    NOT NULL DEFAULT '' CHECK(budget = '' OR json_valid(budget)),
+    source         TEXT    NOT NULL CHECK(source IN ('manual','agent','automation')),
+    source_ref     TEXT    NOT NULL DEFAULT '',
+    created_at     INTEGER NOT NULL,
+    started_at     INTEGER NOT NULL DEFAULT 0,
+    ended_at       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_work_items_project_state_sort
+  ON work_items(project_id, state, sort_position, created_at);
+
+CREATE INDEX idx_work_items_project_sort
+  ON work_items(project_id, sort_position, created_at);
+
+CREATE TABLE work_item_phases (
+    item_id          TEXT    NOT NULL,
+    phase_id         TEXT    NOT NULL,
+    attempt          INTEGER NOT NULL CHECK(attempt >= 1),
+    thread_id        TEXT    NOT NULL DEFAULT '',
+    input_envelope   TEXT    NOT NULL DEFAULT '' CHECK(input_envelope = '' OR json_valid(input_envelope)),
+    output_envelope  TEXT    NOT NULL DEFAULT '' CHECK(output_envelope = '' OR json_valid(output_envelope)),
+    gate_trace       TEXT    NOT NULL DEFAULT '' CHECK(gate_trace = '' OR json_valid(gate_trace)),
+    intervention     TEXT    NOT NULL DEFAULT '' CHECK(intervention = '' OR json_valid(intervention)),
+    narrative_path   TEXT    NOT NULL DEFAULT '',
+    status           TEXT    NOT NULL CHECK(status IN ('running','completed','parked','failed','cancelled','superseded')),
+    started_at       INTEGER NOT NULL,
+    ended_at         INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(item_id, phase_id, attempt)
+);
+
+CREATE INDEX idx_work_item_phases_item_started
+  ON work_item_phases(item_id, started_at, phase_id, attempt);
+
+CREATE TABLE work_item_effects (
+    item_id      TEXT    NOT NULL,
+    phase_id     TEXT    NOT NULL,
+    tool         TEXT    NOT NULL,
+    payload_hash TEXT    NOT NULL,
+    payload      TEXT    NOT NULL CHECK(json_valid(payload)),
+    created_at   INTEGER NOT NULL,
+    UNIQUE(item_id, phase_id, tool, payload_hash)
+);
+
+CREATE TABLE automations (
+    id             TEXT    PRIMARY KEY,
+    project_id     TEXT    NOT NULL,
+    workflow_id    TEXT    NOT NULL,
+    workflow_scope TEXT    NOT NULL CHECK(workflow_scope IN ('project','shared')),
+    name           TEXT    NOT NULL,
+    enabled        INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+    trigger        TEXT    NOT NULL CHECK(json_valid(trigger)),
+    condition      TEXT    NOT NULL DEFAULT '' CHECK(condition = '' OR json_valid(condition)),
+    seeds          TEXT    NOT NULL DEFAULT '' CHECK(seeds = '' OR json_valid(seeds)),
+    notes          TEXT    NOT NULL DEFAULT '',
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+
+CREATE INDEX idx_automations_project ON automations(project_id, created_at);
+
+CREATE TABLE automation_cursors (
+    automation_id TEXT    NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+    source_key    TEXT    NOT NULL,
+    cursor        TEXT    NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    PRIMARY KEY(automation_id, source_key)
+);
+
+ALTER TABLE usage_ledger ADD COLUMN work_item_id TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX idx_usage_ledger_work_item
+  ON usage_ledger(work_item_id, created_at);`,
+	},
+	{
+		Version: 23,
+		Name:    "thread_workflow_mode",
+		SQL:     rebuildThreadsWorkflowModeV23SQL,
+		Rebuild: true,
 	},
 }
 

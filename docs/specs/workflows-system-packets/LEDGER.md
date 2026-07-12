@@ -15,7 +15,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P1.2 `internal/workflow/profile` | `m1/p12-profile` | `~/repos/ao-lanes/p12` | gpt-5.6-sol / high | `019f5478-b246-7863-b9ac-80977313ffc5` | **merged** |
 | P1.3 `ao` CLI skeleton | `m1/p13-ao-cli` | `~/repos/ao-lanes/p13` | gpt-5.6-sol / high | `019f5478-bdb3-75c0-b1c4-4ee5139ae19a` | **merged** |
 | P1.4 starters + `ao workflow new` | `m1/p14-starters` | `~/repos/ao-lanes/p14` | gpt-5.6-sol / high | `019f548e-a038-7f82-87ab-750b8b20957d` | **merged** |
-| P2.1 workflow persistence | `m2/p21-workflow-persistence` | `~/repos/ao-lanes/p21` | gpt-5.6-sol / high | run1 `019f549e-e74f-7721-98dd-9abcb4fc730b` (dead on arrival); run2 `019f54ee-a5e8-7b41-8825-6ccb1b790a3b` | dispatched (base `e89ebc2c`) |
+| P2.1 workflow persistence | `m2/p21-workflow-persistence` | `~/repos/ao-lanes/p21` | gpt-5.6-sol / high | run1 `019f549e-e74f-7721-98dd-9abcb4fc730b` (dead on arrival); run2 `019f54ee-a5e8-7b41-8825-6ccb1b790a3b` | **merged** |
 | P2.2 engine core | — | — | — | _pending_ | authored; gates on P2.1 merge |
 | P2.3 provider envelope wiring | `m2/p23-provider-envelope` | `~/repos/ao-lanes/p23` | gpt-5.6-sol / high | `019f54ee-b30b-72d1-b57e-58f8456c56d0` | **merged** |
 
@@ -187,3 +187,22 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   assistantMessage alias stays transcript-only). No rider needed.
   Claude re-ran full gates + focused provider -race independently:
   86 packages ok, no races. Report at `reports/P2.3-report.md`.
+- **P2.1 reviewed + merged.** Migrations v22 (five workflow tables +
+  usage_ledger work_item_id, D8-exact DDL with json_valid CHECKs +
+  composite drain-order indexes) and v23 (threads.mode gains 'workflow'
+  via rebuild preserving the CURRENT shape incl. claude-tui provider and
+  max/ultra efforts). Bare CRUD only, no engine logic; transactional
+  complete-set queue reorder with duplicate/foreign/partial rejection;
+  idempotent effect recording preserving original payload; cursors
+  CASCADE with automations (scheduler state, not run history — run-record
+  tables keep zero FKs per D8 retention); token aggregate avoids Codex
+  reasoning double-count. Assumptions all sound; pagination correctly
+  declined as out-of-fence. Claude rider: QueryWorkItemUsage rejects ''
+  (the unattributed marker — summing it would report the whole ledger as
+  one item's spend) + test. Claude re-ran full go-build/go-test
+  independently post-rider: green. Report at `reports/P2.1-report.md`.
+- **Carried forward to P2.5 authoring (from P2.1 review):** per-item USD
+  budgets cannot rely on `QueryWorkItemUsage.CostUSD` alone — Codex rows
+  persist `cost_source='none'` with zero wire cost, so the reliability
+  packet must compose `internal/usagecost` estimates for USD budget checks
+  (tokens/wall-clock budgets unaffected).

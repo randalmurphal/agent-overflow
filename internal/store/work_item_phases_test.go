@@ -1,0 +1,74 @@
+package store
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"testing"
+)
+
+func TestWorkItemPhaseAttemptsAndEffects(t *testing.T) {
+	s := newTestStore(t)
+	for _, phase := range []WorkItemPhase{
+		{ItemID: "item", PhaseID: "build", Attempt: 1, ThreadID: "thread-deleted", InputEnvelope: json.RawMessage(`{"input":1}`), Status: "superseded", StartedAt: 10, EndedAt: 11},
+		{ItemID: "item", PhaseID: "build", Attempt: 2, ThreadID: "thread-live", InputEnvelope: json.RawMessage(`{"input":2}`), NarrativePath: "/tmp/narrative.md", Status: "running", StartedAt: 20},
+		{ItemID: "item", PhaseID: "review", Attempt: 1, Status: "running", StartedAt: 30},
+	} {
+		if err := s.CreateWorkItemPhase(phase); err != nil {
+			t.Fatalf("create phase %s/%d: %v", phase.PhaseID, phase.Attempt, err)
+		}
+	}
+	if err := s.CreateWorkItemPhase(WorkItemPhase{ItemID: "item", PhaseID: "build", Attempt: 2, Status: "running", StartedAt: 40}); err == nil {
+		t.Fatal("duplicate phase attempt succeeded")
+	}
+
+	output := json.RawMessage(`{"status":"done"}`)
+	trace := json.RawMessage(`{"route":"review"}`)
+	if err := s.CompleteWorkItemPhase("item", "build", 2, output, trace, "completed", 25); err != nil {
+		t.Fatalf("complete phase: %v", err)
+	}
+	intervention := json.RawMessage(`{"kind":"takeover"}`)
+	if err := s.UpdateWorkItemPhaseIntervention("item", "build", 2, intervention); err != nil {
+		t.Fatalf("update intervention: %v", err)
+	}
+	current, err := s.GetCurrentWorkItemPhase("item", "build")
+	if err != nil {
+		t.Fatalf("current attempt: %v", err)
+	}
+	if current.Attempt != 2 || current.Status != "completed" || current.EndedAt != 25 ||
+		string(current.OutputEnvelope) != string(output) || string(current.GateTrace) != string(trace) ||
+		string(current.Intervention) != string(intervention) {
+		t.Fatalf("current phase = %#v", current)
+	}
+	phases, err := s.ListWorkItemPhases("item")
+	if err != nil {
+		t.Fatalf("list phases: %v", err)
+	}
+	if len(phases) != 3 || phases[0].Attempt != 1 || phases[1].Attempt != 2 || phases[2].PhaseID != "review" {
+		t.Fatalf("phase list = %#v", phases)
+	}
+
+	effect := WorkItemEffect{ItemID: "item", PhaseID: "build", Tool: "report", PayloadHash: "sha256", Payload: json.RawMessage(`{"issue":1}`), CreatedAt: 50}
+	if err := s.RecordWorkItemEffect(effect); err != nil {
+		t.Fatalf("record effect: %v", err)
+	}
+	duplicate := effect
+	duplicate.Payload = json.RawMessage(`{"issue":2}`)
+	duplicate.CreatedAt = 60
+	if err := s.RecordWorkItemEffect(duplicate); err != nil {
+		t.Fatalf("record duplicate effect: %v", err)
+	}
+	gotEffect, err := s.GetWorkItemEffect("item", "build", "report", "sha256")
+	if err != nil {
+		t.Fatalf("get effect: %v", err)
+	}
+	if string(gotEffect.Payload) != string(effect.Payload) || gotEffect.CreatedAt != 50 {
+		t.Fatalf("duplicate replaced original effect: %#v", gotEffect)
+	}
+	if err := s.CompleteWorkItemPhase("missing", "build", 1, output, trace, "completed", 1); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing phase completion error = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.UpdateWorkItemPhaseIntervention("missing", "build", 1, intervention); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing phase intervention error = %v, want sql.ErrNoRows", err)
+	}
+}

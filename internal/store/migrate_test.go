@@ -1668,3 +1668,182 @@ func TestMigrationV21BackfillsDeterministicProjectSlugs(t *testing.T) {
 		t.Fatal("duplicate slug update succeeded, want unique constraint error")
 	}
 }
+
+func TestMigrationV22CreatesWorkflowPersistence(t *testing.T) {
+	db := migrateThrough(t, 21)
+	if err := applyMigration(db, migrationByVersion(t, 22)); err != nil {
+		t.Fatalf("apply migration v22: %v", err)
+	}
+
+	for _, table := range []string{
+		"work_items", "work_item_phases", "work_item_effects",
+		"automations", "automation_cursors",
+	} {
+		var count int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table,
+		).Scan(&count); err != nil {
+			t.Fatalf("find table %s: %v", table, err)
+		}
+		if count != 1 {
+			t.Errorf("table %s count = %d, want 1", table, count)
+		}
+	}
+	columns, err := tableColumns(db, "usage_ledger")
+	if err != nil {
+		t.Fatalf("usage_ledger columns: %v", err)
+	}
+	if !columns["work_item_id"] {
+		t.Fatal("usage_ledger.work_item_id missing")
+	}
+	for _, index := range []string{
+		"idx_work_items_project_state_sort", "idx_work_items_project_sort",
+		"idx_work_item_phases_item_started", "idx_automations_project",
+		"idx_usage_ledger_work_item",
+	} {
+		readIndexSQL(t, db, index)
+	}
+
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, reason,
+		 sort_position, step_mode, source, created_at)
+		VALUES ('item-v22', 'deleted-project', 'goal', 'wf', 'shared', 'queued', '', 0, 1, 'manual', 1)`)
+	mustExec(t, db, `INSERT INTO work_item_phases
+		(item_id, phase_id, attempt, status, started_at)
+		VALUES ('item-v22', 'phase', 1, 'running', 2)`)
+	mustExec(t, db, `INSERT INTO work_item_effects
+		(item_id, phase_id, tool, payload_hash, payload, created_at)
+		VALUES ('item-v22', 'phase', 'report', 'hash', '{}', 3)`)
+	mustExec(t, db, `INSERT INTO automations
+		(id, project_id, workflow_id, workflow_scope, name, trigger, created_at, updated_at)
+		VALUES ('auto-v22', 'deleted-project', 'wf', 'project', 'Auto', '{"cron":"* * * * *"}', 4, 4)`)
+	mustExec(t, db, `INSERT INTO automation_cursors
+		(automation_id, source_key, cursor, updated_at)
+		VALUES ('auto-v22', 'jira', 'cursor-1', 5)`)
+
+	invalid := []struct {
+		name string
+		sql  string
+	}{
+		{"work item scope", `UPDATE work_items SET workflow_scope = 'unknown' WHERE id = 'item-v22'`},
+		{"work item state", `UPDATE work_items SET state = 'unknown' WHERE id = 'item-v22'`},
+		{"work item reason", `UPDATE work_items SET reason = 'unknown' WHERE id = 'item-v22'`},
+		{"work item snapshot", `UPDATE work_items SET snapshot = '{' WHERE id = 'item-v22'`},
+		{"work item seeds", `UPDATE work_items SET seeds = '{' WHERE id = 'item-v22'`},
+		{"work item step mode", `UPDATE work_items SET step_mode = 2 WHERE id = 'item-v22'`},
+		{"work item budget", `UPDATE work_items SET budget = '{' WHERE id = 'item-v22'`},
+		{"work item source", `UPDATE work_items SET source = 'unknown' WHERE id = 'item-v22'`},
+		{"phase status", `UPDATE work_item_phases SET status = 'unknown' WHERE item_id = 'item-v22'`},
+		{"phase attempt", `UPDATE work_item_phases SET attempt = 0 WHERE item_id = 'item-v22'`},
+		{"phase input envelope", `UPDATE work_item_phases SET input_envelope = '{' WHERE item_id = 'item-v22'`},
+		{"phase output envelope", `UPDATE work_item_phases SET output_envelope = '{' WHERE item_id = 'item-v22'`},
+		{"phase gate trace", `UPDATE work_item_phases SET gate_trace = '{' WHERE item_id = 'item-v22'`},
+		{"phase intervention", `UPDATE work_item_phases SET intervention = '{' WHERE item_id = 'item-v22'`},
+		{"effect json", `UPDATE work_item_effects SET payload = '{' WHERE item_id = 'item-v22'`},
+		{"automation scope", `UPDATE automations SET workflow_scope = 'unknown' WHERE id = 'auto-v22'`},
+		{"automation enabled", `UPDATE automations SET enabled = 2 WHERE id = 'auto-v22'`},
+		{"automation trigger", `UPDATE automations SET trigger = '{' WHERE id = 'auto-v22'`},
+		{"automation condition", `UPDATE automations SET condition = '{' WHERE id = 'auto-v22'`},
+		{"automation seeds", `UPDATE automations SET seeds = '{' WHERE id = 'auto-v22'`},
+	}
+	for _, test := range invalid {
+		if _, err := db.Exec(test.sql); err == nil {
+			t.Errorf("%s constraint accepted invalid value", test.name)
+		}
+	}
+
+	// Run records deliberately carry no project/thread foreign keys.
+	mustExec(t, db, `DELETE FROM work_items WHERE id = 'item-v22'`)
+	var phaseCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_item_phases WHERE item_id = 'item-v22'`).Scan(&phaseCount); err != nil {
+		t.Fatalf("count retained phases: %v", err)
+	}
+	if phaseCount != 1 {
+		t.Fatalf("phase rows after work item delete = %d, want 1 (no FK cascade)", phaseCount)
+	}
+}
+
+func TestMigrationV23PreservesThreadsAndAcceptsWorkflowMode(t *testing.T) {
+	db := migrateThrough(t, 22)
+	mustExec(t, db, `INSERT INTO projects
+		(id, path, name, slug, created_at, updated_at)
+		VALUES ('project-v23', '/tmp/v23', 'V23', 'v23', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads
+		(id, project_id, title, provider, workspace_path, created_at, updated_at)
+		VALUES ('root-v23', 'project-v23', 'Root', 'codex', '/tmp/v23', 1, 1)`)
+	mustExec(t, db, `INSERT INTO channels
+		(id, thread_id, type, status, max_turns, created_at, updated_at)
+		VALUES ('channel-v23', 'root-v23', 'deliberation', 'open', 8, 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads
+		(id, project_id, title, provider, model, workspace_path, worktree_path,
+		 branch, pr_ref, session_ref, pending_fork_session_ref, mode,
+		 reasoning_effort, fast_mode, context_window,
+		 auto_compact_standard_percent, auto_compact_extended_percent,
+		 runtime_mode, discussion_id, parent_thread_id, forked_from_thread_id,
+		 last_token_usage, last_read_at, pinned_at, created_at, updated_at,
+		 archived, disabled_mcp_servers)
+		VALUES ('thread-v23', 'project-v23', 'Preserved', 'codex', 'gpt', '/tmp/v23', '/tmp/v23-wt',
+		 'ao/v23', 'pr-23', 'session-23', 'fork-session-23', 'discussion',
+		 'ultra', 1, 123456, 45, 55, 'auto-accept-edits', 'channel-v23',
+		 'root-v23', 'root-v23', '{"inputTokens":1}', 6, 7, 2, 3, 1, '["server"]')`)
+	mustExec(t, db, `INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at)
+		VALUES ('item-v23', 'thread-v23', 0, 0, 'user_text', 'user', 'completed', 'keep me', 2, 2)`)
+	if _, err := db.Exec(`INSERT INTO threads
+		(id, project_id, title, provider, workspace_path, mode, created_at, updated_at)
+		VALUES ('workflow-before-v23', 'project-v23', 'Workflow', 'codex', '/tmp/v23', 'workflow', 4, 4)`); err == nil {
+		t.Fatal("pre-v23 threads table accepted workflow mode")
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 23)); err != nil {
+		t.Fatalf("apply migration v23: %v", err)
+	}
+
+	var preserved int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM threads
+		WHERE id = 'thread-v23' AND project_id = 'project-v23'
+		  AND title = 'Preserved' AND provider = 'codex' AND model = 'gpt'
+		  AND workspace_path = '/tmp/v23' AND worktree_path = '/tmp/v23-wt'
+		  AND branch = 'ao/v23' AND pr_ref = 'pr-23' AND session_ref = 'session-23'
+		  AND pending_fork_session_ref = 'fork-session-23' AND mode = 'discussion'
+		  AND reasoning_effort = 'ultra' AND fast_mode = 1 AND context_window = 123456
+		  AND auto_compact_standard_percent = 45 AND auto_compact_extended_percent = 55
+		  AND runtime_mode = 'auto-accept-edits' AND discussion_id = 'channel-v23'
+		  AND parent_thread_id = 'root-v23' AND forked_from_thread_id = 'root-v23'
+		  AND last_token_usage = '{"inputTokens":1}' AND last_read_at = 6 AND pinned_at = 7
+		  AND created_at = 2 AND updated_at = 3 AND archived = 1
+		  AND disabled_mcp_servers = '["server"]'`).Scan(&preserved); err != nil {
+		t.Fatalf("read preserved thread: %v", err)
+	}
+	if preserved != 1 {
+		t.Fatal("v23 rebuild did not preserve the complete thread row")
+	}
+	var childRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE thread_id = 'thread-v23'`).Scan(&childRows); err != nil {
+		t.Fatalf("count child rows: %v", err)
+	}
+	if childRows != 1 {
+		t.Fatalf("thread child rows after rebuild = %d, want 1", childRows)
+	}
+	for _, index := range []string{
+		"idx_threads_forked_from", "idx_threads_parent", "idx_threads_pinned_at",
+		"idx_threads_project", "idx_threads_updated",
+	} {
+		readIndexSQL(t, db, index)
+	}
+	var foreignKeys int
+	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatalf("read foreign_keys: %v", err)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("foreign_keys = %d after v23, want 1", foreignKeys)
+	}
+	if _, err := db.Exec(`INSERT INTO threads
+		(id, project_id, title, provider, workspace_path, created_at, updated_at)
+		VALUES ('bad-fk-v23', 'missing-project', 'Bad FK', 'codex', '/tmp/v23', 4, 4)`); err == nil {
+		t.Fatal("foreign key enforcement was not restored after v23")
+	}
+	mustExec(t, db, `INSERT INTO threads
+		(id, project_id, title, provider, workspace_path, mode, created_at, updated_at)
+		VALUES ('workflow-after-v23', 'project-v23', 'Workflow', 'codex', '/tmp/v23', 'workflow', 4, 4)`)
+}
