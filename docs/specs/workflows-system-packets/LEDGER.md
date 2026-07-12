@@ -24,7 +24,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.7 harness workflows | `m2/p27-harness-workflows` | `~/repos/ao-lanes/p27` | gpt-5.6-sol / **xhigh** | `019f566e-6df8-7e71-9f2d-843f7b228a5d` | **merged** |
 | P0.3 rev2 OS notifications | `m3/p03r2-os-notifications` | `~/repos/ao-lanes/p03r2` | gpt-5.6-sol / **xhigh** | `019f56ae-e129-7612-be10-c9c677757ed9` | **merged** `6cb823f4` |
 | P3.1 thread modes + take-over | `m3/p31-thread-modes` | `~/repos/ao-lanes/p31` | gpt-5.6-sol / **xhigh** | run1 `019f56fc-e0c2-78e0-acf4-6979f21e303e` (dead on arrival — usage limit); run2 `019f5714-98e5-77f2-8d0a-cc289a6bf374` | **merged `3ee937f8`** (workflows-system) |
-| P3.2 disposition + UI data + notifications | `m3/p32-disposition-uidata` | `~/repos/ao-lanes/p32` | gpt-5.6-sol / **xhigh** | `019f576c-444e-70b3-9bd5-0afadd50c1de` | dispatched (base `dc591c52`, workflows-system) |
+| P3.2 disposition + UI data + notifications | `m3/p32-disposition-uidata` | `~/repos/ao-lanes/p32` | gpt-5.6-sol / **xhigh** | `019f576c-444e-70b3-9bd5-0afadd50c1de` | resumed after valid BLOCKED (Scope Amendment 1) |
 
 ## Events
 
@@ -588,3 +588,19 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   engine Sync() test semantics; drain-summary tally reset on restart is
   an accepted documented assumption. Log: session scratchpad
   `p32-codex.log`.
+
+- **P3.2 BLOCKED (valid, packet authoring gap) → Scope Amendment 1 →
+  resumed.** Codex implemented the fire-and-forget contract, found
+  `TestWorkflowHookFailureAndTimeoutParkSetupFailed` asserting the OLD
+  inline-provisioning-error contract of `WorkflowSetQueue`, and stopped
+  rather than weaken a test, add a shim, or revert decision 11 — exactly
+  right (all seven pre-edit baselines had passed; a harness-reset race it
+  found on the way was fixed via the preserved `Engine.Sync()` contract,
+  no expectations touched). Amendment ruling: tests asserting the
+  obsolete synchronous contract may be UPDATED to assert the new one at
+  equal-or-stronger rigor (park to needs-human(setup-failed) + event
+  surfacing both proven; synchronous validation errors still inline);
+  one named contract change, anti-gaming rules otherwise unchanged.
+  Session resumed in place (context is the asset): same id
+  `019f576c-444e-70b3-9bd5-0afadd50c1de`, xhigh restated, log
+  `p32-codex-resume.log`.
