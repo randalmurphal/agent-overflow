@@ -165,6 +165,7 @@ type Project struct {
 	ID           string `json:"id"`
 	Path         string `json:"path"`
 	Name         string `json:"name"`
+	Slug         string `json:"slug"`
 	Color        string `json:"color,omitempty"`
 	SortPosition int    `json:"sortPosition"`
 	CreatedAt    int64  `json:"createdAt"`

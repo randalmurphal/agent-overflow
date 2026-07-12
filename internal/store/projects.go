@@ -25,13 +25,13 @@ type ProjectWithCounts struct {
 	LastActive  int64   `json:"lastActive,omitempty"`
 }
 
-const projectColumns = `id, path, name, color, sort_position, created_at, updated_at, archived`
+const projectColumns = `id, path, name, slug, color, sort_position, created_at, updated_at, archived`
 
 func scanProject(scanner interface{ Scan(...any) error }) (Project, error) {
 	var p Project
 	var archived int
 	if err := scanner.Scan(
-		&p.ID, &p.Path, &p.Name, &p.Color, &p.SortPosition,
+		&p.ID, &p.Path, &p.Name, &p.Slug, &p.Color, &p.SortPosition,
 		&p.CreatedAt, &p.UpdatedAt, &archived,
 	); err != nil {
 		return Project{}, err
@@ -44,13 +44,31 @@ func scanProject(scanner interface{ Scan(...any) error }) (Project, error) {
 // surfaces as ErrProjectPathInUse so callers can decide whether to
 // redirect the user to the existing project.
 func (s *Store) CreateProject(p Project) error {
-	_, err := s.db.Exec(
-		`INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Path, p.Name, p.Color, p.SortPosition,
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: create project: begin: %w", err)
+	}
+	p.Slug, err = nextProjectSlug(p.Name, func(candidate string) (bool, error) {
+		var exists bool
+		if err := tx.QueryRow(
+			`SELECT EXISTS(SELECT 1 FROM projects WHERE slug = ?)`, candidate,
+		).Scan(&exists); err != nil {
+			return false, fmt.Errorf("query project slug %q: %w", candidate, err)
+		}
+		return exists, nil
+	})
+	if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("store: create project: %w", err)
+	}
+	_, err = tx.Exec(
+		`INSERT INTO projects (id, path, name, slug, color, sort_position, created_at, updated_at, archived)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Path, p.Name, p.Slug, p.Color, p.SortPosition,
 		p.CreatedAt, p.UpdatedAt, boolToInt(p.Archived),
 	)
 	if err != nil {
+		_ = tx.Rollback()
 		// modernc.org/sqlite returns the constraint text verbatim; we
 		// detect by substring because exposing the full driver error
 		// type would couple this package to the driver.
@@ -58,6 +76,9 @@ func (s *Store) CreateProject(p Project) error {
 			return fmt.Errorf("%w: %s", ErrProjectPathInUse, p.Path)
 		}
 		return fmt.Errorf("store: create project: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: create project: commit: %w", err)
 	}
 	return nil
 }
@@ -121,7 +142,7 @@ func (s *Store) ListProjects() ([]Project, error) {
 // gated by MarkThreadActivity) counts.
 func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 	rows, err := s.db.Query(
-		`SELECT p.id, p.path, p.name, p.color, p.sort_position,
+		`SELECT p.id, p.path, p.name, p.slug, p.color, p.sort_position,
 		        p.created_at, p.updated_at, p.archived,
 		        COALESCE(COUNT(t.id), 0) AS thread_count,
 		        COALESCE(
@@ -149,7 +170,7 @@ func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 			archived int
 		)
 		if err := rows.Scan(
-			&pwc.Project.ID, &pwc.Project.Path, &pwc.Project.Name, &pwc.Project.Color,
+			&pwc.Project.ID, &pwc.Project.Path, &pwc.Project.Name, &pwc.Project.Slug, &pwc.Project.Color,
 			&pwc.Project.SortPosition, &pwc.Project.CreatedAt, &pwc.Project.UpdatedAt, &archived,
 			&pwc.ThreadCount, &pwc.LastActive,
 		); err != nil {

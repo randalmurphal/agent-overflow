@@ -1,6 +1,6 @@
 # SQLite Schema
 
-Source of truth for the shape lives in `internal/store/migrations/`. This
+Source of truth for the shape lives in `internal/store/migrate.go`. This
 page is the human-readable summary — if it disagrees with the migrations,
 the migrations win.
 
@@ -8,7 +8,7 @@ the migrations win.
 
 | Table | Purpose |
 |---|---|
-| `projects` | User-defined grouping of threads rooted at a directory. `path` (UNIQUE), `name`, `color`, `sort_position`, `archived`. Each thread belongs to exactly one project. |
+| `projects` | User-defined grouping of threads rooted at a directory. `path` (UNIQUE), `name`, immutable `slug` (UNIQUE, filesystem-safe; keys per-project app config under `<config-root>/projects/<slug>/`), `color`, `sort_position`, `archived`. Each thread belongs to exactly one project. |
 | `threads` | One row per conversation. Provider, session_ref, workspace/project paths, model, `mode` (chat/plan/design/discussion), `reasoning_effort`, `fast_mode`, `context_window`, per-tier auto-compact percentages (`auto_compact_standard_percent`, `auto_compact_extended_percent`), `runtime_mode`, archived flag, fork lineage (`parent_thread_id`, `pending_fork_session_ref`, `forked_from_thread_id`), discussion membership (`discussion_id`), `last_token_usage`. |
 | `items` | Timeline items per thread. `turn_index`, `item_index`, `kind`, `role`, `status`, `summary` (always-loaded preview), `payload_id`, `parent_id` (subagent / nested-tool correlation), `is_background`, `completion_of` (back-reference from tool_completion to its launch), `tool_name`, `decision`, `meta`. |
 | `payloads` | Heavy content. `kind`, `meta` (JSON, loaded with items), `data` (base BLOB, on-demand). |
@@ -48,6 +48,7 @@ implementation markers and revision parent links.
 ## Key Indexes
 
 - `idx_threads_updated` — sidebar sort.
+- `idx_projects_slug` — enforces the stable, unique filesystem-safe project slug used by per-project app config directories.
 - `idx_threads_project` — per-project thread list.
 - `idx_items_thread` — load thread timeline.
 - `idx_items_parent` — group subagent / nested-tool items under a parent (partial index on non-empty `parent_id`). The subagent descendant CTE writes an explicit `parent_id <> ''` term so the planner can prove the index predicate — see `descendantsCTEFromRoots`.

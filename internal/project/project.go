@@ -74,5 +74,5 @@ func EnsureForWorkspace(s *store.Store, core *gitops.Core, workspacePath string)
 	if err := s.CreateProject(p); err != nil {
 		return store.Project{}, err
 	}
-	return p, nil
+	return s.GetProject(p.ID)
 }

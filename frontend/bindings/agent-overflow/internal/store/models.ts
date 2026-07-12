@@ -682,6 +682,7 @@ export class Project {
     "id": string;
     "path": string;
     "name": string;
+    "slug": string;
     "color"?: string;
     "sortPosition": number;
     "createdAt": number;
@@ -698,6 +699,9 @@ export class Project {
         }
         if (!("name" in $$source)) {
             this["name"] = "";
+        }
+        if (!("slug" in $$source)) {
+            this["slug"] = "";
         }
         if (!("sortPosition" in $$source)) {
             this["sortPosition"] = 0;

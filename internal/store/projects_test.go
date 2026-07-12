@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -32,6 +33,70 @@ func TestCreateProjectHappyPath(t *testing.T) {
 	}
 	if got.Path != p.Path || got.Name != p.Name {
 		t.Fatalf("GetProject returned %+v, want %+v", got, p)
+	}
+	if got.Slug != "p1" {
+		t.Fatalf("Slug = %q, want %q", got.Slug, "p1")
+	}
+}
+
+func TestProjectSlug(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "lowercase", in: "My Project", want: "my-project"},
+		{name: "unicode", in: "Crème 日本", want: "cr-me"},
+		{name: "unicode lowercases to ascii", in: "Kelvin", want: "kelvin"},
+		{name: "symbols collapse", in: "one___two!!!three", want: "one-two-three"},
+		{name: "dashes only", in: "---", want: "project"},
+		{name: "empty", in: "", want: "project"},
+		{name: "overlong", in: strings.Repeat("a", 70), want: strings.Repeat("a", 64)},
+		{name: "retrim after cap", in: strings.Repeat("a", 63) + "-z", want: strings.Repeat("a", 63)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ProjectSlug(test.in); got != test.want {
+				t.Fatalf("ProjectSlug(%q) = %q, want %q", test.in, got, test.want)
+			}
+		})
+	}
+}
+
+func TestCreateProjectAssignsUniqueImmutableSlugs(t *testing.T) {
+	s := newTestStore(t)
+	first := newProject("slug-1", "/tmp/slug-1", "Collision Name")
+	second := newProject("slug-2", "/tmp/slug-2", "collision---name")
+	third := newProject("slug-3", "/tmp/slug-3", "Collision Name")
+	for _, project := range []Project{first, second, third} {
+		if err := s.CreateProject(project); err != nil {
+			t.Fatalf("CreateProject(%s): %v", project.ID, err)
+		}
+	}
+
+	for id, want := range map[string]string{
+		"slug-1": "collision-name",
+		"slug-2": "collision-name-2",
+		"slug-3": "collision-name-3",
+	} {
+		got, err := s.GetProject(id)
+		if err != nil {
+			t.Fatalf("GetProject(%s): %v", id, err)
+		}
+		if got.Slug != want {
+			t.Errorf("GetProject(%s).Slug = %q, want %q", id, got.Slug, want)
+		}
+	}
+
+	if err := s.UpdateProjectName(first.ID, "Renamed Project"); err != nil {
+		t.Fatalf("UpdateProjectName: %v", err)
+	}
+	renamed, err := s.GetProject(first.ID)
+	if err != nil {
+		t.Fatalf("GetProject after rename: %v", err)
+	}
+	if renamed.Slug != "collision-name" {
+		t.Fatalf("slug changed on rename: %q", renamed.Slug)
 	}
 }
 

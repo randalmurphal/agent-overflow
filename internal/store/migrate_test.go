@@ -1605,3 +1605,66 @@ func TestMigrationV20BackfillsProviderTurnID(t *testing.T) {
 		t.Errorf("claude row provider_turn_id = %q, want empty", rows["thread-v20:1"])
 	}
 }
+
+func TestMigrationV21BackfillsDeterministicProjectSlugs(t *testing.T) {
+	db := migrateThrough(t, 20)
+	for _, row := range []struct {
+		id        string
+		path      string
+		name      string
+		createdAt int64
+	}{
+		{id: "p-b", path: "/tmp/p-b", name: "Same Project", createdAt: 10},
+		{id: "p-later", path: "/tmp/p-later", name: "same___project", createdAt: 20},
+		{id: "p-a", path: "/tmp/p-a", name: "SAME PROJECT!!", createdAt: 10},
+	} {
+		mustExec(t, db, `
+			INSERT INTO projects (id, path, name, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?)
+		`, row.id, row.path, row.name, row.createdAt, row.createdAt)
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 21)); err != nil {
+		t.Fatalf("apply migration v21: %v", err)
+	}
+
+	want := map[string]string{
+		"p-a":     "same-project",
+		"p-b":     "same-project-2",
+		"p-later": "same-project-3",
+	}
+	rows, err := db.Query(`SELECT id, slug FROM projects ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query project slugs: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, slug string
+		if err := rows.Scan(&id, &slug); err != nil {
+			t.Fatalf("scan project slug: %v", err)
+		}
+		if slug != want[id] {
+			t.Errorf("project %s slug = %q, want %q", id, slug, want[id])
+		}
+		delete(want, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate project slugs: %v", err)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing migrated projects: %v", want)
+	}
+
+	var indexSQL string
+	if err := db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_projects_slug'`,
+	).Scan(&indexSQL); err != nil {
+		t.Fatalf("idx_projects_slug not found: %v", err)
+	}
+	if !strings.Contains(indexSQL, "UNIQUE INDEX") {
+		t.Fatalf("idx_projects_slug is not unique: %s", indexSQL)
+	}
+	if _, err := db.Exec(`UPDATE projects SET slug = 'same-project' WHERE id = 'p-b'`); err == nil {
+		t.Fatal("duplicate slug update succeeded, want unique constraint error")
+	}
+}

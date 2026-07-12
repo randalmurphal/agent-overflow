@@ -825,6 +825,12 @@ CREATE INDEX idx_usage_ledger_thread ON usage_ledger(thread_id, created_at);`,
 
 UPDATE turns SET provider_turn_id = turn_id WHERE turn_id NOT LIKE '%:%';`,
 	},
+	{
+		Version: 21,
+		Name:    "project_slugs",
+		SQL:     `ALTER TABLE projects ADD COLUMN slug TEXT NOT NULL DEFAULT '';`,
+		Fix:     backfillProjectSlugsFixup,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
