@@ -112,7 +112,7 @@ func TestJSONShapes(t *testing.T) {
 		{
 			name:     "list entry",
 			args:     []string{"workflow", "list", "--json", "--config-root", configRoot},
-			wantKeys: []string{"id", "name", "path", "scope", "shadowsShared"},
+			wantKeys: []string{"bindingStatus", "findings", "id", "name", "path", "scope", "shadowsShared"},
 		},
 	}
 	for _, test := range tests {
@@ -208,6 +208,7 @@ func TestHelpAtEveryCommandLevel(t *testing.T) {
 	}{
 		{name: "root", args: []string{"--help"}, want: "Usage: ao "},
 		{name: "workflow", args: []string{"workflow", "--help"}, want: "Usage: ao workflow <command>"},
+		{name: "new", args: []string{"workflow", "new", "--help"}, want: "Usage: ao workflow new"},
 		{name: "validate", args: []string{"workflow", "validate", "--help"}, want: "Usage: ao workflow validate"},
 		{name: "list", args: []string{"workflow", "list", "--help"}, want: "Usage: ao workflow list"},
 	}

@@ -1,0 +1,118 @@
+# yaml-language-server: $schema=../workflow.schema.json
+# Required project profile bindings (names must match exactly):
+# checks: build-and-test
+# commands: (none)
+# capacities: validation-slot
+id: build-and-validate
+name: Build and validate
+description: Implement a goal, run the project's deterministic build and test suite, diagnose failures, and retry only with evidence.
+inputs:
+  goal:
+    schema:
+      type: string
+      description: The requested change and its acceptance criteria.
+  context:
+    schema:
+      type: string
+      description: Optional ticket, discussion, or repository context.
+    optional: true
+outputs:
+  summary:
+    from: implement.summary
+phases:
+  - id: implement
+    name: Implement the change
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: implement.md
+    access: write
+    inputs:
+      goal:
+        schema:
+          type: string
+      context:
+        schema:
+          type: string
+        optional: true
+    outputs:
+      summary:
+        schema:
+          type: string
+          description: Concise account of the implemented behavior and important decisions.
+      changed:
+        schema:
+          type: boolean
+          description: Whether the phase changed the workspace.
+    gate:
+      routes:
+        - to: validate
+  - id: validate
+    name: Run deterministic validation
+    driver: tool
+    check: build-and-test
+    resources: [validation-slot]
+    inputs:
+      implement.changed:
+        schema:
+          type: boolean
+    outputs:
+      passed:
+        schema:
+          type: boolean
+      details:
+        schema:
+          type: string
+        optional: true
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: validate.passed
+              value: true
+          to: done
+        - to: diagnose
+  - id: diagnose
+    name: Diagnose validation failure
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: diagnose.md
+    access: read-only
+    inputs:
+      validate.passed:
+        schema:
+          type: boolean
+      validate.details:
+        schema:
+          type: string
+        optional: true
+    outputs:
+      classification:
+        schema:
+          type: string
+          enum: [genuine, flaky, infrastructure]
+      diagnosis:
+        schema:
+          type: string
+      remedy:
+        schema:
+          type: string
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: diagnose.classification
+              value: genuine
+          loop: implement
+          max: 2
+          feedback: [diagnose.diagnosis, diagnose.remedy, validate.details]
+        - when:
+            in:
+              ref: diagnose.classification
+              values: [flaky, infrastructure]
+          loop: validate
+          max: 2
+          feedback: [diagnose.diagnosis, diagnose.remedy]
+        - park: validation-needs-human
+cleanup: manual

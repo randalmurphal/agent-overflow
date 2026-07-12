@@ -14,7 +14,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P1.1 `internal/workflow/def` | `m1/p11-workflow-def` | `~/repos/ao-lanes/p11` | gpt-5.6-sol / high | `019f545e-ab3a-78f2-a7bc-66e4f65a8164` | **merged** |
 | P1.2 `internal/workflow/profile` | `m1/p12-profile` | `~/repos/ao-lanes/p12` | gpt-5.6-sol / high | `019f5478-b246-7863-b9ac-80977313ffc5` | **merged** |
 | P1.3 `ao` CLI skeleton | `m1/p13-ao-cli` | `~/repos/ao-lanes/p13` | gpt-5.6-sol / high | `019f5478-bdb3-75c0-b1c4-4ee5139ae19a` | **merged** |
-| P1.4 starters + `ao workflow new` | `m1/p14-starters` | `~/repos/ao-lanes/p14` | gpt-5.6-sol / high | `019f548e-a038-7f82-87ab-750b8b20957d` | dispatched (base `e0900405`) |
+| P1.4 starters + `ao workflow new` | `m1/p14-starters` | `~/repos/ao-lanes/p14` | gpt-5.6-sol / high | `019f548e-a038-7f82-87ab-750b8b20957d` | **merged** |
 | P2.1 workflow persistence | `m2/p21-workflow-persistence` | `~/repos/ao-lanes/p21` | gpt-5.6-sol / high | run1 `019f549e-e74f-7721-98dd-9abcb4fc730b` (dead on arrival) | authored; awaiting usage-window reset |
 
 ## Events
@@ -154,3 +154,19 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   dispatch after reset. P1.4 was mid-run at the time and kept working;
   if it dies on a subsequent request, RESUME its session (context is the
   asset — tree dirty, work standing) rather than fresh-dispatch.
+- **P1.4 reviewed + merged — M1 complete.** Finished before the usage
+  window closed. Scope exact; assertions extended, never weakened; content
+  reviewed as product surface and rated strong (fenced untrusted seeds,
+  envelope-aware endings, evidence-based diagnosis with bounded loops,
+  dominance-correct loop targets, effect-aware Jira dedup). CI validity
+  test enforces documented/used binding parity both directions +
+  fenced-interpolation prompt contract; scaffold writes confined via
+  os.Root + O_EXCL with rollback and a directory-swap escape test.
+  Notable accepted assumptions: starter phases pin `gpt-5.6-sol` (schema
+  requires a concrete model; maintenance note), scaffolds publish the
+  embedded authoring schema beside the scope dir so the YAML `$schema`
+  header resolves. Claude rider: a differing existing
+  `workflow.schema.json` no longer fails the scaffold (it's an editor
+  aid) — publication is skipped with a stderr note; test updated.
+  Claude re-ran full go-build/go-test independently (81 packages ok)
+  pre-rider + focused aocli/starters post-rider.

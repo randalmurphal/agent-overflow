@@ -64,6 +64,8 @@ func runWorkflow(args []string, configRoot string, stdout, stderr io.Writer) int
 		return exitOK
 	}
 	switch args[0] {
+	case "new":
+		return runNew(args[1:], configRoot, stdout, stderr)
 	case "validate":
 		return runValidate(args[1:], configRoot, stdout, stderr)
 	case "list":
@@ -136,7 +138,11 @@ func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Wr
 		}
 	}
 
-	result := def.Validate(resolved, nil)
+	bindings, err := loadProjectBindings(*configRoot, *projectSlug)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
+	result := def.Validate(resolved, bindings)
 	result.Findings = slicesx.OrEmpty(result.Findings)
 	if *jsonOutput {
 		if err := writeJSON(stdout, result); err != nil {
@@ -159,11 +165,13 @@ func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Wr
 }
 
 type listEntry struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Scope         def.Scope `json:"scope"`
-	Path          string    `json:"path"`
-	ShadowsShared bool      `json:"shadowsShared"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Scope         def.Scope         `json:"scope"`
+	Path          string            `json:"path"`
+	ShadowsShared bool              `json:"shadowsShared"`
+	BindingStatus def.BindingStatus `json:"bindingStatus"`
+	Findings      []def.Finding     `json:"findings"`
 }
 
 func runList(args []string, inheritedConfigRoot string, stdout, stderr io.Writer) int {
@@ -195,7 +203,11 @@ func runList(args []string, inheritedConfigRoot string, stdout, stderr io.Writer
 	if err != nil {
 		return operationalError(stderr, err)
 	}
-	entries, err := listConfigured(root, *projectSlug)
+	bindings, err := loadProjectBindings(root, *projectSlug)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
+	entries, err := listConfigured(root, *projectSlug, bindings)
 	if err != nil {
 		return operationalError(stderr, err)
 	}
@@ -207,7 +219,7 @@ func runList(args []string, inheritedConfigRoot string, stdout, stderr io.Writer
 	}
 	var output strings.Builder
 	for _, entry := range entries {
-		fmt.Fprintf(&output, "id=%s\tname=%q\tscope=%s\tpath=%q\tshadows-shared=%t\n", entry.ID, entry.Name, entry.Scope, entry.Path, entry.ShadowsShared)
+		fmt.Fprintf(&output, "id=%s\tname=%q\tscope=%s\tpath=%q\tshadows-shared=%t\tbindings=%s\tfindings=%d\n", entry.ID, entry.Name, entry.Scope, entry.Path, entry.ShadowsShared, entry.BindingStatus, len(entry.Findings))
 	}
 	if err := writeOutput(stdout, output.String()); err != nil {
 		return operationalError(stderr, err)
@@ -273,7 +285,7 @@ func resolveConfigured(configRoot, projectSlug string) ([]def.ResolvedWorkflow, 
 	return def.Resolve(sources)
 }
 
-func listConfigured(configRoot, projectSlug string) ([]listEntry, error) {
+func listConfigured(configRoot, projectSlug string, bindings def.Bindings) ([]listEntry, error) {
 	sources, err := configuredSources(configRoot, projectSlug)
 	if err != nil {
 		return nil, err
@@ -293,12 +305,15 @@ func listConfigured(configRoot, projectSlug string) ([]listEntry, error) {
 	entries := make([]listEntry, 0, len(resolved))
 	for _, workflow := range resolved {
 		_, shadows := sharedIDs[workflow.Workflow.ID]
+		validation := def.Validate(workflow, bindings)
 		entries = append(entries, listEntry{
 			ID:            workflow.Workflow.ID,
 			Name:          workflow.Workflow.Name,
 			Scope:         workflow.Scope,
 			Path:          workflow.Path,
 			ShadowsShared: shadows && workflow.Scope == def.ScopeProject,
+			BindingStatus: validation.BindingStatus,
+			Findings:      slicesx.OrEmpty(validation.Findings),
 		})
 	}
 	if entries == nil {
@@ -339,11 +354,11 @@ func operationalError(stderr io.Writer, err error) int {
 }
 
 func writeRootUsage(output io.Writer) error {
-	return writeOutput(output, "Usage: ao [--config-root <path>] workflow <command> [options]\n\nCommands:\n  workflow validate  Validate a workflow definition\n  workflow list      List resolved workflow definitions\n")
+	return writeOutput(output, "Usage: ao [--config-root <path>] workflow <command> [options]\n\nCommands:\n  workflow new       Scaffold a workflow definition\n  workflow validate  Validate a workflow definition\n  workflow list      List resolved workflow definitions\n")
 }
 
 func writeWorkflowUsage(output io.Writer) error {
-	return writeOutput(output, "Usage: ao workflow <command> [options]\n\nCommands:\n  validate  Validate a workflow definition\n  list      List resolved workflow definitions\n")
+	return writeOutput(output, "Usage: ao workflow <command> [options]\n\nCommands:\n  new       Scaffold a workflow definition\n  validate  Validate a workflow definition\n  list      List resolved workflow definitions\n")
 }
 
 func writeValidateUsage(output io.Writer) error {

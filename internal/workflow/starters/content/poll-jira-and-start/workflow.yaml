@@ -1,0 +1,110 @@
+# yaml-language-server: $schema=../workflow.schema.json
+# Required project profile bindings (names must match exactly):
+# checks: (none)
+# commands: query-jira-work-items
+# capacities: jira-poller
+id: poll-jira-and-start
+name: Poll Jira and start work
+description: Query Jira through a profile-bound command, deduplicate work items after a cursor, enqueue each new item, and advance continuity state only after successful dispatch.
+inputs:
+  cursor:
+    schema:
+      type: string
+      description: Last committed source watermark from this automation's continuity notes.
+    optional: true
+  query:
+    schema:
+      type: string
+      description: Jira query selecting work that should enter Agent Overflow.
+  target-workflow:
+    schema:
+      type: string
+      description: Workflow id to enqueue for each new Jira work item.
+outputs:
+  summary:
+    from: dispatch.summary
+  next-cursor:
+    from: dispatch.next-cursor
+phases:
+  - id: query-source
+    name: Query Jira through the project profile
+    driver: tool
+    command: query-jira-work-items
+    resources: [jira-poller]
+    inputs:
+      cursor:
+        schema:
+          type: string
+        optional: true
+      query:
+        schema:
+          type: string
+    outputs:
+      candidates:
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              updated:
+                type: string
+              title:
+                type: string
+              body:
+                type: string
+            required: [key, updated, title, body]
+            additionalProperties: false
+      proposed-cursor:
+        schema:
+          type: string
+    gate:
+      routes:
+        - to: dispatch
+  - id: dispatch
+    name: Deduplicate and enqueue new work
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: dispatch.md
+    access: read-only
+    capabilities: [enqueue, update-job-notes]
+    inputs:
+      target-workflow:
+        schema:
+          type: string
+      query-source.candidates:
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              updated:
+                type: string
+              title:
+                type: string
+              body:
+                type: string
+            required: [key, updated, title, body]
+            additionalProperties: false
+      query-source.proposed-cursor:
+        schema:
+          type: string
+    outputs:
+      enqueued-count:
+        schema:
+          type: number
+          minimum: 0
+      next-cursor:
+        schema:
+          type: string
+      summary:
+        schema:
+          type: string
+    gate:
+      routes:
+        - to: done
+cleanup: auto

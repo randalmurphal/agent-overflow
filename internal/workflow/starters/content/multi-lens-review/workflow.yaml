@@ -1,0 +1,182 @@
+# yaml-language-server: $schema=../workflow.schema.json
+# Required project profile bindings (names must match exactly):
+# checks: build-and-test
+# commands: (none)
+# capacities: review-workers, validation-slot
+id: multi-lens-review
+name: Multi-lens review
+description: Review a change in parallel for correctness, maintainability, and security, consolidate findings, fix material issues, and validate the result.
+inputs:
+  goal:
+    schema:
+      type: string
+      description: The intended behavior and acceptance criteria for the change.
+  implementation-context:
+    schema:
+      type: string
+      description: Optional summary, ticket text, or review focus supplied at intake.
+    optional: true
+outputs:
+  review:
+    from: review.consolidated-review
+phases:
+  - id: review
+    name: Review in parallel and consolidate
+    driver: agent
+    shape: fan-out
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: review-coordinator.md
+    access: read-only
+    resources: [review-workers]
+    inputs:
+      goal:
+        schema:
+          type: string
+      implementation-context:
+        schema:
+          type: string
+        optional: true
+    outputs:
+      verdict:
+        schema:
+          type: string
+          enum: [approve, changes-needed]
+      consolidated-review:
+        schema:
+          type: string
+      fix-guidance:
+        schema:
+          type: string
+        optional: true
+    fan_out:
+      - id: correctness
+        provider: codex
+        model: gpt-5.6-sol
+        prompt: review-correctness.md
+        access: read-only
+      - id: maintainability
+        provider: codex
+        model: gpt-5.6-sol
+        prompt: review-maintainability.md
+        access: read-only
+      - id: security
+        provider: codex
+        model: gpt-5.6-sol
+        prompt: review-security.md
+        access: read-only
+    join:
+      id: consolidate
+      provider: codex
+      model: gpt-5.6-sol
+      prompt: review-consolidate.md
+      access: read-only
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: review.verdict
+              value: approve
+          to: done
+        - to: fix
+  - id: fix
+    name: Fix material review findings
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: fix.md
+    access: write
+    inputs:
+      goal:
+        schema:
+          type: string
+      review.consolidated-review:
+        schema:
+          type: string
+      review.fix-guidance:
+        schema:
+          type: string
+        optional: true
+    outputs:
+      summary:
+        schema:
+          type: string
+      changed:
+        schema:
+          type: boolean
+    gate:
+      routes:
+        - to: validate
+  - id: validate
+    name: Validate reviewed changes
+    driver: tool
+    check: build-and-test
+    resources: [validation-slot]
+    inputs:
+      fix.changed:
+        schema:
+          type: boolean
+    outputs:
+      passed:
+        schema:
+          type: boolean
+      details:
+        schema:
+          type: string
+        optional: true
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: validate.passed
+              value: true
+          loop: review
+          max: 2
+          feedback: [fix.summary, validate.details]
+        - when:
+            eq:
+              ref: validate.passed
+              value: true
+          park: review-cycle-limit
+        - to: diagnose
+  - id: diagnose
+    name: Diagnose post-review validation failure
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: diagnose.md
+    access: read-only
+    inputs:
+      validate.details:
+        schema:
+          type: string
+        optional: true
+    outputs:
+      classification:
+        schema:
+          type: string
+          enum: [genuine, flaky, infrastructure]
+      diagnosis:
+        schema:
+          type: string
+      remedy:
+        schema:
+          type: string
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: diagnose.classification
+              value: genuine
+          loop: fix
+          max: 2
+          feedback: [diagnose.diagnosis, diagnose.remedy, validate.details]
+        - when:
+            in:
+              ref: diagnose.classification
+              values: [flaky, infrastructure]
+          loop: validate
+          max: 2
+          feedback: [diagnose.diagnosis, diagnose.remedy]
+        - park: review-validation-needs-human
+cleanup: manual
