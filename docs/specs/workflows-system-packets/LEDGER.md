@@ -238,3 +238,24 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   (f) Settings gains WorkflowQueueActive/WorkflowConcurrency in P2.4.
   Degraded-but-correct (optional): loop feedback is rebuilt without the
   human note after a crash inside the human-decision window.
+- **P2.4 BLOCKED at start (valid) → Scope amendment 1 → resumed.** Codex
+  stopped clean at the def fence: phase prompts are sibling-relative file
+  references, def validates them but exports no body loader, and the packet
+  forbade both forking the confinement logic and editing def. Adjudication
+  exposed the deeper hole — the frozen snapshot was freezing prompt PATHS,
+  so a mid-run definition edit would mutate a running item's prompts (D8
+  violation). Ruling: def gains exported `InlinePrompts(resolved)` (existing
+  confinement + size rules; authored-form → runtime-form transition,
+  documented as the only one); DefinitionSource inlines at item start so
+  snapshots freeze bodies. Amendment committed (`d0763eaa`), lane
+  fast-forwarded, session resumed at xhigh. Zero implementation work lost
+  (blocked before any edit).
+- **P2.5 packet authored** (`d4c446e3`) while P2.4 runs: watchdog / transient
+  retry / budget as three buttons on the one teardown; runner-owned timers
+  with new OutcomeStalled/OutcomeTransientExhausted mappings; engine-side
+  budget check at attempt start behind a SpendSource seam composing
+  usagecost estimates (the carried P2.1 finding); profile gains
+  `reliability.backoff`; def gains per-phase `watchdog:` override; usage
+  rows for phase threads get `work_item_id` stamped (budget prerequisite
+  found while authoring — without it every budget sum reads zero).
+  Dispatch gated on P2.4 merge.
