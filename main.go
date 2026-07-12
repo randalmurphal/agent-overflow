@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/provider/claudetui"
@@ -591,25 +592,20 @@ func fatalf(format string, args ...any) {
 // bootSettingsDir resolves the directory holding settings.json for the
 // boot-time reads that run before App.ServiceStartup constructs the settings
 // service (the App service hasn't initialised yet when main.go builds the
-// transport / window, so we can't reach through it for the path). It mirrors
-// initStores' fallback chain — UserConfigDir → UserHomeDir, then
-// /agent-overflow — so every pre-Start reader resolves the same file the App
-// later writes. Returns "" when neither base dir is resolvable; callers treat
-// that as "no persisted preference".
+// transport / window, so we can't reach through it for the path). It shares
+// initStores' resolution — --data-dir override, else the appdirs chain — so
+// every pre-Start reader resolves the same file the App later writes.
+// Returns "" when no base dir is resolvable; callers treat that as "no
+// persisted preference".
 func bootSettingsDir() string {
-	base := dataDirRoot
-	if base == "" {
-		var err error
-		base, err = os.UserConfigDir()
-		if err != nil {
-			home, homeErr := os.UserHomeDir()
-			if homeErr != nil {
-				return ""
-			}
-			base = home
-		}
+	if dataDirRoot != "" {
+		return filepath.Join(dataDirRoot, appdirs.DirName)
 	}
-	return filepath.Join(base, "agent-overflow")
+	root, err := appdirs.Root()
+	if err != nil {
+		return ""
+	}
+	return root
 }
 
 // newApp constructs the App for a local-backend boot, threading the
