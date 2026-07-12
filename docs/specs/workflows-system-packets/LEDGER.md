@@ -388,3 +388,15 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   maxStarts refused loudly; queued targets require inactive caller
   queue). Claude re-ran all six gates independently: green, e2e 10/10.
   Report at `reports/P2.7-report.md`.
+- **M2 CLOSE-OUT: complete.** All seven packets merged (P2.1–P2.7).
+  Integrated-main verification green: make go-build, make go-test,
+  frontend check, frontend build, make e2e (10/10), and full
+  make test-race (root 739s within the 1800s budget, triage 393s).
+  The engine now runs items end-to-end against real providers with
+  reliability controls and workspace isolation, fully covered by the
+  deterministic harness: enqueue → worktree provisioning + setup hooks →
+  schema-enforced phase turns → gates (auto/human/step) → question parks
+  answerable on-session → watchdog/transient-retry/budget parks →
+  artifacts → crash sweep. Next: M3 boundary items — P0.3 rev2 brief,
+  UI packets (carry-forwards logged above), post-M2 tool-driver +
+  fan-out/join packet.
