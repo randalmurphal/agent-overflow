@@ -5,10 +5,11 @@ import "encoding/json"
 // FrameType discriminates the wire frames. Encoded as the "type" field
 // in every frame so the decoder can route without sniffing other fields.
 const (
-	frameTypeRPC    = "rpc"
-	frameTypeEvent  = "event"
-	frameTypeReplay = "replay"
-	frameTypeBatch  = "batch"
+	frameTypeRPC       = "rpc"
+	frameTypeEvent     = "event"
+	frameTypeReplay    = "replay"
+	frameTypeSubscribe = "subscribe"
+	frameTypeBatch     = "batch"
 )
 
 // MaxReplayChannels caps the number of channels a single replay request
@@ -16,6 +17,11 @@ const (
 // map could otherwise force the dispatcher to allocate proportionally
 // large response slices.
 const MaxReplayChannels = 1024
+
+// MaxSubscribeChannels bounds an opt-in connection event filter. Ordinary
+// SPA clients omit subscribe and retain the all-channel behavior; narrow
+// service clients use it to avoid receiving unrelated provider traffic.
+const MaxSubscribeChannels = 1024
 
 // MaxRPCParams caps the number of positional parameters a single RPC
 // frame can carry. Protects against pathological inputs that would
@@ -33,6 +39,9 @@ const MaxRPCParams = 64
 //     while disconnected. LastSeqByChannel maps channel name to the last
 //     seq the client successfully applied. Channels absent from the map
 //     get no replay.
+//   - "subscribe": opt this connection into the live event channels named
+//     by Channels. Omitted by ordinary SPA connections, which retain the
+//     existing all-visible-channel behavior.
 //
 // The server echoes ID back on rpc responses so the client can match
 // requests to in-flight promises.
@@ -43,6 +52,7 @@ type ClientFrame struct {
 	MethodID         uint32            `json:"methodId,omitempty"`
 	Params           []json.RawMessage `json:"params,omitempty"`
 	LastSeqByChannel map[string]uint64 `json:"lastSeqByChannel,omitempty"`
+	Channels         []string          `json:"channels,omitempty"`
 }
 
 // ServerFrame is the union of every frame the server may send. The
@@ -54,6 +64,9 @@ type ClientFrame struct {
 //     is true when the client's replay request fell outside the in-memory
 //     ring — the client should re-fetch via list endpoints rather than
 //     rely on the (truncated) history.
+//   - "batch": coalesced pushed events in the batchFrame envelope below.
+//   - "replay": completion marker sent after a replay request. Replay and
+//     live pushes can interleave, so strict-order consumers buffer until it.
 type ServerFrame struct {
 	Type    string          `json:"type"`
 	ID      string          `json:"id,omitempty"`

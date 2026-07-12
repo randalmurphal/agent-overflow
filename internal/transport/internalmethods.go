@@ -231,6 +231,10 @@ var LocalOnlyMethods = map[string]bool{
 	"SendMessageWithOptions":   true,
 	"SteerMessageWithOptions":  true,
 	"SendPlanRevisionComments": true,
+	// NotificationActivated synthesizes desktop navigation after a native
+	// notification click. Only the loopback Windows launcher may drive it;
+	// a LAN-attached browser must not steer another client's pane focus.
+	"NotificationActivated": true,
 	// Flush-queue surface: RegisterQueueItem stages a user message
 	// and the dispatcher writes it to the local provider's stdin /
 	// JSON-RPC as soon as possible. GetQueueState and GetThreadLiveState

@@ -130,6 +130,7 @@ const bootstrap = async () => ({ wsUrl: 'ws://example/ws', token: 'test-token' }
 describe('WSClient', () => {
   beforeEach(() => {
     MockWebSocket.reset();
+    sessionStorage.clear();
   });
 
   afterEach(() => {
@@ -151,7 +152,10 @@ describe('WSClient', () => {
     await flushMicrotasks();
 
     // Replay frame sent on open, then the RPC frame.
-    expect(ws.sent[0]).toMatchObject({ type: 'replay' });
+    expect(ws.sent[0]).toEqual({
+      type: 'replay',
+      lastSeqByChannel: { 'notification:activated': 0 },
+    });
     expect(ws.sent[1]).toMatchObject({ type: 'rpc', methodId: 123, params: ['arg'] });
     const rpcId = ws.sent[1]!.id as string;
     ws.pushFrame({ type: 'rpc', id: rpcId, result: 'ok' });
@@ -216,6 +220,111 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('drops duplicate live/replay sequence numbers', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const seen: unknown[] = [];
+    client.subscribe('notification:activated', (data) => seen.push(data));
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    ws.pushFrame({ type: 'replay' });
+
+    const event = {
+      type: 'event' as const,
+      channel: 'notification:activated',
+      seq: 1,
+      data: { kind: 'thread', threadId: 'thread-1' },
+    };
+    ws.pushFrame(event);
+    ws.pushFrame(event);
+
+    expect(seen).toEqual([{ kind: 'thread', threadId: 'thread-1' }]);
+    client.close();
+  });
+
+  it('persists the activation checkpoint across a page-level client reload', async () => {
+    const firstClient = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    firstClient.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await flushMicrotasks();
+    first.pushFrame({ type: 'replay' });
+    first.pushFrame({
+      type: 'event',
+      channel: 'notification:activated',
+      seq: 7,
+      data: { kind: 'none' },
+    });
+    firstClient.close();
+
+    const secondClient = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    secondClient.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+
+    expect(second.sent[0]).toEqual({
+      type: 'replay',
+      lastSeqByChannel: { 'notification:activated': 7 },
+    });
+    secondClient.close();
+  });
+
+  it('does not reuse an activation checkpoint from a different backend boot', async () => {
+    sessionStorage.setItem(
+      'ao:notification-activation-seq',
+      JSON.stringify({ scope: 'old-token', seq: 7 }),
+    );
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 'new-token' }),
+    });
+    client.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    expect(ws.sent[0]).toEqual({
+      type: 'replay',
+      lastSeqByChannel: { 'notification:activated': 0 },
+    });
+    client.close();
+  });
+
+  it('orders a live activation that races ahead of replay completion', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const seen: string[] = [];
+    client.subscribe('notification:activated', (data) => {
+      seen.push((data as { threadId: string }).threadId);
+    });
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({
+      type: 'event',
+      channel: 'notification:activated',
+      seq: 2,
+      data: { kind: 'thread', threadId: 'thread-2' },
+    });
+    ws.pushFrame({
+      type: 'event',
+      channel: 'notification:activated',
+      seq: 1,
+      data: { kind: 'thread', threadId: 'thread-1' },
+    });
+    expect(seen).toEqual([]);
+
+    ws.pushFrame({ type: 'replay' });
+    expect(seen).toEqual(['thread-1', 'thread-2']);
+    client.close();
+  });
+
   it('rejects pending RPCs with DisconnectedError on close', async () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
 
@@ -265,7 +374,11 @@ describe('WSClient', () => {
 
     expect(second.sent[0]).toEqual({
       type: 'replay',
-      lastSeqByChannel: { 'thread:updated': 7, 'other:channel': 3 },
+      lastSeqByChannel: {
+        'notification:activated': 0,
+        'thread:updated': 7,
+        'other:channel': 3,
+      },
     });
 
     client.close();
@@ -694,7 +807,7 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(second.sent[0]).toEqual({
       type: 'replay',
-      lastSeqByChannel: { unsubscribed: 9 },
+      lastSeqByChannel: { 'notification:activated': 0, unsubscribed: 9 },
     });
     client.close();
   });

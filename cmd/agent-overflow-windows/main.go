@@ -53,6 +53,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/notify"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/wsldistro"
@@ -384,6 +385,15 @@ type launcherApp struct {
 
 	mu       sync.Mutex
 	launcher *wsllauncher.Launcher
+	// notificationService presents Windows toasts. notificationClient is the
+	// narrow WS bridge back to the WSL backend; notificationCancel stops its
+	// reconnect loop on backend exit or launcher shutdown. All are guarded by
+	// mu because activation callbacks run independently of launchAndShow.
+	notificationService     *launcherNotificationService
+	notificationClient      *wsllauncher.NotificationClient
+	notificationContext     context.Context
+	notificationCancel      context.CancelFunc
+	notificationActivations *wsllauncher.NotificationActivationQueue
 
 	// flushGeometry persists the window placement immediately. Set on the
 	// ApplicationStarted handler (with window) and read on shutdown as a
@@ -520,6 +530,10 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 		return fmt.Errorf("backend booted but unreachable from Windows: %w", err)
 	}
 	logBootPhase("launcher.probe_bootstrap", phaseStarted)
+
+	if err := a.startNotificationBridge(bs, l); err != nil {
+		log.Printf("notifications: start launcher bridge: %v", err)
+	}
 
 	// Persist the chosen distro + installed version only after the
 	// backend has booted successfully. This pairs with PickDistro's
@@ -801,7 +815,15 @@ func (a *launcherApp) win() *application.WebviewWindow {
 // non-empty the handler also kicks off the backend launch (the picker is
 // skipped).
 func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient bool) *launcherApp {
-	a := &launcherApp{distros: distros}
+	a := &launcherApp{
+		distros:                 distros,
+		notificationActivations: wsllauncher.NewNotificationActivationQueue(),
+	}
+	a.notificationContext, a.notificationCancel = context.WithCancel(context.Background())
+	notificationService := newLauncherNotificationService(func(target notify.Target) {
+		a.queueNotificationActivation(target)
+	})
+	a.notificationService = notificationService
 	mode := wslSingleInstanceMode()
 	title := appidentity.AppTitle(mode)
 	enableDevBrowserArgs := mode == "dev"
@@ -821,6 +843,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			Level: wailsLogLevel(mode),
 		})),
 		Services: []application.Service{
+			application.NewService(notificationService),
 			application.NewService(a),
 		},
 		Assets: application.AssetOptions{
@@ -855,7 +878,11 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			a.mu.Lock()
 			flush := a.flushGeometry
 			l := a.launcher
+			cancelNotifications := a.notificationCancel
 			a.mu.Unlock()
+			if cancelNotifications != nil {
+				cancelNotifications()
+			}
 			if flush != nil {
 				flush()
 			}
@@ -935,6 +962,83 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	})
 
 	return a
+}
+
+func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launcher *wsllauncher.Launcher) error {
+	client, err := wsllauncher.NewNotificationClient(wsllauncher.NotificationClientConfig{
+		WSURL:   fmt.Sprintf("ws://127.0.0.1:%d/ws", bs.Port),
+		Token:   bs.Token,
+		Present: a.notificationService.present,
+		Logf:    log.Printf,
+	})
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.notificationClient = client
+	ctx := a.notificationContext
+	startDrain := a.notificationActivations.StartIfPending(true)
+	a.mu.Unlock()
+
+	go client.Run(ctx)
+	if startDrain {
+		go a.drainNotificationActivations()
+	}
+	go func() {
+		err := launcher.Wait()
+		unexpectedExit := ctx.Err() == nil
+		a.notificationCancel()
+		if err != nil && unexpectedExit {
+			log.Printf("notifications: WSL backend exited; stopping launcher bridge: %v", err)
+		}
+	}()
+	return nil
+}
+
+func (a *launcherApp) queueNotificationActivation(target notify.Target) {
+	a.mu.Lock()
+	dropped, startDrain := a.notificationActivations.Push(target, a.notificationClient != nil)
+	a.mu.Unlock()
+	if dropped != nil {
+		log.Printf("notifications: pending activation queue full; dropped oldest target kind=%s", dropped.Kind)
+	}
+	if startDrain {
+		go a.drainNotificationActivations()
+	}
+}
+
+func (a *launcherApp) drainNotificationActivations() {
+	for {
+		a.mu.Lock()
+		client := a.notificationClient
+		if client == nil {
+			a.notificationActivations.Stop()
+			a.mu.Unlock()
+			return
+		}
+		target, ok := a.notificationActivations.Next()
+		if !ok {
+			a.mu.Unlock()
+			return
+		}
+		ctx := a.notificationContext
+		a.mu.Unlock()
+
+		err := client.Activate(ctx, target)
+		if ctx.Err() != nil {
+			a.mu.Lock()
+			a.notificationActivations.Stop()
+			a.mu.Unlock()
+			return
+		}
+		// Once an RPC write is attempted, a disconnect is ambiguous: the
+		// backend may have emitted activation before its response was lost.
+		// Do not retry without an idempotency key; one click must emit at most
+		// one frontend event.
+		if err != nil {
+			log.Printf("notifications: post activation to backend: %v", err)
+		}
+	}
 }
 
 func wslSingleInstanceOptions(window func() *application.WebviewWindow) *application.SingleInstanceOptions {

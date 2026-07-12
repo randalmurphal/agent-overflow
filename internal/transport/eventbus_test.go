@@ -238,6 +238,35 @@ func TestEventBus_SubscriberCount(t *testing.T) {
 	b.Close()
 }
 
+func TestEventBus_ChannelFilteredSubscriber(t *testing.T) {
+	bus := NewEventBus(8)
+	t.Cleanup(bus.Close)
+	sub := bus.Subscribe()
+	t.Cleanup(sub.Close)
+	sub.SetChannels([]string{"notification:send"})
+
+	if got := bus.ChannelSubscriberCount("notification:send"); got != 1 {
+		t.Fatalf("notification subscriber count = %d, want 1", got)
+	}
+	if got := bus.ChannelSubscriberCount("provider:item_event"); got != 0 {
+		t.Fatalf("provider subscriber count = %d, want 0", got)
+	}
+	if _, err := bus.Emit("provider:item_event", "ignored"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bus.Emit("notification:send", "wanted"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-sub.Events():
+		if event.Channel != "notification:send" {
+			t.Fatalf("delivered channel = %q, want notification:send", event.Channel)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("filtered subscriber did not receive selected channel")
+	}
+}
+
 func TestEventBus_Subscribe_AfterClose(t *testing.T) {
 	bus := NewEventBus(10)
 	bus.Close()

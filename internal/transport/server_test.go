@@ -346,6 +346,45 @@ func TestServer_EventLiveDelivery(t *testing.T) {
 	}
 }
 
+func TestServer_EventSubscriptionFiltersLiveDelivery(t *testing.T) {
+	f := newServerFixture(t)
+	conn := f.dial(t)
+	frame, err := json.Marshal(ClientFrame{
+		Type:     frameTypeSubscribe,
+		Channels: []string{"notification:send"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, frame); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(func() bool {
+		return f.bus.ChannelSubscriberCount("notification:send") == 1
+	}, 500*time.Millisecond) {
+		t.Fatal("server never applied event subscription")
+	}
+	if _, err := f.bus.Emit("provider:item_event", "ignored"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.bus.Emit("notification:send", "wanted"); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got ServerFrame
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != frameTypeEvent || got.Channel != "notification:send" {
+		t.Fatalf("filtered event = %#v, want notification:send event", got)
+	}
+}
+
 func TestServer_ReplayMissedEvents(t *testing.T) {
 	f := newServerFixture(t)
 
@@ -401,6 +440,17 @@ func TestServer_ReplayMissedEvents(t *testing.T) {
 		if frm.Gap {
 			t.Fatalf("event %d unexpectedly gap-flagged", i)
 		}
+	}
+	_, raw, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read replay completion marker: %v", err)
+	}
+	var complete ServerFrame
+	if err := json.Unmarshal(raw, &complete); err != nil {
+		t.Fatalf("decode replay completion marker: %v", err)
+	}
+	if complete.Type != frameTypeReplay {
+		t.Fatalf("replay completion frame = %#v, want type %q", complete, frameTypeReplay)
 	}
 }
 

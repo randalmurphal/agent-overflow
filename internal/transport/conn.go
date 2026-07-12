@@ -157,6 +157,8 @@ func (h *connHandler) readLoop(ctx context.Context) {
 			h.dispatchRPC(ctx, frame)
 		case frameTypeReplay:
 			h.handleReplay(ctx, frame)
+		case frameTypeSubscribe:
+			h.handleSubscribe(ctx, frame)
 		default:
 			h.writeError(ctx, frame.ID, &FrameError{
 				Code:    ErrCodeBadParams,
@@ -164,6 +166,20 @@ func (h *connHandler) readLoop(ctx context.Context) {
 			})
 		}
 	}
+}
+
+func (h *connHandler) handleSubscribe(ctx context.Context, frame ClientFrame) {
+	if len(frame.Channels) == 0 || len(frame.Channels) > MaxSubscribeChannels {
+		h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid event subscription"})
+		return
+	}
+	for _, channel := range frame.Channels {
+		if channel == "" || len(channel) > 256 {
+			h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid event subscription"})
+			return
+		}
+	}
+	h.sub.SetChannels(frame.Channels)
 }
 
 // dispatchRPC enforces the per-conn concurrency cap and spawns a
@@ -232,8 +248,15 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 		if !eventVisibleToOrigin(e.Channel, h.profile.isLoopback) {
 			continue
 		}
+		if !h.sub.accepts(e.Channel) {
+			continue
+		}
 		h.writeEventFrame(ctx, e)
 	}
+	// Replay and the live pump share writeMu, so live frames may interleave
+	// with replay frames. This completion marker lets clients buffer the one
+	// channel whose strict click ordering matters, then apply by sequence.
+	h.writeFrame(ctx, ServerFrame{Type: frameTypeReplay, ID: frame.ID})
 }
 
 // pumpEvents copies live events from the subscriber into the wire.

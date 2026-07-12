@@ -12,6 +12,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 
 	"agent-overflow/internal/harness"
 	"agent-overflow/internal/harness/control"
+	"agent-overflow/internal/notify"
 	"agent-overflow/internal/uitrace"
 )
 
@@ -104,4 +106,14 @@ func (h *Harness) HarnessEmit(channel string, payload json.RawMessage) error {
 	}
 	h.app.emit(channel, payload)
 	return nil
+}
+
+// HarnessNotify exercises the production send helper and then synthesizes
+// the activation that an OS click would produce. The synthetic step bypasses
+// only OS presentation/click handling: target validation, backend emission,
+// transport delivery, and frontend routing are the production path.
+func (h *Harness) HarnessNotify(title, body string, target notify.Target) error {
+	sendErr := h.app.notifyOS(title, body, target)
+	activationErr := h.app.activateNotificationTarget(target)
+	return errors.Join(sendErr, activationErr)
 }

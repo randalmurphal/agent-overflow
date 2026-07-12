@@ -36,6 +36,14 @@ Two callers:
   shells out and parses the same UTF-16 LE output as the Windows
   caller. On native Linux/macOS it returns `nil, nil` so the picker
   UI's empty-state branch is exercisable off-platform.
+- `notification_client.go` — cross-platform transport client used by the
+  Windows launcher: replay-aware `notification:send` consumption,
+  bounded reconnect, and `NotificationActivated` RPC posting. Kept
+  cross-platform so its wire behavior is exercised by Linux unit tests.
+  The notification wire contract itself (`Target`, `Send`, validation,
+  content limits) lives in `internal/notify`, shared with the backend.
+- `notification_activation_queue.go` — bounded cold-click FIFO and serialized
+  drain state shared with the launcher, also cross-platform for unit tests.
 - `distro_test.go`, `launcher_test.go` — table-driven against fixture
   bytes (`testdata/`) and stubbed readers.
 

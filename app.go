@@ -74,14 +74,20 @@ type App struct {
 	// ServiceStartup in desktop mode (app_desktop.go); left nil in the
 	// headless WSL backend, where there is no native window to attach a
 	// dialog to and the frontend uses a download fallback instead.
-	saveDialog     savePayloadPicker
-	store          *store.Store
-	git            *gitops.Core
-	gitWatch       *gitwatch.Manager
-	settings       *settings.Service
-	triage         *triage.Router
-	workflowEngine *engine.Engine
-	workflowRunner *workflowAppRunner
+	saveDialog savePayloadPicker
+	// osNotifications is the single platform-routing seam behind notifyOS.
+	// Desktop boot installs the in-process Wails service adapter; the WSL
+	// headless boot installs the transport bridge; harness mode installs an
+	// explicit unavailable sender. Tests may leave it nil to exercise the
+	// same visible degraded error without pulling in a platform service.
+	osNotifications osNotificationSender
+	store           *store.Store
+	git             *gitops.Core
+	gitWatch        *gitwatch.Manager
+	settings        *settings.Service
+	triage          *triage.Router
+	workflowEngine  *engine.Engine
+	workflowRunner  *workflowAppRunner
 	// turnObservers fan provider events out to internal App features after
 	// triage handling has been attempted. Each registration lives until its
 	// returned unsubscribe function runs; the built-in discussion observer

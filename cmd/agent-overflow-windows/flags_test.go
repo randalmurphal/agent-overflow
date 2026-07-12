@@ -49,6 +49,16 @@ func TestParseLauncherFlags_UnknownFlagErrors(t *testing.T) {
 	}
 }
 
+func TestParseLauncherFlags_AcceptsWindowsToastEmbeddingMode(t *testing.T) {
+	got, err := parseLauncherFlags([]string{"-Embedding"})
+	if err != nil {
+		t.Fatalf("parse -Embedding: %v", err)
+	}
+	if !got.Embedding {
+		t.Fatal("Embedding = false, want true")
+	}
+}
+
 func TestParseLauncherFlags_HelpReturnsErrHelp(t *testing.T) {
 	// flag.ContinueOnError surfaces -h via flag.ErrHelp so callers can
 	// distinguish "user asked for help" from a real parse failure and

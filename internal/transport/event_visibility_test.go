@@ -5,6 +5,8 @@ import "testing"
 func TestEventVisibleToOrigin(t *testing.T) {
 	for _, channel := range []string{
 		"git:status",
+		"notification:activated",
+		"notification:send",
 		"provider:approval",
 		"provider:status",
 		"provider:queue_flushed",

@@ -395,6 +395,7 @@ func runHeadless(listenAddr string, printURLFD int) {
 	// Windows binary's embed; the transport just needs an asset
 	// handler so non-RPC paths return 404 cleanly.
 	srv := bootTransport(appService, listenAddr, bootTransportOptions{RequireReadyForBootstrap: true})
+	appService.osNotifications = newTransportNotificationSender(appService)
 	log.Printf("transport: headless mode")
 
 	phaseStarted := time.Now()

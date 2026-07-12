@@ -25,6 +25,11 @@ type launcherFlags struct {
 	// to wsl.json — the override stays scoped to the current run so a
 	// dev-mode invocation doesn't clobber the user's saved pick.
 	Distro string
+	// Embedding is the internal COM-server launch switch Windows appends when
+	// a toast is activated while the launcher is not already running. The
+	// normal boot still runs so Wails can register the toast callback while
+	// the WSL backend and bridge come online.
+	Embedding bool
 }
 
 // parseLauncherFlags parses the CLI args and returns the launcher's
@@ -39,8 +44,12 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 		"",
 		"skip the picker and launch directly in this WSL distro (used by `make dev-wsl`)",
 	)
+	embedding := fs.Bool("Embedding", false, "internal Windows toast activation mode")
 	if err := fs.Parse(args); err != nil {
 		return launcherFlags{}, fmt.Errorf("parse flags: %w", err)
 	}
-	return launcherFlags{Distro: strings.TrimSpace(*distro)}, nil
+	return launcherFlags{
+		Distro:    strings.TrimSpace(*distro),
+		Embedding: *embedding,
+	}, nil
 }

@@ -13,6 +13,9 @@ window at the resulting `http://localhost:<port>` URL.
   Svelte — it ships before the backend exists).
 - Persisted picker config (`%APPDATA%\agent-overflow\wsl.json`) in
   `config.go`.
+- Native Windows notification authorization/presentation in
+  `notifications.go`; the reconnecting backend WS client lives in
+  `internal/wsllauncher/notification_client.go` so it is testable off-Windows.
 
 ## When to edit elsewhere instead
 
@@ -33,7 +36,7 @@ killing the `.exe` always tears down the WSL-side child too.
 ## CLI flags
 
 The launcher is GUI-only in production (Start Menu / Desktop double-click).
-The only flag is for the dev path:
+The only user-facing flag is for the dev path:
 
 - `--distro <name>` — skip the picker and launch directly in this WSL
   distro. Used by `make dev-wsl` from inside a WSL shell, where
@@ -50,6 +53,11 @@ The only flag is for the dev path:
 the CLI shape; `resolveChosenDistro` in `main.go` is where the
 override-vs-saved precedence lives. Both are unit-tested in
 `flags_test.go` / `main_test.go`.
+
+Windows may also launch the registered toast activation executable with the
+internal `-Embedding` COM-server switch. The parser accepts it so a click can
+cold-start the launcher and register the notification callback; it is not a
+user-facing option and does not alter distro selection.
 
 ## Diagnostics: where the logs are
 

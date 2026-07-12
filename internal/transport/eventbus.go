@@ -240,6 +240,22 @@ func (b *EventBus) SubscriberCount() int {
 	return len(b.subs)
 }
 
+// ChannelSubscriberCount returns the number of subscribers that explicitly
+// opted into channel filtering and selected channel. Default all-channel SPA
+// subscribers are deliberately excluded so service-presence checks do not
+// mistake an ordinary webview for a dedicated bridge consumer.
+func (b *EventBus) ChannelSubscriberCount(channel string) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	count := 0
+	for _, subscriber := range b.subList {
+		if subscriber.explicitlySubscribes(channel) {
+			count++
+		}
+	}
+	return count
+}
+
 // Replay returns the events the client missed since lastSeqByChannel.
 // For each channel:
 //   - If lastSeq is older than the oldest event in the ring, a single
@@ -315,11 +331,14 @@ func (b *EventBus) Close() {
 // would race deliver() and panic on send-after-close. Instead, a Done
 // channel is closed which the consumer selects on alongside Events().
 type Subscriber struct {
-	ch     chan Event
-	done   chan struct{}
-	bus    *EventBus
-	closed atomic.Bool
+	ch       chan Event
+	done     chan struct{}
+	bus      *EventBus
+	closed   atomic.Bool
+	channels atomic.Pointer[subscriberChannelFilter]
 }
+
+type subscriberChannelFilter map[string]struct{}
 
 // Events returns the receive-only event channel. Callers must select
 // on Events() AND Done() simultaneously — Events never closes, Done
@@ -330,12 +349,44 @@ func (s *Subscriber) Events() <-chan Event { return s.ch }
 // shut down. Receive returns immediately when closed.
 func (s *Subscriber) Done() <-chan struct{} { return s.done }
 
+// SetChannels opts this subscriber into a narrow event set. Before this is
+// called a subscriber receives every channel, preserving the existing SPA
+// wire contract.
+func (s *Subscriber) SetChannels(channels []string) {
+	filter := make(subscriberChannelFilter, len(channels))
+	for _, channel := range channels {
+		filter[channel] = struct{}{}
+	}
+	s.channels.Store(&filter)
+}
+
+func (s *Subscriber) accepts(channel string) bool {
+	filter := s.channels.Load()
+	if filter == nil {
+		return true
+	}
+	_, ok := (*filter)[channel]
+	return ok
+}
+
+func (s *Subscriber) explicitlySubscribes(channel string) bool {
+	filter := s.channels.Load()
+	if filter == nil {
+		return false
+	}
+	_, ok := (*filter)[channel]
+	return ok
+}
+
 // deliver pushes an event into the subscriber's buffered channel. A
 // full channel drops the event silently — the wsClient detects the
 // per-channel seq gap on the next received event and re-fetches via
 // list endpoints. Falling behind is the subscriber's problem to detect.
 func (s *Subscriber) deliver(e Event) {
 	if s.closed.Load() {
+		return
+	}
+	if !s.accepts(e.Channel) {
 		return
 	}
 	select {

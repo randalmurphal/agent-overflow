@@ -65,6 +65,7 @@ func runHarness(flags cliFlags) {
 	}
 
 	appService := newApp()
+	appService.configureUnavailableNotifications("the agent test harness has no OS notification presenter")
 	// Pin provider spawns to the mock at resolution time, not just via
 	// the seeded settings — UpdateSettings stays callable in harness
 	// mode, but it can never repoint a spawn at a real provider binary.

@@ -173,6 +173,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "MarkThreadRead", ID: 1480646012},                       // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375},                      // main.App.MarkThreadUnread
 	{Name: "MoveThreadTerminals", ID: 3013708277},                  // main.App.MoveThreadTerminals
+	{Name: "NotificationActivated", ID: 2831503793},                // main.App.NotificationActivated
 	{Name: "OpenExternalURL", ID: 3362740399},                      // main.App.OpenExternalURL
 	{Name: "OpenInEditor", ID: 3994295523},                         // main.App.OpenInEditor
 	{Name: "OpenTerminal", ID: 2247958725},                         // main.App.OpenTerminal

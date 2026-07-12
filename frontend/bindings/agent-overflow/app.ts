@@ -41,6 +41,9 @@ import * as mcpstatus$0 from "./internal/mcpstatus/models.js";
 import * as network$0 from "./internal/network/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as notify$0 from "./internal/notify/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as provider$0 from "./internal/provider/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -1759,6 +1762,15 @@ export function MoveThreadTerminals(fromThreadID: string, toThreadID: string): $
     return $Call.ByID(3013708277, fromThreadID, toThreadID).then(($result: any) => {
         return $$createType86($result);
     });
+}
+
+/**
+ * NotificationActivated is called by the native Windows launcher after a
+ * bridged notification click. It validates the launcher-provided target and
+ * emits the same frontend event as the in-process desktop callback.
+ */
+export function NotificationActivated(target: notify$0.Target): $CancellablePromise<void> {
+    return $Call.ByID(2831503793, target);
 }
 
 /**

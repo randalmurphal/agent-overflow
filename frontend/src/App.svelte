@@ -8,6 +8,7 @@
     setupEventListeners,
   } from './lib/stores/events';
   import { getThreads, loadThreads } from './lib/stores/threads.svelte';
+  import { markNotificationHydrated } from './lib/stores/eventsNotification';
   import {
     installPaneLayoutPersistence,
     loadPersistedPaneLayout,
@@ -279,8 +280,10 @@
     // charge, which is the correct degraded behavior.
     const appStorageReady = hydrateAppStorage();
     void (async () => {
+      let threadRegistryHydrated = false;
       try {
         const threads = await loadThreads();
+        threadRegistryHydrated = true;
         await appStorageReady;
         syncSidebarWidthFromAppStorage();
         syncSidebarFromAppStorage();
@@ -293,6 +296,7 @@
         resetPaneRegistry(null);
         addToast('error', userFacingError(err, 'Failed to restore pane layout.'));
       } finally {
+        if (threadRegistryHydrated) await markNotificationHydrated();
         paneLayoutRestored = true;
         appReady = true;
       }

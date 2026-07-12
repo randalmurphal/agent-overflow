@@ -8,7 +8,8 @@ backend.
 
 - HTTP listener serving the embedded SPA, a `/bootstrap.json` manifest,
   and the `/ws` upgrade endpoint.
-- A small JSON wire frame: `{type:"rpc"|"event"|"replay", ...}`.
+- A small JSON wire frame:
+  `{type:"rpc"|"event"|"replay"|"subscribe"|"batch", ...}`.
 - Reflection-based RPC dispatch against a receiver's exported methods.
   Method IDs are FNV-1a 32-bit of `<package>.<typeName>.<methodName>`
   so they match Wails' `internal/hash.Fnv` and the existing generated
@@ -66,11 +67,15 @@ on the wire at all. Rules for any future receiver:
 - **Client → Server**:
   - `{type:"rpc", id, methodId|method, params:[...]}` — invoke
   - `{type:"replay", lastSeqByChannel:{...}}` — request missed events
+  - `{type:"subscribe", channels:[...]}` — opt into a narrow live-event set;
+    ordinary SPA clients omit this and continue receiving all visible channels
 - **Server → Client**:
   - `{type:"rpc", id, result|error}` — response
   - `{type:"event", channel, seq, data, gap?}` — push
   - `{type:"batch", events:[{channel, seq, data, gap?}, ...]}` —
     coalesced events (any connection; multi-event windows only)
+  - `{type:"replay", id?}` — completion marker for a replay request;
+    strict-order consumers buffer interleaved live events until this arrives
 
 `gap:true` is the "your replay seq fell outside the in-memory ring,
 re-fetch via list endpoints" signal. The server cannot reconstruct

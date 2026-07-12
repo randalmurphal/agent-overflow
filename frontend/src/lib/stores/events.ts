@@ -14,6 +14,7 @@
 //   - eventsCheckpoint.ts    — checkpoint capture/revert + message revert
 //   - eventsTransportGap.ts  — missed-seq resync
 //   - eventsDiscussion.ts    — discussion:message / discussion:state push
+//   - eventsNotification.ts  — OS activation routing + cold-start queue
 //
 // This file itself stays a thin fan-in: channel names, generics, and the
 // teardown order live here; the reaction logic lives in the domain modules.
@@ -115,6 +116,10 @@ import {
 import { applyPRReviewUpdated } from './eventsPRReview';
 import { clearAllDiscussionLiveTail } from './discussionLiveTail';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
+import {
+  applyNotificationActivated,
+  type NotificationTarget,
+} from './eventsNotification';
 
 /**
  * Frontend custom DOM event names live in `./eventNames` so consumers
@@ -151,6 +156,10 @@ export function setupEventListeners(): () => void {
   resetItemEventQueue();
 
   const cancelApproval = wailsEventOn<ApprovalEvent>('provider:approval', applyApprovalEvent);
+  const cancelNotificationActivated = wailsEventOn<NotificationTarget>(
+    'notification:activated',
+    applyNotificationActivated,
+  );
   const cancelUserInput = wailsEventOn<UserInputEvent>('provider:user_input', applyUserInputEvent);
 
   const cancelUsage = wailsEventOn<UsageEvent>('provider:usage', applyUsageEvent);
@@ -361,6 +370,7 @@ export function setupEventListeners(): () => void {
     cancelItemEvent();
     flushItemEventQueue();
     cancelApproval();
+    cancelNotificationActivated();
     cancelUserInput();
     cancelUsage();
     cancelModelFallback();

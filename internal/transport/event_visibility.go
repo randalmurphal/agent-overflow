@@ -2,6 +2,8 @@ package transport
 
 var loopbackOnlyEventChannels = map[string]bool{
 	"git:status":                     true,
+	"notification:activated":         true,
+	"notification:send":              true,
 	"provider:approval":              true,
 	"provider:status":                true,
 	"provider:queue_flushed":         true,

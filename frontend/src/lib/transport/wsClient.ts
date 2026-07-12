@@ -16,6 +16,7 @@
 //     {type:"rpc", id, error:{code, message}}                // error
 //     {type:"event", channel, seq, data, gap?}               // push
 //     {type:"batch", events:[{channel,seq,data,gap?},...]}   // coalesced push
+//     {type:"replay", id?}                                  // replay complete
 //
 // The client owns:
 //   - The (single) WebSocket connection and its lifecycle.
@@ -44,6 +45,15 @@ const TRANSPORT_GAP_CHANNEL = 'transport:gap';
 // Cap matches server-side MaxReplayChannels (frame.go) so the replay
 // frame can't exceed the wire limit.
 export const MAX_REPLAY_CHANNELS = 1024;
+// Native notification activation can arrive before the SPA makes its first
+// WS connection (notably a cold launch from a Windows toast). Seed this
+// channel at sequence zero so the first replay request drains the transport
+// ring into eventsNotification's bounded pre-hydration queue.
+const NOTIFICATION_ACTIVATED_CHANNEL = 'notification:activated';
+const NOTIFICATION_ACTIVATION_SEQ_KEY = 'ao:notification-activation-seq';
+let notificationCheckpointLoadWarningLogged = false;
+let notificationCheckpointStoreWarningLogged = false;
+const MAX_TRACKED_REPLAY_CHANNELS = MAX_REPLAY_CHANNELS - 1;
 // Defensive cap on concurrent client RPCs. The server caps at 64 per
 // connection — at 10_000 client-side, something pathological is happening.
 export const MAX_PENDING_RPCS = 10_000;
@@ -125,7 +135,12 @@ interface ServerBatchFrame {
   }>;
 }
 
-type ServerFrame = ServerRPCFrame | ServerEventFrame | ServerBatchFrame;
+interface ServerReplayFrame {
+  type: 'replay';
+  id?: string;
+}
+
+type ServerFrame = ServerRPCFrame | ServerEventFrame | ServerBatchFrame | ServerReplayFrame;
 
 interface ClientRPCFrame {
   type: 'rpc';
@@ -421,6 +436,9 @@ export class WSClient {
   // entry once we hit MAX_REPLAY_CHANNELS — the cap mirrors the server's
   // own clamp and stops a hostile remote from blowing the wire frame.
   private readonly lastSeqByChannel: Map<string, number> = new Map();
+  private notificationReplayPending = false;
+  private notificationReplayBuffer: ServerEventFrame[] = [];
+  private notificationCheckpointScope: string | null = null;
 
   constructor(opts: WSClientOptions = {}) {
     this.fetchBootstrap = opts.bootstrap ?? defaultBootstrap;
@@ -650,7 +668,12 @@ export class WSClient {
         // only acts on this if the map is non-empty; it's still cheap
         // to send unconditionally since channel-by-channel reconciliation
         // is exactly what a reconnect needs.
-        const replay: Record<string, number> = {};
+        const replay: Record<string, number> = {
+          [NOTIFICATION_ACTIVATED_CHANNEL]: loadNotificationActivationSeq(bootstrap.token),
+        };
+        this.notificationCheckpointScope = bootstrap.token;
+        this.notificationReplayPending = true;
+        this.notificationReplayBuffer = [];
         for (const [channel, seq] of this.lastSeqByChannel) {
           replay[channel] = seq;
         }
@@ -713,6 +736,8 @@ export class WSClient {
         // sees DisconnectedError and decides whether to retry at the
         // app layer).
         this.failPending(new DisconnectedError('socket closed'));
+        this.notificationReplayPending = false;
+        this.notificationReplayBuffer = [];
         this.ws = null;
         if (!settled) {
           // First-attempt failure: surface to the awaiter so the call
@@ -845,15 +870,32 @@ export class WSClient {
       return;
     }
     if (frame.type === 'event') {
+      if (this.bufferNotificationReplayEvent(frame)) return;
       this.handleEventEntry(frame);
       return;
     }
     if (frame.type === 'batch') {
       for (const evt of frame.events) {
+        if (this.bufferNotificationReplayEvent({ type: 'event', ...evt })) continue;
         this.handleEventEntry(evt);
       }
       return;
     }
+    if (frame.type === 'replay') {
+      const buffered = this.notificationReplayBuffer
+        .sort((a, b) => a.seq - b.seq);
+      this.notificationReplayBuffer = [];
+      this.notificationReplayPending = false;
+      for (const event of buffered) this.handleEventEntry(event);
+    }
+  }
+
+  private bufferNotificationReplayEvent(event: ServerEventFrame): boolean {
+    if (!this.notificationReplayPending || event.channel !== NOTIFICATION_ACTIVATED_CHANNEL) {
+      return false;
+    }
+    this.notificationReplayBuffer.push(event);
+    return true;
   }
 
   // handleEventEntry processes a single event entry — used by both
@@ -864,6 +906,8 @@ export class WSClient {
     data: unknown;
     gap?: boolean;
   }): void {
+    const lastSeq = this.lastSeqByChannel.get(evt.channel);
+    if (lastSeq !== undefined && evt.seq <= lastSeq) return;
     this.recordChannelSeq(evt.channel, evt.seq);
     if (evt.gap === true) {
       console.warn(
@@ -887,15 +931,21 @@ export class WSClient {
       // rather than aging out on the next overflow.
       this.lastSeqByChannel.delete(channel);
       this.lastSeqByChannel.set(channel, seq);
+      if (channel === NOTIFICATION_ACTIVATED_CHANNEL && this.notificationCheckpointScope !== null) {
+        storeNotificationActivationSeq(this.notificationCheckpointScope, seq);
+      }
       return;
     }
-    if (this.lastSeqByChannel.size >= MAX_REPLAY_CHANNELS) {
+    if (this.lastSeqByChannel.size >= MAX_TRACKED_REPLAY_CHANNELS) {
       const oldest = this.lastSeqByChannel.keys().next().value;
       if (typeof oldest === 'string') {
         this.lastSeqByChannel.delete(oldest);
       }
     }
     this.lastSeqByChannel.set(channel, seq);
+    if (channel === NOTIFICATION_ACTIVATED_CHANNEL && this.notificationCheckpointScope !== null) {
+      storeNotificationActivationSeq(this.notificationCheckpointScope, seq);
+    }
   }
 
   private dispatchToSubscribers(channel: string, data: unknown): void {
@@ -945,6 +995,38 @@ export class WSClient {
     for (const p of drained) {
       clearTimeout(p.timer);
       p.reject(err);
+    }
+  }
+}
+
+function loadNotificationActivationSeq(scope: string): number {
+  try {
+    const value = globalThis.sessionStorage?.getItem(NOTIFICATION_ACTIVATION_SEQ_KEY);
+    if (!value) return 0;
+    const parsed = JSON.parse(value) as { scope?: unknown; seq?: unknown };
+    if (parsed.scope !== scope) return 0;
+    return Number.isSafeInteger(parsed.seq) && Number(parsed.seq) >= 0 ? Number(parsed.seq) : 0;
+  } catch (error) {
+    if (!notificationCheckpointLoadWarningLogged) {
+      notificationCheckpointLoadWarningLogged = true;
+      console.warn('wsClient: could not load notification activation checkpoint', error);
+    }
+    return 0;
+  }
+}
+
+function storeNotificationActivationSeq(scope: string, seq: number): void {
+  try {
+    globalThis.sessionStorage?.setItem(
+      NOTIFICATION_ACTIVATION_SEQ_KEY,
+      JSON.stringify({ scope, seq }),
+    );
+  } catch (error) {
+    // Storage is a reload-dedup optimization. Sequence tracking in memory
+    // remains authoritative for the live connection when storage is denied.
+    if (!notificationCheckpointStoreWarningLogged) {
+      notificationCheckpointStoreWarningLogged = true;
+      console.warn('wsClient: could not store notification activation checkpoint', error);
     }
   }
 }

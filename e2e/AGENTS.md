@@ -19,6 +19,9 @@ headless, isolated data dir, mocked providers. Full harness guide:
 - `tests/workflows.spec.ts` — RPC/event-only workflow coverage: two-phase
   drain, human gate approval, same-session question answer, watchdog stall,
   and cancel/interrupt.
+- `tests/notifications.spec.ts` — OS-notification pipe: `HarnessNotify`'s
+  typed degraded send error, cold activation through transport replay and
+  the pre-hydration queue, and the `none`-target no-op log.
 
 ## Running
 

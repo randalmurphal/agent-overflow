@@ -698,6 +698,7 @@ func (p *privilegedApp) SendMessage() string                    { return "ok" }
 func (p *privilegedApp) SendMessageWithOptions() string         { return "ok" }
 func (p *privilegedApp) SteerMessageWithOptions() string        { return "ok" }
 func (p *privilegedApp) SendPlanRevisionComments() string       { return "ok" }
+func (p *privilegedApp) NotificationActivated() string          { return "ok" }
 func (p *privilegedApp) RegisterQueueItem() string              { return "ok" }
 func (p *privilegedApp) GetQueueState() string                  { return "ok" }
 func (p *privilegedApp) GetThreadLiveState() string             { return "ok" }
