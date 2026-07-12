@@ -501,3 +501,17 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   limit (window reset 12:05 PM); run2 banner-verified sol/**xhigh**,
   session `019f5714-98e5-77f2-8d0a-cc289a6bf374`, no usage-limit errors.
   Log: session scratchpad `p31-codex-run2.log`.
+- **P3.1 BLOCKED (valid, packet authoring gap) → Scope Amendment 1 →
+  resumed.** Codex blocked pre-edit, baselines all green: the brief's
+  forbidden zone allowed only `methods_gen.go` regeneration under
+  `internal/transport/`, but every new bound App method must be
+  classified in `internalmethods.go` and the exhaustive classification
+  test enforces it — an honest implementation path did not exist. Codex
+  refused to misclassify or weaken the test (exactly right). Amendment
+  ruling: all three new RPCs join the existing Workflow* LocalOnly block
+  (they drive provider sessions + local worktree state); existing
+  transport test fixtures (privilegedApp stubs) may be extended exactly
+  as the classification tests require; test expectations stay untouched.
+  Session resumed in place (context is the asset — specs read, baseline
+  done): same id `019f5714-98e5-77f2-8d0a-cc289a6bf374`, xhigh restated,
+  log `p31-codex-resume.log`.
