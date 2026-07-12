@@ -12,8 +12,9 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P0.3 OS notifications | `m0/p03-os-notifications` | `~/repos/ao-lanes/p03` | gpt-5.6-sol / high | `019f5437-1334-7ad1-9d71-4b04bb7b8439` | PARKED (valid BLOCKED) |
 | P0.4 docs hygiene | `m0/p04-docs-hygiene` | `~/repos/ao-lanes/p04` | gpt-5.6-sol / high | `019f5434-5f98-7ba2-9bea-3b89c2d30656` | **merged** |
 | P1.1 `internal/workflow/def` | `m1/p11-workflow-def` | `~/repos/ao-lanes/p11` | gpt-5.6-sol / high | `019f545e-ab3a-78f2-a7bc-66e4f65a8164` | **merged** |
-| P1.2 `internal/workflow/profile` | `m1/p12-profile` | `~/repos/ao-lanes/p12` | gpt-5.6-sol / high | `019f5478-b246-7863-b9ac-80977313ffc5` | dispatched (base `c20c5293`) |
-| P1.3 `ao` CLI skeleton | `m1/p13-ao-cli` | `~/repos/ao-lanes/p13` | gpt-5.6-sol / high | `019f5478-bdb3-75c0-b1c4-4ee5139ae19a` | dispatched (base `c20c5293`) |
+| P1.2 `internal/workflow/profile` | `m1/p12-profile` | `~/repos/ao-lanes/p12` | gpt-5.6-sol / high | `019f5478-b246-7863-b9ac-80977313ffc5` | **merged** |
+| P1.3 `ao` CLI skeleton | `m1/p13-ao-cli` | `~/repos/ao-lanes/p13` | gpt-5.6-sol / high | `019f5478-bdb3-75c0-b1c4-4ee5139ae19a` | **merged** |
+| P1.4 starters + `ao workflow new` | `m1/p14-starters` | `~/repos/ao-lanes/p14` | gpt-5.6-sol / high | _pending_ | authored |
 
 ## Events
 
@@ -120,3 +121,25 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   8-tile cap + clip note, watcher .tmp suppression + polling fallback,
   prompt override path, .picked/LatestUnpickedOptionSet, workdirs under
   dbDir) — all accurate. Report preserved at `reports/P0.4-report.md`.
+- **P1.2 reviewed + merged (`372e2691`).** Strict loader per D6+amendments;
+  compile-time def.Bindings assertion; discriminated per_item_budget
+  (tokens|usd|wall_clock, exactly one); explicit ResolveSecrets with mask
+  list + no-leak formatting test. Claude rider: trim trailing newline on
+  file-sourced secrets — an untrimmed mask ("abc\n") can never match the
+  value as it appears in narrative text, so D2-8 masking would miss it.
+- **P1.3 reviewed + merged (`7e654c88`).** cmd/ao + internal/aocli, offline
+  validate/list per D15/M1 fence; exit codes 0/1/2; bindability status
+  always visible. Claude rider: extracted the config-root fallback chain
+  into internal/appdirs (main.go bootSettingsDir + aocli now share it) —
+  the packet's main*.go fence had correctly forced codex to mirror the
+  chain; two live copies of a platform-subtle resolution invites drift.
+  Follow-up folded into P1.4: `ao workflow validate --project` should load
+  the project profile as def.Bindings now that P1.2 is merged.
+- **P0.1 run2 completed; adjudication in progress.** Registry + discussion
+  migration reviewed (dispatch point exactly after triage.Handle; snapshot
+  under RLock, invoke outside; idempotent unsubscribe; discussion logic
+  byte-preserved). One flag: its first final `make test-race` FAILED with
+  the specific diagnostic lost to codex-side log truncation (honestly
+  disclosed), passed on exact retry (626s). Claude running an independent
+  full test-race in the lane before merge — retry-pass alone is not
+  acceptance evidence for a possible race.
