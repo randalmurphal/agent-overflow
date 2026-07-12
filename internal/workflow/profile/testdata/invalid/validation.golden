@@ -1,0 +1,23 @@
+base-branch.value | profile base_branch | must not be blank
+capacity.name | profile capacity "Bad_Capacity" | name must match [a-z0-9-]+
+capacity.value | profile capacity "Bad_Capacity" | capacity must be at least 1
+check.argv | profile check "Bad_Check" | argv must contain a non-empty executable at index 0
+check.name | profile check "Bad_Check" | name must match [a-z0-9-]+
+command.argv | profile command "Bad_Command" | argv must contain a non-empty executable at index 0
+command.name | profile command "Bad_Command" | name must match [a-z0-9-]+
+disposition.value | profile disposition | must be manual, auto-pr, or auto-merge
+mcp-server.value | profile mcp_servers[0] | server name must not be empty
+mcp-server.duplicate | profile mcp_servers[2] | server "github" is duplicated
+reliability.budget | profile reliability.per_item_budget | exactly one of tokens, usd, or wall_clock must be set
+reliability.budget-tokens | profile reliability.per_item_budget.tokens | must be at least 1
+reliability.budget-usd | profile reliability.per_item_budget.usd | must be a finite value greater than 0
+reliability.budget-wall-clock | profile reliability.per_item_budget.wall_clock | must be greater than 0
+reliability.watchdog | profile reliability.watchdog | must be a time.ParseDuration-compatible string
+secret.name | profile secret "Bad_Source" | name must match [a-z0-9-]+
+secret.source | profile secret "Bad_Source" | source must be env or file
+secret.env | profile secret "env-fields" | env source requires a non-empty env field
+secret.path | profile secret "env-fields" | env source must not set path
+secret.env | profile secret "file-fields" | file source must not set env
+secret.path | profile secret "file-fields" | file source requires a non-empty path field
+worktree-setup.copy | profile worktree_setup.copy[0] | glob must not be empty
+worktree-setup.run | profile worktree_setup.run[0] | argv must contain a non-empty executable at index 0

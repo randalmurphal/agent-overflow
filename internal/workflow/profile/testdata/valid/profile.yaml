@@ -1,0 +1,24 @@
+base_branch: main
+checks:
+  test: [make, test]
+capacities:
+  live-stack: 1
+commands:
+  report-issue: [gh, issue, create, --title, "{{ title }}"]
+reliability:
+  watchdog: 15m
+  per_item_budget:
+    usd: 25
+disposition: auto-pr
+secrets:
+  github-token:
+    source: env
+    env: GITHUB_TOKEN
+  signing-key:
+    source: file
+    path: /run/secrets/signing-key
+mcp_servers: [github, sentry]
+worktree_setup:
+  copy: [.env, config/*.local]
+  run:
+    - [pnpm, install, --frozen-lockfile]

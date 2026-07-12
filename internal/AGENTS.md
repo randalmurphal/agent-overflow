@@ -69,6 +69,7 @@ one closest to what you're touching.
 | `usermessage/` | JSON wire shape persisted in `store.Item.Meta` for user_text rows (`Meta` + `AttachmentMeta`) plus the `Marshal` / `FromItem` / `EncodeDraftSource` helpers every entry point (send, steer, flush-queue dispatch, fork-and-revert, composer-restore) routes through. App-bound sagas in `app_send.go` / `app_draft.go` / `app_flush_queue.go` / `app_steer.go` build inputs and call these to cross the serialisation boundary. |
 | `flushqueue/` | Pure projectors behind the per-thread flush queue: wire shape (`QueuedItem`), inner JSON shape (`Payload`), `triage.QueuedFlushItem → QueuedItem` decoder, and the `queue:<uuid>` id allocator. App-bound register/dispatch/undo sagas stay in `app_flush_queue.go`. |
 | `workflow/def/` | Pure workflow YAML parsing/resolution, embedded authoring schema, interpolation, envelope-schema generation/post-validation, graph dry-run validation, and derived workspace need. |
+| `workflow/profile/` | Pure per-project workflow profile loading/validation, binding lookup, and explicit env/file secret resolution with mask collection. |
 
 ## Responsibility boundary
 

@@ -12,8 +12,8 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P0.3 OS notifications | `m0/p03-os-notifications` | `~/repos/ao-lanes/p03` | gpt-5.6-sol / high | `019f5437-1334-7ad1-9d71-4b04bb7b8439` | PARKED (valid BLOCKED) |
 | P0.4 docs hygiene | `m0/p04-docs-hygiene` | `~/repos/ao-lanes/p04` | gpt-5.6-sol / high | `019f5434-5f98-7ba2-9bea-3b89c2d30656` | **merged** |
 | P1.1 `internal/workflow/def` | `m1/p11-workflow-def` | `~/repos/ao-lanes/p11` | gpt-5.6-sol / high | `019f545e-ab3a-78f2-a7bc-66e4f65a8164` | **merged** |
-| P1.2 `internal/workflow/profile` | `m1/p12-profile` | `~/repos/ao-lanes/p12` | gpt-5.6-sol / high | _pending_ | authored |
-| P1.3 `ao` CLI skeleton | `m1/p13-ao-cli` | `~/repos/ao-lanes/p13` | gpt-5.6-sol / high | _pending_ | authored |
+| P1.2 `internal/workflow/profile` | `m1/p12-profile` | `~/repos/ao-lanes/p12` | gpt-5.6-sol / high | `019f5478-b246-7863-b9ac-80977313ffc5` | dispatched (base `c20c5293`) |
+| P1.3 `ao` CLI skeleton | `m1/p13-ao-cli` | `~/repos/ao-lanes/p13` | gpt-5.6-sol / high | `019f5478-bdb3-75c0-b1c4-4ee5139ae19a` | dispatched (base `c20c5293`) |
 
 ## Events
 
