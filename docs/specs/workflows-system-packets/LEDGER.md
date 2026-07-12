@@ -20,7 +20,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.3 provider envelope wiring | `m2/p23-provider-envelope` | `~/repos/ao-lanes/p23` | gpt-5.6-sol / high | `019f54ee-b30b-72d1-b57e-58f8456c56d0` | **merged** |
 | P2.4 phase runner + app wiring | `m2/p24-phase-runner` | `~/repos/ao-lanes/p24` | gpt-5.6-sol / **xhigh** | `019f553e-41c5-76d1-9bb2-433541267c0b` | **merged** |
 | P2.5 reliability | `m2/p25-reliability` | `~/repos/ao-lanes/p25` | gpt-5.6-sol / **xhigh** | run1 `019f556f-851a-79c0-8910-2c3ba63ff505` (dead on arrival — usage limit); run2 `019f5601-046a-7d11-96ce-38b7df0d666d` | **merged** |
-| P2.6 workspace isolation | `m2/p26-workspace-isolation` | `~/repos/ao-lanes/p26` | gpt-5.6-sol / **xhigh** | `019f5635-3455-7483-9849-9a35a0805bb4` | dispatched (base `cbcf8b63`) |
+| P2.6 workspace isolation | `m2/p26-workspace-isolation` | `~/repos/ao-lanes/p26` | gpt-5.6-sol / **xhigh** | `019f5635-3455-7483-9849-9a35a0805bb4` | **merged** |
 
 ## Events
 
@@ -319,3 +319,38 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   illustrative `runs/<run-id>/` (must appear in codex's report as a noted
   deviation); cleanup policy is plumbing-only — execution must NOT be
   implemented. Log: session scratchpad `p26-codex.log`.
+- **P2.6 reviewed + merged** (`98855a55`) with one reviewer rider. Scope
+  exact (38 files, no forbidden zones); gaming audit clean (existing-test
+  edits were the additive stepMode param plus one strengthened assertion).
+  Load-bearing assumption VERIFIED: v22 already reserved step_mode +
+  worktree_path/branch/base_branch — the packet's v24 authorization rested
+  on a wrong premise; codex answered with an honest no-op `SELECT 1` marker
+  migration, and the rider dropped it (migration history records schema
+  changes, not feature adoption) folding the column assertions into the
+  v22 test. Line-level cores all sound: async Runner.Start futures (entered
+  ack, keyed loop settlement, stale guards on item/phase/attempt/state —
+  every cancel/complete race traced clean, futures always settle exactly
+  once); provisioning state machine per packet (reuse requires all three
+  fields + registered branch match, interrupted recovery on unique prefix,
+  rollback via `git worktree remove --force` verified branch-retaining);
+  ErrSetupFailed scoped to provisioning only; step-mode parks persist the
+  genuine trace, approve executes exactly the recorded decision with
+  completion persisted before intervention for crash safety, reject names
+  alternatives verbatim; artifact confinement double-layered (EvalSymlinks
+  containment + os.Root staged rename), capture failures never touch the
+  outcome; D13 path deviation noted in the report as required; cleanup
+  execution confirmed ABSENT (grep-proof). Bonus adjacent fix accepted:
+  recoverTerminal rebuilds route feedback on advance/loop recovery, fixing
+  a pre-existing P2.2-era crash-window feedback loss. Claude re-ran all six
+  gates independently (build, go-test, workflow -race, frontend check,
+  frontend build, e2e 5/5): green; rider re-verified with build + store
+  suite. Report at `reports/P2.6-report.md`.
+- **Carried forward from P2.6 review (M3):** workflow bound methods that
+  trigger phase starts (WorkflowEnqueueItem, WorkflowSetQueue, resume,
+  answer, gate-resolve) block until the provisioning of the starts they
+  triggered settles — minutes-long RPCs for writing workflows with setup
+  hooks. The future machinery makes fire-and-forget a trivial flip
+  (stop attaching starts to command responses); decide the UI contract in
+  M3. Also accepted interpretation: artifacts capture at the producing
+  phase's successful completion (re-capture on loops), not at workflow
+  end — self-consistent and loop-safe.
