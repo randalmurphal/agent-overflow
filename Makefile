@@ -93,11 +93,15 @@ go-test:
 # is included so the App integration tests (transport server boot,
 # multi-session shutdown, event-emit fan-out) get the race detector
 # too — that's the surface most likely to hide a real-world race. The
-# 600s timeout absorbs the App boot suite, which runs ~380s under
-# -race on slower hosts (WSL, CI runners). Tighten only if you've
+# timeout is per test binary, and every listed package runs in ONE go
+# test invocation, so the root suite competes with triage (~330s under
+# -race) for CPU: the root package alone measures ~590s under -race on
+# an idle WSL host (2026-07, post-harness commit), which is why 600s
+# started flaking. 1800s keeps deadlock protection while absorbing
+# in-invocation parallelism and loaded hosts. Tighten only if you've
 # measured headroom.
 test-race:
-	go test -race -timeout 600s ./internal/transport/... ./internal/triage/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... .
+	go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... .
 
 # playwright install is idempotent and cached (~/.cache/ms-playwright);
 # the Chromium binary backs the frontend browser test project
