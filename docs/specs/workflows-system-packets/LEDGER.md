@@ -15,6 +15,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P1.2 `internal/workflow/profile` | `m1/p12-profile` | `~/repos/ao-lanes/p12` | gpt-5.6-sol / high | `019f5478-b246-7863-b9ac-80977313ffc5` | **merged** |
 | P1.3 `ao` CLI skeleton | `m1/p13-ao-cli` | `~/repos/ao-lanes/p13` | gpt-5.6-sol / high | `019f5478-bdb3-75c0-b1c4-4ee5139ae19a` | **merged** |
 | P1.4 starters + `ao workflow new` | `m1/p14-starters` | `~/repos/ao-lanes/p14` | gpt-5.6-sol / high | `019f548e-a038-7f82-87ab-750b8b20957d` | dispatched (base `e0900405`) |
+| P2.1 workflow persistence | `m2/p21-workflow-persistence` | `~/repos/ao-lanes/p21` | gpt-5.6-sol / high | run1 `019f549e-e74f-7721-98dd-9abcb4fc730b` (dead on arrival) | authored; awaiting usage-window reset |
 
 ## Events
 
@@ -147,3 +148,9 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   lane — green end to end (root package 799s, no FAIL/DATA RACE lines),
   on top of codex's focused -race observer runs and its retry pass. Report
   at `reports/P0.1-report.md`.
+- **Codex usage limit hit 2026-07-12 ~00:35 EDT** (resets 02:02). P2.1's
+  first dispatch died at its first request — zero work consumed; lane p21
+  stays bootstrapped + baselined (full go-build/go-test green) for a fresh
+  dispatch after reset. P1.4 was mid-run at the time and kept working;
+  if it dies on a subsequent request, RESUME its session (context is the
+  asset — tree dirty, work standing) rather than fresh-dispatch.
