@@ -23,6 +23,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.6 workspace isolation | `m2/p26-workspace-isolation` | `~/repos/ao-lanes/p26` | gpt-5.6-sol / **xhigh** | `019f5635-3455-7483-9849-9a35a0805bb4` | **merged** |
 | P2.7 harness workflows | `m2/p27-harness-workflows` | `~/repos/ao-lanes/p27` | gpt-5.6-sol / **xhigh** | `019f566e-6df8-7e71-9f2d-843f7b228a5d` | **merged** |
 | P0.3 rev2 OS notifications | `m3/p03r2-os-notifications` | `~/repos/ao-lanes/p03r2` | gpt-5.6-sol / **xhigh** | `019f56ae-e129-7612-be10-c9c677757ed9` | **merged** `6cb823f4` |
+| P3.1 thread modes + take-over | `m3/p31-thread-modes` | `~/repos/ao-lanes/p31` | gpt-5.6-sol / **xhigh** | run1 `019f56fc-e0c2-78e0-acf4-6979f21e303e` (dead on arrival — usage limit); run2 `019f5714-98e5-77f2-8d0a-cc289a6bf374` | dispatched (base `c3a34919`) |
 
 ## Events
 
@@ -479,3 +480,24 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   Windows toast click-through (incl. cold `-Embedding` launch), real
   macOS presentation/authorization, real Linux desktop click/dismiss.
   Lane pruned.
+- **P3.1 authored (`c3a34919`) + dispatched** into `~/repos/ao-lanes/p31`
+  (branch `m3/p31-thread-modes`, base `c3a34919`). Brief binds: one
+  append-only migration (threads mode CHECK + `work_items.triage_thread_id`);
+  `internal/threadmode` owns the hidden-modes set consumed by all backend
+  listing exclusions; take-over = send-path entry (interrupt → detach →
+  schema-less free-form turns) parking at needs-human(taken-over) with a
+  new typed reason; `WorkflowCompleteTakeover` finalize turn re-attaches
+  the phase schema and routes the envelope through the normal gate path
+  (failed finalize re-parks taken-over, not agent-error); discard+re-run
+  asserts existing `WorkflowResumeItem` from the taken-over park;
+  `WorkflowOpenTriageThread(itemID)` open-or-return with no-internals
+  seeding + immediate kickoff; `WorkflowOpenTriageAgent(projectID)`
+  singleton shell (D4.9 tools deferred to M4); P2.4 carry-forward (a)
+  fixed (settings updates may not clear a live process-N bound).
+  Forbidden: provider/transport/triage internals, disposition, P3.3
+  surface, frontend src. Gates add workflow+threadmode+store -race and
+  GOOS=windows cross-build; full lane baseline green pre-dispatch
+  (8/8 including e2e 11/11). Run1 died on arrival at the codex usage
+  limit (window reset 12:05 PM); run2 banner-verified sol/**xhigh**,
+  session `019f5714-98e5-77f2-8d0a-cc289a6bf374`, no usage-limit errors.
+  Log: session scratchpad `p31-codex-run2.log`.
