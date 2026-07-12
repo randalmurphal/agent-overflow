@@ -681,3 +681,21 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   sweep order/wrap/skip semantics per §5.4; curly-quote sweep on Go
   files (P3.1/P3.2 recurrence). Log: session scratchpad
   `p345-codex.log`.
+
+- **P3.4+P3.5 BLOCKED (valid, packet authoring gap) → Scope Amendment 1
+  → resumed.** Codex ran all eight baselines green, touched zero
+  implementation files, and stopped on a real contradiction I authored:
+  preamble P4 mandates `WorkflowOpenStudioThread` be LocalOnly, but the
+  forbidden-zones allowlist says "NOTHING else" and omits
+  `internal/transport/internalmethods.go`. Amendment ruling (appended to
+  repo + lane packet copies, committed `5af736c0`): internalmethods.go
+  amendable for exactly that one addition; P4 may live in a new
+  `app_workflow_studio.go` + test; extending `app_bindings_test.go`'s
+  registered-methods list is allowed (pre-empting two likely re-bounces
+  spotted during the ruling). Session resumed in place, xhigh restated,
+  log `p345-codex-resume.log`. Third packet running with a BLOCKED on a
+  Claude-side allowlist gap (P3.1 transport, P3.2 obsolete-contract
+  test, now this) — authoring lesson: when a preamble names a
+  cross-cutting requirement (classification, registration test), walk
+  the allowlist against each requirement's file touch-set before
+  dispatch.
