@@ -26,6 +26,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P3.1 thread modes + take-over | `m3/p31-thread-modes` | `~/repos/ao-lanes/p31` | gpt-5.6-sol / **xhigh** | run1 `019f56fc-e0c2-78e0-acf4-6979f21e303e` (dead on arrival — usage limit); run2 `019f5714-98e5-77f2-8d0a-cc289a6bf374` | **merged `3ee937f8`** (workflows-system) |
 | P3.2 disposition + UI data + notifications | `m3/p32-disposition-uidata` | `~/repos/ao-lanes/p32` | gpt-5.6-sol / **xhigh** | `019f576c-444e-70b3-9bd5-0afadd50c1de` | **merged `6d329261`** (workflows-system) |
 | P3.4+P3.5 workflows pane frontend | `m3/p345-workflows-pane` | `~/repos/ao-lanes/p345` | gpt-5.6-sol / **xhigh** | `019f57c7-df07-70c3-b29f-0af4eb40af07` | **merged `a4640596`** (workflows-system) |
+| P3.6 sidebar + exclusions + deep links + remote | `m3/p36-sidebar-remote` | `~/repos/ao-lanes/p36` | gpt-5.6-sol / **xhigh** | `019f583e-5348-7251-a18d-d31e8c6b9c2b` | dispatched |
 
 ## Events
 
@@ -764,3 +765,26 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   horizontal geometry) merged after the battery as `f525265b` —
   conflict-free; frontend + e2e gates re-run post-merge. Lane p345
   pruned.
+
+- **P3.6 authored + dispatched** (`P3.6-sidebar-remote.md`, lane
+  `~/repos/ao-lanes/p36` off workflows-system `d3f6ab32`, sol/xhigh,
+  banner verified, log `p36-codex.log`). Scope: WorkflowsSection +
+  WorkflowsFooter (new always-on `workflowsSidebar.svelte.ts` store —
+  the pane store empties on close, sidebar must not read it), §6.3
+  client-side exclusions (backend `hiddenThreadModesClause` already
+  covers listings; residual = live-event ingestion + pickers/search),
+  §10 deep links (NotificationTarget widened to the two workflow kinds
+  Go already validates), §5.7 review affordance (real companion,
+  sourcePaneId = workflows, newest phase thread; structural surgery =
+  BLOCKED), and the banked §12 decision: exactly five reads go
+  wire-safe (ListItems/GetItem/ListItemCosts/ListDefinitions/
+  GetJobNotes), everything else stays LocalOnly incl. GetBranchBaseDiff
+  (remote diff = disabled affordance), plus a server-derived `remote`
+  flag in the bootstrap manifest sharing the SAME peer-locality
+  predicate as LocalOnly enforcement so the two cannot disagree.
+  Pre-dispatch allowlist walk done against all six requirement
+  clusters (lesson from three straight bounces): added
+  components/review/ + PaneHost seam allowance, workflowRunSignal.ts,
+  and bound sidebar-store init to the always-mounted footer because
+  App.svelte is off-list. Workflow event channels verified already
+  remote-visible (event_visibility.go), so no event work needed.
