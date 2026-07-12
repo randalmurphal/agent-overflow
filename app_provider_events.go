@@ -21,16 +21,17 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 	// "error" — the wire-typed signal for an abnormal exit (signal, crash,
 	// clean exit-0 we didn't initiate). Captured in the closure so the
 	// disconnected branch can distinguish "process died on its own" (auto-
-	// reconnect candidate) from "we asked it to stop" (no-op). Plain bool
-	// — the returned handler is invoked synchronously by a single read-loop
-	// goroutine, so no atomic is needed.
+	// reconnect candidate) from "we asked it to stop" (no-op). Plain bool:
+	// providers serialize delivery to this handler, so no atomic is needed.
+	// Claude calls it from its read loop; Codex also has collaboration workers
+	// and serializes all producers through Session.emitEvent.
 	var deathReported bool
 	// sawInit flips true on the session's first EventInit. An error
 	// turn-complete BEFORE init is the dead-on-arrival signature: the
 	// process failed during startup (Claude rejecting its
 	// --resume-session-at cursor emits result{error_during_execution}
 	// pre-init, then lingers alive) and can never serve a send. Same
-	// single-goroutine justification as deathReported.
+	// serialized-callback justification as deathReported.
 	var sawInit bool
 	return func(evt provider.ProviderEvent) {
 		// Design-mode tools used to be wired through Claude event

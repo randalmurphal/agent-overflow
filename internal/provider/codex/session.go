@@ -64,6 +64,7 @@ type Session struct {
 	mu                 sync.Mutex
 	pending            map[int64]chan json.RawMessage
 	onEvent            func(provider.ProviderEvent)
+	eventMu            sync.Mutex
 	dynamicToolHandler DynamicToolHandler
 	cancel             context.CancelFunc
 	closing            atomic.Bool
@@ -111,8 +112,9 @@ type Session struct {
 	// so the detached-completion path cannot rely on receiverThreadIds
 	// alone.
 	//
-	// agentPathByThread is the inverse index used to delete path mappings
-	// when a close_agent event closes a receiver thread.
+	// childThreadByAgentPath identifies the current owner of a reusable path.
+	// agentPathByThread retains each thread's canonical path so replay from a
+	// superseded child can be rejected and close_agent can clean up safely.
 	//
 	// No heuristic background-tool classifier runs here (invariant 25).
 	// The wire-typed signals for a backgrounded item are
@@ -124,13 +126,20 @@ type Session struct {
 	// surfaces the wire fields; it doesn't project them.
 	childParentByThread       map[string]string
 	childParentByAgentPath    map[string]string
+	childThreadByAgentPath    map[string]string
+	childPathOwnerLive        map[string]bool
 	agentPathByThread         map[string]string
 	agentMetaByThread         map[string]collabReceiverMeta
 	subagentNotificationDedup map[subagentNotificationDedupKey]struct{}
-	rolloutObserverWG         sync.WaitGroup
-	collabMetadataReads       chan struct{}
-	rawToolCallsByID          map[string]rawToolCall
-	waitReceiverIDsByCall     map[string][]string
+	// childLifecycleMu serializes live and recovered child status emission.
+	// The revision rejects a stale thread/read snapshot if a live lifecycle
+	// notification arrived while the recovery request was in flight.
+	childLifecycleMu       sync.Mutex
+	childLifecycleRevision map[string]uint64
+	rolloutObserverWG      sync.WaitGroup
+	collabMetadataReads    chan struct{}
+	rawToolCallsByID       map[string]rawToolCall
+	waitReceiverIDsByCall  map[string][]string
 	// deferredChildWireEvents quarantines notifications and server requests
 	// from provider threads whose spawn ownership has not arrived yet. Codex
 	// MultiAgentV2 starts the child before it emits the parent's canonical
@@ -241,6 +250,21 @@ type Config struct {
 	EventLogger *logging.Logger
 }
 
+// emitEvent preserves the provider callback's serialized-delivery contract
+// even for metadata and history work that completes on collaboration workers.
+func (s *Session) emitEvent(event provider.ProviderEvent) {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	s.emitEventLocked(event)
+}
+
+func (s *Session) emitEventLocked(event provider.ProviderEvent) {
+	if s.onEvent == nil {
+		return
+	}
+	s.onEvent(event)
+}
+
 // NewSession spawns codex app-server, performs the initialize handshake,
 // and starts (or resumes) a thread. Returns after handshake completes.
 func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(provider.ProviderEvent)) (*Session, error) {
@@ -282,6 +306,8 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		readDone:                  make(chan struct{}),
 		childParentByThread:       make(map[string]string),
 		childParentByAgentPath:    make(map[string]string),
+		childThreadByAgentPath:    make(map[string]string),
+		childPathOwnerLive:        make(map[string]bool),
 		agentPathByThread:         make(map[string]string),
 		agentMetaByThread:         make(map[string]collabReceiverMeta),
 		subagentNotificationDedup: make(map[subagentNotificationDedupKey]struct{}),
@@ -368,7 +394,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		Model:     cfg.Model,
 		CWD:       cfg.WorkDir,
 	})
-	s.onEvent(provider.ProviderEvent{
+	s.emitEvent(provider.ProviderEvent{
 		Kind:      provider.EventInit,
 		ThreadID:  threadID,
 		Meta:      meta,
@@ -649,6 +675,8 @@ func (s *Session) Close() error {
 	s.structuredOutputByTurn = nil
 	s.childParentByThread = nil
 	s.childParentByAgentPath = nil
+	s.childThreadByAgentPath = nil
+	s.childPathOwnerLive = nil
 	s.agentPathByThread = nil
 	s.agentMetaByThread = nil
 	s.subagentNotificationDedup = nil
@@ -661,6 +689,9 @@ func (s *Session) Close() error {
 		timer.Stop()
 	}
 	s.deferredChildDeadlines = nil
+	s.childLifecycleMu.Lock()
+	s.childLifecycleRevision = nil
+	s.childLifecycleMu.Unlock()
 	s.collabHistoryQueue = nil
 	s.collabHistoryVisited = nil
 	s.mu.Unlock()

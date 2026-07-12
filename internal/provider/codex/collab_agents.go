@@ -118,21 +118,11 @@ func (s *Session) childLifecycleEvents(method string, params json.RawMessage, pa
 		return nil
 	}
 	if method == "turn/started" {
-		meta, err := json.Marshal(map[string]string{
-			"agent_path": providerThreadID,
-			"status":     "running",
-		})
-		if err != nil {
+		event := s.childStatusEvent(providerThreadID, parentToolUseID, "running")
+		if event == nil {
 			return nil
 		}
-		return []provider.ProviderEvent{{
-			Kind:            provider.EventSubagentStatus,
-			ThreadID:        s.threadID,
-			ItemID:          parentToolUseID,
-			ParentToolUseID: parentToolUseID,
-			Meta:            meta,
-			Timestamp:       time.Now(),
-		}}
+		return []provider.ProviderEvent{*event}
 	}
 	if method != "turn/completed" {
 		return nil
@@ -142,21 +132,11 @@ func (s *Session) childLifecycleEvents(method string, params json.RawMessage, pa
 	if status == "" {
 		return nil
 	}
-	meta, err := json.Marshal(map[string]string{
-		"agent_path": providerThreadID,
-		"status":     status,
-	})
-	if err != nil {
+	event := s.childStatusEvent(providerThreadID, parentToolUseID, status)
+	if event == nil {
 		return nil
 	}
-	events := []provider.ProviderEvent{{
-		Kind:            provider.EventSubagentStatus,
-		ThreadID:        s.threadID,
-		ItemID:          parentToolUseID,
-		ParentToolUseID: parentToolUseID,
-		Meta:            meta,
-		Timestamp:       time.Now(),
-	}}
+	events := []provider.ProviderEvent{*event}
 	if status == "errored" {
 		if message := strings.TrimSpace(completed.Turn.Error.Message); message != "" {
 			events = append(events, provider.ProviderEvent{
@@ -171,6 +151,43 @@ func (s *Session) childLifecycleEvents(method string, params json.RawMessage, pa
 		}
 	}
 	return events
+}
+
+func (s *Session) emitChildLifecycleEvents(method string, params json.RawMessage, parentToolUseID string) {
+	providerThreadID := providerThreadIDFromParams(params)
+	if providerThreadID == "" {
+		return
+	}
+	s.observeAndEmitChildLifecycle(providerThreadID, s.childLifecycleEvents(method, params, parentToolUseID))
+}
+
+// observeAndEmitChildLifecycle invalidates in-flight recovery snapshots for
+// every lifecycle wire observation, even if malformed input normalizes to no
+// event. Event delivery is reserved before releasing childLifecycleMu so a
+// later observation cannot overtake this one, but the external callback never
+// runs while the lifecycle lock is held.
+func (s *Session) observeAndEmitChildLifecycle(providerThreadID string, events []provider.ProviderEvent) {
+	providerThreadID = strings.TrimSpace(providerThreadID)
+	if providerThreadID == "" {
+		return
+	}
+	s.childLifecycleMu.Lock()
+	if s.childLifecycleRevision == nil {
+		s.childLifecycleRevision = make(map[string]uint64)
+	}
+	s.childLifecycleRevision[providerThreadID]++
+	s.eventMu.Lock()
+	s.childLifecycleMu.Unlock()
+	defer s.eventMu.Unlock()
+	for _, event := range events {
+		s.emitEventLocked(event)
+	}
+}
+
+func (s *Session) childLifecycleRevisionForThread(providerThreadID string) uint64 {
+	s.childLifecycleMu.Lock()
+	defer s.childLifecycleMu.Unlock()
+	return s.childLifecycleRevision[strings.TrimSpace(providerThreadID)]
 }
 
 // isUnsafeChildProjectionEvent is the second fail-closed layer after wire
@@ -205,7 +222,11 @@ func isUnsafeChildProjectionEvent(kind provider.EventKind) bool {
 
 func codexSubagentStatusFromTurnCompleted(params json.RawMessage) string {
 	wire := decodeTurnCompletedParams(params)
-	switch wire.Turn.Status {
+	return codexSubagentStatusFromTurnStatus(wire.Turn.Status)
+}
+
+func codexSubagentStatusFromTurnStatus(turnStatus string) string {
+	switch turnStatus {
 	case "completed":
 		return "completed"
 	case "failed":
@@ -217,18 +238,19 @@ func codexSubagentStatusFromTurnCompleted(params json.RawMessage) string {
 	}
 }
 
-func (s *Session) childErrorStatusEvent(providerThreadID, parentToolUseID string) *provider.ProviderEvent {
+func (s *Session) childStatusEvent(providerThreadID, parentToolUseID, status string) *provider.ProviderEvent {
 	providerThreadID = strings.TrimSpace(providerThreadID)
 	parentToolUseID = strings.TrimSpace(parentToolUseID)
-	if providerThreadID == "" || parentToolUseID == "" {
+	status = strings.TrimSpace(status)
+	if providerThreadID == "" || parentToolUseID == "" || status == "" {
 		return nil
 	}
 	meta, err := json.Marshal(map[string]string{
 		"agent_path": providerThreadID,
-		"status":     "errored",
+		"status":     status,
 	})
 	if err != nil {
-		log.Printf("codex: marshal child error status for %s: %v", providerThreadID, err)
+		log.Printf("codex: marshal child status for %s: %v", providerThreadID, err)
 		return nil
 	}
 	return &provider.ProviderEvent{
@@ -239,6 +261,32 @@ func (s *Session) childErrorStatusEvent(providerThreadID, parentToolUseID string
 		Meta:            meta,
 		Timestamp:       time.Now(),
 	}
+}
+
+func (s *Session) childErrorStatusEvent(providerThreadID, parentToolUseID string) *provider.ProviderEvent {
+	return s.childStatusEvent(providerThreadID, parentToolUseID, "errored")
+}
+
+func (s *Session) emitChildErrorStatusEvent(providerThreadID, parentToolUseID string) {
+	event := s.childErrorStatusEvent(providerThreadID, parentToolUseID)
+	if event == nil {
+		s.observeAndEmitChildLifecycle(providerThreadID, nil)
+		return
+	}
+	s.observeAndEmitChildLifecycle(providerThreadID, []provider.ProviderEvent{*event})
+}
+
+func (s *Session) emitRecoveredChildStatus(providerThreadID string, expectedRevision uint64, event provider.ProviderEvent) bool {
+	s.childLifecycleMu.Lock()
+	if s.childLifecycleRevision[providerThreadID] != expectedRevision {
+		s.childLifecycleMu.Unlock()
+		return false
+	}
+	s.eventMu.Lock()
+	s.childLifecycleMu.Unlock()
+	defer s.eventMu.Unlock()
+	s.emitEventLocked(event)
+	return true
 }
 
 func (s *Session) parentToolUseForProviderThread(providerThreadID string) string {
@@ -267,13 +315,9 @@ func (s *Session) providerThreadForAgentPath(agentPath, parentToolUseID string) 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for providerThreadID, candidatePath := range s.agentPathByThread {
-		if candidatePath != agentPath {
-			continue
-		}
-		if parentToolUseID == "" || s.childParentByThread[providerThreadID] == parentToolUseID {
-			return providerThreadID
-		}
+	providerThreadID := s.childThreadByAgentPath[agentPath]
+	if parentToolUseID == "" || s.childParentByThread[providerThreadID] == parentToolUseID {
+		return providerThreadID
 	}
 	return ""
 }
@@ -282,11 +326,22 @@ func (s *Session) setParentToolUseForProviderThread(providerThreadID, parentTool
 	return s.registerChildOwnership("", providerThreadID, "", parentToolUseID)
 }
 
+func (s *Session) registerHistoricalChildOwnership(sourceThreadID, childThreadID, agentPath, parentToolUseID string) bool {
+	return s.registerChildOwnershipWithSource(sourceThreadID, childThreadID, agentPath, parentToolUseID, true)
+}
+
 // registerChildOwnership is the single ownership mutation boundary for live
 // V1/V2 events, raw enrichment, and resume-history reconstruction. A provider
-// thread can never be its own child and an established thread/path edge cannot
-// be remapped to a different launch item by malformed or replayed input.
+// thread can never be its own child and an established thread edge cannot be
+// remapped to a different launch item by malformed or replayed input. Canonical
+// paths are different: Codex may reuse one after an app-server restart, so a
+// newly observed child thread replaces the path's historical lookup while the
+// old thread keeps its immutable launch ownership for late thread-scoped events.
 func (s *Session) registerChildOwnership(sourceThreadID, childThreadID, agentPath, parentToolUseID string) bool {
+	return s.registerChildOwnershipWithSource(sourceThreadID, childThreadID, agentPath, parentToolUseID, false)
+}
+
+func (s *Session) registerChildOwnershipWithSource(sourceThreadID, childThreadID, agentPath, parentToolUseID string, fromHistory bool) bool {
 	sourceThreadID = strings.TrimSpace(sourceThreadID)
 	childThreadID = strings.TrimSpace(childThreadID)
 	agentPath = strings.TrimSpace(agentPath)
@@ -311,22 +366,40 @@ func (s *Session) registerChildOwnership(sourceThreadID, childThreadID, agentPat
 		if s.childParentByAgentPath == nil {
 			s.childParentByAgentPath = make(map[string]string)
 		}
-		if existing := s.childParentByAgentPath[agentPath]; existing != "" && existing != parentToolUseID {
-			log.Printf("codex: reject conflicting child path ownership %q: existing=%s incoming=%s", agentPath, existing, parentToolUseID)
-			return false
-		}
 		if s.agentPathByThread == nil {
 			s.agentPathByThread = make(map[string]string)
+		}
+		if s.childThreadByAgentPath == nil {
+			s.childThreadByAgentPath = make(map[string]string)
+		}
+		if s.childPathOwnerLive == nil {
+			s.childPathOwnerLive = make(map[string]bool)
 		}
 		if existing := s.agentPathByThread[childThreadID]; existing != "" && existing != agentPath {
 			log.Printf("codex: reject conflicting canonical path for child %q: existing=%q incoming=%q", childThreadID, existing, agentPath)
 			return false
 		}
+		if currentThreadID := s.childThreadByAgentPath[agentPath]; currentThreadID != "" && currentThreadID != childThreadID {
+			if s.agentPathByThread[childThreadID] == agentPath {
+				log.Printf("codex: reject replay from superseded child path ownership %q: current=%s replay=%s", agentPath, currentThreadID, childThreadID)
+				return false
+			}
+			if !fromHistory && s.childPathOwnerLive[agentPath] {
+				log.Printf("codex: reject conflicting live child path ownership %q: current=%s incoming=%s", agentPath, currentThreadID, childThreadID)
+				return false
+			}
+		}
 	}
 	s.childParentByThread[childThreadID] = parentToolUseID
 	if agentPath != "" {
-		s.childParentByAgentPath[agentPath] = parentToolUseID
 		s.agentPathByThread[childThreadID] = agentPath
+		currentThreadID := s.childThreadByAgentPath[agentPath]
+		preserveLiveOwner := fromHistory && currentThreadID != "" && s.childPathOwnerLive[agentPath]
+		if !preserveLiveOwner {
+			s.childParentByAgentPath[agentPath] = parentToolUseID
+			s.childThreadByAgentPath[agentPath] = childThreadID
+			s.childPathOwnerLive[agentPath] = !fromHistory
+		}
 	}
 	return true
 }
@@ -419,7 +492,11 @@ func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) 
 	}
 	s.mu.Lock()
 	if agentPath := s.agentPathByThread[providerThreadID]; agentPath != "" {
-		delete(s.childParentByAgentPath, agentPath)
+		if s.childThreadByAgentPath[agentPath] == providerThreadID {
+			delete(s.childParentByAgentPath, agentPath)
+			delete(s.childThreadByAgentPath, agentPath)
+			delete(s.childPathOwnerLive, agentPath)
+		}
 		delete(s.agentPathByThread, providerThreadID)
 	}
 	delete(s.childParentByThread, providerThreadID)
@@ -443,7 +520,7 @@ func (s *Session) emitCollabReceiverMetaUpdate(parentToolUseID string, meta coll
 	if err != nil {
 		return
 	}
-	s.onEvent(provider.ProviderEvent{
+	s.emitEvent(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
 		ThreadID:  s.threadID,
 		ItemID:    parentToolUseID,

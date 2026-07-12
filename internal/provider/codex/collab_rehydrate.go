@@ -31,9 +31,9 @@ type collabHistoryJob struct {
 // rehydrateCollabOwnershipFromThreadResponse rebuilds provider-side routing
 // indexes from the root thread/resume history without replaying the transcript.
 // Historical spawn rows were already projected into SQLite when they first
-// arrived. Descendant histories are inspected with read-only thread/read calls;
-// only an active child is resumed, with turns excluded, to restore its live
-// notification subscription.
+// arrived. Descendant histories are inspected with read-only thread/read calls:
+// active children are resumed to restore live notification subscriptions, and
+// terminal children repair spawn state that AO may have missed while offline.
 func (s *Session) rehydrateCollabOwnershipFromThreadResponse(resp json.RawMessage) {
 	ownerships, err := collabHistoryOwnerships(resp)
 	if err != nil {
@@ -52,7 +52,7 @@ func (s *Session) rehydrateCollabOwnershipFromThreadResponse(resp json.RawMessag
 	s.mu.Unlock()
 	mapped := make([]string, 0, len(ownerships))
 	for _, ownership := range ownerships {
-		if !s.registerChildOwnership(ownership.SourceThreadID, ownership.ChildThreadID, ownership.AgentPath, ownership.ParentItemID) {
+		if !s.registerHistoricalChildOwnership(ownership.SourceThreadID, ownership.ChildThreadID, ownership.AgentPath, ownership.ParentItemID) {
 			continue
 		}
 		s.scheduleCollabMetadataRead(ownership.ChildThreadID, ownership.ParentItemID, ownership.LaunchMeta)
@@ -222,6 +222,7 @@ func (s *Session) runCollabHistoryQueue() {
 }
 
 func (s *Session) inspectCollabHistoryChild(job collabHistoryJob) error {
+	lifecycleRevision := s.childLifecycleRevisionForThread(job.Ownership.ChildThreadID)
 	resp, err := s.readCollabHistoryWithRetry(job.Ownership.ChildThreadID)
 	if err != nil {
 		return err
@@ -229,7 +230,10 @@ func (s *Session) inspectCollabHistoryChild(job collabHistoryJob) error {
 	if !s.collabHistoryGenerationCurrent(job.Generation) {
 		return nil
 	}
-	status := readNestedString(resp, "thread", "status", "type")
+	status, err := s.reconcileCollabHistoryTerminal(job, resp, lifecycleRevision)
+	if err != nil {
+		return err
+	}
 	if status == "active" {
 		if err := s.attachActiveChildWithRetry(job.Ownership.ChildThreadID); err != nil {
 			return err
@@ -241,7 +245,7 @@ func (s *Session) inspectCollabHistoryChild(job collabHistoryJob) error {
 		if !s.collabHistoryGenerationCurrent(job.Generation) {
 			return nil
 		}
-		if !s.registerChildOwnership(ownership.SourceThreadID, ownership.ChildThreadID, ownership.AgentPath, ownership.ParentItemID) {
+		if !s.registerHistoricalChildOwnership(ownership.SourceThreadID, ownership.ChildThreadID, ownership.AgentPath, ownership.ParentItemID) {
 			continue
 		}
 		s.scheduleCollabMetadataRead(ownership.ChildThreadID, ownership.ParentItemID, ownership.LaunchMeta)
@@ -253,6 +257,61 @@ func (s *Session) inspectCollabHistoryChild(job collabHistoryJob) error {
 		s.warnCollabHistory(fmt.Sprintf("Codex child history %s could not be decoded completely", job.Ownership.ChildThreadID), parseErr)
 	}
 	return nil
+}
+
+// reconcileCollabHistoryTerminal repairs a persisted spawn that missed its
+// child-scoped turn/completed notification while AO was disconnected. Active
+// children are deliberately excluded: their latest stored turn may be an older
+// completed turn while a newer turn is still running.
+func (s *Session) reconcileCollabHistoryTerminal(job collabHistoryJob, resp json.RawMessage, expectedLifecycleRevision uint64) (string, error) {
+	providerThreadID := strings.TrimSpace(job.Ownership.ChildThreadID)
+	parentToolUseID := strings.TrimSpace(job.Ownership.ParentItemID)
+	if providerThreadID == "" || parentToolUseID == "" {
+		return "", errors.New("child terminal history job is missing ownership identifiers")
+	}
+	var response struct {
+		Thread struct {
+			ID     string `json:"id"`
+			Status struct {
+				Type string `json:"type"`
+			} `json:"status"`
+			Turns []struct {
+				Status string `json:"status"`
+			} `json:"turns"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(resp, &response); err != nil {
+		return "", fmt.Errorf("decode child terminal history: %w", err)
+	}
+	responseThreadID := strings.TrimSpace(response.Thread.ID)
+	if responseThreadID == "" || responseThreadID != providerThreadID {
+		return "", fmt.Errorf("child terminal history thread mismatch: got %q, want %q", responseThreadID, providerThreadID)
+	}
+	var status string
+	switch response.Thread.Status.Type {
+	case "active":
+		return response.Thread.Status.Type, nil
+	case "systemError":
+		status = "errored"
+	case "idle", "notLoaded":
+		if len(response.Thread.Turns) == 0 {
+			return response.Thread.Status.Type, nil
+		}
+		latestTurn := response.Thread.Turns[len(response.Thread.Turns)-1]
+		status = codexSubagentStatusFromTurnStatus(latestTurn.Status)
+		if status == "" {
+			return response.Thread.Status.Type, nil
+		}
+	default:
+		return "", fmt.Errorf("child terminal history has unknown thread status %q", response.Thread.Status.Type)
+	}
+	event := s.childStatusEvent(providerThreadID, parentToolUseID, status)
+	if event == nil {
+		return "", errors.New("could not construct recovered child terminal status")
+	}
+
+	s.emitRecoveredChildStatus(providerThreadID, expectedLifecycleRevision, *event)
+	return response.Thread.Status.Type, nil
 }
 
 func (s *Session) readCollabHistoryWithRetry(providerThreadID string) (json.RawMessage, error) {
@@ -343,7 +402,7 @@ func (s *Session) warnCollabHistory(message string, err error) {
 	if marshalErr != nil {
 		meta = json.RawMessage(`{"kind":"warning","title":"Subagent history warning"}`)
 	}
-	s.onEvent(provider.ProviderEvent{
+	s.emitEvent(provider.ProviderEvent{
 		Kind:      provider.EventNotification,
 		ThreadID:  s.threadID,
 		Content:   message,

@@ -280,7 +280,7 @@ func (s *Session) readLoop() {
 			// missed emission here leaves the FE working indicator
 			// stuck. MarshalProcessExitMeta tolerates a nil exitErr.
 			exitErr := provider.WaitProcessExitErr(s.proc)
-			s.onEvent(provider.ProviderEvent{
+			s.emitEvent(provider.ProviderEvent{
 				Kind:      provider.EventSessionStatus,
 				ThreadID:  s.threadID,
 				Content:   "error",
@@ -289,7 +289,7 @@ func (s *Session) readLoop() {
 			})
 		}
 
-		s.onEvent(provider.ProviderEvent{
+		s.emitEvent(provider.ProviderEvent{
 			Kind:      provider.EventSessionStatus,
 			ThreadID:  s.threadID,
 			Content:   "disconnected",
@@ -302,7 +302,7 @@ func (s *Session) readLoop() {
 		if err != nil {
 			if err != io.EOF {
 				meta, _ := json.Marshal(map[string]any{"fatal": true})
-				s.onEvent(provider.ProviderEvent{
+				s.emitEvent(provider.ProviderEvent{
 					Kind:      provider.EventError,
 					ThreadID:  s.threadID,
 					Content:   fmt.Sprintf("codex: read error: %v", err),
