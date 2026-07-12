@@ -92,6 +92,9 @@ over stdio.
   documents each as applying "for this turn and subsequent turns"),
   which is how a mid-session model / effort / fast-mode / runtime-mode
   change lands without a session restart (`live_update.go`).
+  `provider.SendOptions.OutputSchema` is sent as `outputSchema` on every
+  schemaed `turn/start`; it is per-turn and never sticky. The final completed
+  agentMessage text is JSON-parsed into the turn-complete structured payload.
   `turn/steer` takes NO config fields, so an in-flight turn can never
   be reconfigured.
 - Sandbox/approval method family — `file/write`, `file/delete`,

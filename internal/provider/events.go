@@ -182,8 +182,11 @@ type ProviderEvent struct {
 	ContentPresent bool            `json:"contentPresent,omitempty"`
 	Role           string          `json:"role,omitempty"`
 	Meta           json.RawMessage `json:"meta,omitempty"`
-	Timestamp      time.Time       `json:"timestamp"`
-	Replace        bool            `json:"replace,omitempty"` // when true, triage upserts instead of inserting
+	// StructuredOutput carries the provider's structured payload on
+	// EventTurnComplete. Nil means the turn produced no usable payload.
+	StructuredOutput json.RawMessage `json:"structuredOutput,omitempty"`
+	Timestamp        time.Time       `json:"timestamp"`
+	Replace          bool            `json:"replace,omitempty"` // when true, triage upserts instead of inserting
 	// ParentToolUseID links a subagent-emitted event to its parent Task-tool
 	// use. Claude surfaces this on assistant messages when the message is
 	// produced inside a Task (Agent) tool call. Empty for top-level events.

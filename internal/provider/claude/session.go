@@ -180,13 +180,16 @@ type pendingApproval struct {
 
 // Config for creating a Claude session.
 type Config struct {
-	Binary          string // default: "claude"
-	Model           string
-	WorkDir         string
-	Resume          string // session ID to resume, empty for new
-	ResumeAt        string // transcript UUID to resume at inside Resume
-	ForkSession     bool
-	SystemPrompt    string
+	Binary       string // default: "claude"
+	Model        string
+	WorkDir      string
+	Resume       string // session ID to resume, empty for new
+	ResumeAt     string // transcript UUID to resume at inside Resume
+	ForkSession  bool
+	SystemPrompt string
+	// OutputSchema is the inline JSON schema passed to --json-schema when
+	// the session process starts. It is sticky for every turn in the session.
+	OutputSchema    string
 	ReasoningEffort string
 	FastMode        bool
 	AllowedTools    []string
@@ -367,6 +370,9 @@ func buildArgs(cfg Config) []string {
 	}
 	if cfg.SystemPrompt != "" {
 		args = append(args, "--system-prompt", cfg.SystemPrompt)
+	}
+	if cfg.OutputSchema != "" {
+		args = append(args, "--json-schema", cfg.OutputSchema)
 	}
 	if cfg.ReasoningEffort != "" {
 		args = append(args, "--effort", cfg.ReasoningEffort)

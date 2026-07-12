@@ -1,12 +1,42 @@
 package claude
 
 import (
+	"bytes"
 	"strconv"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
 )
+
+func TestParseResult_StructuredOutputPresent(t *testing.T) {
+	parser := NewParser()
+	events, err := parser.ParseLine(testThread, []byte(`{"type":"result","subtype":"success","is_error":false,"structured_output":{"status":"done","outputs":{"answer":42}}}`))
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	want := []byte(`{"status":"done","outputs":{"answer":42}}`)
+	if !bytes.Equal(events[0].StructuredOutput, want) {
+		t.Fatalf("StructuredOutput = %s, want %s", events[0].StructuredOutput, want)
+	}
+}
+
+func TestParseResult_StructuredOutputAbsentIsNil(t *testing.T) {
+	parser := NewParser()
+	events, err := parser.ParseLine(testThread, []byte(`{"type":"result","subtype":"success","is_error":false}`))
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if events[0].StructuredOutput != nil {
+		t.Fatalf("StructuredOutput = %s, want nil", events[0].StructuredOutput)
+	}
+}
 
 func TestParseResult_SuccessIsErrorUsesResultFallback(t *testing.T) {
 	parser := NewParser()

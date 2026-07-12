@@ -17,7 +17,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P1.4 starters + `ao workflow new` | `m1/p14-starters` | `~/repos/ao-lanes/p14` | gpt-5.6-sol / high | `019f548e-a038-7f82-87ab-750b8b20957d` | **merged** |
 | P2.1 workflow persistence | `m2/p21-workflow-persistence` | `~/repos/ao-lanes/p21` | gpt-5.6-sol / high | run1 `019f549e-e74f-7721-98dd-9abcb4fc730b` (dead on arrival); run2 `019f54ee-a5e8-7b41-8825-6ccb1b790a3b` | dispatched (base `e89ebc2c`) |
 | P2.2 engine core | — | — | — | _pending_ | authored; gates on P2.1 merge |
-| P2.3 provider envelope wiring | `m2/p23-provider-envelope` | `~/repos/ao-lanes/p23` | gpt-5.6-sol / high | `019f54ee-b30b-72d1-b57e-58f8456c56d0` | dispatched (base `c722ef3e`) |
+| P2.3 provider envelope wiring | `m2/p23-provider-envelope` | `~/repos/ao-lanes/p23` | gpt-5.6-sol / high | `019f54ee-b30b-72d1-b57e-58f8456c56d0` | **merged** |
 
 ## Events
 
@@ -172,3 +172,18 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   aid) — publication is skipped with a stderr note; test updated.
   Claude re-ran full go-build/go-test independently (81 packages ok)
   pre-rider + focused aocli/starters post-rider.
+- **P2.3 reviewed + merged.** Faithful to every D2a verdict: claude
+  session-sticky `--json-schema` via Config.OutputSchema (inline, flag
+  coexistence tested), payload copied from `result.structured_output`
+  (absent → nil, no synthesized error); codex per-turn `outputSchema`
+  via SendOptions with pending-schema state bound to the turn id under
+  either response/notification ordering (latch prevents double-bind;
+  ordering tests both ways), final-agentMessage-wins retention where an
+  invalid FINAL payload deletes an earlier valid one (nil → engine
+  parks), turn-complete consumes state (leak-free), Close clears all.
+  Provider layer transports bytes only — json.Valid syntax check, zero
+  validation (engine authority preserved). Assumptions all sound (Event
+  → ProviderEvent naming adaptation; agentMessage-only source;
+  assistantMessage alias stays transcript-only). No rider needed.
+  Claude re-ran full gates + focused provider -race independently:
+  86 packages ok, no races. Report at `reports/P2.3-report.md`.

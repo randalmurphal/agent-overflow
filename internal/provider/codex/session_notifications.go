@@ -104,6 +104,7 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 		if suppressSubagentNotificationCarrier && evt.Kind == provider.EventUserText {
 			continue
 		}
+		s.observeStructuredOutputCandidate(evt)
 		s.prepareNotificationEvent(evt, method, params, parentToolUseID)
 		if evt.Kind == provider.EventTurnStart && evt.TurnID != "" && !s.claimTurnStart(evt.TurnID) {
 			// The app-server occasionally re-sends turn/started (recovery,
@@ -296,10 +297,12 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 		if evt.TurnID == "" {
 			return
 		}
+		s.bindPendingTurnSchema(evt.TurnID)
 		s.mu.Lock()
 		s.activeTurnID = evt.TurnID
 		s.mu.Unlock()
 	case provider.EventTurnComplete:
+		evt.StructuredOutput = s.takeStructuredOutput(evt.TurnID)
 		if meta, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta); ok && meta != nil {
 			s.attachTurnUsage(meta)
 		}
@@ -311,6 +314,39 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 		s.clearPlanBufferForTurn(evt.TurnID)
 		s.clearTurnStart(evt.TurnID)
 	}
+}
+
+func (s *Session) observeStructuredOutputCandidate(event *provider.ProviderEvent) {
+	if event == nil || event.Kind != provider.EventContentBlockStop || event.ItemType != "agentMessage" || event.TurnID == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, schemaed := s.schemaedTurnIDs[event.TurnID]; !schemaed {
+		return
+	}
+	if s.structuredOutputByTurn == nil {
+		s.structuredOutputByTurn = make(map[string]json.RawMessage)
+	}
+	payload := []byte(event.Content)
+	if !json.Valid(payload) {
+		delete(s.structuredOutputByTurn, event.TurnID)
+		return
+	}
+	s.structuredOutputByTurn[event.TurnID] = json.RawMessage(payload)
+}
+
+func (s *Session) takeStructuredOutput(turnID string) json.RawMessage {
+	if turnID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	payload := s.structuredOutputByTurn[turnID]
+	delete(s.structuredOutputByTurn, turnID)
+	delete(s.schemaedTurnIDs, turnID)
+	return payload
 }
 
 func hasProviderEventKind(events []provider.ProviderEvent, kind provider.EventKind) bool {

@@ -1,6 +1,9 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // SendOptions carries per-turn settings that are not fixed at provider
 // session start. InteractionMode is explicit because Claude's permission mode
@@ -9,6 +12,10 @@ import "context"
 type SendOptions struct {
 	InteractionMode InteractionMode
 	Attachments     []ImageAttachment
+	// OutputSchema is the per-turn structured-output schema. Codex sends it
+	// as outputSchema on every schemaed turn; Claude ignores it because its
+	// output schema is fixed on Config when the session process starts.
+	OutputSchema json.RawMessage
 	// UserMessageUUID, when non-empty, is the message id the app minted at
 	// send time. Providers that let the client supply the user-message id
 	// send it on the wire so the id is known before the provider echoes the

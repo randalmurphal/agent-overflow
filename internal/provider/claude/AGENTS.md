@@ -21,6 +21,10 @@ claude --output-format stream-json --input-format stream-json --verbose
 Session resume uses `--resume <session-ref>`. Fork is replay-based: we
 replay from the chosen turn against a fresh session.
 
+Structured output is session-sticky: `Config.OutputSchema` is passed as
+inline JSON through `--json-schema` when the process starts. Per-turn
+`provider.SendOptions.OutputSchema` is deliberately ignored by Claude.
+
 ## Layout
 
 The parser is split by wire-envelope type so each NDJSON shape has one

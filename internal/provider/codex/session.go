@@ -42,6 +42,14 @@ type Session struct {
 	threadID      string // our internal thread ID
 	codexThreadID string // the Codex app-server's thread ID from thread/start
 	activeTurnID  string // current active turn ID from turn/started; cleared on turn/completed
+	// pendingTurnSchemaKnown/pendingTurnSchemaed bridge Send's per-turn
+	// options to the turn ID supplied by the response or turn/started. The
+	// maps retain only schemaed turns and their latest completed agentMessage;
+	// turn/completed consumes both so state cannot leak across turns.
+	pendingTurnSchemaKnown bool
+	pendingTurnSchemaed    bool
+	schemaedTurnIDs        map[string]struct{}
+	structuredOutputByTurn map[string]json.RawMessage
 	// The turn config block below is re-applied to every turn/start call, so
 	// a mid-session change (ApplyLiveUpdate) takes effect on the next turn
 	// without a process restart. All five are guarded by mu: Send copies
@@ -390,6 +398,9 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		"input":             input,
 		"collaborationMode": codexCollaborationMode(opts.InteractionMode, cfg.Model, cfg.ReasoningEffort),
 	}
+	if len(opts.OutputSchema) > 0 {
+		params["outputSchema"] = opts.OutputSchema
+	}
 	// Per-turn config overrides — Codex's TurnStartParams takes `model`,
 	// `effort`, `serviceTier`, `approvalPolicy`, and `sandboxPolicy` at the
 	// top level, each documented upstream as applying "for this turn and
@@ -418,19 +429,57 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		params["sandboxPolicy"] = sandboxPolicy
 	}
 
+	s.setPendingTurnSchema(len(opts.OutputSchema) > 0)
 	resp, err := s.sendRequest(ctx, "turn/start", params)
 	if err != nil {
+		s.clearPendingTurnSchema()
 		return fmt.Errorf("codex: turn/start: %w", err)
 	}
 
 	turnID := readNestedString(resp, "turn", "id")
 	if turnID != "" {
+		s.bindPendingTurnSchema(turnID)
 		s.mu.Lock()
 		s.activeTurnID = turnID
 		s.mu.Unlock()
 	}
 
 	return nil
+}
+
+func (s *Session) setPendingTurnSchema(schemaed bool) {
+	s.mu.Lock()
+	s.pendingTurnSchemaKnown = true
+	s.pendingTurnSchemaed = schemaed
+	s.mu.Unlock()
+}
+
+func (s *Session) clearPendingTurnSchema() {
+	s.mu.Lock()
+	s.pendingTurnSchemaKnown = false
+	s.pendingTurnSchemaed = false
+	s.mu.Unlock()
+}
+
+func (s *Session) bindPendingTurnSchema(turnID string) {
+	if turnID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.pendingTurnSchemaKnown {
+		return
+	}
+	if s.pendingTurnSchemaed {
+		if s.schemaedTurnIDs == nil {
+			s.schemaedTurnIDs = make(map[string]struct{})
+		}
+		s.schemaedTurnIDs[turnID] = struct{}{}
+	} else {
+		delete(s.schemaedTurnIDs, turnID)
+	}
+	s.pendingTurnSchemaKnown = false
+	s.pendingTurnSchemaed = false
 }
 
 // Steer injects user input into the currently-active turn's
@@ -594,6 +643,10 @@ func (s *Session) Close() error {
 		log.Printf("codex: closing with %d quarantined child events whose spawn ownership never arrived", deferredChildEvents)
 	}
 	s.seenTurnStarts = nil
+	s.pendingTurnSchemaKnown = false
+	s.pendingTurnSchemaed = false
+	s.schemaedTurnIDs = nil
+	s.structuredOutputByTurn = nil
 	s.childParentByThread = nil
 	s.childParentByAgentPath = nil
 	s.agentPathByThread = nil

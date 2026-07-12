@@ -776,6 +776,7 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 		ResumeAt:        "leaf-456",
 		ForkSession:     true,
 		SystemPrompt:    "Be helpful",
+		OutputSchema:    `{"type":"object"}`,
 		PermissionFlags: []string{"--permission-mode", "acceptEdits"},
 		MaxTurns:        5,
 		AllowedTools:    []string{"Bash", "Edit"},
@@ -812,6 +813,9 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 	}
 	if !findFlag("--system-prompt", "Be helpful") {
 		t.Error("missing --system-prompt")
+	}
+	if !findFlag("--json-schema", `{"type":"object"}`) {
+		t.Error("missing --json-schema inline JSON")
 	}
 	if !findFlag("--permission-mode", "acceptEdits") {
 		t.Error("missing --permission-mode acceptEdits")

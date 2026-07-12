@@ -106,8 +106,9 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	}
 
 	events := []provider.ProviderEvent{{
-		Kind:     provider.EventTurnComplete,
-		ThreadID: threadID,
+		Kind:             provider.EventTurnComplete,
+		ThreadID:         threadID,
+		StructuredOutput: raw["structured_output"],
 		TurnComplete: &provider.WireTurnCompleteMeta{
 			StopReason:         stopReason,
 			AssistantMessageID: assistantMessageID,
@@ -238,4 +239,3 @@ func looksInterrupted(s string) bool {
 	lower := strings.ToLower(s)
 	return strings.Contains(lower, "aborted") || strings.Contains(lower, "interrupted")
 }
-
