@@ -120,6 +120,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 		return nil
 	}())
+	if a.workflowEngine != nil {
+		record("close workflow engine", a.workflowEngine.Close())
+	}
 
 	// Step 2: drain the triage reactor. Any Handle() calls currently
 	// running (dispatched from provider sessionEventHandlers) get to

@@ -430,5 +430,8 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.attachments = attachmentStore
 	a.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 	a.configDir = dbDir
+	if err := a.initWorkflowEngine(dbDir); err != nil {
+		return err
+	}
 	return nil
 }

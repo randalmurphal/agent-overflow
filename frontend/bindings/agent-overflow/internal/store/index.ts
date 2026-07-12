@@ -28,5 +28,7 @@ export {
     TimelineCursor,
     Turn,
     UsageBucket,
-    UsageQuery
+    UsageQuery,
+    WorkItem,
+    WorkItemPhase
 } from "./models.js";

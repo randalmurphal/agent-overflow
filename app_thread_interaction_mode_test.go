@@ -75,7 +75,7 @@ func TestUpdateThreadModeRejectsInvalidMode(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	for _, mode := range []string{"nonsense", "DEFAULT", " ", "debate", "PLAN", "design", "discussion"} {
+	for _, mode := range []string{"nonsense", "DEFAULT", " ", "debate", "PLAN", "design", "discussion", "workflow"} {
 		if _, err := app.UpdateThreadMode(thread.ID, mode); err == nil {
 			t.Fatalf("UpdateThreadMode(%q) error = nil, want validation error", mode)
 		} else if !strings.Contains(err.Error(), "invalid mode") {

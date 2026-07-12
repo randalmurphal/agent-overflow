@@ -311,6 +311,31 @@ func TestRetentionDefaultIsThirtyDays(t *testing.T) {
 	}
 }
 
+func TestWorkflowSettingsDefaultsValidationAndSanitization(t *testing.T) {
+	got := NewService(t.TempDir()).Get()
+	if !got.WorkflowQueueActive || got.WorkflowConcurrency != 2 {
+		t.Fatalf("workflow defaults = active:%t concurrency:%d", got.WorkflowQueueActive, got.WorkflowConcurrency)
+	}
+	svc := NewService(t.TempDir())
+	updated, err := svc.Update(map[string]any{"workflowQueueActive": false, "workflowConcurrency": 32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.WorkflowQueueActive || updated.WorkflowConcurrency != 32 {
+		t.Fatalf("workflow settings update = %+v", updated)
+	}
+	if _, err := svc.Update(map[string]any{"workflowConcurrency": 0}); err == nil {
+		t.Fatal("zero workflow concurrency succeeded")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"workflowConcurrency":99}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := NewService(dir).Get().WorkflowConcurrency; got != DefaultSettings.WorkflowConcurrency {
+		t.Fatalf("sanitized workflow concurrency = %d, want %d", got, DefaultSettings.WorkflowConcurrency)
+	}
+}
+
 func TestRetentionUpdateRoundTrip(t *testing.T) {
 	svc := NewService(t.TempDir())
 

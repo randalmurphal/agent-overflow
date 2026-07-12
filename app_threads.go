@@ -53,8 +53,8 @@ type CreateThreadOptions struct {
 // most recently used persisted chat model profile; if no profile exists yet,
 // built-in provider defaults seed the first draft. Mode defaults to chat so
 // every normal new thread starts as a chat thread. "discussion" is rejected
-// as a mode value because discussion threads must come through
-// StartDiscussion (which wires the deliberation channel).
+// as mode values because discussion/workflow threads must come through their
+// owning coordination sagas, which wire channels or phase run records.
 func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("create thread: store unavailable")

@@ -21,6 +21,9 @@ func TestWorkItemPhaseAttemptsAndEffects(t *testing.T) {
 	if err := s.CreateWorkItemPhase(WorkItemPhase{ItemID: "item", PhaseID: "build", Attempt: 2, Status: "running", StartedAt: 40}); err == nil {
 		t.Fatal("duplicate phase attempt succeeded")
 	}
+	if err := s.AttachWorkItemPhaseRun("item", "review", 1, "workflow-thread", "/runs/review/narrative.md"); err != nil {
+		t.Fatalf("attach phase run: %v", err)
+	}
 
 	output := json.RawMessage(`{"status":"done"}`)
 	trace := json.RawMessage(`{"route":"review"}`)
@@ -44,7 +47,8 @@ func TestWorkItemPhaseAttemptsAndEffects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list phases: %v", err)
 	}
-	if len(phases) != 3 || phases[0].Attempt != 1 || phases[1].Attempt != 2 || phases[2].PhaseID != "review" {
+	if len(phases) != 3 || phases[0].Attempt != 1 || phases[1].Attempt != 2 || phases[2].PhaseID != "review" ||
+		phases[2].ThreadID != "workflow-thread" || phases[2].NarrativePath != "/runs/review/narrative.md" {
 		t.Fatalf("phase list = %#v", phases)
 	}
 
@@ -70,5 +74,8 @@ func TestWorkItemPhaseAttemptsAndEffects(t *testing.T) {
 	}
 	if err := s.UpdateWorkItemPhaseIntervention("missing", "build", 1, intervention); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing phase intervention error = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.AttachWorkItemPhaseRun("missing", "build", 1, "thread", "/tmp/narrative.md"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing phase attachment error = %v, want sql.ErrNoRows", err)
 	}
 }

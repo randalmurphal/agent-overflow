@@ -5,6 +5,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as json$0 from "../../../encoding/json/models.js";
+
 /**
  * Attachment is the persisted metadata for a file attached to a thread.
  */
@@ -1429,6 +1433,123 @@ export class UsageQuery {
     static createFrom($$source: any = {}): UsageQuery {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new UsageQuery($$parsedSource as Partial<UsageQuery>);
+    }
+}
+
+/**
+ * WorkItem is one persisted workflow run record.
+ */
+export class WorkItem {
+    "id": string;
+    "projectId": string;
+    "goal": string;
+    "workflowId": string;
+    "workflowScope": string;
+    "snapshot"?: json$0.RawMessage;
+    "state": string;
+    "reason"?: string;
+    "sortPosition": number;
+    "seeds"?: json$0.RawMessage;
+    "stepMode": boolean;
+    "worktreePath"?: string;
+    "branch"?: string;
+    "baseBranch"?: string;
+    "budget"?: json$0.RawMessage;
+    "source": string;
+    "sourceRef"?: string;
+    "createdAt": number;
+    "startedAt"?: number;
+    "endedAt"?: number;
+
+    /** Creates a new WorkItem instance. */
+    constructor($$source: Partial<WorkItem> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("goal" in $$source)) {
+            this["goal"] = "";
+        }
+        if (!("workflowId" in $$source)) {
+            this["workflowId"] = "";
+        }
+        if (!("workflowScope" in $$source)) {
+            this["workflowScope"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("sortPosition" in $$source)) {
+            this["sortPosition"] = 0;
+        }
+        if (!("stepMode" in $$source)) {
+            this["stepMode"] = false;
+        }
+        if (!("source" in $$source)) {
+            this["source"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkItem instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkItem {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkItem($$parsedSource as Partial<WorkItem>);
+    }
+}
+
+/**
+ * WorkItemPhase is one attempt of a workflow phase.
+ */
+export class WorkItemPhase {
+    "itemId": string;
+    "phaseId": string;
+    "attempt": number;
+    "threadId"?: string;
+    "inputEnvelope"?: json$0.RawMessage;
+    "outputEnvelope"?: json$0.RawMessage;
+    "gateTrace"?: json$0.RawMessage;
+    "intervention"?: json$0.RawMessage;
+    "narrativePath"?: string;
+    "status": string;
+    "startedAt": number;
+    "endedAt"?: number;
+
+    /** Creates a new WorkItemPhase instance. */
+    constructor($$source: Partial<WorkItemPhase> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("phaseId" in $$source)) {
+            this["phaseId"] = "";
+        }
+        if (!("attempt" in $$source)) {
+            this["attempt"] = 0;
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkItemPhase instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkItemPhase {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkItemPhase($$parsedSource as Partial<WorkItemPhase>);
     }
 }
 

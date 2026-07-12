@@ -40,7 +40,7 @@ func TestStartupCrashSweepStopsAndParksInterruptedAttempt(t *testing.T) {
 		t.Fatalf("crashed phase was auto-rerun: %+v", h.runner.started())
 	}
 	h.profiles.setCapacity("project", "stack", 1)
-	if err := h.engine.SetQueue(true, 0); err != nil {
+	if err := h.engine.SetQueue(true, 0, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.engine.Enqueue(testItem("after-crash", "project", "crash", 1)); err != nil {
@@ -56,6 +56,46 @@ func TestStartupCrashSweepStopsAndParksInterruptedAttempt(t *testing.T) {
 	}
 	if len(phases) != 1 || phases[0].Status != "parked" || phases[0].EndedAt == 0 {
 		t.Fatalf("crash-swept phase = %+v", phases)
+	}
+}
+
+func TestStartupCrashSweepPreservesPersistedAnswerAttempt(t *testing.T) {
+	workflow := onePhaseWorkflow("answer-crash", nil, []def.Route{{To: "done"}})
+	snapshot, err := json.Marshal(Snapshot{Workflow: workflow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := json.Marshal(PhaseInput{Vars: map[string]any{}, Feedback: &Feedback{Note: "persisted answer"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"answer-crash": workflow}, []string{"project"}, func(database *store.Store) {
+		item := testItem("answer-crash", "project", "answer-crash", 0)
+		if err := database.CreateWorkItem(item); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.UpdateWorkItemRunStart(item.ID, snapshot, "", "", "", 20); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.UpdateWorkItemState(item.ID, string(StateRunning), "", 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.CreateWorkItemPhase(store.WorkItemPhase{
+			ItemID: item.ID, PhaseID: "work", Attempt: 2, ThreadID: "question-thread",
+			InputEnvelope: input, Status: "running", StartedAt: 21,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	requireItemState(t, h.store, "answer-crash", StateNeedsHuman, ReasonInterrupted)
+	phases, err := h.store.ListWorkItemPhases("answer-crash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted PhaseInput
+	if len(phases) != 1 || phases[0].Status != "parked" || json.Unmarshal(phases[0].InputEnvelope, &persisted) != nil ||
+		persisted.Feedback == nil || persisted.Feedback.Note != "persisted answer" {
+		t.Fatalf("crash-swept answer phase = %+v, input=%+v", phases, persisted)
 	}
 }
 

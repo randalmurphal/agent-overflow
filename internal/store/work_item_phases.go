@@ -57,6 +57,20 @@ func (s *Store) CreateWorkItemPhase(phase WorkItemPhase) error {
 	return nil
 }
 
+// AttachWorkItemPhaseRun records the AO thread and system-owned narrative path
+// after the runner creates them for a persisted phase attempt.
+func (s *Store) AttachWorkItemPhaseRun(itemID, phaseID string, attempt int, threadID, narrativePath string) error {
+	result, err := s.db.Exec(
+		`UPDATE work_item_phases SET thread_id = ?, narrative_path = ?
+		 WHERE item_id = ? AND phase_id = ? AND attempt = ?`,
+		threadID, narrativePath, itemID, phaseID, attempt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: attach work item phase run %s/%s/%d: %w", itemID, phaseID, attempt, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: attach work item phase run %s/%s/%d", itemID, phaseID, attempt))
+}
+
 func (s *Store) CompleteWorkItemPhase(itemID, phaseID string, attempt int, outputEnvelope, gateTrace json.RawMessage, status string, endedAt int64) error {
 	result, err := s.db.Exec(
 		`UPDATE work_item_phases

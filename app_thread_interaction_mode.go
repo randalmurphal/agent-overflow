@@ -46,9 +46,9 @@ func (a *App) UpdateThreadMode(threadID string, mode string) (store.Thread, erro
 	if err != nil {
 		return store.Thread{}, err
 	}
-	// Thread *type* is immutable: design and discussion threads stay in
-	// their respective UX shells for life. The agent-mode toggle only swaps
-	// chat ↔ plan within a chat thread.
+	// Thread *type* is immutable: design, discussion, and workflow threads
+	// stay in their respective owning UX/engine paths for life. The agent-mode
+	// toggle only swaps chat ↔ plan within a chat thread.
 	if !threadmode.IsPostCreationMode(current.Mode) {
 		return store.Thread{}, fmt.Errorf("cannot change mode of %q thread (immutable thread type)", current.Mode)
 	}

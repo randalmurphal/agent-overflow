@@ -212,7 +212,7 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 	request := RunRequest{
 		Key:  RunKey{ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt},
 		Item: item.item, Workflow: item.workflow, Phase: phase, Vars: vars,
-		Feedback: cloneFeedback(item.feedback),
+		Feedback: cloneFeedback(item.feedback), PriorThreadID: item.priorThreadID,
 	}
 	item.runnerActive = true
 	err := e.runner.Start(e.ctx, request, func(outcome Outcome) {
@@ -222,6 +222,7 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 		}
 	})
 	item.feedback = nil
+	item.priorThreadID = ""
 	if err != nil {
 		item.runnerActive = false
 		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonAgentError}), err)

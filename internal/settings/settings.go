@@ -236,6 +236,11 @@ type Settings struct {
 	// persistence rationale as ProjectSortMode.
 	UsagePeriod string `json:"usagePeriod"`
 
+	// WorkflowQueueActive and WorkflowConcurrency configure the autonomous
+	// workflow drain. Concurrency is global across projects and bounded 1..32.
+	WorkflowQueueActive bool `json:"workflowQueueActive"`
+	WorkflowConcurrency int  `json:"workflowConcurrency"`
+
 	// Per-client UI view state (pane layout, collapsed projects,
 	// sidebar width, …) deliberately does NOT live here: it moved to
 	// the store's ui_state table, keyed per client, so two clients of
@@ -296,9 +301,11 @@ var DefaultSettings = Settings{
 	ObservabilityEventLogEnabled: false,
 	// 30 days is the default retention window. The cleanup loop reads
 	// this on every tick, so toggling it doesn't require a restart.
-	Retention:       RetentionSettings{Days: 30},
-	ProjectSortMode: "lastActivity",
-	UsagePeriod:     "month",
+	Retention:           RetentionSettings{Days: 30},
+	ProjectSortMode:     "lastActivity",
+	UsagePeriod:         "month",
+	WorkflowQueueActive: true,
+	WorkflowConcurrency: 2,
 }
 
 // HiddenModelsForProvider returns the hidden-model slug list for the

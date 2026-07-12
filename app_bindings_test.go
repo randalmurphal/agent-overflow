@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,19 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 )
+
+func TestWorkflowBoundMethodsRegisteredOnApp(t *testing.T) {
+	appType := reflect.TypeOf((*App)(nil))
+	for _, name := range []string{
+		"WorkflowEnqueueItem", "WorkflowCancelItem", "WorkflowResumeItem",
+		"WorkflowAnswerQuestion", "WorkflowResolveGate", "WorkflowReorderQueue",
+		"WorkflowSetQueue", "WorkflowListItems", "WorkflowGetItem",
+	} {
+		if _, ok := appType.MethodByName(name); !ok {
+			t.Errorf("App method %s is not registered", name)
+		}
+	}
+}
 
 func TestGetSettingsReturnsCurrentServiceState(t *testing.T) {
 	dir := t.TempDir()
@@ -60,6 +74,43 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 	}
 	if reloaded.PaneDensity != "spacious" {
 		t.Fatalf("reloaded PaneDensity = %q, want spacious", reloaded.PaneDensity)
+	}
+}
+
+func TestSettingsRollbackPatchRestoresEveryPatchedField(t *testing.T) {
+	previous := settings.DefaultSettings
+	previous.Theme = "light"
+	previous.WorkflowQueueActive = true
+	previous.WorkflowConcurrency = 2
+	rollback, err := settingsRollbackPatch(previous, map[string]any{
+		"theme": "dark", "workflowQueueActive": false, "workflowConcurrency": 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollback["theme"] != "light" || rollback["workflowQueueActive"] != true || rollback["workflowConcurrency"] != float64(2) {
+		t.Fatalf("rollback patch = %#v", rollback)
+	}
+}
+
+func TestUpdateSettingsRollsBackMixedPatchWhenWorkflowEngineRejects(t *testing.T) {
+	app := newTestAppWithStore(t)
+	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.workflowEngine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	previous := app.currentSettings()
+	if _, err := app.UpdateSettings(map[string]any{
+		"theme": "dark", "workflowQueueActive": false, "workflowConcurrency": 7,
+	}); err == nil {
+		t.Fatal("UpdateSettings with closed workflow engine succeeded")
+	}
+	current := app.currentSettings()
+	if current.Theme != previous.Theme || current.WorkflowQueueActive != previous.WorkflowQueueActive ||
+		current.WorkflowConcurrency != previous.WorkflowConcurrency {
+		t.Fatalf("mixed patch was not rolled back: got %+v, previous %+v", current, previous)
 	}
 }
 

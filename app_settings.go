@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -83,6 +85,18 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 	if err != nil {
 		return settings.Settings{}, err
 	}
+	_, workflowActiveChanged := patch["workflowQueueActive"]
+	_, workflowConcurrencyChanged := patch["workflowConcurrency"]
+	if a.workflowEngine != nil && (workflowActiveChanged || workflowConcurrencyChanged) {
+		if err := a.workflowEngine.SetQueue(next.WorkflowQueueActive, 0, next.WorkflowConcurrency); err != nil {
+			rollback, rollbackBuildErr := settingsRollbackPatch(prev, patch)
+			var rollbackErr error
+			if rollbackBuildErr == nil {
+				_, rollbackErr = a.settings.Update(rollback)
+			}
+			return settings.Settings{}, errors.Join(err, rollbackBuildErr, rollbackErr)
+		}
+	}
 	a.ReconfigureObservability(prev, next)
 	if _, ok := patch["editor"]; ok {
 		// Editor preference touched — drop the cached catalog so the
@@ -106,6 +120,26 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 		}
 	}
 	return next, nil
+}
+
+func settingsRollbackPatch(previous settings.Settings, patch map[string]any) (map[string]any, error) {
+	encoded, err := json.Marshal(previous)
+	if err != nil {
+		return nil, fmt.Errorf("settings rollback: encode previous settings: %w", err)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(encoded, &values); err != nil {
+		return nil, fmt.Errorf("settings rollback: decode previous settings: %w", err)
+	}
+	rollback := make(map[string]any, len(patch))
+	for key := range patch {
+		value, ok := values[key]
+		if !ok {
+			return nil, fmt.Errorf("settings rollback: previous value for %q is unavailable", key)
+		}
+		rollback[key] = value
+	}
+	return rollback, nil
 }
 
 // GetModelsForProvider returns the known model registry for the given provider.

@@ -54,6 +54,9 @@ import * as terminal$0 from "./internal/terminal/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as wsllauncher$0 from "./internal/wsllauncher/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as json$0 from "../encoding/json/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -294,8 +297,8 @@ export function CreateProposedPlanComment(threadID: string, input: store$0.Propo
  * most recently used persisted chat model profile; if no profile exists yet,
  * built-in provider defaults seed the first draft. Mode defaults to chat so
  * every normal new thread starts as a chat thread. "discussion" is rejected
- * as a mode value because discussion threads must come through
- * StartDiscussion (which wires the deliberation channel).
+ * as mode values because discussion/workflow threads must come through their
+ * owning coordination sagas, which wire channels or phase run records.
  */
 export function CreateThread(opts: $models.CreateThreadOptions): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2579322833, opts).then(($result: any) => {
@@ -2882,6 +2885,48 @@ export function Version(): $CancellablePromise<string> {
     return $Call.ByID(2431199839);
 }
 
+export function WorkflowAnswerQuestion(itemID: string, answer: string): $CancellablePromise<void> {
+    return $Call.ByID(4150249282, itemID, answer);
+}
+
+export function WorkflowCancelItem(itemID: string): $CancellablePromise<void> {
+    return $Call.ByID(4158962817, itemID);
+}
+
+export function WorkflowEnqueueItem(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage): $CancellablePromise<store$0.WorkItem> {
+    return $Call.ByID(683191625, projectID, workflowID, workflowScope, goal, seeds).then(($result: any) => {
+        return $$createType100($result);
+    });
+}
+
+export function WorkflowGetItem(itemID: string): $CancellablePromise<$models.WorkflowItemDetail> {
+    return $Call.ByID(70120675, itemID).then(($result: any) => {
+        return $$createType101($result);
+    });
+}
+
+export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
+    return $Call.ByID(3037887964, projectID).then(($result: any) => {
+        return $$createType102($result);
+    });
+}
+
+export function WorkflowReorderQueue(projectID: string, orderedIDs: string[]): $CancellablePromise<void> {
+    return $Call.ByID(1214686266, projectID, orderedIDs);
+}
+
+export function WorkflowResolveGate(itemID: string, decision: string, note: string): $CancellablePromise<void> {
+    return $Call.ByID(3348479803, itemID, decision, note);
+}
+
+export function WorkflowResumeItem(itemID: string, targetPhase: string): $CancellablePromise<void> {
+    return $Call.ByID(3138507556, itemID, targetPhase);
+}
+
+export function WorkflowSetQueue(active: boolean, maxStarts: number, concurrency: number): $CancellablePromise<void> {
+    return $Call.ByID(3526159695, active, maxStarts, concurrency);
+}
+
 /**
  * WriteTerminal writes base64-encoded data to the given terminal. The
  * payload is base64 rather than a raw string so that non-UTF-8 byte
@@ -3001,3 +3046,6 @@ const $$createType96 = $models.WorkspaceFileSearchResult.createFrom;
 const $$createType97 = $models.SubmitPRReviewResult.createFrom;
 const $$createType98 = $models.PRUpdateSubscriptionResult.createFrom;
 const $$createType99 = $models.MCPAuthInitResult.createFrom;
+const $$createType100 = store$0.WorkItem.createFrom;
+const $$createType101 = $models.WorkflowItemDetail.createFrom;
+const $$createType102 = $Create.Array($$createType100);

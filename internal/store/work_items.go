@@ -40,6 +40,10 @@ const workItemColumns = `id, project_id, goal, workflow_id, workflow_scope,
 snapshot, state, reason, sort_position, seeds, step_mode, worktree_path,
 branch, base_branch, budget, source, source_ref, created_at, started_at, ended_at`
 
+const workItemSummaryColumns = `id, project_id, goal, workflow_id, workflow_scope,
+'', state, reason, sort_position, '', step_mode, worktree_path,
+branch, base_branch, '', source, source_ref, created_at, started_at, ended_at`
+
 func jsonText(value json.RawMessage) string {
 	if len(value) == 0 {
 		return ""
@@ -95,7 +99,17 @@ func (s *Store) GetWorkItem(id string) (WorkItem, error) {
 // ListWorkItems returns matching items in queue order. ProjectID is required;
 // an empty States slice includes every state.
 func (s *Store) ListWorkItems(filter WorkItemListFilter) ([]WorkItem, error) {
-	query := `SELECT ` + workItemColumns + ` FROM work_items WHERE project_id = ?`
+	return s.listWorkItems(filter, workItemColumns)
+}
+
+// ListWorkItemSummaries returns matching items without loading snapshot,
+// seeds, or budget payloads. GetWorkItem is the detail path for those fields.
+func (s *Store) ListWorkItemSummaries(filter WorkItemListFilter) ([]WorkItem, error) {
+	return s.listWorkItems(filter, workItemSummaryColumns)
+}
+
+func (s *Store) listWorkItems(filter WorkItemListFilter, columns string) ([]WorkItem, error) {
+	query := `SELECT ` + columns + ` FROM work_items WHERE project_id = ?`
 	args := []any{filter.ProjectID}
 	if len(filter.States) > 0 {
 		query += ` AND state IN (` + strings.TrimRight(strings.Repeat("?,", len(filter.States)), ",") + `)`
@@ -123,6 +137,19 @@ func (s *Store) ListWorkItems(filter WorkItemListFilter) ([]WorkItem, error) {
 		return nil, fmt.Errorf("store: list work items: iterate: %w", err)
 	}
 	return items, nil
+}
+
+// NextWorkItemSortPosition returns the queue position after the project's
+// current maximum without materializing any work items.
+func (s *Store) NextWorkItemSortPosition(projectID string) (int, error) {
+	var position int
+	if err := s.db.QueryRow(
+		`SELECT COALESCE(MAX(sort_position), -1) + 1 FROM work_items WHERE project_id = ?`,
+		projectID,
+	).Scan(&position); err != nil {
+		return 0, fmt.Errorf("store: next work item sort position: %w", err)
+	}
+	return position, nil
 }
 
 // UpdateWorkItemState writes the transition result atomically. Transition

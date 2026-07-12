@@ -38,6 +38,7 @@ import (
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/uitrace"
+	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workspacefiles"
 )
 
@@ -73,12 +74,14 @@ type App struct {
 	// ServiceStartup in desktop mode (app_desktop.go); left nil in the
 	// headless WSL backend, where there is no native window to attach a
 	// dialog to and the frontend uses a download fallback instead.
-	saveDialog savePayloadPicker
-	store      *store.Store
-	git        *gitops.Core
-	gitWatch   *gitwatch.Manager
-	settings   *settings.Service
-	triage     *triage.Router
+	saveDialog     savePayloadPicker
+	store          *store.Store
+	git            *gitops.Core
+	gitWatch       *gitwatch.Manager
+	settings       *settings.Service
+	triage         *triage.Router
+	workflowEngine *engine.Engine
+	workflowRunner *workflowAppRunner
 	// turnObservers fan provider events out to internal App features after
 	// triage handling has been attempted. Each registration lives until its
 	// returned unsubscribe function runs; the built-in discussion observer

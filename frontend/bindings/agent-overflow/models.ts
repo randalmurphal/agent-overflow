@@ -1914,6 +1914,39 @@ export class UpdateAvailability {
     }
 }
 
+export class WorkflowItemDetail {
+    "item": store$0.WorkItem;
+    "phases": store$0.WorkItemPhase[];
+
+    /** Creates a new WorkflowItemDetail instance. */
+    constructor($$source: Partial<WorkflowItemDetail> = {}) {
+        if (!("item" in $$source)) {
+            this["item"] = (new store$0.WorkItem());
+        }
+        if (!("phases" in $$source)) {
+            this["phases"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowItemDetail instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowItemDetail {
+        const $$createField0_0 = $$createType32;
+        const $$createField1_0 = $$createType34;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("item" in $$parsedSource) {
+            $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
+        }
+        if ("phases" in $$parsedSource) {
+            $$parsedSource["phases"] = $$createField1_0($$parsedSource["phases"]);
+        }
+        return new WorkflowItemDetail($$parsedSource as Partial<WorkflowItemDetail>);
+    }
+}
+
 /**
  * WorkspaceFileSearchResult is the RPC shape for workspace-file search hits.
  */
@@ -1941,7 +1974,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType33;
+        const $$createField0_0 = $$createType36;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -2073,5 +2106,8 @@ const $$createType28 = $Create.Array($$createType27);
 const $$createType29 = provider$0.PendingInteractiveRequests.createFrom;
 const $$createType30 = LiveStateTodo.createFrom;
 const $$createType31 = $Create.Nullable($$createType30);
-const $$createType32 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType33 = $Create.Array($$createType32);
+const $$createType32 = store$0.WorkItem.createFrom;
+const $$createType33 = store$0.WorkItemPhase.createFrom;
+const $$createType34 = $Create.Array($$createType33);
+const $$createType35 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType36 = $Create.Array($$createType35);

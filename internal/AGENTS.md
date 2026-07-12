@@ -70,6 +70,7 @@ one closest to what you're touching.
 | `flushqueue/` | Pure projectors behind the per-thread flush queue: wire shape (`QueuedItem`), inner JSON shape (`Payload`), `triage.QueuedFlushItem → QueuedItem` decoder, and the `queue:<uuid>` id allocator. App-bound register/dispatch/undo sagas stay in `app_flush_queue.go`. |
 | `workflow/def/` | Pure workflow YAML parsing/resolution, embedded authoring schema, interpolation, envelope-schema generation/post-validation, ordered runtime gate evaluation/tracing, graph dry-run validation, and derived workspace need. |
 | `workflow/engine/` | Single-goroutine workflow item/phase FSM, queue drain, project-local resource semaphores, teardown, and SQLite startup rebuild/crash sweep. |
+| `workflow/runner/` | Pure helpers for workflow phase prompt assembly, narrative paths, envelope outcomes, and validation retry feedback. |
 | `workflow/profile/` | Pure per-project workflow profile loading/validation, binding lookup, and explicit env/file secret resolution with mask collection. |
 | `workflow/starters/` | Embedded workflow definition sets used as sources by `ao workflow new`; never an engine-visible built-in tier. |
 | `aocli/` | Offline `ao` command routing, config-root discovery, workflow validation/listing, and human/JSON presentation. |

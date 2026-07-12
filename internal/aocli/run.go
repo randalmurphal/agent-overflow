@@ -121,7 +121,7 @@ func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Wr
 		if err != nil {
 			return operationalError(stderr, err)
 		}
-		workflows, err := resolveConfigured(root, *projectSlug)
+		workflows, err := ResolveConfigured(root, *projectSlug)
 		if err != nil {
 			return operationalError(stderr, err)
 		}
@@ -277,12 +277,35 @@ func configuredSources(configRoot, projectSlug string) ([]def.Source, error) {
 	return sources, nil
 }
 
-func resolveConfigured(configRoot, projectSlug string) ([]def.ResolvedWorkflow, error) {
+// ResolveConfigured returns workflows from the same shared/project discovery
+// chain used by the ao CLI.
+func ResolveConfigured(configRoot, projectSlug string) ([]def.ResolvedWorkflow, error) {
 	sources, err := configuredSources(configRoot, projectSlug)
 	if err != nil {
 		return nil, err
 	}
 	return def.Resolve(sources)
+}
+
+// ResolveWorkflow resolves one workflow by its explicit persisted scope.
+func ResolveWorkflow(configRoot, projectSlug, workflowID string, scope def.Scope) (def.ResolvedWorkflow, error) {
+	sources, err := configuredSources(configRoot, projectSlug)
+	if err != nil {
+		return def.ResolvedWorkflow{}, err
+	}
+	if scope != def.ScopeShared && scope != def.ScopeProject {
+		return def.ResolvedWorkflow{}, fmt.Errorf("workflow %q has invalid scope %q", workflowID, scope)
+	}
+	resolved, err := resolveScope(sources, scope)
+	if err != nil {
+		return def.ResolvedWorkflow{}, err
+	}
+	for _, workflow := range resolved {
+		if workflow.Workflow.ID == workflowID {
+			return workflow, nil
+		}
+	}
+	return def.ResolvedWorkflow{}, fmt.Errorf("workflow id %q was not found in %s scope", workflowID, scope)
 }
 
 func listConfigured(configRoot, projectSlug string, bindings def.Bindings) ([]listEntry, error) {

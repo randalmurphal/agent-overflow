@@ -19,7 +19,7 @@ func TestFSMTransitionsPersistBeforeEmitting(t *testing.T) {
 	if err := h.engine.Cancel(item.ID); err == nil {
 		t.Fatal("queued -> cancelled must be rejected")
 	}
-	if err := h.engine.SetQueue(true, 0); err != nil {
+	if err := h.engine.SetQueue(true, 0, 1); err != nil {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, item.ID, StateRunning, "")
@@ -117,7 +117,7 @@ func TestDrainPriorityCapPauseAndProcessBound(t *testing.T) {
 	if err := h.engine.Reorder("project", []string{"middle", "first", "last"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.SetQueue(true, 2); err != nil {
+	if err := h.engine.SetQueue(true, 2, 2); err != nil {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
@@ -131,12 +131,108 @@ func TestDrainPriorityCapPauseAndProcessBound(t *testing.T) {
 	if got := len(h.runner.started()); got != 2 {
 		t.Fatalf("process bound started %d items, want 2", got)
 	}
-	if err := h.engine.SetQueue(true, 0); err != nil {
+	if err := h.engine.SetQueue(true, 0, 2); err != nil {
 		t.Fatal(err)
 	}
 	starts = h.runner.started()
 	if len(starts) != 3 || starts[2].Key.ItemID != "last" {
 		t.Fatalf("resumed starts = %+v", starts)
+	}
+}
+
+func TestAnswerQuestionContinuesPriorThread(t *testing.T) {
+	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	item := testItem("item", "project", "question", 0)
+	if err := h.engine.Enqueue(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Answer(item.ID, "Use the safe option"); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	if len(starts) != 2 || starts[1].Key.Attempt != 2 || starts[1].PriorThreadID != "thread-one" ||
+		starts[1].Feedback == nil || starts[1].Feedback.Note != "Use the safe option" {
+		t.Fatalf("answer runner starts = %+v", starts)
+	}
+	phases, err := h.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input PhaseInput
+	if len(phases) != 2 || json.Unmarshal(phases[1].InputEnvelope, &input) != nil || input.Feedback == nil || input.Feedback.Note != "Use the safe option" {
+		t.Fatalf("answer phase input = %+v, phases=%+v", input, phases)
+	}
+}
+
+func TestAnswerQuestionRejections(t *testing.T) {
+	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	if err := h.engine.Answer("missing", ""); err == nil {
+		t.Fatal("empty answer succeeded")
+	}
+	if err := h.engine.Answer("missing", string(make([]byte, maxHumanNoteBytes+1))); err == nil {
+		t.Fatal("oversized answer succeeded")
+	}
+
+	item := testItem("stuck", "project", "question", 0)
+	if err := h.engine.Enqueue(item); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeStuck, Envelope: stuckEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Answer(item.ID, "answer"); err == nil {
+		t.Fatal("answering a stuck item succeeded")
+	}
+}
+
+func TestAnswerQuestionRejectsWhenConcurrencyIsFull(t *testing.T) {
+	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	question := testItem("question", "project", "question", 0)
+	if err := h.engine.Enqueue(question); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.AttachWorkItemPhaseRun(question.ID, "work", 1, "thread-question", "/tmp/narrative.md"); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, question.ID, Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Enqueue(testItem("blocker", "project", "question", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Answer(question.ID, "answer"); err == nil {
+		t.Fatal("answer succeeded at full concurrency")
+	}
+}
+
+func TestSetQueueUpdatesConcurrency(t *testing.T) {
+	workflow := onePhaseWorkflow("queue", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"queue": workflow}, []string{"project"}, nil)
+	for _, id := range []string{"one", "two"} {
+		if err := h.engine.Enqueue(testItem(id, "project", "queue", 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.engine.SetQueue(true, 0, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(h.runner.started()); got != 2 {
+		t.Fatalf("started %d items, want 2", got)
+	}
+	if err := h.engine.SetQueue(true, 0, 0); err == nil {
+		t.Fatal("invalid concurrency succeeded")
 	}
 }
 

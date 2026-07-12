@@ -4,12 +4,51 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 )
 
 const maxHumanNoteBytes = 16 * 1024
+
+func (e *Engine) answer(itemID, answer string) error {
+	if strings.TrimSpace(answer) == "" {
+		return fmt.Errorf("answer question %q: answer cannot be empty", itemID)
+	}
+	if len(answer) > maxHumanNoteBytes {
+		return fmt.Errorf("answer question %q: answer is %d bytes; maximum is %d", itemID, len(answer), maxHumanNoteBytes)
+	}
+	if e.activeSlots >= e.config.GlobalConcurrency {
+		return fmt.Errorf("answer question %q: global concurrency is full", itemID)
+	}
+	item, err := e.loadParked(itemID)
+	if err != nil {
+		return err
+	}
+	if Reason(item.item.Reason) != ReasonQuestion {
+		return fmt.Errorf("answer question %q: item reason is %q, want %q", itemID, item.item.Reason, ReasonQuestion)
+	}
+	phases, err := e.store.ListWorkItemPhases(itemID)
+	if err != nil {
+		return fmt.Errorf("answer question %q phases: %w", itemID, err)
+	}
+	current, ok := phaseAttempt(phases, item.phaseID, item.attempt)
+	if !ok || current.ThreadID == "" {
+		return fmt.Errorf("answer question %q: parked attempt thread is missing", itemID)
+	}
+	if err := e.transition(item, StateRunning, ""); err != nil {
+		return err
+	}
+	item.feedback = &Feedback{Note: answer}
+	item.priorThreadID = current.ThreadID
+	item.attempt = 0
+	e.items[itemID] = item
+	if err := e.enterPhase(item); err != nil {
+		return err
+	}
+	return e.schedule()
+}
 
 func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note string) error {
 	if choice != HumanApprove && choice != HumanReject {

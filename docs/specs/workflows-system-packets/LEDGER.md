@@ -18,7 +18,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.1 workflow persistence | `m2/p21-workflow-persistence` | `~/repos/ao-lanes/p21` | gpt-5.6-sol / high | run1 `019f549e-e74f-7721-98dd-9abcb4fc730b` (dead on arrival); run2 `019f54ee-a5e8-7b41-8825-6ccb1b790a3b` | **merged** |
 | P2.2 engine core | `m2/p22-engine-core` | `~/repos/ao-lanes/p22` | gpt-5.6-sol / **xhigh** | `019f5505-71d3-73d0-89d5-f5e55b7230a9` | **merged** |
 | P2.3 provider envelope wiring | `m2/p23-provider-envelope` | `~/repos/ao-lanes/p23` | gpt-5.6-sol / high | `019f54ee-b30b-72d1-b57e-58f8456c56d0` | **merged** |
-| P2.4 phase runner + app wiring | `m2/p24-phase-runner` | `~/repos/ao-lanes/p24` | gpt-5.6-sol / **xhigh** | `019f553e-41c5-76d1-9bb2-433541267c0b` | dispatched (base `9adcfcfa`) |
+| P2.4 phase runner + app wiring | `m2/p24-phase-runner` | `~/repos/ao-lanes/p24` | gpt-5.6-sol / **xhigh** | `019f553e-41c5-76d1-9bb2-433541267c0b` | **merged** |
 
 ## Events
 
@@ -259,3 +259,28 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   rows for phase threads get `work_item_id` stamped (budget prerequisite
   found while authoring — without it every budget sum reads zero).
   Dispatch gated on P2.4 merge.
+- **P2.4 reviewed + merged.** No rider needed — first zero-rider app-layer
+  packet. `InlinePrompts` amendment-exact (copies, existing confinement,
+  element-naming errors). Engine Answer additive, mirroring
+  resolveHumanGate's validation order; PriorThreadID forwarded/cleared like
+  feedback; SetQueue concurrency atomic and bounded. Runner lock discipline
+  verified (no order cycle; per-attempt sendMu serializes send vs Stop with
+  recheck-after-acquire; single outcome delivery; unknown-key Stop no-op);
+  its wire signals (fatal/expect_turn_complete meta,
+  EventSessionStatus error/disconnected) all confirmed real. DefinitionSource
+  dry-run-validates BEFORE inlining; workflow threads excluded from every
+  user-facing listing (plain ListThreads feeds only harness internals);
+  schema-less workflow spawn is a hard error; workflow threads skip generic
+  auto-reconnect (engine owns continuation). Existing-test edits strengthen
+  assertions only; codex added the crash-window answer-preservation test
+  unprompted. Claude re-ran the FULL gate set independently (go-build,
+  go-test, workflow -race 44.6s, frontend check/build, e2e 5/5): green.
+  Report at `reports/P2.4-report.md`.
+- **Carried forward from P2.4 review:** (a) a settings-UI workflow update
+  resets a live process-N bound (UpdateSettings forwards maxStarts=0) — M3
+  queue UI should either surface or re-apply the bound; (b) M3's take-over
+  flow must route through the runner's schema registration — a free-form
+  send to a parked workflow thread whose session died errors loudly today
+  (correct but a UX dead-end until the takeover/finalize flow exists);
+  (c) tool-driver and fan-out/join phases: runner rejects with a clear
+  error → agent-error park; needs its own packet post-M2.

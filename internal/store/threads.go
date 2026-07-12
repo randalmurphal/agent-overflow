@@ -95,6 +95,7 @@ var legalModes = map[string]struct{}{
 	"design":     {},
 	"discussion": {},
 	"terminal":   {},
+	"workflow":   {},
 }
 
 var legalEfforts = map[string]struct{}{
@@ -278,7 +279,7 @@ func (s *Store) ListThreads() ([]Thread, error) {
 func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 	rows, err := s.db.Query(
 		`SELECT ` + threadColumns + ` FROM threads
-		 WHERE archived = 0
+		 WHERE archived = 0 AND mode != 'workflow'
 		   AND (
 		       threads.mode = 'terminal'
 		    OR EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id)
@@ -311,7 +312,8 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 // the sidebar so the user can unarchive or permanently delete them.
 func (s *Store) ListArchivedThreads() ([]Thread, error) {
 	rows, err := s.db.Query(
-		`SELECT ` + threadColumns + ` FROM threads WHERE archived = 1 ORDER BY updated_at DESC`,
+		`SELECT ` + threadColumns + ` FROM threads
+		 WHERE archived = 1 AND mode != 'workflow' ORDER BY updated_at DESC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list archived threads: %w", err)
@@ -335,7 +337,7 @@ func (s *Store) ListArchivedThreads() ([]Thread, error) {
 func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
 	rows, err := s.db.Query(
 		`SELECT `+threadColumns+` FROM threads
-		 WHERE project_id = ? AND archived = 0
+		 WHERE project_id = ? AND archived = 0 AND mode != 'workflow'
 		 ORDER BY updated_at DESC`,
 		projectID,
 	)

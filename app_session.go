@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -346,10 +347,17 @@ func (a *App) spawnProviderSession(
 	// guarantees a future third provider can't forget the field and
 	// silently end up immune to the idle reaper.
 	liveness := newSessionLiveness(time.Now())
+	workflowSchema, err := a.workflowSchemaForSession(t)
+	if err != nil {
+		return session{}, err
+	}
 
 	switch t.Provider {
 	case string(provider.Claude):
 		cfg := claude.ConfigFromOptions(opts)
+		if len(workflowSchema) > 0 {
+			cfg.OutputSchema = string(workflowSchema)
+		}
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.Env = a.mergeProviderEnv(cfg.Env)
 		cfg.EventLogger = a.logger
@@ -420,6 +428,20 @@ func (a *App) spawnProviderSession(
 	default:
 		return session{}, fmt.Errorf("unknown provider: %s", t.Provider)
 	}
+}
+
+func (a *App) workflowSchemaForSession(thread store.Thread) (json.RawMessage, error) {
+	if thread.Mode != "workflow" {
+		return nil, nil
+	}
+	if a.workflowRunner == nil {
+		return nil, fmt.Errorf("start workflow session: runner unavailable")
+	}
+	schema := a.workflowRunner.schemaForThread(thread.ID)
+	if len(schema) == 0 {
+		return nil, fmt.Errorf("start workflow session %s: phase output schema is not registered", thread.ID)
+	}
+	return schema, nil
 }
 
 // SendMessageOptions carries send-time composer settings. AttachmentIDs is the

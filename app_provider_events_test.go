@@ -301,6 +301,27 @@ func TestSessionEventHandlerNoAutoReconnectWithoutSessionRef(t *testing.T) {
 	}
 }
 
+func TestAutoReconnectSkipsWorkflowThreads(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-workflow-no-reconnect")
+	thread.Mode = "workflow"
+	thread.SessionRef = "workflow-resume-ref"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	started := false
+	app.stopSessionFn = func(string) error { return nil }
+	app.startSessionFn = func(string) error {
+		started = true
+		return nil
+	}
+	app.attemptAutoReconnect(thread.ID)
+	if started {
+		t.Fatal("workflow thread used generic auto-reconnect")
+	}
+}
+
 // TestAutoReconnectSingleShotAcrossDeathsThroughHandler exercises the
 // loop guard end-to-end: two abnormal-death sequences without an
 // intervening EventTurnStart must produce exactly one ReconnectSession

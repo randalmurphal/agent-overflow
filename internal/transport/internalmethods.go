@@ -190,13 +190,13 @@ var LocalOnlyMethods = map[string]bool{
 	"GetWorkspaceCurrentDiff":        true,
 	// GetDiffContextLines reads arbitrary workspace/ref file content by
 	// line range (review hunk-gap expansion) — same bulk-content class.
-	"GetDiffContextLines": true,
-	"ListDiffReviewComments":         true,
-	"CreateDiffReviewComment":        true,
-	"UpdateDiffReviewComment":        true,
-	"DeleteDiffReviewComment":        true,
-	"MarkDiffReviewCommentsSent":     true,
-	"SendDiffReviewComments":         true,
+	"GetDiffContextLines":        true,
+	"ListDiffReviewComments":     true,
+	"CreateDiffReviewComment":    true,
+	"UpdateDiffReviewComment":    true,
+	"DeleteDiffReviewComment":    true,
+	"MarkDiffReviewCommentsSent": true,
+	"SendDiffReviewComments":     true,
 	// Codex model discovery spawns the configured `codex app-server`
 	// subprocess. It looks like a catalog read, but the local process
 	// execution makes it loopback-only.
@@ -257,6 +257,18 @@ var LocalOnlyMethods = map[string]bool{
 	// methods_gen_test.go's wireSafeMethods, which called out exactly
 	// this re-audit trigger.
 	"PostChannelMessage": true,
+	// Workflow control drives autonomous full-access provider sessions and
+	// persists local queue/settings state. Keep the complete control plane
+	// loopback-only as one session-control class.
+	"WorkflowEnqueueItem":    true,
+	"WorkflowCancelItem":     true,
+	"WorkflowResumeItem":     true,
+	"WorkflowAnswerQuestion": true,
+	"WorkflowResolveGate":    true,
+	"WorkflowReorderQueue":   true,
+	"WorkflowSetQueue":       true,
+	"WorkflowListItems":      true,
+	"WorkflowGetItem":        true,
 	// ConcludeDiscussion is lifecycle control over the deliberation's
 	// provider-session turn loop — same class as PostChannelMessage: it
 	// removes the in-memory FSM (a.deliberations) and can race an

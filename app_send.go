@@ -37,6 +37,7 @@ type sendMessageOptions struct {
 	RevisionSourceCommentIDs     []string
 	RevisionSourceDiffReview     *SourceDiffReview
 	RevisionSourceDiffCommentIDs []string
+	OutputSchema                 json.RawMessage
 }
 
 // userMessageInputs is the projection of fields shared by every
@@ -333,7 +334,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// provider-injected user envelope can never mispair with it.
 	a.triage.RegisterPendingSendExpecting(threadID, userItem.ID, turnIndex, sendUUID)
 
-	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments, sendUUID); err != nil {
+	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments, sendUUID, opts.OutputSchema); err != nil {
 		// Drop the pending-send marker before persisting the error row.
 		// Without this, the marker would still be live when the next AO
 		// send registers a new entry, and a stale wire init for an orphaned
@@ -349,7 +350,9 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// Codex from `turn/started`. There is no synthetic EventTurnStart
 	// emission here.
 
-	a.maybeGenerateThreadTitleWithAttachments(thread, content, hasPriorItems, persistedAttachments)
+	if thread.Mode != "workflow" {
+		a.maybeGenerateThreadTitleWithAttachments(thread, content, hasPriorItems, persistedAttachments)
+	}
 	return userItem, nil
 }
 
@@ -693,6 +696,7 @@ func sendToProvider(
 	mode provider.InteractionMode,
 	attachments []provider.ImageAttachment,
 	userMessageUUID string,
+	outputSchema json.RawMessage,
 ) error {
 	providerSess := sess.providerSession()
 	if providerSess == nil {
@@ -708,5 +712,14 @@ func sendToProvider(
 		InteractionMode: mode,
 		Attachments:     attachments,
 		UserMessageUUID: userMessageUUID,
+		OutputSchema:    outputSchema,
 	})
+}
+
+func (a *App) sendWorkflowMessage(threadID, content string, outputSchema json.RawMessage) error {
+	if len(outputSchema) == 0 {
+		return fmt.Errorf("workflow send: output schema is required")
+	}
+	_, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{OutputSchema: outputSchema})
+	return err
 }

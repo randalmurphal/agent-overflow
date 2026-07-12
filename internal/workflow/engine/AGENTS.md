@@ -19,6 +19,9 @@ resource semaphores, and startup recovery.
   memory; resume loads a parked item from SQLite on demand.
 - The optional process-N queue bound belongs only to `SetQueue` in memory and
   never survives restart.
+- `Answer` is valid only for `needs-human(question)`. It persists a new phase
+  attempt whose feedback carries the answer and sets `RunRequest.PriorThreadID`
+  from the parked attempt so the runner continues the same provider session.
 
 ## Boundaries
 

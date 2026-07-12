@@ -709,6 +709,15 @@ func (p *privilegedApp) StartDiscussion() string                { return "ok" }
 func (p *privilegedApp) StartDiscussionByID() string            { return "ok" }
 func (p *privilegedApp) PostChannelMessage() string             { return "ok" }
 func (p *privilegedApp) ConcludeDiscussion() string             { return "ok" }
+func (p *privilegedApp) WorkflowEnqueueItem() string            { return "ok" }
+func (p *privilegedApp) WorkflowCancelItem() string             { return "ok" }
+func (p *privilegedApp) WorkflowResumeItem() string             { return "ok" }
+func (p *privilegedApp) WorkflowAnswerQuestion() string         { return "ok" }
+func (p *privilegedApp) WorkflowResolveGate() string            { return "ok" }
+func (p *privilegedApp) WorkflowReorderQueue() string           { return "ok" }
+func (p *privilegedApp) WorkflowSetQueue() string               { return "ok" }
+func (p *privilegedApp) WorkflowListItems() string              { return "ok" }
+func (p *privilegedApp) WorkflowGetItem() string                { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string               { return "ok" }
 func (p *privilegedApp) UpdateThreadProvider() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadModel() string              { return "ok" }

@@ -17,9 +17,9 @@ import (
 // the "last used" profile so the chat bar can rehydrate without
 // rebuilding from scratch. No-ops on discussion threads (the
 // deliberation runtime picks its own provider/model per participant)
-// and when the thread carries no usable provider/model pair.
+// or workflow threads and when the thread carries no usable provider/model pair.
 func (a *App) rememberChatModelProfile(thread store.Thread) {
-	if a.store == nil || thread.Mode == "discussion" {
+	if a.store == nil || thread.Mode == "discussion" || thread.Mode == "workflow" {
 		return
 	}
 	if strings.TrimSpace(thread.Provider) == "" || strings.TrimSpace(thread.Model) == "" {

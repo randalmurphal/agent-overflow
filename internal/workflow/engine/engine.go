@@ -15,15 +15,16 @@ import (
 const commandBuffer = 256
 
 type runtimeItem struct {
-	item         store.WorkItem
-	workflow     def.Workflow
-	phaseID      string
-	attempt      int
-	runnerActive bool
-	waiting      bool
-	acquired     []string
-	slot         bool
-	feedback     *Feedback
+	item          store.WorkItem
+	workflow      def.Workflow
+	phaseID       string
+	attempt       int
+	runnerActive  bool
+	waiting       bool
+	acquired      []string
+	slot          bool
+	feedback      *Feedback
+	priorThreadID string
 }
 
 type resourceKey struct {
@@ -64,8 +65,8 @@ func New(store persistence, runner Runner, emitter Emitter, definitions Definiti
 	if store == nil || runner == nil || emitter == nil || definitions == nil || profiles == nil {
 		return nil, fmt.Errorf("workflow engine: store, runner, emitter, definition source, and profile source are required")
 	}
-	if config.GlobalConcurrency < 1 {
-		return nil, fmt.Errorf("workflow engine: global concurrency must be at least 1")
+	if config.GlobalConcurrency < 1 || config.GlobalConcurrency > MaxGlobalConcurrency {
+		return nil, fmt.Errorf("workflow engine: global concurrency must be between 1 and %d", MaxGlobalConcurrency)
 	}
 	return &Engine{
 		store: store, runner: runner, emitter: emitter, definitions: definitions,
@@ -144,6 +145,12 @@ func (e *Engine) Resume(itemID, targetPhase string) error {
 	return e.request(resumeCommand{itemID: itemID, targetPhase: targetPhase})
 }
 
+// Answer continues a question-parked phase as the next turn on its prior
+// workflow thread with the phase schema still attached.
+func (e *Engine) Answer(itemID, answer string) error {
+	return e.request(answerCommand{itemID: itemID, answer: answer})
+}
+
 func (e *Engine) ResolveHumanGate(itemID string, decision HumanDecision, note string) error {
 	return e.request(humanGateCommand{itemID: itemID, decision: decision, note: note})
 }
@@ -152,10 +159,11 @@ func (e *Engine) Reorder(projectID string, orderedIDs []string) error {
 	return e.request(reorderCommand{projectID: projectID, orderedIDs: append([]string(nil), orderedIDs...)})
 }
 
-// SetQueue toggles draining. maxStarts <= 0 means unbounded; a positive value
-// pauses the engine after that many new item starts and is never persisted.
-func (e *Engine) SetQueue(active bool, maxStarts int) error {
-	return e.request(queueCommand{active: active, maxStarts: maxStarts})
+// SetQueue toggles draining and updates live global concurrency. maxStarts <= 0
+// means unbounded; a positive value pauses after that many new item starts and
+// is never persisted.
+func (e *Engine) SetQueue(active bool, maxStarts, concurrency int) error {
+	return e.request(queueCommand{active: active, maxStarts: maxStarts, concurrency: concurrency})
 }
 
 // Sync waits until every command enqueued before it has been processed.
@@ -178,15 +186,21 @@ type resumeCommand struct {
 	targetPhase string
 	reply       chan response
 }
+type answerCommand struct {
+	itemID string
+	answer string
+	reply  chan response
+}
 type reorderCommand struct {
 	projectID  string
 	orderedIDs []string
 	reply      chan response
 }
 type queueCommand struct {
-	active    bool
-	maxStarts int
-	reply     chan response
+	active      bool
+	maxStarts   int
+	concurrency int
+	reply       chan response
 }
 type humanGateCommand struct {
 	itemID   string
@@ -230,6 +244,9 @@ func (e *Engine) request(command any) error {
 	case resumeCommand:
 		command.reply = reply
 		e.commands <- command
+	case answerCommand:
+		command.reply = reply
+		e.commands <- command
 	case reorderCommand:
 		command.reply = reply
 		e.commands <- command
@@ -267,18 +284,26 @@ func (e *Engine) loop() {
 		case resumeCommand:
 			err = e.resume(command.itemID, command.targetPhase)
 			command.reply <- response{err}
+		case answerCommand:
+			err = e.answer(command.itemID, command.answer)
+			command.reply <- response{err}
 		case reorderCommand:
 			err = e.reorder(command.projectID, command.orderedIDs)
 			command.reply <- response{err}
 		case queueCommand:
-			e.queueActive = command.active
-			e.startsRemaining = -1
-			if command.active && command.maxStarts > 0 {
-				e.startsRemaining = command.maxStarts
-			}
-			e.emitQueue()
-			if command.active {
-				err = e.schedule()
+			if command.concurrency < 1 || command.concurrency > MaxGlobalConcurrency {
+				err = fmt.Errorf("set workflow queue: concurrency must be between 1 and %d", MaxGlobalConcurrency)
+			} else {
+				e.config.GlobalConcurrency = command.concurrency
+				e.queueActive = command.active
+				e.startsRemaining = -1
+				if command.active && command.maxStarts > 0 {
+					e.startsRemaining = command.maxStarts
+				}
+				e.emitQueue()
+				if command.active {
+					err = e.schedule()
+				}
 			}
 			command.reply <- response{err}
 		case humanGateCommand:

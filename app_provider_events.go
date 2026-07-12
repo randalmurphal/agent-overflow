@@ -136,6 +136,12 @@ func (a *App) attemptAutoReconnect(threadID string) {
 		log.Printf("app: auto-reconnect lookup failed for %s: %v", threadID, err)
 		return
 	}
+	if thread.Mode == "workflow" {
+		// Workflow attempts are resumed only by the workflow engine. Generic
+		// reconnect would spawn the provider after the runner has already
+		// parked the failed attempt and released its phase schema.
+		return
+	}
 	if thread.SessionRef == "" && thread.PendingForkRef == "" {
 		// Death before the provider published a resume cursor — nothing
 		// to --resume against. Leave the banner up; the user can decide

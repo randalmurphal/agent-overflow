@@ -63,12 +63,13 @@ type RunKey struct {
 
 // RunRequest contains the immutable workflow snapshot plus phase-local input.
 type RunRequest struct {
-	Key      RunKey         `json:"key"`
-	Item     store.WorkItem `json:"item"`
-	Workflow def.Workflow   `json:"workflow"`
-	Phase    def.Phase      `json:"phase"`
-	Vars     map[string]any `json:"vars"`
-	Feedback *Feedback      `json:"feedback,omitempty"`
+	Key           RunKey         `json:"key"`
+	Item          store.WorkItem `json:"item"`
+	Workflow      def.Workflow   `json:"workflow"`
+	Phase         def.Phase      `json:"phase"`
+	Vars          map[string]any `json:"vars"`
+	Feedback      *Feedback      `json:"feedback,omitempty"`
+	PriorThreadID string         `json:"priorThreadId,omitempty"`
 }
 
 type Feedback struct {
@@ -127,6 +128,7 @@ type Config struct {
 
 const MaxSeedBytes = 64 * 1024
 const MaxSnapshotBytes = 4 * 1024 * 1024
+const MaxGlobalConcurrency = 32
 
 // Snapshot is the persisted, immutable run definition.
 type Snapshot struct {

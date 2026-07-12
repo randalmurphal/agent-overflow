@@ -73,6 +73,47 @@ func TestWorkItemCRUDListAndTransitions(t *testing.T) {
 	}
 }
 
+func TestWorkItemSummaryAndNextSortPosition(t *testing.T) {
+	s := newTestStore(t)
+	first := testWorkItem("first", "project-a", "queued", 4, 1)
+	first.Snapshot = json.RawMessage(`{"workflow":{"prompt":"large"}}`)
+	if err := s.CreateWorkItem(first); err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	second := testWorkItem("second", "project-a", "done", 9, 2)
+	if err := s.CreateWorkItem(second); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+
+	summaries, err := s.ListWorkItemSummaries(WorkItemListFilter{ProjectID: "project-a"})
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	if len(summaries) != 2 || summaries[0].ID != "first" || summaries[1].ID != "second" {
+		t.Fatalf("summary order = %#v", summaries)
+	}
+	if len(summaries[0].Snapshot) != 0 || len(summaries[0].Seeds) != 0 || len(summaries[0].Budget) != 0 {
+		t.Fatalf("summary includes heavy payloads: %#v", summaries[0])
+	}
+	if summaries[0].Goal != first.Goal || summaries[0].State != first.State {
+		t.Fatalf("summary lost list fields: %#v", summaries[0])
+	}
+	position, err := s.NextWorkItemSortPosition("project-a")
+	if err != nil {
+		t.Fatalf("next sort position: %v", err)
+	}
+	if position != 10 {
+		t.Fatalf("next sort position = %d, want 10", position)
+	}
+	emptyPosition, err := s.NextWorkItemSortPosition("project-empty")
+	if err != nil {
+		t.Fatalf("empty next sort position: %v", err)
+	}
+	if emptyPosition != 0 {
+		t.Fatalf("empty next sort position = %d, want 0", emptyPosition)
+	}
+}
+
 func TestReorderQueuedWorkItemsIsAtomic(t *testing.T) {
 	s := newTestStore(t)
 	for _, item := range []WorkItem{
