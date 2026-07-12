@@ -716,3 +716,22 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   read set as one coherent decision** — today's all-LocalOnly state
   means remote renders no workflows, acceptable until P3.6. Committed
   `2132c5cf`; resume log `p345-codex-resume2.log`, xhigh restated.
+
+- **P3.4+P3.5 third BLOCKED (valid, mid-implementation) → Scope
+  Amendment 3 → resumed.** Codex had finished the preamble (gates 1–4
+  green) and the frontend work plan, then caught in its own post-task
+  review that `WorkflowListItems` summaries blank `disposition` —
+  making resolved done runs indistinguishable from
+  done-awaiting-disposition, which would wrongly resurrect merged/
+  discarded runs into sweep counts after every reload. It correctly
+  refused all three dishonest outs (contract change outside allowlist,
+  unbounded detail hydration, ship-it-wrong-as-assumption). Ruling
+  adopted its smallest-resolution proposal, upgraded from a boolean to
+  the full receipt: `workItemSummaryColumns` selects the real
+  `disposition` column (compact schema-checked JSON, needed for §4.1
+  history receipts anyway); digest stays detail-only; blanking-contract
+  tests updatable at equal rigor; frontend treats done+empty as
+  awaiting disposition. Committed `0a7617ed`; resume log
+  `p345-codex-resume3.log`, xhigh restated. Notably the run is
+  self-auditing against the packet's binding decisions before its gate
+  battery — the 907k-token session found this, not my review.
