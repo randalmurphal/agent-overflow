@@ -47,10 +47,12 @@ version.
 ## Core Principles
 
 1. **Go is triage + pipe.** No event sourcing, no orchestration engine,
-   no in-memory read models. The one deliberate exception — lightweight
+   no in-memory read models. The deliberate exceptions — lightweight
    coordination when brokering between multiple provider processes and the
-   frontend (deliberation turn tracking, design option flow) — is coordination,
-   not orchestration, and is called out where it lives.
+   frontend (deliberation turn tracking, design option flow), and the workflows
+   engine (`internal/workflow/`; spec: `docs/specs/workflows-system.md`), which
+   sequences phases over the same thread/provider runtime — are coordination,
+   not orchestration, and are called out where they live.
 2. **Provider process is the source of truth during a turn.** Don't duplicate
    its state. Provider session files (`~/.claude/`, `~/.codex/`) are the
    authoritative history for crash recovery.
@@ -193,19 +195,15 @@ and [invariant 25](docs/architecture/invariants.md#25-codex-backgrounding-uses-w
 These are intentional non-goals for the current phase — don't implement
 them without a scope conversation first.
 
-- **Workflow / phase / gate system.** Forge has one
-  (`apps/server/src/workflow/`); the underlying idea ported from
-  `/Users/randy/repos/orc` (see `docs/specs/TASK_TEMPLATES.md`,
-  `docs/decisions/ADR-007-human-gates.md`). Not a core feature for v1.
 - **Auto-updater wiring.** Wails v3 ships a built-in updater
   (https://v3alpha.wails.io/guides/distribution/auto-updates/); enable
   it when we're ready to distribute. No custom updater required.
 - **Correction-needed / mid-turn correction flow.** Forge has this as
   a workflow/gate mechanic (`thread.correct` command, guidance channel
-  projection, `correction-needed` interactive-request kind). Both are
-  tightly coupled to workflows — which we've also deferred — and
-  neither maps to a Codex or Claude wire-level event. t3-code (the
+  projection, `correction-needed` interactive-request kind). Workflows are
+  landing under `docs/specs/workflows-system.md`, but this correction flow
+  remains deferred pending its own scope conversation. It does not map to a
+  Codex or Claude wire-level event, and t3-code (the
   reference UX we most closely track) doesn't implement either.
-  Revisit only if workflows land. If a "let me course-correct
-  mid-turn" primitive is wanted independently, it becomes its own
-  feature, not forge parity.
+  If a "let me course-correct mid-turn" primitive is wanted independently,
+  it becomes its own feature, not forge parity.
