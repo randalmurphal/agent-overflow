@@ -63,15 +63,18 @@ func (s *Session) rememberRawToolCall(item map[string]json.RawMessage) {
 	case "write_stdin":
 		call.ProcessID = readFlexibleString(args, "session_id")
 	case "spawn_agent":
+		isMultiAgentV2 := strings.TrimSpace(readRawString(item, "namespace")) == "collaboration" ||
+			readFlexibleString(args, "task_name") != ""
 		call.AgentType = readFlexibleString(args, "agent_type")
 		call.Model = readFlexibleString(args, "model")
 		call.ReasoningEffort = readFlexibleString(args, "reasoning_effort")
-		call.Prompt = rawSpawnAgentPrompt(args)
+		if !isMultiAgentV2 {
+			call.Prompt = rawSpawnAgentPrompt(args)
+		}
 	case "wait_agent":
 		call.Targets = readFlexibleStringArray(args, "targets")
 	case "send_message", "followup_task":
 		call.Target = readFlexibleString(args, "target")
-		call.Prompt = readFlexibleString(args, "message")
 	case "interrupt_agent":
 		call.Target = readFlexibleString(args, "target")
 	default:
@@ -190,7 +193,6 @@ func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
 			setRawStringArray(input, "requestedReceiverThreadIds", call.Targets)
 		case "send_message", "followup_task":
 			setRawStringIfMissing(input, "tool", "send_input")
-			setRawStringIfMissing(input, "prompt", call.Prompt)
 			setRawStringIfMissing(input, "target", call.Target)
 			setRawStringIfMissing(input, "activityTool", call.Name)
 		}
@@ -389,11 +391,18 @@ func (r *codexProviderEventLogRedactor) redact(direction string, data []byte) []
 	callID := strings.TrimSpace(readRawString(item, "call_id"))
 	switch itemType {
 	case "function_call":
-		if readRawString(item, "name") == "write_stdin" {
+		name := readRawString(item, "name")
+		if name == "write_stdin" {
 			r.rememberWriteStdinCallID(callID)
 			if redactWriteStdinArguments(item) {
 				changed = true
 			}
+		}
+		if isEncryptedCollaborationFunctionCall(item, name) {
+			if !redactFunctionCallMessage(item) {
+				item["arguments"] = json.RawMessage(`"[redacted]"`)
+			}
+			changed = true
 		}
 	case "function_call_output":
 		if r.takeWriteStdinCallID(callID) {
@@ -409,6 +418,42 @@ func (r *codexProviderEventLogRedactor) redact(direction string, data []byte) []
 		return data
 	}
 	return redacted
+}
+
+func isEncryptedCollaborationFunctionCall(item map[string]json.RawMessage, name string) bool {
+	switch name {
+	case "send_message", "followup_task":
+		return true
+	case "spawn_agent":
+		if readRawString(item, "namespace") == "collaboration" {
+			return true
+		}
+		args, _ := decodeFunctionArguments(readRawString(item, "arguments"))
+		return readFlexibleString(args, "task_name") != ""
+	default:
+		return false
+	}
+}
+
+func redactFunctionCallMessage(item map[string]json.RawMessage) bool {
+	args, ok := decodeFunctionArguments(readRawString(item, "arguments"))
+	if !ok {
+		return false
+	}
+	if _, ok := args["message"]; !ok {
+		return false
+	}
+	args["message"] = json.RawMessage(`"[redacted]"`)
+	encodedArgs, err := json.Marshal(args)
+	if err != nil {
+		return false
+	}
+	encodedString, err := json.Marshal(string(encodedArgs))
+	if err != nil {
+		return false
+	}
+	item["arguments"] = encodedString
+	return true
 }
 
 func redactTerminalInteractionStdin(root, params map[string]json.RawMessage, original []byte) []byte {

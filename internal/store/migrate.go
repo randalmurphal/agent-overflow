@@ -825,6 +825,11 @@ CREATE INDEX idx_usage_ledger_thread ON usage_ledger(thread_id, created_at);`,
 
 UPDATE turns SET provider_turn_id = turn_id WHERE turn_id NOT LIKE '%:%';`,
 	},
+	{
+		Version: 21,
+		Name:    "trim_codex_v2_encrypted_collab_prompts",
+		Fix:     trimCodexV2EncryptedCollabPromptsFixup,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

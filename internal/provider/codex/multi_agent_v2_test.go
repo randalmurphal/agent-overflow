@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,7 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 	})
 	s.model = "gpt-5.4"
 	s.reasoningEffort = "high"
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-a","agentNickname":"Socrates","source":{"subAgent":{"threadSpawn":{"parentThreadId":"root-provider-thread","agentPath":"/root/reviewer"}}}}}}`))
 
 	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 
@@ -89,6 +91,8 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 				AgentPath         string                     `json:"agentPath"`
 				Model             string                     `json:"model"`
 				ReasoningEffort   string                     `json:"reasoningEffort"`
+				AgentNickname     string                     `json:"newAgentNickname"`
+				AgentRole         string                     `json:"newAgentRole"`
 				ReceiverThreadIDs []string                   `json:"receiverThreadIds"`
 				AgentsStates      map[string]json.RawMessage `json:"agentsStates"`
 			} `json:"input"`
@@ -98,9 +102,43 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 		}
 		if meta.Input.Tool != "spawn_agent" || meta.Input.AgentPath != "/root/reviewer" ||
 			meta.Input.Model != "gpt-5.4" || meta.Input.ReasoningEffort != "high" ||
+			meta.Input.AgentNickname != "Socrates" || meta.Input.AgentRole != "default" ||
 			len(meta.Input.ReceiverThreadIDs) != 1 || meta.Input.ReceiverThreadIDs[0] != "child-a" ||
 			len(meta.Input.AgentsStates) != 1 {
 			t.Fatalf("normalized meta = %+v", meta.Input)
+		}
+	}
+}
+
+func TestMultiAgentV2NestedSpawnInheritsSourceAgentProfile(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
+		events = append(events, event)
+	})
+	s.model = "gpt-root"
+	s.reasoningEffort = "high"
+	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/reviewer", "spawn-a") {
+		t.Fatal("register source child ownership")
+	}
+	s.rememberCollabProfile("child-a", "gpt-child", "low")
+
+	s.dispatchLine(v2ActivityLine("child-a", "child-turn", "spawn-b", "started", "grandchild-b", "/root/reviewer/worker"))
+
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want nested tool start and completion", events)
+	}
+	for _, event := range events {
+		var meta struct {
+			Input struct {
+				Model           string `json:"model"`
+				ReasoningEffort string `json:"reasoningEffort"`
+			} `json:"input"`
+		}
+		if err := json.Unmarshal(event.Meta, &meta); err != nil {
+			t.Fatalf("decode nested spawn meta: %v", err)
+		}
+		if meta.Input.Model != "gpt-child" || meta.Input.ReasoningEffort != "low" {
+			t.Fatalf("nested profile = %q/%q, want gpt-child/low", meta.Input.Model, meta.Input.ReasoningEffort)
 		}
 	}
 }
@@ -176,7 +214,7 @@ func TestMultiAgentV2ChildCompletionAndInterruptAreScopedStatuses(t *testing.T) 
 	}
 }
 
-func TestMultiAgentV2InteractionUsesRawMessageMetadataWhenAvailable(t *testing.T) {
+func TestMultiAgentV2InteractionDoesNotExposeEncryptedRawMessage(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -184,7 +222,7 @@ func TestMultiAgentV2InteractionUsesRawMessageMetadataWhenAvailable(t *testing.T
 	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 	events = nil
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call","name":"followup_task","call_id":"followup-a","arguments":"{\"target\":\"/root/reviewer\",\"message\":\"Check the retry path\"}"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call","namespace":"collaboration","name":"followup_task","call_id":"followup-a","arguments":"{\"target\":\"/root/reviewer\",\"message\":\"gAAAA-encrypted\"}"}}}`))
 	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "followup-a", "interacted", "child-a", "/root/reviewer"))
 
 	if len(events) != 1 || events[0].Kind != provider.EventToolComplete || events[0].ItemType != "send_input" {
@@ -201,9 +239,36 @@ func TestMultiAgentV2InteractionUsesRawMessageMetadataWhenAvailable(t *testing.T
 	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
 		t.Fatalf("decode interaction meta: %v", err)
 	}
-	if meta.Input.Tool != "send_input" || meta.Input.Prompt != "Check the retry path" ||
+	if meta.Input.Tool != "send_input" || meta.Input.Prompt != "" ||
 		meta.Input.Target != "/root/reviewer" || meta.Input.ActivityTool != "followup_task" {
 		t.Fatalf("interaction meta = %+v", meta.Input)
+	}
+}
+
+func TestMultiAgentV2SpawnDoesNotExposeEncryptedRawMessage(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
+		events = append(events, event)
+	})
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call","namespace":"collaboration","name":"spawn_agent","call_id":"spawn-a","arguments":"{\"task_name\":\"reviewer\",\"message\":\"gAAAA-encrypted\"}"}}}`))
+	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want tool start and completion", events)
+	}
+	for _, event := range events {
+		var meta struct {
+			Input struct {
+				Prompt string `json:"prompt"`
+			} `json:"input"`
+		}
+		if err := json.Unmarshal(event.Meta, &meta); err != nil {
+			t.Fatalf("decode event meta: %v", err)
+		}
+		if meta.Input.Prompt != "" {
+			t.Fatalf("encrypted prompt leaked into event meta: %q", meta.Input.Prompt)
+		}
 	}
 }
 
@@ -310,8 +375,9 @@ func TestMultiAgentV2QuarantineExpiryDropsUnownedNotifications(t *testing.T) {
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
-	if !s.deferChildWireEvent("unknown-child", deferredChildWireEvent{Method: "turn/started", Params: json.RawMessage(`{"threadId":"unknown-child"}`)}) {
-		t.Fatal("defer unknown child notification")
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"unknown-child","agentNickname":"Orphan"}}}`))
+	if len(s.collabReceiverMetadataForThreads([]string{"unknown-child"})) != 1 {
+		t.Fatal("accepted quarantine did not retain child display metadata")
 	}
 	s.expireDeferredChildWireEvents("unknown-child")
 	if s.deferredChildWireCount != 0 || len(s.deferredChildWireEvents) != 0 {
@@ -319,6 +385,28 @@ func TestMultiAgentV2QuarantineExpiryDropsUnownedNotifications(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Kind != provider.EventNotification {
 		t.Fatalf("expiry warning = %+v", events)
+	}
+	if len(s.collabReceiverMetadataForThreads([]string{"unknown-child"})) != 0 {
+		t.Fatal("expired quarantine retained child display metadata")
+	}
+}
+
+func TestMultiAgentV2RejectedQuarantineDoesNotCacheMetadata(t *testing.T) {
+	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
+	providerThreadID := strings.Repeat("x", maxDeferredChildThreadIDBytes+1)
+	line, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "thread/started",
+		"params": map[string]any{
+			"thread": map[string]any{"id": providerThreadID, "agentNickname": "Orphan"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal notification: %v", err)
+	}
+	s.dispatchLine(line)
+	if len(s.collabReceiverMetadataForThreads([]string{providerThreadID})) != 0 {
+		t.Fatal("rejected quarantine retained child display metadata")
 	}
 }
 

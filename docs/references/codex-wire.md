@@ -374,6 +374,9 @@ counters, and child turn completions falsely close the root round. The
 quarantine has per-thread, total-count, byte, and thread-id bounds. If typed
 ownership does not arrive within ten seconds, queued approvals are rejected,
 the child events are dropped, and one visible session warning is emitted.
+The quarantined `thread/started` display metadata is cached separately so the
+event remains unroutable while its nickname can still enrich the spawn row on
+first paint once ownership arrives.
 
 This rule is recursive. A `subAgentActivity kind:"started"` received on a
 known child thread creates a nested edge from that child's spawn item to the
@@ -440,9 +443,16 @@ contains the authoritative receiver thread and a running `agentsStates`
 entry, because successful emission occurs only after core has spawned the
 child. This is a typed authorization signal, not an ordering heuristic.
 
-Raw `spawn_agent` arguments can enrich the row with prompt, role, and model
-during a fresh session. On resume, raw events are unavailable, so
-`agentPath`/`taskName` and `thread/read` metadata provide the stable label.
+MultiAgentV2 marks `spawn_agent.message`, `send_message.message`, and
+`followup_task.message` as encrypted tool parameters. Raw response items carry
+opaque model-service ciphertext in those fields; clients cannot decrypt it and
+must never normalize it as a plaintext prompt. Safe raw fields such as target,
+explicit role, model, and effort may enrich the row. The canonical activity,
+active session profile, cached `thread/started`, and `thread/read` metadata
+provide path, effective model/effort, and display label. Effective profiles are
+tracked per owned provider thread so a nested spawn inherits its immediate
+parent agent's model/effort rather than the AO root's. On resume, raw events
+are unavailable, so those typed sources remain authoritative.
 `thread/resume` history is scanned for both V1 spawn items and V2 started
 activities to rebuild ownership without replaying duplicate transcript rows.
 One bounded, session-cancellable worker follows descendants with read-only

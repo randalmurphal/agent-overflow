@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -211,6 +212,69 @@ func TestV9TrimsCollabAgentStateMessagesMeta(t *testing.T) {
 	}
 	if got := readMeta("i-plain"); got != plainMeta {
 		t.Errorf("v9 must not touch rows without agentsStates:\n got %s\nwant %s", got, plainMeta)
+	}
+}
+
+func TestV21TrimsCodexV2EncryptedCollabPrompts(t *testing.T) {
+	db := migrateThrough(t, 20)
+
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v21', '/v21', 'v21', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode)
+		VALUES ('t-v21', 'p-v21', 'T', 'codex', '/tmp', '', 1, 1, 0, 'chat')`)
+
+	seed := func(id, toolName, summary, meta string, itemIndex int) {
+		t.Helper()
+		mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+			summary, parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+			VALUES (?, 't-v21', 0, ?, 'tool_call', 'assistant', 'completed', ?, '', 0, '', ?, '', ?, 1, 1)`,
+			id, itemIndex, summary, toolName, meta)
+	}
+	seed("spawn-v2", "collab_agent", "collab_agent", `{"input":{"tool":"spawn_agent","activityKind":"started","prompt":"gAAAA-spawn","agentPath":"/root/reviewer"}}`, 0)
+	seed("send-v2", "send_input", "send_input: gAAAA-send…", `{"input":{"tool":"send_input","activityKind":"interacted","prompt":"gAAAA-send","agentPath":"/root/reviewer"}}`, 1)
+	legacy := `{"input":{"tool":"spawn_agent","prompt":"Review the parser"}}`
+	seed("spawn-v1", "collab_agent", "collab_agent: Review the parser", legacy, 2)
+	seed("custom-v2", "send_input", "Sent a follow-up successfully", `{"input":{"tool":"send_input","activityKind":"interacted","prompt":"gAAAA-custom","agentPath":"/root/reviewer"}}`, 3)
+	seed("failed-v2", "send_input", "send_input: gAAAA-failed… (failed)", `{"input":{"tool":"send_input","activityKind":"interacted","prompt":"gAAAA-failed-payload","agentPath":"/root/reviewer"}}`, 4)
+	for index := 0; index < 130; index++ {
+		id := fmt.Sprintf("batched-v2-%03d", index)
+		seed(id, "send_input", "send_input: gAAAA-batched…", `{"input":{"tool":"send_input","activityKind":"interacted","prompt":"gAAAA-batched-payload"}}`, index+5)
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 21)); err != nil {
+		t.Fatalf("apply v21: %v", err)
+	}
+
+	for _, tc := range []struct {
+		id          string
+		wantSummary string
+		wantPrompt  bool
+	}{
+		{id: "spawn-v2", wantSummary: "collab_agent"},
+		{id: "send-v2", wantSummary: "send_input"},
+		{id: "spawn-v1", wantSummary: "collab_agent: Review the parser", wantPrompt: true},
+		{id: "custom-v2", wantSummary: "Sent a follow-up successfully"},
+		{id: "failed-v2", wantSummary: "send_input (failed)"},
+		{id: "batched-v2-129", wantSummary: "send_input"},
+	} {
+		var summary, meta string
+		if err := db.QueryRow(`SELECT summary, meta FROM items WHERE thread_id = 't-v21' AND id = ?`, tc.id).Scan(&summary, &meta); err != nil {
+			t.Fatalf("read %s: %v", tc.id, err)
+		}
+		if summary != tc.wantSummary {
+			t.Errorf("%s summary = %q, want %q", tc.id, summary, tc.wantSummary)
+		}
+		var decoded struct {
+			Input map[string]json.RawMessage `json:"input"`
+		}
+		if err := json.Unmarshal([]byte(meta), &decoded); err != nil {
+			t.Fatalf("decode %s meta: %v", tc.id, err)
+		}
+		_, hasPrompt := decoded.Input["prompt"]
+		if hasPrompt != tc.wantPrompt {
+			t.Errorf("%s prompt presence = %v, want %v", tc.id, hasPrompt, tc.wantPrompt)
+		}
 	}
 }
 

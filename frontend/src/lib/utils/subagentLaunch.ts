@@ -4,6 +4,7 @@ import { displayModelLabel } from './modelLabels';
 
 interface ParsedCodexSubagentInput {
   tool: string;
+  activityKind: string;
   prompt: string;
   model: string;
   reasoningEffort: string;
@@ -53,6 +54,7 @@ function parseCodexSubagentInput(item: Item): ParsedCodexSubagentInput {
   const input = parsedInput(item);
   return {
     tool: stringValue(input, 'tool'),
+    activityKind: stringValue(input, 'activityKind'),
     prompt: stringValue(input, 'prompt'),
     model: stringValue(input, 'model'),
     reasoningEffort: stringValue(input, 'reasoningEffort', 'reasoning_effort'),
@@ -78,6 +80,11 @@ export function codexModelEffortAffix(model: string, reasoningEffort: string): s
   return [modelLabel, reasoningEffort].filter(Boolean).join(' ');
 }
 
+export function codexAgentMetadataAffix(role: string, model: string, reasoningEffort: string): string {
+  const modelLabel = model ? displayModelLabel('codex', model) : '';
+  return [role.trim() || 'default', modelLabel, reasoningEffort.trim()].filter(Boolean).join(' - ');
+}
+
 /**
  * Codex's spawned-child launch is normalized as `toolName=collab_agent`.
  * Other collab controls use dedicated tool names (`send_input`, `wait_agent`,
@@ -92,6 +99,7 @@ export function isCodexSubagentLaunchItem(item: Item): boolean {
 
 export function codexSubagentLaunchInfo(item: Item): CodexSubagentLaunchInfo {
   const parsed = parseCodexSubagentInput(item);
+  const isV2Activity = parsed.activityKind !== '';
   const failedWithoutReceiver =
     parsed.receiverThreadIds.length === 0 &&
     (item.status === 'errored' || item.status === 'killed' || item.status === 'declined');
@@ -102,10 +110,17 @@ export function codexSubagentLaunchInfo(item: Item): CodexSubagentLaunchInfo {
         ? `${parsed.receiverThreadIds.length} agents`
         : 'agent'
   );
-  const roleLabel = codexSubagentDisplayLabel(parsed.agentNickname, parsed.agentRole, fallbackLabel);
-  const modelAffix = codexModelEffortAffix(parsed.model, parsed.reasoningEffort);
+  const identityLabel = parsed.agentNickname.trim() || fallbackLabel;
+  const roleLabel = isV2Activity
+    ? identityLabel
+    : codexSubagentDisplayLabel(parsed.agentNickname, parsed.agentRole, fallbackLabel);
+  const modelAffix = isV2Activity
+    ? codexAgentMetadataAffix(parsed.agentRole, parsed.model, parsed.reasoningEffort)
+    : codexModelEffortAffix(parsed.model, parsed.reasoningEffort);
   return {
     ...parsed,
+    prompt: isV2Activity ? '' : parsed.prompt,
+    agentRole: isV2Activity ? parsed.agentRole || 'default' : parsed.agentRole,
     agentLabel: roleLabel,
     modelAffix,
     title: failedWithoutReceiver ? 'Agent spawn failed' : `Spawned ${roleLabel}`,

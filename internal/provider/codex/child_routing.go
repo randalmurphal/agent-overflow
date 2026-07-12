@@ -122,6 +122,7 @@ func (s *Session) expireDeferredChildWireEvents(providerThreadID string) {
 	if len(events) == 0 || s.closing.Load() {
 		return
 	}
+	s.deleteUnownedAgentMeta(providerThreadID)
 	for _, event := range events {
 		if event.RequestID == "" {
 			continue

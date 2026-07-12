@@ -552,6 +552,11 @@ func preserveCodexWaitLaunchReceiverTargets(launchMeta string, completeMeta json
 		return completeMeta
 	}
 	input["requestedReceiverThreadIds"] = encodedReceivers
+	if receiverAgents := receiverAgentsFromItemMeta(json.RawMessage(launchMeta)); len(receiverAgents) > 0 {
+		if encodedAgents, err := json.Marshal(receiverAgents); err == nil {
+			input["requestedReceiverAgents"] = encodedAgents
+		}
+	}
 	encodedInput, err := json.Marshal(input)
 	if err != nil {
 		return completeMeta
@@ -564,6 +569,78 @@ func preserveCodexWaitLaunchReceiverTargets(launchMeta string, completeMeta json
 	return encodedMeta
 }
 
+// snapshotCodexWaitStartReceivers fills the one gap left by Codex V2's wait
+// events: some wait starts omit their target list even though the parent is
+// visibly waiting on active children. Explicit wire/raw targets always win.
+// The persisted live-launch projection is ordered, reconnect-safe, and already
+// reflects child lifecycle updates, so it is the stable source for this display
+// snapshot. Completion keeps the snapshot through
+// preserveCodexWaitLaunchReceiverTargets above.
+func (r *Router) snapshotCodexWaitStartReceivers(evt provider.ProviderEvent) (provider.ProviderEvent, error) {
+	if evt.ItemType != "wait_agent" || waitMetaHasReceiverTargets(evt.Meta) {
+		return evt, nil
+	}
+	launches, err := r.store.ListLiveCodexSubagentLaunches(evt.ThreadID)
+	if err != nil {
+		return evt, fmt.Errorf("snapshot Codex wait receivers: %w", err)
+	}
+	parentID := eventParentID(evt)
+	seen := make(map[string]struct{})
+	receiverThreadIDs := make([]string, 0, len(launches))
+	receiverAgents := make([]codexWaitReceiverAgent, 0, len(launches))
+	for _, launch := range launches {
+		if strings.TrimSpace(launch.ParentID) != parentID {
+			continue
+		}
+		terminalStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))
+		agentsByThreadID := receiverAgentsByThreadID(json.RawMessage(launch.Meta))
+		for _, receiverThreadID := range receiverThreadIDsFromItemMeta(json.RawMessage(launch.Meta)) {
+			receiverThreadID = strings.TrimSpace(receiverThreadID)
+			if receiverThreadID == "" || strings.TrimSpace(terminalStatuses[receiverThreadID]) != "" {
+				continue
+			}
+			if _, duplicate := seen[receiverThreadID]; duplicate {
+				continue
+			}
+			seen[receiverThreadID] = struct{}{}
+			receiverThreadIDs = append(receiverThreadIDs, receiverThreadID)
+			if agent, ok := agentsByThreadID[receiverThreadID]; ok {
+				receiverAgents = append(receiverAgents, agent)
+			}
+		}
+	}
+	if len(receiverThreadIDs) == 0 {
+		return evt, nil
+	}
+	input := map[string]any{"receiverThreadIds": receiverThreadIDs}
+	if len(receiverAgents) > 0 {
+		input["receiverAgents"] = receiverAgents
+	}
+	extra, err := json.Marshal(map[string]any{"input": input})
+	if err != nil {
+		return evt, fmt.Errorf("encode Codex wait receiver snapshot: %w", err)
+	}
+	merged, ok := mergeJSONObjectBytes(evt.Meta, extra)
+	if !ok {
+		return evt, nil
+	}
+	evt.Meta = merged
+	return evt, nil
+}
+
+func waitMetaHasReceiverTargets(meta json.RawMessage) bool {
+	var decoded struct {
+		Input struct {
+			ReceiverThreadIDs          []string `json:"receiverThreadIds"`
+			RequestedReceiverThreadIDs []string `json:"requestedReceiverThreadIds"`
+		} `json:"input"`
+	}
+	if len(meta) == 0 || json.Unmarshal(meta, &decoded) != nil {
+		return false
+	}
+	return len(decoded.Input.ReceiverThreadIDs) > 0 || len(decoded.Input.RequestedReceiverThreadIDs) > 0
+}
+
 func receiverThreadIDsFromItemMeta(meta json.RawMessage) []string {
 	var decoded struct {
 		Input struct {
@@ -574,6 +651,47 @@ func receiverThreadIDsFromItemMeta(meta json.RawMessage) []string {
 		return nil
 	}
 	return decoded.Input.ReceiverThreadIDs
+}
+
+type codexWaitReceiverAgent struct {
+	ThreadID      string `json:"threadId"`
+	AgentNickname string `json:"agentNickname,omitempty"`
+	AgentRole     string `json:"agentRole,omitempty"`
+}
+
+func receiverAgentsFromItemMeta(meta json.RawMessage) []codexWaitReceiverAgent {
+	var decoded struct {
+		Input struct {
+			ReceiverThreadIDs []string                 `json:"receiverThreadIds"`
+			ReceiverAgents    []codexWaitReceiverAgent `json:"receiverAgents"`
+			NewAgentNickname  string                   `json:"newAgentNickname"`
+			NewAgentRole      string                   `json:"newAgentRole"`
+		} `json:"input"`
+	}
+	if len(meta) == 0 || json.Unmarshal(meta, &decoded) != nil {
+		return nil
+	}
+	agents := decoded.Input.ReceiverAgents
+	if len(agents) == 0 && len(decoded.Input.ReceiverThreadIDs) == 1 &&
+		(strings.TrimSpace(decoded.Input.NewAgentNickname) != "" || strings.TrimSpace(decoded.Input.NewAgentRole) != "") {
+		agents = []codexWaitReceiverAgent{{
+			ThreadID:      decoded.Input.ReceiverThreadIDs[0],
+			AgentNickname: strings.TrimSpace(decoded.Input.NewAgentNickname),
+			AgentRole:     strings.TrimSpace(decoded.Input.NewAgentRole),
+		}}
+	}
+	return agents
+}
+
+func receiverAgentsByThreadID(meta json.RawMessage) map[string]codexWaitReceiverAgent {
+	agentsByThreadID := make(map[string]codexWaitReceiverAgent)
+	for _, agent := range receiverAgentsFromItemMeta(meta) {
+		agent.ThreadID = strings.TrimSpace(agent.ThreadID)
+		if agent.ThreadID != "" {
+			agentsByThreadID[agent.ThreadID] = agent
+		}
+	}
+	return agentsByThreadID
 }
 
 func (r *Router) isCodexThread(threadID string) (bool, error) {
@@ -1482,6 +1600,12 @@ func toolInputPreview(input json.RawMessage) string {
 	}
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(input, &obj) != nil {
+		return ""
+	}
+	// MultiAgentV2 collaboration message arguments are encrypted by the
+	// model service. Canonical activity rows carry activityKind; never let a
+	// stale or future adapter copy of that opaque value enter item summaries.
+	if _, isV2Activity := obj["activityKind"]; isV2Activity {
 		return ""
 	}
 	for _, key := range []string{"command", "file_path", "path", "pattern", "query", "url", "description", "prompt"} {

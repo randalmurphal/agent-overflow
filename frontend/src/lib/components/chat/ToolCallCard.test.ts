@@ -396,11 +396,20 @@ describe("<ToolCallCard> header dispatcher", () => {
       kind: "tool_call",
       status: "running",
       toolName: "send_input",
+      meta: JSON.stringify({
+        input: {
+          tool: "send_input",
+          activityKind: "interacted",
+          prompt: "gAAAA-encrypted",
+        },
+      }),
     });
 
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    expect(getByTestId("collab-tool-row").textContent).toContain("Sent input");
+    const text = getByTestId("collab-tool-row").textContent ?? "";
+    expect(text).toContain("Sent input");
+    expect(text).not.toContain("gAAAA");
   });
 
   it("renders Codex spawn_agent as a compact spawned row", async () => {
@@ -437,7 +446,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByTestId("subagent-group")).toBeNull();
   });
 
-  it("uses the MultiAgentV2 task path when spawn nickname metadata is hidden", async () => {
+  it("renders MultiAgentV2 spawn metadata on one line without encrypted prompt output", async () => {
     const pane = await buildPane(makeThread({ provider: "codex" }));
     const item = makeItem({
       id: "spawn-v2",
@@ -447,15 +456,25 @@ describe("<ToolCallCard> header dispatcher", () => {
       meta: JSON.stringify({
         input: {
           tool: "spawn_agent",
+          activityKind: "started",
           taskName: "/root/review_security",
+          prompt: "gAAAA-encrypted",
+          model: "gpt-5.6-sol",
+          reasoningEffort: "high",
           receiverThreadIds: ["child-v2"],
+          newAgentNickname: "Socrates",
+          newAgentRole: "default",
         },
       }),
     });
 
-    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const { getByTestId, queryByText } = render(ToolCallCard, { props: { pane, item } });
+    const row = getByTestId("collab-tool-row");
 
-    expect(getByTestId("collab-tool-row").textContent).toContain("Spawned review_security");
+    expect(row.textContent).toContain("Spawned Socrates");
+    expect(row.textContent).toContain("(default - GPT 5.6 Sol - high)");
+    expect(row.textContent).not.toContain("gAAAA");
+    expect(queryByText(/^└/)).toBeNull();
   });
 
   it("renders terminal Codex spawn_agent failures without receivers as failed spawns", async () => {
@@ -891,7 +910,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(text).toContain("Finished waiting");
     expect(text).not.toContain("Waited for 2 agents");
     expect(getByTestId("collab-tool-row-receivers").textContent).toBe(
-      "Hypatia [default], Parfit [default]",
+      "└ Hypatia [default], Parfit [default]",
     );
     expect(text).not.toContain("completed - done");
     expect(text).not.toContain("failed - boom");
@@ -1069,19 +1088,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(text).not.toContain("Waiting for Hypatia");
   });
 
-  it("renders wait_agent receivers as a single comma-separated line under the parent body", async () => {
-    // The receiver list sits below the "Waiting for N agents" header and
-    // is meant to read as a continuation of the parent row's body column,
-    // not as a separate left-edge list. The body column starts at
-    // 6.125rem from the CollabToolRow's `px-1` content edge (chevron +
-    // gap + icon + gap + label + gap, all defined in
-    // TranscriptDisclosureHeader). Joining the agents with ", " keeps
-    // long rosters readable on a single wrapping line rather than one
-    // truncated row per agent. The `└` leader is gone — body-column
-    // alignment already carries the visual relationship and the user
-    // explicitly asked that it not appear. If the disclosure
-    // primitive's gutter widths change, recompute the margin and update
-    // both this expectation and the comment in CollabToolRowDetails.
+  it("renders wait_agent receivers as an indented comma-separated preview line", async () => {
     const pane = await buildPane(makeThread({ provider: "codex" }));
     const item = makeItem({
       id: "wait-receivers-indent",
@@ -1103,10 +1110,10 @@ describe("<ToolCallCard> header dispatcher", () => {
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
     const receivers = getByTestId("collab-tool-row-receivers");
 
-    expect(receivers.className).toContain("ml-[6.125rem]");
+    expect(receivers.className).toContain("ml-5");
+    expect(receivers.className).toContain("truncate");
     expect(receivers.className).not.toContain("space-y-");
-    expect(receivers.textContent).toBe("Schrodinger [default], Kierkegaard [default]");
-    expect(receivers.textContent).not.toContain("└");
+    expect(receivers.textContent).toBe("└ Schrodinger [default], Kierkegaard [default]");
   });
 
   it("renders wait_agent receiver nicknames and keeps completed carriers neutral", async () => {
@@ -1136,8 +1143,10 @@ describe("<ToolCallCard> header dispatcher", () => {
     });
     const text = getByTestId("collab-tool-row").textContent ?? "";
 
-    expect(text).toContain("Waiting for Galileo [explorer]");
-    expect(text).not.toContain("└ Galileo [explorer]");
+    expect(text).toContain("Waiting for Agent");
+    expect(getByTestId("collab-tool-row-receivers").textContent).toBe(
+      "└ Galileo [explorer]",
+    );
   });
 
   it("renders a checklist icon for Plan / ExitPlanMode", async () => {

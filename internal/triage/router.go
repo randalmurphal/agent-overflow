@@ -613,6 +613,11 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	if isToolStartMetaUpdateOnly(evt.Meta) {
 		return r.persistToolCallLaunch(evt)
 	}
+	var err error
+	evt, err = r.snapshotCodexWaitStartReceivers(evt)
+	if err != nil {
+		return err
+	}
 	r.settleStreamingBeforeTimelineBoundary(evt, "tool start", settleBoundaryScopeOnly)
 	// Codex TUI does not flush a unified-exec wait streak just because an
 	// unrelated top-level tool starts. Wait streaks flush on assistant

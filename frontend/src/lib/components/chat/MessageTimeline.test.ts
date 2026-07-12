@@ -367,7 +367,8 @@ describe('<MessageTimeline>', () => {
     ]);
     await tick();
 
-    expect(getByTestId('wait-group').textContent).toContain('Waiting for Chandrasekhar');
+    expect(getByTestId('wait-group').textContent).toContain('Waiting for Agent');
+    expect(getByTestId('collab-tool-row-receivers').textContent).toBe('└ Chandrasekhar');
     expect(queryByText('Review the timeline code')).toBeNull();
     expect(queryByText('I will inspect the live path.')).toBeNull();
 

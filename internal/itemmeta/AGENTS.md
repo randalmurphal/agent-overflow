@@ -23,6 +23,10 @@ logic lives here. Stdlib-only.
   (resolveSubagentsForWait, hasRunningChild), which decode evt.Meta,
   always see full messages. Fixed point. Callers: triage
   `shapeToolItemMeta` and the store v9 data-fixup migration.
+- `collab_prompt.go` — `TrimEncryptedCollabPrompt(raw)` removes opaque
+  MultiAgentV2 collaboration message ciphertext from persisted item
+  metadata, keyed structurally by `input.activityKind`; legacy plaintext
+  V1 prompts are preserved.
 
 ## Responsibility boundary
 

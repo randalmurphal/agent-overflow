@@ -399,8 +399,8 @@ func decodeSubAgentActivityItem(item map[string]json.RawMessage) (subAgentActivi
 // collabAgentToolCall items. V2 emits only item/completed for a successful
 // spawn, so Started expands to the begin/end pair the background projector
 // already understands. The typed activity supplies the authoritative child
-// thread and task path; raw function-call metadata can enrich prompt/role when
-// available but is not required for routing.
+// thread and task path; raw function-call metadata can enrich safe fields such
+// as role/model/effort, but V2's encrypted prompt is unavailable to clients.
 func classifySubAgentActivityCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
 	activity, ok := decodeSubAgentActivity("item/completed", params)
 	if !ok {

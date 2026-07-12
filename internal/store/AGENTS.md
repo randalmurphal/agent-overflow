@@ -72,7 +72,8 @@ root `CLAUDE.md` principle 3.
 - `migrate_fixups.go` — Go-side data fixups referenced by `Fix`
   migrations in `migrate.go`, built on the shared `rewriteItemMetas`
   scan/rewrite helper (v8 trims persisted tool_result echo, v9 trims
-  collab agentsStates messages out of `items.meta`).
+  collab agentsStates messages out of `items.meta`, v21 removes encrypted
+  MultiAgentV2 prompt blobs and repairs their summaries).
 - `sqlutil.go` — shared SQL helpers.
 
 ## Responsibility boundary
