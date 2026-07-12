@@ -26,7 +26,8 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P3.1 thread modes + take-over | `m3/p31-thread-modes` | `~/repos/ao-lanes/p31` | gpt-5.6-sol / **xhigh** | run1 `019f56fc-e0c2-78e0-acf4-6979f21e303e` (dead on arrival — usage limit); run2 `019f5714-98e5-77f2-8d0a-cc289a6bf374` | **merged `3ee937f8`** (workflows-system) |
 | P3.2 disposition + UI data + notifications | `m3/p32-disposition-uidata` | `~/repos/ao-lanes/p32` | gpt-5.6-sol / **xhigh** | `019f576c-444e-70b3-9bd5-0afadd50c1de` | **merged `6d329261`** (workflows-system) |
 | P3.4+P3.5 workflows pane frontend | `m3/p345-workflows-pane` | `~/repos/ao-lanes/p345` | gpt-5.6-sol / **xhigh** | `019f57c7-df07-70c3-b29f-0af4eb40af07` | **merged `a4640596`** (workflows-system) |
-| P3.6 sidebar + exclusions + deep links + remote | `m3/p36-sidebar-remote` | `~/repos/ao-lanes/p36` | gpt-5.6-sol / **xhigh** | `019f583e-5348-7251-a18d-d31e8c6b9c2b` | dispatched |
+| P3.6 sidebar + exclusions + deep links + remote | `m3/p36-sidebar-remote` | `~/repos/ao-lanes/p36` | gpt-5.6-sol / **xhigh** | `019f583e-5348-7251-a18d-d31e8c6b9c2b` | **merged `481fa3de`** (workflows-system) |
+| P3.7 e2e UI specs per surface | `m3/p37-e2e` | `~/repos/ao-lanes/p37` | gpt-5.6-sol / **xhigh** | — | authored |
 
 ## Events
 
@@ -802,3 +803,40 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   picker path was written from memory — also `ls` every allowlisted
   path so a file that moved (or never lived there) bounces on Claude's
   desk, not codex's.
+
+- **P3.6 verdict: not gamed, ZERO riders — merged `481fa3de`.** Resumed
+  run finished green (gates ×2 in-lane; final: 1602 files / 0 errors
+  svelte-check, 5384 vitest tests, e2e 11/11). Line-level review across
+  five diff areas (go/transport, transport-utils, stores, sidebar,
+  workflows/review) found nothing requiring a rider — a campaign first.
+  Verified specifically: exactly-five wire-safe reclassification with
+  `remoteAddrIsLoopback` shared between bootstrap flag and WS
+  enforcement; reactive strict-boolean `isViewOnlySession`; JobNotes
+  debounce cancelled on locality flip (guarded at schedule AND fire);
+  `WORKFLOWS_PANE_ID` === the pane's registered `paneId` so companion
+  cleanup targets the right source; `deferInitialLoad` safe because
+  `setScope` ends in an unconditional reload; `thread:updated` ingestion
+  is replace-only so hidden modes cannot enter via events. Gaming sweeps
+  clean (curly quotes, R2 vocabulary, test skips/only, gate configs).
+  Accepted-as-is notes (not defects): deep-link seeds `workflowLabel`
+  from the raw workflow id until definitions load; triage deep-link uses
+  `loadThreadById` after `WorkflowOpenTriageAgent` (canonical
+  conversion/registration path); sidebar tests in `__tests__/`
+  (precedent: `primitives/__tests__`). Report relocated with addendum →
+  `reports/P3.6-report.md`. Independent 8-gate battery on the merged
+  tree (race gate now includes `./internal/transport/`): all green.
+  Lane `p36` pruned.
+
+- **P3.7 authored** (`P3.7-e2e.md`) — the final M3 packet: Playwright
+  UI specs per surface (sidebar/§6.3 exclusions, pane navigation,
+  run-detail action flows via the UI, sweep, intake, §10 deep links,
+  §5.7 review companion). Key bindings: helpers extracted from
+  `workflows.spec.ts` with assertions byte-identical; additive
+  `data-testid`s only on the frontend; app-bug = BLOCKED with repro
+  (never bend the spec to the bug, never fix app code); no new harness
+  RPC surface; `make e2e` twice from the final tree (flake = not
+  done); §12 remote posture excluded (loopback harness, unit-covered).
+  Pre-dispatch allowlist walk done INCLUDING the `ls`-every-path check
+  (P3.6 lesson): all cited paths and testids verified present. The
+  UI-SPEC conformance audit + fable taste pass remain Claude-side
+  after this merges.
