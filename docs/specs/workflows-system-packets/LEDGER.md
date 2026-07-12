@@ -21,7 +21,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.4 phase runner + app wiring | `m2/p24-phase-runner` | `~/repos/ao-lanes/p24` | gpt-5.6-sol / **xhigh** | `019f553e-41c5-76d1-9bb2-433541267c0b` | **merged** |
 | P2.5 reliability | `m2/p25-reliability` | `~/repos/ao-lanes/p25` | gpt-5.6-sol / **xhigh** | run1 `019f556f-851a-79c0-8910-2c3ba63ff505` (dead on arrival — usage limit); run2 `019f5601-046a-7d11-96ce-38b7df0d666d` | **merged** |
 | P2.6 workspace isolation | `m2/p26-workspace-isolation` | `~/repos/ao-lanes/p26` | gpt-5.6-sol / **xhigh** | `019f5635-3455-7483-9849-9a35a0805bb4` | **merged** |
-| P2.7 harness workflows | `m2/p27-harness-workflows` | `~/repos/ao-lanes/p27` | gpt-5.6-sol / **xhigh** | `019f566e-6df8-7e71-9f2d-843f7b228a5d` | dispatched (base `a684bfa1`) |
+| P2.7 harness workflows | `m2/p27-harness-workflows` | `~/repos/ao-lanes/p27` | gpt-5.6-sol / **xhigh** | `019f566e-6df8-7e71-9f2d-843f7b228a5d` | **merged** |
 
 ## Events
 
@@ -365,3 +365,26 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   abort fixed once in the ao-mockprovider engine with parser-verified
   terminal frames for BOTH adapters; five zero-sleep Playwright specs;
   `make e2e` is the heart gate. Log: session scratchpad `p27-codex.log`.
+- **P2.7 reviewed + merged** (`3faceb5f`). ZERO riders — third zero-rider
+  packet of M2. All three banked review emphases verified line-level:
+  (1) production-paths seeding — zero raw work-item/phase writes (grep +
+  read), items via WorkflowEnqueueItem only, definitions/profile/prompts
+  written at the exact production config-dir layout and validated through
+  the production workflowDefinitionSource.Resolve, driven targets through
+  the real scheduler with subscribe-before-activate event waiting;
+  (2) interrupt frames — single engine-owned abort in ao-mockprovider
+  (turn-keyed gates, abort checks at every step boundary, ack-before-
+  terminal ordering by goroutine handoff), and BOTH binary tests push the
+  emitted frames through the real app parsers (claude.Parser with
+  MarkInterruptAcked; codex.ClassifyNotification) asserting
+  Aborted/StopReason:"interrupted" normalization — the strongest check
+  short of a live CLI; (3) all five Playwright specs are event-await-only
+  (no sleep/poll), including same-mockId question continuation and 100ms
+  watchdog. Reset drains queued items via start-then-cancel with a
+  must-make-progress loop that tolerates setup-failure parks. Deliberate
+  behavior change accepted: afterTurns:"silent" now stays owned until
+  interrupt (a hung turn, not an empty completion) — packet scope.
+  Sensible adjudications logged in ASSUMPTIONS (exhausted transient
+  maxStarts refused loudly; queued targets require inactive caller
+  queue). Claude re-ran all six gates independently: green, e2e 10/10.
+  Report at `reports/P2.7-report.md`.
