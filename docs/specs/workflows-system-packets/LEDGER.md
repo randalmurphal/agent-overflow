@@ -21,6 +21,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P2.4 phase runner + app wiring | `m2/p24-phase-runner` | `~/repos/ao-lanes/p24` | gpt-5.6-sol / **xhigh** | `019f553e-41c5-76d1-9bb2-433541267c0b` | **merged** |
 | P2.5 reliability | `m2/p25-reliability` | `~/repos/ao-lanes/p25` | gpt-5.6-sol / **xhigh** | run1 `019f556f-851a-79c0-8910-2c3ba63ff505` (dead on arrival — usage limit); run2 `019f5601-046a-7d11-96ce-38b7df0d666d` | **merged** |
 | P2.6 workspace isolation | `m2/p26-workspace-isolation` | `~/repos/ao-lanes/p26` | gpt-5.6-sol / **xhigh** | `019f5635-3455-7483-9849-9a35a0805bb4` | **merged** |
+| P2.7 harness workflows | `m2/p27-harness-workflows` | `~/repos/ao-lanes/p27` | gpt-5.6-sol / **xhigh** | `019f566e-6df8-7e71-9f2d-843f7b228a5d` | dispatched (base `a684bfa1`) |
 
 ## Events
 
@@ -354,3 +355,13 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   M3. Also accepted interpretation: artifacts capture at the producing
   phase's successful completion (re-capture on loops), not at workflow
   end — self-consistent and loop-safe.
+- **P2.7 dispatched** into `~/repos/ao-lanes/p27` (branch
+  `m2/p27-harness-workflows`, base `a684bfa1` = post-P2.6 main). Lane
+  frontend-bootstrapped; full pre-dispatch baseline green (go-build,
+  go-test, frontend check, `make e2e` 5/5). Banner verified sol/**xhigh**,
+  session `019f566e-6df8-7e71-9f2d-843f7b228a5d`, no usage-limit DOA.
+  Review inputs banked: seeding must flow through production paths only
+  (unreachable target = validation error, never raw rows); mock interrupt
+  abort fixed once in the ao-mockprovider engine with parser-verified
+  terminal frames for BOTH adapters; five zero-sleep Playwright specs;
+  `make e2e` is the heart gate. Log: session scratchpad `p27-codex.log`.
