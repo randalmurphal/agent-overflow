@@ -1,9 +1,9 @@
 <script lang="ts">
   import type { WorkItem, WorkflowDefinitionView } from '../../types/workflow';
   import {
-    WorkflowCancelItem,
     WorkflowOpenStudioThread,
     WorkflowOpenTriageAgent,
+    WorkflowRemoveQueuedItem,
     WorkflowReorderQueue,
   } from '../../stores/bindings';
   import { openThreadInNewPane } from '../../stores/panes.svelte';
@@ -184,11 +184,11 @@
     const key = `queue-cancel:${item.id}`;
     if (armed !== key) { setWorkflowArmedAction(key); return; }
     try {
-      await WorkflowCancelItem(item.id);
+      await WorkflowRemoveQueuedItem(item.id);
       setWorkflowArmedAction(null);
-      addToast('info', 'Teardown — queued run cancelled, worktree kept');
+      addToast('info', 'Removed from queue — record kept, nothing was provisioned');
     } catch (error) {
-      addToast('error', userFacingError(error, 'Could not cancel the queued run.'));
+      addToast('error', userFacingError(error, 'Could not remove the queued run.'));
     }
   }
 </script>

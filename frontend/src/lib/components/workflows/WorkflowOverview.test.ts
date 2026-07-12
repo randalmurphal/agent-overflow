@@ -52,7 +52,7 @@ describe('WorkflowOverview queue controls', () => {
       workflows: [{ id: 'wf', name: 'Workflow', scope: 'shared', phaseCount: 0, phases: [], inputs: [], defaultStepMode: false, valid: true, allBindingsAvailable: true }],
     }));
     setBindingMock('UpdateSettings', async (patch: Partial<Settings>) => makeSettings(patch));
-    setBindingMock('WorkflowCancelItem', async () => undefined);
+    setBindingMock('WorkflowRemoveQueuedItem', async () => undefined);
     setBindingMock('WorkflowReorderQueue', async () => undefined);
     setBindingMock('WorkflowGetItem', async () => ({
       item: queued, phases: [], artifacts: [],
@@ -77,10 +77,10 @@ describe('WorkflowOverview queue controls', () => {
 
     const cancel = view.getByTestId('wf-queue-cancel');
     await fireEvent.click(cancel);
-    expect(getBindingMock('WorkflowCancelItem')).not.toHaveBeenCalled();
+    expect(getBindingMock('WorkflowRemoveQueuedItem')).not.toHaveBeenCalled();
     expect(cancel).toHaveTextContent('cancel?');
     await fireEvent.click(cancel);
-    await waitFor(() => expect(getBindingMock('WorkflowCancelItem')).toHaveBeenCalledWith('queued'));
+    await waitFor(() => expect(getBindingMock('WorkflowRemoveQueuedItem')).toHaveBeenCalledWith('queued'));
   });
 
   it('opens queued runs with the full overview-workflow-run stack', async () => {

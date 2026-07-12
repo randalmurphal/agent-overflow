@@ -45,6 +45,22 @@ func TestWorkItemCRUDListAndTransitions(t *testing.T) {
 	if len(all) != 3 {
 		t.Fatalf("all project-a items = %d, want 3", len(all))
 	}
+	everyProject, err := s.ListWorkItemSummaries(WorkItemListFilter{})
+	if err != nil {
+		t.Fatalf("list every project: %v", err)
+	}
+	if len(everyProject) != 4 ||
+		everyProject[0].ID != "other-project" || everyProject[1].ID != "running" ||
+		everyProject[2].ID != "queued-first" || everyProject[3].ID != "queued-later" {
+		t.Fatalf("every-project order = %#v", everyProject)
+	}
+	crossProjectQueued, err := s.ListWorkItems(WorkItemListFilter{States: []string{"queued"}})
+	if err != nil {
+		t.Fatalf("list cross-project queued: %v", err)
+	}
+	if len(crossProjectQueued) != 3 {
+		t.Fatalf("cross-project queued = %d, want 3", len(crossProjectQueued))
+	}
 
 	snapshot := json.RawMessage(`{"id":"build","version":1}`)
 	if err := s.UpdateWorkItemRunStart("queued-first", snapshot, "/tmp/wt", "ao/item", "main", 40); err != nil {

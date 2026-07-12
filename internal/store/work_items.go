@@ -35,7 +35,8 @@ type WorkItem struct {
 	EndedAt        int64           `json:"endedAt,omitempty"`
 }
 
-// WorkItemListFilter narrows ListWorkItems by project and optional states.
+// WorkItemListFilter narrows ListWorkItems by optional project and states.
+// An empty ProjectID matches every project.
 type WorkItemListFilter struct {
 	ProjectID string   `json:"projectId"`
 	States    []string `json:"states,omitempty"`
@@ -127,8 +128,8 @@ func (s *Store) GetWorkItemByPhaseThread(threadID string) (WorkItem, error) {
 	return item, nil
 }
 
-// ListWorkItems returns matching items in queue order. ProjectID is required;
-// an empty States slice includes every state.
+// ListWorkItems returns matching items in queue order. An empty ProjectID
+// lists every project; an empty States slice includes every state.
 func (s *Store) ListWorkItems(filter WorkItemListFilter) ([]WorkItem, error) {
 	return s.listWorkItems(filter, workItemColumns)
 }
@@ -140,13 +141,21 @@ func (s *Store) ListWorkItemSummaries(filter WorkItemListFilter) ([]WorkItem, er
 }
 
 func (s *Store) listWorkItems(filter WorkItemListFilter, columns string) ([]WorkItem, error) {
-	query := `SELECT ` + columns + ` FROM work_items WHERE project_id = ?`
-	args := []any{filter.ProjectID}
+	query := `SELECT ` + columns + ` FROM work_items`
+	conditions := make([]string, 0, 2)
+	args := make([]any, 0, 1+len(filter.States))
+	if filter.ProjectID != "" {
+		conditions = append(conditions, `project_id = ?`)
+		args = append(args, filter.ProjectID)
+	}
 	if len(filter.States) > 0 {
-		query += ` AND state IN (` + strings.TrimRight(strings.Repeat("?,", len(filter.States)), ",") + `)`
+		conditions = append(conditions, `state IN (`+strings.TrimRight(strings.Repeat("?,", len(filter.States)), ",")+`)`)
 		for _, state := range filter.States {
 			args = append(args, state)
 		}
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
 	query += ` ORDER BY sort_position ASC, created_at ASC`
 
